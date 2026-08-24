@@ -17,6 +17,7 @@ import {
   isFreteMarketplaceOwned,
   modalidadeFreteSchema,
   type ModalidadeFrete,
+  seedFreteInicial,
 } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { ClientePicker } from '@/components/pickers/ClientePicker';
@@ -26,7 +27,7 @@ import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import type { FreteInicialFormState } from '../types';
 import { collectFreteErrors } from '../freteErrors';
 import { FreteSwitchField, fretePath, type PedidoFormHandle } from './frete/fields';
-import { seedFreteInicial } from './frete/seedFreteInicial';
+
 import { isAtivacaoDeFrete, seedVolumePadrao } from './frete/seedVolumePadrao';
 import { notificarAvisoDimensoes } from './frete/notificarAviso';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';

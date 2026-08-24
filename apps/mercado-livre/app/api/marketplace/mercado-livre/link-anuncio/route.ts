@@ -14,8 +14,9 @@
  * ⚠️ in `lib/marketplace/anuncios/anuncioUrl.ts` for why it is not cached).
  *
  * Responses: 200 `{ url }`; 404 when the link doc is missing, belongs to another
- * conta, or the listing no longer exists on ML; 409 when it was never published;
- * ML errors map through `mercadoLivreErrorResponse`.
+ * conta, or the listing no longer exists on ML; 409 when it was never published,
+ * or when a família's members cannot be searched because the conta carries no ML
+ * `user_id`; ML errors map through `mercadoLivreErrorResponse`.
  */
 import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
@@ -23,7 +24,7 @@ import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collect
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { resolveAnuncioUrl } from '@/lib/marketplace/anuncios/anuncioUrl';
+import { AnuncioUrlSemUserIdError, resolveAnuncioUrl } from '@/lib/marketplace/anuncios/anuncioUrl';
 import { refMatchesIntegracao } from '@/lib/marketplace/core/linkRefs';
 import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
@@ -88,7 +89,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     const channelCtx = await ctx.resolveChannelContext();
     const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
-    const url = await resolveAnuncioUrl({ api }, link);
+    // A família's members are found through `GET /users/{sellerId}/items/search`,
+    // so the conta's own ML id is part of the question — see `familyItemUrl`.
+    const url = await resolveAnuncioUrl(
+      { api, sellerUserId: asNumberOrNull(ctx.conta.user_id) },
+      link,
+    );
     if (url == null) {
       // `link.id` was present, so this is ML saying the listing is gone — not
       // the "never published" case the 409 above covers.
@@ -99,7 +105,17 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
     return NextResponse.json({ url });
   } catch (err) {
+    // A conta that never finished identifying itself is a CONNECTION problem, not
+    // a dead anúncio — 404 here would send the operator hunting for a listing that
+    // is fine. Same 409 family as "never published": fix the state, then retry.
+    if (err instanceof AnuncioUrlSemUserIdError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);
     throw err;
   }
+}
+
+function asNumberOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }

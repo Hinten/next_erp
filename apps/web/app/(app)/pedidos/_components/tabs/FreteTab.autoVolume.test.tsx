@@ -8,9 +8,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import type { Pedido } from '@delfrance/schemas';
-import { MODALIDADE_FRETE } from '@delfrance/schemas';
+import { MODALIDADE_FRETE, seedFreteInicial } from '@delfrance/schemas';
 import type { FreteInicialFormState, PedidoFormState, VolumeFormState } from '../types';
-import { seedFreteInicial } from './frete/seedFreteInicial';
+
 import { FreteTab } from './FreteTab';
 import { notifications } from '@mantine/notifications';
 import { loadProdutoPesoMap } from './frete/produtoPeso';

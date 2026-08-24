@@ -107,6 +107,21 @@ async function editAndSave(field: string, value: string) {
   });
 }
 
+/**
+ * The "Salvar e continuar" path — the one that leaves the form MOUNTED, so the
+ * same record can be saved twice without the listener ever being torn down.
+ * `editAndSave` cannot stand in for it: the plain "Salvar" navigates away in
+ * `onSaved`, which is precisely why the stale baseline below never showed up.
+ */
+async function editAndSaveContinue(field: string, value: string) {
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText(field), { target: { value } });
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar' }));
+  });
+}
+
 beforeEach(() => {
   saveRecordMock.mockReset();
   notifyShow.mockReset();
@@ -248,5 +263,66 @@ describe('ObjectView — tier-3 conflict (#824)', () => {
 
     expect(screen.queryByRole('button', { name: 'Salvar mesmo assim' })).toBeNull();
     expect(screen.getByText(/excluído por outra pessoa/)).toBeTruthy();
+  });
+
+  it('re-bases the baseline onto a successful save, so saving twice is not a false conflict', async () => {
+    // ⚠️ The mirror image of the `#791` case above, and it only became reachable
+    // once the listener started delivering `fromCache: false` at all: with the
+    // baseline permanently null the guard was skipped, so this could not fire.
+    // Arm it and the ORDINARY "Salvar e continuar" path breaks — the baseline
+    // keeps the pre-save version while the server holds the post-save one, so a
+    // second edit of the same field collides with the operator's OWN write.
+    //
+    // `useServerTruthSeed` cannot repair it: it corrects once per record id, and
+    // that already happened on open. The echo re-emitted below proves exactly
+    // that — a fresh server snapshot arrives and changes nothing.
+    saveRecordMock.mockResolvedValue({ id: 'EXISTING', patch: { nome: 'Alicia' } });
+    renderView();
+
+    await editAndSaveContinue('Nome', 'Alicia');
+    // The form stays mounted (no navigation), and the server echoes the write.
+    docState.current = {
+      data: { id: 'EXISTING', data: { ...LOADED, nome: 'Alicia' } },
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
+
+    await editAndSave('Nome', 'Alicia Segunda');
+
+    expect(saveRecordMock).toHaveBeenCalledTimes(2);
+    const second = saveRecordMock.mock.calls[1]![0] as { baseline?: Record<string, unknown> };
+    // The version the operator last knew is the one THEY just wrote.
+    expect(second.baseline?.nome).toBe('Alicia');
+    // Untouched fields still come from the server seed — the re-base merges the
+    // patch in, it does not replace the baseline with it.
+    expect(second.baseline?.email).toBe('a@x.com');
+  });
+
+  it('does NOT let a successful save ARM a baseline that server truth never seeded', async () => {
+    // The null check on that re-base, which is easy to read as a mere
+    // null-safety nicety. It is the `#791` safeguard again, one step later.
+    //
+    // On a cache paint that no server snapshot has corrected, the baseline is
+    // deliberately null — fail open, because a version nobody displayed cannot be
+    // used to raise a conflict the operator could act on. A re-base that skipped
+    // this check would MANUFACTURE a baseline out of the patch, claiming server
+    // truth for a record we never read from the server, and every later save
+    // would be judged against it.
+    docState.current = {
+      data: { id: 'EXISTING', data: { ...LOADED } },
+      loading: false,
+      error: undefined,
+      fromCache: true,
+    };
+    saveRecordMock.mockResolvedValue({ id: 'EXISTING', patch: { nome: 'Alicia' } });
+    renderView();
+
+    await editAndSaveContinue('Nome', 'Alicia');
+    await editAndSave('Nome', 'Alicia Segunda');
+
+    expect(saveRecordMock).toHaveBeenCalledTimes(2);
+    const second = saveRecordMock.mock.calls[1]![0] as { baseline?: Record<string, unknown> };
+    expect(second.baseline).toBeUndefined();
   });
 });
