@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { checkName, jobBlocks, topBlock } from './workflow-scan.js';
+import { checkName, jobBlocks, stripComments, topBlock } from './workflow-scan.js';
 
 /**
  * Unit tests for the shared workflow line-scanner.
@@ -117,8 +117,82 @@ describe('checkName', () => {
     expect(checkName('test', jobs.test)).toBe('test');
   });
 
+  it('derives the key indent, matching jobBlocks', () => {
+    // ⚠️ The regression. `checkName` used to hardcode `/^\s{4}name/` while
+    // `jobBlocks` one screen up DERIVED the indent — so on the 4-space workflow the
+    // sibling test blesses, job keys sit at 8 spaces, nothing matched, and this
+    // silently returned the job id instead of its name. Confidently wrong beats
+    // loudly wrong only in the sense that it is harder to notice.
+    const four = [
+      'jobs:',
+      '    alpha:',
+      '        name: CI alpha',
+      '        runs-on: ubuntu-latest',
+      '',
+    ].join('\n');
+    const jobs = jobBlocks(four);
+    expect(Object.keys(jobs)).toEqual(['alpha']);
+    expect(checkName('alpha', jobs.alpha)).toBe('CI alpha');
+  });
+
+  it('does not let whitespace straddle a line break', () => {
+    // `\s` matches `\n`, so the old `\s{4}` could span a newline and read a `name:`
+    // that belongs to something shallower. Literal spaces plus a derived indent
+    // close it: here the shallowest key is at column 0, so an indented `name:` is
+    // not a key of this job.
+    expect(checkName('j', 'runs-on: x\n   name: bogus')).toBe('j');
+  });
+
   it('strips surrounding quotes', () => {
     expect(checkName('j', "    name: 'CI test'")).toBe('CI test');
     expect(checkName('j', '    name: "CI test"')).toBe('CI test');
+  });
+});
+
+/**
+ * The SECOND half of the landmine, which anchoring to `jobs:` does not reach.
+ *
+ * A comment at job indent BETWEEN two jobs documents the NEXT one, but `jobBlocks`
+ * has no way to know that, so it lands in the PREVIOUS job's body. A guard asking
+ * `body.includes('<command>')` then matches prose and blames a job that really
+ * exists — harder to disbelieve than the `pull_request` version, not easier.
+ */
+const COMMENT_BETWEEN_JOBS = [
+  'jobs:',
+  '  alpha:',
+  '    runs-on: ubuntu-latest',
+  '',
+  '  # This block documents beta and mentions `turbo run build`.',
+  '  # It is prose, not a command.',
+  '  beta:',
+  '    runs-on: ubuntu-latest',
+  '',
+].join('\n');
+
+describe('stripComments', () => {
+  it('removes the prose that would otherwise be read as a command', () => {
+    const jobs = jobBlocks(COMMENT_BETWEEN_JOBS);
+
+    // The misattribution itself is real and NOT fixed by anchoring — assert it, so
+    // nobody "fixes" this by pretending jobBlocks handles it.
+    expect(jobs.alpha).toContain('turbo run build');
+
+    // ...but once comments are stripped, no job claims to run it.
+    for (const [id, body] of Object.entries(jobs)) {
+      expect(stripComments(body), `${id} must not appear to run a commented command`).not.toContain(
+        'turbo run build',
+      );
+    }
+  });
+
+  it('keeps real content, including a trailing inline comment', () => {
+    const body = [
+      '    env:',
+      '      FUNCTIONS_REGION: us-central1 # keep me',
+      '    # drop me',
+    ].join('\n');
+    const out = stripComments(body);
+    expect(out).toContain('FUNCTIONS_REGION: us-central1');
+    expect(out).not.toContain('drop me');
   });
 });

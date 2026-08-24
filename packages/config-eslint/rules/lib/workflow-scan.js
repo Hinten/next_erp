@@ -83,13 +83,52 @@ export function jobBlocks(source) {
 }
 
 /**
+ * A job body with full-line comments removed.
+ *
+ * ⚠️ Anchoring to `jobs:` fixes a comment sitting ABOVE `jobs:`, but not one at job
+ * indent BETWEEN two jobs: `jobBlocks` cannot know a trailing comment block
+ * documents the NEXT job, so it lands in the previous one's body. A guard asking
+ * `body.includes('<command>')` then matches prose and blames a job that really
+ * exists — which takes longer to disbelieve than the `pull_request` version, not
+ * less.
+ *
+ * The durable fix is semantic rather than positional: **a command named in a
+ * comment is not a command**. Scan the stripped body and the attribution question
+ * stops mattering.
+ *
+ * Full-line comments only. A trailing `key: value  # note` needs quote-awareness to
+ * strip safely, and it is not the hazard — the hazard is a paragraph of prose
+ * explaining what a job does, which is always full-line.
+ */
+export function stripComments(jobBody) {
+  return jobBody
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n');
+}
+
+/**
  * The check-run name GitHub publishes for a job: its `name:`, else its bare id.
  *
  * ⚠️ A check-run name carries NO workflow-name prefix, which is why these names
  * must be unique repo-wide and why `ci-lane-gates.test.js` asserts them.
+ *
+ * ⚠️ The key indent is DERIVED, matching `jobBlocks`. It used to be a hardcoded
+ * `/^\s{4}name/`, which contradicted the sibling function one screen up: on a
+ * 4-space-indented workflow — the very shape `workflow-scan.test.js` blesses — job
+ * keys sit at 8 spaces, no match, and this silently returned the job id instead of
+ * its name. In `ci-lane-gates.test.js` a wrong fallback usually fails loudly against
+ * a pinned name, but the repo-wide uniqueness scan is the exception: falling back to
+ * the id there could MASK a genuine check-name collision.
+ *
+ * ⚠️ Literal spaces, not `\s`. `\s` matches `\n`, so `\s{4}` could straddle a line
+ * break and read a `name:` belonging to something else entirely.
  */
 export function checkName(jobId, jobBody) {
-  const m = jobBody.match(/^\s{4}name\s*:\s*(.+?)\s*$/m);
+  const lines = jobBody.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#'));
+  if (lines.length === 0) return jobId;
+  const indent = Math.min(...lines.map((l) => l.match(/^ */)[0].length));
+  const m = jobBody.match(new RegExp(`^ {${indent}}name\\s*:\\s*(.+?)\\s*$`, 'm'));
   if (!m) return jobId;
   return m[1].replace(/^['"]|['"]$/g, '');
 }

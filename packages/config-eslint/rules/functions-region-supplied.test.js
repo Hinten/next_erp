@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { jobBlocks } from './lib/workflow-scan.js';
+import { jobBlocks, stripComments } from './lib/workflow-scan.js';
 
 /**
  * Repo invariant: every workflow job that BUILDS a Cloud Functions bundle must
@@ -128,6 +128,33 @@ describe('a workflow that builds a functions bundle supplies its region', () => 
     ).toEqual([]);
   });
 
+  it('still parses jobs out of every known builder', () => {
+    // ⚠️ Third anti-vacuity floor, and the one this file lacked. The two beside it
+    // pin the git pathspec and REGION_COMMANDS, but BOTH read the file text — so
+    // neither notices the PARSER. Mutation-tested: stub `jobBlocks` to `return {}`
+    // and the assertion below passes 4/4 having examined no jobs at all.
+    //
+    // That matters more now that the parser lives in a shared module owned by
+    // another guard: `jobBlocks` will next be edited for `ci-lane-gates`' benefit,
+    // and nothing here would notice. `ci-lane-gates.test.js` pins ci.yml's real job
+    // list, so a TOTAL break reds somewhere — but a break that empties only one
+    // file's jobs would red nowhere.
+    const unparsed = KNOWN_BUILDERS.filter((p) => Object.keys(jobBlocks(read(p))).length === 0);
+
+    expect(
+      unparsed,
+      [
+        '`jobBlocks` found NO jobs in these workflows, so the per-job scan below',
+        'examines nothing and passes vacuously:',
+        '',
+        ...unparsed.map((p) => `  - ${p}`),
+        '',
+        'Either the workflow genuinely has no `jobs:` block (then drop it from',
+        'KNOWN_BUILDERS), or lib/workflow-scan.js stopped parsing this shape.',
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
   it('still recognises those builders by their commands', () => {
     // Guards the scan itself: if REGION_COMMANDS drifts from how the workflows
     // actually invoke things, the assertion below passes over an empty set.
@@ -168,7 +195,14 @@ describe('a workflow that builds a functions bundle supplies its region', () => 
     const offenders = [];
 
     for (const file of findWorkflows()) {
-      for (const [id, body] of Object.entries(jobBlocks(read(file)))) {
+      for (const [id, rawBody] of Object.entries(jobBlocks(read(file)))) {
+        // ⚠️ Comments stripped FIRST. Anchoring `jobBlocks` to `jobs:` fixed the
+        // comment-above-`jobs:` shape, but a comment at job indent BETWEEN two jobs
+        // still lands in the preceding job's body — `jobBlocks` cannot know it
+        // documents the next one. `includes(command)` would then match prose and
+        // blame a job that really exists. A command named in a comment is not a
+        // command, so scanning the stripped body settles it positionally-blind.
+        const body = stripComments(rawBody);
         if (delegates(body)) continue;
         for (const { command, variable } of REGION_COMMANDS) {
           if (!body.includes(command)) continue;
