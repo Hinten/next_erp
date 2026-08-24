@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  MercadoLivreError,
   MercadoLivreHttpError,
   MercadoLivreLabelUnavailableError,
   MercadoLivreNetworkError,
@@ -8,7 +9,7 @@ import {
   isVersionConflict,
 } from '../src/errors';
 import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
-import { orderSchema } from '../src/types';
+import { ML_MULTIGET_MAX_IDS, orderSchema } from '../src/types';
 import {
   __resetAvisoFormatoLegado,
   ehFormatoLegado,
@@ -84,6 +85,99 @@ describe('createMercadoLivreApi — happy paths', () => {
     const item = await api.getItem('MLB1');
     expect(item.id).toBe('MLB1');
     expect(String(fetchMock.mock.calls[0]![0])).toContain('include_attributes=all');
+  });
+
+  it('getItemsByIds joins ids and attributes, and parses the VERBOSE envelope', async () => {
+    // Multiget does not answer with items — it answers `[{code, body}, …]`, one
+    // entry per requested id, each with its own status. A caller that reads
+    // `body` without `code` sees a 403/404 as an item with no fields.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([
+        { code: 200, body: { id: 'MLB1', user_product_id: 'MLBU1' } },
+        { code: 404, body: null },
+      ]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const out = await api.getItemsByIds(['MLB1', 'MLB2'], ['id', 'user_product_id']);
+
+    expect(out).toHaveLength(2);
+    expect(out[0]!.code).toBe(200);
+    expect(out[0]!.body?.user_product_id).toBe('MLBU1');
+    expect(out[1]!.code).toBe(404);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('/items?');
+    expect(url).toContain('ids=MLB1%2CMLB2');
+    expect(url).toContain('attributes=id%2Cuser_product_id');
+  });
+
+  it('getItemsByIds tolerates a QUOTED code — ML quoting a number must not kill the body', async () => {
+    // #1087's shape, applied here: `parseOk` validates the whole body, so one
+    // strict field costs the entire multiget. This one is the worst place for
+    // it — every entry would fail `code !== 200`, `verificarMembros` would
+    // confirm nothing, and the orphan sweep would silently stop closing.
+    // ⚠️ Only reachable through the real client: the sweep's own tests mock
+    // `getItemsByIds` and never run this schema.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ code: '200', body: { id: 'MLB1', user_product_id: 'MLBU1' } }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    const out = await api.getItemsByIds(['MLB1'], ['id', 'user_product_id']);
+
+    expect(out[0]!.code).toBe(200);
+    expect(out[0]!.body?.user_product_id).toBe('MLBU1');
+  });
+
+  it('getItemsByIds omits attributes entirely when none are named', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([{ code: 200, body: { id: 'MLB1' } }]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.getItemsByIds(['MLB1']);
+
+    expect(String(fetchMock.mock.calls[0]![0])).not.toContain('attributes=');
+  });
+
+  it('getItemsByIds REFUSES more than the cap, before touching the network', async () => {
+    // ML does not error on an over-long multiget — it truncates — so a caller
+    // deciding what to CLOSE from the difference would act on a set it only
+    // partly verified. The "no fetch" half is the point: the refusal has to
+    // happen at the seam, not after ML has already answered for a prefix.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const demais = Array.from({ length: ML_MULTIGET_MAX_IDS + 1 }, (_, i) => `MLB${String(i)}`);
+
+    await expect(api.getItemsByIds(demais)).rejects.toBeInstanceOf(MercadoLivreError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('getItemsByIds allows EXACTLY the cap — the boundary is inclusive', async () => {
+    // Pins the off-by-one: a cap that silently became `>=` would leave the last
+    // id of every full chunk unverified, which is the same silent prefix in a
+    // different disguise.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const noLimite = Array.from({ length: ML_MULTIGET_MAX_IDS }, (_, i) => `MLB${String(i)}`);
+
+    await api.getItemsByIds(noLimite);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('getItemsByIds maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getItemsByIds(['MLB1'])).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
   });
 
   it('searchOrders forwards the query params', async () => {

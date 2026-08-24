@@ -33,6 +33,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   type BuildItemPayloadInput,
+  ML_MULTIGET_MAX_IDS,
   type MercadoLivreApi,
   MercadoLivreError,
   type MlItem,
@@ -190,7 +191,19 @@ export interface OrphanSweepResult {
  *    family disagrees with ML's (indexing lag on a fresh create is the normal
  *    cause), so the set difference is not trustworthy;
  *  - the sweep would close EVERY member → that is never a legitimate outcome of
- *    "some variations were removed", and the caller keeps the produto anyway.
+ *    "some variations were removed", and the caller keeps the produto anyway;
+ *  - an orphan whose `user_product_id` is NOT one of this família's → ML answered
+ *    more broadly than we asked, and the set difference is not ours to act on.
+ *
+ * ⚠️ That last one is a different KIND of doubt from the four above, which is
+ * why it needs its own check. Those all guard OUR view being incomplete; this
+ * guards ML's answer being too BROAD, and the existing guards cannot see it —
+ * a foreign item passes `keptItemIds.every(...)` (that tests the other
+ * direction) and passes the whole-family test (one genuine member kept is
+ * enough), and then gets closed. Closing is terminal and the victim would be
+ * another família's live listing, so membership is PROVEN before the close, not
+ * assumed: {@link verificarMembros} re-reads each candidate's own
+ * `user_product_id` and anything it cannot confirm stays open.
  *
  * Best-effort throughout: a failure here is reported, never fatal — the items
  * are already published and correct.
@@ -216,10 +229,38 @@ export async function sweepRemovedMembers(
   if (!keptItemIds.every((id) => membership.ids.includes(id))) {
     return { closed: [], skipped: 'a família ainda não reflete os anúncios publicados agora' };
   }
-  const orphans = membership.ids.filter((id) => !kept.has(id));
-  if (orphans.length === 0) return { closed: [], skipped: null };
-  if (orphans.length === membership.ids.length) {
+  const candidatos = membership.ids.filter((id) => !kept.has(id));
+  // BEFORE any verification: nothing to close is the common outcome of a normal
+  // publish, and returning here is what keeps the membership check free.
+  if (candidatos.length === 0) return { closed: [], skipped: null };
+  if (candidatos.length === membership.ids.length) {
     return { closed: [], skipped: 'nenhum anúncio publicado agora pertence à família' };
+  }
+
+  const verificacao = await verificarMembros(deps, candidatos, membership.userProductIds);
+  if (verificacao.erro != null) {
+    return { closed: [], skipped: `não foi possível confirmar os membros: ${verificacao.erro}` };
+  }
+  const orphans = verificacao.confirmados;
+  // ⚠️ A PARTIAL refusal is otherwise invisible: `skipped` stays null and the
+  // sweep reports success, so the candidates that fell out leave no trace at all.
+  // That is the case most worth seeing, because it is the only signal that either
+  // assumption nothing here can test has broken — that ML honours the
+  // `user_product_id` filter, and that it answers in the `{code, body}` envelope.
+  // A FLAT response is the sharp one: `code` is optional on a `.passthrough()`
+  // schema, so it would parse, then fail `code !== 200` on every entry, and the
+  // sweep would quietly stop closing anything for good.
+  if (orphans.length < candidatos.length) {
+    const confirmadosSet = new Set(orphans);
+    console.warn('[mercado-livre] publish: variações não confirmadas na família', {
+      familyId,
+      naoConfirmadas: candidatos.filter((id) => !confirmadosSet.has(id)),
+      confirmadas: orphans.length,
+      candidatas: candidatos.length,
+    });
+  }
+  if (orphans.length === 0) {
+    return { closed: [], skipped: 'nenhum anúncio a encerrar pertence comprovadamente à família' };
   }
 
   const closed: string[] = [];
@@ -244,6 +285,75 @@ export async function sweepRemovedMembers(
 }
 
 /* --------------------------------- helpers ---------------------------------- */
+
+/**
+ * Which of these candidates PROVABLY belong to the família, re-read from ML.
+ *
+ * The candidates come from `GET /users/{sellerId}/items/search?user_product_id=<csv>`,
+ * so they are only this família's items if ML honoured that filter. Nothing in
+ * this repo can verify that it does — ML has no sandbox and no lane may hold real
+ * credentials — and on this path being wrong closes a stranger's live listing.
+ * So the filter's answer is treated as a PROPOSAL and each candidate's own
+ * `user_product_id` is the proof.
+ *
+ * ⚠️ Every uncertainty keeps a listing OPEN. A non-200 entry, an item ML returns
+ * with no `user_product_id`, an id that was never asked about, one ML omitted
+ * from its answer entirely — all of them fall out of `confirmados`. The
+ * asymmetry is the whole design: leaving an orphan open costs a later sweep,
+ * closing a live listing costs a seller their sale and cannot be undone from
+ * here.
+ *
+ * ⚠️ An empty `userProductIds` confirms NOTHING, and must not: an absent
+ * authority means we could not learn the família's members, which is the
+ * strongest possible reason not to close anything. Today the sweep cannot reach
+ * that branch — `resolveFamilyItemIds` short-circuits an empty família to no
+ * ids, so there are no candidates — but the refusal belongs to THIS function's
+ * contract rather than to its caller's control flow, and a second caller or a
+ * change upstream must not be able to turn "we do not know" into "close it".
+ *
+ * Cost: ⌈candidates / {@link ML_MULTIGET_MAX_IDS}⌉ requests, and this is only
+ * ever reached when something is already about to be closed. Chunking is
+ * mandatory rather than tidy — ML TRUNCATES an over-long multiget instead of
+ * rejecting it, so an unchunked call would silently confirm a prefix and drop
+ * every candidate past the 20th into "unverified".
+ */
+async function verificarMembros(
+  deps: { api: MercadoLivreApi },
+  candidatos: ReadonlyArray<string>,
+  userProductIds: ReadonlyArray<string>,
+): Promise<{ confirmados: string[]; erro: string | null }> {
+  if (userProductIds.length === 0) {
+    return { confirmados: [], erro: 'a família não reportou nenhum user product' };
+  }
+  const daFamilia = new Set(userProductIds);
+  const pedidos = new Set(candidatos);
+  const confirmados: string[] = [];
+
+  try {
+    for (let i = 0; i < candidatos.length; i += ML_MULTIGET_MAX_IDS) {
+      const lote = candidatos.slice(i, i + ML_MULTIGET_MAX_IDS);
+      const resposta = await deps.api.getItemsByIds(lote, ['id', 'user_product_id']);
+      for (const entrada of resposta) {
+        // ML's verbose envelope carries a per-entry status: a 403/404 arrives
+        // inside a 200, with a `body` that is absent or hollow. Reading `body`
+        // without `code` makes an unreadable item look like one with no UP.
+        if (entrada.code !== 200) continue;
+        const id = entrada.body?.id;
+        const up = entrada.body?.user_product_id;
+        if (typeof id !== 'string' || !pedidos.has(id)) continue;
+        if (typeof up !== 'string' || !daFamilia.has(up)) continue;
+        confirmados.push(id);
+      }
+    }
+  } catch (err) {
+    // Best-effort like the rest of the sweep: the caller turns this into a
+    // `skipped`, never a throw — the items are already published and correct.
+    if (!(err instanceof MercadoLivreError)) throw err;
+    return { confirmados: [], erro: err.message };
+  }
+
+  return { confirmados, erro: null };
+}
 
 /**
  * Persist one member's `variacaoMercadoLivre` link — **patching only the fields

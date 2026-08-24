@@ -214,6 +214,56 @@ export const itemSchema = z
 export type MlItem = z.infer<typeof itemSchema>;
 
 /**
+ * ML's documented Multiget cap (*Busca de itens* → "Multiget": "um máximo de 20
+ * resultados com uma única chamada").
+ *
+ * ⚠️ ML does not error on an over-long multiget — it TRUNCATES, so a caller that
+ * does not chunk gets a silent prefix and, if it is deciding what to DELETE or
+ * CLOSE from the difference, acts on a set it only partly verified. That is why
+ * `getItemsByIds` refuses locally instead of forwarding the request: the trap is
+ * invisible at the ML end, so the seam has to be the one that says no.
+ */
+export const ML_MULTIGET_MAX_IDS = 20;
+
+/**
+ * `GET /items?ids=<csv>&attributes=<csv>` — ML's **Multiget**, capped at 20 ids.
+ *
+ * ⚠️ The response is NOT an array of items. Multiget answers in the *verbose*
+ * envelope — `[{ code, body }, …]`, one entry per requested id, each carrying its
+ * OWN status code — so a partial failure is a 200 overall with a non-200 entry
+ * inside it. A caller that reads `body` without checking `code` treats a missing
+ * or forbidden item as an item with no fields, which for
+ * {@link https://developers.mercadolivre.com.br/pt_br/itens-e-buscas | the docs'}
+ * own example shape is indistinguishable from a real one.
+ *
+ * `body` is modelled narrow on purpose: the only caller asks for two attributes
+ * (`sweepRemovedMembers`' membership check), and `attributes=` makes ML omit
+ * everything else, so reusing `itemSchema` here would claim fields the request
+ * never asked for. `.passthrough()` keeps whatever else a wider caller requests.
+ */
+export const itemsMultigetSchema = z.array(
+  z
+    .object({
+      // `mlInt()`, not `z.number().int()`: ML quoting a number is serializer-level
+      // drift and `parseOk` validates the WHOLE body, so one strict field costs
+      // the entire multiget. Here that would be silent in the worst way — every
+      // entry would fail `code !== 200`, the sweep would confirm nothing, and it
+      // would stop closing anything at all.
+      code: mlInt().nullable().optional(),
+      body: z
+        .object({
+          id: z.string().nullable().optional(),
+          user_product_id: z.string().nullable().optional(),
+        })
+        .passthrough()
+        .nullable()
+        .optional(),
+    })
+    .passthrough(),
+);
+export type MlItemsMultiget = z.infer<typeof itemsMultigetSchema>;
+
+/**
  * `conditions` of one `GET /items/{id}/prices` entry — the applicability
  * window plus channel restrictions. `context_restrictions` values include
  * `channel_marketplace` and legacy `channel_mshops` (Mercado Shops is

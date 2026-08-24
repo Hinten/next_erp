@@ -1401,10 +1401,16 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
         id: `MLB90${++n}`,
         family_id: 4260899048783356,
       })),
-      // The orphan sweep's two hops. Membership == exactly what was published,
-      // so the default fixture closes nothing.
+      // The orphan sweep's hops. Membership == exactly what was published, so
+      // the default fixture closes nothing.
       getUserProductFamily: vi.fn(async () => ({ user_products_ids: ['MLBU1', 'MLBU2'] })),
       searchItemsByUserProduct: vi.fn(async () => ({ results: ['MLB901', 'MLB902'] })),
+      // Hop three: the sweep PROVES membership before closing, so an id it
+      // cannot confirm stays open. Confirms whatever it is asked about — a
+      // fixture that wants a refusal overrides this.
+      getItemsByIds: vi.fn(async (ids: readonly string[]) =>
+        ids.map((id) => ({ code: 200, body: { id, user_product_id: 'MLBU1' } })),
+      ),
       ...overrides,
     });
   }
