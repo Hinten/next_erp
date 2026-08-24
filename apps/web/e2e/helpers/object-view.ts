@@ -172,27 +172,34 @@ export async function expectToast(page: Page, matcher: string | RegExp): Promise
  * Per-attempt budget for the authoritative Firestore snapshot to reach a record
  * that was just re-opened after a save.
  *
- * ## Why a bigger wall clock is the wrong lever
+ * ## Two different things went wrong here; this budget only addresses one
  *
- * `ObjectView` deliberately paints the Firestore snapshot it can get
- * *immediately* and corrects it afterwards. With `persistentLocalCache`,
- * `onSnapshot` emits `fromCache: true` FIRST, and `saveRecord` commits in a
- * transaction — which has no latency compensation — while the screen navigates
- * away in `onSaved`, tearing the listener down before the server echo lands. So
- * the local cache still holds the pre-save value when the record is re-opened,
- * and `useServerTruthSeed` only re-seeds the form once the authoritative
- * `fromCache: false` snapshot arrives.
+ * `ObjectView` paints the snapshot it can get *immediately* and corrects it
+ * afterwards: `onSnapshot` emits `fromCache: true` first, and `saveRecord`
+ * commits in a transaction — no latency compensation — while `onSaved` navigates
+ * away, tearing the listener down before the server echo. `useServerTruthSeed`
+ * re-seeds once the authoritative `fromCache: false` snapshot arrives.
  *
- * That budget was widened once already (5s → 15s, #799) and went red again
- * anyway — three in-job retries in a row, then green on a fresh job. The reason
- * is in the SDK: the watch stream backs off exponentially (1s, ×1.5, capped at
- * 60s) and `OnlineStateTracker` gives up after 10s and surfaces cached data. Once
- * the initial handshake misses, the retries land FURTHER apart, so a stalled load
- * is no likelier to converge at 30s than at 15s — while a fresh page load resets
- * the backoff to zero and typically converges in under two seconds.
+ * **The structural bug was that it usually never arrived at all.** The SDK's
+ * `QueryListener.shouldRaiseEvent` delivers a change-free snapshot only when the
+ * cache -> server transition coincides with `includeMetadataChanges: true`, and
+ * the shared hooks did not pass it — so `fromCache` flipped only when the server
+ * copy also differed in DATA. That is fixed at the source now, in
+ * `packages/data/src/hooks/useSnapshot.ts`, and guarded by
+ * `packages/config-eslint/rules/snapshot-metadata-changes.test.js`. Waiting here
+ * would never have fixed it: there was nothing in flight to wait for.
  *
- * So this is a per-attempt budget, not a total: {@link waitForServerSnapshot}
- * spends it once, reloads, and spends it again. 10s is ~5× the healthy path.
+ * **The residual flake is a genuinely stalled stream**, which is what the budget
+ * and the reload are for. Widening it alone was tried (5s -> 15s, #799) and went
+ * red anyway, because the watch stream backs off exponentially (1s, x1.5, capped
+ * at 60s) and `OnlineStateTracker` concludes "offline" after 10s and serves
+ * cache. Once the initial handshake misses, retries land FURTHER apart — so a
+ * stalled load is no likelier to converge at 30s than at 15s, while a fresh page
+ * load resets the backoff and typically converges in under two seconds.
+ *
+ * Hence a per-attempt budget rather than a total: {@link waitForServerSnapshot}
+ * spends it, reloads, and spends it again. 10s is deliberate — past that the SDK
+ * has already given up and is serving cache, so more waiting buys nothing.
  */
 export const SERVER_TRUTH_TIMEOUT = 10_000;
 
