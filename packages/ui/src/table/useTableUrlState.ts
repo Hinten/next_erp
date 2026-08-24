@@ -67,10 +67,24 @@ export function parseFiltersFromParams(
       // the coerce-by-`kind` ladder below (the descriptor's kind describes the
       // document ARRAY, never its elements). An empty list means "no rows",
       // which is not a filter worth restoring: skip it and show everything.
-      const list = rawValue
-        .split(',')
-        .filter((part) => part !== '')
-        .map((part) => decodeURIComponent(part));
+      //
+      // ⚠️ The decode must not throw. `URLSearchParams.get()` does NOT sanitise
+      // a stray `%` (`…:abc%,def` arrives verbatim), and `decodeURIComponent`
+      // answers a malformed escape with `URIError`. This function runs from the
+      // `useState` initializer in `useTableUrlState`, so a throw here happens
+      // DURING RENDER and takes down the whole TableView subtree — over a
+      // mangled shared link. Every other unparseable input in this loop drops
+      // its filter and continues; so does this one.
+      let list: string[];
+      try {
+        list = rawValue
+          .split(',')
+          .filter((part) => part !== '')
+          .map((part) => decodeURIComponent(part));
+      } catch (err) {
+        if (!(err instanceof URIError)) throw err;
+        continue;
+      }
       if (list.length === 0) continue;
       out[key] = { op, value: list };
       continue;

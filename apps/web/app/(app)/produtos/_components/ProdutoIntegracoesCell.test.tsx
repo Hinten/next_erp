@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 import type { Produto } from '@delfrance/schemas';
+import type { IntegracoesStatus } from '@/lib/data/useIntegracoes';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { ProdutoIntegracoesCell } from './ProdutoListCells';
 
@@ -24,10 +25,14 @@ function produto(ids: string[]): Produto {
   return { integracoesComProduto: ids } as Produto;
 }
 
-function renderCell(ids: string[], entries: Array<[string, Integracao]>) {
+function renderCell(
+  ids: string[],
+  entries: Array<[string, Integracao]>,
+  status: IntegracoesStatus = 'success',
+) {
   return render(
     <MantineTestProvider>
-      <ProdutoIntegracoesCell produto={produto(ids)} byId={new Map(entries)} />
+      <ProdutoIntegracoesCell produto={produto(ids)} byId={new Map(entries)} status={status} />
     </MantineTestProvider>,
   );
 }
@@ -99,6 +104,29 @@ describe('ProdutoIntegracoesCell', () => {
     renderCell(['i1', 'fantasma'], [['i1', integracao({ nome: 'Loja Principal' })]]);
     expect(screen.getByText('Loja Principal')).toBeTruthy();
     expect(screen.getByText('desconhecida')).toBeTruthy();
+  });
+
+  // ⚠️ `byId` is empty while the shared read is in flight and empty when it
+  // fails, so without these two branches EVERY badge on EVERY row would read
+  // `desconhecida` — reporting a loading spinner or a missing permission as a
+  // drifted denorm, the one thing that badge is supposed to mean.
+  it('shows a skeleton, not "desconhecida", while the lookup is loading', () => {
+    const { container } = renderCell(['i1'], [], 'pending');
+    expect(screen.queryByText('desconhecida')).toBeNull();
+    expect(container.querySelectorAll('.mantine-Skeleton-root')).toHaveLength(1);
+  });
+
+  it('says "indisponível", not "desconhecida", when the lookup failed', () => {
+    // e.g. a user whose claims lack PERM.integracao.read → permission-denied.
+    renderCell(['i1', 'i2'], [], 'error');
+    expect(screen.queryByText('desconhecida')).toBeNull();
+    expect(screen.getByText('indisponível')).toBeTruthy();
+  });
+
+  it('still renders nothing on no channel even when the lookup failed', () => {
+    // Nothing to report: the produto is genuinely listed nowhere.
+    const { container } = renderCell([], [], 'error');
+    expect(container.querySelectorAll('[data-variant]')).toHaveLength(0);
   });
 
   it('renders nothing for a produto on no channel', () => {

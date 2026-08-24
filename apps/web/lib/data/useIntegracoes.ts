@@ -28,11 +28,24 @@ export interface IntegracaoRow {
   data: Integracao;
 }
 
+/**
+ * Whether the shared read has produced a usable lookup yet.
+ *
+ * ⚠️ Consumers MUST branch on this rather than treating an empty `byId` as
+ * "these ids do not exist". `byId` is empty in three very different situations
+ * — still loading, the read failed (a user without `PERM.integracao.read` gets
+ * `permission-denied`), and the collection really is empty — and a renderer
+ * that cannot tell them apart reports a system problem as a data problem.
+ */
+export type IntegracoesStatus = 'pending' | 'error' | 'success';
+
 export interface UseIntegracoesResult {
-  /** All integrações, ordered by `nome` ascending. Empty while loading. */
+  /** All integrações, ordered by `nome` ascending. Empty unless `success`. */
   rows: IntegracaoRow[];
   /** The same rows keyed by document id, for resolving a denormalized id. */
   byId: Map<string, Integracao>;
+  /** Read {@link IntegracoesStatus} before interpreting an empty `byId`. */
+  status: IntegracoesStatus;
   query: UseQueryResult<IntegracaoRow[]>;
 }
 
@@ -66,5 +79,5 @@ export function useIntegracoes(db: Firestore): UseIntegracoesResult {
   const rows = useMemo(() => query.data ?? [], [query.data]);
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r.data])), [rows]);
 
-  return { rows, byId, query };
+  return { rows, byId, status: query.status, query };
 }

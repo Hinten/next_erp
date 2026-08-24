@@ -131,7 +131,11 @@ export default function ProdutosPage() {
   // Same deal for the Canais de venda column: `integracoesComProduto` stores
   // bare integração ids, so the names and colours come from one cached read of
   // the (tiny) `integracao` collection, shared with the pickers.
-  const { rows: integracoes, byId: integracoesById } = useIntegracoes(db);
+  const {
+    rows: integracoes,
+    byId: integracoesById,
+    status: integracoesStatus,
+  } = useIntegracoes(db);
 
   // Foto and Preço are virtual columns because neither renders from a projected
   // scalar: `fotos` holds arquivo REFS that need a second read, and the price is
@@ -159,7 +163,13 @@ export default function ProdutosPage() {
         key: 'integracoes',
         label: 'Canais de venda',
         dependsOn: ['integracoesComProduto'],
-        renderCell: (row) => <ProdutoIntegracoesCell produto={row.data} byId={integracoesById} />,
+        renderCell: (row) => (
+          <ProdutoIntegracoesCell
+            produto={row.data}
+            byId={integracoesById}
+            status={integracoesStatus}
+          />
+        ),
         // ⚠️ Deliberately NO `sortField`. Firestore would accept
         // `orderBy('integracoesComProduto')`, but it orders by the ARRAY — i.e.
         // by the first integração's random document id, which is not an order
@@ -176,7 +186,7 @@ export default function ProdutosPage() {
         },
       },
     ],
-    [db, listaPadraoId, integracoes, integracoesById],
+    [db, listaPadraoId, integracoes, integracoesById, integracoesStatus],
   );
 
   return (
