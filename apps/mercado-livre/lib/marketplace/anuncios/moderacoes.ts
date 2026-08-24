@@ -27,7 +27,7 @@ import {
   type MlModeration,
   type MlModerationEvidence,
 } from '@delfrance/integrations-mercado-livre';
-import { type MlModeracao, mlModeracaoSchema } from '@delfrance/schemas';
+import { type MlModeracao, mlModeracaoSchema, precisaConsultarModeracao } from '@delfrance/schemas';
 
 /**
  * ML's answer is unbounded and a Firestore document is not. Mirrors
@@ -48,67 +48,13 @@ const WORDING_REASON = 'reason';
 const WORDING_REMEDY = 'remedy';
 
 /**
- * The `sub_status` values that mean "ML has a moderation on this listing".
- *
- * Assembled from the status/substatus/tag table in *Gerenciar moderações* plus
- * the two companion pages, *Moderações com pausa* and *Moderações de imagens*:
- *
- *  | status         | sub_status / tag                      |
- *  |----------------|---------------------------------------|
- *  | `under_review` | waiting_for_patch · forbidden · held  |
- *  |                | pending_documentation · suspended     |
- *  |                | suspended_for_prevention · warning    |
- *  |                | picture_downloading_pending           |
- *  | `paused`       | moderation_penalty                    |
- *  |                | picture_download_pending              |
- *  | `active`       | poor_quality_thumbnail · moderation_penalty |
- *  | `closed`       | moderation_penalty                    |
- *
- * ⚠️ Both `picture_download_pending` and `picture_downloading_pending` are here
- * on purpose. They are not a typo of one another — ML's pages use the first for
- * the `paused` case and the second for the `under_review` one, and normalising
- * them to a single spelling would miss whichever page is right.
- *
- * ⚠️ `active` earns a place in this table, which is what makes moderation a poor
- * fit for `errors`: a `poor_quality_thumbnail` listing is LIVE and sendable, so
- * the stock re-arm gate would have cleared the diagnosis on the same write that
- * produced it.
+ * ⚠️ `precisaConsultarModeracao` and its `MODERATION_SUB_STATUS` table used to
+ * live here. They moved to `@delfrance/schemas`, beside the `moderacoes` field
+ * they gate, when `apps/web` needed the same decision to tell "ML reports a
+ * moderation nobody fetched" apart from a link whose field was never populated
+ * (#1239). apps/web has no dependency edge to this app and none is possible, so
+ * the predicate could not stay. Import it from the schema; do not re-add a copy.
  */
-const MODERATION_SUB_STATUS: ReadonlySet<string> = new Set([
-  'moderation_penalty',
-  'poor_quality_thumbnail',
-  'picture_download_pending',
-  'picture_downloading_pending',
-  'waiting_for_patch',
-  'forbidden',
-  'held',
-  'pending_documentation',
-  'suspended',
-  'suspended_for_prevention',
-  'warning',
-]);
-
-/**
- * Whether this reading is worth a `last_moderation` call.
- *
- * `under_review` qualifies on the STATUS alone: ML's docs put every one of its
- * substatuses in the moderation table, and a listing under review with a
- * sub_status we have not catalogued is exactly the case where the operator most
- * needs the reason. Everything else has to name a moderation sub_status.
- *
- * Being a predicate rather than "always fetch" is what keeps the `items` stream
- * affordable: it fires for every change to every listing the seller owns, and a
- * healthy one must keep costing the single `GET /items/{id}` it costs today.
- *
- * Pure and total — no clock, no network.
- */
-export function precisaConsultarModeracao(
-  status: string | null | undefined,
-  subStatus: readonly string[] | null | undefined,
-): boolean {
-  if (status === 'under_review') return true;
-  return (subStatus ?? []).some((s) => MODERATION_SUB_STATUS.has(s));
-}
 
 /** `MLB123` → `MLB123-ITM`, the `moderation_reference_id` for a listing. */
 export function moderationReferenceId(itemId: string): string {

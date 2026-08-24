@@ -57,7 +57,12 @@ import {
   mapUpMemberToImport,
   skuGuessFromVariations,
 } from '@delfrance/integrations-mercado-livre';
-import { type MlModeracao, PRODUTO_EXTRA_DATA_DOC_ID, toOuterRef } from '@delfrance/schemas';
+import {
+  type MlModeracao,
+  PRODUTO_EXTRA_DATA_DOC_ID,
+  precisaConsultarModeracao,
+  toOuterRef,
+} from '@delfrance/schemas';
 import {
   estoqueCollection,
   produtoCollection,
@@ -74,7 +79,7 @@ import {
   assembleImportPlan,
 } from './importCore';
 import { importCategoriaChain } from './importCategoria';
-import { consultarModeracoes, precisaConsultarModeracao } from '../anuncios/moderacoes';
+import { consultarModeracoes } from '../anuncios/moderacoes';
 import { resolveTaxonomia } from './importTaxonomia';
 import { importVariationChildren } from './importVariations';
 import { resolveFamilySiblingIds } from './importFamily';
