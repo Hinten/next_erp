@@ -55,6 +55,7 @@ import {
 import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
+import { POLITICA_FRESCOR_TOPICO_SHIPMENTS, freteRecebidoEhMaisNovo } from './orderShipmentMapping';
 import { importPedidoMercadoLivre, mergeFreteInicial, type OrderImportDeps } from './orderImport';
 import {
   OccEngine,
@@ -2196,6 +2197,45 @@ describe('importPedidoMercadoLivre — order with no Mercado Envios shipment', (
       codRastreio: null,
       enderecoFreteOuterReference: 'documents/clientes/cli-1/enderecos/end-1',
     });
+  });
+
+  it('⚠️ stamps ultimaModificacao, or a later real shipment could never overwrite it', () => {
+    // `seedFreteInicial` leaves the stamp null, and the SHIPMENTS-topic policy
+    // reads an unstamped STORED block as "already newer" — the deliberate inverse
+    // of the order-import policy. An unstamped seed would therefore freeze the
+    // block forever, silently, if this order ever did gain a real shipment.
+    expect(POLITICA_FRESCOR_TOPICO_SHIPMENTS.semWatermarkArmazenado).toBe('ignorar');
+    expect(
+      freteRecebidoEhMaisNovo({
+        semFreteArmazenado: false,
+        armazenadoUs: null, // an UNSTAMPED seed
+        recebidoUs: 1_700_000_000_000_000,
+        ...POLITICA_FRESCOR_TOPICO_SHIPMENTS,
+      }),
+      'an unstamped seed would refuse the real shipment',
+    ).toBe(false);
+    expect(
+      freteRecebidoEhMaisNovo({
+        semFreteArmazenado: false,
+        armazenadoUs: NOW_US, // what we actually write
+        recebidoUs: NOW_US + 1,
+        ...POLITICA_FRESCOR_TOPICO_SHIPMENTS,
+      }),
+    ).toBe(true);
+  });
+
+  it('the written block carries the stamp', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPronto(db);
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, tags: ['no_shipping'] })),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    const frete = db.docs('pedidos').get('pedido-1')!.freteInicial as DocData;
+    expect(frete.ultimaModificacao).toBe(NOW_US);
   });
 
   it('⛔ writes NOTHING when the shipment is merely un-propagated (no no_shipping tag)', async () => {

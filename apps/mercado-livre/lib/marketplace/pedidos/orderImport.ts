@@ -1042,6 +1042,20 @@ async function applyFreteSemEnvioStep(args: {
       // The one field the seed cannot know: whose address this ships to. Same
       // source `applyFreteStep` uses for the shipment path.
       enderecoFreteOuterReference: freshPedido.enderecoFiscalOuterRef,
+      // ⚠️ STAMPED, and it must be. `seedFreteInicial` leaves this null, and the
+      // SHIPMENTS-topic freshness policy reads an unstamped stored block as
+      // "already newer" (`semWatermarkArmazenado: 'ignorar'`, the deliberate
+      // inverse of the order-import policy). So an unstamped seed would make
+      // `mergeFreteInicialSeMaisNovo` refuse every later write FOREVER — if this
+      // order ever does gain a real Mercado Envios shipment, its tracking number,
+      // prazoDespacho and carrier data would be dropped silently, with no error
+      // and no log. That is the exact freeze `LIVE-TEST.md` warns about.
+      //
+      // `nowUs` (our clock) rather than an ML clock because there is no ML
+      // timestamp to borrow — the order has no shipment. Both sides are µs epoch,
+      // and the claim it encodes is honest: "this block was true when we wrote
+      // it". Any shipment created afterwards is strictly newer and wins.
+      ultimaModificacao: nowUs,
     };
 
     tx.update(
