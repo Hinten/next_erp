@@ -490,20 +490,36 @@ export function dimensoesDoPacote(
   };
 }
 
+/** A produto field a screen can send the operator to, named as that tab labels it. */
+export type CampoMedidaProduto = 'Peso líquido' | 'Altura' | 'Largura' | 'Profundidade';
+
 /**
- * Which of the four inputs {@link dimensoesDoPacote} needed and did not get, in
- * the order they appear on the produto's "Dimensões e peso" tab — so a screen
- * can name the empty fields instead of saying "incompleto".
+ * Which produto fields a marketplace listing needs and does not have, in the
+ * order the produto's "Dimensões e peso" tab shows them — so a screen can name
+ * the empty fields instead of saying "incompleto". Empty means publish can send
+ * a complete declaration.
  *
- * Empty when the package resolves. `Peso` covers both weight fields, since
- * either one satisfies it.
+ * ⚠️ **This is NOT "what {@link dimensoesDoPacote} is missing", and the
+ * difference is the whole reason it exists.** Publish derives *two* independent
+ * things from these fields: the package (`SELLER_PACKAGE_*`) and the product's
+ * NET weight, which rides ML's separate `WEIGHT` attribute. The package's weight
+ * happily falls back to the net one, so keying on `pesoBrutoKg ?? pesoLiquidoKg`
+ * makes a produto with only a GROSS weight look complete — the package resolves,
+ * this returns nothing, and the screen shows a reassuring package with no
+ * warning while `WEIGHT` is silently absent from every publish. `WEIGHT` has no
+ * fallback: net weight is a different fact from gross, and publishing one as the
+ * other would invent data.
+ *
+ * So the weight entry keys on **`pesoLiquidoKg` alone**. That also covers the
+ * both-null case in one actionable line, since filling Peso líquido satisfies
+ * the package too. A produto with a net weight and no gross weight is complete —
+ * nothing is missing, the package just weighs the net value.
  */
-export function dimensoesDoPacoteFaltando(
+export function medidasFaltandoParaAnuncio(
   medidas: MedidasDoPacote | null | undefined,
-): Array<'Peso' | 'Altura' | 'Largura' | 'Profundidade'> {
-  if (dimensoesDoPacote(medidas) != null) return [];
-  const faltando: Array<'Peso' | 'Altura' | 'Largura' | 'Profundidade'> = [];
-  if ((medidas?.pesoBrutoKg ?? medidas?.pesoLiquidoKg) == null) faltando.push('Peso');
+): CampoMedidaProduto[] {
+  const faltando: CampoMedidaProduto[] = [];
+  if (medidas?.pesoLiquidoKg == null) faltando.push('Peso líquido');
   if (medidas?.alturaCm == null) faltando.push('Altura');
   if (medidas?.larguraCm == null) faltando.push('Largura');
   if (medidas?.profundidadeCm == null) faltando.push('Profundidade');

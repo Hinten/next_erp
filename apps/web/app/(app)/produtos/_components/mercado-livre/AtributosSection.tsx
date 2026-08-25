@@ -87,7 +87,7 @@ export interface AtributosSectionProps {
  * `cadastroProdutoMLNew.dart` where it should have been.
  *
  * ⚠️ The derived ids are not simply *absent* from the screen — `ListingForm`
- * shows their values read-only (`DimensoesPacoteField`, `CondicaoField`). A
+ * shows their values read-only (`DimensoesPesoField`, `CondicaoField`). A
  * required ML attribute that just vanishes reads as a bug; one that says "this
  * comes from the produto" reads as a design. Keep any future addition to that
  * list paired with somewhere to see it.

@@ -402,14 +402,62 @@ describe('ListingForm', () => {
   });
 });
 
-describe('Dimensões do pacote come from the produto', () => {
-  it('renders the package publish will send, read-only', () => {
-    // These four leave as SELLER_PACKAGE_* on every publish, rebuilt from the
-    // produto, which is why the category grid never offers them as inputs.
-    // Showing them is what stops that filtering reading as four missing fields.
+describe('Dimensões e peso come from the produto', () => {
+  it('renders the package AND the net weight publish will send, read-only', () => {
+    // Five attributes leave on every publish rebuilt from the produto — the four
+    // SELLER_PACKAGE_* plus WEIGHT — which is why the category grid never offers
+    // them as inputs. Showing them is what stops that filtering reading as five
+    // missing fields.
     renderForm();
     expect(screen.getByText('5 × 10 × 10 cm · 1000 g')).toBeDefined();
+    expect(screen.getByText('Peso líquido 0,9 kg')).toBeDefined();
     expect(screen.getByText(/Dimensões e peso do produto/)).toBeDefined();
+  });
+
+  // ⚠️ THE regression a reviewer caught on the first cut of this PR. `WEIGHT` is
+  // withheld from the grid, pruned from the link doc and dropped from
+  // `link.attributes` on every publish — but it is only re-derived from
+  // `pesoLiquidoKg`, which the GROSS weight does not stand in for. With the
+  // missing-field check keyed on `pesoBrutoKg ?? pesoLiquidoKg` this produto
+  // looked complete: a reassuring package, no warning, and `WEIGHT` silently
+  // gone from every publish with its stored copy already pruned.
+  it('warns when only the GROSS weight is filled — WEIGHT has no fallback', () => {
+    renderForm(
+      {},
+      {
+        produtoMedidas: {
+          alturaCm: 5,
+          larguraCm: 10,
+          profundidadeCm: 10,
+          pesoBrutoKg: 1,
+          pesoLiquidoKg: null,
+        },
+      },
+    );
+    // The package still resolves on the gross weight, and still shows.
+    expect(screen.getByText('5 × 10 × 10 cm · 1000 g')).toBeDefined();
+    // ...but the net weight does not, and the screen says so.
+    expect(screen.getByText('Falta preencher: Peso líquido')).toBeDefined();
+    expect(screen.getByText('Peso líquido —')).toBeDefined();
+  });
+
+  it('a net weight with no gross weight is complete — no warning', () => {
+    renderForm(
+      {},
+      {
+        produtoMedidas: {
+          alturaCm: 5,
+          larguraCm: 10,
+          profundidadeCm: 10,
+          pesoBrutoKg: null,
+          pesoLiquidoKg: 2,
+        },
+      },
+    );
+    expect(screen.queryByText(/Falta preencher/)).toBeNull();
+    expect(screen.getByText('Peso líquido 2 kg')).toBeDefined();
+    // The package weighs the net value when there is no gross one.
+    expect(screen.getByText('5 × 10 × 10 cm · 2000 g')).toBeDefined();
   });
 
   // ⚠️ THE display↔payload assertion. ML accepts only whole cm/g, so a produto
@@ -432,10 +480,11 @@ describe('Dimensões do pacote come from the produto', () => {
     expect(screen.queryByText(/5,5|5\.5/)).toBeNull();
   });
 
-  // ML requires all four for ME2 cross docking and does NOT tag them `required`
-  // in its per-category attributes, so nothing else on this screen can warn —
-  // and publish omits all four when one is missing rather than sending three.
-  it('names the empty produto fields instead of failing silently at ML', () => {
+  // ML requires all four package attributes for ME2 cross docking and does NOT
+  // tag them `required` in its per-category attributes, so nothing else on this
+  // screen can warn — and publish omits all four when one is missing rather
+  // than sending three.
+  it('names every empty produto field instead of failing silently at ML', () => {
     renderForm(
       {},
       {
@@ -448,8 +497,8 @@ describe('Dimensões do pacote come from the produto', () => {
         },
       },
     );
-    expect(screen.getByText('Falta preencher: Largura e Profundidade')).toBeDefined();
-    expect(screen.getByText(/não envia nenhum deles/)).toBeDefined();
+    expect(screen.getByText('Falta preencher: Peso líquido, Largura e Profundidade')).toBeDefined();
+    expect(screen.getByText(/Preencha na aba Dimensões e peso/)).toBeDefined();
   });
 
   // ⚠️ `null` is "the produto snapshot has not landed", not "the produto is

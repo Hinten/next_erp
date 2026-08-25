@@ -25,7 +25,7 @@ import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
 import {
   dimensoesDoPacote,
-  dimensoesDoPacoteFaltando,
+  medidasFaltandoParaAnuncio,
   resolveCondicaoAnuncio,
   type FonteCondicaoAnuncio,
   type MedidasDoPacote,
@@ -99,7 +99,8 @@ export interface ListingFormProps {
   produtoCondicao: number | null;
   /**
    * The produto's dimension/weight fields, which publish turns into the
-   * `SELLER_PACKAGE_*` attributes — see `DimensoesPacoteField`.
+   * `SELLER_PACKAGE_*` attributes AND the separate `WEIGHT` one — see
+   * `DimensoesPesoField`.
    *
    * ⚠️ `null` means the produto snapshot has not landed yet, not that the fields
    * are empty. The field warns on empty, so collapsing the two would flash a
@@ -239,31 +240,42 @@ function listarEmPortugues(nomes: readonly string[]): string {
  * produto is empty. Collapsing the two flashes the warning on every open, the
  * same bug `produtoFotoCount` avoids by staying `null` while loading.
  */
-function DimensoesPacoteField({ medidas }: { medidas: MedidasDoPacote | null }) {
+function DimensoesPesoField({ medidas }: { medidas: MedidasDoPacote | null }) {
   const pacote = medidas ? dimensoesDoPacote(medidas) : null;
-  const faltando = medidas ? dimensoesDoPacoteFaltando(medidas) : [];
+  const faltando = medidas ? medidasFaltandoParaAnuncio(medidas) : [];
+  // ⚠️ The `WEIGHT` attribute's own gate, mirroring `buildParentAttributes`:
+  // `pesoLiquidoKg` alone, with no fallback to the gross weight. Reading the
+  // package's `pesoG` here instead would show a number publish does not send.
+  const pesoLiquidoKg = medidas?.pesoLiquidoKg ?? null;
 
   return (
-    <ListingField label="Dimensões do pacote">
+    <ListingField label="Dimensões e peso">
       <Stack gap={2}>
-        {pacote ? (
-          <Text size="sm">
-            {`${pacote.alturaCm} × ${pacote.larguraCm} × ${pacote.profundidadeCm} cm · ${pacote.pesoG} g`}
-          </Text>
-        ) : (
-          <Text size="sm" c={faltando.length > 0 ? 'orange.7' : undefined}>
-            {faltando.length > 0 ? `Falta preencher: ${listarEmPortugues(faltando)}` : EMPTY_VALUE}
+        <Text size="sm">
+          {pacote
+            ? `${pacote.alturaCm} × ${pacote.larguraCm} × ${pacote.profundidadeCm} cm · ${pacote.pesoG} g`
+            : EMPTY_VALUE}
+        </Text>
+        <Text size="sm">
+          {pesoLiquidoKg != null
+            ? `Peso líquido ${pesoLiquidoKg.toLocaleString('pt-BR')} kg`
+            : `Peso líquido ${EMPTY_VALUE}`}
+        </Text>
+        {faltando.length > 0 && (
+          <Text size="sm" c="orange.7">
+            {`Falta preencher: ${listarEmPortugues(faltando)}`}
           </Text>
         )}
         <Text size="xs" c="dimmed">
           {faltando.length > 0
             ? // Naming the consequence, not just the gap. ML requires all four
-              // for Mercado Envios cross docking and xd_drop_off and does NOT
-              // tag them `required` in its per-category attributes, so nothing
-              // else in this screen can warn — and publish omits all four when
-              // one is missing rather than sending a partial set.
-              'Preencha na aba Dimensões e peso do produto. Sem os quatro valores a publicação não envia nenhum deles, e o Mercado Livre pode recusar o anúncio.'
-            : 'Definido pela aba Dimensões e peso do produto. Arredondado para centímetros e gramas inteiros, que é o único formato que o Mercado Livre aceita.'}
+              // package attributes for Mercado Envios cross docking and
+              // xd_drop_off and does NOT tag them `required` in its per-category
+              // attributes, so nothing else in this screen can warn — and
+              // publish omits all four when one is missing rather than sending a
+              // partial set.
+              'Preencha na aba Dimensões e peso do produto. A publicação envia as dimensões do pacote só com os quatro valores, e o peso líquido só com o campo preenchido — o Mercado Livre pode recusar o anúncio sem eles.'
+            : 'Definido pela aba Dimensões e peso do produto. As medidas do pacote são arredondadas para centímetros e gramas inteiros, que é o único formato que o Mercado Livre aceita.'}
         </Text>
       </Stack>
     </ListingField>
@@ -851,7 +863,7 @@ export function ListingForm({
               owns these values, publish rebuilds them from it every run, and the
               category grid therefore never offers them as inputs. Read-only text
               rather than a labelled control — see `ListingField`. */}
-          <DimensoesPacoteField medidas={produtoMedidas} />
+          <DimensoesPesoField medidas={produtoMedidas} />
           <Controller
             control={form.control}
             name="category_id"

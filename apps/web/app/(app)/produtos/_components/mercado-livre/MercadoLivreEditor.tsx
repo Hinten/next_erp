@@ -157,7 +157,7 @@ export function MercadoLivreEditor({
   // reason the card already warns "a publicação envia os dados salvos".
   const produtoEhUsado = produtoSnap.data?.data.ehUsado ?? false;
   // The five fields publish turns into `WEIGHT` + `SELLER_PACKAGE_*`, shown
-  // read-only per listing (`DimensoesPacoteField`). Read from the SAVED doc for
+  // read-only per listing (`DimensoesPesoField`). Read from the SAVED doc for
   // the same reason as `produtoEhUsado` above.
   //
   // ⚠️ `null` while the snapshot loads — NOT an empty object. The field warns
