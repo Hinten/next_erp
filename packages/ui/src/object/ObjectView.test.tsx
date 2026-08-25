@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MantineTestProvider } from '../testing/mantine';
 import { Notifications } from '@mantine/notifications';
 import { z } from 'zod';
+import { useWatch } from 'react-hook-form';
 import type { CollectionHandle } from '@delfrance/data';
 
 // Default to "no existing doc" — individual tests can override.
@@ -76,6 +77,38 @@ describe('ObjectView', () => {
     );
     expect(screen.getByRole('textbox', { name: 'Nome' })).toBeTruthy();
     expect(screen.getByRole('textbox', { name: 'Observações' })).toBeTruthy();
+  });
+
+  // The produto editor's heading is a node handed to `title` that calls
+  // `useWatch` to follow `nome`/`sku` as they are typed. That only works
+  // because `title` is rendered INSIDE the FormProvider — a detail no type
+  // signature carries, and one that a refactor lifting the header above the
+  // form would break silently (the heading would throw for want of a control,
+  // or freeze at its first value).
+  it('renders `title` inside the form context, so a title node can track field values', async () => {
+    function TitleProbe() {
+      const nome = useWatch({ name: 'nome' });
+      return <h2>{`Editar ${(nome as string | null) || 'sem nome'}`}</h2>;
+    }
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          title={<TitleProbe />}
+        />
+      </Wrap>,
+    );
+    expect(screen.getByRole('heading', { name: 'Editar sem nome' })).toBeTruthy();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Nome' }), {
+      target: { value: 'Camiseta Azul' },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Editar Camiseta Azul' })).toBeTruthy(),
+    );
   });
 
   it('hides excluded fields', () => {

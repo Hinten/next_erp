@@ -4,6 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { jobBlocks, stripComments } from './lib/workflow-scan.js';
+
 /**
  * Repo invariant: every workflow job that BUILDS a Cloud Functions bundle must
  * supply `FUNCTIONS_REGION`.
@@ -102,36 +104,6 @@ function findWorkflows() {
 const read = (file) => readFileSync(resolve(REPO_ROOT, file), 'utf8').split('\r\n').join('\n');
 
 /**
- * Split a workflow into jobs: everything from one 2-space-indented `<id>:` line up
- * to the next one. A hand-rolled slice, not a YAML parse, for the reason
- * `ci-lane-gates.test.js` documents — `on:` is a YAML 1.1 boolean, so a naive parse
- * keys that block as `true` and a test reading it passes vacuously over every file.
- *
- * ⚠️ A WORKFLOW-level `env:` block (indent 0) is not attributed to any job by
- * this split, so a region hoisted there would read as missing. That is the
- * intended reading rather than a gap: the failure message says to put it on the
- * job, because a reader checking one job should not have to scan the file to
- * learn whether it is covered. No workflow uses a top-level `env:` today.
- *
- * ⚠️ JOB level is the whole point. The first version of this guard asked whether the
- * FILE mentioned the variable anywhere, and that is exactly how two failures got
- * through: `ci-mercado-livre.yml` sets a region in its tasks job while the firestore
- * job — a sibling in the same file — set none, and the file-level scan saw a match.
- */
-function jobs(source) {
-  const lines = source.split('\n');
-  const starts = [];
-  lines.forEach((line, i) => {
-    if (/^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)) starts.push(i);
-  });
-
-  return starts.map((start, n) => ({
-    id: lines[start].trim().replace(/:$/, ''),
-    body: lines.slice(start, starts[n + 1] ?? lines.length).join('\n'),
-  }));
-}
-
-/**
  * A reusable workflow's caller supplies no env, so `uses:` inherits the callee's.
  * Treat a job that only delegates as covered — the callee is checked on its own.
  */
@@ -156,6 +128,33 @@ describe('a workflow that builds a functions bundle supplies its region', () => 
     ).toEqual([]);
   });
 
+  it('still parses jobs out of every known builder', () => {
+    // ⚠️ Third anti-vacuity floor, and the one this file lacked. The two beside it
+    // pin the git pathspec and REGION_COMMANDS, but BOTH read the file text — so
+    // neither notices the PARSER. Mutation-tested: stub `jobBlocks` to `return {}`
+    // and the assertion below passes 4/4 having examined no jobs at all.
+    //
+    // That matters more now that the parser lives in a shared module owned by
+    // another guard: `jobBlocks` will next be edited for `ci-lane-gates`' benefit,
+    // and nothing here would notice. `ci-lane-gates.test.js` pins ci.yml's real job
+    // list, so a TOTAL break reds somewhere — but a break that empties only one
+    // file's jobs would red nowhere.
+    const unparsed = KNOWN_BUILDERS.filter((p) => Object.keys(jobBlocks(read(p))).length === 0);
+
+    expect(
+      unparsed,
+      [
+        '`jobBlocks` found NO jobs in these workflows, so the per-job scan below',
+        'examines nothing and passes vacuously:',
+        '',
+        ...unparsed.map((p) => `  - ${p}`),
+        '',
+        'Either the workflow genuinely has no `jobs:` block (then drop it from',
+        'KNOWN_BUILDERS), or lib/workflow-scan.js stopped parsing this shape.',
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
   it('still recognises those builders by their commands', () => {
     // Guards the scan itself: if REGION_COMMANDS drifts from how the workflows
     // actually invoke things, the assertion below passes over an empty set.
@@ -173,16 +172,42 @@ describe('a workflow that builds a functions bundle supplies its region', () => 
     ).toEqual([]);
   });
 
+  /**
+   * ⚠️ JOB level is the whole point. The first version of this guard asked whether
+   * the FILE mentioned the variable anywhere, and that is exactly how two failures
+   * got through: `ci-mercado-livre.yml` sets a region in its tasks job while the
+   * firestore job — a sibling in the same file — set none, and the file-level scan
+   * saw a match.
+   *
+   * ⚠️ A WORKFLOW-level `env:` block (indent 0) is attributed to no job, so a region
+   * hoisted there reads as missing. That is the intended reading rather than a gap:
+   * the failure message says to put it on the job, because a reader checking one job
+   * should not have to scan the file to learn whether it is covered. No workflow uses
+   * a top-level `env:` today.
+   *
+   * ⚠️ `jobBlocks` is anchored to the `jobs:` block, which this guard's own local
+   * copy was not — see the note on the import and `lib/workflow-scan.js`. Do not
+   * "simplify" it back to a bare indent match: `on:`'s sub-keys are at the same
+   * indent as a job id, and blaming a comment on a job named `pull_request` is worse
+   * than not checking at all.
+   */
   it('every JOB that needs a region sets it', () => {
     const offenders = [];
 
     for (const file of findWorkflows()) {
-      for (const job of jobs(read(file))) {
-        if (delegates(job.body)) continue;
+      for (const [id, rawBody] of Object.entries(jobBlocks(read(file)))) {
+        // ⚠️ Comments stripped FIRST. Anchoring `jobBlocks` to `jobs:` fixed the
+        // comment-above-`jobs:` shape, but a comment at job indent BETWEEN two jobs
+        // still lands in the preceding job's body — `jobBlocks` cannot know it
+        // documents the next one. `includes(command)` would then match prose and
+        // blame a job that really exists. A command named in a comment is not a
+        // command, so scanning the stripped body settles it positionally-blind.
+        const body = stripComments(rawBody);
+        if (delegates(body)) continue;
         for (const { command, variable } of REGION_COMMANDS) {
-          if (!job.body.includes(command)) continue;
-          if (new RegExp(`^\\s*${variable}\\s*:`, 'm').test(job.body)) continue;
-          offenders.push(`${file} › ${job.id} runs \`${command}\` without ${variable}`);
+          if (!body.includes(command)) continue;
+          if (new RegExp(`^\\s*${variable}\\s*:`, 'm').test(body)) continue;
+          offenders.push(`${file} › ${id} runs \`${command}\` without ${variable}`);
         }
       }
     }

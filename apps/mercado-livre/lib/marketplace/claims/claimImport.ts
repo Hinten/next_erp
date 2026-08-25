@@ -86,6 +86,7 @@ import {
 } from './claimMapping';
 import { claimActionability, type ClaimActionability } from './claimActionability';
 import { vincularClienteMercadoLivre } from './claimCliente';
+import { corToEtiquetaArgb } from '@delfrance/core/cor';
 import { coerceToMillis } from '@delfrance/core/datetime';
 import { limparMensagensProvisorias } from '../chat/mensagemProvisoria';
 import { resolveShipmentOrderId } from '../pedidos/shipmentOrderId';
@@ -380,7 +381,11 @@ export async function importClaimMercadoLivre(
     buyerUserId,
     clienteOuterRef: clienteRef,
     contaId: integracaoId,
-    contaCor: conta.cor,
+    // ⚠️ CONVERTED, not copied. `integracao.cor` is a 24-bit RGB int; `cor_etiqueta`
+    // is a 32-bit ARGB `Color.value`, and the chat etiqueta filter matches its
+    // palette with an exact `==`. A raw copy paints the right colour but is
+    // selectable by no etiqueta at all. See `corToEtiquetaArgb`.
+    contaCor: corToEtiquetaArgb(conta.cor),
     pedidoId,
     incidenteId,
     respostaBloqueada: acao.motivo,

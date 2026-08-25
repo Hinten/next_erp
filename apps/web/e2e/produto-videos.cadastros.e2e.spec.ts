@@ -54,7 +54,7 @@ test.describe.serial('Produtos vídeos e2e — ObjectView Vídeos tab', () => {
     await expect.poll(() => docExistsByName('produtos', nome), { timeout: 15_000 }).toBe(true);
 
     // Already in the editor — switch to the Vídeos tab.
-    await expect(page.getByRole('heading', { name: 'Editar produto' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: `Editar ${nome} - sem sku` })).toBeVisible();
     await page.getByRole('tab', { name: 'Vídeos' }).click();
 
     // The dropzone + empty state render (no videos yet). Generous timeout — the
