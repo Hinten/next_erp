@@ -100,6 +100,13 @@ env:
     availability:
       - RUNTIME
 
+  # #1087 — how old a payment may be and still bootstrap a pedido. See the
+  # .env.example note; the code defaults to 72h if this is unset or unparseable.
+  - variable: MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H
+    value: '72'
+    availability:
+      - RUNTIME
+
   - variable: MERCADO_LIVRE_CLIENT_ID
     secret: MERCADO_LIVRE_CLIENT_ID
     availability:

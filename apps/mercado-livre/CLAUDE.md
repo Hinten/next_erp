@@ -356,7 +356,7 @@ matters:
 |---|---|---|
 | `items` | `handled` | listing status-sync + the UP-migration takeover (#440/#441) |
 | `orders_v2`, `orders` | `handled` | order → pedido import (Step 9) |
-| `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9) |
+| `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9); since #1087 it also BOOTSTRAPS a missing pedido |
 | `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
 | `claims` | `handled` | incidente ALWAYS; conversa/mensagens only while answerable (Step 14 / #768) |
 | `questions` | `handled` | pre-sale question → chat conversa/mensagem import (#532) |
@@ -573,6 +573,38 @@ these before "fixing" what looks wrong in `publishCore.ts`:
   `POST /items` **requires**, making the produto unpublishable. `publish.ts`'s
   `quantidadeParaPublicar` is the deliberate divergence: a virtual kit publishes
   the component-min like any other kit.
+
+⚠️ **A `payments` notification can now CREATE a pedido — indirectly (#1087).**
+ML fires `orders_v2` only for *"vendas confirmadas"*, and the seller-scoped
+`/orders/search` filters on `hidden_for_seller`. So a `payment_in_process` order
+**exists**, notifies nothing, and searches empty — while its Mercado Pago payment
+notifies immediately. The payment used to be dropped (`pedido-nao-encontrado`,
+acked `done`), which meant no pedido, therefore **no stock reservation**, while the
+buyer held the unit and another channel could sell it.
+`pedidos/pendingOrderBootstrap.ts` now enqueues a synthetic `orders_v2` for
+`/orders/{payment.order_id}`, so **`orderImport.ts` is still the only pedido
+creator** — the payments path creates nothing, it only addresses the order topic.
+⚠️ The retry is bounded by INHERITANCE, not by a new counter: the synthetic is an
+ordinary notification task (`TASK_MAX_ATTEMPTS`, then `MAX_TENTATIVAS` hot-sweep
+re-drives, then `parked`), and because it carries `id: null` the pipeline keys its
+failure doc on `orders_v2:_orders_<id>` — the **order**, not the payment, of which
+ML sends several per order. The `orders_v2` handler cannot re-enter the payments
+branch, so no cycle exists.
+⚠️ Two guards refuse the bootstrap and each reports **`dropped`, not `done`**: a
+payment older than `MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H` (default 72h — the
+hot sweep re-drives hour-old payloads and `missed_feeds` replays up to 48h, and
+neither may reserve stock for a long-closed order), and a terminally dead payment
+status. The age bound ships with a FUTURE-SKEW half; without it a forward-dated
+`date_created` keeps `now - created` negative and can never expire.
+
+⚠️ **A pedido created before payment needs the estado PROMOTION arm, or it is a
+dead end.** `estado` is written only on pedido CREATE (`orderPedidoTx.ts`) and
+`podeAvancarParaPago` requires `emProcessamento`, so a pedido born at
+`aguardandoConfirmacaoDePagamento` — which HOLDS a stock reservation — could never
+move, never reach `pago`, and never be dispatched or invoiced. `orderImport.ts`'s
+pago transaction gained a promotion arm up the ML pre-payment ladder, gated on the
+same ML-order-clock watermark as the downgrade and strictly one-directional. Do not
+widen it past `emProcessamento`: from there on `estado` belongs to the business.
 
 ⚠️ `items_prices` is not "pending" — it is closed by decision #803: the ERP owns
 both price tables, so a price notification has nothing to do. It stays in the
