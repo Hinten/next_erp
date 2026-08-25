@@ -79,7 +79,10 @@ import { gitGrep } from './lib/repo-scan.js';
  * No exclusion is needed for the module that DEFINES the tolerance: it lives in
  * `packages/core/src/wire/`, outside every pathspec here.
  */
-const PATHSPECS = [':(glob)packages/integrations/mercado-livre/src/**/*.ts'];
+const PATHSPECS = [
+  ':(glob)packages/integrations/mercado-livre/src/**/*.ts',
+  ':(glob)packages/integrations/mercado-pago/src/**/*.ts',
+];
 
 /** Both bans in ONE spawn — `git grep` ORs its `-e` patterns. */
 const PATTERNS = ['z\\.number\\(', 'z\\.coerce\\.number'];
@@ -136,10 +139,20 @@ const KNOWN_TOLERANT_LINES = {
     'total_paid_amount: wireNumber().nullable().optional(),',
     'resource_id: wireInt(),',
   ],
+  // ⚠️ Two of these four lines are IDENTICAL to Mercado Livre's above. That is
+  // the point: the packages are near-copies, so only the KEY distinguishes
+  // "Mercado Pago is still being scanned" from "some file somewhere still has
+  // this line". Spread from the token block to the payment block.
+  'packages/integrations/mercado-pago/src/types.ts': [
+    'expires_in: wireNumber(),',
+    'user_id: wireInt().nullable().optional(),',
+    'transaction_amount: wireNumber().nullable().optional(),',
+    'marketplace_fee: wireNumber().nullable().optional(),',
+  ],
 };
 
-/** Well below the 75 the ML sweep converted — a rot detector, not a spec. */
-const TOLERANT_FLOOR = 60;
+/** Well below the 75 + 13 the two sweeps converted — a rot detector, not a spec. */
+const TOLERANT_FLOOR = 75;
 
 const FIX = [
   'Fix: use `wireNumber()` — or `wireInt()` where the field carried `.int()` — from',
@@ -209,7 +222,7 @@ describe('channel response schemas tolerate a quoted number', () => {
     ).toEqual([]);
     expect(
       hits.length,
-      `Only ${String(hits.length)} wireNumber()/wireInt() call sites found; the ML sweep alone converted 75.`,
+      `Only ${String(hits.length)} wireNumber()/wireInt() call sites found; the sweeps converted 75 (ML) + 13 (MP).`,
     ).toBeGreaterThanOrEqual(TOLERANT_FLOOR);
   });
 
