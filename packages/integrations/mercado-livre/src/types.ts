@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { mlInt, mlNumber } from './mlNumber';
+import { wireInt, wireNumber } from '@delfrance/core/wire';
 
 /**
  * Zod shapes for Mercado Livre payloads (OAuth + REST resources). Tolerant by
@@ -9,14 +9,14 @@ import { mlInt, mlNumber } from './mlNumber';
  * the identifiers we actually key on are required. A field ML renames or drops
  * therefore degrades gracefully instead of throwing.
  *
- * ⚠️ **Every numeric field goes through `mlNumber()` / `mlInt()`** (`./mlNumber`),
+ * ⚠️ **Every numeric field goes through `wireNumber()` / `wireInt()`** (`@delfrance/core/wire`),
  * never a bare `z.number()`, because ML is inconsistent about whether a number
  * arrives as a JSON number or as a quoted string — and a `z.number()` that meets
  * a string rejects the WHOLE resource, not just that field. #1087 is the worked
  * example: one quoted `order_id` on `GET /collections/{id}` stopped a payment
  * importing at all. The helper carries the autopsy and the reason
  * `z.coerce.number()` is not the answer. Enforced by
- * `packages/config-eslint/rules/ml-response-numbers-tolerant.test.js`.
+ * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`.
  *
  * ⚠️ The `z.union([z.number(), z.string()])` fields are the OLDER, per-field form
  * of the same tolerance and stay as they are. They are not all numeric —
@@ -39,9 +39,9 @@ export const tokenResponseSchema = z
   .object({
     access_token: z.string().min(1),
     token_type: z.string().min(1),
-    expires_in: mlNumber(),
+    expires_in: wireNumber(),
     scope: z.string().nullable().optional(),
-    user_id: mlInt().nullable().optional(),
+    user_id: wireInt().nullable().optional(),
     refresh_token: z.string().min(1),
   })
   .passthrough();
@@ -58,7 +58,7 @@ export const tokenErrorSchema = z
     error: z.string().optional(),
     error_description: z.string().optional(),
     message: z.string().optional(),
-    status: mlNumber().optional(),
+    status: wireNumber().optional(),
   })
   .passthrough();
 export type TokenError = z.infer<typeof tokenErrorSchema>;
@@ -70,7 +70,7 @@ export type TokenError = z.infer<typeof tokenErrorSchema>;
 /** `GET /users/me` (and `/users/{id}`) — only the fields we key on. */
 export const userSchema = z
   .object({
-    id: mlInt(),
+    id: wireInt(),
     nickname: z.string().nullable().optional(),
     email: z.string().nullable().optional(),
     site_id: z.string().nullable().optional(),
@@ -97,7 +97,7 @@ export type MlUser = z.infer<typeof userSchema>;
  */
 export const testUserSchema = z
   .object({
-    id: mlInt(),
+    id: wireInt(),
     nickname: z.string().min(1),
     password: z.string().min(1),
     site_status: z.string().nullable().optional(),
@@ -134,7 +134,7 @@ export const itemAttributeSchema = z
      */
     value_struct: z
       .object({
-        number: mlNumber().nullable().optional(),
+        number: wireNumber().nullable().optional(),
         unit: z.string().nullable().optional(),
       })
       .passthrough()
@@ -161,8 +161,8 @@ export const itemVariationSchema = z
   .object({
     // ML has sent numeric and (rarely) string ids over time — accept both.
     id: z.union([z.number(), z.string()]).nullable().optional(),
-    available_quantity: mlNumber().nullable().optional(),
-    price: mlNumber().nullable().optional(),
+    available_quantity: wireNumber().nullable().optional(),
+    price: wireNumber().nullable().optional(),
     seller_custom_field: z.string().nullable().optional(),
     /** User-Products model: each variation is its own item. */
     item_relations: z.array(z.unknown()).nullable().optional(),
@@ -186,16 +186,16 @@ export const itemSchema = z
     /** User-Products model — the variation identity lives at the item ROOT (no `variations[]`). */
     attribute_combinations: z.array(itemAttributeSchema).nullable().optional(),
     category_id: z.string().nullable().optional(),
-    price: mlNumber().nullable().optional(),
+    price: wireNumber().nullable().optional(),
     /** Normal price (promo/`price` may be lower); import uses `base_price ?? price`. */
-    base_price: mlNumber().nullable().optional(),
-    available_quantity: mlNumber().nullable().optional(),
+    base_price: wireNumber().nullable().optional(),
+    available_quantity: wireNumber().nullable().optional(),
     condition: z.string().nullable().optional(),
     status: z.string().nullable().optional(),
     /** ML sub-status (`deleted`/`suspended`/`freezed`/`out_of_stock`…) — bot filtering. */
     sub_status: z.array(z.string()).nullable().optional(),
     listing_type_id: z.string().nullable().optional(),
-    seller_id: mlInt().nullable().optional(),
+    seller_id: wireInt().nullable().optional(),
     seller_custom_field: z.string().nullable().optional(),
     permalink: z.string().nullable().optional(),
     date_created: z.string().nullable().optional(),
@@ -244,12 +244,12 @@ export const ML_MULTIGET_MAX_IDS = 20;
 export const itemsMultigetSchema = z.array(
   z
     .object({
-      // `mlInt()`, not `z.number().int()`: ML quoting a number is serializer-level
+      // `wireInt()`, not `z.number().int()`: ML quoting a number is serializer-level
       // drift and `parseOk` validates the WHOLE body, so one strict field costs
       // the entire multiget. Here that would be silent in the worst way — every
       // entry would fail `code !== 200`, the sweep would confirm nothing, and it
       // would stop closing anything at all.
-      code: mlInt().nullable().optional(),
+      code: wireInt().nullable().optional(),
       body: z
         .object({
           id: z.string().nullable().optional(),
@@ -287,8 +287,8 @@ export const itemPricesEntrySchema = z
   .object({
     id: z.string().nullable().optional(),
     type: z.string().nullable().optional(),
-    amount: mlNumber().nullable().optional(),
-    regular_amount: mlNumber().nullable().optional(),
+    amount: wireNumber().nullable().optional(),
+    regular_amount: wireNumber().nullable().optional(),
     currency_id: z.string().nullable().optional(),
     last_updated: z.string().nullable().optional(),
     conditions: itemPricesConditionsSchema.nullable().optional(),
@@ -328,8 +328,8 @@ export const orderItemSchema = z
       .passthrough()
       .nullable()
       .optional(),
-    quantity: mlNumber().nullable().optional(),
-    unit_price: mlNumber().nullable().optional(),
+    quantity: wireNumber().nullable().optional(),
+    unit_price: wireNumber().nullable().optional(),
     currency_id: z.string().nullable().optional(),
     element_id: z.union([z.number(), z.string()]).nullable().optional(),
     /**
@@ -370,16 +370,16 @@ export const orderItemSchema = z
 /** `GET /orders/{id}`. Can arrive `206 Partial Content` with `order_items` empty. */
 export const orderSchema = z
   .object({
-    id: mlInt(),
+    id: wireInt(),
     status: z.string().nullable().optional(),
     date_created: z.string().nullable().optional(),
     last_updated: z.string().nullable().optional(),
-    pack_id: mlInt().nullable().optional(),
+    pack_id: wireInt().nullable().optional(),
     order_items: z.array(orderItemSchema).nullable().optional(),
-    total_amount: mlNumber().nullable().optional(),
+    total_amount: wireNumber().nullable().optional(),
     currency_id: z.string().nullable().optional(),
-    buyer: z.object({ id: mlInt().nullable().optional() }).passthrough().nullable().optional(),
-    shipping: z.object({ id: mlInt().nullable().optional() }).passthrough().nullable().optional(),
+    buyer: z.object({ id: wireInt().nullable().optional() }).passthrough().nullable().optional(),
+    shipping: z.object({ id: wireInt().nullable().optional() }).passthrough().nullable().optional(),
     tags: z.array(z.string()).nullable().optional(),
   })
   .passthrough();
@@ -391,9 +391,9 @@ export const orderSearchSchema = z
     results: z.array(orderSchema).default([]),
     paging: z
       .object({
-        total: mlNumber().nullable().optional(),
-        offset: mlNumber().nullable().optional(),
-        limit: mlNumber().nullable().optional(),
+        total: wireNumber().nullable().optional(),
+        offset: wireNumber().nullable().optional(),
+        limit: wireNumber().nullable().optional(),
       })
       .passthrough()
       .nullable()
@@ -454,9 +454,9 @@ export const listingPricesSchema = z
   .object({
     listing_type_id: z.string().nullable().optional(),
     /** Commission charged on a sale — the link doc's `comissao`. */
-    sale_fee_amount: mlNumber().nullable().optional(),
+    sale_fee_amount: wireNumber().nullable().optional(),
     /** Up-front listing fee (0 for the free/classic types). */
-    listing_fee_amount: mlNumber().nullable().optional(),
+    listing_fee_amount: wireNumber().nullable().optional(),
     currency_id: z.string().nullable().optional(),
   })
   .passthrough();
@@ -494,11 +494,11 @@ export const categoryAttributeSchema = z
     /** `FAMILY` marks an attribute that identifies a User-Products family. */
     hierarchy: z.string().nullable().optional(),
     /** ML's own ordering hint — lower is more important. */
-    relevance: mlNumber().nullable().optional(),
+    relevance: wireNumber().nullable().optional(),
     tooltip: z.string().nullable().optional(),
     hint: z.string().nullable().optional(),
     /** Max characters ML accepts; over-long values are rejected on publish. */
-    value_max_length: mlInt().nullable().optional(),
+    value_max_length: wireInt().nullable().optional(),
     default_unit: z.string().nullable().optional(),
     default_unit_id: z.string().nullable().optional(),
     allowed_units: z
@@ -563,10 +563,10 @@ export type MlItemDescription = z.infer<typeof itemDescriptionSchema>;
 /** `GET /packs/{id}` — a cart grouping N orders (1 item-variation each). */
 export const packSchema = z
   .object({
-    id: mlInt(),
+    id: wireInt(),
     status: z.string().nullable().optional(),
-    orders: z.array(z.object({ id: mlInt() }).passthrough()).default([]),
-    shipment: z.object({ id: mlInt().nullable().optional() }).passthrough().nullable().optional(),
+    orders: z.array(z.object({ id: wireInt() }).passthrough()).default([]),
+    shipment: z.object({ id: wireInt().nullable().optional() }).passthrough().nullable().optional(),
   })
   .passthrough();
 export type MlPack = z.infer<typeof packSchema>;
@@ -583,8 +583,8 @@ export const mlPaymentChargeDetailSchema = z
       .optional(),
     amounts: z
       .object({
-        original: mlNumber().nullable().optional(),
-        refunded: mlNumber().nullable().optional(),
+        original: wireNumber().nullable().optional(),
+        refunded: wireNumber().nullable().optional(),
       })
       .passthrough()
       .nullable()
@@ -596,7 +596,7 @@ export type MlPaymentChargeDetail = z.infer<typeof mlPaymentChargeDetailSchema>;
 /** One entry of `payment.fee_details[]` (legacy `FeeDetailsMercadoLivrePayment`, models.dart:4787-4800) — only `amount` feeds `toPagamento`'s tarifas total; `fee_payer`/`type` ride through `.passthrough()` untyped. */
 export const mlPaymentFeeDetailSchema = z
   .object({
-    amount: mlNumber().nullable().optional(),
+    amount: wireNumber().nullable().optional(),
   })
   .passthrough();
 export type MlPaymentFeeDetail = z.infer<typeof mlPaymentFeeDetailSchema>;
@@ -604,7 +604,7 @@ export type MlPaymentFeeDetail = z.infer<typeof mlPaymentFeeDetailSchema>;
 /** One entry of `payment.refunds[]` (legacy `MercadoLivreRefund`, models.dart:4813-4845) — only `amount` feeds `toPagamento`'s refund total. */
 export const mlPaymentRefundSchema = z
   .object({
-    amount: mlNumber().nullable().optional(),
+    amount: wireNumber().nullable().optional(),
   })
   .passthrough();
 export type MlPaymentRefund = z.infer<typeof mlPaymentRefundSchema>;
@@ -618,35 +618,35 @@ export type MlPaymentRefund = z.infer<typeof mlPaymentRefundSchema>;
  */
 export const mlPaymentSchema = z
   .object({
-    id: mlInt(),
+    id: wireInt(),
     date_created: z.string().nullable().optional(),
     date_approved: z.string().nullable().optional(),
     date_last_updated: z.string().nullable().optional(),
     last_modified: z.string().nullable().optional(),
     reason: z.string().nullable().optional(),
-    transaction_amount: mlNumber().nullable().optional(),
-    total_paid_amount: mlNumber().nullable().optional(),
-    shipping_cost: mlNumber().nullable().optional(),
-    coupon_amount: mlNumber().nullable().optional(),
+    transaction_amount: wireNumber().nullable().optional(),
+    total_paid_amount: wireNumber().nullable().optional(),
+    shipping_cost: wireNumber().nullable().optional(),
+    coupon_amount: wireNumber().nullable().optional(),
     status: z.string().nullable().optional(),
     /** Consumed by the payments-topic handler (legacy tasks.dart:1172/1176 — NONE-marketplace skip + order-key resolution). */
     marketplace: z.string().nullable().optional(),
     /** Consumed by the payments-topic handler for order-key resolution (legacy tasks.dart:1176). */
     external_reference: z.string().nullable().optional(),
     /** Consumed by the payments-topic handler for order-key resolution (legacy tasks.dart:1176). */
-    order_id: mlInt().nullable().optional(),
-    installments: mlNumber().nullable().optional(),
+    order_id: wireInt().nullable().optional(),
+    installments: wireNumber().nullable().optional(),
     payment_type: z.string().nullable().optional(),
     payment_type_id: z.string().nullable().optional(),
     payment_method_id: z.string().nullable().optional(),
-    card_id: mlNumber().nullable().optional(),
+    card_id: wireNumber().nullable().optional(),
     card: z
       .object({ last_four_digits: z.string().nullable().optional() })
       .passthrough()
       .nullable()
       .optional(),
     authorization_code: z.string().nullable().optional(),
-    marketplace_fee: mlNumber().nullable().optional(),
+    marketplace_fee: wireNumber().nullable().optional(),
     fee_details: z.array(mlPaymentFeeDetailSchema).nullable().optional(),
     charge_details: z.array(mlPaymentChargeDetailSchema).nullable().optional(),
     charges_details: z.array(mlPaymentChargeDetailSchema).nullable().optional(),
@@ -681,7 +681,7 @@ const mlShipmentEstimatedDateSchema = z
  */
 export const mlShipmentLeadTimeSchema = z
   .object({
-    list_cost: mlNumber().nullable().optional(),
+    list_cost: wireNumber().nullable().optional(),
     estimated_delivery_limit: mlShipmentEstimatedDateSchema.nullable().optional(),
     estimated_delivery_time: mlShipmentEstimatedDateSchema.nullable().optional(),
   })
@@ -723,7 +723,7 @@ const mlShipmentAddressSchema = z
  */
 export const mlShipmentSchema = z
   .object({
-    id: mlInt(),
+    id: wireInt(),
     status: z.string().nullable().optional(),
     substatus: z.string().nullable().optional(),
     tracking_number: z.string().nullable().optional(),
@@ -837,8 +837,8 @@ export type MlShipmentSla = z.infer<typeof mlShipmentSlaSchema>;
  */
 export const mlShipmentInvoiceSchema = z
   .object({
-    id: mlInt().nullable().optional(),
-    shipment_id: mlInt().nullable().optional(),
+    id: wireInt().nullable().optional(),
+    shipment_id: wireInt().nullable().optional(),
     status: z.string().nullable().optional(),
   })
   .passthrough();
@@ -970,9 +970,9 @@ export const userProductItemsSearchSchema = z
      */
     paging: z
       .object({
-        total: mlInt().nullable().optional(),
-        limit: mlInt().nullable().optional(),
-        offset: mlInt().nullable().optional(),
+        total: wireInt().nullable().optional(),
+        limit: wireInt().nullable().optional(),
+        offset: wireInt().nullable().optional(),
       })
       .passthrough()
       .nullable()
@@ -1028,7 +1028,7 @@ export const userProductStockLocationSchema = z
     type: z.string().nullable().optional(),
     store_id: z.union([z.string(), z.number()]).nullable().optional(),
     network_node_id: z.union([z.string(), z.number()]).nullable().optional(),
-    quantity: mlNumber().nullable().optional(),
+    quantity: wireNumber().nullable().optional(),
   })
   .passthrough();
 export type MlUserProductStockLocation = z.infer<typeof userProductStockLocationSchema>;
@@ -1069,7 +1069,7 @@ export const sellerItemsScanSchema = z
     scroll_id: z.string().nullable().optional(),
     results: z.array(z.string()).default([]),
     paging: z
-      .object({ total: mlNumber().nullable().optional() })
+      .object({ total: wireNumber().nullable().optional() })
       .passthrough()
       .nullable()
       .optional(),
@@ -1226,7 +1226,7 @@ export const mlClaimPlayerSchema = z
   .object({
     role: z.string().nullable().default(null),
     type: z.string().nullable().default(null),
-    user_id: mlInt().nullable().default(null),
+    user_id: wireInt().nullable().default(null),
     available_actions: z
       .array(mlClaimAvailableActionSchema)
       .nullish()
@@ -1263,12 +1263,12 @@ export type MlClaimResolution = z.infer<typeof mlClaimResolutionSchema>;
  */
 export const mlClaimSchema = z
   .object({
-    id: mlInt(),
+    id: wireInt(),
     type: z.string().nullable().default(null),
     stage: z.string().nullable().default(null),
     status: z.string().nullable().default(null),
     /** The complained-about resource id — an order/pack/shipment/payment id depending on `resource`. */
-    resource_id: mlInt(),
+    resource_id: wireInt(),
     /** `order`/`pack`/`shipment`/`payment`/`purchase` (legacy `_ResourceClaims`, models.dart:3724-3755). */
     resource: z.string(),
     reason_id: z.string().nullable().default(null),
@@ -1293,7 +1293,7 @@ export const mlClaimMessageAttachmentSchema = z
     filename: z.string(),
     original_filename: z.string().nullable().optional(),
     type: z.string().nullable().optional(),
-    size: mlNumber().nullable().optional(),
+    size: wireNumber().nullable().optional(),
     date_created: z.string().nullable().optional(),
   })
   .passthrough();
@@ -1381,9 +1381,9 @@ export const mlClaimSearchSchema = z
   .object({
     paging: z
       .object({
-        total: mlNumber().nullable().optional(),
-        offset: mlNumber().nullable().optional(),
-        limit: mlNumber().nullable().optional(),
+        total: wireNumber().nullable().optional(),
+        offset: wireNumber().nullable().optional(),
+        limit: wireNumber().nullable().optional(),
       })
       .passthrough()
       .default({}),
@@ -1445,8 +1445,8 @@ export const mlMissedFeedSchema = z
     /** `http_code` is logged as a histogram; the rest is dropped. */
     response: z
       .object({
-        http_code: mlNumber().nullable().optional().catch(null),
-        req_time: mlNumber().nullable().optional().catch(null),
+        http_code: wireNumber().nullable().optional().catch(null),
+        req_time: wireNumber().nullable().optional().catch(null),
       })
       .passthrough()
       .nullable()
@@ -1494,7 +1494,7 @@ export type MlQuestionAnswer = z.infer<typeof mlQuestionAnswerSchema>;
 /** The asker, as `GET /questions/{id}?api_version=4` returns it. */
 export const mlQuestionFromSchema = z
   .object({
-    id: mlInt().nullable().default(null),
+    id: wireInt().nullable().default(null),
     nickname: z.string().nullable().default(null),
   })
   .passthrough();
@@ -1528,9 +1528,9 @@ export type MlQuestionFrom = z.infer<typeof mlQuestionFromSchema>;
  */
 export const mlQuestionSchema = z
   .object({
-    id: mlInt(),
-    seller_id: mlInt().nullable().default(null),
-    buyer_id: mlInt().nullable().default(null),
+    id: wireInt(),
+    seller_id: wireInt().nullable().default(null),
+    buyer_id: wireInt().nullable().default(null),
     item_id: z.string().nullable().default(null),
     status: z.string().nullable().default(null),
     /** Empty when `status` is `BANNED` — ML strips moderated text. */
@@ -1596,7 +1596,7 @@ export const mlMessageAttachmentSchema = z
     filename: z.string().nullable().default(null),
     original_filename: z.string().nullable().default(null),
     type: z.string().nullable().default(null),
-    size: mlNumber().nullable().default(null),
+    size: wireNumber().nullable().default(null),
   })
   .passthrough();
 export type MlMessageAttachment = z.infer<typeof mlMessageAttachmentSchema>;
@@ -1675,9 +1675,9 @@ export type MlPostSaleMessage = z.infer<typeof mlPostSaleMessageSchema>;
  */
 export const mlPagingSchema = z
   .object({
-    limit: mlNumber().nullable().default(null),
-    offset: mlNumber().nullable().default(null),
-    total: mlNumber().nullable().default(null),
+    limit: wireNumber().nullable().default(null),
+    offset: wireNumber().nullable().default(null),
+    total: wireNumber().nullable().default(null),
   })
   .passthrough();
 export type MlPaging = z.infer<typeof mlPagingSchema>;
@@ -1691,8 +1691,8 @@ export const mlPackMessagesSchema = z
       .array(mlPostSaleMessageSchema)
       .nullish()
       .transform((v) => v ?? []),
-    seller_max_message_length: mlInt().nullable().default(null),
-    buyer_max_message_length: mlInt().nullable().default(null),
+    seller_max_message_length: wireInt().nullable().default(null),
+    buyer_max_message_length: wireInt().nullable().default(null),
   })
   .passthrough();
 export type MlPackMessages = z.infer<typeof mlPackMessagesSchema>;
@@ -1753,8 +1753,8 @@ export type MlAnswerResult = z.infer<typeof mlAnswerResultSchema>;
  */
 export const mlPartialRefundOfferSchema = z
   .object({
-    amount: mlNumber().nullable().default(null),
-    percentage: mlNumber().nullable().default(null),
+    amount: wireNumber().nullable().default(null),
+    percentage: wireNumber().nullable().default(null),
   })
   .passthrough();
 export type MlPartialRefundOffer = z.infer<typeof mlPartialRefundOfferSchema>;
@@ -1770,13 +1770,13 @@ export type MlPartialRefundOffer = z.infer<typeof mlPartialRefundOfferSchema>;
 export const mlPartialRefundAdviceSchema = z
   .object({
     // ⚠️ Tolerant like every other numeric in this file — a quoted `"30"` must not
-    // fail the read. `mlNumber()` rather than the hand-rolled union this started
+    // fail the read. `wireNumber()` rather than the hand-rolled union this started
     // as: that one coerced with a bare `Number(v)`, which reads `'1e3'` as 1000
-    // and `'0x1F'` as 31. `./mlNumber` is the one place that rule is written.
+    // and `'0x1F'` as 31. `@delfrance/core/wire` is the one place that rule is written.
     // `.catch(null)` keeps a percentage ML sends as garbage from taking the whole
     // offers read down — this is advice for a human, not a value anything decides
     // on, so degrading it beats failing the picker.
-    percentage: mlNumber().nullable().default(null).catch(null),
+    percentage: wireNumber().nullable().default(null).catch(null),
     reason: z.string().nullable().default(null).catch(null),
     type: z.string().nullable().default(null).catch(null),
   })
@@ -1830,7 +1830,7 @@ export type MlPartialRefundOffers = z.infer<typeof mlPartialRefundOffersSchema>;
 export const mlExpectedResolutionSchema = z
   .object({
     player_role: z.string().nullable().default(null),
-    user_id: mlInt().nullable().default(null),
+    user_id: wireInt().nullable().default(null),
     expected_resolution: z.string().nullable().default(null),
     status: z.string().nullable().default(null),
   })
@@ -1844,7 +1844,7 @@ export const mlExpectedResolutionsSchema = z.array(mlExpectedResolutionSchema);
 export const mlClaimAttachmentUploadSchema = z
   .object({
     filename: z.string(),
-    user_id: mlInt().nullable().default(null),
+    user_id: wireInt().nullable().default(null),
   })
   .passthrough();
 export type MlClaimAttachmentUpload = z.infer<typeof mlClaimAttachmentUploadSchema>;

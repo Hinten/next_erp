@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /**
- * Numeric RESPONSE fields that survive Mercado Livre sending a number as a JSON
+ * Numeric RESPONSE fields that survive a provider sending a number as a JSON
  * **string**.
  *
  * ## What broke
@@ -18,12 +18,32 @@ import { z } from 'zod';
  * `external_reference`, which arrived present and valid. The import had
  * everything it needed and still died, because `parseOk` validates the whole
  * body before any caller reads a field. That is why the answer is a blanket
- * sweep of `types.ts` rather than a fix to `order_id`: quoting a number is a
- * SERIALIZER-level drift, so the field it lands on next is not predictable.
+ * sweep of a channel's response schemas rather than a fix to `order_id`:
+ * quoting a number is a SERIALIZER-level drift, so the field it lands on next is
+ * not predictable.
  *
- * Doing it wholesale is safe in `types.ts` and only there — that file holds
- * response schemas exclusively, so widening it can never make this ERP SEND a
- * coerced value to ML.
+ * Doing it wholesale is safe in a RESPONSE-schema file and only there — widening
+ * a shape we READ can never make this ERP SEND a coerced value to a provider.
+ *
+ * ## Why it lives in `@delfrance/core` rather than in a channel
+ *
+ * The resource that drifted is a **Mercado Pago payment**; `/collections/{id}`
+ * is merely the alias Mercado Livre's host serves it under. The same object
+ * reached through `GET /v1/payments/{id}` carried the identical exposure
+ * (#1251), so the rule was never Mercado-Livre-shaped to begin with. #810 is the
+ * worked example of what a second, drifting private copy costs: Mercado Livre's
+ * local `asInt` accepted only `typeof v === 'number'` while its sibling one
+ * import away had always accepted numeric strings too, and side by side they
+ * could not have drifted. ⚠️ **Do not let a channel grow its own copy of this
+ * regex.**
+ *
+ * ⚠️ Related but deliberately NOT the same function: `asInt` in
+ * `@delfrance/data/admin/notifications/coerce.ts`. That one is integer-only and
+ * TRUNCATES a non-integer number, which is the right contract for a webhook
+ * receiver normalizing a payload before enqueue; this one refuses anything it
+ * cannot read exactly. They share the leading-`+` spelling on purpose — a
+ * gratuitous disagreement between two sibling coercers is how #810 started — but
+ * merging them would change both contracts.
  *
  * ## What it must never do
  *
@@ -36,16 +56,20 @@ import { z } from 'zod';
  * `path` — which is what makes the failure diagnosable.
  *
  * ⚠️ The regex is deliberate — do NOT simplify it to a bare `Number(s)`, which
- * reads `'0x1F'` as **31** and `'1e3'` as **1000**. `asInt` in
- * `@delfrance/data/admin/notifications/coerce.ts` reached this conclusion
- * independently, for the reason it states: a coerced-from-garbage id is worse
- * than a rejected one.
+ * reads `'0x1F'` as **31** and `'1e3'` as **1000**. `asInt` reached this
+ * conclusion independently, for the reason it states: a coerced-from-garbage id
+ * is worse than a rejected one.
  *
- * ⚠️ Deliberately NOT re-exported from `./index.ts`. Its contract is "the shapes
- * ML's own responses arrive in", not "a coercion utility". #810 is the worked
- * example of what a second, drifting copy of a coercer costs, and `index.ts` is
- * the surface `apps/mercado-livre` imports — exporting this would invite exactly
- * that. Tests import it from `../src/mlNumber` directly.
+ * ⚠️ This module is the DEFINITION site, so it is the one place a bare
+ * `z.number()` is correct. The repo-state guard
+ * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`
+ * bans it across the channel packages and deliberately does not scan
+ * `packages/core`.
+ *
+ * ⚠️ Exposed as the `@delfrance/core/wire` SUBPATH and deliberately kept out of
+ * the root barrel: `@delfrance/core`'s root is reachable from every browser
+ * bundle in the monorepo (via `@delfrance/schemas`), and this is an
+ * explicit-import utility, not something `formatReais` should drag along.
  */
 
 /**
@@ -63,8 +87,8 @@ import { z } from 'zod';
  *  - `'0x1F'`  — bare `Number()` says 31.
  *  - `'1e3'`   — bare `Number()` says 1000. JSON may write a NUMBER that way, and
  *                `JSON.parse` handles it before we ever see it; a QUOTED one is a
- *                string ML built by hand, and reading an exponent out of it is a
- *                guess.
+ *                string the provider built by hand, and reading an exponent out
+ *                of it is a guess.
  *  - `''`, `'  '`, `'abc'`, `'Infinity'`, `'NaN'`, `'1 000'`, `'1_000'`, `'3.'`.
  *
  * The leading `+` is accepted to match `INTEGER_STRING` in `coerce.ts`; a
@@ -73,20 +97,17 @@ import { z } from 'zod';
 const DECIMAL_STRING = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
 
 /**
- * A Mercado Livre numeric string as a number, or `null` when it is not one.
+ * A provider's numeric string as a number, or `null` when it is not one.
  *
- * ⚠️ **The one place this rule is written.** Anything else in this repo that has
- * to read a quoted ML number — the Zod builders below, and `asNumber` in
+ * ⚠️ **The one place this rule is written.** Anything in this repo that has to
+ * read a quoted provider number — the Zod builders below, and `asNumber` in
  * `apps/mercado-livre`'s `orderMLWire.ts`, which rebuilds the pedido's `orderML`
- * mirror off the raw order-embedded payment — calls THIS, rather than keeping its
- * own regex. That is the whole lesson of #810: Mercado Livre's private `asInt`
- * accepted only `typeof v === 'number'` while its sibling one import away had
- * always accepted numeric strings too, and side by side they could not have
- * drifted. A second copy of the rule here would repeat it exactly.
+ * mirror off the raw order-embedded payment — calls THIS, rather than keeping
+ * its own regex. See the module header for why a second copy is the bug.
  *
  * Returns `null` — never `0` — for anything it cannot read.
  */
-export function parseMlDecimal(v: unknown): number | null {
+export function parseWireDecimal(v: unknown): number | null {
   if (typeof v !== 'string') return null;
   const t = v.trim();
   if (!DECIMAL_STRING.test(t)) return null;
@@ -94,7 +115,7 @@ export function parseMlDecimal(v: unknown): number | null {
   // ⚠️ Load-bearing, and the one hole a decimal regex does not already close.
   // `Number('9007199254740993')` is 9007199254740992 — silently rounded — and
   // `z.number()` ACCEPTS that. A rounded id IS an invented value, the one thing
-  // this module promises never to produce. `mlInt()` gets the check free from
+  // this module promises never to produce. `wireInt()` gets the check free from
   // `.int()` (Zod 4 answers `too_big` above MAX_SAFE_INTEGER), but `card_id` is
   // an identifier declared WITHOUT `.int()`, and real ML order ids already run to
   // ~2e15 — only ~4.5x below the cliff.
@@ -106,7 +127,7 @@ export function parseMlDecimal(v: unknown): number | null {
   // above (no dot, not a safe integer), but `'9'.repeat(400) + '.5'` skips that
   // branch and is `Infinity`. `z.number()` rejects `Infinity`, so the Zod
   // builders below would have been fine either way — but this function is also
-  // called from a plain, non-Zod caller (`orderMLWire`), which has no inner
+  // called from plain, non-Zod callers (`orderMLWire`), which have no inner
   // schema to catch it. Relying on the consumer is precisely the assumption that
   // breaks the moment a second one appears.
   return Number.isFinite(n) ? n : null;
@@ -118,24 +139,24 @@ export function parseMlDecimal(v: unknown): number | null {
  * so the wrapped `z.number()` produces the ordinary `invalid_type` at the right
  * `path`.
  *
- * ⚠️ `??`, not `||`: `parseMlDecimal('0')` is `0`, which is falsy and a perfectly
- * good amount.
+ * ⚠️ `??`, not `||`: `parseWireDecimal('0')` is `0`, which is falsy and a
+ * perfectly good amount.
  */
 function toNumberish(v: unknown): unknown {
   if (typeof v !== 'string') return v; // number/null/undefined/boolean pass straight through
-  return parseMlDecimal(v) ?? v;
+  return parseWireDecimal(v) ?? v;
 }
 
 /** A JSON number, or a decimal string that unambiguously means one. */
-export function mlNumber() {
+export function wireNumber() {
   return z.preprocess(toNumberish, z.number());
 }
 
 /**
- * {@link mlNumber} for a field that was declared `z.number().int()`. `.int()`
+ * {@link wireNumber} for a field that was declared `z.number().int()`. `.int()`
  * keeps its Zod 4 semantics unchanged, including the `MAX_SAFE_INTEGER` ceiling —
  * no `.refine(Number.isSafeInteger)` is needed on top.
  */
-export function mlInt() {
+export function wireInt() {
   return z.preprocess(toNumberish, z.number().int());
 }

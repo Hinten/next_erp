@@ -47,9 +47,9 @@
  * promoted to named properties on the plugin's inferred type yet.
  */
 import { coerceToMillis } from '@delfrance/core/datetime';
+import { parseWireDecimal } from '@delfrance/core/wire';
 import { toOuterRef } from '@delfrance/schemas';
 import type { MlOrder } from '@delfrance/integrations-mercado-livre';
-import { parseMlDecimal } from '@delfrance/integrations-mercado-livre';
 
 type MlOrderItemLine = NonNullable<MlOrder['order_items']>[number];
 
@@ -221,15 +221,16 @@ function buildBuyerWire(order: MlOrder): Record<string, unknown> | null {
  * Dart's `json['transaction_amount'] as num?` THROWS on a string, so there is no
  * working legacy behaviour that produced `null` here to reproduce.
  *
- * ⚠️ The string rule is `parseMlDecimal` from the plugin, NOT a local regex. It
- * still never invents a value — `Number('')` is 0, `Number('0x1F')` is 31 and
- * `Number('1e3')` is 1000, all of which it refuses — and keeping ONE definition
- * is the #810 lesson: the private copy that drifted from its sibling is what
- * stopped repo-wide ingestion with no error at all.
+ * ⚠️ The string rule is `parseWireDecimal` from `@delfrance/core/wire`, NOT a
+ * local regex. It still never invents a value — `Number('')` is 0,
+ * `Number('0x1F')` is 31 and `Number('1e3')` is 1000, all of which it
+ * refuses — and keeping ONE definition is the #810 lesson: the private copy
+ * that drifted from its sibling is what stopped repo-wide ingestion with no
+ * error at all.
  */
 function asNumber(v: unknown): number | null {
   if (typeof v === 'number') return v;
-  return parseMlDecimal(v);
+  return parseWireDecimal(v);
 }
 
 function asMaybeString(v: unknown): string | null {
