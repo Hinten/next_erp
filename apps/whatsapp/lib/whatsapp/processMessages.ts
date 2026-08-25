@@ -80,6 +80,7 @@ import {
   type IncomingMessage,
 } from '@delfrance/integrations-whatsapp-cloud-api';
 
+import { corToEtiquetaArgb } from '@delfrance/core/cor';
 import { type ContaIdLookup, readContaIdByWaId, readWhatsappConta } from './contaCache';
 import { conversaDocId, mensagemDocId, senderId } from './ids';
 import {
@@ -377,7 +378,11 @@ async function upsertConversa(
         integracaoOuterRef: `documents/integracao/${args.contaId}`,
         id: args.phoneNumberId,
         prazo_resposta: args.prazoMs,
-        cor_etiqueta: args.conta.cor ?? 0,
+        // ⚠️ CONVERTED, not copied. `integracao.cor` is a 24-bit RGB int; `cor_etiqueta`
+        // is a 32-bit ARGB `Color.value`, and the chat etiqueta filter matches its
+        // palette with an exact `==`. A raw copy paints the right colour but is
+        // selectable by no etiqueta at all. See `corToEtiquetaArgb`.
+        cor_etiqueta: corToEtiquetaArgb(args.conta.cor) ?? 0,
         externalLink: `https://api.whatsapp.com/send?phone=${args.from}`,
         estadoConversa: ESTADO_CONVERSA.naoRespondido,
       });
