@@ -90,6 +90,34 @@ export type MlShippingMode = 'me2' | 'me1' | 'not_specified';
  * would fight an authoritative remote one. `local_pick_up` is an account-level
  * preference and `free_methods` only means anything when `free_shipping` is
  * true, so both would be second copies of something we do not own.
+ *
+ * ## ⚠️ The update path is all-or-nothing, and one quadrant is UNVERIFIED
+ *
+ * Because this rides on every `PUT`, a republish whose real intent is a
+ * price/stock/picture edit now also depends on ML accepting a shipping-mode
+ * write. The unverified quadrant is an item **with sales** at `not_specified`
+ * on a conta configured `me2`. If ML refused that, the whole republish 400s
+ * where it used to succeed: one `updateItem` call owns the request
+ * (`publish.ts`), its catch stamps `estado: 'E'`, and `shipping` is absent from
+ * `REFERENCE_FIELDS` (`publishFalhas.ts`) so the cause renders above the form
+ * pinned to no control. The class is real — it is why `family_name` is stripped
+ * on update just below, and why `titleEditability` exists in apps/web.
+ *
+ * It was left unguarded on PURPOSE, on this evidence: ML's documented failure
+ * mode for a shipping-mode write it will not honour is **200 with the change
+ * silently not applied**, not a 4xx. Its own FAQ says so twice for the mirror
+ * case — a `PUT` setting `mode: 'me1'` on an ME2-enabled conta "pode retornar
+ * uma resposta 200 de sucesso sem que a alteração seja efetivamente aplicada",
+ * leaving the item `not_specified`. A silent no-op costs nothing here; a 400
+ * would. Guarding a failure ML appears not to produce would be dead code in the
+ * one file whose header already warns about inventing mechanisms.
+ *
+ * ⚠️ **`POST /items/validate` cannot settle it** — it validates a CREATE body
+ * and knows nothing of an existing item's sales. The check that does: republish
+ * a SOLD `not_specified` listing from a `me2` conta during the #1087 live run.
+ * If it 400s with a `shipping.*` cause, the containment is a bounded one-shot
+ * retry with the key removed, in the `pruneDeadPictures` mould (`publish.ts`) —
+ * degrade to the pre-#1273 body rather than fail the publish.
  */
 function applyShipping(
   data: Record<string, unknown>,
