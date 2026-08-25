@@ -21,7 +21,9 @@
  * asymmetry is the whole correctness argument. Resolving to a control is not the
  * same as being VISIBLE on one: `campos` is resolved server-side against the
  * payload we SENT, which by design carries attributes the editor never renders
- * (`SELLER_PACKAGE_*`, `WEIGHT`, `SIZE_GRID_ID`, `SELLER_SKU`), and several
+ * (`SELLER_PACKAGE_*`, `WEIGHT`, `SIZE_GRID_ID`, `SELLER_SKU` — withheld by
+ * `attributeOmission`, whose `derivado` arm is what finally made that list true
+ * of the dimensions rather than merely intended), and several
  * controls come and go — `listing_type_id` becomes read-only once published,
  * `descricao` hides behind a collapsible, and an `attributes.X` row vanishes when
  * the operator changes category. An earlier cut kept single-control causes out of

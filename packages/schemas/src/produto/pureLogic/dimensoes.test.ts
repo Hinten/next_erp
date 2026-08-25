@@ -6,6 +6,8 @@ import {
   LIMITE_LEGAL_CM,
   LIMITE_SEM_SOBRETAXA_CM,
   LIMITE_SOMA_CM,
+  dimensoesDoPacote,
+  medidasFaltandoParaAnuncio,
   // Aliased so every assertion below stays byte-identical to the suite this
   // file was moved from — that is what proves the move changed no behaviour.
   estimarDimensoes as dimensoesPedido,
@@ -319,5 +321,111 @@ describe('estimarDimensoes — fatorOcupacao', () => {
         ).toBeLessThanOrEqual(LIMITE_LEGAL_CM);
       }
     }
+  });
+});
+
+describe('dimensoesDoPacote', () => {
+  it('declares whole centimetres and whole grams', () => {
+    expect(dimensoesDoPacote(caixa(5, 10, 10, { pesoBrutoKg: 1 }))).toEqual({
+      alturaCm: 5,
+      larguraCm: 10,
+      profundidadeCm: 10,
+      pesoG: 1000,
+    });
+  });
+
+  // ML rejects a decimal outright (`item.attribute.invalid.format.seller.
+  // package.dimensions`), and these attributes are never editor inputs, so a
+  // produto measured in halves had no way to be published at all.
+  it('rounds cm UP — the package has to contain the product', () => {
+    expect(dimensoesDoPacote(caixa(5.5, 10.01, 30, { pesoBrutoKg: 0.2504 }))).toEqual({
+      alturaCm: 6,
+      larguraCm: 11,
+      profundidadeCm: 30,
+      pesoG: 250,
+    });
+  });
+
+  it('floors at 1 rather than declaring a zero-sized package', () => {
+    expect(dimensoesDoPacote(caixa(0.2, 0, 1, { pesoBrutoKg: 0.0004 }))).toEqual({
+      alturaCm: 1,
+      larguraCm: 1,
+      profundidadeCm: 1,
+      pesoG: 1,
+    });
+  });
+
+  it('takes the GROSS weight, falling back to net — what ships is what is billed', () => {
+    expect(dimensoesDoPacote(caixa(1, 1, 1, { pesoBrutoKg: 2, pesoLiquidoKg: 1 }))?.pesoG).toBe(
+      2000,
+    );
+    expect(dimensoesDoPacote(caixa(1, 1, 1, { pesoLiquidoKg: 1 }))?.pesoG).toBe(1000);
+  });
+
+  // ML: "the attributes seller_package_height, seller_package_length,
+  // seller_package_width, seller_package_weight are all required". Three
+  // quarters of a package is a rejected publish, not a partial one.
+  it('is all four or nothing', () => {
+    expect(dimensoesDoPacote(caixa(1, 1, 1))).toBeNull(); // no weight
+    expect(dimensoesDoPacote(medidas({ pesoBrutoKg: 1, alturaCm: 1, larguraCm: 1 }))).toBeNull();
+    expect(dimensoesDoPacote(null)).toBeNull();
+    expect(dimensoesDoPacote(undefined)).toBeNull();
+  });
+
+  // Unlike the pedido estimator's `medidasDo`, which falls back to the parent.
+  // A variation is a different size from its parent; inheriting the parent's box
+  // would ship a measurement nobody took for this produto.
+  it('does NOT inherit a parent box', () => {
+    expect(dimensoesDoPacote(medidas({ pesoBrutoKg: 1, paiId: 'pai' }))).toBeNull();
+  });
+
+  it('names the empty fields, in the order the produto tab shows them', () => {
+    expect(medidasFaltandoParaAnuncio(medidas())).toEqual([
+      'Peso líquido',
+      'Altura',
+      'Largura',
+      'Profundidade',
+    ]);
+    expect(medidasFaltandoParaAnuncio(caixa(1, 1, 1))).toEqual(['Peso líquido']);
+    expect(medidasFaltandoParaAnuncio(medidas({ pesoLiquidoKg: 1, alturaCm: 1 }))).toEqual([
+      'Largura',
+      'Profundidade',
+    ]);
+    // Empty is the signal the caller keys on — a complete produto must not
+    // report a missing field, or the screen warns over nothing.
+    expect(medidasFaltandoParaAnuncio(caixa(1, 1, 1, { pesoLiquidoKg: 1 }))).toEqual([]);
+  });
+
+  // ⚠️ THE regression this function was reshaped for. Publish derives TWO things
+  // from these fields, and only one of them tolerates a gross weight: the
+  // package falls back to it, ML's separate `WEIGHT` attribute does not (net and
+  // gross are different facts). Keying the check on `pesoBrutoKg ?? pesoLiquidoKg`
+  // made this produto look complete — the package resolved, nothing was
+  // reported, the screen showed a reassuring package with no warning — while
+  // `WEIGHT` was silently absent from every publish, its stored copy pruned and
+  // dropped with nothing to replace it.
+  it('reports a missing NET weight even when the package resolves on the gross one', () => {
+    const soBruto = caixa(1, 1, 1, { pesoBrutoKg: 1 });
+    expect(dimensoesDoPacote(soBruto)).not.toBeNull();
+    expect(dimensoesDoPacote(soBruto)?.pesoG).toBe(1000);
+    expect(medidasFaltandoParaAnuncio(soBruto)).toEqual(['Peso líquido']);
+  });
+
+  it('a net weight with no gross weight is complete — the package weighs the net value', () => {
+    const soLiquido = caixa(1, 1, 1, { pesoLiquidoKg: 2 });
+    expect(medidasFaltandoParaAnuncio(soLiquido)).toEqual([]);
+    expect(dimensoesDoPacote(soLiquido)?.pesoG).toBe(2000);
+  });
+
+  // A stored `0` is a real value, not an absence: it must resolve (to the 1cm
+  // floor) rather than send the operator to fill a field they already filled.
+  it('treats a stored zero as present', () => {
+    expect(medidasFaltandoParaAnuncio(caixa(0, 0, 0, { pesoLiquidoKg: 0 }))).toEqual([]);
+    expect(dimensoesDoPacote(caixa(0, 0, 0, { pesoBrutoKg: 0 }))).toEqual({
+      alturaCm: 1,
+      larguraCm: 1,
+      profundidadeCm: 1,
+      pesoG: 1,
+    });
   });
 });

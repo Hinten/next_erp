@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { MlCategoryAttribute } from '@delfrance/integrations-mercado-livre';
+import {
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  type MlCategoryAttribute,
+} from '@delfrance/integrations-mercado-livre';
 
 import {
   ML_BLOCKED_ATTRIBUTE_IDS,
@@ -14,9 +17,44 @@ function attr(over: Partial<MlCategoryAttribute> & { id: string }): MlCategoryAt
 }
 
 describe('attributeOmission', () => {
-  it('drops every ERP- or variation-owned id', () => {
+  it('drops every catalogue- or variation-owned id', () => {
     for (const id of ML_BLOCKED_ATTRIBUTE_IDS) {
       expect(attributeOmission(attr({ id }), 'item')).toBe('bloqueado');
+    }
+  });
+
+  // ⚠️ Every fixture here is deliberately UNTAGGED. ML tags `SELLER_PACKAGE_*`
+  // `hidden` in many categories — MLB457167 among them — so a fixture carrying
+  // that tag would come back `oculto` and pass against the version of this code
+  // that had no `derivado` rule at all. The whole point is the category that
+  // omits the tag, which is where the duplicated attribute used to ship.
+  it('withholds a produto-derived id even when ML does not tag it hidden', () => {
+    for (const id of ML_PRODUTO_DERIVED_ATTRIBUTE_IDS) {
+      expect(attributeOmission(attr({ id }), 'item')).toBe('derivado');
+      expect(attributeOmission(attr({ id }), 'variacao')).toBe('derivado');
+    }
+    // Named explicitly too: iterating the constant under test cannot catch it
+    // being emptied, and WEIGHT is the one an operator actually reported seeing.
+    expect(attributeOmission(attr({ id: 'WEIGHT', value_type: 'number_unit' }), 'item')).toBe(
+      'derivado',
+    );
+    expect(attributeOmission(attr({ id: 'SELLER_PACKAGE_HEIGHT' }), 'item')).toBe('derivado');
+  });
+
+  // The two spellings are different ML attributes and must not converge:
+  // `PACKAGE_*` is ML's read-only factory data, `SELLER_PACKAGE_*` is ours.
+  it('separates the read-only PACKAGE_* group from the derived SELLER_PACKAGE_* one', () => {
+    expect(attributeOmission(attr({ id: 'PACKAGE_HEIGHT' }), 'item')).toBe('bloqueado');
+    expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain('PACKAGE_HEIGHT');
+    expect(ML_BLOCKED_ATTRIBUTE_IDS).not.toContain('SELLER_PACKAGE_HEIGHT');
+  });
+
+  it('leaves the ficha técnica editable — those are not the package dimensions', () => {
+    // HEIGHT/WIDTH/LENGTH describe the PRODUCT, arrive untagged (verified against
+    // MLB457167) and nothing derives them. Withholding them would blank four
+    // fields operators fill by hand.
+    for (const id of ['HEIGHT', 'WIDTH', 'LENGTH', 'DEPTH', 'DIAMETER']) {
+      expect(attributeOmission(attr({ id, value_type: 'number_unit' }), 'item')).toBeNull();
     }
   });
 
@@ -169,6 +207,8 @@ describe('projectCategoriaAtributos', () => {
     const { atributos, omitidos } = projectCategoriaAtributos(
       [
         attr({ id: 'SELLER_SKU' }),
+        attr({ id: 'WEIGHT', value_type: 'number_unit' }),
+        attr({ id: 'PACKAGE_HEIGHT' }),
         attr({ id: 'ESCONDIDO', tags: { hidden: true } }),
         attr({ id: 'SIZE_GRID_ID', value_type: 'grid_id' }),
         attr({ id: 'VISIVEL' }),
@@ -177,10 +217,23 @@ describe('projectCategoriaAtributos', () => {
     );
     expect(atributos.map((a) => a.id)).toEqual(['VISIVEL']);
     expect(omitidos).toEqual([
-      { id: 'SELLER_SKU', motivo: 'bloqueado' },
+      { id: 'SELLER_SKU', motivo: 'derivado' },
+      { id: 'WEIGHT', motivo: 'derivado' },
+      { id: 'PACKAGE_HEIGHT', motivo: 'bloqueado' },
       { id: 'ESCONDIDO', motivo: 'oculto' },
       { id: 'SIZE_GRID_ID', motivo: 'tabela-de-medidas' },
     ]);
+  });
+
+  // `omitidos` is what `attributesForSave` is allowed to prune from the link
+  // doc, so a derived id landing there is what finally clears the stale copies
+  // an earlier build stored (legacy's `deleteNonShownAttributes`).
+  it('lists every derived id in omitidos so the stored copy can be pruned', () => {
+    const { omitidos } = projectCategoriaAtributos(
+      ML_PRODUTO_DERIVED_ATTRIBUTE_IDS.map((id) => attr({ id })),
+      'item',
+    );
+    expect(omitidos.map((o) => o.id).sort()).toEqual([...ML_PRODUTO_DERIVED_ATTRIBUTE_IDS].sort());
   });
 });
 
