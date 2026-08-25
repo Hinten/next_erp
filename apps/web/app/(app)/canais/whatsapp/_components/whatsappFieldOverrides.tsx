@@ -1,6 +1,6 @@
 'use client';
 
-import { ColorInput, Group, Stack, Switch, Text } from '@mantine/core';
+import { Group, Stack, Switch, Text } from '@mantine/core';
 import { TimeInput } from '@mantine/dates';
 import type { HorarioWhatsapp, PeriodoWhatsapp } from '@delfrance/schemas';
 import type { FieldConfig, FieldRenderProps } from '@delfrance/ui';
@@ -10,55 +10,8 @@ import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
 import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
+import { CorInput } from '@/components/inputs/CorInput';
 import { applyWeekdayEdit, defaultHorario, hhmmToMs, msToHHMM } from './horarioFuncionamento';
-
-/**
- * RGB int (`0xRRGGBB`) → `#rrggbb`. Duplicated from `balcaoFieldOverrides`
- * (no shared home yet for this two-consumer helper — Mercado Livre opts out
- * of `cor` entirely, so extracting a shared module isn't worth it for one
- * more consumer).
- */
-function intToHex(value: number): string {
-  const clamped = Math.max(0, Math.min(0xffffff, Math.trunc(value)));
-  return `#${clamped.toString(16).padStart(6, '0')}`;
-}
-
-/** `#rrggbb` (or `#rgb`) → RGB int. Anything else → null. */
-function hexToInt(hex: string): number | null {
-  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
-  const body = m?.[1];
-  if (!body) return null;
-  const full =
-    body.length === 3
-      ? body
-          .split('')
-          .map((c) => c + c)
-          .join('')
-      : body;
-  return Number.parseInt(full, 16);
-}
-
-function CorInput({ value, onChange, onBlur, label, hint, disabled, error }: FieldRenderProps) {
-  const hex = typeof value === 'number' ? intToHex(value) : '';
-  return (
-    <ColorInput
-      label={label}
-      description={hint ?? 'Cor de destaque para identificar o canal.'}
-      value={hex}
-      onChange={(next) => {
-        if (!next) {
-          onChange(null);
-          return;
-        }
-        onChange(hexToInt(next));
-      }}
-      onBlur={onBlur}
-      disabled={disabled}
-      error={error}
-      format="hex"
-    />
-  );
-}
 
 /* -------------------------------------------------------------------------- */
 /*                horario_funcionamento — business-hours editor               */

@@ -61,7 +61,7 @@ test.describe.serial('Produtos fotos e2e — ObjectView Fotos tab', () => {
     await expect.poll(() => docExistsByName('produtos', nome), { timeout: 15_000 }).toBe(true);
 
     // Already in the editor — switch to the Fotos tab.
-    await expect(page.getByRole('heading', { name: 'Editar produto' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: `Editar ${nome} - sem sku` })).toBeVisible();
     await page.getByRole('tab', { name: 'Fotos' }).click();
 
     // The dropzone + empty state render (no photos yet). Generous timeout — the
@@ -79,7 +79,7 @@ test.describe.serial('Produtos fotos e2e — ObjectView Fotos tab', () => {
     const { produtoId } = await seedProdutoComVariacoes(prefix, grupos);
 
     await page.goto(`/produtos/${produtoId}/editar`);
-    await expect(page.getByRole('heading', { name: 'Editar produto' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: `Editar ${prefix}-pai` })).toBeVisible();
     await page.getByRole('tab', { name: 'Fotos' }).click();
 
     // One section per Cores variant (the permiteFotos group), with its own

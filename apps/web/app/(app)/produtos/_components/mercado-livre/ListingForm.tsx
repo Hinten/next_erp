@@ -24,8 +24,11 @@ import { IconChevronDown, IconChevronUp, IconSparkles } from '@tabler/icons-reac
 import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
 import {
+  dimensoesDoPacote,
+  medidasFaltandoParaAnuncio,
   resolveCondicaoAnuncio,
   type FonteCondicaoAnuncio,
+  type MedidasDoPacote,
   type ProdutoMercadoLivreLink,
 } from '@delfrance/schemas';
 
@@ -73,7 +76,7 @@ import { AtributosAiModal } from './AtributosAiModal';
 import { ATRIBUTOS_LOAD_FAILED_MESSAGE, AtributosSection } from './AtributosSection';
 import { CategoriaField } from './CategoriaField';
 import { ListingConflictModal } from './ListingConflictModal';
-import { ListingField, textOr } from './ListingField';
+import { EMPTY_VALUE, ListingField, textOr } from './ListingField';
 
 /** ML metadata barely moves; a half-hour is generous and still bounded. */
 const METADATA_STALE_MS = 30 * 60 * 1000;
@@ -94,6 +97,16 @@ export interface ListingFormProps {
   produtoEhUsado: boolean;
   /** `extraData.condicao` — the second input publish resolves from. */
   produtoCondicao: number | null;
+  /**
+   * The produto's dimension/weight fields, which publish turns into the
+   * `SELLER_PACKAGE_*` attributes AND the separate `WEIGHT` one — see
+   * `DimensoesPesoField`.
+   *
+   * ⚠️ `null` means the produto snapshot has not landed yet, not that the fields
+   * are empty. The field warns on empty, so collapsing the two would flash a
+   * warning on every open.
+   */
+  produtoMedidas: MedidasDoPacote | null;
   link: ProdutoMercadoLivreLink;
   db: Firestore;
   canWrite: boolean;
@@ -199,6 +212,76 @@ function CondicaoField({
   );
 }
 
+/** Joins the missing field names the way a sentence would: "A, B e C". */
+function listarEmPortugues(nomes: readonly string[]): string {
+  if (nomes.length <= 1) return nomes[0] ?? '';
+  return `${nomes.slice(0, -1).join(', ')} e ${nomes[nomes.length - 1]}`;
+}
+
+/**
+ * Dimensões do pacote, read-only, derived exactly the way publish derives them.
+ *
+ * These four values leave as `SELLER_PACKAGE_HEIGHT`/`_LENGTH`/`_WIDTH`/
+ * `_WEIGHT` on every publish, rebuilt from the produto each time, which is why
+ * the category grid never offers them as inputs (`attributeOmission` →
+ * `derivado`). Withholding them silently was the state this replaces: the
+ * operator saw four ML attributes simply missing, with nothing saying the values
+ * existed one tab away — and the produto is where they belong, since a package
+ * size is a fact about the product, not about one of its listings.
+ *
+ * ⚠️ It must run `dimensoesDoPacote`, not format the raw produto fields. The
+ * declaration is whole centimetres and whole grams (ML rejects a decimal
+ * outright), so a produto measured `5.5 cm` publishes `6 cm` — and a screen that
+ * printed `5,5 cm` here would be describing a payload that does not exist. Same
+ * display↔payload trap `CondicaoField` documents, and just as invisible, because
+ * one side is a screen and the other a wire value.
+ *
+ * ⚠️ `medidas: null` means the produto snapshot has not landed, NOT that the
+ * produto is empty. Collapsing the two flashes the warning on every open, the
+ * same bug `produtoFotoCount` avoids by staying `null` while loading.
+ */
+function DimensoesPesoField({ medidas }: { medidas: MedidasDoPacote | null }) {
+  const pacote = medidas ? dimensoesDoPacote(medidas) : null;
+  const faltando = medidas ? medidasFaltandoParaAnuncio(medidas) : [];
+  // ⚠️ The `WEIGHT` attribute's own gate, mirroring `buildParentAttributes`:
+  // `pesoLiquidoKg` alone, with no fallback to the gross weight. Reading the
+  // package's `pesoG` here instead would show a number publish does not send.
+  const pesoLiquidoKg = medidas?.pesoLiquidoKg ?? null;
+
+  return (
+    <ListingField label="Dimensões e peso">
+      <Stack gap={2}>
+        <Text size="sm">
+          {pacote
+            ? `${pacote.alturaCm} × ${pacote.larguraCm} × ${pacote.profundidadeCm} cm · ${pacote.pesoG} g`
+            : EMPTY_VALUE}
+        </Text>
+        <Text size="sm">
+          {pesoLiquidoKg != null
+            ? `Peso líquido ${pesoLiquidoKg.toLocaleString('pt-BR')} kg`
+            : `Peso líquido ${EMPTY_VALUE}`}
+        </Text>
+        {faltando.length > 0 && (
+          <Text size="sm" c="orange.7">
+            {`Falta preencher: ${listarEmPortugues(faltando)}`}
+          </Text>
+        )}
+        <Text size="xs" c="dimmed">
+          {faltando.length > 0
+            ? // Naming the consequence, not just the gap. ML requires all four
+              // package attributes for Mercado Envios cross docking and
+              // xd_drop_off and does NOT tag them `required` in its per-category
+              // attributes, so nothing else in this screen can warn — and
+              // publish omits all four when one is missing rather than sending a
+              // partial set.
+              'Preencha na aba Dimensões e peso do produto. A publicação envia as dimensões do pacote só com os quatro valores, e o peso líquido só com o campo preenchido — o Mercado Livre pode recusar o anúncio sem eles.'
+            : 'Definido pela aba Dimensões e peso do produto. As medidas do pacote são arredondadas para centímetros e gramas inteiros, que é o único formato que o Mercado Livre aceita.'}
+        </Text>
+      </Stack>
+    </ListingField>
+  );
+}
+
 /**
  * The editable half of a listing.
  *
@@ -226,6 +309,7 @@ export function ListingForm({
   produtoNome,
   produtoEhUsado,
   produtoCondicao,
+  produtoMedidas,
   link,
   db,
   canWrite,
@@ -775,6 +859,11 @@ export function ListingForm({
             condicaoAnuncio={link.condition ?? null}
             published={isPublished}
           />
+          {/* ⚠️ Same shape as Condição, and for the same reason: the produto
+              owns these values, publish rebuilds them from it every run, and the
+              category grid therefore never offers them as inputs. Read-only text
+              rather than a labelled control — see `ListingField`. */}
+          <DimensoesPesoField medidas={produtoMedidas} />
           <Controller
             control={form.control}
             name="category_id"
