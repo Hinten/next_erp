@@ -603,8 +603,18 @@ dead end.** `estado` is written only on pedido CREATE (`orderPedidoTx.ts`) and
 `aguardandoConfirmacaoDePagamento` — which HOLDS a stock reservation — could never
 move, never reach `pago`, and never be dispatched or invoiced. `orderImport.ts`'s
 pago transaction gained a promotion arm up the ML pre-payment ladder, gated on the
-same ML-order-clock watermark as the downgrade and strictly one-directional. Do not
-widen it past `emProcessamento`: from there on `estado` belongs to the business.
+same ML-order-clock watermark as the downgrade. Do not widen it past
+`emProcessamento`: from there on `estado` belongs to the business.
+⚠️ **The ladder needs BOTH directions, and the second one leaks stock if missed.**
+An order that DIES (`cancelled`/`invalid`/`pending_cancel`) also has to release the
+reservation, and the population this bootstraps — card under review, unpaid boleto
+— is precisely the one that most often dies. Two surfaces cover it: `orderImport`
+releases when an `orders_v2` arrives, and `orderPaymentImport` releases on a
+terminal payment (the reliable one — a never-seller-visible order fires no
+`orders_v2` even to say it was cancelled). ⚠️ The terminal estado set is
+ENUMERATED, never derived as "not on the ladder": `estadoPedidoFromOrderStatus`
+returns `iniciado` for any unrecognised status, so the shortcut would drop a live
+pedido's reservation the first time ML invented a status string.
 
 ⚠️ `items_prices` is not "pending" — it is closed by decision #803: the ERP owns
 both price tables, so a price notification has nothing to do. It stays in the

@@ -2451,12 +2451,19 @@ describe('orders_v2 / payments report what they actually did (#1087)', () => {
       expect(r).toMatchObject({ outcome: 'done', detail: 'pedido-nao-encontrado' });
     });
 
-    it('degrades to pedido-nao-encontrado when the tasks valve is off', async () => {
-      // Sweep-only mode must not claim a bootstrap that never got queued, and
-      // must not burn the notification's retry budget over a deployment mode.
+    it('KEEPS the notification when the tasks valve is off — never reports done', async () => {
+      // Sweep-only mode is where reporting `done` bites: the receiver persists a
+      // `failed` doc, the SWEEP runs this code, and a `resolve` would DELETE that
+      // doc — consuming the delivery, losing the bootstrap for good, and counting
+      // it identically to a payment that genuinely synced. `fail` keeps the doc so
+      // the sweep re-drives it once the valve is back (the pagamento upsert is
+      // idempotent), and it parks with a reason if the valve never returns.
       const { r, db } = await runComBootstrap('pedido-nao-encontrado', 42, 'tasks-desabilitado');
-      expect(r).toMatchObject({ outcome: 'done', detail: 'pedido-nao-encontrado' });
-      expect(db.docs(NOTIF).size).toBe(0);
+      expect(r).toMatchObject({ outcome: 'failed', detail: 'pedido-bootstrap-sem-fila' });
+      expect(db.docs(NOTIF).size).toBe(1);
+      const doc = [...db.docs(NOTIF).values()][0] as Record<string, unknown>;
+      expect(doc.status).toBe('failed');
+      expect(String(doc.erro)).toContain('MERCADO_LIVRE_TASKS_DISABLED');
     });
 
     it('persists NOTHING on any of these paths — the pipeline stays enqueue-first', async () => {

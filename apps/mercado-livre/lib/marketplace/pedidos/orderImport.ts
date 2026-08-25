@@ -267,9 +267,26 @@ const ORDEM_ESTADO_PRE_PAGAMENTO_ML: readonly EstadoPedido[] = [
  * transaction only ever runs on a pedido the ML order import owns, so it cannot
  * touch a manually-created cart.
  */
-const ESTADOS_PEDIDO_PRE_PAGAMENTO_ML: ReadonlySet<EstadoPedido> = new Set(
+export const ESTADOS_PEDIDO_PRE_PAGAMENTO_ML: ReadonlySet<EstadoPedido> = new Set(
   ORDEM_ESTADO_PRE_PAGAMENTO_ML.filter((e) => e !== ESTADO_PEDIDO.emProcessamento),
 );
+
+/**
+ * The estados `estadoPedidoFromOrderStatus` produces for an order that has DIED —
+ * `cancelled`, `invalid`, `pending_cancel`. None of them is in
+ * `ESTADOS_PEDIDO_RESERVA`, so reaching one RELEASES the stock reservation.
+ *
+ * ⚠️ Enumerated explicitly, never derived as "not on the ladder". That shortcut
+ * looks equivalent and is not: `estadoPedidoFromOrderStatus` returns `iniciado`
+ * for ANY status it does not recognise, and `iniciado` is off the ladder too — so
+ * the derived version would release a live pedido's reservation the first time ML
+ * invented a status string.
+ */
+const ESTADOS_PEDIDO_ML_TERMINAL: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  ESTADO_PEDIDO.cancelado,
+  ESTADO_PEDIDO.fraude,
+  ESTADO_PEDIDO.estornadoIntegralmente,
+]);
 
 /**
  * Is this order payload at least as new as the ML order clock already applied to
@@ -1628,10 +1645,19 @@ async function applyPagoAdvanceOrDowngrade(args: {
     // input is re-derived from this transaction's own `tx.get` — the site stays
     // class A in the transaction inventory.
     const alvoDoPayload = estadoPedidoFromOrderStatus(initialOrder.status ?? '');
+    // Two directions out of the pre-payment ladder, and BOTH are needed. Up: the
+    // order got paid. Out: the order DIED (`cancelled`/`invalid`/`pending_cancel`)
+    // — and without that arm a bootstrapped pedido would sit at
+    // `aguardandoConfirmacaoDePagamento` forever holding a stock reservation,
+    // which is #1087 pointed the other way. The population this bootstraps is
+    // exactly the one that most often dies (card under review, unpaid boleto).
+    const promoveNaLadeira =
+      ORDEM_ESTADO_PRE_PAGAMENTO_ML.indexOf(alvoDoPayload) >
+      ORDEM_ESTADO_PRE_PAGAMENTO_ML.indexOf(freshPedido.estado);
+    const liberaReserva = ESTADOS_PEDIDO_ML_TERMINAL.has(alvoDoPayload);
     if (
       ESTADOS_PEDIDO_PRE_PAGAMENTO_ML.has(freshPedido.estado) &&
-      ORDEM_ESTADO_PRE_PAGAMENTO_ML.indexOf(alvoDoPayload) >
-        ORDEM_ESTADO_PRE_PAGAMENTO_ML.indexOf(freshPedido.estado) &&
+      (promoveNaLadeira || liberaReserva) &&
       payloadNaoEhAntigo(freshPedido.lastMarketplaceUpdate, orderLastUpdatedUs)
     ) {
       tx.update(

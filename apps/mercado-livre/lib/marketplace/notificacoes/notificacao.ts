@@ -1019,11 +1019,17 @@ export type PaymentImportOutcome =
   | 'payment-404'
   | 'marketplace-none'
   | 'sem-order-key'
-  /**
-   * No pedido owns the order and none could be asked for — the enqueue seam was
-   * off (`MERCADO_LIVRE_TASKS_DISABLED`), or the payment carried no order key.
-   */
+  /** No pedido owns the order, and the payment carried no order key to ask with. */
   | 'pedido-nao-encontrado'
+  /**
+   * #1087 — a bootstrap was owed but the enqueue seam is off
+   * (`MERCADO_LIVRE_TASKS_DISABLED`). NOT a success: it disposes as `fail`, so the
+   * doc survives for the sweep to re-drive once the valve is back. Reporting it as
+   * `done` would let the SWEEP delete the failure doc, consuming the delivery and
+   * losing the bootstrap for good — the exact "success that did nothing" shape this
+   * issue is about.
+   */
+  | 'pedido-bootstrap-sem-fila'
   /** #1087 — a synthetic `orders_v2` was enqueued; the pedido is on its way. */
   | 'pedido-bootstrap-agendado'
   /** #1087 — no pedido, and the payment is too old (or future-dated) to bootstrap one. */
@@ -1042,6 +1048,14 @@ const PAYMENT_OUTCOMES_DROP: ReadonlySet<PaymentImportOutcome> = new Set([
   'pedido-nao-encontrado-expirado',
   'pedido-nao-encontrado-pagamento-morto',
 ]);
+
+/**
+ * The one payments arm that must SURVIVE rather than be dropped: the work is
+ * still owed and only a deployment valve is in the way, so the doc has to outlive
+ * this delivery. `fail` keeps it for the hot sweep, which re-drives it (the
+ * pagamento upsert is idempotent) and resolves the moment the valve is back.
+ */
+const PAYMENT_OUTCOME_FAIL: PaymentImportOutcome = 'pedido-bootstrap-sem-fila';
 
 /**
  * What the `shipments` import actually DID, for the log. The fourth and last of
@@ -1253,7 +1267,7 @@ export async function processNotificationPayload(
       return {
         kind: 'done',
         integracaoId,
-        detail: agendamento === 'agendado' ? 'pedido-bootstrap-agendado' : 'pedido-nao-encontrado',
+        detail: agendamento === 'agendado' ? 'pedido-bootstrap-agendado' : PAYMENT_OUTCOME_FAIL,
       };
     }
     // Same as `orders_v2` above. This is the branch #1087 was actually watching:
@@ -1555,6 +1569,14 @@ function pipelineFor(runners: NotificationRunners = {}) {
       const detalhe = outcome.kind === 'done' ? outcome.detail : undefined;
       if (detalhe != null && PAYMENT_OUTCOMES_DROP.has(detalhe as PaymentImportOutcome)) {
         return { kind: 'drop', label: detalhe };
+      }
+      if (detalhe === PAYMENT_OUTCOME_FAIL) {
+        return {
+          kind: 'fail',
+          reason:
+            'bootstrap do pedido não enfileirado — MERCADO_LIVRE_TASKS_DISABLED; ' +
+            'mantido para a varredura re-dirigir quando a fila voltar',
+        };
       }
       if (detalhe === 'pedido-bootstrap-agendado') {
         return { kind: 'resolve', label: detalhe };

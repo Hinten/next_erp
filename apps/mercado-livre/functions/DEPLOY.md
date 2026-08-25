@@ -624,6 +624,16 @@ MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
 MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1
 # The high-stock skip on the incremental tier (ADR 0014). Default 100.
 MERCADO_LIVRE_STOCK_LIMIAR_ALTO=100
+# How old a `payments` notification may be and still BOOTSTRAP a pedido (#1087).
+# Default 72h — ML holds a boleto up to ~3 business days and a pending boleto is
+# a real sale, while the hot sweep re-drives hour-old payloads and `missed_feeds`
+# replays up to 48h, neither of which may reserve stock for a long-closed order.
+# ⚠️ It belongs HERE, not in `apphosting.yaml`: the guard runs inside
+# `processNotificationPayload`, reached only from `processMercadoLivreNotification`
+# and the reprocess sweeps — both in THIS codebase. The App Hosting backend hosts
+# the receiver, which acks and enqueues without ever touching that path, so a value
+# set there would be read by nothing and fail silently.
+MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H=72
 # The MONTHLY reconciliation — see "The monthly reconciliation" below. Leave it
 # COMMENTED OUT until the normal sweeps have run cleanly for a while: this
 # snippet is meant to be copy-pasted, so the safe state has to be the one

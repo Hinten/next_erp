@@ -77,6 +77,18 @@
  *     `onPedidoChanged` trigger observes the pedido write and records the
  *     transition (with a null usuário — this runs on the Admin SDK).
  *
+ *  8. RESERVA RELEASE (#1087 review) — the counterpart of (7), and the reason
+ *     this module writes `estado` twice. A pedido the bootstrap created sits at
+ *     `aguardandoConfirmacaoDePagamento`, which is in `ESTADOS_PEDIDO_RESERVA`.
+ *     When the payment then dies, NOTHING else in the repo can move it: the
+ *     order import's arms need an `orders_v2` that a never-seller-visible order
+ *     does not fire, `podeAvancarParaPago` needs `emProcessamento`, and the
+ *     downgrade needs `pago` — so the unit would stay reserved forever. This
+ *     topic is the surface that DOES arrive. The target estado comes from
+ *     `statusToEstadoPedido`, the repo's canonical payment→pedido mapping, and is
+ *     refused while any pagamento is `aprovado` or the pedido has left the
+ *     pre-payment set.
+ *
  * THROW-ON-TRANSIENT discipline: every error except a 404 on the primary
  * `getPayment` call PROPAGATES (ML API non-404, network, Firestore,
  * `MlStatusDesconhecidoError` out of `mlPaymentToPagamento`, a `ZodError` out
@@ -94,12 +106,12 @@ import {
   type MercadoLivreApi,
   type MlPayment,
 } from '@delfrance/integrations-mercado-livre';
-import { STATUS_PAGAMENTO } from '@delfrance/schemas';
+import { STATUS_PAGAMENTO, statusToEstadoPedido } from '@delfrance/schemas';
 import { roundReais } from '@delfrance/core/money';
 import { coerceToMicros } from '@delfrance/core/datetime';
 import { pagamentoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
 
-import { loadContaBag, podeAvancarParaPago } from './orderImport';
+import { ESTADOS_PEDIDO_PRE_PAGAMENTO_ML, loadContaBag, podeAvancarParaPago } from './orderImport';
 import { makePagamentoIdMercadoLivre } from './orderIds';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import { mergePagamentoUpdate, mlPaymentToPagamento } from './orderPaymentMapping';
@@ -402,6 +414,57 @@ export async function importPagamentoMercadoLivre(
       // refuses (no cliente, no endereço, no frete) — and `pago` authorizes
       // dispatch and NF-e emission. Strictly more conservative than before; the
       // log below makes the delta observable rather than silent.
+      // #1087 (review) — RELEASE the stock reservation when the sale dies.
+      //
+      // A pedido this channel bootstrapped sits at
+      // `aguardandoConfirmacaoDePagamento`, which is in `ESTADOS_PEDIDO_RESERVA`.
+      // If the payment is then rejected/cancelled/refunded, NOTHING else in the
+      // repo would ever move it: the order import's arms need an `orders_v2` that
+      // a never-seller-visible order does not fire, `podeAvancarParaPago` needs
+      // `emProcessamento`, and the downgrade needs `pago`. The unit would stay
+      // reserved forever. This topic is the surface that DOES arrive.
+      //
+      // The target estado is not invented here — `statusToEstadoPedido` is the
+      // repo's canonical payment→pedido mapping (Flutter's
+      // `STATUS_PAGAMENTO.toEstadoPedido()`), and every terminal status it maps
+      // lands outside `ESTADOS_PEDIDO_RESERVA`.
+      //
+      // ⚠️ Scoped to the estados the ML bootstrap can create, so it can never
+      // touch business-owned state, and refused outright while ANY pagamento on
+      // the pedido is `aprovado` — a partially-paid pedido whose second payment
+      // was rejected is still a live sale. Every input is re-derived from this
+      // transaction's own reads.
+      const statusAlvo = mapped.status_pagamento;
+      if (
+        statusAlvo != null &&
+        payment.status != null &&
+        ML_PAYMENT_STATUS_TERMINAL.has(payment.status) &&
+        ESTADOS_PEDIDO_PRE_PAGAMENTO_ML.has(pedidoRaw.estado as never)
+      ) {
+        const algumAprovado = allPagamentosSnap.docs
+          .filter((d) => d.id !== pagamentoId)
+          .some(
+            (d) =>
+              (d.data() as Record<string, unknown>).status_pagamento === STATUS_PAGAMENTO.aprovado,
+          );
+        if (!algumAprovado) {
+          const estadoLiberado = statusToEstadoPedido(statusAlvo);
+          console.warn('[mercado-livre] payment import: reserva liberada — pagamento terminal', {
+            pedidoId,
+            de: pedidoRaw.estado,
+            para: estadoLiberado,
+            statusMl: payment.status,
+          });
+          tx.update(
+            pedidoRef,
+            pedidoCollection.parseMerge({
+              estado: estadoLiberado,
+              ultimaModificacao: maiorUs(readMicrosField(pedidoRaw, 'ultimaModificacao'), nowUs),
+            }),
+          );
+        }
+      }
+
       const podeAvancar = podeAvancarParaPago({
         estado: pedidoRaw.estado as never,
         clientePedidoOuterRef: (pedidoRaw.clientePedidoOuterRef ?? null) as string | null,

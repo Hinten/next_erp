@@ -1436,6 +1436,76 @@ describe('importPedidoMercadoLivre — estado promotion along the pre-payment la
     expect(db.docs('pedidos').get('pedido-1')).toMatchObject({ estado: 'pago' });
   });
 
+  it.each([
+    ['cancelled', 'cancelado'],
+    ['invalid', 'fraude'],
+    ['pending_cancel', 'estornadoIntegralmente'],
+  ])('RELEASES the reservation when the order dies (%s -> %s)', async (status, esperado) => {
+    // The mirror of the promotion: without this the pedido would sit at
+    // `aguardandoConfirmacaoDePagamento` — which is in ESTADOS_PEDIDO_RESERVA —
+    // forever, with no writer anywhere able to move it. #1087 pointed the other way.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPrePagamento(db, 'aguardandoConfirmacaoDePagamento');
+    const api = makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1, status })) });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({ estado: esperado });
+  });
+
+  it('does NOT release on a status ML has not documented — `iniciado` is not terminal', async () => {
+    // ⚠️ The trap that makes the terminal set explicit rather than derived.
+    // `estadoPedidoFromOrderStatus` returns `iniciado` for ANY unrecognised
+    // status, and `iniciado` is off the ladder too — so a "not on the ladder ⇒
+    // terminal" shortcut would drop a live pedido's reservation the first time ML
+    // invented a status string.
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPrePagamento(db, 'aguardandoConfirmacaoDePagamento');
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, status: 'quantum_superposition' })),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({
+      estado: 'aguardandoConfirmacaoDePagamento',
+    });
+  });
+
+  it('does NOT release a LIVE pedido on a late-delivered cancelled payload', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPrePagamento(db, 'aguardandoConfirmacaoDePagamento', {
+      lastMarketplaceUpdate: Date.parse('2026-02-01T00:00:00.000Z') * 1000,
+    });
+    const api = makeApi({
+      getOrder: vi.fn(async () =>
+        makeOrder({ id: 1, status: 'cancelled', lastUpdated: '2026-01-01T00:00:00.000Z' }),
+      ),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({
+      estado: 'aguardandoConfirmacaoDePagamento',
+    });
+  });
+
+  it('never releases an estado the business owns — a pago pedido is not on the FROM-set', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedPedidoPrePagamento(db, 'pago');
+    db.seed('pedidos/pedido-1/pagamentos', 'pag-1', { id: '900', valor: 100, status_pagamento: 4 });
+    const api = makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1, status: 'cancelled' })) });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    // The pago DOWNGRADE owns this case and refuses it (payments still cover it).
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({ estado: 'pago' });
+  });
+
   it('writes nothing at all when there is nothing to promote', async () => {
     const db = new FakeDb();
     seedConta(db);

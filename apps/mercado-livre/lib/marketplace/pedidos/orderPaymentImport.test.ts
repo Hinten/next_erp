@@ -6,7 +6,12 @@ import {
   type MercadoLivreApi,
   type MlPayment,
 } from '@delfrance/integrations-mercado-livre';
-import { FORMA_PAGAMENTO, STATUS_PAGAMENTO } from '@delfrance/schemas';
+import {
+  ESTADOS_PEDIDO_RESERVA,
+  FORMA_PAGAMENTO,
+  STATUS_PAGAMENTO,
+  type EstadoPedido,
+} from '@delfrance/schemas';
 
 import {
   PEDIDO_BOOTSTRAP_MAX_FUTURE_SKEW_MS,
@@ -403,6 +408,89 @@ describe('importPagamentoMercadoLivre — orderML resolution', () => {
     // dispatcher can ask the `orders_v2` topic to import it.
     expect(res).toEqual({ pedidoId: null, orderId: 424242, skipped: 'pedido-nao-encontrado' });
     expect(escritas(db)).toEqual([]);
+  });
+});
+
+/**
+ * #1087 (review) — the RELEASE arm. A pedido this channel bootstrapped sits at
+ * `aguardandoConfirmacaoDePagamento`, which HOLDS a stock reservation. When the
+ * payment then dies, this topic is the surface that reliably arrives: a
+ * never-seller-visible order fires no `orders_v2` even to say it was cancelled.
+ * Without this the unit stays reserved forever.
+ */
+describe('importPagamentoMercadoLivre — releases the reserva when the sale dies', () => {
+  const CASOS: ReadonlyArray<readonly [string, string]> = [
+    ['rejected', 'pagamentoNaoRealizado'],
+    ['cancelled', 'cancelado'],
+    ['refunded', 'estornadoIntegralmente'],
+    ['charged_back', 'estornadoIntegralmente'],
+  ];
+
+  it.each(CASOS)('a %s payment moves the pedido to %s', async (statusMl, esperado) => {
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    const api = makeApi({ 950: payment({ id: 950, order_id: 900, status: statusMl }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 950);
+
+    expect(db.docs('pedidos').get('PED-REL')).toMatchObject({ estado: esperado });
+  });
+
+  it('the released estado is OUT of the reserva set — that is the whole point', async () => {
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    const api = makeApi({ 951: payment({ id: 951, order_id: 900, status: 'cancelled' }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 951);
+
+    const estado = db.docs('pedidos').get('PED-REL')!.estado as EstadoPedido;
+    expect(ESTADOS_PEDIDO_RESERVA.has(estado)).toBe(false);
+  });
+
+  it('REFUSES to release while another pagamento is aprovado — still a live sale', async () => {
+    // A partially-paid pedido whose SECOND payment was rejected has real money on
+    // it. Releasing there would drop a reservation the sale still needs.
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 500 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    db.seed('pedidos/PED-REL/pagamentos', 'outro', {
+      id: '111',
+      valor: 100,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    const api = makeApi({ 952: payment({ id: 952, order_id: 900, status: 'rejected' }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 952);
+
+    expect(db.docs('pedidos').get('PED-REL')).toMatchObject({
+      estado: 'aguardandoConfirmacaoDePagamento',
+    });
+  });
+
+  it('never touches an estado the business owns — pago is off the FROM-set', async () => {
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'pago', valorCobrado: 100 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    const api = makeApi({ 953: payment({ id: 953, order_id: 900, status: 'cancelled' }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 953);
+
+    expect(db.docs('pedidos').get('PED-REL')).toMatchObject({ estado: 'pago' });
+  });
+
+  it('leaves a LIVE payment alone', async () => {
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 500 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    const api = makeApi({ 954: payment({ id: 954, order_id: 900, status: 'pending' }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 954);
+
+    expect(db.docs('pedidos').get('PED-REL')).toMatchObject({
+      estado: 'aguardandoConfirmacaoDePagamento',
+    });
   });
 });
 
