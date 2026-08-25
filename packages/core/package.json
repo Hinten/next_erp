@@ -11,6 +11,7 @@
     "./money": "./src/money/index.ts",
     "./address": "./src/address/index.ts",
     "./cep": "./src/cep/index.ts",
+    "./cor": "./src/cor/index.ts",
     "./documents": "./src/documents/index.ts",
     "./phone": "./src/phone/index.ts",
     "./region": "./src/region/index.ts",
