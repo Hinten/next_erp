@@ -814,6 +814,28 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   }, [visibleKeysArr, descriptors, virtualColumns, fieldOverrides]);
 
   /**
+   * Columns offered by the ColumnPicker. It MUST apply the same exclusions as
+   * `visibleColumns` above: `hidden` is a design-time decision by the page, so
+   * a hidden field is not a column the user may turn on, and offering its
+   * checkbox anyway is a control that does nothing — it ticks, it persists, and
+   * no column appears. #1264 shipped exactly that on /produtos, where the
+   * picker's label search matched only the dead "Integracoes Com Produto"
+   * entry and never the virtual "Canais de venda" column that replaced it.
+   *
+   * The label comes from the override too, so the picker names a column exactly
+   * as its header does (same expression as the schema header below).
+   */
+  const pickerFields = useMemo(
+    () => [
+      ...descriptors
+        .filter((d) => d.kind !== 'unknown' && !fieldOverrides[d.key]?.hidden)
+        .map((d) => ({ key: d.key, label: fieldOverrides[d.key]?.label ?? d.label })),
+      ...virtualColumns.map((v) => ({ key: v.key, label: v.label })),
+    ],
+    [descriptors, fieldOverrides, virtualColumns],
+  );
+
+  /**
    * Subset of schema descriptors that are currently visible — for legacy
    * call sites (filter parsing, monitor-field auto-detect) that don't
    * need to know about virtual columns.
@@ -926,12 +948,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                 </Tooltip>
               )}
               <ColumnPicker
-                fields={[
-                  ...descriptors
-                    .filter((d) => d.kind !== 'unknown')
-                    .map((d) => ({ key: d.key, label: d.label })),
-                  ...virtualColumns.map((v) => ({ key: v.key, label: v.label })),
-                ]}
+                fields={pickerFields}
                 visibleKeys={visibleKeys}
                 onToggle={toggleColumn}
                 order={visibleKeysArr}
