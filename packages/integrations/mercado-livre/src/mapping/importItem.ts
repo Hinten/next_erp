@@ -172,6 +172,35 @@ function measurementFromStruct(attr: MlItemAttribute): { value: string; unit: st
 }
 
 /**
+ * The same (number, unit) split, recovered from a `value_name` ML BAKED the unit
+ * into while still reporting `unit_id` beside it — `'12 cm'` + `unit_id: 'cm'`.
+ *
+ * ⛔ Not a tidy-up. `attributeToMercadoLivre` re-joins `value_name` and `unit_id`
+ * on the way out (`[value_name, unit_id].join(' ')`), so storing BOTH halves means
+ * the next publish sends `'12 cm cm'`, the one after that `'12 cm cm cm'`, and so
+ * on. It compounds silently until ML rejects the value, by which time every
+ * republished listing carries it. Observed live in #1087, where ML returned
+ * `'12 cm'` for a HEIGHT we sent as `'12'` and sent no `value_struct` to split it.
+ *
+ * Returns null unless the `value_name` really does end with the reported unit, so
+ * a legitimate value that merely CONTAINS the unit's letters is untouched.
+ */
+function measurementFromBakedValueName(
+  attr: MlItemAttribute,
+): { value: string; unit: string } | null {
+  const unit = typeof attr.unit_id === 'string' ? attr.unit_id.trim() : '';
+  const valueName = typeof attr.value_name === 'string' ? attr.value_name.trim() : '';
+  if (unit === '' || valueName === '') return null;
+  const sufixo = ` ${unit}`;
+  if (!valueName.endsWith(sufixo)) return null;
+  const value = valueName.slice(0, -sufixo.length).trim();
+  // Only a NUMBER may be split off. Anything else and the trailing word is part
+  // of the value, not a unit ML appended.
+  if (value === '' || !Number.isFinite(Number(value))) return null;
+  return { value, unit };
+}
+
+/**
  * Map an item's `attributes[]` to the inline link-doc `attributes`, dropping the
  * ids the publish path re-derives from produto fields (so a re-publish never
  * sends a duplicate id). Empty-value attributes are filtered (publish parity).
@@ -185,7 +214,7 @@ export function attributesFromItem(
   const mapped: MlAttribute[] = (attrs ?? [])
     .filter((a) => typeof a.id === 'string' && a.id.length > 0 && !DERIVED_ATTRIBUTE_IDS.has(a.id))
     .map((a) => {
-      const measurement = measurementFromStruct(a);
+      const measurement = measurementFromStruct(a) ?? measurementFromBakedValueName(a);
       return {
         id: a.id as string,
         // The struct describes the (number, unit) PAIR, so ML's `value_id` names
