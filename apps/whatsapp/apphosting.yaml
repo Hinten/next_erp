@@ -17,7 +17,7 @@ runConfig:
 # variables, or via Cloud Secret Manager for secrets; required unless marked
 # OPTIONAL):
 #   FIREBASE_PROJECT_ID          OPTIONAL — auto-detected on App Hosting/Cloud Run
-#                                (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
+#                                (via FIREBASE_CONFIG.projectId; Cloud Run sets no project env var); set only to
 #                                override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID         Firestore database id (default: "default")
 #   WHATSAPP_VERIFY_TOKEN        REQUIRED (#527) — the hub.verify_token echoed on the
@@ -31,8 +31,12 @@ runConfig:
 #                                function/queue (falls back to FUNCTIONS_REGION; no
 #                                default — unset, it throws); MUST match its
 #                                deploy region or the enqueue silently drops.
-#   FIREBASE_STORAGE_BUCKET      OPTIONAL — bucket for cached inbound media
-#                                (default <projectId>.appspot.com)
+#   FIREBASE_STORAGE_BUCKET      OPTIONAL — bucket for cached inbound media. The
+#                                backend reads FIREBASE_CONFIG.storageBucket (which
+#                                App Hosting injects, and which carries the project's
+#                                REAL default — <projectId>.firebasestorage.app for a
+#                                project created after late 2024), so set this only to
+#                                OVERRIDE. Last resort: <projectId>.appspot.com.
 #   WEB_APP_URL                  apps/web origin (the panel that drives the routes)
 #   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)
 

@@ -42,15 +42,28 @@ function loadServiceAccount(): Record<string, unknown> | null {
 
 /**
  * Resolve the Firebase project id without demanding per-backend config.
- * Order: explicit `FIREBASE_PROJECT_ID` (dev / override) → the env Cloud Run /
- * App Hosting inject for free (`GOOGLE_CLOUD_PROJECT`, `FIREBASE_CONFIG`) → the
- * service-account JSON's own `project_id`. Exported for unit tests.
+ * Order: explicit `FIREBASE_PROJECT_ID` (dev / override) → `GOOGLE_CLOUD_PROJECT`
+ * → `FIREBASE_CONFIG.projectId` → the service-account JSON's own `project_id`.
+ * Exported for unit tests.
+ *
+ * ⚠️ **Only `FIREBASE_CONFIG` is actually injected on a deployed backend.** This
+ * comment used to say Cloud Run / App Hosting supply `GOOGLE_CLOUD_PROJECT` "for
+ * free"; they do not. The Cloud Run container contract sets only PORT /
+ * K_SERVICE / K_REVISION / K_CONFIGURATION, and the project id lives on the
+ * METADATA SERVER, never in an env var. Verified against the deployed service:
+ * neither `GOOGLE_CLOUD_PROJECT` nor `FIREBASE_PROJECT_ID` is present there.
+ *
+ * That false premise is not academic — it is why `packages/ai` stopped its own
+ * ladder one tier short and threw on every AI call in staging. These files only
+ * escaped because they already had the `FIREBASE_CONFIG` tier below.
  */
 export function resolveProjectId(serviceAccount: Record<string, unknown> | null): string | null {
   const explicit = process.env.FIREBASE_PROJECT_ID;
   if (explicit) return explicit;
 
-  // Cloud Run (and therefore Firebase App Hosting) sets this on every service.
+  // ⚠️ NOT set by Cloud Run / App Hosting — see the note above. Kept as a tier
+  // because some GCP tooling and local shells do export it, never because the
+  // platform does.
   const gcp = process.env.GOOGLE_CLOUD_PROJECT;
   if (gcp) return gcp;
 
@@ -84,9 +97,12 @@ export function getAdminApp(): App {
   const projectId = resolveProjectId(serviceAccount);
   if (!projectId) {
     throw new Error(
-      'Firebase project id not found. Set FIREBASE_PROJECT_ID (or provide a service ' +
-        'account) in local dev; on App Hosting / Cloud Run it is auto-detected via ' +
-        'GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG.',
+      'Firebase project id not found. Tried FIREBASE_PROJECT_ID, GOOGLE_CLOUD_PROJECT, ' +
+        'FIREBASE_CONFIG.projectId and the service account. On a deployed backend ' +
+        'FIREBASE_CONFIG is the one that answers — Cloud Run exposes the project only ' +
+        'via the metadata server, never as an env var, so GOOGLE_CLOUD_PROJECT being ' +
+        'unset there is normal. In local dev set FIREBASE_PROJECT_ID or provide a ' +
+        'service account.',
     );
   }
   // In Firebase App Hosting / Cloud Run, application default credentials are
