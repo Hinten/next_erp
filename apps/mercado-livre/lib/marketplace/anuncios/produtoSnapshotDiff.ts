@@ -96,15 +96,93 @@ export const SUBCOLECOES_ESPERADAS_PERDIDAS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Losses already established elsewhere, so a run's real result is not buried
- * under decisions already taken.
+ * Differences already accounted for, so a run's real result is not buried under
+ * decisions already taken.
  *
- * `ehKit` — `IS_KIT` is read on import and NEVER written on publish (legacy did
- * the same), so it round-trips to `false`. Pinned in
- * `packages/integrations/mercado-livre/test/roundTrip.test.ts`.
+ * ⚠️ A **predicate**, never a field name. Excusing a whole field would hide the
+ * real loss it exists to catch — a `nome` that came back genuinely wrong looks
+ * identical to one ML merely title-cased, unless something checks WHICH of the
+ * two happened. Each entry returns its note only when the difference is exactly
+ * the shape it knows about, and `null` otherwise, which sends the row straight
+ * back to the findings.
  */
-export const DIVERGENCIAS_CONHECIDAS: ReadonlyMap<string, string> = new Map([
-  ['ehKit', 'IS_KIT é lido no import e NUNCA enviado no publish — volta como false (#1087 §5)'],
+export type DivergenciaConhecida = (antes: unknown, depois: unknown) => string | null;
+
+/** `IS_KIT` is read on import and NEVER written on publish (legacy did the same). */
+const kitPerdidoNoPublish: DivergenciaConhecida = (a, b) =>
+  a === true && b === false
+    ? 'IS_KIT é lido no import e NUNCA enviado no publish — volta como false (#1087 §5)'
+    : null;
+
+/** ML title-cases the título; same string, different case. */
+const soCaixaDiferente: DivergenciaConhecida = (a, b) =>
+  typeof a === 'string' && typeof b === 'string' && a.toLocaleLowerCase() === b.toLocaleLowerCase()
+    ? 'o Mercado Livre normaliza a caixa do título — mesma string'
+    : null;
+
+function atributosPorId(v: unknown): Map<string, unknown> | null {
+  if (!Array.isArray(v)) return null;
+  const m = new Map<string, unknown>();
+  for (const a of v) {
+    if (typeof a !== 'object' || a === null) return null;
+    const { id, value_name: valueName } = a as { id?: unknown; value_name?: unknown };
+    if (typeof id !== 'string') return null;
+    m.set(id, valueName);
+  }
+  return m;
+}
+
+/**
+ * ML echoes attributes back enriched — it fills `name`, `value_id` and
+ * `attribute_group_*` on ids it recognises. Known ONLY while the id set and every
+ * `value_name` still agree: a changed or dropped VALUE is a real loss.
+ */
+const atributosEnriquecidosPeloMl: DivergenciaConhecida = (a, b) => {
+  const antes = atributosPorId(a);
+  const depois = atributosPorId(b);
+  if (antes == null || depois == null) return null;
+  if (antes.size !== depois.size) return null;
+  for (const [id, valor] of antes) {
+    if (!depois.has(id)) return null;
+    if (!same(valor, depois.get(id))) return null;
+  }
+  return 'mesmos ids e value_names — o Mercado Livre apenas devolveu name/value_id preenchidos';
+};
+
+function hashesDeFoto(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: string[] = [];
+  for (const f of v) {
+    if (typeof f !== 'object' || f === null) return null;
+    const ref = (f as { arquivoOuterRef?: unknown }).arquivoOuterRef;
+    if (typeof ref !== 'string') return null;
+    // `arquivos/<produtoId>_<hash>` — the produto id half necessarily changes on
+    // a re-import; the content hash is what must survive.
+    const sub = ref.slice(ref.indexOf('_') + 1);
+    out.push(sub);
+  }
+  return out;
+}
+
+/**
+ * Arquivo refs embed the produto id, which is new after a re-import. Known ONLY
+ * while the content hashes match one for one — a MISSING or different photo is a
+ * real loss, and that is what the Storage-bucket 404 produced.
+ */
+const fotosRechaveadas: DivergenciaConhecida = (a, b) => {
+  const antes = hashesDeFoto(a);
+  const depois = hashesDeFoto(b);
+  if (antes == null || depois == null) return null;
+  if (antes.length !== depois.length) return null;
+  if (antes.some((h, i) => h !== depois[i])) return null;
+  return 'mesmas fotos — só o produtoId dentro do arquivoOuterRef mudou';
+};
+
+export const DIVERGENCIAS_CONHECIDAS: ReadonlyMap<string, DivergenciaConhecida> = new Map([
+  ['ehKit', kitPerdidoNoPublish],
+  ['nome', soCaixaDiferente],
+  ['attributes', atributosEnriquecidosPeloMl],
+  ['fotos', fotosRechaveadas],
 ]);
 
 export interface DocDump {
@@ -155,7 +233,7 @@ export function same(a: unknown, b: unknown): boolean {
 
 export function row(campo: string, antes: unknown, depois: unknown): Row {
   if (same(antes, depois)) return { campo, antes, depois, bucket: 'ok' };
-  const nota = DIVERGENCIAS_CONHECIDAS.get(campo);
+  const nota = DIVERGENCIAS_CONHECIDAS.get(campo)?.(antes, depois);
   if (nota != null) return { campo, antes, depois, bucket: 'conhecida', nota };
   return { campo, antes, depois, bucket: depois == null ? 'ausente' : 'divergente' };
 }

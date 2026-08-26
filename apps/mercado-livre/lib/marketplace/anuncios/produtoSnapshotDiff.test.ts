@@ -132,6 +132,62 @@ describe('diffSnapshots — the buckets', () => {
     expect(r.conhecidas.map((c) => c.campo)).toEqual(['ehKit']);
   });
 
+  it('excuses ML title-casing the nome — but NOT a different nome', () => {
+    const base = snap(dump({ ...PRODUTO_BASE }, { ...LINK_BASE }));
+    const soCaixa = snap(dump({ ...PRODUTO_BASE, nome: 'VASO DECORATIVO' }, { ...LINK_BASE }));
+    expect(diffSnapshots(base, soCaixa).achados).toEqual([]);
+    expect(diffSnapshots(base, soCaixa).conhecidas.map((c) => c.campo)).toEqual(['nome']);
+
+    // ⚠️ The half that matters: a genuinely wrong título must still be a finding.
+    const outro = snap(dump({ ...PRODUTO_BASE, nome: 'Vaso Decorativo Grande' }, { ...LINK_BASE }));
+    expect(diffSnapshots(base, outro).achados.map((a) => a.campo)).toEqual(['nome']);
+  });
+
+  it('excuses ML enriching attributes — but NOT a changed or dropped value', () => {
+    const base = snap(dump({ ...PRODUTO_BASE }, { ...LINK_BASE }));
+
+    const enriquecido = snap(
+      dump(
+        { ...PRODUTO_BASE },
+        {
+          ...LINK_BASE,
+          attributes: [{ id: 'BRAND', value_name: 'Genérica', name: 'Marca', value_id: null }],
+        },
+      ),
+    );
+    expect(diffSnapshots(base, enriquecido).achados).toEqual([]);
+
+    const valorTrocado = snap(
+      dump({ ...PRODUTO_BASE }, { ...LINK_BASE, attributes: [{ id: 'BRAND', value_name: 'X' }] }),
+    );
+    expect(diffSnapshots(base, valorTrocado).achados.map((a) => a.campo)).toEqual(['attributes']);
+
+    const perdido = snap(dump({ ...PRODUTO_BASE }, { ...LINK_BASE, attributes: [] }));
+    expect(diffSnapshots(base, perdido).achados.map((a) => a.campo)).toEqual(['attributes']);
+  });
+
+  it('excuses re-keyed arquivo refs — but NOT a photo that did not come back', () => {
+    const comFotos = (refs: string[]) =>
+      snap(
+        dump(
+          { ...PRODUTO_BASE, fotos: refs.map((r) => ({ arquivoOuterRef: r })) },
+          { ...LINK_BASE },
+        ),
+      );
+    const antes = comFotos(['arquivos/velho_hashA', 'arquivos/velho_hashB']);
+
+    // Same content hashes, new produto id — what a healthy re-import produces.
+    const rechaveado = comFotos(['arquivos/novo_hashA', 'arquivos/novo_hashB']);
+    expect(diffSnapshots(antes, rechaveado).achados).toEqual([]);
+
+    // ⚠️ The Storage-404 shape: photos simply absent. Must stay a finding.
+    const semFotos = snap(dump({ ...PRODUTO_BASE, fotos: null }, { ...LINK_BASE }));
+    expect(diffSnapshots(antes, semFotos).achados.map((a) => a.campo)).toEqual(['fotos']);
+
+    const umaSo = comFotos(['arquivos/novo_hashA']);
+    expect(diffSnapshots(antes, umaSo).achados.map((a) => a.campo)).toEqual(['fotos']);
+  });
+
   it('never counts a history subcollection as a finding', () => {
     const antes = snap({
       ...dump({ ...PRODUTO_BASE }, { ...LINK_BASE }),

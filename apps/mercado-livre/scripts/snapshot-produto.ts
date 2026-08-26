@@ -43,6 +43,7 @@ import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
 import {
   produtoCollection,
   produtoMercadoLivreLinkCollection,
+  variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
 import { getAdminFirestore } from '../lib/firebase/admin';
@@ -215,31 +216,65 @@ async function dumpFilhos(db: Firestore, paiId: string): Promise<ProdutoDump[]> 
 /* --------------------------------- lookup ---------------------------------- */
 
 /**
+ * Climb to the ROOT produto. ⚠️ Every lookup below can legitimately land on a
+ * variation CHILD, and comparing a root snapshot against a child reports the
+ * whole family as lost — nine phantom findings that read exactly like real ones
+ * (observed on the first live run). The root is the anchor a snapshot is taken
+ * at, so every path converges on it.
+ */
+async function subirParaRaiz(db: Firestore, produtoId: string): Promise<string> {
+  const snap = await (produtoCollection.docRef(db, {}, produtoId) as DocumentReference).get();
+  const paiId = (snap.data() as { paiId?: unknown } | undefined)?.paiId;
+  if (typeof paiId === 'string' && paiId !== '' && paiId !== produtoId) {
+    log(`  ⓘ ${produtoId} é uma variação — comparando a raiz ${paiId}.`);
+    return paiId;
+  }
+  return produtoId;
+}
+
+/**
  * Resolve the produto. ⚠️ The doc id CHANGES on a re-import, so the id in a saved
  * snapshot is useless for finding the produto afterwards — `--itemId` is the
- * stable handle, resolved through the link doc exactly as `inspect-anuncio.ts`
- * does, with the conta filter applied in code because one listing id can appear
- * under two integrações.
+ * stable handle.
+ *
+ * ⚠️ It takes TWO stages, for the same reason `resolveLink` in
+ * `anuncios/itemsStatusSync.ts` does (#1142). A User-Products family's PARENT
+ * link carries `familyId ?? itemIds[0]`, so a member's item id matches no parent
+ * at all — the member's id lives on `variacaoMercadoLivre.itemId`. Stage 1 alone
+ * fails on exactly the shape most of this catalogue now uses, and the failure is
+ * silent in the sense that matters: it reports "no link", not "wrong stage".
  */
 async function resolverProdutoId(db: Firestore, args: Args): Promise<string> {
   if (args.produtoId != null) return args.produtoId;
 
   if (args.itemId != null) {
-    const snap = await produtoMercadoLivreLinkCollection
+    // (1) the parent link — a simple listing, or a family addressed by its id.
+    const porLink = await produtoMercadoLivreLinkCollection
       .groupQuery(db)
       .where('id', '==', args.itemId)
       .get();
-    for (const d of snap.docs) {
+    for (const d of porLink.docs) {
       const link = d.data() as Record<string, unknown>;
       if (!refMatchesIntegracao(link.contaOuterRef, args.integracaoId)) continue;
       const produtoId = d.ref.parent.parent?.id;
-      if (produtoId != null) return produtoId;
+      if (produtoId != null) return subirParaRaiz(db, produtoId);
     }
+
+    // (2) a User-Products MEMBER — its item id lives on the child's own link.
+    const porMembro = await variacaoMercadoLivreLinkCollection
+      .groupQuery(db)
+      .where('itemId', '==', args.itemId)
+      .get();
+    for (const d of porMembro.docs) {
+      const filhoId = d.ref.parent.parent?.id;
+      if (filhoId != null) return subirParaRaiz(db, filhoId);
+    }
+
     if (args.sku == null) {
       throw new SnapshotLookupError(
-        `Nenhum link produtoMercadoLivre com id=${args.itemId} nesta conta. ` +
-          'Se o produto acabou de ser reimportado o link pode ainda não existir — ' +
-          'tente --sku, que não depende dele.',
+        `Nenhum link com id=${args.itemId} nesta conta, nem como membro ` +
+          '(variacaoMercadoLivre.itemId). Se o produto acabou de ser reimportado o link ' +
+          'pode ainda não existir — tente --sku, que não depende dele.',
       );
     }
   }
@@ -251,7 +286,7 @@ async function resolverProdutoId(db: Firestore, args: Args): Promise<string> {
       `sku=${args.sku} nomeia mais de um produto — use --produtoId para desambiguar.`,
     );
   }
-  return porSku.docs[0]!.id;
+  return subirParaRaiz(db, porSku.docs[0]!.id);
 }
 
 /* -------------------------------- rendering -------------------------------- */
