@@ -100,13 +100,15 @@ export interface MembroUnicoPlano {
   /** Child estoque rows to create — one per depósito the parent held. */
   estoques: ReadonlyArray<{ docId: string; data: Record<string, unknown> }>;
   /**
-   * Parent estoque rows to ZERO — never to delete.
+   * What the parent's rows are left holding — the RESERVED units, and never a
+   * delete.
    *
    * ⚠️ `onEstoqueDeleted` cascades into the row's whole `historicoEstoque`
    * subcollection, so deleting here would destroy the produto's stock audit trail
-   * to save one empty document. Zeroing keeps the ledger and moves the quantity.
+   * to save one document. Rewriting the quantity keeps the ledger AND keeps the
+   * row an open pedido's release still needs.
    */
-  parentEstoqueZeros: ReadonlyArray<{ docId: string; data: Record<string, unknown> }>;
+  parentEstoqueRestos: ReadonlyArray<{ docId: string; data: Record<string, unknown> }>;
   /**
    * Patch for the parent link. Under a family the `user_product_id` belongs to the
    * MEMBER (#706/#1142) — `publish.ts` and `importCore.ts` both write `null` here
@@ -155,17 +157,6 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
 
   if (args.acao === 'adotar' && (args.link.id == null || args.link.id === '')) {
     recusas.push('adoção pedida sem um anúncio para adotar (o vínculo não tem id)');
-  }
-
-  const reservados = args.estoques.filter(
-    (e) =>
-      reservaEfetiva(typeof e.quantidadeReservada === 'number' ? e.quantidadeReservada : null) > 0,
-  );
-  if (reservados.length > 0) {
-    recusas.push(
-      `estoque reservado em ${reservados.map((e) => e.depositoId).join(', ')} — ` +
-        'há pedidos em aberto sobre este produto; conclua-os antes de publicar',
-    );
   }
 
   if (recusas.length > 0) return { ok: false, recusas };
@@ -229,20 +220,45 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
     attributes: [],
   };
 
+  // ⚠️ Only the AVAILABLE units move; the reserved ones stay on the parent.
+  //
+  // An open pedido's reservation is keyed on the produto its LINE names — the
+  // parent — so the eventual release decrements the parent's row. Move the reserve
+  // with the rest and that release lands on a document we emptied, while the child
+  // keeps a phantom reserve for ever: the produto then under-reports its stock
+  // permanently, with nothing to signal it. Leaving exactly `reservaEfetiva` behind
+  // makes the parent's available quantity zero (so the sweep still sends the
+  // child's number, which is the whole point) while the ledger the release needs is
+  // still there and still correct.
+  //
+  // The residual, stated because it is real: once that pedido ships, those units sit
+  // on the parent and someone has to move them to the child. They are visible in the
+  // Balanço rather than lost, and this is the only tier that neither blocks a
+  // publish nor oversells.
+  const disponivelDe = (e: MembroUnicoEstoque) =>
+    Math.max(
+      0,
+      e.quantidade -
+        reservaEfetiva(typeof e.quantidadeReservada === 'number' ? e.quantidadeReservada : null),
+    );
+
   const estoques = args.estoques.map((e) => ({
     docId: makeEstoqueUid(childId, e.depositoId),
     data: {
       parentId: childId,
       depositoOuterRef: toOuterRef(`depositos/${e.depositoId}`),
-      quantidade: e.quantidade,
+      quantidade: disponivelDe(e),
       dataCriacao: now,
       ultimaModificacao: now,
     } as Record<string, unknown>,
   }));
 
-  const parentEstoqueZeros = args.estoques.map((e) => ({
+  const parentEstoqueRestos = args.estoques.map((e) => ({
     docId: makeEstoqueUid(args.produtoId, e.depositoId),
-    data: { quantidade: 0, ultimaModificacao: now } as Record<string, unknown>,
+    data: {
+      quantidade: e.quantidade - disponivelDe(e),
+      ultimaModificacao: now,
+    } as Record<string, unknown>,
   }));
 
   return {
@@ -253,7 +269,7 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
       produto,
       link,
       estoques,
-      parentEstoqueZeros,
+      parentEstoqueRestos,
       parentLinkPatch: { userProductId: null, ultimaModificacao: now },
     },
   };

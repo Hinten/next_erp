@@ -82,6 +82,19 @@ class FakeDb {
             col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
             self.bump(key);
           },
+          // Real `create()` semantics, and the ALREADY_EXISTS half is the point:
+          // the sole-member materialisation (#1087) treats gRPC 6 as an ADOPTION,
+          // so a double is indistinguishable from a first run only if this throws
+          // the way Firestore does.
+          create: async (data: DocData) => {
+            if (col.has(docId)) {
+              const err = new Error(`ALREADY_EXISTS: ${key}`) as Error & { code: number };
+              err.code = 6;
+              throw err;
+            }
+            col.set(docId, { ...data });
+            self.bump(key);
+          },
           update: async (patch: DocData, precondition?: { lastUpdateTime?: unknown }) => {
             // Recorded only once the write COMMITS — a rejected update never
             // reaches Firestore, so a test asserting on `updates` must not see
@@ -1716,7 +1729,13 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
         // `updateItem` — with `{status}` bodies, and AFTER the link write — so an
         // ungated mock re-applied the "concurrent" fields once more at the end
         // and the assertion below passed under a full-clobber implementation.
-        if (!('status' in payload)) {
+        //
+        // ⚠️ The discriminator is the payload's SIZE, not the absence of a
+        // `status` key: since #1087 a family of ONE carries `status: 'active'` on
+        // its member PUT too (it stands in for a simple item, which has always
+        // reactivated on edit), so "no status" stopped telling the two apart and
+        // silently disabled this whole mock.
+        if (Object.keys(payload).length > 1) {
           const doc = db.docs('produtos/child-1/variacaoMercadoLivre').get('var-child-1')!;
           doc.attributes = [{ id: 'VOLTAGE', value_name: '220V' }];
           doc.campoLegadoDesconhecido = 'preservar';

@@ -10,7 +10,8 @@
  * Mutation check — this file is only worth its runtime if it goes red on a real
  * regression. Flip `args.acao === 'adotar' ? args.link.id : null` to `null` in
  * `upSoleMember.ts` and "adoption carries the existing item id" must fail; drop the
- * `reservaEfetiva` filter and "refuses a produto with stock reserved" must fail.
+ * `reservaEfetiva` term from `disponivelDe` and "moves only the AVAILABLE units"
+ * must fail.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -117,12 +118,34 @@ describe('planejarMembroUnico — adoption (the produto was already published)',
 });
 
 describe('planejarMembroUnico — the estoque move', () => {
-  it('creates the child row with the parent quantity and ZEROES the parent row', () => {
+  it('with nothing reserved, the WHOLE quantity moves and the parent is left at 0', () => {
     const p = plano();
     expect(p.estoques).toHaveLength(1);
     expect(p.estoques[0]!.data).toMatchObject({ parentId: p.childProdutoId, quantidade: 7 });
-    expect(p.parentEstoqueZeros).toHaveLength(1);
-    expect(p.parentEstoqueZeros[0]!.data).toMatchObject({ quantidade: 0 });
+    expect(p.parentEstoqueRestos).toHaveLength(1);
+    expect(p.parentEstoqueRestos[0]!.data).toMatchObject({ quantidade: 0 });
+  });
+
+  it('⚠️ moves only the AVAILABLE units — the reserved ones stay on the parent', () => {
+    // 10 in the warehouse, 2 owed to an open pedido whose release decrements the
+    // PARENT. Moving those 2 with the rest would land the release on an emptied row
+    // and leave the child a phantom reserve for ever.
+    const p = plano({ estoques: [{ depositoId: 'dep1', quantidade: 10, quantidadeReservada: 2 }] });
+    expect(p.estoques[0]!.data.quantidade).toBe(8);
+    expect(p.parentEstoqueRestos[0]!.data.quantidade).toBe(2);
+  });
+
+  it('conserves the total: what the child gains plus what the parent keeps is unchanged', () => {
+    const p = plano({ estoques: [{ depositoId: 'dep1', quantidade: 10, quantidadeReservada: 3 }] });
+    const total =
+      Number(p.estoques[0]!.data.quantidade) + Number(p.parentEstoqueRestos[0]!.data.quantidade);
+    expect(total).toBe(10);
+  });
+
+  it('a fully reserved produto moves nothing and still plans (publish is never blocked)', () => {
+    const p = plano({ estoques: [{ depositoId: 'dep1', quantidade: 2, quantidadeReservada: 2 }] });
+    expect(p.estoques[0]!.data.quantidade).toBe(0);
+    expect(p.parentEstoqueRestos[0]!.data.quantidade).toBe(2);
   });
 
   it('⚠️ never DELETES the parent row — that would cascade its historicoEstoque away', () => {
@@ -138,13 +161,13 @@ describe('planejarMembroUnico — the estoque move', () => {
       ],
     });
     expect(p.estoques.map((e) => e.data.quantidade)).toEqual([7, 3]);
-    expect(p.parentEstoqueZeros).toHaveLength(2);
+    expect(p.parentEstoqueRestos).toHaveLength(2);
   });
 
   it('a produto with no estoque at all still plans cleanly', () => {
     const p = plano({ estoques: [] });
     expect(p.estoques).toEqual([]);
-    expect(p.parentEstoqueZeros).toEqual([]);
+    expect(p.parentEstoqueRestos).toEqual([]);
   });
 });
 
@@ -168,32 +191,20 @@ describe('planejarMembroUnico — creation (the produto was never published)', (
 });
 
 describe('planejarMembroUnico — refusals', () => {
-  it('refuses a produto with stock RESERVED, naming the depósito', () => {
+  it('⚠️ a reservation NEVER blocks the publish — it only splits the move', () => {
     const r = planejarMembroUnico(
       args({ estoques: [{ depositoId: 'dep1', quantidade: 7, quantidadeReservada: 2 }] }),
     );
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.recusas.join(' ')).toContain('dep1');
+    expect(r.ok).toBe(true);
   });
 
-  it('refuses WHOLE, never half — one reserved depósito blocks the others too', () => {
-    const r = planejarMembroUnico(
-      args({
-        estoques: [
-          { depositoId: 'dep1', quantidade: 7, quantidadeReservada: 0 },
-          { depositoId: 'dep2', quantidade: 3, quantidadeReservada: 5 },
-        ],
-      }),
-    );
-    expect(r.ok).toBe(false);
-  });
-
-  it('a NEGATIVE stored reserve is not a reserve (#931) — it plans normally', () => {
+  it('a NEGATIVE stored reserve is not a reserve (#931) — the whole quantity moves', () => {
     const r = planejarMembroUnico(
       args({ estoques: [{ depositoId: 'dep1', quantidade: 7, quantidadeReservada: -3 }] }),
     );
     expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plano.estoques[0]!.data.quantidade).toBe(7);
   });
 
   it('a non-numeric stored reserve is not a reserve either', () => {
@@ -201,6 +212,8 @@ describe('planejarMembroUnico — refusals', () => {
       args({ estoques: [{ depositoId: 'dep1', quantidade: 7, quantidadeReservada: null }] }),
     );
     expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plano.estoques[0]!.data.quantidade).toBe(7);
   });
 
   it('refuses an adoption with no anúncio to adopt', () => {
