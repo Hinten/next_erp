@@ -21,16 +21,21 @@
  * no `pedidoId`, so batching would need a new denormalized key plus a backfill
  * of the legacy Flutter docs a production export brings with it.
  *
- * So the coupling is broken at the other end. Every row subscribes at mount and
- * the observer only ever takes the subscription AWAY, so listener count tracks
- * screen height instead of `limit` within ~1s of paint — and because listeners
- * are TORN DOWN on exit rather than merely mounted lazily, it stays bounded
- * however far the operator scrolls.
+ * ⚠️ What this DOES and does NOT buy. Every row subscribes at mount and the
+ * observer may only ever take the subscription AWAY. So the SUSTAINED listener
+ * count tracks screen height — a long session on `/pedidos` no longer holds one
+ * listener per row it has ever rendered — but the FIRST-PAINT peak is still
+ * exactly `limit`. `pedidoMeta.defaultQuery.limit` therefore stays at 50, and
+ * its comment records the two attempts at bounding the peak that the vendas
+ * lane rejected. Do not read this file as having solved that.
  *
- * ⚠️ The gate is deliberately one-directional. An earlier revision waited for
- * the observer BEFORE subscribing, which put intersection delivery on the
- * critical path of the first badge and made `pedidos-nfe-snapshot` marginal
- * against its 10s assertion — see NFE_LISTENER_UNSEEN_MS.
+ * ⚠️ The one-directional shape is load-bearing, both halves learned on that
+ * lane: waiting for the observer before subscribing puts intersection delivery
+ * on the critical path of the first badge, and rationing the optimistic
+ * subscriptions starves every row past the ration when delivery is unreliable.
+ * Subscribing unconditionally degrades GRACEFULLY — with no intersection
+ * callbacks at all, the screen behaves exactly as it did before #1216, so the
+ * gate can only improve on that baseline and never fall below it.
  *
  * Three things keep that invisible to the operator:
  *
@@ -45,7 +50,7 @@
  *    change and the cell renders a Skeleton while loading. This memo is what
  *    guarantees a scroll-back repaints instantly.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useIntersection } from '@mantine/hooks';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
@@ -87,28 +92,6 @@ export const NFE_LISTENER_IDLE_MS = 15_000;
  */
 export const NFE_LISTENER_UNSEEN_MS = 1_000;
 
-/**
- * How many rows may subscribe optimistically — i.e. before the observer has
- * said anything about them — at any one time.
- *
- * ⚠️ This is what actually bounds the FIRST-PAINT peak, and it is the whole
- * point of the gate. Subscribing every mounted row optimistically (which an
- * earlier revision did) leaves peak concurrent listeners at exactly `limit`,
- * unchanged from before #1216 — only the burst's *duration* shrinks. But #159
- * measured a first-paint LATENCY effect, so shortening the burst is not the
- * same as fixing it.
- *
- * Rows mount in DOM order, so the budget is claimed by the top of the table —
- * the rows actually on screen, which are exactly the ones that must not wait
- * for an intersection callback. Everything past the budget starts inactive and
- * waits to be observed, which costs nothing visible because it is below the
- * fold. A slot is released as soon as its row is observed (the guess is
- * resolved) or unmounts, so scrolling keeps refilling it.
- *
- * Sized above a full viewport of rows (~15-20 on a laptop) with headroom.
- */
-export const NFE_OPTIMISTIC_BUDGET = 30;
-
 /** Upper bound on the {@link recallLatestNfe} memo, evicted oldest-first. */
 export const NFE_MEMO_MAX = 400;
 
@@ -134,18 +117,6 @@ function toBadge(doc: NotaFiscalEletronica): NfeBadge {
     chave: doc.chave,
     error: doc.error,
   };
-}
-
-let optimisticInFlight = 0;
-
-function claimOptimisticSlot(): boolean {
-  if (optimisticInFlight >= NFE_OPTIMISTIC_BUDGET) return false;
-  optimisticInFlight += 1;
-  return true;
-}
-
-function releaseOptimisticSlot(): void {
-  if (optimisticInFlight > 0) optimisticInFlight -= 1;
 }
 
 export type LatestNfeStatus = 'idle' | 'loading' | 'ready';
@@ -228,7 +199,6 @@ export function recallLatestNfe(uid: string | null, pedidoId: string): NfeMemoEn
 export function __resetLatestNfeMemo(): void {
   latestNfeMemo.clear();
   memoOwner = null;
-  optimisticInFlight = 0;
 }
 
 export function useLatestNfe(pedidoId: string): LatestNfeState {
@@ -252,40 +222,26 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
   // an intersection callback. Re-entering cancels a pending teardown (the
   // effect cleanup clears the timer), so a row flickering across the fold keeps
   // one continuous subscription.
-  const [active, setActive] = useState(false);
-  const seenVisible = useRef(false);
-  const slotHeld = useRef(false);
-
-  // ⚠️ Claim in a LAYOUT effect, never in a `useState` initializer. Initializers
-  // run in the RENDER phase, which React executes for the new tree BEFORE it
-  // commits the deletions of the rows being replaced. So on any re-query that
-  // swaps the row set — applying a column filter, the commonest thing an
-  // operator does — a new row would see the budget still held by 100 rows that
-  // are about to unmount, start inactive, and sit waiting on an intersection
-  // callback. That failed `pedidos-nfe-snapshot` 3/3, deterministically,
-  // because that spec filters to a single pedido before asserting the badge.
+  // ⚠️ EVERY row subscribes at mount, and the observer may only ever take the
+  // subscription AWAY. This is deliberately the most conservative shape, and
+  // both halves were learned the hard way on the vendas lane:
   //
-  // A layout effect runs in the commit phase, after those deletions have been
-  // processed and their cleanups run, so the budget it reads is the real one.
-  // It is also synchronous before paint, so claiming here costs one render —
-  // not the many frames an IntersectionObserver delivery can take.
-  useLayoutEffect(() => {
-    slotHeld.current = claimOptimisticSlot();
-    if (slotHeld.current) setActive(true);
-    return () => {
-      if (!slotHeld.current) return;
-      slotHeld.current = false;
-      releaseOptimisticSlot();
-    };
-  }, []);
-
-  // Hand the slot back once the observer has resolved the guess — the row keeps
-  // its subscription, it just no longer needs to be guessed about.
-  useEffect(() => {
-    if (!observed || !slotHeld.current) return;
-    slotHeld.current = false;
-    releaseOptimisticSlot();
-  }, [observed]);
+  //  - Waiting for the observer before subscribing puts intersection delivery
+  //    on the critical path of the first badge (throttled; seconds late while a
+  //    big table renders) — `pedidos-nfe-snapshot` went marginal against its
+  //    10s assertion.
+  //  - Rationing the optimistic subscriptions to bound the first-paint peak
+  //    made it worse: rows past the ration never subscribe at all if delivery
+  //    is unreliable, so their badges never resolve. FOUR `/pedidos` list specs
+  //    failed 3/3 that way.
+  //
+  // Subscribing unconditionally degrades GRACEFULLY: if intersection callbacks
+  // never arrive, nothing is ever released and the screen behaves exactly as it
+  // did before #1216. The gate can then only ever improve on that baseline,
+  // never fall below it — which is the property worth having on a column that
+  // reports fiscal state.
+  const [active, setActive] = useState(true);
+  const seenVisible = useRef(false);
 
   useEffect(() => {
     if (inView) {

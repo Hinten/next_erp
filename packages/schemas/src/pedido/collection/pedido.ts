@@ -359,24 +359,36 @@ export const pedidoMeta: CollectionMetadata = {
     // different /pedidos LIST spec each time, while every pedido EDITOR spec
     // passed); at 50 it was 166 passed, 0 failed, 0 flaky.
     //
-    // #1216 broke that coupling with an explicit budget: `useLatestNfe` lets at
-    // most `NFE_OPTIMISTIC_BUDGET` (30) rows subscribe before the
-    // IntersectionObserver has reported on them, and rows mount in DOM order,
-    // so the FIRST-PAINT peak is bounded at 30 regardless of this number. Rows
-    // past the budget wait to be observed (they are below the fold, so nothing
-    // visible waits), and any row the observer reports off screen is released.
+    // ⚠️ STILL 50 — #1216 did NOT buy 100 back. Read this before trying again;
+    // the attempt is written up so it is not repeated blind.
     //
-    // ⚠️ "Bounded peak" is the load-bearing property, and it is easy to lose.
-    // An intermediate revision of #1216 subscribed EVERY mounted row
-    // optimistically — that shortens the burst but leaves the peak at exactly
-    // this number, which is the quantity #159 measured. Whatever replaces the
-    // gate must bound the peak, not merely the duration; the
-    // `bounds the FIRST-PAINT peak` case in `useLatestNfe.test.ts` pins it.
-    // If a future virtual column re-introduces an ungated per-row listener,
-    // this value goes back to 50 with it.
+    // #1216 made the NF listener RELEASABLE: `useLatestNfe` subscribes every row
+    // at mount and tears the listener down once the IntersectionObserver reports
+    // the row off screen. That genuinely cuts the SUSTAINED count and is what
+    // shipped. It does not cut the FIRST-PAINT peak, which stays at exactly this
+    // number — and the peak is the quantity #159 measured.
+    //
+    // Two ways of bounding the peak were tried on the vendas lane; both failed,
+    // for opposite reasons:
+    //
+    //  1. Wait for the observer before subscribing. That puts intersection
+    //     delivery on the critical path of the first badge — those callbacks are
+    //     throttled and can lag by seconds while 100 rows render — and
+    //     `pedidos-nfe-snapshot` went fail/fail/pass, pass, fail/fail/fail.
+    //  2. Ration the optimistic subscriptions (a 30-slot budget). Worse: rows
+    //     past the ration never subscribe AT ALL when delivery is unreliable, so
+    //     their badges never resolve. FOUR /pedidos LIST specs then failed 3/3 —
+    //     pedidos-anexos, pedidos-devolucao, pedidos-etiqueta-ml,
+    //     pedidos-nfe-snapshot — the same rotating-list-spec signature #159
+    //     recorded, on a branch that already contained main.
+    //
+    // So raising this needs the first-paint cost cut somewhere OTHER than the NF
+    // listener. The remaining per-row reads are `ClienteCell`'s cliente `getDoc`
+    // and `FreteCell`'s `intFreteTipo` `getDoc` — up to one of each per row,
+    // ungated, which #1216 explicitly flags and nothing has yet addressed.
     // `limit` is the FIRST page only; "Carregar mais" grows it by the same
     // amount per click.
-    limit: 100,
+    limit: 50,
     // Same nine columns legacy showed (`pedidoTableView.dart:2221-2256`).
     // Every virtual column declares `dependsOn`, so the Pipelines projection
     // stays on for this heavy collection — see `CollectionDefaultQuery.columns`.
