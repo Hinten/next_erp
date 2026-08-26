@@ -105,14 +105,27 @@ const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/;
 const UNION_LINE = /z\.union\(\[/;
 
 /**
- * Source lines allowed to keep a strict `z.number()`, each mapped to its reason.
+ * Source lines allowed to keep a strict `z.number()`, keyed by file and then by
+ * the exact source line, each mapped to its reason.
  *
  * DELIBERATELY EMPTY. No field in a scanned `types.ts` today has a caller that
  * reads its REJECTION as a signal. The map exists so that adding the first one is a
  * reviewed edit to this file rather than an argument in a PR thread, and the
  * staleness test below stops it rotting into decoration.
  *
- * @type {Record<string, string>}
+ * ⚠️ Keyed by PATH for the same reason {@link KNOWN_TOLERANT_LINES} is, pointed
+ * the other way. A flat map would make a carve-out written for ONE package
+ * exempt an identically-spelled line in a sibling — the packages are
+ * near-copies, so `amount: z.number().nullable().optional(),` is not an
+ * identity — and its staleness check would stay green as long as *either*
+ * package still had the line. An assertion running over an empty set and an
+ * exemption applying to a file nobody reviewed it for are the same bug.
+ *
+ * It is empty today, which is exactly why the shape is settled now: the FIX text
+ * below actively invites the first entry, and by then the structure is not a
+ * free change any more.
+ *
+ * @type {Record<string, Record<string, string>>}
  */
 const ALLOWED_STRICT = {};
 
@@ -172,7 +185,9 @@ const FIX = [
   'Is your schema validating something we SEND rather than something the provider',
   'sends us? Then tolerance is the WRONG direction and none of the above applies — a',
   'request shape should reject a stringified number, not coerce it. Add its exact',
-  'source line to ALLOWED_STRICT in this file, with that as the reason.',
+  'source line to ALLOWED_STRICT in this file, UNDER ITS FILE PATH, with that as',
+  'the reason — the map is Record<path, Record<sourceLine, reason>>, so a carve-out',
+  'excuses that line in that file only and never the same text in a sibling package.',
 ].join('\n');
 
 /** `path:line:text` triples, left in git's own order because they feed a message. */
@@ -190,11 +205,18 @@ function pathOf(hit) {
   return hit.slice(0, hit.indexOf(':'));
 }
 
-function isOffender(hit) {
+/**
+ * `allowed` is a parameter only so the self-test below can drive it with a
+ * synthetic, NON-empty map — the real one shipping empty would otherwise make
+ * the path-keying assertion vacuous. Production callers pass nothing.
+ */
+function isOffender(hit, allowed = ALLOWED_STRICT) {
   const text = textOf(hit);
   if (COMMENT_LINE.test(text)) return false;
   if (UNION_LINE.test(text)) return false;
-  return !(text.trim() in ALLOWED_STRICT);
+  // ⚠️ Looked up under the hit's PATH, never as a flat membership test — a
+  // carve-out excuses one line in one file, not that text everywhere.
+  return !(text.trim() in (allowed[pathOf(hit)] ?? {}));
 }
 
 describe('channel response schemas tolerate a quoted number', () => {
@@ -244,14 +266,26 @@ describe('channel response schemas tolerate a quoted number', () => {
   });
 
   it('has no STALE ALLOWED_STRICT entry', () => {
-    const present = new Set(scan(PATTERNS).map((h) => textOf(h).trim()));
-    const stale = Object.keys(ALLOWED_STRICT).filter((l) => !present.has(l));
+    const present = new Map();
+    for (const hit of scan(PATTERNS)) {
+      const path = pathOf(hit);
+      if (!present.has(path)) present.set(path, new Set());
+      present.get(path).add(textOf(hit).trim());
+    }
+    // ⚠️ Matched per FILE, not against the union: a carve-out must not be kept
+    // alive by an identically-spelled line in a package it was never written for.
+    const stale = Object.entries(ALLOWED_STRICT).flatMap(([path, lines]) =>
+      Object.keys(lines)
+        .filter((l) => !present.get(path)?.has(l))
+        .map((l) => `${path}: ${l}`),
+    );
     expect(
       stale,
       [
-        'These ALLOWED_STRICT entries match no line any more — the field was renamed,',
-        'deleted, or already converted. Remove them, so the carve-out list keeps being',
-        'read as current rather than as decoration:',
+        'These ALLOWED_STRICT entries match no line any more, in the file they were',
+        'written for — the field was renamed, deleted, or already converted. Remove',
+        'them, so the carve-out list keeps being read as current rather than as',
+        'decoration:',
         ...stale.map((l) => `  - ${l}`),
       ].join('\n'),
     ).toEqual([]);
@@ -279,6 +313,30 @@ describe('channel response schemas tolerate a quoted number', () => {
     expect(PATTERNS.some((p) => new RegExp(p).test(fixed))).toBe(false);
     expect(PATTERNS.some((p) => new RegExp(p).test(bare))).toBe(true);
     expect(PATTERNS.some((p) => new RegExp(p).test(coerced))).toBe(true);
+  });
+
+  it('⚠️ an ALLOWED_STRICT carve-out excuses ONE file, not that line everywhere', () => {
+    // The control for the path-keying, driven with a synthetic map because the
+    // real one ships empty — which would make this assertion vacuous.
+    //
+    // The two hits below are the SAME source line in two different files. That
+    // is the realistic case, not a contrived one: the channel packages are
+    // near-copies, so a request-shaped carve-out in one would silently exempt a
+    // response field of the same name in another. A flat map answers `false`
+    // twice here; keyed by path it answers false, then true.
+    const carved = {
+      'packages/integrations/freight-br/src/melhor-envio/types.ts': {
+        'width: z.number(),': 'REQUEST — outbound volume, tolerance is the wrong direction',
+      },
+    };
+    const line = '  width: z.number(),';
+
+    expect(
+      isOffender(`packages/integrations/freight-br/src/melhor-envio/types.ts:59:${line}`, carved),
+    ).toBe(false);
+    expect(isOffender(`packages/integrations/mercado-pago/src/types.ts:59:${line}`, carved)).toBe(
+      true,
+    );
   });
 
   it('⚠️ pathOf splits a hit the same way git spells it', () => {
