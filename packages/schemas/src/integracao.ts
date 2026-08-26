@@ -183,6 +183,47 @@ export const periodoWhatsappSchema = z.object({
 });
 export type PeriodoWhatsapp = z.infer<typeof periodoWhatsappSchema>;
 
+/** Human labels for {@link modoEnvioMercadoLivreSchema}. */
+export const MODO_ENVIO_MERCADO_LIVRE_LABELS = {
+  me2: 'Mercado Envios 2',
+  me1: 'Mercado Envios 1',
+  not_specified: 'A combinar com o comprador',
+} as const;
+
+/**
+ * `shipping.mode` sent on `POST`/`PUT /items` for this conta's listings.
+ *
+ * ⚠️ **`null` and `'not_specified'` are NOT the same thing.** Null sends no
+ * `shipping` node at all, and ML then applies the account's own default —
+ * documented on its Envios Personalizados page: "se o usuário tiver a opção
+ * default ME configurada, todas as suas publicações serão criadas sob essa
+ * modalidade". `'not_specified'` is the opposite: an explicit instruction to
+ * publish as "a combinar" regardless of that default. Null is the shipped
+ * default, so an unconfigured conta keeps publishing exactly as it did before
+ * this field existed.
+ *
+ * ⚠️ **`'me1'` is silently ignored on a conta that has ME2 enabled** — ML
+ * answers 200 and leaves the item `not_specified`. That is an account-level
+ * business rule (ML prioritises ME2 coexistence), not an integration bug, and
+ * changing it needs the seller's commercial contact, not an API call.
+ *
+ * `'custom'` is deliberately NOT offered. ML's custom mode carries a `costs[]`
+ * table (a description + cost per region) that nothing in this repo models, and
+ * sending the mode bare would publish a listing whose shipping cost table is
+ * empty. Adding it is its own change, with its own UI.
+ */
+export const modoEnvioMercadoLivreSchema = z
+  .enum(['me2', 'me1', 'not_specified'])
+  .meta({ labels: MODO_ENVIO_MERCADO_LIVRE_LABELS });
+export type ModoEnvioMercadoLivre = z.infer<typeof modoEnvioMercadoLivreSchema>;
+
+/** Named members of {@link modoEnvioMercadoLivreSchema}; the values are ML's own wire codes. */
+export const MODO_ENVIO_MERCADO_LIVRE = {
+  me2: 'me2',
+  me1: 'me1',
+  naoEspecificado: 'not_specified',
+} as const satisfies Record<string, ModoEnvioMercadoLivre>;
+
 /**
  * Integracao — collection `integracao`. Mirrors
  * `packages/canal_de_vendas/lib/src/models.dart`. Outer references
@@ -217,6 +258,21 @@ export const integracaoSchema = z
      * legacy app connected already carry it (legacy wire parity).
      */
     user_id: z.number().int().nullable().default(null),
+
+    /**
+     * Mercado Livre — the `shipping.mode` every publish from this conta sends.
+     *
+     * Read at publish time (`publicar/route.ts` → `PublishDeps`), exactly like
+     * `depositoOuterRef` and `operacaoOuterRef` below: the conta is already
+     * loaded by `loadMercadoLivreContext`, so this costs no extra read.
+     *
+     * ⚠️ Has NO legacy counterpart — the Flutter app never sent a `shipping`
+     * node either, which is why every ERP-published listing lands as "a
+     * combinar". Do not look for a parity reference in `.old/`.
+     *
+     * See {@link modoEnvioMercadoLivreSchema} for why null ≠ `'not_specified'`.
+     */
+    modoEnvioMercadoLivre: modoEnvioMercadoLivreSchema.nullable().default(null),
 
     // NOTE: `ContaMercadoLivre.preferenciasProdutoMercadoLivre` (an embedded
     // object of 10 boolean import/overwrite toggles — importarCategorias,

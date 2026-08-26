@@ -131,6 +131,12 @@ export interface ConversaFromQuestionContext {
   readonly produtoOuterRef: string | null;
   /** The anúncio title, when the item fetch succeeded. */
   readonly tituloAnuncio: string | null;
+  /**
+   * The conta's colour ALREADY LIFTED into `cor_etiqueta`'s 32-bit ARGB domain
+   * by `corToEtiquetaArgb` — never the raw 24-bit `integracao.cor`. The chat
+   * etiqueta filter matches its palette with an exact `==`, so an unlifted
+   * value paints correctly and is selectable by nothing.
+   */
   readonly corEtiqueta: number | null;
   /** ONE clock read for the whole import, in MILLISECONDS. */
   readonly nowMs: number;

@@ -250,6 +250,45 @@ describe('buildParentAttributes', () => {
     expect(attrs.map((a) => a.id)).toEqual(['SELLER_SKU', 'WEIGHT']);
   });
 
+  // ⚠️ The stale-copy path. A link doc written before the editor withheld these
+  // ids can still carry one, and `attributesForSave` cannot prune an id the
+  // CATEGORY does not list — so a stored `WEIGHT` in such a category survives
+  // every save. Appending the derived copy beside it ships the attribute TWICE,
+  // once with the operator's old value. Publish owns these ids unconditionally.
+  it('drops a stored copy of a derived id instead of duplicating it', () => {
+    const attrs = buildParentAttributes(produto, {
+      docId: 'l',
+      id: null,
+      attributes: [
+        { id: 'BRAND', value_name: 'Acme' },
+        { id: 'WEIGHT', value_name: '99 kg' },
+        { id: 'SELLER_PACKAGE_HEIGHT', value_name: '99 cm' },
+      ],
+    });
+    expect(attrs.filter((a) => a.id === 'WEIGHT')).toHaveLength(1);
+    expect(attrs.filter((a) => a.id === 'SELLER_PACKAGE_HEIGHT')).toHaveLength(1);
+    // The produto's value wins, not the stale one.
+    expect(attrs.find((a) => a.id === 'WEIGHT')?.value_name).not.toBe('99 kg');
+    expect(attrs.find((a) => a.id === 'SELLER_PACKAGE_HEIGHT')?.value_name).not.toBe('99 cm');
+    // A non-derived stored attribute is still preserved.
+    expect(attrs.find((a) => a.id === 'BRAND')?.value_name).toBe('Acme');
+  });
+
+  // The stored copy goes even when the produto cannot replace it — a value the
+  // ERP owns and could not derive is not a value to fall back on: it is the one
+  // the operator is being told to fill in on the produto.
+  it('drops a stored derived id even with nothing to replace it', () => {
+    const attrs = buildParentAttributes(
+      { ...produto, alturaCm: null },
+      {
+        docId: 'l',
+        id: null,
+        attributes: [{ id: 'SELLER_PACKAGE_HEIGHT', value_name: '99 cm' }],
+      },
+    );
+    expect(attrs.map((a) => a.id)).toEqual(['SELLER_SKU', 'WEIGHT']);
+  });
+
   it('omits SELLER_SKU when the item has variations (#799 bug 3)', () => {
     // Each variation carries its own SELLER_SKU in `attributes`, so it is never
     // a combination id and the mapper's combination prune cannot reach the
@@ -484,6 +523,23 @@ describe('assemblePublishInput', () => {
       { id: 'SIZE', value_name: 'M' },
       { id: 'VOLTAGE', value_name: '220V' },
     ]);
+  });
+
+  it('passes the conta shipping mode through, and normalises absent to null', () => {
+    expect(assemblePublishInput({ ...baseArgs, shippingMode: 'me2' }).shippingMode).toBe('me2');
+    // Absent must reach the builder as an explicit null rather than undefined:
+    // both suppress the node today, but null is the value the conta actually
+    // stores, and it keeps this boundary honest about "nothing configured".
+    expect(assemblePublishInput(baseArgs).shippingMode).toBeNull();
+    expect(assemblePublishInput({ ...baseArgs, shippingMode: null }).shippingMode).toBeNull();
+  });
+
+  it('does NOT validate the shipping mode against the seller', () => {
+    // Whether a mode is available is an account/category fact only ML holds, and
+    // it already answers with a readable `shipping.me2_adoption_mandatory` cause.
+    // A local guess would be a second, staler copy of that answer — so this must
+    // assemble cleanly and let the publish carry it.
+    expect(() => assemblePublishInput({ ...baseArgs, shippingMode: 'me1' })).not.toThrow();
   });
 
   it('only merges a stored attribute EVERY child can supply (review #1064)', () => {

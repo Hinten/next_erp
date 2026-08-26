@@ -23,16 +23,18 @@
  * uploads a single picture (#798).
  */
 import {
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
   type BuildItemPayloadInput,
   type ItemVariationInput,
   type MlAttribute,
+  type MlShippingMode,
   attrPackageDimensions,
   attrSizeGridId,
   attrSizeGridRowId,
   attrSku,
   attrWeightKg,
 } from '@delfrance/integrations-mercado-livre';
-import { parseFakePath, resolveCondicaoAnuncio } from '@delfrance/schemas';
+import { dimensoesDoPacote, parseFakePath, resolveCondicaoAnuncio } from '@delfrance/schemas';
 
 import type { ResolvedSizeChart } from '../size-charts/sizeChart';
 
@@ -150,6 +152,15 @@ export interface AssemblePublishArgs {
    * parity — ML itself rejects chart-required domains).
    */
   sizeChart?: ResolvedSizeChart | null;
+  /**
+   * The conta's `shipping.mode`, straight from the integração doc. Passed
+   * through untouched and deliberately NOT validated here: whether a mode is
+   * available to this seller is an account/category fact only ML holds, and it
+   * already answers with a readable `shipping.me2_adoption_mandatory` cause that
+   * `publishFalhas.ts` parses. A local guess would only be a second, staler
+   * copy of that answer.
+   */
+  shippingMode?: MlShippingMode | null;
 }
 
 /* ------------------------- publishing model + guards ------------------------ */
@@ -338,15 +349,17 @@ export function resolveCondition(
  * the next publish. `SIZE_GRID_ID` is deliberately NOT here — the link doc is
  * where the chart binding lives between publishes, and a fresh resolution
  * replaces it rather than adding a second one.
+ *
+ * The membership itself is {@link ML_PRODUTO_DERIVED_ATTRIBUTE_IDS}, shared with
+ * the import stripper and the editor's projection: this list and the editor's
+ * used to be independent literals in two workspaces, and they disagreed —
+ * `PACKAGE_*` there against the `SELLER_PACKAGE_*` here, which are different ML
+ * attributes. A `Set` rather than the array because the hot path is
+ * `.has()` per stored attribute.
  */
-export const ML_DERIVED_ATTRIBUTE_IDS: ReadonlySet<string> = new Set([
-  'SELLER_SKU',
-  'WEIGHT',
-  'SELLER_PACKAGE_HEIGHT',
-  'SELLER_PACKAGE_LENGTH',
-  'SELLER_PACKAGE_WIDTH',
-  'SELLER_PACKAGE_WEIGHT',
-]);
+export const ML_DERIVED_ATTRIBUTE_IDS: ReadonlySet<string> = new Set(
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+);
 
 /**
  * Parent-level attributes (mapper prunes any combination ids from these).
@@ -369,32 +382,31 @@ export function buildParentAttributes(
   sizeChartId?: string | null,
   options?: { includeSku?: boolean },
 ): MlAttribute[] {
-  // A freshly resolved chart REPLACES any stale SIZE_GRID_ID the link doc
-  // carries (legacy toMercadoLivre: remove-then-add); with no resolution the
-  // link's existing binding is left untouched.
-  const attrs: MlAttribute[] =
-    sizeChartId != null
-      ? (link?.attributes ?? []).filter((a) => a.id !== 'SIZE_GRID_ID')
-      : [...(link?.attributes ?? [])];
+  // ⚠️ Derived ids are dropped from the STORED list before anything is appended,
+  // or a link doc carrying a stale copy ships the attribute twice — once with
+  // the operator's old value and once with the produto's. The write-back has
+  // excluded them since #799 and the editor now withholds them entirely, but
+  // neither reaches a doc written before that: `attributesForSave` can only
+  // prune an id the CATEGORY lists, so a stored `WEIGHT` in a category whose
+  // attribute list omits it survives every save. This is the boundary where the
+  // rule is unconditional — publish owns these ids, whatever is on disk.
+  const attrs: MlAttribute[] = (link?.attributes ?? []).filter(
+    (a) =>
+      !(a.id != null && ML_DERIVED_ATTRIBUTE_IDS.has(a.id)) &&
+      // A freshly resolved chart REPLACES any stale SIZE_GRID_ID the link doc
+      // carries (legacy toMercadoLivre: remove-then-add); with no resolution the
+      // link's existing binding is left untouched.
+      !(sizeChartId != null && a.id === 'SIZE_GRID_ID'),
+  );
   if (sizeChartId != null) attrs.push(attrSizeGridId(sizeChartId));
   if (produto.sku && (options?.includeSku ?? true)) attrs.push(attrSku(produto.sku));
   if (produto.pesoLiquidoKg != null) attrs.push(attrWeightKg(produto.pesoLiquidoKg));
-  const pesoKg = produto.pesoBrutoKg ?? produto.pesoLiquidoKg;
-  if (
-    produto.alturaCm != null &&
-    produto.larguraCm != null &&
-    produto.profundidadeCm != null &&
-    pesoKg != null
-  ) {
-    attrs.push(
-      ...attrPackageDimensions({
-        alturaCm: produto.alturaCm,
-        larguraCm: produto.larguraCm,
-        profundidadeCm: produto.profundidadeCm,
-        pesoKg,
-      }),
-    );
-  }
+  // ⚠️ `dimensoesDoPacote` is the ONE implementation of "which fields, all four
+  // or nothing, rounded how" — shared with the produto's Mercado Livre tab,
+  // which shows the operator these exact numbers. Re-deriving them here is how a
+  // screen ends up promising 10cm while the payload ships 11.
+  const pacote = dimensoesDoPacote(produto);
+  if (pacote) attrs.push(...attrPackageDimensions(pacote));
   return attrs;
 }
 
@@ -723,5 +735,6 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       includeSku: args.isUserProductSeller || variations.length === 0,
     }),
     variations,
+    shippingMode: args.shippingMode ?? null,
   };
 }

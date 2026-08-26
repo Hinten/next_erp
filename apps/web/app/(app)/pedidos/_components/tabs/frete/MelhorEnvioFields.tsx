@@ -13,6 +13,7 @@ import {
   FreightValidationError,
   buildCalculatePayload,
   isErroredOption,
+  parseMePrice,
   toVolumeInput,
 } from '@delfrance/integrations-freight-br/http-client';
 
@@ -121,7 +122,13 @@ export function MelhorEnvioFields({
     return quotes.map((q) => {
       const errored = isErroredOption(q);
       const carrier = `${q.company?.name ?? ''} ${q.name}`.trim();
-      const price = q.custom_price ?? q.price;
+      // ⚠️ Through `parseMePrice` — the SAME reading `onSelectQuote` saves with,
+      // not the raw wire value. Otherwise the two disagree: an option ME priced
+      // in a shape the rule refuses ('1.234,56', 'R$ 37,79', '') would render a
+      // real price here, and selecting it would write 0 into valorCobrado /
+      // custoCalculado / custoFinal with nothing on screen saying so. Rendering
+      // `R$ ?` makes the zero exactly as visible as the fallback claims it is.
+      const price = parseMePrice(q.custom_price ?? q.price);
       const label = errored
         ? `${carrier} — indisponível`
         : `${carrier} — R$ ${price ?? '?'}${q.delivery_time != null ? ` (${q.delivery_time} dia(s))` : ''}`;
@@ -145,7 +152,13 @@ export function MelhorEnvioFields({
     }
     const option = quotes?.find((q) => String(q.id) === value);
     if (!option || isErroredOption(option)) return;
-    const price = parsePrice(option.custom_price ?? option.price) ?? 0;
+    // ⚠️ `?? 0` is a deliberate, visible choice, not a coercion. `parseMePrice`
+    // returns null rather than inventing a value (it replaced a private
+    // `Number(s)` here, which read '' as 0, '0x1F' as 31 and '1e3' as 1000), so
+    // falling back to zero is this screen SAYING "quote it at R$ 0,00". It is
+    // reachable only for an option ME priced unreadably — the no-price case is
+    // already filtered by `isErroredOption` above.
+    const price = parseMePrice(option.custom_price ?? option.price) ?? 0;
     // Strip any `undefined` so Firestore accepts the stored snapshot.
     const optionData = JSON.parse(JSON.stringify(option)) as Record<string, unknown>;
 
@@ -255,10 +268,4 @@ export function MelhorEnvioFields({
       {pedidoId && <EtiquetaMelhorEnvioPanel form={form} intFreteId={intFreteId} />}
     </Stack>
   );
-}
-
-function parsePrice(s: string | null | undefined): number | null {
-  if (s == null) return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
 }

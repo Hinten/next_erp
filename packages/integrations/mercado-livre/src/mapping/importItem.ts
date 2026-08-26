@@ -18,18 +18,26 @@
  *    produto fields (`SELLER_SKU`, `WEIGHT`, `SELLER_PACKAGE_*`, `IS_KIT`) so a
  *    round-trip re-publish never sends a duplicated attribute id.
  */
-import { type MlAttribute, attributesWithValue } from './attributes';
+import {
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  type MlAttribute,
+  attributesWithValue,
+} from './attributes';
 import { type EstadoPublicacao, estadoFromMlStatus } from './itemPayload';
 import type { MlItem, MlItemAttribute } from '../types';
 
-/** Attribute ids the publish path re-derives from produto fields (not stored on the link). */
+/**
+ * Attribute ids the publish path re-derives from produto fields (not stored on
+ * the link) — {@link ML_PRODUTO_DERIVED_ATTRIBUTE_IDS} plus one import-only id.
+ *
+ * `IS_KIT` is local rather than shared because it has no publish counterpart:
+ * nothing emits it, so putting it in the shared set would tell the listing editor
+ * to withhold an attribute the ERP does not actually own. Here it is right —
+ * `ehKit` is a produto field, and carrying ML's copy on the link would let the two
+ * disagree.
+ */
 const DERIVED_ATTRIBUTE_IDS: ReadonlySet<string> = new Set([
-  'SELLER_SKU',
-  'WEIGHT',
-  'SELLER_PACKAGE_HEIGHT',
-  'SELLER_PACKAGE_LENGTH',
-  'SELLER_PACKAGE_WIDTH',
-  'SELLER_PACKAGE_WEIGHT',
+  ...ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
   'IS_KIT',
 ]);
 

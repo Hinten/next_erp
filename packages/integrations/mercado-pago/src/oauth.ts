@@ -170,8 +170,20 @@ async function requestToken(
 
   const result = tokenResponseSchema.safeParse(parsed);
   if (!result.success) {
+    // ⚠️ Field names in the MESSAGE, not only in `issues` — same reasoning as
+    // `parseOk` in `api.ts`, and the same reason it matters here: a token
+    // exchange that fails to parse disconnects the account, and the operator
+    // sees only this string.
+    //
+    // ⚠️ Paths only, never the body. This branch is reachable with
+    // `parsed = { raw: text }` (line 141) where `text` is the raw TOKEN
+    // response — the #1015 leak shape. Zod 4 serializes `code`/`path`/
+    // `expected`/`message` and no input value, and `.passthrough()` keeps
+    // `unrecognized_keys` from firing at all, so `issues` is not itself a leak;
+    // joining the paths keeps it that way by construction.
+    const campos = [...new Set(result.error.issues.map((i) => i.path.join('.') || '(raiz)'))];
     throw new MercadoPagoValidationError(
-      'Resposta do /oauth/token do Mercado Pago em formato inesperado.',
+      `Resposta do /oauth/token do Mercado Pago em formato inesperado. Campos inválidos: ${campos.join(', ')}.`,
       result.error.issues,
     );
   }

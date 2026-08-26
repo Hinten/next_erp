@@ -135,6 +135,12 @@ export interface ConversaFromPackContext {
   readonly clienteOuterRef: string | null;
   readonly integracaoOuterRef: string;
   readonly pedidoOuterRef: string | null;
+  /**
+   * The conta's colour ALREADY LIFTED into `cor_etiqueta`'s 32-bit ARGB domain
+   * by `corToEtiquetaArgb` — never the raw 24-bit `integracao.cor`. The chat
+   * etiqueta filter matches its palette with an exact `==`, so an unlifted
+   * value paints correctly and is selectable by nothing.
+   */
   readonly corEtiqueta: number | null;
   readonly nowMs: number;
   readonly acao: OrderMessageActionability;

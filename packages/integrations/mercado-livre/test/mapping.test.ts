@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
   attrColor,
   attrNA,
   attrPackageDimensions,
+  attrSize,
+  attrSizeGridId,
+  attrSizeGridRowId,
   attrSku,
   attrWeightKg,
   attributeToMercadoLivre,
@@ -35,13 +39,68 @@ describe('attributeToMercadoLivre', () => {
   it('weight and dimension factories embed the units (old wire parity)', () => {
     expect(attrWeightKg(0.5)).toEqual({ id: 'WEIGHT', name: 'Peso', value_name: '0.5 kg' });
     expect(
-      attrPackageDimensions({ alturaCm: 10, larguraCm: 20, profundidadeCm: 30, pesoKg: 0.5 }),
+      attrPackageDimensions({ alturaCm: 10, larguraCm: 20, profundidadeCm: 30, pesoG: 500 }),
     ).toEqual([
       { id: 'SELLER_PACKAGE_HEIGHT', value_name: '10 cm' },
       { id: 'SELLER_PACKAGE_LENGTH', value_name: '20 cm' },
       { id: 'SELLER_PACKAGE_WIDTH', value_name: '30 cm' },
       { id: 'SELLER_PACKAGE_WEIGHT', value_name: '500 g' },
     ]);
+  });
+
+  // The axis crossing is legacy parity (`models.dart:2135`) and stays: ML
+  // re-sorts the three for display and bills the volume, which a permutation
+  // leaves alone. Pinned so nobody "fixes" it into a silent wire change.
+  it('keeps the legacy axis crossing — LENGTH←largura, WIDTH←profundidade', () => {
+    const [, length, width] = attrPackageDimensions({
+      alturaCm: 1,
+      larguraCm: 2,
+      profundidadeCm: 3,
+      pesoG: 1,
+    });
+    expect(length).toEqual({ id: 'SELLER_PACKAGE_LENGTH', value_name: '2 cm' });
+    expect(width).toEqual({ id: 'SELLER_PACKAGE_WIDTH', value_name: '3 cm' });
+  });
+});
+
+describe('ML_PRODUTO_DERIVED_ATTRIBUTE_IDS', () => {
+  // The anti-drift anchor. The editor withholds exactly these ids, publish
+  // strips exactly these from the write-back and import strips them off the
+  // link — three surfaces that used to hold independent literals and DID
+  // disagree (`PACKAGE_*` against `SELLER_PACKAGE_*`).
+  it('names every id the produto-derived factories emit', () => {
+    const emitted = [
+      attrSku('SKU-1'),
+      attrWeightKg(0.5),
+      ...attrPackageDimensions({ alturaCm: 1, larguraCm: 1, profundidadeCm: 1, pesoG: 1 }),
+    ].map((a) => a.id!);
+
+    expect([...emitted].sort()).toEqual([...ML_PRODUTO_DERIVED_ATTRIBUTE_IDS].sort());
+  });
+
+  // Membership is "the produto owns it", not "a factory emits it". These four
+  // come from the grupo de variações and the tabela de medidas, are withheld by
+  // their own rules, and `SIZE_GRID_ID` in particular must survive on the link
+  // doc — it is where the chart binding lives between publishes.
+  it('excludes the variation- and size-chart-owned factories', () => {
+    for (const attr of [
+      attrSize('M'),
+      attrColor('Preto'),
+      attrSizeGridId('grid-1'),
+      attrSizeGridRowId('row-1'),
+    ]) {
+      expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain(attr.id);
+    }
+  });
+
+  // The read-only spelling is a DIFFERENT ML attribute (factory packaging data
+  // a seller cannot write). Folding the two lists together is the mistake this
+  // set exists to prevent.
+  it('carries the seller-writable spelling, never the read-only PACKAGE_* one', () => {
+    for (const axis of ['HEIGHT', 'LENGTH', 'WIDTH', 'WEIGHT']) {
+      expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).toContain(`SELLER_PACKAGE_${axis}`);
+      expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain(`PACKAGE_${axis}`);
+    }
   });
 });
 
@@ -433,6 +492,107 @@ describe('userProductMemberInputs', () => {
 
   it('yields nothing for a produto with no variations', () => {
     expect(userProductMemberInputs({ ...input, variations: [] })).toEqual([]);
+  });
+});
+
+/**
+ * The `shipping` node. Every ERP-published listing landed on ML as "a combinar"
+ * because no builder emitted one at all.
+ *
+ * ⚠️ All FOUR quadrants are asserted on purpose. The fields around this one
+ * (`category_id`, `condition`, `listing_type_id`, `price`) are all create-only,
+ * so "create carries it, update drops it" is the shape a reader expects here —
+ * and it is exactly wrong: `shipping` rides on the PUT too, which is what makes
+ * a republish self-heal a listing already sitting at "a combinar". Testing only
+ * the create half would pass against a builder that silently dropped it on
+ * update, i.e. against the version that fixes nothing already published.
+ */
+describe('buildItemPayload / buildUserProductItemPayload — shipping mode', () => {
+  const legacyBase = {
+    isUpdate: false,
+    isUserProductSeller: false,
+    title: 'Camiseta Básica',
+    condition: 'new' as const,
+    sellerCustomField: 'link-doc-1',
+    categoryId: 'MLB31447',
+    listingTypeId: 'gold_special',
+    price: 79.9,
+    availableQuantity: 12,
+    pictures: [{ id: 'IMG1' }],
+    attributes: [attrSku('SKU-1')],
+  };
+  const upBase = {
+    familyName: 'Camiseta Básica',
+    condition: 'new' as const,
+    categoryId: 'MLB31447',
+    listingTypeId: 'gold_special',
+    price: 79.9,
+    attributes: [attrSku('SKU-PAI')],
+    pictures: [{ id: 'PIC-PAI' }],
+    member: {
+      produtoId: 'child-1',
+      availableQuantity: 4,
+      attributeCombinations: [attrColor('Azul')],
+    },
+  };
+
+  it.each([false, true])('legacy builder sends it — isUpdate=%s', (isUpdate) => {
+    const data = buildItemPayload({ ...legacyBase, isUpdate, shippingMode: 'me2' });
+    expect(data.shipping).toEqual({ mode: 'me2' });
+  });
+
+  it.each([false, true])('User-Products builder sends it — isUpdate=%s', (isUpdate) => {
+    const data = buildUserProductItemPayload({ ...upBase, isUpdate, shippingMode: 'me2' });
+    expect(data.shipping).toEqual({ mode: 'me2' });
+  });
+
+  // `not_specified` is a REAL choice, not the absence of one: it forces "a
+  // combinar" over an account default that would otherwise have applied.
+  it('passes the mode through verbatim, not just me2', () => {
+    expect(buildItemPayload({ ...legacyBase, shippingMode: 'me1' }).shipping).toEqual({
+      mode: 'me1',
+    });
+    expect(buildItemPayload({ ...legacyBase, shippingMode: 'not_specified' }).shipping).toEqual({
+      mode: 'not_specified',
+    });
+  });
+
+  // ⚠️ `not.toHaveProperty`, never `toBeUndefined()` — the latter also passes
+  // for `{ shipping: undefined }`, and a key present-but-undefined is what
+  // reaches ML as an explicit null and overwrites the account default.
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+  ])('emits NO shipping key when the mode is %s', (_label, mode) => {
+    expect(buildItemPayload({ ...legacyBase, shippingMode: mode })).not.toHaveProperty('shipping');
+    expect(
+      buildUserProductItemPayload({ ...upBase, isUpdate: false, shippingMode: mode }),
+    ).not.toHaveProperty('shipping');
+  });
+
+  it('omitting the field entirely is byte-identical to before it existed', () => {
+    expect(buildItemPayload(legacyBase)).not.toHaveProperty('shipping');
+    expect(buildUserProductItemPayload({ ...upBase, isUpdate: false })).not.toHaveProperty(
+      'shipping',
+    );
+  });
+
+  // Pinned SEPARATELY from the builder above, because this projection is the
+  // only thing that puts a shipping node on a User-Products FAMILY: every member
+  // is built from it. Assert on the projection itself so a dropped forward fails
+  // here even if the member builder is fine.
+  it('userProductMemberInputs forwards the mode to every member', () => {
+    const members = userProductMemberInputs({
+      ...legacyBase,
+      isUserProductSeller: true,
+      shippingMode: 'me2',
+      variations: [
+        { produtoId: 'child-1', availableQuantity: 1, attributeCombinations: [attrColor('Azul')] },
+        { produtoId: 'child-2', availableQuantity: 2, attributeCombinations: [attrColor('Verde')] },
+      ],
+    });
+    expect(members).toHaveLength(2);
+    expect(members.map((m) => m.shippingMode)).toEqual(['me2', 'me2']);
   });
 });
 

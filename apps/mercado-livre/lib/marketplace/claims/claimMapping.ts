@@ -279,6 +279,12 @@ export interface ConversaFromClaimContext {
   /** `documents/clientes/<id>` — the buyer, resolved from the pedido (#768). */
   clienteOuterRef: string | null;
   contaId: string;
+  /**
+   * The conta's colour ALREADY LIFTED into `cor_etiqueta`'s 32-bit ARGB domain
+   * by `corToEtiquetaArgb` — never the raw 24-bit `integracao.cor`. The chat
+   * etiqueta filter matches its palette with an exact `==`, so an unlifted
+   * value paints correctly and is selectable by nothing.
+   */
   contaCor: number | null;
   pedidoId: string;
   incidenteId: string;

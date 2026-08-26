@@ -15,9 +15,48 @@
  *     Dart decoder. Here an errored option parses cleanly and carries
  *     its `error` string.
  *  2. Monetary fields stay **strings** exactly as ME sends them
- *     (`"37.79"`); the UI parses to number at the edge.
+ *     (`"37.79"`); a caller parses to number at the edge — through
+ *     `parseMePrice`, never a local `Number()`.
+ *
+ * ## ⚠️ Numbers on the wire — the convention, because this file has BOTH
+ * directions in it
+ *
+ * A provider quoting a number is serializer-level drift, and a `z.number()`
+ * that meets a quoted value rejects the WHOLE resource rather than that one
+ * field. #1087 is the worked example: one quoted `order_id` stopped a payment
+ * importing at all, and the notification parked. The repo's answer (#1249,
+ * #1251) is `wireNumber()` / `wireInt()` from `@delfrance/core/wire` — tolerance
+ * that never invents a value.
+ *
+ * ⚠️ But that sweep is only safe on a shape we READ. This file — unlike the
+ * Mercado Livre and Mercado Pago `types.ts`, which hold response schemas
+ * exclusively — **models both directions**, so it is split by direction below
+ * and each half gets the opposite rule:
+ *
+ *  - **RESPONSE** shapes (`calculateOptionSchema`, `agencySchema`,
+ *    `shipmentServiceSchema`, `balanceSchema`, `tokenResponseSchema`, …) go
+ *    through `wireNumber()`. Three of their ids are REQUIRED, which is the
+ *    sharp edge: one quoted `id` would discard the entire quote list, and a
+ *    freight quote that fails is an order nobody can ship.
+ *  - **REQUEST** shapes (`dimensionsWeightSchema`, `calculateRequestSchema`,
+ *    `cartInsertRequestSchema`) keep a strict `z.number()`. Tolerance is the
+ *    WRONG direction outbound: we must not send ME a stringified number
+ *    because we accepted one. Those six lines are carve-outs in
+ *    `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`,
+ *    each with its reason.
+ *
+ * ⚠️ And ME's monetary fields are a THIRD answer, kept on purpose: they are
+ * `z.union([z.string(), z.number()])` rather than either of the above. ME types
+ * them inconsistently BY ENDPOINT and says so in this repo already — strings in
+ * `calculate`, numbers in the cart 201 (see `cartItemSchema`). Coercing to a
+ * number would change what every consumer holds; leaving them `z.string()` had
+ * the MIRROR of the #1087 bug, because the day `calculate` answers with a JSON
+ * number the whole option array fails to parse. The union accepts both and
+ * `parseMePrice` is the one place the reading happens.
  */
 import { z } from 'zod';
+
+import { parseWireDecimal, wireNumber } from '@delfrance/core/wire';
 
 /* -------------------------------------------------------------------------- */
 /*                              OAuth token                                   */
@@ -28,7 +67,7 @@ export const tokenResponseSchema = z
   .object({
     token_type: z.string().nullable().optional(),
     /** Seconds until the access token expires (ME: 2592000 = 30 days). */
-    expires_in: z.number(),
+    expires_in: wireNumber(),
     access_token: z.string().min(1),
     refresh_token: z.string().min(1),
   })
@@ -54,7 +93,15 @@ export type TokenError = z.infer<typeof tokenErrorSchema>;
 /*                          shipment/calculate                                */
 /* -------------------------------------------------------------------------- */
 
-/** A single volume / package: dimensions in cm, weight in kg. */
+/**
+ * A single volume / package: dimensions in cm, weight in kg.
+ *
+ * ⚠️ REQUEST shape — strict `z.number()` is CORRECT here and the four lines
+ * below are carve-outs in the repo guard. This is what we SEND to ME, built by
+ * `normalizeVolume`; accepting a stringified dimension would mean forwarding
+ * one, and ME answers a bad body with an opaque 422. Nothing outside this
+ * package ever feeds it a provider value.
+ */
 export const dimensionsWeightSchema = z.object({
   width: z.number(),
   height: z.number(),
@@ -69,6 +116,9 @@ export type DimensionsWeight = z.infer<typeof dimensionsWeightSchema>;
  * volume, a `volumes` array when there are several. `options` carries
  * insurance/receipt/own_hand; `services` optionally limits the carriers
  * quoted (CSV of service ids).
+ *
+ * ⚠️ REQUEST shape — `insurance_value` stays a strict `z.number()`. It is a
+ * declared value we send, derived from the pedido, never read off a provider.
  */
 export const calculateRequestSchema = z
   .object({
@@ -90,12 +140,12 @@ export const calculateRequestSchema = z
 export type CalculateRequest = z.infer<typeof calculateRequestSchema>;
 
 export const deliveryRangeSchema = z
-  .object({ min: z.number().nullable().optional(), max: z.number().nullable().optional() })
+  .object({ min: wireNumber().nullable().optional(), max: wireNumber().nullable().optional() })
   .passthrough();
 
 export const companySchema = z
   .object({
-    id: z.number(),
+    id: wireNumber(),
     name: z.string(),
     picture: z.string().nullable().optional(),
   })
@@ -110,15 +160,22 @@ export type Company = z.infer<typeof companySchema>;
  */
 export const calculateOptionSchema = z
   .object({
-    id: z.number(),
+    id: wireNumber(),
     name: z.string(),
-    price: z.string().nullable().optional(),
-    custom_price: z.string().nullable().optional(),
-    discount: z.string().nullable().optional(),
+    // ⚠️ A union, and deliberately neither of the other two answers — see the
+    // file header. `z.string()` alone is the MIRROR of #1087: ME is documented
+    // (in `cartItemSchema` below) to send these as NUMBERS on the cart 201, so
+    // the day `calculate` does the same, `z.array(calculateOptionSchema)`
+    // rejects every option and the operator gets no quotes at all. And
+    // `wireNumber()` would change what every consumer holds. Read them through
+    // `parseMePrice`, which is the one place the rule lives.
+    price: z.union([z.string(), z.number()]).nullable().optional(),
+    custom_price: z.union([z.string(), z.number()]).nullable().optional(),
+    discount: z.union([z.string(), z.number()]).nullable().optional(),
     currency: z.string().nullable().optional(),
-    delivery_time: z.number().nullable().optional(),
+    delivery_time: wireNumber().nullable().optional(),
     delivery_range: deliveryRangeSchema.nullable().optional(),
-    custom_delivery_time: z.number().nullable().optional(),
+    custom_delivery_time: wireNumber().nullable().optional(),
     custom_delivery_range: deliveryRangeSchema.nullable().optional(),
     company: companySchema.nullable().optional(),
     /** Present (with no pricing/company) when the carrier can't quote. */
@@ -133,6 +190,30 @@ export type CalculateResponse = z.infer<typeof calculateResponseSchema>;
 /** `true` when this option is a non-quotable error entry (has `error`, no price). */
 export function isErroredOption(o: CalculateOption): boolean {
   return o.error != null || (o.price == null && o.company == null);
+}
+
+/**
+ * A Melhor Envio monetary field (`price`, `custom_price`, `discount`) as a
+ * number, or `null` when it is not one.
+ *
+ * ⚠️ **The one place ME's money is read.** It lives here rather than in the
+ * screen that renders a quote because that screen had a private
+ * `Number(s)` — which answers **0** for `''`, **31** for `'0x1F'` and **1000**
+ * for `'1e3'`, on a value the operator then saves onto the pedido as the freight
+ * they will be charged. `parseWireDecimal` is the repo's rule for exactly this
+ * (#810: a coerced-from-garbage value is worse than a refused one), and a
+ * private second copy of it is the bug that rule exists to prevent.
+ *
+ * The `number` branch is not hypothetical: `price` is a
+ * `z.union([z.string(), z.number()])` precisely because ME types it by endpoint.
+ *
+ * Returns `null` — never `0` — for anything it cannot read. ⚠️ A caller that
+ * turns that `null` into `0` is choosing to quote free shipping; make that
+ * choice explicitly, at the call site, where it is visible.
+ */
+export function parseMePrice(v: string | number | null | undefined): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  return parseWireDecimal(v);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -156,7 +237,7 @@ function toArray(v: unknown): unknown[] {
  */
 export const shipmentServiceSchema = z
   .object({
-    id: z.number(),
+    id: wireNumber(),
     name: z.string().nullable().optional(),
     company: companySchema.nullable().optional(),
   })
@@ -172,7 +253,7 @@ export const shipmentServicesResponseSchema = z.preprocess(toArray, z.array(ship
  */
 export const agencySchema = z
   .object({
-    id: z.number(),
+    id: wireNumber(),
     name: z.string().nullable().optional(),
     company: companySchema.nullable().optional(),
   })
@@ -212,7 +293,7 @@ export type Me = z.infer<typeof meSchema>;
 /** `GET /api/v2/me/balance` — wallet balance in BRL. */
 export const balanceSchema = z
   .object({
-    balance: z.number().nullable().optional(),
+    balance: wireNumber().nullable().optional(),
   })
   .passthrough();
 export type Balance = z.infer<typeof balanceSchema>;
@@ -268,6 +349,9 @@ export type CartItem = z.infer<typeof cartItemSchema>;
  * options) is a domain mapping built server-side from the pedido + frete — the
  * package stays domain-neutral, so only the `service` ME requires is modeled
  * and the rest passes through.
+ *
+ * ⚠️ REQUEST shape — `service` stays a strict `z.number()`. It is the carrier
+ * service id we picked, and ME rejects the cart insert if it arrives quoted.
  */
 export const cartInsertRequestSchema = z
   .object({

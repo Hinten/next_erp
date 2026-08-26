@@ -11,12 +11,14 @@
     "./money": "./src/money/index.ts",
     "./address": "./src/address/index.ts",
     "./cep": "./src/cep/index.ts",
+    "./cor": "./src/cor/index.ts",
     "./documents": "./src/documents/index.ts",
     "./phone": "./src/phone/index.ts",
     "./region": "./src/region/index.ts",
     "./tenant": "./src/tenant/index.ts",
     "./plugins": "./src/plugins/index.ts",
-    "./equality": "./src/equality/index.ts"
+    "./equality": "./src/equality/index.ts",
+    "./wire": "./src/wire/index.ts"
   },
   "scripts": {
     "lint": "eslint .",

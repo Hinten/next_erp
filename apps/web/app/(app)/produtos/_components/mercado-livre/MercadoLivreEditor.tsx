@@ -11,6 +11,7 @@ import { PERM } from '@delfrance/auth';
 import {
   INTEGRACAO_TIPO,
   PRODUTO_EXTRA_DATA_DOC_ID,
+  type MedidasDoPacote,
   type ProdutoMercadoLivreLink,
 } from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
@@ -155,6 +156,25 @@ export function MercadoLivreEditor({
   // an unsaved toggle would promise a value publish would not use — the same
   // reason the card already warns "a publicação envia os dados salvos".
   const produtoEhUsado = produtoSnap.data?.data.ehUsado ?? false;
+  // The five fields publish turns into `WEIGHT` + `SELLER_PACKAGE_*`, shown
+  // read-only per listing (`DimensoesPesoField`). Read from the SAVED doc for
+  // the same reason as `produtoEhUsado` above.
+  //
+  // ⚠️ `null` while the snapshot loads — NOT an empty object. The field warns
+  // when a value is missing, and an empty object is indistinguishable from a
+  // produto nobody measured, so it would flash the warning on every open (the
+  // `produtoFotoCount` lesson, three lines up).
+  const produtoMedidas = useMemo<MedidasDoPacote | null>(() => {
+    const p = produtoSnap.data?.data;
+    if (!p) return null;
+    return {
+      alturaCm: p.alturaCm,
+      larguraCm: p.larguraCm,
+      profundidadeCm: p.profundidadeCm,
+      pesoBrutoKg: p.pesoBrutoKg,
+      pesoLiquidoKg: p.pesoLiquidoKg,
+    };
+  }, [produtoSnap.data]);
   // ⚠️ `extraData.condicao` is the SECOND input publish resolves the condition
   // from (`resolveCondicaoAnuncio`), and it lives in its own singleton
   // subcollection — nothing about it is derivable from the produto doc. Without
@@ -857,6 +877,7 @@ export function MercadoLivreEditor({
                   produtoNome={produtoNome}
                   produtoEhUsado={produtoEhUsado}
                   produtoCondicao={produtoCondicao}
+                  produtoMedidas={produtoMedidas}
                   produtoFotoCount={produtoFotoCount}
                   produtoDirty={produtoDirty}
                   carregandoGeral={carregandoGeral}

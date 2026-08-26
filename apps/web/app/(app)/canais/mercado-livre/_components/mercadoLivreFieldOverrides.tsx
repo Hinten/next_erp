@@ -6,6 +6,7 @@ import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
+import { CorInput } from '@/components/inputs/CorInput';
 
 /**
  * Field config shared by the Mercado Livre create and edit screens — the
@@ -40,6 +41,18 @@ export const mercadoLivreFields: Record<string, FieldConfig> = {
     hint: 'Depósito de onde o estoque é enviado ao Mercado Livre.',
     renderInput: refRenderInput(depositoCollection, true),
   },
+  modoEnvioMercadoLivre: {
+    label: 'Modo de envio',
+    hint: 'Enviado em toda publicação e republicação desta conta. Vazio: não enviar o modo — o Mercado Livre aplica o padrão da conta.',
+  },
+  // Surfaced now that the colour is READ somewhere: /produtos paints one badge
+  // per canal de venda with it. While this field stayed excluded, every ML
+  // conta had `cor = null` and rendered neutral grey — and ML is the channel
+  // most produtos are listed on, so the column's colour said nothing.
+  cor: {
+    hint: 'Cor de destaque do canal — usada nos badges de "Canais de venda" em /produtos.',
+    renderInput: CorInput,
+  },
   nome: { label: 'Nome' },
   ativo: { label: 'Ativo' },
   padrao: { label: 'Padrão' },
@@ -48,8 +61,9 @@ export const mercadoLivreFields: Record<string, FieldConfig> = {
 /**
  * Fields hidden from the Mercado Livre form:
  *  - `tipo` is pinned to 1 (mercadoLivre) in defaultValues — never user-pickable.
- *  - `cpf_cnpj`, `idCadIntTran`, `modalidadeFreteImportacao`, `cor` stay out of
- *    this first slice (surfaced later by the milestone that consumes them).
+ *  - `cpf_cnpj`, `idCadIntTran`, `modalidadeFreteImportacao` stay out of this
+ *    first slice (surfaced later by the milestone that consumes them). `cor`
+ *    was in that group and has now been surfaced — /produtos consumes it.
  *  - `dataCadastro` is stamped automatically on create.
  *  - the per-channel account fields below (#289) are irrelevant here too —
  *    even `user_id`, which IS this channel's own field, is stamped by the
@@ -60,7 +74,6 @@ export const mercadoLivreExcludedFields = [
   'cpf_cnpj',
   'idCadIntTran',
   'modalidadeFreteImportacao',
-  'cor',
   'dataCadastro',
   'ultimaModificacao',
   'user_id', // latent leak (rendered as a raw number input) — per-channel field, hidden here, surfaced by their own channel screens/flows

@@ -478,3 +478,75 @@ describe('mpPaymentToPagamento — every output is wire-valid', () => {
     expect(parsed.metodoPagamentoOuterRef).toBe(OUTER_REF);
   });
 });
+
+/**
+ * Tolerance must not change ARITHMETIC.
+ *
+ * The money fields are not inert: `mpPaymentToPagamento` sums them into `valor`
+ * and `tarifas`, `reconcilePedidoFromPagamento` writes the result to Firestore
+ * inside a transaction, and it re-sums `valorPago` across the pedido to drive
+ * the estado transition. Widening `types.ts` to accept a quoted number is only
+ * safe if the number that comes out the other side is the same one (#1251).
+ *
+ * ⚠️ This suite is the one that matters, because it is the only place in the MP
+ * workspaces that builds its fixtures THROUGH `mpPaymentSchema` — the app's own
+ * tests cast (`... as MpPayment`) and so cannot see a schema change at all.
+ */
+describe('a fully-quoted payload maps identically to the numeric one', () => {
+  /** Every numeric field, in the shapes a serializer actually emits. */
+  const NUMERIC: Record<string, unknown> = {
+    payment_type_id: 'credit_card',
+    status: 'approved',
+    transaction_amount: 1000.02,
+    shipping_cost: 15.5,
+    installments: 12,
+    marketplace_fee: 8.35,
+    refunds: [{ amount: 50 }, { amount: 0.5 }],
+    fee_details: [{ amount: 4.5, type: 'mercadopago_fee' }, { amount: 1.25 }],
+    charges_details: [
+      {
+        amounts: { original: 30.5, refunded: 10 },
+        accounts: { from: 'collector', to: 'mp' },
+      },
+    ],
+  };
+
+  const QUOTED: Record<string, unknown> = {
+    ...NUMERIC,
+    transaction_amount: '1000.02',
+    shipping_cost: '15.5',
+    installments: '12',
+    marketplace_fee: '8.35',
+    refunds: [{ amount: '50' }, { amount: '0.500000' }], // C `%f` on the second
+    fee_details: [{ amount: '4.50', type: 'mercadopago_fee' }, { amount: '+1.25' }],
+    charges_details: [
+      {
+        amounts: { original: '30.50', refunded: '10' },
+        accounts: { from: 'collector', to: 'mp' },
+      },
+    ],
+  };
+
+  it('produces a byte-identical pagamento', () => {
+    expect(map(QUOTED)).toEqual(map(NUMERIC));
+  });
+
+  it('and the derived money is the value it always was, not a fresh 0', () => {
+    // Spelled out rather than left to the deep-equal: a bug that zeroed BOTH
+    // sides would satisfy the assertion above and nothing else.
+    const { pagamento } = map(QUOTED);
+    expect(pagamento.valor).toBe(965.02); // 1000.02 + 15.5 - 50.5
+    expect(pagamento.tarifas).toBe(34.6); // 8.35 + 4.5 + 1.25 + (30.5 - 10)
+    expect(pagamento.parcelas).toBe(12);
+    expect(pagamento.status_pagamento).toBe(STATUS_PAGAMENTO.estornado_parcialmente);
+  });
+
+  it('⛔ a money field that is not a number still fails the parse, never becomes 0', () => {
+    // The whole reason `z.coerce.number()` is banned: a payment recorded as
+    // R$ 0,00 reconciles against nothing, and `valor: z.number().min(0)` on the
+    // write validator would accept it without a murmur.
+    for (const amount of ['', '   ', '1,50', '0x1F', '1e3', 'R$ 100,00', true]) {
+      expect(mpPaymentSchema.safeParse({ id: 1, transaction_amount: amount }).success).toBe(false);
+    }
+  });
+});

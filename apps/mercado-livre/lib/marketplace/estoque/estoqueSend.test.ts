@@ -315,6 +315,20 @@ function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
   };
 }
 
+/**
+ * ML's own words for a watermarked cover photo, as this path would store them.
+ * Module-scoped: both the success writeback and the terminal-4xx branch assert
+ * on it, and they live in different describes.
+ */
+const MODERACAO = {
+  nome: 'WATERMARK',
+  dataCriacao: null,
+  motivo: "A foto de capa contém marcas d'água.",
+  remedio: 'Corrija suas fotos de capa.',
+  secoes: ['pictures'],
+  evidencias: [],
+};
+
 /** Seed the writeback-target link doc (only the writeback/error tests need it). */
 function seedLink(db: FakeDb, extra: DocData = {}): void {
   db.seed(LINK_PATH, 'link1', {
@@ -980,6 +994,53 @@ describe('processStockSendTask — terminal 4xx (last attempt verifies with ML)'
     return h;
   }
 
+  /**
+   * ⚠️ #1252, and this path has BETTER evidence than the success writeback: the
+   * verification GET above is a real `GET /items`, not a PUT echo. So a stored
+   * reason ML no longer reports is stale here for exactly the same reason, and
+   * clearing it costs nothing.
+   *
+   * Before this, the branch wrote a fresh `status` and left `moderacoes`
+   * standing — producing `{ estado: 'E', status: 'active', sub_status: [],
+   * moderacoes: [ … ] }`, a lifted reason sitting next to a status that says
+   * there is none. That is precisely the contradiction the invariant forbids.
+   */
+  it('CLEARS a lifted reason on the verification GET, alongside the latch', async () => {
+    const h = terminal(async () => ({ id: 'MLB111', status: 'active', sub_status: [] }), {
+      moderacoes: [MODERACAO],
+    });
+
+    await run(h);
+
+    // One object: the reason and the status it explains move together, and the
+    // `estado 'E'` latch — our diagnosis of OUR payload — rides along without
+    // changing what ML reported.
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      estado: 'E',
+      status: 'active',
+      moderacoes: [],
+    });
+  });
+
+  /**
+   * ⚠️ The other arm. ML is still reporting the moderation, so this branch —
+   * which made no `/moderations` read — must leave the stored reason alone
+   * rather than invent a verdict.
+   */
+  it('leaves a reason the verification GET is STILL reporting', async () => {
+    const h = terminal(
+      async () => ({ id: 'MLB111', status: 'active', sub_status: ['poor_quality_thumbnail'] }),
+      { moderacoes: [MODERACAO] },
+    );
+
+    await run(h);
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      sub_status: ['poor_quality_thumbnail'],
+      moderacoes: [MODERACAO],
+    });
+  });
+
   it("ML says the listing is HEALTHY → our payload is the problem → estado 'E'", async () => {
     const h = terminal(async () => ({ id: 'MLB111', status: 'active', sub_status: [] }));
 
@@ -1594,25 +1655,29 @@ describe('processStockSendTask — success clears the previous diagnosis', () =>
    * active listing accepts stock updates — so a send lands on a moderated
    * listing routinely.
    *
-   * Clearing `moderacoes` here would erase a live, still-true reason and show a
-   * clean listing that is really still penalised. Hiding a real problem is worse
-   * than the "no explanation" bug the field was added to fix, so this path — which
-   * never called `/moderations` — must leave it exactly as it found it.
+   * Clearing `moderacoes` on the SEND's authority would erase a live, still-true
+   * reason and show a clean listing that is really still penalised. Hiding a real
+   * problem is worse than the "no explanation" bug the field was added to fix.
+   *
+   * ⚠️ The `sub_status` on the RESPONSE is what makes this test mean anything
+   * (#1252). It used to be absent — the harness answered a bare `active` — so the
+   * assertion held for the wrong reason: the code simply never touched the field.
+   * That version passed against a writer that cleared unconditionally on success,
+   * which is precisely the bug it claims to guard. Now the response reports the
+   * moderation ML is still applying, and survival is a real verdict.
    */
-  it('does NOT clear a live moderation it never asked ML about', async () => {
-    const moderacao = {
-      nome: 'WATERMARK',
-      dataCriacao: null,
-      motivo: "A foto de capa contém marcas d'água.",
-      remedio: 'Corrija suas fotos de capa.',
-      secoes: ['pictures'],
-      evidencias: [],
-    };
-    const h = makeHarness();
+  it('does NOT clear a moderation ML is STILL reporting', async () => {
+    const h = makeHarness({
+      updateItem: async () => ({
+        id: 'MLB111',
+        status: 'active',
+        sub_status: ['poor_quality_thumbnail'],
+      }),
+    });
     seedLink(h.db, {
       estado: 'p',
       errors: ['ML 400: invalid quantity'],
-      moderacoes: [moderacao],
+      moderacoes: [MODERACAO],
     });
 
     await run(h);
@@ -1621,7 +1686,54 @@ describe('processStockSendTask — success clears the previous diagnosis', () =>
     // The stock diagnosis cleared…
     expect(link).toMatchObject({ errors: [] });
     // …and the policy reason survived untouched.
-    expect(link).toMatchObject({ moderacoes: [moderacao] });
+    expect(link).toMatchObject({ moderacoes: [MODERACAO] });
+    // ⚠️ Deliberately NOT `expect(api.getLastModeration).toBeUndefined()`. The
+    // fake API is a fixed literal with no such key, so that assertion could
+    // never fail — it would read as a guard while checking nothing. What
+    // actually proves "no lookup" here is that the surface has no moderation
+    // endpoint at all, so a call would throw; this pins the calls it DOES make.
+    expect(h.updateItem).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * ⚠️ THE OTHER HALF, and the one #1252 exists for. A reason ML has LIFTED is
+   * worse than no reason at all: a stale moderação on a healthy listing is
+   * indistinguishable from a real one, so the operator edits a listing that has
+   * nothing wrong with it.
+   *
+   * The clear is free — `precisaConsultarModeracao` is pure, so `resp` alone
+   * settles it and no `/moderations` call is made. That is what lets a path which
+   * never asks ML about moderation still be trusted to clear one.
+   */
+  it('CLEARS a reason ML has stopped reporting, without asking ML anything', async () => {
+    // The harness default: `active`, no sub_status — ML reporting nothing.
+    const h = makeHarness();
+    seedLink(h.db, { estado: 'p', moderacoes: [MODERACAO] });
+
+    await run(h);
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({
+      status: 'active',
+      moderacoes: [],
+    });
+  });
+
+  /**
+   * ⚠️ A `variationItem` task carries the FAMILY's `linkDocId` next to a MEMBER's
+   * `itemId`, so `resp` describes one member while the write targets the parent.
+   * That is why this arm writes no status — and the clear has to sit inside the
+   * same guard, or one member's verdict would clear the whole family's reason.
+   */
+  it('a member send clears nothing on the family link', async () => {
+    const h = makeHarness();
+    seedLink(h.db, { estado: 'p', moderacoes: [MODERACAO] });
+
+    await run(h, payload({ kind: 'variationItem', variacaoProdutoId: 'child-1' }));
+
+    const link = h.db.docs(LINK_PATH).get('link1');
+    expect(link).toMatchObject({ moderacoes: [MODERACAO] });
+    // The status half is absent for the same reason.
+    expect(link).toMatchObject({ estado: 'p' });
   });
 });
 
