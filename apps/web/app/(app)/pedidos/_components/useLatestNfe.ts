@@ -45,7 +45,7 @@
  *    change and the cell renders a Skeleton while loading. This memo is what
  *    guarantees a scroll-back repaints instantly.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useIntersection } from '@mantine/hooks';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
@@ -252,27 +252,39 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
   // an intersection callback. Re-entering cancels a pending teardown (the
   // effect cleanup clears the timer), so a row flickering across the fold keeps
   // one continuous subscription.
-  // Claimed once, at mount, in DOM order — so the top of the table gets the
-  // optimistic slots and the tail below the fold waits to be observed.
-  const [optimistic] = useState(claimOptimisticSlot);
-  const [active, setActive] = useState(optimistic);
+  const [active, setActive] = useState(false);
   const seenVisible = useRef(false);
+  const slotHeld = useRef(false);
 
-  // Hand the slot back the moment the guess is resolved (the observer has
-  // spoken) or the row goes away, so scrolling keeps refilling the budget.
-  const slotHeld = useRef(optimistic);
-  useEffect(() => {
-    if (!slotHeld.current) return;
-    if (observed) {
-      slotHeld.current = false;
-      releaseOptimisticSlot();
-      return;
-    }
+  // ⚠️ Claim in a LAYOUT effect, never in a `useState` initializer. Initializers
+  // run in the RENDER phase, which React executes for the new tree BEFORE it
+  // commits the deletions of the rows being replaced. So on any re-query that
+  // swaps the row set — applying a column filter, the commonest thing an
+  // operator does — a new row would see the budget still held by 100 rows that
+  // are about to unmount, start inactive, and sit waiting on an intersection
+  // callback. That failed `pedidos-nfe-snapshot` 3/3, deterministically,
+  // because that spec filters to a single pedido before asserting the badge.
+  //
+  // A layout effect runs in the commit phase, after those deletions have been
+  // processed and their cleanups run, so the budget it reads is the real one.
+  // It is also synchronous before paint, so claiming here costs one render —
+  // not the many frames an IntersectionObserver delivery can take.
+  useLayoutEffect(() => {
+    slotHeld.current = claimOptimisticSlot();
+    if (slotHeld.current) setActive(true);
     return () => {
       if (!slotHeld.current) return;
       slotHeld.current = false;
       releaseOptimisticSlot();
     };
+  }, []);
+
+  // Hand the slot back once the observer has resolved the guess — the row keeps
+  // its subscription, it just no longer needs to be guessed about.
+  useEffect(() => {
+    if (!observed || !slotHeld.current) return;
+    slotHeld.current = false;
+    releaseOptimisticSlot();
   }, [observed]);
 
   useEffect(() => {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
+import { Fragment, createElement } from 'react';
+import { act, render, renderHook } from '@testing-library/react';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import { ESTADO_NFE } from '@delfrance/schemas';
 import type { NotaFiscalEletronica } from '@delfrance/schemas';
@@ -12,6 +13,7 @@ import {
   __resetLatestNfeMemo,
   useLatestNfe,
 } from './useLatestNfe';
+import type { LatestNfeStatus } from './useLatestNfe';
 
 // Hoisted mutable state so each test can steer the two hooks `useLatestNfe`
 // composes, then `rerender()` to observe the result. Mirrors the pattern in
@@ -166,6 +168,31 @@ describe('useLatestNfe', () => {
     hooks.forEach((h) => h.unmount());
     const afterScroll = renderHook(() => useLatestNfe('fresh'));
     expect(afterScroll.result.current.status).not.toBe('idle');
+  });
+
+  it('gives a slot to a row that REPLACES a full page (the filter re-query)', () => {
+    // React renders the NEW tree before committing the deletions of the old
+    // one, so a claim made in a `useState` initializer sees a budget still held
+    // by rows that are about to unmount — every replacement row starts inactive
+    // and sits waiting on an intersection callback. That is the exact shape
+    // that failed `pedidos-nfe-snapshot` 3/3: the spec filters to ONE pedido
+    // before asserting the badge.
+    //
+    // Separate `renderHook` roots cannot catch this (each mount/unmount is its
+    // own commit), so this drives ONE tree that swaps its children.
+    const seen: Record<string, LatestNfeStatus> = {};
+    function Row({ id }: { id: string }) {
+      seen[id] = useLatestNfe(id).status;
+      return null;
+    }
+    const page = (ids: string[]) =>
+      createElement(Fragment, null, ...ids.map((id) => createElement(Row, { key: id, id })));
+
+    const full = Array.from({ length: NFE_OPTIMISTIC_BUDGET }, (_, i) => `full-${i}`);
+    const { rerender } = render(page(full));
+    act(() => rerender(page(['filtered'])));
+
+    expect(seen.filtered).not.toBe('idle');
   });
 
   it('keeps a row the observer reports visible subscribed indefinitely', () => {
