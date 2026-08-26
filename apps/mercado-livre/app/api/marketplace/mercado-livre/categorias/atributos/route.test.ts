@@ -84,7 +84,7 @@ describe('GET /api/marketplace/mercado-livre/categorias/atributos', () => {
     expect(body.atributos.map((a) => a.id)).toEqual(['BRAND', 'MODEL']);
     expect(body.atributos[0]!.required).toBe(true);
     expect(body.omitidos).toEqual([
-      { id: 'SELLER_SKU', motivo: 'bloqueado' },
+      { id: 'SELLER_SKU', motivo: 'derivado' },
       { id: 'ESCONDIDO', motivo: 'oculto' },
       { id: 'SIZE_GRID_ID', motivo: 'tabela-de-medidas' },
       { id: 'SLEEVE', motivo: 'somente-variacao' },
