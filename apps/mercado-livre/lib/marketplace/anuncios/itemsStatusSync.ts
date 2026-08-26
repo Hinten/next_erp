@@ -102,7 +102,7 @@
  * only when every observed member is closed, and never while one was never
  * observed.
  */
-import { FieldValue, type Firestore } from 'firebase-admin/firestore';
+import { type DocumentReference, FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { ESTADO_PUBLICACAO_ML, type MlModeracao } from '@delfrance/schemas';
 import {
   type MlItem,
@@ -256,30 +256,39 @@ export async function syncItemStatus(
   // item id and therefore resolves through stage 1, never stage 2. A stage-2
   // resolution is already User-Products, so it cannot be the source of a
   // migration INTO User Products.
-  if (link.member) {
-    // ⚠️ Fetched HERE, not inside the fold: that runs in a TRANSACTION, and a
-    // network call in a transaction window is root `CLAUDE.md` rule 7's class C
-    // — the callback re-runs on every OCC retry, so the fetch would be re-issued
-    // per attempt against a rate-limited API. The transaction receives an
-    // already-resolved value and stays free of I/O (#1087).
-    return applyMemberStatusAndFold(
+  //
+  // ⚠️ ONLY the `familia` half short-circuits here, and the distinction is the
+  // whole reason `via` exists. The argument above turns on a stage-2 resolution
+  // being already User-Products and therefore never a migration SOURCE. A
+  // member found through the parent's own `id` (`id-do-pai`, the `family_id`-less
+  // family) enjoys no such guarantee: it matched exactly the way a legacy
+  // listing does, so its tags must still be read first. It folds below instead,
+  // which is strictly more conservative in both directions.
+  const foldMembro = async (membro: ResolvedMember): Promise<ItemsSyncOutcome> =>
+    applyMemberStatusAndFold(
       db,
       integracaoId,
       {
         produtoId: link.produtoId,
         linkDocId: link.docId,
-        memberProdutoId: link.member.produtoId,
-        memberDocId: link.member.docId,
-        pmlOuterRef: link.member.pmlOuterRef,
+        memberProdutoId: membro.produtoId,
+        memberDocId: membro.docId,
+        pmlOuterRef: membro.pmlOuterRef,
       },
       { status: item.status ?? null, subStatus: item.sub_status ?? null },
+      // ⚠️ Fetched HERE, not inside the fold: that runs in a TRANSACTION, and a
+      // network call in a transaction window is root `CLAUDE.md` rule 7's class C
+      // — the callback re-runs on every OCC retry, so the fetch would be re-issued
+      // per attempt against a rate-limited API. The transaction receives an
+      // already-resolved value and stays free of I/O (#1087).
       await fetchModeracoes(api, itemId, item),
       // #706: this member's own stock identity, straight off the fetched item.
       // The family's parent link deliberately gets none — a User Product
       // describes a product at VARIATION level, so the members carry them.
       item.user_product_id ?? null,
     );
-  }
+
+  if (link.member?.via === 'familia') return await foldMembro(link.member);
 
   // Migration-tagged item (needs the fetched item's `tags`) — the only reason
   // left to skip a listing, and it is ML's reason, not ours. The ONE takeover
@@ -314,6 +323,13 @@ export async function syncItemStatus(
     await stampAguardandoMigracao(db, link);
     return 'deferred-migration-source';
   }
+
+  // The `family_id`-less family (#1142). Below every tag branch for the reason
+  // stated above, and above the simple merge because this item is STILL one of N
+  // listings the parent summarises — the parent's `id` merely happens to be this
+  // member's. Writing it straight through would let member 0 speak for the family
+  // AND leave member 0's own link unwritten, which poisons every sibling's fold.
+  if (link.member) return await foldMembro(link.member);
 
   // Below every deferral, so a listing ML is mid-migration never pays for a
   // moderation it has nowhere to put: those branches stamp `estado: 'am'` and
@@ -461,15 +477,65 @@ export interface MemberFoldTarget {
   pmlOuterRef: string;
 }
 
+/** The family end alone — every member the caller observed rides in separately. */
+export interface FamilyFoldTarget {
+  /** The FAMILY anchor produto — where the parent link lives. */
+  produtoId: string;
+  /** The family's `produtoMercadoLivre` doc id. */
+  linkDocId: string;
+  /** The parent's outer ref — the key the sibling fold reads by. */
+  pmlOuterRef: string;
+}
+
 /**
- * The User-Products FAMILY path (#1142): record what ML said about THIS member,
- * then re-derive the family's summary from every member.
+ * ONE member the caller has a fresh reading for, ready to be substituted into
+ * the fold in place of what is stored on that member's link.
  *
- * ⚠️ The denorm key is the PARENT link's own `id`, never the notified member's.
- * Publish and import both stamped `produtos.marketplace` with the family id
- * (member ids go on the CHILD produtos, in a different shape), so keying on the
- * member would `arrayUnion` an entry nothing ever removes AND leave the cancel
- * arm's `externalId` filter matching nothing — a removal that silently no-ops.
+ * Every member NOT listed here still counts — the fold reads its stored values
+ * off disk exactly as it always has. That is what makes a partial refresh safe:
+ * a member ML could not answer for is left alone rather than guessed at.
+ */
+export interface ObservedMember {
+  /** The variation CHILD produto owning the member link. */
+  memberProdutoId: string;
+  /** The `variacaoMercadoLivre` doc id. */
+  memberDocId: string;
+  status: string | null;
+  subStatus: string[] | null;
+  /**
+   * ML's active moderations for THIS member, or `null` for a caller that never
+   * asked `/moderations`. ⚠️ `null` is NOT `[]` — see the wrapper below.
+   */
+  moderacoes: MlModeracao[] | null;
+  /** This member's `user_product_id` (#706), fill-only; `null` = not learned. */
+  userProductId: string | null;
+}
+
+/** What the family's parent link carries AFTER a fold ran (or would not run). */
+export interface FamilyFoldResult {
+  outcome: ItemsSyncOutcome;
+  /**
+   * The parent's EFFECTIVE values once this call returned: the folded ones when
+   * the fold concluded and wrote, otherwise the values already stored. A caller
+   * that reports back to an operator (`reverificarAnuncio`) needs the state that
+   * is true now, not the one it hoped to write — a fold that declined to
+   * conclude leaves the previous summary standing, and saying otherwise would
+   * report a change that did not happen.
+   */
+  estado: string | null;
+  status: string | null;
+  subStatus: string[] | null;
+}
+
+/**
+ * The User-Products FAMILY path (#1142) for ONE observed member — the shape the
+ * `items` webhook and the stock sender both take. A thin wrapper over
+ * {@link applyFamilyStatusAndFold}, which is the same operation for N members.
+ *
+ * ⚠️ Kept as its own export because its two callers each hold exactly one
+ * member's fresh reading, and collapsing them onto the array form at the call
+ * site would invite passing a partial family — which the fold would then read as
+ * "these are the only members", the one thing it must never conclude.
  *
  * ⚠️ Exported because the `items` webhook is NOT the only surface that learns
  * one member's status: the stock sender's terminal 4xx branch (#781) fetches the
@@ -513,9 +579,55 @@ export async function applyMemberStatusAndFold(
    */
   userProductId: string | null = null,
 ): Promise<ItemsSyncOutcome> {
-  const status = observed.status;
-  const subStatus = observed.subStatus;
+  const { produtoId, linkDocId, memberProdutoId, memberDocId, pmlOuterRef } = target;
+  const resultado = await applyFamilyStatusAndFold(
+    db,
+    integracaoId,
+    { produtoId, linkDocId, pmlOuterRef },
+    [
+      {
+        memberProdutoId,
+        memberDocId,
+        status: observed.status,
+        subStatus: observed.subStatus,
+        moderacoes,
+        userProductId,
+      },
+    ],
+  );
+  return resultado.outcome;
+}
 
+/**
+ * Record what the caller observed about ANY number of a family's members, then
+ * re-derive the family's summary from every member — the observed ones from the
+ * readings supplied here, the rest from what is stored on their own links.
+ *
+ * One transaction for the whole family, never one per member. N transactions
+ * would read the siblings N times (N² reads) and — worse — would let a fold
+ * midway through the run conclude against a half-refreshed family, which for the
+ * `closed` ladder is exactly the premature `estado 'c'` this module exists to
+ * prevent. Here every member is written and the summary derived in the same
+ * atomic view.
+ *
+ * ⚠️ The denorm key is the PARENT link's own `id`, never a member's. Publish and
+ * import both stamped `produtos.marketplace` with the family id (member ids go
+ * on the CHILD produtos, in a different shape), so keying on a member would
+ * `arrayUnion` an entry nothing ever removes AND leave the cancel arm's
+ * `externalId` filter matching nothing — a removal that silently no-ops.
+ *
+ * ⚠️ A member the caller could NOT read must simply be left out of `observados`.
+ * It then folds from disk like any sibling, and if that leaves it never observed
+ * the fold declines to conclude — which is the correct answer. Passing it in with
+ * `status: 'closed'` to "complete" the set would manufacture the one reading that
+ * can cancel a family.
+ */
+export async function applyFamilyStatusAndFold(
+  db: Firestore,
+  integracaoId: string,
+  target: FamilyFoldTarget,
+  observados: readonly ObservedMember[],
+): Promise<FamilyFoldResult> {
   const parentRef = produtoMercadoLivreLinkCollection.docRef(
     db,
     { produtoId: target.produtoId },
@@ -523,8 +635,18 @@ export async function applyMemberStatusAndFold(
   );
   const produtoRef = produtoCollection.docRef(db, {}, target.produtoId);
   const siblingQuery = familyMemberQuery(db, target.pmlOuterRef);
+  const porChave = new Map<string, ObservedMember>(
+    observados.map((o) => [chaveMembro(o.memberProdutoId, o.memberDocId), o]),
+  );
+  // ⚠️ Only a caller that actually READ `/moderations` for at least one member
+  // may move the parent's `moderacoes`. Exactly the rule the single-member path
+  // has always applied, widened by one member: with every reading assembled from
+  // disk, writing the fold winner's value back would let a caller that never
+  // asked blank a reason recorded on the PARENT by publish, import or an earlier
+  // status sync (#1087).
+  const leuModeracoes = observados.some((o) => o.moderacoes != null);
 
-  return db.runTransaction(async (tx): Promise<ItemsSyncOutcome> => {
+  return db.runTransaction(async (tx): Promise<FamilyFoldResult> => {
     // ---- READS. All of them, before any write (Firestore's rule), and every
     // input below is re-derived from THESE — never from `link.data` or
     // `member.raw`, which were captured before the ML fetch and are stale by
@@ -534,7 +656,9 @@ export async function applyMemberStatusAndFold(
       tx.get(parentRef),
       tx.get(produtoRef),
     ]);
-    if (!parentSnap.exists) return 'link-removido';
+    if (!parentSnap.exists) {
+      return { outcome: 'link-removido', estado: null, status: null, subStatus: null };
+    }
     const parent = (parentSnap.data() ?? {}) as Record<string, unknown>;
 
     // ---- Re-derive the fold from the transaction's OWN view of every member.
@@ -542,7 +666,8 @@ export async function applyMemberStatusAndFold(
     // set includes every member doc, so a concurrent task writing a DIFFERENT
     // member of this family aborts this callback and it retries against the
     // value that writer committed.
-    let notified: (typeof members.docs)[number] | null = null;
+    const encontrados = new Set<string>();
+    const escritas: Array<{ ref: DocumentReference; patch: Record<string, unknown> }> = [];
     const foldable: Array<{
       status: string | null;
       subStatus: string[] | null;
@@ -550,24 +675,24 @@ export async function applyMemberStatusAndFold(
     }> = [];
     for (const d of members.docs) {
       const raw = d.data() as Record<string, unknown>;
-      const isNotified =
-        d.id === target.memberDocId && (d.ref.parent?.parent?.id ?? '') === target.memberProdutoId;
-      if (isNotified) notified = d;
+      const chave = chaveMembro(d.ref.parent?.parent?.id ?? '', d.id);
+      const observado = porChave.get(chave) ?? null;
+      if (observado) encontrados.add(chave);
       // ⚠️ A row with no `itemId` is not an ML listing at all — the legacy
       // `variations[]` branch leaves the field null (`importCore.ts`). Passing it
       // to the fold would count it as "never observed", and since no notification
       // can ever arrive for something that was never published, the family could
       // NEVER conclude `'c'`. Excluded outright: absent, not unknown.
-      if (!isNotified && !(typeof raw.itemId === 'string' && raw.itemId.length > 0)) continue;
+      if (!observado && !(typeof raw.itemId === 'string' && raw.itemId.length > 0)) continue;
       foldable.push(
-        isNotified
+        observado
           ? {
-              status,
-              subStatus,
+              status: observado.status,
+              subStatus: observado.subStatus,
               // A caller that never read `/moderations` contributes what is
               // STORED on the member, exactly like a sibling below — so the fold
               // stays a statement about disk rather than a guess.
-              moderacoes: moderacoes ?? moderacoesArmazenadas(raw),
+              moderacoes: observado.moderacoes ?? moderacoesArmazenadas(raw),
             }
           : {
               status: typeof raw.status === 'string' ? raw.status : null,
@@ -579,33 +704,22 @@ export async function applyMemberStatusAndFold(
               moderacoes: moderacoesArmazenadas(raw),
             },
       );
+      const patch = observado ? patchDoMembro(observado, raw) : null;
+      if (patch) escritas.push({ ref: d.ref, patch });
     }
-    // The notified member should be among its own siblings (they share the parent
-    // ref it was found by); if a delete removed it, its fresh reading still counts.
-    if (!notified) foldable.push({ status, subStatus, moderacoes: moderacoes ?? [] });
+    // An observed member should be among its own siblings (they share the parent
+    // ref it was found by); if a delete removed it, its fresh reading still counts
+    // for the fold — there is simply no document left to record it on.
+    for (const [chave, observado] of porChave) {
+      if (encontrados.has(chave)) continue;
+      foldable.push({
+        status: observado.status,
+        subStatus: observado.subStatus,
+        moderacoes: observado.moderacoes ?? [],
+      });
+    }
 
-    const notifiedRaw = (notified?.data() ?? {}) as Record<string, unknown>;
-    // #706: counted as a CHANGE in its own right, which is what makes the `items`
-    // sync the catalogue-wide self-heal — a listing whose status never moves
-    // would otherwise never gain the field, and that sync is the only component
-    // that sees a member's fresh ML item on its own schedule.
-    const userProductIdChanged =
-      userProductId != null &&
-      userProductId !==
-        (typeof notifiedRaw.userProductId === 'string' ? notifiedRaw.userProductId : null);
-    const memberChanged =
-      notified != null &&
-      (status !== (typeof notifiedRaw.status === 'string' ? notifiedRaw.status : null) ||
-        userProductIdChanged ||
-        !stringArraysEqual(
-          subStatus,
-          Array.isArray(notifiedRaw.sub_status) ? (notifiedRaw.sub_status as string[]) : null,
-        ) ||
-        // Same rule the parent gets: the member's own moderation must be able to
-        // move on its own, or a lifted one survives on a member whose raw status
-        // never changed — and the fold would then hand it to the parent.
-        (moderacoes != null && !moderacoesIguais(moderacoes, moderacoesArmazenadas(notifiedRaw))));
-
+    const memberChanged = escritas.length > 0;
     const folded = foldFamilyStatus(foldable);
 
     // ---- Parent decision, re-derived from the tx-fresh parent snapshot.
@@ -621,13 +735,10 @@ export async function applyMemberStatusAndFold(
       currentErrors.length > 0 &&
       podeEnviarEstoque(folded.status, folded.subStatus).enviar;
     const estadoChanged = folded != null && estado !== currentEstado;
-    // ⚠️ Only a caller that actually READ `/moderations` may move this field.
-    // With `moderacoes == null` the fold winner's value was assembled entirely
-    // from disk, so writing it back would let the stock sender blank a reason
-    // recorded on the PARENT (by publish, import, or a pre-UP status sync) using
-    // members that simply never carried one.
+    // ⚠️ Only a caller that actually READ `/moderations` may move this field —
+    // see `leuModeracoes` above the transaction for why.
     const moderacoesChanged =
-      moderacoes != null &&
+      leuModeracoes &&
       folded != null &&
       !moderacoesIguais(folded.moderacoes, moderacoesArmazenadas(parent));
     const parentChanged =
@@ -638,32 +749,27 @@ export async function applyMemberStatusAndFold(
         errorsToClear ||
         moderacoesChanged);
 
-    // ---- WRITES.
-    if (memberChanged && notified) {
-      tx.set(
-        notified.ref,
-        {
-          status,
-          sub_status: subStatus,
-          ...(moderacoes != null ? { moderacoes } : {}),
-          // Also fill-only, and for a different reason than `moderacoes`:
-          // `userProductId` is an IDENTITY, not an observation, so a response
-          // that simply omitted it must never null a stored one (#706).
-          ...(userProductId != null ? { userProductId } : {}),
-        },
-        { merge: true },
-      );
-    }
+    // ---- WRITES. Every observed member that actually moved, in the same atomic
+    // view the fold above was derived from.
+    for (const escrita of escritas) tx.set(escrita.ref, escrita.patch, { merge: true });
 
     if (!folded || !parentChanged) {
       // Either the members do not support a conclusion (every observed one closed,
       // some never observed — see `foldFamilyStatus`), or the summary already
       // matches. Saying which happened is the difference between "nothing to do"
       // and "recorded, cannot summarise yet".
-      return memberChanged ? 'synced-member' : 'unchanged';
+      // ⚠️ The parent kept its STORED values, so those are what this call
+      // reports. Handing back the fold's answer here would tell an operator the
+      // family moved when it did not.
+      return {
+        outcome: memberChanged ? 'synced-member' : 'unchanged',
+        estado: currentEstado,
+        status: currentStatus,
+        subStatus: currentSubStatus,
+      };
     }
 
-    // ⚠️ The denorm key is the PARENT link's own `id`, never the notified member's.
+    // ⚠️ The denorm key is the PARENT link's own `id`, never a member's.
     // Publish and import both stamped `produtos.marketplace` with the family id
     // (member ids go on the CHILD produtos, in a different shape), so keying on the
     // member would arrayUnion an entry nothing ever removes AND leave the cancel
@@ -698,11 +804,61 @@ export async function applyMemberStatusAndFold(
       // healed `[]`, and the family's moderation is the FOLD WINNER's — the
       // member whose status this parent is reporting, never a union. Omitted
       // entirely when the caller never read `/moderations` (see above).
-      ...(moderacoes != null ? { moderacoes: folded.moderacoes } : {}),
+      ...(leuModeracoes ? { moderacoes: folded.moderacoes } : {}),
     });
 
-    return 'synced-family';
+    return {
+      outcome: 'synced-family',
+      estado,
+      status: folded.status,
+      subStatus: folded.subStatus,
+    };
   });
+}
+
+/** Identity of one member link across the family: its child produto + doc id. */
+function chaveMembro(memberProdutoId: string, memberDocId: string): string {
+  return `${memberProdutoId} ${memberDocId}`;
+}
+
+/**
+ * The patch one observed member needs, or `null` when nothing moved.
+ *
+ * ⚠️ Every field is compared BY VALUE, and each of the three counts as a change
+ * on its own. A member whose raw status never moves would otherwise never gain
+ * `userProductId` (#706, the catalogue-wide self-heal) and would keep a
+ * moderation ML has since lifted (#1087) — which the fold would then hand to the
+ * parent, where a stale reason on a healthy listing is indistinguishable from a
+ * real one.
+ */
+function patchDoMembro(
+  observado: ObservedMember,
+  raw: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const statusArmazenado = typeof raw.status === 'string' ? raw.status : null;
+  const subStatusArmazenado = Array.isArray(raw.sub_status) ? (raw.sub_status as string[]) : null;
+  // Fill-only: `userProductId` is an IDENTITY, not an observation, so a response
+  // that simply omitted it must never null a stored one.
+  const userProductIdMudou =
+    observado.userProductId != null &&
+    observado.userProductId !== (typeof raw.userProductId === 'string' ? raw.userProductId : null);
+  const moderacoesMudaram =
+    observado.moderacoes != null &&
+    !moderacoesIguais(observado.moderacoes, moderacoesArmazenadas(raw));
+
+  const mudou =
+    observado.status !== statusArmazenado ||
+    !stringArraysEqual(observado.subStatus, subStatusArmazenado) ||
+    userProductIdMudou ||
+    moderacoesMudaram;
+  if (!mudou) return null;
+
+  return {
+    status: observado.status,
+    sub_status: observado.subStatus,
+    ...(observado.moderacoes != null ? { moderacoes: observado.moderacoes } : {}),
+    ...(observado.userProductId != null ? { userProductId: observado.userProductId } : {}),
+  };
 }
 
 /**
@@ -888,6 +1044,18 @@ interface ResolvedMember {
   raw: Record<string, unknown>;
   /** The parent's outer ref — the key the sibling fold reads by. */
   pmlOuterRef: string;
+  /**
+   * WHICH stage placed this member, and it decides where the fold may run
+   * relative to the migration-tag branches — see {@link syncItemStatus}.
+   *
+   *  - `familia` — the parent link's `id` did NOT match; the item was found as a
+   *    member. The parent therefore carries a FAMILY id.
+   *  - `id-do-pai` — the parent link's `id` matched AND the same item is also a
+   *    member of that family. That happens when ML omitted `family_id` at
+   *    publish, so the parent fell back to `itemIds[0]` (`publish.ts`) and member
+   *    0's id is the family's id.
+   */
+  via: 'familia' | 'id-do-pai';
 }
 
 interface ResolvedLink {
@@ -918,6 +1086,16 @@ interface ResolvedLink {
  * bulk of the `items` stream. That is the deliberate trade: a family's status was
  * previously unreachable, and the alternative (querying members first) would tax
  * the common case instead.
+ *
+ * ⚠️ A stage-1 hit on a USER-PRODUCTS link is not automatically a simple listing,
+ * and assuming it was is the remaining half of #1142. `publish.ts` writes
+ * `familyId ?? itemIds[0]` — so when ML omits `family_id` the parent's `id` is
+ * MEMBER 0's item id, member 0's delivery matches stage 1, and its status went
+ * straight onto the parent un-folded while its OWN member link was never written.
+ * Every sibling's later fold then read a stale member 0. So a UP stage-1 hit pays
+ * ONE more indexed lookup to ask whether this item is also a member of the family
+ * it just matched. A UP single-item listing has no member link and answers no; a
+ * legacy `variations[]` member has `itemId: null` and cannot match either.
  */
 async function resolveLink(
   db: Firestore,
@@ -932,7 +1110,31 @@ async function resolveLink(
     const data = d.data() as Record<string, unknown>;
     if (!refMatchesIntegracao(data.contaOuterRef, integracaoId)) continue;
     const produtoId = d.ref.parent?.parent?.id;
-    if (produtoId) return { produtoId, docId: d.id, data };
+    if (!produtoId) continue;
+    if (data.isUserProductModel !== true) return { produtoId, docId: d.id, data };
+
+    const membro = await resolveUpFamilyByMemberItemId(db, itemId, integracaoId);
+    // Only a member of THIS link. A different family that happens to hold the
+    // same item id cannot be reached from here, and the parent this loop matched
+    // stays the answer.
+    const daMesmaFamilia =
+      membro != null && membro.produtoId === produtoId && membro.linkDocId === d.id;
+    return {
+      produtoId,
+      docId: d.id,
+      data,
+      ...(daMesmaFamilia
+        ? {
+            member: {
+              produtoId: membro.childProdutoId ?? '',
+              docId: membro.memberDocId,
+              raw: membro.memberRaw,
+              pmlOuterRef: membro.pmlOuterRef,
+              via: 'id-do-pai' as const,
+            },
+          }
+        : {}),
+    };
   }
 
   // Stage 2 — a UP family member. Ownership is proven through the PARENT's
@@ -949,6 +1151,7 @@ async function resolveLink(
         docId: member.memberDocId,
         raw: member.memberRaw,
         pmlOuterRef: member.pmlOuterRef,
+        via: 'familia',
       },
     };
   }

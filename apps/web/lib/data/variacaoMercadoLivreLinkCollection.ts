@@ -18,10 +18,13 @@ import { defineCollection } from '@delfrance/data';
  *  - `itemId` (MLB string) — User-Products, where the variation IS its own item.
  *
  * Written server-side by `publishProduto` / `publishUserProduct` and by
- * `importVariations`, plus the UP-migration prune in `importMigration`. ⚠️ NOT
- * by the `items` status webhook — `itemsStatusSync` imports this handle but only
- * ever READS through it; its write-back is to the PARENT link
- * (`produtoMercadoLivreLinkCollection`) and the denorm.
+ * `importVariations`, plus the UP-migration prune in `importMigration`. ⚠️ Since
+ * #1142 the `items` status webhook is a writer too, and it is the important one
+ * for reading: `applyMemberStatusAndFold` records each member's raw
+ * `status`/`sub_status`/`moderacoes` HERE, and the PARENT link carries only the
+ * FOLD over them (`upFamilyStatus.ts`). So this subcollection — not the parent —
+ * is where a User-Products family's per-variation state actually lives.
+ * `reverificarAnuncio` writes the same fields for every member at once.
  *
  * Rules coverage comes from `PRODUTO_SUBCOLLECTION_NAMES`, so adding this
  * handle needs no ruleset regeneration.

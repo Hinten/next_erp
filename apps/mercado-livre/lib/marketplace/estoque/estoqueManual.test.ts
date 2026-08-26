@@ -27,12 +27,19 @@ const CONTA_DOC = { depositoOuterRef: 'documents/depositos/DEP1', nome: 'Loja ML
 
 /* --------------------------------- fixtures -------------------------------- */
 
-/** Minimal fake Firestore: `resolverAnchors` only needs docRef + getAll. */
+/**
+ * Minimal fake Firestore: `resolverAnchors` only needs docRef + getAll.
+ *
+ * `collectionGroup` answers EMPTY, which is the "not a User-Products family"
+ * shape — that is what every fixture here is, and it keeps the re-arm pass on
+ * the single-listing path it has always taken (#1142).
+ */
 function fakeDb(docs: Record<string, Record<string, unknown> | null>): Firestore {
   const db = {
     collection: (name: string) => ({
       doc: (id: string) => ({ id, path: `${name}/${id}`, __id: id }),
     }),
+    collectionGroup: () => ({ where: () => ({ get: async () => ({ docs: [] }) }) }),
     getAll: (...args: unknown[]) => {
       const refs = args.filter(
         (a): a is { __id: string } => a != null && typeof a === 'object' && '__id' in a,

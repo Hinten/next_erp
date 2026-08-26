@@ -457,22 +457,57 @@ siblings are still selling out of the stock and price sweeps, silently. The deno
 is keyed on the parent link's own `id`, matching what publish and import stamped;
 member ids belong to the CHILD produtos.
 
-⚠️ **The `items` webhook is NOT the only surface that learns one member's status,
-and the other one is the stock sender.** `buildSendTasks` emits one
-`kind: 'variationItem'` task per UP member carrying the **family's** `linkDocId`
-next to the **member's** `itemId`, so `estoqueSend`'s terminal 4xx branch (#781)
-verifies a MEMBER and used to write that verdict straight to the parent through
-`applyItemStatusToLink` — one member speaking for the family, which for `closed`
-is the silent sweep drop the paragraph above describes. Both callers now land on
-the same fold: `applyMemberStatusAndFold` (exported from `itemsStatusSync.ts`) is
-the one writer of a member's status, and the member path never reaches
-`applyItemStatusToLink` at all — so the denorm can never be keyed on a member id.
-A member whose link cannot be resolved takes the conservative `estado 'E'` stop
-instead, which is loud and bounded; `estado 'c'` from one member is not an option.
+⚠️ **The `items` webhook is NOT the only surface that learns one member's status
+— there are THREE, and all three land on the same fold.** `buildSendTasks` emits
+one `kind: 'variationItem'` task per UP member carrying the **family's**
+`linkDocId` next to the **member's** `itemId`, so `estoqueSend`'s terminal 4xx
+branch (#781) verifies a MEMBER and used to write that verdict straight to the
+parent through `applyItemStatusToLink` — one member speaking for the family,
+which for `closed` is the silent sweep drop the paragraph above describes. The
+third is **`reverificarAnuncio`**, which learns EVERY member's status at once.
+`applyMemberStatusAndFold` (one member) and `applyFamilyStatusAndFold` (N, the
+same transaction body) are the one writer of a member's status, and the member
+path never reaches `applyItemStatusToLink` at all — so the denorm can never be
+keyed on a member id. A member whose link cannot be resolved takes the
+conservative `estado 'E'` stop instead, which is loud and bounded; `estado 'c'`
+from one member is not an option.
 The residual: a HEALTHY member whose payload ML refused still latches the whole
 family at `'E'`, because `estado` lives only on the parent link. It is visible and
 self-clearing (an `items` webhook or "Reverificar anúncio"), and the log names the
 offending member — but it does stop the siblings until then.
+
+⚠️ **"Reverificar anúncio" on a family re-reads it MEMBER BY MEMBER, and the
+naive version of that button was a silent catalogue outage (#1142).** The route
+takes its item id from the parent link's `id`, which under User Products is
+`familyId ?? itemIds[0]` (`publish.ts`) — so it is either ML's **numeric** family
+key or **member 0's** item id. `GET /items/{numeric family key}` answers **404**,
+and this module's 404 branch records `closed`: on a family that is `estado 'c'`,
+the conta dropped from `integracoesComProduto`, and the produto out of BOTH
+sweeps, from an operator pressing a button to diagnose ONE listing. So
+`reverificarAnuncio` asks the member links FIRST (one indexed group query on
+`produtoMercadoLivreOuterRef`, no ML call), multigets every member
+(`getItemsByIds`, ⌈N/20⌉ requests — ⚠️ ML TRUNCATES an over-long multiget rather
+than refusing it), and folds once. Two refusals hold it together: a family id
+with **no member links on disk** throws `ReverificacaoFamiliaSemMembrosError`
+(409) rather than falling back to the item endpoint, and a member ML could not
+read (`code !== 200`, which is how a 403/5xx arrives inside a 200) is left
+**unobserved** rather than assumed closed. Only a per-entry **404** records
+`closed`, and even then only for that member. This is also the ONLY thing that
+clears the un-concludable backlog `upFamilyStatus.ts` documents — a family
+concludes only once every member is observed, and a listing that never changes
+never fires the `items` notification that would observe it.
+
+⚠️ **A stage-1 hit on a User-Products link is NOT automatically a simple
+listing.** The `family_id`-less family (ML omitted it at publish, so the parent's
+`id` is member 0's item id) matches `resolveLink` stage 1, and treating that as a
+simple listing wrote member 0's status onto the parent un-folded AND never wrote
+member 0's own link — poisoning every sibling's fold for the life of the listing.
+A UP stage-1 hit therefore pays one more indexed lookup to ask whether the item is
+also a member of the family it just matched. ⚠️ Its fold runs **below** the
+migration-tag branches, unlike a stage-2 member's: the argument that lets stage 2
+skip those tags is that a stage-2 resolution is already User-Products and so can
+never be a migration SOURCE, and a stage-1-attached member matched exactly the way
+a legacy listing does, so it enjoys no such guarantee.
 
 ⚠️ **A member's own `status`/`sub_status` gate its send — on BOTH child loops, and
 that is what makes #707's prune do anything.** `membroPodeEnviar` is called from

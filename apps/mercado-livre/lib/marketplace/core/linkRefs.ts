@@ -60,6 +60,33 @@ export function parsePmlOuterRef(ref: string): { produtoId: string; linkId: stri
   return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
 }
 
+/**
+ * Is this stored `produtoMercadoLivre.id` a User-Products FAMILY id rather than
+ * an ML item id?
+ *
+ * The shapes do not overlap: a family id is ML's own numeric key
+ * (`6264141844942250`), every item id is `MLB` + digits, and a UPtin id is
+ * `MLBU` + digits. Under User Products the parent link's `id` is
+ * `familyId ?? itemIds[0]` (`publish.ts`), so the SAME field holds either shape
+ * and only its form tells them apart.
+ *
+ * ⚠️ Two endpoints, two failure modes, and both are silent in their own way.
+ * Sending an ITEM id to `GET /sites/MLB/user-products-families/{id}` answers
+ * **400** (`invalid value for id`) — noisy, recoverable. Sending a FAMILY id to
+ * `GET /items/{id}` answers **404**, which every caller in this codebase reads as
+ * "the listing is gone" and records as `closed` — on a family that means
+ * `estado 'c'`, which fails `linkHasLiveListing`, drops the conta from
+ * `produtos.integracoesComProduto` and takes the produto out of BOTH ML sweeps
+ * with nothing logged. So this predicate is a REFUSAL, not a routing hint: no
+ * caller may hand a family id to an item-level endpoint (#1142).
+ *
+ * Moved here from `anuncios/anuncioUrl.ts`, which had the only copy, once
+ * `reverificarAnuncio` needed the same test. One copy, one definition.
+ */
+export function isFamilyId(id: string): boolean {
+  return /^\d+$/.test(id);
+}
+
 /** Last non-empty path segment of a `documents/<col>/<id>` (or bare) ref. */
 export function lastSegment(ref: string): string {
   const parts = ref.split('/').filter(Boolean);

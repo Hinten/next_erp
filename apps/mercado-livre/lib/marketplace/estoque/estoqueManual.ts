@@ -60,7 +60,11 @@ import { type StockContextLoader, type StockSendResult, processStockSendTask } f
 import type { LinkStatusTarget } from '../anuncios/itemsStatusSync';
 import { MlTasksDisabledError } from '../notificacoes/mlTasks';
 import type { MlStockTaskScheduler } from './mlStockTasks';
-import { type ReverificarApi, reverificarAnuncio } from '../anuncios/reverificarAnuncio';
+import {
+  ReverificacaoFamiliaSemMembrosError,
+  type ReverificarApi,
+  reverificarAnuncio,
+} from '../anuncios/reverificarAnuncio';
 
 /* --------------------------------- tunables -------------------------------- */
 
@@ -527,7 +531,18 @@ export async function enviarEstoqueManual(
         }
         orcamento -= 1;
         const target: LinkStatusTarget = { produtoId: row.anchorId, linkDocId, itemId };
-        const res = await reverificarAnuncio(db, args.integracaoId, target, api, nowMs);
+        let res;
+        try {
+          res = await reverificarAnuncio(db, args.integracaoId, target, api, nowMs);
+        } catch (err) {
+          // A família with no member links here cannot be re-read (#1142). It is
+          // reported as "not re-armed" rather than aborting the whole manual
+          // push: every OTHER listing in this run is unaffected, and the latch
+          // it keeps is the pre-existing state, not a new failure.
+          if (!(err instanceof ReverificacaoFamiliaSemMembrosError)) throw err;
+          rearmePorLink.set(linkDocId, { executado: false, estado: null, enviavel: false });
+          continue;
+        }
         rearmePorLink.set(linkDocId, {
           executado: true,
           estado: res.estado,

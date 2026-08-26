@@ -27,8 +27,10 @@
  * back to the item when ML omits `family_id`, and the UPtin takeover
  * (`importMigration.ts`) merges the flag onto an existing link WITHOUT touching
  * its id — so every migrated listing carries the old item id. Hence
- * {@link isFamilyId}: the two shapes address different endpoints, and sending an
- * item id to the families one is a 400 (`invalid value for id`), not a 404.
+ * `isFamilyId` (`core/linkRefs.ts`): the two shapes address different endpoints,
+ * and sending an item id to the families one is a 400 (`invalid value for id`),
+ * not a 404. ⚠️ The INVERSE — a family id sent to `GET /items/{id}` — answers
+ * 404, which callers read as "gone"; see that helper for why it is a refusal.
  *
  * ⚠️ The answer is deliberately NOT persisted on the link doc. ⚠️ The original
  * reason is VOID — it assumed a dual run in which the legacy `Model.save()`, an
@@ -50,6 +52,8 @@ import {
   type MlUserProductItemsSearch,
   MercadoLivreHttpError,
 } from '@delfrance/integrations-mercado-livre';
+
+import { isFamilyId } from '../core/linkRefs';
 
 /** The minimal ML surface a URL resolution needs (injectable for tests). */
 export interface AnuncioUrlApi {
@@ -97,24 +101,6 @@ export class AnuncioUrlSemUserIdError extends Error {
 export function mlbProductUrl(itemId: string): string | null {
   const digits = itemId.replace(/\D/g, '');
   return digits ? `https://produto.mercadolivre.com.br/MLB-${digits}` : null;
-}
-
-/**
- * Is this stored id a FAMILY id rather than an item id?
- *
- * The shapes do not overlap: a family id is ML's own numeric key
- * (`6264141844942250`), every item id is `MLB` + digits, and a UPtin id is
- * `MLBU` + digits. Dispatching on the shape is what keeps a malformed request off
- * the wire — `GET /sites/MLB/user-products-families/MLB4128712323` answers
- * **400**, and a 400 says nothing a caller can recover from, unlike the 404 a
- * genuinely missing family returns.
- *
- * This is the invariant every OTHER caller of the families endpoint already
- * enforces by construction: `import.ts` and `publishUserProduct.ts` only ever
- * pass a value derived from `item.family_id`, and refuse when it is null.
- */
-function isFamilyId(id: string): boolean {
-  return /^\d+$/.test(id);
 }
 
 /**
