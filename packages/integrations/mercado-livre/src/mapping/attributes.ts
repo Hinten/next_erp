@@ -35,6 +35,21 @@ export function attrSku(sku: string): MlAttribute {
   return { id: 'SELLER_SKU', value_name: sku };
 }
 
+/**
+ * Brand — the produto's `extraData.marca`, once `resolveMarcaAnuncio` has said
+ * the produto is the one deciding.
+ *
+ * ⚠️ Emits `value_name` alone, which is why the caller must reach for this ONLY
+ * on that branch and never to rebuild a stored entry. An ML category that
+ * enumerates its brands answers with a `value_id` naming ML's own brand record,
+ * and the legacy form stored one whenever the typed text matched an enumerated
+ * value exactly (`cadastroProdutoMLNew.dart:1175-1230`) — so round-tripping a
+ * stored `BRAND` through this factory would quietly discard that id.
+ */
+export function attrBrand(valueName: string): MlAttribute {
+  return { id: 'BRAND', value_name: valueName };
+}
+
 export function attrSize(valueName: string): MlAttribute {
   return { id: 'SIZE', value_name: valueName };
 }
@@ -139,6 +154,37 @@ export const ML_PRODUTO_DERIVED_ATTRIBUTE_IDS: readonly string[] = [
   'SELLER_PACKAGE_WIDTH',
   'SELLER_PACKAGE_WEIGHT',
 ];
+
+/**
+ * Attribute ids the produto FILLS but does not own outright — the listing's own
+ * stored value stays the fallback.
+ *
+ * ⚠️ Deliberately NOT part of {@link ML_PRODUTO_DERIVED_ATTRIBUTE_IDS}, and the
+ * two lists must not be merged. They agree on the first two of that list's three
+ * obligations — the editor withholds both, and publish persists neither back —
+ * and split on what those mean plus the third:
+ *
+ *  - a DERIVED id is stripped from the write-back because storing it would
+ *    duplicate it next run; a HERDADO id is stripped because storing the derived
+ *    value would LATCH it, making the produto's Marca its own fallback so that
+ *    clearing Marca could never clear the listing's brand. The stored entry is
+ *    then carried back verbatim (`linkAttributesAfterPublish`) — publish neither
+ *    adds one nor removes one;
+ *  - import STRIPS a derived id and must NOT strip a herdado one, because that
+ *    stored copy is what the produto falls back TO.
+ *
+ * `BRAND` is the case, and the difference is where the values live. A stale
+ * stored `WEIGHT` is a duplicate of something the produto already holds, so
+ * dropping it loses nothing; `BRAND` is `required` in most ML categories and has
+ * been operator-typed for this app's whole history, so for a produto with an
+ * empty Marca the stored value is the ONLY copy in existence. Treating it as
+ * derived would strip the brand off every listing on the next save and publish
+ * nothing in its place.
+ *
+ * The precedence itself is `resolveMarcaAnuncio` (`@delfrance/schemas`), shared
+ * with the produto screen that displays the same answer.
+ */
+export const ML_PRODUTO_HERDADO_ATTRIBUTE_IDS: readonly string[] = ['BRAND'];
 
 /**
  * Wire transform for the ML API — port of `AttributesMLNew.toMercadoLivre()`:
