@@ -22,6 +22,19 @@ topic; everything else is either a pure mapper or a resolver they share.
   Tier-2 guarded in **µs**.
 - `orderShipmentImport.ts` — `shipments` topic; refreshes `freteInicial`.
   Tier-2 guarded in **µs**, null-tolerant the opposite way from payments.
+- `pendingOrderBootstrap.ts` — **#1087**. A payment whose order the ERP has never
+  seen used to be dropped, so no pedido existed and no stock was reserved while
+  the buyer held the unit. ML fires `orders_v2` only for _"vendas confirmadas"_,
+  so a `payment_in_process` order arrives on the payments topic and **nowhere
+  else**. This enqueues a synthetic `orders_v2` for `/orders/{id}` — so
+  `orderImport.ts` stays the only pedido creator — and inherits the notification
+  pipeline's own bounds rather than inventing a counter.
+  ⚠️ Its `id: null` is load-bearing: the pipeline's `docIdOf` falls back to
+  `derivedDocId`, which keys the dedup on the **order**. A synthesised id would
+  key it on the payment, of which ML sends several per order.
+  ⚠️ It owns this folder's only edge into `notificacoes/mlTasks.ts`, deliberately
+  — `mlTasks.ts` imports a value from `notificacao.ts`, so reaching it from the
+  dispatcher instead would close a file-level import cycle.
 
 **Pure mapping and identity**
 
