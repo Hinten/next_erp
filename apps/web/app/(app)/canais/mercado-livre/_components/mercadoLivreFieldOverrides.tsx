@@ -41,6 +41,10 @@ export const mercadoLivreFields: Record<string, FieldConfig> = {
     hint: 'Depósito de onde o estoque é enviado ao Mercado Livre.',
     renderInput: refRenderInput(depositoCollection, true),
   },
+  modoEnvioMercadoLivre: {
+    label: 'Modo de envio',
+    hint: 'Enviado em toda publicação e republicação desta conta. Vazio: não enviar o modo — o Mercado Livre aplica o padrão da conta.',
+  },
   // Surfaced now that the colour is READ somewhere: /produtos paints one badge
   // per canal de venda with it. While this field stayed excluded, every ML
   // conta had `cor = null` and rendered neutral grey — and ML is the channel

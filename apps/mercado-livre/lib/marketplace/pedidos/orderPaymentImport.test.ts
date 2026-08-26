@@ -6,9 +6,20 @@ import {
   type MercadoLivreApi,
   type MlPayment,
 } from '@delfrance/integrations-mercado-livre';
-import { FORMA_PAGAMENTO, STATUS_PAGAMENTO } from '@delfrance/schemas';
+import {
+  ESTADOS_PEDIDO_RESERVA,
+  FORMA_PAGAMENTO,
+  STATUS_PAGAMENTO,
+  type EstadoPedido,
+} from '@delfrance/schemas';
 
-import { importPagamentoMercadoLivre, type PaymentImportDeps } from './orderPaymentImport';
+import {
+  PEDIDO_BOOTSTRAP_MAX_FUTURE_SKEW_MS,
+  decidirBootstrapPedido,
+  importPagamentoMercadoLivre,
+  pedidoBootstrapMaxAgeMs,
+  type PaymentImportDeps,
+} from './orderPaymentImport';
 import { makePagamentoIdMercadoLivre } from './orderIds';
 import {
   OccEngine,
@@ -212,6 +223,13 @@ class FakeDb {
 
 const asDb = (db: FakeDb) => db as unknown as Firestore;
 
+/**
+ * The WRITES a run performed. `opLog` also records reads, and the bootstrap
+ * guards necessarily run the `orderML` lookup first — so `opLog.length === 0`
+ * would be asserting the lookup never happened, not that nothing was written.
+ */
+const escritas = (db: FakeDb) => db.opLog.filter((o) => o.op !== 'get');
+
 /* --------------------------------- fixtures ------------------------------- */
 
 const CONTA_ID = 'conta-A';
@@ -309,7 +327,7 @@ describe('importPagamentoMercadoLivre — primary GET + pure guards', () => {
     const db = makeDb();
     const api = makeApi({});
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 12345);
-    expect(res).toEqual({ pedidoId: null, skipped: 'payment-404' });
+    expect(res).toEqual({ pedidoId: null, orderId: null, skipped: 'payment-404' });
   });
 
   it('propagates a non-404 / network error from getPayment (transient — no swallow)', async () => {
@@ -326,7 +344,7 @@ describe('importPagamentoMercadoLivre — primary GET + pure guards', () => {
     const db = makeDb();
     const api = makeApi({ 706: payment({ id: 706, marketplace: 'NONE' }) });
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 706);
-    expect(res).toEqual({ pedidoId: null, skipped: 'marketplace-none' });
+    expect(res).toEqual({ pedidoId: null, orderId: null, skipped: 'marketplace-none' });
     expect(db.opLog.length).toBe(0);
   });
 
@@ -334,7 +352,7 @@ describe('importPagamentoMercadoLivre — primary GET + pure guards', () => {
     const db = makeDb();
     const api = makeApi({ 707: payment({ id: 707, external_reference: null, order_id: null }) });
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 707);
-    expect(res).toEqual({ pedidoId: null, skipped: 'sem-order-key' });
+    expect(res).toEqual({ pedidoId: null, orderId: null, skipped: 'sem-order-key' });
     expect(db.opLog.length).toBe(0);
   });
 
@@ -342,7 +360,7 @@ describe('importPagamentoMercadoLivre — primary GET + pure guards', () => {
     const db = makeDb();
     const api = makeApi({ 708: payment({ id: 708, external_reference: 'abc-not-a-number' }) });
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 708);
-    expect(res).toEqual({ pedidoId: null, skipped: 'sem-order-key' });
+    expect(res).toEqual({ pedidoId: null, orderId: null, skipped: 'sem-order-key' });
   });
 });
 
@@ -381,11 +399,228 @@ describe('importPagamentoMercadoLivre — orderML resolution', () => {
     expect(res.pedidoId).toBe('PED-ID');
   });
 
-  it('skips with pedido-nao-encontrado when no orderML doc matches (the SEAM — no import fallback)', async () => {
+  it('reports pedido-nao-encontrado WITH the orderId when no orderML doc matches (#1087)', async () => {
     const db = makeDb();
     const api = makeApi({ 712: payment({ id: 712, order_id: 424242 }) });
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 712);
-    expect(res).toEqual({ pedidoId: null, skipped: 'pedido-nao-encontrado' });
+    // The SEAM still holds — this handler creates NO pedido and writes nothing.
+    // What changed is that it now hands the caller the order key, so the
+    // dispatcher can ask the `orders_v2` topic to import it.
+    expect(res).toEqual({ pedidoId: null, orderId: 424242, skipped: 'pedido-nao-encontrado' });
+    expect(escritas(db)).toEqual([]);
+  });
+});
+
+/**
+ * #1087 (review) — the RELEASE arm. A pedido this channel bootstrapped sits at
+ * `aguardandoConfirmacaoDePagamento`, which HOLDS a stock reservation. When the
+ * payment then dies, this topic is the surface that reliably arrives: a
+ * never-seller-visible order fires no `orders_v2` even to say it was cancelled.
+ * Without this the unit stays reserved forever.
+ */
+describe('importPagamentoMercadoLivre — releases the reserva when the sale dies', () => {
+  const CASOS: ReadonlyArray<readonly [string, string]> = [
+    ['rejected', 'pagamentoNaoRealizado'],
+    ['cancelled', 'cancelado'],
+    ['refunded', 'estornadoIntegralmente'],
+    ['charged_back', 'estornadoIntegralmente'],
+  ];
+
+  it.each(CASOS)('a %s payment moves the pedido to %s', async (statusMl, esperado) => {
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    const api = makeApi({ 950: payment({ id: 950, order_id: 900, status: statusMl }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 950);
+
+    expect(db.docs('pedidos').get('PED-REL')).toMatchObject({ estado: esperado });
+  });
+
+  it('the released estado is OUT of the reserva set — that is the whole point', async () => {
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    const api = makeApi({ 951: payment({ id: 951, order_id: 900, status: 'cancelled' }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 951);
+
+    const estado = db.docs('pedidos').get('PED-REL')!.estado as EstadoPedido;
+    expect(ESTADOS_PEDIDO_RESERVA.has(estado)).toBe(false);
+  });
+
+  it('REFUSES to release while another pagamento is aprovado — still a live sale', async () => {
+    // A partially-paid pedido whose SECOND payment was rejected has real money on
+    // it. Releasing there would drop a reservation the sale still needs.
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 500 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    db.seed('pedidos/PED-REL/pagamentos', 'outro', {
+      id: '111',
+      valor: 100,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    const api = makeApi({ 952: payment({ id: 952, order_id: 900, status: 'rejected' }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 952);
+
+    expect(db.docs('pedidos').get('PED-REL')).toMatchObject({
+      estado: 'aguardandoConfirmacaoDePagamento',
+    });
+  });
+
+  it('never touches an estado the business owns — pago is off the FROM-set', async () => {
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'pago', valorCobrado: 100 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    const api = makeApi({ 953: payment({ id: 953, order_id: 900, status: 'cancelled' }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 953);
+
+    expect(db.docs('pedidos').get('PED-REL')).toMatchObject({ estado: 'pago' });
+  });
+
+  it('leaves a LIVE payment alone', async () => {
+    const db = makeDb();
+    seedPedido(db, 'PED-REL', { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 500 });
+    seedOrderMl(db, 'PED-REL', '900', { id: 900 });
+    const api = makeApi({ 954: payment({ id: 954, order_id: 900, status: 'pending' }) });
+
+    await importPagamentoMercadoLivre(baseDeps(db, api), 954);
+
+    expect(db.docs('pedidos').get('PED-REL')).toMatchObject({
+      estado: 'aguardandoConfirmacaoDePagamento',
+    });
+  });
+});
+
+describe('importPagamentoMercadoLivre — pedido bootstrap guards (#1087)', () => {
+  /**
+   * ⚠️ The default fixture is 62h old against `NOW_US` (`date_created`
+   * 2026-07-20T10:00Z vs 2026-07-23T00:00Z) — INSIDE the 72h bound. Every
+   * "expired" case must therefore override `date_created` explicitly; relying on
+   * the default would assert nothing.
+   */
+  const AGORA = new Date(NOW_US / 1000).toISOString();
+  const HORAS = (h: number) => new Date(NOW_US / 1000 - h * 3_600_000).toISOString();
+
+  it('refuses the bootstrap when the payment is older than the max age', async () => {
+    const db = makeDb();
+    const api = makeApi({ 720: payment({ id: 720, order_id: 555, date_created: HORAS(73) }) });
+    const res = await importPagamentoMercadoLivre(baseDeps(db, api), 720);
+    expect(res).toEqual({
+      pedidoId: null,
+      orderId: 555,
+      skipped: 'pedido-nao-encontrado-expirado',
+    });
+    expect(escritas(db)).toEqual([]);
+  });
+
+  it('allows the bootstrap just inside the max age', async () => {
+    const db = makeDb();
+    const api = makeApi({ 721: payment({ id: 721, order_id: 556, date_created: HORAS(71) }) });
+    const res = await importPagamentoMercadoLivre(baseDeps(db, api), 721);
+    expect(res.skipped).toBe('pedido-nao-encontrado');
+  });
+
+  it('refuses a payment dated FAR in the future — the skew half of the bound', async () => {
+    // Without an upper bound `now - created` stays negative and can never exceed
+    // the max age, so a forward-dated payment would be immortal. This is the bug
+    // `@delfrance/data/admin/oauth-state` documents as `MAX_FUTURE_SKEW_MS`.
+    const db = makeDb();
+    const api = makeApi({ 722: payment({ id: 722, order_id: 557, date_created: HORAS(-24) }) });
+    const res = await importPagamentoMercadoLivre(baseDeps(db, api), 722);
+    expect(res.skipped).toBe('pedido-nao-encontrado-expirado');
+  });
+
+  it('tolerates a small forward skew', async () => {
+    const db = makeDb();
+    const api = makeApi({
+      723: payment({ id: 723, order_id: 558, date_created: HORAS(-1 / 60) }),
+    });
+    const res = await importPagamentoMercadoLivre(baseDeps(db, api), 723);
+    expect(res.skipped).toBe('pedido-nao-encontrado');
+  });
+
+  it.each(['rejected', 'cancelled', 'refunded', 'charged_back'])(
+    'refuses the bootstrap for a terminally dead payment (%s) — nothing to reserve',
+    async (status) => {
+      const db = makeDb();
+      const api = makeApi({ 730: payment({ id: 730, order_id: 559, status }) });
+      const res = await importPagamentoMercadoLivre(baseDeps(db, api), 730);
+      expect(res).toEqual({
+        pedidoId: null,
+        orderId: 559,
+        skipped: 'pedido-nao-encontrado-pagamento-morto',
+      });
+      expect(escritas(db)).toEqual([]);
+    },
+  );
+
+  it.each(['pending', 'in_process', 'authorized', 'approved'])(
+    'bootstraps for a live payment status (%s)',
+    async (status) => {
+      const db = makeDb();
+      const api = makeApi({ 731: payment({ id: 731, order_id: 560, status }) });
+      const res = await importPagamentoMercadoLivre(baseDeps(db, api), 731);
+      expect(res.skipped).toBe('pedido-nao-encontrado');
+    },
+  );
+
+  it('bootstraps on an ML status this port has not catalogued — conservative toward stock', async () => {
+    const db = makeDb();
+    const api = makeApi({ 732: payment({ id: 732, order_id: 561, status: 'quantum_pending' }) });
+    const res = await importPagamentoMercadoLivre(baseDeps(db, api), 732);
+    expect(res.skipped).toBe('pedido-nao-encontrado');
+  });
+
+  it('FAILS OPEN on an unreadable date_created — null is not age 0', async () => {
+    // `coerceToMicros` returns null for three distinct reasons (absent,
+    // unparseable, or a bare number in the ms/µs dead zone) and none of them
+    // means "brand new". Failing open is the house convention AND the direction
+    // that holds stock.
+    const db = makeDb();
+    const api = makeApi({ 733: payment({ id: 733, order_id: 562, date_created: null }) });
+    const res = await importPagamentoMercadoLivre(baseDeps(db, api), 733);
+    expect(res.skipped).toBe('pedido-nao-encontrado');
+  });
+
+  it('decidirBootstrapPedido is pure and honours an injected horizon', () => {
+    const umaHoraUs = 3_600_000_000;
+    expect(
+      decidirBootstrapPedido({
+        criadoUs: NOW_US - 2 * umaHoraUs,
+        statusMl: 'pending',
+        nowUs: NOW_US,
+        maxAgeMs: 60 * 60 * 1000,
+      }),
+    ).toBe('pedido-nao-encontrado-expirado');
+    expect(
+      decidirBootstrapPedido({
+        criadoUs: NOW_US - umaHoraUs / 2,
+        statusMl: 'pending',
+        nowUs: NOW_US,
+        maxAgeMs: 60 * 60 * 1000,
+      }),
+    ).toBe('bootstrap');
+    // A dead payment is refused regardless of how fresh it is.
+    expect(decidirBootstrapPedido({ criadoUs: NOW_US, statusMl: 'cancelled', nowUs: NOW_US })).toBe(
+      'pedido-nao-encontrado-pagamento-morto',
+    );
+    expect(AGORA).toContain('2026-07-23');
+  });
+
+  it('pins the default horizon at 72h and the skew tolerance', () => {
+    // The env override is the operator knob; the DEFAULT is the promise.
+    delete process.env.MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H;
+    expect(pedidoBootstrapMaxAgeMs()).toBe(72 * 60 * 60 * 1000);
+    process.env.MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H = '6';
+    expect(pedidoBootstrapMaxAgeMs()).toBe(6 * 60 * 60 * 1000);
+    // A junk override falls back rather than collapsing the window to zero.
+    process.env.MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H = 'nonsense';
+    expect(pedidoBootstrapMaxAgeMs()).toBe(72 * 60 * 60 * 1000);
+    delete process.env.MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H;
+    expect(PEDIDO_BOOTSTRAP_MAX_FUTURE_SKEW_MS).toBe(5 * 60 * 1000);
   });
 });
 
@@ -398,7 +633,7 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
     const api = makeApi({ 1200: payment({ id: 1200, order_id: 500, transaction_amount: 77 }) });
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 1200);
 
-    expect(res).toEqual({ pedidoId: 'PED-CREATE', skipped: null });
+    expect(res).toEqual({ pedidoId: 'PED-CREATE', orderId: 500, skipped: null });
     const expectedId = makePagamentoIdMercadoLivre(CONTA_ID, 1200);
     const stored = db.docs('pedidos/PED-CREATE/pagamentos').get(expectedId);
     expect(stored).toBeTruthy();
@@ -421,7 +656,7 @@ describe('importPagamentoMercadoLivre — create + staleness', () => {
     });
     const res = await importPagamentoMercadoLivre(baseDeps(db, api), 800);
 
-    expect(res).toEqual({ pedidoId: 'PED-STALE', skipped: 'stale' });
+    expect(res).toEqual({ pedidoId: 'PED-STALE', orderId: 111, skipped: 'stale' });
     expect(db.docs('pedidos/PED-STALE/pagamentos').get(pagId)!.valor).toBe(999); // untouched
   });
 

@@ -36,16 +36,20 @@
  *      are the same classes as (1);
  *  (7) verify the echoed price (`PRECO_NAO_ATUALIZADO` on mismatch, and
  *      deliberately no link stamp — the PUT was accepted, the listing is fine);
- *  (8) success writeback onto the link doc — fresh status always, plus
- *      `precoPublicado` for `item` drafts ONLY, because sibling `variationItem`
- *      drafts share the parent link doc and would flip-flop it.
+ *  (8) success writeback onto the link doc — everything except
+ *      `ultimaModificacao` is for `item` drafts ONLY: the fresh status pair,
+ *      `precoPublicado`, and the gated `moderacoes` clear. A `variationItem`
+ *      draft writes `ultimaModificacao` alone. Two different reasons — sibling
+ *      drafts share the parent link doc so `precoPublicado` would flip-flop, and
+ *      `resp` describes a MEMBER while `linkDocId` names the FAMILY, so its
+ *      status is not the family's to publish (#1252).
  *
  * Gate (9), the per-item checkpoint, belongs to the caller: the manual push has
  * no job document to checkpoint into.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { roundReais } from '@delfrance/core/money';
-import type { EnvioPrecoFilaItem } from '@delfrance/schemas';
+import { type EnvioPrecoFilaItem, precisaConsultarModeracao } from '@delfrance/schemas';
 import {
   type MlItem,
   MercadoLivreHttpError,
@@ -288,18 +292,50 @@ export async function enviarPrecoDraft(
     };
   }
 
-  // ---- (8) Success writeback (estoqueSend's status-writeback shape). Only
-  // `item` drafts also stamp `precoPublicado` (the publish.ts field): sibling
-  // `variationItem` drafts all share the PARENT link doc, and with
-  // `propagatePriceToChildren: false` a per-child stamp would flip-flop to
-  // whichever child was sent last — so variation sends stamp status only.
-  const writeback: Record<string, unknown> = {
-    estado: estadoFromMlStatus(resp.status),
-    status: resp.status ?? null,
-    sub_status: resp.sub_status ?? [],
-    ultimaModificacao: nowMs,
-  };
-  if (draft.kind === 'item') writeback.precoPublicado = draft.preco;
+  // ---- (8) Success writeback (estoqueSend's status-writeback shape).
+  //
+  // ⚠️ A `variationItem` draft writes NEITHER status NOR `precoPublicado`, and
+  // the two omissions have different reasons.
+  //
+  // `precoPublicado` because sibling `variationItem` drafts all share the PARENT
+  // link doc, and with `propagatePriceToChildren: false` a per-child stamp would
+  // flip-flop to whichever child was sent last.
+  //
+  // The status pair because `resp` describes ONE MEMBER (`draft.itemId` is
+  // `varLink.itemId`) while `draft.linkDocId` names the FAMILY's parent link —
+  // so stamping it publishes one member's lifecycle as the family's. This is the
+  // same one-member-speaks-for-the-family over-reach `estoqueSend` guards with
+  // `ehMembro`, and until #1252 this path did it unguarded: a member coming back
+  // `paused` or `under_review` on an otherwise accepted PUT wrote that to the
+  // parent, where `estado` feeds `linkHasLiveListing` → `integracoesComProduto`,
+  // the anchor pre-filter BOTH sweeps open with. One member could silently drop
+  // a produto whose siblings were still selling.
+  //
+  // ⚠️ The two senders now agree ON THIS GATE. Do not "restore" the status write
+  // here without also changing `estoqueSend.ts` — a family's status has exactly
+  // one writer per path, and the `items` webhook's fold is the one that spans
+  // members.
+  //
+  // ⚠️ They still diverge on the FAILURE direction, and that is not fixed here:
+  // gate (6) above stamps `estado: 'E'` on the parent for a deterministic 4xx on
+  // a member's PUT, where `estoqueSend`'s terminal branch routes a member through
+  // `applyMemberStatusAndFold`. Both latch the family at `'E'`, which
+  // `apps/mercado-livre/CLAUDE.md` records as a deliberate, loud, self-clearing
+  // residual — so it is consistent enough to leave, but it is a real asymmetry
+  // and "the senders agree" must not be read as covering it.
+  const ehMembro = draft.kind === 'variationItem';
+  const writeback: Record<string, unknown> = { ultimaModificacao: nowMs };
+  if (!ehMembro) {
+    writeback.estado = estadoFromMlStatus(resp.status);
+    writeback.status = resp.status ?? null;
+    writeback.sub_status = resp.sub_status ?? [];
+    writeback.precoPublicado = draft.preco;
+    // #1252, free: the gate is pure, so ML's own answer on the response we
+    // already hold settles it with no `/moderations` call. Omitted on the other
+    // arm — `mergeIfExists` is `update()`-backed, so an absent key leaves the
+    // stored reason standing rather than recording a verdict we never asked for.
+    if (!precisaConsultarModeracao(resp.status, resp.sub_status)) writeback.moderacoes = [];
+  }
   // `mergeIfExists` — same reason as the failure stamp above.
   await produtoMercadoLivreLinkCollection.mergeIfExists(
     db,
