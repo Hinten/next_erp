@@ -356,7 +356,7 @@ matters:
 |---|---|---|
 | `items` | `handled` | listing status-sync + the UP-migration takeover (#440/#441) |
 | `orders_v2`, `orders` | `handled` | order → pedido import (Step 9) |
-| `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9) |
+| `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9); since #1087 it also BOOTSTRAPS a missing pedido |
 | `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
 | `claims` | `handled` | incidente ALWAYS; conversa/mensagens only while answerable (Step 14 / #768) |
 | `questions` | `handled` | pre-sale question → chat conversa/mensagem import (#532) |
@@ -421,15 +421,24 @@ state. It is **qualified in the other** by the third value — `null` = "never a
 omits the key rather than inventing `[]`. Both `null` cases are the importer's; see
 the import ⚠️ above rather than restating them here.
 
-⚠️ **`clearFalha()` deliberately does NOT clear `moderacoes`, and only a writer that
-just asked ML may touch it** — today `itemsStatusSync`, `reverificarAnuncio` and the
-**importer**. `errors`/`causas` record OUR failed write, so a later success
+⚠️ **`clearFalha()` deliberately does NOT clear `moderacoes`, and the field moves
+only on ML's authority — never on a caller's success.** Two groups qualify (#1252).
+A writer that ASKED ML may write any value: `itemsStatusSync`, `reverificarAnuncio`,
+the **importer**. A writer that merely holds a fresh `status`/`sub_status` may write
+`[]` and nothing else, because `precisaConsultarModeracao` is pure — when it reports
+no moderation that IS ML's verdict, obtained for free — and omits the key otherwise:
+**publish**, the **UP member publish**, the **stock send** and the **price send** —
+the stock send on BOTH its success writeback and its terminal-4xx verification path,
+which reads a real `GET /items` and so holds the strongest evidence of any of them.
+Seven writers, one invariant. `errors`/`causas` record OUR failed write, so a later success
 invalidates them; a moderação is ML's verdict and nothing we do lifts it. The stock
-writeback proves the point — it fires on a successful `PUT /items`, and a
-`poor_quality_thumbnail` listing is `active` and accepts stock updates **while
-moderated**. Clearing there would erase a live reason and show a clean listing that
-is really still penalised, which hides a real problem rather than merely failing to
-explain one. ⚠️ `reverificarAnuncio` therefore **re-fetches**: it clears
+writeback is the case that makes the distinction concrete — it fires on a successful
+`PUT /items`, and a `poor_quality_thumbnail` listing is `active` and accepts stock
+updates **while moderated**, so clearing on the SEND's authority would erase a live
+reason and show a clean listing that is really still penalised. What makes its gated
+clear safe is that `poor_quality_thumbnail` is one of the sub_statuses the gate
+matches: on exactly that listing the predicate returns TRUE, the key is omitted and
+the reason survives. Only a response reporting no moderation at all clears. ⚠️ `reverificarAnuncio` therefore **re-fetches**: it clears
 unconditionally, so clear-only would erase the reason the operator pressed the button
 to see. ⚠️ On a UP FAMILY the moderation is stored per MEMBER, and what the PARENT
 takes depends on the path. On the **`items` sync** it takes the **fold winner's**
@@ -486,10 +495,22 @@ the UP branch made the whole self-heal a no-op: the phantom went straight back i
 ride the `varLinks` subcollection projection in `stockJoinBuilders`; dropping them
 there silently disables both rungs.
 
+⚠️ **The price sender follows the SAME member rule as the stock sender (#1252).**
+`precoDraftSend` used to stamp `estado`/`status`/`sub_status` on the FAMILY's parent
+link from a MEMBER's `PUT /items` response — a `variationItem` draft carries the
+member's `itemId` next to the parent's `linkDocId`, exactly like a `variationItem`
+stock task — and unlike `estoqueSend` it had no `ehMembro` guard. Its own comment
+blessed it ("variation sends stamp status only"), so the two senders disagreed and
+one of them was wrong. A member price send now writes `ultimaModificacao` and nothing
+else. ⚠️ Do not restore either half without changing both senders: a family's status
+has exactly one writer per path, and only the `items` webhook's fold spans members.
+
 ⚠️ **A variation link is NOT backfilled by a successful send, unlike the parent.**
 `estoqueSend`'s happy-path writeback is family-scoped, and for a `variationItem`
-task it deliberately writes NO status at all — `resp` describes one member while
-`linkDocId` names the family, so writing it there is the same over-reach in the
+task it deliberately writes NO status — and, since #1252, no `moderacoes` either:
+the clear sits INSIDE that same guard, or one member's verdict would clear the
+whole family's reason. `resp` describes one member while
+`linkDocId` names the family, so writing either there is the same over-reach in the
 success direction (a member returning `paused` on an accepted PUT would make the
 next sweep skip every sibling as `status-nao-enviavel`). It writes only
 `ultimaModificacao` + `clearFalha()`, both legitimately family-wide. Reaching the
@@ -573,6 +594,48 @@ these before "fixing" what looks wrong in `publishCore.ts`:
   `POST /items` **requires**, making the produto unpublishable. `publish.ts`'s
   `quantidadeParaPublicar` is the deliberate divergence: a virtual kit publishes
   the component-min like any other kit.
+
+⚠️ **A `payments` notification can now CREATE a pedido — indirectly (#1087).**
+ML fires `orders_v2` only for *"vendas confirmadas"*, and the seller-scoped
+`/orders/search` filters on `hidden_for_seller`. So a `payment_in_process` order
+**exists**, notifies nothing, and searches empty — while its Mercado Pago payment
+notifies immediately. The payment used to be dropped (`pedido-nao-encontrado`,
+acked `done`), which meant no pedido, therefore **no stock reservation**, while the
+buyer held the unit and another channel could sell it.
+`pedidos/pendingOrderBootstrap.ts` now enqueues a synthetic `orders_v2` for
+`/orders/{payment.order_id}`, so **`orderImport.ts` is still the only pedido
+creator** — the payments path creates nothing, it only addresses the order topic.
+⚠️ The retry is bounded by INHERITANCE, not by a new counter: the synthetic is an
+ordinary notification task (`TASK_MAX_ATTEMPTS`, then `MAX_TENTATIVAS` hot-sweep
+re-drives, then `parked`), and because it carries `id: null` the pipeline keys its
+failure doc on `orders_v2:_orders_<id>` — the **order**, not the payment, of which
+ML sends several per order. The `orders_v2` handler cannot re-enter the payments
+branch, so no cycle exists.
+⚠️ Two guards refuse the bootstrap and each reports **`dropped`, not `done`**: a
+payment older than `MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H` (default 72h — the
+hot sweep re-drives hour-old payloads and `missed_feeds` replays up to 48h, and
+neither may reserve stock for a long-closed order), and a terminally dead payment
+status. The age bound ships with a FUTURE-SKEW half; without it a forward-dated
+`date_created` keeps `now - created` negative and can never expire.
+
+⚠️ **A pedido created before payment needs the estado PROMOTION arm, or it is a
+dead end.** `estado` is written only on pedido CREATE (`orderPedidoTx.ts`) and
+`podeAvancarParaPago` requires `emProcessamento`, so a pedido born at
+`aguardandoConfirmacaoDePagamento` — which HOLDS a stock reservation — could never
+move, never reach `pago`, and never be dispatched or invoiced. `orderImport.ts`'s
+pago transaction gained a promotion arm up the ML pre-payment ladder, gated on the
+same ML-order-clock watermark as the downgrade. Do not widen it past
+`emProcessamento`: from there on `estado` belongs to the business.
+⚠️ **The ladder needs BOTH directions, and the second one leaks stock if missed.**
+An order that DIES (`cancelled`/`invalid`/`pending_cancel`) also has to release the
+reservation, and the population this bootstraps — card under review, unpaid boleto
+— is precisely the one that most often dies. Two surfaces cover it: `orderImport`
+releases when an `orders_v2` arrives, and `orderPaymentImport` releases on a
+terminal payment (the reliable one — a never-seller-visible order fires no
+`orders_v2` even to say it was cancelled). ⚠️ The terminal estado set is
+ENUMERATED, never derived as "not on the ladder": `estadoPedidoFromOrderStatus`
+returns `iniciado` for any unrecognised status, so the shortcut would drop a live
+pedido's reservation the first time ML invented a status string.
 
 ⚠️ `items_prices` is not "pending" — it is closed by decision #803: the ERP owns
 both price tables, so a price notification has nothing to do. It stays in the

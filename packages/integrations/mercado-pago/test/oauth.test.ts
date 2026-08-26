@@ -175,3 +175,49 @@ describe('refreshAccessToken', () => {
     expect((token as Record<string, unknown>).some_new_mp_field).toBe('surprise');
   });
 });
+
+/**
+ * The token response has the same exposure as the payment one, and a nastier
+ * consequence: `expires_in` feeds `nowMs + expires_in * 1000` in the app's
+ * credential store, so a quoted value used to fail the whole exchange — which
+ * reads to the operator as the account disconnecting (#1251).
+ */
+describe('the token response tolerates a quoted number', () => {
+  it('parses a quoted expires_in and user_id', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ ...TOKEN_JSON, expires_in: '15552000', user_id: '123456' }),
+    );
+    const token = await refreshAccessToken({ ...config, fetch: fetchMock }, 'TG-1');
+    expect(token.expires_in).toBe(15552000);
+    expect(token.user_id).toBe(123456);
+  });
+
+  it('⛔ still REJECTS an expires_in that is not a number', async () => {
+    // `z.coerce.number()` would read '' as 0 here — an access token that expired
+    // at the epoch, i.e. a refresh loop on every request.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ ...TOKEN_JSON, expires_in: '' }),
+    );
+    await expect(
+      refreshAccessToken({ ...config, fetch: fetchMock }, 'TG-1'),
+    ).rejects.toBeInstanceOf(MercadoPagoValidationError);
+  });
+
+  it('names the invalid field in err.message, and leaks no token value (#1015)', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ ...TOKEN_JSON, expires_in: '0x1F' }),
+    );
+    try {
+      await refreshAccessToken({ ...config, fetch: fetchMock }, 'TG-1');
+    } catch (err) {
+      if (!(err instanceof MercadoPagoValidationError)) throw err;
+      expect(err.message).toMatch(/expires_in/);
+      // ⚠️ On a non-JSON body this branch is reached with the RAW token response
+      // wrapped as `{ raw: text }`, so the message must carry paths only.
+      expect(err.message).not.toContain('APP_USR-abc');
+      expect(err.message).not.toContain('TG-refresh-1');
+      return;
+    }
+    throw new Error('expected a MercadoPagoValidationError');
+  });
+});

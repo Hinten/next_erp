@@ -14,6 +14,7 @@
     "seed:frete-me": "dotenv -e ../../.env.local -- tsx src/seed-frete-melhor-envio-dev.ts",
     "reset:frete-me": "dotenv -e ../../.env.local -- tsx src/reset-frete-me-dev.ts",
     "debug:me-cart": "dotenv -e ../../.env.local -- tsx src/debug-me-cart.ts",
+    "debug:ml-order-visibility": "dotenv -e ../../.env.local -- tsx src/debug-ml-order-visibility.ts",
     "webhook:me-smoke": "dotenv -e ../../.env.local -- tsx src/webhook-me-smoke.ts",
     "seed:nfe": "dotenv -e ../../.env.local -- tsx src/seed-nfe-dev.ts",
     "seed:variacoes": "dotenv -e ../../.env.local -- tsx src/seed-variacoes-dev.ts",

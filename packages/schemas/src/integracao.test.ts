@@ -10,6 +10,9 @@ import {
   encodeHorarioMs,
   integracaoMeta,
   integracaoSchema,
+  MODO_ENVIO_MERCADO_LIVRE,
+  MODO_ENVIO_MERCADO_LIVRE_LABELS,
+  modoEnvioMercadoLivreSchema,
   periodoWhatsappSchema,
   token6hMeta,
   token6hSchema,
@@ -200,6 +203,49 @@ describe('integracaoSchema per-channel fields', () => {
     expect(integracaoSchema.safeParse({ ...base, modalidadeFreteImportacao: 3 }).success).toBe(
       false,
     );
+  });
+
+  it('parses modoEnvioMercadoLivre, defaulting to null', () => {
+    for (const modo of ['me2', 'me1', 'not_specified'] as const) {
+      expect(
+        integracaoSchema.parse({ ...base, modoEnvioMercadoLivre: modo }).modoEnvioMercadoLivre,
+      ).toBe(modo);
+    }
+    expect(
+      integracaoSchema.parse({ ...base, modoEnvioMercadoLivre: null }).modoEnvioMercadoLivre,
+    ).toBeNull();
+    // ⚠️ The default is what keeps this field inert for every conta nobody has
+    // configured: null means publish sends no `shipping` node at all, exactly
+    // as it did before the field existed.
+    expect(integracaoSchema.parse(base).modoEnvioMercadoLivre).toBeNull();
+  });
+
+  it('rejects a modoEnvioMercadoLivre outside the enum', () => {
+    // `custom` is a REAL ML mode we deliberately do not offer — it needs a
+    // `costs[]` table nothing here models, and publishing it bare would ship a
+    // listing with an empty cost table. Pinned so re-adding it is a decision.
+    expect(integracaoSchema.safeParse({ ...base, modoEnvioMercadoLivre: 'custom' }).success).toBe(
+      false,
+    );
+    expect(integracaoSchema.safeParse({ ...base, modoEnvioMercadoLivre: 'me3' }).success).toBe(
+      false,
+    );
+  });
+
+  it('MODO_ENVIO_MERCADO_LIVRE names every member of the enum, and only those', () => {
+    // ⚠️ Compares against a LITERAL list, not against the enum's own options —
+    // iterating the thing under test would still pass if a member were deleted
+    // from both sides at once.
+    expect([...modoEnvioMercadoLivreSchema.options].sort()).toEqual([
+      'me1',
+      'me2',
+      'not_specified',
+    ]);
+    expect(Object.values(MODO_ENVIO_MERCADO_LIVRE).sort()).toEqual(['me1', 'me2', 'not_specified']);
+    // Every member carries a label, or the ObjectView Select renders raw keys.
+    for (const modo of modoEnvioMercadoLivreSchema.options) {
+      expect(MODO_ENVIO_MERCADO_LIVRE_LABELS[modo]).toBeTruthy();
+    }
   });
 
   it('passes a legacy Loja Integrada doc with token_id through untouched (not modeled)', () => {

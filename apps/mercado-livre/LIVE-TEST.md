@@ -388,6 +388,30 @@ above, and the notice rows below — and treat these seven as confirmatory.
 | `/moderations` 5xx during a single import                | the produto **still imports**, `moderacoes` untouched, one `console.warn` in the backend log naming the item                                     |        | `import.test.ts` — _"a TRANSIENT moderation failure degrades to 'never asked'…"_           |
 | Import a moderated **UP family** member                  | the reason lands on the MEMBER's `variacaoMercadoLivre` doc AND on the family parent link (the importer takes the imported member's, not a fold) |        | `import.test.ts` — _"a moderated member stamps both its variacaoMercadoLivre link and…"_   |
 
+The FREE CLEAR (#1252) added three more writers — publish, the UP member publish and
+the stock send. None of them asks ML about moderation; each clears only when ML's own
+`status`/`sub_status` on the response it already holds report none. So these rows are
+all about a reason ML has **lifted**, and the thing to watch is that no
+`/moderations` call appears in the log for any of them.
+
+| Signal                                                             | Assert                                                                                                                                                        | Result |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Fix the photo, wait for ML to lift it, then **republish**          | `moderacoes` becomes `[]` on the publish writeback alone — no `items` delivery needed, no `/moderations` call                                                 |        |
+| Republish while the moderação is **still** in force                | ⚠️ the reason SURVIVES — `poor_quality_thumbnail` is `active`, so the publish succeeds and must not clear it                                                  |        |
+| Send stock to a listing whose reason ML lifted                     | `moderacoes` becomes `[]` on the stock writeback                                                                                                              |        |
+| Send stock to a listing that is **still** `poor_quality_thumbnail` | ⚠️ the reason survives — this is the case the whole gate exists for                                                                                           |        |
+| Send stock for ONE MEMBER of a UP family (`variationItem`)         | ⚠️ the family parent link's `moderacoes` is **untouched** — one member does not speak for the family                                                          |        |
+| Send PRICE to a listing whose reason ML lifted                     | `moderacoes` becomes `[]` on the price writeback                                                                                                              |        |
+| Send PRICE for ONE MEMBER of a UP family (`variationItem`)         | ⚠️ the parent link gains **only** `ultimaModificacao` — no `estado`, no `status`, no `moderacoes`. #1252 removed the member→parent stamp this path used to do |        |
+| Republish a UP family whose member reason ML lifted                | the MEMBER's `variacaoMercadoLivre` doc clears to `[]`                                                                                                        |        |
+
+⚠️ The rows worth a slot are the two **survival** ones (republish and stock send while
+still moderated) and the two **member** ones. The clearing rows are pinned by unit
+tests; the survival rows are what prove the gate reads ML's real `sub_status` rather
+than assuming success means healthy, and the member rows are the family boundary no
+fixture can prove is wired to the live task shape — a `variationItem` task is built by
+the sweep, not by the test.
+
 The NOTICE is what #1259 added on top: the `null` state — "ML reports a moderation and
 nobody ever asked why" — is now visible instead of rendering identically to `[]`. The
 mass import above is what makes it reachable in production, which is why these rows come
