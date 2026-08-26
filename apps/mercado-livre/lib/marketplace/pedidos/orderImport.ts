@@ -1127,10 +1127,16 @@ async function registrarIncidenteDeDivergencia(
  *  - **No downgrade** — structural: `ESTADO_FRETE.entregue` is the only value
  *    this branch can emit, so `false`/`null` writes nothing and no code path here
  *    can walk a block backwards.
- *  - **Terminal latch** — mirrors the Melhor Envio webhook's `TERMINAL_ESTADOS`.
- *    A sem-envio block is NOT marketplace-locked (`externalOptionIntegracao` is
- *    null), so the pedido form's Frete tab can edit it freely; an operator who
- *    cancelled or recorded a return is not overridden.
+ *  - **Not-arranged-elsewhere** — the block must still be the un-arranged FOB
+ *    seed. ⚠️ A sem-envio block is NOT marketplace-locked, so the pedido form's
+ *    Frete tab edits it freely — and that cuts BOTH ways: the operator can also
+ *    hook real freight onto it, at which point the carrier owns `estado` and
+ *    ML's flag does not. This was the gap the first version of this function
+ *    shipped with: the ownership claim was written in a comment and never
+ *    checked. See the guard itself for what it costs.
+ *  - **Terminal latch** — mirrors the Melhor Envio webhook's `TERMINAL_ESTADOS`,
+ *    plus `devolvido`: an operator who cancelled or recorded a return is not
+ *    overridden.
  *  - **Idempotence** — the `=== entregue` early return, so the three deliveries
  *    ML sends per order produce one transition and one stock movement.
  */
@@ -1227,13 +1233,17 @@ async function applyFreteSemEnvioStep(args: {
 /**
  * Freight states the sem-envio delivery advance refuses to overwrite.
  *
- * Deliberately the Melhor Envio webhook's `TERMINAL_ESTADOS` plus `devolvido`:
- * a sem-envio block carries `externalOptionIntegracao: null`, so
- * `isFreteMarketplaceOwned` is false and the pedido form's Frete tab leaves it
- * fully editable. These three are the states a human sets to say "this is over,
- * and not by delivery" — an ML `fulfilled` that arrives afterwards is stale news
- * about an order somebody already closed differently, and overriding it would
- * both mislabel the pedido and, from `cancelado`, move stock.
+ * Deliberately the Melhor Envio webhook's `TERMINAL_ESTADOS` plus `devolvido`.
+ * These three are the states a HUMAN sets to say "this is over, and not by
+ * delivery" — an ML `fulfilled` arriving afterwards is news about an order
+ * somebody already closed differently, and overriding it would both mislabel the
+ * pedido and, from `cancelado` (which is NOT in `ESTADOS_FRETE_REMOVE_ESTOQUE`),
+ * move stock.
+ *
+ * ⚠️ This set answers "did a human close it?", NOT "does someone else own this
+ * block?" — those are different questions, and conflating them is what let the
+ * first version of this function overwrite an arranged carrier's estado. The
+ * ownership question is the separate not-arranged-elsewhere guard.
  *
  * NOT a general monotonicity rank — no such ordering exists for `EstadoFrete` in
  * this repo, and inventing one here would be a much larger claim than this guard
@@ -1283,6 +1293,60 @@ function advanceFreteSemEnvioParaEntregue(args: {
   // One transition, one stock movement.
   if (freshFrete.estado === ESTADO_FRETE.entregue) return;
 
+  // The staleness gate, in MICROSECONDS on both sides (`payloadNaoEhAntigo`
+  // coerces the stored one, so a legacy Flutter millisecond value still compares
+  // as the same instant). Shared with the estado promotion and downgrade on
+  // purpose: three directions of one decision about the same clock, which must
+  // not drift apart.
+  //
+  // ⚠️ Deliberately ABOVE the two warning guards: a payload we were going to drop
+  // for staleness must not first announce some other reason. A log that
+  // misattributes the cause is worse than no log — it sends the reader after the
+  // wrong thing.
+  if (!payloadNaoEhAntigo(freshPedido.lastMarketplaceUpdate, orderLastUpdatedUs)) return;
+
+  // ⚠️ The block is no longer the un-arranged FOB seed: an operator hooked REAL
+  // freight onto it — chose an `int_frete`, selected a quoted option, or bought a
+  // label. From that moment the carrier owns `estado`, and ML's flag does not:
+  // `fulfilled` is about the SALE ("a operação se concretizou"), not about
+  // somebody else's parcel.
+  //
+  // This is the guard the terminal latch below was WRONGLY assumed to cover. The
+  // seed really is not marketplace-owned (`externalOptionIntegracao` starts null,
+  // so `isFreteMarketplaceOwned` is false and the pedido form's Frete tab edits it
+  // freely) — but that is precisely what lets the block STOP being a sem-envio
+  // seed, and nothing here noticed. Writing `entregue` over an arranged block
+  // costs three things, worst last:
+  //   1. a parcel still in transit is labelled delivered;
+  //   2. ⚠️ the Melhor Envio webhook latches on `entregue` (its own
+  //      `TERMINAL_ESTADOS`), so from this write on EVERY later ME estado event
+  //      for that label is silently dropped — permanently, including a real
+  //      `cancelled`. ML's flag would have taken the block away from the carrier
+  //      that actually owns it;
+  //   3. from a pre-removal estado (`aguardandoNFe`, `emSeparacao`,
+  //      `despachoAutorizado`) it also fires the irreversible stock movement
+  //      early — the exact hazard this whole function is written around.
+  //
+  // `codRastreio` is deliberately NOT in this list: an operator who delivers by
+  // motoboy can type a tracking code on a genuinely un-arranged frete, and that
+  // must not veto the ML confirmation. Every field below implies a SYSTEM that
+  // will keep writing `estado`; a hand-typed code does not.
+  if (
+    freshFrete.integracaoFreteOuterRef != null ||
+    freshFrete.externalOptionIntegracao != null ||
+    freshFrete.printLabelId != null ||
+    freshFrete.externalId != null
+  ) {
+    console.warn('[mercado-livre] fulfilled ignorado — frete arranjado fora do ML', {
+      pedidoId: pedidoRef.id,
+      estadoAtual: freshFrete.estado,
+      integracaoFreteOuterRef: freshFrete.integracaoFreteOuterRef,
+      externalOptionIntegracao: freshFrete.externalOptionIntegracao,
+      printLabelId: freshFrete.printLabelId,
+    });
+    return;
+  }
+
   if (ESTADOS_FRETE_TERMINAIS_SEM_ENVIO.has(freshFrete.estado)) {
     console.warn('[mercado-livre] fulfilled ignorado — frete em estado terminal', {
       pedidoId: pedidoRef.id,
@@ -1290,13 +1354,6 @@ function advanceFreteSemEnvioParaEntregue(args: {
     });
     return;
   }
-
-  // The staleness gate, in MICROSECONDS on both sides (`payloadNaoEhAntigo`
-  // coerces the stored one, so a legacy Flutter millisecond value still compares
-  // as the same instant). Shared with the estado promotion and downgrade on
-  // purpose: three directions of one decision about the same clock, which must
-  // not drift apart.
-  if (!payloadNaoEhAntigo(freshPedido.lastMarketplaceUpdate, orderLastUpdatedUs)) return;
 
   tx.update(
     pedidoRef,

@@ -2753,6 +2753,98 @@ describe('importPedidoMercadoLivre — order with no Mercado Envios shipment', (
       },
     );
 
+    // ⚠️ The block is editable precisely BECAUSE it is not marketplace-owned, so
+    // an operator can arrange real freight on it — pick an int_frete, select a
+    // quoted option, buy a Melhor Envio label. From then on the carrier owns
+    // `estado`. Writing `entregue` over it does not merely mislabel a parcel in
+    // transit: the ME webhook latches on `entregue` via its own TERMINAL_ESTADOS,
+    // so every later ME event for that label is silently dropped FOREVER — and
+    // from a pre-removal estado it fires the irreversible stock movement early.
+    it.each([
+      [
+        'integracaoFreteOuterRef (an int_frete was chosen)',
+        { integracaoFreteOuterRef: 'documents/int_frete/me-1' },
+      ],
+      [
+        'externalOptionIntegracao (a quote was selected)',
+        { externalOptionIntegracao: 'melhorEnvios' },
+      ],
+      ['printLabelId (a label was bought)', { printLabelId: 'label-123' }],
+      ['externalId (an external shipment exists)', { externalId: 'ext-9' }],
+    ])('⛔ never takes a frete arranged outside ML — %s', async (_label, freteOver) => {
+      const db = new FakeDb();
+      seedConta(db);
+      // `postado` is deliberately in ESTADOS_FRETE_REMOVE_ESTOQUE already, so
+      // this case isolates the OWNERSHIP violation from the stock one.
+      seedPedidoComFreteSemEnvio(db, { estado: 'postado', ...freteOver });
+      const api = makeApi({
+        getOrder: vi.fn(async () =>
+          makeOrder({
+            id: 1,
+            tags: ['no_shipping'],
+            fulfilled: true,
+            lastUpdated: '2026-02-01T00:00:00.000-03:00',
+          }),
+        ),
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      expect(freteDe(db).estado).toBe('postado');
+    });
+
+    it('⛔ an arranged frete in a PRE-REMOVAL estado is not advanced — the stock case', async () => {
+      // `despachoAutorizado` is NOT in ESTADOS_FRETE_REMOVE_ESTOQUE, so advancing
+      // it to `entregue` would cross the boundary and deduct the goods — for a
+      // parcel the carrier has not even collected. This is the worst of the three
+      // consequences and the one that cannot be undone from the frete side.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPedidoComFreteSemEnvio(db, {
+        estado: 'despachoAutorizado',
+        printLabelId: 'label-123',
+        externalOptionIntegracao: 'melhorEnvios',
+      });
+      const api = makeApi({
+        getOrder: vi.fn(async () =>
+          makeOrder({
+            id: 1,
+            tags: ['no_shipping'],
+            fulfilled: true,
+            lastUpdated: '2026-02-01T00:00:00.000-03:00',
+          }),
+        ),
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      expect(freteDe(db).estado).toBe('despachoAutorizado');
+    });
+
+    it('still advances a frete carrying only a hand-typed codRastreio', async () => {
+      // The deliberate NON-member of the arranged-freight predicate. An operator
+      // who delivered by motoboy can record a tracking code on a genuinely
+      // un-arranged frete; that must not veto ML's confirmation, because no
+      // SYSTEM is going to write `estado` for it.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPedidoComFreteSemEnvio(db, { codRastreio: 'BR123456789BR' });
+      const api = makeApi({
+        getOrder: vi.fn(async () =>
+          makeOrder({
+            id: 1,
+            tags: ['no_shipping'],
+            fulfilled: true,
+            lastUpdated: '2026-02-01T00:00:00.000-03:00',
+          }),
+        ),
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      expect(freteDe(db).estado).toBe('entregue');
+    });
+
     it('⛔ does not overwrite a terminal estado a human set (cancelado)', async () => {
       // A sem-envio block is NOT marketplace-locked (`externalOptionIntegracao`
       // is null), so the pedido form's Frete tab edits it freely. An operator who
