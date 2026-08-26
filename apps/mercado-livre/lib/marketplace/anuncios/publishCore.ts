@@ -36,6 +36,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import { dimensoesDoPacote, parseFakePath, resolveCondicaoAnuncio } from '@delfrance/schemas';
 
+import { isFamilyId } from '../core/linkRefs';
 import type { ResolvedSizeChart } from '../size-charts/sizeChart';
 
 /** Publish blocked by missing/invalid produto data — maps to HTTP 422. */
@@ -238,25 +239,18 @@ export function publishModeIssues(args: {
     );
   }
 
-  // A User-Products family whose variations were ALL deleted. `link.id` holds a
-  // FAMILY id, and with no children the fan-out does not engage — so the publish
-  // would fall through to `PUT /items/{familyId}`, the one call this whole model
-  // forbids, and earn a 4xx the operator cannot read. The orphan sweep lives
-  // inside the fan-out too, so the family's members would stay live and selling
-  // with no produto behind any of them.
+  // A User-Products family whose variations were ALL deleted — the one childless
+  // UP state publish must REFUSE rather than repair. `link.id` holds a FAMILY id,
+  // so there is no item to PUT and no member to derive one from: inventing a sole
+  // member here would POST a NEW item into a family that already has live ones,
+  // and `sweepRemovedMembers` would then confirm and CLOSE every sibling that was
+  // selling. The other two childless states are repairable and handled by
+  // {@link classificarMembroUnico}; this is the one that is not.
   //
-  // ⚠️ Detected by the SHAPE of the id, not by `childrenCount` alone: a produto
-  // that never had variations is also `isUserProductModel` with zero children,
-  // and there `link.id` is a real item id that must keep republishing normally.
-  // An ML item id always carries its site prefix (`MLB…`); a family id is the
-  // bare integer ML computes (`import.ts:193` stringifies it). All-digits is
-  // therefore the one form that cannot be an item.
-  if (
-    args.model === 'user-products' &&
-    args.childrenCount === 0 &&
-    args.linkId != null &&
-    /^\d+$/.test(args.linkId)
-  ) {
+  // ⚠️ Evaluated against the ORIGINAL `childrenCount`, before any sole-member
+  // materialisation runs. Materialise first and `childrenCount` is 1, so this
+  // guard silently stops firing — which is exactly the destructive case.
+  if (classificarMembroUnico(args) === 'recusar') {
     issues.push(
       'este anúncio é uma família User Products (o vínculo aponta para a família, não para um ' +
         'anúncio) e o produto não tem mais variações — recadastre as variações ou encerre os ' +
@@ -265,6 +259,42 @@ export function publishModeIssues(args: {
   }
 
   return issues;
+}
+
+/**
+ * What a childless User-Products produto needs before it can publish (#1087).
+ *
+ * ML auto-generates a family for EVERY user product, so a "UP single" is really a
+ * family of one — which is the shape the importer writes (parent + one child) and
+ * the shape publish did NOT write, storing a root produto instead. The two sides
+ * disagreed for exactly this case, so a produto could not survive
+ * delete → re-import. Publish now converges on the importer's shape, and this
+ * classifier is the whole dispatch.
+ *
+ * ⚠️ The three cases are told apart by the SHAPE of `link.id`, never by
+ * `childrenCount` alone — all three have zero children:
+ *
+ *  - `'nenhum'`  – not a childless UP produto; nothing to do.
+ *  - `'criar'`   – never published (`linkId == null`). Mint the sole member, POST it.
+ *  - `'adotar'`  – published under the OLD convention, so `link.id` is a real item
+ *                id (`MLB…`). Mint the sole member **carrying that item id** so the
+ *                fan-out PUTs the existing listing. ⛔ Minting it WITHOUT the id
+ *                makes the fan-out POST a second item, after which
+ *                `sweepRemovedMembers` confirms the original as an orphan and
+ *                pauses-then-closes it — a live listing, its sales history and its
+ *                ranking, gone.
+ *  - `'recusar'` – `link.id` is a FAMILY id (all digits), so the ERP's variations
+ *                were deleted out from under a family that may still have live
+ *                members. Not repairable from here.
+ */
+export function classificarMembroUnico(args: {
+  model: ListingModel;
+  linkId: string | null;
+  childrenCount: number;
+}): 'nenhum' | 'criar' | 'adotar' | 'recusar' {
+  if (args.model !== 'user-products' || args.childrenCount > 0) return 'nenhum';
+  if (args.linkId == null || args.linkId === '') return 'criar';
+  return isFamilyId(args.linkId) ? 'recusar' : 'adotar';
 }
 
 /**
@@ -653,7 +683,14 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       child.storedCombinations,
       mergeable,
     );
-    if (combos.length === 0) {
+    // ⚠️ A User-Products family of EXACTLY ONE member has nothing to vary, so it
+    // legitimately carries no combination — ML identifies the sole member by its
+    // own item id, not by an attribute. That is the shape the IMPORTER already
+    // writes for a UP single (`mapUpMemberToImport` over an empty
+    // `attribute_combinations` yields `combos: []`), and publish has to produce
+    // the same one. With TWO OR MORE members it stays a blocking issue: ML cannot
+    // tell siblings apart without a combination, so they would collapse together.
+    if (combos.length === 0 && !(args.isUserProductSeller && args.variations.length === 1)) {
       issues.push(`variação "${child.produto.nome}" sem atributos de combinação`);
     }
     const attrs: MlAttribute[] = [];
