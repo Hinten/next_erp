@@ -48,6 +48,28 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
     ResizeObserverShim;
 }
 
+// JSDOM lacks `IntersectionObserver`, which `useIntersection` constructs on ref
+// attach — the NF column's viewport gate (#1216) and anything else that lazily
+// mounts on visibility. The shim never fires its callback, so `entry` stays
+// `null` and consumers see "not in view"; a test that needs the observed state
+// mocks `useIntersection` itself rather than driving this.
+if (typeof globalThis.IntersectionObserver === 'undefined') {
+  class IntersectionObserverShim {
+    readonly root = null;
+    readonly rootMargin = '';
+    readonly thresholds: ReadonlyArray<number> = [];
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
+  }
+  (
+    globalThis as unknown as { IntersectionObserver: typeof IntersectionObserverShim }
+  ).IntersectionObserver = IntersectionObserverShim;
+}
+
 // JSDOM lacks `Element.prototype.scrollIntoView`, which Mantine's Combobox
 // calls from a `setTimeout` when its dropdown opens. Because it fires on a
 // timer, the TypeError surfaces as an *unhandled* error attributed to whatever

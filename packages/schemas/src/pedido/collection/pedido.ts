@@ -346,23 +346,48 @@ export const pedidoMeta: CollectionMetadata = {
     // regardless of date. (The often-repeated "'99' sorts above '100'" story is
     // NOT the defect: both apps zero-pad to a fixed width.)
     orderBy: [{ field: 'timestamp', direction: 'desc' }],
-    // 50, NOT legacy's 100 — measured, not assumed (#159).
+    // 100, matching legacy, which deliberately overrode this one screen to
+    // `itensPerPage: 100` (`cacheExtent: 700`,
+    // `.old/lib/pedido/pages/pedidoTableView.dart:2187`).
     //
-    // Legacy deliberately overrode this one screen to `itensPerPage: 100`
-    // (`cacheExtent: 700`, `.old/lib/pedido/pages/pedidoTableView.dart:2187`),
-    // and 100 was the intended parity target here. It does not survive contact
-    // with this app's NF column: `PedidoCells.NFCell` opens a REALTIME
-    // `onSnapshot` listener PER ROW on that pedido's `nfev4` subcollection, so
-    // the page size is also the concurrent-listener count on first paint of the
-    // heaviest screen — 100 rows meant 100 live listeners.
+    // ⚠️ This sat at 50 between #159 and #1216, and the reason is worth keeping:
+    // `PedidoCells.NFCell` opens a REALTIME `onSnapshot` on that pedido's
+    // `nfev4` subcollection, so the page size WAS also the concurrent-listener
+    // count on first paint of the heaviest screen — 100 rows meant 100 live
+    // listeners. The vendas e2e lane measured it across four runs: at 100 it
+    // never produced a clean run (3 failed/2 flaky, then 1/1, then 1/1 — a
+    // different /pedidos LIST spec each time, while every pedido EDITOR spec
+    // passed); at 50 it was 166 passed, 0 failed, 0 flaky.
     //
-    // The vendas e2e lane measured it across four runs: at 100 it never
-    // produced a clean run (3 failed/2 flaky, then 1/1, then 1/1 — a different
-    // /pedidos LIST spec each time, while every pedido EDITOR spec passed); at
-    // 50 it was 166 passed, 0 failed, 0 flaky. Raising this without first
-    // making the NF column cheap just buys back the flakiness — #1216 carries
-    // that work and restoring 100 is its acceptance test. `limit` is the FIRST page only; "Carregar mais" grows it
-    // by the same amount per click.
+    // ⚠️ STILL 50 — #1216 did NOT buy 100 back. Read this before trying again;
+    // the attempt is written up so it is not repeated blind.
+    //
+    // #1216 made the NF listener RELEASABLE: `useLatestNfe` subscribes every row
+    // at mount and tears the listener down once the IntersectionObserver reports
+    // the row off screen. That genuinely cuts the SUSTAINED count and is what
+    // shipped. It does not cut the FIRST-PAINT peak, which stays at exactly this
+    // number — and the peak is the quantity #159 measured.
+    //
+    // Two ways of bounding the peak were tried on the vendas lane; both failed,
+    // for opposite reasons:
+    //
+    //  1. Wait for the observer before subscribing. That puts intersection
+    //     delivery on the critical path of the first badge — those callbacks are
+    //     throttled and can lag by seconds while 100 rows render — and
+    //     `pedidos-nfe-snapshot` went fail/fail/pass, pass, fail/fail/fail.
+    //  2. Ration the optimistic subscriptions (a 30-slot budget). Worse: rows
+    //     past the ration never subscribe AT ALL when delivery is unreliable, so
+    //     their badges never resolve. FOUR /pedidos LIST specs then failed 3/3 —
+    //     pedidos-anexos, pedidos-devolucao, pedidos-etiqueta-ml,
+    //     pedidos-nfe-snapshot — the same rotating-list-spec signature #159
+    //     recorded, on a branch that already contained main.
+    //
+    // So raising this needs the first-paint cost cut somewhere OTHER than the NF
+    // listener. The remaining per-row reads are `ClienteCell`'s cliente `getDoc`
+    // and `FreteCell`'s `intFreteTipo` `getDoc` — up to one of each per row,
+    // ungated, which #1216 explicitly flags and nothing has yet addressed.
+    // `limit` is the FIRST page only; "Carregar mais" grows it by the same
+    // amount per click.
     limit: 50,
     // Same nine columns legacy showed (`pedidoTableView.dart:2221-2256`).
     // Every virtual column declares `dependsOn`, so the Pipelines projection
