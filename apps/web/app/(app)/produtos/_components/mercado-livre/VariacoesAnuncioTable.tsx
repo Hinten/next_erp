@@ -131,7 +131,28 @@ export function VariacoesAnuncioTable({
     return rows.sort((a, b) => rotulo(a.data).localeCompare(rotulo(b.data), 'pt-BR'));
   }, [membrosSnap.data]);
 
-  if (!isUserProducts || linhas.length === 0) return null;
+  // ⚠️ Measured on the RAW page, never on `linhas`. `limit()` bounds what
+  // Firestore returned; the `itemId` filter runs after it. A full page holding
+  // one legacy member yields 59 rows, and a cap tested against 59 would go
+  // quiet in exactly the state where BOTH hazards compound — the tail is
+  // dropped AND something else was dropped too. `MercadoLivreEditor` measures
+  // its own cap the same way (`links.length >= MAX_LINKS`, on the snapshot).
+  const paginaTruncada = (membrosSnap.data?.length ?? 0) >= MAX_MEMBROS;
+
+  if (!isUserProducts) return null;
+  // ⚠️ A failed read must not look like "this família has no variations". The
+  // table's whole argument is that an absent row and a known-empty one mean
+  // different things; rendering nothing here would make a permissions or
+  // network failure indistinguishable from the page as it was before this
+  // component existed. The editor surfaces its own snapshot errors the same way.
+  if (membrosSnap.error) {
+    return (
+      <Alert color="red" variant="light">
+        Erro ao carregar as variações deste anúncio: {membrosSnap.error.message}
+      </Alert>
+    );
+  }
+  if (linhas.length === 0) return null;
 
   return (
     <Stack gap="xs">
@@ -146,10 +167,10 @@ export function VariacoesAnuncioTable({
         </Text>
       </Group>
 
-      {linhas.length >= MAX_MEMBROS && (
+      {paginaTruncada && (
         <Alert color="yellow" variant="light">
-          Mostrando as primeiras {MAX_MEMBROS} variações deste anúncio. Pode haver outras que não
-          aparecem aqui.
+          Mostrando apenas as primeiras {MAX_MEMBROS} variações deste anúncio. Pode haver outras que
+          não aparecem aqui.
         </Alert>
       )}
 

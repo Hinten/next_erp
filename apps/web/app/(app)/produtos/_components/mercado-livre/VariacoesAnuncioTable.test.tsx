@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   membros: [] as Array<{ id: string; data: VariacaoMercadoLivreLink }>,
   /** Every query handed to `useSnapshot`, so a test can assert none was built. */
   queries: [] as unknown[],
+  /** A failed read, for the case that must not look like an empty família. */
+  erro: null as { message: string } | null,
 }));
 
 vi.mock('@delfrance/data', () => ({
@@ -20,7 +22,11 @@ vi.mock('@delfrance/data', () => ({
 vi.mock('@delfrance/data/hooks', () => ({
   useSnapshot: (q: unknown) => {
     h.queries.push(q);
-    return { data: q == null ? undefined : h.membros, loading: false, error: null };
+    return {
+      data: q == null || h.erro ? undefined : h.membros,
+      loading: false,
+      error: h.erro,
+    };
   },
 }));
 
@@ -78,6 +84,7 @@ beforeEach(() => {
   cleanup();
   h.membros = [];
   h.queries = [];
+  h.erro = null;
 });
 
 /* ---------------------------------- tests ---------------------------------- */
@@ -246,5 +253,33 @@ describe('VariacoesAnuncioTable', () => {
     );
 
     expect(screen.getByText(/Pode haver outras que não aparecem aqui/)).toBeDefined();
+  });
+
+  it('⚠️ …and still says so when a FILTERED row drops the visible count below the cap', () => {
+    // The state where both hazards compound, and the one the cap test above
+    // cannot see: `limit()` bounds the RAW page, the `itemId` filter runs after
+    // it. A full page holding one legacy member renders 59 rows — measuring the
+    // cap against those 59 goes quiet exactly when the tail was dropped AND
+    // something else was dropped too.
+    renderTable([
+      ...Array.from({ length: 59 }, (_, i) => ({
+        id: `v${String(i)}`,
+        data: membro({ itemId: `MLB-${String(i)}`, sku: `SKU-${String(i)}` }),
+      })),
+      { id: 'v-legado', data: membro({ itemId: null, sku: 'LEGADO' }) },
+    ]);
+
+    expect(screen.getByText(/Pode haver outras que não aparecem aqui/)).toBeDefined();
+  });
+
+  it('⚠️ a FAILED read says so, instead of looking like a família with no variations', () => {
+    // Rendering nothing would make a permissions or network failure
+    // indistinguishable from the page as it was before this component existed —
+    // the exact conflation the rest of this table argues against.
+    h.erro = { message: 'Missing or insufficient permissions.' };
+    renderTable([{ id: 'v1', data: membro() }]);
+
+    expect(screen.getByText(/Erro ao carregar as variações deste anúncio/)).toBeDefined();
+    expect(screen.queryByText('Variações no Mercado Livre')).toBeNull();
   });
 });
