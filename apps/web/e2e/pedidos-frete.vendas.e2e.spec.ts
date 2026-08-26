@@ -127,7 +127,15 @@ test.describe.serial('Pedidos — aba Frete', () => {
     // the integração's 7-day cut-off schedule.
     const valorCobrado = page.getByLabel('Valor cobrado', { exact: true });
     await expect(valorCobrado).toBeVisible();
-    await valorCobrado.fill('12.5');
+    // ⚠️ Comma, not a dot. The field is localized (pt-BR) like every other
+    // decimal input, and `.fill()` sets the whole value in one go — which
+    // react-number-format treats as a paste and strips of any character that is
+    // not the CONFIGURED separator, so '12.5' lands as 125. Typing a dot is
+    // fine (`allowedDecimalSeparators` converts the inserted character) and so
+    // is a real paste (Mantine's `handlePaste` rewrites the separator first);
+    // only Playwright's `.fill()` bypasses both. Same convention as
+    // `pedidos.vendas.e2e.spec.ts`, which fills the desconto as '1,5'.
+    await valorCobrado.fill('12,5');
     await valorCobrado.blur();
 
     const pedido = await createAndReadBack(page);
