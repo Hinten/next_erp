@@ -5,6 +5,8 @@ import { DatePickerInput, DateTimePicker } from '@mantine/dates';
 import { Controller, type Control, type FieldValues } from 'react-hook-form';
 import type { ZodObject, ZodRawShape } from 'zod';
 import type { FieldConfig, FieldDescriptor, FieldRenderProps } from '../schema/types';
+import { DecimalInput } from '../inputs/DecimalInput';
+import { parseDecimalInput } from '../inputs/decimalValue';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import { epochToPickerString, pickerStringToEpoch } from './datetimeField';
 import { NullClearButton } from './NullClearButton';
@@ -209,21 +211,25 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
             );
           case 'number':
             return (
-              <NumberInput
-                value={(field.value as number | string | undefined) ?? ''}
-                onChange={(v) => field.onChange(typeof v === 'string' ? Number(v) : v)}
+              <DecimalInput
+                value={(field.value as number | null | undefined) ?? null}
+                onChange={field.onChange}
                 onBlur={field.onBlur}
                 label={label}
                 description={hint}
                 error={error}
                 disabled={!editable}
+                allowNegative
               />
             );
           case 'integer':
             return (
               <NumberInput
                 value={(field.value as number | string | undefined) ?? ''}
-                onChange={(v) => field.onChange(typeof v === 'string' ? Number(v) : v)}
+                // Integers cannot reach the in-progress-decimal branch, but they
+                // DO reach the empty one: `Number('')` is 0, so clearing a
+                // nullable integer used to store a zero instead of clearing it.
+                onChange={(v) => field.onChange(parseDecimalInput(v))}
                 onBlur={field.onBlur}
                 label={label}
                 description={hint}
@@ -236,7 +242,8 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
             return (
               <NumberInput
                 value={(field.value as number | string | undefined) ?? ''}
-                onChange={(v) => field.onChange(typeof v === 'string' ? Number(v) : v)}
+                // Centavos — an integer kind, see the note on 'integer' above.
+                onChange={(v) => field.onChange(parseDecimalInput(v))}
                 onBlur={field.onBlur}
                 label={label}
                 description={hint ?? 'Valor em centavos (BRL).'}

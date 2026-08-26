@@ -1,27 +1,7 @@
 'use client';
 
 import { type CSSProperties, type ReactNode, useState } from 'react';
-import { NumberInput } from '@mantine/core';
-
-/**
- * Coerce Mantine `NumberInput`'s `onChange` payload to a number (or `null` when
- * empty). The control hands back a FORMATTED STRING with a comma decimal (and
- * Playwright `.fill()` always yields a string), so a naive
- * `typeof v === 'number'` check silently drops every value. Drop the prefix,
- * fold any thousands dots that precede a comma, then turn the decimal comma
- * into a dot (a lone dot is also accepted as the decimal separator).
- */
-export function parseBrl(v: number | string): number | null {
-  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  if (typeof v !== 'string') return null;
-  const cleaned = v
-    .replace(/[^\d.,-]/g, '') // drop "R$", spaces, NBSP
-    .replace(/\.(?=.*,)/g, '') // dots before a comma are thousands → drop
-    .replace(',', '.'); // decimal comma → dot
-  if (cleaned === '' || cleaned === '-') return null;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
-}
+import { DecimalInput } from '@delfrance/ui';
 
 export interface CurrencyInputProps {
   /** Numeric value; `null` renders empty. */
@@ -40,18 +20,22 @@ export interface CurrencyInputProps {
 }
 
 /**
- * BRL money input (pt-BR): `R$ ` prefix, comma decimal separator, up to two
- * decimal places. Either `,` or `.` is accepted as the decimal key.
+ * BRL money input (pt-BR): `R$ ` prefix, two decimal places.
  *
- * `fixedDecimalScale` is enabled ONLY while the field is NOT focused, so a
- * loaded/idle value always shows both decimals (e.g. `R$ 30,00`). It is turned
- * OFF during editing: with a controlled value, fixed decimals re-format
- * mid-typing and react-number-format re-reads the padded `,00` as integer
- * digits, which mis-scaled every keystroke (×100) and blocked decimal entry.
- * `thousandSeparator` is intentionally omitted for the same parsing-ambiguity
- * reason. Negatives are blocked; clamping is left to Zod (`clampBehavior="none"`)
- * so an invalid 0 surfaces as a form error instead of being silently corrected.
- * Emits `null` when cleared.
+ * Everything about reading the operator's keystrokes lives in `DecimalInput`
+ * (`@delfrance/ui`) — this adds only what is specific to money.
+ *
+ * ⚠️ The one thing it adds is genuinely delicate: **`fixedDecimalScale` is on
+ * ONLY while the field is not focused**, so an idle price always shows both
+ * decimals (`R$ 30,00`) while a price being typed shows exactly what was typed.
+ * Padding a controlled value mid-typing makes react-number-format re-read the
+ * forced `,00` as integer digits, which mis-scaled every keystroke (×100) and
+ * blocked decimal entry outright (`07bf3fa7`). This is the only field kind in
+ * the app that wants the padding, which is why `DecimalInput` leaves it off by
+ * default rather than sequencing it for everyone.
+ *
+ * Negatives are blocked; clamping is left to Zod so an invalid 0 surfaces as a
+ * form error instead of being silently corrected. Emits `null` when cleared.
  */
 export function CurrencyInput({
   value,
@@ -66,25 +50,24 @@ export function CurrencyInput({
 }: CurrencyInputProps) {
   const [editing, setEditing] = useState(false);
   return (
-    <NumberInput
+    <DecimalInput
       label={label}
       description={description}
       disabled={disabled}
       error={error}
-      aria-label={ariaLabel}
+      ariaLabel={ariaLabel}
       style={style}
       rightSection={rightSection}
-      rightSectionPointerEvents={rightSection ? 'all' : undefined}
-      value={value ?? ''}
-      onChange={(v) => onChange(parseBrl(v))}
+      value={value}
+      onChange={onChange}
       onFocus={() => setEditing(true)}
       onBlur={() => setEditing(false)}
       prefix="R$ "
       decimalScale={2}
       fixedDecimalScale={!editing}
-      decimalSeparator=","
-      allowedDecimalSeparators={[',', '.']}
-      allowNegative={false}
+      // Deliberate opt-out, carried over verbatim: clamping is left to Zod so
+      // an invalid 0 surfaces as a form error instead of being silently
+      // corrected into a valid-looking price.
       clampBehavior="none"
       hideControls
     />
