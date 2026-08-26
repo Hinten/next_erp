@@ -206,3 +206,110 @@ describe('a derived Storage bucket name is the LAST resort', () => {
     );
   });
 });
+
+/**
+ * Second invariant, same family, different value: a server surface that reads
+ * `GOOGLE_CLOUD_PROJECT` must also consult `FIREBASE_CONFIG`.
+ *
+ * ⚠️ `GOOGLE_CLOUD_PROJECT` is NOT injected by App Hosting / Cloud Run. The
+ * container runtime contract sets only PORT / K_SERVICE / K_REVISION /
+ * K_CONFIGURATION; the project id is reachable from the metadata server and
+ * never as an env var. Verified against the deployed backend — neither
+ * `GOOGLE_CLOUD_PROJECT` nor `FIREBASE_PROJECT_ID` is present there.
+ *
+ * `packages/ai/src/admin/provider.ts` carried a comment asserting the opposite
+ * ("injected by App Hosting / Cloud Run") and stopped its ladder one tier short.
+ * Every AI call on staging therefore threw `AiNotConfiguredError` — found by a
+ * human trying to fill a tabela de medidas, not by any test. The six
+ * `lib/firebase/admin.ts` copies carried the same false comment but happened to
+ * have the fallback, which is why only one surface broke.
+ *
+ * ⚠️ SCOPE: this asserts the file CONSULTS `FIREBASE_CONFIG` — not where in
+ * the ladder, and not that the parsed value is used. Both are semantic and are
+ * owned by the unit suites, which mutation-prove them. What this catches is the
+ * copy-paste: a NEW server surface that reads `GOOGLE_CLOUD_PROJECT` and stops
+ * there. It would not catch deleting the tier while leaving the parser behind —
+ * `no-unused-vars` covers that, and a text scan should not pretend to.
+ */
+const READS_GCP = 'process.env.GOOGLE_CLOUD_PROJECT';
+const READS_FIREBASE_CONFIG = 'process.env.FIREBASE_CONFIG';
+
+/** Every server surface, tests excluded — they legitimately stub these vars. */
+const SOURCE_PATHSPECS = ['apps', 'packages'];
+const isTest = (p) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(p);
+
+/**
+ * ⚠⚠ Anti-vacuity anchor. The assertion expects `[]`, which passes just as
+ * happily over an empty set. These are the surfaces that must be discovered.
+ */
+const MUST_READ_GCP = [
+  'apps/mercado-livre/lib/firebase/admin.ts',
+  'apps/whatsapp/lib/firebase/admin.ts',
+  'packages/ai/src/admin/provider.ts',
+];
+
+describe('a server surface that reads GOOGLE_CLOUD_PROJECT also consults FIREBASE_CONFIG', () => {
+  const readers = () =>
+    gitGrep({ patterns: [READS_GCP], pathspecs: SOURCE_PATHSPECS, mode: 'fixed' }).filter(
+      (p) => !isTest(p),
+    );
+
+  it('the scan finds every known reader', () => {
+    const found = readers();
+    expect(
+      found.length,
+      'The GOOGLE_CLOUD_PROJECT scan stopped matching — this guard is checking nothing.',
+    ).toBeGreaterThanOrEqual(7);
+    for (const f of MUST_READ_GCP) {
+      expect(found, `${f} must be in the scan.`).toContain(f);
+    }
+  });
+
+  it('every reader also consults FIREBASE_CONFIG', () => {
+    const consults = new Set(
+      gitGrep({
+        patterns: [READS_FIREBASE_CONFIG],
+        pathspecs: SOURCE_PATHSPECS,
+        mode: 'fixed',
+        list: false,
+      })
+        .filter((hit) => !COMMENT_LINE.test(textOf(hit)))
+        .map(pathOf)
+        .filter((p) => !isTest(p)),
+    );
+    const offenders = readers().filter((f) => !consults.has(f));
+
+    expect(
+      offenders,
+      [
+        'These files read GOOGLE_CLOUD_PROJECT without falling back to',
+        'FIREBASE_CONFIG.projectId:',
+        '',
+        ...offenders.map((f) => `  - ${f}`),
+        '',
+        'GOOGLE_CLOUD_PROJECT is NOT set on App Hosting / Cloud Run. The container',
+        'contract sets only PORT / K_SERVICE / K_REVISION / K_CONFIGURATION, and the',
+        'project id lives on the metadata server. On the deployed backend neither',
+        'GOOGLE_CLOUD_PROJECT nor FIREBASE_PROJECT_ID is present, so a ladder that',
+        'stops at them resolves NOTHING in production while working fine locally.',
+        '',
+        'Fix: add a final tier reading `projectId` out of FIREBASE_CONFIG. Copy the',
+        'parser from a sibling that already has one — today `firebaseConfigProjectId()`',
+        'in packages/ai/src/admin/provider.ts or `firebaseConfigValue()` in any',
+        'apps/<app>/lib/firebase/admin.ts. Keep both details verbatim: the narrow',
+        'catch (`if (!(err instanceof SyntaxError)) throw err;`) and the',
+        'TRUTHINESS check — an env var set to the empty string must not',
+        'short-circuit a ladder whose later tier holds the real answer.',
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  it('⚠️ the test-file filter spares tests but not real sources', () => {
+    // Controls both ways: tests legitimately stub these vars and must be
+    // excluded, but a source file must never be.
+    expect(isTest('packages/ai/src/admin/provider.test.ts')).toBe(true);
+    expect(isTest('apps/mercado-livre/lib/firebase/admin.test.ts')).toBe(true);
+    expect(isTest('packages/ai/src/admin/provider.ts')).toBe(false);
+    expect(isTest('apps/whatsapp/lib/firebase/admin.ts')).toBe(false);
+  });
+});

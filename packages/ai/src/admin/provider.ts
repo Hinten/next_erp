@@ -83,12 +83,55 @@ export const DEFAULT_AI_LOCATION = 'global';
 
 let cachedClient: GoogleGenAI | null = null;
 
+/**
+ * `projectId` out of `FIREBASE_CONFIG`, the JSON blob Firebase-managed runtimes
+ * inject — `null` when the variable is absent, unparseable, or carries nothing
+ * usable.
+ *
+ * Mirrors `resolveProjectId` in each app's `lib/firebase/admin.ts`, narrow catch
+ * included (root CLAUDE.md rule 6). COPIED rather than imported: those are
+ * deliberately per-app, dependency-free bootstraps, and this package keeps a
+ * minimal dependency surface of its own — it must not grow one to read an env
+ * var.
+ */
+function firebaseConfigProjectId(): string | null {
+  const raw = process.env.FIREBASE_CONFIG;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const value = parsed.projectId;
+    return typeof value === 'string' && value ? value : null;
+  } catch (err) {
+    // Malformed FIREBASE_CONFIG — treat as absent and keep falling back.
+    if (!(err instanceof SyntaxError)) throw err;
+    return null;
+  }
+}
+
 function getClient(): GoogleGenAI {
   if (cachedClient) return cachedClient;
-  // `GOOGLE_CLOUD_PROJECT` is injected by App Hosting / Cloud Run; the fallback
-  // covers a local `pnpm dev`, where it comes from .env.local.
-  const project = process.env.GOOGLE_CLOUD_PROJECT ?? process.env.FIREBASE_PROJECT_ID;
-  if (!project) throw new AiNotConfiguredError('GOOGLE_CLOUD_PROJECT');
+  // ⚠️ **`GOOGLE_CLOUD_PROJECT` is NOT injected by App Hosting / Cloud Run.**
+  // This comment used to say it was, and the claim was load-bearing: every AI
+  // call on the deployed backend threw `AiNotConfiguredError`. Cloud Run's
+  // container contract sets only PORT / K_SERVICE / K_REVISION / K_CONFIGURATION;
+  // the project id is reachable from the METADATA SERVER, never as an env var.
+  // Verified against the deployed service — neither `GOOGLE_CLOUD_PROJECT` nor
+  // `FIREBASE_PROJECT_ID` is present there.
+  //
+  // What IS injected is `FIREBASE_CONFIG`, carrying the projectId. That is the
+  // same ladder every `lib/firebase/admin.ts` already ends with, and for exactly
+  // this reason.
+  //
+  // ⚠️ Truthiness, not `??` — unlike `location` below. An env var explicitly
+  // set to `''` must not short-circuit a ladder whose LATER tier holds the real
+  // answer; that would reproduce the bug this tier exists to fix.
+  const explicit = process.env.GOOGLE_CLOUD_PROJECT || process.env.FIREBASE_PROJECT_ID;
+  const project = explicit || firebaseConfigProjectId();
+  if (!project) {
+    throw new AiNotConfiguredError(
+      'GOOGLE_CLOUD_PROJECT / FIREBASE_PROJECT_ID / FIREBASE_CONFIG.projectId',
+    );
+  }
   // `??`, not `||`: an env var explicitly set to '' is a misconfiguration worth
   // failing on downstream, not something to silently paper over.
   const location = process.env.GOOGLE_CLOUD_LOCATION ?? DEFAULT_AI_LOCATION;
