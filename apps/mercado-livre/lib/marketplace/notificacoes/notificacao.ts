@@ -998,10 +998,18 @@ export type OrderImportOutcome =
    * ⚠️ The `-sem-envio` pair is not redundant with `created`/`updated`: the order
    * carries NO Mercado Envios shipment ("frete a combinar"), so its freight was
    * synthesized and no `shipments` notification will ever arrive to complete it.
-   * That needs a human, and it is invisible otherwise. Spelled as a pair rather
-   * than replacing created/updated so the log still says whether the pedido was
-   * new — losing information to save an enum member is the habit this whole
-   * series exists to break.
+   * The freight itself still has to be ARRANGED by a human — the synthesized
+   * block is a FOB seed with no carrier, no tracking and no label, and nothing
+   * will fill those in. What no longer needs one is the DELIVERY step: since
+   * `applyFreteSemEnvioStep` learned to read `order.fulfilled`, the seller's
+   * confirmation in the ML panel advances the block to `entregue` on its own
+   * (and moves the stock). Before that it could not: ML stopped adding the
+   * `delivered` tag automatically, so a delivered sem-envio order reads
+   * `not_delivered` / `paid` forever and the pedido stranded at `iniciado`.
+   * Still invisible otherwise, which is why this stays its own outcome. Spelled
+   * as a pair rather than replacing created/updated so the log still says
+   * whether the pedido was new — losing information to save an enum member is
+   * the habit this whole series exists to break.
    */
   | 'created-sem-envio'
   | 'updated-sem-envio'
