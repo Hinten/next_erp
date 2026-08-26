@@ -44,6 +44,7 @@ import { useSnapshot } from '@delfrance/data/hooks';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
+import { useAuth } from '@/lib/auth';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
@@ -88,10 +89,28 @@ interface NfeMemoEntry {
  * Last badge seen per pedido, for the lifetime of the tab. An entry whose
  * `data` is `undefined` is a remembered "this pedido has no NF-e" — distinct
  * from an absent key, which means "never looked".
+ *
+ * ⚠️ Module state, so it outlives every unmount AND every route change. Logging
+ * out is `signOut()` + `router.replace('/login')` (`UserMenu.tsx`) — a CLIENT
+ * navigation with no reload — so without an owner this map would survive into
+ * the next user's session and paint their rows with the previous operator's
+ * NF-e. `memoOwner` scopes it to one uid and drops the whole map the moment
+ * that changes (apps/web CLAUDE.md rule 6: every query is tenant-scoped).
  */
 const latestNfeMemo = new Map<string, NfeMemoEntry>();
+let memoOwner: string | null = null;
 
-function rememberLatestNfe(pedidoId: string, entry: NfeMemoEntry): void {
+/** Drop everything the moment the signed-in uid changes. */
+function claimMemo(uid: string | null): void {
+  if (memoOwner === uid) return;
+  latestNfeMemo.clear();
+  memoOwner = uid;
+}
+
+function rememberLatestNfe(uid: string | null, pedidoId: string, entry: NfeMemoEntry): void {
+  claimMemo(uid);
+  // Never remember for a signed-out session — there is no owner to scope it to.
+  if (uid === null) return;
   // Delete-then-set so re-observing a pedido refreshes its recency; the Map's
   // insertion order is then an LRU and the oldest key is the right eviction.
   latestNfeMemo.delete(pedidoId);
@@ -103,17 +122,21 @@ function rememberLatestNfe(pedidoId: string, entry: NfeMemoEntry): void {
   }
 }
 
-export function recallLatestNfe(pedidoId: string): NfeMemoEntry | undefined {
+export function recallLatestNfe(uid: string | null, pedidoId: string): NfeMemoEntry | undefined {
+  claimMemo(uid);
+  if (uid === null) return undefined;
   return latestNfeMemo.get(pedidoId);
 }
 
 /** Test seam — the memo is module state, so it outlives a `cleanup()`. */
 export function __resetLatestNfeMemo(): void {
   latestNfeMemo.clear();
+  memoOwner = null;
 }
 
 export function useLatestNfe(pedidoId: string): LatestNfeState {
   const db = getFirebaseFirestore();
+  const uid = useAuth().user?.uid ?? null;
   // `useIntersection` memoizes its ref callback on the PRIMITIVE option values
   // (rootMargin/root/threshold), so this object literal does not re-create the
   // observer each render. Root stays the viewport: TableView renders a plain
@@ -132,9 +155,14 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
       setActive(true);
       return;
     }
+    // Nothing subscribed yet (the common case on mount, before the observer has
+    // reported): there is no teardown to schedule. Without this guard every row
+    // on a 100-row page arms a 15s timer whose only effect is setting `active`
+    // to the value it already holds.
+    if (!active) return;
     const timer = setTimeout(() => setActive(false), NFE_LISTENER_IDLE_MS);
     return () => clearTimeout(timer);
-  }, [inView]);
+  }, [inView, active]);
 
   const query = useMemo(() => {
     // `useSnapshot(null)` IS the teardown: it unsubscribes and no-ops.
@@ -149,13 +177,19 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
     return buildQuery(base, [orderByField('ultima_modificacao', 'desc'), limit(1)]);
   }, [db, pedidoId, active]);
 
-  const { data, loading } = useSnapshot<NotaFiscalEletronica>(query);
+  const { data, loading, fromCache } = useSnapshot<NotaFiscalEletronica>(query);
   const settled = query !== null && !loading && data !== undefined;
 
   useEffect(() => {
-    if (!settled) return;
-    rememberLatestNfe(pedidoId, { data: data?.[0]?.data, id: data?.[0]?.id });
-  }, [settled, data, pedidoId]);
+    // ⚠️ Only SERVER truth is worth remembering. `persistentLocalCache` makes
+    // `onSnapshot` emit `fromCache: true` first, and for a query nothing has
+    // cached yet that emission is `[]` — i.e. "this pedido has no NF-e". Storing
+    // it would persist a false negative that later mounts replay as a settled
+    // dash. Rendering it below is fine (it is corrected within the same
+    // listener); persisting it is not.
+    if (!settled || fromCache !== false) return;
+    rememberLatestNfe(uid, pedidoId, { data: data?.[0]?.data, id: data?.[0]?.id });
+  }, [settled, fromCache, data, pedidoId, uid]);
 
   if (settled) {
     return { ref, status: 'ready', latest: data?.[0]?.data, latestId: data?.[0]?.id };
@@ -163,7 +197,7 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
   // Subscribing (or torn down) with a remembered value: repaint it rather than
   // flashing a Skeleton. Deliberately preferred over `loading` — the value is
   // exactly as stale as what the operator was already looking at.
-  const remembered = recallLatestNfe(pedidoId);
+  const remembered = recallLatestNfe(uid, pedidoId);
   if (remembered) {
     return { ref, status: 'ready', latest: remembered.data, latestId: remembered.id };
   }

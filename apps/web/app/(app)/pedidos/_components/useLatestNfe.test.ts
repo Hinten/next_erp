@@ -14,8 +14,12 @@ import {
 // Hoisted mutable state so each test can steer the two hooks `useLatestNfe`
 // composes, then `rerender()` to observe the result. Mirrors the pattern in
 // `PedidoCells.test.tsx`.
-const { intersecting, snapState, useSnapshotSpy } = vi.hoisted(() => ({
+const { intersecting, uid, snapState, useSnapshotSpy } = vi.hoisted(() => ({
   intersecting: { current: false },
+  // The signed-in uid the memo is scoped to. Swapping it stands in for a
+  // logout + a second operator signing in on the same tab (a client-side
+  // navigation, so module state survives).
+  uid: { current: 'user-a' as string | null },
   snapState: {
     current: {
       data: undefined,
@@ -58,6 +62,10 @@ vi.mock('@/lib/firebase/client', () => ({
   getFirebaseFirestore: () => ({}),
 }));
 
+vi.mock('@/lib/auth', () => ({
+  useAuth: () => ({ user: uid.current === null ? null : { uid: uid.current }, loading: false }),
+}));
+
 vi.mock('@/lib/data/nfeCollection', () => ({
   nfeCollection: { ref: () => ({ __nfeRef: true }) },
 }));
@@ -93,6 +101,7 @@ describe('useLatestNfe', () => {
     __resetLatestNfeMemo();
     useSnapshotSpy.mockClear();
     intersecting.current = false;
+    uid.current = 'user-a';
     snapState.current = { data: undefined, loading: true, error: undefined };
   });
 
@@ -123,7 +132,12 @@ describe('useLatestNfe', () => {
     intersecting.current = true;
     const { result, rerender } = renderHook(() => useLatestNfe('p1'));
 
-    snapState.current = { data: nfeRow(ESTADO_NFE.aprovada), loading: false, error: undefined };
+    snapState.current = {
+      data: nfeRow(ESTADO_NFE.aprovada),
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
     act(() => rerender());
 
     expect(result.current.status).toBe('ready');
@@ -134,7 +148,12 @@ describe('useLatestNfe', () => {
   it('keeps the listener through the grace period, then tears it down', () => {
     intersecting.current = true;
     const { rerender } = renderHook(() => useLatestNfe('p1'));
-    snapState.current = { data: nfeRow(ESTADO_NFE.gerado), loading: false, error: undefined };
+    snapState.current = {
+      data: nfeRow(ESTADO_NFE.gerado),
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
     act(() => rerender());
     expect(lastQuery()).not.toBeNull();
 
@@ -154,7 +173,12 @@ describe('useLatestNfe', () => {
   it('cancels a pending teardown when the row comes back before the grace period', () => {
     intersecting.current = true;
     const { rerender } = renderHook(() => useLatestNfe('p1'));
-    snapState.current = { data: nfeRow(ESTADO_NFE.gerado), loading: false, error: undefined };
+    snapState.current = {
+      data: nfeRow(ESTADO_NFE.gerado),
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
     act(() => rerender());
 
     intersecting.current = false;
@@ -175,7 +199,12 @@ describe('useLatestNfe', () => {
   it('repaints a torn-down row from the memo instead of flashing a skeleton', () => {
     intersecting.current = true;
     const first = renderHook(() => useLatestNfe('p1'));
-    snapState.current = { data: nfeRow(ESTADO_NFE.aprovada), loading: false, error: undefined };
+    snapState.current = {
+      data: nfeRow(ESTADO_NFE.aprovada),
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
     act(() => first.rerender());
     first.unmount();
 
@@ -193,7 +222,7 @@ describe('useLatestNfe', () => {
   it('remembers "this pedido has no NF-e" distinctly from "never looked"', () => {
     intersecting.current = true;
     const first = renderHook(() => useLatestNfe('p1'));
-    snapState.current = { data: [], loading: false, error: undefined };
+    snapState.current = { data: [], loading: false, error: undefined, fromCache: false };
     act(() => first.rerender());
     expect(first.result.current.status).toBe('ready');
     expect(first.result.current.latest).toBeUndefined();
@@ -213,12 +242,63 @@ describe('useLatestNfe', () => {
     expect(unseen.result.current.status).toBe('idle');
   });
 
+  it('never replays one operator’s badge to the next signed-in user', () => {
+    // Logout is `signOut()` + `router.replace('/login')` — a CLIENT navigation
+    // with no reload — so this module-level memo survives it. Without an owner
+    // it would paint user B's rows with user A's NF-e.
+    intersecting.current = true;
+    const a = renderHook(() => useLatestNfe('p1'));
+    snapState.current = {
+      data: nfeRow(ESTADO_NFE.aprovada),
+      loading: false,
+      error: undefined,
+      fromCache: false,
+    };
+    act(() => a.rerender());
+    expect(a.result.current.latest?.estado).toBe(ESTADO_NFE.aprovada);
+    a.unmount();
+
+    // User B signs in on the same tab and the row is off screen (no listener).
+    uid.current = 'user-b';
+    intersecting.current = false;
+    snapState.current = { data: undefined, loading: true, error: undefined };
+
+    const b = renderHook(() => useLatestNfe('p1'));
+    expect(b.result.current.status).toBe('idle');
+    expect(b.result.current.latest).toBeUndefined();
+  });
+
+  it('does not remember an empty CACHED snapshot as “no NF-e”', () => {
+    // `persistentLocalCache` emits `fromCache: true` first, and for a query
+    // nothing has cached that emission is `[]`. Rendering it is fine; storing
+    // it would persist a false negative later mounts replay as a settled dash.
+    intersecting.current = true;
+    const first = renderHook(() => useLatestNfe('p1'));
+    snapState.current = { data: [], loading: false, error: undefined, fromCache: true };
+    act(() => first.rerender());
+    // Rendered as "no NF-e" for now — the same listener corrects it.
+    expect(first.result.current.status).toBe('ready');
+    first.unmount();
+
+    intersecting.current = false;
+    snapState.current = { data: undefined, loading: true, error: undefined };
+
+    // Nothing was persisted, so an unsubscribed remount says "unknown".
+    const second = renderHook(() => useLatestNfe('p1'));
+    expect(second.result.current.status).toBe('idle');
+  });
+
   it('bounds the memo, evicting the oldest pedido first', () => {
     // Fill past the cap. Each pedido is observed once, then unmounted.
     for (let i = 0; i < NFE_MEMO_MAX + 1; i += 1) {
       intersecting.current = true;
       const h = renderHook(() => useLatestNfe(`p${i}`));
-      snapState.current = { data: nfeRow(ESTADO_NFE.gerado), loading: false, error: undefined };
+      snapState.current = {
+        data: nfeRow(ESTADO_NFE.gerado),
+        loading: false,
+        error: undefined,
+        fromCache: false,
+      };
       act(() => h.rerender());
       h.unmount();
     }
