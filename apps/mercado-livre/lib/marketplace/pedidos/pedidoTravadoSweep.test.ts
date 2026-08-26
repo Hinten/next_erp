@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreHttpError, type MlOrder } from '@delfrance/integrations-mercado-livre';
+import { MlTasksDisabledError } from '../notificacoes/mlTasks';
 import { ESTADO_PEDIDO, ESTADOS_PEDIDO_RESERVA, STATUS_PAGAMENTO } from '@delfrance/schemas';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
@@ -106,11 +107,12 @@ class FakeDb {
     return q;
   }
 
-  collection(path: string): FakeQuery & { doc: (id: string) => unknown } {
+  collection(path: string): FakeQuery & { doc: (id?: string) => unknown } {
     const self = this;
     const q = this.query(path);
+    let auto = 0;
     return Object.assign(q, {
-      doc(id: string) {
+      doc(id: string = `auto-${++auto}`) {
         return {
           id,
           path: `${path}/${id}`,
@@ -137,6 +139,11 @@ class FakeDb {
         const col = self.col(ref.path.slice(0, cut));
         const id = ref.path.slice(cut + 1);
         col.set(id, { ...(col.get(id) ?? {}), ...patch });
+      },
+      set(ref: { path: string }, data: DocData) {
+        self.writes.push({ path: ref.path, patch: data });
+        const cut = ref.path.lastIndexOf('/');
+        self.col(ref.path.slice(0, cut)).set(ref.path.slice(cut + 1), { ...data });
       },
     };
     return fn(tx);
@@ -393,6 +400,56 @@ describe('the decision table', () => {
   });
 });
 
+describe('attribution (#1280 review)', () => {
+  it('records an incidente naming the sweep and the ML status', async () => {
+    // ⚠️ The ESTADO cannot identify the writer: `orderPaymentImport`'s release
+    // arm writes `pagamentoNaoRealizado` too (a `rejected` payment maps
+    // `recusado → pagamentoNaoRealizado`), on this very population and more often
+    // than this sweep does. And the `historicoEstadoPedido` row the trigger
+    // appends carries a NULL usuário for every Admin-SDK writer. So the incidente
+    // is the only durable thing that says WHO did this and WHY.
+    const db = new FakeDb();
+    seedPedidoTravado(db, 'ped-1');
+    armApi(order({ status: 'payment_in_process' }));
+
+    await run(db, fakeScheduler().scheduler);
+
+    const incidentes = [...db.docs('pedidos/ped-1/incidentes').values()];
+    expect(incidentes).toHaveLength(1);
+    const motivo = String((incidentes[0] as DocData).motivoDoIncidente);
+    expect(motivo).toContain('payment_in_process');
+    expect(motivo).toContain('7');
+  });
+
+  it('writes the incidente in the SAME transaction as the estado', async () => {
+    // A pedido released with no explanation, or an explanation for a release that
+    // did not happen, are both worse than either alone.
+    const db = new FakeDb();
+    seedPedidoTravado(db, 'ped-1');
+    armApi(order({ status: 'payment_in_process' }));
+
+    await run(db, fakeScheduler().scheduler);
+
+    const paths = db.writes.map((w) => w.path);
+    expect(paths).toEqual(['pedidos/ped-1', expect.stringContaining('pedidos/ped-1/incidentes/')]);
+  });
+
+  it('records NO incidente when the release is refused', async () => {
+    const db = new FakeDb();
+    seedPedidoTravado(db, 'ped-1');
+    armApi(order({ status: 'payment_in_process' }));
+    db.beforeTx = (self) => {
+      const p = self.docs('pedidos').get('ped-1')!;
+      self.docs('pedidos').set('ped-1', { ...p, estado: ESTADO_PEDIDO.pago });
+    };
+
+    await run(db, fakeScheduler().scheduler);
+
+    expect(db.docs('pedidos/ped-1/incidentes').size).toBe(0);
+    expect(db.writes).toEqual([]);
+  });
+});
+
 describe('the in-transaction re-check (rule 7)', () => {
   it('does NOT release a pedido that got paid during the ML round trip', async () => {
     // The window is real: an ML API call sits between the candidate query and
@@ -464,6 +521,75 @@ describe('dry run', () => {
     expect(db.docs('pedidos').get('ped-1')).toMatchObject({
       estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
     });
+    expect(db.docs('pedidos/ped-1/incidentes').size).toBe(0);
+  });
+
+  it.each([
+    [
+      'a pedido that moved during the round trip',
+      (self: FakeDb) => {
+        const p = self.docs('pedidos').get('ped-1')!;
+        self.docs('pedidos').set('ped-1', { ...p, estado: ESTADO_PEDIDO.pago });
+      },
+      'mudou-durante',
+    ],
+    [
+      'a payment that landed during the round trip',
+      (self: FakeDb) => {
+        self.seed('pedidos/ped-1/pagamentos', 'tardio', {
+          valor: 100,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+        });
+      },
+      'pagamento-aprovado',
+    ],
+  ])('reports %s exactly as a real run would', async (_label, mutate, esperado) => {
+    // ⚠️ The counters must be IDENTICAL, not an upper bound. Returning before the
+    // transaction would make these two verdicts unreachable in a rehearsal and
+    // count each as `liberado` — over-reporting releases in the very number an
+    // operator reads before deciding it is safe to let the sweep write.
+    process.env[PEDIDO_TRAVADO_DRY_RUN_ENV] = '1';
+    const db = new FakeDb();
+    seedPedidoTravado(db, 'ped-1');
+    armApi(order({ status: 'payment_in_process' }));
+    db.beforeTx = mutate;
+
+    const res = await run(db, fakeScheduler().scheduler);
+
+    expect(res.veredictos).toEqual({ [esperado]: 1 });
+    expect(db.writes).toEqual([]);
+  });
+});
+
+describe('sweep-only mode is never logged as a re-drive', () => {
+  it('counts tasks-desabilitado, not redirecionado', async () => {
+    // Folding them would log re-drives that never happened — the conflation the
+    // per-verdict counters exist to prevent, in the one mode guaranteed to hit it.
+    const db = new FakeDb();
+    seedPedidoTravado(db, 'ped-1');
+    armApi(order({ status: 'paid' }));
+    const enqueue = vi.fn<MlTaskScheduler['enqueue']>(async () => {
+      throw new MlTasksDisabledError();
+    });
+
+    const res = await run(db, { enqueue });
+
+    expect(res.veredictos).toEqual({ 'tasks-desabilitado': 1 });
+    expect(db.writes).toEqual([]);
+  });
+
+  it('a 404 with no resolvable user_id is unverifiable, not a re-drive', async () => {
+    // The 404 arm applies the SAME guard as the normal redirect: a synthetic with
+    // no `user_id` resolves to no conta and can only land in the deferred lane.
+    const db = new FakeDb();
+    seedPedidoTravado(db, 'ped-1');
+    h.loadMercadoLivreContext.mockRejectedValue(new MercadoLivreHttpError('gone', 404, null));
+    const { scheduler, enqueue } = fakeScheduler();
+
+    const res = await run(db, scheduler);
+
+    expect(res.veredictos).toEqual({ 'nao-verificavel': 1 });
+    expect(enqueue).not.toHaveBeenCalled();
   });
 });
 

@@ -30,11 +30,26 @@
  *    `pagamentoNaoRealizado`.
  *
  * `pagamentoNaoRealizado` over `cancelado` deliberately: it says WHY the sale
- * ended, it is already grouped with `cancelado` in the NF-e emission block
- * (`emissaoNFeBloqueadaPorEstado`), and nothing else in the repo writes it — so
- * seeing one means "this sweep did it". Like `cancelado` it sits OUTSIDE
+ * ended, and it is already grouped with `cancelado` in the NF-e emission block
+ * (`emissaoNFeBloqueadaPorEstado`). Like `cancelado` it sits OUTSIDE
  * `ESTADOS_PEDIDO_RESERVA`, so `onPedidoEstoqueSync` releases the reservation on
  * the estado write alone. This module performs no estoque arithmetic.
+ *
+ * ⚠️ **The estado does NOT identify this sweep as the writer**, and an earlier
+ * version of this comment wrongly claimed it did. `orderPaymentImport.ts`'s
+ * release arm writes `statusToEstadoPedido(...)`, and a `rejected` ML payment
+ * maps `recusado → pagamentoNaoRealizado` — on exactly this population, and far
+ * MORE often than a notification that never arrives. `statusToEstadoPedido` also
+ * backs the manual status-change UI. Agreeing with that arm on the same
+ * real-world outcome is a virtue, but it means the estado is evidence of WHAT
+ * happened, never of WHO did it.
+ *
+ * Attribution is therefore written explicitly: every release records an
+ * `incidente` naming this sweep and the ML status that justified it, in the same
+ * transaction as the estado. That is the only durable channel — the
+ * `historicoEstadoPedido` row the `onPedidoChanged` trigger appends carries a
+ * NULL usuário for any Admin-SDK writer, so it cannot tell this sweep apart from
+ * the importer, and a Cloud Logging line ages out long before the pedido does.
  *
  * ⚠️ It does NOT cancel the order at ML. ML owns its own order lifecycle and an
  * unpaid order expires there anyway; this releases OUR reservation only.
@@ -75,9 +90,16 @@ import {
   createMercadoLivreApi,
   type MlOrder,
 } from '@delfrance/integrations-mercado-livre';
-import { ESTADO_PEDIDO, STATUS_PAGAMENTO, type EstadoPedido } from '@delfrance/schemas';
+import {
+  ESTADO_PEDIDO,
+  ORIGEM_INCIDENTE,
+  STATUS_PAGAMENTO,
+  TIPO_INCIDENTE,
+  type EstadoPedido,
+} from '@delfrance/schemas';
 import { millisToMicros } from '@delfrance/core/datetime';
 import {
+  incidenteCollection,
   orderMLCollection,
   pagamentoCollection,
   pedidoCollection,
@@ -97,9 +119,14 @@ export const PEDIDO_TRAVADO_FLAG_ENV = 'MERCADO_LIVRE_PEDIDO_TRAVADO_SWEEP_ENABL
  * would, but performs **no write and no enqueue**.
  *
  * This exists because the sweep ends real sales. Run it here first, read a few
- * weeks of counters, and only then turn the real flag on — the counters are
- * identical in both modes, so the dry run is a genuine rehearsal rather than a
- * different code path.
+ * weeks of counters, and only then turn the real flag on.
+ *
+ * ⚠️ The counters really are identical, and that costs one design decision: the
+ * dry run runs the transaction and its READS, skipping only the two writes. An
+ * earlier version returned before the transaction, which made `mudou-durante` and
+ * `pagamento-aprovado` unreachable in a rehearsal and counted each as `liberado`
+ * — an upper bound biased toward over-reporting releases, in the one number an
+ * operator uses to decide it is safe to go live.
  */
 export const PEDIDO_TRAVADO_DRY_RUN_ENV = 'MERCADO_LIVRE_PEDIDO_TRAVADO_DRY_RUN';
 
@@ -150,6 +177,14 @@ export type PedidoTravadoVeredito =
   | 'nao-verificavel'
   /** ML moved on — re-driven through `orders_v2` so the existing arms decide. */
   | 'redirecionado'
+  /**
+   * A re-drive was owed but `MERCADO_LIVRE_TASKS_DISABLED` is on, so nothing was
+   * enqueued. Counted apart from `redirecionado` deliberately: folding them would
+   * log 47 re-drives that never happened — the exact conflation this sweep's
+   * per-verdict counters exist to prevent, in the one deployment mode where it is
+   * guaranteed to be wrong.
+   */
+  | 'tasks-desabilitado'
   /** ML still says pre-payment after the horizon → released. */
   | 'liberado'
   /** The in-transaction re-check refused: the pedido changed under us. */
@@ -231,6 +266,8 @@ async function liberarPedido(
   pedidoId: string,
   cutoffUs: number,
   nowUs: number,
+  statusMl: string,
+  dryRun: boolean,
 ): Promise<'liberado' | 'mudou-durante' | 'pagamento-aprovado'> {
   return db.runTransaction(async (tx) => {
     /* ===================== READ PHASE (no writes yet) ===================== */
@@ -255,6 +292,13 @@ async function liberarPedido(
 
     if (algumAprovado(pagamentosSnap.docs)) return 'pagamento-aprovado';
 
+    // ⚠️ Dry run runs the WHOLE decision, reads included, and skips only the two
+    // writes. Returning early instead would make `mudou-durante` and
+    // `pagamento-aprovado` unreachable in a rehearsal and report each as
+    // `liberado` — an upper bound on releases, biased in the UNSAFE direction,
+    // and exactly the number an operator reads before dropping the dry-run flag.
+    if (dryRun) return 'liberado';
+
     tx.update(
       pedidoRef,
       pedidoCollection.parseMerge({
@@ -262,6 +306,25 @@ async function liberarPedido(
         // Wall clock, monotonic — never `lastMarketplaceUpdate`, whose single
         // writer is `discoverPedidoMercadoLivre` (#791/O15).
         ultimaModificacao: Math.max(readMicros(raw, 'ultimaModificacao') ?? 0, nowUs),
+      }),
+    );
+
+    // Durable attribution, in the SAME transaction as the estado — see the module
+    // doc. The estado alone cannot say who wrote it, and the history row the
+    // trigger appends carries a null usuário for every Admin-SDK writer. Same
+    // shape the pack-absorption cancel uses (`orderPedidoTx.ts`).
+    const incidenteId = incidenteCollection.newDocId(db, { pedidoId });
+    tx.set(
+      incidenteCollection.docRef(db, { pedidoId }, incidenteId),
+      incidenteCollection.parse({
+        origem: ORIGEM_INCIDENTE.outros,
+        tipo: TIPO_INCIDENTE.troca,
+        motivoDoIncidente:
+          `Pedido liberado automaticamente: o Mercado Livre ainda reportava o ` +
+          `pedido como "${statusMl}" após ${pedidoTravadoMaxIdadeDias()} dias sem ` +
+          `confirmação de pagamento. A reserva de estoque foi devolvida.`,
+        timestamp: nowUs,
+        ultimaModificacao: nowUs,
       }),
     );
     return 'liberado';
@@ -276,18 +339,20 @@ async function liberarPedido(
 async function redirecionar(
   deps: PedidoTravadoDeps,
   args: { orderId: number; userId: number | null; dryRun: boolean },
-): Promise<void> {
-  if (args.dryRun) return;
+): Promise<'redirecionado' | 'tasks-desabilitado'> {
+  if (args.dryRun) return 'redirecionado';
   try {
     await deps.scheduler.enqueue(
       buildBootstrapOrderPayload({ orderId: args.orderId, userId: args.userId }),
     );
   } catch (err) {
     // Sweep-only mode: there is no queue to enqueue onto. Next week's tick
-    // retries; nothing is lost because the pedido stays a candidate.
-    if (err instanceof MlTasksDisabledError) return;
+    // retries; nothing is lost because the pedido stays a candidate. REPORTED,
+    // never folded into `redirecionado` — see that verdict's note.
+    if (err instanceof MlTasksDisabledError) return 'tasks-desabilitado';
     throw err;
   }
+  return 'redirecionado';
 }
 
 /**
@@ -383,8 +448,15 @@ export async function runPedidoTravadoSweep(
         // UNVERIFIABLE: a dead grant, a 5xx, a conta that vanished. Never end a
         // sale on a read that did not answer.
         if (err instanceof MercadoLivreHttpError && err.status === 404) {
-          await redirecionar(deps, { orderId, userId, dryRun });
-          contar(veredictos, 'redirecionado');
+          // Same guard as the normal redirect arm below, and it is REACHABLE
+          // here: `userId` is still null when the 404 came out of
+          // `loadMercadoLivreContext`/`resolveChannelContext` before the
+          // assignment ran, or when the conta carries no numeric `user_id`.
+          if (userId == null) {
+            contar(veredictos, 'nao-verificavel');
+            continue;
+          }
+          contar(veredictos, await redirecionar(deps, { orderId, userId, dryRun }));
           continue;
         }
         if (err instanceof MercadoLivreError) {
@@ -401,17 +473,19 @@ export async function runPedidoTravadoSweep(
           contar(veredictos, 'nao-verificavel');
           continue;
         }
-        await redirecionar(deps, { orderId, userId, dryRun });
-        contar(veredictos, 'redirecionado');
+        contar(veredictos, await redirecionar(deps, { orderId, userId, dryRun }));
         continue;
       }
 
-      if (dryRun) {
-        contar(veredictos, 'liberado');
-        continue;
-      }
-      const aplicado = await liberarPedido(db, pedidoId, cutoffUs, nowUs);
-      if (aplicado === 'liberado') {
+      const aplicado = await liberarPedido(
+        db,
+        pedidoId,
+        cutoffUs,
+        nowUs,
+        order.status ?? '',
+        dryRun,
+      );
+      if (aplicado === 'liberado' && !dryRun) {
         console.warn('[mercado-livre] pedido travado liberado', {
           pedidoId,
           orderId,
