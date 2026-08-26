@@ -45,6 +45,36 @@ import { z } from 'zod';
  * gratuitous disagreement between two sibling coercers is how #810 started — but
  * merging them would change both contracts.
  *
+ * ## Which answer is right where — the repo convention, settled in #1251
+ *
+ * The three integration packages had reached three different answers to the same
+ * question. They are not interchangeable, and the deciding fact is always the
+ * DIRECTION of the shape and whether the provider is documented to vary:
+ *
+ *  1. **A RESPONSE field → `wireNumber()` / `wireInt()`.** The default. A quoted
+ *     value must never cost the whole resource. Enforced by
+ *     `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`
+ *     across `mercado-livre`, `mercado-pago` and `freight-br`.
+ *  2. **A REQUEST field → a strict `z.number()`.** Tolerance is the wrong
+ *     direction outbound: accepting a stringified number means FORWARDING one,
+ *     and the provider answers a bad body with an opaque 4xx. Melhor Envio's
+ *     `dimensionsWeightSchema`, `calculateRequestSchema.options.insurance_value`
+ *     and `cartInsertRequestSchema.service` are the worked examples — they live
+ *     in the same `types.ts` as response shapes, and are carve-outs in the guard
+ *     with their reason written down.
+ *  3. **`z.union([z.string(), z.number()])` — only when the provider is KNOWN to
+ *     vary by endpoint, or when the field is not always numeric.** Melhor Envio's
+ *     `price` / `custom_price` / `discount` (strings in `calculate`, numbers in
+ *     the cart 201) and Mercado Livre's `street_number` (`'S/N'`, `'123-A'`) are
+ *     the two shapes of this case. Read them through ONE named function —
+ *     `parseMePrice` — never a local `Number()`.
+ *
+ * ⚠️ Modelling money as `z.string()` and parsing at the edge, which is where
+ * `freight-br` started, is **not** a fourth answer: it is the MIRROR of #1087.
+ * The day the provider sends a JSON number, the parse fails and takes the whole
+ * response with it — and for `calculate`, whose body is an array, that is every
+ * quote at once.
+ *
  * ## What it must never do
  *
  * ⚠️ **`z.coerce.number()` is banned, and this module is not a route to it.** It

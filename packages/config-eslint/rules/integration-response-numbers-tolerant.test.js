@@ -46,21 +46,24 @@
 // 3. It does not reach the channel APPS — `apps/mercado-livre` and
 //    `apps/mercado-pago`, whose only provider-inbound numeric schemas are the
 //    notification wire payloads, already tolerant via the shared `asInt`/`asMillis`
-//    pre-parse in `@delfrance/data/admin/notifications` — nor
-//    `packages/integrations/freight-br`, which answers the same question a THIRD
-//    way (money as `z.string()`) and whose `types.ts` mixes request and response
-//    shapes, so it cannot be swept wholesale. That is its own decision (#1251).
+//    pre-parse in `@delfrance/data/admin/notifications`.
 // 4. It does not scan `packages/core`, which is where the tolerance is DEFINED and
 //    therefore the one place a bare `z.number()` is correct.
-// 5. It assumes every schema under a scanned `src/` is a RESPONSE schema — true
-//    today, since each `types.ts` holds only response shapes and nothing else in
-//    those trees declares a `z.number()`. But `mercado-livre/src/mapping/` builds
-//    the outbound REQUEST payloads (as plain objects, no schema), and for a request
-//    shape strictness is CORRECT: we must not coerce a stringified number on the
-//    way OUT. The pathspec still covers it deliberately — a response schema quietly
-//    added there would otherwise escape in silence, which is the worse failure — so
-//    the FIX text names the case and `ALLOWED_STRICT` absorbs it as one reviewed
-//    edit.
+// 5. ⚠️ It CANNOT tell a request schema from a response one, and one scanned file
+//    holds both. `mercado-livre/src/mapping/` builds outbound REQUEST payloads (as
+//    plain objects, no schema), and `freight-br/src/melhor-envio/types.ts` declares
+//    real request SCHEMAS — `dimensionsWeightSchema`, `calculateRequestSchema`,
+//    `cartInsertRequestSchema` — beside its response ones. For a request shape
+//    strictness is CORRECT: we must not coerce a stringified number on the way OUT.
+//    Those trees are still scanned deliberately — a response schema quietly added
+//    there would otherwise escape in silence, which is the worse failure — so the
+//    FIX text names the case and `ALLOWED_STRICT` absorbs each one as a reviewed,
+//    path-scoped edit with its reason.
+// 6. Melhor Envio's MONEY is a third answer the guard cannot police at all:
+//    `price` / `custom_price` / `discount` are `z.union([z.string(), z.number()])`
+//    because ME types them by ENDPOINT (strings in `calculate`, numbers in the cart
+//    201), and the union spelling is skipped below. `parseMePrice` is the one place
+//    they are read.
 import { describe, expect, it } from 'vitest';
 
 import { gitGrep } from './lib/repo-scan.js';
@@ -82,6 +85,7 @@ import { gitGrep } from './lib/repo-scan.js';
 const PATHSPECS = [
   ':(glob)packages/integrations/mercado-livre/src/**/*.ts',
   ':(glob)packages/integrations/mercado-pago/src/**/*.ts',
+  ':(glob)packages/integrations/freight-br/src/**/*.ts',
 ];
 
 /** Both bans in ONE spawn — `git grep` ORs its `-e` patterns. */
@@ -108,26 +112,38 @@ const UNION_LINE = /z\.union\(\[/;
  * Source lines allowed to keep a strict `z.number()`, keyed by file and then by
  * the exact source line, each mapped to its reason.
  *
- * DELIBERATELY EMPTY. No field in a scanned `types.ts` today has a caller that
- * reads its REJECTION as a signal. The map exists so that adding the first one is a
- * reviewed edit to this file rather than an argument in a PR thread, and the
- * staleness test below stops it rotting into decoration.
+ * ⚠️ Keyed by PATH for the same reason the anchor below is: a line text alone is
+ * not an identity across near-identical packages, and a carve-out that leaks to a
+ * file nobody reviewed it for is a hole. `width: z.number(),` is correct in a
+ * Melhor Envio REQUEST body and would be a defect in a response schema.
  *
- * ⚠️ Keyed by PATH for the same reason {@link KNOWN_TOLERANT_LINES} is, pointed
- * the other way. A flat map would make a carve-out written for ONE package
- * exempt an identically-spelled line in a sibling — the packages are
- * near-copies, so `amount: z.number().nullable().optional(),` is not an
- * identity — and its staleness check would stay green as long as *either*
- * package still had the line. An assertion running over an empty set and an
- * exemption applying to a file nobody reviewed it for are the same bug.
+ * A flat map would make a carve-out written for ONE package exempt an
+ * identically-spelled line in a sibling, and its staleness check would stay
+ * green as long as *either* package still had the line. An assertion running
+ * over an empty set and an exemption applying to a file nobody reviewed it for
+ * are the same bug.
  *
- * It is empty today, which is exactly why the shape is settled now: the FIX text
- * below actively invites the first entry, and by then the structure is not a
- * free change any more.
+ * Every entry here is a shape this ERP **SENDS**. Tolerance is the wrong
+ * direction outbound: accepting a stringified number would mean forwarding one,
+ * and the provider answers a bad body with an opaque 4xx. The staleness test
+ * below stops the list rotting into decoration once a field is renamed.
  *
  * @type {Record<string, Record<string, string>>}
  */
-const ALLOWED_STRICT = {};
+const ALLOWED_STRICT = {
+  'packages/integrations/freight-br/src/melhor-envio/types.ts': {
+    // `dimensionsWeightSchema` — the volume we SEND on `shipment/calculate` and
+    // on the cart insert, built by `normalizeVolume` from the pedido's own
+    // numbers. Nothing outside the package ever feeds it a provider value.
+    'width: z.number(),': 'REQUEST — outbound volume (dimensionsWeightSchema)',
+    'height: z.number(),': 'REQUEST — outbound volume (dimensionsWeightSchema)',
+    'length: z.number(),': 'REQUEST — outbound volume (dimensionsWeightSchema)',
+    'weight: z.number(),': 'REQUEST — outbound volume (dimensionsWeightSchema)',
+    'insurance_value: z.number().optional(),':
+      'REQUEST — declared value we send on shipment/calculate',
+    'service: z.number(),': 'REQUEST — the carrier service id we send on the cart insert',
+  },
+};
 
 /**
  * Lines that must still be found by the scan, keyed by the file they live in.
@@ -162,10 +178,26 @@ const KNOWN_TOLERANT_LINES = {
     'transaction_amount: wireNumber().nullable().optional(),',
     'marketplace_fee: wireNumber().nullable().optional(),',
   ],
+  // ⚠️ Melhor Envio is the file that mixes DIRECTIONS, and this anchor carries
+  // the one claim nothing else here can: that its RESPONSE half stayed
+  // converted. The staleness test cannot see that — it only ever looks at lines
+  // still spelled `z.number()`.
+  //
+  // Its request half needs no anchor and never did: `present` is keyed by path,
+  // so a pathspec that stops matching this file makes `present.get(path)`
+  // undefined and reports all six carve-outs STALE. Loud, not quiet. (An earlier
+  // revision of this comment claimed the opposite; it was measured and is wrong.
+  // Left corrected rather than deleted, because "it would go quiet otherwise" is
+  // exactly the argument someone would later use to delete this anchor.)
+  'packages/integrations/freight-br/src/melhor-envio/types.ts': [
+    'expires_in: wireNumber(),',
+    'balance: wireNumber().nullable().optional(),',
+    'delivery_time: wireNumber().nullable().optional(),',
+  ],
 };
 
-/** Well below the 75 + 13 the two sweeps converted — a rot detector, not a spec. */
-const TOLERANT_FLOOR = 75;
+/** Well below the 75 + 13 + 10 the three sweeps converted — a rot detector, not a spec. */
+const TOLERANT_FLOOR = 85;
 
 const FIX = [
   'Fix: use `wireNumber()` — or `wireInt()` where the field carried `.int()` — from',
@@ -319,6 +351,15 @@ describe('channel response schemas tolerate a quoted number', () => {
     expect(isOffender(`p.ts:3:${unionReversed}`)).toBe(false);
     expect(isOffender(`p.ts:4:${bare}`)).toBe(true);
     expect(isOffender(`p.ts:5:${coerced}`)).toBe(true);
+
+    // ⚠️ ALLOWED_STRICT is keyed by path, and this is the control for that. The
+    // SAME line is excused in the Melhor Envio request bodies and an offence
+    // anywhere else — a flat carve-out list would have answered `false` twice.
+    const me = 'packages/integrations/freight-br/src/melhor-envio/types.ts';
+    expect(isOffender(`${me}:59:  width: z.number(),`)).toBe(false);
+    expect(
+      isOffender(`packages/integrations/mercado-pago/src/types.ts:59:  width: z.number(),`),
+    ).toBe(true);
 
     // Prove the PATTERNS themselves, not just the filter: a converted line must
     // never even reach `isOffender`.
