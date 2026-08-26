@@ -421,15 +421,24 @@ state. It is **qualified in the other** by the third value — `null` = "never a
 omits the key rather than inventing `[]`. Both `null` cases are the importer's; see
 the import ⚠️ above rather than restating them here.
 
-⚠️ **`clearFalha()` deliberately does NOT clear `moderacoes`, and only a writer that
-just asked ML may touch it** — today `itemsStatusSync`, `reverificarAnuncio` and the
-**importer**. `errors`/`causas` record OUR failed write, so a later success
+⚠️ **`clearFalha()` deliberately does NOT clear `moderacoes`, and the field moves
+only on ML's authority — never on a caller's success.** Two groups qualify (#1252).
+A writer that ASKED ML may write any value: `itemsStatusSync`, `reverificarAnuncio`,
+the **importer**. A writer that merely holds a fresh `status`/`sub_status` may write
+`[]` and nothing else, because `precisaConsultarModeracao` is pure — when it reports
+no moderation that IS ML's verdict, obtained for free — and omits the key otherwise:
+**publish**, the **UP member publish**, the **stock send** and the **price send** —
+the stock send on BOTH its success writeback and its terminal-4xx verification path,
+which reads a real `GET /items` and so holds the strongest evidence of any of them.
+Seven writers, one invariant. `errors`/`causas` record OUR failed write, so a later success
 invalidates them; a moderação is ML's verdict and nothing we do lifts it. The stock
-writeback proves the point — it fires on a successful `PUT /items`, and a
-`poor_quality_thumbnail` listing is `active` and accepts stock updates **while
-moderated**. Clearing there would erase a live reason and show a clean listing that
-is really still penalised, which hides a real problem rather than merely failing to
-explain one. ⚠️ `reverificarAnuncio` therefore **re-fetches**: it clears
+writeback is the case that makes the distinction concrete — it fires on a successful
+`PUT /items`, and a `poor_quality_thumbnail` listing is `active` and accepts stock
+updates **while moderated**, so clearing on the SEND's authority would erase a live
+reason and show a clean listing that is really still penalised. What makes its gated
+clear safe is that `poor_quality_thumbnail` is one of the sub_statuses the gate
+matches: on exactly that listing the predicate returns TRUE, the key is omitted and
+the reason survives. Only a response reporting no moderation at all clears. ⚠️ `reverificarAnuncio` therefore **re-fetches**: it clears
 unconditionally, so clear-only would erase the reason the operator pressed the button
 to see. ⚠️ On a UP FAMILY the moderation is stored per MEMBER, and what the PARENT
 takes depends on the path. On the **`items` sync** it takes the **fold winner's**
@@ -486,10 +495,22 @@ the UP branch made the whole self-heal a no-op: the phantom went straight back i
 ride the `varLinks` subcollection projection in `stockJoinBuilders`; dropping them
 there silently disables both rungs.
 
+⚠️ **The price sender follows the SAME member rule as the stock sender (#1252).**
+`precoDraftSend` used to stamp `estado`/`status`/`sub_status` on the FAMILY's parent
+link from a MEMBER's `PUT /items` response — a `variationItem` draft carries the
+member's `itemId` next to the parent's `linkDocId`, exactly like a `variationItem`
+stock task — and unlike `estoqueSend` it had no `ehMembro` guard. Its own comment
+blessed it ("variation sends stamp status only"), so the two senders disagreed and
+one of them was wrong. A member price send now writes `ultimaModificacao` and nothing
+else. ⚠️ Do not restore either half without changing both senders: a family's status
+has exactly one writer per path, and only the `items` webhook's fold spans members.
+
 ⚠️ **A variation link is NOT backfilled by a successful send, unlike the parent.**
 `estoqueSend`'s happy-path writeback is family-scoped, and for a `variationItem`
-task it deliberately writes NO status at all — `resp` describes one member while
-`linkDocId` names the family, so writing it there is the same over-reach in the
+task it deliberately writes NO status — and, since #1252, no `moderacoes` either:
+the clear sits INSIDE that same guard, or one member's verdict would clear the
+whole family's reason. `resp` describes one member while
+`linkDocId` names the family, so writing either there is the same over-reach in the
 success direction (a member returning `paused` on an accepted PUT would make the
 next sweep skip every sibling as `status-nao-enviavel`). It writes only
 `ultimaModificacao` + `clearFalha()`, both legitimately family-wide. Reaching the

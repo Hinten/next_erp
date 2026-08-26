@@ -16,6 +16,7 @@
  */
 import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import { modoEnvioMercadoLivreSchema } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -106,6 +107,12 @@ export async function POST(req: Request): Promise<NextResponse> {
         // The seller whose items the User-Products orphan sweep enumerates —
         // same source `/importar` uses for the family fan-out.
         sellerUserId: asNumberOrNull(ctx.conta.user_id),
+        // `safeParse`, not a cast: `ctx.conta` is untyped passthrough, and a
+        // doc carrying a mode this build does not know (a value added later, a
+        // legacy shape) must degrade to "send no shipping node" rather than
+        // throw mid-publish. `.data` is undefined on failure, hence `?? null`.
+        shippingMode:
+          modoEnvioMercadoLivreSchema.safeParse(ctx.conta.modoEnvioMercadoLivre).data ?? null,
         listingTypeId: body.listingTypeId ?? null,
         linkDocId,
       },
