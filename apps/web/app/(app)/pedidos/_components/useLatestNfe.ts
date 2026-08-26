@@ -21,16 +21,23 @@
  * no `pedidoId`, so batching would need a new denormalized key plus a backfill
  * of the legacy Flutter docs a production export brings with it.
  *
- * So the coupling is broken at the other end. Listener count now tracks screen
- * height instead of `limit`, and — because listeners are TORN DOWN on exit, not
- * merely mounted lazily — it stays bounded however far the operator scrolls.
+ * So the coupling is broken at the other end. Every row subscribes at mount and
+ * the observer only ever takes the subscription AWAY, so listener count tracks
+ * screen height instead of `limit` within ~1s of paint — and because listeners
+ * are TORN DOWN on exit rather than merely mounted lazily, it stays bounded
+ * however far the operator scrolls.
+ *
+ * ⚠️ The gate is deliberately one-directional. An earlier revision waited for
+ * the observer BEFORE subscribing, which put intersection delivery on the
+ * critical path of the first badge and made `pedidos-nfe-snapshot` marginal
+ * against its 10s assertion — see NFE_LISTENER_UNSEEN_MS.
  *
  * Three things keep that invisible to the operator:
  *
  * 1. `NFE_LISTENER_ROOT_MARGIN` keeps a row subscribed for roughly one screen
  *    beyond the fold, so ordinary scrolling never races the subscription.
- * 2. `NFE_LISTENER_IDLE_MS` delays teardown, so scrolling past a row and back
- *    does not thrash the Watch stream.
+ * 2. `NFE_LISTENER_IDLE_MS` / `NFE_LISTENER_UNSEEN_MS` delay teardown, so
+ *    scrolling past a row and back does not thrash the Watch stream.
  * 3. {@link recallLatestNfe} — the last badge seen for a pedido this session.
  *    Firestore's IndexedDB cache (enabled in `lib/firebase/client.ts`) does emit
  *    a `fromCache: true` snapshot first on re-subscribe, but that does NOT stop
@@ -38,7 +45,7 @@
  *    change and the cell renders a Skeleton while loading. This memo is what
  *    guarantees a scroll-back repaints instantly.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useIntersection } from '@mantine/hooks';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
@@ -56,10 +63,29 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 export const NFE_LISTENER_ROOT_MARGIN = '600px 0px';
 
 /**
- * Grace period between a row leaving the viewport and its listener being torn
- * down. Absorbs scroll-past-and-back without re-registering a Watch target.
+ * Grace period between a row that HAS been on screen leaving the viewport and
+ * its listener being torn down. Absorbs scroll-past-and-back without
+ * re-registering a Watch target.
  */
 export const NFE_LISTENER_IDLE_MS = 15_000;
+
+/**
+ * Teardown delay for a row the observer has never reported as visible — the
+ * off-screen tail of the first paint. Short, because nothing is being absorbed:
+ * these rows were subscribed optimistically and are simply not wanted.
+ *
+ * ⚠️ Why optimistic at all. Waiting for the observer before subscribing puts
+ * IntersectionObserver delivery on the CRITICAL PATH of the first badge. Those
+ * callbacks are delivered in the rendering pipeline's "update and deliver
+ * intersection observations" step, which is throttled and can be delayed by
+ * seconds while a 100-row table renders on a loaded machine — not the
+ * ~frame it looks like. The vendas lane caught it: `pedidos-nfe-snapshot`
+ * asserts the badge within 10s and went fail/fail/pass, pass, fail/fail/fail
+ * across three runs while the gate was pessimistic. Subscribing at mount and
+ * letting the observer only ever TEAR DOWN keeps the badge exactly as fast as
+ * it was before #1216, and still bounds the listener count within ~1s of paint.
+ */
+export const NFE_LISTENER_UNSEEN_MS = 1_000;
 
 /** Upper bound on the {@link recallLatestNfe} memo, evicted oldest-first. */
 export const NFE_MEMO_MAX = 400;
@@ -144,25 +170,36 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
   const { ref, entry } = useIntersection<HTMLDivElement>({
     rootMargin: NFE_LISTENER_ROOT_MARGIN,
   });
+  // `entry` is null until the observer has reported even once. That is NOT
+  // "off screen" — it is "not yet known", and the two must not be conflated:
+  // see NFE_LISTENER_UNSEEN_MS.
+  const observed = entry !== null;
   const inView = entry?.isIntersecting ?? false;
 
-  // Sticky-on, delayed-off. Entering cancels any pending teardown (the effect
-  // cleanup clears the timer), so a row that flickers across the fold keeps one
-  // continuous subscription.
-  const [active, setActive] = useState(false);
+  // Optimistic-on, delayed-off. The subscription starts at mount and the
+  // observer only ever takes it AWAY, so nothing the operator can see waits on
+  // an intersection callback. Re-entering cancels a pending teardown (the
+  // effect cleanup clears the timer), so a row flickering across the fold keeps
+  // one continuous subscription.
+  const [active, setActive] = useState(true);
+  const seenVisible = useRef(false);
   useEffect(() => {
     if (inView) {
+      seenVisible.current = true;
       setActive(true);
       return;
     }
-    // Nothing subscribed yet (the common case on mount, before the observer has
-    // reported): there is no teardown to schedule. Without this guard every row
-    // on a 100-row page arms a 15s timer whose only effect is setting `active`
-    // to the value it already holds.
+    // No observation yet — keep the optimistic subscription rather than tearing
+    // down a row that may well be on screen.
+    if (!observed) return;
+    // Already torn down; nothing to schedule.
     if (!active) return;
-    const timer = setTimeout(() => setActive(false), NFE_LISTENER_IDLE_MS);
+    // A row that was on screen gets the full grace period; one that never was
+    // is the first paint's off-screen tail and goes quickly.
+    const delay = seenVisible.current ? NFE_LISTENER_IDLE_MS : NFE_LISTENER_UNSEEN_MS;
+    const timer = setTimeout(() => setActive(false), delay);
     return () => clearTimeout(timer);
-  }, [inView, active]);
+  }, [inView, observed, active]);
 
   const query = useMemo(() => {
     // `useSnapshot(null)` IS the teardown: it unsubscribes and no-ops.

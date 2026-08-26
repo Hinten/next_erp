@@ -6,6 +6,7 @@ import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
 import {
   NFE_LISTENER_IDLE_MS,
+  NFE_LISTENER_UNSEEN_MS,
   NFE_MEMO_MAX,
   __resetLatestNfeMemo,
   useLatestNfe,
@@ -15,7 +16,10 @@ import {
 // composes, then `rerender()` to observe the result. Mirrors the pattern in
 // `PedidoCells.test.tsx`.
 const { intersecting, uid, snapState, useSnapshotSpy } = vi.hoisted(() => ({
-  intersecting: { current: false },
+  // `null` = the observer has not reported yet (the real hook's `entry` before
+  // its first callback). Distinct from `false`, which is a positive "off
+  // screen" report — the gate treats them differently on purpose.
+  intersecting: { current: null as boolean | null },
   // The signed-in uid the memo is scoped to. Swapping it stands in for a
   // logout + a second operator signing in on the same tab (a client-side
   // navigation, so module state survives).
@@ -38,7 +42,10 @@ vi.mock('@mantine/hooks', async () => {
     // cannot drive. Stand in for the observed state directly.
     useIntersection: () => ({
       ref: () => {},
-      entry: { isIntersecting: intersecting.current } as unknown as IntersectionObserverEntry,
+      entry:
+        intersecting.current === null
+          ? null
+          : ({ isIntersecting: intersecting.current } as unknown as IntersectionObserverEntry),
     }),
   };
 });
@@ -100,7 +107,8 @@ describe('useLatestNfe', () => {
     vi.useFakeTimers();
     __resetLatestNfeMemo();
     useSnapshotSpy.mockClear();
-    intersecting.current = false;
+    // Default to "the observer has not reported yet", the real state at mount.
+    intersecting.current = null;
     uid.current = 'user-a';
     snapState.current = { data: undefined, loading: true, error: undefined };
   });
@@ -109,23 +117,46 @@ describe('useLatestNfe', () => {
     vi.useRealTimers();
   });
 
-  it('opens NO listener while the row is off screen', () => {
+  it('subscribes at mount, without waiting for the observer to report', () => {
+    // Load-bearing: intersection delivery must NOT sit on the critical path of
+    // the first badge. Those callbacks are throttled and can lag by seconds
+    // while a 100-row table renders, which made `pedidos-nfe-snapshot` marginal
+    // against its 10s assertion when the gate waited for them.
     const { result } = renderHook(() => useLatestNfe('p1'));
-
-    expect(lastQuery()).toBeNull();
-    expect(result.current.status).toBe('idle');
-    expect(result.current.latest).toBeUndefined();
-  });
-
-  it('subscribes once the row enters the viewport', () => {
-    const { result, rerender } = renderHook(() => useLatestNfe('p1'));
-    expect(lastQuery()).toBeNull();
-
-    intersecting.current = true;
-    act(() => rerender());
 
     expect(lastQuery()).not.toBeNull();
     expect(result.current.status).toBe('loading');
+  });
+
+  it('drops the listener shortly after the observer reports the row off screen', () => {
+    const { rerender } = renderHook(() => useLatestNfe('p1'));
+    expect(lastQuery()).not.toBeNull();
+
+    intersecting.current = false;
+    act(() => rerender());
+    act(() => {
+      vi.advanceTimersByTime(NFE_LISTENER_UNSEEN_MS - 1);
+    });
+    expect(lastQuery()).not.toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    // This is the proof the gate still bounds the concurrent-listener count:
+    // the off-screen tail of a 100-row first paint releases within ~1s.
+    expect(lastQuery()).toBeNull();
+  });
+
+  it('keeps a row the observer reports visible subscribed indefinitely', () => {
+    intersecting.current = true;
+    const { rerender } = renderHook(() => useLatestNfe('p1'));
+
+    act(() => {
+      vi.advanceTimersByTime(NFE_LISTENER_IDLE_MS * 3);
+    });
+    act(() => rerender());
+
+    expect(lastQuery()).not.toBeNull();
   });
 
   it('reports the latest doc once the snapshot settles', () => {
@@ -208,10 +239,16 @@ describe('useLatestNfe', () => {
     act(() => first.rerender());
     first.unmount();
 
-    // A brand-new mount, still off screen: no listener, but the badge is known.
+    // A brand-new mount that the observer then reports off screen: once the
+    // optimistic subscription is released there is no listener, but the badge
+    // is still painted from the memo rather than falling back to a skeleton.
     snapState.current = { data: undefined, loading: true, error: undefined };
     intersecting.current = false;
-    const { result } = renderHook(() => useLatestNfe('p1'));
+    const { result, rerender } = renderHook(() => useLatestNfe('p1'));
+    act(() => {
+      vi.advanceTimersByTime(NFE_LISTENER_UNSEEN_MS);
+    });
+    act(() => rerender());
 
     expect(lastQuery()).toBeNull();
     expect(result.current.status).toBe('ready');
@@ -239,7 +276,7 @@ describe('useLatestNfe', () => {
     // ...while an unrelated pedido stays `idle`, so its cell renders a
     // placeholder rather than claiming it has no nota fiscal.
     const unseen = renderHook(() => useLatestNfe('outro'));
-    expect(unseen.result.current.status).toBe('idle');
+    expect(unseen.result.current.status).not.toBe('ready');
   });
 
   it('never replays one operator’s badge to the next signed-in user', () => {
@@ -264,7 +301,7 @@ describe('useLatestNfe', () => {
     snapState.current = { data: undefined, loading: true, error: undefined };
 
     const b = renderHook(() => useLatestNfe('p1'));
-    expect(b.result.current.status).toBe('idle');
+    expect(b.result.current.status).not.toBe('ready');
     expect(b.result.current.latest).toBeUndefined();
   });
 
@@ -285,7 +322,7 @@ describe('useLatestNfe', () => {
 
     // Nothing was persisted, so an unsubscribed remount says "unknown".
     const second = renderHook(() => useLatestNfe('p1'));
-    expect(second.result.current.status).toBe('idle');
+    expect(second.result.current.status).not.toBe('ready');
   });
 
   it('bounds the memo, evicting the oldest pedido first', () => {
@@ -307,7 +344,7 @@ describe('useLatestNfe', () => {
     snapState.current = { data: undefined, loading: true, error: undefined };
 
     // `p0` was evicted; the most recent one survives.
-    expect(renderHook(() => useLatestNfe('p0')).result.current.status).toBe('idle');
+    expect(renderHook(() => useLatestNfe('p0')).result.current.status).not.toBe('ready');
     expect(renderHook(() => useLatestNfe(`p${NFE_MEMO_MAX}`)).result.current.status).toBe('ready');
   });
 });
