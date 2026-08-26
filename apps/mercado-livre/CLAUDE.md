@@ -147,12 +147,37 @@ The per-surface notes below stay the authority on behaviour.
   slots — rule 7 tier 0), and **revoke the bootstrap conta's credential only once both
   are durable**. `testUsers.test.ts` asserts the INTERLEAVING, not the final state;
   all three orderings are mutation-proven.
+  ⚠️ **A `role` in the POST body switches to `modo: 'novo'` — ONE fresh account,
+  reusing nothing** (#1087: Mercado Pago stops accepting purchases from a buyer and it
+  has to be replaced without re-minting the working seller). That suspends rule 2 and
+  **nothing else**: the write still lands the instant ML answers, the revocation still
+  runs last. What replaces rule 2 is the doc id — `${role}-${mlUserId}` (`docIdAdicional`),
+  derived from ML's own response so it cannot collide, written with `store.create`
+  rather than `put` so a collision FAILS (`ML_USUARIO_TESTE_DUPLICADO`) instead of
+  overwriting a password nothing reissues. ⚠️ Do not collapse `put` and `create`: `put`
+  overwriting is what makes a partial re-run of the PAIR safe, and `create` refusing is
+  what protects the additional one.
+  ⚠️ **The ten-slot cap is now refused server-side** (`ML_LIMITE_USUARIOS_TESTE`, 409,
+  before any mint) against `USUARIO_TESTE_LIMITE_POR_CONTA` in `packages/schemas` —
+  shared with the counter apps/web shows. ⚠️ It compares what WE stored, which is a
+  **floor**: ML lists nothing, so another integração or a hand-rolled `curl` spends from
+  the same ten invisibly. Both the error and the UI say so rather than presenting the
+  number as exact.
   ⚠️ `POST` deletes every `tokenDuravel` doc on the conta it used — intended (that
   account is a real seller account and must not stay connected), but it is why the
   gate is an explicit `MERCADO_LIVRE_TEST_USERS_ENABLED=1` rather than a `NODE_ENV`
   check: apps/web calls the DEPLOYED backend even in local dev, and #1059 is the
   worked example of a `NODE_ENV` escape disabling a guard in the one job that needed
   it. Unset ⇒ 404, checked before auth.
+  ⚠️ **That revocation is why the NEXT mint needs a reconnect, and it is a
+  precondition rather than a fault.** `resolveChannelContext()` runs BEFORE every guard
+  in `criarUsuariosTeste`, so once the credential is gone the route answers 409
+  `ML_REAUTH_REQUIRED` even for a call that would have minted nothing. The additional
+  mint therefore takes `manterCredencial` to opt out — ⚠️ **defaulting to FALSE (i.e.
+  revoke)**, refused outright when sent without a `role`, and validated by a
+  `z.strictObject` so an unknown key, a wrong type or an absent field all fail CLOSED.
+  A security step a typo can switch off is #1059's shape. The pair bootstrap keeps its
+  unconditional revocation and ignores nothing.
   ⚠️ `criarUsuarioTeste` in the integrations package bypasses `parseOk` on purpose:
   that helper puts the RAW BODY into `MercadoLivreValidationError`, and `respond.ts`
   logs a validation error's payload straight to the log stream — the exact route #1015
@@ -290,8 +315,10 @@ Two suites, deliberately separated by filename:
   `current`, and the "one wins" refresh under real contention), the notification store's
   ALREADY_EXISTS/NOT_FOUND semantics, the receiver writing a real failure doc via the
   `MERCADO_LIVRE_TASKS_DISABLED` valve, `exchangeAndPersist`, and the test-user store
-  (role doc ids, and `deleteAll` clearing BOTH tokenDuravel lineages — the offline
-  suite mocks Firestore away, so a `current`-only delete cannot be caught there).
+  (role doc ids, `create` refusing an existing doc id rather than overwriting a stored
+  password, and `deleteAll` clearing BOTH tokenDuravel lineages — the offline suite
+  mocks Firestore away, so neither a `current`-only delete nor a `set`-shaped "create"
+  can be caught there).
 
 - **Cloud Tasks round trip** — `test:tasks` (`*.tasks.test.ts`), run by the same workflow
   under `--config firebase.mercado-livre.tasks.json --only firestore,functions,tasks`.
