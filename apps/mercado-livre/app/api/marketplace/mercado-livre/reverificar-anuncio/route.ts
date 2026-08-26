@@ -27,7 +27,10 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { naoDocId, refMatchesIntegracao } from '@/lib/marketplace/core/linkRefs';
 import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
-import { reverificarAnuncio } from '@/lib/marketplace/anuncios/reverificarAnuncio';
+import {
+  ReverificacaoFamiliaSemMembrosError,
+  reverificarAnuncio,
+} from '@/lib/marketplace/anuncios/reverificarAnuncio';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -96,8 +99,27 @@ export async function POST(req: Request): Promise<NextResponse> {
     // The behaviour (record ML's real state, clear `errors`, stamp `closed` on
     // a 404) lives in lib/marketplace/anuncios/reverificarAnuncio.ts — shared verbatim
     // with the manual stock push's re-arm pass (#819).
-    return NextResponse.json(await reverificarAnuncio(db, integracaoId, target, api, nowMs));
+    //
+    // ⚠️ `chamadasMl` is dropped rather than forwarded: it is the in-process
+    // budget signal the manual push decrements by, not something an HTTP caller
+    // can act on, and putting it on the wire would make it part of a contract
+    // apps/web mirrors by hand.
+    const { chamadasMl: _chamadasMl, ...resposta } = await reverificarAnuncio(
+      db,
+      integracaoId,
+      target,
+      api,
+      nowMs,
+    );
+    return NextResponse.json(resposta);
   } catch (err) {
+    // A família whose members this ERP does not hold: nothing to re-read, and
+    // guessing would cancel a live listing (see the error class). 409 for the
+    // same reason "never published" is one — the anúncio exists, the local state
+    // does not support the action.
+    if (err instanceof ReverificacaoFamiliaSemMembrosError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);
     throw err;
   }
