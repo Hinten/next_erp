@@ -30,15 +30,6 @@ export function createTestUserStore(db: Firestore, integracaoId: string): TestUs
   const ctx = { integracaoId };
 
   return {
-    async get(role: UsuarioTesteRole): Promise<UsuarioTesteMercadoLivre | null> {
-      const snap = await usuariosTesteCollection.docRef(db, ctx, role).get();
-      if (!snap.exists) return null;
-      return usuariosTesteCollection.parseRead(
-        snap.data(),
-        usuariosTesteCollection.docPath(ctx, role),
-      );
-    },
-
     async put(record: UsuarioTesteMercadoLivre): Promise<void> {
       // `set`, not `merge`: the record is written once, whole, and a merge mask
       // would let a half-written earlier attempt survive underneath it.

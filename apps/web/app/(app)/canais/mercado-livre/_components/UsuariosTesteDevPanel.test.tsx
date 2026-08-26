@@ -405,6 +405,35 @@ describe('UsuariosTesteDevPanel — the additional buyer mint', () => {
     );
   });
 
+  it('⚠️ says NOTHING about a cause while the conta read is still in flight', async () => {
+    // `conectada` collapses "not loaded yet" and "query failed" into
+    // "disconnected". Naming a specific cause there — "a criação anterior apagou
+    // as credenciais" — is false on every first render. The button stays
+    // disabled (we genuinely do not know); only the sentence is withheld.
+    let resolver: (c: MercadoLivreConta) => void = () => undefined;
+    setUsuarios([usuario('comprador')], {
+      conta: undefined,
+    });
+    h.clientRef.current = {
+      ...h.clientRef.current!,
+      conta: vi.fn(
+        () =>
+          new Promise<MercadoLivreConta>((res) => {
+            resolver = res;
+          }),
+      ),
+    };
+    renderPanel();
+
+    await screen.findByText('TEST-comprador');
+    expect(screen.queryByTestId('ml-usuarios-teste-desconectada')).toBeNull();
+    expect(screen.getByTestId('ml-novo-comprador').hasAttribute('disabled')).toBe(true);
+
+    // Once the answer arrives and it really IS disconnected, the cause appears.
+    resolver({ connected: false, me: null });
+    expect(await screen.findByTestId('ml-usuarios-teste-desconectada')).toBeTruthy();
+  });
+
   it('disables the action and explains it when the conta is disconnected', async () => {
     // ⚠️ The precondition, not a fault: a previous mint deleted the credential,
     // and the backend resolves a token BEFORE any guard, so an unconnected conta

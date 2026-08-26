@@ -23,6 +23,7 @@ import {
   codigosVerificacaoEmail,
   criarUsuariosTeste,
   docIdAdicional,
+  reutilizavel,
 } from './testUsers';
 
 const NOW = 1_700_000_000_000;
@@ -49,9 +50,6 @@ function fakeStore(seed: UsuarioTesteMercadoLivre[] = []) {
   const store: TestUserStore & { docs: typeof docs; log: string[] } = {
     docs,
     log,
-    async get(role) {
-      return docs.get(role) ?? null;
-    },
     async put(record) {
       log.push(`put:${record.role}`);
       docs.set(record.role, record);
@@ -377,6 +375,44 @@ describe('criarUsuariosTeste — additional mint (modo: novo)', () => {
   });
 });
 
+describe('criarUsuariosTeste — reuse spans BOTH doc-id schemes', () => {
+  it('⭐ a pair run after a standalone buyer REUSES it instead of minting a second', async () => {
+    // The bug this replaced: reuse was `store.get(role)` — the bare role doc id
+    // — so an account written by an additional mint at `${role}-${mlUserId}` was
+    // invisible and the pair bootstrap spent a permanent slot on a buyer the
+    // operator already had. Reachable from the panel: with one buyer and no
+    // seller the pair button is (correctly) enabled.
+    const store = fakeStore();
+    const avulso = deps({ store, roles: [USUARIO_TESTE_ROLE.comprador], modo: 'novo' });
+    await criarUsuariosTeste(avulso.deps);
+
+    const par = deps({ store });
+    const result = await criarUsuariosTeste(par.deps);
+
+    // ONE mint on the pair run — the seller — and the buyer came off disk.
+    expect(par.criarUsuarioTeste).toHaveBeenCalledTimes(1);
+    expect(result.criados).toEqual([USUARIO_TESTE_ROLE.vendedor]);
+    expect(result.reaproveitados).toEqual([USUARIO_TESTE_ROLE.comprador]);
+    expect([...store.docs.keys()].sort()).toEqual(['comprador-1001', 'vendedor']);
+  });
+
+  it('reuses the NEWEST record when several share a role', async () => {
+    const store = fakeStore();
+    await store.create('comprador-1', registro({ id: 1, nickname: 'ANTIGO', createdAt: 100 }));
+    await store.create('comprador-2', registro({ id: 2, nickname: 'NOVO', createdAt: 900 }));
+    const { deps: d } = deps({ store, roles: [USUARIO_TESTE_ROLE.comprador] });
+
+    expect((await criarUsuariosTeste(d)).usuarios[0]?.nickname).toBe('NOVO');
+  });
+
+  it('reutilizavel matches the role FIELD, not the doc id', () => {
+    const rec = registro({ id: 7 });
+    expect(reutilizavel([rec], USUARIO_TESTE_ROLE.comprador)).toBe(rec);
+    expect(reutilizavel([rec], USUARIO_TESTE_ROLE.vendedor)).toBeNull();
+    expect(reutilizavel([], USUARIO_TESTE_ROLE.comprador)).toBeNull();
+  });
+});
+
 describe('criarUsuariosTeste — the revocation opt-out', () => {
   it('skips the wipe entirely when revogarCredencial is false', async () => {
     const {
@@ -432,7 +468,7 @@ describe('criarUsuariosTeste — the ten-slot cap', () => {
 
   it('refuses at the limit, before minting anything or touching the credential', async () => {
     const store = fakeStore();
-    for (const [i, r] of dezRegistros().entries()) await store.create(`comprador-${String(i)}`, r);
+    for (const [i, r] of dezRegistros().entries()) await store.create(`extra-${String(i)}`, r);
     const {
       deps: d,
       criarUsuarioTeste,
@@ -458,17 +494,79 @@ describe('criarUsuariosTeste — the ten-slot cap', () => {
 
   it('guards the PAIR bootstrap too, not only the additional mint', async () => {
     const store = fakeStore();
-    for (const [i, r] of dezRegistros().entries()) await store.create(`comprador-${String(i)}`, r);
+    for (const [i, r] of dezRegistros().entries()) await store.create(`extra-${String(i)}`, r);
     const { deps: d, criarUsuarioTeste } = deps({ store });
 
     await expect(criarUsuariosTeste(d)).rejects.toBeInstanceOf(TestUserGuardError);
     expect(criarUsuarioTeste).not.toHaveBeenCalled();
   });
 
+  it('⭐ the PAIR path lands on TEN, never eleven, at nine stored records', async () => {
+    // The guard used to run once before a loop that mints one per role, so nine
+    // stored records passed it and the pair bootstrap minted two — eleven. Two
+    // things now stop that: the buyer is REUSED (it is one of the nine), and the
+    // bound is re-checked per mint rather than per call.
+    const store = fakeStore();
+    const nove = dezRegistros().slice(0, USUARIO_TESTE_LIMITE_POR_CONTA - 1);
+    for (const [i, r] of nove.entries()) await store.create(`extra-${String(i)}`, r);
+    const { deps: d, criarUsuarioTeste } = deps({ store });
+
+    const result = await criarUsuariosTeste(d);
+
+    expect(criarUsuarioTeste).toHaveBeenCalledTimes(1);
+    expect(result.criados).toEqual([USUARIO_TESTE_ROLE.vendedor]);
+    expect(store.docs.size).toBe(USUARIO_TESTE_LIMITE_POR_CONTA);
+  });
+
+  it('⭐ the bound is RE-CHECKED per mint: the 10th is allowed, the 11th refused', async () => {
+    // Directly on the in-loop check — a multi-mint run at nine stored records
+    // must spend the last slot and then refuse, not sail through on one
+    // up-front comparison.
+    const store = fakeStore();
+    const nove = dezRegistros().slice(0, USUARIO_TESTE_LIMITE_POR_CONTA - 1);
+    for (const [i, r] of nove.entries()) await store.create(`extra-${String(i)}`, r);
+    const {
+      deps: d,
+      criarUsuarioTeste,
+      deleteAll,
+    } = deps({
+      store,
+      roles: [USUARIO_TESTE_ROLE.comprador, USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+    });
+
+    const err = await criarUsuariosTeste(d).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(TestUserGuardError);
+    expect((err as TestUserGuardError).code).toBe('ML_LIMITE_USUARIOS_TESTE');
+    expect((err as TestUserGuardError).extra).toMatchObject({
+      registrados: USUARIO_TESTE_LIMITE_POR_CONTA,
+    });
+    expect(criarUsuarioTeste).toHaveBeenCalledTimes(1);
+    // Rule 1 still held for the one that DID mint; rule 3 kept the credential.
+    expect(store.docs.size).toBe(USUARIO_TESTE_LIMITE_POR_CONTA);
+    expect(deleteAll).not.toHaveBeenCalled();
+  });
+
+  it('a run that only REUSES is not refused at the cap — it spends nothing', async () => {
+    // The cap exists to stop an eleventh slot being spent, not to block a
+    // zero-cost re-run.
+    const store = fakeStore();
+    for (const [i, r] of dezRegistros().entries()) await store.create(`extra-${String(i)}`, r);
+    await store.put(registro({ role: USUARIO_TESTE_ROLE.vendedor, id: 40 }));
+    const { deps: d, criarUsuarioTeste } = deps({ store });
+
+    const result = await criarUsuariosTeste(d);
+
+    expect(criarUsuarioTeste).not.toHaveBeenCalled();
+    expect(result.criados).toEqual([]);
+    expect(result.reaproveitados).toEqual(ROLES_A_CRIAR);
+  });
+
   it('allows the mint one below the limit', async () => {
     const store = fakeStore();
     const noveRegistros = dezRegistros().slice(0, USUARIO_TESTE_LIMITE_POR_CONTA - 1);
-    for (const [i, r] of noveRegistros.entries()) await store.create(`comprador-${String(i)}`, r);
+    for (const [i, r] of noveRegistros.entries()) await store.create(`extra-${String(i)}`, r);
     const { deps: d, criarUsuarioTeste } = deps({
       store,
       roles: [USUARIO_TESTE_ROLE.comprador],

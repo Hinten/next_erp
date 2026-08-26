@@ -20,7 +20,6 @@ const h = vi.hoisted(() => ({
   deleteAll: vi.fn(),
   criarUsuarioTeste: vi.fn(),
   getMe: vi.fn(),
-  storeGet: vi.fn(),
   storePut: vi.fn(),
   storeCreate: vi.fn(),
   storeList: vi.fn(),
@@ -40,7 +39,6 @@ vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
 
 vi.mock('@/lib/marketplace/conta/testUserStore', () => ({
   createTestUserStore: () => ({
-    get: h.storeGet,
     put: h.storePut,
     create: h.storeCreate,
     list: h.storeList,
@@ -102,7 +100,6 @@ beforeEach(() => {
     password: 'qatest328',
     site_status: 'active',
   });
-  h.storeGet.mockResolvedValue(null);
   h.storePut.mockResolvedValue(undefined);
   h.storeCreate.mockResolvedValue(undefined);
   h.storeList.mockResolvedValue([]);
@@ -288,7 +285,7 @@ describe('POST body — the pair bootstrap stays the default', () => {
 
 describe('POST body — the single-role mint', () => {
   it('mints ONE fresh account through create, reusing nothing', async () => {
-    h.storeGet.mockResolvedValue(record(USUARIO_TESTE_ROLE.comprador));
+    h.storeList.mockResolvedValue([record(USUARIO_TESTE_ROLE.comprador)]);
 
     const res = await POST(postBody({ role: 'comprador' }));
     const body = (await res.json()) as { criados: string[]; usuarios: { password: string }[] };
@@ -355,7 +352,6 @@ describe('POST body — the single-role mint', () => {
       password: 'qatest328',
       site_status: 'active',
     });
-    h.storeGet.mockResolvedValue(null);
     h.storeCreate.mockResolvedValue(undefined);
     h.storeList.mockResolvedValue([]);
 

@@ -120,17 +120,21 @@ export class TestUserGuardError extends Error {
 /**
  * Persistence for the minted records.
  *
+ * ⚠️ There is deliberately NO read-one-by-role member. Reuse is decided from
+ * {@link list} through `reutilizavel`, because a lookup keyed on the bare role
+ * doc id cannot see an account an additional mint wrote at
+ * `${role}-${mlUserId}` — which is precisely how a pair bootstrap came to
+ * re-mint a buyer that already existed. One read, one source of truth.
+ *
  * ⚠️ Two writers with different guarantees, deliberately. {@link put} is the
  * pair bootstrap's idempotent full write at the ROLE's fixed doc id — reached
- * only after {@link get} came back null, so re-running it re-writes identical
+ * only after `reutilizavel` found nothing, so re-running it re-writes identical
  * content. {@link create} is the additional mint's, at an explicit id, and it
  * REFUSES a doc that already exists. Do not collapse them: `put` overwriting is
  * what makes a partial re-run safe, and `create` refusing is what stops an
  * additional mint from destroying an unrecoverable password.
  */
 export interface TestUserStore {
-  /** The stored record for a role, or null. */
-  get(role: UsuarioTesteRole): Promise<UsuarioTesteMercadoLivre | null>;
   /** Write a record at the role's fixed doc id, overwriting. */
   put(record: UsuarioTesteMercadoLivre): Promise<void>;
   /**
@@ -208,6 +212,30 @@ export function docIdAdicional(role: UsuarioTesteRole, mlUserId: number): string
 }
 
 /**
+ * The stored record a `reaproveitar` run should reuse for `role` — newest first.
+ *
+ * ⚠️ Matches on the record's **`role` FIELD**, not on the doc id. Looking it up
+ * by the bare role doc id (what this did first) cannot see an account an
+ * additional mint wrote at `${role}-${mlUserId}`, so a pair bootstrap run after
+ * a "Novo comprador" read null, minted a redundant buyer, and spent one of the
+ * ten permanent slots on an account the operator already had. That path is
+ * reachable from the panel: with one buyer and no seller the pair button is
+ * (correctly) enabled, and on a fresh integração the additional mint can be the
+ * FIRST click.
+ *
+ * Newest-first because that is the account the operator is working with — it is
+ * the one the panel badges "Mais recente".
+ */
+export function reutilizavel(
+  registrados: readonly UsuarioTesteMercadoLivre[],
+  role: UsuarioTesteRole,
+): UsuarioTesteMercadoLivre | null {
+  const candidatos = registrados.filter((u) => u.role === role);
+  if (candidatos.length === 0) return null;
+  return candidatos.reduce((a, b) => ((b.createdAt ?? 0) > (a.createdAt ?? 0) ? b : a));
+}
+
+/**
  * Mint (or reuse) test users, then revoke the bootstrap credential.
  *
  * Throws {@link TestUserGuardError} in two cases, BOTH before anything is
@@ -252,17 +280,6 @@ export async function criarUsuariosTeste(
   // costs nothing; not refusing one it would ACCEPT is the cost of the floor
   // being a floor, and the message says so rather than pretending otherwise.
   const registrados = await deps.store.list();
-  if (registrados.length >= USUARIO_TESTE_LIMITE_POR_CONTA) {
-    throw new TestUserGuardError(
-      'ML_LIMITE_USUARIOS_TESTE',
-      409,
-      `Esta integração já tem ${String(registrados.length)} usuários de teste registrados, ` +
-        `e o Mercado Livre permite ${String(USUARIO_TESTE_LIMITE_POR_CONTA)} por conta real — ` +
-        'um limite permanente, sem nenhum endpoint que liste o que já foi criado. ' +
-        'Uma vaga só volta a existir depois de 60 dias sem atividade na conta de teste.',
-      { registrados: registrados.length, limite: USUARIO_TESTE_LIMITE_POR_CONTA },
-    );
-  }
 
   const usuarios: UsuarioTesteMercadoLivre[] = [];
   const criados: UsuarioTesteRole[] = [];
@@ -270,7 +287,7 @@ export async function criarUsuariosTeste(
 
   for (const role of roles) {
     if (modo === 'reaproveitar') {
-      const existente = await deps.store.get(role);
+      const existente = reutilizavel(registrados, role);
       if (existente) {
         // Rule 2: never re-mint what we already hold. A retry after a partial
         // failure must cost zero slots.
@@ -278,6 +295,27 @@ export async function criarUsuariosTeste(
         reaproveitados.push(role);
         continue;
       }
+    }
+
+    // ⚠️ Checked HERE, not once before the loop. The pre-loop version could not
+    // know how many mints the run would do: at nine stored records a pair
+    // bootstrap passed it and then minted twice, ending at eleven. Counting
+    // `criados` makes the bound hold per mint instead of per call.
+    //
+    // A consequence worth having: a run that reuses everything mints nothing,
+    // so it is no longer refused at the cap. Refusing a zero-cost re-run was
+    // never the point — spending an eleventh slot is.
+    if (registrados.length + criados.length >= USUARIO_TESTE_LIMITE_POR_CONTA) {
+      const total = registrados.length + criados.length;
+      throw new TestUserGuardError(
+        'ML_LIMITE_USUARIOS_TESTE',
+        409,
+        `Esta integração já tem ${String(total)} usuários de teste registrados, ` +
+          `e o Mercado Livre permite ${String(USUARIO_TESTE_LIMITE_POR_CONTA)} por conta real — ` +
+          'um limite permanente, sem nenhum endpoint que liste o que já foi criado. ' +
+          'Uma vaga só volta a existir depois de 60 dias sem atividade na conta de teste.',
+        { registrados: total, limite: USUARIO_TESTE_LIMITE_POR_CONTA },
+      );
     }
 
     const minted = await deps.api.criarUsuarioTeste(siteId);

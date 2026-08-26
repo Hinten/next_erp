@@ -256,6 +256,12 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
 
   const compradorMaisRecente = usuarios.find((u) => u.role === 'comprador') ?? null;
   const conectada = contaQuery.data?.connected === true;
+  // ⚠️ "Disconnected" and "we do not know yet" are DIFFERENT, and only the first
+  // has a cause worth naming. `conectada` collapses them, so the hint below has
+  // to gate on the answer having arrived — otherwise it asserts a specific and
+  // false reason ("the previous mint deleted the credentials") on every first
+  // render and on every failed conta read.
+  const contaRespondeu = contaQuery.data != null;
   const contaNome = contaQuery.data?.me
     ? (contaQuery.data.me.nickname ?? `id ${String(contaQuery.data.me.id)}`)
     : null;
@@ -344,7 +350,7 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
           )}
         </Group>
 
-        {canWrite && !conectada && (
+        {canWrite && contaRespondeu && !conectada && (
           <Text size="xs" c="dimmed" data-testid="ml-usuarios-teste-desconectada">
             {PRECISA_RECONECTAR}
           </Text>

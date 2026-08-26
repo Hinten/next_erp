@@ -21,7 +21,13 @@ import { describe, expect, it } from 'vitest';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 
 import { createTestUserStore } from './testUserStore';
-import { ROLES_A_CRIAR, TestUserGuardError, criarUsuariosTeste, docIdAdicional } from './testUsers';
+import {
+  ROLES_A_CRIAR,
+  TestUserGuardError,
+  criarUsuariosTeste,
+  docIdAdicional,
+  reutilizavel,
+} from './testUsers';
 
 const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 
@@ -47,6 +53,26 @@ function rec(
     createdByUserId: 999,
     ...over,
   };
+}
+
+/**
+ * The record a reuse run would pick for `role` — the PRODUCTION lookup, so these
+ * assertions exercise the thing the pair bootstrap actually calls.
+ */
+async function reusavel(
+  store: { list: () => Promise<UsuarioTesteMercadoLivre[]> },
+  role: UsuarioTesteMercadoLivre['role'],
+): Promise<UsuarioTesteMercadoLivre | null> {
+  return reutilizavel(await store.list(), role);
+}
+
+/**
+ * One raw doc BY ID. ⚠️ Use this, not `reusavel`, to assert a SPECIFIC document
+ * is untouched: once several records share a role the reuse lookup answers
+ * "the newest", which is a different question.
+ */
+async function rawDoc(integracaoId: string, docId: string) {
+  return (await rawColl(integracaoId).doc(docId).get()).data();
 }
 
 /** The raw subcollection, UNCONVERTED — used to assert doc IDS. */
@@ -77,10 +103,10 @@ describe.skipIf(!EMULATED)('createTestUserStore (Firestore emulator)', () => {
     await store.put(rec(USUARIO_TESTE_ROLE.vendedor, { nickname: 'TEST-novo' }));
 
     expect((await rawColl(integracaoId).get()).size).toBe(1);
-    expect((await store.get(USUARIO_TESTE_ROLE.vendedor))?.nickname).toBe('TEST-novo');
+    expect((await reusavel(store, USUARIO_TESTE_ROLE.vendedor))?.nickname).toBe('TEST-novo');
   });
 
-  it('B3: get round-trips the whole record, password included', async () => {
+  it('B3: a stored record round-trips whole, password included', async () => {
     // The password is the reason this collection exists — a store that silently
     // dropped it would look healthy in every other assertion.
     const integracaoId = newIntegracaoId();
@@ -89,18 +115,18 @@ describe.skipIf(!EMULATED)('createTestUserStore (Firestore emulator)', () => {
 
     await store.put(written);
 
-    expect(await store.get(USUARIO_TESTE_ROLE.comprador)).toEqual(written);
+    expect(await reusavel(store, USUARIO_TESTE_ROLE.comprador)).toEqual(written);
   });
 
-  it('B4: get returns null for a role with no record', async () => {
+  it('B4: the reuse lookup returns null for a role with no record', async () => {
     const integracaoId = newIntegracaoId();
     const store = createTestUserStore(getAdminFirestore(), integracaoId);
 
     await store.put(rec(USUARIO_TESTE_ROLE.vendedor));
 
     // Positive first, so this cannot pass against an empty wrong database.
-    expect(await store.get(USUARIO_TESTE_ROLE.vendedor)).not.toBeNull();
-    expect(await store.get(USUARIO_TESTE_ROLE.comprador)).toBeNull();
+    expect(await reusavel(store, USUARIO_TESTE_ROLE.vendedor)).not.toBeNull();
+    expect(await reusavel(store, USUARIO_TESTE_ROLE.comprador)).toBeNull();
   });
 
   it('B5: list returns seller first regardless of Firestore doc-id order', async () => {
@@ -168,7 +194,7 @@ describe.skipIf(!EMULATED)('createTestUserStore — the additional mint (Firesto
     const snap = await rawColl(integracaoId).get();
     expect(snap.docs.map((d) => d.id).sort()).toEqual(['comprador', 'comprador-777']);
     // The stored record is byte-identical to what was written before.
-    expect(await store.get(USUARIO_TESTE_ROLE.comprador)).toEqual(antigo);
+    expect(await rawDoc(integracaoId, USUARIO_TESTE_ROLE.comprador)).toEqual(antigo);
   });
 
   it('B8: create REFUSES an existing doc id, and the stored password survives', async () => {
@@ -250,7 +276,7 @@ describe.skipIf(!EMULATED)('createTestUserStore — the additional mint (Firesto
     const snap = await rawColl(integracaoId).get();
     expect(snap.docs.map((d) => d.id).sort()).toEqual(['comprador', 'comprador-1003', 'vendedor']);
     // The pair the first run stored is exactly as it was left.
-    expect((await store.get(USUARIO_TESTE_ROLE.comprador))?.password).toBe('senha-2');
-    expect((await store.get(USUARIO_TESTE_ROLE.vendedor))?.password).toBe('senha-1');
+    expect((await rawDoc(integracaoId, USUARIO_TESTE_ROLE.comprador))?.password).toBe('senha-2');
+    expect((await rawDoc(integracaoId, USUARIO_TESTE_ROLE.vendedor))?.password).toBe('senha-1');
   });
 });
