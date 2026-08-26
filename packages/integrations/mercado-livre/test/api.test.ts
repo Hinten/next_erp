@@ -935,6 +935,24 @@ describe('createMercadoLivreApi — User-Products stock by location (multiorigem
     expect(parsed.order_items?.[0]?.item?.id).toBe('MLB1');
   });
 
+  it('models `fulfilled` in all four shapes ML sends, ABSENT included', () => {
+    // On a sem-envio order this is the seller's delivery confirmation and the
+    // only signal there is — the `delivered` tag is no longer added
+    // automatically. It rode `.passthrough()` untyped until #1087, which is
+    // exactly why nothing could read it.
+    expect(orderSchema.parse({ id: 1, fulfilled: true }).fulfilled).toBe(true);
+    // ⚠️ `false` is NOT "not delivered yet" — it is "the sale was not
+    // concretized" (ML demands a `reason`, refunds, and reverts `status` to
+    // `confirmed`). Modelled distinctly from `null` so a reader cannot conflate
+    // "the seller said no" with "the seller has not answered".
+    expect(orderSchema.parse({ id: 1, fulfilled: false }).fulfilled).toBe(false);
+    expect(orderSchema.parse({ id: 1, fulfilled: null }).fulfilled).toBeNull();
+    // ABSENT stays absent rather than defaulting: the sole reader tests
+    // `=== true`, so an invented `false` would be a lie about a field that
+    // decides a stock movement.
+    expect(orderSchema.parse({ id: 1 }).fulfilled).toBeUndefined();
+  });
+
   it('an uninitialised UP answers stock-locations not found, NOT an empty locations array', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ message: 'stock-locations not found' }, 404),

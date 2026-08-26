@@ -164,6 +164,18 @@ class FakeDb {
   lastPatch(path: string, id: string): DocData | undefined {
     return this.patches.get(`${path}/${id}`);
   }
+  /**
+   * Forget every recorded patch, keeping the documents. Lets a test assert "this
+   * SECOND call wrote nothing" without a fresh db — `lastPatch` is last-write-wins,
+   * so an earlier call's patch would otherwise still be sitting there and read as
+   * a write that never happened. Needed wherever re-running the same import must
+   * be proven inert rather than merely convergent: a stored value can be identical
+   * after a redundant rewrite (`avancarWatermark(NOW_US, NOW_US)` is a no-op), so
+   * comparing state cannot distinguish "did not write" from "wrote the same".
+   */
+  clearPatches(): void {
+    this.patches.clear();
+  }
 
   private query(entries: Array<[string, DocData]>) {
     const clauses: Array<[string, unknown]> = [];
@@ -269,6 +281,14 @@ function makeOrder(opts: {
   itens?: boolean;
   /** ML order tags. `['no_shipping']` marks an order sold with no envio. */
   tags?: readonly string[];
+  /**
+   * ML's feedback "operação concretizada" flag. On a sem-envio order `true` is
+   * the seller's delivery confirmation — the ONLY signal there is, since the
+   * `delivered` tag is no longer added automatically. Defaults to `null` (the
+   * shape ML sends before the seller confirms), never `undefined`, so a test
+   * that omits it exercises the real pre-confirmation payload.
+   */
+  fulfilled?: boolean | null;
 }): DocData {
   return {
     id: opts.id,
@@ -291,6 +311,7 @@ function makeOrder(opts: {
     seller: { id: SELLER_USER_ID },
     shipping: opts.shippingId != null ? { id: opts.shippingId } : null,
     tags: opts.tags ?? [],
+    fulfilled: opts.fulfilled ?? null,
     payments: [],
   };
 }
@@ -2574,6 +2595,254 @@ describe('importPedidoMercadoLivre — order with no Mercado Envios shipment', (
       estado: 'postado',
       modalidade: '0',
       codRastreio: 'BR123456789BR',
+    });
+  });
+
+  // ⚠️⚠️ EVERY assertion below guards a PHYSICAL STOCK MOVEMENT, not a label.
+  // `entregue` ∈ `ESTADOS_FRETE_REMOVE_ESTOQUE`, so committing it wakes
+  // `onPedidoEstoqueSync` and deducts the goods from the depósito — and crossing
+  // that boundary is irreversible from the frete side (`efeitoEstoquePedido`
+  // holds on the PEDIDO estado once applied, so moving the frete back restocks
+  // nothing). A guard that stops firing here does not produce a wrong label; it
+  // produces missing inventory.
+  describe('delivery via order.fulfilled', () => {
+    /** A pedido that already carries the sem-envio seed, ready to be advanced. */
+    function seedPedidoComFreteSemEnvio(db: FakeDb, freteOver: DocData = {}): void {
+      seedPedidoPronto(db, {
+        lastMarketplaceUpdate: Date.parse('2026-01-01T00:00:00.000-03:00') * 1000,
+        freteInicial: {
+          estado: 'iniciado',
+          modalidade: '1',
+          externalOptionIntegracao: null,
+          enderecoFreteOuterReference: 'documents/clientes/cli-1/enderecos/end-1',
+          ultimaModificacao: Date.parse('2026-01-01T00:00:00.000-03:00') * 1000,
+          ...freteOver,
+        },
+      });
+    }
+
+    function freteDe(db: FakeDb): DocData {
+      return db.docs('pedidos').get('pedido-1')!.freteInicial as DocData;
+    }
+
+    it('advances an existing sem-envio frete to entregue when fulfilled is true', async () => {
+      // The live case: the seller confirms delivery in the ML panel, `fulfilled`
+      // flips null → true, and `tags`/`status` never move (ML stopped adding the
+      // `delivered` tag automatically — "o integrador deverá realizar um PUT com
+      // a tag correspondente"). Before this, the signal arrived and was dropped.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPedidoComFreteSemEnvio(db);
+      const api = makeApi({
+        getOrder: vi.fn(async () =>
+          makeOrder({
+            id: 1,
+            tags: ['no_shipping', 'not_delivered', 'paid'],
+            fulfilled: true,
+            lastUpdated: '2026-02-01T00:00:00.000-03:00',
+          }),
+        ),
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      expect(freteDe(db)).toMatchObject({ estado: 'entregue' });
+      // The rest of the block rides through untouched — the advance re-derives
+      // it from the tx-fresh read and overrides exactly one field.
+      expect(freteDe(db)).toMatchObject({ modalidade: '1', externalOptionIntegracao: null });
+    });
+
+    it('⛔ does NOT read fulfilled on an order that HAS a shipment', async () => {
+      // The precedence guard, and it is structural: `fulfilled` is read only
+      // inside the `semEnvio` arm, and `pedidoSemEnvioMercadoEnvios` demands an
+      // absent `shipping.id`. For an me2/FULL order the shipment is the
+      // authority and must never be overridden by a feedback flag.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPedidoComFreteSemEnvio(db);
+      const getShipment = vi.fn(async () => ({
+        id: 77,
+        status: 'ready_to_ship',
+        substatus: null,
+        last_updated: '2026-02-01T00:00:00.000-03:00',
+      }));
+      const api = makeApi({
+        getOrder: vi.fn(async () =>
+          makeOrder({
+            id: 1,
+            shippingId: 77,
+            tags: ['no_shipping'],
+            fulfilled: true,
+            lastUpdated: '2026-02-01T00:00:00.000-03:00',
+          }),
+        ),
+        getShipment,
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      // The shipment branch ran...
+      expect(getShipment).toHaveBeenCalled();
+      // ...and nothing anywhere wrote `entregue` off the back of `fulfilled`.
+      expect(freteDe(db).estado).not.toBe('entregue');
+    });
+
+    it('⛔ refuses to flip on a payload OLDER than the ML order clock', async () => {
+      // `fulfilled` is FEEDBACK, and feedback is editable (`PUT /feedback/{id}`),
+      // so a replayed `true` can contradict a newer `false`. That is why the
+      // advance is gated even though it is a "promotion" — unlike an approved
+      // payment, it is not true-whenever-it-arrives.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPedidoComFreteSemEnvio(db);
+      db.docs('pedidos').get('pedido-1')!.lastMarketplaceUpdate =
+        Date.parse('2026-03-01T00:00:00.000-03:00') * 1000;
+      const api = makeApi({
+        getOrder: vi.fn(async () =>
+          makeOrder({
+            id: 1,
+            tags: ['no_shipping'],
+            fulfilled: true,
+            lastUpdated: '2026-01-01T00:00:00.000-03:00',
+          }),
+        ),
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      expect(freteDe(db).estado).toBe('iniciado');
+    });
+
+    // ⚠️ BOTH stored states are load-bearing, and the `iniciado` rows are the
+    // ones that actually pin the guard. Seeded at `entregue` the idempotence
+    // check short-circuits first, so an `entregue`-only table still passes with
+    // the `!entregue` guard DELETED — measured, not assumed. The `iniciado` rows
+    // are the ones that red, and they are the dangerous direction anyway: a
+    // wrong forward flip moves stock, while an un-flip could not restock even if
+    // it happened.
+    it.each([
+      ['iniciado', 'null (the seller has not confirmed)', null],
+      ['iniciado', 'false (the sale was NOT concretized)', false],
+      ['entregue', 'null (the seller has not confirmed)', null],
+      ['entregue', 'false (the sale was NOT concretized)', false],
+    ])(
+      '⛔ leaves a %s frete exactly as it was — fulfilled: %s',
+      async (estadoArmazenado, _label, fulfilled) => {
+        // `false` is not "not delivered yet": ML requires a `reason`
+        // (OUT_OF_STOCK / BUYER_REGRETS / …), refunds the payment and drives
+        // `status` back to `confirmed`. That is the cancel path
+        // `applyPagoAdvanceOrDowngrade` already owns via `order.status`; a second
+        // writer of it here would be the lost update rule 7 warns about.
+        const db = new FakeDb();
+        seedConta(db);
+        seedPedidoComFreteSemEnvio(db, { estado: estadoArmazenado });
+        const api = makeApi({
+          getOrder: vi.fn(async () =>
+            makeOrder({
+              id: 1,
+              tags: ['no_shipping'],
+              fulfilled: fulfilled as boolean | null,
+              lastUpdated: '2026-02-01T00:00:00.000-03:00',
+            }),
+          ),
+        });
+
+        await importPedidoMercadoLivre(deps(db, api), 1);
+
+        expect(freteDe(db).estado).toBe(estadoArmazenado);
+      },
+    );
+
+    it('⛔ does not overwrite a terminal estado a human set (cancelado)', async () => {
+      // A sem-envio block is NOT marketplace-locked (`externalOptionIntegracao`
+      // is null), so the pedido form's Frete tab edits it freely. An operator who
+      // cancelled has said something ML's flag does not know, and from
+      // `cancelado` the flip would MOVE STOCK.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPedidoComFreteSemEnvio(db, { estado: 'cancelado' });
+      const api = makeApi({
+        getOrder: vi.fn(async () =>
+          makeOrder({
+            id: 1,
+            tags: ['no_shipping'],
+            fulfilled: true,
+            lastUpdated: '2026-02-01T00:00:00.000-03:00',
+          }),
+        ),
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      expect(freteDe(db).estado).toBe('cancelado');
+    });
+
+    it('is idempotent — three identical deliveries produce ONE transition, SILENTLY', async () => {
+      // ML sent three `orders_v2` deliveries for the live order, the hot sweep
+      // re-drives hour-old payloads and `missed_feeds` replays them again. Three
+      // stock movements instead of one would be silent, permanent overselling.
+      //
+      // ⚠️ The "silently" half is the whole reason the `=== entregue` early
+      // return exists SEPARATELY from the terminal latch, which would otherwise
+      // subsume it (`entregue` ∈ `ESTADOS_FRETE_TERMINAIS_SEM_ENVIO`). Delete the
+      // early return and the state assertions below still pass — measured — but
+      // every replay starts warning that it hit a terminal estado. Those two
+      // cases mean opposite things: "already done, expected, happens constantly"
+      // versus "an operator closed this some other way, look at it". A log that
+      // cries wolf on the common path is how the rare one gets ignored.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const db = new FakeDb();
+        seedConta(db);
+        seedPedidoComFreteSemEnvio(db);
+        const api = makeApi({
+          getOrder: vi.fn(async () =>
+            makeOrder({
+              id: 1,
+              tags: ['no_shipping'],
+              fulfilled: true,
+              lastUpdated: '2026-02-01T00:00:00.000-03:00',
+            }),
+          ),
+        });
+
+        await importPedidoMercadoLivre(deps(db, api), 1);
+        expect(freteDe(db).estado).toBe('entregue');
+        const apósPrimeira = freteDe(db).ultimaModificacao;
+
+        db.clearPatches();
+        warn.mockClear();
+        await importPedidoMercadoLivre(deps(db, api), 1);
+        await importPedidoMercadoLivre(deps(db, api), 1);
+
+        expect(freteDe(db).estado).toBe('entregue');
+        // Not merely "still entregue": the block was not rewritten at all, so
+        // `onPedidoEstoqueSync` is never even woken by deliveries 2 and 3.
+        expect(freteDe(db).ultimaModificacao).toBe(apósPrimeira);
+        expect(db.lastPatch('pedidos', 'pedido-1')?.freteInicial).toBeUndefined();
+        expect(
+          warn.mock.calls.filter((c) => String(c[0]).includes('estado terminal')),
+        ).toHaveLength(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('seeds a first-seen already-delivered order straight at entregue', async () => {
+      // The backlog shape: an order delivered before this shipped, recovered by a
+      // re-import. The seed is create-only, so seeding `iniciado` here would
+      // strand it forever — the advance arm can never run on a block this same
+      // call just created.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPedidoPronto(db);
+      const api = makeApi({
+        getOrder: vi.fn(async () => makeOrder({ id: 1, tags: ['no_shipping'], fulfilled: true })),
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      expect(freteDe(db)).toMatchObject({ estado: 'entregue', modalidade: '1' });
     });
   });
 });

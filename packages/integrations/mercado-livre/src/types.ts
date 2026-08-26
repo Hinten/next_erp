@@ -381,6 +381,26 @@ export const orderSchema = z
     buyer: z.object({ id: mlInt().nullable().optional() }).passthrough().nullable().optional(),
     shipping: z.object({ id: mlInt().nullable().optional() }).passthrough().nullable().optional(),
     tags: z.array(z.string()).nullable().optional(),
+    /**
+     * The feedback "operação concretizada" flag, surfaced on the order itself.
+     *
+     * ⚠️ It is NOT a shipping status and NOT related to Fulfillment/FULL. ML's
+     * feedback reference defines it as *"Indica se a operação foi ou não foi
+     * concretizada"*, and — the part that makes it load-bearing here — says the
+     * seller's confirmation *"deverá sempre ser aplicada para mudar o status
+     * para entregue em vendas sem Mercado Envios"*. On an order with no
+     * shipment it IS the delivery confirmation, and the only one: the
+     * `delivered`/`not_delivered` TAGS are no longer added automatically
+     * ("o integrador deverá realizar um PUT com a tag correspondente"), so a
+     * delivered sem-envio order still reads `not_delivered` forever.
+     *
+     * ⚠️ `false` does not mean "not delivered yet" — it means the sale did NOT
+     * happen (it requires a `reason` such as `OUT_OF_STOCK`/`BUYER_REGRETS`,
+     * carries `restock_item`, and drives the order back to `status=confirmed`
+     * with the payment refunded). Only `true` is actionable; see
+     * `applyFreteSemEnvioStep`, the single reader.
+     */
+    fulfilled: z.boolean().nullable().optional(),
   })
   .passthrough();
 export type MlOrder = z.infer<typeof orderSchema>;

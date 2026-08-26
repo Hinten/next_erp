@@ -141,7 +141,12 @@ import {
 import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import { type ViaCepClient, createViaCepClient } from '@delfrance/core/cep';
 import { recoverEnderecoFromCep, type EnderecoBuildOutcome } from '@delfrance/schemas';
-import { MODALIDADE_FRETE, seedFreteInicial } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  MODALIDADE_FRETE,
+  seedFreteInicial,
+  type EstadoFrete,
+} from '@delfrance/schemas';
 import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 
@@ -1080,17 +1085,66 @@ async function registrarIncidenteDeDivergencia(
  *    `=== INTEGRACAO_FRETE.mercadoLivre` and so decline, which is correct — there
  *    is no ML label to print and no ML shipment to attach an NF-e to.
  *
- * ⚠️ **CREATE-ONLY, and re-derived from the `tx.get`** (root `CLAUDE.md` rule 7).
- * A replayed notification, an operator who filled the frete in by hand, or a real
- * shipment that arrived later must never be overwritten by this seed. There is no
- * recency gate because there is nothing to compare: the seed carries no ML clock.
+ * ⚠️ **The SEED is create-only, and everything is re-derived from the `tx.get`**
+ * (root `CLAUDE.md` rule 7). A replayed notification, an operator who filled the
+ * frete in by hand, or a real shipment that arrived later must never be
+ * overwritten by this seed. There is no recency gate on the seed because there is
+ * nothing to compare: it carries no ML clock.
+ *
+ * ## The delivery advance (the one thing that is NOT create-only)
+ *
+ * `fulfilled === true` advances an existing block to `ESTADO_FRETE.entregue`.
+ * That is the ONLY state this function ever writes onto a block it did not just
+ * create, and it is the only way a sem-envio order can ever learn it was
+ * delivered — see the field's docblock on `orderSchema`: ML stopped adding the
+ * `delivered` tag automatically, so a delivered sem-envio order reads
+ * `not_delivered` and `status: paid` forever, which is exactly how it went
+ * unnoticed.
+ *
+ * ⚠️⚠️ **This write MOVES PHYSICAL STOCK.** `entregue` is a member of
+ * `ESTADOS_FRETE_REMOVE_ESTOQUE`, so committing it wakes `onPedidoEstoqueSync`
+ * (`freteInicial.estado` is one of its `CAMPOS_OBSERVADOS`) and deducts the goods
+ * from the depósito. And crossing that boundary is **irreversible from the frete
+ * side**: once the movement is applied, `efeitoEstoquePedido` switches to its hold
+ * branch, which is keyed on the PEDIDO estado — moving the frete back to
+ * `iniciado` restocks nothing. So the hazard to guard is the wrong FORWARD flip,
+ * and every guard below exists for that, not for tidiness:
+ *
+ *  - **Precedence** — structural, and it is why this lives here rather than in a
+ *    step of its own. The caller reaches this function only through the
+ *    `else if (semEnvio)` arm, and `pedidoSemEnvioMercadoEnvios` demands BOTH an
+ *    absent `shipping.id` AND the `no_shipping` tag. An me2/FULL/custom order
+ *    carrying a shipment therefore cannot get here at all, and `fulfilled` can
+ *    never override a shipment-derived `EstadoFrete`. If a shipment shows up
+ *    LATER, `applyFreteStep` takes the branch and the shipment wins — correct:
+ *    the shipment is the authority whenever one exists.
+ *  - **Staleness** — `payloadNaoEhAntigo` against `lastMarketplaceUpdate`, the
+ *    same helper (and therefore the same µs units and the same null-tolerance)
+ *    the estado promotion and downgrade share. Needed even though this is a
+ *    "promotion": unlike an approved payment, which is true whenever it arrives,
+ *    `fulfilled` is FEEDBACK and feedback is editable (`PUT /feedback/{id}`), so
+ *    a replayed `true` can contradict a newer `false`.
+ *  - **No downgrade** — structural: `ESTADO_FRETE.entregue` is the only value
+ *    this branch can emit, so `false`/`null` writes nothing and no code path here
+ *    can walk a block backwards.
+ *  - **Terminal latch** — mirrors the Melhor Envio webhook's `TERMINAL_ESTADOS`.
+ *    A sem-envio block is NOT marketplace-locked (`externalOptionIntegracao` is
+ *    null), so the pedido form's Frete tab can edit it freely; an operator who
+ *    cancelled or recorded a return is not overridden.
+ *  - **Idempotence** — the `=== entregue` early return, so the three deliveries
+ *    ML sends per order produce one transition and one stock movement.
  */
 async function applyFreteSemEnvioStep(args: {
   db: Firestore;
   pedidoId: string;
+  /** `order.fulfilled` — ONLY `true` is actionable. See `orderSchema`. */
+  fulfilled: boolean | null;
+  /** The ML ORDER clock, µs, for the staleness gate on the delivery advance. */
+  orderLastUpdatedUs: number | null;
   nowUs: number;
 }): Promise<void> {
-  const { db, pedidoId, nowUs } = args;
+  const { db, pedidoId, fulfilled, orderLastUpdatedUs, nowUs } = args;
+  const entregue = fulfilled === true;
 
   await db.runTransaction(async (tx) => {
     const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
@@ -1101,8 +1155,19 @@ async function applyFreteSemEnvioStep(args: {
       pedidoCollection.docPath({}, pedidoId),
     );
 
-    // Create-only. Re-derived from the tx-fresh doc, never from the pre-read.
-    if (freshPedido.freteInicial != null) return;
+    // The block already exists → the SEED is done; only the delivery advance is
+    // still on the table. Re-derived from the tx-fresh doc, never the pre-read.
+    if (freshPedido.freteInicial != null) {
+      advanceFreteSemEnvioParaEntregue({
+        tx,
+        pedidoRef,
+        freshPedido,
+        entregue,
+        orderLastUpdatedUs,
+        nowUs,
+      });
+      return;
+    }
 
     // ⚠️ And not before the endereço exists. `applyEnderecoStep` has a `sem-cep`
     // path that returns with `enderecoFiscalOuterRef` still null and RETRIES on
@@ -1124,6 +1189,15 @@ async function applyFreteSemEnvioStep(args: {
       // The one field the seed cannot know: whose address this ships to. Same
       // source `applyFreteStep` uses for the shipment path.
       enderecoFreteOuterReference: freshPedido.enderecoFiscalOuterRef,
+      // An order that is ALREADY delivered when we first see it is seeded
+      // straight at `entregue` rather than at `iniciado`-then-advanced. Same
+      // decision, one write: splitting it would make the create and advance arms
+      // disagree about what `fulfilled` means, and would leave a re-import of an
+      // old delivered order (the backlog case) permanently at `iniciado` because
+      // the seed is create-only. No staleness gate here for the same reason the
+      // rest of the seed has none — there is no stored block, so there is no
+      // prior state a stale payload could contradict.
+      ...(entregue ? { estado: ESTADO_FRETE.entregue } : {}),
       // ⚠️ STAMPED, and it must be. `seedFreteInicial` leaves this null, and the
       // SHIPMENTS-topic freshness policy reads an unstamped stored block as
       // "already newer" (`semWatermarkArmazenado: 'ignorar'`, the deliberate
@@ -1148,6 +1222,100 @@ async function applyFreteSemEnvioStep(args: {
       }) as DocumentData,
     );
   });
+}
+
+/**
+ * Freight states the sem-envio delivery advance refuses to overwrite.
+ *
+ * Deliberately the Melhor Envio webhook's `TERMINAL_ESTADOS` plus `devolvido`:
+ * a sem-envio block carries `externalOptionIntegracao: null`, so
+ * `isFreteMarketplaceOwned` is false and the pedido form's Frete tab leaves it
+ * fully editable. These three are the states a human sets to say "this is over,
+ * and not by delivery" — an ML `fulfilled` that arrives afterwards is stale news
+ * about an order somebody already closed differently, and overriding it would
+ * both mislabel the pedido and, from `cancelado`, move stock.
+ *
+ * NOT a general monotonicity rank — no such ordering exists for `EstadoFrete` in
+ * this repo, and inventing one here would be a much larger claim than this guard
+ * needs. Advancing from a mid-flight state an operator moved forward by hand
+ * (`empacotado`, `postado`, …) is allowed and costs nothing: those are already in
+ * `ESTADOS_FRETE_REMOVE_ESTOQUE`, so the stock delta is zero and only the label
+ * changes.
+ */
+const ESTADOS_FRETE_TERMINAIS_SEM_ENVIO: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.entregue,
+  ESTADO_FRETE.cancelado,
+  ESTADO_FRETE.devolvido,
+]);
+
+/**
+ * Advance an EXISTING sem-envio `freteInicial` to `entregue` on `fulfilled`.
+ *
+ * Every guard, and why, is on {@link applyFreteSemEnvioStep}'s docblock — read it
+ * before touching this: the write moves physical stock and is irreversible from
+ * the frete side. Split out only so the create arm stays readable; it is part of
+ * the same transaction and, like everything else in it, decides exclusively from
+ * the `tx.get` snapshot (class A, root `CLAUDE.md` rule 7).
+ */
+function advanceFreteSemEnvioParaEntregue(args: {
+  tx: FirebaseFirestore.Transaction;
+  pedidoRef: FirebaseFirestore.DocumentReference;
+  freshPedido: Pedido;
+  entregue: boolean;
+  orderLastUpdatedUs: number | null;
+  nowUs: number;
+}): void {
+  const { tx, pedidoRef, freshPedido, entregue, orderLastUpdatedUs, nowUs } = args;
+
+  // `fulfilled` is `false`/`null`/absent. NOT a downgrade signal: `false` means
+  // the sale was never concretized (ML requires a `reason` and refunds the
+  // payment, driving `status` back to `confirmed`), which is the cancel path
+  // `applyPagoAdvanceOrDowngrade` already owns via `order.status`. A second,
+  // uncoordinated writer of that decision here would be the lost update rule 7
+  // warns about — and it would be one that un-labels a delivery.
+  if (!entregue) return;
+
+  const freshFrete = freshPedido.freteInicial;
+  if (freshFrete == null) return;
+
+  // Idempotence. ML sent THREE deliveries for the live order that motivated this;
+  // the sweep re-drives hours-old payloads and `missed_feeds` replays them again.
+  // One transition, one stock movement.
+  if (freshFrete.estado === ESTADO_FRETE.entregue) return;
+
+  if (ESTADOS_FRETE_TERMINAIS_SEM_ENVIO.has(freshFrete.estado)) {
+    console.warn('[mercado-livre] fulfilled ignorado — frete em estado terminal', {
+      pedidoId: pedidoRef.id,
+      estadoAtual: freshFrete.estado,
+    });
+    return;
+  }
+
+  // The staleness gate, in MICROSECONDS on both sides (`payloadNaoEhAntigo`
+  // coerces the stored one, so a legacy Flutter millisecond value still compares
+  // as the same instant). Shared with the estado promotion and downgrade on
+  // purpose: three directions of one decision about the same clock, which must
+  // not drift apart.
+  if (!payloadNaoEhAntigo(freshPedido.lastMarketplaceUpdate, orderLastUpdatedUs)) return;
+
+  tx.update(
+    pedidoRef,
+    pedidoCollection.parseMerge({
+      // The WHOLE block, re-derived from the tx-fresh read with one field
+      // overridden — the same idiom `applyFreteStep` uses (`freteInicial:
+      // targetFrete`). Never a dotted-path patch: `parseMerge` full-parses what
+      // it is given, and a `'freteInicial.estado'` key would not survive it.
+      freteInicial: {
+        ...freshFrete,
+        estado: ESTADO_FRETE.entregue,
+        // Monotonic, and it must be: this is the watermark the SHIPMENTS-topic
+        // freshness policy compares against, so pulling it backwards would let a
+        // stale shipment payload overwrite the block.
+        ultimaModificacao: avancarWatermark(coerceToMicros(freshFrete.ultimaModificacao), nowUs),
+      },
+      ultimaModificacao: avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs),
+    }) as DocumentData,
+  );
 }
 
 async function applyFreteStep(args: {
@@ -1896,8 +2064,17 @@ export async function importPedidoMercadoLivre(
     getBillingInfo,
   });
 
+  // The ML ORDER clock, µs. Hoisted because BOTH freight branches gate on it now
+  // — one comparison, one unit, computed once.
+  const orderLastUpdatedUs = coerceToMicros(initialOrder.last_updated ?? null);
+
   // ⚠️ The `else if` is the whole point: an order with no Mercado Envios shipment
   // reached this line and did nothing, forever. See `applyFreteSemEnvioStep`.
+  //
+  // ⚠️ It is ALSO the precedence guard for the delivery advance: `fulfilled` is
+  // read only inside the `semEnvio` arm, so it can never override a
+  // shipment-derived `EstadoFrete`. An order carrying a shipment — me2, FULL,
+  // custom — takes the first branch and the shipment stays the authority.
   if (shippingInstance) {
     // No longer returns a pedido — the pago step re-reads everything it needs
     // inside its own transaction, so the trailing `readPedido` is gone.
@@ -1909,13 +2086,19 @@ export async function importPedidoMercadoLivre(
       shippingInstance,
       integracaoId,
       contaBag,
-      orderLastUpdatedUs: coerceToMicros(initialOrder.last_updated ?? null),
+      orderLastUpdatedUs,
       orderStatus: initialOrder.status ?? null,
       nowUs,
       loadShipmentPayments,
     });
   } else if (semEnvio) {
-    await applyFreteSemEnvioStep({ db, pedidoId, nowUs });
+    await applyFreteSemEnvioStep({
+      db,
+      pedidoId,
+      fulfilled: initialOrder.fulfilled ?? null,
+      orderLastUpdatedUs,
+      nowUs,
+    });
   } else {
     // ⚠️ The third case, and the only silent one: no shipment AND no tag. It is
     // the legitimate async-propagation window — but it is ALSO what this whole
