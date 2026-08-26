@@ -587,14 +587,19 @@ describe('attributesForSave', () => {
     expect(out).toEqual([]);
   });
 
-  // ⚠️ THE regression the `herdado` reason exists to prevent, and it fires on a
-  // save the operator did not think touched the brand at all. `BRAND` is
-  // withheld from the grid just like a derived id — note it is absent from
-  // `attrs` here, exactly as the server now returns it — but publish FALLS BACK
-  // to this stored value whenever the produto has no Marca. Pruning it deletes
-  // the brand outright, for most of the catalogue, on the next save of any
-  // unrelated field.
-  it('PRESERVES a herdado stored value while still pruning a derivado one', () => {
+  // ⚠️ THE property the whole `herdado` design rests on, asserted from the
+  // consumer's side. `BRAND` reaches this function in NEITHER array — the server
+  // keeps it out of `atributos` AND out of `omitidos` — so it takes the
+  // preserve-the-unmentioned branch. That value is what publish falls back to
+  // when the produto has no Marca, and for such a produto it is the only copy in
+  // existence; pruning it deletes the brand on the next save of any unrelated
+  // field.
+  //
+  // ⚠️ Note nothing in the module special-cases it, and that is the point: this
+  // holds for EVERY version of this bundle, including one built before `BRAND`
+  // was withheld at all — which is what makes the two apps deployable in either
+  // order.
+  it('PRESERVES a stored BRAND the server withheld from both arrays', () => {
     const out = attributesForSave(
       [attr({ id: 'MODEL' })],
       [{ id: 'MODEL', value_id: null, value_name: 'X', unit_id: null }],
@@ -602,10 +607,8 @@ describe('attributesForSave', () => {
         { id: 'BRAND', value_id: '9999', value_name: 'Acme' },
         { id: 'SELLER_SKU', value_name: 'SKU-1' },
       ],
-      [
-        { id: 'BRAND', motivo: 'herdado' },
-        { id: 'SELLER_SKU', motivo: 'derivado' },
-      ],
+      // Only the DERIVED id is reported; BRAND is reported nowhere.
+      [{ id: 'SELLER_SKU' }],
     );
     // Verbatim, `value_id` and all: an enumerated ML brand carries one, and
     // nothing downstream could reconstruct it from the name.
@@ -613,26 +616,11 @@ describe('attributesForSave', () => {
     expect(out.some((a) => a.id === 'SELLER_SKU')).toBe(false);
   });
 
-  // Prune-by-default is the behaviour that has always held and only `herdado` is
-  // carved out of it — a caller that sends no reason must not opt every withheld
-  // id into preservation, which would resurrect the stale copies #799 removed.
-  it('still prunes a withheld id when no reason is given', () => {
-    const out = attributesForSave(
-      [],
-      [],
-      [{ id: 'SELLER_SKU', value_name: 'SKU-1' }],
-      [{ id: 'SELLER_SKU' }],
-    );
-    expect(out).toEqual([]);
-  });
-
-  it('prunes a withheld id whose reason is anything other than herdado', () => {
-    const out = attributesForSave(
-      [],
-      [],
-      [{ id: 'ESCONDIDO', value_name: 'x' }],
-      [{ id: 'ESCONDIDO', motivo: 'oculto' }],
-    );
+  // The control that stops the assertion above being vacuous: this function CAN
+  // delete BRAND, and does the moment the metadata names it. It is the server's
+  // silence that protects the brand, nothing in here.
+  it('would prune BRAND if the metadata ever did list it as withheld', () => {
+    const out = attributesForSave([], [], [{ id: 'BRAND', value_name: 'Acme' }], [{ id: 'BRAND' }]);
     expect(out).toEqual([]);
   });
 

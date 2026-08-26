@@ -72,6 +72,10 @@ export type MlAttributeScope = 'item' | 'variacao';
  * stale duplicate of something the produto still holds, so `attributesForSave`
  * prunes it — while a `herdado` id's stored copy IS the fallback and must
  * survive. Collapsing the two erases every brand the operators have typed.
+ *
+ * ⚠️ `herdado` is consequently an INTERNAL verdict: it decides that an attribute
+ * is withheld, and then `projectCategoriaAtributos` reports it in neither array.
+ * No client ever receives the string, and none should have to know it.
  */
 export type MlAttributeOmission =
   | 'derivado'
@@ -144,16 +148,10 @@ export function isAttributeRequired(attr: MlCategoryAttribute): boolean {
  * `BRAND` alone rather than overwriting it, so the save must not prune it. See
  * {@link MlAttributeOmission}.
  *
- * ⚠️ **`herdado` INVERTS this repo's usual deploy order: apps/web must ship
- * BEFORE this backend, not after.** The habit here is backend-first, because the
- * new UI reads a DTO field the old backend does not send. This value is the
- * opposite kind of change — it is DESTRUCTIVE to an old client. The moment this
- * function starts returning it, an apps/web bundle without the `herdado`
- * carve-out in `attributesForSave` prunes `BRAND` from `link.attributes` on the
- * next save of ANY unrelated field, deleting the fallback publish reads and
- * leaving every produto with an empty Marca publishing no brand at all. Deployed
- * the other way round the window is harmless: a new apps/web against an old
- * backend simply never sees `herdado` and behaves exactly as before.
+ * ⚠️ `herdado` is the one verdict that never reaches the DTO — `projectCategoriaAtributos`
+ * keeps it out of `omitidos` as well as out of `atributos`, which is what makes
+ * the rollout order irrelevant in both directions. Read that function's note
+ * before changing this one.
  */
 export function attributeOmission(
   attr: MlCategoryAttribute,
@@ -203,6 +201,22 @@ function toDto(attr: MlCategoryAttribute): CategoriaAtributoDto {
  * name. The legacy screen wanted exactly this — it carries a commented-out
  * `getAtributosObrigatorio` (`cadastroProdutoMLNew.dart:862-872`) — and never
  * shipped it, so operators hunted for the field that blocked their publish.
+ *
+ * ⚠️ **A `herdado` id is omitted from BOTH arrays, deliberately.** Every other
+ * withheld id is reported in `omitidos`, which exists so the save knows what it
+ * may prune. `herdado` wants the opposite — withheld from the grid, stored copy
+ * KEPT — and `attributesForSave` already gives exactly that to an id it has
+ * never heard of: its "unknown to this category — preserve verbatim" branch
+ * fires for anything in neither array.
+ *
+ * Saying nothing is therefore stronger than saying `herdado`, because it holds
+ * for EVERY client, including a stale `apps/web` bundle that has never heard the
+ * word. Listing the id and asking the client to special-case it would make this
+ * a value the old client ACTS ON — pruning the very brand publish falls back to —
+ * which turns an ordinary rollout into a destructive one and buys a permanent
+ * cross-workspace invariant for something the prune semantics already give free.
+ * The only cost is that the DTO stops REPORTING why `BRAND` left the grid, which
+ * nothing reads; `ListingForm`'s `MarcaField` explains it on screen instead.
  */
 export function projectCategoriaAtributos(
   attrs: MlCategoryAttribute[],
@@ -213,8 +227,13 @@ export function projectCategoriaAtributos(
 
   for (const attr of attrs) {
     const motivo = attributeOmission(attr, scope);
-    if (motivo) omitidos.push({ id: attr.id, motivo });
-    else atributos.push(toDto(attr));
+    if (!motivo) {
+      atributos.push(toDto(attr));
+      continue;
+    }
+    // ⚠️ A `herdado` id is reported in NEITHER array, and that absence is the
+    // whole mechanism — see this function's doc comment.
+    if (motivo !== 'herdado') omitidos.push({ id: attr.id, motivo });
   }
 
   atributos.sort((a, b) => {

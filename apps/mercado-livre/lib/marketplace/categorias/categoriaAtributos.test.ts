@@ -265,17 +265,32 @@ describe('projectCategoriaAtributos', () => {
     expect(omitidos.map((o) => o.id).sort()).toEqual([...ML_PRODUTO_DERIVED_ATTRIBUTE_IDS].sort());
   });
 
-  // ⚠️ The reason has to REACH apps/web, because that is where the difference
-  // between the two verdicts is spent: `attributesForSave` prunes a `derivado`
-  // id's stored value and must keep a `herdado` one. An omission that arrived
-  // with the wrong `motivo` — or with none — deletes the brand on the next save.
-  it('reports BRAND in omitidos as herdado, so the save knows not to prune it', () => {
+  // ⚠️ THE invariant the herdado design rests on, and it is an ABSENCE: `BRAND`
+  // is reported in NEITHER array. `omitidos` is the list `attributesForSave` is
+  // allowed to prune, so naming BRAND there is what would delete the brand — and
+  // it would do so on ANY apps/web bundle, including one deployed before this
+  // change. Saying nothing instead hands the id to the "unknown to this category
+  // — preserve verbatim" branch, which every version of that function has had.
+  it('reports BRAND in NEITHER atributos NOR omitidos', () => {
     const { atributos, omitidos } = projectCategoriaAtributos(
       [attr({ id: 'BRAND', tags: { required: true } }), attr({ id: 'VISIVEL' })],
       'item',
     );
     expect(atributos.map((a) => a.id)).toEqual(['VISIVEL']);
-    expect(omitidos).toEqual([{ id: 'BRAND', motivo: 'herdado' }]);
+    expect(omitidos).toEqual([]);
+  });
+
+  // The control: every OTHER withheld id must still be reported, or the stale
+  // copies #799 removed come straight back.
+  it('still reports every non-herdado omission', () => {
+    const { omitidos } = projectCategoriaAtributos(
+      [attr({ id: 'BRAND' }), attr({ id: 'SELLER_SKU' }), attr({ id: 'GTIN' })],
+      'item',
+    );
+    expect(omitidos).toEqual([
+      { id: 'SELLER_SKU', motivo: 'derivado' },
+      { id: 'GTIN', motivo: 'bloqueado' },
+    ]);
   });
 });
 

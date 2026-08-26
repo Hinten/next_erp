@@ -88,11 +88,11 @@ describe('GET /api/marketplace/mercado-livre/categorias/atributos', () => {
     expect(body.leaf).toBe(true);
     expect(body.atributos.map((a) => a.id)).toEqual(['MATERIAL', 'MODEL']);
     expect(body.atributos[0]!.required).toBe(true);
-    // ⚠️ `herdado` has to survive the ROUTE, not just the projection: apps/web
-    // reads this `motivo` to decide whether a stored value may be pruned on
-    // save, and for BRAND pruning it deletes the brand.
+    // ⚠️ BRAND appears in NEITHER array over the wire. `omitidos` is the prune
+    // list, so naming it there is what would delete the stored brand — on any
+    // apps/web bundle, old or new. Its absence is the mechanism.
+    expect(body.omitidos.some((o) => o.id === 'BRAND')).toBe(false);
     expect(body.omitidos).toEqual([
-      { id: 'BRAND', motivo: 'herdado' },
       { id: 'SELLER_SKU', motivo: 'derivado' },
       { id: 'ESCONDIDO', motivo: 'oculto' },
       { id: 'SIZE_GRID_ID', motivo: 'tabela-de-medidas' },

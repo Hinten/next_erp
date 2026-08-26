@@ -521,18 +521,6 @@ function normalize(s: string): string {
 }
 
 /**
- * The one omission reason whose already-stored value must SURVIVE a save.
- *
- * ⚠️ A bare string because this app cannot import the enum it mirrors —
- * `MlAttributeOmission` lives in `apps/mercado-livre`, and the browser must
- * never load `@delfrance/integrations-mercado-livre`, whose root carries the
- * OAuth client secret. `MercadoLivreCategoriaAtributos.omitidos` types `motivo`
- * as a plain `string` for exactly that reason. If the server ever renames the
- * reason, the symptom is silent: brands start disappearing on save.
- */
-const OMISSAO_HERDADO = 'herdado';
-
-/**
  * Build the `attributes` array to store, from the rendered metadata, the edited
  * rows and whatever was already on the doc.
  *
@@ -547,14 +535,18 @@ const OMISSAO_HERDADO = 'herdado';
  * established. Blocked ids (`SELLER_SKU`, `PACKAGE_*`…) ARE in the metadata and
  * ARE dropped, deliberately: the server re-derives them from the produto.
  *
- * ⚠️ `herdado` is the ONE omission that must not be pruned, and it is the exact
- * inverse of the paragraph above. A `derivado` id's stored copy is a stale
- * duplicate of a value the produto still holds, so deleting it loses nothing and
- * publish re-derives it. A `herdado` id's stored copy IS the value publish falls
- * back to — `BRAND` today — so pruning it deletes the brand outright, for every
- * produto whose Marca is empty, on the next save of any UNRELATED field. Carve
- * out only this reason: every other one, including any added later, must stay
- * prunable, which is the behaviour that has always held.
+ * ⚠️ That preserve-the-unmentioned branch is also what keeps `BRAND` alive, and
+ * it is load-bearing rather than incidental. `BRAND` is produto-filled and never
+ * rendered, but unlike a derived id its stored copy is the FALLBACK publish
+ * reads when the produto has no Marca — for a produto whose Marca is empty it is
+ * the only copy in existence. The server therefore reports it in NEITHER
+ * `atributos` NOR `omitidos` (`projectCategoriaAtributos`), so it lands here as
+ * an id this category never mentioned and survives untouched. Nothing in this
+ * file special-cases it, deliberately: an id the metadata does not name is
+ * already safe, in every version of this bundle, which is what makes the two
+ * apps deployable in either order. Do NOT "improve" this by having the server
+ * list it and adding a carve-out here — that hands an old bundle a value it
+ * would act on, and it prunes the brand.
  *
  * This is also where a free-text row is finally RESOLVED — trimmed and matched
  * against ML's known values by {@link resolveTypedValue}. The field itself keeps
@@ -567,14 +559,13 @@ export function attributesForSave(
   attrs: MercadoLivreCategoriaAtributo[],
   rows: AttrRow[],
   stored: AttrWire[] | null | undefined,
-  omitidos: Array<{ id: string; motivo?: string }> = [],
+  omitidos: Array<{ id: string }> = [],
 ): AttrWire[] {
   const rowById = new Map(rows.map((r) => [r.id, r]));
   const rendered = new Set(attrs.map((a) => a.id));
   // Only ids the metadata explicitly withheld may be pruned; anything the
-  // metadata never mentioned is not ours to delete — and a `herdado` id is
-  // withheld from the FORM without being ours to delete either.
-  const withheld = new Set(omitidos.filter((o) => o.motivo !== OMISSAO_HERDADO).map((o) => o.id));
+  // metadata never mentioned is not ours to delete.
+  const withheld = new Set(omitidos.map((o) => o.id));
 
   const out: AttrWire[] = [];
 
