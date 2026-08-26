@@ -342,11 +342,21 @@ export const pedidoMeta: CollectionMetadata = {
     // different /pedidos LIST spec each time, while every pedido EDITOR spec
     // passed); at 50 it was 166 passed, 0 failed, 0 flaky.
     //
-    // #1216 broke that coupling: the NF listener is now gated on the row being
-    // on screen and torn down when it scrolls away (`useLatestNfe`), so first-
-    // paint listener count tracks SCREEN HEIGHT, not this number. Raising it
-    // again is safe for that reason and no other — if a future virtual column
-    // re-introduces a per-row listener, this value goes back to 50 with it.
+    // #1216 broke that coupling with an explicit budget: `useLatestNfe` lets at
+    // most `NFE_OPTIMISTIC_BUDGET` (30) rows subscribe before the
+    // IntersectionObserver has reported on them, and rows mount in DOM order,
+    // so the FIRST-PAINT peak is bounded at 30 regardless of this number. Rows
+    // past the budget wait to be observed (they are below the fold, so nothing
+    // visible waits), and any row the observer reports off screen is released.
+    //
+    // ⚠️ "Bounded peak" is the load-bearing property, and it is easy to lose.
+    // An intermediate revision of #1216 subscribed EVERY mounted row
+    // optimistically — that shortens the burst but leaves the peak at exactly
+    // this number, which is the quantity #159 measured. Whatever replaces the
+    // gate must bound the peak, not merely the duration; the
+    // `bounds the FIRST-PAINT peak` case in `useLatestNfe.test.ts` pins it.
+    // If a future virtual column re-introduces an ungated per-row listener,
+    // this value goes back to 50 with it.
     // `limit` is the FIRST page only; "Carregar mais" grows it by the same
     // amount per click.
     limit: 100,

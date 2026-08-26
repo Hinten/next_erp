@@ -105,7 +105,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 import { ClienteCell, FreteCell, ImpCell, NFCell, VlrCell } from './PedidoCells';
-import { __resetLatestNfeMemo } from './useLatestNfe';
+import { NFE_LISTENER_UNSEEN_MS, __resetLatestNfeMemo } from './useLatestNfe';
 
 function wrap(node: React.ReactNode) {
   return render(<MantineTestProvider>{node}</MantineTestProvider>);
@@ -194,14 +194,28 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
     expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
   });
 
-  it('shows a placeholder, NOT the no-NF-e dash, while the row is off screen', () => {
-    // The distinction is load-bearing: an off-screen row has no listener, and
+  it('shows a placeholder, NOT the no-NF-e dash, once the row is released off screen', () => {
+    // The distinction is load-bearing: a released row has no listener, and
     // rendering DASH there would assert the pedido has no nota fiscal.
-    intersecting.current = false;
-    setSnap({ data: undefined, loading: false });
-    const { container } = wrap(<NFCell pedidoId="p1" />);
-    expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
-    expect(screen.queryByText('—')).toBeNull();
+    //
+    // ⚠️ Reaching `status: 'idle'` requires ADVANCING PAST the teardown delay.
+    // The gate is one-directional, so merely reporting `isIntersecting: false`
+    // leaves `active` true and the cell in the ordinary loading branch — an
+    // earlier version of this test asserted the same Skeleton either way and
+    // was green with the gate neutralised.
+    vi.useFakeTimers();
+    try {
+      intersecting.current = false;
+      setSnap({ data: undefined, loading: false });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      act(() => {
+        vi.advanceTimersByTime(NFE_LISTENER_UNSEEN_MS);
+      });
+      expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
+      expect(screen.queryByText('—')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders DASH when no NFe doc exists', () => {

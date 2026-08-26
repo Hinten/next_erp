@@ -87,8 +87,66 @@ export const NFE_LISTENER_IDLE_MS = 15_000;
  */
 export const NFE_LISTENER_UNSEEN_MS = 1_000;
 
+/**
+ * How many rows may subscribe optimistically — i.e. before the observer has
+ * said anything about them — at any one time.
+ *
+ * ⚠️ This is what actually bounds the FIRST-PAINT peak, and it is the whole
+ * point of the gate. Subscribing every mounted row optimistically (which an
+ * earlier revision did) leaves peak concurrent listeners at exactly `limit`,
+ * unchanged from before #1216 — only the burst's *duration* shrinks. But #159
+ * measured a first-paint LATENCY effect, so shortening the burst is not the
+ * same as fixing it.
+ *
+ * Rows mount in DOM order, so the budget is claimed by the top of the table —
+ * the rows actually on screen, which are exactly the ones that must not wait
+ * for an intersection callback. Everything past the budget starts inactive and
+ * waits to be observed, which costs nothing visible because it is below the
+ * fold. A slot is released as soon as its row is observed (the guess is
+ * resolved) or unmounts, so scrolling keeps refilling it.
+ *
+ * Sized above a full viewport of rows (~15-20 on a laptop) with headroom.
+ */
+export const NFE_OPTIMISTIC_BUDGET = 30;
+
 /** Upper bound on the {@link recallLatestNfe} memo, evicted oldest-first. */
 export const NFE_MEMO_MAX = 400;
+
+/**
+ * The only fields the badge and its HoverCard read. The memo stores THIS, never
+ * the whole document: `nfeSchema` carries `infNFe`, `xml_nfe_proc`,
+ * `xml_epec_proc` and `xml_assinado`, and a `procNFe` runs to tens of KB — so
+ * remembering 400 full docs would pin double-digit MB of XML the badge never
+ * looks at, for the lifetime of the tab.
+ */
+export type NfeBadge = Pick<
+  NotaFiscalEletronica,
+  'estado' | 'tpEmis' | 'cStat' | 'xMotivo' | 'numeracao' | 'chave' | 'error'
+>;
+
+function toBadge(doc: NotaFiscalEletronica): NfeBadge {
+  return {
+    estado: doc.estado,
+    tpEmis: doc.tpEmis,
+    cStat: doc.cStat,
+    xMotivo: doc.xMotivo,
+    numeracao: doc.numeracao,
+    chave: doc.chave,
+    error: doc.error,
+  };
+}
+
+let optimisticInFlight = 0;
+
+function claimOptimisticSlot(): boolean {
+  if (optimisticInFlight >= NFE_OPTIMISTIC_BUDGET) return false;
+  optimisticInFlight += 1;
+  return true;
+}
+
+function releaseOptimisticSlot(): void {
+  if (optimisticInFlight > 0) optimisticInFlight -= 1;
+}
 
 export type LatestNfeStatus = 'idle' | 'loading' | 'ready';
 
@@ -101,13 +159,25 @@ export interface LatestNfeState {
    * would claim a pedido has no nota fiscal.
    */
   readonly status: LatestNfeStatus;
-  readonly latest: NotaFiscalEletronica | undefined;
+  /** Everything the badge + HoverCard fields need. May come from the memo. */
+  readonly badge: NfeBadge | undefined;
+  /**
+   * The full document, and ONLY when it came from a live snapshot. `undefined`
+   * for a memo-backed render.
+   *
+   * ⚠️ Gate every action on this, not on {@link badge}. `downloadNfeXml` reads
+   * the XML straight out of the object it is handed, so serving a remembered
+   * one would hand the operator a stale `procNFe` — and `xml_assinado` is
+   * nulled by the same write that persists `xml_nfe_proc`, so a remembered copy
+   * can disagree with SEFAZ about which XML even exists.
+   */
+  readonly doc: NotaFiscalEletronica | undefined;
   /** The nfev4 doc id — the `[nfeId]` segment for the DANFE / CC-e routes. */
   readonly latestId: string | undefined;
 }
 
 interface NfeMemoEntry {
-  readonly data: NotaFiscalEletronica | undefined;
+  readonly badge: NfeBadge | undefined;
   readonly id: string | undefined;
 }
 
@@ -154,10 +224,11 @@ export function recallLatestNfe(uid: string | null, pedidoId: string): NfeMemoEn
   return latestNfeMemo.get(pedidoId);
 }
 
-/** Test seam — the memo is module state, so it outlives a `cleanup()`. */
+/** Test seam — module state outlives a `cleanup()`, so tests must reset it. */
 export function __resetLatestNfeMemo(): void {
   latestNfeMemo.clear();
   memoOwner = null;
+  optimisticInFlight = 0;
 }
 
 export function useLatestNfe(pedidoId: string): LatestNfeState {
@@ -181,8 +252,29 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
   // an intersection callback. Re-entering cancels a pending teardown (the
   // effect cleanup clears the timer), so a row flickering across the fold keeps
   // one continuous subscription.
-  const [active, setActive] = useState(true);
+  // Claimed once, at mount, in DOM order — so the top of the table gets the
+  // optimistic slots and the tail below the fold waits to be observed.
+  const [optimistic] = useState(claimOptimisticSlot);
+  const [active, setActive] = useState(optimistic);
   const seenVisible = useRef(false);
+
+  // Hand the slot back the moment the guess is resolved (the observer has
+  // spoken) or the row goes away, so scrolling keeps refilling the budget.
+  const slotHeld = useRef(optimistic);
+  useEffect(() => {
+    if (!slotHeld.current) return;
+    if (observed) {
+      slotHeld.current = false;
+      releaseOptimisticSlot();
+      return;
+    }
+    return () => {
+      if (!slotHeld.current) return;
+      slotHeld.current = false;
+      releaseOptimisticSlot();
+    };
+  }, [observed]);
+
   useEffect(() => {
     if (inView) {
       seenVisible.current = true;
@@ -225,23 +317,44 @@ export function useLatestNfe(pedidoId: string): LatestNfeState {
     // dash. Rendering it below is fine (it is corrected within the same
     // listener); persisting it is not.
     if (!settled || fromCache !== false) return;
-    rememberLatestNfe(uid, pedidoId, { data: data?.[0]?.data, id: data?.[0]?.id });
+    const row = data?.[0];
+    // Only the badge projection — never the document, which carries the XML.
+    rememberLatestNfe(uid, pedidoId, {
+      badge: row ? toBadge(row.data) : undefined,
+      id: row?.id,
+    });
   }, [settled, fromCache, data, pedidoId, uid]);
 
   if (settled) {
-    return { ref, status: 'ready', latest: data?.[0]?.data, latestId: data?.[0]?.id };
+    const row = data?.[0];
+    return {
+      ref,
+      status: 'ready',
+      badge: row ? toBadge(row.data) : undefined,
+      doc: row?.data,
+      latestId: row?.id,
+    };
   }
   // Subscribing (or torn down) with a remembered value: repaint it rather than
   // flashing a Skeleton. Deliberately preferred over `loading` — the value is
   // exactly as stale as what the operator was already looking at.
   const remembered = recallLatestNfe(uid, pedidoId);
   if (remembered) {
-    return { ref, status: 'ready', latest: remembered.data, latestId: remembered.id };
+    // `doc` stays undefined on purpose — a remembered badge may be rendered,
+    // but nothing may be DOWNLOADED or emitted from it.
+    return {
+      ref,
+      status: 'ready',
+      badge: remembered.badge,
+      doc: undefined,
+      latestId: remembered.id,
+    };
   }
   return {
     ref,
     status: query !== null ? 'loading' : 'idle',
-    latest: undefined,
+    badge: undefined,
+    doc: undefined,
     latestId: undefined,
   };
 }

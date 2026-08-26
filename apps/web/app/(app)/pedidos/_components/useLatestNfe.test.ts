@@ -8,6 +8,7 @@ import {
   NFE_LISTENER_IDLE_MS,
   NFE_LISTENER_UNSEEN_MS,
   NFE_MEMO_MAX,
+  NFE_OPTIMISTIC_BUDGET,
   __resetLatestNfeMemo,
   useLatestNfe,
 } from './useLatestNfe';
@@ -147,6 +148,26 @@ describe('useLatestNfe', () => {
     expect(lastQuery()).toBeNull();
   });
 
+  it('bounds the FIRST-PAINT peak, not just the burst duration', () => {
+    // #159 measured a first-paint LATENCY effect, so shortening the burst is
+    // not the same as fixing it. Mount a full page's worth of rows with the
+    // observer silent (exactly first paint) and count live subscriptions.
+    const hooks = Array.from({ length: NFE_OPTIMISTIC_BUDGET + 40 }, (_, i) =>
+      renderHook(() => useLatestNfe(`p${i}`)),
+    );
+    const live = hooks.filter((h) => h.result.current.status !== 'idle').length;
+
+    expect(live).toBe(NFE_OPTIMISTIC_BUDGET);
+    expect(live).toBeLessThan(hooks.length);
+
+    // Slots are handed back when a row goes away, so scrolling — which unmounts
+    // rows behind it — keeps refilling the budget rather than exhausting it
+    // once and starving every later row.
+    hooks.forEach((h) => h.unmount());
+    const afterScroll = renderHook(() => useLatestNfe('fresh'));
+    expect(afterScroll.result.current.status).not.toBe('idle');
+  });
+
   it('keeps a row the observer reports visible subscribed indefinitely', () => {
     intersecting.current = true;
     const { rerender } = renderHook(() => useLatestNfe('p1'));
@@ -172,7 +193,7 @@ describe('useLatestNfe', () => {
     act(() => rerender());
 
     expect(result.current.status).toBe('ready');
-    expect(result.current.latest?.estado).toBe(ESTADO_NFE.aprovada);
+    expect(result.current.badge?.estado).toBe(ESTADO_NFE.aprovada);
     expect(result.current.latestId).toBe('nfe-1');
   });
 
@@ -252,8 +273,12 @@ describe('useLatestNfe', () => {
 
     expect(lastQuery()).toBeNull();
     expect(result.current.status).toBe('ready');
-    expect(result.current.latest?.estado).toBe(ESTADO_NFE.aprovada);
+    expect(result.current.badge?.estado).toBe(ESTADO_NFE.aprovada);
     expect(result.current.latestId).toBe('nfe-1');
+    // ⚠️ The badge repaints, the DOCUMENT does not. `downloadNfeXml` reads the
+    // XML out of whatever object it is handed, so a remembered render must
+    // expose none — otherwise a scrolled-back row serves a stale `procNFe`.
+    expect(result.current.doc).toBeUndefined();
   });
 
   it('remembers "this pedido has no NF-e" distinctly from "never looked"', () => {
@@ -262,7 +287,7 @@ describe('useLatestNfe', () => {
     snapState.current = { data: [], loading: false, error: undefined, fromCache: false };
     act(() => first.rerender());
     expect(first.result.current.status).toBe('ready');
-    expect(first.result.current.latest).toBeUndefined();
+    expect(first.result.current.badge).toBeUndefined();
     first.unmount();
 
     intersecting.current = false;
@@ -271,7 +296,7 @@ describe('useLatestNfe', () => {
     // The pedido that WAS looked at reports a settled "no NF-e"...
     const seen = renderHook(() => useLatestNfe('p1'));
     expect(seen.result.current.status).toBe('ready');
-    expect(seen.result.current.latest).toBeUndefined();
+    expect(seen.result.current.badge).toBeUndefined();
 
     // ...while an unrelated pedido stays `idle`, so its cell renders a
     // placeholder rather than claiming it has no nota fiscal.
@@ -292,7 +317,7 @@ describe('useLatestNfe', () => {
       fromCache: false,
     };
     act(() => a.rerender());
-    expect(a.result.current.latest?.estado).toBe(ESTADO_NFE.aprovada);
+    expect(a.result.current.badge?.estado).toBe(ESTADO_NFE.aprovada);
     a.unmount();
 
     // User B signs in on the same tab and the row is off screen (no listener).
@@ -302,7 +327,7 @@ describe('useLatestNfe', () => {
 
     const b = renderHook(() => useLatestNfe('p1'));
     expect(b.result.current.status).not.toBe('ready');
-    expect(b.result.current.latest).toBeUndefined();
+    expect(b.result.current.badge).toBeUndefined();
   });
 
   it('does not remember an empty CACHED snapshot as “no NF-e”', () => {

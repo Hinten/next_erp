@@ -97,7 +97,7 @@ const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
 };
 
 export function NFCell({ pedidoId }: { pedidoId: string }) {
-  const { ref, status, latest, latestId } = useLatestNfe(pedidoId);
+  const { ref, status, badge: latest, doc, latestId } = useLatestNfe(pedidoId);
   const router = useRouter();
 
   // EVERY branch renders through this wrapper. The IntersectionObserver needs a
@@ -127,7 +127,13 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   // The XML download reads straight from the nfev4 doc (no HTTP round-trip),
   // so it's available whenever any XML has been persisted — authorized,
   // EPEC, or the signed pre-transmission anchor.
-  const hasXml = selectNfeXml(latest) != null;
+  //
+  // ⚠️ `doc` is the LIVE document and is undefined for a memo-backed render
+  // (`useLatestNfe`). Every action below hangs off it rather than off the badge:
+  // handing the operator a remembered `procNFe` would serve a stale fiscal
+  // document, and `xml_assinado` is nulled by the same write that persists
+  // `xml_nfe_proc`, so a remembered copy can disagree about which XML exists.
+  const hasXml = doc != null && selectNfeXml(doc) != null;
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
   // tpEmis === 1 is the normal (SEFAZ síncrono) path. Anything else
@@ -220,7 +226,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
             </Group>
           )}
 
-          {latestId && (canPrintDanfe || hasXml) && (
+          {doc != null && latestId && (canPrintDanfe || hasXml) && (
             <Group gap="xs" mt="xs">
               {canPrintDanfe && <DanfeMenu pedidoId={pedidoId} nfeId={latestId} />}
               {hasXml && (
@@ -233,7 +239,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
                     // Stop the row's navigate-onClick; download the XML
                     // straight from the doc already in hand.
                     e.stopPropagation();
-                    downloadNfeXml(latest);
+                    downloadNfeXml(doc);
                   }}
                 >
                   Baixar XML
