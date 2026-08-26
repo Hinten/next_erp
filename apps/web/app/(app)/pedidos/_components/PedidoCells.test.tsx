@@ -8,7 +8,11 @@ import type { NotaFiscalEletronica, Pedido } from '@delfrance/schemas';
 // Hoisted, mutable state objects so each test can swap the value the mocked
 // hooks return before re-rendering. Mirrors the pattern in
 // `packages/ui/src/table/TableView.test.tsx`.
-const { snapState, queryState, dereferenceMock } = vi.hoisted(() => ({
+const { intersecting, snapState, queryState, dereferenceMock } = vi.hoisted(() => ({
+  // NFCell's listener is gated on the row being on screen (#1216). These tests
+  // are about what the cell RENDERS, so the row is on screen by default; the
+  // gate itself is proved in `useLatestNfe.test.ts`.
+  intersecting: { current: true },
   snapState: {
     current: {
       data: undefined,
@@ -58,6 +62,20 @@ vi.mock('@delfrance/data', async () => {
   };
 });
 
+vi.mock('@mantine/hooks', async () => {
+  const actual = await vi.importActual<typeof import('@mantine/hooks')>('@mantine/hooks');
+  return {
+    ...actual,
+    // jsdom cannot drive a real IntersectionObserver, so stand in for the
+    // observed state. `vitest.setup.ts` shims the constructor for everything
+    // else that touches it.
+    useIntersection: () => ({
+      ref: () => {},
+      entry: { isIntersecting: intersecting.current } as unknown as IntersectionObserverEntry,
+    }),
+  };
+});
+
 vi.mock('@delfrance/data/hooks', async () => {
   const actual =
     await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
@@ -84,6 +102,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 import { ClienteCell, FreteCell, ImpCell, NFCell, VlrCell } from './PedidoCells';
+import { __resetLatestNfeMemo } from './useLatestNfe';
 
 function wrap(node: React.ReactNode) {
   return render(<MantineTestProvider>{node}</MantineTestProvider>);
@@ -136,6 +155,14 @@ function setSnap(state: Partial<SnapshotState<SnapshotRow<NotaFiscalEletronica>[
 }
 
 describe('NFCell — Firestore snapshot-driven cell', () => {
+  beforeEach(() => {
+    intersecting.current = true;
+    // The memo is module state keyed by pedidoId, so it survives `cleanup()`
+    // and would otherwise leak one test's badge into the next (every case here
+    // uses "p1").
+    __resetLatestNfeMemo();
+  });
+
   afterEach(() => {
     setSnap({ data: undefined, loading: true });
   });
@@ -144,6 +171,16 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
     setSnap({ loading: true });
     const { container } = wrap(<NFCell pedidoId="p1" />);
     expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
+  });
+
+  it('shows a placeholder, NOT the no-NF-e dash, while the row is off screen', () => {
+    // The distinction is load-bearing: an off-screen row has no listener, and
+    // rendering DASH there would assert the pedido has no nota fiscal.
+    intersecting.current = false;
+    setSnap({ data: undefined, loading: false });
+    const { container } = wrap(<NFCell pedidoId="p1" />);
+    expect(container.querySelector('[class*="Skeleton"]')).toBeTruthy();
+    expect(screen.queryByText('—')).toBeNull();
   });
 
   it('renders DASH when no NFe doc exists', () => {

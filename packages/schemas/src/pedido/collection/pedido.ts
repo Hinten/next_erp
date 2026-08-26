@@ -329,24 +329,27 @@ export const pedidoMeta: CollectionMetadata = {
     // regardless of date. (The often-repeated "'99' sorts above '100'" story is
     // NOT the defect: both apps zero-pad to a fixed width.)
     orderBy: [{ field: 'timestamp', direction: 'desc' }],
-    // 50, NOT legacy's 100 — measured, not assumed (#159).
+    // 100, matching legacy, which deliberately overrode this one screen to
+    // `itensPerPage: 100` (`cacheExtent: 700`,
+    // `.old/lib/pedido/pages/pedidoTableView.dart:2187`).
     //
-    // Legacy deliberately overrode this one screen to `itensPerPage: 100`
-    // (`cacheExtent: 700`, `.old/lib/pedido/pages/pedidoTableView.dart:2187`),
-    // and 100 was the intended parity target here. It does not survive contact
-    // with this app's NF column: `PedidoCells.NFCell` opens a REALTIME
-    // `onSnapshot` listener PER ROW on that pedido's `nfev4` subcollection, so
-    // the page size is also the concurrent-listener count on first paint of the
-    // heaviest screen — 100 rows meant 100 live listeners.
+    // ⚠️ This sat at 50 between #159 and #1216, and the reason is worth keeping:
+    // `PedidoCells.NFCell` opens a REALTIME `onSnapshot` on that pedido's
+    // `nfev4` subcollection, so the page size WAS also the concurrent-listener
+    // count on first paint of the heaviest screen — 100 rows meant 100 live
+    // listeners. The vendas e2e lane measured it across four runs: at 100 it
+    // never produced a clean run (3 failed/2 flaky, then 1/1, then 1/1 — a
+    // different /pedidos LIST spec each time, while every pedido EDITOR spec
+    // passed); at 50 it was 166 passed, 0 failed, 0 flaky.
     //
-    // The vendas e2e lane measured it across four runs: at 100 it never
-    // produced a clean run (3 failed/2 flaky, then 1/1, then 1/1 — a different
-    // /pedidos LIST spec each time, while every pedido EDITOR spec passed); at
-    // 50 it was 166 passed, 0 failed, 0 flaky. Raising this without first
-    // making the NF column cheap just buys back the flakiness — #1216 carries
-    // that work and restoring 100 is its acceptance test. `limit` is the FIRST page only; "Carregar mais" grows it
-    // by the same amount per click.
-    limit: 50,
+    // #1216 broke that coupling: the NF listener is now gated on the row being
+    // on screen and torn down when it scrolls away (`useLatestNfe`), so first-
+    // paint listener count tracks SCREEN HEIGHT, not this number. Raising it
+    // again is safe for that reason and no other — if a future virtual column
+    // re-introduces a per-row listener, this value goes back to 50 with it.
+    // `limit` is the FIRST page only; "Carregar mais" grows it by the same
+    // amount per click.
+    limit: 100,
     // Same nine columns legacy showed (`pedidoTableView.dart:2221-2256`).
     // Every virtual column declares `dependsOn`, so the Pipelines projection
     // stays on for this heavy collection — see `CollectionDefaultQuery.columns`.

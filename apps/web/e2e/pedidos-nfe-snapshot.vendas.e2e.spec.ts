@@ -5,14 +5,20 @@ import { applyTextFilter, expectRowVisible } from './helpers/table-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
- * End-to-end coverage for the `NFCell` snapshot-listener-per-row design:
- * seed a pedido with one NFe at `estado='0'` (gerado), open `/pedidos`,
- * mutate the NFe estado via the Admin SDK, and assert the cell's badge
- * updates without a page reload — proving `onSnapshot` propagates SEFAZ
- * state changes straight into the rendered cell. This is the only e2e
- * shape that can prove the live-listener guarantee end-to-end (a unit
- * test can only prove the React render path; only Firestore can prove
- * the listener wiring round-trips).
+ * End-to-end coverage for the `NFCell` live-badge guarantee: seed a pedido
+ * with one NFe at `estado='0'` (gerado), open `/pedidos`, mutate the NFe
+ * estado via the Admin SDK, and assert the cell's badge updates without a
+ * page reload — proving `onSnapshot` propagates SEFAZ state changes straight
+ * into the rendered cell. This is the only e2e shape that can prove the
+ * live-listener guarantee end-to-end (a unit test can only prove the React
+ * render path; only Firestore can prove the listener wiring round-trips).
+ *
+ * The listener is gated on the row being on screen (#1216, `useLatestNfe`).
+ * The filter below is what keeps this spec honest about that: it narrows the
+ * list to this one pedido, so the row sits at the top of the table and well
+ * inside the observer's margin. Do NOT drop the filter to "simplify" — an
+ * assertion against a row buried under a full page of pedidos would be
+ * asserting the gate, not the listener.
  */
 test.describe.serial('Pedidos NF cell — live snapshot updates', () => {
   const prefix = e2ePrefix('nfe');
