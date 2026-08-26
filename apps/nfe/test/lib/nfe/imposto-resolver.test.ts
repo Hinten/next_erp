@@ -530,6 +530,40 @@ describe('resolveItemImposto — verbatim legacy Flutter wire (#423)', () => {
     expect(out?.configuracaoICMS?.csosn).toBe('102'); // exact legacy scope wins
   });
 
+  it("folds a legacy categoria's UPPERCASE CFOP into the resolved imposto's cfop (#467)", async () => {
+    const legacyCategoria: ImpostoCategoria = {
+      id: 'cat-legacy',
+      impostoCategoriaOperacaoOuterRef: null,
+      dataCadastro: null,
+      CFOP: '5405',
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
+      readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([legacyCategoria]),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+    expect(out?.cfop).toBe('5405'); // CFOP (legacy key) survived into the engine blob
+  });
+
+  it('a lowercase cfop wins over the legacy CFOP on impostoCategoria when both are present', async () => {
+    const mixedCategoria: ImpostoCategoria = {
+      id: 'cat-mixed',
+      impostoCategoriaOperacaoOuterRef: null,
+      dataCadastro: null,
+      cfop: '5102',
+      CFOP: '5405',
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
+      readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([mixedCategoria]),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.cfop).toBe('5102');
+  });
+
   it("folds a legacy regra's UPPERCASE CFOP into the resolved imposto's cfop", async () => {
     const legacyRegra: RegraImposto = {
       id: 'leg-r1',
