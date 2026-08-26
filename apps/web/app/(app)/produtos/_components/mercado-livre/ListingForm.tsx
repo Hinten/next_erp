@@ -25,9 +25,12 @@ import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
 import {
   dimensoesDoPacote,
+  marcaArmazenadaDe,
   medidasFaltandoParaAnuncio,
   resolveCondicaoAnuncio,
+  resolveMarcaAnuncio,
   type FonteCondicaoAnuncio,
+  type FonteMarcaAnuncio,
   type MedidasDoPacote,
   type ProdutoMercadoLivreLink,
 } from '@delfrance/schemas';
@@ -107,6 +110,14 @@ export interface ListingFormProps {
    * warning on every open.
    */
   produtoMedidas: MedidasDoPacote | null;
+  /**
+   * `extraData.marca`, which publish turns into the listing's `BRAND` — see
+   * `MarcaField`.
+   *
+   * ⚠️ `null` means the extraData singleton has not landed; `''` means it did
+   * and Marca is blank. Only the second raises a warning.
+   */
+  produtoMarca: string | null;
   link: ProdutoMercadoLivreLink;
   db: Firestore;
   canWrite: boolean;
@@ -282,6 +293,85 @@ function DimensoesPesoField({ medidas }: { medidas: MedidasDoPacote | null }) {
   );
 }
 
+/** Where the shown brand came from — the caption names it. */
+const FONTE_MARCA_LABEL: Record<FonteMarcaAnuncio, string> = {
+  extraData: 'Definido pelo campo "Marca" na aba Dados extras do produto.',
+  anuncio:
+    'Valor guardado neste anúncio. Preencha "Marca" na aba Dados extras do produto para que ela passe a valer para todos os anúncios deste produto.',
+};
+
+/**
+ * Marca, read-only, derived exactly the way publish derives it.
+ *
+ * It stopped being an input in the category grid for the reason `CondicaoField`
+ * gives: it was a second place to say something the produto already says, and
+ * the two could disagree. A brand is a fact about the product, not about one of
+ * its listings.
+ *
+ * ⚠️ It must run `resolveMarcaAnuncio`, not read either input directly — the
+ * display↔payload trap `CondicaoField` and `DimensoesPesoField` both document.
+ *
+ * ⚠️ Unlike those two, this one has a SECOND tier, and it is why `BRAND` is
+ * `herdado` rather than `derivado`: the value already stored on this listing is
+ * kept whenever the produto has no Marca. Publish leaves that stored entry
+ * untouched and `attributesForSave` refuses to prune it, so nothing an operator
+ * typed before this field existed is lost. The caption says which one is
+ * winning, because "Marca do produto" and "marca deste anúncio" behave
+ * differently on the next publish.
+ *
+ * ⚠️ `marca: null` means the extraData singleton has not landed, NOT that Marca
+ * is empty — `''` is the empty one. Collapsing them flashes "Falta preencher" on
+ * every open, the bug `DimensoesPesoField`'s `medidas: null` guard exists for.
+ */
+function MarcaField({
+  marca,
+  atributos,
+}: {
+  marca: string | null;
+  atributos: ProdutoMercadoLivreLink['attributes'];
+}) {
+  const armazenada = marcaArmazenadaDe(atributos);
+  const {
+    marca: resolvida,
+    fonte,
+    naoSeAplica,
+  } = resolveMarcaAnuncio({
+    marca,
+    marcaAnuncio: armazenada.marca,
+    anuncioNaoSeAplica: armazenada.naoSeAplica,
+  });
+  // ⚠️ An N/A listing is ANSWERED, not empty, so it must not be nagged. Without
+  // this arm the sentinel reads as a blank and raises a warning at an operator
+  // who already said the product has no brand.
+  const faltando = marca !== null && resolvida == null && !naoSeAplica;
+  const legenda = faltando
+    ? // Naming the consequence, not just the gap. Mercado Livre marks BRAND
+      // `required` in most categories and refuses the publish without it.
+      'Preencha na aba Dados extras do produto. A maioria das categorias do Mercado Livre exige a marca e recusa o anúncio sem ela.'
+    : (fonte && FONTE_MARCA_LABEL[fonte]) || null;
+
+  return (
+    <ListingField label="Marca">
+      <Stack gap={2}>
+        {/* ⚠️ Never `resolvida` for the sentinel: its stored `value_name` is the
+            literal string "N/A", which would render as a brand named N/A right
+            beside the real empty marker, "—". */}
+        <Text size="sm">{naoSeAplica ? 'Não se aplica' : (resolvida ?? EMPTY_VALUE)}</Text>
+        {faltando && (
+          <Text size="sm" c="orange.7">
+            Falta preencher: Marca
+          </Text>
+        )}
+        {legenda != null && (
+          <Text size="xs" c="dimmed">
+            {legenda}
+          </Text>
+        )}
+      </Stack>
+    </ListingField>
+  );
+}
+
 /**
  * The editable half of a listing.
  *
@@ -310,6 +400,7 @@ export function ListingForm({
   produtoEhUsado,
   produtoCondicao,
   produtoMedidas,
+  produtoMarca,
   link,
   db,
   canWrite,
@@ -864,6 +955,10 @@ export function ListingForm({
               category grid therefore never offers them as inputs. Read-only text
               rather than a labelled control — see `ListingField`. */}
           <DimensoesPesoField medidas={produtoMedidas} />
+          {/* ⚠️ Also a ListingField, not a labelled control, and for the
+              same e2e reason as Condição above: the published-card assertion
+              counts labelled elements, so a real input here would break it. */}
+          <MarcaField marca={produtoMarca} atributos={link.attributes} />
           <Controller
             control={form.control}
             name="category_id"

@@ -49,6 +49,12 @@ const MEDIDAS = {
   pesoLiquidoKg: 0.9,
 };
 
+/** A produto with a Marca — the default, for the same reason as MEDIDAS: a
+ * test that does not care about the brand block never has to think about it.
+ * ⚠️ It must not be `''`, which would raise "Falta preencher: Marca" and
+ * break the two `queryByText(/Falta preencher/)` assertions above. */
+const MARCA = 'Hering';
+
 function renderForm(
   over: Partial<ProdutoMercadoLivreLink> = {},
   props: Record<string, unknown> = {},
@@ -72,6 +78,7 @@ function renderForm(
       produtoEhUsado={false}
       produtoCondicao={null}
       produtoMedidas={MEDIDAS}
+      produtoMarca={MARCA}
       link={l}
       db={{} as Firestore}
       canWrite
@@ -551,8 +558,13 @@ describe('Condição comes from the produto', () => {
   it('names Dados extras when that is the field that decided', () => {
     // Pointing at "Produto usado" would send the operator to a switch that is
     // already off and cannot explain what they see.
+    //
+    // ⚠️ Matches the FIELD NAME, not just the tab. A bare /Dados extras/ became
+    // ambiguous the moment Marca started pointing at the same tab — two matches,
+    // and `getByText` throws on that. The caption's job is to name which field
+    // decided, so that is what this asserts.
     renderForm({ id: null }, { produtoEhUsado: false, produtoCondicao: 2 });
-    expect(screen.getByText(/Dados extras/)).toBeDefined();
+    expect(screen.getByText(/campo "Condição" na aba Dados extras/)).toBeDefined();
   });
 
   it('leaves novo to the next tier rather than deciding', () => {
@@ -894,5 +906,71 @@ describe('Preencher com dados de teste', () => {
     await waitFor(() => {
       expect(screen.queryByText('Dados de teste preenchidos')).toBeNull();
     });
+  });
+});
+
+describe('Marca comes from the produto', () => {
+  it('renders the produto Marca read-only, naming where it came from', () => {
+    // `BRAND` used to be typed here, per listing, while the produto already had
+    // a Marca two tabs away — two copies of one fact, and the produto's was the
+    // one being ignored.
+    renderForm();
+    expect(screen.getByText('Hering')).toBeDefined();
+    expect(screen.getByText(/campo "Marca" na aba Dados extras/)).toBeDefined();
+  });
+
+  it('beats a brand already stored on the listing', () => {
+    renderForm({ attributes: [{ id: 'BRAND', value_name: 'Acme' }] });
+    expect(screen.getByText('Hering')).toBeDefined();
+    expect(screen.queryByText('Acme')).toBeNull();
+  });
+
+  // ⚠️ The tier that makes `BRAND` `herdado` rather than `derivado`. Operators
+  // typed brands into the grid for this app's whole history, and `BRAND` is
+  // required in most ML categories — so showing nothing here (and publishing
+  // nothing) for a produto with no Marca would break the existing catalogue.
+  it('falls back to the brand stored on the listing, and says so', () => {
+    renderForm({ attributes: [{ id: 'BRAND', value_name: 'Acme' }] }, { produtoMarca: '' });
+    expect(screen.getByText('Acme')).toBeDefined();
+    expect(screen.getByText(/Valor guardado neste anúncio/)).toBeDefined();
+    expect(screen.queryByText('Falta preencher: Marca')).toBeNull();
+  });
+
+  it('names the gap when neither the produto nor the listing has a brand', () => {
+    renderForm({ attributes: [] }, { produtoMarca: '' });
+    expect(screen.getByText('Falta preencher: Marca')).toBeDefined();
+    expect(screen.getByText(/exige a marca/)).toBeDefined();
+  });
+
+  it('reads a whitespace-only Marca as empty rather than as a value', () => {
+    renderForm({ attributes: [] }, { produtoMarca: '   ' });
+    expect(screen.getByText('Falta preencher: Marca')).toBeDefined();
+  });
+
+  // ⚠️ `null` is "the extraData singleton has not landed", NOT "Marca is empty"
+  // — `''` is the empty one. extraData resolves AFTER the first render here, so
+  // collapsing the two flashes this warning on every open.
+  it('stays quiet while the extraData singleton is still loading', () => {
+    renderForm({ attributes: [] }, { produtoMarca: null });
+    expect(screen.queryByText('Falta preencher: Marca')).toBeNull();
+  });
+
+  // ⚠️ The N/A sentinel is an ANSWER, not a blank: the operator declared the
+  // product has no brand. Read as a blank it nags them; read as a value it
+  // prints a brand literally named "N/A" beside the real empty marker, "—".
+  it('shows an N/A listing as "Não se aplica" and does not nag', () => {
+    renderForm(
+      { attributes: [{ id: 'BRAND', value_id: '-1', value_name: 'N/A' }] },
+      { produtoMarca: '' },
+    );
+    expect(screen.getByText('Não se aplica')).toBeDefined();
+    expect(screen.queryByText('N/A')).toBeNull();
+    expect(screen.queryByText('Falta preencher: Marca')).toBeNull();
+  });
+
+  it("lets the produto's Marca outrank an N/A left on the listing", () => {
+    renderForm({ attributes: [{ id: 'BRAND', value_id: '-1', value_name: 'N/A' }] });
+    expect(screen.getByText('Hering')).toBeDefined();
+    expect(screen.queryByText('Não se aplica')).toBeNull();
   });
 });

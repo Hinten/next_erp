@@ -49,9 +49,15 @@ runConfig:
 # variables, or via Cloud Secret Manager for secrets; required unless marked
 # OPTIONAL):
 #   FIREBASE_PROJECT_ID          OPTIONAL — auto-detected on App Hosting/Cloud Run
-#                                (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
+#                                (via FIREBASE_CONFIG.projectId; Cloud Run sets no project env var); set only to
 #                                override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID         Firestore database id (default: "default")
+#   FIREBASE_STORAGE_BUCKET      OPTIONAL — bucket for the product-photo import. The
+#                                backend reads FIREBASE_CONFIG.storageBucket (which
+#                                App Hosting injects, and which carries the project's
+#                                REAL default — <projectId>.firebasestorage.app for a
+#                                project created after late 2024), so set this only to
+#                                OVERRIDE. Last resort: <projectId>.appspot.com.
 #   MERCADO_LIVRE_CLIENT_ID      ML application id             (Secret Manager)
 #   MERCADO_LIVRE_CLIENT_SECRET  ML application secret         (Secret Manager)
 #   MERCADO_LIVRE_STATE_SECRET   HMAC key for the OAuth state  (Secret Manager)

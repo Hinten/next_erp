@@ -57,6 +57,98 @@ export function resolveCondicaoAnuncio(input: {
   return { condition: input.condicaoAnuncio ?? 'new', fonte: 'anuncio' };
 }
 
+/** Which input decided a listing's brand — so a screen can name it. */
+export type FonteMarcaAnuncio = 'extraData' | 'anuncio';
+
+/**
+ * The brand a marketplace listing publishes with, and WHICH field decided it.
+ *
+ * ⚠️ Shared for the same reason {@link resolveCondicaoAnuncio} is, and modelled
+ * on it: `apps/mercado-livre` builds the `BRAND` attribute of an item payload,
+ * and the produto's Mercado Livre tab shows the operator what that attribute
+ * will say. Two copies of one answer — one a screen, one a wire value — is
+ * exactly the pair that disagrees unnoticed.
+ *
+ * The precedence is the produto's, then the listing's: a non-blank
+ * `extraData.marca` wins, and the `BRAND` already stored on the link doc is the
+ * fallback.
+ *
+ * ⚠️ That fallback tier is NOT symmetric with the package dimensions, which have
+ * none, and the asymmetry is deliberate. `BRAND` is `required` in most Mercado
+ * Livre categories and was operator-typed for this app's whole history, so for a
+ * produto with an empty Marca the stored value is the ONLY copy that exists.
+ * Discarding it the way `ML_PRODUTO_DERIVED_ATTRIBUTE_IDS` discards a stale
+ * `WEIGHT` would make the existing catalogue unpublishable.
+ */
+export function resolveMarcaAnuncio(input: {
+  /** `extraData.marca`; null when the singleton has not loaded or is absent. */
+  marca: string | null;
+  /** The `BRAND` value_name the link doc currently stores, if anything. */
+  marcaAnuncio?: string | null;
+  /**
+   * The stored `BRAND` is Mercado Livre's N/A sentinel — an explicit "this
+   * product has no brand", which is an ANSWER and not a blank. Read it off the
+   * link with {@link marcaArmazenadaDe}, never by testing `value_name`.
+   */
+  anuncioNaoSeAplica?: boolean;
+}): { marca: string | null; fonte: FonteMarcaAnuncio | null; naoSeAplica: boolean } {
+  // Blank-as-absent on BOTH tiers: a whitespace-only marca must fall through to
+  // the listing rather than blank out a real stored brand, and a whitespace-only
+  // stored value must not read as "the listing has a brand".
+  const doProduto = input.marca?.trim();
+  if (doProduto) return { marca: doProduto, fonte: 'extraData', naoSeAplica: false };
+  // ⚠️ Ranked BELOW the produto deliberately: a Marca typed on the produto is a
+  // newer, more specific answer than an N/A the operator left on one listing.
+  // Ranked ABOVE the stored value_name because the sentinel carries `'N/A'`
+  // there, and returning that string would print a brand literally named "N/A".
+  if (input.anuncioNaoSeAplica) return { marca: null, fonte: 'anuncio', naoSeAplica: true };
+  const doAnuncio = input.marcaAnuncio?.trim();
+  if (doAnuncio) return { marca: doAnuncio, fonte: 'anuncio', naoSeAplica: false };
+  return { marca: null, fonte: null, naoSeAplica: false };
+}
+
+/** The Mercado Livre attribute id the produto's Marca fills. */
+export const MARCA_ATTRIBUTE_ID = 'BRAND';
+
+/**
+ * ML's "does not apply" marker (`AttributesMLNew.na`, `value_id: '-1'`), whose
+ * `value_name` is the literal string `'N/A'`.
+ */
+const VALUE_ID_NAO_SE_APLICA = '-1';
+
+/**
+ * Read the `BRAND` a link doc already stores.
+ *
+ * ⚠️ Shared for the same reason {@link resolveMarcaAnuncio} is, and it is the
+ * half that was duplicated first: `apps/mercado-livre` needs the stored brand to
+ * decide what the payload sends, and the produto's Mercado Livre tab needs the
+ * same value to show the operator what that payload will say. Written out twice,
+ * the two answers drift the moment either side learns something new about the
+ * shape — which id, which field, what counts as present — and the drift is
+ * invisible because one side is a screen and the other a wire value. That is
+ * exactly how `ML_PRODUTO_DERIVED_ATTRIBUTE_IDS` came to disagree with itself
+ * across three workspaces before #1271 consolidated it.
+ *
+ * The parameter is structural rather than `MlAttribute` because this package
+ * must not depend on `@delfrance/integrations-mercado-livre` (its root carries
+ * the OAuth client secret and `apps/web` reaches this module).
+ */
+export function marcaArmazenadaDe(
+  attributes:
+    | ReadonlyArray<{
+        id?: string | null;
+        value_id?: string | null;
+        value_name?: string | null;
+      }>
+    | null
+    | undefined,
+): { marca: string | null; naoSeAplica: boolean } {
+  const entry = (attributes ?? []).find((a) => a.id === MARCA_ATTRIBUTE_ID);
+  if (!entry) return { marca: null, naoSeAplica: false };
+  if (entry.value_id === VALUE_ID_NAO_SE_APLICA) return { marca: null, naoSeAplica: true };
+  return { marca: entry.value_name ?? null, naoSeAplica: false };
+}
+
 /** Google Shopping `age_group` (string enum). */
 export const googleAgeGroupSchema = z.enum(['newborn', 'infant', 'toddler', 'kids', 'adult']);
 export type GoogleAgeGroup = z.infer<typeof googleAgeGroupSchema>;
