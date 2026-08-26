@@ -1,0 +1,215 @@
+'use client';
+
+/**
+ * Page-level batching for the `/pedidos` row reads that would otherwise be
+ * issued one per rendered row.
+ *
+ * Why (#1216). `ClienteCell` fetches its cliente with a `getDoc`, and
+ * `FreteCell` fetches the owning `int_frete` with another — so a page of N rows
+ * issues up to 2N one-shot reads on first paint, and that cost is what keeps
+ * `pedidoMeta.defaultQuery.limit` at 50. #1283 made the NF *listener* releasable
+ * but could not touch this: two attempts at deferring per-row work behind the
+ * IntersectionObserver were rejected by the vendas lane, because anything that
+ * *withholds* a read starves rows whose observer never reports.
+ *
+ * So this does not defer anything — it **batches**. One `getDocsByIds` per
+ * collection (chunked at the SDK's 30-id `in` cap) replaces up to N `getDoc`s,
+ * and the results are written into the TanStack cache under the exact keys the
+ * cells already use. The cells are unchanged in what they read; they simply
+ * find their answer already there.
+ *
+ * ⚠️ It must degrade gracefully, which is the whole lesson of #1283. Two things
+ * guarantee that:
+ *
+ *  1. {@link PREFETCH_MAX_WAIT_MS} — the cells wait for the batch, but never
+ *     longer than this. If `onRowsChange` never fires, the batch hangs, or the
+ *     provider is absent entirely, every cell falls back to its own `getDoc`
+ *     and the screen behaves exactly as it did before. The gate can only make
+ *     first paint cheaper, never make data unreachable.
+ *  2. {@link PEDIDO_ROW_READS_DEFAULT} is `'settled'`, so a `ClienteCell`
+ *     rendered outside this provider is not gated at all.
+ *
+ * A miss is also safe: an id the batch did not return simply is not seeded, and
+ * that cell's own query runs as usual.
+ */
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { FirebaseError } from 'firebase/app';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import type { SnapshotRow } from '@delfrance/data/hooks';
+import type { IntegracaoFrete, Pedido } from '@delfrance/schemas';
+
+import { clienteCollection } from '@/lib/data/clienteCollection';
+import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { getDocsByIds } from '@/lib/data/getDocsByIds';
+import { intFreteCollection } from '@/lib/data/intFreteCollection';
+import { getFirebaseFirestore } from '@/lib/firebase/client';
+
+/**
+ * How long a cell will wait for the page-level batch before falling back to its
+ * own read. Generous enough for one chunked round trip on a slow connection,
+ * short enough that a page whose batch never runs is barely slower than before.
+ */
+export const PREFETCH_MAX_WAIT_MS = 2_000;
+
+export type RowReadsStatus = 'pending' | 'settled';
+
+/**
+ * ⚠️ `'settled'`, not `'pending'` — a cell rendered without the provider must
+ * read for itself immediately rather than wait for a batch that will never come.
+ */
+export const PEDIDO_ROW_READS_DEFAULT: RowReadsStatus = 'settled';
+
+export const PedidoRowReadsContext = createContext<RowReadsStatus>(PEDIDO_ROW_READS_DEFAULT);
+
+/** Cells gate their `useQuery` on this: `enabled: status === 'settled'`. */
+export function usePedidoRowReads(): RowReadsStatus {
+  return useContext(PedidoRowReadsContext);
+}
+
+/** The TanStack key `ClienteCell` reads its cliente under. */
+export function clienteQueryKey(path: string): readonly unknown[] {
+  return ['cliente', path];
+}
+
+/** The TanStack key `FreteCell` / `EtiquetaRowAction` read the tipo under. */
+export function intFreteTipoQueryKey(path: string): readonly unknown[] {
+  return ['intFreteTipo', path];
+}
+
+/** `clientes/abc` → `abc`. Returns null for anything that is not a doc path. */
+function idFromPath(path: string): string | null {
+  const id = path.split('/').pop();
+  return id && id.length > 0 ? id : null;
+}
+
+interface Target {
+  readonly path: string;
+  readonly id: string;
+}
+
+/**
+ * Collect the distinct cliente / int_frete documents a page of pedidos points
+ * at. Exported for unit tests — pure, no Firestore.
+ */
+export function collectRowReadTargets(
+  rows: ReadonlyArray<SnapshotRow<Pedido>>,
+  toRefPath: (ref: unknown) => string | null,
+): { readonly clientes: Target[]; readonly intFretes: Target[] } {
+  const clientes = new Map<string, Target>();
+  const intFretes = new Map<string, Target>();
+  for (const row of rows) {
+    const clientePath = toRefPath(row.data.clientePedidoOuterRef);
+    if (clientePath) {
+      const id = idFromPath(clientePath);
+      if (id) clientes.set(clientePath, { path: clientePath, id });
+    }
+    const fretePath = toRefPath(row.data.freteInicial?.integracaoFreteOuterRef);
+    if (fretePath) {
+      const id = idFromPath(fretePath);
+      if (id) intFretes.set(fretePath, { path: fretePath, id });
+    }
+  }
+  return { clientes: [...clientes.values()], intFretes: [...intFretes.values()] };
+}
+
+/**
+ * Seed the cells' cache entries from a batch result. Exported for unit tests.
+ *
+ * ⚠️ The seeded VALUE must match what each cell's `queryFn` would have
+ * returned, or the cell renders a differently-shaped object: `ClienteCell`
+ * stores the cliente document, `FreteCell` stores only its `tipo`.
+ */
+export function seedRowReads(
+  queryClient: QueryClient,
+  clientes: ReadonlyArray<Target>,
+  clienteDocs: ReadonlyMap<string, unknown>,
+  intFretes: ReadonlyArray<Target>,
+  intFreteDocs: ReadonlyMap<string, { tipo?: IntegracaoFrete | null }>,
+): void {
+  for (const t of clientes) {
+    const doc = clienteDocs.get(t.id);
+    if (doc !== undefined) queryClient.setQueryData(clienteQueryKey(t.path), doc);
+  }
+  for (const t of intFretes) {
+    const doc = intFreteDocs.get(t.id);
+    if (doc !== undefined) queryClient.setQueryData(intFreteTipoQueryKey(t.path), doc.tipo ?? null);
+  }
+}
+
+export interface RowReadPrefetch {
+  readonly status: RowReadsStatus;
+  /** Pass straight to `TableView`'s `onRowsChange`. */
+  readonly onRows: (rows: SnapshotRow<Pedido>[]) => void;
+}
+
+export function usePedidoRowReadPrefetch(): RowReadPrefetch {
+  const db = getFirebaseFirestore();
+  const queryClient = useQueryClient();
+  const [status, setStatus] = useState<RowReadsStatus>('pending');
+  const runIdRef = useRef(0);
+
+  // The safety net. Armed on mount, NOT on the first `onRows` — if that callback
+  // never fires (no provider wiring, an empty page, a TableView that changed
+  // shape), the cells must still be released.
+  useEffect(() => {
+    const timer = setTimeout(() => setStatus('settled'), PREFETCH_MAX_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const onRows = useCallback(
+    (rows: SnapshotRow<Pedido>[]) => {
+      const runId = (runIdRef.current += 1);
+      const { clientes, intFretes } = collectRowReadTargets(rows, (ref) => {
+        const deref = dereferenceOuterRef(db, ref);
+        return deref?.path ?? null;
+      });
+      if (clientes.length === 0 && intFretes.length === 0) {
+        setStatus('settled');
+        return;
+      }
+      void (async () => {
+        try {
+          const [clienteDocs, intFreteDocs] = await Promise.all([
+            clientes.length
+              ? getDocsByIds(
+                  db,
+                  clienteCollection,
+                  clientes.map((c) => c.id),
+                )
+              : Promise.resolve(new Map()),
+            intFretes.length
+              ? getDocsByIds(
+                  db,
+                  intFreteCollection,
+                  intFretes.map((f) => f.id),
+                )
+              : Promise.resolve(new Map()),
+          ]);
+          // A newer page superseded this batch — its seeds are for rows nobody
+          // is looking at, and its `settled` would race the newer run's.
+          if (runId !== runIdRef.current) return;
+          seedRowReads(queryClient, clientes, clienteDocs, intFretes, intFreteDocs);
+        } catch (err) {
+          // A prefetch is pure optimisation: every cell reads for itself in the
+          // `finally` below, so a Firestore failure here costs a fallback read
+          // and nothing else. Swallowing it deliberately — but ONLY Firestore's
+          // own errors. Anything else is a defect in this module and must not
+          // be hidden behind "the batch failed" (root CLAUDE.md rule 6).
+          //
+          // ⚠️ Needed as a real `catch`, not just `finally`: without it the
+          // rejection escapes this detached async IIFE as an UNHANDLED
+          // rejection, which in the browser is an error event and in tests a
+          // false positive attributed to whatever ran next.
+          if (!(err instanceof FirebaseError)) throw err;
+        } finally {
+          // ⚠️ ALWAYS release the cells, including on a rejected batch — a
+          // failed prefetch must cost a fallback read, never a blank column.
+          if (runId === runIdRef.current) setStatus('settled');
+        }
+      })();
+    },
+    [db, queryClient],
+  );
+
+  return { status, onRows };
+}

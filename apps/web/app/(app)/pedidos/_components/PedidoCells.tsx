@@ -54,6 +54,7 @@ import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
 import { DanfeMenu } from '@/components/DanfeMenu';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 import { useLatestNfe } from './useLatestNfe';
+import { clienteQueryKey, intFreteTipoQueryKey, usePedidoRowReads } from './rowReadPrefetch';
 
 const DASH = '—';
 
@@ -318,6 +319,7 @@ function formatCpfCnpj(raw: string): string {
 
 export function ClienteCell({ pedido }: { pedido: Pedido }) {
   const db = getFirebaseFirestore();
+  const rowReads = usePedidoRowReads();
   const ref = useMemo(
     () => dereferenceOuterRef(db, pedido.clientePedidoOuterRef),
     [db, pedido.clientePedidoOuterRef],
@@ -325,13 +327,17 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
   const path = ref?.path ?? null;
 
   const { data, isLoading } = useQuery<ClienteDoc | null>({
-    queryKey: ['cliente', path],
+    queryKey: clienteQueryKey(path ?? ''),
     queryFn: async () => {
       if (!ref) return null;
       const snap = await getDoc(ref);
       return (snap.data() as ClienteDoc | undefined) ?? null;
     },
-    enabled: !!ref,
+    // Wait for the page-level batch to seed this key, then read whatever it
+    // did not cover. `rowReads` is `'settled'` outside the provider and after
+    // PREFETCH_MAX_WAIT_MS regardless, so this can only ever DELAY the read
+    // briefly — never withhold it.
+    enabled: !!ref && rowReads === 'settled',
     staleTime: 5 * 60 * 1000,
   });
 
@@ -396,6 +402,7 @@ export function ExpedicaoCell({ pedido }: { pedido: Pedido }) {
 
 export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: string }) {
   const db = getFirebaseFirestore();
+  const rowReads = usePedidoRowReads();
   const frete = pedido.freteInicial;
   const estado = frete?.estado;
 
@@ -419,8 +426,9 @@ export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: stri
   const knownEtiquetaAction =
     frete?.printLabelId != null || frete?.externalOptionId != null || canFetchLabel;
   const { data: intTipo } = useQuery<IntegracaoFrete | null>({
-    queryKey: ['intFreteTipo', intRef?.path ?? null],
-    enabled: intRef != null && !knownEtiquetaAction,
+    queryKey: intFreteTipoQueryKey(intRef?.path ?? ''),
+    // Same batch gate as ClienteCell above — delayed at worst, never withheld.
+    enabled: intRef != null && !knownEtiquetaAction && rowReads === 'settled',
     staleTime: 5 * 60 * 1000,
     queryFn: async () => {
       const snap = await getDoc(intRef!);

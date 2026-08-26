@@ -359,36 +359,39 @@ export const pedidoMeta: CollectionMetadata = {
     // different /pedidos LIST spec each time, while every pedido EDITOR spec
     // passed); at 50 it was 166 passed, 0 failed, 0 flaky.
     //
-    // ⚠️ STILL 50 — #1216 did NOT buy 100 back. Read this before trying again;
-    // the attempt is written up so it is not repeated blind.
+    // ⚠️ Raising this is gated on FIRST-PAINT cost, not on the sustained count,
+    // and the history is worth reading before touching it again.
     //
-    // #1216 made the NF listener RELEASABLE: `useLatestNfe` subscribes every row
-    // at mount and tears the listener down once the IntersectionObserver reports
-    // the row off screen. That genuinely cuts the SUSTAINED count and is what
-    // shipped. It does not cut the FIRST-PAINT peak, which stays at exactly this
-    // number — and the peak is the quantity #159 measured.
+    // #1216 first made the NF listener RELEASABLE (`useLatestNfe`: subscribe at
+    // mount, tear down once the IntersectionObserver reports the row off
+    // screen). That cuts the SUSTAINED count but not the peak, and two attempts
+    // at bounding the peak through the observer were both rejected by the
+    // vendas lane, for opposite reasons:
     //
-    // Two ways of bounding the peak were tried on the vendas lane; both failed,
-    // for opposite reasons:
-    //
-    //  1. Wait for the observer before subscribing. That puts intersection
-    //     delivery on the critical path of the first badge — those callbacks are
+    //  1. Waiting for the observer before subscribing put intersection delivery
+    //     on the critical path of the first badge — those callbacks are
     //     throttled and can lag by seconds while 100 rows render — and
     //     `pedidos-nfe-snapshot` went fail/fail/pass, pass, fail/fail/fail.
-    //  2. Ration the optimistic subscriptions (a 30-slot budget). Worse: rows
-    //     past the ration never subscribe AT ALL when delivery is unreliable, so
-    //     their badges never resolve. FOUR /pedidos LIST specs then failed 3/3 —
-    //     pedidos-anexos, pedidos-devolucao, pedidos-etiqueta-ml,
-    //     pedidos-nfe-snapshot — the same rotating-list-spec signature #159
-    //     recorded, on a branch that already contained main.
+    //  2. Rationing the optimistic subscriptions (a 30-slot budget) was worse:
+    //     rows past the ration never subscribe AT ALL when delivery is
+    //     unreliable, so their badges never resolve. FOUR /pedidos LIST specs
+    //     failed 3/3 — pedidos-anexos, pedidos-devolucao, pedidos-etiqueta-ml,
+    //     pedidos-nfe-snapshot.
     //
-    // So raising this needs the first-paint cost cut somewhere OTHER than the NF
-    // listener. The remaining per-row reads are `ClienteCell`'s cliente `getDoc`
-    // and `FreteCell`'s `intFreteTipo` `getDoc` — up to one of each per row,
-    // ungated, which #1216 explicitly flags and nothing has yet addressed.
+    // ⭐ The lesson those two produced: never WITHHOLD a per-row read to bound
+    // cost — BATCH it. `rowReadPrefetch` now issues one chunked `getDocsByIds`
+    // per collection for the whole page, replacing up to 2N one-shot `getDoc`s
+    // from `ClienteCell` and `FreteCell`, and seeds them into the cache keys
+    // those cells already read. It cannot make data unreachable: a cell that
+    // the batch missed, or whose batch failed or never ran, falls back to its
+    // own read after PREFETCH_MAX_WAIT_MS.
+    //
+    // If this reds the vendas lane again, put it back to 50 — the rotating
+    // /pedidos LIST spec failure above is the signature to look for, and it
+    // means first-paint cost is still the binding constraint.
     // `limit` is the FIRST page only; "Carregar mais" grows it by the same
     // amount per click.
-    limit: 50,
+    limit: 100,
     // Same nine columns legacy showed (`pedidoTableView.dart:2221-2256`).
     // Every virtual column declares `dependsOn`, so the Pipelines projection
     // stays on for this heavy collection — see `CollectionDefaultQuery.columns`.
