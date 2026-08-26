@@ -21,7 +21,7 @@ import { describe, expect, it } from 'vitest';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 
 import { createTestUserStore } from './testUserStore';
-import { ROLES_A_CRIAR, criarUsuariosTeste } from './testUsers';
+import { ROLES_A_CRIAR, TestUserGuardError, criarUsuariosTeste, docIdAdicional } from './testUsers';
 
 const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 
@@ -147,5 +147,110 @@ describe.skipIf(!EMULATED)('createTestUserStore (Firestore emulator)', () => {
     // …and the second run reports the FIRST run's credentials, not new ones.
     expect(second.usuarios.map((u) => u.password)).toEqual(['senha-1', 'senha-2']);
     expect((await rawColl(integracaoId).get()).size).toBe(2);
+  });
+});
+
+describe.skipIf(!EMULATED)('createTestUserStore — the additional mint (Firestore emulator)', () => {
+  it('B7: create writes a NEW doc and leaves the role doc untouched', async () => {
+    // The property the whole `${role}-${mlUserId}` scheme exists for: replacing
+    // a buyer must not destroy the previous one's password, which ML will never
+    // reissue.
+    const integracaoId = newIntegracaoId();
+    const store = createTestUserStore(getAdminFirestore(), integracaoId);
+    const antigo = rec(USUARIO_TESTE_ROLE.comprador, { id: 555, password: 'nao-perca-isto' });
+    await store.put(antigo);
+
+    await store.create(
+      docIdAdicional(USUARIO_TESTE_ROLE.comprador, 777),
+      rec(USUARIO_TESTE_ROLE.comprador, { id: 777, nickname: 'TEST-novo', password: 'nova' }),
+    );
+
+    const snap = await rawColl(integracaoId).get();
+    expect(snap.docs.map((d) => d.id).sort()).toEqual(['comprador', 'comprador-777']);
+    // The stored record is byte-identical to what was written before.
+    expect(await store.get(USUARIO_TESTE_ROLE.comprador)).toEqual(antigo);
+  });
+
+  it('B8: create REFUSES an existing doc id, and the stored password survives', async () => {
+    // Firestore's `create` is what turns a collision into ALREADY_EXISTS instead
+    // of a silent overwrite; the store maps that onto a guard error the route
+    // already knows how to shape.
+    const integracaoId = newIntegracaoId();
+    const store = createTestUserStore(getAdminFirestore(), integracaoId);
+    const docId = docIdAdicional(USUARIO_TESTE_ROLE.comprador, 777);
+    const original = rec(USUARIO_TESTE_ROLE.comprador, { id: 777, password: 'a-preciosa' });
+    await store.create(docId, original);
+
+    const err = await store
+      .create(docId, rec(USUARIO_TESTE_ROLE.comprador, { id: 777, password: 'sobrescrita' }))
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(TestUserGuardError);
+    expect((err as TestUserGuardError).code).toBe('ML_USUARIO_TESTE_DUPLICADO');
+    expect((err as TestUserGuardError).status).toBe(409);
+    const stored = (await rawColl(integracaoId).doc(docId).get()).data();
+    expect(stored?.password).toBe('a-preciosa');
+  });
+
+  it('B9: list surfaces the additional records after the pair, seller first', async () => {
+    const integracaoId = newIntegracaoId();
+    const store = createTestUserStore(getAdminFirestore(), integracaoId);
+
+    await store.put(rec(USUARIO_TESTE_ROLE.comprador, { nickname: 'TEST-comprador-1' }));
+    await store.put(rec(USUARIO_TESTE_ROLE.vendedor));
+    await store.create(
+      docIdAdicional(USUARIO_TESTE_ROLE.comprador, 777),
+      rec(USUARIO_TESTE_ROLE.comprador, { id: 777, nickname: 'TEST-comprador-2' }),
+    );
+
+    const nicks = (await store.list()).map((u) => u.nickname);
+    expect(nicks).toEqual(['TEST-vendedor', 'TEST-comprador-1', 'TEST-comprador-2']);
+  });
+
+  it('B10: an additional run mints ONE, keeps the credential and spares the pair', async () => {
+    // The end-to-end #1087 shape over real persistence: the seller is untouched,
+    // the old buyer is untouched, and the conta stays connected for a follow-up.
+    const integracaoId = newIntegracaoId();
+    const store = createTestUserStore(getAdminFirestore(), integracaoId);
+    let mints = 0;
+    let wipes = 0;
+    const api = {
+      getMe: async () => ({ id: 999, nickname: 'LOJA-REAL' }),
+      criarUsuarioTeste: async () => {
+        mints += 1;
+        return {
+          id: 1000 + mints,
+          nickname: `TEST000${String(mints)}`,
+          password: `senha-${String(mints)}`,
+        };
+      },
+    };
+    const tokens = {
+      deleteAll: async () => {
+        wipes += 1;
+        return 0;
+      },
+    };
+
+    await criarUsuariosTeste({ api, store, tokens, now: () => NOW });
+    const avulso = await criarUsuariosTeste({
+      api,
+      store,
+      tokens,
+      now: () => NOW,
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+      revogarCredencial: false,
+    });
+
+    expect(mints).toBe(3);
+    expect(wipes).toBe(1);
+    expect(avulso.criados).toEqual([USUARIO_TESTE_ROLE.comprador]);
+    expect(avulso.credencialRevogada).toBe(false);
+    const snap = await rawColl(integracaoId).get();
+    expect(snap.docs.map((d) => d.id).sort()).toEqual(['comprador', 'comprador-1003', 'vendedor']);
+    // The pair the first run stored is exactly as it was left.
+    expect((await store.get(USUARIO_TESTE_ROLE.comprador))?.password).toBe('senha-2');
+    expect((await store.get(USUARIO_TESTE_ROLE.vendedor))?.password).toBe('senha-1');
   });
 });

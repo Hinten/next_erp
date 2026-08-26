@@ -1,7 +1,15 @@
 /**
- * Mint the pair of Mercado Livre **test users** an end-to-end run needs — one
- * seller, one buyer — from a throwaway "bootstrap" conta, then revoke that
- * conta's credential.
+ * Mint Mercado Livre **test users** from a throwaway "bootstrap" conta, then
+ * revoke that conta's credential.
+ *
+ * Two shapes, one code path:
+ *
+ *  - **the pair bootstrap** (`modo: 'reaproveitar'`, the default) — one seller
+ *    and one buyer, keyed on the ROLE, reusing anything already stored;
+ *  - **an additional mint** (`modo: 'novo'`) — ONE fresh account of a named
+ *    role, keyed on `${role}-${mlUserId}`, reusing nothing. #1087 needs it: a
+ *    buyer that Mercado Pago has stopped accepting purchases from has to be
+ *    replaced without re-minting the seller that still works.
  *
  * ML has no sandbox. It hands out throwaway production accounts through
  * `POST /users/test_user` instead, and the response is the ONLY time the
@@ -35,6 +43,30 @@
  * ⚠️ Rule 3 is why the wipe is not `Promise.all`'d with anything, and why it
  * takes the store rather than being folded into the loop.
  *
+ * ⚠️ **`modo: 'novo'` suspends rule 2 and nothing else.** Reuse is exactly what
+ * that caller is asking us not to do, so it is skipped — but the write still
+ * lands the instant ML answers (rule 1), and the revocation still runs last
+ * (rule 3). What replaces rule 2 is the doc id: `${role}-${mlUserId}` is derived
+ * from ML's own response, so it cannot collide with a stored record, and it is
+ * written with `create` rather than `set` so a collision would FAIL rather than
+ * silently overwrite an unrecoverable password.
+ *
+ * ## Two things this module cannot protect you from
+ *
+ * ⚠️ **The cap is real and uncheckable.** Ten per real account, and ML publishes
+ * no endpoint that lists them, so {@link USUARIO_TESTE_LIMITE_POR_CONTA} is
+ * enforced against what WE stored — a floor, never the true total. The guard
+ * refuses at ten; it cannot tell you when you are at nine having spent eleven.
+ *
+ * ⚠️ **A successful mint leaves the conta unable to mint again.** `deleteAll`
+ * removes every `tokenDuravel` doc, and the route resolves the channel context
+ * before reaching this function — so the next `POST` dies at
+ * `getOrRefreshAccessToken` with `ML_REAUTH_REQUIRED` before any guard here
+ * runs. That is intended (the bootstrap account is a real seller account), but
+ * it makes "reconnect the real account first" a PRECONDITION of every
+ * additional mint, not an error to be surprised by. `revogarCredencial: false`
+ * is the deliberate opt-out, and it is the caller's to make explicit.
+ *
  * ## What the caller must not do with the result
  *
  * `password` is a live credential ML will never reissue. It is returned so the
@@ -44,6 +76,7 @@
  */
 import type { MercadoLivreApi, MlTestUser } from '@delfrance/integrations-mercado-livre';
 import {
+  USUARIO_TESTE_LIMITE_POR_CONTA,
   USUARIO_TESTE_ROLE,
   type UsuarioTesteMercadoLivre,
   type UsuarioTesteRole,
@@ -71,7 +104,10 @@ export const ROLES_A_CRIAR: readonly UsuarioTesteRole[] = [
  */
 export class TestUserGuardError extends Error {
   constructor(
-    readonly code: 'ML_CONTA_JA_E_TESTE',
+    readonly code:
+      | 'ML_CONTA_JA_E_TESTE'
+      | 'ML_LIMITE_USUARIOS_TESTE'
+      | 'ML_USUARIO_TESTE_DUPLICADO',
     readonly status: number,
     message: string,
     readonly extra: Record<string, unknown> = {},
@@ -81,15 +117,38 @@ export class TestUserGuardError extends Error {
   }
 }
 
-/** Persistence for the minted records. One document per role. */
+/**
+ * Persistence for the minted records.
+ *
+ * ⚠️ Two writers with different guarantees, deliberately. {@link put} is the
+ * pair bootstrap's idempotent full write at the ROLE's fixed doc id — reached
+ * only after {@link get} came back null, so re-running it re-writes identical
+ * content. {@link create} is the additional mint's, at an explicit id, and it
+ * REFUSES a doc that already exists. Do not collapse them: `put` overwriting is
+ * what makes a partial re-run safe, and `create` refusing is what stops an
+ * additional mint from destroying an unrecoverable password.
+ */
 export interface TestUserStore {
   /** The stored record for a role, or null. */
   get(role: UsuarioTesteRole): Promise<UsuarioTesteMercadoLivre | null>;
-  /** Write a record at the role's fixed doc id. */
+  /** Write a record at the role's fixed doc id, overwriting. */
   put(record: UsuarioTesteMercadoLivre): Promise<void>;
+  /**
+   * Write at an EXPLICIT doc id, refusing if the document already exists.
+   * Throws {@link TestUserGuardError} `ML_USUARIO_TESTE_DUPLICADO` on collision.
+   */
+  create(docId: string, record: UsuarioTesteMercadoLivre): Promise<void>;
   /** Every stored record, for the read-back route. */
   list(): Promise<UsuarioTesteMercadoLivre[]>;
 }
+
+/**
+ * How a run treats a role that is already stored.
+ *
+ *  - `reaproveitar` — reuse it and mint nothing (rule 2). The pair bootstrap.
+ *  - `novo` — mint a fresh account regardless, under `${role}-${mlUserId}`.
+ */
+export type CriarUsuariosTesteModo = 'reaproveitar' | 'novo';
 
 export interface CriarUsuariosTesteDeps {
   readonly api: Pick<MercadoLivreApi, 'criarUsuarioTeste' | 'getMe'>;
@@ -98,10 +157,25 @@ export interface CriarUsuariosTesteDeps {
   readonly tokens: Pick<TokenDuravelStore, 'deleteAll'>;
   readonly siteId?: string;
   readonly now?: () => number;
+  /**
+   * Roles to mint on this run, in order. Default {@link ROLES_A_CRIAR} — the
+   * pair. An additional mint passes exactly one.
+   */
+  readonly roles?: readonly UsuarioTesteRole[];
+  /** See {@link CriarUsuariosTesteModo}. Default `reaproveitar`. */
+  readonly modo?: CriarUsuariosTesteModo;
+  /**
+   * Revoke the bootstrap conta's credential once every record is durable.
+   *
+   * ⚠️ Defaults to **true**, and every caller that wants it off must say so.
+   * An absent value disabling a security step is #1059's shape; here it would
+   * silently leave a real seller account wired to the ERP.
+   */
+  readonly revogarCredencial?: boolean;
 }
 
 export interface CriarUsuariosTesteResult {
-  /** Both records, seller first. */
+  /** The records this run produced — reused ones included, seller first. */
   readonly usuarios: readonly UsuarioTesteMercadoLivre[];
   /** Roles minted on THIS run — the ones that consumed a slot. */
   readonly criados: readonly UsuarioTesteRole[];
@@ -109,23 +183,52 @@ export interface CriarUsuariosTesteResult {
   readonly reaproveitados: readonly UsuarioTesteRole[];
   /** Credential docs deleted from the bootstrap conta. */
   readonly credenciaisRemovidas: number;
+  /**
+   * Whether the credential was revoked at all.
+   *
+   * ⚠️ Reported separately because `credenciaisRemovidas === 0` is ambiguous:
+   * it is also what a revocation against an already-empty subcollection returns.
+   * The UI has to tell "we left this conta connected" from "there was nothing
+   * left to delete", and only this flag does.
+   */
+  readonly credencialRevogada: boolean;
   /** Who minted them — the conta that is now disconnected. */
   readonly conta: { readonly id: number; readonly nickname: string | null };
 }
 
 /**
- * Mint (or reuse) the seller/buyer pair, then revoke the bootstrap credential.
+ * Doc id for an ADDITIONAL mint — never the bare role, which the pair bootstrap
+ * owns and whose stored password an overwrite would destroy.
  *
- * Throws {@link TestUserGuardError} when the conta is itself a test user: ML's
- * test users cannot mint test users, and reaching this point with one connected
- * means the operator selected the wrong conta — the failure mode worth catching,
- * since the next step wipes that conta's credential.
+ * Derived from ML's own response, so it is unique by construction (ML user ids
+ * are), needs no read to compute, and has no race to lose.
+ */
+export function docIdAdicional(role: UsuarioTesteRole, mlUserId: number): string {
+  return `${role}-${String(mlUserId)}`;
+}
+
+/**
+ * Mint (or reuse) test users, then revoke the bootstrap credential.
+ *
+ * Throws {@link TestUserGuardError} in two cases, BOTH before anything is
+ * minted:
+ *
+ *  - the conta is itself a test user (`ML_CONTA_JA_E_TESTE`). ML's test users
+ *    cannot mint test users, and reaching this point with one connected means
+ *    the operator selected the wrong conta — the failure mode worth catching,
+ *    since the next step wipes that conta's credential.
+ *  - ten records are already stored (`ML_LIMITE_USUARIOS_TESTE`). See the ⚠️ in
+ *    the module header for why that number is a floor rather than the truth.
  */
 export async function criarUsuariosTeste(
   deps: CriarUsuariosTesteDeps,
 ): Promise<CriarUsuariosTesteResult> {
   const siteId = deps.siteId ?? SITE_ID_PADRAO;
   const now = deps.now ?? Date.now;
+  const roles = deps.roles ?? ROLES_A_CRIAR;
+  const modo = deps.modo ?? 'reaproveitar';
+  // ⚠️ `?? true`, not `=== true`: an absent flag must REVOKE. See the field's doc.
+  const revogar = deps.revogarCredencial ?? true;
 
   const me = await deps.api.getMe();
   if (isContaDeTeste(me.nickname)) {
@@ -143,38 +246,69 @@ export async function criarUsuariosTeste(
     );
   }
 
+  // ⚠️ Also before any mint. `registrados` is what WE stored, which is a FLOOR
+  // on the slots this real account has spent — ML lists nothing, so an eleventh
+  // mint is refused here or nowhere. Refusing a request ML would reject anyway
+  // costs nothing; not refusing one it would ACCEPT is the cost of the floor
+  // being a floor, and the message says so rather than pretending otherwise.
+  const registrados = await deps.store.list();
+  if (registrados.length >= USUARIO_TESTE_LIMITE_POR_CONTA) {
+    throw new TestUserGuardError(
+      'ML_LIMITE_USUARIOS_TESTE',
+      409,
+      `Esta integração já tem ${String(registrados.length)} usuários de teste registrados, ` +
+        `e o Mercado Livre permite ${String(USUARIO_TESTE_LIMITE_POR_CONTA)} por conta real — ` +
+        'um limite permanente, sem nenhum endpoint que liste o que já foi criado. ' +
+        'Uma vaga só volta a existir depois de 60 dias sem atividade na conta de teste.',
+      { registrados: registrados.length, limite: USUARIO_TESTE_LIMITE_POR_CONTA },
+    );
+  }
+
   const usuarios: UsuarioTesteMercadoLivre[] = [];
   const criados: UsuarioTesteRole[] = [];
   const reaproveitados: UsuarioTesteRole[] = [];
 
-  for (const role of ROLES_A_CRIAR) {
-    const existente = await deps.store.get(role);
-    if (existente) {
-      // Rule 2: never re-mint what we already hold. A retry after a partial
-      // failure must cost zero slots.
-      usuarios.push(existente);
-      reaproveitados.push(role);
-      continue;
+  for (const role of roles) {
+    if (modo === 'reaproveitar') {
+      const existente = await deps.store.get(role);
+      if (existente) {
+        // Rule 2: never re-mint what we already hold. A retry after a partial
+        // failure must cost zero slots.
+        usuarios.push(existente);
+        reaproveitados.push(role);
+        continue;
+      }
     }
 
     const minted = await deps.api.criarUsuarioTeste(siteId);
     const record = toRecord(minted, role, siteId, now(), me.id);
-    // Rule 1: persist BEFORE the next mint. Anything between the ML response and
-    // this write is a window in which a slot is spent and the credential lost.
-    await deps.store.put(record);
+    // Rule 1: persist BEFORE anything else — the next mint, the revocation, the
+    // response. Anything between the ML response and this write is a window in
+    // which a slot is spent and the credential lost.
+    if (modo === 'novo') {
+      // `create` at a response-derived id: it cannot collide with the pair
+      // bootstrap's role doc, and if it somehow did it FAILS instead of
+      // overwriting a password nothing can reissue.
+      await deps.store.create(docIdAdicional(role, minted.id), record);
+    } else {
+      await deps.store.put(record);
+    }
     usuarios.push(record);
     criados.push(role);
   }
 
-  // Rule 3: both are durable — only now is it safe to lose the token that
-  // created them.
-  const credenciaisRemovidas = await deps.tokens.deleteAll();
+  // Rule 3: every record is durable — only now is it safe to lose the token
+  // that created them. ⚠️ Still the LAST statement when it runs, and skipped
+  // whole when the caller opted out; there is no ordering in which a credential
+  // dies before the account it minted is on disk.
+  const credenciaisRemovidas = revogar ? await deps.tokens.deleteAll() : 0;
 
   return {
     usuarios,
     criados,
     reaproveitados,
     credenciaisRemovidas,
+    credencialRevogada: revogar,
     conta: { id: me.id, nickname: me.nickname ?? null },
   };
 }

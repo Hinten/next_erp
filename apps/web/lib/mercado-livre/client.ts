@@ -507,6 +507,14 @@ export interface MercadoLivreUsuariosTesteResult {
   reaproveitados: ('vendedor' | 'comprador')[];
   /** Credential docs deleted from the bootstrap conta — it is now disconnected. */
   credenciaisRemovidas: number;
+  /**
+   * Whether the credential was revoked at all.
+   *
+   * ⚠️ Read THIS, never `credenciaisRemovidas === 0` — a revocation against an
+   * already-empty subcollection also returns zero, so the count cannot tell
+   * "we left this conta connected" from "there was nothing left to delete".
+   */
+  credencialRevogada: boolean;
   conta: { id: number; nickname: string | null };
 }
 
@@ -989,6 +997,27 @@ export interface MercadoLivreClient {
    */
   criarUsuariosTeste(integracaoId: string): Promise<MercadoLivreUsuariosTesteResult>;
   /**
+   * Mint ONE additional test user of `role` (PERM.integracao.write) — #1087's
+   * case, where Mercado Pago stopped accepting purchases from the buyer and it
+   * has to be replaced without re-minting the seller that still works.
+   *
+   * ⚠️ **This never reuses.** The stored record of that role is left untouched
+   * and the new account lands at its own doc id, so every call spends one of
+   * the account's ten permanent slots. A retry after a lost response spends a
+   * second one — check the list before clicking again.
+   *
+   * ⚠️ **It needs the real application-owner account connected.** A previous
+   * mint deleted this conta's credential, and the backend resolves a token
+   * before any guard runs, so an unconnected conta answers 409
+   * `ML_REAUTH_REQUIRED`. Pass `manterCredencial` to skip the revocation and
+   * keep the conta connected for a follow-up mint — the default revokes.
+   */
+  criarUsuarioTesteAvulso(
+    integracaoId: string,
+    role: 'vendedor' | 'comprador',
+    opts?: { manterCredencial?: boolean },
+  ): Promise<MercadoLivreUsuariosTesteResult>;
+  /**
    * Models the AI settings page may offer, plus what a suggestion would actually
    * use right now (PERM.integracao.read).
    *
@@ -1385,10 +1414,19 @@ export function createMercadoLivreClient(config: {
     criarUsuariosTeste: (integracaoId) =>
       // `{}` is what makes this a POST — `call` picks the method from the
       // presence of a body. The id stays in the query string so both verbs read
-      // it the same way.
+      // it the same way. An empty body is ALSO the pair bootstrap on the
+      // backend, so this stays correct if the placeholder ever goes away.
       call<MercadoLivreUsuariosTesteResult>(
         `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
         {},
+      ),
+    criarUsuarioTesteAvulso: (integracaoId, role, opts) =>
+      call<MercadoLivreUsuariosTesteResult>(
+        `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+        // ⚠️ Sent explicitly rather than omitted when false: the backend's
+        // schema rejects unknown keys, so a typo here is a 400 rather than a
+        // silently-skipped revocation.
+        { role, manterCredencial: opts?.manterCredencial ?? false },
       ),
     iaModelos: (agenteId) =>
       call<MercadoLivreIaModelos>(

@@ -118,6 +118,35 @@ seller.
 | Both users can sign in on mercadolivre.com.br                         |        |
 | E-mail verification accepted with the last 4/6 digits of the user id  |        |
 
+### 1.6 Replacing a blocked buyer — **Novo comprador**
+
+Mercado Pago can stop accepting purchases from a test buyer, which blocks every
+Phase 6 step. **Novo comprador** on the same panel mints ONE fresh buyer beside
+the stored one; the seller and the old buyer are never touched.
+
+⚠️ **Reconnect first.** The previous mint deleted this conta's credential, and
+the backend resolves a token _before_ any guard — so an unconnected conta can
+only answer `409 ML_REAUTH_REQUIRED`, even for a call that would create nothing.
+Press **Reautenticar** and sign in as the **real account that registered the ML
+application** (a test user cannot mint test users; the route refuses with
+`ML_CONTA_JA_E_TESTE`).
+
+⚠️ **This one never reuses.** Every click spends one of the ten permanent slots,
+a retry after a network error included. Read the counter in the dialog before
+clicking again — and remember it is a _floor_: it counts only what this
+integração stored, and ML publishes nothing that lists the rest.
+
+Tick **Manter esta conta conectada** if you intend to mint another buyer straight
+after; otherwise leave it unticked and the credential is revoked as usual.
+
+| Check                                                                   | Result |
+| ----------------------------------------------------------------------- | ------ |
+| The dialog names the connected account and shows `N de 10`              |        |
+| A new doc `comprador-<mlUserId>`; the `comprador` doc is byte-identical |        |
+| The reveal modal refuses to close before the password is copied         |        |
+| `tokenDuravel` empty (or still populated, if you ticked "manter")       |        |
+| The new buyer signs in and completes a Mercado Pago checkout            |        |
+
 ---
 
 ## 2. Phase 0 — offline, before spending anything

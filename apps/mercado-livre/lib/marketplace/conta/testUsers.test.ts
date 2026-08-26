@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MlTestUser, MlUser } from '@delfrance/integrations-mercado-livre';
 import {
+  USUARIO_TESTE_LIMITE_POR_CONTA,
   USUARIO_TESTE_ROLE,
   type UsuarioTesteMercadoLivre,
   type UsuarioTesteRole,
@@ -17,9 +18,11 @@ import {
 import {
   ROLES_A_CRIAR,
   TestUserGuardError,
+  type CriarUsuariosTesteDeps,
   type TestUserStore,
   codigosVerificacaoEmail,
   criarUsuariosTeste,
+  docIdAdicional,
 } from './testUsers';
 
 const NOW = 1_700_000_000_000;
@@ -53,6 +56,14 @@ function fakeStore(seed: UsuarioTesteMercadoLivre[] = []) {
       log.push(`put:${record.role}`);
       docs.set(record.role, record);
     },
+    async create(docId, record) {
+      // Mirrors Firestore's `create`: refuses rather than replaces. The real
+      // store maps ALREADY_EXISTS onto a TestUserGuardError; the fake throws so
+      // a test can prove the stored password survived the collision.
+      log.push(`create:${docId}`);
+      if (docs.has(docId)) throw new Error(`ALREADY_EXISTS ${docId}`);
+      docs.set(docId, record);
+    },
     async list() {
       return [...docs.values()];
     },
@@ -65,6 +76,9 @@ function deps(over: {
   store?: ReturnType<typeof fakeStore>;
   me?: MlUser;
   deleteAll?: () => Promise<number>;
+  roles?: readonly UsuarioTesteRole[];
+  modo?: CriarUsuariosTesteDeps['modo'];
+  revogarCredencial?: boolean;
 }) {
   const store = over.store ?? fakeStore();
   let n = 0;
@@ -92,7 +106,31 @@ function deps(over: {
       store,
       tokens: { deleteAll },
       now: () => NOW,
-    },
+      // Spread only when supplied, so the DEFAULTS are what the untouched
+      // assertions below exercise — an explicit `undefined` would still be a
+      // value the function has to interpret.
+      ...(over.roles === undefined ? {} : { roles: over.roles }),
+      ...(over.modo === undefined ? {} : { modo: over.modo }),
+      ...(over.revogarCredencial === undefined
+        ? {}
+        : { revogarCredencial: over.revogarCredencial }),
+    } satisfies CriarUsuariosTesteDeps,
+  };
+}
+
+/** A stored record, so a test can prove an additional mint left it alone. */
+function registro(over: Partial<UsuarioTesteMercadoLivre> = {}): UsuarioTesteMercadoLivre {
+  return {
+    role: USUARIO_TESTE_ROLE.comprador,
+    id: 555,
+    nickname: 'TEST-JA-EXISTE',
+    password: 'ja-salva',
+    site_id: 'MLB',
+    site_status: 'active',
+    email: null,
+    createdAt: NOW - 1000,
+    createdByUserId: 999,
+    ...over,
   };
 }
 
@@ -241,6 +279,205 @@ describe('criarUsuariosTeste', () => {
   it('falls back to the requested site when ML omits site_id', async () => {
     const { deps: d } = deps({ mint: async () => minted({ site_id: undefined }) });
     expect((await criarUsuariosTeste(d)).usuarios[0]?.site_id).toBe('MLB');
+  });
+});
+
+describe('criarUsuariosTeste — additional mint (modo: novo)', () => {
+  it('mints ONE fresh buyer beside the stored one, never over it', async () => {
+    // #1087: Mercado Pago stopped accepting purchases from the stored buyer, so
+    // it has to be replaced — but the seller still works and its slot must not
+    // be spent again, and the old buyer's password is unrecoverable.
+    const store = fakeStore([registro()]);
+    const { deps: d, criarUsuarioTeste } = deps({
+      store,
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+    });
+
+    const result = await criarUsuariosTeste(d);
+
+    expect(criarUsuarioTeste).toHaveBeenCalledTimes(1);
+    expect(result.criados).toEqual([USUARIO_TESTE_ROLE.comprador]);
+    expect(result.reaproveitados).toEqual([]);
+    expect(result.usuarios).toHaveLength(1);
+    // The stored record is byte-identical — this is the property the whole doc-id
+    // scheme exists for.
+    expect(store.docs.get(USUARIO_TESTE_ROLE.comprador)).toEqual(registro());
+    expect(store.docs.get(docIdAdicional(USUARIO_TESTE_ROLE.comprador, 1001))?.nickname).toBe(
+      'TEST0001',
+    );
+  });
+
+  it('RULE 2 is SUSPENDED — a stored record is not reused', async () => {
+    // The pair bootstrap reuses so a retry costs zero slots. "Give me a new
+    // buyer" is the opposite request, and answering it with the old one would
+    // silently do nothing on the one screen that cannot show you it did nothing.
+    const { deps: d, criarUsuarioTeste } = deps({
+      store: fakeStore([registro()]),
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+    });
+
+    expect((await criarUsuariosTeste(d)).usuarios[0]?.nickname).not.toBe('TEST-JA-EXISTE');
+    expect(criarUsuarioTeste).toHaveBeenCalledTimes(1);
+  });
+
+  it('RULES 1 + 3 still hold: create lands before the wipe, and it is last', async () => {
+    const { deps: d, store } = deps({
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+    });
+
+    await criarUsuariosTeste(d);
+
+    expect(store.log).toEqual(['mint:1', 'create:comprador-1001', 'deleteAll']);
+  });
+
+  it('RULES 1 + 3: a failed mint stores nothing and keeps the credential', async () => {
+    const {
+      deps: d,
+      store,
+      deleteAll,
+    } = deps({
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+      mint: async () => {
+        throw new Error('ML: max test users reached');
+      },
+    });
+
+    await expect(criarUsuariosTeste(d)).rejects.toThrow('max test users');
+
+    expect(store.docs.size).toBe(0);
+    expect(deleteAll).not.toHaveBeenCalled();
+  });
+
+  it('writes through create, so a colliding id FAILS instead of overwriting', async () => {
+    // The doc id comes from ML's response and cannot collide in practice; this
+    // pins what happens if it ever did, because "overwrite" would mean losing a
+    // password nothing can reissue.
+    const store = fakeStore();
+    const existente = registro({ id: 1001, nickname: 'NAO-PERCA-ISTO', password: 'preciosa' });
+    await store.create(docIdAdicional(USUARIO_TESTE_ROLE.comprador, 1001), existente);
+    const { deps: d, deleteAll } = deps({
+      store,
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+    });
+
+    await expect(criarUsuariosTeste(d)).rejects.toThrow('ALREADY_EXISTS');
+
+    expect(store.docs.get(docIdAdicional(USUARIO_TESTE_ROLE.comprador, 1001))).toEqual(existente);
+    expect(deleteAll).not.toHaveBeenCalled();
+  });
+
+  it('derives the doc id from the ML user id, never the bare role', () => {
+    expect(docIdAdicional(USUARIO_TESTE_ROLE.comprador, 120506781)).toBe('comprador-120506781');
+    expect(docIdAdicional(USUARIO_TESTE_ROLE.vendedor, 7)).toBe('vendedor-7');
+  });
+});
+
+describe('criarUsuariosTeste — the revocation opt-out', () => {
+  it('skips the wipe entirely when revogarCredencial is false', async () => {
+    const {
+      deps: d,
+      store,
+      deleteAll,
+    } = deps({
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+      revogarCredencial: false,
+    });
+
+    const result = await criarUsuariosTeste(d);
+
+    expect(deleteAll).not.toHaveBeenCalled();
+    expect(result.credencialRevogada).toBe(false);
+    expect(result.credenciaisRemovidas).toBe(0);
+    // ⚠️ Opting out of rule 3 must not weaken rule 1: the record is still on
+    // disk before the function returns.
+    expect(store.log).toEqual(['mint:1', 'create:comprador-1001']);
+    expect(store.docs.size).toBe(1);
+  });
+
+  it('⚠️ an ABSENT revogarCredencial REVOKES — a missing field may not disable it', async () => {
+    // #1059's shape: a guard that a value nobody sent can switch off. Here it
+    // would leave a real seller account wired to the ERP, silently.
+    const { deps: d, deleteAll } = deps({});
+
+    const result = await criarUsuariosTeste(d);
+
+    expect(deleteAll).toHaveBeenCalledTimes(1);
+    expect(result.credencialRevogada).toBe(true);
+  });
+
+  it('reports credencialRevogada even when there was nothing to delete', async () => {
+    // `credenciaisRemovidas === 0` is ambiguous — it is also what an empty
+    // subcollection returns — so the flag is what the UI has to read.
+    const { deps: d } = deps({ deleteAll: async () => 0 });
+
+    const result = await criarUsuariosTeste(d);
+
+    expect(result.credenciaisRemovidas).toBe(0);
+    expect(result.credencialRevogada).toBe(true);
+  });
+});
+
+describe('criarUsuariosTeste — the ten-slot cap', () => {
+  function dezRegistros(): UsuarioTesteMercadoLivre[] {
+    return Array.from({ length: USUARIO_TESTE_LIMITE_POR_CONTA }, (_, i) =>
+      registro({ id: 2000 + i, nickname: `TEST-${String(i)}` }),
+    );
+  }
+
+  it('refuses at the limit, before minting anything or touching the credential', async () => {
+    const store = fakeStore();
+    for (const [i, r] of dezRegistros().entries()) await store.create(`comprador-${String(i)}`, r);
+    const {
+      deps: d,
+      criarUsuarioTeste,
+      deleteAll,
+    } = deps({
+      store,
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+    });
+
+    const err = await criarUsuariosTeste(d).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(TestUserGuardError);
+    expect((err as TestUserGuardError).code).toBe('ML_LIMITE_USUARIOS_TESTE');
+    expect((err as TestUserGuardError).status).toBe(409);
+    expect((err as TestUserGuardError).extra).toMatchObject({
+      registrados: USUARIO_TESTE_LIMITE_POR_CONTA,
+      limite: USUARIO_TESTE_LIMITE_POR_CONTA,
+    });
+    expect(criarUsuarioTeste).not.toHaveBeenCalled();
+    expect(deleteAll).not.toHaveBeenCalled();
+  });
+
+  it('guards the PAIR bootstrap too, not only the additional mint', async () => {
+    const store = fakeStore();
+    for (const [i, r] of dezRegistros().entries()) await store.create(`comprador-${String(i)}`, r);
+    const { deps: d, criarUsuarioTeste } = deps({ store });
+
+    await expect(criarUsuariosTeste(d)).rejects.toBeInstanceOf(TestUserGuardError);
+    expect(criarUsuarioTeste).not.toHaveBeenCalled();
+  });
+
+  it('allows the mint one below the limit', async () => {
+    const store = fakeStore();
+    const noveRegistros = dezRegistros().slice(0, USUARIO_TESTE_LIMITE_POR_CONTA - 1);
+    for (const [i, r] of noveRegistros.entries()) await store.create(`comprador-${String(i)}`, r);
+    const { deps: d, criarUsuarioTeste } = deps({
+      store,
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+    });
+
+    await criarUsuariosTeste(d);
+
+    expect(criarUsuarioTeste).toHaveBeenCalledTimes(1);
   });
 });
 
