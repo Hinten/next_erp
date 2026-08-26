@@ -27,6 +27,7 @@ import {
   type BuildItemPayloadInput,
   type ItemVariationInput,
   type MlAttribute,
+  type MlShippingMode,
   attrPackageDimensions,
   attrSizeGridId,
   attrSizeGridRowId,
@@ -151,6 +152,15 @@ export interface AssemblePublishArgs {
    * parity — ML itself rejects chart-required domains).
    */
   sizeChart?: ResolvedSizeChart | null;
+  /**
+   * The conta's `shipping.mode`, straight from the integração doc. Passed
+   * through untouched and deliberately NOT validated here: whether a mode is
+   * available to this seller is an account/category fact only ML holds, and it
+   * already answers with a readable `shipping.me2_adoption_mandatory` cause that
+   * `publishFalhas.ts` parses. A local guess would only be a second, staler
+   * copy of that answer.
+   */
+  shippingMode?: MlShippingMode | null;
 }
 
 /* ------------------------- publishing model + guards ------------------------ */
@@ -725,5 +735,6 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       includeSku: args.isUserProductSeller || variations.length === 0,
     }),
     variations,
+    shippingMode: args.shippingMode ?? null,
   };
 }
