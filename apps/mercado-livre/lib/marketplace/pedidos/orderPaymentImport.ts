@@ -26,12 +26,23 @@
  *     two-step precedent as the shipments handler and the order-import's own
  *     pack resolution). No match at all → `pedido-nao-encontrado`.
  *
- *     ⚠️ SEAM: a payment notification for an order this ERP hasn't discovered
- *     yet is DROPPED here, not used to bootstrap a pedido — the `orders_v2`/
- *     `orders` topic (`orderImport.ts`) is the ONLY pedido creator. This is
- *     Lucas's explicit decision for this Step 9 slice, not a legacy behavior
- *     (legacy's `pedidoOldOrder` lookup on this path force-unwraps and would
- *     crash the same way on a genuine miss).
+ *     ⚠️ SEAM (revised by #1087). `orderImport.ts` is STILL the only pedido
+ *     creator — this module creates none and holds no scheduler. What changed is
+ *     that a miss is no longer a terminal drop: the result carries `orderId` and
+ *     a verdict, and the DISPATCHER (`notificacoes/notificacao.ts` →
+ *     `pendingOrderBootstrap.ts`) asks the `orders_v2` topic to import it.
+ *
+ *     Why it had to change: ML fires `orders_v2` only for "vendas confirmadas",
+ *     so a `payment_in_process` order — which EXISTS, and whose Mercado Pago
+ *     payment notifies immediately — reaches us here and nowhere else. Dropping
+ *     it meant no pedido, therefore no stock reservation, while the buyer held
+ *     the unit and another channel could sell it.
+ *
+ *     Two guards decide (`decidirBootstrapPedido`): the payment must not be
+ *     older than `pedidoBootstrapMaxAgeMs()` (a sweep re-drive or `missed_feeds`
+ *     replay must not reserve stock for a long-closed order), and must not be
+ *     terminally dead. A refusal reports its OWN skip value so it surfaces as
+ *     `dropped` rather than as work performed.
  *  5. Staleness outer guard (:1205), NULL-TOLERANT the opposite way from the
  *     shipments handler: proceed iff the stored pagamento doesn't exist yet,
  *     OR its stored `ultimaModificacao` is null, OR it's older than the
@@ -66,6 +77,18 @@
  *     `onPedidoChanged` trigger observes the pedido write and records the
  *     transition (with a null usuário — this runs on the Admin SDK).
  *
+ *  8. RESERVA RELEASE (#1087 review) — the counterpart of (7), and the reason
+ *     this module writes `estado` twice. A pedido the bootstrap created sits at
+ *     `aguardandoConfirmacaoDePagamento`, which is in `ESTADOS_PEDIDO_RESERVA`.
+ *     When the payment then dies, NOTHING else in the repo can move it: the
+ *     order import's arms need an `orders_v2` that a never-seller-visible order
+ *     does not fire, `podeAvancarParaPago` needs `emProcessamento`, and the
+ *     downgrade needs `pago` — so the unit would stay reserved forever. This
+ *     topic is the surface that DOES arrive. The target estado comes from
+ *     `statusToEstadoPedido`, the repo's canonical payment→pedido mapping, and is
+ *     refused while any pagamento is `aprovado` or the pedido has left the
+ *     pre-payment set.
+ *
  * THROW-ON-TRANSIENT discipline: every error except a 404 on the primary
  * `getPayment` call PROPAGATES (ML API non-404, network, Firestore,
  * `MlStatusDesconhecidoError` out of `mlPaymentToPagamento`, a `ZodError` out
@@ -83,12 +106,12 @@ import {
   type MercadoLivreApi,
   type MlPayment,
 } from '@delfrance/integrations-mercado-livre';
-import { STATUS_PAGAMENTO } from '@delfrance/schemas';
+import { STATUS_PAGAMENTO, statusToEstadoPedido } from '@delfrance/schemas';
 import { roundReais } from '@delfrance/core/money';
 import { coerceToMicros } from '@delfrance/core/datetime';
 import { pagamentoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
 
-import { loadContaBag, podeAvancarParaPago } from './orderImport';
+import { ESTADOS_PEDIDO_PRE_PAGAMENTO_ML, loadContaBag, podeAvancarParaPago } from './orderImport';
 import { makePagamentoIdMercadoLivre } from './orderIds';
 import { resolvePedidoIdByOrderId } from './orderPedidoResolve';
 import { mergePagamentoUpdate, mlPaymentToPagamento } from './orderPaymentMapping';
@@ -102,11 +125,27 @@ export interface PaymentImportDeps {
 
 export interface PaymentImportResult {
   pedidoId: string | null;
+  /**
+   * The ML order key this payment resolved to (`external_reference ?? order_id`),
+   * or null when it had none. The dispatcher needs it to address the pedido
+   * bootstrap — see {@link PaymentImportResult.skipped}'s
+   * `pedido-nao-encontrado` arm.
+   */
+  orderId: number | null;
   skipped:
     | 'payment-404'
     | 'marketplace-none'
     | 'sem-order-key'
+    /**
+     * No pedido owns this order YET. Since #1087 this is no longer a terminal
+     * drop: the caller bootstraps one via the `orders_v2` topic. The two arms
+     * below are the cases where it must NOT.
+     */
     | 'pedido-nao-encontrado'
+    /** No pedido, and the payment is too old (or too far in the future) to bootstrap one. */
+    | 'pedido-nao-encontrado-expirado'
+    /** No pedido, and the payment is terminally dead — there is no sale to reserve stock for. */
+    | 'pedido-nao-encontrado-pagamento-morto'
     | 'stale'
     | null;
 }
@@ -116,6 +155,98 @@ export interface PaymentImportResult {
  * for "not a marketplace-tagged payment".
  */
 const MARKETPLACE_NONE = 'NONE';
+
+/**
+ * How old a payment may be and still bootstrap a pedido (#1087). Default 72h,
+ * overridable with `MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H`.
+ *
+ * WHY a bound exists at all: the hot sweep re-drives hour-old payloads and the
+ * `missed_feeds` backstop replays entries up to ML's 48h retention. Without it a
+ * replayed payment would create a pedido and RESERVE STOCK for an order long
+ * since closed.
+ *
+ * WHY 72h: ML holds a boleto up to ~3 business days, and a pending boleto is a
+ * real sale whose stock should stay reserved. Anything older than that is past
+ * every window ML itself keeps the payment pending in.
+ *
+ * ⚠️ Deliberately NOT phase-aware, unlike `toDisposition`. The bound is on the
+ * PAYMENT's own creation clock, not on the notification's `sent`, so a sweep
+ * re-drive or a `missed_feeds` replay of a genuinely fresh payment still passes.
+ * Do not add a phase parameter here.
+ */
+export function pedidoBootstrapMaxAgeMs(): number {
+  const raw = Number(process.env.MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H);
+  const horas = Number.isFinite(raw) && raw > 0 ? raw : 72;
+  return horas * 60 * 60 * 1000;
+}
+
+/**
+ * Tolerance for a payment stamped slightly in the future — clock skew between ML
+ * and us. Without an UPPER bound a forward-dated `date_created` would NEVER
+ * expire, because `now - created` stays negative and can never exceed the max
+ * age: the exact silent bug `@delfrance/data/admin/oauth-state` documents
+ * (`MAX_FUTURE_SKEW_MS`), which lived in only one of two channels for months.
+ */
+export const PEDIDO_BOOTSTRAP_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * ML payment statuses that mean the sale is OVER — the terminal arms of
+ * `statusPagamentoFromMlPaymentStatus` (`orderStatusMaps.ts`). Bootstrapping a
+ * pedido for one of these would reserve stock for a purchase that will never
+ * complete, and `terminate on death` is the loop guard that keeps a payment
+ * whose order never appears from being retried forever.
+ *
+ * ⚠️ Matched against the RAW ML string, never the mapped enum:
+ * `statusPagamentoFromMlPaymentStatus` THROWS on a status ML has not documented,
+ * and this decision runs on a path that today returns cleanly — routing it
+ * through the mapper would turn a clean skip into a thrown error. An unrecognised
+ * status therefore bootstraps (conservative toward holding the stock) and logs.
+ */
+export const ML_PAYMENT_STATUS_TERMINAL: ReadonlySet<string> = new Set([
+  'rejected',
+  'cancelled',
+  'refunded',
+  'charged_back',
+]);
+
+/** Why {@link decidirBootstrapPedido} refused, or `'bootstrap'` when it did not. */
+export type BootstrapVeredito =
+  | 'bootstrap'
+  | 'pedido-nao-encontrado-expirado'
+  | 'pedido-nao-encontrado-pagamento-morto';
+
+/**
+ * Pure: may a payment with no owning pedido bootstrap one? Both guards, in µs.
+ *
+ * ⚠️ UNITS. Both sides are MICROSECONDS at the comparison — the
+ * `ultimaModificacao` family, not the millisecond family the ML link docs use
+ * (root `CLAUDE.md` rule 7). `criadoUs` comes from `coerceToMicros(date_created)`,
+ * which parses ML's ISO-8601 string at full precision.
+ *
+ * ⚠️ `criadoUs == null` FAILS OPEN (bootstraps). That is the house convention for
+ * an unreadable timestamp (`ack404EhSeguro`, the staleness gate above), and here
+ * it is also the direction that holds stock. `coerceToMicros` returns null for
+ * three distinct reasons — absent, unparseable, or a bare number in the
+ * undeterminable ms/µs gap — and none of them means "age 0".
+ */
+export function decidirBootstrapPedido(args: {
+  criadoUs: number | null;
+  statusMl: string | null;
+  nowUs: number;
+  maxAgeMs?: number;
+}): BootstrapVeredito {
+  const { criadoUs, statusMl, nowUs } = args;
+  if (statusMl != null && ML_PAYMENT_STATUS_TERMINAL.has(statusMl)) {
+    return 'pedido-nao-encontrado-pagamento-morto';
+  }
+  if (criadoUs == null) return 'bootstrap';
+  const idadeUs = nowUs - criadoUs;
+  if (idadeUs < 0 && -idadeUs > PEDIDO_BOOTSTRAP_MAX_FUTURE_SKEW_MS * 1000) {
+    return 'pedido-nao-encontrado-expirado';
+  }
+  const maxAgeUs = (args.maxAgeMs ?? pedidoBootstrapMaxAgeMs()) * 1000;
+  return idadeUs > maxAgeUs ? 'pedido-nao-encontrado-expirado' : 'bootstrap';
+}
 
 /**
  * `orderKey = external_reference ?? order_id.toString()`, then `int.parse`
@@ -184,14 +315,14 @@ export async function importPagamentoMercadoLivre(
     payment = await api.getPayment(paymentId);
   } catch (err) {
     if (err instanceof MercadoLivreHttpError && err.status === 404) {
-      return { pedidoId: null, skipped: 'payment-404' };
+      return { pedidoId: null, orderId: null, skipped: 'payment-404' };
     }
     throw err;
   }
 
   // (2) tasks.dart:1172-1174 — zero Firestore ops for a non-marketplace payment.
   if (payment.marketplace === MARKETPLACE_NONE) {
-    return { pedidoId: null, skipped: 'marketplace-none' };
+    return { pedidoId: null, orderId: null, skipped: 'marketplace-none' };
   }
 
   // (3) tasks.dart:1176.
@@ -202,18 +333,39 @@ export async function importPagamentoMercadoLivre(
       externalReference: payment.external_reference ?? null,
       orderIdField: payment.order_id ?? null,
     });
-    return { pedidoId: null, skipped: 'sem-order-key' };
+    return { pedidoId: null, orderId: null, skipped: 'sem-order-key' };
   }
 
   // (4) tasks.dart:1178-1191 — the shared pack-first resolver (`orderPedidoResolve.ts`).
   const pedidoId = await resolvePedidoIdByOrderId(db, orderId);
   if (pedidoId == null) {
-    // SEAM — see module doc point (4): no import fallback, by design.
+    // (4b) #1087 — the seam moved. This handler still creates NO pedido; it
+    // reports whether the caller may ask the `orders_v2` topic to. See the
+    // module doc point (4).
+    const veredito = decidirBootstrapPedido({
+      criadoUs: coerceToMicros(payment.date_created ?? null),
+      statusMl: payment.status ?? null,
+      nowUs,
+    });
+    if (veredito !== 'bootstrap') {
+      console.warn('[mercado-livre] payment import: bootstrap do pedido recusado', {
+        paymentId,
+        orderId,
+        motivo: veredito,
+        statusMl: payment.status ?? null,
+        dateCreated: payment.date_created ?? null,
+      });
+      return { pedidoId: null, orderId, skipped: veredito };
+    }
+    // An ML status this port has not catalogued reaches here and bootstraps —
+    // conservative toward holding the stock. It is not a lost signal: once the
+    // pedido exists, the next delivery runs `mlPaymentToPagamento`, which throws
+    // `MlStatusDesconhecidoError` on exactly that value rather than guessing.
     console.warn('[mercado-livre] payment import: pedido não encontrado para a order', {
       paymentId,
       orderId,
     });
-    return { pedidoId: null, skipped: 'pedido-nao-encontrado' };
+    return { pedidoId: null, orderId, skipped: 'pedido-nao-encontrado' };
   }
 
   const contaBag = await loadContaBag(db, contaId);
@@ -244,7 +396,7 @@ export async function importPagamentoMercadoLivre(
       existingUltimaModificacao == null ||
       existingUltimaModificacao < mapped.ultimaModificacao;
     if (!proceed) {
-      return { pedidoId, skipped: 'stale' };
+      return { pedidoId, orderId, skipped: 'stale' };
     }
 
     // (6) create-or-merge upsert at the deterministic id — doc id kept either way.
@@ -262,6 +414,57 @@ export async function importPagamentoMercadoLivre(
       // refuses (no cliente, no endereço, no frete) — and `pago` authorizes
       // dispatch and NF-e emission. Strictly more conservative than before; the
       // log below makes the delta observable rather than silent.
+      // #1087 (review) — RELEASE the stock reservation when the sale dies.
+      //
+      // A pedido this channel bootstrapped sits at
+      // `aguardandoConfirmacaoDePagamento`, which is in `ESTADOS_PEDIDO_RESERVA`.
+      // If the payment is then rejected/cancelled/refunded, NOTHING else in the
+      // repo would ever move it: the order import's arms need an `orders_v2` that
+      // a never-seller-visible order does not fire, `podeAvancarParaPago` needs
+      // `emProcessamento`, and the downgrade needs `pago`. The unit would stay
+      // reserved forever. This topic is the surface that DOES arrive.
+      //
+      // The target estado is not invented here — `statusToEstadoPedido` is the
+      // repo's canonical payment→pedido mapping (Flutter's
+      // `STATUS_PAGAMENTO.toEstadoPedido()`), and every terminal status it maps
+      // lands outside `ESTADOS_PEDIDO_RESERVA`.
+      //
+      // ⚠️ Scoped to the estados the ML bootstrap can create, so it can never
+      // touch business-owned state, and refused outright while ANY pagamento on
+      // the pedido is `aprovado` — a partially-paid pedido whose second payment
+      // was rejected is still a live sale. Every input is re-derived from this
+      // transaction's own reads.
+      const statusAlvo = mapped.status_pagamento;
+      if (
+        statusAlvo != null &&
+        payment.status != null &&
+        ML_PAYMENT_STATUS_TERMINAL.has(payment.status) &&
+        ESTADOS_PEDIDO_PRE_PAGAMENTO_ML.has(pedidoRaw.estado as never)
+      ) {
+        const algumAprovado = allPagamentosSnap.docs
+          .filter((d) => d.id !== pagamentoId)
+          .some(
+            (d) =>
+              (d.data() as Record<string, unknown>).status_pagamento === STATUS_PAGAMENTO.aprovado,
+          );
+        if (!algumAprovado) {
+          const estadoLiberado = statusToEstadoPedido(statusAlvo);
+          console.warn('[mercado-livre] payment import: reserva liberada — pagamento terminal', {
+            pedidoId,
+            de: pedidoRaw.estado,
+            para: estadoLiberado,
+            statusMl: payment.status,
+          });
+          tx.update(
+            pedidoRef,
+            pedidoCollection.parseMerge({
+              estado: estadoLiberado,
+              ultimaModificacao: maiorUs(readMicrosField(pedidoRaw, 'ultimaModificacao'), nowUs),
+            }),
+          );
+        }
+      }
+
       const podeAvancar = podeAvancarParaPago({
         estado: pedidoRaw.estado as never,
         clientePedidoOuterRef: (pedidoRaw.clientePedidoOuterRef ?? null) as string | null,
@@ -308,6 +511,6 @@ export async function importPagamentoMercadoLivre(
       }
     }
 
-    return { pedidoId, skipped: null };
+    return { pedidoId, orderId, skipped: null };
   });
 }

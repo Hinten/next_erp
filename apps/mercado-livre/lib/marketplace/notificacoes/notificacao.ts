@@ -100,6 +100,11 @@ import {
   importPagamentoMercadoLivre,
 } from '../pedidos/orderPaymentImport';
 import {
+  type BootstrapAgendamento,
+  type PendingOrderBootstrapArgs,
+  agendarBootstrapPedido,
+} from '../pedidos/pendingOrderBootstrap';
+import {
   type ShipmentImportResult,
   importShipmentMercadoLivre,
 } from '../pedidos/orderShipmentImport';
@@ -742,6 +747,26 @@ const runPaymentImport: PaymentImportRunner = async (db, integracaoId, resourceI
 };
 
 /**
+ * The #1087 pedido-bootstrap seam: enqueue a synthetic `orders_v2` for an order
+ * ML has not yet made seller-visible. Injectable exactly like the import runners
+ * above, because the real one reaches Cloud Tasks and a test must be able to
+ * COUNT enqueues (the unbounded-loop guard) without one.
+ */
+export type PendingOrderBootstrapRunner = (
+  args: PendingOrderBootstrapArgs,
+) => Promise<BootstrapAgendamento>;
+
+/**
+ * Production bootstrap. The Cloud Tasks scheduler is constructed inside
+ * `pendingOrderBootstrap.ts`, NOT here, and that placement is deliberate:
+ * `mlTasks.ts` imports `MERCADO_LIVRE_NOTIFICATION_QUEUE` from this module, so a
+ * direct `mlTasks` import here would close a file-level import cycle. Keeping the
+ * edge in one file leaves this module's import list free of the Functions SDK.
+ */
+const runPendingOrderBootstrap: PendingOrderBootstrapRunner = (args) =>
+  agendarBootstrapPedido(args);
+
+/**
  * The Step 9 PR 3 shipment-sync seam invoked for `shipments` notifications —
  * shaped exactly like `OrderImportRunner`/`PaymentImportRunner` (topic handler
  * → typed runner, injectable for tests, defaulted to the real
@@ -994,8 +1019,43 @@ export type PaymentImportOutcome =
   | 'payment-404'
   | 'marketplace-none'
   | 'sem-order-key'
+  /** No pedido owns the order, and the payment carried no order key to ask with. */
   | 'pedido-nao-encontrado'
+  /**
+   * #1087 — a bootstrap was owed but the enqueue seam is off
+   * (`MERCADO_LIVRE_TASKS_DISABLED`). NOT a success: it disposes as `fail`, so the
+   * doc survives for the sweep to re-drive once the valve is back. Reporting it as
+   * `done` would let the SWEEP delete the failure doc, consuming the delivery and
+   * losing the bootstrap for good — the exact "success that did nothing" shape this
+   * issue is about.
+   */
+  | 'pedido-bootstrap-sem-fila'
+  /** #1087 — a synthetic `orders_v2` was enqueued; the pedido is on its way. */
+  | 'pedido-bootstrap-agendado'
+  /** #1087 — no pedido, and the payment is too old (or future-dated) to bootstrap one. */
+  | 'pedido-nao-encontrado-expirado'
+  /** #1087 — no pedido, and the payment is terminally dead. Nothing to reserve. */
+  | 'pedido-nao-encontrado-pagamento-morto'
   | 'stale';
+
+/**
+ * The `pedido-nao-encontrado` arms that must NOT read as work performed. They
+ * dispose as `drop`, so the task reports `dropped` and the sweep counts them
+ * under their own key — the `ack` vs `ignore` distinction #813 turned on, where
+ * `done` for something that did nothing is indistinguishable from success.
+ */
+const PAYMENT_OUTCOMES_DROP: ReadonlySet<PaymentImportOutcome> = new Set([
+  'pedido-nao-encontrado-expirado',
+  'pedido-nao-encontrado-pagamento-morto',
+]);
+
+/**
+ * The one payments arm that must SURVIVE rather than be dropped: the work is
+ * still owed and only a deployment valve is in the way, so the doc has to outlive
+ * this delivery. `fail` keeps it for the hot sweep, which re-drives it (the
+ * pagamento upsert is idempotent) and resolves the moment the valve is back.
+ */
+const PAYMENT_OUTCOME_FAIL: PaymentImportOutcome = 'pedido-bootstrap-sem-fila';
 
 /**
  * What the `shipments` import actually DID, for the log. The fourth and last of
@@ -1063,6 +1123,7 @@ export interface NotificationRunners {
   claimImportRunner?: ClaimImportRunner;
   questionImportRunner?: QuestionImportRunner;
   orderMessageImportRunner?: OrderMessageImportRunner;
+  pendingOrderBootstrapRunner?: PendingOrderBootstrapRunner;
 }
 
 /**
@@ -1081,6 +1142,7 @@ export async function processNotificationPayload(
   const migrationRunner = runners.migrationRunner ?? runUptinMigration;
   const orderImportRunner = runners.orderImportRunner ?? runOrderImport;
   const paymentImportRunner = runners.paymentImportRunner ?? runPaymentImport;
+  const bootstrapRunner = runners.pendingOrderBootstrapRunner ?? runPendingOrderBootstrap;
   const shipmentImportRunner = runners.shipmentImportRunner ?? runShipmentImport;
   const claimImportRunner = runners.claimImportRunner ?? runClaimImport;
   const questionImportRunner = runners.questionImportRunner ?? runQuestionImport;
@@ -1189,6 +1251,24 @@ export async function processNotificationPayload(
         resourceId,
         skipped: result.skipped,
       });
+    }
+    // #1087 — the order EXISTS at ML but is not seller-visible yet, so no
+    // `orders_v2` will ever arrive for it and the pedido would never exist,
+    // leaving the unit unreserved while the buyer holds it. Ask the order topic
+    // to import it. `orderImport.ts` stays the only pedido creator; this only
+    // addresses it. The two refusal arms (`-expirado`, `-pagamento-morto`) never
+    // reach here — they carry their own skip value and dispose as `drop`.
+    if (result.skipped === 'pedido-nao-encontrado' && result.orderId != null) {
+      const agendamento = await bootstrapRunner({
+        orderId: result.orderId,
+        userId: payload.user_id,
+        recebidoMs: payload.received ?? null,
+      });
+      return {
+        kind: 'done',
+        integracaoId,
+        detail: agendamento === 'agendado' ? 'pedido-bootstrap-agendado' : PAYMENT_OUTCOME_FAIL,
+      };
     }
     // Same as `orders_v2` above. This is the branch #1087 was actually watching:
     // a payment that never imported acked `done` and looked exactly like one that
@@ -1479,6 +1559,27 @@ function pipelineFor(runners: NotificationRunners = {}) {
           kind: 'fail',
           reason: `ML API retornou 500 (não é erro do cliente): ${outcome.message}`,
         };
+      }
+      // #1087 — two `payments` arms do real deciding and then do NOTHING, on
+      // purpose. Reporting them as `done` is the failure mode this issue is
+      // about: an outcome indistinguishable from work performed. They `drop`, so
+      // the task reports `dropped` and each is counted under its own key.
+      // Deliberately narrow: every OTHER `done` keeps its bare `resolve`, so no
+      // existing operator counter gets renamed.
+      const detalhe = outcome.kind === 'done' ? outcome.detail : undefined;
+      if (detalhe != null && PAYMENT_OUTCOMES_DROP.has(detalhe as PaymentImportOutcome)) {
+        return { kind: 'drop', label: detalhe };
+      }
+      if (detalhe === PAYMENT_OUTCOME_FAIL) {
+        return {
+          kind: 'fail',
+          reason:
+            'bootstrap do pedido não enfileirado — MERCADO_LIVRE_TASKS_DISABLED; ' +
+            'mantido para a varredura re-dirigir quando a fila voltar',
+        };
+      }
+      if (detalhe === 'pedido-bootstrap-agendado') {
+        return { kind: 'resolve', label: detalhe };
       }
       return { kind: 'resolve' }; // done
     },
