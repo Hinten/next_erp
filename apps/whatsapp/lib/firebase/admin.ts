@@ -42,6 +42,45 @@ function loadServiceAccount(): Record<string, unknown> | null {
 }
 
 /**
+ * A STRING field out of `FIREBASE_CONFIG`, the JSON blob Firebase-managed
+ * runtimes (App Hosting, Cloud Functions) inject — `null` when the variable is
+ * absent, unparseable, or carries nothing usable for `key`.
+ *
+ * ⚠️ TRUTHINESS, not `typeof === 'string'`. The blob really does carry EMPTY
+ * values: the deployed App Hosting backend's is exactly
+ * `{"databaseURL":"","projectId":"…","storageBucket":"…"}`, so a type-only check
+ * would hand a caller `''` and stop the ladder on a value that resolves nothing.
+ *
+ * ⚠️ firebase-admin ALSO accepts a filesystem PATH in this variable
+ * (`lib/app/lifecycle.js:loadOptionsFromEnvVar` —
+ * `config.startsWith('{') ? config : readFileSync(config)`). That form is
+ * deliberately NOT supported here: no runtime this repo deploys to uses it, and
+ * reading the filesystem out of a config resolver would make every unit test
+ * that touches it non-hermetic. A path lands in the `SyntaxError` catch below,
+ * so the caller keeps falling back — the same outcome as an absent value.
+ *
+ * ⚠️ Exported for unit tests, and that is load-bearing rather than tidy. BOTH
+ * current callers guard the result with `if (value)` before using it, so an
+ * empty string is swallowed downstream and the `&& value` below is invisible to
+ * every ladder test — mutation-proven: deleting it reds nothing through the
+ * public functions. Testing the contract HERE is the only thing pinning it, and
+ * the contract is what protects the next caller who forgets to guard.
+ */
+export function firebaseConfigValue(key: 'projectId' | 'storageBucket'): string | null {
+  const raw = process.env.FIREBASE_CONFIG;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const value = parsed[key];
+    return typeof value === 'string' && value ? value : null;
+  } catch (err) {
+    // Malformed FIREBASE_CONFIG — treat as absent and keep falling back.
+    if (!(err instanceof SyntaxError)) throw err;
+    return null;
+  }
+}
+
+/**
  * Resolve the Firebase project id without demanding per-backend config.
  * Order: explicit `FIREBASE_PROJECT_ID` (dev / override) → the env Cloud Run /
  * App Hosting inject for free (`GOOGLE_CLOUD_PROJECT`, `FIREBASE_CONFIG`) → the
@@ -57,16 +96,8 @@ export function resolveProjectId(serviceAccount: Record<string, unknown> | null)
 
   // Firebase-managed runtimes (App Hosting, Functions) inject FIREBASE_CONFIG
   // as a JSON string carrying the projectId.
-  const firebaseConfig = process.env.FIREBASE_CONFIG;
-  if (firebaseConfig) {
-    try {
-      const parsed = JSON.parse(firebaseConfig) as { projectId?: unknown };
-      if (typeof parsed.projectId === 'string' && parsed.projectId) return parsed.projectId;
-    } catch (err) {
-      // Malformed FIREBASE_CONFIG — treat as absent and keep falling back.
-      if (!(err instanceof SyntaxError)) throw err;
-    }
-  }
+  const fromConfig = firebaseConfigValue('projectId');
+  if (fromConfig) return fromConfig;
 
   const saProject = serviceAccount?.project_id;
   if (typeof saProject === 'string' && saProject) return saProject;
@@ -110,15 +141,42 @@ export function getAdminFirestore(): Firestore {
 
 /**
  * Resolve the Cloud Storage bucket name for server-side media uploads (the
- * inbound webhook caches received WhatsApp media as `Arquivo`s). `getAdminApp()`
- * does NOT set `storageBucket`, so a no-arg `.bucket()` would throw — resolve it
- * explicitly: `FIREBASE_STORAGE_BUCKET` (set it if the derived name is wrong,
- * e.g. a newer `<project>.firebasestorage.app` bucket), else the classic default
- * `<projectId>.appspot.com`. Exported for unit tests.
+ * inbound webhook caches received WhatsApp media as `Arquivo`s).
+ *
+ * `getAdminApp()` passes an explicit options object to `initializeApp`, and
+ * firebase-admin merges `FIREBASE_CONFIG` into the app ONLY on the no-argument
+ * path (`lib/app/lifecycle.js`: `if (typeof options === 'undefined') { options =
+ * loadOptionsFromEnvVar() }`). So this app's admin app carries no
+ * `storageBucket`, a no-arg `.bucket()` would throw, and the name has to be
+ * resolved here.
+ *
+ * Order: `FIREBASE_STORAGE_BUCKET` (operator override) →
+ * `FIREBASE_CONFIG.storageBucket` (the runtime's OWN answer, injected on App
+ * Hosting / Cloud Functions) → the classic `<projectId>.appspot.com`.
+ *
+ * ⚠️ The middle tier is not a nicety. Firebase changed the DEFAULT bucket for
+ * projects created after late 2024 to `<projectId>.firebasestorage.app`, so on
+ * such a project the derived `.appspot.com` names a bucket that DOES NOT EXIST
+ * — a 500 on the first server-side upload. That is exactly what it did live on
+ * the Mercado Livre side; this channel had simply not uploaded yet.
+ * `FIREBASE_CONFIG` carried the correct name the whole time and nothing read it.
+ *
+ * ⚠️ Only the deployed runtimes inject `FIREBASE_CONFIG`, so local dev is
+ * unchanged: the tier is inert there and the derivation still runs.
+ *
+ * ⚠️ This THROWS where its twin in `apps/mercado-livre` returns null. The
+ * asymmetry is deliberate — that app has a `tryGetAdminBucket` whose callers
+ * degrade to skip-photos, this one has no such caller — so do NOT unify them.
+ *
+ * Exported for unit tests.
  */
 export function resolveStorageBucketName(): string {
   const explicit = process.env.FIREBASE_STORAGE_BUCKET;
   if (explicit) return explicit;
+
+  const fromConfig = firebaseConfigValue('storageBucket');
+  if (fromConfig) return fromConfig;
+
   const projectId = resolveProjectId(loadServiceAccount());
   if (!projectId) {
     throw new Error(

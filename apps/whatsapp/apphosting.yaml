@@ -31,8 +31,12 @@ runConfig:
 #                                function/queue (falls back to FUNCTIONS_REGION; no
 #                                default — unset, it throws); MUST match its
 #                                deploy region or the enqueue silently drops.
-#   FIREBASE_STORAGE_BUCKET      OPTIONAL — bucket for cached inbound media
-#                                (default <projectId>.appspot.com)
+#   FIREBASE_STORAGE_BUCKET      OPTIONAL — bucket for cached inbound media. The
+#                                backend reads FIREBASE_CONFIG.storageBucket (which
+#                                App Hosting injects, and which carries the project's
+#                                REAL default — <projectId>.firebasestorage.app for a
+#                                project created after late 2024), so set this only to
+#                                OVERRIDE. Last resort: <projectId>.appspot.com.
 #   WEB_APP_URL                  apps/web origin (the panel that drives the routes)
 #   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)
 

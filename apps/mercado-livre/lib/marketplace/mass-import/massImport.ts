@@ -284,8 +284,9 @@ function asNumberOrNull(v: unknown): number | null {
 }
 
 /**
- * A missing Storage bucket NAME is a backend/env misconfiguration
- * (`FIREBASE_STORAGE_BUCKET` / derivable project id unset), never a per-item
+ * A missing Storage bucket NAME is a backend/env misconfiguration — all three
+ * tiers failed (`FIREBASE_STORAGE_BUCKET`, `FIREBASE_CONFIG.storageBucket`, and a
+ * derivable project id are ALL unset), never a per-item
  * concern — `importProduto` already treats a missing `bucket` as "skip this
  * item's photos", so a mass-import run degrades the SAME way instead of
  * failing the entire batch over a Storage config gap. `tryGetAdminBucket`
