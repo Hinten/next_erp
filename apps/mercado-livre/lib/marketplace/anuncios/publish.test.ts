@@ -4,6 +4,7 @@ import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrat
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import { type PublishDeps, publishProduto } from './publish';
+import { MercadoLivrePublishError } from './publishCore';
 
 /**
  * Regression tests for the LEGACY-WIRE contract of the publish orchestrator. The
@@ -2197,5 +2198,122 @@ describe('publishProduto — which anúncio a publish targets', () => {
     await publishProduto({ ...makeDeps(db, api), linkDocId: '' }, PROD);
 
     expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ id: 'MLB777', estado: 'p' });
+  });
+});
+
+/* ------------------- the User-Products SOLE MEMBER (#1087) ------------------ */
+
+describe('publishProduto — the User-Products sole member (#1087)', () => {
+  /** `XMLB000000000000000<parentLinkDocId>vMLB<itemId>` — the importer's own id. */
+  const CHILD = 'XMLB000000000000000ML-DOC-1vMLBMLB777';
+
+  function seedPublishedSingle(db: FakeDb): void {
+    seedBase(db);
+    // A produto published under the OLD convention: User-Products model, a REAL
+    // item id on the link (not a family id), and no children.
+    db.seed(LINKS_PATH, 'ML-DOC-1', {
+      ...FLUTTER_LINK,
+      isUserProductModel: true,
+      userProductId: 'MLBU-1',
+      status: 'active',
+      sub_status: [],
+    });
+  }
+
+  it('⛔ ADOPTS the live listing — it must never POST a second item', async () => {
+    // This is the assertion the whole change hangs on. Materialise the child
+    // WITHOUT seeding its member link with `link.id` and `findVariacaoLink`
+    // returns null, the member counts as new, `createItem` POSTs a duplicate,
+    // and `sweepRemovedMembers` then confirms the ORIGINAL as an orphan and
+    // pauses-then-closes it — a live, selling listing with its sales history and
+    // its search ranking. Do not delete this test.
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).toHaveBeenCalled();
+    expect(mocks.updateItem!.mock.calls[0]![0]).toBe('MLB777');
+  });
+
+  it('seeds the member link with the existing item id, which is what makes it a PUT', async () => {
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const member = db.docs(`produtos/${CHILD}/variacaoMercadoLivre`).get(CHILD)!;
+    expect(member.itemId).toBe('MLB777');
+    expect(member.userProductId).toBe('MLBU-1');
+  });
+
+  it('mints the child at the id a later IMPORT would use, so the two converge', async () => {
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const child = db.docs('produtos').get(CHILD)!;
+    expect(child.paiId).toBe(PROD);
+    expect(child.sku).toBe('SKU-1');
+    // A sole member has nothing to vary, so it carries no variation taxonomy —
+    // exactly what the importer writes for an empty `attribute_combinations`.
+    expect(child.variacoesUid).toBeNull();
+    expect(child.grupoDeVariacoesUid).toBeNull();
+  });
+
+  it('moves the AVAILABLE stock to the child and leaves the reserve on the parent', async () => {
+    // 10 in the warehouse, 2 owed to an open pedido whose release decrements the
+    // PARENT. The sweep prices a family off its children, so the child must own
+    // the sellable 8 — but moving the 2 as well would strand that release.
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(db.docs(`produtos/${CHILD}/estoques`).get(`est-${CHILD}-dep-1`)!.quantidade).toBe(8);
+    expect(db.docs(`produtos/${PROD}/estoques`).get('est-1')!.quantidade).toBe(2);
+  });
+
+  it('is idempotent — publishing twice leaves ONE child and does not re-move stock', async () => {
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    // The picture must resolve from cache on the second pass; re-uploading is a
+    // different code path and not what this test is about.
+    db.seed('arquivos', 'arq-1', {
+      filename: 'foto.jpg',
+      contentType: 'image/jpeg',
+      url: 'https://storage/foto.jpg',
+      externalIds: [{ integracaoPath: `documents/integracao/${CONTA}`, id: 'PIC-1' }],
+    });
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const filhos = [...db.docs('produtos').keys()].filter((id) => id !== PROD);
+    expect(filhos).toEqual([CHILD]);
+    // The second pass must NOT copy the parent's now-reduced quantity over the
+    // child's good row.
+    expect(db.docs(`produtos/${CHILD}/estoques`).get(`est-${CHILD}-dep-1`)!.quantidade).toBe(8);
+  });
+
+  it('still REFUSES a family id with no children — that one is not repairable here', async () => {
+    // `link.id` all digits means the ERP variations were deleted out from under a
+    // family that may still have live ML members. Materialising a sole member
+    // there would POST into it and the sweep would orphan the siblings.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, isUserProductModel: true, id: '426089904' });
+    const { api, mocks } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(MercadoLivrePublishError);
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).not.toHaveBeenCalled();
   });
 });

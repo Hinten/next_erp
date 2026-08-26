@@ -49,6 +49,15 @@ const PRODUTO_NOME_MAX = 100;
 
 /** One depósito row of the PARENT, as read before the move. */
 export interface MembroUnicoEstoque {
+  /**
+   * The row's ACTUAL Firestore document id.
+   *
+   * ⚠️ Not derivable. `makeEstoqueUid` is what THIS app writes, but the migrated
+   * corpus also holds rows at auto-ids that are matched by `depositoOuterRef`
+   * instead — so re-deriving the id here would patch a document that does not
+   * exist and leave the real row untouched, silently doubling the stock.
+   */
+  docId: string;
   depositoId: string;
   /** The parent row's stored quantity (gross — it still includes any reserve). */
   quantidade: number;
@@ -254,7 +263,8 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
   }));
 
   const parentEstoqueRestos = args.estoques.map((e) => ({
-    docId: makeEstoqueUid(args.produtoId, e.depositoId),
+    // The row's own id, never a derived one — see `MembroUnicoEstoque.docId`.
+    docId: e.docId,
     data: {
       quantidade: e.quantidade - disponivelDe(e),
       ultimaModificacao: now,

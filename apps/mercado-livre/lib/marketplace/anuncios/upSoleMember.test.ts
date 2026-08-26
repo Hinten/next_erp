@@ -46,7 +46,7 @@ function args(over: Partial<PlanejarMembroUnicoArgs> = {}): PlanejarMembroUnicoA
       userProductId: 'MLBU4903167333',
       moderacoes: null,
     },
-    estoques: [{ depositoId: 'dep1', quantidade: 7, quantidadeReservada: 0 }],
+    estoques: [{ docId: 'est-dep1', depositoId: 'dep1', quantidade: 7, quantidadeReservada: 0 }],
     now: NOW,
     ...over,
   };
@@ -130,20 +130,26 @@ describe('planejarMembroUnico — the estoque move', () => {
     // 10 in the warehouse, 2 owed to an open pedido whose release decrements the
     // PARENT. Moving those 2 with the rest would land the release on an emptied row
     // and leave the child a phantom reserve for ever.
-    const p = plano({ estoques: [{ depositoId: 'dep1', quantidade: 10, quantidadeReservada: 2 }] });
+    const p = plano({
+      estoques: [{ docId: 'est-dep1', depositoId: 'dep1', quantidade: 10, quantidadeReservada: 2 }],
+    });
     expect(p.estoques[0]!.data.quantidade).toBe(8);
     expect(p.parentEstoqueRestos[0]!.data.quantidade).toBe(2);
   });
 
   it('conserves the total: what the child gains plus what the parent keeps is unchanged', () => {
-    const p = plano({ estoques: [{ depositoId: 'dep1', quantidade: 10, quantidadeReservada: 3 }] });
+    const p = plano({
+      estoques: [{ docId: 'est-dep1', depositoId: 'dep1', quantidade: 10, quantidadeReservada: 3 }],
+    });
     const total =
       Number(p.estoques[0]!.data.quantidade) + Number(p.parentEstoqueRestos[0]!.data.quantidade);
     expect(total).toBe(10);
   });
 
   it('a fully reserved produto moves nothing and still plans (publish is never blocked)', () => {
-    const p = plano({ estoques: [{ depositoId: 'dep1', quantidade: 2, quantidadeReservada: 2 }] });
+    const p = plano({
+      estoques: [{ docId: 'est-dep1', depositoId: 'dep1', quantidade: 2, quantidadeReservada: 2 }],
+    });
     expect(p.estoques[0]!.data.quantidade).toBe(0);
     expect(p.parentEstoqueRestos[0]!.data.quantidade).toBe(2);
   });
@@ -156,8 +162,8 @@ describe('planejarMembroUnico — the estoque move', () => {
   it('carries every depósito, not just the first', () => {
     const p = plano({
       estoques: [
-        { depositoId: 'dep1', quantidade: 7, quantidadeReservada: 0 },
-        { depositoId: 'dep2', quantidade: 3, quantidadeReservada: 0 },
+        { docId: 'est-dep1', depositoId: 'dep1', quantidade: 7, quantidadeReservada: 0 },
+        { docId: 'est-dep2', depositoId: 'dep2', quantidade: 3, quantidadeReservada: 0 },
       ],
     });
     expect(p.estoques.map((e) => e.data.quantidade)).toEqual([7, 3]);
@@ -193,14 +199,22 @@ describe('planejarMembroUnico — creation (the produto was never published)', (
 describe('planejarMembroUnico — refusals', () => {
   it('⚠️ a reservation NEVER blocks the publish — it only splits the move', () => {
     const r = planejarMembroUnico(
-      args({ estoques: [{ depositoId: 'dep1', quantidade: 7, quantidadeReservada: 2 }] }),
+      args({
+        estoques: [
+          { docId: 'est-dep1', depositoId: 'dep1', quantidade: 7, quantidadeReservada: 2 },
+        ],
+      }),
     );
     expect(r.ok).toBe(true);
   });
 
   it('a NEGATIVE stored reserve is not a reserve (#931) — the whole quantity moves', () => {
     const r = planejarMembroUnico(
-      args({ estoques: [{ depositoId: 'dep1', quantidade: 7, quantidadeReservada: -3 }] }),
+      args({
+        estoques: [
+          { docId: 'est-dep1', depositoId: 'dep1', quantidade: 7, quantidadeReservada: -3 },
+        ],
+      }),
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -209,7 +223,11 @@ describe('planejarMembroUnico — refusals', () => {
 
   it('a non-numeric stored reserve is not a reserve either', () => {
     const r = planejarMembroUnico(
-      args({ estoques: [{ depositoId: 'dep1', quantidade: 7, quantidadeReservada: null }] }),
+      args({
+        estoques: [
+          { docId: 'est-dep1', depositoId: 'dep1', quantidade: 7, quantidadeReservada: null },
+        ],
+      }),
     );
     expect(r.ok).toBe(true);
     if (!r.ok) return;

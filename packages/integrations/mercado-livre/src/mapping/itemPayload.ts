@@ -7,10 +7,15 @@
  *    ⚠️ `family_name` is CREATE-ONLY — see the note on the assignment itself —
  *    so a User-Products UPDATE carries no name field at all, while a legacy one
  *    still carries `title` (a rename is legitimate there).
- *    ⚠️ A User-Products produto that HAS variations does not come through here
- *    at all: each variation is its own ML item, built one at a time by
- *    {@link buildUserProductItemPayload}. This function only serves a UP produto
- *    with no children (one item, one implicit user product).
+ *    ⚠️ A User-Products produto does not come through here at all any more:
+ *    every variation is its own ML item, built one at a time by
+ *    {@link buildUserProductItemPayload}. Since #1087 that includes the SINGLE —
+ *    ML auto-generates a family for every user product, so publish materialises
+ *    the sole member and takes the family path for it too, which is what makes a
+ *    produto survive delete → re-import. The `isUserProductSeller` branch below
+ *    is therefore unreachable from `publish.ts`; it is kept because the flag is
+ *    still what `userProductMemberInputs` reads to project each member, and
+ *    removing it would make this builder silently wrong for any future caller.
  *  - Create-only fields: `family_name` (User Products only), `category_id`,
  *    `currency_id: 'BRL'`, `condition`, `site_id: 'MLB'`,
  *    `buying_mode: 'buy_it_now'`, `listing_type_id`, and `seller_custom_field`

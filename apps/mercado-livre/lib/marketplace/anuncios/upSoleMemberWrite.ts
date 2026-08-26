@@ -90,6 +90,7 @@ export async function garantirMembroUnico(
   const estoques: MembroUnicoEstoque[] = (estoqueSnap?.docs ?? []).map((d): MembroUnicoEstoque => {
     const raw = d.data() as Record<string, unknown>;
     return {
+      docId: d.id,
       depositoId: idFromRef(String(raw.depositoOuterRef ?? '')),
       quantidade: typeof raw.quantidade === 'number' ? raw.quantidade : 0,
       quantidadeReservada: raw.quantidadeReservada,

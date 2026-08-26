@@ -622,6 +622,36 @@ published under the legacy model and not yet migrated stay editable with the
 legacy payload. Both paths are live for the whole migration, which is why
 `isUserProductModel` is per-link and flips only via the UPtin takeover.
 
+⚠️ **A User-Products produto is ALWAYS a family — parent produto + at least one
+child (#1087).** ML auto-generates a family for every user product ("a família é
+autogerada"), so a produto with no ERP variations is a family of ONE, not a
+simple item, and that is what the importer has always written. Publish used to
+write a root produto with no children instead, so the two sides disagreed for
+exactly that case and a produto did not survive delete → re-import: it came back
+with a different shape, a different `sku` and a different `link.id`. Publish now
+materialises the sole member first (`anuncios/upSoleMember.ts` decides it,
+`upSoleMemberWrite.ts` writes it) and every UP produto takes the family fan-out.
+
+⛔ The dangerous half is the ALREADY-PUBLISHED produto. Its member link must be
+seeded with the existing `link.id` BEFORE the fan-out runs, or `findVariacaoLink`
+finds nothing, `createItem` POSTs a SECOND item, and `sweepRemovedMembers` then
+confirms the original as an orphan and pauses-then-closes it — a live, selling
+listing with its sales history and ranking. `publish.test.ts` asserts
+`createItem` is never called on that path; do not delete that assertion.
+
+⚠️ `publishModeIssues` still runs against the ORIGINAL child count, above the
+materialisation. Move it below and its `childrenCount === 0` arm stops firing —
+and that arm is the one childless state publish must REFUSE rather than repair
+(a family id on the link means live ML members a new POST would orphan).
+
+⚠️ Stock moves to the child, because the sweep prices a family off its children
+and a child with no estoque row reads ZERO. Only the AVAILABLE units move: an
+open pedido's reservation is keyed on the produto its LINE names — the parent —
+so the reserved remainder stays there for the release to decrement. The residual
+is that those units sit on the parent once the pedido ships and have to be moved
+by hand; they are visible in the Balanço rather than lost, and this is the only
+tier that neither blocks a publish nor oversells.
+
 Four facts from the ML docs that the payload builder now encodes (#797) — check
 these before "fixing" what looks wrong in `publishCore.ts`:
 
