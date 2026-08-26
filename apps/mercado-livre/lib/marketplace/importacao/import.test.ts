@@ -1829,6 +1829,91 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     });
   });
 
+  /**
+   * #1087 — a simple produto re-imports as a parent plus one variation, so the
+   * measurements can sit on the child while the "produto base" the operator
+   * opens shows none. `dimensoesDoPacote` has no parent fallback, so that parent
+   * publishes no package at all until someone retypes the box.
+   *
+   * The reachable shape: the ML item carries no `SELLER_PACKAGE_*` (so `mapped`
+   * resolves five nulls and the fill-null path has nothing to give the parent),
+   * while the ERP child already holds the real box.
+   */
+  describe('child → parent dimension rollup', () => {
+    /** MEMBER_A with every package attribute stripped — mapped dims are all null. */
+    const MEMBER_SEM_MEDIDAS: DocData = { ...MEMBER_A };
+
+    const CAIXA = {
+      pesoLiquidoKg: 0.9,
+      pesoBrutoKg: 1,
+      alturaCm: 5,
+      larguraCm: 10,
+      profundidadeCm: 10,
+    };
+
+    /** Seed the ERP child that already carries the box, linked to the family parent. */
+    function seedFilhoComCaixa(db: FakeDb): void {
+      db.seed('produtos', expectedChildId(MEMBER_A_ID), {
+        nome: 'Camiseta G',
+        sku: 'SKU-A',
+        paiId: expectedParentId,
+        ...CAIXA,
+      });
+    }
+
+    it("fills the blank parent from the child's box", async () => {
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta Família', sku: FAMILY_ID });
+      seedFilhoComCaixa(db);
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      expect(db.docs('produtos').get(expectedParentId)).toMatchObject(CAIXA);
+    });
+
+    // ⚠️ Fill-BLANK-only. The parent's numbers differ from the child's on every
+    // axis, so a rollup that overwrote would be caught here rather than passing
+    // against equal fixtures.
+    it('never replaces a box the parent already has', async () => {
+      const db = new FakeDb();
+      const doPai = {
+        pesoLiquidoKg: 7,
+        pesoBrutoKg: 8,
+        alturaCm: 70,
+        larguraCm: 80,
+        profundidadeCm: 90,
+      };
+      db.seed('produtos', expectedParentId, {
+        nome: 'Camiseta Família',
+        sku: FAMILY_ID,
+        ...doPai,
+      });
+      seedFilhoComCaixa(db);
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      expect(db.docs('produtos').get(expectedParentId)).toMatchObject(doPai);
+    });
+
+    it('leaves the parent blank when the child has no box either', async () => {
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta Família', sku: FAMILY_ID });
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      expect(db.docs('produtos').get(expectedParentId)?.alturaCm ?? null).toBeNull();
+    });
+  });
+
   describe('ERP-first family children (#801)', () => {
     const fake = (grupoId: string, varianteId: string) =>
       `documents/grupoDeVariacoes/${grupoId}/variacoes/${varianteId}`;

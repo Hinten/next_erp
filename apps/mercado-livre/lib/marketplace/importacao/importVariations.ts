@@ -48,9 +48,11 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import {
+  type FilhoMedidas,
   type ImportOptions,
   type VariationChildAssembleArgs,
   assembleVariationChildPlan,
+  medidasEfetivas,
   resolveVariationCombo,
 } from './importCore';
 import { type TaxonomiaResolution } from './taxonomiaCore';
@@ -72,6 +74,19 @@ export interface ImportVariationChildrenDeps {
 export interface ImportVariationChildrenResult {
   total: number;
   created: number;
+  /**
+   * Each child's dimensions AFTER this call's write, in call order — what
+   * `rollupDimensoesDosFilhos` reads to repair a blank parent (#1087).
+   *
+   * ⚠️ Returned rather than re-read: the loop already holds both halves (the raw
+   * child doc and the patch just applied), so folding them here costs ZERO extra
+   * Firestore reads. A re-read would also be wrong-ish — it could observe a
+   * concurrent writer and make the parent adopt a value this import never wrote.
+   *
+   * ⚠️ Call order is the caller's stable order (the imported member first), which
+   * is what makes the rollup's donor choice deterministic — see its doc.
+   */
+  medidas: FilhoMedidas[];
 }
 
 /**
@@ -116,6 +131,7 @@ export async function importVariationChildren(
   const { db, integracaoId, options, depositoOuterRef, now } = deps;
   const depositoId = depositoOuterRef ? lastSegment(depositoOuterRef) : null;
   let created = 0;
+  const medidas: FilhoMedidas[] = [];
 
   // The parent's existing children, read AT MOST ONCE per call and only when a
   // variation actually reaches the combination rule — a steady-state re-import
@@ -180,6 +196,10 @@ export async function importVariationChildren(
     };
     let plan = assembleVariationChildPlan(args);
     let stockForWrite = existingStock;
+    // Whichever raw doc the FINAL `plan` was assembled from — it becomes
+    // `freshProduto` if the create loses the ALREADY_EXISTS race below. Folding
+    // the wrong base would report this child's measurements as the loser's.
+    let baseProduto = existingProduto;
 
     // produto (create-only `.create()`, mirroring the parent's collision guard —
     // but on ALREADY_EXISTS this does a LOCAL re-read + re-assemble on the update
@@ -195,6 +215,7 @@ export async function importVariationChildren(
           if (!isAlreadyExists(err)) throw err;
           isCreate = false;
           const freshProduto = await readRaw(ref);
+          baseProduto = freshProduto;
           stockForWrite = depositoId ? await readEstoque(db, produtoId, depositoId) : null;
           const freshLink = await readRaw(
             variacaoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId),
@@ -272,9 +293,10 @@ export async function importVariationChildren(
     });
 
     if (isCreate) created += 1;
+    medidas.push({ produtoId, ...medidasEfetivas(baseProduto, plan.produto?.data) });
   }
 
-  return { total: mappedVariations.length, created };
+  return { total: mappedVariations.length, created, medidas };
 }
 
 /* -------------------------------------------------------------------------- */

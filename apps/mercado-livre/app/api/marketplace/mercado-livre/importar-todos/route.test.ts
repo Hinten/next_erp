@@ -60,6 +60,7 @@ const FULL_DEFAULTS = {
   importarPreco: true,
   sobrescreverPreco: true,
   atualizarProdutoPai: true,
+  sobrescreverDadosProduto: false,
   importarFotos: true,
   importarCategorias: true,
   atualizarCadastrados: false,

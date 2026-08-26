@@ -67,6 +67,7 @@ export function ImportarMercadoLivreModal({
   const [sobrescreverEstoque, setSobrescreverEstoque] = useState(false);
   const [importarPreco, setImportarPreco] = useState(true);
   const [sobrescreverPreco, setSobrescreverPreco] = useState(true);
+  const [sobrescreverDadosProduto, setSobrescreverDadosProduto] = useState(false);
   const [importarFotos, setImportarFotos] = useState(true);
   const [importarCategorias, setImportarCategorias] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -88,6 +89,7 @@ export function ImportarMercadoLivreModal({
           sobrescreverEstoque,
           importarPreco,
           sobrescreverPreco,
+          sobrescreverDadosProduto,
           importarFotos,
           importarCategorias,
         },
@@ -167,6 +169,13 @@ export function ImportarMercadoLivreModal({
           checked={sobrescreverPreco}
           onChange={(e) => setSobrescreverPreco(e.currentTarget.checked)}
           disabled={!canImport || !importarPreco}
+        />
+        <Checkbox
+          label="Sobrescrever dados do produto (marca, dimensões, SKU)"
+          description="Por padrão a importação só preenche campos vazios. Marque para substituir também os valores já cadastrados. A descrição e a categoria nunca são substituídas."
+          checked={sobrescreverDadosProduto}
+          onChange={(e) => setSobrescreverDadosProduto(e.currentTarget.checked)}
+          disabled={!canImport}
         />
         <Checkbox
           label="Importar fotos"

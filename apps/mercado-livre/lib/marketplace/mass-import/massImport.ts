@@ -318,7 +318,7 @@ const defaultResolveImportDeps: NonNullable<MassImportRunDeps['resolveImportDeps
   };
 };
 
-/** The 7 `ImportOptions` fields `MassImportOptions` shares with a per-item import. */
+/** The 8 `ImportOptions` fields `MassImportOptions` shares with a per-item import. */
 function toImportOptions(options: MassImportOptions): ImportOptions {
   return {
     importarEstoque: options.importarEstoque,
@@ -326,6 +326,7 @@ function toImportOptions(options: MassImportOptions): ImportOptions {
     importarPreco: options.importarPreco,
     sobrescreverPreco: options.sobrescreverPreco,
     atualizarProdutoPai: options.atualizarProdutoPai,
+    sobrescreverDadosProduto: options.sobrescreverDadosProduto,
     importarFotos: options.importarFotos,
     importarCategorias: options.importarCategorias,
   };

@@ -77,11 +77,13 @@ import {
   DEFAULT_IMPORT_OPTIONS,
   MercadoLivreImportError,
   assembleImportPlan,
+  medidasEfetivas,
+  rollupDimensoesDosFilhos,
 } from './importCore';
 import { importCategoriaChain } from './importCategoria';
 import { consultarModeracoes } from '../anuncios/moderacoes';
 import { resolveTaxonomia } from './importTaxonomia';
-import { importVariationChildren } from './importVariations';
+import { type ImportVariationChildrenResult, importVariationChildren } from './importVariations';
 import { resolveFamilySiblingIds } from './importFamily';
 import { isAlreadyExists, isFailedPrecondition } from '@delfrance/data/admin';
 import { lastSegment, refMatchesIntegracao } from '../core/linkRefs';
@@ -488,7 +490,7 @@ export async function importProduto(
   // Children (#520 legacy variations[] / #521 User-Products member), run after
   // the parent's own produto/link exist (children reference the parent link's
   // outer-ref). No-op ({ total: 0, created: 0 }) for a simple listing.
-  let variationsResult = { total: 0, created: 0 };
+  let variationsResult: ImportVariationChildrenResult = { total: 0, created: 0, medidas: [] };
   if (ownsChildren) {
     const parentLinkOuterRef = toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${linkDocId}`);
     const parentInfo = {
@@ -535,6 +537,30 @@ export async function importProduto(
           mappedVariations,
           taxonomia,
         );
+  }
+
+  // Dimension rollup, child → parent (#1087). A simple listing re-imports as a
+  // parent produto plus one variation, so the measurements can land on the child
+  // while the "produto base" the operator opens shows none — and
+  // `dimensoesDoPacote` has no parent fallback, so a blank parent publishes no
+  // package at all. Repair the blank rather than teach every reader to look down.
+  //
+  // Costs ZERO extra reads: `medidas` comes back from the loop that already read
+  // each child, and the parent's own effective values are the doc this call just
+  // read merged with the patch it just wrote.
+  //
+  // ⚠️ Rule 7: this is a SECOND write to a produto this call already wrote, and it
+  // is deliberately unguarded. It only ever sets fields observed null in the read
+  // above — the same guarantee `fillNull` has always given — and the value comes
+  // from a child of this very listing, so the worst a lost race can do is write
+  // the measurement a concurrent writer was about to write anyway. A
+  // `lastUpdateTime` precondition would turn that non-event into a 500.
+  if (ownsChildren && variationsResult.medidas.length > 0) {
+    const medidasDoPai = medidasEfetivas(existingProduto, plan.produto?.data);
+    const rollup = rollupDimensoesDosFilhos(medidasDoPai, variationsResult.medidas);
+    if (rollup) {
+      await produtoCollection.merge(db, {}, produtoId, { ...rollup, ultimaModificacao: now });
+    }
   }
 
   // Photos (#439) — additive, high-quality, best-effort. After the produto exists;
@@ -610,7 +636,7 @@ export async function importProduto(
     estado: mapped.estado,
     nome: mapped.nome,
     created: isCreate,
-    variations: variationsResult,
+    variations: { total: variationsResult.total, created: variationsResult.created },
     family: familyResult,
   };
 }

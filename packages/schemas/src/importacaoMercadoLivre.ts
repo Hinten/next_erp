@@ -79,6 +79,19 @@ export const massImportOptionsSchema = z.object({
   importarPreco: z.boolean(),
   sobrescreverPreco: z.boolean(),
   atualizarProdutoPai: z.boolean(),
+  /**
+   * Let a re-import REPLACE produto data the ERP already holds (#1087) — see
+   * `ImportOptions.sobrescreverDadosProduto` for exactly which fields, and which
+   * are deliberately left out.
+   *
+   * ⚠️ `.default(false)` rather than the bare `z.boolean()` its siblings use, and
+   * that is load-bearing: those existed from day one, this one did not. A job doc
+   * written BEFORE this field shipped carries no key, and a required boolean
+   * would fail its Zod parse — an in-flight mass import would stop resuming at
+   * the moment the backend was deployed under it. The default is also the safe
+   * value, so an old job keeps behaving exactly as it did when it was queued.
+   */
+  sobrescreverDadosProduto: z.boolean().default(false),
   importarFotos: z.boolean(),
   importarCategorias: z.boolean(),
   /** Mass-import-only: also re-drive items that already have a link doc. */

@@ -470,7 +470,24 @@ export function buildParentAttributes(
   // `attrBrand(marca)` on the `anuncio` branch: that rebuilds the entry from its
   // name alone and discards the `value_id` an enumerated ML brand carries, which
   // is the bug `attrBrand`'s own doc comment warns against.
-  const marcaDoProduto = fonte === 'extraData' ? marca : null;
+  const marcaResolvida = fonte === 'extraData' ? marca : null;
+
+  // ⚠️ …and when the produto's Marca says exactly what the listing ALREADY
+  // stores, take the same absence branch (#1087). Since the importer began
+  // backfilling `extraData.marca` from the listing's own `BRAND`, the common case
+  // is a produto whose Marca was COPIED from the entry sitting on the link — so
+  // rebuilding it through `attrBrand` would strip the `value_id` ML had already
+  // matched, on every listing the import touched, to send back a value_name ML
+  // has to resolve again. The stored entry is the strictly richer copy of an
+  // identical answer, so keep it.
+  //
+  // Compared on the trimmed name because that is the only field both sides have:
+  // `marcaArmazenadaDe` returns `value_name`, and `resolveMarcaAnuncio` already
+  // trims. An exact match is deliberately the ONLY thing that skips the rebuild —
+  // a differing Marca (the operator retyped it) must still win, and a
+  // case-insensitive or fuzzy test would silently keep a stale brand.
+  const marcaDoProduto =
+    marcaResolvida != null && armazenada.marca?.trim() === marcaResolvida ? null : marcaResolvida;
 
   // ⚠️ Derived ids are dropped from the STORED list before anything is appended,
   // or a link doc carrying a stale copy ships the attribute twice — once with
