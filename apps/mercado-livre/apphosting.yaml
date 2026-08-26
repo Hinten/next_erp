@@ -49,7 +49,7 @@ runConfig:
 # variables, or via Cloud Secret Manager for secrets; required unless marked
 # OPTIONAL):
 #   FIREBASE_PROJECT_ID          OPTIONAL — auto-detected on App Hosting/Cloud Run
-#                                (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
+#                                (via FIREBASE_CONFIG.projectId; Cloud Run sets no project env var); set only to
 #                                override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID         Firestore database id (default: "default")
 #   FIREBASE_STORAGE_BUCKET      OPTIONAL — bucket for the product-photo import. The
