@@ -627,6 +627,26 @@ export async function applyFamilyStatusAndFold(
   integracaoId: string,
   target: FamilyFoldTarget,
   observados: readonly ObservedMember[],
+  opts: {
+    /**
+     * Clear `errors`/`causas` on the parent whenever any are stored, instead of
+     * only when the fold concludes AND says the listing could take stock again.
+     *
+     * ⚠️ This is `reverificarAnuncio`'s guarantee, not the webhook's, and the two
+     * genuinely differ. A re-verification is the operator saying *"tell me the
+     * truth now"*, so a stale diagnosis must not survive the button press — the
+     * single-listing path clears unconditionally at every write site, including
+     * its 404 branch. The webhook has no such promise: it fires unprompted, so it
+     * only re-arms a listing ML says can receive stock again. Inheriting the
+     * webhook's rule here silently downgraded the button on families, where the
+     * fold can land on `paused` (no `out_of_stock`) or decline to conclude and
+     * the operator would keep reading the old fault.
+     *
+     * ⚠️ It also forces the WRITE. Without that, a family whose fold cannot
+     * conclude takes the early return and the clear never lands.
+     */
+    limparFalhaSempre?: boolean;
+  } = {},
 ): Promise<FamilyFoldResult> {
   const parentRef = produtoMercadoLivreLinkCollection.docRef(
     db,
@@ -731,9 +751,9 @@ export async function applyFamilyStatusAndFold(
       : null;
     const currentErrors = Array.isArray(parent.errors) ? parent.errors : [];
     const errorsToClear =
-      folded != null &&
       currentErrors.length > 0 &&
-      podeEnviarEstoque(folded.status, folded.subStatus).enviar;
+      (opts.limparFalhaSempre === true ||
+        (folded != null && podeEnviarEstoque(folded.status, folded.subStatus).enviar));
     const estadoChanged = folded != null && estado !== currentEstado;
     // ⚠️ Only a caller that actually READ `/moderations` may move this field —
     // see `leuModeracoes` above the transaction for why.
@@ -754,6 +774,14 @@ export async function applyFamilyStatusAndFold(
     for (const escrita of escritas) tx.set(escrita.ref, escrita.patch, { merge: true });
 
     if (!folded || !parentChanged) {
+      // ⚠️ The clear still has to land. A caller with `limparFalhaSempre`
+      // promised the operator a fresh diagnosis, and a family whose fold cannot
+      // conclude — or whose summary already matched — would otherwise take this
+      // early return with the stale `errors`/`causas` intact, which is the one
+      // thing that button exists to prevent.
+      if (errorsToClear) {
+        tx.update(parentRef, { ...clearFalha(), ultimaModificacao: Date.now() });
+      }
       // Either the members do not support a conclusion (every observed one closed,
       // some never observed — see `foldFamilyStatus`), or the summary already
       // matches. Saying which happened is the difference between "nothing to do"
@@ -761,8 +789,13 @@ export async function applyFamilyStatusAndFold(
       // ⚠️ The parent kept its STORED values, so those are what this call
       // reports. Handing back the fold's answer here would tell an operator the
       // family moved when it did not.
+      //
+      // `errorsToClear` counts toward the outcome because a write happened, and
+      // `'unchanged'` while writing is the ambiguity this vocabulary was split up
+      // to remove. It is inert for the webhook: without `limparFalhaSempre` the
+      // flag still requires `folded != null`, which this branch excludes.
       return {
-        outcome: memberChanged ? 'synced-member' : 'unchanged',
+        outcome: memberChanged || errorsToClear ? 'synced-member' : 'unchanged',
         estado: currentEstado,
         status: currentStatus,
         subStatus: currentSubStatus,

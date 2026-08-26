@@ -38,9 +38,12 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { millisToMicros } from '@delfrance/core/datetime';
-import { ESTADO_PUBLICACAO_ML, idFromRef } from '@delfrance/schemas';
+import { ESTADO_PUBLICACAO_ML, idFromRef, toOuterRef } from '@delfrance/schemas';
 import { MercadoLivreError, MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
-import { produtoCollection } from '@delfrance/data/admin/collections';
+import {
+  produtoCollection,
+  produtoMercadoLivreLinkCollection,
+} from '@delfrance/data/admin/collections';
 
 import {
   type FetchStockFamiliesByIds,
@@ -62,6 +65,7 @@ import { MlTasksDisabledError } from '../notificacoes/mlTasks';
 import type { MlStockTaskScheduler } from './mlStockTasks';
 import {
   ReverificacaoFamiliaSemMembrosError,
+  type ReverificacaoMembro,
   type ReverificarApi,
   reverificarAnuncio,
 } from '../anuncios/reverificarAnuncio';
@@ -105,7 +109,18 @@ export function manualPushConcurrency(): number {
   return Math.max(1, Math.min(envInt('MERCADO_LIVRE_STOCK_MANUAL_CONCURRENCY', teto), teto));
 }
 
-/** Cap on re-arm `GET /items` calls per request. */
+/**
+ * Cap on re-arm ML calls per request.
+ *
+ * ⚠️ Counted in CALLS, not in listings, and the distinction became real with
+ * #1142. A simple listing still costs 1 (`GET /items`, plus 1 more only when its
+ * status says a moderation is due). A User-Products FAMILY costs
+ * ⌈members / 20⌉ multigets plus one `/moderations` read per moderated member, so
+ * charging it a flat unit would let a cap named for `GET /items` calls buy an
+ * order of magnitude more traffic than it promises — sequential, inside a
+ * synchronous route handler. `reverificarAnuncio` reports what it issued and the
+ * loop decrements by that.
+ */
 export function manualRearmMaxGets(): number {
   return envInt('MERCADO_LIVRE_STOCK_MANUAL_REARM_MAX_GETS', 100);
 }
@@ -413,6 +428,50 @@ function estaLatched(link: RawStockLinkRow): boolean {
   return link.estado === ESTADO_PUBLICACAO_ML.erro;
 }
 
+/**
+ * Carry a família re-check's fresh member readings onto the in-memory rows, so
+ * `buildSendTasks` plans against what ML just said (#1142).
+ *
+ * Patching the parent link alone is only half the refresh. Under User Products
+ * the send gate is NOT on the parent: `buildSendTasks` decides per member via
+ * `membroPodeEnviar(varLink, …)`, reading `child.varLinks[].status` /
+ * `.sub_status`. So a member ML had just reported `active` was still skipped as
+ * `status-nao-enviavel` from its stale stored `paused` — in the very run the
+ * operator asked for, and bounded only by the next sweep re-reading it.
+ *
+ * ⚠️ Matched on `itemId`, not on the doc id. An ML item id is globally unique,
+ * while a `variacaoMercadoLivre` doc id is unique only within its child produto —
+ * two members of one family can legitimately share one.
+ *
+ * ⚠️ Only `lido` members are applied. An unread one kept its STORED status, and
+ * writing this report's `null` over it would be actively harmful: `membroPodeEnviar`
+ * reads a null status as "never observed, send optimistically" (#780), so it
+ * would turn a member ML declined to answer for into one this run sends to.
+ */
+function aplicarMembros(
+  row: StockFamilyRow,
+  linkDocId: string,
+  membros: ReverificacaoMembro[] | undefined,
+): void {
+  if (!membros || membros.length === 0) return;
+  const porItemId = new Map(membros.filter((m) => m.lido).map((m) => [m.itemId, m]));
+  if (porItemId.size === 0) return;
+  const parentRef = toOuterRef(
+    produtoMercadoLivreLinkCollection.docPath({ produtoId: row.anchorId }, linkDocId),
+  );
+  for (const child of row.children) {
+    for (const varLink of child.varLinks) {
+      // Scoped to THIS listing: a produto can hold several on one conta, and a
+      // sibling listing's members must not take this one's readings.
+      if (varLink.produtoMercadoLivreOuterRef !== parentRef) continue;
+      const lido = typeof varLink.itemId === 'string' ? porItemId.get(varLink.itemId) : undefined;
+      if (!lido) continue;
+      varLink.status = lido.status;
+      varLink.sub_status = lido.subStatus ?? [];
+    }
+  }
+}
+
 export async function enviarEstoqueManual(
   db: Firestore,
   args: EnviarEstoqueManualArgs,
@@ -529,7 +588,6 @@ export async function enviarEstoqueManual(
           rearmePorLink.set(linkDocId, { executado: false, estado: null, enviavel: false });
           continue;
         }
-        orcamento -= 1;
         const target: LinkStatusTarget = { produtoId: row.anchorId, linkDocId, itemId };
         let res;
         try {
@@ -543,6 +601,14 @@ export async function enviarEstoqueManual(
           rearmePorLink.set(linkDocId, { executado: false, estado: null, enviavel: false });
           continue;
         }
+        // ⚠️ Charged by ML CALLS ISSUED, not by listings re-armed. A família is
+        // ⌈members/20⌉ multigets plus a `/moderations` read per moderated member,
+        // so a flat `-= 1` would let a cap documented as "GET /items calls per
+        // request" buy an order of magnitude more traffic than its name promises
+        // — sequential, inside a synchronous route handler. The check above is
+        // still "is there budget left", so the LAST family can overshoot by its
+        // own cost: you cannot price a família before looking at it.
+        orcamento -= Math.max(1, res.chamadasMl);
         rearmePorLink.set(linkDocId, {
           executado: true,
           estado: res.estado,
@@ -554,6 +620,13 @@ export async function enviarEstoqueManual(
         link.estado = res.estado;
         link.status = res.status;
         link.sub_status = res.subStatus ?? [];
+        // ⚠️ …and the MEMBER rows too, or the refresh is only half applied. Under
+        // User Products `buildSendTasks` does not read the parent for the send
+        // gate: it decides per member through `membroPodeEnviar(varLink, …)` on
+        // `child.varLinks[].status`/`.sub_status`. Patching only the parent
+        // cleared the latch and then skipped the very member ML had just declared
+        // healthy, as `status-nao-enviavel`, in the run the operator asked for.
+        aplicarMembros(row, linkDocId, res.membros);
       }
     }
   }

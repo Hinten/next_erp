@@ -7,6 +7,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 
 import {
+  applyFamilyStatusAndFold,
   applyItemStatusToLink,
   type ItemsApiResolver,
   type ItemsSyncApi,
@@ -1794,5 +1795,82 @@ describe('syncItemStatus — moderations on a User-Products family', () => {
 
     expect(db.docData(memberVarPath('childA'), 'v-childA')?.moderacoes).toEqual([]);
     expect(db.docData(LINK_PATH, 'link1')?.moderacoes).toEqual([]);
+  });
+});
+
+/**
+ * `reverificarAnuncio`'s guarantee, which the fold does NOT share by default.
+ *
+ * A re-verification is the operator saying "tell me the truth now", so a stale
+ * diagnosis must not survive the button press. The webhook has no such promise —
+ * it fires unprompted and only re-arms a listing ML says can take stock again —
+ * so the family path inherited the wrong rule until this flag existed.
+ */
+describe('applyFamilyStatusAndFold — limparFalhaSempre (#1142)', () => {
+  const membroObservado = (status: string, subStatus: string[] = []) => ({
+    memberProdutoId: 'childA',
+    memberDocId: 'v-childA',
+    status,
+    subStatus,
+    moderacoes: null,
+    userProductId: null,
+  });
+
+  const alvo = { produtoId: PRODUTO, linkDocId: 'link1', pmlOuterRef: FAMILY_PML_REF };
+
+  it('clears a stale diagnosis the WEBHOOK rule would have left standing', async () => {
+    // `paused` WITHOUT `out_of_stock` is not sendable, so the webhook's
+    // `errorsToClear` is false and the operator would keep reading the old fault.
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }], {
+      estado: 'E',
+      errors: ['ML 400: invalid quantity'],
+      causas: [{ mensagem: 'algo' }],
+    });
+
+    await applyFamilyStatusAndFold(asDb(db), CONTA, alvo, [membroObservado('paused')], {
+      limparFalhaSempre: true,
+    });
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ errors: [], causas: [] });
+  });
+
+  it('⚠️ clears it even when the fold CANNOT conclude and writes nothing else', async () => {
+    // The case the early return used to swallow: an unobserved sibling means no
+    // summary, so without forcing the write the clear never lands at all.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      // Never observed, and closed-only observations cannot conclude.
+      { itemId: MEMBER_B, child: 'childB', status: null },
+    ]);
+    db.seed(LINK_PATH, 'link1', {
+      ...db.docData(LINK_PATH, 'link1'),
+      estado: 'E',
+      errors: ['ML 400: invalid quantity'],
+      causas: [{ mensagem: 'algo' }],
+    });
+
+    await applyFamilyStatusAndFold(asDb(db), CONTA, alvo, [membroObservado('closed')], {
+      limparFalhaSempre: true,
+    });
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ errors: [], causas: [] });
+    // …and the family is NOT cancelled on one member's closed reading.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'E' });
+  });
+
+  it('⚠️ WITHOUT the flag the webhook rule is unchanged — a stale fault survives', async () => {
+    // The inverse, and what keeps the flag from being a silent behaviour change
+    // for the `items` webhook: same family, same reading, no flag.
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }], {
+      estado: 'E',
+      errors: ['ML 400: invalid quantity'],
+    });
+
+    await applyFamilyStatusAndFold(asDb(db), CONTA, alvo, [membroObservado('paused')]);
+
+    expect(db.docData(LINK_PATH, 'link1')?.errors).toEqual(['ML 400: invalid quantity']);
   });
 });

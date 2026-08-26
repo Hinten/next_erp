@@ -36,7 +36,7 @@ import {
   MercadoLivreHttpError,
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
-import { toOuterRef } from '@delfrance/schemas';
+import { precisaConsultarModeracao, toOuterRef } from '@delfrance/schemas';
 import type { Firestore } from 'firebase-admin/firestore';
 
 import { podeEnviarEstoque } from '../estoque/bulkEstoquePlan';
@@ -98,6 +98,18 @@ export interface ReverificacaoResultado {
    * over these (`upFamilyStatus.ts`), which is all the parent link can carry.
    */
   membros?: ReverificacaoMembro[];
+  /**
+   * How many ML requests this re-verification actually issued.
+   *
+   * ⚠️ Load-bearing for the manual stock push's budget (#819). It caps re-arms
+   * with `MERCADO_LIVRE_STOCK_MANUAL_REARM_MAX_GETS`, documented as a cap on
+   * `GET /items` CALLS — an accounting that was exact while one link meant one
+   * request. A família is ⌈members / {@link ML_MULTIGET_MAX_IDS}⌉ multigets plus
+   * one `/moderations` read per member whose fresh status warrants one, so
+   * charging it a single unit would let that cap buy an order of magnitude more
+   * traffic than its name promises. The caller decrements by THIS.
+   */
+  chamadasMl: number;
 }
 
 /**
@@ -188,6 +200,8 @@ export async function reverificarAnuncio(
         status: 'closed',
         subStatus: [],
         enviavel: false,
+        // The `getItem` that 404'd. `/moderations` is never reached on this arm.
+        chamadasMl: 1,
       };
     }
     throw err;
@@ -210,6 +224,9 @@ export async function reverificarAnuncio(
     status: item.status ?? null,
     subStatus: item.sub_status ?? null,
     enviavel: podeEnviarEstoque(item.status, item.sub_status).enviar,
+    // The `getItem`, plus the `/moderations` read only when the SAME pure
+    // predicate `consultarModeracoes` gates on says one was due.
+    chamadasMl: precisaConsultarModeracao(item.status, item.sub_status) ? 2 : 1,
   };
 }
 
@@ -280,7 +297,8 @@ async function reverificarFamilia(
   membros: readonly MembroDaFamilia[],
   api: ReverificarApi,
 ): Promise<ReverificacaoResultado> {
-  const lidos = await lerMembros(api, membros);
+  const { lidos, chamadas } = await lerMembros(api, membros);
+  let chamadasMl = chamadas;
 
   // Every ML read happens BEFORE the transaction — the fold runs inside one, and
   // a network call in that window is root `CLAUDE.md` rule 7's class C: the
@@ -305,6 +323,10 @@ async function reverificarFamilia(
       });
       continue;
     }
+    // Counted with the SAME pure predicate `consultarModeracoes` gates on, so
+    // the tally is exact rather than an upper bound — it answers `[]` without a
+    // request when the fresh status says no moderation exists.
+    if (precisaConsultarModeracao(lido.status, lido.subStatus)) chamadasMl += 1;
     observados.push({
       memberProdutoId: membro.memberProdutoId,
       memberDocId: membro.memberDocId,
@@ -312,8 +334,7 @@ async function reverificarFamilia(
       subStatus: lido.subStatus,
       // A re-check is the operator asking for the truth NOW, so it FETCHES the
       // reason rather than merely clearing it — the same rule the single-item
-      // path states at length. `consultarModeracoes` answers `[]` without a
-      // request when the fresh status says no moderation exists.
+      // path states at length.
       moderacoes: await consultarModeracoes(api, membro.itemId, lido.status, lido.subStatus),
       userProductId: lido.userProductId,
     });
@@ -336,6 +357,14 @@ async function reverificarFamilia(
       pmlOuterRef: membros[0]!.pmlOuterRef,
     },
     observados,
+    // ⚠️ THIS function's guarantee, not the fold's default. A re-verification is
+    // the operator saying "tell me the truth now", so a stale diagnosis must not
+    // survive it — the single-listing path below clears unconditionally at every
+    // write site. Without this the family path would inherit the WEBHOOK's rule
+    // (clear only when the fold concludes AND says stock can flow again) and the
+    // operator would keep reading the old fault on a família whose fold landed on
+    // `paused` or could not conclude at all.
+    { limparFalhaSempre: true },
   );
 
   return {
@@ -348,6 +377,7 @@ async function reverificarFamilia(
     subStatus: folded.subStatus,
     enviavel: podeEnviarEstoque(folded.status, folded.subStatus).enviar,
     membros: relatorio,
+    chamadasMl,
   };
 }
 
@@ -383,13 +413,15 @@ interface LeituraDeMembro {
 async function lerMembros(
   api: ReverificarApi,
   membros: readonly MembroDaFamilia[],
-): Promise<Map<string, LeituraDeMembro>> {
+): Promise<{ lidos: Map<string, LeituraDeMembro>; chamadas: number }> {
   const pedidos = new Set(membros.map((m) => m.itemId));
   const ids = [...pedidos];
   const out = new Map<string, LeituraDeMembro>();
+  let chamadas = 0;
 
   for (let i = 0; i < ids.length; i += ML_MULTIGET_MAX_IDS) {
     const lote = ids.slice(i, i + ML_MULTIGET_MAX_IDS);
+    chamadas += 1;
     const resposta = await api.getItemsByIds(lote, [
       'id',
       'status',
@@ -420,5 +452,5 @@ async function lerMembros(
       });
     });
   }
-  return out;
+  return { lidos: out, chamadas };
 }
