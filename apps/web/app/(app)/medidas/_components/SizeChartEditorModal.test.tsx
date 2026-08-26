@@ -1,3 +1,4 @@
+import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
@@ -8,6 +9,7 @@ import {
   MercadoLivreClientNetworkError,
   type MercadoLivreClient,
 } from '@/lib/mercado-livre/client';
+import { SIZE_CHART_MOTIVOS } from '@/lib/mercado-livre/sizeChartDisabled';
 import { SizeChartEditorModal } from './SizeChartEditorModal';
 
 /**
@@ -54,7 +56,9 @@ const BRAND_TEMPLATE_SPEC = {
   },
 };
 
-function show(client: Partial<MercadoLivreClient>) {
+type ModalProps = ComponentProps<typeof SizeChartEditorModal>;
+
+function show(client: Partial<MercadoLivreClient>, over: Partial<ModalProps> = {}) {
   const qc = new QueryClient({
     // ⚠️ NOT `retry: false` — the queries set their own `retry` predicate, which
     // a client default cannot override. `retryDelay: 0` is the knob that IS
@@ -82,6 +86,7 @@ function show(client: Partial<MercadoLivreClient>) {
           onSaveDraft={vi.fn()}
           onSend={vi.fn()}
           onDuplicate={vi.fn()}
+          {...over}
         />
       </QueryClientProvider>
     </MantineTestProvider>,
@@ -224,5 +229,84 @@ describe('SizeChartEditorModal — chart-level free-text attributes', () => {
     await waitFor(() => {
       expect(marca.value).toBe('Nike');
     });
+  });
+});
+
+/**
+ * Three of the modal's four controls were disabled with nothing on screen to
+ * say why, and the one line that did speak — the status text beside "Enviar" —
+ * was built from `canWrite` and `blockingError` alone, so it stayed cheerful
+ * about a send the row cap or a running save had already stopped.
+ */
+describe('SizeChartEditorModal — why a control is off', () => {
+  /**
+   * Hovering must ADD one occurrence of the message.
+   *
+   * ⚠️ Counting, not `getByText`: the "Enviar" motivo is ALSO rendered as the
+   * always-visible status line, so presence in the DOM proves nothing about
+   * whether the tooltip can be opened at all. The hover goes on the wrapper
+   * `<span>` — floating-ui registers `mouseenter` natively on the reference
+   * element, and it does not bubble up from the button.
+   */
+  async function revela(button: HTMLElement, motivo: string) {
+    expect(button.hasAttribute('disabled')).toBe(true);
+    const antes = screen.queryAllByText(motivo).length;
+    const wrapper = button.parentElement;
+    expect(wrapper).not.toBeNull();
+    fireEvent.mouseEnter(wrapper!);
+    await waitFor(() => {
+      expect(screen.queryAllByText(motivo).length).toBe(antes + 1);
+    });
+    fireEvent.mouseLeave(wrapper!);
+  }
+
+  it('names the permission gap on the two controls that reach Mercado Livre', async () => {
+    show(
+      { sizeChartDomains: vi.fn().mockResolvedValue(DOMAINS), sizeChartSpecs: vi.fn() },
+      {
+        canWrite: false,
+      },
+    );
+
+    await revela(await screen.findByTestId('ml-size-chart-ai-fill'), SIZE_CHART_MOTIVOS.semEscrita);
+    await revela(
+      screen.getByRole('button', { name: 'Enviar ao Mercado Livre' }),
+      SIZE_CHART_MOTIVOS.semEscrita,
+    );
+
+    // A draft is a local Firestore write, and cancelling is not a write at all.
+    expect(screen.getByRole('button', { name: 'Cancelar' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('says what the AI button is waiting for, instead of spending a 422 to find out', async () => {
+    show({ sizeChartDomains: vi.fn().mockResolvedValue(DOMAINS), sizeChartSpecs: vi.fn() });
+
+    // No domain picked yet, so there is no grid and nothing to fill.
+    await revela(await screen.findByTestId('ml-size-chart-ai-fill'), SIZE_CHART_MOTIVOS.gradeVazia);
+  });
+
+  it('says which half of a new guia is still missing', async () => {
+    show({ sizeChartDomains: vi.fn().mockResolvedValue(DOMAINS), sizeChartSpecs: vi.fn() });
+
+    const rascunho = await screen.findByRole('button', { name: 'Salvar rascunho' });
+    await revela(rascunho, SIZE_CHART_MOTIVOS.semNome);
+
+    fireEvent.change(screen.getByLabelText(/Nome da guia/), { target: { value: 'Camisetas' } });
+    // ⚠️ With the name filled the NEXT blocker surfaces rather than the control
+    // staying silently off — the whole point of ordering the causes.
+    await revela(
+      screen.getByRole('button', { name: 'Salvar rascunho' }),
+      SIZE_CHART_MOTIVOS.semDominio,
+    );
+  });
+
+  it('reports the send blocker in the status line as well as the tooltip', async () => {
+    show({ sizeChartDomains: vi.fn().mockResolvedValue(DOMAINS), sizeChartSpecs: vi.fn() });
+
+    const enviar = await screen.findByRole('button', { name: 'Enviar ao Mercado Livre' });
+    expect(enviar.hasAttribute('disabled')).toBe(true);
+    // One source: the line beside the button now IS the gate's verdict, so it
+    // can no longer say "Pronto para enviar." while the button is dead.
+    expect(screen.queryByText('Pronto para enviar.')).toBeNull();
   });
 });
