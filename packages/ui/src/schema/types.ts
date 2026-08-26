@@ -113,6 +113,15 @@ export interface FieldConfig<TValue = unknown> {
   options?: Array<{ value: string; label: string }>;
   /** ObjectView section/tab grouping. */
   section?: string;
+  /**
+   * Drop this field from the surface entirely. In `ObjectView` it renders no
+   * input; in `TableView` it is neither rendered NOR offered by the
+   * ColumnPicker — "not a column at all", not "off by default" (use
+   * `meta.defaultQuery.columns` / `defaultColumns` for that). The two
+   * TableView lists that must agree on it are `visibleColumns` and
+   * `pickerFields`; honouring it in only one of them is a checkbox that ticks,
+   * persists and renders nothing.
+   */
   hidden?: boolean;
   editable?: boolean;
   renderCell?: (value: TValue, row: unknown) => ReactNode;
