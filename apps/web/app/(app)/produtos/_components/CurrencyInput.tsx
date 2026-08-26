@@ -65,6 +65,10 @@ export function CurrencyInput({
       prefix="R$ "
       decimalScale={2}
       fixedDecimalScale={!editing}
+      // Deliberate opt-out, carried over verbatim: clamping is left to Zod so
+      // an invalid 0 surfaces as a form error instead of being silently
+      // corrected into a valid-looking price.
+      clampBehavior="none"
       hideControls
     />
   );

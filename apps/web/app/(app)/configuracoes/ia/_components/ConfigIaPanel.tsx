@@ -343,6 +343,10 @@ export function ConfigIaPanel({ agenteId, titulo, descricao }: ConfigIaPanelProp
           min={256}
           max={65_536}
           step={512}
+          // `maxOutputTokens` is `z.number().int()`, so a decimal here fails at
+          // save time as a raw ZodError in a red toast. This is also what the
+          // CARVE_OUTS entry in `decimal-input-single-reader.test.js` promises.
+          allowDecimal={false}
           disabled={!canWrite}
         />
         <DecimalInput

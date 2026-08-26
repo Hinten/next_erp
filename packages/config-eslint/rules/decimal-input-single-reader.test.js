@@ -67,15 +67,22 @@ function fileOf(hit) {
 }
 
 /**
+ * The wrapper itself — it renders the one `<NumberInput>` everything else goes
+ * through, so the "this is an integer field" claim below cannot apply to it.
+ */
+const OWNERS = new Set(['packages/ui/src/inputs/DecimalInput.tsx']);
+
+/**
  * The files allowed to render a bare `<NumberInput>`, and why.
  *
  * ⚠️ Path-keyed on purpose. Every value here is a claim about ONE file; a flat
  * list of excused line texts would let a row editor inherit its sibling's
  * excuse, which is exactly how a near-copy defect stays invisible.
  *
- * Every entry except the two owners is the same claim: **this field is an
- * integer**, declared with `allowDecimal={false}`, so no keystroke can reach
- * Mantine's in-progress-decimal branch at all.
+ * Every entry except the owner is the same claim: **this field is an integer**,
+ * declared with `allowDecimal={false}`, so no keystroke can reach Mantine's
+ * in-progress-decimal branch at all — and that claim is now VERIFIED against
+ * the file rather than trusted as prose.
  */
 const CARVE_OUTS = {
   'packages/ui/src/inputs/DecimalInput.tsx': 'owns the wrapper — this IS the one reader',
@@ -160,6 +167,51 @@ describe('decimal inputs go through DecimalInput', () => {
         ...offenders.map((o) => `  - ${o}`),
         '',
         FIX,
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  it('⚠️ every carve-out actually IS integer-only, so the reason is not just prose', () => {
+    // ⭐ The reason strings were unenforced when this guard was written, and one
+    // of the thirteen was simply FALSE: `ConfigIaPanel` claimed
+    // `allowDecimal={false}` while rendering a bare decimal-capable field, so
+    // `maxOutputTokens` (a `z.number().int()`) accepted 4096.5 and failed at
+    // save time as a raw ZodError. An excuse nothing checks is an excuse that
+    // drifts. Every non-owner entry makes the identical claim, so it is cheap
+    // to verify: one `allowDecimal={false}` per `<NumberInput>` in the file.
+    const counts = (pattern) => {
+      const hits = gitGrep({
+        patterns: [pattern],
+        pathspecs: PATHSPECS,
+        mode: 'fixed',
+        list: false,
+      });
+      const byFile = new Map();
+      for (const h of hits) {
+        if (COMMENT_LINE.test(textOf(h))) continue;
+        const f = fileOf(h);
+        byFile.set(f, (byFile.get(f) ?? 0) + 1);
+      }
+      return byFile;
+    };
+    const inputs = counts(PATTERN);
+    const guarded = counts('allowDecimal={false}');
+
+    const unbacked = Object.keys(CARVE_OUTS)
+      .filter((f) => !OWNERS.has(f))
+      .map((f) => ({ f, n: inputs.get(f) ?? 0, g: guarded.get(f) ?? 0 }))
+      .filter(({ n, g }) => g < n);
+
+    expect(
+      unbacked,
+      [
+        'These files are excused as "integer-only" but do not carry one',
+        '`allowDecimal={false}` per `<NumberInput>`, so the stated reason is not true',
+        'of the file and the field can take a decimal:',
+        ...unbacked.map(({ f, n, g }) => `  - ${f}: ${n} <NumberInput>, ${g} allowDecimal={false}`),
+        '',
+        'Either add `allowDecimal={false}` (if it really is an integer field) or',
+        'render `DecimalInput` and drop the carve-out.',
       ].join('\n'),
     ).toEqual([]);
   });

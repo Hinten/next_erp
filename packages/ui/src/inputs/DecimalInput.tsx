@@ -20,10 +20,20 @@ export interface DecimalInputProps {
    */
   allowDecimal?: boolean;
   /**
-   * Defaults to `'none'` — an out-of-range value must surface as a validation
-   * error, not be silently corrected into a valid-looking one. Pass `'strict'`
-   * only where `min`/`max` are the ONLY enforcement of a real limit and no
-   * schema rule stands behind them.
+   * Defaults to `'blur'` — **Mantine's own default**, deliberately.
+   *
+   * ⚠️ This wrapper must not silently change a default of the component it
+   * wraps. An earlier revision defaulted to `'none'` on the theory that an
+   * out-of-range value should surface as a Zod error; that theory was never
+   * checked against the call sites, and eleven of them relied on the Mantine
+   * default for the ONLY enforcement their bound had — `precoDeVenda`'s
+   * `min={0.01}`, `Temperatura`'s `max={2}`, seven `max={1}` coefficients in
+   * `RegraForm`. Nothing downstream re-checks any of them, so the field simply
+   * stopped correcting itself.
+   *
+   * Pass `'none'` to genuinely defer to schema validation (`CurrencyInput`
+   * does), or `'strict'` to reject the keystroke outright (`DevolucaoTab`'s
+   * quantity, where `max` guards against returning more than was sold).
    */
   clampBehavior?: 'none' | 'blur' | 'strict';
   /**
@@ -89,8 +99,7 @@ export interface DecimalInputProps {
  * - **`thousandSeparator` is never set at all.** It makes the parse ambiguous
  *   and zeroed the localized pedido inputs (`3fb2b299`).
  *
- * `clampBehavior` defaults to `"none"`: an out-of-range value must surface as a
- * Zod error, not be silently corrected into a valid-looking one.
+ * `clampBehavior` follows Mantine (`'blur'`) — see the prop's note.
  */
 export function DecimalInput({
   value,
@@ -98,7 +107,7 @@ export function DecimalInput({
   decimalScale,
   allowDecimal,
   fixedDecimalScale,
-  clampBehavior = 'none',
+  clampBehavior = 'blur',
   prefix,
   suffix,
   allowNegative = false,

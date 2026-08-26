@@ -17,9 +17,15 @@ import { DecimalInput } from './DecimalInput';
 function Harness({
   initial = null,
   decimalScale,
+  min,
+  max,
+  clampBehavior,
 }: {
   initial?: number | null;
   decimalScale?: number;
+  min?: number;
+  max?: number;
+  clampBehavior?: 'none' | 'blur' | 'strict';
 }) {
   const [value, setValue] = useState<number | null>(initial);
   return (
@@ -29,6 +35,9 @@ function Harness({
         value={value}
         onChange={setValue}
         decimalScale={decimalScale}
+        min={min}
+        max={max}
+        clampBehavior={clampBehavior}
       />
       <output data-testid="held">{value === null ? 'null' : String(value)}</output>
     </MantineTestProvider>
@@ -140,5 +149,65 @@ describe('DecimalInput', () => {
     fireEvent.change(input, { target: { value: '1,239' } });
     expect(input.value).toBe('1,23');
     expect(held()).toBe('1.23');
+  });
+});
+
+/**
+ * ⭐ `clampBehavior` must keep MANTINE's default, not invent one.
+ *
+ * An earlier revision defaulted it to `'none'`, which silently disarmed the
+ * `min`/`max` of eleven converted call sites — `precoDeVenda`'s `min={0.01}`,
+ * `Temperatura`'s `max={2}`, seven `max={1}` coefficients — none of which has
+ * any downstream re-check. A wrapper that changes a default of the component it
+ * wraps breaks its callers without touching them.
+ *
+ * ⚠️ `fireEvent.focusOut`, not `fireEvent.blur`: React listens on `focusout`.
+ */
+describe('DecimalInput — bounds', () => {
+  it("clamps up to `min` on blur by default, like Mantine's own NumberInput", () => {
+    render(<Harness min={0.01} decimalScale={2} />);
+    const input = box();
+
+    fireEvent.change(input, { target: { value: '0' } });
+    expect(held()).toBe('0');
+
+    fireEvent.focusOut(input);
+    expect(held()).toBe('0.01');
+  });
+
+  it('clamps down to `max` on blur too', () => {
+    render(<Harness max={2} decimalScale={1} />);
+    const input = box();
+
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.focusOut(input);
+    expect(held()).toBe('2');
+  });
+
+  it('leaves the value alone when a caller opts out with "none"', () => {
+    render(<Harness min={0.01} decimalScale={2} clampBehavior="none" />);
+    const input = box();
+
+    fireEvent.change(input, { target: { value: '0' } });
+    fireEvent.focusOut(input);
+    // CurrencyInput relies on this: an invalid 0 must reach Zod as a form error
+    // rather than be silently corrected into a valid-looking price.
+    expect(held()).toBe('0');
+  });
+
+  it('still lets a decimal be typed under the default clamp', () => {
+    // The clamp runs on blur, so it must not interfere with typing "0,5" — the
+    // reason `"strict"` would have been the wrong repair.
+    render(<Harness min={0.01} decimalScale={2} />);
+    const input = box();
+
+    fireEvent.change(input, { target: { value: '0' } });
+    fireEvent.change(input, { target: { value: '0,' } });
+    expect(held()).toBe('0');
+    fireEvent.change(input, { target: { value: '0,5' } });
+    expect(input.value).toBe('0,5');
+
+    fireEvent.focusOut(input);
+    expect(held()).toBe('0.5');
   });
 });
