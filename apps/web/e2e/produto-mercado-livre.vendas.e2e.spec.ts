@@ -5,6 +5,7 @@ import {
   cleanupProdutoSubcollection,
   e2ePrefix,
   seedMercadoLivreFixtures,
+  seedProdutoMlFamilia,
   seedProdutoMlPublicado,
 } from './_helpers/seed-data';
 import { warmRoutes } from './helpers/warmup';
@@ -42,23 +43,39 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
   // A fifth, for the same reason: the delete test creates and destroys a draft,
   // which no other test's tolerance logic should have to reason about.
   const contaExcluir = `${prefix}-005`;
+  // A sixth, owned by the User-Products família (#1142). Its produto is separate
+  // too: the family's parent link carries a FAMILY id where every other test's
+  // carries an item id, and sharing a produto would put both shapes on one page.
+  const contaFamilia = `${prefix}-006`;
   // Deterministic (mirrors seedProdutoMlPublicado) so afterAll can always
   // sweep the link SUBCOLLECTION even when beforeAll dies mid-way — the
   // nome-prefix sweep only reaches the parent doc, and Firestore never
   // cascades, so a guard on a beforeAll-assigned id would leak an orphan.
   const produtoId = `${prefix}-prod`;
   const mlItemId = 'MLB3609679155';
+  // Deterministic for the same reason as `produtoId`: afterAll must be able to
+  // sweep BOTH of its link subcollections even when beforeAll dies mid-way.
+  const produtoFamiliaId = `${prefix}-familia`;
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
     await Promise.all([
-      seedMercadoLivreFixtures(prefix, 5).then(() => seedProdutoMlPublicado(prefix, contaLinked)),
+      seedMercadoLivreFixtures(prefix, 6).then(() =>
+        Promise.all([
+          seedProdutoMlPublicado(prefix, contaLinked),
+          seedProdutoMlFamilia(prefix, contaFamilia),
+        ]),
+      ),
       warmRoutes(browser, ['/produtos/novo', '/produtos/__aquecimento__/editar']),
     ]);
   });
 
   test.afterAll(async () => {
     await cleanupProdutoSubcollection(produtoId, 'produtoMercadoLivre');
+    // Firestore never cascades: BOTH of the família's link subcollections have to
+    // go before its produto, or the nome-prefix sweep leaves orphans behind.
+    await cleanupProdutoSubcollection(produtoFamiliaId, 'produtoMercadoLivre');
+    await cleanupProdutoSubcollection(produtoFamiliaId, 'variacaoMercadoLivre');
     await cleanupByNamePrefix('produtos', prefix);
     await cleanupMercadoLivreFixtures(prefix);
   });
@@ -342,5 +359,37 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
       timeout: 15_000,
     });
     await expect(page.getByRole('button', { name: 'Novo anúncio' })).toHaveCount(0);
+  });
+
+  /**
+   * A User-Products família is N ML listings, not one, and only the FOLD of them
+   * reaches the parent link. Before this the tab showed that fold and nothing
+   * else, so an operator could read "pausado" with no way to learn WHICH
+   * variation ML paused (#1142).
+   *
+   * ⚠️ The seeded member statuses differ from each other AND from the family's,
+   * so this cannot pass by reading the summary strip instead of the rows.
+   */
+  test('lists each variation of a User-Products família with its own status', async ({ page }) => {
+    await page.goto(`/produtos/${produtoFamiliaId}/editar`);
+    const card = await abrirConta(page, contaFamilia);
+
+    await expect(card.getByText('Variações no Mercado Livre')).toBeVisible({ timeout: 30_000 });
+    // Each member is its own anúncio, identified by its ML attributes.
+    await expect(card.getByText('Cor: Azul')).toBeVisible();
+    await expect(card.getByText('Cor: Verde')).toBeVisible();
+    // …and carries its own state: the família summarises as active, one member
+    // is not.
+    await expect(card.getByText('out_of_stock')).toBeVisible();
+  });
+
+  test('shows no variation table for a legacy listing', async ({ page }) => {
+    // Paired with the positive case above so "the table is absent" and "the
+    // panel never rendered" cannot be the same green.
+    await page.goto(`/produtos/${produtoId}/editar`);
+    const card = await abrirConta(page, contaLinked);
+
+    await expect(card.getByText(`Anúncio ${mlItemId}`)).toBeVisible({ timeout: 30_000 });
+    await expect(card.getByText('Variações no Mercado Livre')).toHaveCount(0);
   });
 });

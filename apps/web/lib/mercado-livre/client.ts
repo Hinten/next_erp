@@ -68,6 +68,20 @@ export interface MercadoLivrePublicarResult {
   orfaosEncerrados?: string[];
 }
 
+/** One member of a re-verified User-Products family (#1142). */
+export interface MercadoLivreReverificarMembro {
+  itemId: string;
+  memberDocId: string;
+  /**
+   * Did ML answer for this member? `false` means its stored status still stands.
+   * ⚠️ Not the same as `status: 'closed'` — an unreadable member is unknown.
+   */
+  lido: boolean;
+  status: string | null;
+  subStatus: string[] | null;
+  enviavel: boolean;
+}
+
 export interface MercadoLivreReverificarResult {
   /** Old-shape estado code derived from the listing's fresh ML status. */
   estado: string;
@@ -76,6 +90,16 @@ export interface MercadoLivreReverificarResult {
   subStatus: string[] | null;
   /** Whether the stock sweep will send to this listing again. */
   enviavel: boolean;
+  /**
+   * Present only for a User-Products FAMILY, one entry per member — the level at
+   * which a family actually has a status. The four fields above are the FOLD
+   * over these, which is all the parent link can carry.
+   *
+   * ⚠️ Only used for the toast's wording. The per-variation table reads the
+   * member links from Firestore directly and repaints from the live snapshot, so
+   * it does not depend on this and shows the same values after a reload.
+   */
+  membros?: MercadoLivreReverificarMembro[];
 }
 
 export interface MercadoLivreImportarResult {
