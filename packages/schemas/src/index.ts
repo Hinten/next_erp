@@ -316,6 +316,7 @@ export {
   usuarioTesteMercadoLivreMeta,
   usuarioTesteRoleSchema,
   USUARIO_TESTE_ROLE,
+  USUARIO_TESTE_LIMITE_POR_CONTA,
   type Integracao,
   type IntegracaoTipo,
   type BrandShopee,

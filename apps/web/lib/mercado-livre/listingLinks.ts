@@ -99,7 +99,15 @@ export function listingPermalink(
   return link.id ? mlbProductUrl(link.id) : null;
 }
 
-function mlbProductUrl(itemId: string): string | null {
+/**
+ * `produto.mercadolivre.com.br/MLB-<digits>` for ONE item id.
+ *
+ * Exported for the per-variation table (#1142), where each row already holds a
+ * member's own `MLB…` and needs no link-shaped wrapper to turn it into a URL —
+ * a User-Products member IS its own item, which is exactly the case
+ * {@link listingPermalink} cannot answer from a link doc alone.
+ */
+export function mlbProductUrl(itemId: string): string | null {
   const digits = itemId.replace(/\D/g, '');
   return digits ? `https://produto.mercadolivre.com.br/MLB-${digits}` : null;
 }

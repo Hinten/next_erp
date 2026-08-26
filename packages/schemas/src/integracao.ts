@@ -778,6 +778,23 @@ export const USUARIO_TESTE_ROLE = {
 } as const satisfies Record<string, UsuarioTesteRole>;
 
 /**
+ * «Você pode criar até 10 usuários de teste com sua conta de Mercado Livre.»
+ * — `realizacao-de-testes` (pt_br, rev. 2025-12-30).
+ *
+ * ⚠️ The cap is per REAL account and effectively permanent — a slot frees only
+ * after 60 days of inactivity, and ML publishes **no endpoint that lists** the
+ * users an account has minted. So the number of records stored under
+ * `integracao/{id}/usuariosTeste` is a **LOWER BOUND** on the slots spent, never
+ * the real total: another integração, another environment or a hand-rolled
+ * `curl` all consume from the same ten without leaving a trace here.
+ *
+ * Shared by the backend guard (`apps/mercado-livre/lib/marketplace/conta/testUsers.ts`)
+ * and the counter the operator sees before minting (`apps/web`'s
+ * `UsuariosTesteDevPanel`) so the two can never disagree.
+ */
+export const USUARIO_TESTE_LIMITE_POR_CONTA = 10;
+
+/**
  * A Mercado Livre **test user** — `integracao/{integracaoId}/usuariosTeste`.
  *
  * ML has no sandbox; it hands out throwaway production accounts through

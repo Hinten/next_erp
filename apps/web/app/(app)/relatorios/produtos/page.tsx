@@ -35,6 +35,7 @@ export default function ProdutosMaisVendidosPage() {
             min={1}
             max={50}
             step={1}
+            allowDecimal={false}
             w={120}
           />
         }

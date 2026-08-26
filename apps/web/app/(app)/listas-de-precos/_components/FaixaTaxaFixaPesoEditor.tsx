@@ -1,8 +1,8 @@
 'use client';
 
-import { ActionIcon, Button, Group, NumberInput, Stack, Text } from '@mantine/core';
+import { ActionIcon, Button, Group, Stack, Text } from '@mantine/core';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
-import { DELETE_MARK } from '@delfrance/ui';
+import { DELETE_MARK, DecimalInput } from '@delfrance/ui';
 
 /**
  * One editable row of a formula's `faixasTaxaFixaPeso` (peso range → fixed
@@ -58,31 +58,31 @@ export function FaixaTaxaFixaPesoEditor({
         const marked = row[DELETE_MARK] === true;
         return (
           <Group key={i} align="flex-end" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
-            <NumberInput
+            <DecimalInput
               label="Peso mín. (kg)"
-              aria-label={`Peso mínimo ${i + 1}${scope}`}
+              ariaLabel={`Peso mínimo ${i + 1}${scope}`}
               value={row.pesoMinKg ?? 0}
-              onChange={(v) => patchRow(i, { pesoMinKg: typeof v === 'number' ? v : 0 })}
+              onChange={(n) => patchRow(i, { pesoMinKg: n ?? 0 })}
               disabled={disabled || marked}
               min={0}
               decimalScale={3}
               w={130}
             />
-            <NumberInput
+            <DecimalInput
               label="Peso máx. (kg)"
-              aria-label={`Peso máximo ${i + 1}${scope}`}
+              ariaLabel={`Peso máximo ${i + 1}${scope}`}
               value={row.pesoMaxKg ?? 0}
-              onChange={(v) => patchRow(i, { pesoMaxKg: typeof v === 'number' ? v : 0 })}
+              onChange={(n) => patchRow(i, { pesoMaxKg: n ?? 0 })}
               disabled={disabled || marked}
               min={0}
               decimalScale={3}
               w={130}
             />
-            <NumberInput
+            <DecimalInput
               label="Taxa fixa"
-              aria-label={`Taxa fixa por peso ${i + 1}${scope}`}
+              ariaLabel={`Taxa fixa por peso ${i + 1}${scope}`}
               value={row.taxaFixa ?? 0}
-              onChange={(v) => patchRow(i, { taxaFixa: typeof v === 'number' ? v : 0 })}
+              onChange={(n) => patchRow(i, { taxaFixa: n ?? 0 })}
               disabled={disabled || marked}
               min={0}
               decimalScale={2}

@@ -158,6 +158,46 @@ describe('TableView', () => {
     expect(stored).toContain('nome');
   });
 
+  it('omits a hidden field from the picker so every checkbox on offer renders a column', () => {
+    // Mirrors /produtos: `nome` is hidden because a virtual column REPLACES it,
+    // and `tipo` is relabelled. The picker used to consult neither — it listed
+    // TWO "Nome" checkboxes, the schema one being a control that ticks,
+    // persists and renders nothing, because `visibleColumns` drops it. On
+    // /produtos that dead entry was the only match for a "integra" search,
+    // while the working column is labelled "Canais de venda".
+    localStorage.setItem('delfrance:tableview:columns:tests', JSON.stringify(['tipo']));
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        fields={{ nome: { hidden: true }, tipo: { label: 'Classificação' } }}
+        virtualColumns={[
+          {
+            key: 'nomeLink',
+            label: 'Nome',
+            dependsOn: ['nome'],
+            renderCell: (row) => <span>{row.data.nome}</span>,
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Configurar colunas' }));
+
+    // Exactly one "Nome" — the virtual column. The hidden schema field is gone.
+    expect(screen.getAllByRole('checkbox', { name: 'Nome' })).toHaveLength(1);
+    // And the picker names a column exactly as its header does.
+    expect(screen.getByRole('checkbox', { name: 'Classificação' })).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: 'Tipo' })).toBeNull();
+
+    // The checkbox that IS on offer produces a column.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Nome' }));
+    expect(screen.getAllByRole('columnheader').map((th) => th.textContent)).toEqual([
+      'Classificação',
+      'Nome',
+    ]);
+  });
+
   it('reorders columns via the picker and persists the new order', () => {
     wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
     // Default order follows the schema: Nome, Tipo, Observacoes.

@@ -9,6 +9,7 @@ import { ListingDetails } from './ListingDetails';
 import { ListingForm } from './ListingForm';
 import type { ListingSaveFn } from './ListingForm';
 import { ListingStatusStrip, type MotivoReverificacao } from './ListingStatusStrip';
+import { VariacoesAnuncioTable } from './VariacoesAnuncioTable';
 
 /**
  * ONE Mercado Livre anúncio: its live status, the last stock-push outcome, the
@@ -19,6 +20,12 @@ import { ListingStatusStrip, type MotivoReverificacao } from './ListingStatusStr
  * (the dirty/loading sets and the flush registry feed the produto page's save
  * and leave-guard) or single-flight locks that a second, off-screen listing must
  * not be able to fire in parallel.
+ *
+ * ⚠️ ONE documented exception: {@link VariacoesAnuncioTable} owns its own
+ * subscription. Neither reason above reaches it — a read-only per-listing query
+ * is not cross-account and is not a lock — and the editor could not hold it
+ * anyway: it renders N listings, so subscribing per listing up there would mean
+ * N hooks for a variable N. See that component's docblock.
  */
 export interface AnuncioBlockProps {
   produtoId: string;
@@ -130,6 +137,18 @@ export function AnuncioBlock({
         urlResolvida={urlResolvida}
         abrindo={abrindo}
         onAbrirAnuncio={onAbrirAnuncio}
+      />
+      {/* Directly under the strip it explains: the family status above is a FOLD
+          over these, so an operator who sees "pausado" can find WHICH variation
+          ML paused without leaving the tab (#1142). Renders nothing for a legacy
+          listing or one with no member links. */}
+      <VariacoesAnuncioTable
+        produtoId={produtoId}
+        linkDocId={linkDocId}
+        db={db}
+        isUserProducts={link.isUserProductModel === true}
+        linkStatus={link.status ?? null}
+        linkSubStatus={link.sub_status ?? null}
       />
       {stockResult && (
         <Text

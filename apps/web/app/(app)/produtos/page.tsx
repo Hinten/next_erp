@@ -214,15 +214,22 @@ export default function ProdutosPage() {
         virtualColumns={virtualColumns}
         fields={{
           // The schema field is REPLACED by the `nomeLink` virtual column, not
-          // merely left out of the declared columns: the ColumnPicker lists every
-          // schema field, so leaving it visible there put two identical "Nome"
-          // checkboxes in the picker and let a user toggle on a plain-text
-          // duplicate of the linked column.
+          // merely left out of the declared columns: without `hidden` the
+          // ColumnPicker offers every schema field, which put two identical
+          // "Nome" checkboxes in the picker and let a user toggle on a
+          // plain-text duplicate of the linked column.
           nome: { hidden: true },
           // Same reason as `nome`: the `integracoes` virtual column REPLACES
           // this field. Left visible, the ColumnPicker would offer both — the
           // badge column and a raw "Integracoes Com Produto" duplicate still
           // rendering the generic array cell's `N item(s)`.
+          //
+          // ⚠️ `hidden` did not reach the picker until #1264 was fixed up: it
+          // was consulted only when rendering, so both duplicates were still
+          // listed and ticking one silently rendered nothing — and the picker's
+          // label search matched "integra" on the dead entry ALONE, never on
+          // "Canais de venda". Keep `pickerFields` and `visibleColumns` in
+          // TableView applying the same exclusions.
           integracoesComProduto: { hidden: true },
           publicado: {
             label: 'Status',

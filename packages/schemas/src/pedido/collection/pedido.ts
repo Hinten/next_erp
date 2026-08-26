@@ -78,6 +78,23 @@ export const ESTADO_PEDIDO = {
   processandoCancelamento: 'processandoCancelamento',
   cancelado: 'cancelado',
   fraude: 'fraude',
+  /**
+   * The order has **consolidated**: the return window has passed and the money
+   * is certain to be received.
+   *
+   * ⚠️ NOT a synonym for "delivered", and the distinction is load-bearing —
+   * delivery OPENS the return window, consolidation is what closes it, so the
+   * two events are separated by the whole devolução period. No channel reports
+   * the later one, which is why no marketplace import advances a pedido here:
+   * `pago` is the last rung an ML/marketplace path may write (see
+   * `apps/mercado-livre/CLAUDE.md` — from `emProcessamento` on, `estado`
+   * belongs to the business).
+   *
+   * It is also a stock-removal trigger in its own right (`efeitoEstoquePedido`
+   * tests `estado === finalizado` in `entradaRemocao`, independently of the
+   * frete), which makes it the backstop that eventually removes the goods for an
+   * order whose freight state never reported.
+   */
   finalizado: 'finalizado',
   error: 'error',
 } as const satisfies Record<string, EstadoPedido>;

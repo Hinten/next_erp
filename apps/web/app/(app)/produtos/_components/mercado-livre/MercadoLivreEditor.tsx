@@ -25,6 +25,7 @@ import { produtoMercadoLivreLinkCollection } from '@/lib/data/produtoMercadoLivr
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
+  type MercadoLivreReverificarMembro,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
@@ -603,12 +604,13 @@ export function MercadoLivreEditor({
         color: motivo === 'moderacao' ? 'blue' : result.enviavel ? 'green' : 'yellow',
         title: `Anúncio reverificado — ${estadoLabel(result.estado)}`,
         message:
-          motivo === 'moderacao'
+          resumoDosMembros(result.membros) +
+          (motivo === 'moderacao'
             ? 'Se o Mercado Livre informou um motivo, ele aparece abaixo.'
             : result.enviavel
               ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos) — ou clique em ' +
                 'Enviar estoque para enviar agora.'
-              : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
+              : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.'),
       });
     } catch (err) {
       if (err instanceof MercadoLivreClientHttpError) {
@@ -982,6 +984,33 @@ function abrir(aba: Window | null, url: string): void {
   if (!aba) return;
   aba.opener = null;
   aba.location.replace(url);
+}
+
+/**
+ * The one-line preamble a FAMILY's re-check earns, or `''` for a single listing.
+ *
+ * Under User Products the button re-reads N listings, not one, and the title only
+ * ever shows the FOLD — so without this the operator cannot tell a family from a
+ * simple anúncio, nor that the summary above is a summary. The count of members
+ * ML could not answer for is named rather than hidden: those keep their stored
+ * status, so a silent partial refresh would read as a complete one.
+ *
+ * The member VALUES are not repeated here — the table below repaints from the
+ * live snapshot, which is this handler's whole feedback model.
+ */
+function resumoDosMembros(membros: MercadoLivreReverificarMembro[] | undefined): string {
+  if (!membros || membros.length === 0) return '';
+  const total = membros.length;
+  const naoLidos = membros.filter((m) => !m.lido).length;
+  const cabeca =
+    total === 1 ? '1 variação reverificada' : `${String(total)} variações reverificadas`;
+  const cauda =
+    naoLidos === 0
+      ? ''
+      : naoLidos === 1
+        ? ' (1 não respondeu e manteve o status anterior)'
+        : ` (${String(naoLidos)} não responderam e mantiveram o status anterior)`;
+  return `${cabeca}${cauda}. `;
 }
 
 /**

@@ -71,6 +71,7 @@ import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 import { isRetryableMercadoLivreError, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
+import { DecimalInput } from '@delfrance/ui';
 
 /**
  * Raised when someone else saved this page while this form was open.
@@ -342,13 +343,17 @@ export function ConfigIaPanel({ agenteId, titulo, descricao }: ConfigIaPanelProp
           min={256}
           max={65_536}
           step={512}
+          // `maxOutputTokens` is `z.number().int()`, so a decimal here fails at
+          // save time as a raw ZodError in a red toast. This is also what the
+          // CARVE_OUTS entry in `decimal-input-single-reader.test.js` promises.
+          allowDecimal={false}
           disabled={!canWrite}
         />
-        <NumberInput
+        <DecimalInput
           label="Temperatura"
           description="0 = determinístico. Isto é extração de dados, não redação."
           value={temperaturaValue}
-          onChange={(v) => setTemperatura(typeof v === 'number' ? v : temperaturaValue)}
+          onChange={(n) => setTemperatura(n ?? temperaturaValue)}
           min={0}
           max={2}
           step={0.1}

@@ -2,6 +2,10 @@ export { cssVariablesResolver, theme } from './theme';
 export { PageHeader, type PageHeaderProps } from './PageHeader';
 export { PlaceholderPage, type PlaceholderPageProps } from './PlaceholderPage';
 
+// Input primitives
+export { DecimalInput, type DecimalInputProps } from './inputs/DecimalInput';
+export { parseDecimalInput } from './inputs/decimalValue';
+
 // Schema metadata layer
 export { extractFieldsFromSchema } from './schema/derive';
 export { parseZodDescription, type ParsedDescription } from './schema/describe';

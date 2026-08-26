@@ -17,6 +17,7 @@
     "inspect:anuncio": "dotenv -e ../../.env.local -- tsx scripts/inspect-anuncio.ts",
     "inspect:pedido": "dotenv -e ../../.env.local -- tsx scripts/inspect-pedido.ts",
     "dump:notificacoes": "dotenv -e ../../.env.local -- tsx scripts/dump-notificacoes.ts",
+    "snapshot:produto": "dotenv -e ../../.env.local -- tsx scripts/snapshot-produto.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {
