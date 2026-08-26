@@ -45,6 +45,27 @@ export class MercadoLivreClientNetworkError extends Error {
   }
 }
 
+/**
+ * The mercado-livre backend answered 200, but not to the question that was
+ * asked — so the "success" describes work that did not happen.
+ *
+ * ⚠️ This exists because `apps/web` talks to the **deployed** channel backend,
+ * never the one in this checkout (the `itemIds?` note above is the same skew,
+ * handled by tolerating an absent field). Tolerance is right for a field the UI
+ * merely displays and wrong for one that decides whether a permanent, billable,
+ * unrecoverable side effect occurred — there, a mismatch has to stop.
+ */
+export class MercadoLivreBackendDesatualizadoError extends Error {
+  constructor(
+    message: string,
+    /** Which check failed — the panel picks its copy from this. */
+    readonly motivo: 'backend-desatualizado' | 'contrato-violado',
+  ) {
+    super(message);
+    this.name = 'MercadoLivreBackendDesatualizadoError';
+  }
+}
+
 export interface MercadoLivreConta {
   connected: boolean;
   me: { id: number; nickname: string | null; email: string | null } | null;
@@ -482,6 +503,16 @@ export interface MercadoLivreAnuncioTeste {
  */
 export interface MercadoLivreUsuarioTeste {
   role: 'vendedor' | 'comprador';
+  /**
+   * The Firestore document holding this record — `vendedor` / `comprador` for
+   * the pair bootstrap, `${role}-${id}` for an additional mint.
+   *
+   * ⚠️ Rendered next to every account because it is the ONLY field that can
+   * answer "did the new buyer land beside the old one, or on top of it?". Every
+   * buyer carries `role: 'comprador'`, so without it a list that failed to grow
+   * is indistinguishable from a document that was replaced.
+   */
+  docId: string;
   id: number;
   nickname: string;
   password: string;
@@ -496,6 +527,65 @@ export interface MercadoLivreUsuarioTeste {
    * without these the operator cannot get past a verification prompt.
    */
   codigosVerificacaoEmail: { quatro: string; seis: string };
+}
+
+/**
+ * The single-role mint's post-condition, checked in the BROWSER.
+ *
+ * ⚠️ It has to live here: the half that can be wrong is the half that is not
+ * running this code. `apps/web` calls the deployed `apps/mercado-livre`, and
+ * before the single-role mint existed that route **ignored its body entirely**
+ * and always ran the pair bootstrap. Against a stale deployment a
+ * `{role: 'comprador'}` POST therefore reuses both stored users, mints nothing,
+ * wipes the conta's credential anyway, and answers **200**. `call<T>()` casts
+ * rather than validates, so every one of those was reported as a success:
+ * the list did not change, and the reveal modal showed `usuarios[0]` — the
+ * SELLER — under a "Comprador" badge, with the seller's password.
+ *
+ * Two checks, because the remedies differ:
+ *
+ *  1. `credencialRevogada` is the CAPABILITY PROBE — the field did not exist
+ *     before the single-role mint, so its absence dates the backend.
+ *  2. The contract itself: exactly one account, of the role asked for, freshly
+ *     minted and nothing reused.
+ *
+ * ⚠️ Throwing loses nothing. The backend persists every record BEFORE it
+ * answers (rule 1 of the mint: persist before the next mint, before the
+ * revocation, before the response), so whatever it did is already on disk and
+ * readable through `GET`. Refusing only stops one account's password being
+ * presented as another's.
+ *
+ * ⚠️ The PAIR bootstrap deliberately gets no such check: a stale backend does
+ * exactly what that button asks, and its toast reads no field the old shape
+ * lacks.
+ */
+function exigirMintAvulso(
+  result: MercadoLivreUsuariosTesteResult,
+  role: 'vendedor' | 'comprador',
+): MercadoLivreUsuariosTesteResult {
+  if (typeof result.credencialRevogada !== 'boolean') {
+    throw new MercadoLivreBackendDesatualizadoError(
+      'O backend do Mercado Livre é anterior à criação avulsa: ele ignorou o `role`, rodou a ' +
+        'criação do PAR e não criou nenhum comprador novo — mas apagou as credenciais desta ' +
+        'conta assim mesmo. Nenhuma senha foi revelada aqui, porque a conta que ele devolveu ' +
+        'não é a que você pediu. Faça o deploy de `apps/mercado-livre` (com ' +
+        'MERCADO_LIVRE_TEST_USERS_ENABLED=1) antes de usar este botão.',
+      'backend-desatualizado',
+    );
+  }
+  const criouSoOSolicitado =
+    result.criados.length === 1 && result.criados[0] === role && result.reaproveitados.length === 0;
+  const umUnicoDoRole = result.usuarios.length === 1 && result.usuarios[0]?.role === role;
+  if (!criouSoOSolicitado || !umUnicoDoRole) {
+    throw new MercadoLivreBackendDesatualizadoError(
+      `O backend não criou o ${role} solicitado: respondeu com ${String(result.criados.length)} ` +
+        `criado(s) e ${String(result.reaproveitados.length)} reaproveitado(s). Nenhuma senha ` +
+        'foi revelada, para não mostrar a credencial de outra conta como se fosse a nova. ' +
+        'Confira a lista antes de clicar de novo — cada clique gasta uma vaga permanente.',
+      'contrato-violado',
+    );
+  }
+  return result;
 }
 
 /** Result of the dev-only mint. */
@@ -1420,13 +1510,16 @@ export function createMercadoLivreClient(config: {
         `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
         {},
       ),
-    criarUsuarioTesteAvulso: (integracaoId, role, opts) =>
-      call<MercadoLivreUsuariosTesteResult>(
-        `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
-        // ⚠️ Sent explicitly rather than omitted when false: the backend's
-        // schema rejects unknown keys, so a typo here is a 400 rather than a
-        // silently-skipped revocation.
-        { role, manterCredencial: opts?.manterCredencial ?? false },
+    criarUsuarioTesteAvulso: async (integracaoId, role, opts) =>
+      exigirMintAvulso(
+        await call<MercadoLivreUsuariosTesteResult>(
+          `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+          // ⚠️ Sent explicitly rather than omitted when false: the backend's
+          // schema rejects unknown keys, so a typo here is a 400 rather than a
+          // silently-skipped revocation.
+          { role, manterCredencial: opts?.manterCredencial ?? false },
+        ),
+        role,
       ),
     iaModelos: (agenteId) =>
       call<MercadoLivreIaModelos>(

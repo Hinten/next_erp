@@ -45,7 +45,9 @@ vi.mock('@/lib/auth', async (importActual) => {
 });
 
 const { UsuariosTesteDevPanel } = await import('./UsuariosTesteDevPanel');
-const { MercadoLivreClientHttpError } = await import('@/lib/mercado-livre/client');
+const { MercadoLivreBackendDesatualizadoError, MercadoLivreClientHttpError } =
+  await import('@/lib/mercado-livre/client');
+const { notifications } = await import('@mantine/notifications');
 
 function renderPanel(): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -100,12 +102,23 @@ function setError(err: unknown): void {
   };
 }
 
+/**
+ * One stored account.
+ *
+ * ⚠️ `docId` defaults to the ADDITIONAL-mint shape (`${role}-${id}`) rather than
+ * the bare role, so a fixture with several accounts of one role is unique
+ * without anyone having to remember. A test modelling the PAIR bootstrap passes
+ * `docId: 'comprador'` explicitly — the two shapes coexisting on one integração
+ * is the arrangement worth writing out.
+ */
 function usuario(
   role: 'vendedor' | 'comprador',
   over: Partial<MercadoLivreUsuarioTeste> = {},
 ): MercadoLivreUsuarioTeste {
+  const id = over.id ?? 120506781;
   return {
     role,
+    docId: `${role}-${String(id)}`,
     id: 120506781,
     nickname: `TEST-${role}`,
     password: 'qatest328',
@@ -282,6 +295,141 @@ describe('UsuariosTesteDevPanel — flag ON', () => {
     const vagas = screen.getAllByTestId('ml-usuarios-teste-vagas')[0];
     expect(vagas?.textContent).toContain('de 10');
     expect(vagas?.textContent).toContain('piso');
+  });
+});
+
+describe('UsuariosTesteDevPanel — showing every buyer', () => {
+  it('groups each role under its own count, so a list that failed to grow shows it', async () => {
+    // ⭐ The reported bug read as "creating a new buyer deleted the old one".
+    // It had not: the deployed backend ignored the `role` and minted nothing at
+    // all. A FLAT list cannot tell those apart — the roles interleave, so a
+    // buyer count that did not move is invisible. The count in the heading is
+    // the whole point of the grouping.
+    setUsuarios([
+      usuario('vendedor', { docId: 'vendedor', id: 1, nickname: 'TEST-v' }),
+      usuario('comprador', { docId: 'comprador', id: 2, nickname: 'TEST-c-antigo' }),
+      usuario('comprador', { docId: 'comprador-3', id: 3, nickname: 'TEST-c-novo' }),
+    ]);
+    renderPanel();
+
+    await screen.findByText('TEST-c-novo');
+    const compradores = screen.getByTestId('ml-usuarios-teste-compradores');
+    expect(compradores.textContent).toContain('Compradores (2)');
+    // BOTH, not just the newest — the old buyer is exactly what the operator
+    // came here to confirm is still there.
+    expect(compradores.textContent).toContain('TEST-c-antigo');
+    expect(compradores.textContent).toContain('TEST-c-novo');
+    expect(screen.getByTestId('ml-usuarios-teste-vendedores').textContent).toContain(
+      'Vendedores (1)',
+    );
+  });
+
+  it('⭐ shows the doc id, the one field that separates "beside" from "on top of"', async () => {
+    // Every buyer record says `role: 'comprador'`, so the records alone cannot
+    // distinguish an additional mint landing at its own document from one that
+    // replaced the pair bootstrap's. Two distinct doc ids on screen is the
+    // proof; it is also what makes an overwrite visible if one ever happens.
+    setUsuarios([
+      usuario('comprador', { docId: 'comprador', id: 2, nickname: 'TEST-c-antigo' }),
+      usuario('comprador', { docId: 'comprador-3', id: 3, nickname: 'TEST-c-novo' }),
+    ]);
+    renderPanel();
+
+    await screen.findByText('TEST-c-novo');
+    const compradores = screen.getByTestId('ml-usuarios-teste-compradores');
+    expect(compradores.textContent).toContain('comprador-3');
+    expect(compradores.textContent).toContain('doc comprador');
+  });
+
+  it('renders a role with nothing in it as "(0)" rather than hiding it', async () => {
+    // The seller half being MISSING is the state the pair bootstrap exists to
+    // fix. A section that hides itself when empty reports the same screen for
+    // "no seller" and "seller present", which is how `usuarios.length >= 2`
+    // came to stand in for coverage in the first place.
+    setUsuarios([usuario('comprador', { id: 1 }), usuario('comprador', { id: 2 })]);
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getAllByText('TEST-comprador')).toHaveLength(2);
+    });
+    expect(screen.getByTestId('ml-usuarios-teste-vendedores').textContent).toContain(
+      'Vendedores (0)',
+    );
+  });
+});
+
+describe('UsuariosTesteDevPanel — a backend that ignored the role', () => {
+  /**
+   * ⚠️ The client mock is replaced wholesale in this file, so the guard that
+   * PRODUCES this error cannot be exercised here — the response shape that
+   * triggers it is pinned in `lib/mercado-livre/client.test.ts`. What these
+   * assert is what the panel does once it is thrown, which is the half that
+   * decides whether a wrong password reaches the screen.
+   */
+  function erroDesatualizado() {
+    return new MercadoLivreBackendDesatualizadoError(
+      'O backend do Mercado Livre é anterior à criação avulsa: ele ignorou o `role`. ' +
+        'Faça o deploy de `apps/mercado-livre` antes de usar este botão.',
+      'backend-desatualizado',
+    );
+  }
+
+  async function clicarNovoComprador(): Promise<void> {
+    await screen.findByTestId('ml-usuarios-teste-panel');
+    await abrirNovoComprador();
+    fireEvent.click(await screen.findByTestId('ml-novo-comprador-entendido'));
+    fireEvent.click(screen.getByTestId('ml-novo-comprador-confirmar'));
+  }
+
+  it('⭐ names the deploy and reveals NOTHING — the response held another account', async () => {
+    // The failure this replaces: a stale backend answered 200 with the PAIR, so
+    // `usuarios[0]` was the SELLER, and the modal titled "Comprador de teste
+    // criado" showed the seller's password under a "Comprador" badge.
+    setUsuarios([usuario('vendedor', { docId: 'vendedor' })], {
+      avulso: () => Promise.reject(erroDesatualizado()),
+    });
+    const show = vi.spyOn(notifications, 'show').mockImplementation(() => '');
+    renderPanel();
+
+    await clicarNovoComprador();
+
+    await waitFor(() => {
+      expect(show).toHaveBeenCalled();
+    });
+    const aviso = show.mock.calls[0]?.[0] as {
+      color?: string;
+      message?: unknown;
+      autoClose?: unknown;
+    };
+    expect(aviso.color).toBe('red');
+    expect(String(aviso.message)).toContain('deploy');
+    // ⚠️ A message naming a deploy the operator has to go and do cannot vanish
+    // after four seconds.
+    expect(aviso.autoClose).toBe(false);
+    expect(screen.queryByTestId('ml-usuario-teste-revelado')).toBeNull();
+  });
+
+  it('⚠️ still re-reads the conta — a refused mint still wiped the credential', async () => {
+    // The refusal happens on a 200: the backend already ran, already revoked.
+    // Refetching only `onSuccess` left "Conectada" on screen beside a conta that
+    // no longer was, and the next click then failed with an unrelated 409.
+    setUsuarios([usuario('vendedor', { docId: 'vendedor' })], {
+      avulso: () => Promise.reject(erroDesatualizado()),
+    });
+    vi.spyOn(notifications, 'show').mockImplementation(() => '');
+    const conta = vi.mocked(h.clientRef.current?.conta as (id: string) => Promise<unknown>);
+    renderPanel();
+    await screen.findByTestId('ml-usuarios-teste-panel');
+    await waitFor(() => {
+      expect(conta.mock.calls.length).toBeGreaterThan(0);
+    });
+    const antes = conta.mock.calls.length;
+
+    await clicarNovoComprador();
+
+    await waitFor(() => {
+      expect(conta.mock.calls.length).toBeGreaterThan(antes);
+    });
   });
 });
 

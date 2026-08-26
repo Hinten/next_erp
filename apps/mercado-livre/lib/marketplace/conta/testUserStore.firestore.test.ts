@@ -24,6 +24,7 @@ import { createTestUserStore } from './testUserStore';
 import {
   ROLES_A_CRIAR,
   TestUserGuardError,
+  type UsuarioTesteRegistrado,
   criarUsuariosTeste,
   docIdAdicional,
   reutilizavel,
@@ -60,9 +61,9 @@ function rec(
  * assertions exercise the thing the pair bootstrap actually calls.
  */
 async function reusavel(
-  store: { list: () => Promise<UsuarioTesteMercadoLivre[]> },
+  store: { list: () => Promise<UsuarioTesteRegistrado[]> },
   role: UsuarioTesteMercadoLivre['role'],
-): Promise<UsuarioTesteMercadoLivre | null> {
+): Promise<UsuarioTesteRegistrado | null> {
   return reutilizavel(await store.list(), role);
 }
 
@@ -115,7 +116,13 @@ describe.skipIf(!EMULATED)('createTestUserStore (Firestore emulator)', () => {
 
     await store.put(written);
 
-    expect(await reusavel(store, USUARIO_TESTE_ROLE.comprador)).toEqual(written);
+    // ⚠️ `docId` on the expectation, not a looser matcher: the read side gains
+    // exactly one field, and a `toMatchObject` here would stop noticing if a
+    // stored field ever went missing — which for `password` is the whole risk.
+    expect(await reusavel(store, USUARIO_TESTE_ROLE.comprador)).toEqual({
+      ...written,
+      docId: USUARIO_TESTE_ROLE.comprador,
+    });
   });
 
   it('B4: the reuse lookup returns null for a role with no record', async () => {
@@ -280,3 +287,65 @@ describe.skipIf(!EMULATED)('createTestUserStore — the additional mint (Firesto
     expect((await rawDoc(integracaoId, USUARIO_TESTE_ROLE.vendedor))?.password).toBe('senha-1');
   });
 });
+
+describe.skipIf(!EMULATED)(
+  'createTestUserStore — doc ids and the put guard (Firestore emulator)',
+  () => {
+    it('B11: list reports the doc id holding each record, both shapes at once', async () => {
+      // ⭐ The read the panel depends on. The pair bootstrap's bare `comprador`
+      // and an additional mint's `comprador-<id>` carry the SAME `role`, so
+      // without the doc id a screen showing both cannot say they are two
+      // documents rather than one row rendered twice — and a buyer count that
+      // failed to grow looks identical to a document that was replaced.
+      const integracaoId = newIntegracaoId();
+      const store = createTestUserStore(getAdminFirestore(), integracaoId);
+
+      await store.put(rec(USUARIO_TESTE_ROLE.vendedor));
+      await store.put(rec(USUARIO_TESTE_ROLE.comprador));
+      await store.create(
+        docIdAdicional(USUARIO_TESTE_ROLE.comprador, 777),
+        rec(USUARIO_TESTE_ROLE.comprador, { id: 777, nickname: 'TEST-comprador-2' }),
+      );
+
+      expect((await store.list()).map((u) => u.docId)).toEqual([
+        'vendedor',
+        'comprador',
+        'comprador-777',
+      ]);
+    });
+
+    it('B12: put REFUSES a different account on the role doc, password intact', async () => {
+      // The last path that could still destroy an unrecoverable credential. `put`
+      // was a bare `set`, safe only because `reutilizavel` had just read the role
+      // as absent — an argument living outside the write, one refactor from being
+      // false. The guard now sits IN the write.
+      const integracaoId = newIntegracaoId();
+      const store = createTestUserStore(getAdminFirestore(), integracaoId);
+      const antigo = rec(USUARIO_TESTE_ROLE.comprador, { id: 555, password: 'nao-perca-isto' });
+      await store.put(antigo);
+
+      const err = await store
+        .put(rec(USUARIO_TESTE_ROLE.comprador, { id: 999, password: 'sobrescrita' }))
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(TestUserGuardError);
+      expect((err as TestUserGuardError).code).toBe('ML_USUARIO_TESTE_DUPLICADO');
+      expect(await rawDoc(integracaoId, USUARIO_TESTE_ROLE.comprador)).toEqual(antigo);
+    });
+
+    it('B13: put stays idempotent for the SAME account — the partial-re-run case', async () => {
+      // The control B12 needs. Rule 2 lets a run that failed halfway be retried,
+      // and that retry re-writes identical content at the same doc id; a guard
+      // that refused it would turn every recovery into a dead end.
+      const integracaoId = newIntegracaoId();
+      const store = createTestUserStore(getAdminFirestore(), integracaoId);
+      const registro = rec(USUARIO_TESTE_ROLE.vendedor, { id: 555 });
+
+      await store.put(registro);
+      await store.put({ ...registro, site_status: 'paused' });
+
+      expect((await rawColl(integracaoId).get()).size).toBe(1);
+      expect((await rawDoc(integracaoId, USUARIO_TESTE_ROLE.vendedor))?.site_status).toBe('paused');
+    });
+  },
+);

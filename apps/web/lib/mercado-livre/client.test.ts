@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  MercadoLivreBackendDesatualizadoError,
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
+  type MercadoLivreUsuarioTeste,
   createMercadoLivreClient,
   mercadoLivreHttpFallbackMessage,
 } from './client';
@@ -170,5 +172,187 @@ describe('sugerirMedidas — the body', () => {
     const sent = await bodyOf(grid);
     expect('facts' in sent).toBe(false);
     expect(sent.tabMediId).toBe('tm1');
+  });
+});
+
+/**
+ * `criarUsuarioTesteAvulso` — the post-condition, and why it lives in the browser.
+ *
+ * ⭐ The bug it closes was reported as "creating a new buyer deletes the old
+ * one". It did not. `apps/web` calls the DEPLOYED apps/mercado-livre, and before
+ * the single-role mint existed that route **ignored its body entirely** and
+ * always ran the pair bootstrap. So a `{role: 'comprador'}` POST against a stale
+ * deployment reused both stored accounts, minted nothing, wiped the conta's
+ * credential anyway — and answered **200**.
+ *
+ * `call<T>()` casts rather than validates, so all of that arrived as a success:
+ * the list did not change, and the reveal modal showed `usuarios[0]`, which for
+ * the pair is the SELLER, under a "Comprador" badge with the seller's password.
+ *
+ * ⚠️ These cannot move to the backend. The half that is wrong is the half that
+ * is not running this code.
+ */
+describe('criarUsuarioTesteAvulso — the stale-backend post-condition', () => {
+  function ok(body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  function registro(
+    role: 'vendedor' | 'comprador',
+    over: Partial<MercadoLivreUsuarioTeste> = {},
+  ): MercadoLivreUsuarioTeste {
+    return {
+      role,
+      docId: role,
+      id: role === 'vendedor' ? 1 : 2,
+      nickname: 'TEST-' + role,
+      password: 'senha-' + role,
+      site_id: 'MLB',
+      site_status: 'active',
+      email: null,
+      createdAt: 1_700_000_000_000,
+      createdByUserId: 999,
+      codigosVerificacaoEmail: { quatro: '0001', seis: '000001' },
+      ...over,
+    };
+  }
+
+  /** Exactly what a backend predating the single-role mint answers. */
+  const RESPOSTA_ANTIGA = {
+    usuarios: [registro('vendedor'), registro('comprador')],
+    criados: [],
+    reaproveitados: ['vendedor', 'comprador'],
+    credenciaisRemovidas: 2,
+    conta: { id: 999, nickname: 'LOJA-REAL' },
+  };
+
+  async function recusa(body: unknown): Promise<MercadoLivreBackendDesatualizadoError> {
+    const c = client(async () => ok(body));
+    try {
+      await c.criarUsuarioTesteAvulso('i1', 'comprador');
+    } catch (err) {
+      if (err instanceof MercadoLivreBackendDesatualizadoError) return err;
+      throw err;
+    }
+    throw new Error('esperava uma recusa');
+  }
+
+  it('⭐ refuses the pre-#1295 shape and names the deploy', async () => {
+    // `credencialRevogada` is the capability probe: the field did not exist
+    // before the single-role mint, so its ABSENCE dates the backend. Nothing
+    // else in the payload distinguishes the two versions.
+    const err = await recusa(RESPOSTA_ANTIGA);
+
+    expect(err.motivo).toBe('backend-desatualizado');
+    expect(err.message).toContain('deploy');
+    expect(err.message).toContain('apps/mercado-livre');
+  });
+
+  it('⭐ refuses BEFORE the seller could be handed back as the new buyer', async () => {
+    // The decisive assertion. Without the guard this RESOLVES, and
+    // `usuarios[0]` — the seller — is what the panel reveals as the new
+    // comprador's credential.
+    const c = client(async () => ok(RESPOSTA_ANTIGA));
+
+    await expect(c.criarUsuarioTesteAvulso('i1', 'comprador')).rejects.toBeInstanceOf(
+      MercadoLivreBackendDesatualizadoError,
+    );
+  });
+
+  it('says the credential was wiped anyway, because it was', async () => {
+    // The revocation is the mint's LAST step and unconditional on the old route,
+    // so a refusal here is not "nothing happened" — the conta is disconnected
+    // now, and the next attempt 409s on ML_REAUTH_REQUIRED for a reason that
+    // looks unrelated.
+    const err = await recusa(RESPOSTA_ANTIGA);
+
+    expect(err.message).toContain('credenciais');
+  });
+
+  it('refuses a current backend that minted nothing', async () => {
+    // The field is present, so this is not a version problem — the run reused
+    // instead of minting, which the single-role mint never does. Different
+    // cause, different remedy, so a different `motivo`.
+    const err = await recusa({
+      usuarios: [registro('comprador')],
+      criados: [],
+      reaproveitados: ['comprador'],
+      credenciaisRemovidas: 0,
+      credencialRevogada: true,
+      conta: { id: 999, nickname: 'LOJA-REAL' },
+    });
+
+    expect(err.motivo).toBe('contrato-violado');
+    expect(err.message).toContain('vaga permanente');
+  });
+
+  it('refuses a single account of the WRONG role', async () => {
+    // A seller returned for a buyer request is the credential-confusion case
+    // reduced to one record — a `usuarios.length === 1` check alone passes it.
+    const err = await recusa({
+      usuarios: [registro('vendedor')],
+      criados: ['vendedor'],
+      reaproveitados: [],
+      credenciaisRemovidas: 2,
+      credencialRevogada: true,
+      conta: { id: 999, nickname: 'LOJA-REAL' },
+    });
+
+    expect(err.motivo).toBe('contrato-violado');
+  });
+
+  it('refuses TWO accounts even when both were freshly minted', async () => {
+    // The other stale-deployment branch: on an integração holding only
+    // `comprador-<id>` docs the old route finds neither bare role doc and mints
+    // BOTH — two permanent slots for one click, one of them a seller nobody
+    // asked for.
+    const err = await recusa({
+      usuarios: [registro('vendedor'), registro('comprador')],
+      criados: ['vendedor', 'comprador'],
+      reaproveitados: [],
+      credenciaisRemovidas: 2,
+      credencialRevogada: true,
+      conta: { id: 999, nickname: 'LOJA-REAL' },
+    });
+
+    expect(err.motivo).toBe('contrato-violado');
+  });
+
+  it('passes a well-formed single mint through untouched', async () => {
+    // The control. A guard that only ever refuses is indistinguishable from a
+    // broken button.
+    const corpo = {
+      usuarios: [registro('comprador', { docId: 'comprador-2' })],
+      criados: ['comprador'],
+      reaproveitados: [],
+      credenciaisRemovidas: 2,
+      credencialRevogada: true,
+      conta: { id: 999, nickname: 'LOJA-REAL' },
+    };
+    const c = client(async () => ok(corpo));
+
+    expect(await c.criarUsuarioTesteAvulso('i1', 'comprador')).toEqual(corpo);
+  });
+
+  it('lets a deliberate manterCredencial through — false is a real value', async () => {
+    // `credencialRevogada: false` is legitimate and falsy. A probe written as a
+    // truthiness check rather than a `typeof` would reject exactly the opt-out
+    // the panel offers.
+    const corpo = {
+      usuarios: [registro('comprador', { docId: 'comprador-2' })],
+      criados: ['comprador'],
+      reaproveitados: [],
+      credenciaisRemovidas: 0,
+      credencialRevogada: false,
+      conta: { id: 999, nickname: 'LOJA-REAL' },
+    };
+    const c = client(async () => ok(corpo));
+
+    await expect(
+      c.criarUsuarioTesteAvulso('i1', 'comprador', { manterCredencial: true }),
+    ).resolves.toEqual(corpo);
   });
 });

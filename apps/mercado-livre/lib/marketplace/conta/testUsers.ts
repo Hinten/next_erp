@@ -118,6 +118,26 @@ export class TestUserGuardError extends Error {
 }
 
 /**
+ * A stored record together with the Firestore document that holds it.
+ *
+ * ⚠️ The doc id is the ONLY thing that distinguishes "the additional mint landed
+ * beside the pair" from "it landed on top of it". The record itself cannot say:
+ * `role` is `comprador` on both the bare `comprador` doc and every
+ * `comprador-<mlUserId>` doc, so a panel rendering records alone can show a
+ * buyer count that failed to grow and give the operator no way to tell whether
+ * a document was replaced or never written. It is carried out to the wire for
+ * exactly that reason.
+ *
+ * ⚠️ It is a READ-side field and must never travel back into a write.
+ * {@link usuarioTesteMercadoLivreSchema} is `.passthrough()`, so a `docId` that
+ * reached {@link TestUserStore.put} or {@link TestUserStore.create} would be
+ * persisted silently as a record field. {@link toRecord} is the only producer of
+ * a written record and returns a bare {@link UsuarioTesteMercadoLivre}; keep it
+ * that way.
+ */
+export type UsuarioTesteRegistrado = UsuarioTesteMercadoLivre & { readonly docId: string };
+
+/**
  * Persistence for the minted records.
  *
  * ⚠️ There is deliberately NO read-one-by-role member. Reuse is decided from
@@ -135,15 +155,23 @@ export class TestUserGuardError extends Error {
  * additional mint from destroying an unrecoverable password.
  */
 export interface TestUserStore {
-  /** Write a record at the role's fixed doc id, overwriting. */
+  /**
+   * Write a record at the role's fixed doc id.
+   *
+   * Idempotent for the SAME ML account — re-writing identical content is what
+   * makes a partial pair re-run safe. Throws {@link TestUserGuardError}
+   * `ML_USUARIO_TESTE_DUPLICADO` when the doc already holds a DIFFERENT account,
+   * so the overwrite that would destroy an unrecoverable password cannot happen
+   * even if a caller reached here without checking.
+   */
   put(record: UsuarioTesteMercadoLivre): Promise<void>;
   /**
    * Write at an EXPLICIT doc id, refusing if the document already exists.
    * Throws {@link TestUserGuardError} `ML_USUARIO_TESTE_DUPLICADO` on collision.
    */
   create(docId: string, record: UsuarioTesteMercadoLivre): Promise<void>;
-  /** Every stored record, for the read-back route. */
-  list(): Promise<UsuarioTesteMercadoLivre[]>;
+  /** Every stored record with the doc id holding it, for the read-back route. */
+  list(): Promise<UsuarioTesteRegistrado[]>;
 }
 
 /**
@@ -179,8 +207,11 @@ export interface CriarUsuariosTesteDeps {
 }
 
 export interface CriarUsuariosTesteResult {
-  /** The records this run produced — reused ones included, seller first. */
-  readonly usuarios: readonly UsuarioTesteMercadoLivre[];
+  /**
+   * The records this run produced — reused ones included, seller first, each
+   * with the doc id holding it.
+   */
+  readonly usuarios: readonly UsuarioTesteRegistrado[];
   /** Roles minted on THIS run — the ones that consumed a slot. */
   readonly criados: readonly UsuarioTesteRole[];
   /** Roles that were already stored and were reused instead of re-minted. */
@@ -227,9 +258,9 @@ export function docIdAdicional(role: UsuarioTesteRole, mlUserId: number): string
  * the one the panel badges "Mais recente".
  */
 export function reutilizavel(
-  registrados: readonly UsuarioTesteMercadoLivre[],
+  registrados: readonly UsuarioTesteRegistrado[],
   role: UsuarioTesteRole,
-): UsuarioTesteMercadoLivre | null {
+): UsuarioTesteRegistrado | null {
   const candidatos = registrados.filter((u) => u.role === role);
   if (candidatos.length === 0) return null;
   return candidatos.reduce((a, b) => ((b.createdAt ?? 0) > (a.createdAt ?? 0) ? b : a));
@@ -281,7 +312,7 @@ export async function criarUsuariosTeste(
   // being a floor, and the message says so rather than pretending otherwise.
   const registrados = await deps.store.list();
 
-  const usuarios: UsuarioTesteMercadoLivre[] = [];
+  const usuarios: UsuarioTesteRegistrado[] = [];
   const criados: UsuarioTesteRole[] = [];
   const reaproveitados: UsuarioTesteRole[] = [];
 
@@ -323,15 +354,19 @@ export async function criarUsuariosTeste(
     // Rule 1: persist BEFORE anything else — the next mint, the revocation, the
     // response. Anything between the ML response and this write is a window in
     // which a slot is spent and the credential lost.
+    const docId = modo === 'novo' ? docIdAdicional(role, minted.id) : role;
     if (modo === 'novo') {
       // `create` at a response-derived id: it cannot collide with the pair
       // bootstrap's role doc, and if it somehow did it FAILS instead of
       // overwriting a password nothing can reissue.
-      await deps.store.create(docIdAdicional(role, minted.id), record);
+      await deps.store.create(docId, record);
     } else {
       await deps.store.put(record);
     }
-    usuarios.push(record);
+    // ⚠️ `docId` is attached HERE, after the write, never inside `record`: the
+    // stored shape is `.passthrough()`, so handing it to the store would persist
+    // a document's own id as one of its fields.
+    usuarios.push({ ...record, docId });
     criados.push(role);
   }
 
