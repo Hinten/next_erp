@@ -1,8 +1,9 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Button, Group, Modal, NumberInput, Stack, Text } from '@mantine/core';
+import { Button, Group, Modal, Stack, Text } from '@mantine/core';
 import { evaluateFormula, taxaFixaPorPeso, type FormulaCalculoPreco } from '@delfrance/schemas';
+import { DecimalInput } from '@delfrance/ui';
 
 /**
  * "Testar Fórmula" dialog — legacy parity with `_TestFormulaDialog`
@@ -41,16 +42,18 @@ export interface TestarFormulaDialogProps {
 }
 
 export function TestarFormulaDialog({ opened, onClose, formula }: TestarFormulaDialogProps) {
-  const [custo, setCusto] = useState<number | string>(10);
-  const [peso, setPeso] = useState<number | string>(0.25);
+  const [custo, setCusto] = useState<number | null>(10);
+  const [peso, setPeso] = useState<number | null>(0.25);
 
   // Null when the row can't be evaluated (unparsable formula or non-finite
   // Custo/Peso input); otherwise the raw computed value (may be ≤ 0).
   const resultado = useMemo(() => {
     if (!formula) return null;
-    const custoNum = typeof custo === 'number' ? custo : Number(custo);
-    const pesoNum = typeof peso === 'number' ? peso : Number(peso);
-    if (!Number.isFinite(custoNum) || !Number.isFinite(pesoNum)) return null;
+    // `DecimalInput` already hands back a finite number or `null`; an empty box
+    // means "no answer", not zero.
+    if (custo === null || peso === null) return null;
+    const custoNum = custo;
+    const pesoNum = peso;
     const row: FormulaCalculoPreco = {
       limiar: 0,
       formula: formula.formula ?? '',
@@ -88,8 +91,14 @@ export function TestarFormulaDialog({ opened, onClose, formula }: TestarFormulaD
   return (
     <Modal opened={opened} onClose={onClose} title="Testar fórmula" centered>
       <Stack>
-        <NumberInput label="Custo (C)" value={custo} onChange={setCusto} decimalScale={2} min={0} />
-        <NumberInput label="Peso (kg)" value={peso} onChange={setPeso} decimalScale={3} min={0} />
+        <DecimalInput
+          label="Custo (C)"
+          value={custo}
+          onChange={setCusto}
+          decimalScale={2}
+          min={0}
+        />
+        <DecimalInput label="Peso (kg)" value={peso} onChange={setPeso} decimalScale={3} min={0} />
         <Text size="sm" fw={600}>
           Preço calculado: {resultadoLabel}
         </Text>

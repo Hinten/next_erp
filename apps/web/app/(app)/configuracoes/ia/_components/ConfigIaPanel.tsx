@@ -71,6 +71,7 @@ import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 import { isRetryableMercadoLivreError, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
+import { DecimalInput } from '@delfrance/ui';
 
 /**
  * Raised when someone else saved this page while this form was open.
@@ -344,11 +345,11 @@ export function ConfigIaPanel({ agenteId, titulo, descricao }: ConfigIaPanelProp
           step={512}
           disabled={!canWrite}
         />
-        <NumberInput
+        <DecimalInput
           label="Temperatura"
           description="0 = determinístico. Isto é extração de dados, não redação."
           value={temperaturaValue}
-          onChange={(v) => setTemperatura(typeof v === 'number' ? v : temperaturaValue)}
+          onChange={(n) => setTemperatura(n ?? temperaturaValue)}
           min={0}
           max={2}
           step={0.1}

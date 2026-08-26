@@ -16,6 +16,7 @@ import { IconFilter, IconFilterFilled } from '@tabler/icons-react';
 import type { PipelineFilterOp } from '@delfrance/data';
 import type { ColumnFilterValue, FilterableField } from '../schema/types';
 import { type EpochUnit, epochToPickerString, pickerStringToEpoch } from '../object/datetimeField';
+import { DecimalInput } from '../inputs/DecimalInput';
 
 // `ColumnFilterValue` now lives in ../schema/types (so `VirtualColumn.filter`
 // can reference it without a circular import). Re-exported here for the
@@ -215,15 +216,15 @@ function TextBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
 
 function NumericBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
   const [op, setOp] = useState<PipelineFilterOp>(value?.op ?? 'eq');
-  const [local, setLocal] = useState<number | ''>((value?.value as number) ?? '');
-  const disabled = typeof local !== 'number';
+  const [local, setLocal] = useState<number | null>((value?.value as number) ?? null);
+  const disabled = local === null;
   const apply = () => {
-    if (typeof local === 'number') onApply({ op, value: local });
+    if (local !== null) onApply({ op, value: local });
   };
   return (
     <FilterShell
       onClear={() => {
-        setLocal('');
+        setLocal(null);
         onClear();
       }}
       onApply={apply}
@@ -245,17 +246,18 @@ function NumericBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           // click-outside and closes the surrounding FilterPopover.
           comboboxProps={{ withinPortal: false }}
         />
-        <NumberInput
+        <DecimalInput
           label={descriptor.label}
           value={local}
-          onChange={(v) => setLocal(typeof v === 'number' ? v : '')}
+          onChange={setLocal}
+          allowNegative
+          autoFocus
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !disabled) {
               e.preventDefault();
               apply();
             }
           }}
-          autoFocus
         />
       </Stack>
     </FilterShell>

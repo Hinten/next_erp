@@ -6,31 +6,16 @@ import {
   Button,
   Fieldset,
   Group,
-  NumberInput,
   SimpleGrid,
   Stack,
   Text,
   TextInput,
 } from '@mantine/core';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
-import { DELETE_MARK } from '@delfrance/ui';
+import { DELETE_MARK, DecimalInput } from '@delfrance/ui';
 import { FaixaTaxaFixaPesoEditor } from './FaixaTaxaFixaPesoEditor';
 import { TestarFormulaDialog } from './TestarFormulaDialog';
 import { rowFieldError, validatedIndices } from './editorErrors';
-
-/**
- * Coerce Mantine's `NumberInput` onChange payload to a number, or `null` when
- * the field is cleared — mirrors `CurrencyInput`'s `parseBrl`
- * (`apps/web/app/(app)/produtos/_components/CurrencyInput.tsx`). Never forces
- * an empty input back to `0`: a truly-blank limiar must surface the "maior
- * que zero" validation error instead of silently parsing as a valid-looking 0.
- */
-function parseLimiar(v: number | string): number | null {
-  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  if (v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
 
 /**
  * Characters the legacy formula input accepts (digits, the four arithmetic
@@ -165,11 +150,11 @@ export function FormulaListEditor({
           <Fieldset key={i} p="sm" opacity={marked ? 0.5 : 1}>
             <Stack gap="sm">
               <Group align="flex-end" gap="sm" wrap="nowrap">
-                <NumberInput
+                <DecimalInput
                   label="Limiar"
-                  aria-label={`Limiar ${i + 1}${scope}`}
-                  value={row.limiar ?? ''}
-                  onChange={(v) => patchRow(i, { limiar: parseLimiar(v) })}
+                  ariaLabel={`Limiar ${i + 1}${scope}`}
+                  value={row.limiar ?? null}
+                  onChange={(n) => patchRow(i, { limiar: n })}
                   disabled={disabled || marked}
                   error={rowFieldError(errorTree, errIdx, 'limiar')}
                   decimalScale={2}
@@ -230,14 +215,15 @@ export function FormulaListEditor({
               </Group>
               <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
                 {COEFFICIENTS.map((c) => (
-                  <NumberInput
+                  <DecimalInput
                     key={String(c.key)}
                     label={c.label}
-                    aria-label={`${c.label} ${i + 1}${scope}`}
+                    ariaLabel={`${c.label} ${i + 1}${scope}`}
                     value={(row[c.key] as number | undefined) ?? 0}
-                    onChange={(v) => patchRow(i, { [c.key]: typeof v === 'number' ? v : 0 })}
+                    onChange={(n) => patchRow(i, { [c.key]: n ?? 0 })}
                     disabled={disabled || marked}
                     decimalScale={2}
+                    allowNegative
                   />
                 ))}
               </SimpleGrid>
