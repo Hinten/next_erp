@@ -17,13 +17,14 @@
  * name-checking.
  */
 import { Controller, useWatch, type FieldPath, type UseFormReturn } from 'react-hook-form';
-import { Group, NumberInput, Select, Stack, Text } from '@mantine/core';
+import { Group, Select, Stack, Text } from '@mantine/core';
 import {
   defaultsFor,
   type RegraInput,
   type RegraOutput,
   type RegraTipo,
 } from '@/lib/produtos/bulkPreco/regraSchema';
+import { DecimalInput } from '@delfrance/ui';
 
 export interface RegraFormProps {
   form: UseFormReturn<RegraInput, unknown, RegraOutput>;
@@ -43,16 +44,6 @@ const REGRA_OPTIONS: { value: RegraTipo; label: string }[] = [
 
 function regraPath(key: string): FieldPath<RegraInput> {
   return key as FieldPath<RegraInput>;
-}
-
-/** Coerce Mantine `NumberInput`'s payload to a number, or `null` when cleared —
- * mirrors `CurrencyInput`'s `parseBrl` / `FormulaListEditor`'s `parseLimiar`.
- * Never forces an empty field back to `0`: the F1 lesson. */
-function parseRegraNumber(v: number | string): number | null {
-  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  if (v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
 }
 
 interface RegraNumberFieldProps {
@@ -79,17 +70,18 @@ function RegraNumberField({
       control={form.control}
       name={regraPath(name)}
       render={({ field, fieldState }) => (
-        <NumberInput
+        <DecimalInput
           label={label}
-          aria-label={label}
-          value={(field.value as unknown as number | null | undefined) ?? ''}
-          onChange={(v) => (field.onChange as (val: number | null) => void)(parseRegraNumber(v))}
+          ariaLabel={label}
+          value={(field.value as unknown as number | null | undefined) ?? null}
+          onChange={field.onChange as (val: number | null) => void}
           onBlur={field.onBlur}
           error={fieldState.error?.message}
           decimalScale={decimalScale}
           min={min}
           max={max}
           w={w}
+          allowNegative
         />
       )}
     />

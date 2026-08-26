@@ -33,8 +33,11 @@ process.env.MERCADO_LIVRE_TASKS_REGION = 'us-central1';
 // while a top-level `await import` is module evaluation and carries no such
 // budget. This mirrors `apps/whatsapp/functions/src/sendOutbound.test.ts` and
 // the sibling `on*Changed` tests here, which all import at the top level.
-const { reprocessMercadoLivreNotifications, sweepMercadoLivreMissedFeeds } =
-  await import('./index');
+const {
+  reprocessMercadoLivreNotifications,
+  sweepMercadoLivreMissedFeeds,
+  sweepMercadoLivrePedidosTravados,
+} = await import('./index');
 
 afterAll(() => {
   process.env.FUNCTIONS_REGION = originalFunctionsRegion;
@@ -89,5 +92,33 @@ describe('sweepMercadoLivreMissedFeeds (#812)', () => {
     };
     expect(trigger.schedule).toBe('0 5 * * *');
     expect(trigger.timeZone).toBe('America/Sao_Paulo');
+  });
+});
+
+describe('sweepMercadoLivrePedidosTravados (#1087 follow-up)', () => {
+  it('runs WEEKLY, clear of the other ML schedules', () => {
+    // ⚠️ Asserted on the parsed trigger fields, not `toContain` on the JSON blob:
+    // every schedule in this module uses America/Sao_Paulo, so a substring match
+    // would pass whatever THIS function declares.
+    //
+    // Monday 04:00 is deliberate — 02:00 is the daily stock sweep, 03:00 the
+    // monthly reconciliation, 05:00 the missed-feeds backstop. Overlapping them
+    // would put two ML-API-bound sweeps on the same rate limit.
+    const trigger = endpointOf(sweepMercadoLivrePedidosTravados).scheduleTrigger as {
+      schedule?: string;
+      timeZone?: string;
+    };
+    expect(trigger.schedule).toBe('0 4 * * 1');
+    expect(trigger.timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('binds both ML app secrets and sets timeoutSeconds to 540', () => {
+    // It makes one ML round trip per candidate, sequentially, up to the page cap
+    // — the gen2 60s default cannot absorb that.
+    const endpoint = endpointOf(sweepMercadoLivrePedidosTravados);
+    const json = JSON.stringify(endpoint);
+    expect(json).toContain('MERCADO_LIVRE_CLIENT_ID');
+    expect(json).toContain('MERCADO_LIVRE_CLIENT_SECRET');
+    expect(endpoint.timeoutSeconds).toBe(540);
   });
 });

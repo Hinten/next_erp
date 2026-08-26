@@ -14,6 +14,10 @@ const h = vi.hoisted(() => ({
   getLastModeration: vi.fn(),
   docRef: vi.fn(),
   applyItemStatusToLink: vi.fn(),
+  applyFamilyStatusAndFold: vi.fn(),
+  getItemsByIds: vi.fn(),
+  /** Docs the family-member group query answers with (#1142). */
+  memberDocs: [] as Array<{ id: string; data: () => Record<string, unknown>; parentId: string }>,
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
@@ -30,7 +34,11 @@ vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
 
 vi.mock('@/lib/marketplace/anuncios/itemsStatusSync', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/marketplace/anuncios/itemsStatusSync')>();
-  return { ...actual, applyItemStatusToLink: h.applyItemStatusToLink };
+  return {
+    ...actual,
+    applyItemStatusToLink: h.applyItemStatusToLink,
+    applyFamilyStatusAndFold: h.applyFamilyStatusAndFold,
+  };
 });
 
 vi.mock('@delfrance/integrations-mercado-livre', async (importActual) => {
@@ -45,6 +53,22 @@ vi.mock('@delfrance/data/admin/collections', async (importActual) => {
     produtoMercadoLivreLinkCollection: {
       ...actual.produtoMercadoLivreLinkCollection,
       docRef: h.docRef,
+    },
+    // The family-member lookup every re-check now runs first (#1142). Empty by
+    // default, so the existing cases keep exercising the single-listing path.
+    variacaoMercadoLivreLinkCollection: {
+      ...actual.variacaoMercadoLivreLinkCollection,
+      groupQuery: () => ({
+        where: () => ({
+          get: async () => ({
+            docs: h.memberDocs.map((d) => ({
+              id: d.id,
+              data: d.data,
+              ref: { parent: { parent: { id: d.parentId } } },
+            })),
+          }),
+        }),
+      }),
     },
   };
 });
@@ -78,7 +102,12 @@ beforeEach(() => {
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
   h.resolveChannelContext.mockResolvedValue({ accessToken: 'AT' });
   h.loadCtx.mockResolvedValue({ conta: {}, resolveChannelContext: h.resolveChannelContext });
-  h.createApi.mockReturnValue({ getItem: h.getItem, getLastModeration: h.getLastModeration });
+  h.memberDocs = [];
+  h.createApi.mockReturnValue({
+    getItem: h.getItem,
+    getLastModeration: h.getLastModeration,
+    getItemsByIds: h.getItemsByIds,
+  });
   // ML's answer for a listing with no active moderation. The DEFAULT, so every
   // test that does not opt in runs the real "not moderated" path (#1087).
   h.getLastModeration.mockRejectedValue(new MercadoLivreHttpError('ML 404: not found', 404, null));

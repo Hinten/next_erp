@@ -11,7 +11,7 @@ import {
   TextInput,
 } from '@mantine/core';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
-import { DELETE_MARK, type FieldRenderProps } from '@delfrance/ui';
+import { DELETE_MARK, type FieldRenderProps, DecimalInput } from '@delfrance/ui';
 import { rootError, rowFieldError, validatedIndices } from './editorErrors';
 
 /**
@@ -97,11 +97,11 @@ export function FaixaCepEditor({
                 error={rowFieldError(errorTree, errIdx, 'cepFinal')}
                 w={110}
               />
-              <NumberInput
+              <DecimalInput
                 label="Custo"
-                aria-label={`Custo ${i + 1}`}
+                ariaLabel={`Custo ${i + 1}`}
                 value={row.custo ?? 0}
-                onChange={(v) => patchRow(i, { custo: typeof v === 'number' ? v : 0 })}
+                onChange={(n) => patchRow(i, { custo: n ?? 0 })}
                 onBlur={onBlur}
                 disabled={disabled || marked}
                 error={rowFieldError(errorTree, errIdx, 'custo')}
@@ -109,11 +109,11 @@ export function FaixaCepEditor({
                 decimalScale={2}
                 w={100}
               />
-              <NumberInput
+              <DecimalInput
                 label="Preço"
-                aria-label={`Preço ${i + 1}`}
+                ariaLabel={`Preço ${i + 1}`}
                 value={row.valor ?? 0}
-                onChange={(v) => patchRow(i, { valor: typeof v === 'number' ? v : 0 })}
+                onChange={(n) => patchRow(i, { valor: n ?? 0 })}
                 onBlur={onBlur}
                 disabled={disabled || marked}
                 error={rowFieldError(errorTree, errIdx, 'valor')}

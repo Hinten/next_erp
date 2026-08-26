@@ -535,6 +535,19 @@ function normalize(s: string): string {
  * established. Blocked ids (`SELLER_SKU`, `PACKAGE_*`…) ARE in the metadata and
  * ARE dropped, deliberately: the server re-derives them from the produto.
  *
+ * ⚠️ That preserve-the-unmentioned branch is also what keeps `BRAND` alive, and
+ * it is load-bearing rather than incidental. `BRAND` is produto-filled and never
+ * rendered, but unlike a derived id its stored copy is the FALLBACK publish
+ * reads when the produto has no Marca — for a produto whose Marca is empty it is
+ * the only copy in existence. The server therefore reports it in NEITHER
+ * `atributos` NOR `omitidos` (`projectCategoriaAtributos`), so it lands here as
+ * an id this category never mentioned and survives untouched. Nothing in this
+ * file special-cases it, deliberately: an id the metadata does not name is
+ * already safe, in every version of this bundle, which is what makes the two
+ * apps deployable in either order. Do NOT "improve" this by having the server
+ * list it and adding a carve-out here — that hands an old bundle a value it
+ * would act on, and it prunes the brand.
+ *
  * This is also where a free-text row is finally RESOLVED — trimmed and matched
  * against ML's known values by {@link resolveTypedValue}. The field itself keeps
  * the raw draft so a space is typeable ({@link draftTypedValue}), and the blur

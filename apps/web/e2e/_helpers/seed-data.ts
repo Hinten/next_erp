@@ -2861,6 +2861,108 @@ export async function seedProdutoMlPublicado(
 }
 
 /**
+ * Seed a produto published as a **User-Products FAMILY** (#1142): a parent link
+ * whose `id` is ML's numeric family key, plus one `variacaoMercadoLivre` member
+ * per variation — each with its own `itemId` and its own raw ML status, which is
+ * where a family's real state lives.
+ *
+ * ⚠️ The member links go under the PARENT produto here, not under variation
+ * children. Publish writes them under each child, but the editor reads them by
+ * `produtoMercadoLivreOuterRef` through a collection-group query, so the parent
+ * is a valid — and much cheaper — place to seed them: no child produtos to
+ * create, and none to sweep afterwards. The one thing that must be faithful is
+ * the ref, because that is the key the query matches on.
+ *
+ * The statuses are deliberately DIFFERENT from each other and from the parent's,
+ * so an assertion cannot pass by reading the family summary instead of the
+ * member rows.
+ */
+export async function seedProdutoMlFamilia(
+  prefix: string,
+  integracaoId: string,
+): Promise<{
+  produtoId: string;
+  familyId: string;
+  membros: Array<{ itemId: string; cor: string }>;
+}> {
+  const produtoId = `${prefix}-familia`;
+  const familyId = '6264141844942250';
+  const membros = [
+    { itemId: 'MLB4000000001', cor: 'Azul', status: 'active', sub: [] as string[] },
+    { itemId: 'MLB4000000002', cor: 'Verde', status: 'paused', sub: ['out_of_stock'] },
+  ];
+  const now = Date.now();
+  const batch = db().batch();
+  batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: now,
+    nome: produtoId,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_FAM`,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    paiId: null,
+    ordem: null,
+    timestamp: new Date().toISOString(),
+    integracoesComProduto: [integracaoId],
+  });
+  batch.set(
+    db().collection('produtos').doc(produtoId).collection('produtoMercadoLivre').doc(familyId),
+    {
+      contaOuterRef: `documents/integracao/${integracaoId}`,
+      channels: ['marketplace'],
+      estado: 'p',
+      // ⚠️ The FAMILY id, not an item id — that is the shape that made a
+      // member's status unreachable before #1142.
+      id: familyId,
+      sku: null,
+      descricao: null,
+      site_id: 'MLB',
+      title: produtoId,
+      category_id: 'MLB31447',
+      condition: 'new',
+      listing_type_id: 'gold_special',
+      crossdocking: 0,
+      freteGratis: false,
+      precoPublicado: 79.9,
+      tarifaFrete: null,
+      comissao: null,
+      isUserProductModel: true,
+      video_id: null,
+      attributes: null,
+      errors: null,
+      status: 'active',
+      sub_status: [],
+      ultimaModificacao: now,
+      dataCadastro: now,
+    },
+  );
+  for (const m of membros) {
+    batch.set(
+      db().collection('produtos').doc(produtoId).collection('variacaoMercadoLivre').doc(m.itemId),
+      {
+        id: null,
+        itemId: m.itemId,
+        userProductId: null,
+        contaOuterRef: `documents/integracao/${integracaoId}`,
+        produtoVariacaoOuterRef: `documents/produtos/${produtoId}`,
+        produtoMercadoLivreOuterRef: `documents/produtos/${produtoId}/produtoMercadoLivre/${familyId}`,
+        sku: `${m.itemId}-SKU`,
+        attributes: [{ id: 'COLOR', name: 'Cor', value_name: m.cor }],
+        status: m.status,
+        sub_status: m.sub,
+        moderacoes: null,
+      },
+    );
+  }
+  await batch.commit();
+  return { produtoId, familyId, membros: membros.map((m) => ({ itemId: m.itemId, cor: m.cor })) };
+}
+
+/**
  * Delete every doc of one produto subcollection (Firestore never cascades —
  * link docs seeded by `seedVariacaoMlLink` must be swept before the produto).
  */

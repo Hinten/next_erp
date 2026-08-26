@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
+  attrBrand,
   attrColor,
   attrNA,
   attrPackageDimensions,
@@ -604,5 +606,31 @@ describe('estadoFromMlStatus', () => {
     expect(estadoFromMlStatus('under_review')).toBe(ESTADO_PUBLICACAO.underReview);
     expect(estadoFromMlStatus('weird_new_status')).toBe(ESTADO_PUBLICACAO.error);
     expect(estadoFromMlStatus(null)).toBe(ESTADO_PUBLICACAO.error);
+  });
+});
+
+describe('ML_PRODUTO_HERDADO_ATTRIBUTE_IDS', () => {
+  it('names exactly what attrBrand emits', () => {
+    expect(ML_PRODUTO_HERDADO_ATTRIBUTE_IDS).toEqual([attrBrand('Hering').id]);
+  });
+
+  it('emits a bare value_name, inventing no value_id', () => {
+    // An enumerated ML brand carries a `value_id` naming ML's own record. This
+    // factory cannot know one, which is why publish must never rebuild a STORED
+    // BRAND through it — only append one the produto decided.
+    expect(attrBrand('Hering')).toEqual({ id: 'BRAND', value_name: 'Hering' });
+  });
+
+  // ⚠️ THE point of the split, asserted on the literal so it cannot pass
+  // vacuously against an emptied list. The two share only "withhold it from the
+  // editor": a DERIVED id's stored copy is a stale duplicate and is pruned
+  // everywhere, while a HERDADO id's stored copy is the fallback publish reads
+  // when the produto has no Marca. Merging them deletes every brand ever typed.
+  it('is disjoint from the derived ids', () => {
+    expect(ML_PRODUTO_HERDADO_ATTRIBUTE_IDS).toContain('BRAND');
+    expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain('BRAND');
+    for (const id of ML_PRODUTO_HERDADO_ATTRIBUTE_IDS) {
+      expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain(id);
+    }
   });
 });

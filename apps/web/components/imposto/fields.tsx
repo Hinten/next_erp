@@ -1,13 +1,7 @@
 'use client';
 
-import { NumberInput, Select, SimpleGrid } from '@mantine/core';
-
-/** Coerce Mantine NumberInput's `string | number` onChange into `number | null`. */
-function toNumberOrNull(v: string | number): number | null {
-  if (v === '' || v === null || v === undefined) return null;
-  const n = typeof v === 'number' ? v : Number(v);
-  return Number.isFinite(n) ? n : null;
-}
+import { Select, SimpleGrid } from '@mantine/core';
+import { DecimalInput } from '@delfrance/ui';
 
 export interface NumberFieldProps {
   label: string;
@@ -28,13 +22,12 @@ export function NumberField({
   error,
 }: NumberFieldProps) {
   return (
-    <NumberInput
+    <DecimalInput
       label={label}
       description={description}
       error={error}
-      value={value ?? ''}
-      onChange={(v) => onChange(toNumberOrNull(v))}
-      allowNegative={false}
+      value={value ?? null}
+      onChange={onChange}
       decimalScale={6}
       step={0.01}
       hideControls

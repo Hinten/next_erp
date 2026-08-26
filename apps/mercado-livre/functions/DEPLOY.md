@@ -634,6 +634,14 @@ MERCADO_LIVRE_STOCK_LIMIAR_ALTO=100
 # the receiver, which acks and enqueues without ever touching that path, so a value
 # set there would be read by nothing and fail silently.
 MERCADO_LIVRE_PEDIDO_BOOTSTRAP_MAX_AGE_H=72
+# The WEEKLY stuck-pedido sweep (#1087 follow-up). ⚠️ It ENDS SALES: it moves a
+# pedido ML still reports as unpaid to `pagamentoNaoRealizado`, releasing its
+# stock reservation. Enable the DRY RUN first, read a few weeks of the per-verdict
+# counters in the tick log, and only then drop the dry-run line.
+MERCADO_LIVRE_PEDIDO_TRAVADO_SWEEP_ENABLED=1
+MERCADO_LIVRE_PEDIDO_TRAVADO_DRY_RUN=1
+# Horizon in days (default 7). Effective age is 7-14 given the weekly cadence.
+MERCADO_LIVRE_PEDIDO_TRAVADO_MAX_IDADE_D=7
 # The MONTHLY reconciliation — see "The monthly reconciliation" below. Leave it
 # COMMENTED OUT until the normal sweeps have run cleanly for a while: this
 # snippet is meant to be copy-pasted, so the safe state has to be the one

@@ -19,7 +19,20 @@ import type { StockSendResult } from './estoqueSend';
 
 vi.mock('../anuncios/itemsStatusSync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../anuncios/itemsStatusSync')>();
-  return { ...actual, applyItemStatusToLink: vi.fn().mockResolvedValue(true) };
+  return {
+    ...actual,
+    applyItemStatusToLink: vi.fn().mockResolvedValue(true),
+    // The PERSISTENCE half of a família re-check. Stubbed at the same seam
+    // `reverificarAnuncio.test.ts` uses — the fold is covered end-to-end against
+    // a real FakeDb in `itemsStatusSync.test.ts`, and what these tests own is
+    // what the manual push does with the reading it gets back (#1142).
+    applyFamilyStatusAndFold: vi.fn().mockResolvedValue({
+      outcome: 'synced-family',
+      estado: 'p',
+      status: 'active',
+      subStatus: [],
+    }),
+  };
 });
 
 const CONTA = 'conta-1';
@@ -27,11 +40,32 @@ const CONTA_DOC = { depositoOuterRef: 'documents/depositos/DEP1', nome: 'Loja ML
 
 /* --------------------------------- fixtures -------------------------------- */
 
-/** Minimal fake Firestore: `resolverAnchors` only needs docRef + getAll. */
-function fakeDb(docs: Record<string, Record<string, unknown> | null>): Firestore {
+/**
+ * Minimal fake Firestore: `resolverAnchors` only needs docRef + getAll.
+ *
+ * `collectionGroup` answers with `membros` — EMPTY by default, which is the "not
+ * a User-Products family" shape every single-listing fixture here needs, since
+ * `reverificarAnuncio` decides between its two paths by asking for member links
+ * first (#1142). Pass rows to reach the family branch.
+ */
+function fakeDb(
+  docs: Record<string, Record<string, unknown> | null>,
+  membros: Array<{ docId: string; child: string; data: Record<string, unknown> }> = [],
+): Firestore {
   const db = {
     collection: (name: string) => ({
       doc: (id: string) => ({ id, path: `${name}/${id}`, __id: id }),
+    }),
+    collectionGroup: () => ({
+      where: () => ({
+        get: async () => ({
+          docs: membros.map((m) => ({
+            id: m.docId,
+            data: () => m.data,
+            ref: { parent: { parent: { id: m.child } } },
+          })),
+        }),
+      }),
     }),
     getAll: (...args: unknown[]) => {
       const refs = args.filter(
@@ -97,9 +131,15 @@ function baseDeps(over: Record<string, unknown> = {}) {
       conta: CONTA_DOC,
       resolveChannelContext: () => Promise.resolve({ accessToken: 'tok' }),
     }),
+    // The full surface `reverificarAnuncio` may reach, so an override that adds
+    // one of them still types. `getLastModeration` answers "none" and
+    // `getItemsByIds` is never reached on the single-listing path (the fake db's
+    // `collectionGroup` is empty unless a fixture says otherwise).
     api: {
       getItem: vi.fn(),
       getMe: vi.fn().mockResolvedValue({ id: 1, tags: [] }),
+      getLastModeration: vi.fn().mockResolvedValue([]),
+      getItemsByIds: vi.fn().mockResolvedValue([]),
     },
     fetchFamilies: vi.fn().mockResolvedValue([familyRow()]),
     sleep: vi.fn().mockResolvedValue(undefined),
@@ -477,6 +517,183 @@ describe('enviarEstoqueManual — the #781 latch', () => {
       deps as never,
     );
     expect(res.listings[0]).toMatchObject({ outcome: 'pulado', motivo: 'status-nao-enviavel' });
+  });
+});
+
+/**
+ * The re-arm on a User-Products FAMILY (#1142). Every fixture above stays on the
+ * single-listing path — `collectionGroup` answers empty — so none of this branch
+ * was reachable before.
+ */
+describe('enviarEstoqueManual — re-arming a User-Products família', () => {
+  const PML_REF = 'documents/produtos/PROD/produtoMercadoLivre/link1';
+
+  const filho = (produtoId: string, itemId: string, status: string | null, qtd: number) => ({
+    produtoId,
+    ehKit: false,
+    ehKitVirtual: false,
+    publicado: true,
+    componentesKit: null,
+    timestampMs: null,
+    estoque: { quantidade: qtd, quantidadeReservada: 0 },
+    componentEstoques: [],
+    varLinks: [
+      {
+        itemId,
+        varLinkDocId: `v-${produtoId}`,
+        produtoMercadoLivreOuterRef: PML_REF,
+        status,
+        sub_status: [],
+      },
+    ],
+  });
+
+  /** A family latched at `estado 'E'`, with two members on two children. */
+  const familiaLatched = (varStatus: Array<string | null>) =>
+    familyRow({
+      links: [
+        {
+          id: 'FAM-9',
+          linkDocId: 'link1',
+          estado: 'E',
+          status: 'active',
+          isUserProductModel: true,
+        },
+      ],
+      children: [
+        filho('childA', 'MLB-A', varStatus[0] ?? null, 4),
+        filho('childB', 'MLB-B', varStatus[1] ?? null, 5),
+      ],
+    } as never);
+
+  const membrosNoDb = [
+    {
+      docId: 'v-childA',
+      child: 'childA',
+      data: { itemId: 'MLB-A', produtoMercadoLivreOuterRef: PML_REF },
+    },
+    {
+      docId: 'v-childB',
+      child: 'childB',
+      data: { itemId: 'MLB-B', produtoMercadoLivreOuterRef: PML_REF },
+    },
+  ];
+
+  const multiget = (entries: Array<{ id: string; status: string }>) =>
+    vi.fn().mockResolvedValue(entries.map((e) => ({ code: 200, body: { ...e, sub_status: [] } })));
+
+  it('⚠️ patches the MEMBER rows, not just the parent — or it skips what ML just healed', async () => {
+    // The failure this pins: `buildSendTasks`' UP branch gates per member on
+    // `child.varLinks[].status`, NOT on the parent. A member stored `paused`
+    // (no `out_of_stock`) that ML now reports `active` cleared the family latch
+    // and was then skipped `status-nao-enviavel` in the very run the operator
+    // asked for.
+    const deps = baseDeps({
+      fetchFamilies: vi.fn().mockResolvedValue([familiaLatched(['paused', 'active'])]),
+      api: {
+        getMe: vi.fn().mockResolvedValue({ tags: [] }),
+        getItem: vi.fn(),
+        getItemsByIds: multiget([
+          { id: 'MLB-A', status: 'active' },
+          { id: 'MLB-B', status: 'active' },
+        ]),
+      },
+    });
+
+    const res = await enviarEstoqueManual(
+      fakeDb({ PROD: { paiId: null, nome: 'Camiseta' } }, membrosNoDb),
+      { integracaoId: CONTA, produtoIds: ['PROD'], reenviarComErro: true },
+      deps as never,
+    );
+
+    // NEVER the item endpoint with a family id — that 404 records `closed`.
+    expect(deps.api.getItem).not.toHaveBeenCalled();
+    // Both members send; the previously-`paused` one is no longer skipped.
+    expect(res.listings.filter((l) => l.outcome === 'enviado')).toHaveLength(2);
+    expect(res.listings.some((l) => l.motivo === 'status-nao-enviavel')).toBe(false);
+  });
+
+  it('⚠️ leaves an UNREAD member on its stored status, never on the report null', async () => {
+    // `membroPodeEnviar` reads a null status as "never observed, send
+    // optimistically" (#780), so writing the report's `null` over a stored
+    // `closed` would turn a member ML declined to answer for into one this run
+    // sends to.
+    const deps = baseDeps({
+      fetchFamilies: vi.fn().mockResolvedValue([familiaLatched(['closed', 'active'])]),
+      api: {
+        getMe: vi.fn().mockResolvedValue({ tags: [] }),
+        getItem: vi.fn(),
+        // ML answers for B only; A comes back 500 inside the 200 envelope.
+        getItemsByIds: vi.fn().mockResolvedValue([
+          { code: 500, body: null },
+          { code: 200, body: { id: 'MLB-B', status: 'active', sub_status: [] } },
+        ]),
+      },
+    });
+
+    const res = await enviarEstoqueManual(
+      fakeDb({ PROD: { paiId: null, nome: 'Camiseta' } }, membrosNoDb),
+      { integracaoId: CONTA, produtoIds: ['PROD'], reenviarComErro: true },
+      deps as never,
+    );
+
+    // A keeps `closed` and is skipped; B was read and sends.
+    expect(res.listings.some((l) => l.motivo === 'status-nao-enviavel')).toBe(true);
+    expect(res.listings.filter((l) => l.outcome === 'enviado')).toHaveLength(1);
+  });
+
+  it('⚠️ charges the re-arm budget by ML CALLS, not by listings', async () => {
+    // `MERCADO_LIVRE_STOCK_MANUAL_REARM_MAX_GETS` is documented as a cap on
+    // calls. A família is one multiget per 20 members plus a `/moderations` read
+    // per moderated member — a flat `-= 1` let one unit buy all of that.
+    //
+    // ⚠️ The two members are MODERATED on purpose, and the budget is 2 rather
+    // than 1. A clean 2-member família costs exactly one multiget, so charging
+    // per call and charging a flat unit both spend 1 and the test cannot tell
+    // them apart — it passed against the flat version. Moderated, the real cost
+    // is 1 multiget + 2 `/moderations` reads = 3, which overruns a budget of 2
+    // while a flat unit leaves 1 and re-arms the second listing.
+    process.env.MERCADO_LIVRE_STOCK_MANUAL_REARM_MAX_GETS = '2';
+    try {
+      const deps = baseDeps({
+        fetchFamilies: vi.fn().mockResolvedValue([
+          familiaLatched(['active', 'active']),
+          familyRow({
+            anchorId: 'PROD2',
+            links: [{ id: 'MLB999', linkDocId: 'link9', estado: 'E', status: 'active' }],
+          }),
+        ]),
+        api: {
+          getMe: vi.fn().mockResolvedValue({ tags: [] }),
+          getItem: vi.fn().mockResolvedValue({ id: 'MLB999', status: 'active', sub_status: [] }),
+          getLastModeration: vi.fn().mockResolvedValue([]),
+          getItemsByIds: vi.fn().mockResolvedValue([
+            {
+              code: 200,
+              body: { id: 'MLB-A', status: 'active', sub_status: ['poor_quality_thumbnail'] },
+            },
+            {
+              code: 200,
+              body: { id: 'MLB-B', status: 'active', sub_status: ['poor_quality_thumbnail'] },
+            },
+          ]),
+        },
+      });
+
+      const res = await enviarEstoqueManual(
+        fakeDb({ PROD: { paiId: null, nome: 'Camiseta' }, PROD2: { paiId: null } }, membrosNoDb),
+        { integracaoId: CONTA, produtoIds: ['PROD', 'PROD2'], reenviarComErro: true },
+        deps as never,
+      );
+
+      // Both moderation reads actually happened — the cost being charged is real.
+      expect(deps.api.getLastModeration).toHaveBeenCalledTimes(2);
+      // The família overran the budget, so the SECOND listing never reaches ML.
+      expect(deps.api.getItem).not.toHaveBeenCalled();
+      expect(res.listings.some((l) => l.rearme?.executado === false)).toBe(true);
+    } finally {
+      delete process.env.MERCADO_LIVRE_STOCK_MANUAL_REARM_MAX_GETS;
+    }
   });
 });
 

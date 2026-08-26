@@ -294,10 +294,19 @@ region at deploy time.
    result is persisted — `arquivos.url`, and `conversa`'s `anexo_url`,
    `image_url`, `video_url`, `thumbnail_url`.
    ⚠️ The new project's default bucket is `<project>.firebasestorage.app`, **not**
-   `<project>.appspot.com`, so `FIREBASE_STORAGE_BUCKET` and
-   `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` must both be set explicitly — the
-   `.appspot.com` fallback in `resolveStorageBucketName()` is wrong for this
-   project and will resolve to a bucket that does not exist.
+   `<project>.appspot.com` — so the `.appspot.com` fallback still sitting at the
+   BOTTOM of `resolveStorageBucketName()` names a bucket that does not exist here.
+   The two halves are no longer symmetric:
+   - **Server side, handled.** `resolveStorageBucketName()` now reads
+     `FIREBASE_CONFIG.storageBucket` above that fallback, and App Hosting /
+     Cloud Functions inject `FIREBASE_CONFIG` with the correct bucket. So
+     `FIREBASE_STORAGE_BUCKET` does **not** need setting on the new project; it
+     stays an override. (`apps/functions` never needed it — its bare
+     `initializeApp()` makes firebase-admin load the same blob itself.)
+   - **Client side, still manual and permanently so.**
+     `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` **must** be set explicitly: it is
+     inlined into the browser bundle by `next build`, and there is no
+     `FIREBASE_CONFIG` in a browser. Same for every other `NEXT_PUBLIC_FIREBASE_*`.
 
 ### Phase 3 — cut the traffic over
 

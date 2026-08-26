@@ -587,6 +587,43 @@ describe('attributesForSave', () => {
     expect(out).toEqual([]);
   });
 
+  // ⚠️ THE property the whole `herdado` design rests on, asserted from the
+  // consumer's side. `BRAND` reaches this function in NEITHER array — the server
+  // keeps it out of `atributos` AND out of `omitidos` — so it takes the
+  // preserve-the-unmentioned branch. That value is what publish falls back to
+  // when the produto has no Marca, and for such a produto it is the only copy in
+  // existence; pruning it deletes the brand on the next save of any unrelated
+  // field.
+  //
+  // ⚠️ Note nothing in the module special-cases it, and that is the point: this
+  // holds for EVERY version of this bundle, including one built before `BRAND`
+  // was withheld at all — which is what makes the two apps deployable in either
+  // order.
+  it('PRESERVES a stored BRAND the server withheld from both arrays', () => {
+    const out = attributesForSave(
+      [attr({ id: 'MODEL' })],
+      [{ id: 'MODEL', value_id: null, value_name: 'X', unit_id: null }],
+      [
+        { id: 'BRAND', value_id: '9999', value_name: 'Acme' },
+        { id: 'SELLER_SKU', value_name: 'SKU-1' },
+      ],
+      // Only the DERIVED id is reported; BRAND is reported nowhere.
+      [{ id: 'SELLER_SKU' }],
+    );
+    // Verbatim, `value_id` and all: an enumerated ML brand carries one, and
+    // nothing downstream could reconstruct it from the name.
+    expect(out).toContainEqual({ id: 'BRAND', value_id: '9999', value_name: 'Acme' });
+    expect(out.some((a) => a.id === 'SELLER_SKU')).toBe(false);
+  });
+
+  // The control that stops the assertion above being vacuous: this function CAN
+  // delete BRAND, and does the moment the metadata names it. It is the server's
+  // silence that protects the brand, nothing in here.
+  it('would prune BRAND if the metadata ever did list it as withheld', () => {
+    const out = attributesForSave([], [], [{ id: 'BRAND', value_name: 'Acme' }], [{ id: 'BRAND' }]);
+    expect(out).toEqual([]);
+  });
+
   it('drops a rendered-but-empty row instead of storing a blank', () => {
     const out = attributesForSave(
       [brand, attr({ id: 'MODEL' })],

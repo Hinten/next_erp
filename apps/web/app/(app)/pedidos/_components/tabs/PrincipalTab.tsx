@@ -8,7 +8,6 @@ import {
   Badge,
   Button,
   Group,
-  NumberInput,
   Stack,
   Table,
   Text,
@@ -34,13 +33,13 @@ import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
-import { parseBrl } from '@/app/(app)/produtos/_components/CurrencyInput';
 import type { PedidoFormState } from '../types';
 import { makeRowId } from '../flattenItens';
 import { precoFromProduto } from '../precoLookup';
 import { ProdutoThumbnail } from '@/components/ProdutoThumbnail';
 import { ProdutoVariacaoLabel } from '../ProdutoVariacaoLabel';
 import { useEstoqueDisponivel } from '../useEstoqueDisponivel';
+import { DecimalInput } from '@delfrance/ui';
 
 function brl(value: number): string {
   return formatReais(value);
@@ -523,18 +522,16 @@ function ItemRow({
           control={form.control}
           name={`_itensFlat.${index}.quantidade` as const}
           render={({ field }) => (
-            <NumberInput
+            <DecimalInput
               ref={qtyRef}
               value={field.value ?? 0}
-              onChange={(v) => field.onChange(parseBrl(v) ?? 0)}
+              onChange={(n) => field.onChange(n ?? 0)}
               onBlur={field.onBlur}
               min={0}
               decimalScale={3}
-              decimalSeparator=","
-              allowedDecimalSeparators={[',', '.']}
               w={100}
               disabled={disabled || marked}
-              aria-label={`Quantidade item ${index + 1}`}
+              ariaLabel={`Quantidade item ${index + 1}`}
             />
           )}
         />
@@ -544,17 +541,15 @@ function ItemRow({
           control={form.control}
           name={`_itensFlat.${index}.precoDeVenda` as const}
           render={({ field }) => (
-            <NumberInput
+            <DecimalInput
               value={field.value ?? 0.01}
-              onChange={(v) => field.onChange(parseBrl(v) ?? 0.01)}
+              onChange={(n) => field.onChange(n ?? 0.01)}
               onBlur={field.onBlur}
               min={0.01}
               decimalScale={2}
-              decimalSeparator=","
-              allowedDecimalSeparators={[',', '.']}
               w={120}
               disabled={disabled || marked}
-              aria-label={`Preço item ${index + 1}`}
+              ariaLabel={`Preço item ${index + 1}`}
             />
           )}
         />
@@ -564,18 +559,16 @@ function ItemRow({
           control={form.control}
           name={`_itensFlat.${index}.descontoUnitario` as const}
           render={({ field }) => (
-            <NumberInput
+            <DecimalInput
               value={field.value ?? 0}
-              onChange={(v) => field.onChange(parseBrl(v) ?? 0)}
+              onChange={(n) => field.onChange(n ?? 0)}
               onBlur={field.onBlur}
               min={0}
               decimalScale={2}
-              decimalSeparator=","
-              allowedDecimalSeparators={[',', '.']}
               w={120}
               disabled={disabled || marked}
               error={descontoError}
-              aria-label={`Desconto item ${index + 1}`}
+              ariaLabel={`Desconto item ${index + 1}`}
             />
           )}
         />

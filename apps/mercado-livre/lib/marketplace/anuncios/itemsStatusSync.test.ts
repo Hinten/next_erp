@@ -7,6 +7,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 
 import {
+  applyFamilyStatusAndFold,
   applyItemStatusToLink,
   type ItemsApiResolver,
   type ItemsSyncApi,
@@ -1275,6 +1276,130 @@ describe('syncItemStatus — a family member never speaks for the family un-fold
   });
 });
 
+/**
+ * The `family_id`-less family — the half of #1142 that survived #1155.
+ *
+ * `publish.ts` writes the parent's `id` as `familyId ?? itemIds[0]`, so when ML
+ * omits `family_id` the parent carries MEMBER 0's item id. That member's
+ * delivery then matches `resolveLink` STAGE 1, which used to mean `member:
+ * undefined` and the simple write-through path: member 0's status straight onto
+ * the parent un-folded, and member 0's OWN link never written — which left every
+ * sibling's later fold reading a stale member 0 forever.
+ */
+describe('syncItemStatus — a family whose parent carries a MEMBER id (#1142)', () => {
+  /** The `family_id`-less shape: the parent's `id` IS member A's item id. */
+  function seedFamilySemFamilyId(db: FakeDb, link: DocData = {}): void {
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA' },
+        { itemId: MEMBER_B, child: 'childB' },
+      ],
+      { id: MEMBER_A, ...link },
+      { marketplace: [{ integracaoUid: CONTA, externalId: MEMBER_A }], marketplaceIds: [MEMBER_A] },
+    );
+  }
+
+  it("records member 0's status on ITS OWN link instead of writing through", async () => {
+    const db = new FakeDb();
+    seedFamilySemFamilyId(db);
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'paused', sub_status: ['out_of_stock'] }),
+    );
+
+    expect(out).toBe('synced-member');
+    // THE regression: without the member attach this doc is never written, and
+    // every sibling's fold reads a stale member A for the life of the listing.
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({
+      status: 'paused',
+      sub_status: ['out_of_stock'],
+    });
+    // The family is still live (member B is active), so the summary must not move.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+  });
+
+  it('member 0 closing cannot cancel the family while a sibling is live', async () => {
+    // The silent outage this whole module exists to prevent: `estado 'c'` fails
+    // `linkHasLiveListing`, drops the conta from `integracoesComProduto`, and the
+    // produto leaves BOTH sweeps with nothing logged.
+    const db = new FakeDb();
+    seedFamilySemFamilyId(db);
+
+    await syncItemStatus(asDb(db), CONTA, MEMBER_A, resolverFor({ status: 'closed' }));
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({ marketplaceIds: [MEMBER_A] });
+  });
+
+  it('folds to the family summary once every member agrees', async () => {
+    const db = new FakeDb();
+    seedFamily(
+      db,
+      [
+        { itemId: MEMBER_A, child: 'childA' },
+        { itemId: MEMBER_B, child: 'childB', status: 'paused', sub: ['out_of_stock'] },
+      ],
+      { id: MEMBER_A },
+    );
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'paused', sub_status: ['out_of_stock'] }),
+    );
+
+    expect(out).toBe('synced-family');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa', status: 'paused' });
+  });
+
+  it('⚠️ migration TAGS still outrank the fold on this path, unlike stage 2', async () => {
+    // The ordering that makes the stage-1 attach safe. A stage-2 member cannot be
+    // a migration SOURCE (a UPtin source is a legacy `variations[]` listing, which
+    // resolves through stage 1) — but THIS member matched exactly the way a legacy
+    // listing does, so its tags must be read before anything else.
+    const db = new FakeDb();
+    seedFamilySemFamilyId(db);
+    const migrationRunner = vi.fn(async () => {});
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      MEMBER_A,
+      resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
+      migrationRunner,
+    );
+
+    expect(out).toBe('migrated');
+    expect(migrationRunner).toHaveBeenCalledTimes(1);
+    // And the fold never ran: the member's own link keeps its stored reading.
+    expect(db.docData(memberVarPath('childA'), 'v-childA')).toMatchObject({ status: 'active' });
+  });
+
+  it('a UP SINGLE-ITEM listing has no member link, so it keeps the simple path', async () => {
+    // The other half of the discriminator. `isUserProductModel` alone would send
+    // every UP listing down the fold; only an actual member link may.
+    const db = new FakeDb();
+    db.seed('produtos', PRODUTO, { nome: 'Camiseta' });
+    db.seed(LINK_PATH, 'link1', {
+      id: ITEM,
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      estado: 'E',
+      status: 'active',
+      isUserProductModel: true,
+    });
+
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'paused' }));
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa', status: 'paused' });
+  });
+});
+
 describe('syncItemStatus — userProductId self-heal (multiorigem, #706)', () => {
   it('stamps userProductId on a SIMPLE listing, whose item IS the stock unit', async () => {
     const db = new FakeDb();
@@ -1670,5 +1795,82 @@ describe('syncItemStatus — moderations on a User-Products family', () => {
 
     expect(db.docData(memberVarPath('childA'), 'v-childA')?.moderacoes).toEqual([]);
     expect(db.docData(LINK_PATH, 'link1')?.moderacoes).toEqual([]);
+  });
+});
+
+/**
+ * `reverificarAnuncio`'s guarantee, which the fold does NOT share by default.
+ *
+ * A re-verification is the operator saying "tell me the truth now", so a stale
+ * diagnosis must not survive the button press. The webhook has no such promise —
+ * it fires unprompted and only re-arms a listing ML says can take stock again —
+ * so the family path inherited the wrong rule until this flag existed.
+ */
+describe('applyFamilyStatusAndFold — limparFalhaSempre (#1142)', () => {
+  const membroObservado = (status: string, subStatus: string[] = []) => ({
+    memberProdutoId: 'childA',
+    memberDocId: 'v-childA',
+    status,
+    subStatus,
+    moderacoes: null,
+    userProductId: null,
+  });
+
+  const alvo = { produtoId: PRODUTO, linkDocId: 'link1', pmlOuterRef: FAMILY_PML_REF };
+
+  it('clears a stale diagnosis the WEBHOOK rule would have left standing', async () => {
+    // `paused` WITHOUT `out_of_stock` is not sendable, so the webhook's
+    // `errorsToClear` is false and the operator would keep reading the old fault.
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }], {
+      estado: 'E',
+      errors: ['ML 400: invalid quantity'],
+      causas: [{ mensagem: 'algo' }],
+    });
+
+    await applyFamilyStatusAndFold(asDb(db), CONTA, alvo, [membroObservado('paused')], {
+      limparFalhaSempre: true,
+    });
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ errors: [], causas: [] });
+  });
+
+  it('⚠️ clears it even when the fold CANNOT conclude and writes nothing else', async () => {
+    // The case the early return used to swallow: an unobserved sibling means no
+    // summary, so without forcing the write the clear never lands at all.
+    const db = new FakeDb();
+    seedFamily(db, [
+      { itemId: MEMBER_A, child: 'childA' },
+      // Never observed, and closed-only observations cannot conclude.
+      { itemId: MEMBER_B, child: 'childB', status: null },
+    ]);
+    db.seed(LINK_PATH, 'link1', {
+      ...db.docData(LINK_PATH, 'link1'),
+      estado: 'E',
+      errors: ['ML 400: invalid quantity'],
+      causas: [{ mensagem: 'algo' }],
+    });
+
+    await applyFamilyStatusAndFold(asDb(db), CONTA, alvo, [membroObservado('closed')], {
+      limparFalhaSempre: true,
+    });
+
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ errors: [], causas: [] });
+    // …and the family is NOT cancelled on one member's closed reading.
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'E' });
+  });
+
+  it('⚠️ WITHOUT the flag the webhook rule is unchanged — a stale fault survives', async () => {
+    // The inverse, and what keeps the flag from being a silent behaviour change
+    // for the `items` webhook: same family, same reading, no flag.
+    const db = new FakeDb();
+    seedFamily(db, [{ itemId: MEMBER_A, child: 'childA' }], {
+      estado: 'E',
+      errors: ['ML 400: invalid quantity'],
+    });
+
+    await applyFamilyStatusAndFold(asDb(db), CONTA, alvo, [membroObservado('paused')]);
+
+    expect(db.docData(LINK_PATH, 'link1')?.errors).toEqual(['ML 400: invalid quantity']);
   });
 });

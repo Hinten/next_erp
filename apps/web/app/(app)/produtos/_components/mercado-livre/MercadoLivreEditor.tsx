@@ -25,6 +25,7 @@ import { produtoMercadoLivreLinkCollection } from '@/lib/data/produtoMercadoLivr
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
+  type MercadoLivreReverificarMembro,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { flushListings } from '@/lib/mercado-livre/flushListings';
@@ -190,6 +191,24 @@ export function MercadoLivreEditor({
   // null while loading, so the derivation falls through to the next tier rather
   // than asserting "novo" for a beat and flipping.
   const produtoCondicao = extraDataSnap.data?.data.condicao ?? null;
+  // `extraData.marca` is the FIRST input publish resolves the listing's `BRAND`
+  // from (`resolveMarcaAnuncio`), with the link's stored `BRAND` behind it.
+  //
+  // ⚠️ The two empties are NOT the same, and this is the one field where it
+  // shows. `null` means the singleton has not landed — the comment on
+  // `carregandoGeral` below is explicit that extraData resolves AFTER the first
+  // render — while `''` means it landed and Marca is genuinely blank. Only the
+  // second may raise "Falta preencher"; collapsing them flashes that warning on
+  // every open, which is the `produtoMedidas` lesson above verbatim.
+  //
+  // ⚠️ An ERRORED snapshot is a THIRD state and must read as `null` too. It
+  // stops loading with no data, so `?? ''` alone would report "landed and
+  // blank" and nag the operator to fill a Marca that may well be filled — we
+  // simply did not manage to read it.
+  const produtoMarca =
+    extraDataSnap.loading || extraDataSnap.error != null
+      ? null
+      : (extraDataSnap.data?.data.marca ?? '');
 
   /**
    * The publish in flight, if any.
@@ -603,12 +622,13 @@ export function MercadoLivreEditor({
         color: motivo === 'moderacao' ? 'blue' : result.enviavel ? 'green' : 'yellow',
         title: `Anúncio reverificado — ${estadoLabel(result.estado)}`,
         message:
-          motivo === 'moderacao'
+          resumoDosMembros(result.membros) +
+          (motivo === 'moderacao'
             ? 'Se o Mercado Livre informou um motivo, ele aparece abaixo.'
             : result.enviavel
               ? 'O envio de estoque volta a rodar no próximo ciclo (até 15 minutos) — ou clique em ' +
                 'Enviar estoque para enviar agora.'
-              : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.',
+              : 'O Mercado Livre ainda não aceita envio de estoque para este anúncio.'),
       });
     } catch (err) {
       if (err instanceof MercadoLivreClientHttpError) {
@@ -731,7 +751,8 @@ export function MercadoLivreEditor({
    * `contasSnap`/`linksSnap` are absent on purpose — the early return below
    * means we never render at all while those two load. These three do not stop
    * a render: the produto doc (`fotos`/`nome`/`ehUsado`), its extraData
-   * (`condicao`, the second input to `resolveCondicaoAnuncio`) and the tenant
+   * (`condicao` for `resolveCondicaoAnuncio`, `marca` for `resolveMarcaAnuncio`)
+   * and the tenant
    * claims all resolve AFTER the buttons are on screen, which is the window a
    * publish could previously be fired in.
    */
@@ -878,6 +899,7 @@ export function MercadoLivreEditor({
                   produtoEhUsado={produtoEhUsado}
                   produtoCondicao={produtoCondicao}
                   produtoMedidas={produtoMedidas}
+                  produtoMarca={produtoMarca}
                   produtoFotoCount={produtoFotoCount}
                   produtoDirty={produtoDirty}
                   carregandoGeral={carregandoGeral}
@@ -982,6 +1004,33 @@ function abrir(aba: Window | null, url: string): void {
   if (!aba) return;
   aba.opener = null;
   aba.location.replace(url);
+}
+
+/**
+ * The one-line preamble a FAMILY's re-check earns, or `''` for a single listing.
+ *
+ * Under User Products the button re-reads N listings, not one, and the title only
+ * ever shows the FOLD — so without this the operator cannot tell a family from a
+ * simple anúncio, nor that the summary above is a summary. The count of members
+ * ML could not answer for is named rather than hidden: those keep their stored
+ * status, so a silent partial refresh would read as a complete one.
+ *
+ * The member VALUES are not repeated here — the table below repaints from the
+ * live snapshot, which is this handler's whole feedback model.
+ */
+function resumoDosMembros(membros: MercadoLivreReverificarMembro[] | undefined): string {
+  if (!membros || membros.length === 0) return '';
+  const total = membros.length;
+  const naoLidos = membros.filter((m) => !m.lido).length;
+  const cabeca =
+    total === 1 ? '1 variação reverificada' : `${String(total)} variações reverificadas`;
+  const cauda =
+    naoLidos === 0
+      ? ''
+      : naoLidos === 1
+        ? ' (1 não respondeu e manteve o status anterior)'
+        : ` (${String(naoLidos)} não responderam e mantiveram o status anterior)`;
+  return `${cabeca}${cauda}. `;
 }
 
 /**

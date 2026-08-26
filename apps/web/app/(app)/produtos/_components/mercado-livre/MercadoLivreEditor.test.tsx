@@ -21,6 +21,8 @@ type ListingSaveFn = (mode: 'button' | 'flush') => Promise<ListingSaveOutcome>;
 const h = vi.hoisted(() => ({
   contas: [] as Array<{ id: string; data: Record<string, unknown> }>,
   links: [] as Array<{ id: string; data: unknown }>,
+  /** What the per-variation table's group query answers (#1142). */
+  membros: [] as Array<{ id: string; data: Record<string, unknown> }>,
   /** Every ListingForm stub's registered save, keyed by link doc id. */
   saves: new Map<string, ReturnType<typeof vi.fn>>(),
   /** The control→messages map each ListingForm stub received, keyed by link doc id. */
@@ -56,24 +58,28 @@ const h = vi.hoisted(() => ({
 vi.mock('@mantine/notifications', () => ({ notifications: { show: h.notify } }));
 
 vi.mock('@delfrance/data', () => ({
-  buildQuery: () => ({}),
+  // ⚠️ `buildQuery` PASSES THE BASE THROUGH so a query can be told apart by what
+  // it was built on — see the `useSnapshot` mock below for why that matters now.
+  buildQuery: (base: unknown) => base ?? {},
+  groupQuery: () => ({ __grupo: 'variacaoMercadoLivre' }),
   limit: () => ({}),
   whereEqual: () => ({}),
 }));
 
 vi.mock('@delfrance/data/hooks', () => ({
-  // The editor calls `useSnapshot` twice per render, always contas-then-links
-  // (`MercadoLivreEditor.tsx`, the two `useMemo` queries). Hooks are order-stable
-  // by definition, so a per-render counter discriminates them safely — the mocked
-  // `buildQuery` returns an opaque object that could carry no tag.
-  useSnapshot: (() => {
-    let call = 0;
-    return () => {
-      const isContas = call % 2 === 0;
-      call += 1;
-      return { data: isContas ? h.contas : h.links, loading: false, error: null };
-    };
-  })(),
+  // ⚠️ Discriminated by WHAT THE QUERY WAS BUILT ON, never by call order. This
+  // used to be a per-render counter keyed on "the editor calls `useSnapshot`
+  // twice, contas-then-links" — true when written, and silently wrong the moment
+  // a third caller appeared: `VariacoesAnuncioTable` subscribes once per anúncio
+  // (#1142) and, for a legacy listing, with a `null` query. Either way it
+  // consumed a slot and shifted every later call by one, swapping contas and
+  // links. Tagging is order-free, so a fourth caller cannot break it either.
+  useSnapshot: (q: { __col?: string; __grupo?: string } | null) => {
+    if (q?.__col === 'integracao') return { data: h.contas, loading: false, error: null };
+    if (q?.__col === 'produtoMercadoLivre') return { data: h.links, loading: false, error: null };
+    // The per-variation table: its group query, or `null` on a legacy listing.
+    return { data: h.membros, loading: false, error: null };
+  },
   useDocSnapshot: () => ({
     data: { id: 'prod-1', data: { nome: 'Camiseta Básica', fotos: ['a'], ehUsado: false } },
     // Unlike the two `useSnapshot` queries above, this one does NOT hold back the
@@ -91,8 +97,17 @@ vi.mock('@/lib/mercado-livre/client', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/mercado-livre/client')>();
   return { ...actual, useMercadoLivreClient: () => h.client };
 });
-vi.mock('@/lib/data/integracaoCollection', () => ({ integracaoCollection: { ref: () => ({}) } }));
+// ⚠️ Each `ref()` returns a TAGGED base so `useSnapshot` can tell the queries
+// apart by what they were built on — see its mock above.
+vi.mock('@/lib/data/integracaoCollection', () => ({
+  integracaoCollection: { ref: () => ({ __col: 'integracao' }) },
+}));
 vi.mock('@/lib/data/produtoCollection', () => ({ produtoCollection: { docRef: () => ({}) } }));
+// Stubbed like its siblings so the real module's `defineCollection` call never
+// runs against the `@delfrance/data` mock above.
+vi.mock('@/lib/data/variacaoMercadoLivreLinkCollection', () => ({
+  variacaoMercadoLivreLinkCollection: { converter: {} },
+}));
 // The editor reads `extraData.condicao` (the second input `resolveCondicaoAnuncio`
 // uses). Stubbed like its siblings so the real module's `defineCollection` call
 // never runs against the `@delfrance/data` mock above.
@@ -100,7 +115,7 @@ vi.mock('@/lib/data/produtoExtraDataCollection', () => ({
   produtoExtraDataCollection: { docRef: () => ({}) },
 }));
 vi.mock('@/lib/data/produtoMercadoLivreLinkCollection', () => ({
-  produtoMercadoLivreLinkCollection: { ref: () => ({}) },
+  produtoMercadoLivreLinkCollection: { ref: () => ({ __col: 'produtoMercadoLivre' }) },
 }));
 vi.mock('@/lib/mercado-livre/listingDraft', () => ({
   createListingDraft: h.createListingDraft,
@@ -164,6 +179,7 @@ function renderEditor() {
 beforeEach(() => {
   h.contas = [conta('conta-1', 'Loja Principal')];
   h.links = [];
+  h.membros = [];
   h.saves = new Map();
   h.serverErrors = new Map();
   h.outcomes = new Map();
@@ -1189,5 +1205,126 @@ describe('reverificar — the reason decides what the operator is told', () => {
 
     const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
     expect(shown?.message).toContain('estoque');
+  });
+});
+
+/**
+ * The per-variation table is rendered by `AnuncioBlock`, so only a test that
+ * drives the whole tab proves it is actually WIRED — its own spec renders the
+ * component directly and would stay green if nothing ever mounted it.
+ */
+describe('variações de uma família User-Products (#1142)', () => {
+  const membro = (over: Record<string, unknown> = {}) => ({
+    itemId: 'MLB-A',
+    produtoVariacaoOuterRef: 'documents/produtos/child-1',
+    produtoMercadoLivreOuterRef: 'documents/produtos/prod-1/produtoMercadoLivre/L-FAM',
+    sku: 'CAM-AZ-M',
+    attributes: [{ id: 'COLOR', name: 'Cor', value_name: 'Azul' }],
+    status: 'active',
+    sub_status: [],
+    moderacoes: null,
+    ...over,
+  });
+
+  it('lists each member under the anúncio it belongs to', async () => {
+    h.links = [link('L-FAM', { id: '6264141844942250', isUserProductModel: true })];
+    h.membros = [
+      { id: 'v1', data: membro() },
+      {
+        id: 'v2',
+        data: membro({
+          itemId: 'MLB-B',
+          sku: 'CAM-VD-G',
+          attributes: [{ id: 'COLOR', name: 'Cor', value_name: 'Verde' }],
+          status: 'paused',
+        }),
+      },
+    ];
+    renderEditor();
+
+    expect(await screen.findByText('Variações no Mercado Livre')).toBeDefined();
+    expect(screen.getByText('Cor: Azul')).toBeDefined();
+    expect(screen.getByText('Cor: Verde')).toBeDefined();
+  });
+
+  it('shows nothing for a LEGACY listing, whose variations are not listings', async () => {
+    h.links = [link('L-LEG', { id: 'MLB1', isUserProductModel: false })];
+    h.membros = [{ id: 'v1', data: membro() }];
+    renderEditor();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('listing-form-L-LEG')).toBeDefined();
+    });
+    expect(screen.queryByText('Variações no Mercado Livre')).toBeNull();
+  });
+
+  it('a família re-check reports HOW MANY variations were re-read', async () => {
+    // The title only ever shows the FOLD, so without this the operator cannot
+    // tell a família from a simple anúncio — nor that the status above is a
+    // summary of several listings.
+    h.links = [
+      link('L-FAM', {
+        id: '6264141844942250',
+        isUserProductModel: true,
+        estado: ESTADO_PUBLICACAO_ML.erro,
+      }),
+    ];
+    h.client = {
+      reverificarAnuncio: vi.fn(async () => ({
+        estado: ESTADO_PUBLICACAO_ML.publicado,
+        status: 'active',
+        subStatus: [],
+        enviavel: true,
+        membros: [
+          {
+            itemId: 'MLB-A',
+            memberDocId: 'v1',
+            lido: true,
+            status: 'active',
+            subStatus: [],
+            enviavel: true,
+          },
+          {
+            itemId: 'MLB-B',
+            memberDocId: 'v2',
+            lido: false,
+            status: null,
+            subStatus: null,
+            enviavel: false,
+          },
+        ],
+      })),
+    };
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reverificar anúncio' }));
+    });
+
+    const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
+    expect(shown?.message).toContain('2 variações reverificadas');
+    // ⚠️ A member ML could not answer for keeps its stored status, so a silent
+    // partial refresh would read as a complete one.
+    expect(shown?.message).toContain('1 não respondeu');
+  });
+
+  it('a SIMPLE listing gets no variation preamble', async () => {
+    h.links = [link('L-SIMPLES', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.erro })];
+    h.client = {
+      reverificarAnuncio: vi.fn(async () => ({
+        estado: ESTADO_PUBLICACAO_ML.publicado,
+        status: 'active',
+        subStatus: [],
+        enviavel: true,
+      })),
+    };
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reverificar anúncio' }));
+    });
+
+    const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
+    expect(shown?.message).not.toContain('variaç');
   });
 });

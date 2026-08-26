@@ -16,7 +16,8 @@ its status and moderation state current. The inverse direction (ML → ERP) is
 
 - `upMemberLink.ts` — resolves a UP family from one member's ML item id.
 - `upFamilyStatus.ts` — folds member statuses into the one status the parent
-  link can carry.
+  link can carry. ⚠️ Three surfaces feed it, and none may bypass it: the `items`
+  webhook, the stock sender's terminal 4xx branch, and `reverificarAnuncio`.
 
 **Lifecycle & state**
 
@@ -33,8 +34,11 @@ its status and moderation state current. The inverse direction (ML → ERP) is
   — no longer lives here: it moved to `@delfrance/schemas` beside the field it
   gates when `apps/web` needed the same decision (#1239), and this module now
   imports it like every other caller. Keep it free of anything import-specific.
-- `reverificarAnuncio.ts` — the operator escape hatch: re-read one listing and
-  record its real state (stock-latch recovery).
+- `reverificarAnuncio.ts` — the operator escape hatch: re-read a listing and
+  record its real state (stock-latch recovery). ⚠️ On a User-Products FAMILY it
+  re-reads every MEMBER (multiget) and folds; it must never hand the parent
+  link's `id` to `GET /items/{id}`, because that 404 records `closed` on the
+  whole family (#1142).
 - `anuncioUrl.ts` — resolves a listing's public ML URL (needed only for
   User-Products links).
 - `variacoesFantasma.ts` — phantom-variation self-heal for old-model bulk stock
