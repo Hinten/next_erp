@@ -6,12 +6,11 @@ import { buildAuthorizeUrl } from './oauth';
 
 export * from './errors';
 export * from './types';
-// ⚠️ The SCALAR coercer only — `mlNumber()` / `mlInt()` stay unexported on
-// purpose. Those build the response schemas in `types.ts`; exporting them would
-// invite a consumer to grow a second ML-shaped schema outside this package.
-// `parseMlDecimal` is the opposite case: it must be shared, or the next caller
-// that has to read a quoted ML number keeps its own regex and #810 repeats.
-export { parseMlDecimal } from './mlNumber';
+// ⚠️ No numeric coercer is exported here any more. The rule that reads a quoted
+// provider number lives in `@delfrance/core/wire` (`parseWireDecimal`,
+// `wireNumber()`, `wireInt()`) — Mercado Pago hit the identical exposure on the
+// SAME payment resource through `GET /v1/payments/{id}` (#1251), so a per-channel
+// copy was always going to drift (#810). Import it from core directly.
 export * from './shipmentFields';
 export * from './oauth';
 export * from './api';

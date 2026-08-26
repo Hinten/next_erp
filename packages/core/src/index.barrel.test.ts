@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as cep from './cep';
 import * as region from './region';
+import * as wire from './wire';
 import * as core from './index';
 
 /**
@@ -45,5 +46,22 @@ describe('packages/core root barrel', () => {
     // Guards the test above from passing vacuously if `./cep` is ever emptied
     // or its barrel stops re-exporting values.
     expect(Object.keys(cep).length).toBeGreaterThan(0);
+  });
+
+  it('does not re-export anything from the ./wire subpath', () => {
+    // Same rule as ./cep and ./region, third reason: `./wire` is an
+    // explicit-import coercer for provider RESPONSE schemas, not something
+    // `formatReais` should drag into every browser bundle. Its own docstring
+    // states this invariant — and a stated-but-unenforced invariant is exactly
+    // the failure shape that module is about, since `export * from './wire'`
+    // is a one-line, obviously-correct-looking diff that nothing else fails.
+    const rootExports = new Set(Object.keys(core));
+    const leaked = Object.keys(wire).filter((name) => rootExports.has(name));
+
+    expect(leaked).toEqual([]);
+  });
+
+  it('is comparing against a non-empty ./wire surface', () => {
+    expect(Object.keys(wire).length).toBeGreaterThan(0);
   });
 });
