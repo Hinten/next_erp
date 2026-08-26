@@ -672,6 +672,26 @@ ENUMERATED, never derived as "not on the ladder": `estadoPedidoFromOrderStatus`
 returns `iniciado` for any unrecognised status, so the shortcut would drop a live
 pedido's reservation the first time ML invented a status string.
 
+⚠️ **The ONLY time-based release is `pedidos/pedidoTravadoSweep.ts`** — a weekly
+`onSchedule` (Mon 04:00). Both arms above are event-driven, so a reservation whose
+terminal ML event never arrives is held forever: the notification can PARK
+(terminal — nothing re-drives a parked doc), ML may never fire one for a silently
+expired boleto, and `importMercadoLivreOrders` cannot rescue it because its
+seller-scoped `/orders/search` filters exactly these orders. The sweep is mostly a
+RE-DRIVER — it asks ML and enqueues a synthetic `orders_v2` so the existing arms
+decide — and writes `pagamentoNaoRealizado` itself only when ML still reports the
+order pre-payment past the horizon.
+⚠️ It ENDS SALES, so: doubly flag-gated
+(`MERCADO_LIVRE_PEDIDO_TRAVADO_SWEEP_ENABLED` + a `..._DRY_RUN` rehearsal mode), it
+never acts on an unverifiable ML read (a 5xx or dead grant is `nao-verificavel`,
+never a release), and it re-derives every input inside the transaction.
+⚠️ **`integracaoPedidoOuterRef` is NOT the marketplace discriminator** — a
+human-created pedido is REQUIRED by the form to set it, so gating on it would
+sweep manual sales. The gate is `lastMarketplaceUpdate` (sole writer
+`discoverPedidoMercadoLivre`) plus an `orderML` mirror, `hasUserInteraction`, and a
+refusal while any pagamento is `aprovado` — a human reaches
+`aguardandoConfirmacaoDePagamento` legitimately through a PARTIAL payment.
+
 ⚠️ `items_prices` is not "pending" — it is closed by decision #803: the ERP owns
 both price tables, so a price notification has nothing to do. It stays in the
 disposition table only so it acks instead of parking a document per delivery.

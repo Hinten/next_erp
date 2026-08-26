@@ -19,6 +19,10 @@ import {
   MISSED_FEEDS_FLAG_ENV,
   runMissedFeedsSweep,
 } from '../../lib/marketplace/notificacoes/missedFeedsSweep';
+import {
+  PEDIDO_TRAVADO_FLAG_ENV,
+  runPedidoTravadoSweep,
+} from '../../lib/marketplace/pedidos/pedidoTravadoSweep';
 import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/estoque/bulkEstoquePlan';
 import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/preco/precoSync';
 import { MERCADO_LIVRE_NFE_UPLOAD_QUEUE } from '../../lib/marketplace/nfe/nfeUpload';
@@ -397,6 +401,64 @@ export const sweepMercadoLivreMissedFeeds = onSchedule(
     if (errors.length > 0) {
       logger.warn('[mercado-livre] missed-feeds sweep had per-conta failures', {
         errors: errors.slice(0, 10).map((c) => ({ integracaoId: c.integracaoId, error: c.error })),
+      });
+    }
+  },
+);
+
+/**
+ * #1087 follow-up — the WEEKLY release of pedidos stuck awaiting a payment that
+ * never resolved.
+ *
+ * Every other release path in this channel is event-driven, so a reservation
+ * whose terminal `orders_v2`/`payments` event never arrived was held forever.
+ * This is the only time-based one. It is mostly a RE-DRIVER: it asks ML what
+ * happened and lets the existing import arms decide, releasing by itself only
+ * when ML still reports the order pre-payment past the horizon.
+ *
+ * Monday 04:00 America/Sao_Paulo — clear of the 02:00 daily stock sweep, the
+ * 03:00 monthly reconciliation and the 05:00 missed-feeds backstop.
+ *
+ * ⚠️ It ENDS SALES, so it ships doubly gated: `MERCADO_LIVRE_PEDIDO_TRAVADO_SWEEP_ENABLED`
+ * must be `'1'` at all, and `MERCADO_LIVRE_PEDIDO_TRAVADO_DRY_RUN=1` decides and
+ * counts without writing. Run the dry run for a few weeks and read the counters
+ * before letting it write.
+ */
+export const sweepMercadoLivrePedidosTravados = onSchedule(
+  {
+    // Cloud Tasks/Scheduler do not exist in us-east5 — see TASKS_SCHEDULER_REGION.
+    region: TASKS_SCHEDULER_REGION,
+    schedule: '0 4 * * 1',
+    timeZone: 'America/Sao_Paulo',
+    secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],
+    // One ML round trip per candidate, up to PAGE_LIMIT of them, sequentially —
+    // the 60s onSchedule default cannot absorb that; 540s matches the other
+    // ML-API-bound sweeps.
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const result = await runPedidoTravadoSweep(getDb(), {
+      scheduler: createMlTaskScheduler(),
+      nowMs: Date.now(),
+    });
+    if (!result.enabled) {
+      logger.info(
+        `[mercado-livre] pedido-travado sweep disabled (${PEDIDO_TRAVADO_FLAG_ENV} != '1') — no-op`,
+      );
+      return;
+    }
+    logger.info('[mercado-livre] pedido-travado sweep', {
+      dryRun: result.dryRun,
+      examinados: result.examinados,
+      // Per-verdict, never a single total: "examined 200, released 0" and
+      // "examined 200, released 200" must not look alike in a log.
+      veredictos: result.veredictos,
+      truncado: result.truncado,
+      errorCount: result.erros.length,
+    });
+    if (result.erros.length > 0) {
+      logger.warn('[mercado-livre] pedido-travado sweep had per-pedido failures', {
+        erros: result.erros.slice(0, 10),
       });
     }
   },

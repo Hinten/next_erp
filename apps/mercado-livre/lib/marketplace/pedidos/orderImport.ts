@@ -287,7 +287,7 @@ export const ESTADOS_PEDIDO_PRE_PAGAMENTO_ML: ReadonlySet<EstadoPedido> = new Se
  * the derived version would release a live pedido's reservation the first time ML
  * invented a status string.
  */
-const ESTADOS_PEDIDO_ML_TERMINAL: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+export const ESTADOS_PEDIDO_ML_TERMINAL: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
   ESTADO_PEDIDO.cancelado,
   ESTADO_PEDIDO.fraude,
   ESTADO_PEDIDO.estornadoIntegralmente,
