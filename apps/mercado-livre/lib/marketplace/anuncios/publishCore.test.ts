@@ -250,6 +250,45 @@ describe('buildParentAttributes', () => {
     expect(attrs.map((a) => a.id)).toEqual(['SELLER_SKU', 'WEIGHT']);
   });
 
+  // ⚠️ The stale-copy path. A link doc written before the editor withheld these
+  // ids can still carry one, and `attributesForSave` cannot prune an id the
+  // CATEGORY does not list — so a stored `WEIGHT` in such a category survives
+  // every save. Appending the derived copy beside it ships the attribute TWICE,
+  // once with the operator's old value. Publish owns these ids unconditionally.
+  it('drops a stored copy of a derived id instead of duplicating it', () => {
+    const attrs = buildParentAttributes(produto, {
+      docId: 'l',
+      id: null,
+      attributes: [
+        { id: 'BRAND', value_name: 'Acme' },
+        { id: 'WEIGHT', value_name: '99 kg' },
+        { id: 'SELLER_PACKAGE_HEIGHT', value_name: '99 cm' },
+      ],
+    });
+    expect(attrs.filter((a) => a.id === 'WEIGHT')).toHaveLength(1);
+    expect(attrs.filter((a) => a.id === 'SELLER_PACKAGE_HEIGHT')).toHaveLength(1);
+    // The produto's value wins, not the stale one.
+    expect(attrs.find((a) => a.id === 'WEIGHT')?.value_name).not.toBe('99 kg');
+    expect(attrs.find((a) => a.id === 'SELLER_PACKAGE_HEIGHT')?.value_name).not.toBe('99 cm');
+    // A non-derived stored attribute is still preserved.
+    expect(attrs.find((a) => a.id === 'BRAND')?.value_name).toBe('Acme');
+  });
+
+  // The stored copy goes even when the produto cannot replace it — a value the
+  // ERP owns and could not derive is not a value to fall back on: it is the one
+  // the operator is being told to fill in on the produto.
+  it('drops a stored derived id even with nothing to replace it', () => {
+    const attrs = buildParentAttributes(
+      { ...produto, alturaCm: null },
+      {
+        docId: 'l',
+        id: null,
+        attributes: [{ id: 'SELLER_PACKAGE_HEIGHT', value_name: '99 cm' }],
+      },
+    );
+    expect(attrs.map((a) => a.id)).toEqual(['SELLER_SKU', 'WEIGHT']);
+  });
+
   it('omits SELLER_SKU when the item has variations (#799 bug 3)', () => {
     // Each variation carries its own SELLER_SKU in `attributes`, so it is never
     // a combination id and the mapper's combination prune cannot reach the

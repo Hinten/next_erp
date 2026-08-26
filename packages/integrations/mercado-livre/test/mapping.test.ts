@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
   attrColor,
   attrNA,
   attrPackageDimensions,
+  attrSize,
+  attrSizeGridId,
+  attrSizeGridRowId,
   attrSku,
   attrWeightKg,
   attributeToMercadoLivre,
@@ -35,13 +39,68 @@ describe('attributeToMercadoLivre', () => {
   it('weight and dimension factories embed the units (old wire parity)', () => {
     expect(attrWeightKg(0.5)).toEqual({ id: 'WEIGHT', name: 'Peso', value_name: '0.5 kg' });
     expect(
-      attrPackageDimensions({ alturaCm: 10, larguraCm: 20, profundidadeCm: 30, pesoKg: 0.5 }),
+      attrPackageDimensions({ alturaCm: 10, larguraCm: 20, profundidadeCm: 30, pesoG: 500 }),
     ).toEqual([
       { id: 'SELLER_PACKAGE_HEIGHT', value_name: '10 cm' },
       { id: 'SELLER_PACKAGE_LENGTH', value_name: '20 cm' },
       { id: 'SELLER_PACKAGE_WIDTH', value_name: '30 cm' },
       { id: 'SELLER_PACKAGE_WEIGHT', value_name: '500 g' },
     ]);
+  });
+
+  // The axis crossing is legacy parity (`models.dart:2135`) and stays: ML
+  // re-sorts the three for display and bills the volume, which a permutation
+  // leaves alone. Pinned so nobody "fixes" it into a silent wire change.
+  it('keeps the legacy axis crossing — LENGTH←largura, WIDTH←profundidade', () => {
+    const [, length, width] = attrPackageDimensions({
+      alturaCm: 1,
+      larguraCm: 2,
+      profundidadeCm: 3,
+      pesoG: 1,
+    });
+    expect(length).toEqual({ id: 'SELLER_PACKAGE_LENGTH', value_name: '2 cm' });
+    expect(width).toEqual({ id: 'SELLER_PACKAGE_WIDTH', value_name: '3 cm' });
+  });
+});
+
+describe('ML_PRODUTO_DERIVED_ATTRIBUTE_IDS', () => {
+  // The anti-drift anchor. The editor withholds exactly these ids, publish
+  // strips exactly these from the write-back and import strips them off the
+  // link — three surfaces that used to hold independent literals and DID
+  // disagree (`PACKAGE_*` against `SELLER_PACKAGE_*`).
+  it('names every id the produto-derived factories emit', () => {
+    const emitted = [
+      attrSku('SKU-1'),
+      attrWeightKg(0.5),
+      ...attrPackageDimensions({ alturaCm: 1, larguraCm: 1, profundidadeCm: 1, pesoG: 1 }),
+    ].map((a) => a.id!);
+
+    expect([...emitted].sort()).toEqual([...ML_PRODUTO_DERIVED_ATTRIBUTE_IDS].sort());
+  });
+
+  // Membership is "the produto owns it", not "a factory emits it". These four
+  // come from the grupo de variações and the tabela de medidas, are withheld by
+  // their own rules, and `SIZE_GRID_ID` in particular must survive on the link
+  // doc — it is where the chart binding lives between publishes.
+  it('excludes the variation- and size-chart-owned factories', () => {
+    for (const attr of [
+      attrSize('M'),
+      attrColor('Preto'),
+      attrSizeGridId('grid-1'),
+      attrSizeGridRowId('row-1'),
+    ]) {
+      expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain(attr.id);
+    }
+  });
+
+  // The read-only spelling is a DIFFERENT ML attribute (factory packaging data
+  // a seller cannot write). Folding the two lists together is the mistake this
+  // set exists to prevent.
+  it('carries the seller-writable spelling, never the read-only PACKAGE_* one', () => {
+    for (const axis of ['HEIGHT', 'LENGTH', 'WIDTH', 'WEIGHT']) {
+      expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).toContain(`SELLER_PACKAGE_${axis}`);
+      expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain(`PACKAGE_${axis}`);
+    }
   });
 });
 
