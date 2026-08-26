@@ -25,6 +25,7 @@ import { useQuery } from '@tanstack/react-query';
 import { AfterSaveBlockedError } from '@delfrance/ui';
 import {
   dimensoesDoPacote,
+  marcaArmazenadaDe,
   medidasFaltandoParaAnuncio,
   resolveCondicaoAnuncio,
   resolveMarcaAnuncio,
@@ -329,9 +330,20 @@ function MarcaField({
   marca: string | null;
   atributos: ProdutoMercadoLivreLink['attributes'];
 }) {
-  const armazenada = (atributos ?? []).find((a) => a.id === 'BRAND')?.value_name ?? null;
-  const { marca: resolvida, fonte } = resolveMarcaAnuncio({ marca, marcaAnuncio: armazenada });
-  const faltando = marca !== null && resolvida == null;
+  const armazenada = marcaArmazenadaDe(atributos);
+  const {
+    marca: resolvida,
+    fonte,
+    naoSeAplica,
+  } = resolveMarcaAnuncio({
+    marca,
+    marcaAnuncio: armazenada.marca,
+    anuncioNaoSeAplica: armazenada.naoSeAplica,
+  });
+  // ⚠️ An N/A listing is ANSWERED, not empty, so it must not be nagged. Without
+  // this arm the sentinel reads as a blank and raises a warning at an operator
+  // who already said the product has no brand.
+  const faltando = marca !== null && resolvida == null && !naoSeAplica;
   const legenda = faltando
     ? // Naming the consequence, not just the gap. Mercado Livre marks BRAND
       // `required` in most categories and refuses the publish without it.
@@ -341,7 +353,10 @@ function MarcaField({
   return (
     <ListingField label="Marca">
       <Stack gap={2}>
-        <Text size="sm">{resolvida ?? EMPTY_VALUE}</Text>
+        {/* ⚠️ Never `resolvida` for the sentinel: its stored `value_name` is the
+            literal string "N/A", which would render as a brand named N/A right
+            beside the real empty marker, "—". */}
+        <Text size="sm">{naoSeAplica ? 'Não se aplica' : (resolvida ?? EMPTY_VALUE)}</Text>
         {faltando && (
           <Text size="sm" c="orange.7">
             Falta preencher: Marca

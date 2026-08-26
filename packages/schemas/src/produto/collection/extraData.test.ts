@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { CONDICAO_PRODUTO, resolveCondicaoAnuncio, resolveMarcaAnuncio } from './extraData';
+import {
+  CONDICAO_PRODUTO,
+  marcaArmazenadaDe,
+  resolveCondicaoAnuncio,
+  resolveMarcaAnuncio,
+} from './extraData';
 
 describe('resolveCondicaoAnuncio', () => {
   it('lets the produto win, because "used" is a fact about the product', () => {
@@ -81,6 +86,7 @@ describe('resolveMarcaAnuncio', () => {
     expect(resolveMarcaAnuncio({ marca: 'Hering', marcaAnuncio: 'Nike' })).toEqual({
       marca: 'Hering',
       fonte: 'extraData',
+      naoSeAplica: false,
     });
   });
 
@@ -92,11 +98,16 @@ describe('resolveMarcaAnuncio', () => {
     expect(resolveMarcaAnuncio({ marca: null, marcaAnuncio: 'Nike' })).toEqual({
       marca: 'Nike',
       fonte: 'anuncio',
+      naoSeAplica: false,
     });
   });
 
   it('reports no source at all when neither tier has a value', () => {
-    expect(resolveMarcaAnuncio({ marca: null })).toEqual({ marca: null, fonte: null });
+    expect(resolveMarcaAnuncio({ marca: null })).toEqual({
+      marca: null,
+      fonte: null,
+      naoSeAplica: false,
+    });
   });
 
   it('trims, so no stray space reaches the wire or the screen', () => {
@@ -110,6 +121,7 @@ describe('resolveMarcaAnuncio', () => {
     expect(resolveMarcaAnuncio({ marca: '   ', marcaAnuncio: 'Nike' })).toEqual({
       marca: 'Nike',
       fonte: 'anuncio',
+      naoSeAplica: false,
     });
   });
 
@@ -117,6 +129,72 @@ describe('resolveMarcaAnuncio', () => {
     expect(resolveMarcaAnuncio({ marca: null, marcaAnuncio: '  ' })).toEqual({
       marca: null,
       fonte: null,
+      naoSeAplica: false,
     });
+  });
+
+  // ⚠️ The N/A sentinel is an ANSWER, not a blank. Read as a blank it raises
+  // "Falta preencher" at an operator who already declared the product has no
+  // brand; read as a value it prints a brand literally named "N/A".
+  it('reports an N/A listing as answered, carrying no brand name', () => {
+    expect(resolveMarcaAnuncio({ marca: null, anuncioNaoSeAplica: true })).toEqual({
+      marca: null,
+      fonte: 'anuncio',
+      naoSeAplica: true,
+    });
+  });
+
+  it("lets the produto's Marca outrank an N/A left on one listing", () => {
+    // A Marca typed on the produto is the newer, more specific answer.
+    expect(resolveMarcaAnuncio({ marca: 'Hering', anuncioNaoSeAplica: true })).toEqual({
+      marca: 'Hering',
+      fonte: 'extraData',
+      naoSeAplica: false,
+    });
+  });
+
+  it("outranks the sentinel's stored value_name, which is the string 'N/A'", () => {
+    // Ordering the two the other way round returns 'N/A' as the brand.
+    expect(
+      resolveMarcaAnuncio({ marca: null, marcaAnuncio: 'N/A', anuncioNaoSeAplica: true }),
+    ).toEqual({ marca: null, fonte: 'anuncio', naoSeAplica: true });
+  });
+});
+
+describe('marcaArmazenadaDe', () => {
+  it('reads the stored BRAND value_name', () => {
+    expect(marcaArmazenadaDe([{ id: 'BRAND', value_name: 'Acme' }])).toEqual({
+      marca: 'Acme',
+      naoSeAplica: false,
+    });
+  });
+
+  it('ignores every other attribute id', () => {
+    expect(
+      marcaArmazenadaDe([
+        { id: 'MODEL', value_name: 'X' },
+        { id: 'SELLER_SKU', value_name: 'SKU-1' },
+      ]),
+    ).toEqual({ marca: null, naoSeAplica: false });
+  });
+
+  it('reports the N/A sentinel as such, never as a brand named N/A', () => {
+    expect(marcaArmazenadaDe([{ id: 'BRAND', value_id: '-1', value_name: 'N/A' }])).toEqual({
+      marca: null,
+      naoSeAplica: true,
+    });
+  });
+
+  it('tolerates a stored BRAND carrying only a value_id', () => {
+    expect(marcaArmazenadaDe([{ id: 'BRAND', value_id: '9999' }])).toEqual({
+      marca: null,
+      naoSeAplica: false,
+    });
+  });
+
+  it('handles null/undefined/empty without throwing', () => {
+    for (const input of [null, undefined, []]) {
+      expect(marcaArmazenadaDe(input)).toEqual({ marca: null, naoSeAplica: false });
+    }
   });
 });

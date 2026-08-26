@@ -143,6 +143,17 @@ export function isAttributeRequired(attr: MlCategoryAttribute): boolean {
  * reason — and is a separate verdict for a different one: publish leaves a stored
  * `BRAND` alone rather than overwriting it, so the save must not prune it. See
  * {@link MlAttributeOmission}.
+ *
+ * ⚠️ **`herdado` INVERTS this repo's usual deploy order: apps/web must ship
+ * BEFORE this backend, not after.** The habit here is backend-first, because the
+ * new UI reads a DTO field the old backend does not send. This value is the
+ * opposite kind of change — it is DESTRUCTIVE to an old client. The moment this
+ * function starts returning it, an apps/web bundle without the `herdado`
+ * carve-out in `attributesForSave` prunes `BRAND` from `link.attributes` on the
+ * next save of ANY unrelated field, deleting the fallback publish reads and
+ * leaving every produto with an empty Marca publishing no brand at all. Deployed
+ * the other way round the window is harmless: a new apps/web against an old
+ * backend simply never sees `herdado` and behaves exactly as before.
  */
 export function attributeOmission(
   attr: MlCategoryAttribute,

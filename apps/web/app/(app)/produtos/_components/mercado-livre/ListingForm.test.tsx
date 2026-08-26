@@ -954,4 +954,23 @@ describe('Marca comes from the produto', () => {
     renderForm({ attributes: [] }, { produtoMarca: null });
     expect(screen.queryByText('Falta preencher: Marca')).toBeNull();
   });
+
+  // ⚠️ The N/A sentinel is an ANSWER, not a blank: the operator declared the
+  // product has no brand. Read as a blank it nags them; read as a value it
+  // prints a brand literally named "N/A" beside the real empty marker, "—".
+  it('shows an N/A listing as "Não se aplica" and does not nag', () => {
+    renderForm(
+      { attributes: [{ id: 'BRAND', value_id: '-1', value_name: 'N/A' }] },
+      { produtoMarca: '' },
+    );
+    expect(screen.getByText('Não se aplica')).toBeDefined();
+    expect(screen.queryByText('N/A')).toBeNull();
+    expect(screen.queryByText('Falta preencher: Marca')).toBeNull();
+  });
+
+  it("lets the produto's Marca outrank an N/A left on the listing", () => {
+    renderForm({ attributes: [{ id: 'BRAND', value_id: '-1', value_name: 'N/A' }] });
+    expect(screen.getByText('Hering')).toBeDefined();
+    expect(screen.queryByText('Não se aplica')).toBeNull();
+  });
 });

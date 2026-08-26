@@ -62,13 +62,13 @@ import {
 import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin';
 
 import {
-  ML_DERIVED_ATTRIBUTE_IDS,
   MercadoLivrePublishError,
   type PublishGrupoVariacao,
   type PublishLink,
   type PublishProduto,
   type PublishVariationChild,
   assemblePublishInput,
+  linkAttributesAfterPublish,
   publishModeIssues,
   resolveCondition,
   resolveListingModel,
@@ -628,16 +628,14 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     precoPublicado: family ? null : (item.price ?? null),
     freteGratis: item.shipping?.free_shipping ?? false,
     isUserProductModel: input.isUserProductSeller,
-    // #799 bug 7: the attributes we just sent, minus the ones rebuilt from
-    // the produto on every publish (appending those back would duplicate
-    // them). Without this a produto the legacy app never published keeps
+    // #799 bug 7: the attributes we just sent, minus the ids publish does not
+    // own. Without this a produto the legacy app never published keeps
     // `attributes: null` forever and the editor has nothing to load.
-    // `id` is optional on MlAttribute for ML's id-less custom characteristic,
-    // which only ever appears in a variation's combinations — never here. The
-    // link doc's wire schema requires an id, so drop any that lacks one.
-    attributes: (input.attributes ?? []).filter(
-      (a): a is MlAttribute & { id: string } => a.id != null && !ML_DERIVED_ATTRIBUTE_IDS.has(a.id),
-    ),
+    //
+    // ⚠️ The derived ids and the herdado ones are excluded for OPPOSITE reasons
+    // and the stored `BRAND` is carried back verbatim — see
+    // `linkAttributesAfterPublish`, which is where that whole argument lives.
+    attributes: linkAttributesAfterPublish(input.attributes, linkDoc?.data.attributes),
     errors: [],
     // Cleared WITH `errors`: a surviving falha paints a red field on a listing
     // that just published successfully, which reads exactly like a rejection.

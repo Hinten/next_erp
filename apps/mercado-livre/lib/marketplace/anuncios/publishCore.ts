@@ -24,6 +24,7 @@
  */
 import {
   ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
   type BuildItemPayloadInput,
   type ItemVariationInput,
   type MlAttribute,
@@ -37,6 +38,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import {
   dimensoesDoPacote,
+  marcaArmazenadaDe,
   parseFakePath,
   resolveCondicaoAnuncio,
   resolveMarcaAnuncio,
@@ -374,6 +376,52 @@ export const ML_DERIVED_ATTRIBUTE_IDS: ReadonlySet<string> = new Set(
 );
 
 /**
+ * The produto-FILLED ids whose stored copy publish must leave alone — the
+ * counterpart set to {@link ML_DERIVED_ATTRIBUTE_IDS}, kept separate because
+ * the two get opposite treatment on the write-back. See
+ * {@link linkAttributesAfterPublish}.
+ */
+export const ML_HERDADO_ATTRIBUTE_IDS: ReadonlySet<string> = new Set(
+  ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
+);
+/**
+ * The `attributes` array to STORE on the link doc after a successful publish
+ * (#799 bug 7) — what was sent, minus the ids publish does not own.
+ *
+ * ⚠️ The two exclusions are NOT the same exclusion, and collapsing them
+ * reintroduces a bug in one direction or the other.
+ *
+ *  - A **derived** id (`SELLER_SKU`, `WEIGHT`, `SELLER_PACKAGE_*`) is rebuilt
+ *    from the produto every run, so storing it duplicates it on the next one.
+ *    Dropping it loses nothing.
+ *  - A **herdado** id (`BRAND`) is the FALLBACK publish reads when the produto
+ *    has no Marca, and it belongs to the operator or the importer — so publish
+ *    must neither add one nor remove one. Persisting the derived value would
+ *    latch it: the produto's Marca becomes its own fallback, and clearing Marca
+ *    could then never clear the listing's brand. Dropping the stored one on a
+ *    publish that USED it would delete the only copy in existence.
+ *
+ * Hence: strip both from what was sent, then carry the STORED herdado entries
+ * back verbatim, `value_id` and all.
+ */
+export function linkAttributesAfterPublish(
+  sent: ReadonlyArray<MlAttribute> | null | undefined,
+  stored: ReadonlyArray<MlAttribute> | null | undefined,
+): Array<MlAttribute & { id: string }> {
+  // `id` is optional on MlAttribute for ML's id-less custom characteristic,
+  // which only ever appears in a variation's combinations — never here. The link
+  // doc's wire schema requires an id, so drop any that lacks one.
+  const enviados = (sent ?? []).filter(
+    (a): a is MlAttribute & { id: string } =>
+      a.id != null && !ML_DERIVED_ATTRIBUTE_IDS.has(a.id) && !ML_HERDADO_ATTRIBUTE_IDS.has(a.id),
+  );
+  const herdadas = (stored ?? []).filter(
+    (a): a is MlAttribute & { id: string } => a.id != null && ML_HERDADO_ATTRIBUTE_IDS.has(a.id),
+  );
+  return [...enviados, ...herdadas];
+}
+
+/**
  * Parent-level attributes (mapper prunes any combination ids from these).
  *
  * `includeSku: false` only when the payload will actually EMIT variations, each
@@ -391,8 +439,12 @@ export const ML_DERIVED_ATTRIBUTE_IDS: ReadonlySet<string> = new Set(
 export function buildParentAttributes(
   produto: PublishProduto,
   link: PublishLink | null,
-  sizeChartId?: string | null,
-  options?: { includeSku?: boolean; marca?: string | null },
+  sizeChartId: string | null,
+  // ⚠️ REQUIRED, both the object and `marca` inside it, so a new call site that
+  // forgets the produto's Marca fails to compile instead of quietly publishing
+  // the stale stored brand. Every other produto-derived value here arrives
+  // through `produto`; this is the one input that could go missing unnoticed.
+  options: { includeSku?: boolean; marca: string | null },
 ): MlAttribute[] {
   // ⚠️ `BRAND` is HERDADO, not derived, so it takes the OPPOSITE default to every
   // id above: the stored entry is dropped only when the produto actually decided
@@ -402,15 +454,21 @@ export function buildParentAttributes(
   // `WEIGHT` is dropped, would publish no brand at all for the many produtos
   // whose Marca is still empty. See `ML_PRODUTO_HERDADO_ATTRIBUTE_IDS` in
   // `@delfrance/integrations-mercado-livre`, which carries the full contract.
-  const marcaArmazenada =
-    (link?.attributes ?? []).find((a) => a.id === 'BRAND')?.value_name ?? null;
-  // The SAME call the produto's Mercado Livre tab makes, so the screen and the
-  // payload cannot disagree — the display↔payload trap `resolveCondicaoAnuncio`
-  // and `dimensoesDoPacote` both exist to close.
+  // The SAME two calls the produto's Mercado Livre tab makes, so the screen and
+  // the payload cannot disagree — the display↔payload trap
+  // `resolveCondicaoAnuncio` and `dimensoesDoPacote` both exist to close.
+  const armazenada = marcaArmazenadaDe(link?.attributes);
   const { marca, fonte } = resolveMarcaAnuncio({
-    marca: options?.marca ?? null,
-    marcaAnuncio: marcaArmazenada,
+    marca: options.marca,
+    marcaAnuncio: armazenada.marca,
+    anuncioNaoSeAplica: armazenada.naoSeAplica,
   });
+  // ⚠️ Only the `extraData` verdict is consumed here, and the fallback is
+  // expressed as the ABSENCE of a filter below rather than as a value — the
+  // stored entry simply survives. Do NOT "finish the job" by pushing
+  // `attrBrand(marca)` on the `anuncio` branch: that rebuilds the entry from its
+  // name alone and discards the `value_id` an enumerated ML brand carries, which
+  // is the bug `attrBrand`'s own doc comment warns against.
   const marcaDoProduto = fonte === 'extraData' ? marca : null;
 
   // ⚠️ Derived ids are dropped from the STORED list before anything is appended,

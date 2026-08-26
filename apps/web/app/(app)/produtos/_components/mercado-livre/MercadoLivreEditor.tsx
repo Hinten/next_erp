@@ -199,7 +199,15 @@ export function MercadoLivreEditor({
   // render — while `''` means it landed and Marca is genuinely blank. Only the
   // second may raise "Falta preencher"; collapsing them flashes that warning on
   // every open, which is the `produtoMedidas` lesson above verbatim.
-  const produtoMarca = extraDataSnap.loading ? null : (extraDataSnap.data?.data.marca ?? '');
+  //
+  // ⚠️ An ERRORED snapshot is a THIRD state and must read as `null` too. It
+  // stops loading with no data, so `?? ''` alone would report "landed and
+  // blank" and nag the operator to fill a Marca that may well be filled — we
+  // simply did not manage to read it.
+  const produtoMarca =
+    extraDataSnap.loading || extraDataSnap.error != null
+      ? null
+      : (extraDataSnap.data?.data.marca ?? '');
 
   /**
    * The publish in flight, if any.

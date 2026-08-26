@@ -160,10 +160,18 @@ export const ML_PRODUTO_DERIVED_ATTRIBUTE_IDS: readonly string[] = [
  * stored value stays the fallback.
  *
  * ⚠️ Deliberately NOT part of {@link ML_PRODUTO_DERIVED_ATTRIBUTE_IDS}, and the
- * two lists must not be merged: of that list's three obligations these ids share
- * only the first. The editor withholds both, but for an id here publish must
- * LEAVE a stored copy alone and import must NOT strip it — that copy is what the
- * produto falls back TO.
+ * two lists must not be merged. They agree on the first two of that list's three
+ * obligations — the editor withholds both, and publish persists neither back —
+ * and split on what those mean plus the third:
+ *
+ *  - a DERIVED id is stripped from the write-back because storing it would
+ *    duplicate it next run; a HERDADO id is stripped because storing the derived
+ *    value would LATCH it, making the produto's Marca its own fallback so that
+ *    clearing Marca could never clear the listing's brand. The stored entry is
+ *    then carried back verbatim (`linkAttributesAfterPublish`) — publish neither
+ *    adds one nor removes one;
+ *  - import STRIPS a derived id and must NOT strip a herdado one, because that
+ *    stored copy is what the produto falls back TO.
  *
  * `BRAND` is the case, and the difference is where the values live. A stale
  * stored `WEIGHT` is a duplicate of something the produto already holds, so
