@@ -193,17 +193,29 @@ function pathOf(hit) {
 }
 
 /**
- * `allowed` is a parameter only so the self-test below can drive it with a
- * synthetic, NON-empty map — the real one shipping empty would otherwise make
- * the path-keying assertion vacuous. Production callers pass nothing.
+ * Is this exact source line carved out for THIS file?
+ *
+ * ⚠️ Looked up under the path, never as a flat membership test — a carve-out
+ * excuses one line in one file, not that text everywhere.
+ *
+ * ⚠️ Split out, rather than made a defaulted parameter of `isOffender`, so the
+ * self-test can drive it with a synthetic NON-empty map (the real one ships
+ * empty, which would make a path-keying assertion vacuous) WITHOUT putting an
+ * optional second parameter on a function that is passed to `.filter()`.
+ * `Array.prototype.filter` calls its callback with `(element, index, array)`, so
+ * `\`.filter(isOffender)\`` would have bound the INDEX to that parameter and
+ * silently excused nothing — invisible while the map is empty, and a hole the
+ * day it is not.
  */
-function isOffender(hit, allowed = ALLOWED_STRICT) {
+function isExcused(path, text, allowed) {
+  return text.trim() in (allowed[path] ?? {});
+}
+
+function isOffender(hit) {
   const text = textOf(hit);
   if (COMMENT_LINE.test(text)) return false;
   if (UNION_LINE.test(text)) return false;
-  // ⚠️ Looked up under the hit's PATH, never as a flat membership test — a
-  // carve-out excuses one line in one file, not that text everywhere.
-  return !(text.trim() in (allowed[pathOf(hit)] ?? {}));
+  return !isExcused(pathOf(hit), text, ALLOWED_STRICT);
 }
 
 describe('channel response schemas tolerate a quoted number', () => {
@@ -306,11 +318,11 @@ describe('channel response schemas tolerate a quoted number', () => {
     // The control for the path-keying, driven with a synthetic map because the
     // real one ships empty — which would make this assertion vacuous.
     //
-    // The two hits below are the SAME source line in two different files. That
-    // is the realistic case, not a contrived one: the channel packages are
+    // The two lookups below are the SAME source line in two different files.
+    // That is the realistic case, not a contrived one: the channel packages are
     // near-copies, so a request-shaped carve-out in one would silently exempt a
-    // response field of the same name in another. A flat map answers `false`
-    // twice here; keyed by path it answers false, then true.
+    // response field of the same name in another. A flat map answers `true`
+    // twice here; keyed by path it answers true, then false.
     const carved = {
       'packages/integrations/freight-br/src/melhor-envio/types.ts': {
         'width: z.number(),': 'REQUEST — outbound volume, tolerance is the wrong direction',
@@ -319,11 +331,40 @@ describe('channel response schemas tolerate a quoted number', () => {
     const line = '  width: z.number(),';
 
     expect(
-      isOffender(`packages/integrations/freight-br/src/melhor-envio/types.ts:59:${line}`, carved),
-    ).toBe(false);
-    expect(isOffender(`packages/integrations/mercado-pago/src/types.ts:59:${line}`, carved)).toBe(
-      true,
+      isExcused('packages/integrations/freight-br/src/melhor-envio/types.ts', line, carved),
+    ).toBe(true);
+    expect(isExcused('packages/integrations/mercado-pago/src/types.ts', line, carved)).toBe(false);
+  });
+
+  it('⚠️ every ALLOWED_STRICT entry survives the REAL `.filter(isOffender)` call', () => {
+    // ⛔ The control the lookup test above cannot give, and the reason it is
+    // written through `.filter` rather than by calling `isOffender(hit)`.
+    //
+    // `Array.prototype.filter` invokes its callback as `(element, index, array)`.
+    // Give `isOffender` an optional second parameter — say, to make the carve-out
+    // map injectable for a test — and `.filter(isOffender)` silently binds the
+    // INDEX to it, so nothing is ever excused. That version passes every
+    // assertion that calls the helper directly, and it is invisible for exactly
+    // as long as `ALLOWED_STRICT` is empty. It cost this stack a red suite the
+    // first time the map gained entries.
+    //
+    // So: build the offender list the way production does, then assert no
+    // carved-out line is in it. Vacuous while the map is empty, load-bearing the
+    // moment it is not.
+    const offenders = new Set(scan(PATTERNS).filter(isOffender));
+    const notHonoured = Object.entries(ALLOWED_STRICT).flatMap(([path, lines]) =>
+      Object.keys(lines).flatMap((l) =>
+        [...offenders].filter((h) => pathOf(h) === path && textOf(h).trim() === l),
+      ),
     );
+    expect(
+      notHonoured,
+      [
+        'These lines are listed in ALLOWED_STRICT but the real scan still reports them',
+        'as offenders, so the carve-out is not reaching `isOffender` at all:',
+        ...notHonoured.map((h) => `  - ${h}`),
+      ].join('\n'),
+    ).toEqual([]);
   });
 
   it('⚠️ pathOf splits a hit the same way git spells it', () => {
