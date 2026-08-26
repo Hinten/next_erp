@@ -240,6 +240,72 @@ export function podeAvancarParaPago(pedido: {
   );
 }
 
+/**
+ * The pre-payment rungs of the ML ladder, in ascending order — exactly the
+ * estados `estadoPedidoFromOrderStatus` produces for an order that has not been
+ * paid yet, plus the rung it lands on when it is (`emProcessamento`).
+ *
+ * Order IS the semantics: a promotion is allowed only strictly UP this list, so
+ * a late-delivered older payload can never walk a pedido backwards. Everything
+ * past `emProcessamento` is deliberately absent — from there on `estado` is the
+ * business's, moved by the `pago` advance, the downgrade, or a human.
+ */
+const ORDEM_ESTADO_PRE_PAGAMENTO_ML: readonly EstadoPedido[] = [
+  ESTADO_PEDIDO.carrinho,
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.emProcessamento,
+];
+
+/**
+ * The estados a pedido may be PROMOTED OUT OF (#1087) — the pre-payment rungs
+ * the payments-topic bootstrap can create a pedido at.
+ *
+ * `emProcessamento` is excluded: it is the ladder's top and the handover point to
+ * `podeAvancarParaPago`. `carrinho` IS included even though it holds no stock
+ * reservation — a pedido stranded there is just as unreachable, and this
+ * transaction only ever runs on a pedido the ML order import owns, so it cannot
+ * touch a manually-created cart.
+ */
+export const ESTADOS_PEDIDO_PRE_PAGAMENTO_ML: ReadonlySet<EstadoPedido> = new Set(
+  ORDEM_ESTADO_PRE_PAGAMENTO_ML.filter((e) => e !== ESTADO_PEDIDO.emProcessamento),
+);
+
+/**
+ * The estados `estadoPedidoFromOrderStatus` produces for an order that has DIED —
+ * `cancelled`, `invalid`, `pending_cancel`. None of them is in
+ * `ESTADOS_PEDIDO_RESERVA`, so reaching one RELEASES the stock reservation.
+ *
+ * ⚠️ Enumerated explicitly, never derived as "not on the ladder". That shortcut
+ * looks equivalent and is not: `estadoPedidoFromOrderStatus` returns `iniciado`
+ * for ANY status it does not recognise, and `iniciado` is off the ladder too — so
+ * the derived version would release a live pedido's reservation the first time ML
+ * invented a status string.
+ */
+const ESTADOS_PEDIDO_ML_TERMINAL: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  ESTADO_PEDIDO.cancelado,
+  ESTADO_PEDIDO.fraude,
+  ESTADO_PEDIDO.estornadoIntegralmente,
+]);
+
+/**
+ * Is this order payload at least as new as the ML order clock already applied to
+ * the pedido? Shared by the estado PROMOTION and the estado DOWNGRADE, which must
+ * agree — they are the two directions of one decision.
+ *
+ * `>=`, not `>`: the promotion/downgrade transaction is separate from the one
+ * that advanced the watermark (`discoverPedidoMercadoLivre`, earlier in this same
+ * import), so a crash or retry between the two leaves the watermark already at
+ * this payload's value, and a strict comparison could never converge.
+ *
+ * Units: both sides µs, and the stored side is coerced, so a legacy Flutter
+ * MILLISECOND value still compares as the same instant.
+ */
+function payloadNaoEhAntigo(armazenado: unknown, recebidoUs: number | null): boolean {
+  const armazenadoUs = coerceToMicros(armazenado);
+  return recebidoUs == null || armazenadoUs == null || recebidoUs >= armazenadoUs;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                             Small pure helpers                             */
 /* -------------------------------------------------------------------------- */
@@ -1560,6 +1626,75 @@ async function applyPagoAdvanceOrDowngrade(args: {
     const valorCobrado = freshPedido.valorCobrado;
     const temPagamento = armazenados.length + novos.length > 0;
 
+    // #1087 — PROMOTION along the pre-payment ladder, the arm that was missing.
+    //
+    // `estado` is written only on pedido CREATE (`orderPedidoTx.ts`), and
+    // `podeAvancarParaPago` below requires `emProcessamento`. That was harmless
+    // while `orders_v2` fired only for seller-visible (i.e. paid) orders, so
+    // every ML pedido was born at `emProcessamento`. The payments-topic bootstrap
+    // changes that: a pedido born from a `payment_in_process` order sits at
+    // `aguardandoConfirmacaoDePagamento`, which HOLDS a stock reservation — and
+    // with no arm here it could never move, so it would hold that reservation
+    // forever, never reach `pago`, and never be dispatched or invoiced.
+    //
+    // Scope is deliberately the two estados the bootstrap can create. It never
+    // touches an estado a human owns, and once the pedido reaches
+    // `emProcessamento` the existing advance below takes over unchanged.
+    //
+    // Gated on the SAME ML order clock as the downgrade (see its note), and every
+    // input is re-derived from this transaction's own `tx.get` — the site stays
+    // class A in the transaction inventory.
+    const alvoDoPayload = estadoPedidoFromOrderStatus(initialOrder.status ?? '');
+    // Two directions out of the pre-payment ladder, and BOTH are needed. Up: the
+    // order got paid. Out: the order DIED (`cancelled`/`invalid`/`pending_cancel`)
+    // — and without that arm a bootstrapped pedido would sit at
+    // `aguardandoConfirmacaoDePagamento` forever holding a stock reservation,
+    // which is #1087 pointed the other way. The population this bootstraps is
+    // exactly the one that most often dies (card under review, unpaid boleto).
+    const promoveNaLadeira =
+      ORDEM_ESTADO_PRE_PAGAMENTO_ML.indexOf(alvoDoPayload) >
+      ORDEM_ESTADO_PRE_PAGAMENTO_ML.indexOf(freshPedido.estado);
+    const liberaReserva = ESTADOS_PEDIDO_ML_TERMINAL.has(alvoDoPayload);
+    if (
+      ESTADOS_PEDIDO_PRE_PAGAMENTO_ML.has(freshPedido.estado) &&
+      (promoveNaLadeira || liberaReserva) &&
+      payloadNaoEhAntigo(freshPedido.lastMarketplaceUpdate, orderLastUpdatedUs)
+    ) {
+      tx.update(
+        pedidoRef,
+        pedidoCollection.parseMerge({
+          estado: alvoDoPayload,
+          // Wall clock, monotonic — as everywhere else on this pedido. The ML
+          // order clock lives in `lastMarketplaceUpdate` and its single writer is
+          // `discoverPedidoMercadoLivre` (#791/O15).
+          ultimaModificacao: avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs),
+        }) as DocumentData,
+      );
+      // Fall through: a promotion to `emProcessamento` may ALSO satisfy the pago
+      // advance in this same transaction, but `freshPedido` still carries the old
+      // estado, so `podeAvancarParaPago` below would refuse. Re-checking against
+      // the promoted value keeps one delivery from needing two.
+      if (
+        alvoDoPayload === ESTADO_PEDIDO.emProcessamento &&
+        podeAvancarParaPago({ ...freshPedido, estado: alvoDoPayload }) &&
+        valorCobrado != null &&
+        temPagamento &&
+        totalAprovado >= roundReais(valorCobrado)
+      ) {
+        tx.update(
+          pedidoRef,
+          pedidoCollection.parseMerge({
+            estado: ESTADO_PEDIDO.pago,
+            ultimaModificacao: avancarWatermark(
+              coerceToMicros(freshPedido.ultimaModificacao),
+              nowUs,
+            ),
+          }) as DocumentData,
+        );
+      }
+      return;
+    }
+
     if (podeAvancarParaPago(freshPedido)) {
       if (valorCobrado != null && temPagamento && totalAprovado >= roundReais(valorCobrado)) {
         tx.update(
@@ -1583,17 +1718,13 @@ async function applyPagoAdvanceOrDowngrade(args: {
     // event has since moved past, so the downgrade is gated on the payload not
     // being older than what we have already applied.
     //
-    // `>=`, not `>`: this transaction is separate from the one that advanced the
-    // watermark (`discoverPedidoMercadoLivre`, earlier in this same import), so a
-    // crash or retry between the two leaves the watermark already at this
-    // payload's value. A strict comparison would make the retry unable to ever
-    // converge. Units: both sides µs, and the stored side is coerced, so a
-    // legacy Flutter MILLISECOND value still compares as the same instant.
-    const relogioArmazenadoUs = coerceToMicros(freshPedido.lastMarketplaceUpdate);
-    const payloadEhAtual =
-      orderLastUpdatedUs == null ||
-      relogioArmazenadoUs == null ||
-      orderLastUpdatedUs >= relogioArmazenadoUs;
+    // The comparison itself (and why it is `>=`) now lives in
+    // `payloadNaoEhAntigo`, shared with the #1087 promotion arm above — the two
+    // directions of one decision, which must not drift apart.
+    const payloadEhAtual = payloadNaoEhAntigo(
+      freshPedido.lastMarketplaceUpdate,
+      orderLastUpdatedUs,
+    );
 
     // tasks.dart:746-774 — reachable now even when a concurrent handler advanced
     // the pedido to `pago` between our pre-read and this transaction.

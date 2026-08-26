@@ -495,6 +495,107 @@ describe('userProductMemberInputs', () => {
   });
 });
 
+/**
+ * The `shipping` node. Every ERP-published listing landed on ML as "a combinar"
+ * because no builder emitted one at all.
+ *
+ * ⚠️ All FOUR quadrants are asserted on purpose. The fields around this one
+ * (`category_id`, `condition`, `listing_type_id`, `price`) are all create-only,
+ * so "create carries it, update drops it" is the shape a reader expects here —
+ * and it is exactly wrong: `shipping` rides on the PUT too, which is what makes
+ * a republish self-heal a listing already sitting at "a combinar". Testing only
+ * the create half would pass against a builder that silently dropped it on
+ * update, i.e. against the version that fixes nothing already published.
+ */
+describe('buildItemPayload / buildUserProductItemPayload — shipping mode', () => {
+  const legacyBase = {
+    isUpdate: false,
+    isUserProductSeller: false,
+    title: 'Camiseta Básica',
+    condition: 'new' as const,
+    sellerCustomField: 'link-doc-1',
+    categoryId: 'MLB31447',
+    listingTypeId: 'gold_special',
+    price: 79.9,
+    availableQuantity: 12,
+    pictures: [{ id: 'IMG1' }],
+    attributes: [attrSku('SKU-1')],
+  };
+  const upBase = {
+    familyName: 'Camiseta Básica',
+    condition: 'new' as const,
+    categoryId: 'MLB31447',
+    listingTypeId: 'gold_special',
+    price: 79.9,
+    attributes: [attrSku('SKU-PAI')],
+    pictures: [{ id: 'PIC-PAI' }],
+    member: {
+      produtoId: 'child-1',
+      availableQuantity: 4,
+      attributeCombinations: [attrColor('Azul')],
+    },
+  };
+
+  it.each([false, true])('legacy builder sends it — isUpdate=%s', (isUpdate) => {
+    const data = buildItemPayload({ ...legacyBase, isUpdate, shippingMode: 'me2' });
+    expect(data.shipping).toEqual({ mode: 'me2' });
+  });
+
+  it.each([false, true])('User-Products builder sends it — isUpdate=%s', (isUpdate) => {
+    const data = buildUserProductItemPayload({ ...upBase, isUpdate, shippingMode: 'me2' });
+    expect(data.shipping).toEqual({ mode: 'me2' });
+  });
+
+  // `not_specified` is a REAL choice, not the absence of one: it forces "a
+  // combinar" over an account default that would otherwise have applied.
+  it('passes the mode through verbatim, not just me2', () => {
+    expect(buildItemPayload({ ...legacyBase, shippingMode: 'me1' }).shipping).toEqual({
+      mode: 'me1',
+    });
+    expect(buildItemPayload({ ...legacyBase, shippingMode: 'not_specified' }).shipping).toEqual({
+      mode: 'not_specified',
+    });
+  });
+
+  // ⚠️ `not.toHaveProperty`, never `toBeUndefined()` — the latter also passes
+  // for `{ shipping: undefined }`, and a key present-but-undefined is what
+  // reaches ML as an explicit null and overwrites the account default.
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+  ])('emits NO shipping key when the mode is %s', (_label, mode) => {
+    expect(buildItemPayload({ ...legacyBase, shippingMode: mode })).not.toHaveProperty('shipping');
+    expect(
+      buildUserProductItemPayload({ ...upBase, isUpdate: false, shippingMode: mode }),
+    ).not.toHaveProperty('shipping');
+  });
+
+  it('omitting the field entirely is byte-identical to before it existed', () => {
+    expect(buildItemPayload(legacyBase)).not.toHaveProperty('shipping');
+    expect(buildUserProductItemPayload({ ...upBase, isUpdate: false })).not.toHaveProperty(
+      'shipping',
+    );
+  });
+
+  // Pinned SEPARATELY from the builder above, because this projection is the
+  // only thing that puts a shipping node on a User-Products FAMILY: every member
+  // is built from it. Assert on the projection itself so a dropped forward fails
+  // here even if the member builder is fine.
+  it('userProductMemberInputs forwards the mode to every member', () => {
+    const members = userProductMemberInputs({
+      ...legacyBase,
+      isUserProductSeller: true,
+      shippingMode: 'me2',
+      variations: [
+        { produtoId: 'child-1', availableQuantity: 1, attributeCombinations: [attrColor('Azul')] },
+        { produtoId: 'child-2', availableQuantity: 2, attributeCombinations: [attrColor('Verde')] },
+      ],
+    });
+    expect(members).toHaveLength(2);
+    expect(members.map((m) => m.shippingMode)).toEqual(['me2', 'me2']);
+  });
+});
+
 describe('estadoFromMlStatus', () => {
   it('maps the ML statuses to the old short-code estados', () => {
     expect(estadoFromMlStatus('active')).toBe(ESTADO_PUBLICACAO.publicado);

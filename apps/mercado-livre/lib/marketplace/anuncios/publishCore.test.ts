@@ -525,6 +525,23 @@ describe('assemblePublishInput', () => {
     ]);
   });
 
+  it('passes the conta shipping mode through, and normalises absent to null', () => {
+    expect(assemblePublishInput({ ...baseArgs, shippingMode: 'me2' }).shippingMode).toBe('me2');
+    // Absent must reach the builder as an explicit null rather than undefined:
+    // both suppress the node today, but null is the value the conta actually
+    // stores, and it keeps this boundary honest about "nothing configured".
+    expect(assemblePublishInput(baseArgs).shippingMode).toBeNull();
+    expect(assemblePublishInput({ ...baseArgs, shippingMode: null }).shippingMode).toBeNull();
+  });
+
+  it('does NOT validate the shipping mode against the seller', () => {
+    // Whether a mode is available is an account/category fact only ML holds, and
+    // it already answers with a readable `shipping.me2_adoption_mandatory` cause.
+    // A local guess would be a second, staler copy of that answer — so this must
+    // assemble cleanly and let the publish carry it.
+    expect(() => assemblePublishInput({ ...baseArgs, shippingMode: 'me1' })).not.toThrow();
+  });
+
   it('only merges a stored attribute EVERY child can supply (review #1064)', () => {
     // child-2 was added in the ERP after the listing was published, so it has no
     // variation link and no stored VOLTAGE. Merging per-child would send

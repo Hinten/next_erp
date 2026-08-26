@@ -261,6 +261,11 @@ export {
   INTEGRACAO_TIPO,
   INTEGRACAO_TIPO_LABELS,
   pluginIdForTipo,
+  // Mercado Livre `shipping.mode` for this conta's publishes.
+  modoEnvioMercadoLivreSchema,
+  type ModoEnvioMercadoLivre,
+  MODO_ENVIO_MERCADO_LIVRE,
+  MODO_ENVIO_MERCADO_LIVRE_LABELS,
   // Shopee brand cache subcollection — a real DomainSchema, registered in
   // ALL_DOMAINS, reusing the parent `integracao` permission bits.
   brandShopee,

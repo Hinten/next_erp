@@ -23,6 +23,7 @@ import {
   MercadoLivreHttpError,
   type MlAttribute,
   type MlItem,
+  type MlShippingMode,
   type MlUser,
   buildItemPayload,
   estadoFromMlStatus,
@@ -45,6 +46,7 @@ import {
   idFromRef,
   mlSizeChartsForConta,
   parseFakePath,
+  precisaConsultarModeracao,
   toOuterRef,
 } from '@delfrance/schemas';
 import {
@@ -100,6 +102,14 @@ export interface PublishDeps {
   /** From the integração doc (parsed upstream by loadMercadoLivreContext). */
   tabelaNormalOuterRef: string | null;
   depositoOuterRef: string | null;
+  /**
+   * The conta's `shipping.mode` (`integracao.modoEnvioMercadoLivre`), same
+   * source as the two refs above. Null/absent sends no `shipping` node at all,
+   * which is what every publish did before this existed — so an unconfigured
+   * conta is unaffected. Rides on republishes too, so an existing "a combinar"
+   * listing self-heals the next time it is published.
+   */
+  shippingMode?: MlShippingMode | null;
   /**
    * The conta's ML `user_id` — the seller whose items the removed-variation
    * sweep searches. Null disables the sweep (it cannot enumerate a family
@@ -515,6 +525,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
     isUserProductSeller: listingModel === 'user-products',
     sizeChart: tabela.resolved,
+    shippingMode: deps.shippingMode ?? null,
   });
 
   const now = Date.now();
@@ -627,6 +638,25 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     // Cleared WITH `errors`: a surviving falha paints a red field on a listing
     // that just published successfully, which reads exactly like a rejection.
     causas: [],
+    // ⚠️ #1252, and it is NOT the same clear as the two above. `errors`/`causas`
+    // record OUR failed write, so this success invalidates them outright. A
+    // moderação is ML's verdict and nothing we do lifts it — so the ONLY thing
+    // authorising a clear here is ML's own answer, read off the response we
+    // already hold: `precisaConsultarModeracao` is pure, so a listing ML now
+    // calls healthy is written `[]` with no `/moderations` call at all.
+    //
+    // The other arm OMITS the key rather than writing `null`. `writeLinkDoc`'s
+    // merge is `update()`-backed, so an absent key leaves the stored reason
+    // standing — which is right: this path never asked ML why, and inventing
+    // `[]` would record "not moderated" we never confirmed. A republish of a
+    // still-moderated listing therefore keeps the reason the operator can see.
+    //
+    // ⚠️ On a UP family `item` is `family.items[0]` — the same "primary member"
+    // whose status this patch already publishes as the family's (see above).
+    // The clear follows that member deliberately: one listing, one status, one
+    // reason. Folding across siblings here would read every member on the
+    // publish path and disagree with the `status` sitting beside it.
+    ...(precisaConsultarModeracao(item.status, item.sub_status) ? {} : { moderacoes: [] }),
     ultimaModificacao: now,
   });
 

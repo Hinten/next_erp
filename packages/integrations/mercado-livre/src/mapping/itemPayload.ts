@@ -57,6 +57,75 @@ export interface ItemPictureRef {
   id: string;
 }
 
+/**
+ * `shipping.mode` on `POST`/`PUT /items`.
+ *
+ * ⚠️ Structural, not imported from `@delfrance/schemas` — this package stays
+ * platform-neutral (same reason as `MedidaReferenceChart` and the incident
+ * adapters). The stored ERP enum is `modoEnvioMercadoLivreSchema`; the bridge
+ * that reads the conta and hands the value down lives in `apps/mercado-livre`.
+ *
+ * `'custom'` is absent on purpose: it carries a `costs[]` table this repo does
+ * not model, and sending the mode without one publishes an empty cost table.
+ */
+export type MlShippingMode = 'me2' | 'me1' | 'not_specified';
+
+/**
+ * The `shipping` node, or nothing.
+ *
+ * ⚠️ Sent on **create AND update**, deliberately unlike `category_id`,
+ * `condition`, `listing_type_id` and `price` around it. ML accepts `shipping`
+ * on a `PUT /items/{id}`, and that is what lets a republish self-heal a listing
+ * already sitting at "a combinar" — the alternative was a one-off backfill
+ * script over every existing item. The accepted cost is that an operator who
+ * changes the mode in ML's own UI loses it to the next ERP republish; the conta
+ * setting is the ERP's declared intent and wins.
+ *
+ * Null/absent emits NO key at all, which is the pre-existing behaviour — so a
+ * conta nobody configured publishes byte-identically to before this field.
+ *
+ * Only `mode` rides. `free_shipping` is deliberately never sent: ML applies
+ * `mandatory_free_shipping` itself above a price threshold and documents that
+ * free shipping cannot be forced through the API, so writing a stored value
+ * would fight an authoritative remote one. `local_pick_up` is an account-level
+ * preference and `free_methods` only means anything when `free_shipping` is
+ * true, so both would be second copies of something we do not own.
+ *
+ * ## ⚠️ The update path is all-or-nothing, and one quadrant is UNVERIFIED
+ *
+ * Because this rides on every `PUT`, a republish whose real intent is a
+ * price/stock/picture edit now also depends on ML accepting a shipping-mode
+ * write. The unverified quadrant is an item **with sales** at `not_specified`
+ * on a conta configured `me2`. If ML refused that, the whole republish 400s
+ * where it used to succeed: one `updateItem` call owns the request
+ * (`publish.ts`), its catch stamps `estado: 'E'`, and `shipping` is absent from
+ * `REFERENCE_FIELDS` (`publishFalhas.ts`) so the cause renders above the form
+ * pinned to no control. The class is real — it is why `family_name` is stripped
+ * on update just below, and why `titleEditability` exists in apps/web.
+ *
+ * It was left unguarded on PURPOSE, on this evidence: ML's documented failure
+ * mode for a shipping-mode write it will not honour is **200 with the change
+ * silently not applied**, not a 4xx. Its own FAQ says so twice for the mirror
+ * case — a `PUT` setting `mode: 'me1'` on an ME2-enabled conta "pode retornar
+ * uma resposta 200 de sucesso sem que a alteração seja efetivamente aplicada",
+ * leaving the item `not_specified`. A silent no-op costs nothing here; a 400
+ * would. Guarding a failure ML appears not to produce would be dead code in the
+ * one file whose header already warns about inventing mechanisms.
+ *
+ * ⚠️ **`POST /items/validate` cannot settle it** — it validates a CREATE body
+ * and knows nothing of an existing item's sales. The check that does: republish
+ * a SOLD `not_specified` listing from a `me2` conta during the #1087 live run.
+ * If it 400s with a `shipping.*` cause, the containment is a bounded one-shot
+ * retry with the key removed, in the `pruneDeadPictures` mould (`publish.ts`) —
+ * degrade to the pre-#1273 body rather than fail the publish.
+ */
+function applyShipping(
+  data: Record<string, unknown>,
+  mode: MlShippingMode | null | undefined,
+): void {
+  if (mode != null) data.shipping = { mode };
+}
+
 export interface ItemVariationInput {
   /** ML variation id — include only when updating an existing variation. */
   mlVariationId?: number | string | null;
@@ -107,6 +176,11 @@ export interface BuildItemPayloadInput {
   attributes?: ReadonlyArray<MlAttribute>;
   /** Legacy-model variations; ignored for User-Products sellers. */
   variations?: ReadonlyArray<ItemVariationInput>;
+  /**
+   * The conta's `shipping.mode`. Null/absent sends no `shipping` node, leaving
+   * ML to apply the account default — see {@link applyShipping}.
+   */
+  shippingMode?: MlShippingMode | null;
 }
 
 export function buildItemPayload(input: BuildItemPayloadInput): Record<string, unknown> {
@@ -167,6 +241,7 @@ export function buildItemPayload(input: BuildItemPayloadInput): Record<string, u
     data.available_quantity = input.availableQuantity;
   }
   if (input.videoId != null) data.video_id = input.videoId;
+  applyShipping(data, input.shippingMode);
 
   if (hasVariations) {
     const parentPictureIds = (input.pictures ?? []).map((p) => p.id);
@@ -236,6 +311,12 @@ export interface BuildUserProductItemPayloadInput {
   pictures?: ReadonlyArray<ItemPictureRef>;
   /** The single variation this item IS. */
   member: ItemVariationInput;
+  /**
+   * The conta's `shipping.mode`, shared by every member of the family — see
+   * {@link applyShipping}. Under User Products each member is its OWN ML item,
+   * so the node has to ride on each one; a family does not carry it centrally.
+   */
+  shippingMode?: MlShippingMode | null;
 }
 
 export function buildUserProductItemPayload(
@@ -301,6 +382,7 @@ export function buildUserProductItemPayload(
   // nothing for ML to derive one from — see `apps/mercado-livre/CLAUDE.md`.
   data.available_quantity = input.member.availableQuantity;
   if (input.videoId != null) data.video_id = input.videoId;
+  applyShipping(data, input.shippingMode);
 
   return data;
 }
@@ -329,6 +411,12 @@ export function userProductMemberInputs(
     videoId: input.videoId,
     attributes: input.attributes,
     pictures: input.pictures,
+    shippingMode: input.shippingMode,
+    // ⚠️ Load-bearing: this is the ONLY thing that puts a `shipping` node on a
+    // User-Products family. `publishUserProductMembers` builds every member from
+    // this projection, so dropping it here would ship single items with a mode
+    // and leave every VARIATION family at "a combinar" — worse than the uniform
+    // bug it replaces, because it looks fixed.
     member,
   }));
 }
