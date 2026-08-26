@@ -122,7 +122,13 @@ export function MelhorEnvioFields({
     return quotes.map((q) => {
       const errored = isErroredOption(q);
       const carrier = `${q.company?.name ?? ''} ${q.name}`.trim();
-      const price = q.custom_price ?? q.price;
+      // ⚠️ Through `parseMePrice` — the SAME reading `onSelectQuote` saves with,
+      // not the raw wire value. Otherwise the two disagree: an option ME priced
+      // in a shape the rule refuses ('1.234,56', 'R$ 37,79', '') would render a
+      // real price here, and selecting it would write 0 into valorCobrado /
+      // custoCalculado / custoFinal with nothing on screen saying so. Rendering
+      // `R$ ?` makes the zero exactly as visible as the fallback claims it is.
+      const price = parseMePrice(q.custom_price ?? q.price);
       const label = errored
         ? `${carrier} — indisponível`
         : `${carrier} — R$ ${price ?? '?'}${q.delivery_time != null ? ` (${q.delivery_time} dia(s))` : ''}`;

@@ -178,10 +178,17 @@ const KNOWN_TOLERANT_LINES = {
     'transaction_amount: wireNumber().nullable().optional(),',
     'marketplace_fee: wireNumber().nullable().optional(),',
   ],
-  // ⚠️ Melhor Envio is the file that mixes DIRECTIONS, so it is the one whose
-  // anchor is really two claims: the response half is tolerant, AND the six
-  // request lines in ALLOWED_STRICT above are still being reached (their
-  // staleness test would go quiet otherwise).
+  // ⚠️ Melhor Envio is the file that mixes DIRECTIONS, and this anchor carries
+  // the one claim nothing else here can: that its RESPONSE half stayed
+  // converted. The staleness test cannot see that — it only ever looks at lines
+  // still spelled `z.number()`.
+  //
+  // Its request half needs no anchor and never did: `present` is keyed by path,
+  // so a pathspec that stops matching this file makes `present.get(path)`
+  // undefined and reports all six carve-outs STALE. Loud, not quiet. (An earlier
+  // revision of this comment claimed the opposite; it was measured and is wrong.
+  // Left corrected rather than deleted, because "it would go quiet otherwise" is
+  // exactly the argument someone would later use to delete this anchor.)
   'packages/integrations/freight-br/src/melhor-envio/types.ts': [
     'expires_in: wireNumber(),',
     'balance: wireNumber().nullable().optional(),',
