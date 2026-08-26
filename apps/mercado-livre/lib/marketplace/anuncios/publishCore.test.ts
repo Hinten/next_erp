@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildItemPayload } from '@delfrance/integrations-mercado-livre';
+import {
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
+  attrBrand,
+  buildItemPayload,
+} from '@delfrance/integrations-mercado-livre';
+import { MARCA_ATTRIBUTE_ID } from '@delfrance/schemas';
 import {
   MercadoLivrePublishError,
   type PublishGrupoVariacao,
@@ -973,5 +979,32 @@ describe('linkAttributesAfterPublish', () => {
   it('drops an id-less attribute, which the link wire schema forbids', () => {
     const out = linkAttributesAfterPublish([{ name: 'Sabor', value_name: 'Uva' }], null);
     expect(out).toEqual([]);
+  });
+});
+
+// ⚠️ `BRAND` is spelled in two packages that CANNOT import each other: the ML
+// package must not depend on `@delfrance/schemas` (its root carries the OAuth
+// core, and `apps/web` reaches schemas), so `attrBrand` and
+// `ML_PRODUTO_HERDADO_ATTRIBUTE_IDS` hold their own literal while
+// `MARCA_ATTRIBUTE_ID` holds the shared one. Nothing in either package can see
+// the disagreement — but this app imports both, so it can.
+//
+// A drift here is silent and total: publish would filter on one id and re-add
+// the other, shipping the attribute twice (once with the operator's stale value)
+// while the produto's Marca never replaced anything.
+describe('the BRAND id agrees across the two packages that cannot import each other', () => {
+  it('is what attrBrand emits', () => {
+    expect(attrBrand('Hering').id).toBe(MARCA_ATTRIBUTE_ID);
+  });
+
+  it('is the herdado list membership', () => {
+    expect(ML_PRODUTO_HERDADO_ATTRIBUTE_IDS).toContain(MARCA_ATTRIBUTE_ID);
+  });
+
+  // The control: the constant is a real id, not an empty string that would make
+  // both assertions above pass against anything.
+  it('is a non-empty id no derived rule also claims', () => {
+    expect(MARCA_ATTRIBUTE_ID.length).toBeGreaterThan(0);
+    expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain(MARCA_ATTRIBUTE_ID);
   });
 });

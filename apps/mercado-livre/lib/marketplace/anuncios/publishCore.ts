@@ -37,6 +37,7 @@ import {
   attrWeightKg,
 } from '@delfrance/integrations-mercado-livre';
 import {
+  MARCA_ATTRIBUTE_ID,
   dimensoesDoPacote,
   marcaArmazenadaDe,
   parseFakePath,
@@ -482,7 +483,13 @@ export function buildParentAttributes(
   const attrs: MlAttribute[] = (link?.attributes ?? []).filter(
     (a) =>
       !(a.id != null && ML_DERIVED_ATTRIBUTE_IDS.has(a.id)) &&
-      !(marcaDoProduto != null && a.id === 'BRAND') &&
+      // ⚠️ The REMOVE half of a remove-then-add pair whose add half is
+      // `attrBrand` below, so it must name the same id that half does — via the
+      // one constant, never a fourth spelling of the literal. It stays
+      // MARCA-specific rather than iterating `ML_HERDADO_ATTRIBUTE_IDS`: a
+      // second herdado id would own its own pair, and removing every herdado id
+      // here while re-adding only the brand would drop the others outright.
+      !(marcaDoProduto != null && a.id === MARCA_ATTRIBUTE_ID) &&
       // A freshly resolved chart REPLACES any stale SIZE_GRID_ID the link doc
       // carries (legacy toMercadoLivre: remove-then-add); with no resolution the
       // link's existing binding is left untouched.
@@ -490,7 +497,7 @@ export function buildParentAttributes(
   );
   if (marcaDoProduto != null) attrs.push(attrBrand(marcaDoProduto));
   if (sizeChartId != null) attrs.push(attrSizeGridId(sizeChartId));
-  if (produto.sku && (options?.includeSku ?? true)) attrs.push(attrSku(produto.sku));
+  if (produto.sku && (options.includeSku ?? true)) attrs.push(attrSku(produto.sku));
   if (produto.pesoLiquidoKg != null) attrs.push(attrWeightKg(produto.pesoLiquidoKg));
   // ⚠️ `dimensoesDoPacote` is the ONE implementation of "which fields, all four
   // or nothing, rounded how" — shared with the produto's Mercado Livre tab,
