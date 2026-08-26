@@ -28,13 +28,19 @@ import {
   type ItemVariationInput,
   type MlAttribute,
   type MlShippingMode,
+  attrBrand,
   attrPackageDimensions,
   attrSizeGridId,
   attrSizeGridRowId,
   attrSku,
   attrWeightKg,
 } from '@delfrance/integrations-mercado-livre';
-import { dimensoesDoPacote, parseFakePath, resolveCondicaoAnuncio } from '@delfrance/schemas';
+import {
+  dimensoesDoPacote,
+  parseFakePath,
+  resolveCondicaoAnuncio,
+  resolveMarcaAnuncio,
+} from '@delfrance/schemas';
 
 import type { ResolvedSizeChart } from '../size-charts/sizeChart';
 
@@ -125,6 +131,12 @@ export interface AssemblePublishArgs {
   produto: PublishProduto;
   /** `extraData.condicao` (1 novo / 2 usado / 3 recondicionado) or null. */
   condicao: number | null;
+  /**
+   * `extraData.marca`, or null when the singleton is absent. Passed beside
+   * `condicao` for the same reason: both live on the extraData singleton rather
+   * than the produto doc, so `toPublishProduto` cannot reach either.
+   */
+  marca: string | null;
   /** Price-list id resolved from the integração's `tabelaNormalOuterRef`. */
   priceListId: string | null;
   /**
@@ -380,8 +392,27 @@ export function buildParentAttributes(
   produto: PublishProduto,
   link: PublishLink | null,
   sizeChartId?: string | null,
-  options?: { includeSku?: boolean },
+  options?: { includeSku?: boolean; marca?: string | null },
 ): MlAttribute[] {
+  // ⚠️ `BRAND` is HERDADO, not derived, so it takes the OPPOSITE default to every
+  // id above: the stored entry is dropped only when the produto actually decided
+  // the value, and otherwise survives verbatim. Rebuilding it through
+  // `attrBrand` on the fallback branch would discard the `value_id` an
+  // enumerated ML brand carries — and dropping it outright, the way a stale
+  // `WEIGHT` is dropped, would publish no brand at all for the many produtos
+  // whose Marca is still empty. See `ML_PRODUTO_HERDADO_ATTRIBUTE_IDS` in
+  // `@delfrance/integrations-mercado-livre`, which carries the full contract.
+  const marcaArmazenada =
+    (link?.attributes ?? []).find((a) => a.id === 'BRAND')?.value_name ?? null;
+  // The SAME call the produto's Mercado Livre tab makes, so the screen and the
+  // payload cannot disagree — the display↔payload trap `resolveCondicaoAnuncio`
+  // and `dimensoesDoPacote` both exist to close.
+  const { marca, fonte } = resolveMarcaAnuncio({
+    marca: options?.marca ?? null,
+    marcaAnuncio: marcaArmazenada,
+  });
+  const marcaDoProduto = fonte === 'extraData' ? marca : null;
+
   // ⚠️ Derived ids are dropped from the STORED list before anything is appended,
   // or a link doc carrying a stale copy ships the attribute twice — once with
   // the operator's old value and once with the produto's. The write-back has
@@ -393,11 +424,13 @@ export function buildParentAttributes(
   const attrs: MlAttribute[] = (link?.attributes ?? []).filter(
     (a) =>
       !(a.id != null && ML_DERIVED_ATTRIBUTE_IDS.has(a.id)) &&
+      !(marcaDoProduto != null && a.id === 'BRAND') &&
       // A freshly resolved chart REPLACES any stale SIZE_GRID_ID the link doc
       // carries (legacy toMercadoLivre: remove-then-add); with no resolution the
       // link's existing binding is left untouched.
       !(sizeChartId != null && a.id === 'SIZE_GRID_ID'),
   );
+  if (marcaDoProduto != null) attrs.push(attrBrand(marcaDoProduto));
   if (sizeChartId != null) attrs.push(attrSizeGridId(sizeChartId));
   if (produto.sku && (options?.includeSku ?? true)) attrs.push(attrSku(produto.sku));
   if (produto.pesoLiquidoKg != null) attrs.push(attrWeightKg(produto.pesoLiquidoKg));
@@ -729,6 +762,7 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
     pictures: args.pictures,
     videoId: args.link?.video_id ?? null,
     attributes: buildParentAttributes(args.produto, args.link, args.sizeChart?.chartId ?? null, {
+      marca: args.marca,
       // Mirrors buildItemPayload's own `hasVariations`, which is
       // `!isUserProductSeller && variations.length > 0` — a UP seller emits no
       // variations array, so its parent SKU is the only one there is.

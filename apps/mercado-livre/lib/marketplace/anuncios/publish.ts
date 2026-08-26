@@ -253,6 +253,9 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 
   const pubProduto = toPublishProduto(produtoId, produto);
   const condicao = typeof extra?.condicao === 'number' ? extra.condicao : null;
+  // Same singleton, same read — `buildParentAttributes` turns this into the
+  // listing's `BRAND`, falling back to whatever the link doc already stores.
+  const marca = typeof extra?.marca === 'string' ? extra.marca : null;
 
   /**
    * Write the fields publish OWNS onto the link doc, and nothing else.
@@ -513,6 +516,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const input = assemblePublishInput({
     produto: pubProduto,
     condicao,
+    marca,
     priceListId,
     priceListNome,
     availableQuantity,

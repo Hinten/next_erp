@@ -57,6 +57,45 @@ export function resolveCondicaoAnuncio(input: {
   return { condition: input.condicaoAnuncio ?? 'new', fonte: 'anuncio' };
 }
 
+/** Which input decided a listing's brand — so a screen can name it. */
+export type FonteMarcaAnuncio = 'extraData' | 'anuncio';
+
+/**
+ * The brand a marketplace listing publishes with, and WHICH field decided it.
+ *
+ * ⚠️ Shared for the same reason {@link resolveCondicaoAnuncio} is, and modelled
+ * on it: `apps/mercado-livre` builds the `BRAND` attribute of an item payload,
+ * and the produto's Mercado Livre tab shows the operator what that attribute
+ * will say. Two copies of one answer — one a screen, one a wire value — is
+ * exactly the pair that disagrees unnoticed.
+ *
+ * The precedence is the produto's, then the listing's: a non-blank
+ * `extraData.marca` wins, and the `BRAND` already stored on the link doc is the
+ * fallback.
+ *
+ * ⚠️ That fallback tier is NOT symmetric with the package dimensions, which have
+ * none, and the asymmetry is deliberate. `BRAND` is `required` in most Mercado
+ * Livre categories and was operator-typed for this app's whole history, so for a
+ * produto with an empty Marca the stored value is the ONLY copy that exists.
+ * Discarding it the way `ML_PRODUTO_DERIVED_ATTRIBUTE_IDS` discards a stale
+ * `WEIGHT` would make the existing catalogue unpublishable.
+ */
+export function resolveMarcaAnuncio(input: {
+  /** `extraData.marca`; null when the singleton has not loaded or is absent. */
+  marca: string | null;
+  /** The `BRAND` value_name the link doc currently stores, if anything. */
+  marcaAnuncio?: string | null;
+}): { marca: string | null; fonte: FonteMarcaAnuncio | null } {
+  // Blank-as-absent on BOTH tiers: a whitespace-only marca must fall through to
+  // the listing rather than blank out a real stored brand, and a whitespace-only
+  // stored value must not read as "the listing has a brand".
+  const doProduto = input.marca?.trim();
+  if (doProduto) return { marca: doProduto, fonte: 'extraData' };
+  const doAnuncio = input.marcaAnuncio?.trim();
+  if (doAnuncio) return { marca: doAnuncio, fonte: 'anuncio' };
+  return { marca: null, fonte: null };
+}
+
 /** Google Shopping `age_group` (string enum). */
 export const googleAgeGroupSchema = z.enum(['newborn', 'infant', 'toddler', 'kids', 'adult']);
 export type GoogleAgeGroup = z.infer<typeof googleAgeGroupSchema>;

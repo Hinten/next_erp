@@ -190,6 +190,16 @@ export function MercadoLivreEditor({
   // null while loading, so the derivation falls through to the next tier rather
   // than asserting "novo" for a beat and flipping.
   const produtoCondicao = extraDataSnap.data?.data.condicao ?? null;
+  // `extraData.marca` is the FIRST input publish resolves the listing's `BRAND`
+  // from (`resolveMarcaAnuncio`), with the link's stored `BRAND` behind it.
+  //
+  // ⚠️ The two empties are NOT the same, and this is the one field where it
+  // shows. `null` means the singleton has not landed — the comment on
+  // `carregandoGeral` below is explicit that extraData resolves AFTER the first
+  // render — while `''` means it landed and Marca is genuinely blank. Only the
+  // second may raise "Falta preencher"; collapsing them flashes that warning on
+  // every open, which is the `produtoMedidas` lesson above verbatim.
+  const produtoMarca = extraDataSnap.loading ? null : (extraDataSnap.data?.data.marca ?? '');
 
   /**
    * The publish in flight, if any.
@@ -731,7 +741,8 @@ export function MercadoLivreEditor({
    * `contasSnap`/`linksSnap` are absent on purpose — the early return below
    * means we never render at all while those two load. These three do not stop
    * a render: the produto doc (`fotos`/`nome`/`ehUsado`), its extraData
-   * (`condicao`, the second input to `resolveCondicaoAnuncio`) and the tenant
+   * (`condicao` for `resolveCondicaoAnuncio`, `marca` for `resolveMarcaAnuncio`)
+   * and the tenant
    * claims all resolve AFTER the buttons are on screen, which is the window a
    * publish could previously be fired in.
    */
@@ -878,6 +889,7 @@ export function MercadoLivreEditor({
                   produtoEhUsado={produtoEhUsado}
                   produtoCondicao={produtoCondicao}
                   produtoMedidas={produtoMedidas}
+                  produtoMarca={produtoMarca}
                   produtoFotoCount={produtoFotoCount}
                   produtoDirty={produtoDirty}
                   carregandoGeral={carregandoGeral}

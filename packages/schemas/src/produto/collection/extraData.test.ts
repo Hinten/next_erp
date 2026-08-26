@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CONDICAO_PRODUTO, resolveCondicaoAnuncio } from './extraData';
+import { CONDICAO_PRODUTO, resolveCondicaoAnuncio, resolveMarcaAnuncio } from './extraData';
 
 describe('resolveCondicaoAnuncio', () => {
   it('lets the produto win, because "used" is a fact about the product', () => {
@@ -73,5 +73,50 @@ describe('resolveCondicaoAnuncio', () => {
     expect(
       resolveCondicaoAnuncio({ ehUsado: false, condicao: null, condicaoAnuncio: 'used' }).condition,
     ).toBe('used');
+  });
+});
+
+describe('resolveMarcaAnuncio', () => {
+  it('lets the produto win, because a brand is a fact about the product', () => {
+    expect(resolveMarcaAnuncio({ marca: 'Hering', marcaAnuncio: 'Nike' })).toEqual({
+      marca: 'Hering',
+      fonte: 'extraData',
+    });
+  });
+
+  // ⚠️ The tier `resolveCondicaoAnuncio` has and `dimensoesDoPacote` does NOT,
+  // and the reason `BRAND` is `herdado` rather than `derivado`: it was
+  // operator-typed for this app's whole history, so for a produto with no Marca
+  // the value stored on the listing is the only copy that exists anywhere.
+  it('falls back to the brand already stored on the listing', () => {
+    expect(resolveMarcaAnuncio({ marca: null, marcaAnuncio: 'Nike' })).toEqual({
+      marca: 'Nike',
+      fonte: 'anuncio',
+    });
+  });
+
+  it('reports no source at all when neither tier has a value', () => {
+    expect(resolveMarcaAnuncio({ marca: null })).toEqual({ marca: null, fonte: null });
+  });
+
+  it('trims, so no stray space reaches the wire or the screen', () => {
+    expect(resolveMarcaAnuncio({ marca: '  Hering  ' }).marca).toBe('Hering');
+    expect(resolveMarcaAnuncio({ marca: null, marcaAnuncio: ' Nike ' }).marca).toBe('Nike');
+  });
+
+  // The dangerous direction: reading '   ' as a real value would overwrite a
+  // genuine stored brand with spaces on the very next publish.
+  it('treats a whitespace-only marca as absent instead of blanking the listing', () => {
+    expect(resolveMarcaAnuncio({ marca: '   ', marcaAnuncio: 'Nike' })).toEqual({
+      marca: 'Nike',
+      fonte: 'anuncio',
+    });
+  });
+
+  it('treats a whitespace-only stored value as absent too', () => {
+    expect(resolveMarcaAnuncio({ marca: null, marcaAnuncio: '  ' })).toEqual({
+      marca: null,
+      fonte: null,
+    });
   });
 });

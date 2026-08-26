@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
   type MlCategoryAttribute,
 } from '@delfrance/integrations-mercado-livre';
 
@@ -39,6 +40,29 @@ describe('attributeOmission', () => {
       'derivado',
     );
     expect(attributeOmission(attr({ id: 'SELLER_PACKAGE_HEIGHT' }), 'item')).toBe('derivado');
+  });
+
+  // ⚠️ Same untagged-fixture rule, and here it is not merely prudent: ML does
+  // not tag BRAND `hidden` in ANY category — it is `required` in most of them —
+  // so an omission leaning on that tag would never fire for this id at all.
+  it('withholds BRAND as herdado, never as derivado', () => {
+    expect(attributeOmission(attr({ id: 'BRAND' }), 'item')).toBe('herdado');
+    expect(attributeOmission(attr({ id: 'BRAND' }), 'variacao')).toBe('herdado');
+    // ⚠️ The verdicts must not converge. apps/web prunes a `derivado` id's
+    // stored value on the next save, and for BRAND that stored value is exactly
+    // what publish falls back to when the produto has no Marca.
+    expect(attributeOmission(attr({ id: 'BRAND' }), 'item')).not.toBe('derivado');
+    for (const id of ML_PRODUTO_HERDADO_ATTRIBUTE_IDS) {
+      expect(attributeOmission(attr({ id }), 'item')).toBe('herdado');
+    }
+  });
+
+  // Being ML-required is BRAND's normal state and changes nothing here: the
+  // value is not missing, it just lives on the produto.
+  it('withholds BRAND even where the category marks it required', () => {
+    expect(attributeOmission(attr({ id: 'BRAND', tags: { required: true } }), 'item')).toBe(
+      'herdado',
+    );
   });
 
   // The two spellings are different ML attributes and must not converge:
@@ -107,15 +131,20 @@ describe('isAttributeRequired', () => {
 });
 
 describe('projectCategoriaAtributos', () => {
+  // ⚠️ The fixture must be an id the projection actually RENDERS. This was
+  // `BRAND` — a fine stand-in for "an ordinary required attribute" until BRAND
+  // became `herdado` and stopped reaching `atributos` at all, at which point the
+  // assertion read `undefined` and told you nothing about the normalisation it
+  // is here to check. `MODEL` is withheld by no rule.
   it('normalises the fields the editor renders', () => {
     const { atributos } = projectCategoriaAtributos(
       [
         attr({
-          id: 'BRAND',
-          name: 'Marca',
+          id: 'MODEL',
+          name: 'Modelo',
           value_type: 'string',
           values: [{ id: 'v1', name: 'Acme' }],
-          tooltip: 'A marca do produto',
+          tooltip: 'O modelo do produto',
           value_max_length: 60,
           attribute_group_id: 'MAIN',
           attribute_group_name: 'Principais',
@@ -125,11 +154,11 @@ describe('projectCategoriaAtributos', () => {
       'item',
     );
     expect(atributos[0]).toEqual({
-      id: 'BRAND',
-      name: 'Marca',
+      id: 'MODEL',
+      name: 'Modelo',
       valueType: 'string',
       values: [{ id: 'v1', name: 'Acme' }],
-      hint: 'A marca do produto',
+      hint: 'O modelo do produto',
       valueMaxLength: 60,
       defaultUnit: null,
       allowedUnits: [],
@@ -234,6 +263,19 @@ describe('projectCategoriaAtributos', () => {
       'item',
     );
     expect(omitidos.map((o) => o.id).sort()).toEqual([...ML_PRODUTO_DERIVED_ATTRIBUTE_IDS].sort());
+  });
+
+  // ⚠️ The reason has to REACH apps/web, because that is where the difference
+  // between the two verdicts is spent: `attributesForSave` prunes a `derivado`
+  // id's stored value and must keep a `herdado` one. An omission that arrived
+  // with the wrong `motivo` — or with none — deletes the brand on the next save.
+  it('reports BRAND in omitidos as herdado, so the save knows not to prune it', () => {
+    const { atributos, omitidos } = projectCategoriaAtributos(
+      [attr({ id: 'BRAND', tags: { required: true } }), attr({ id: 'VISIVEL' })],
+      'item',
+    );
+    expect(atributos.map((a) => a.id)).toEqual(['VISIVEL']);
+    expect(omitidos).toEqual([{ id: 'BRAND', motivo: 'herdado' }]);
   });
 });
 

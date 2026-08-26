@@ -49,6 +49,11 @@ beforeEach(() => {
   h.getCategory.mockResolvedValue({ id: 'MLB31447', children_categories: [] });
   h.getCategoryAttributes.mockResolvedValue([
     { id: 'BRAND', name: 'Marca', value_type: 'string', tags: { required: true } },
+    // A required attribute that IS editable, so the required-first ordering
+    // below still has two rows to order. BRAND used to play that part and no
+    // longer reaches `atributos` at all — it is `herdado`, filled from the
+    // produto's Marca.
+    { id: 'MATERIAL', name: 'Material', value_type: 'string', tags: { required: true } },
     { id: 'MODEL', name: 'Modelo', value_type: 'string', relevance: 2 },
     { id: 'SELLER_SKU', name: 'SKU', value_type: 'string' },
     { id: 'ESCONDIDO', name: 'Oculto', value_type: 'string', tags: { hidden: true } },
@@ -81,9 +86,13 @@ describe('GET /api/marketplace/mercado-livre/categorias/atributos', () => {
       omitidos: Array<{ id: string; motivo: string }>;
     };
     expect(body.leaf).toBe(true);
-    expect(body.atributos.map((a) => a.id)).toEqual(['BRAND', 'MODEL']);
+    expect(body.atributos.map((a) => a.id)).toEqual(['MATERIAL', 'MODEL']);
     expect(body.atributos[0]!.required).toBe(true);
+    // ⚠️ `herdado` has to survive the ROUTE, not just the projection: apps/web
+    // reads this `motivo` to decide whether a stored value may be pruned on
+    // save, and for BRAND pruning it deletes the brand.
     expect(body.omitidos).toEqual([
+      { id: 'BRAND', motivo: 'herdado' },
       { id: 'SELLER_SKU', motivo: 'derivado' },
       { id: 'ESCONDIDO', motivo: 'oculto' },
       { id: 'SIZE_GRID_ID', motivo: 'tabela-de-medidas' },

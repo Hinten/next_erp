@@ -587,6 +587,55 @@ describe('attributesForSave', () => {
     expect(out).toEqual([]);
   });
 
+  // ⚠️ THE regression the `herdado` reason exists to prevent, and it fires on a
+  // save the operator did not think touched the brand at all. `BRAND` is
+  // withheld from the grid just like a derived id — note it is absent from
+  // `attrs` here, exactly as the server now returns it — but publish FALLS BACK
+  // to this stored value whenever the produto has no Marca. Pruning it deletes
+  // the brand outright, for most of the catalogue, on the next save of any
+  // unrelated field.
+  it('PRESERVES a herdado stored value while still pruning a derivado one', () => {
+    const out = attributesForSave(
+      [attr({ id: 'MODEL' })],
+      [{ id: 'MODEL', value_id: null, value_name: 'X', unit_id: null }],
+      [
+        { id: 'BRAND', value_id: '9999', value_name: 'Acme' },
+        { id: 'SELLER_SKU', value_name: 'SKU-1' },
+      ],
+      [
+        { id: 'BRAND', motivo: 'herdado' },
+        { id: 'SELLER_SKU', motivo: 'derivado' },
+      ],
+    );
+    // Verbatim, `value_id` and all: an enumerated ML brand carries one, and
+    // nothing downstream could reconstruct it from the name.
+    expect(out).toContainEqual({ id: 'BRAND', value_id: '9999', value_name: 'Acme' });
+    expect(out.some((a) => a.id === 'SELLER_SKU')).toBe(false);
+  });
+
+  // Prune-by-default is the behaviour that has always held and only `herdado` is
+  // carved out of it — a caller that sends no reason must not opt every withheld
+  // id into preservation, which would resurrect the stale copies #799 removed.
+  it('still prunes a withheld id when no reason is given', () => {
+    const out = attributesForSave(
+      [],
+      [],
+      [{ id: 'SELLER_SKU', value_name: 'SKU-1' }],
+      [{ id: 'SELLER_SKU' }],
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('prunes a withheld id whose reason is anything other than herdado', () => {
+    const out = attributesForSave(
+      [],
+      [],
+      [{ id: 'ESCONDIDO', value_name: 'x' }],
+      [{ id: 'ESCONDIDO', motivo: 'oculto' }],
+    );
+    expect(out).toEqual([]);
+  });
+
   it('drops a rendered-but-empty row instead of storing a blank', () => {
     const out = attributesForSave(
       [brand, attr({ id: 'MODEL' })],

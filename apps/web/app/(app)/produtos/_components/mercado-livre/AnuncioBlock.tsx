@@ -32,6 +32,8 @@ export interface AnuncioBlockProps {
   produtoEhUsado: boolean;
   produtoCondicao: number | null;
   produtoMedidas: MedidasDoPacote | null;
+  /** `extraData.marca` — same tier as `produtoCondicao`; null while it loads. */
+  produtoMarca: string | null;
   /** `null` while the produto doc is still loading — NOT 0. */
   produtoFotoCount: number | null;
   canWrite: boolean;
@@ -90,6 +92,7 @@ export function AnuncioBlock({
   produtoEhUsado,
   produtoCondicao,
   produtoMedidas,
+  produtoMarca,
   produtoFotoCount,
   canWrite,
   hasClient,
@@ -159,6 +162,7 @@ export function AnuncioBlock({
         produtoEhUsado={produtoEhUsado}
         produtoCondicao={produtoCondicao}
         produtoMedidas={produtoMedidas}
+        produtoMarca={produtoMarca}
         link={link}
         db={db}
         canWrite={canWrite}

@@ -298,6 +298,69 @@ describe('buildParentAttributes', () => {
     });
     expect(attrs.map((a) => a.id)).toEqual(['WEIGHT']);
   });
+
+  // ---- BRAND: herdado, not derived -------------------------------------
+  // The produto decides when it has a Marca; otherwise the listing's own stored
+  // brand stands. Both halves matter and they fail in opposite directions.
+
+  it("replaces a stored BRAND with the produto's Marca", () => {
+    const attrs = buildParentAttributes(
+      produto,
+      {
+        docId: 'l',
+        id: null,
+        attributes: [{ id: 'BRAND', value_id: '9999', value_name: 'Acme' }],
+      },
+      null,
+      { marca: 'Hering' },
+    );
+    expect(attrs.filter((a) => a.id === 'BRAND')).toEqual([{ id: 'BRAND', value_name: 'Hering' }]);
+    expect(attrs.map((a) => a.id)).toEqual([
+      'BRAND',
+      'SELLER_SKU',
+      'WEIGHT',
+      'SELLER_PACKAGE_HEIGHT',
+      'SELLER_PACKAGE_LENGTH',
+      'SELLER_PACKAGE_WIDTH',
+      'SELLER_PACKAGE_WEIGHT',
+    ]);
+  });
+
+  // ⚠️ THE regression this whole design exists to prevent. Treating BRAND like a
+  // derived id would drop this entry and publish nothing in its place — for
+  // every produto whose Marca is still empty, which today is most of them. The
+  // `value_id` assertion is the second half: an enumerated ML brand carries one,
+  // and rebuilding the entry through `attrBrand` would silently discard it.
+  it('keeps a stored BRAND verbatim, value_id and all, when the produto has no Marca', () => {
+    const armazenada = { id: 'BRAND', value_id: '9999', value_name: 'Acme' };
+    const attrs = buildParentAttributes(
+      produto,
+      { docId: 'l', id: null, attributes: [armazenada] },
+      null,
+      { marca: null },
+    );
+    expect(attrs.filter((a) => a.id === 'BRAND')).toEqual([armazenada]);
+  });
+
+  it('reads a whitespace-only Marca as absent rather than blanking the stored brand', () => {
+    const attrs = buildParentAttributes(
+      produto,
+      { docId: 'l', id: null, attributes: [{ id: 'BRAND', value_name: 'Acme' }] },
+      null,
+      { marca: '   ' },
+    );
+    expect(attrs.find((a) => a.id === 'BRAND')?.value_name).toBe('Acme');
+  });
+
+  it('trims the produto Marca on the way to the wire', () => {
+    const attrs = buildParentAttributes(produto, null, null, { marca: '  Hering  ' });
+    expect(attrs.find((a) => a.id === 'BRAND')?.value_name).toBe('Hering');
+  });
+
+  it('emits no BRAND at all when neither the produto nor the listing has one', () => {
+    const attrs = buildParentAttributes(produto, null, null, { marca: null });
+    expect(attrs.some((a) => a.id === 'BRAND')).toBe(false);
+  });
 });
 
 describe('combinationsFromVariacoes', () => {
@@ -425,6 +488,7 @@ describe('assemblePublishInput', () => {
   const baseArgs = {
     produto,
     condicao: 1,
+    marca: null,
     priceListId: 'lista-1',
     priceListNome: null,
     availableQuantity: 10,

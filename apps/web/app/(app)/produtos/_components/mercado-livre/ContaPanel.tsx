@@ -51,6 +51,8 @@ export interface ContaPanelProps {
   produtoEhUsado: boolean;
   produtoCondicao: number | null;
   produtoMedidas: MedidasDoPacote | null;
+  /** `extraData.marca` — same tier as `produtoCondicao`; null while it loads. */
+  produtoMarca: string | null;
   produtoFotoCount: number | null;
   /** The surrounding produto form holds unsaved edits. */
   produtoDirty: boolean;
@@ -103,6 +105,7 @@ export function ContaPanel({
   produtoEhUsado,
   produtoCondicao,
   produtoMedidas,
+  produtoMarca,
   produtoFotoCount,
   produtoDirty,
   carregandoGeral,
@@ -243,6 +246,7 @@ export function ContaPanel({
               produtoEhUsado={produtoEhUsado}
               produtoCondicao={produtoCondicao}
               produtoMedidas={produtoMedidas}
+              produtoMarca={produtoMarca}
               produtoFotoCount={produtoFotoCount}
               canWrite={canPublish}
               hasClient={hasClient}

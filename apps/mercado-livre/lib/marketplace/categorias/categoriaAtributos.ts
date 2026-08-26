@@ -15,6 +15,7 @@
  */
 import {
   ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
   type MlCategoryAttribute,
   attrTag,
 } from '@delfrance/integrations-mercado-livre';
@@ -37,6 +38,9 @@ import {
  * it just lives on the produto. This list carried `SELLER_SKU` and the
  * *`PACKAGE_*`* spelling and claimed to cover the dimensions; it never did, since
  * publish derives `SELLER_PACKAGE_*`.
+ *
+ * ⚠️ `BRAND` is not here either, and must not be moved here: it is `herdado`, and
+ * its stored value is one publish deliberately keeps.
  */
 export const ML_BLOCKED_ATTRIBUTE_IDS: readonly string[] = [
   'MAIN_COLOR',
@@ -59,9 +63,19 @@ const SIZE_CHART_VALUE_TYPES: readonly string[] = ['grid_id', 'grid_row_id'];
 
 export type MlAttributeScope = 'item' | 'variacao';
 
-/** Why an attribute was withheld — surfaced so the UI can explain a gap. */
+/**
+ * Why an attribute was withheld — surfaced so the UI can explain a gap.
+ *
+ * ⚠️ `derivado` and `herdado` differ in what the SAVE may do with a value already
+ * stored on the link doc, not in what the screen shows. Both are produto-filled
+ * and neither is offered as an input, but a `derivado` id's stored copy is a
+ * stale duplicate of something the produto still holds, so `attributesForSave`
+ * prunes it — while a `herdado` id's stored copy IS the fallback and must
+ * survive. Collapsing the two erases every brand the operators have typed.
+ */
 export type MlAttributeOmission =
   | 'derivado'
+  | 'herdado'
   | 'bloqueado'
   | 'oculto'
   | 'tabela-de-medidas'
@@ -124,12 +138,18 @@ export function isAttributeRequired(attr: MlCategoryAttribute): boolean {
  * the write-back then deleted what they typed — a duplicated attribute on the
  * wire and an edit that silently vanished. The reason is also the UI's cue to
  * show the produto's value instead of nothing, which `oculto` must not do.
+ *
+ * ⚠️ `herdado` sits directly beneath it, above `bloqueado`/`oculto`, for that same
+ * reason — and is a separate verdict for a different one: publish leaves a stored
+ * `BRAND` alone rather than overwriting it, so the save must not prune it. See
+ * {@link MlAttributeOmission}.
  */
 export function attributeOmission(
   attr: MlCategoryAttribute,
   scope: MlAttributeScope,
 ): MlAttributeOmission | null {
   if (ML_PRODUTO_DERIVED_ATTRIBUTE_IDS.includes(attr.id)) return 'derivado';
+  if (ML_PRODUTO_HERDADO_ATTRIBUTE_IDS.includes(attr.id)) return 'herdado';
   if (ML_BLOCKED_ATTRIBUTE_IDS.includes(attr.id)) return 'bloqueado';
   if (attrTag(attr, 'hidden')) return 'oculto';
   if (attr.value_type != null && SIZE_CHART_VALUE_TYPES.includes(attr.value_type)) {
