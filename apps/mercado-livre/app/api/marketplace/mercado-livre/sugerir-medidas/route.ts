@@ -393,6 +393,13 @@ function parseColumns(raw: unknown): MedidaColumnSpec[] | null {
       values,
       unitId: typeof c.unitId === 'string' && c.unitId !== '' ? c.unitId : null,
       required: c.required === true,
+      // ⚠️ Must be parsed, not ignored. It is what tells the schema and the
+      // prompt that this column is a size correspondence rather than a
+      // measurement; drop it here and the browser's flag never reaches the
+      // model, which then obeys "never invent" and leaves ML's one required
+      // column empty. An older browser simply omits it — `false` is today's
+      // behaviour, so the degradation is silent in the safe direction.
+      sizeEquivalence: c.sizeEquivalence === true,
     });
   }
   return out;

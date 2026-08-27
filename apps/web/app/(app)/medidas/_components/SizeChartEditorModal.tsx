@@ -34,6 +34,7 @@ import {
   type ChartRowDraft,
   duplicateChart,
   indexCellErrors,
+  prefillSizeEquivalence,
   rowsFromVariantes,
   seedRows,
   seedUnits,
@@ -333,19 +334,36 @@ export function SizeChartEditorModal({
     setSeededFrom(seedKey);
     setUnits(seedUnits(allColumns, chart));
     setRows(
-      chart != null
-        ? seedRows(chart, allColumns)
-        : grupo
-          ? rowsFromVariantes(grupo.grupoId, grupo.variantes, effectiveMainId)
-          : [],
+      // The equivalence pass runs LAST and only ever fills an empty cell, so a
+      // stored answer always wins over the name match. See
+      // `prefillSizeEquivalence`.
+      prefillSizeEquivalence(
+        chart != null
+          ? seedRows(chart, allColumns)
+          : grupo
+            ? rowsFromVariantes(grupo.grupoId, grupo.variantes, effectiveMainId)
+            : [],
+        allColumns,
+        effectiveMainId,
+      ),
     );
   }
 
   /* -------------------------------- errors ------------------------------- */
 
+  /**
+   * The attribute ids the grid actually DRAWS — `columns`, not `allColumns`,
+   * because a column the operator collapsed has no cell to carry a message
+   * either. An error naming anything outside this set falls back to the
+   * chart-level alert instead of vanishing into a key nobody reads.
+   */
+  const renderedAttributeIds = useMemo(
+    () => new Set(columns.flatMap((c) => c.parts.map((p) => p.attributeId))),
+    [columns],
+  );
   const errors = useMemo(
-    () => indexCellErrors(validationErrors, errorChartIndex),
-    [validationErrors, errorChartIndex],
+    () => indexCellErrors(validationErrors, errorChartIndex, renderedAttributeIds),
+    [validationErrors, errorChartIndex, renderedAttributeIds],
   );
   const nameError = nome.trim().length === 0 ? null : validateChartName(nome);
 
@@ -442,7 +460,11 @@ export function SizeChartEditorModal({
       return {
         value_id: null,
         value_name: null,
-        valueList: [{ id: s.value_id ?? '', name: s.value_name }],
+        // ⚠️ The suggestion's OWN list when it has one. A size-equivalence cell
+        // maps one row onto several standard sizes, and rebuilding a
+        // single-member list from `value_id` here would throw all but the first
+        // away while the review modal had shown the operator every one.
+        valueList: s.valueList ?? [{ id: s.value_id ?? '', name: s.value_name }],
       };
     }
     return { value_id: s.value_id, value_name: s.value_name, valueList: null };
@@ -455,9 +477,19 @@ export function SizeChartEditorModal({
    * not match to an option would land as a visibly EMPTY cell that nonetheless
    * ships to ML. Offering it would be worse than dropping it: the operator ticks
    * a row, sees nothing change, and only finds out at send time.
+   *
+   * ⚠️ A `multiselect` fails the same way and was NOT covered: its widget looks
+   * every member up by id in the option list, so an unmatched value applied as
+   * `{id: '', …}` renders as an empty box and still reaches ML. Both closed-list
+   * kinds need a resolved id — the difference is only where it lives.
    */
   function aiApplicable(s: MercadoLivreMedidasSugestao['sugestoes'][number]): boolean {
-    return partKindById.get(s.attributeId) !== 'select' || s.value_id != null;
+    const kind = partKindById.get(s.attributeId);
+    if (kind === 'select') return s.value_id != null;
+    if (kind === 'multiselect') {
+      return (s.valueList ?? []).some((v) => v.id !== '') || s.value_id != null;
+    }
+    return true;
   }
 
   /** Write the accepted cells in, reusing the same path a typed edit takes. */

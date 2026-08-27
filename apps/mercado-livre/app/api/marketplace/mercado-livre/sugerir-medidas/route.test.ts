@@ -144,6 +144,31 @@ describe('POST /sugerir-medidas — body validation', () => {
     expect((await POST(req({ ...ok, columns: [{ ...COLUMNS[0], values }] }))).status).toBe(400);
   });
 
+  it('carries `sizeEquivalence` through to the agent', async () => {
+    // ⚠️ A field this parser ignores is a field the model never sees. It is what
+    // tells the schema and the prompt that the column is a size correspondence
+    // rather than a measurement — drop it and the agent obeys "never invent" and
+    // leaves ML's one required column empty, which is the whole bug.
+    await POST(
+      req({
+        ...ok,
+        columns: [
+          { ...COLUMNS[0], attributeId: 'FILTRABLE_SIZE', kind: 'select', sizeEquivalence: true },
+        ],
+      }),
+    );
+    expect(h.suggest.mock.calls[0]?.[1]?.columns?.[0]).toMatchObject({
+      attributeId: 'FILTRABLE_SIZE',
+      sizeEquivalence: true,
+    });
+  });
+
+  it('defaults `sizeEquivalence` to false when an older client omits it', async () => {
+    // The degradation has to be silent in the SAFE direction: today's behaviour.
+    await POST(req(ok));
+    expect(h.suggest.mock.calls[0]?.[1]?.columns?.[0]?.sizeEquivalence).toBe(false);
+  });
+
   it('declines an EMPTY grid with 422 instead of spending a call', async () => {
     const res = await POST(req({ ...ok, rows: [] }));
     expect(res.status).toBe(422);

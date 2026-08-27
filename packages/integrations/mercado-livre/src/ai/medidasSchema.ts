@@ -59,6 +59,20 @@ export interface MedidaColumnSpec {
   unitId: string | null;
   /** ML rejects a row missing this column. */
   required: boolean;
+  /**
+   * ML's size-EQUIVALENCE column (`FILTRABLE_SIZE`, and its per-domain
+   * spellings): which standard Mercado Livre size(s) this row corresponds to.
+   *
+   * ⚠️ It is the one column in the grid that is **not** transcribed. Every other
+   * cell is read off the supplier's photo, and the system instruction is written
+   * to keep it that way — "OMITA qualquer medida que você não conseguir
+   * determinar", "NUNCA invente, estime, interpole ou extrapole". An equivalence
+   * is *derived* from the row's own size label and measurements, so under those
+   * rules alone a model correctly answers nothing at all. {@link describe} is
+   * what carves it out, and it lives there rather than only in the instruction
+   * because the instruction is overridable per-install and the schema is not.
+   */
+  sizeEquivalence?: boolean;
 }
 
 /** One grid row, identified by the editor and labelled by its main attribute. */
@@ -179,9 +193,29 @@ export function buildMedidasSchema(
   };
 }
 
+/**
+ * One cell's node.
+ *
+ * A `multiselect` column answers with an ARRAY. ML tags its equivalence
+ * attribute `multivalued` on apparel domains and means it: their own docs map
+ * one row ("Small") onto four standard sizes (34, 36, 38, 40), and that set is
+ * what the listing's size filter is built from — collapsing it to one value
+ * narrows who can find the anúncio. Every other column stays a scalar.
+ *
+ * ⚠️ Still no `required`, no `nullable`, no `anyOf`, and no `minItems`: omitting
+ * the property has to stay the cheapest way for a model to decline.
+ */
 function buildCell(column: MedidaColumnSpec, maxEnumValues: number): JsonSchemaNode {
-  const node: JsonSchemaNode = { type: 'string', description: describe(column) };
+  const description = describe(column);
   const options = enumMembers(column, maxEnumValues);
+
+  if (column.kind === 'multiselect') {
+    const item: JsonSchemaNode = { type: 'string' };
+    if (options != null) item.enum = options;
+    return { type: 'array', description, items: item };
+  }
+
+  const node: JsonSchemaNode = { type: 'string', description };
   if (options != null) node.enum = options;
   return node;
 }
@@ -218,6 +252,20 @@ function enumMembers(column: MedidaColumnSpec, maxEnumValues: number): string[] 
 
 function describe(column: MedidaColumnSpec): string {
   const parts: string[] = [column.label];
+  // ⚠️ FIRST, and it REPLACES the measurement wording rather than adding to it.
+  // This column is a size-system correspondence, not something printed on the
+  // supplier's sheet — see `MedidaColumnSpec.sizeEquivalence`. Without this the
+  // "never invent, omit what you cannot read" rules apply to it verbatim and the
+  // model leaves the one column ML refuses the guia over empty.
+  if (column.sizeEquivalence === true) {
+    parts.push(
+      column.kind === 'multiselect'
+        ? 'Equivalência de tamanho: quais tamanhos padrão do Mercado Livre correspondem a este tamanho. NÃO é uma medida da tabela — deduza a partir do nome do tamanho e das medidas desta linha, e informe todos os tamanhos padrão que este tamanho cobre.'
+        : 'Equivalência de tamanho: qual tamanho padrão do Mercado Livre corresponde a este tamanho. NÃO é uma medida da tabela — deduza a partir do nome do tamanho e das medidas desta linha.',
+    );
+    if (column.required) parts.push('Obrigatório no Mercado Livre.');
+    return parts.join(' — ');
+  }
   if (column.kind === 'number') {
     // ⚠️ Naming the unit and forbidding conversion in the same breath. A size
     // table printed in centimetres against a chart configured in inches is the

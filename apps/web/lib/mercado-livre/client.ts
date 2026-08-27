@@ -665,6 +665,12 @@ export interface MercadoLivreMedidaColumn {
   values: Array<{ id: string; name: string }>;
   unitId: string | null;
   required: boolean;
+  /**
+   * ML's size-equivalence column (`FILTRABLE_SIZE`): which standard Mercado
+   * Livre size(s) the row corresponds to. The only column in the grid the model
+   * DERIVES rather than transcribes, and the flag is what tells it so.
+   */
+  sizeEquivalence: boolean;
 }
 
 /** One suggested cell. `value_id` is set only for a closed-list match. */
@@ -673,6 +679,12 @@ export interface MercadoLivreMedidaSugestao {
   attributeId: string;
   value_id: string | null;
   value_name: string;
+  /**
+   * Every matched option for a `multiselect` column, in the shape that cell
+   * reads. Null for a scalar column. `value_name` carries the joined label so a
+   * review table can print it without knowing the kind.
+   */
+  valueList: Array<{ id: string; name: string }> | null;
 }
 
 /**
