@@ -65,14 +65,81 @@ interface MacroForm {
 
 const EMPTY_FORM: MacroForm = { nome: '', produtos: [], categorias: [], ncms: [], imposto: {} };
 
+/**
+ * `NVE`/`indEscala` are `string[]`/`boolean` on {@link RegraImposto} (the
+ * legacy wire shape, #468), but the shared `DadosGeraisSection` — reused
+ * as-is by the produto/categoria/operação editors, which still store both as
+ * plain strings — only knows how to edit a free-text value. Bridged HERE
+ * rather than in the shared component so those other three editors are
+ * untouched. Round-trips losslessly through an unedited save.
+ *
+ * `formatNveText` takes `unknown`, not `string[] | null`, on purpose: a doc
+ * that fails `parseSoftRead` for an UNRELATED reason (a schema mismatch
+ * anywhere else in it) comes back raw, and `NVE` could still be the legacy
+ * scalar string `regraImpostoSchema`'s own read-tolerant preprocess would
+ * otherwise have caught — this is the last line of defense against `.join`
+ * throwing on the "Editar" click.
+ */
+export function formatNveText(nve: unknown): string | null {
+  if (typeof nve === 'string') return nve.trim() || null;
+  return Array.isArray(nve) && nve.length > 0 ? nve.join(', ') : null;
+}
+
+export function parseNveText(text: string | null | undefined): string[] | null {
+  if (text == null) return null;
+  const codes = text
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return codes.length > 0 ? codes : null;
+}
+
+// `indEscala`'s domain values elsewhere in this repo are 'S'/'N' — the NF-e
+// XSD enum (`indEscala: z.enum(['S', 'N'])`) and the produto/categoria
+// imposto tabs an operator edits through this SAME widget both use them, so
+// that is the muscle memory this free-text field inherits. Recognized text
+// maps explicitly both ways; anything else (typos, a stray word) is treated
+// as NOT SET rather than guessed — silently flipping an operator's "N" to
+// `true` is worse than asking them to retype it.
+const IND_ESCALA_TRUE_WORDS = new Set(['s', 'sim', 'true', '1']);
+const IND_ESCALA_FALSE_WORDS = new Set(['n', 'nao', 'não', 'false', '0']);
+
+export function formatIndEscalaText(v: boolean | null): string | null {
+  if (v === true) return 'S';
+  if (v === false) return 'N';
+  return null;
+}
+
+export function parseIndEscalaText(text: string | null | undefined): boolean | null {
+  const trimmed = (text?.trim() ?? '').toLowerCase();
+  if (trimmed === '') return null;
+  if (IND_ESCALA_TRUE_WORDS.has(trimmed)) return true;
+  if (IND_ESCALA_FALSE_WORDS.has(trimmed)) return false;
+  return null;
+}
+
 function formFromRegra(r: RegraImposto): MacroForm {
-  const { id: _id, nome, produtos, categorias, ncms, dataCadastro: _dc, ...imposto } = r;
+  const {
+    id: _id,
+    nome,
+    produtos,
+    categorias,
+    ncms,
+    dataCadastro: _dc,
+    NVE,
+    indEscala,
+    ...rest
+  } = r;
   return {
     nome: nome ?? '',
     produtos: produtos ?? [],
     categorias: categorias ?? [],
     ncms: ncms ?? [],
-    imposto: imposto as ImpostoConfigValue,
+    imposto: {
+      ...rest,
+      NVE: formatNveText(NVE),
+      indEscala: formatIndEscalaText(indEscala),
+    } as ImpostoConfigValue,
   };
 }
 
@@ -143,12 +210,17 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
     setSaving(true);
     setSaveError(null);
     // The regra doc = matching criteria + the imposto blob (origem/CFOP/configs).
+    // NVE/indEscala come back out of the shared editor's free-text shape into
+    // regraImpostoSchema's real wire types — see formFromRegra.
+    const { NVE: nveText, indEscala: indEscalaText, ...restImposto } = form.imposto;
     const docData = {
       nome: form.nome.trim() || null,
       produtos: form.produtos,
       categorias: form.categorias,
       ncms,
-      ...form.imposto,
+      ...restImposto,
+      NVE: parseNveText(nveText as string | null | undefined),
+      indEscala: parseIndEscalaText(indEscalaText as string | null | undefined),
       // Preserve the creation stamp on edit; only mint a new one on create.
       dataCadastro: editing.id ? (editing.dataCadastro ?? nowMillis()) : nowMillis(),
     };

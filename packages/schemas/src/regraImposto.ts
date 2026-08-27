@@ -37,6 +37,36 @@ const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
  *
  * Imposto blob fields are **typed** (`taxConfigFields`, shared with the tribute
  * engine via `@delfrance/schemas`) rather than pass-through.
+ *
+ * Two more legacy wire fields, modeled as their own field rather than merged
+ * into a new-app counterpart (same posture as the `CFOP`/`cfop` pair above —
+ * a consumer that needs the fold does it itself, the schema just stops
+ * dropping the raw value):
+ * - `estados` — `List` of UF codes (`_$RegraImpostoToJson`'s
+ *   `ufsOperacaoToJson`) that scopes the rule to specific interstate
+ *   destinations. Not yet consumed by the resolver's match semantics
+ *   (deferred to #422) — modeled here so a legacy doc round-trips.
+ * - `timeStamp` (capital S) — the legacy ms-epoch creation stamp; the new
+ *   editor stamps `dataCadastro` instead and never ORIGINATES a `timeStamp`
+ *   (`MacrosTab` round-trips an existing one unchanged on save, same as
+ *   `estados`, but mints neither on create). ⚠️ NOT auto-folded into
+ *   `dataCadastro`: a legacy doc carrying only `timeStamp` still sorts as
+ *   undated wherever a consumer orders by `dataCadastro` (e.g. the Macros
+ *   tab's list query) — same gap the field had before this schema modeled it
+ *   at all, since `dataCadastro` itself is unchanged.
+ *
+ * ⚠️ `NVE`/`indEscala` need a READ-tolerant preprocess, not just a corrected
+ * type. Before this schema fixed their type, they were `z.string()` — and
+ * `MacrosTab`'s editor (`apps/web`) faithfully wrote plain strings through
+ * that shape, so an already-stored `operacao/{id}/regras` doc (staging, not
+ * just a hypothetical legacy export) can carry a scalar. A bare type swap
+ * would fail the WHOLE-DOCUMENT parse for those docs: the resolver's
+ * `parseRegraImpostoSnapshot` (`apps/nfe/lib/nfe/orchestrator/bundle.ts`)
+ * drops such a rule silently on a failed `safeParse`, sending the item's tax
+ * calculation to the wrong tier — not a loud failure, a wrong NF-e. The
+ * preprocess accepts the legacy scalar (one-element array / sim-não text)
+ * so the doc still parses; the new editor never writes a scalar again
+ * (`MacrosTab`'s save path bridges its free-text UI to the real shape).
  */
 export const regraImpostoSchema = z.object({
   id: z.string().nullable().default(null),
@@ -44,24 +74,53 @@ export const regraImpostoSchema = z.object({
   produtos: z.array(z.string()).default([]),
   categorias: z.array(z.string()).default([]),
   ncms: z.array(z.string()).default([]),
-  // Dados Gerais (lenient strings, optional — a rule may omit them; the
-  // resolver re-validates via the engine `impostoSchema`).
+  // Dados Gerais — a rule may omit any of them; the resolver re-validates
+  // via the engine `impostoSchema`. Mostly lenient strings; NVE/indEscala
+  // are typed to the legacy wire (see their own comments below).
   origem: z.string().nullable().optional(),
   cfop: z.string().nullable().optional(),
   /** Legacy Flutter wire key (uppercase). Read fallback for `cfop` — never written by the new editor. */
   CFOP: z.string().nullable().optional(),
   cfopInterestadual: z.string().nullable().optional(),
   NCM: z.string().nullable().optional(),
-  NVE: z.string().nullable().optional(),
+  /**
+   * Legacy wire type is a `List`, not a scalar string — but an
+   * already-stored doc may carry the OLD (pre-fix) scalar shape this app's
+   * own editor wrote (see class doc). A string becomes a one-element array;
+   * blank becomes null.
+   */
+  NVE: z
+    .preprocess(
+      (v) => (typeof v === 'string' ? (v.trim() === '' ? null : [v.trim()]) : v),
+      z.array(z.string()).nullable(),
+    )
+    .default(null),
   CEST: z.string().nullable().optional(),
-  indEscala: z.string().nullable().optional(),
+  /**
+   * Legacy wire type is a `bool`, not a string — same already-stored-scalar
+   * concern as `NVE` (see class doc). Blank stays null; `n`/`não`/`nao`/
+   * `false`/`0` (case-insensitive) become `false`; any other non-blank text
+   * becomes `true`.
+   */
+  indEscala: z
+    .preprocess((v) => {
+      if (typeof v !== 'string') return v;
+      const trimmed = v.trim();
+      if (trimmed === '') return null;
+      return !/^(n|não|nao|false|0)$/i.test(trimmed);
+    }, z.boolean().nullable())
+    .default(null),
   CNPJFab: z.string().nullable().optional(),
   cBenef: z.string().nullable().optional(),
   extipi: z.string().nullable().optional(),
   unidade: z.string().nullable().optional(),
   compoeValorTotalDaNFe: z.boolean().nullable().optional(),
+  /** UF codes scoping the rule to specific destinations. See class doc. */
+  estados: z.array(z.string()).nullable().default(null),
   ...taxConfigFields,
   dataCadastro: millisSinceEpoch().nullable().default(null),
+  /** Legacy wire key (capital S). Read fallback for `dataCadastro`. */
+  timeStamp: millisSinceEpoch().nullable().default(null),
 });
 
 export type RegraImposto = z.infer<typeof regraImpostoSchema>;

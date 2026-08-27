@@ -279,6 +279,16 @@ The per-surface notes below stay the authority on behaviour.
   test (`user_id === customerUid`). Nothing writes `user_id` now, so direction rests
   on `estadoEnvio` alone. A `rejected`/`moderated` message of OURS lands as `erro` —
   ML never delivered it.
+  ⚠️ **That last sentence was only half true until #1320, and it is the shape of
+  mistake to watch for.** The synthetic usuario was load-bearing in BOTH
+  directions: `user_id === customerUid` for inbound *and* `user_id === myUid` for
+  outbound. The port fixed the inbound half with `recebido` and left the outbound
+  half with no rule at all, because `MensagemBubble` took the SIDE from `user_id`
+  alone — so every ML reply we sent rendered on the buyer's side, grey and without
+  a delivery tick, on all three ML origens at once. The renderer now takes the side
+  from `ehEstadoDeSaida` when a message has no author. Writing the state correctly
+  is necessary and was never sufficient: a contract asserted in a comment on the
+  producer side is not one the consumer is keeping.
   ⚠️ The mensagem doc id stays the legacy five-field digest even though ML now
   publishes a per-message `hash`. Re-keying would rewrite every already-imported
   message under a new id — a thread-wide duplication of history — to fix a collision

@@ -170,6 +170,81 @@ describe('buildMedidasSchema — shape', () => {
   });
 });
 
+describe('buildMedidasSchema — the size-equivalence column', () => {
+  const EQUIV = column({
+    attributeId: 'FILTRABLE_SIZE',
+    label: 'Tamanho padrão',
+    kind: 'multiselect',
+    unitId: null,
+    required: true,
+    sizeEquivalence: true,
+    values: [
+      { id: '3189130', name: '34' },
+      { id: '3259450', name: '38' },
+    ],
+  });
+
+  it('asks for an ARRAY, with the closed list on the ITEMS', () => {
+    // ML tags its equivalence attribute `multivalued` and means it: one row maps
+    // onto several standard sizes, and that set is the listing's size filter.
+    const cell = buildMedidasSchema(ROWS, [EQUIV]).schema.properties?.P?.properties?.FILTRABLE_SIZE;
+    expect(cell?.type).toBe('array');
+    expect(cell?.items?.type).toBe('string');
+    expect(cell?.items?.enum).toEqual(['34', '38']);
+    // The enum belongs to the member, not the array.
+    expect(cell?.enum).toBeUndefined();
+  });
+
+  it('never emits `minItems` — omission stays the cheapest answer', () => {
+    for (const node of walk(buildMedidasSchema(ROWS, [EQUIV]).schema)) {
+      expect(node).not.toHaveProperty('minItems');
+      expect(node).not.toHaveProperty('required');
+    }
+  });
+
+  it('gives each row its own ITEMS node and its own enum array', () => {
+    // Same sharing hazard as the scalar cells, one level deeper: a provider that
+    // edits `properties.P.properties.FILTRABLE_SIZE.items` must not be editing
+    // every other row's at once.
+    const { schema } = buildMedidasSchema(ROWS, [EQUIV]);
+    const p = schema.properties?.P?.properties?.FILTRABLE_SIZE;
+    const m = schema.properties?.M?.properties?.FILTRABLE_SIZE;
+    expect(p?.items).not.toBe(m?.items);
+    expect(p?.items?.enum).not.toBe(m?.items?.enum);
+  });
+
+  it('describes it as a correspondence, NOT as a measurement', () => {
+    // ⚠️ The load-bearing half, and it lives in the schema rather than only in
+    // the system instruction because the instruction is overridable per-install:
+    // a custom one saved in the settings doc would never see the new rule. Under
+    // the transcription rules alone ("omita o que não conseguir determinar",
+    // "nunca invente") a model correctly leaves this column empty — and ML
+    // refuses the whole guia over it.
+    const desc =
+      buildMedidasSchema(ROWS, [EQUIV]).schema.properties?.P?.properties?.FILTRABLE_SIZE
+        ?.description ?? '';
+    expect(desc).toContain('Equivalência de tamanho');
+    expect(desc).toContain('NÃO é uma medida');
+    expect(desc).toContain('deduza');
+  });
+
+  it('does not inherit the unit wording even when a unit is set', () => {
+    const united = { ...EQUIV, unitId: 'cm' };
+    const desc =
+      buildMedidasSchema(ROWS, [united]).schema.properties?.P?.properties?.FILTRABLE_SIZE
+        ?.description ?? '';
+    expect(desc).not.toContain('Não converta');
+  });
+
+  it('leaves an ordinary multiselect as an array without the equivalence wording', () => {
+    // The array shape follows `kind`; the wording follows `sizeEquivalence`.
+    const plain = { ...EQUIV, attributeId: 'TAGS', sizeEquivalence: false };
+    const cell = buildMedidasSchema(ROWS, [plain]).schema.properties?.P?.properties?.TAGS;
+    expect(cell?.type).toBe('array');
+    expect(cell?.description).not.toContain('Equivalência de tamanho');
+  });
+});
+
 describe('buildMedidasSchema — caps and collisions are reported, never silent', () => {
   it('dedupes on the SAME key the answer is resolved with — case and accents', () => {
     // ⚠️ The bug this pins: the dedupe key used to be `trim()` while

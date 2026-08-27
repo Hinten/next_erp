@@ -76,6 +76,18 @@ export interface ChartColumn {
   required: boolean;
   /** Eligible as the chart's main attribute (`main_attribute_candidate`). */
   mainCandidate: boolean;
+  /**
+   * The size-EQUIVALENCE column — ML's `FILTRABLE_SIZE` and its per-domain
+   * spellings. Not a measurement: it answers "which Mercado Livre standard
+   * size(s) does this row's size correspond to", and it is what drives the size
+   * filter on the resulting anúncio.
+   *
+   * ⚠️ Identified by its TAGS, never by its id. ML names it `FILTRABLE_SIZE` on
+   * `MLB-T_SHIRTS` and `PANTS_TEST_FILTRABLE_SIZES` in its own docs, so an id
+   * match would work on exactly the domain it was written against. See
+   * {@link extractColumns} for what the tags mean.
+   */
+  sizeEquivalence: boolean;
   /** Unit choices for a `number_unit` column; `options` is empty when fixed. */
   unit: { default: string | null; options: ChartSpecValue[] };
   /** Rendered between the parts of a FROM/TO pair (ML's `ui_config.connector`). */
@@ -479,10 +491,30 @@ function unitOf(
  * Dropped on purpose:
  *  - `TEXT_OUTPUT` components — the chart-level GENDER/BRAND echo, not columns
  *    (the legacy `getColunas` skipped them by the same rule);
- *  - `hidden` / `read_only` attributes — ML computes them (`FILTRABLE_SIZE`);
- *  - `grid_filter` attributes — they belong to the chart, not the rows;
+ *  - `grid_filter` attributes — they belong to the chart, not the rows
+ *    ("devem ser carregados no nível geral da tabela de medidas e não no nível
+ *    de rows"), and ML DOES derive the read-only ones itself (`AGE_GROUP`);
+ *  - `hidden` / `read_only` attributes that ML does NOT also mark `required`;
  *  - measure columns tagged for the OTHER measure type; ML rejects a mismatched
  *    one with `invalid_row_attribute`, and a chart carries exactly one type.
+ *
+ * ⚠️ **`required` beats `hidden`/`read_only`.** This file used to drop the pair
+ * outright, on the belief that ML computes whatever it marks read-only —
+ * `FILTRABLE_SIZE` was named as the example. It does not. ML's row contract is
+ * one sentence on *Gerenciar tabela de medidas*: "No nível de rows, você terá de
+ * enviar os atributos somente com a tag **required** somente e pelo menos um com
+ * a tag **main_attribute_candidate**", and their own `POST /catalog/charts`
+ * example sends the equivalence attribute in every row next to `SIZE`. Dropping
+ * it earned `required_row_attribute_not_found` on every row of an apparel guia,
+ * with no cell in the DOM to pin the error to — a rejection the operator could
+ * not act on.
+ *
+ * The tags ML stacks on it — `hidden`, `read_only`, `vip_hidden`,
+ * `variation_attribute` — describe how the attribute behaves on the
+ * **listing**: derived onto the anúncio, absent from the VIP page. None of them
+ * says anything about whether the seller supplies it on the **chart**. Same
+ * class of trap as `grid_filter` naming two different sets in the two spec
+ * responses; see {@link extractChartAttributes}.
  *
  * An unrecognised component id becomes a plain text column rather than an
  * exception (legacy threw and blanked the grid).
@@ -502,8 +534,9 @@ export function extractColumns(
 
     const usable = rawAttrs.filter((a) => {
       if (str(a.id) == null) return false;
-      if (hasTag(a, 'hidden') || hasTag(a, 'read_only')) return false;
       if (hasTag(a, 'grid_filter')) return false;
+      // `required` is the escape hatch, and it is ML's own rule — see above.
+      if ((hasTag(a, 'hidden') || hasTag(a, 'read_only')) && !hasTag(a, 'required')) return false;
       const body = hasTag(a, 'BODY_MEASURE');
       const clothing = hasTag(a, 'CLOTHING_MEASURE');
       if (!body && !clothing) return true;
@@ -529,6 +562,11 @@ export function extractColumns(
       hint: str(uiConfig.hint),
       required: usable.some((a) => hasTag(a, 'required')),
       mainCandidate: usable.some((a) => hasTag(a, 'main_attribute_candidate')),
+      // Exactly the carve-out above: a column that survived only because ML
+      // marked it required despite presenting it as hidden/read-only.
+      sizeEquivalence: usable.some(
+        (a) => hasTag(a, 'required') && (hasTag(a, 'hidden') || hasTag(a, 'read_only')),
+      ),
       unit: unitOf(component, first),
       connector: parts.length > 1 ? (str(uiConfig.connector) ?? '–') : null,
       parts,

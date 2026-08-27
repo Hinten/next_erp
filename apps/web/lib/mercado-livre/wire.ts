@@ -656,6 +656,29 @@ export const medidaSugestaoSchema = z.object({
   attributeId: z.string(),
   value_id: z.string().nullable(),
   value_name: z.string(),
+  /**
+   * Every matched option for a `multiselect` column, in the shape that cell
+   * actually reads. Null for a scalar column; `value_name` carries the members
+   * joined, so a review table can print it without knowing the column's kind.
+   *
+   * ⚠️ **Declared here or silently dropped.** A `z.object` STRIPS unknown keys,
+   * so the day this endpoint moves behind schema validation an undeclared
+   * `valueList` stops arriving — with no error anywhere — and every
+   * size-equivalence suggestion collapses back to its first member.
+   *
+   * ⚠️ **`.default(null)`, per rule 2 in this file's header.**
+   * `apps/mercado-livre` deploys BEFORE `apps/web`, and apps/web calls the
+   * DEPLOYED backend even in local dev, so a browser running ahead of that
+   * deploy sees the field absent. Required, it would fail the WHOLE response and
+   * take the working half of the AI fill down with it. The default is the
+   * fallback `aiCellValue` already applies (`s.valueList ?? …`), which is what
+   * keeps the public type `… | null` instead of widening every consumer to
+   * `undefined`.
+   */
+  valueList: z
+    .array(z.object({ id: z.string(), name: z.string() }))
+    .nullable()
+    .default(null),
 });
 export type MercadoLivreMedidaSugestao = z.infer<typeof medidaSugestaoSchema>;
 

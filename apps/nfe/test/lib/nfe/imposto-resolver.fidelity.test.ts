@@ -83,6 +83,10 @@ function regraDoc(over: Partial<RegraImposto>, csosn: string): RegraImposto {
     categorias: [],
     ncms: [],
     dataCadastro: null,
+    timeStamp: null,
+    NVE: null,
+    indEscala: null,
+    estados: null,
     ...impostoBlob(csosn),
     ...over,
   };

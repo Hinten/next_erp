@@ -353,11 +353,17 @@ export function buildConversaFromPack(ctx: ConversaFromPackContext): Partial<Con
  * One ML message as a mensagem.
  *
  * ⚠️ Direction comes from `estadoEnvio`, and getting it from the AUTHOR rather
- * than from ML's `status` is the point. `MensagemBubble` renders the customer
- * side on `estadoEnvio === recebido`, and this import writes no `user_id` — so a
- * buyer message must be `recebido` and ours `enviado`. Legacy stamped BOTH as
- * `enviado` (`models.dart:3374-3404`), which under the new identity model would
- * render the whole thread as our own outgoing messages.
+ * than from ML's `status` is the point. This import writes no `user_id`, and for
+ * an authorless message `MensagemBubble` takes the side from the state
+ * (`ehEstadoDeSaida`) — so a buyer message must be `recebido` and ours `enviado`.
+ * Legacy stamped BOTH as `enviado` (`models.dart:3374-3404`), which under the new
+ * identity model would render the whole thread as our own outgoing messages.
+ *
+ * ⚠️ That renderer rule is younger than this comment. Until #1320 the side came
+ * off `user_id === myUid` ALONE, so `enviado` bought nothing: every reply we sent
+ * rendered on the buyer's side, grey and tickless. Stamping the state correctly
+ * was necessary and was never sufficient — if you are relying on it, check that
+ * the renderer still reads it.
  *
  * ⚠️ On a thread ML has MIGRATED to the 02/02/2026 agent architecture,
  * `from.user_id` on a read is the AI Agent's id rather than the buyer's — and on
