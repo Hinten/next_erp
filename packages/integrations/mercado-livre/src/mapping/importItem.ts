@@ -12,11 +12,27 @@
  * Deliberate deviations from the legacy Dart (bug-fixes, per the port's licence):
  *  - WEIGHT `g → 0.001` (legacy used `0.01`, a 10× error);
  *  - no fabricated dimensions/weights — the legacy invented 0.25 kg / 5×10×10 cm
- *    defaults when ML had none; we leave them null (a re-publish then omits the
- *    package attributes instead of shipping invented sizes);
+ *    defaults when ML had none; every value here comes from something ML actually
+ *    said, and stays null when it said nothing;
  *  - the link doc's `attributes` EXCLUDE the ids the publish path re-derives from
  *    produto fields (`SELLER_SKU`, `WEIGHT`, `SELLER_PACKAGE_*`, `IS_KIT`) so a
  *    round-trip re-publish never sends a duplicated attribute id.
+ *
+ * ## Where a produto's package comes from
+ *
+ * | produto field | tier 1 — the seller's declaration | tier 2 — fallback |
+ * | --- | --- | --- |
+ * | `alturaCm` | `SELLER_PACKAGE_HEIGHT` | `HEIGHT` (Altura) |
+ * | `larguraCm` | `SELLER_PACKAGE_LENGTH` | `WIDTH` (Largura) |
+ * | `profundidadeCm` | `SELLER_PACKAGE_WIDTH` | `LENGTH` (Comprimento) |
+ * | `pesoBrutoKg` | `SELLER_PACKAGE_WEIGHT` | `billableWeightG / 1000` |
+ * | `pesoLiquidoKg` | `WEIGHT` | — **none, ever** |
+ *
+ * Tier 2 exists because an ME2 listing can legitimately carry NO package at all:
+ * ML stipulates the package itself and publishes nothing (see
+ * {@link MEDIDAS_DO_PRODUTO} for the live measurement that settled it). The three
+ * axes are all-or-nothing and taken from ONE tier; the weight is a separate
+ * donor, and that exception is written down at the use site.
  */
 import {
   ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
@@ -140,6 +156,97 @@ export function weightKgFromAttribute(attr: MlItemAttribute | undefined): number
 /** `SELLER_PACKAGE_*` "55 cm" → cm. */
 function cmFromAttribute(attr: MlItemAttribute | undefined): number | null {
   return parseNumberWithUnit(attr?.value_name, { cm: 1, mm: 0.1, m: 100 }, 1);
+}
+
+/**
+ * The three PRODUCT-SPEC measurement ids, and which produto field each fills.
+ *
+ * ⚠️ **These describe the PRODUCT, not its shipping box**, and using them as a
+ * package is a deliberate choice of ours — not something ML instructs. Measured on
+ * 27/08/2026 for `MLB5146021467`: ML declares NO
+ * `SELLER_PACKAGE_*`/`WEIGHT` on the listing, `shipping.dimensions` is `null`,
+ * and `GET /catalog_domains/MLB-SERVING_AND_HOME_TRAYS/shipping_attributes`
+ * answers `attributes: []` — ML names no shipping attributes for the domain at
+ * all. Under ME2 *"as dimensões dos pacotes são estipuladas pelo Mercado Livre e
+ * não podem ser alteradas pelo usuário"*, so ML derives the package itself and
+ * simply never publishes one. Without this tier such a listing imports with five
+ * nulls, which is correct and useless.
+ *
+ * ⚠️ **The mapping is STRAIGHT here, while {@link attrPackageDimensions}' is
+ * CROSSED, and BOTH are right.** The `SELLER_PACKAGE_*` crossing
+ * (`alturaCm←HEIGHT, larguraCm←LENGTH, profundidadeCm←WIDTH`) is legacy parity
+ * kept so import mirrors publish byte for byte. These ids have unambiguous
+ * Portuguese names from ML (`Altura`, `Largura`, `Comprimento`) and no publish
+ * counterpart to mirror, so they map by MEANING. Do not "align" the two.
+ */
+const MEDIDAS_DO_PRODUTO = [
+  ['alturaCm', 'HEIGHT'],
+  ['larguraCm', 'WIDTH'],
+  ['profundidadeCm', 'LENGTH'],
+] as const satisfies readonly (readonly [keyof MedidasDoPacoteMapeado, string])[];
+
+/** The produto dimension fields this module resolves, in centimetres. */
+type MedidasDoPacoteMapeado = Pick<MappedMlItem, 'alturaCm' | 'larguraCm' | 'profundidadeCm'>;
+
+/**
+ * A measurement in centimetres, from wherever ML put it on THIS response.
+ *
+ * Three sources, in order, because ML is not consistent about which it fills:
+ * the documented root `value_struct`; `values[0].struct`, which is the only
+ * place a live `GET /items?include_attributes=all` actually carried the split
+ * (see {@link itemAttributeSchema}); and finally the baked `value_name`
+ * (`'10 cm'`), which {@link parseNumberWithUnit} already handles.
+ *
+ * A struct is preferred over the text because it states the unit rather than
+ * relying on the value's spelling — `'10 cm'` and `'10cm'` and `'10'` all reach
+ * here, and only the first two carry a unit at all.
+ */
+function cmFromMeasurement(attr: MlItemAttribute | undefined): number | null {
+  if (attr == null) return null;
+  const struct = attr.value_struct ?? attr.values?.[0]?.struct ?? null;
+  if (struct != null && typeof struct.number === 'number' && Number.isFinite(struct.number)) {
+    const unit = typeof struct.unit === 'string' ? struct.unit.trim().toLowerCase() : '';
+    // Same factors as `cmFromAttribute`, and the same rule: an unrecognised unit
+    // is DROPPED rather than assumed. A silent wrong unit is a box off by 10×.
+    const fator = unit === '' ? 1 : ({ cm: 1, mm: 0.1, m: 100 } as Record<string, number>)[unit];
+    if (fator != null) return struct.number * fator;
+    return null;
+  }
+  return cmFromAttribute(attr);
+}
+
+/**
+ * The three axes from the product-spec attributes — ALL of them or NONE.
+ *
+ * ⚠️ All-or-nothing, one donor, for the reason `rollupDimensoesDosFilhos` and
+ * `dimensoesDoPacote` are: a box assembled from two sources is a box neither
+ * source describes. A listing carrying only `HEIGHT` yields nothing.
+ *
+ * `> 0` because ML validates package dimensions for realism and a zero axis is
+ * not a package — the same floor `dimensoesDoPacote` applies.
+ */
+function medidasDoProduto(
+  attrs: readonly MlItemAttribute[] | null | undefined,
+): MedidasDoPacoteMapeado | null {
+  const out = {} as MedidasDoPacoteMapeado;
+  for (const [campo, attrId] of MEDIDAS_DO_PRODUTO) {
+    const valor = cmFromMeasurement(attrById(attrs, attrId));
+    if (valor == null || !(valor > 0)) return null;
+    out[campo] = valor;
+  }
+  return out;
+}
+
+/**
+ * The gross weight the listing DECLARES, in kg — tier 1 only, never a fallback.
+ *
+ * Exported so the IO layer can decide whether an ML weight lookup is worth
+ * spending, WITHOUT re-stating the attribute id: a listing that already declares
+ * its package weight must not cost a network call. `mapMlItemToImport` asks the
+ * same question through this function, so the two can never disagree.
+ */
+export function pesoBrutoDeclaradoKg(item: MlItem): number | null {
+  return weightKgFromAttribute(attrById(item.attributes, 'SELLER_PACKAGE_WEIGHT'));
 }
 
 /** `IS_KIT == 'Sim'` → true (legacy). */
@@ -322,13 +429,62 @@ export function itemStockLivesOnChildren(item: MlItem): boolean {
   return item.family_name != null || (item.variations?.length ?? 0) > 0;
 }
 
+/**
+ * Extra facts the pure mapper cannot fetch for itself — supplied by the IO layer
+ * (`import.ts`), which is the only place allowed to talk to ML.
+ */
+export interface MapMlItemExtras {
+  /**
+   * `coverage.all_country.billable_weight` from
+   * `GET /users/{sellerId}/shipping_options/free`, in GRAMS.
+   *
+   * The last-resort gross weight for a listing ML publishes no
+   * `SELLER_PACKAGE_WEIGHT` on. See the ⚠️ at its use below before moving it.
+   */
+  billableWeightG?: number | null;
+}
+
 /** Map a fetched simple ML item to the normalized import shape. */
-export function mapMlItemToImport(item: MlItem): MappedMlItem {
+export function mapMlItemToImport(item: MlItem, extras: MapMlItemExtras = {}): MappedMlItem {
   const condition = item.condition === 'used' ? 'used' : 'new';
   const precoNormal = item.base_price ?? item.price ?? null;
   const price = item.price ?? null;
   const precoPromocional =
     price != null && precoNormal != null && price !== precoNormal ? price : null;
+
+  // ---- package: the seller's declaration first, then the fallbacks ---------
+  // Tier 1 is what the seller (or a previous publish of ours) put on the listing.
+  const pacoteDeclarado = {
+    alturaCm: cmFromAttribute(attrById(item.attributes, 'SELLER_PACKAGE_HEIGHT')),
+    larguraCm: cmFromAttribute(attrById(item.attributes, 'SELLER_PACKAGE_LENGTH')),
+    profundidadeCm: cmFromAttribute(attrById(item.attributes, 'SELLER_PACKAGE_WIDTH')),
+  };
+  // Tier 2 only when tier 1 produced NOTHING. A partial `SELLER_PACKAGE_*` set is
+  // left partial on purpose: topping it up from a different source would build a
+  // box neither source describes, and the operator can still see which axis ML
+  // is missing.
+  const semPacoteDeclarado =
+    pacoteDeclarado.alturaCm == null &&
+    pacoteDeclarado.larguraCm == null &&
+    pacoteDeclarado.profundidadeCm == null;
+  const pacote = semPacoteDeclarado
+    ? (medidasDoProduto(item.attributes) ?? pacoteDeclarado)
+    : pacoteDeclarado;
+
+  // ⚠️ The billable weight lands on the GROSS weight and must never reach the net
+  // one. `pesoLiquidoKg` is published as ML's `WEIGHT` attribute — the product's
+  // mass — and `dimensoesDoPacote`'s own docblock states that `WEIGHT` has no
+  // fallback because sending gross as net "would invent data". Here the value is
+  // weaker still: a BILLABLE figure from a cost simulator, ML's assumed package,
+  // possibly volumetric. As a gross weight it makes `dimensoesDoPacote` resolve
+  // (so the produto is publishable and freight-quotable) while the produto screen
+  // still names `Peso líquido` as the one field a human must fill. Both halves
+  // are deliberate.
+  const pesoBrutoDeclarado = pesoBrutoDeclaradoKg(item);
+  const pesoBrutoFaturavel =
+    typeof extras.billableWeightG === 'number' && extras.billableWeightG > 0
+      ? extras.billableWeightG / 1000
+      : null;
 
   return {
     mlItemId: item.id,
@@ -338,12 +494,13 @@ export function mapMlItemToImport(item: MlItem): MappedMlItem {
     nome: (item.family_name ?? item.title ?? '').trim(),
     ehKit: isKitFromAttributes(item.attributes),
     ehUsado: condition === 'used',
-    // No fabricated defaults (legacy bug): null when ML has no weight/dims.
+    // Still no fabricated defaults (the legacy bug): every value below comes from
+    // something ML actually said, and stays null when it said nothing.
     pesoLiquidoKg: weightKgFromAttribute(attrById(item.attributes, 'WEIGHT')),
-    pesoBrutoKg: weightKgFromAttribute(attrById(item.attributes, 'SELLER_PACKAGE_WEIGHT')),
-    alturaCm: cmFromAttribute(attrById(item.attributes, 'SELLER_PACKAGE_HEIGHT')),
-    larguraCm: cmFromAttribute(attrById(item.attributes, 'SELLER_PACKAGE_LENGTH')),
-    profundidadeCm: cmFromAttribute(attrById(item.attributes, 'SELLER_PACKAGE_WIDTH')),
+    pesoBrutoKg: pesoBrutoDeclarado ?? pesoBrutoFaturavel,
+    alturaCm: pacote.alturaCm,
+    larguraCm: pacote.larguraCm,
+    profundidadeCm: pacote.profundidadeCm,
 
     precoNormal,
     precoPromocional,

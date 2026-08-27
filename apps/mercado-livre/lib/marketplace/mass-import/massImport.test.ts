@@ -201,6 +201,9 @@ function makeApi(opts: { scan?: DocData; items?: Record<string, DocData> }): Mer
     // #1087 — present so an accidental call is observable rather than a
     // `is not a function` crash. The mass path must never reach it.
     getLastModeration: vi.fn(async () => []),
+    // Present so a regression that STOPS passing `lerPesoEnvio: false` shows up
+    // as a call count, not as a crash — see the mass-path test below.
+    getFreeShippingOptions: vi.fn(async () => ({ coverage: { all_country: {} } })),
   } as unknown as MercadoLivreApi;
 }
 
@@ -381,6 +384,26 @@ describe('processMassImportJob — ML moderations (#1087)', () => {
       status: 'active',
       moderacoes: [],
     });
+  });
+
+  it('⚠️ never calls /shipping_options/free, even for a listing with no weight', async () => {
+    // The mass path passes `lerPesoEnvio: false`, and this is what holds it to
+    // that promise. A flag the caller stops sending is invisible in `import.ts`'s
+    // own tests — they set it themselves — so the assertion has to live HERE,
+    // where the real caller runs. Unlike a category or a domain the answer is per
+    // ITEM, so a drain would pay one extra ML round trip per listing.
+    const db = new FakeDb();
+    seedJob(db, 'jobPeso');
+    const api = makeApi({
+      scan: { results: ['MLB9'], scroll_id: null },
+      items: { MLB9: simpleItem('MLB9') },
+    });
+
+    await processMassImportJob(runDeps(db, api), { jobId: 'jobPeso', integracaoId: 'conta-A' }, 0);
+
+    expect(api.getFreeShippingOptions).not.toHaveBeenCalled();
+    const produtoId = [...db.docs('produtos').keys()][0]!;
+    expect(db.docs('produtos').get(produtoId)!.pesoBrutoKg).toBeNull();
   });
 });
 

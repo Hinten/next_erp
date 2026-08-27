@@ -55,6 +55,7 @@ import {
   mapMlItemToImport,
   mapMlVariationsToImport,
   mapUpMemberToImport,
+  pesoBrutoDeclaradoKg,
   skuGuessFromVariations,
 } from '@delfrance/integrations-mercado-livre';
 import {
@@ -143,6 +144,21 @@ export interface ImportDeps {
    * above — and, like it, the fan-out inherits it through the `...deps` spread.
    */
   lerModeracoes?: boolean;
+  /**
+   * Whether this import may spend an ML `/shipping_options/free` call to recover
+   * a gross weight ML publishes no `SELLER_PACKAGE_WEIGHT` for — default TRUE.
+   * Set `false` by the MASS import, exactly like {@link lerModeracoes} above.
+   *
+   * ⚠️ Unlike a category or a domain, this answer is PER ITEM and cannot be
+   * cached across a catalogue, so the mass path would pay one extra ML round trip
+   * for every listing with no declared weight — which, on a seller whose listings
+   * are all ME2, is every listing. A single import pays it once and gladly.
+   *
+   * A DEPS flag, not an `ImportOptions` one: a per-path cost decision, never an
+   * operator checkbox, so it must not reach `sanitizeOptions`. The family fan-out
+   * inherits it through the `...deps` spread.
+   */
+  lerPesoEnvio?: boolean;
 }
 
 export interface ImportResult {
@@ -236,7 +252,19 @@ export async function importProduto(
   // the whole precos map + no per-item stock apply to it (produtos.dart:226-290).
   // Mutually exclusive with User-Products (an ML item never carries both).
   const hasVariations = !isUserProduct && (item.variations?.length ?? 0) > 0;
-  const mappedItem = mapMlItemToImport(item);
+  // ML's own billable weight, for a listing that declares none of its own (#1306
+  // follow-up). Read here rather than inside the mapper because the mapper is
+  // PURE — the round-trip parity tests depend on that — and above every write for
+  // the same reason the moderation read is: a failure must not orphan documents.
+  const pesoFaturavelG = await lerPesoFaturavel(
+    api,
+    itemId,
+    item,
+    deps.sellerUserId,
+    deps.lerPesoEnvio !== false,
+    integracaoId,
+  );
+  const mappedItem = mapMlItemToImport(item, { billableWeightG: pesoFaturavelG });
   const mapped = {
     ...mappedItem,
     sku: mappedItem.sku ?? (hasVariations ? skuGuessFromVariations(item) : null),
@@ -743,6 +771,54 @@ async function lerModeracoesDoItem(
       integracaoId,
       itemId,
       status: item.status,
+      erro: err.message,
+    });
+    return null;
+  }
+}
+
+/**
+ * ML's BILLABLE weight for this listing, in grams — or null.
+ *
+ * Only asked when the listing declares no `SELLER_PACKAGE_WEIGHT` of its own, so
+ * a seller who fills their packages properly never pays for this call.
+ *
+ * ⚠️ **Best-effort by construction.** ML documents `/shipping_options/free` as
+ * serving only items live on the marketplace, so a paused listing answering 4xx
+ * is the expected case, not an incident — and throwing here would discard a
+ * produto, its extraData, its stock, its photos and its children over a weight.
+ * Same argument, and the same shape, as {@link lerModeracoesDoItem}.
+ */
+async function lerPesoFaturavel(
+  api: MercadoLivreApi,
+  itemId: string,
+  item: MlItem,
+  sellerUserId: number | null,
+  enabled: boolean,
+  integracaoId: string,
+): Promise<number | null> {
+  if (!enabled || sellerUserId == null) return null;
+  // Free: the listing already says what it weighs, so there is nothing to ask.
+  if (pesoBrutoDeclaradoKg(item) != null) return null;
+  // ⚠️ Also free, and it is the case the docblock below PREDICTS: ML serves this
+  // endpoint only for items live on the marketplace, so a paused/under-review
+  // listing buys a round trip whose 4xx we already expect plus a `console.warn`
+  // that reads like an incident. Decided from the item already in hand — the same
+  // shape as `precisaConsultarModeracao` gating the moderations read. It is not a
+  // loss: `estado` returning to active makes the next import ask.
+  if (item.status !== 'active') return null;
+  try {
+    const resp = await api.getFreeShippingOptions(sellerUserId, {
+      itemId,
+      freeShipping: item.shipping?.free_shipping === true,
+    });
+    const g = resp.coverage?.all_country?.billable_weight;
+    return typeof g === 'number' && Number.isFinite(g) && g > 0 ? g : null;
+  } catch (err) {
+    if (!(err instanceof MercadoLivreError)) throw err;
+    console.warn('[mercado-livre] import: falha ao consultar peso de envio — peso nao importado', {
+      integracaoId,
+      itemId,
       erro: err.message,
     });
     return null;
