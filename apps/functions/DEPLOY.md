@@ -1,9 +1,26 @@
 # Deploying `apps/functions` (codebase `storage`)
 
-These are the **Cloud Functions** for the storage pipeline (currently
-`resizeProductImage`). They have never been deployed — `firebase.functions.json`
-at the repo root exists **only** for the emulator suite (`ci-storage.yml`) and is
-deliberately kept away from `firebase deploy`.
+These are the **Cloud Functions** of the codebase `storage` — twenty-nine
+exports, not just the storage pipeline; `src/index.ts` is the list.
+`firebase.functions.json` at the repo root exists **only** for the emulator suite
+(`ci-storage.yml`) and is deliberately kept away from `firebase deploy`.
+
+⚠️ **This document does not know what is deployed, and must never claim to.**
+It said "they have never been deployed" for months after they were, which sent a
+thumbnail investigation looking for a missing deploy that had in fact shipped
+(#1315). Deployment state lives in one place, and it answers in seconds:
+
+```bash
+firebase functions:list --project <project-id>
+```
+
+For the record of a single verification — **not** a claim about today: on
+2026-08-27 that listing showed twenty-seven of the twenty-nine exports live in
+`us-east1` on `nodejs22`, `resizeProductImage` among them (trigger
+`google.cloud.storage.object.v1.finalized`), and a fresh product import was
+observed generating all three derivatives per photo. The two exports absent from
+that listing were `recalcularDimensoesKit` and `onConversaDeleted`. Re-run the
+command rather than trusting this paragraph.
 
 Deploys are **manual and coordinated** — see the Deploying section in `apps/functions/CLAUDE.md`. This doc is
 the lane; it does not run in CI.
@@ -15,9 +32,13 @@ the lane; it does not run in CI.
 - A clean `pnpm install` (workspace deps resolved).
 
 No secrets are needed to build/deploy. The only build-time value is the function
-region, a non-secret constant that `build.mjs` defaults to `us-east1` (the Storage
-bucket region); **`.env.local` is never read by the deploy** — it holds secrets that
-must not reach the build/deploy process. Override the region only for another
+region, a non-secret constant — and it has **no default**: `build.mjs` calls
+`requireBuildRegion('FUNCTIONS_REGION')`, which **throws**, so a missing value
+stops the build instead of inlining a region nobody chose (that is the whole
+point — a wrong region deploys cleanly and then silently never fires). Supply it
+by exporting `FUNCTIONS_REGION` or via the repo-root `.env.functions`.
+**`.env.local` is never read by the deploy** — it holds secrets that
+must not reach the build/deploy process. Set the region for another
 environment via the `FUNCTIONS_REGION` env var.
 
 ## Deploy lane
@@ -230,14 +251,30 @@ Verify it took, with nobody having run gcloud — **once per function**:
 `gcloud run services get-iam-policy processarBalanco --region=<region>` and
 `gcloud run services get-iam-policy recalcularDimensoesKit --region=<region>`.
 
-## Known first-run gotchas (not yet executed)
+## Known gotchas
 
-This lane has been prepared but **not run end-to-end** yet. On a first cloud deploy,
-watch for: `sharp` native-binary platform resolution in the Cloud Build image; the
-gen2 (Eventarc) trigger requiring the Eventarc / Pub/Sub APIs enabled and the
-runtime service account having the right roles (a first-deploy `storage.buckets.get`
-403 right after those APIs are enabled is usually IAM-propagation lag — re-run);
-and the region: the bundle inlines `us-east1` by default, which **must match the
-Storage bucket's region** — if the bucket is elsewhere, deploy with
-`FUNCTIONS_REGION=<bucket-region>` set. Surface any of these back as a follow-up
-rather than forcing the deploy.
+Watch for: `sharp` native-binary platform resolution in the Cloud Build image;
+the gen2 (Eventarc) trigger requiring the Eventarc / Pub/Sub APIs enabled and the
+runtime service account having the right roles (a `storage.buckets.get` 403 right
+after those APIs are first enabled is usually IAM-propagation lag — re-run); and
+the region, which **must match the Storage bucket's region**, because a mismatch
+deploys cleanly and then silently never fires. Surface any of these back as a
+follow-up rather than forcing the deploy.
+
+Both halves of the region check are one command each:
+
+```bash
+gcloud storage buckets list --project <project-id> --format="table(name,location)"
+```
+
+`firebase functions:list` prints the function's region beside it; the two must
+agree. (On 2026-08-27 both were `us-east1` — see the note at the top about not
+trusting a dated observation.)
+
+⚠️ A redeploy is **not** a no-op re-push: it ships every change merged since the
+last one, and creates any export the listing does not already show. Diff
+`src/index.ts` against `firebase functions:list` before running it, and check
+whether the new arrivals need infrastructure first — `recalcularDimensoesKit`
+wants the `produtos(componentesKitKeys CONTAINS, __name__ ASC)` index deployed
+ahead of it, since this Enterprise edition creates none automatically and an
+unindexed query full-scans while billing data scanned instead of failing.

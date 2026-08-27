@@ -158,6 +158,26 @@ describe('ConversaTile', () => {
     expect(screen.queryByLabelText('Erro no envio')).toBeNull();
   });
 
+  it('reserves the SECOND check for a message the contact actually read', () => {
+    // The tile used to draw the double check for merely `enviado`, so it claimed
+    // the customer had seen a message the thread itself only called delivered.
+    // `MensagemStatusIcon` adds its second check on `visualizado`; this matches.
+    lastMsgRef.current = {
+      data: mensagem({
+        conteudo: 'ok',
+        user_id: 'op1',
+        estadoEnvio: ESTADO_ENVIO.enviado,
+        visualizado: Date.parse('2026-07-16T09:00:00.000Z'),
+      }),
+      loading: false,
+    };
+    wrap(
+      <ConversaTile id="c1" conversa={conversa()} active={false} href="/chat/c1" meuUid="op1" />,
+    );
+    expect(screen.getByLabelText('Visualizado')).toBeTruthy();
+    expect(screen.queryByLabelText('Enviado')).toBeNull();
+  });
+
   it('marks the active row with aria-current', () => {
     wrap(<ConversaTile id="c1" conversa={conversa()} active href="/chat/c1?tab=todas" />);
     const link = screen.getByRole('link');

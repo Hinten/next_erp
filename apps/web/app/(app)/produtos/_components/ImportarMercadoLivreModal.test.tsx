@@ -47,8 +47,16 @@ const { ImportarMercadoLivreModal } = await import('./ImportarMercadoLivreModal'
 
 const CAIXA = /Sobrescrever dados do produto/i;
 
-/** Render the modal, pick the account and type an MLB id — the two required inputs. */
-async function abrirEPreencher(): Promise<void> {
+function campoCodigo(): HTMLInputElement {
+  return screen.getByLabelText(/Código do anúncio/i) as HTMLInputElement;
+}
+
+/**
+ * Render the modal, pick the account and type an MLB id — the two required inputs.
+ * The default value is typed with the hyphen ML itself renders, so every case
+ * below also exercises the mask on the way in.
+ */
+async function abrirEPreencher(codigo = 'MLB-5146021467'): Promise<void> {
   render(
     <MantineTestProvider>
       <ImportarMercadoLivreModal db={{} as Firestore} opened onClose={() => {}} />
@@ -58,7 +66,7 @@ async function abrirEPreencher(): Promise<void> {
   // so getByLabelText finds multiple elements.
   fireEvent.click(screen.getByPlaceholderText(/Selecione a conta/i));
   fireEvent.click(await screen.findByText('Loja A'));
-  fireEvent.change(screen.getByLabelText(/Código do anúncio/i), { target: { value: 'MLB123' } });
+  fireEvent.change(campoCodigo(), { target: { value: codigo } });
 }
 
 /** The checkbox INPUT — by role, so the click lands on the control itself. */
@@ -66,9 +74,61 @@ function caixa(): HTMLInputElement {
   return screen.getByRole('checkbox', { name: CAIXA }) as HTMLInputElement;
 }
 
-function importar(): void {
-  fireEvent.click(screen.getByRole('button', { name: /^Importar$/ }));
+function botaoImportar(): HTMLButtonElement {
+  return screen.getByRole('button', { name: /^Importar$/ }) as HTMLButtonElement;
 }
+
+function importar(): void {
+  fireEvent.click(botaoImportar());
+}
+
+describe('ImportarMercadoLivreModal — máscara do código do anúncio', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('normalises the pasted hyphenated code and sends it without the hyphen', async () => {
+    h.importar.mockResolvedValue({ produtoId: 'p1', estado: 'a', nome: 'X', created: true });
+    await abrirEPreencher('MLB-5146021467');
+    expect(campoCodigo().value).toBe('MLB5146021467');
+    importar();
+
+    await waitFor(() => expect(h.importar).toHaveBeenCalled());
+    expect(h.importar.mock.calls[0]?.[0].itemId).toBe('MLB5146021467');
+  });
+
+  // ⚠️ A REAL permalink — slug + tracking fragment. Sweeping every digit after
+  // `MLB` would yield `MLB514602146742`, which still passes the submit gate.
+  it('accepts a pasted permalink, slug and tracking fragment included', async () => {
+    await abrirEPreencher(
+      'https://produto.mercadolivre.com.br/MLB-5146021467-camiseta-preta-42-_JM#position=1&tracking_id=8f1a',
+    );
+    expect(campoCodigo().value).toBe('MLB5146021467');
+    expect(botaoImportar().disabled).toBe(false);
+  });
+
+  // ⚠️ Another site's id must not reach the importer: this backend serves MLB only,
+  // and an MLU listing would half-import with a link doc stamped `MLB`.
+  it('blocks a non-MLB site code and never calls the client', async () => {
+    await abrirEPreencher('MLU-5146021467');
+    expect(botaoImportar().disabled).toBe(true);
+    importar();
+    expect(h.importar).not.toHaveBeenCalled();
+    expect(screen.getByText(/formato MLB1234567890/i)).toBeTruthy();
+  });
+
+  it('keeps the button disabled while the code is still being typed, without flagging an error', async () => {
+    await abrirEPreencher('ML');
+    expect(campoCodigo().value).toBe('ML');
+    expect(botaoImportar().disabled).toBe(true);
+    expect(screen.queryByText(/formato MLB1234567890/i)).toBeNull();
+
+    // Still quiet with the prefix plus a few digits — a correct id in progress.
+    fireEvent.change(campoCodigo(), { target: { value: 'MLB514' } });
+    expect(screen.queryByText(/formato MLB1234567890/i)).toBeNull();
+    expect(botaoImportar().disabled).toBe(true);
+  });
+});
 
 describe('ImportarMercadoLivreModal — sobrescreverDadosProduto', () => {
   // ⚠️ Without this, `mock.calls[0]` is the call the PREVIOUS test made, so the

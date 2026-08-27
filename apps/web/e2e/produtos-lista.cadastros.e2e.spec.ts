@@ -17,7 +17,7 @@ test.describe.serial('Produtos lista e2e — parents only (#119)', () => {
     test.setTimeout(240_000);
     [{ parentNome, childNome }] = await Promise.all([
       seedProdutoComFilho(prefix),
-      warmRoutes(browser, ['/produtos']),
+      warmRoutes(browser, ['/produtos', '/produtos/__aquecimento__/editar']),
     ]);
   });
 
@@ -40,6 +40,29 @@ test.describe.serial('Produtos lista e2e — parents only (#119)', () => {
     await page.goto('/produtos');
     // A strict prefix of the name (not the full string) must match.
     await page.getByPlaceholder('Buscar por nome…').fill(prefix.slice(0, prefix.length - 3));
+    await expect(page.getByRole('link', { name: parentNome, exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByRole('link', { name: childNome, exact: true })).toHaveCount(0);
+  });
+
+  test('keeps the search after opening a produto and cancelling', async ({ page }) => {
+    await page.goto('/produtos');
+    await page.getByPlaceholder('Buscar por nome…').fill(prefix);
+    await expect(page.getByRole('link', { name: parentNome, exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByRole('link', { name: parentNome, exact: true }).click();
+    await page.waitForURL(/\/produtos\/[^/]+\/editar$/, { timeout: 15_000 });
+
+    // Cancelar goes to the BARE list path, so the term has to come back from
+    // the per-screen memory rather than from the query string.
+    await page.getByRole('link', { name: 'Cancelar' }).click();
+    await page.waitForURL(/\/produtos(\?.*)?$/, { timeout: 15_000 });
+
+    await expect(page.getByPlaceholder('Buscar por nome…')).toHaveValue(prefix);
+    await expect(page.getByText(`Busca: "${prefix}"`)).toBeVisible();
     await expect(page.getByRole('link', { name: parentNome, exact: true })).toBeVisible({
       timeout: 15_000,
     });

@@ -28,6 +28,29 @@ export { ColumnPicker, type ColumnPickerItem, type ColumnPickerProps } from './t
 export { ActionBar, type ActionBarProps } from './table/ActionBar';
 export { useCollectionMonitor, type CollectionMonitorResult } from './table/useCollectionMonitor';
 export { SearchBar, type SearchBarProps } from './table/SearchBar';
+export { ActiveFilters, type ActiveFiltersProps } from './table/ActiveFilters';
+export {
+  SEARCH_CHIP_KEY,
+  buildFilterChips,
+  describeFilter,
+  subcollectionLookupFormatter,
+  type FilterChip,
+} from './table/describeFilter';
+export {
+  SEARCH_PARAM,
+  encodeTableState,
+  resolveInitialTableState,
+  urlCarriesTableState,
+  type TableUrlState,
+  type TableUrlStateOptions,
+} from './table/useTableUrlState';
+export {
+  clearListViewMemory,
+  listViewMemoryKey,
+  readListViewMemory,
+  writeListViewMemory,
+  type ListViewMemory,
+} from './table/listViewMemory';
 export { renderCell } from './table/cell-renderers';
 
 // Object primitives

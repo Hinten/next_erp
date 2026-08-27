@@ -44,6 +44,25 @@ export interface OrigemRule {
   /** `isHtml` (models.dart:1022-1033). */
   isHtml: boolean;
   /**
+   * Whether this channel writes INBOUND messages with **no `user_id`**.
+   *
+   * The marketplace importers do: identity is a `cliente` now, not a synthetic
+   * `usuario` (#768), so nothing stamps an author on either direction and only
+   * `estadoEnvio` tells them apart. WhatsApp does not — every inbound message
+   * carries the contact's uid (`processMessages.ts`), so an AUTHORLESS WhatsApp
+   * doc is always one of ours.
+   *
+   * ⚠️ That distinction is load-bearing and not cosmetic, because **`recebido`
+   * is overloaded**: on a marketplace thread it means "the contact sent this",
+   * but `processStatus.ts` writes it onto **our own** outbound message when the
+   * Cloud API reports `read` (and `excluido` when it reports `deleted`). So a
+   * direction rule keyed on the state alone makes a WhatsApp auto-reply jump
+   * from our side to the customer's the moment they read it. Read this flag
+   * FIRST: where it is `false`, an authorless message is ours whatever its state
+   * says. See `mensagemEhNossa` in `apps/web/lib/chat/direcao.ts`.
+   */
+  entradaSemAutor: boolean;
+  /**
    * Whether an outbound sender exists for this origem AT ALL — the static half
    * of the #817 composer gate. NOT from the legacy source: the legacy chat had a
    * working reply path for every origem it modelled, so it never needed to ask.
@@ -104,6 +123,7 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: null,
     maxTamanhoAnexoBytes: CAP_25MB,
     isHtml: false,
+    entradaSemAutor: false,
     temEnvio: false, // webchat has no outbound sender in this app
   },
   // limite 2000 (L1006); permiteAnexo true (default); maximoAnexos 1 (L1073);
@@ -115,6 +135,7 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: FORMATS_FB_WA,
     maxTamanhoAnexoBytes: CAP_25MB,
     isHtml: false,
+    entradaSemAutor: false,
     temEnvio: false, // no Messenger sender ported
   },
   // limite 2000 (L1008); permiteAnexo true (default); maximoAnexos 5 (default);
@@ -126,6 +147,7 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: null,
     maxTamanhoAnexoBytes: CAP_25MB,
     isHtml: false,
+    entradaSemAutor: false,
     temEnvio: false, // no Facebook-comment sender ported
   },
   // limite 2000 (L1010); permiteAnexo true (default); maximoAnexos 1 (L1075);
@@ -137,6 +159,7 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: FORMATS_FB_WA,
     maxTamanhoAnexoBytes: CAP_25MB,
     isHtml: false,
+    entradaSemAutor: false,
     // The only channel that can actually transmit today: `sendOutbound`
     // (apps/whatsapp/functions) picks up the mensagem doc and sends it.
     temEnvio: true,
@@ -151,6 +174,7 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: [],
     maxTamanhoAnexoBytes: 0,
     isHtml: true,
+    entradaSemAutor: true,
     // #533 — the ML chat responder route transmits this origem.
     temEnvio: true,
   },
@@ -168,6 +192,7 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: FORMATS_ML,
     maxTamanhoAnexoBytes: CAP_25MB,
     isHtml: true,
+    entradaSemAutor: true,
     // #533 — the ML chat responder route transmits this origem.
     temEnvio: true,
   },
@@ -187,6 +212,7 @@ export const ORIGEM_RULES: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: FORMATS_ML_CLAIMS,
     maxTamanhoAnexoBytes: 5_000_000,
     isHtml: true,
+    entradaSemAutor: true,
     // #768 — the ML chat responder route transmits this origem too, through
     // the claim's own send-message action.
     temEnvio: true,

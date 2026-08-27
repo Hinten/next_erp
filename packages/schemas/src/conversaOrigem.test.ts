@@ -21,6 +21,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: null,
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: false,
+    entradaSemAutor: false,
     temEnvio: false,
   },
   // facebook — limite 2000 (L1006), maximoAnexos 1 (L1073), formats L1089,
@@ -32,6 +33,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf', 'txt', 'aac', 'mp4', 'mmpeg', 'amr', 'ogg', '3gp'],
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: false,
+    entradaSemAutor: false,
     temEnvio: false,
   },
   // comentario — limite 2000 (L1008), maximoAnexos default 5, formats throw →
@@ -43,6 +45,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: null,
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: false,
+    entradaSemAutor: false,
     temEnvio: false,
   },
   // whatsapp — limite 2000 (L1010), maximoAnexos 1 (L1075), formats L1091 (same
@@ -54,6 +57,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf', 'txt', 'aac', 'mp4', 'mmpeg', 'amr', 'ogg', '3gp'],
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: false,
+    entradaSemAutor: false,
     temEnvio: true,
   },
   // mlperg — limite 2000 (L1012), permiteAnexo FALSE (L1059) so maximoAnexos 0
@@ -65,6 +69,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: [],
     maxTamanhoAnexoBytes: 0,
     isHtml: true,
+    entradaSemAutor: true,
     temEnvio: true,
   },
   // mlped — limite 350 (corrected from legacy 300 at L1014), maximoAnexos 1 (L1069), formats L1085,
@@ -76,6 +81,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf', 'txt'],
     maxTamanhoAnexoBytes: 25_000_000,
     isHtml: true,
+    entradaSemAutor: true,
     temEnvio: true,
   },
   // mlclaims — limite 300 (L1016), maximoAnexos 3 (L1071), formats L1087,
@@ -87,6 +93,7 @@ const EXPECTED: Record<OrigemConversa, OrigemRule> = {
     formatosAnexo: ['jpg', 'jpeg', 'png', 'pdf'],
     maxTamanhoAnexoBytes: 5_000_000,
     isHtml: true,
+    entradaSemAutor: true,
     temEnvio: true,
   },
 };
