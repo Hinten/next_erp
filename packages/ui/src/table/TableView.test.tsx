@@ -83,7 +83,8 @@ vi.mock('@delfrance/data', async () => {
   };
 });
 
-import { MAX_RESTORED_PAGES, TableView } from './TableView';
+import { StrictMode } from 'react';
+import { MAX_RESTORED_PAGES, SCROLL_PERSIST_DEBOUNCE_MS, TableView } from './TableView';
 import { listViewMemoryKey, readListViewMemory, writeListViewMemory } from './listViewMemory';
 
 /** The slot this harness's table uses: pathname '/clientes' + collection 'tests'. */
@@ -1059,6 +1060,86 @@ describe('TableView', () => {
       );
       expect(limits).not.toContain(2);
       expect(limits.at(-1)).toBe(4);
+    });
+
+    it('keeps the restored window under StrictMode', async () => {
+      // `apps/web/next.config` sets `reactStrictMode: true`, so in dev React
+      // mounts, unmounts and REMOUNTS on the same fiber and runs every effect
+      // twice. A boolean "skip my first run" ref does not survive that — it is
+      // already armed on the second run, so the reset fires and the restored
+      // window vanishes in `next dev` while production is fine. Rendering
+      // without StrictMode (as every other case here does) cannot see it.
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      buildPipelineSpy.mockClear();
+      render(
+        <StrictMode>
+          <MantineTestProvider>
+            <TableView
+              schema={testSchema}
+              collection={fakeCollection()}
+              db={{} as never}
+              pageSize={2}
+            />
+          </MantineTestProvider>
+        </StrictMode>,
+      );
+      const limits = buildPipelineSpy.mock.calls.map(
+        (call) => (call as unknown as [unknown, { limit: number }])[1].limit,
+      );
+      expect(limits.at(-1)).toBe(4);
+    });
+
+    it('writes the scroll offset once the gesture settles, not during it', async () => {
+      // A per-frame write runs ~60 stringify+setItem pairs a second for the
+      // whole gesture and none of them is ever read — the offset is consumed
+      // only by the next mount. The intermediate offsets must never land.
+      vi.useFakeTimers();
+      vi.stubGlobal('scrollTo', vi.fn());
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      for (const y of [10, 40, 90, 140]) {
+        Object.defineProperty(window, 'scrollY', { value: y, configurable: true });
+        window.dispatchEvent(new Event('scroll'));
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      expect(readListViewMemory(MEMORY_KEY)?.scroll ?? 0).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS + 20);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(140);
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it('flushes a pending scroll when the list unmounts', async () => {
+      // Clicking a row within the debounce window of the last scroll is exactly
+      // the gesture this feature exists to remember; without the flush it is
+      // the one gesture that loses it.
+      vi.useFakeTimers();
+      vi.stubGlobal('scrollTo', vi.fn());
+      const { unmount } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 640, configurable: true });
+      window.dispatchEvent(new Event('scroll'));
+      unmount();
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(640);
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it('does not zero a remembered offset when it unmounts without a scroll', async () => {
+      // The StrictMode mount/cleanup/remount cycle would otherwise flush
+      // `scrollY` 0 over the offset the restore is still on its way to
+      // putting back.
+      vi.stubGlobal('scrollTo', vi.fn());
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      const { unmount } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      unmount();
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(840);
+      vi.unstubAllGlobals();
     });
 
     it('still collapses the window when the filter changes afterwards', () => {

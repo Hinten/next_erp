@@ -88,6 +88,13 @@ import { renderCell } from './cell-renderers';
  */
 export const MAX_RESTORED_PAGES = 3;
 
+/**
+ * Trailing debounce before a scroll offset is persisted. Long enough that a
+ * flick settles into one write, short enough that a deliberate scroll-then-click
+ * is captured by the unmount flush rather than lost.
+ */
+export const SCROLL_PERSIST_DEBOUNCE_MS = 150;
+
 // Re-exported for back-compat; the implementations now live in
 // ./useTableUrlState alongside the hook that owns this state.
 export { parseFiltersFromParams, parseSortFromParams };
@@ -882,19 +889,33 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // (filters, sort, base filters or bound params) — the expanded window only
   // makes sense for the result set the user was looking at.
   //
-  // ⚠️ Skips its FIRST run. Every `useEffect` fires once on mount, and the
-  // window is now seeded from the sticky memory in `useState` above — so an
-  // unguarded reset here would collapse a restored window back to one page a
-  // beat after it was recovered, and the page count would silently never come
-  // back. Resetting on mount was a no-op before this seed existed, so nothing
-  // is lost by skipping it.
-  const pagesResetArmed = useRef(false);
+  // ⚠️ Keyed on the query SHAPE, not on "have I run before". The window is now
+  // seeded from the sticky memory in `useState` above, so this effect's mount
+  // run must not collapse it — but a boolean "skip the first run" ref does NOT
+  // survive contact with React StrictMode, which `apps/web/next.config` turns
+  // on: StrictMode mounts, unmounts and remounts on the SAME fiber, so the ref
+  // is already armed on the second run, `setPages(1)` fires, and the restored
+  // window silently disappears in `next dev` while production behaves
+  // correctly. Comparing the shape is idempotent under double-invocation —
+  // the second run computes the same signature and finds nothing changed — and
+  // it also says what this effect actually means: reset when the result set
+  // the window described is no longer the one being queried.
+  const pagesResetShape = useRef<string | null>(null);
   useEffect(() => {
-    if (!pagesResetArmed.current) {
-      pagesResetArmed.current = true;
-      return;
-    }
-    setPages(1);
+    const shape = JSON.stringify([
+      filtersSerial,
+      baseFiltersSerial,
+      extraFiltersSerial,
+      queryParamsSerial,
+      sort?.field,
+      sort?.direction,
+      forcedSort?.field,
+      forcedSort?.direction,
+    ]);
+    if (pagesResetShape.current === shape) return;
+    const firstRun = pagesResetShape.current === null;
+    pagesResetShape.current = shape;
+    if (!firstRun) setPages(1);
   }, [
     filtersSerial,
     baseFiltersSerial,
@@ -918,21 +939,35 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // runs in its default `mode: "fixed"`, where `AppShell.Main` sets a
   // `min-height` and no overflow at all. Reading a container's `scrollTop`
   // would sample a constant zero.
+  // Debounced on a TRAILING edge rather than coalesced per animation frame: a
+  // frame-coalesced write still runs ~60 `JSON.stringify` + `setItem` pairs a
+  // second for the whole gesture, and not one of them is ever read — the offset
+  // is only consumed by `resolveInitialTableState` on the NEXT mount. One write
+  // when the gesture settles is equivalent and two orders of magnitude cheaper.
   useEffect(() => {
-    let frame = 0;
+    let handle = 0;
+    let moved = false;
     const onScroll = () => {
-      // Coalesce a scroll burst into one write per frame — this fires at input
-      // rate and every call reaches JSON.stringify + sessionStorage.
-      if (frame) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = 0;
-        rememberView({ scroll: window.scrollY });
-      });
+      moved = true;
+      window.clearTimeout(handle);
+      handle = window.setTimeout(
+        () => rememberView({ scroll: window.scrollY }),
+        SCROLL_PERSIST_DEBOUNCE_MS,
+      );
     };
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => {
       window.removeEventListener('scroll', onScroll);
-      if (frame) window.cancelAnimationFrame(frame);
+      window.clearTimeout(handle);
+      // Flush what the debounce still owes — otherwise clicking a row within
+      // the debounce window of the last scroll loses that scroll entirely,
+      // which is exactly the gesture this feature exists to remember.
+      //
+      // ⚠️ Only when this mount actually saw a scroll. StrictMode mounts,
+      // cleans up and remounts immediately, and an unconditional flush there
+      // would persist `scrollY` 0 over the offset the restore is still on its
+      // way to putting back.
+      if (moved) rememberView({ scroll: window.scrollY });
     };
   }, [rememberView]);
 
