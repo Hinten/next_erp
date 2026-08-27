@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DERIVED_JOB, THIRD_PARTY_JOBS } from '../../../.github/scripts/main-red-alert.mjs';
 import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
-import { checkName, jobBlocks, topBlock } from './lib/workflow-scan.js';
+import { checkName, jobBlocks, stripComments, topBlock } from './lib/workflow-scan.js';
 
 /**
  * Every PR-triggered lane must ALWAYS publish a check, and that check must tell
@@ -1617,6 +1617,84 @@ describe('CI lanes always report', () => {
     expect(
       suites.filter((name) => DERIVED_JOB.test(name)),
       '`DERIVED_JOB` matches a SUITE job. It must only match reporters.',
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 16. An apt-backed browser install trims the sources it does not use.
+  // ------------------------------------------------------------------
+  it('every job installing Playwright system deps trims apt sources first', () => {
+    // WHAT WENT WRONG. `playwright install --with-deps` — and the `install-deps`
+    // half it decomposes into — shells out to `apt-get update`, which exits 100
+    // when ANY configured source fails, including one holding nothing it will
+    // install. The ubuntu-latest image ships two packages.microsoft.com repos; on
+    // 2026-08-27 both answered 403 and reddened `E2E gate (emulator)` on PR #1306,
+    // while every package Playwright actually installs — 9 font packages — sat on
+    // azure.archive.ubuntu.com and fetched fine. A concurrent run on another runner
+    // passed that same minute, so it is a per-edge-node flake that recurs.
+    //
+    // Only lanes running BARE on ubuntu-latest are exposed. The staging e2e lanes
+    // run inside `mcr.microsoft.com/playwright`, where the deps are pre-baked and
+    // no apt runs at all — which is why this only ever hit the emulator lane.
+    //
+    // ⚠️ WHY A TEST AND NOT JUST THE COMMENT IN THE WORKFLOW. Deleting the trim
+    // step fails nothing until the next 403, which may be months out and will read
+    // as an unrelated flake when it lands. Same class as `apphosting-next-pinned`
+    // and `ai-root-entry-browser-safe`: a guard whose removal is otherwise silent.
+    //
+    // ⚠️ PROSE IS NOT AN INVOCATION, AND IT HIDES HERE IN TWO PLACES. `jobBlocks`
+    // cannot know that a trailing comment block documents the NEXT job, so prose
+    // lands in the previous job's body — and both the trim comment and
+    // e2e-reusable.yml's container note name `install-deps` in a comment. Hence
+    // `stripComments` below. But a comment is not the only prose: the retry loop
+    // used to `echo` a warning naming the very command it wraps, and matching that
+    // line made this assertion pass while nothing real was detected — the exact
+    // vacuous green the rot check underneath is meant to catch, caught by it. So
+    // annotation and echo lines are excluded too.
+    const APT_INSTALL = /playwright\s+install-deps\b|playwright\s+install\b[^\n]*--with-deps/;
+    const PROSE = /(?:^|\s)echo\s|::(?:warning|error|notice)::/;
+    const TRIM = /sources\.list\.d/;
+
+    const exposed = [];
+    const offenders = [];
+
+    for (const file of findByPathspec(':(glob).github/workflows/*.y*ml').sort()) {
+      for (const [jobId, body] of Object.entries(jobBlocks(read(file)))) {
+        const lines = stripComments(body).split('\n');
+        const apt = lines.findIndex((line) => APT_INSTALL.test(line) && !PROSE.test(line));
+        if (apt === -1) continue;
+        exposed.push(`${file}:${jobId}`);
+        // Order, not presence: a trim running AFTER the install protects nothing.
+        const trim = lines.findIndex((line) => TRIM.test(line));
+        if (trim === -1 || trim > apt) offenders.push(`${file}:${jobId}`);
+      }
+    }
+
+    expect(
+      exposed.length,
+      [
+        'Found no job running an apt-backed Playwright install.',
+        '',
+        'Either the last such lane moved into the Playwright container — in which',
+        'case delete this assertion and say so — or `APT_INSTALL` has rotted and',
+        'this assertion now checks nothing, which is the vacuous-green failure the',
+        'whole file exists to prevent.',
+      ].join('\n'),
+    ).toBeGreaterThanOrEqual(1);
+
+    expect(
+      offenders,
+      [
+        'A job runs an apt-backed Playwright install with no apt-source trim before it.',
+        '',
+        'That job now dies whenever an unrelated third-party repo on the runner image',
+        'is unreachable — a red required check caused by nothing in the PR, clearing',
+        'only on a re-run. Add the `Trim apt sources to the Ubuntu archive` step ahead',
+        'of the install (copy it from e2e-emulator.yml), or move the job into the',
+        'Playwright container, where no apt runs at all.',
+        '',
+        ...offenders.map((o) => `  - ${o}`),
+      ].join('\n'),
     ).toEqual([]);
   });
 });
