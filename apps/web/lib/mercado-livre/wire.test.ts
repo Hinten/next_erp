@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   categoriaAtributoSchema,
+  reclamacaoEstadoSchema,
   categoriasSchema,
   contaSchema,
   massImportStatusSchema,
@@ -217,5 +218,66 @@ describe('⚠️ ANTI-VACUITY — a wrong body is still rejected', () => {
     const campos = r.success ? [] : r.error.issues.map((i) => i.path.join('.'));
     expect(campos).toContain('id');
     expect(campos).toContain('nickname');
+  });
+});
+
+describe('reclamacaoEstado — the WIRE names, not the stale interface ones', () => {
+  const BASE = {
+    claimId: 5_000_000_001,
+    status: 'opened',
+    stage: 'claim',
+    tipo: 'mediations',
+    reasonId: 'PNR',
+    tipoReclamacao: 'PNR',
+    acoesDisponiveis: [],
+    prazos: [],
+    expectativas: null,
+    expectativasIndisponiveis: false,
+    ofertasParciais: null,
+  };
+
+  it('⭐ accepts podeEnviarMensagem / motivoSemMensagem', async () => {
+    // What `claimResolve.ts:209-210` actually puts on the wire. The interface
+    // said `podeResponder` / `motivoSemResposta` — renamed on the backend in
+    // dbe53a99 and never carried across — and the cast hid it, so
+    // `ReclamacaoMlPanel` read `undefined` and ALWAYS showed the generic
+    // "nenhuma ação" sentence instead of ML's real reason. A live bug on main.
+    const r = reclamacaoEstadoSchema.parse({
+      ...BASE,
+      podeEnviarMensagem: false,
+      motivoSemMensagem: 'Reclamação encerrada no Mercado Livre',
+    });
+
+    expect(r.motivoSemMensagem).toBe('Reclamação encerrada no Mercado Livre');
+  });
+
+  it('⚠️ REJECTS the stale interface names', async () => {
+    // The guard. Without this the rename can drift back in silence exactly the
+    // way it drifted out — the panel would simply stop showing the reason again.
+    const r = reclamacaoEstadoSchema.safeParse({
+      ...BASE,
+      podeResponder: false,
+      motivoSemResposta: 'algo',
+    });
+
+    expect(r.success).toBe(false);
+    const campos = r.success ? [] : r.error.issues.map((i) => i.path.join('.'));
+    expect(campos).toContain('podeEnviarMensagem');
+    expect(campos).toContain('motivoSemMensagem');
+  });
+
+  it('⚠️ REJECTS an absent acoesDisponiveis instead of defaulting it to []', async () => {
+    // Its own doc says the list "empties as the claim closes", so a defaulted
+    // `[]` would render "no actions available" identically to a claim ML never
+    // answered for. `claimResolve.ts:207` always sends it; there is no evidence
+    // for a default and nothing for one to rescue.
+    const { acoesDisponiveis: _drop, ...sem } = BASE;
+    const r = reclamacaoEstadoSchema.safeParse({
+      ...sem,
+      podeEnviarMensagem: true,
+      motivoSemMensagem: null,
+    });
+
+    expect(r.success).toBe(false);
   });
 });
