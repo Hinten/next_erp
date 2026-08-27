@@ -7,6 +7,7 @@ import { IconAlertCircle, IconCheck, IconChecks, IconClock, IconPencil } from '@
 import { ESTADO_ENVIO, type Conversa, type EstadoEnvioMensagem } from '@delfrance/schemas';
 import { etiquetaTint } from '@/lib/chat/etiquetaCores';
 import { lastMensagemPreview } from '@/lib/chat/preview';
+import { mensagemEhNossa } from '@/lib/chat/direcao';
 import { hasDraft } from '@/lib/chat/draft';
 import { useLastMensagem } from '../_hooks/useLastMensagem';
 
@@ -37,15 +38,20 @@ function formatTime(ms: number | null | undefined): string {
 function DeliveryTick({
   estado,
   visualizado,
+  nossa,
 }: {
   estado: EstadoEnvioMensagem | undefined;
   visualizado: number | null | undefined;
+  /** Whether WE sent the last message — the tile is not a receipt for theirs. */
+  nossa: boolean;
 }) {
-  if (estado == null) return null;
-  // ⚠️ The SECOND check means READ, matching `MensagemStatusIcon` in the thread.
-  // This drew a double check for merely `enviado`, so the tile claimed the
-  // customer had seen a message the thread itself only claimed was delivered.
-  if (estado === ESTADO_ENVIO.enviado && visualizado != null) {
+  if (estado == null || !nossa) return null;
+  // ⚠️ The SECOND check means READ, matching `MensagemStatusIcon` in the thread,
+  // and it is gated on `visualizado` ALONE for the same reason that component is.
+  // Adding `estado === enviado` made it unreachable on WhatsApp, where the read
+  // receipt writes `estadoEnvio: recebido` in the SAME patch as `visualizado` —
+  // the thread showed two checks and the tile showed nothing at all.
+  if (visualizado != null) {
     return <IconChecks size={14} color="var(--mantine-color-blue-6)" aria-label="Visualizado" />;
   }
   switch (estado) {
@@ -105,7 +111,7 @@ export function ConversaTile({
   const tint = etiquetaTint(conversa.cor_etiqueta);
   const draft = useMemo(() => hasDraft(id), [id]);
 
-  const preview = loading ? '…' : lastMensagemPreview(lastMsg, { meuUid });
+  const preview = loading ? '…' : lastMensagemPreview(lastMsg, { meuUid, origem: conversa.origem });
   const timeMs = lastMsg?.timestamp ?? conversa.ultima_modificacao;
 
   const mutedColor = tint ? tint.color : 'var(--mantine-color-dimmed)';
@@ -169,7 +175,14 @@ export function ConversaTile({
                     </ThemeIcon>
                   </Tooltip>
                 )}
-                <DeliveryTick estado={lastMsg?.estadoEnvio} visualizado={lastMsg?.visualizado} />
+                <DeliveryTick
+                  estado={lastMsg?.estadoEnvio}
+                  visualizado={lastMsg?.visualizado}
+                  nossa={
+                    lastMsg != null &&
+                    mensagemEhNossa(lastMsg, { myUid: meuUid, origem: conversa.origem })
+                  }
+                />
               </Group>
             </Group>
           </Stack>

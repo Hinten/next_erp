@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { TIPO_MENSAGEM, ESTADO_ENVIO, type Mensagem } from '@delfrance/schemas';
+import {
+  ESTADO_ENVIO,
+  ORIGEM_CONVERSA,
+  TIPO_MENSAGEM,
+  type Mensagem,
+  type OrigemConversa,
+} from '@delfrance/schemas';
 import type { ServerMensagem } from '../../_hooks/useMensagensWindow';
 
 // Author-name lookup is a network hook — stub it so bubbles render synchronously.
@@ -42,6 +48,7 @@ function renderBubble(
   opts?: {
     myUid?: string;
     customerUid?: string | null;
+    origem?: OrigemConversa;
     searchRegex?: RegExp | null;
     searchActive?: boolean;
   },
@@ -54,6 +61,7 @@ function renderBubble(
           mensagem={m}
           myUid={opts?.myUid ?? 'me'}
           customerUid={opts?.customerUid ?? 'cust'}
+          origem={opts?.origem ?? ORIGEM_CONVERSA.mercadoLivrePedido}
           isHtml={false}
           searchRegex={opts?.searchRegex ?? null}
           searchActive={opts?.searchActive ?? false}
@@ -150,6 +158,24 @@ describe('MensagemBubble — which side the bubble lands on', () => {
     );
     expect(side(container)).toBe('entrada');
   });
+
+  it.each([
+    ['READ — processStatus writes estadoEnvio: recebido', ESTADO_ENVIO.recebido],
+    ['DELETED — processStatus writes estadoEnvio: excluido', ESTADO_ENVIO.excluido],
+  ])(
+    '⚠️ a WhatsApp auto-reply stays OURS after %s',
+    (_label, estadoEnvio: (typeof ESTADO_ENVIO)[keyof typeof ESTADO_ENVIO]) => {
+      // `recebido` is overloaded: on a marketplace thread it means the contact
+      // sent this, but WhatsApp's status pipeline writes it onto OUR OWN message
+      // when the customer reads it. A state-only rule made the authorless
+      // auto-reply jump to the customer's side the instant the receipt landed.
+      const { container } = renderBubble(
+        base('wa1', { user_id: null, estadoEnvio, visualizado: Date.now() }),
+        { myUid: 'me', customerUid: null, origem: ORIGEM_CONVERSA.whatsapp },
+      );
+      expect(side(container)).toBe('saida');
+    },
+  );
 
   it('an optimistic row is ours before anything is written', () => {
     const otimista = {

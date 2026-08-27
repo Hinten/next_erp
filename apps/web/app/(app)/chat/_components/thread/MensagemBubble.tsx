@@ -15,7 +15,9 @@ import { useHover } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconArrowForward, IconCopy, IconDots, IconFileText } from '@tabler/icons-react';
 import type { Mensagem } from '@delfrance/schemas';
-import { ESTADO_ENVIO, TIPO_MENSAGEM, ehEstadoDeSaida } from '@delfrance/schemas';
+import { ESTADO_ENVIO, TIPO_MENSAGEM } from '@delfrance/schemas';
+import type { OrigemConversa } from '@delfrance/schemas';
+import { mensagemEhNossa } from '@/lib/chat/direcao';
 import { formatMensagemTime } from '@/lib/chat/mensagemTime';
 import { HighlightedText } from '@/lib/chat/highlight';
 import { type AnyMensagem, isOptimistic, mensagemKey } from '../../_hooks/useMensagensWindow';
@@ -32,6 +34,8 @@ export interface MensagemBubbleProps {
   myUid: string | null | undefined;
   /** The conversa's customer usuario id (from `usarioOuterRef`), for alignment. */
   customerUid: string | null;
+  /** The conversa's origem — decides direction for an authorless message. */
+  origem: OrigemConversa;
   /** Whether this origem renders HTML bodies (ORIGEM_RULES[origem].isHtml). */
   isHtml: boolean;
   searchRegex: RegExp | null;
@@ -55,6 +59,7 @@ export function MensagemBubble(props: MensagemBubbleProps) {
     mensagem,
     myUid,
     customerUid,
+    origem,
     isHtml,
     searchRegex,
     searchActive,
@@ -98,17 +103,11 @@ export function MensagemBubble(props: MensagemBubbleProps) {
     );
   }
 
-  // ⚠️ An author, when there is one, decides the side — it names WHICH operator,
-  // which a send state cannot. But every message the marketplace importers write
-  // is AUTHORLESS (identity is a `cliente` now, so nothing stamps `user_id`,
-  // #768), and for those the side is the send state. Without that second arm
-  // `mine` was unreachable for them: every ML reply we sent rendered on the
-  // customer's side, grey and with no tick, indistinguishable from the buyer's.
-  const semAutor = !mensagem.user_id;
-  const mine =
-    isOptimistic(mensagem) ||
-    (!semAutor && mensagem.user_id === myUid) ||
-    (semAutor && ehEstadoDeSaida(mensagem.estadoEnvio));
+  // The side is `mensagemEhNossa` — see it for why an author outranks the send
+  // state and why the origem outranks both for an authorless doc. Keying on
+  // `user_id === myUid` alone made `mine` unreachable for every marketplace
+  // message, so our own replies rendered as the buyer's, grey and tickless.
+  const mine = isOptimistic(mensagem) || mensagemEhNossa(mensagem, { myUid, origem });
   const isCustomer =
     !mine &&
     (mensagem.estadoEnvio === ESTADO_ENVIO.recebido ||

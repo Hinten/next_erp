@@ -10,7 +10,9 @@
  * "audio"/"video"/"sticker" placeholders.
  */
 import type { Mensagem } from '@delfrance/schemas';
-import { TIPO_MENSAGEM, ehEstadoDeSaida } from '@delfrance/schemas';
+import { TIPO_MENSAGEM } from '@delfrance/schemas';
+import type { OrigemConversa } from '@delfrance/schemas';
+import { mensagemEhNossa } from './direcao';
 
 /**
  * The subset of a `Mensagem` this preview reads. Accepts a full `Mensagem`
@@ -40,6 +42,8 @@ export interface PreviewOptions {
    * `usuarios` doc; the tile may pass it when known, else omit it.
    */
   autorNome?: string | null;
+  /** The conversa's origem — decides direction for an authorless message. */
+  origem?: OrigemConversa | null;
 }
 
 /** Collapse newlines/tabs to single spaces and trim (legacy `conteudoNoBreaks`). */
@@ -83,7 +87,7 @@ function previewBody(m: PreviewMensagem): string {
  */
 export function lastMensagemPreview(
   m: PreviewMensagem | null | undefined,
-  { meuUid, autorNome }: PreviewOptions = {},
+  { meuUid, autorNome, origem }: PreviewOptions = {},
 ): string {
   if (!m) return 'Sem mensagens';
 
@@ -96,9 +100,17 @@ export function lastMensagemPreview(
     if (meuUid != null && m.user_id === meuUid) return `(Eu) ${body}`;
     if (nonEmpty(autorNome)) return `(${autorNome}) ${body}`;
   }
-  // ⚠️ Same rule the thread uses: an AUTHORLESS message is ours when its state
-  // says we sent it. Every marketplace reply is authorless, so keying on
-  // `user_id` alone dropped the prefix on exactly the messages we did send.
-  if (!nonEmpty(m.user_id) && ehEstadoDeSaida(m.estadoEnvio)) return `(Eu) ${body}`;
+  // ⚠️ Same rule the thread uses (`mensagemEhNossa`): every marketplace reply is
+  // AUTHORLESS, so keying on `user_id` alone dropped the prefix on exactly the
+  // messages we did send.
+  //
+  // ⚠️ Gated on `meuUid` like the arm above, deliberately. `MensagemQuote` calls
+  // this with no options at all, and it already prints the author on its own line
+  // — so without the gate a quoted ML reply gained an `(Eu)` that a quoted
+  // colleague's message never gets, and the two prefixes disagreed about when
+  // they apply.
+  if (meuUid != null && !nonEmpty(m.user_id) && mensagemEhNossa(m, { myUid: meuUid, origem })) {
+    return `(Eu) ${body}`;
+  }
   return body;
 }
