@@ -109,6 +109,15 @@ export function PrincipalTab({
     () => (listaRef ? listaDePrecosCollection.docRef(db, {}, listaRef.id) : null),
     [db, listaRef],
   );
+  // Two questions, two sources — conflating them is what made simply OPENING a
+  // pedido re-price it (see the effect below):
+  //  - WHICH lista, and whether it CHANGED: the form field, resolved
+  //    synchronously by `dereferenceOuterRef`. Already correct on the first
+  //    render, so it never transitions null -> id on its own.
+  //  - whether that lista still EXISTS: the snapshot, which necessarily lands a
+  //    beat later. Keeps `handlePick`'s "Selecione uma tabela de preços" guard
+  //    honest when the pedido points at a lista that was deleted.
+  const listaIdSelecionada = listaRef?.id ?? null;
   const { data: listaDoc } = useDocSnapshot(listaRefTyped);
   const listaId = listaDoc?.id ?? null;
 
@@ -137,17 +146,28 @@ export function PrincipalTab({
     });
   }
 
-  // Re-price every priced row when the lista de preços changes to a new
-  // (non-null) value — fetch each distinct produto, look up its price for the
-  // new lista, and overwrite `precoDeVenda` ONLY when a price is found. Skipped
-  // on the initial mount and on a no-op change (tracked via `prevListaRef`), so
-  // an unrelated render never clobbers manual edits.
-  const prevListaRef = useRef<string | null | undefined>(undefined);
+  // Re-price every priced row when the OPERATOR picks a different lista de
+  // preços — fetch each distinct produto, look up its price for the new lista,
+  // and overwrite `precoDeVenda` ONLY when a price is found.
+  //
+  // ⚠️ The signal must be `listaIdSelecionada` (the synchronous ref id), never
+  // `listaId` (the snapshot id). `useDocSnapshot` starts at `data: undefined`,
+  // so the snapshot id goes null → 'X' on every mount once the subscription
+  // lands, and that transition is indistinguishable from an operator picking a
+  // new tabela — which is why merely opening a pedido rewrote every row's price
+  // and left the form dirty. `keepMounted={false}` on PedidoForm's Tabs made it
+  // repeat on each switch back to Principal.
+  const prevListaId = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    const prev = prevListaRef.current;
-    prevListaRef.current = listaId;
+    const prev = prevListaId.current;
+    // Recorded BEFORE the `disabled` bail-out: a pedido that unlocks later must
+    // not fire a deferred re-price for a change the operator never made.
+    prevListaId.current = listaIdSelecionada;
     // First run (undefined) or no actual change → nothing to do.
-    if (prev === undefined || prev === listaId || !listaId) return;
+    if (prev === undefined || prev === listaIdSelecionada || !listaIdSelecionada) return;
+    // Locked pedido (estado past checkout, or no write permission): its prices
+    // are history — never rewritten.
+    if (disabled) return;
     const rows = form.getValues('_itensFlat') ?? [];
     const produtoIds = Array.from(
       new Set(rows.filter((r) => !!r.produtoUid && !r._delete).map((r) => r.produtoUid as string)),
@@ -164,7 +184,7 @@ export function PrincipalTab({
           try {
             const snap = await getDoc(produtoCollection.docRef(db, {}, id));
             const data = snap.data();
-            priceById.set(id, data ? await precoFromProduto(db, data, listaId) : null);
+            priceById.set(id, data ? await precoFromProduto(db, data, listaIdSelecionada) : null);
           } catch (err) {
             if (!(err instanceof FirebaseError)) throw err;
             priceById.set(id, null);
@@ -188,7 +208,7 @@ export function PrincipalTab({
     return () => {
       cancelled = true;
     };
-  }, [listaId, db, form]);
+  }, [listaIdSelecionada, disabled, db, form]);
 
   return (
     <Stack>
