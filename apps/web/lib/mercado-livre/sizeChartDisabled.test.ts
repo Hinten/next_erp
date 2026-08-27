@@ -26,7 +26,14 @@ function input(over: Partial<SizeChartGateInput> = {}): SizeChartGateInput {
   };
 }
 
-/** Every legal input, once. 2⁴ booleans × the three-way busy = 48. */
+/**
+ * Every legal input, once: five booleans × the three-way busy = 96.
+ *
+ * ⚠️ The count is ASSERTED below, not just claimed here. The version of this
+ * comment that said 48 was stale from before `enviada` existed, and a stale
+ * count is worse than none: the next person widening the input reads this line
+ * to check they covered it.
+ */
 function everyInput(): SizeChartGateInput[] {
   const out: SizeChartGateInput[] = [];
   for (const readOnly of [false, true]) {
@@ -46,6 +53,14 @@ function everyInput(): SizeChartGateInput[] {
 }
 
 describe('sizeChartGate', () => {
+  // ⚠️ Pins what "exhaustive" means, so widening `SizeChartGateInput` without
+  // widening the sweep fails here rather than silently narrowing every sweep
+  // below it.
+  it('sweeps every legal input', () => {
+    expect(everyInput()).toHaveLength(96);
+    expect(new Set(everyInput().map((i) => JSON.stringify(i))).size).toBe(96);
+  });
+
   it('leaves every control open when nothing blocks it', () => {
     for (const action of ACTIONS) {
       expect(sizeChartGate(action, input())).toEqual({ disabled: false, motivo: null });
@@ -194,6 +209,7 @@ function editorInput(over: Partial<SizeChartEditorGateInput> = {}): SizeChartEdi
   return {
     canWrite: true,
     busy: null,
+    aiBusy: false,
     aiFillable: true,
     hasNome: true,
     hasDominio: true,
@@ -206,24 +222,28 @@ function editorInput(over: Partial<SizeChartEditorGateInput> = {}): SizeChartEdi
 const BLOQUEIO = 'Responda os atributos da guia.';
 const CAP = 'O Mercado Livre aceita no máximo 75 tamanhos por guia.';
 
+/** Every legal input, once: seven two-valued fields × the three-way busy = 384. */
 function everyEditorInput(): SizeChartEditorGateInput[] {
   const out: SizeChartEditorGateInput[] = [];
   for (const canWrite of [false, true]) {
     for (const busy of [null, 'draft', 'send'] as const) {
-      for (const aiFillable of [false, true]) {
-        for (const hasNome of [false, true]) {
-          for (const hasDominio of [false, true]) {
-            for (const blockingError of [null, BLOQUEIO]) {
-              for (const overCap of [null, CAP]) {
-                out.push({
-                  canWrite,
-                  busy,
-                  aiFillable,
-                  hasNome,
-                  hasDominio,
-                  blockingError,
-                  overCap,
-                });
+      for (const aiBusy of [false, true]) {
+        for (const aiFillable of [false, true]) {
+          for (const hasNome of [false, true]) {
+            for (const hasDominio of [false, true]) {
+              for (const blockingError of [null, BLOQUEIO]) {
+                for (const overCap of [null, CAP]) {
+                  out.push({
+                    canWrite,
+                    busy,
+                    aiBusy,
+                    aiFillable,
+                    hasNome,
+                    hasDominio,
+                    blockingError,
+                    overCap,
+                  });
+                }
               }
             }
           }
@@ -235,6 +255,11 @@ function everyEditorInput(): SizeChartEditorGateInput[] {
 }
 
 describe('sizeChartEditorGate', () => {
+  it('sweeps every legal input', () => {
+    expect(everyEditorInput()).toHaveLength(384);
+    expect(new Set(everyEditorInput().map((i) => JSON.stringify(i))).size).toBe(384);
+  });
+
   it('leaves every control open when nothing blocks it', () => {
     for (const action of EDITOR_ACTIONS) {
       expect(sizeChartEditorGate(action, editorInput())).toEqual({ disabled: false, motivo: null });
@@ -254,7 +279,10 @@ describe('sizeChartEditorGate', () => {
     for (const over of everyEditorInput()) {
       const busy = over.busy !== null;
       expect(sizeChartEditorGate('preencherIa', over).disabled).toBe(
-        !over.canWrite || busy || !over.aiFillable,
+        // ⚠️ `aiBusy` is not a widening: Mantine already disabled this button
+        // through `loading={aiBusy}`. The gate merely learns about a state the
+        // DOM was in all along, so it can say something about it.
+        !over.canWrite || busy || over.aiBusy || !over.aiFillable,
       );
       expect(sizeChartEditorGate('cancelar', over).disabled).toBe(busy);
       expect(sizeChartEditorGate('salvarRascunho', over).disabled).toBe(
@@ -283,6 +311,29 @@ describe('sizeChartEditorGate', () => {
     expect(sizeChartEditorGate('enviar', noWrite).motivo).toBe(SIZE_CHART_MOTIVOS.semEscrita);
     expect(sizeChartEditorGate('cancelar', noWrite).disabled).toBe(false);
     expect(sizeChartEditorGate('salvarRascunho', noWrite).disabled).toBe(false);
+  });
+
+  /**
+   * ⚠️ Mantine's `Button` computes `disabled: disabled || loading`, so while the
+   * AI call runs that button IS disabled — and the gate used to know nothing
+   * about it, leaving the one control on this PR that was dead with no motivo.
+   */
+  it('explains the AI call already in flight', () => {
+    expect(sizeChartEditorGate('preencherIa', editorInput({ aiBusy: true })).motivo).toMatch(
+      /preenchendo/i,
+    );
+  });
+
+  /**
+   * ⚠️ Scoped to `preencherIa` on purpose. `aiBusy` is state separate from
+   * `busy`, and only that button carries it — folding it into `busy` would close
+   * Cancelar / Salvar / Enviar too, which is a behaviour change, not a message.
+   */
+  it('leaves the other controls alone while the AI call runs', () => {
+    const aiBusy = editorInput({ aiBusy: true });
+    expect(sizeChartEditorGate('cancelar', aiBusy).disabled).toBe(false);
+    expect(sizeChartEditorGate('salvarRascunho', aiBusy).disabled).toBe(false);
+    expect(sizeChartEditorGate('enviar', aiBusy).disabled).toBe(false);
   });
 
   it('says what the AI button is waiting for, before the round trip that would 422', () => {

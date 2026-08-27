@@ -68,6 +68,7 @@ export const SIZE_CHART_MOTIVOS = {
   semDominio: 'Selecione o domínio.',
   salvandoRascunho: 'Salvando o rascunho…',
   enviando: 'Enviando ao Mercado Livre…',
+  preenchendoIa: 'Preenchendo a grade com IA…',
 } as const;
 
 /** The four controls on a conta card in the medidas Mercado Livre tab. */
@@ -156,6 +157,22 @@ export interface SizeChartEditorGateInput {
   canWrite: boolean;
   /** Which call is in flight, if any. */
   busy: 'draft' | 'send' | null;
+  /**
+   * The AI suggestion call is in flight.
+   *
+   * ⚠️ A field of its own rather than a fourth `busy` value, and consulted by
+   * `preencherIa` alone. The modal keeps `aiBusy` in state SEPARATE from `busy`,
+   * and only that one button is disabled by it — folding it into `busy` would
+   * close Cancelar / Salvar rascunho / Enviar too, which is a behaviour change,
+   * not a message.
+   *
+   * ⚠️ It has to be here at all because Mantine's `Button` computes
+   * `disabled: disabled || loading` (`Button.mjs:72`), so a `loading` button is
+   * genuinely disabled in the DOM. Any `loading` a caller passes to
+   * `SizeChartActionButton` MUST be mirrored into the gate or the control ends
+   * up dead with nothing to say — the one invariant this module exists to hold.
+   */
+  aiBusy: boolean;
   /** The AI grid holds something worth sending — `chartAiGridIsFillable`. */
   aiFillable: boolean;
   /** The guia has a name. */
@@ -200,7 +217,10 @@ function editorMotivoFor(
       ? SIZE_CHART_MOTIVOS.salvandoRascunho
       : SIZE_CHART_MOTIVOS.enviando;
   }
-  if (action === 'preencherIa' && !input.aiFillable) return SIZE_CHART_MOTIVOS.gradeVazia;
+  if (action === 'preencherIa') {
+    if (input.aiBusy) return SIZE_CHART_MOTIVOS.preenchendoIa;
+    if (!input.aiFillable) return SIZE_CHART_MOTIVOS.gradeVazia;
+  }
   if (action === 'salvarRascunho') {
     if (!input.hasNome) return SIZE_CHART_MOTIVOS.semNome;
     if (!input.hasDominio) return SIZE_CHART_MOTIVOS.semDominio;

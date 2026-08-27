@@ -25,6 +25,7 @@ import { FirebaseError } from 'firebase/app';
 import type { MlSizeChart } from '@delfrance/schemas';
 
 import {
+  SIZE_CHART_MOTIVOS,
   type SizeChartEditorGateInput,
   sizeChartEditorGate,
 } from '@/lib/mercado-livre/sizeChartDisabled';
@@ -533,7 +534,7 @@ export function SizeChartEditorModal({
 
   const blockingError =
     validateChartName(nome) ??
-    (domainId == null ? 'Selecione o domínio.' : null) ??
+    (domainId == null ? SIZE_CHART_MOTIVOS.semDominio : null) ??
     (answered ? null : 'Responda os atributos da guia.') ??
     (missingRequired ? `Informe ${missingRequired.name}.` : null) ??
     (rows.filter((r) => !r.deleted).length === 0 ? 'A guia precisa de ao menos um tamanho.' : null);
@@ -550,6 +551,12 @@ export function SizeChartEditorModal({
   const gateInput: SizeChartEditorGateInput = {
     canWrite,
     busy,
+    // ⚠️ `aiBusy` is separate state from `busy`, and Mantine's `Button` computes
+    // `disabled: disabled || loading` — so without this the IA button spent the
+    // whole AI call disabled with `motivo: null` and its tooltip switched off.
+    // That is the one invariant this module exists to hold, and it was open in
+    // the single control whose `loading` did not reach the gate.
+    aiBusy,
     aiFillable: chartAiGridIsFillable(aiGrid),
     hasNome: nome.trim().length > 0,
     hasDominio: domainId != null,

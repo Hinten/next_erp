@@ -39,6 +39,14 @@ export interface SizeChartActionButtonProps
  * `medidas-mercado-livre.cadastros.e2e.spec.ts` locates by role+name. Do not
  * add an `aria-label` here.
  *
+ * ⚠️ A `loading` you pass through MUST also be expressed in the gate. Mantine's
+ * `Button` computes `disabled: disabled || loading` (`Button.mjs:72`), so a
+ * loading button is genuinely disabled in the DOM — and if the gate does not
+ * know about that state, `motivo` is null, the `Tooltip` is off, and the control
+ * is dead with nothing to say. Every caller mirrors its spinner into the gate
+ * (`rowBusy` → `busy: 'estaGuia'`, `aiBusy`, `busy === 'draft' | 'send'`); the
+ * one that did not is exactly where the invariant reopened.
+ *
  * Known limit: a disabled button is not focusable and a bare `<span>` is not
  * either, so the message is hover-reachable but not keyboard-reachable. The
  * alternative — Mantine's `data-disabled` + `preventDefault` — keeps focus but
