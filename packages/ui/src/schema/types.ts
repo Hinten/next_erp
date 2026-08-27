@@ -228,6 +228,15 @@ export interface VirtualColumnFilter {
     onChange: (next: ColumnFilterValue | undefined) => void;
   }) => ReactNode;
   /**
+   * Render the CURRENT value as text, for the active-filter chip above the
+   * table. Needed whenever the stored value is not self-describing — a
+   * `renderFilter` that emits opaque ids (the produtos "Canais de venda"
+   * filter stores bare integração ids) would otherwise be summarised as a bare
+   * count. A `subcollectionLookup` filter gets a sensible default without
+   * declaring this, from its own `fields` labels.
+   */
+  readonly formatValue?: (value: ColumnFilterValue['value']) => string;
+  /**
    * Resolve this filter via a sibling subcollection (collection-group) lookup
    * rather than a direct `where()` on the listed collection: the emitted value's
    * `subfield` + `value` select which child field to match, the matching child

@@ -96,9 +96,40 @@ export const fooCollection = defineCollection({ path: 'foos', schema: fooSchema 
 
 `'use client'` + `<TableView>`. Per-column filters, header sorting, column
 projection, column-visibility persistence (localStorage) and syncing
-filters/sort to the query string are **automatic** — nothing to wire. The
+filters/sort/search to the query string are **automatic** — nothing to wire. The
 "Copiar" button (`copyHref`) and the update-monitor banner (auto-detected
 `monitorField`) are opt-in — see §4.
+
+**List state is STICKY per screen, and that is also automatic.** `TableView`
+remembers its query string, its "Carregar mais" window and its scroll offset in
+`sessionStorage` (`delfrance:tableview:view:<pathname>|<collectionPath>`), and
+reopens the list in that state whenever the incoming URL carries none of its own
+params — which is exactly what every `router.replace('/foos')` and
+`← Voltar à lista` in a detail page produces. **A detail page needs no change at
+all to preserve the list's filter; do not hand-thread a query string back.**
+Two rules follow:
+
+- **The URL always wins.** Memory applies only to a bare URL, so a shared or
+  bookmarked link is never overridden. Clearing every filter is remembered as
+  cleared, so the mechanism is self-healing.
+- **A sticky filter that is invisible is a support ticket.** `TableView` renders
+  an `ActiveFilters` chip row (one removable chip per filter plus
+  "Limpar filtros") for exactly this reason. If you add a filter UI of your own,
+  make sure it shows up there — a `VirtualColumnFilter` whose value is opaque
+  (bare ids, a packed `"<subfield>:<term>"`) needs `formatValue`, or its chip
+  degrades to "N selecionados".
+
+⚠️ **Component tests that render a `TableView` must `sessionStorage.clear()` in
+`afterEach`**, alongside the existing `localStorage.clear()`. Without it one
+case's filter silently reopens in the next and which cases break depends on the
+order they ran in.
+
+**Free-text search** goes through the `search` prop (§4), not page state — that
+is what puts the term in the URL and in the memory. The exception is a term the
+page cannot turn into filters synchronously (`/clientes` resolves an address
+into a capped id list first): those keep their own input and use
+`useSearchTermParam` from `apps/web/lib/list/`, which gives the same URL +
+session behaviour for one param.
 
 ```tsx
 'use client';
@@ -203,6 +234,7 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `pageSize` | Rows per page (default 50). |
 | `pathContext` | For sub-collections (`{ parentId }`). |
 | `extraFilters` | `ReadonlyArray<PipelineFieldFilter>` — page-owned server-side filters (no filter UI, never in the URL), AND-combined with `meta.defaultQuery` base filters and the user's column filters. An `array-contains-any` entry whose value is an EMPTY array short-circuits to an empty result set without querying (a resolved candidate list that came back empty); an array value on any OTHER op throws (programmer error), never silently renders an empty table. Ignored under `queryOverride`. On the classic fallback path `array-contains-any` is capped at 30 values and `contains`/`startsWith` throw (pipeline-only). |
+| `search` | `{ placeholder?, toFilters(term), toForcedOrderBy?(term) }` — opt-in free-text box owned by `TableView`: the term lives in the URL as `?q=` and is restored with the rest of the list state. `toFilters` widens `extraFilters`; `toForcedOrderBy` supplies the order the term requires (a prefix RANGE must be the first `orderBy`), and the explicit `forcedOrderBy` prop still outranks it. Only for a term the page can turn into filters **synchronously** — see `useSearchTermParam` for the async ones. |
 | `queryOverride` | Escape hatch: pass a ready-made Firestore `Query`. |
 
 ## 5. Reference — `ObjectView` (`packages/ui/src/object/ObjectView.tsx`)
