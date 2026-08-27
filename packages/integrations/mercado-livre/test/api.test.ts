@@ -623,6 +623,56 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     });
   });
 
+  it('getShipmentCosts hits /shipments/{id}/costs with x-format-new and parses the documented body', async () => {
+    // Verbatim from ML's docs (*Gerenciamento de Envios* → Costs). Everything
+    // outside `gross_amount` / `receiver` / `senders[].{user_id,cost}` — the
+    // deprecated `save`, the whole `discounts` breakdown — must ride the
+    // passthrough untouched rather than being typed (#957).
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        gross_amount: 24.55,
+        receiver: {
+          user_id: 74425755,
+          cost: 0,
+          compensation: 0,
+          save: 0,
+          discounts: [{ rate: 1, type: 'loyal', promoted_amount: 4.07 }],
+        },
+        senders: [
+          {
+            user_id: 81387353,
+            cost: 8.19,
+            compensation: 0,
+            save: 0,
+            discounts: [{ rate: 0.6, type: 'mandatory', promoted_amount: 12.29 }],
+          },
+        ],
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const costs = await api.getShipmentCosts(47868202073);
+    expect(costs.gross_amount).toBe(24.55);
+    expect(costs.receiver?.cost).toBe(0);
+    expect(costs.senders?.[0]?.user_id).toBe(81387353);
+    expect(costs.senders?.[0]?.cost).toBe(8.19);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe('https://api.mercadolibre.com/shipments/47868202073/costs');
+    // ML's own curl for this resource carries it — NOT legacy's `X-Costos-New`.
+    expect((init!.headers as Record<string, string>)['x-format-new']).toBe('true');
+    expect(init!.headers as Record<string, string>).not.toHaveProperty('X-Costos-New');
+  });
+
+  it('getShipmentCosts maps a 404 to an HTTP error rather than an empty costs object', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'not found' }, 404),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentCosts(555)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 404,
+    });
+  });
+
   it('getShipmentOrders hits /shipments/{id}/orders with X-New-Domain and parses the BARE ARRAY', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse([

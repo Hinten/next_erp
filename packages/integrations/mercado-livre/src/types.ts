@@ -735,7 +735,10 @@ const mlShipmentAddressSchema = z
  *    Resolve the order through `GET /shipments/{id}/orders` instead
  *    (`getShipmentOrders`); the passthrough keeps the raw value readable for as
  *    long as ML still happens to send it.
- *  - `base_cost` — no counterpart; `lead_time.cost` is the nearest analogue.
+ *  - `base_cost` — no counterpart IN THIS BODY, and `lead_time.cost` is
+ *    emphatically not one (see `shipmentBaseCost`). What the seller actually
+ *    pays now comes from `GET /shipments/{id}/costs` — `senders[].cost`,
+ *    `mlShipmentCostsSchema` below.
  *  - `logistic_type` — moved under `logistic.type`.
  *
  * Still tolerant per house style: only what the readers consume is typed, and
@@ -784,6 +787,58 @@ export const mlShipmentPaymentSchema = z
 export type MlShipmentPayment = z.infer<typeof mlShipmentPaymentSchema>;
 /** The array wrapper for `getShipmentPayments` — see `mlShipmentPaymentSchema`. */
 export const mlShipmentPaymentsSchema = z.array(mlShipmentPaymentSchema);
+
+/**
+ * One party's side of `GET /shipments/{shipmentId}/costs` — `receiver` (the
+ * buyer) or one entry of `senders` (a seller). `cost` is that party's FINAL
+ * share of the shipment, net of every discount ML applied to them.
+ *
+ * ⚠️ `save` is deliberately NOT typed. ML stopped filling it in October/2024
+ * ("todos os casos o campo receberá o valor 0") and removed it from the resource
+ * in January/2025, so a reader would silently get a fabricated zero. `discounts`
+ * is likewise untyped: nothing consumes the breakdown, and both ride through
+ * `.passthrough()` for anyone who needs them knowingly.
+ */
+const mlShipmentCostPartySchema = z
+  .object({
+    user_id: wireInt().nullable().optional(),
+    cost: wireNumber().nullable().optional(),
+    compensation: wireNumber().nullable().optional(),
+  })
+  .passthrough();
+
+/**
+ * `GET /shipments/{shipmentId}/costs` — "os custos do envio a serem pagos pelo
+ * usuário" (ML docs, *Gerenciamento de Envios* → Costs). **The authoritative
+ * answer to "what does the SELLER pay for this shipment?"**, which the
+ * `x-format-new` body no longer carries: it dropped `base_cost` and offers no
+ * counterpart (see `shipmentBaseCost` for why `lead_time.cost` is not one).
+ *
+ * ⚠️ **`senders` is a LIST, and the first entry is not necessarily ours.** ML's
+ * own note: "um só envio poderá conter produtos de diferentes vendedores". The
+ * entry to read is the one whose `user_id` is the connected account's seller id —
+ * `senders[0]` would book another seller's freight cost onto our pedido, and on a
+ * single-seller shipment it would look right every time. `resolveShipmentSellerCost`
+ * in `apps/mercado-livre` is the only reader and matches on `user_id` (#957).
+ *
+ * ⚠️ A `cost` of `0` is a REAL value — a fully subsidised shipment genuinely
+ * costs the seller nothing — never a missing one.
+ *
+ * Unlike `/shipments/{id}/payments`, this resource does NOT require the shipment
+ * to be tied to a `pack_id`.
+ *
+ * `gross_amount` is the shipment total before any discount (the nearest analogue
+ * of the legacy top-level `base_cost`); it is typed because it makes a stored
+ * `senders[].cost` auditable, not because anything maps it today.
+ */
+export const mlShipmentCostsSchema = z
+  .object({
+    gross_amount: wireNumber().nullable().optional(),
+    receiver: mlShipmentCostPartySchema.nullable().optional(),
+    senders: z.array(mlShipmentCostPartySchema).nullable().optional(),
+  })
+  .passthrough();
+export type MlShipmentCosts = z.infer<typeof mlShipmentCostsSchema>;
 
 /**
  * One entry of `GET /shipments/{shipmentId}/orders` — "Vendas associadas a um
@@ -1628,9 +1683,14 @@ export type MlMessageAttachment = z.infer<typeof mlMessageAttachmentSchema>;
  * reference prints them BOTH ways across its samples (`123456789000` in one,
  * `"415458330"` in the next). Every consumer here compares them as strings.
  *
- * ⚠️ Since the 02/02/2026 MLB messaging change, `from.user_id` on a READ is the
- * **AI Agent's** id, not the buyer's — the agent intermediates the conversation.
- * Do not use it to identify the contact; the pedido does that.
+ * ⚠️ On a thread ML has MIGRATED to the 02/02/2026 agent architecture,
+ * `from.user_id` on a READ is the **AI Agent's** id rather than the buyer's — the
+ * agent intermediates the conversation. Do not use it to identify the contact;
+ * the pedido does that.
+ *
+ * ⚠️ That is about IDENTITY and does NOT generalise to ROUTING. `from.user_id` is
+ * the correct address to REPLY to under BOTH architectures, precisely because it
+ * is the one ML just delivered from — see `ML_POST_SALE_AGENT_USER_ID` below.
  */
 export const mlPostSaleMessageSchema = z
   .object({
@@ -1720,13 +1780,29 @@ export type MlPackMessages = z.infer<typeof mlPackMessagesSchema>;
 /**
  * ML's post-sale **messaging Agent** user id, per site.
  *
- * ⚠️ Since **02/02/2026** ML intermediates buyer↔seller post-sale conversations
- * with an AI Agent, starting with Fulfillment logistics and rolling forward.
- * A seller message must be addressed to the AGENT, not to the buyer — and on a
- * read, `from.user_id` is the agent's id rather than the buyer's.
+ * ⚠️ **The rollout is PROGRESSIVE, so this is NOT the recipient of every reply.**
+ * Since 02/02/2026 ML intermediates buyer↔seller post-sale conversations with an
+ * AI Agent — but its own reference says *"de forma progressiva… começando pela
+ * logística Full"*, so at any moment some threads are on the new flow and some
+ * are not, and nothing outside a thread says which.
  *
- * Sending to the real buyer id is not a soft failure: the agent is the delivery
- * path, so a message addressed around it does not reach the buyer.
+ * Both directions are hard failures, and they fail differently, which is what
+ * makes this worth spelling out:
+ *
+ * - agent id on a thread ML has **not** migrated ⇒ `400 to_user_id {agente} does
+ *   not belong to pack /packs/{pack}/sellers/{seller}` — loud, observed live;
+ * - real buyer id on a thread it **has** ⇒ **200**, and the message reaches
+ *   nobody, because the agent is the delivery path.
+ *
+ * ⇒ The recipient is derived PER THREAD by `postSaleRecipientUserId`
+ * (`apps/mercado-livre/lib/marketplace/chat/orderMessageMapping.ts`), from the
+ * pack read the send path already makes. This table is only that derivation's
+ * last rung, reached when `conversation_status.path` names a `/conversations/`
+ * segment and the thread itself named no counterparty.
+ *
+ * ⚠️ Do NOT use it to validate a derived id: an id absent from this table may be
+ * an unlisted site's agent or one ML has newly minted, and rejecting it would
+ * discard a correct answer.
  */
 export const ML_POST_SALE_AGENT_USER_ID = {
   MLB: 3037675074,

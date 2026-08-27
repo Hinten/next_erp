@@ -229,6 +229,27 @@ The per-surface notes below stay the authority on behaviour.
   the seller's items, and neither is undoable from here. Neither action writes to the
   thread — ML changes the question's `status` and the importer is the one writer of
   that state.
+  ⚠️ **A post-sale reply's `to.user_id` is DERIVED per thread, never a constant.**
+  ML's messaging-Agent architecture (02/02/2026) rolls out *progressively* — its own
+  reference says "começando pela logística Full" — so at any moment some threads route
+  through the agent and some still through the buyer, and nothing outside a thread
+  says which. The two mistakes fail differently, which is why this cost a live test to
+  find: the agent on a NOT-yet-migrated thread is a hard `400 to_user_id … does not
+  belong to pack` (observed on pack `2000018143664980`), while the real buyer id on a
+  migrated one is a **200 that reaches nobody**. `postSaleRecipientUserId`
+  (`orderMessageMapping.ts`) answers it from the pack the send path already reads:
+  the newest counterparty message's `from.user_id` — the address ML itself just
+  delivered from, correct under both flows and self-correcting as the rollout
+  advances — then `conversation_status.path` naming a `/conversations/` segment.
+  ⚠️ **`/conversations/` is the ONLY discriminator.** `sellers` (plural) appears on
+  ordinary legacy threads too — the 400 above quotes it — so reading the plural as
+  the tell re-breaks exactly the threads this fixed.
+  ⚠️ Nothing resolves ⇒ **409, never a guessed agent**. A thread reaching that point
+  is by construction one we have no evidence about, so either default is a coin flip;
+  and since the buyer must start every post-sale conversation the population is
+  near-empty, which makes the refusal a *sensor* rather than a cost. The recipient is
+  written **nowhere** — `sender_id` means "the human counterparty" and
+  `acaoPerguntaMercadoLivre` reads it back to call `blockUserFromQuestions`.
 - `lib/marketplace/claims/claim{Import,Mapping,Ids,Attachments,Actionability,Cliente}.ts` —
   **Step 14 + #768**: one ML claim → an Incidente on the pedido, plus a chat Conversa
   and its Mensagens, at the BYTE-EXACT legacy doc ids so re-processing a claim the
