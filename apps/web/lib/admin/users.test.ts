@@ -118,15 +118,21 @@ describe('failures that used to escape un-typed', () => {
     expect(err.message).toBe('Sem permissão.');
   });
 
-  it('falls back to the status line when there is no envelope', async () => {
+  it('⭐ says something useful when the reason phrase is EMPTY', async () => {
+    // ⚠️ The case the old fixture could not see. It passed
+    // `statusText: 'Bad Gateway'` explicitly, but the reason phrase was removed
+    // from HTTP/2 — so anything served by App Hosting / Cloud Run arrives with
+    // `statusText: ''` and the operator's alert read `502 `: a bare number and a
+    // trailing space. No `statusText` here, which is the real shape.
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    stubFetch(
-      async () => new Response('<html>502</html>', { status: 502, statusText: 'Bad Gateway' }),
-    );
+    stubFetch(async () => new Response('<html>502</html>', { status: 502 }));
 
     const err = (await createUser(PAYLOAD, TOKEN).catch((e: unknown) => e)) as AdminClientHttpError;
 
-    expect(err.message).toContain('502');
+    expect(err.message).toContain('HTTP 502');
+    expect(err.message).toContain('serviço de administração');
     expect(err.message).not.toContain('<html');
+    // The status stays on the object for callers that branch on it.
+    expect(err.status).toBe(502);
   });
 });
