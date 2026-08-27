@@ -10,14 +10,14 @@
  * "audio"/"video"/"sticker" placeholders.
  */
 import type { Mensagem } from '@delfrance/schemas';
-import { TIPO_MENSAGEM } from '@delfrance/schemas';
+import { TIPO_MENSAGEM, ehEstadoDeSaida } from '@delfrance/schemas';
 
 /**
  * The subset of a `Mensagem` this preview reads. Accepts a full `Mensagem`
  * (structural) or any partial with these fields, so tests can pass minimal
  * fixtures.
  */
-export type PreviewMensagem = Pick<
+export type PreviewMensagem = { estadoEnvio?: Mensagem['estadoEnvio'] } & Pick<
   Mensagem,
   | 'tipo'
   | 'conteudo'
@@ -96,5 +96,9 @@ export function lastMensagemPreview(
     if (meuUid != null && m.user_id === meuUid) return `(Eu) ${body}`;
     if (nonEmpty(autorNome)) return `(${autorNome}) ${body}`;
   }
+  // ⚠️ Same rule the thread uses: an AUTHORLESS message is ours when its state
+  // says we sent it. Every marketplace reply is authorless, so keying on
+  // `user_id` alone dropped the prefix on exactly the messages we did send.
+  if (!nonEmpty(m.user_id) && ehEstadoDeSaida(m.estadoEnvio)) return `(Eu) ${body}`;
   return body;
 }

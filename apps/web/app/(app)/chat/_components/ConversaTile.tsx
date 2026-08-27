@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { Avatar, Box, Checkbox, Group, Stack, Text, ThemeIcon, Tooltip } from '@mantine/core';
-import { IconAlertCircle, IconChecks, IconClock, IconPencil } from '@tabler/icons-react';
+import { IconAlertCircle, IconCheck, IconChecks, IconClock, IconPencil } from '@tabler/icons-react';
 import { ESTADO_ENVIO, type Conversa, type EstadoEnvioMensagem } from '@delfrance/schemas';
 import { etiquetaTint } from '@/lib/chat/etiquetaCores';
 import { lastMensagemPreview } from '@/lib/chat/preview';
@@ -34,8 +34,20 @@ function formatTime(ms: number | null | undefined): string {
  * customer messages (`recebido`) get no tick — the tile isn't a "you sent this"
  * receipt for those. `null` renders nothing.
  */
-function DeliveryTick({ estado }: { estado: EstadoEnvioMensagem | undefined }) {
+function DeliveryTick({
+  estado,
+  visualizado,
+}: {
+  estado: EstadoEnvioMensagem | undefined;
+  visualizado: number | null | undefined;
+}) {
   if (estado == null) return null;
+  // ⚠️ The SECOND check means READ, matching `MensagemStatusIcon` in the thread.
+  // This drew a double check for merely `enviado`, so the tile claimed the
+  // customer had seen a message the thread itself only claimed was delivered.
+  if (estado === ESTADO_ENVIO.enviado && visualizado != null) {
+    return <IconChecks size={14} color="var(--mantine-color-blue-6)" aria-label="Visualizado" />;
+  }
   switch (estado) {
     case ESTADO_ENVIO.erro:
       return (
@@ -51,7 +63,7 @@ function DeliveryTick({ estado }: { estado: EstadoEnvioMensagem | undefined }) {
     case ESTADO_ENVIO.salva:
       return <IconClock size={14} color="var(--mantine-color-gray-5)" aria-label="Enviando" />;
     case ESTADO_ENVIO.enviado:
-      return <IconChecks size={14} color="var(--mantine-color-gray-5)" aria-label="Enviado" />;
+      return <IconCheck size={14} color="var(--mantine-color-gray-5)" aria-label="Enviado" />;
     case ESTADO_ENVIO.recebido:
     case ESTADO_ENVIO.excluido:
     case ESTADO_ENVIO.banida:
@@ -157,7 +169,7 @@ export function ConversaTile({
                     </ThemeIcon>
                   </Tooltip>
                 )}
-                <DeliveryTick estado={lastMsg?.estadoEnvio} />
+                <DeliveryTick estado={lastMsg?.estadoEnvio} visualizado={lastMsg?.visualizado} />
               </Group>
             </Group>
           </Stack>

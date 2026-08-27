@@ -15,7 +15,7 @@ import { useHover } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconArrowForward, IconCopy, IconDots, IconFileText } from '@tabler/icons-react';
 import type { Mensagem } from '@delfrance/schemas';
-import { TIPO_MENSAGEM } from '@delfrance/schemas';
+import { ESTADO_ENVIO, TIPO_MENSAGEM, ehEstadoDeSaida } from '@delfrance/schemas';
 import { formatMensagemTime } from '@/lib/chat/mensagemTime';
 import { HighlightedText } from '@/lib/chat/highlight';
 import { type AnyMensagem, isOptimistic, mensagemKey } from '../../_hooks/useMensagensWindow';
@@ -98,13 +98,33 @@ export function MensagemBubble(props: MensagemBubbleProps) {
     );
   }
 
-  const mine = isOptimistic(mensagem) || (!!mensagem.user_id && mensagem.user_id === myUid);
+  // ⚠️ An author, when there is one, decides the side — it names WHICH operator,
+  // which a send state cannot. But every message the marketplace importers write
+  // is AUTHORLESS (identity is a `cliente` now, so nothing stamps `user_id`,
+  // #768), and for those the side is the send state. Without that second arm
+  // `mine` was unreachable for them: every ML reply we sent rendered on the
+  // customer's side, grey and with no tick, indistinguishable from the buyer's.
+  const semAutor = !mensagem.user_id;
+  const mine =
+    isOptimistic(mensagem) ||
+    (!semAutor && mensagem.user_id === myUid) ||
+    (semAutor && ehEstadoDeSaida(mensagem.estadoEnvio));
   const isCustomer =
-    !mine && (mensagem.estadoEnvio === 7 || (!!customerUid && mensagem.user_id === customerUid));
+    !mine &&
+    (mensagem.estadoEnvio === ESTADO_ENVIO.recebido ||
+      (!!customerUid && mensagem.user_id === customerUid));
   const isOtherAgent = !mine && !isCustomer && !!mensagem.user_id;
 
   return (
-    <Group ref={rootRef} justify={mine ? 'flex-end' : 'flex-start'} align="flex-end" gap={4}>
+    <Group
+      ref={rootRef}
+      // The side is a CSS custom property once Mantine renders it, so nothing
+      // could assert alignment — which is why this bug had no failing test.
+      data-side={mine ? 'saida' : 'entrada'}
+      justify={mine ? 'flex-end' : 'flex-start'}
+      align="flex-end"
+      gap={4}
+    >
       <BubbleBody
         mensagem={mensagem}
         variant={mine ? 'mine' : isCustomer ? 'customer' : isOtherAgent ? 'agent' : 'customer'}
