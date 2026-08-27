@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { MlOrder } from '@delfrance/integrations-mercado-livre';
+import { roundReais } from '@delfrance/core/money';
 import type { ItemDoPedido } from '@delfrance/schemas';
 
 import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
@@ -232,6 +233,8 @@ function makeItem(opts: {
   ensureUniqueId: string;
   produtoUid: string | null;
   ordem?: number;
+  precoDeVenda?: number;
+  quantidade?: number;
 }): ItemDoPedido {
   return {
     produtoUid: opts.produtoUid,
@@ -241,9 +244,9 @@ function makeItem(opts: {
     sku: null,
     gtin: null,
     nomeDeVenda: 'Item teste',
-    precoDeVenda: 10,
+    precoDeVenda: opts.precoDeVenda ?? 10,
     descontoUnitario: 0,
-    quantidade: 1,
+    quantidade: opts.quantidade ?? 1,
     custo: null,
     timestamp: null,
     imposto: null,
@@ -488,6 +491,127 @@ describe('discoverPedidoMercadoLivre — multi-order pack create', () => {
       // The wall-clock "last modified" stamp, which is what `saveRecord`, the
       // recency sort and the TableView update-monitor all read.
       expect(target.ultimaModificacao).toBe(NOW_US);
+    },
+  );
+
+  /*
+   * The money half of a pack create (#1087). Vector taken from the 2026-08-27
+   * live run: pack `2000014733850447`, orders 50,00 + 99,94, freight 85,99 paid
+   * on the SHIPMENT.
+   *
+   * ⚠️ These pin an UNDER-COUNT on purpose. `mlOrderToPedidoCoreFields` runs on
+   * `firstOrder` alone (legacy's `toPedido()` ran once, on the iteration that
+   * created the doc), so a pack pedido is born holding every sibling's items
+   * against ONE sibling's money. `applyFreteStep`'s conference is what makes it
+   * whole — see the money-map block in `orderImport.test.ts`. Until it runs,
+   * `podeAvancarParaPago` compares `totalAprovado >= valorCobrado` against a
+   * threshold that is too low, which is #791's failure mode: `pago` on a partial
+   * payment, and `pago` authorises dispatch and NF-e emission.
+   */
+  function packDeDuasOrdens(db: FakeDb): Promise<{ pedidoId: string }> {
+    const packId = 9000;
+    const iso = '2026-01-05T00:00:00.000Z';
+    return discoverPedidoMercadoLivre(
+      baseArgs(db, {
+        packId,
+        orders: [
+          makeOrder({
+            id: 9001,
+            packId,
+            lastUpdated: iso,
+            payments: [makePayment({ id: 5001, lastModified: iso, transactionAmount: 50 })],
+          }),
+          makeOrder({
+            id: 9002,
+            packId,
+            lastUpdated: iso,
+            payments: [makePayment({ id: 5002, lastModified: iso, transactionAmount: 99.94 })],
+          }),
+        ],
+        itensByOrderId: new Map([
+          [9001, [makeItem({ ensureUniqueId: 'u9001', produtoUid: 'pA', precoDeVenda: 50 })]],
+          [9002, [makeItem({ ensureUniqueId: 'u9002', produtoUid: 'pB', precoDeVenda: 99.94 })]],
+        ]),
+      }),
+    );
+  }
+
+  it('takes valorCobrado from orders[0] ALONE — a pack is UNDER-COUNTED at create', async () => {
+    const db = new FakeDb();
+
+    const res = await packDeDuasOrdens(db);
+
+    const target = db.docs('pedidos').get(res.pedidoId)!;
+    expect(target.valorCobrado).toBe(50);
+    // Not the whole pack. Spelled out because the number alone reads like a
+    // typo, and because this is exactly the value the conference must replace.
+    expect(target.valorCobrado).not.toBe(149.94);
+    expect(target.numero).toBe('9000'); // …while `numero` DOES use the pack id
+    expect(target.descontoTotal).toBe(0);
+
+    // Anti-vacuity: the sibling's money DID reach Firestore. Without this the
+    // test would pass just as well against an import that dropped order 9002
+    // entirely — and the gap being specific to the `valorCobrado` cache is the
+    // whole finding.
+    const pagamentos = [...db.docs(`pedidos/${res.pedidoId}/pagamentos`).values()];
+    expect(pagamentos).toHaveLength(2);
+    expect(roundReais(pagamentos.reduce((sum, p) => sum + (p.valor as number), 0))).toBe(149.94);
+    // …and so did BOTH orders' items, against that one order's total.
+    expect((target.itensIds as string[]).sort()).toEqual(['pA', 'pB']);
+  });
+
+  it.each([
+    ['9001 first', 9001, 50],
+    ['9002 first', 9002, 99.94],
+  ])(
+    'and orders[0] is the INITIATING notification, not the pack own first (%s)',
+    async (_label, primeiro, esperado) => {
+      // `resolvePackOrders` builds `orders: [initialOrder, ...siblings]`, so
+      // WHICHEVER sibling's webhook lands first decides the stored total. Any
+      // implementation that summed, maxed, or took the pack's own first order
+      // would fail one of these two rows.
+      const db = new FakeDb();
+      const packId = 9000;
+      const iso = '2026-01-05T00:00:00.000Z';
+      const porId = new Map([
+        [9001, { transactionAmount: 50, produtoUid: 'pA' }],
+        [9002, { transactionAmount: 99.94, produtoUid: 'pB' }],
+      ]);
+      const ordem = [primeiro, primeiro === 9001 ? 9002 : 9001];
+
+      const res = await discoverPedidoMercadoLivre(
+        baseArgs(db, {
+          packId,
+          orders: ordem.map((id, i) =>
+            makeOrder({
+              id,
+              packId,
+              lastUpdated: iso,
+              payments: [
+                makePayment({
+                  id: 5100 + i,
+                  lastModified: iso,
+                  transactionAmount: porId.get(id)!.transactionAmount,
+                }),
+              ],
+            }),
+          ),
+          itensByOrderId: new Map(
+            ordem.map((id) => [
+              id,
+              [
+                makeItem({
+                  ensureUniqueId: `u${id}`,
+                  produtoUid: porId.get(id)!.produtoUid,
+                  precoDeVenda: porId.get(id)!.transactionAmount,
+                }),
+              ],
+            ]),
+          ),
+        }),
+      );
+
+      expect(db.docs('pedidos').get(res.pedidoId)!.valorCobrado).toBe(esperado);
     },
   );
 });

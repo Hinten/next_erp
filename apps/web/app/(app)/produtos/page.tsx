@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Anchor, Badge, Button, Menu, Stack, TextInput } from '@mantine/core';
+import { Anchor, Badge, Button, Menu, Stack } from '@mantine/core';
 import { TableView, type VirtualColumn } from '@delfrance/ui';
 import type { PipelineFieldFilter } from '@delfrance/data';
 import { PERM } from '@delfrance/auth';
@@ -27,6 +27,53 @@ import { useEnviarPrecoAction } from './_components/useEnviarPrecoAction';
 // U+F8FF: a very high private-use code point. Appended to the search term it
 // bounds a nome prefix range (nome >= term && nome <= term + sentinel).
 const PREFIX_SENTINEL = '\uf8ff';
+
+/**
+ * The nome search, handed to `TableView` rather than owned by this page.
+ *
+ * That is what puts the term in the URL as `?q=`, and with it in the sticky
+ * list memory — a page-owned `useState` was reset every time an operator opened
+ * a produto and came back.
+ *
+ * The nome search stays a prefix RANGE rather than becoming a generic column
+ * filter. TableView's text filter emits `op: 'contains'` — a substring match,
+ * which is not index-seekable. On Enterprise that is a full scan billed by data
+ * scanned (root CLAUDE.md rule 1). The range below rides the deployed
+ * `produtos(paiId ASC, nome ASC)` index, so search costs a seek instead of a
+ * table sweep.
+ *
+ * ⚠️ That index is no longer the one `produtoMeta.defaultQuery` needs — since
+ * #159 the browse order is `ultimaModificacao desc`. It is kept in
+ * `firestore.indexes.json` FOR THIS SEARCH (and the Nome column sort), and
+ * `toForcedOrderBy` below is what keeps the query matching it. The
+ * index-coverage meta-test only derives indexes from declared default queries,
+ * so it will report this one as "unused" — a warning, never a failure. Do not
+ * delete it.
+ *
+ * ⚠️ `toForcedOrderBy` forces `nome asc` while searching because Firestore
+ * requires an inequality field to be the FIRST orderBy. Leaving the recency
+ * sort in place would throw outright on the classic-query fallback and, on the
+ * Pipelines path, silently stop using `produtos(paiId, nome)` — turning the
+ * seek this search exists to be into the full scan above. `undefined` when not
+ * searching lets `produtoMeta.defaultQuery.orderBy` apply. Same coupling, same
+ * fix as `alterar-precos/_components/ProdutoPickerModal.tsx`.
+ *
+ * Module-level so its identity is stable across renders.
+ */
+const produtoSearch = {
+  placeholder: 'Buscar por nome…',
+  toFilters: (term: string): PipelineFieldFilter[] => {
+    const trimmed = term.trim();
+    return trimmed === ''
+      ? []
+      : [
+          { field: 'nome', op: 'gte', value: trimmed },
+          { field: 'nome', op: 'lte', value: `${trimmed}${PREFIX_SENTINEL}` },
+        ];
+  },
+  toForcedOrderBy: (term: string) =>
+    term.trim() === '' ? undefined : { field: 'nome', direction: 'asc' as const },
+};
 
 /**
  * The nome column, rendered as a LINK rather than left to the generic cell
@@ -75,55 +122,7 @@ export default function ProdutosPage() {
   const { allowed: canWriteIntegracao } = usePermission(PERM.integracao.write);
   const { action: enviarEstoqueAction, modal: enviarEstoqueModal } = useEnviarEstoqueAction();
   const { action: enviarPrecoAction, modal: enviarPrecoModal } = useEnviarPrecoAction();
-  const [search, setSearch] = useState('');
   const [importOpen, setImportOpen] = useState(false);
-  const trimmed = search.trim();
-
-  /**
-   * The nome search stays a page-owned prefix RANGE rather than becoming a
-   * generic column filter.
-   *
-   * TableView's text filter emits `op: 'contains'` — a substring match, which is
-   * not index-seekable. On Enterprise that is a full scan billed by data scanned
-   * (root CLAUDE.md rule 1). The range below rides the deployed
-   * `produtos(paiId ASC, nome ASC)` index, so search costs a seek instead of a
-   * table sweep.
-   *
-   * ⚠️ That index is no longer the one `produtoMeta.defaultQuery` needs — since
-   * #159 the browse order is `ultimaModificacao desc`. It is kept in
-   * `firestore.indexes.json` FOR THIS SEARCH (and the Nome column sort), and the
-   * `searchSort` below is what keeps the query matching it. The index-coverage
-   * meta-test only derives indexes from declared default queries, so it will
-   * report this one as "unused" — a warning, never a failure. Do not delete it.
-   */
-  const extraFilters = useMemo<PipelineFieldFilter[]>(
-    () =>
-      trimmed === ''
-        ? []
-        : [
-            { field: 'nome', op: 'gte', value: trimmed },
-            { field: 'nome', op: 'lte', value: `${trimmed}${PREFIX_SENTINEL}` },
-          ],
-    [trimmed],
-  );
-
-  /**
-   * While searching, force the sort back to `nome asc`.
-   *
-   * `produtoMeta.defaultQuery` orders by `ultimaModificacao desc` (#159), but
-   * the range above filters `nome` — and Firestore requires an inequality
-   * field to be the FIRST orderBy. Leaving the recency sort in place would
-   * throw outright on the classic-query fallback and, on the Pipelines path,
-   * silently stop using `produtos(paiId, nome)` — turning the seek this search
-   * exists to be into the full scan the comment above warns about.
-   *
-   * `undefined` (not searching) lets `meta.defaultQuery.orderBy` apply. Same
-   * coupling, same fix as `alterar-precos/_components/ProdutoPickerModal.tsx`.
-   */
-  const searchSort = useMemo(
-    () => (trimmed === '' ? undefined : { field: 'nome', direction: 'asc' as const }),
-    [trimmed],
-  );
 
   const db = getFirebaseFirestore();
   // One read for the whole table, not one per row — see the hook.
@@ -183,6 +182,13 @@ export default function ProdutosPage() {
           renderFilter: ({ value, onChange }) => (
             <IntegracoesColumnFilter integracoes={integracoes} value={value} onChange={onChange} />
           ),
+          // The stored value is a list of bare integração ids, so the
+          // active-filter chip would otherwise read "2 selecionados". Same
+          // lookup the cell badges use.
+          formatValue: (value) =>
+            (Array.isArray(value) ? value : [String(value)])
+              .map((id) => integracoesById.get(id)?.nome ?? id)
+              .join(', '),
         },
       },
     ],
@@ -192,12 +198,6 @@ export default function ProdutosPage() {
   return (
     <Stack>
       <ImportarMercadoLivreModal db={db} opened={importOpen} onClose={() => setImportOpen(false)} />
-
-      <TextInput
-        placeholder="Buscar por nome…"
-        value={search}
-        onChange={(e) => setSearch(e.currentTarget.value)}
-      />
 
       <TableView
         title="Produtos"
@@ -209,8 +209,7 @@ export default function ProdutosPage() {
         // column set are all declared once on produtoMeta.defaultQuery, so the
         // query, its projection and its Firestore index stay in lockstep.
         meta={produtoMeta}
-        extraFilters={extraFilters}
-        forcedOrderBy={searchSort}
+        search={produtoSearch}
         virtualColumns={virtualColumns}
         fields={{
           // The schema field is REPLACED by the `nomeLink` virtual column, not

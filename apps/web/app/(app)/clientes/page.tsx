@@ -28,6 +28,7 @@ import { formatCpfCnpj, formatTelefone, obscure } from '@/lib/pedido-print/forma
 import { usePermission } from '@/lib/auth';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useSearchTermParam } from '@/lib/list/useSearchTermParam';
 import { ENDERECO_SEARCH_LIMIT, searchClienteIdsByEndereco } from './_lib/buscaPorEndereco';
 
 // Stable empty reference so the `queryOverride` memo doesn't churn while no
@@ -39,8 +40,14 @@ export default function ClientesPage() {
   const { allowed: canDelete } = usePermission(PERM.cliente.delete);
   // `enderecoInput` is the live text field; `enderecoTerm` is the committed
   // term (set on submit) that actually drives the search query.
-  const [enderecoInput, setEnderecoInput] = useState('');
-  const [enderecoTerm, setEnderecoTerm] = useState('');
+  //
+  // The committed term is URL- and session-backed rather than plain state, so
+  // opening a cliente and coming back does not silently drop the search — the
+  // detail page returns to the BARE list path. It cannot move into TableView's
+  // `search` prop: this term resolves asynchronously into a capped id list, and
+  // the table is unmounted entirely while that runs.
+  const [enderecoTerm, setEnderecoTerm] = useSearchTermParam();
+  const [enderecoInput, setEnderecoInput] = useState(enderecoTerm);
 
   const searching = enderecoTerm.trim().length > 0;
 

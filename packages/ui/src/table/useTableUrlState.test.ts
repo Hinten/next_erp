@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ColumnFilterValue, FilterableField } from '../schema/types';
-import { encodeFilterValue, parseFiltersFromParams, parseSortFromParams } from './useTableUrlState';
+import {
+  encodeFilterValue,
+  encodeTableState,
+  parseFiltersFromParams,
+  parseSortFromParams,
+  urlCarriesTableState,
+} from './useTableUrlState';
 
 function field(key: string, kind: FilterableField['kind']): FilterableField {
   return { key, kind, label: key };
@@ -127,5 +133,82 @@ describe('parseSortFromParams', () => {
 
   it('rejects a malformed direction', () => {
     expect(parseSortFromParams(new URLSearchParams('sort=numero:sideways'))).toBeUndefined();
+  });
+});
+
+describe('reserved params', () => {
+  it('never reads ?sort= or ?q= as a column filter', () => {
+    // A schema field literally named `sort` or `q` is shadowed by the two
+    // params this hook owns. Checked BEFORE the descriptor lookup, so adding a
+    // descriptor for either cannot resurrect it as a filter.
+    const shadowed = [field('sort', 'string'), field('q', 'string')];
+    expect(parseFiltersFromParams(new URLSearchParams('sort=nome:asc&q=abc'), shadowed)).toEqual(
+      {},
+    );
+  });
+});
+
+describe('encodeTableState', () => {
+  it('serialises filters, sort and the search term together', () => {
+    expect(
+      encodeTableState(
+        { nome: { op: 'contains', value: 'ab' } },
+        { field: 'nome', direction: 'desc' },
+        'camiseta',
+      ),
+    ).toBe('nome=contains%3Aab&sort=nome%3Adesc&q=camiseta');
+  });
+
+  it('omits an empty search term rather than writing ?q=', () => {
+    // `?q=` present-but-empty would look like state to `urlCarriesTableState`
+    // and suppress the sticky restore forever.
+    expect(encodeTableState({}, undefined, '')).toBe('');
+  });
+
+  it('round-trips through the parsers', () => {
+    const filters: Record<string, ColumnFilterValue> = {
+      nome: { op: 'contains', value: 'ab' },
+      preco: { op: 'gte', value: 10.5 },
+      ativo: { op: 'eq', value: true },
+      canais: { op: 'array-contains-any', value: ['a,b', 'c'] },
+    };
+    const sort = { field: 'preco', direction: 'asc' } as const;
+    const qs = encodeTableState(filters, sort, 'camiseta');
+    const params = new URLSearchParams(qs);
+    expect(parseFiltersFromParams(params, FIELDS)).toEqual(filters);
+    expect(parseSortFromParams(params)).toEqual(sort);
+    expect(params.get('q')).toBe('camiseta');
+  });
+});
+
+describe('urlCarriesTableState', () => {
+  it('is false for a bare URL, which is what lets the memory apply', () => {
+    expect(urlCarriesTableState(new URLSearchParams(''), FIELDS, true)).toBe(false);
+  });
+
+  it('is false for foreign params alone', () => {
+    // Arriving from "Copiar" carries ?copyFrom but says nothing about the list,
+    // so the remembered filters should still be restored.
+    expect(urlCarriesTableState(new URLSearchParams('copyFrom=abc'), FIELDS, true)).toBe(false);
+  });
+
+  it.each([
+    ['a column filter', 'nome=contains%3Aab'],
+    ['a sort', 'sort=nome%3Aasc'],
+  ])('is true for %s', (_label, qs) => {
+    expect(urlCarriesTableState(new URLSearchParams(qs), FIELDS, true)).toBe(true);
+  });
+
+  it('counts ?q= only when the table owns the search box', () => {
+    // The two screens that resolve their term asynchronously keep `q` for
+    // themselves; a table that does not own it must not treat it as its state.
+    expect(urlCarriesTableState(new URLSearchParams('q=abc'), FIELDS, true)).toBe(true);
+    expect(urlCarriesTableState(new URLSearchParams('q=abc'), FIELDS, false)).toBe(false);
+  });
+
+  it('ignores an unparseable filter, matching what hydration would actually apply', () => {
+    expect(urlCarriesTableState(new URLSearchParams('nome=bogusop%3Aab'), FIELDS, true)).toBe(
+      false,
+    );
   });
 });
