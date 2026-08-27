@@ -152,6 +152,38 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(row(2));
   });
 
+  test('keeps the list filter after opening a cliente and going back', async ({ page }) => {
+    await page.goto('/clientes');
+    await applyTextFilter(page, 'Nome', row(2));
+    await expectRowVisible(page, row(2));
+    await expectRowHidden(page, row(1));
+    await expect(page.getByText(`Nome contém "${row(2)}"`)).toBeVisible();
+
+    await page.getByRole('row', { name: new RegExp(row(2)) }).click();
+    await page.waitForURL(/\/clientes\/[^/]+$/, { timeout: 10_000 });
+
+    // "Voltar à lista" goes to the BARE list path, so the query string that
+    // carried the filter is gone by the time the list remounts. The filter has
+    // to come back from the per-screen memory, not from the URL.
+    await page.getByRole('link', { name: 'Voltar à lista' }).click();
+    await page.waitForURL(/\/clientes(\?.*)?$/, { timeout: 15_000 });
+
+    await expectRowVisible(page, row(2));
+    await expectRowHidden(page, row(1));
+    await expect(page.getByText(`Nome contém "${row(2)}"`)).toBeVisible();
+  });
+
+  test('clears every filter at once from the chip row', async ({ page }) => {
+    await page.goto('/clientes');
+    await applyTextFilter(page, 'Nome', row(3));
+    await expectRowHidden(page, row(1));
+
+    await page.getByRole('button', { name: 'Limpar filtros' }).click();
+    await expect(page).not.toHaveURL(/nome=contains/);
+    await expect(page.getByRole('button', { name: 'Limpar filtros' })).toHaveCount(0);
+    await expectRowVisible(page, row(1));
+  });
+
   test('warns about unsaved changes when leaving the edit page', async ({ page }) => {
     await page.goto(`/clientes/${row(4)}`);
     await fillField(page, 'Observações internas', 'edicao-nao-salva');

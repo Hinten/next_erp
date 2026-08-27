@@ -83,7 +83,12 @@ vi.mock('@delfrance/data', async () => {
   };
 });
 
-import { TableView } from './TableView';
+import { StrictMode } from 'react';
+import { MAX_RESTORED_PAGES, SCROLL_PERSIST_DEBOUNCE_MS, TableView } from './TableView';
+import { listViewMemoryKey, readListViewMemory, writeListViewMemory } from './listViewMemory';
+
+/** The slot this harness's table uses: pathname '/clientes' + collection 'tests'. */
+const MEMORY_KEY = listViewMemoryKey('/clientes', 'tests');
 
 const testSchema = z.object({
   nome: z.string(),
@@ -111,6 +116,11 @@ describe('TableView', () => {
   afterEach(() => {
     // useLocalStorage persists visible columns; clear so cases don't leak.
     localStorage.clear();
+    // The sticky list memory persists filters/sort per screen in sessionStorage
+    // and is restored whenever the URL is bare — so without this, one case's
+    // filter silently reopens in the next, and which cases break depends on the
+    // order they ran in.
+    sessionStorage.clear();
     // The URL-sync effect mutates the URL via history.replaceState; reset it
     // so one case's query string doesn't bleed into the next.
     window.history.replaceState(null, '', '/clientes');
@@ -951,6 +961,433 @@ describe('TableView', () => {
         expect.anything(),
         expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
       );
+    });
+  });
+
+  describe('sticky list memory', () => {
+    it('reopens the last filter when the URL carries none', () => {
+      // The reported bug: filter /produtos, open a record, click Cancelar. The
+      // detail page navigates to the BARE list path, so the query string that
+      // held the filter is gone by the time the list remounts.
+      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', pages: 1, scroll: 0 });
+      buildPipelineSpy.mockClear();
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ filters: [{ field: 'nome', op: 'contains', value: 'ana' }] }),
+      );
+    });
+
+    it('issues the restored filter as the FIRST query, not a second one', () => {
+      // Restoring from an effect would spend one full unfiltered page of
+      // scanned data before correcting itself — and this database bills data
+      // scanned. Exactly one query, already narrowed.
+      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', pages: 1, scroll: 0 });
+      buildPipelineSpy.mockClear();
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      // `buildPipelineSpy` is declared with no parameters, so `mock.calls` is
+      // typed `[][]` and `call[1]` is a TS2493. Go through `unknown`.
+      const filterSets = buildPipelineSpy.mock.calls.map(
+        (call) => (call as unknown as [unknown, { filters?: unknown[] }])[1].filters,
+      );
+      expect(filterSets).toEqual([[{ field: 'nome', op: 'contains', value: 'ana' }]]);
+    });
+
+    it('lets the URL win over the memory, so a shared link is never overridden', () => {
+      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', pages: 1, scroll: 0 });
+      searchParamsRef.current = new URLSearchParams('nome=contains:bob');
+      buildPipelineSpy.mockClear();
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ filters: [{ field: 'nome', op: 'contains', value: 'bob' }] }),
+      );
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('records the filter as soon as it is applied', () => {
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      expect(readListViewMemory(MEMORY_KEY)?.qs).toBe('nome=contains%3Aana');
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('remembers a cleared list as cleared, so clearing sticks', () => {
+      // An empty query string is NOT "no memory": without storing it, clearing
+      // every filter would be undone by the previous entry on the next visit.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      searchParamsRef.current = new URLSearchParams();
+      fireEvent.click(screen.getByRole('button', { name: 'Limpar filtros' }));
+      expect(readListViewMemory(MEMORY_KEY)?.qs).toBe('');
+    });
+
+    it('restores the "Carregar mais" window, capped', () => {
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 10, scroll: 0 });
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          pageSize={2}
+        />,
+      );
+      // Capped rather than obeyed: re-reading an unbounded window on every
+      // return is billed data scanned, and on /pedidos it is a listener count.
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 2 * MAX_RESTORED_PAGES }),
+      );
+    });
+
+    it('does not collapse the restored window on mount', () => {
+      // Every effect runs once on mount, including the one that resets the
+      // window whenever the query shape changes. Unguarded, it undoes the
+      // restore a beat after it lands and the page count never comes back.
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          pageSize={2}
+        />,
+      );
+      const limits = buildPipelineSpy.mock.calls.map(
+        (call) => (call as unknown as [unknown, { limit: number }])[1].limit,
+      );
+      expect(limits).not.toContain(2);
+      expect(limits.at(-1)).toBe(4);
+    });
+
+    it('keeps the restored window under StrictMode', async () => {
+      // `apps/web/next.config` sets `reactStrictMode: true`, so in dev React
+      // mounts, unmounts and REMOUNTS on the same fiber and runs every effect
+      // twice. A boolean "skip my first run" ref does not survive that — it is
+      // already armed on the second run, so the reset fires and the restored
+      // window vanishes in `next dev` while production is fine. Rendering
+      // without StrictMode (as every other case here does) cannot see it.
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      buildPipelineSpy.mockClear();
+      render(
+        <StrictMode>
+          <MantineTestProvider>
+            <TableView
+              schema={testSchema}
+              collection={fakeCollection()}
+              db={{} as never}
+              pageSize={2}
+            />
+          </MantineTestProvider>
+        </StrictMode>,
+      );
+      const limits = buildPipelineSpy.mock.calls.map(
+        (call) => (call as unknown as [unknown, { limit: number }])[1].limit,
+      );
+      expect(limits.at(-1)).toBe(4);
+    });
+
+    it('writes the scroll offset once the gesture settles, not during it', async () => {
+      // A per-frame write runs ~60 stringify+setItem pairs a second for the
+      // whole gesture and none of them is ever read — the offset is consumed
+      // only by the next mount. The intermediate offsets must never land.
+      vi.useFakeTimers();
+      vi.stubGlobal('scrollTo', vi.fn());
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      for (const y of [10, 40, 90, 140]) {
+        Object.defineProperty(window, 'scrollY', { value: y, configurable: true });
+        window.dispatchEvent(new Event('scroll'));
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      expect(readListViewMemory(MEMORY_KEY)?.scroll ?? 0).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS + 20);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(140);
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it('flushes a pending scroll when the list unmounts', async () => {
+      // Clicking a row within the debounce window of the last scroll is exactly
+      // the gesture this feature exists to remember; without the flush it is
+      // the one gesture that loses it.
+      vi.useFakeTimers();
+      vi.stubGlobal('scrollTo', vi.fn());
+      const { unmount } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 640, configurable: true });
+      window.dispatchEvent(new Event('scroll'));
+      unmount();
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(640);
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it('abandons the remembered scroll once the operator changes the query', async () => {
+      // The search box and the chip row are interactive while the first query
+      // — sized to the RESTORED window, so possibly slow — is still loading.
+      // An operator who filters in that gap must not be thrown down a result
+      // set they never scrolled when their own rows finally land.
+      const scrollTo = vi.fn();
+      vi.stubGlobal('scrollTo', scrollTo);
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      const withRows = snapState.current;
+      snapState.current = { data: [], loading: false, error: undefined };
+
+      const { rerender } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      // Their own filter, before any row has arrived.
+      fireEvent.click(screen.getByRole('button', { name: 'Filtrar Nome' }));
+      fireEvent.change(screen.getByLabelText('Nome contém'), { target: { value: 'ana' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar' }));
+
+      snapState.current = withRows;
+      rerender(
+        <MantineTestProvider>
+          <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />
+        </MantineTestProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(scrollTo).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    });
+
+    it('does not zero a remembered offset when it unmounts without a scroll', async () => {
+      // The StrictMode mount/cleanup/remount cycle would otherwise flush
+      // `scrollY` 0 over the offset the restore is still on its way to
+      // putting back.
+      vi.stubGlobal('scrollTo', vi.fn());
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      const { unmount } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      unmount();
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(840);
+      vi.unstubAllGlobals();
+    });
+
+    it('still collapses the window when the filter changes afterwards', () => {
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          pageSize={2}
+        />,
+      );
+      buildPipelineSpy.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Filtrar Nome' }));
+      fireEvent.change(screen.getByLabelText('Nome contém'), { target: { value: 'ana' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar' }));
+      expect(buildPipelineSpy).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 2 }),
+      );
+    });
+
+    it('puts the scroll back once the rows are on screen', async () => {
+      // Deferred to the rows because scrolling to an offset the document is not
+      // yet tall enough for silently lands at the bottom instead.
+      const scrollTo = vi.fn();
+      vi.stubGlobal('scrollTo', scrollTo);
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 840));
+      vi.unstubAllGlobals();
+    });
+
+    it('waits for rows, so an empty first paint does not burn the restore', async () => {
+      // The restore fires once. Spending it on a paint with no rows would
+      // scroll a short document to an offset it cannot reach — and then never
+      // try again when the rows actually arrive.
+      const scrollTo = vi.fn();
+      vi.stubGlobal('scrollTo', scrollTo);
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      const withRows = snapState.current;
+      snapState.current = { data: [], loading: false, error: undefined };
+
+      const { rerender } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      // ⚠️ The wait is load-bearing. The restore goes through
+      // `requestAnimationFrame`, so asserting "not called" immediately after
+      // `wrap()` passes even when the guard is gone — nothing has had a chance
+      // to fire yet. Give the frame time to land first.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(scrollTo).not.toHaveBeenCalled();
+
+      snapState.current = withRows;
+      rerender(
+        <MantineTestProvider>
+          <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />
+        </MantineTestProvider>,
+      );
+      await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 840));
+      vi.unstubAllGlobals();
+    });
+
+    it('does not erase the remembered scroll offset on mount', async () => {
+      // The URL sync persists on mount, before the caller has reported a scroll
+      // and before the restore has landed. Seeded with a zero it would blank the
+      // offset that was on its way back, so leaving again right away lost it.
+      vi.stubGlobal('scrollTo', vi.fn());
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(840);
+      vi.unstubAllGlobals();
+    });
+
+    it('keeps foreign query params instead of deleting them', () => {
+      // The URL sync used to rebuild the query string from scratch, which wiped
+      // ?copyFrom / ?copiarDe / ?userCliente — params the surrounding page was
+      // still going to read.
+      window.history.replaceState(null, '', '/clientes?copyFrom=abc');
+      const replaceState = vi.spyOn(window.history, 'replaceState');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      fireEvent.click(screen.getByText('Nome'));
+      expect(replaceState).toHaveBeenLastCalledWith(
+        null,
+        '',
+        '/clientes?copyFrom=abc&sort=nome%3Aasc',
+      );
+      replaceState.mockRestore();
+    });
+
+    it('does not put a foreign param into the memory', () => {
+      window.history.replaceState(null, '', '/clientes?copyFrom=abc');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      fireEvent.click(screen.getByText('Nome'));
+      // `copyFrom` belongs to the navigation that carried it, not to this
+      // screen's saved position — restoring it later would be nonsense.
+      expect(readListViewMemory(MEMORY_KEY)?.qs).toBe('sort=nome%3Aasc');
+    });
+  });
+
+  describe('active filter chips', () => {
+    it('names what is hiding rows, using the displayed column label', () => {
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          fields={{ nome: { label: 'Nome do cliente' } }}
+        />,
+      );
+      expect(screen.getByText('Nome do cliente contém "ana"')).toBeTruthy();
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('renders nothing at all when the list is unfiltered', () => {
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      expect(screen.queryByRole('button', { name: 'Limpar filtros' })).toBeNull();
+    });
+
+    it('never renders a bare column label, which would break the e2e sort helper', () => {
+      // `clickColumnSort` is getByText(label, { exact: true }) under Playwright
+      // strict mode; a chip equal to a header label resolves to two nodes.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana&tipo=eq:0');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      expect(screen.getAllByText('Nome', { exact: true })).toHaveLength(1);
+      expect(screen.getAllByText('Tipo', { exact: true })).toHaveLength(1);
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('removes one filter and leaves the rest', () => {
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana&tipo=eq:0');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      searchParamsRef.current = new URLSearchParams();
+      buildPipelineSpy.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Remover filtro Nome contém "ana"' }));
+      expect(buildPipelineSpy).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ filters: [{ field: 'tipo', op: 'eq', value: '0' }] }),
+      );
+    });
+
+    it('clears every filter at once', () => {
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana&tipo=eq:0');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      searchParamsRef.current = new URLSearchParams();
+      buildPipelineSpy.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Limpar filtros' }));
+      expect(buildPipelineSpy).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ filters: [] }),
+      );
+      expect(screen.queryByRole('button', { name: 'Limpar filtros' })).toBeNull();
+    });
+  });
+
+  describe('search prop', () => {
+    const search = {
+      placeholder: 'Buscar por nome…',
+      toFilters: (term: string) => [{ field: 'nome', op: 'gte' as const, value: term }],
+      toForcedOrderBy: () => ({ field: 'nome', direction: 'asc' as const }),
+    };
+
+    it('feeds the term into the query and forces the order it requires', () => {
+      // A prefix RANGE must be the first orderBy or the query is invalid on the
+      // classic path and silently stops matching its index on the Pipelines one.
+      searchParamsRef.current = new URLSearchParams('q=camiseta');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          search={search}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          filters: [{ field: 'nome', op: 'gte', value: 'camiseta' }],
+          orderBy: [{ field: 'nome', direction: 'asc' }],
+        }),
+      );
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('shows a restored term in the box and as a chip', () => {
+      writeListViewMemory(MEMORY_KEY, { qs: 'q=camiseta', pages: 1, scroll: 0 });
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          search={search}
+        />,
+      );
+      expect((screen.getByLabelText('Buscar') as HTMLInputElement).value).toBe('camiseta');
+      expect(screen.getByText('Busca: "camiseta"')).toBeTruthy();
+    });
+
+    it('leaves ?q= alone when the table does not own the search box', () => {
+      // /clientes and /nfe/comunicacoes resolve their term asynchronously and
+      // keep their own input; wiping their param would clear their search.
+      window.history.replaceState(null, '', '/clientes?q=meu-termo');
+      const replaceState = vi.spyOn(window.history, 'replaceState');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      fireEvent.click(screen.getByText('Nome'));
+      expect(replaceState).toHaveBeenLastCalledWith(
+        null,
+        '',
+        '/clientes?q=meu-termo&sort=nome%3Aasc',
+      );
+      replaceState.mockRestore();
+    });
+
+    it('renders no search box when the prop is absent', () => {
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      expect(screen.queryByLabelText('Buscar')).toBeNull();
     });
   });
 });
