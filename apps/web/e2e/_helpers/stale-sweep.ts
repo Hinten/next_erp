@@ -52,7 +52,7 @@
  */
 import { FieldPath, type Firestore, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { deleteDocumentSubtree } from '@delfrance/data/admin';
-import { E2E_PROBE_COLLECTION, db, e2eRunId } from '@delfrance/test-fixtures';
+import { E2E_PROBE_COLLECTION, db, e2eRunId, e2eRunSlotSuffix } from '@delfrance/test-fixtures';
 import { requiresAuthEnv } from '../helpers/env';
 import { getRunId } from './run-id';
 
@@ -191,9 +191,38 @@ export function prefixEnd(prefix: string): string {
   return `${prefix.slice(0, -1)}${String.fromCharCode(last + 1)}`;
 }
 
-/** Every prefix a target should be matched on. */
-function prefixesFor(target: E2EFixtureTarget, basePrefixes: readonly string[]): string[] {
-  return [...basePrefixes, ...(target.extraPrefixes ?? [])];
+/**
+ * Every prefix a target should be matched on.
+ *
+ * ⚠️ `extraPrefixes` are included ONLY when an age gate is active, and that
+ * coupling is the whole point rather than a tuning choice. The one extra prefix
+ * today is {@link UI_PEDIDO_PREFIX} (`E2E-`), the numero the counter mints for a
+ * pedido created through the UI — which carries **no run id at all**, so no
+ * amount of run/worker/slot scoping can attribute it to a run. Pass B's docblock
+ * already states the consequence: for those docs "the age gate is their only
+ * isolation from a concurrent lane."
+ *
+ * A no-age-gate pass (`maxAgeMs: null` — {@link reclaimPredecessorRun} and
+ * {@link sweepCurrentRunFixtures}) that also matched `E2E-` would therefore
+ * query the GLOBAL range and delete pedidos belonging to whoever else is
+ * running, including a sibling shard of the SAME workflow run, seconds after
+ * they were written. Both jobs stay green and the victim spec reads as flake.
+ * Sharding made that same-run and systematic on the one lane that mints `E2E-`
+ * pedidos, which is why it is enforced here instead of at each call site: a new
+ * `maxAgeMs: null` caller cannot reintroduce it by forgetting a flag.
+ *
+ * The cost is that a UI-minted pedido this run created outlives teardown and
+ * waits for Pass B's {@link STALE_E2E_FIXTURE_AGE_MS} gate. That is already the
+ * documented division of labour — and the specs that care stamp the run prefix
+ * into `observacoesInternas`, which the BASE prefixes match, so those are still
+ * reclaimed immediately.
+ */
+function prefixesFor(
+  target: E2EFixtureTarget,
+  basePrefixes: readonly string[],
+  ageGated: boolean,
+): string[] {
+  return ageGated ? [...basePrefixes, ...(target.extraPrefixes ?? [])] : [...basePrefixes];
 }
 
 export interface SweepReport {
@@ -437,7 +466,7 @@ async function sweep(options: SweepOptions): Promise<SweepReport> {
     const { docs, truncated } = await collectCandidates(
       database,
       target,
-      prefixesFor(target, options.prefixes),
+      prefixesFor(target, options.prefixes, options.maxAgeMs !== null),
       deadline,
     );
 
@@ -487,12 +516,21 @@ async function sweep(options: SweepOptions): Promise<SweepReport> {
  * operates on, so the run it names is the one this run superseded. `null` for a
  * local run, which has no such group and therefore no predecessor to reclaim.
  * `/` is illegal in a document id, hence the substitution.
+ *
+ * ⚠️ The slot segment is what makes SHARDING survivable, and it is the axis
+ * whose omission is worst. `GITHUB_WORKFLOW` and `GITHUB_REF` are identical
+ * across two sharded jobs of one run, while {@link getRunId} is not — so on a
+ * shared group id the second job to claim reads the first's run id as
+ * `previous`, concludes `cancel-in-progress` killed it, and hands its prefix to
+ * {@link reclaimPredecessorRun}, which sweeps with `maxAgeMs: null`. That
+ * deletes a LIVE sibling's fixtures, with no age gate, mid-run. Scoping the run
+ * id without scoping this is strictly worse than scoping neither.
  */
-function concurrencyGroupId(): string | null {
+export function concurrencyGroupId(): string | null {
   const workflow = process.env.GITHUB_WORKFLOW;
   const ref = process.env.GITHUB_REF;
   if (!workflow || !ref) return null;
-  return `${workflow}__${ref}`.replace(/\//g, '_');
+  return `${workflow}__${ref}${e2eRunSlotSuffix()}`.replace(/\//g, '_');
 }
 
 /**

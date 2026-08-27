@@ -23,11 +23,18 @@ function cfg(
   };
 }
 
-/** The pack response ML's "Gestão de mensagens" reference documents. */
+/**
+ * The pack response ML's "Gestão de mensagens" reference documents, on a thread
+ * ML has **MIGRATED** to the 02/02/2026 agent architecture: `path` carries the
+ * `/conversations/` segment and the inbound message comes `from` the agent.
+ *
+ * ⚠️ Those two travel together. This fixture used to pair an agent `from` with a
+ * plain path, a shape ML does not produce — see `LEGACY_PACK` for the other flow.
+ */
 const PACK = {
   paging: { limit: 10, offset: 0, total: 3 },
   conversation_status: {
-    path: '/packs/2000000089077943/seller/415458330',
+    path: '/packs/2000000089077943/sellers/415458330/conversations/post_sale',
     status: 'active',
     substatus: null,
     status_date: '2026-02-05T20:01:46.000Z',
@@ -63,7 +70,36 @@ const PACK = {
   buyer_max_message_length: 3500,
 };
 
+/**
+ * The same thread on the flow ML has **NOT** migrated: a real buyer `from`, and a
+ * `path` with no `/conversations/` segment.
+ *
+ * ⚠️ Note the PLURAL `sellers` — ML uses both spellings off the agent flow (its
+ * reference shows the singular; the live 400 on pack 2000018143664980 quoted the
+ * plural), so only the `/conversations/` segment discriminates the two.
+ */
+const LEGACY_PACK = {
+  ...PACK,
+  conversation_status: { ...PACK.conversation_status, path: '/packs/22175467/sellers/32086568493' },
+  messages: [{ ...PACK.messages[0], from: { user_id: 1234567890 } }],
+};
+
 describe('getPackMessages', () => {
+  it('parses BOTH conversation flows — the discriminator is /conversations/', async () => {
+    for (const [nome, fixture, esperado] of [
+      ['agente', PACK, '/packs/2000000089077943/sellers/415458330/conversations/post_sale'],
+      ['legado', LEGACY_PACK, '/packs/22175467/sellers/32086568493'],
+    ] as const) {
+      const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+        jsonResponse(fixture),
+      );
+      const api = createMercadoLivreApi(cfg(fetchMock));
+      const r = await api.getPackMessages('1', '2');
+      expect(r.conversation_status?.path, nome).toBe(esperado);
+      expect(r.messages[0]?.from?.user_id, nome).toBe(fixture.messages[0]!.from.user_id);
+    }
+  });
+
   it('reads the pack thread WITHOUT marking it read', async () => {
     // ⚠️ The plain GET marks the thread read as a side effect. An importer must
     // not clear the seller's unread state — ML surfaces unread counts they rely on.
@@ -79,6 +115,35 @@ describe('getPackMessages', () => {
       'https://api.mercadolibre.com/messages/packs/2000000089077943/sellers/415458330' +
         '?tag=post_sale&mark_as_read=false',
     );
+  });
+
+  it('puts the caller’s paging on the query string', async () => {
+    // ⚠️ Untested until now, and two callers depend on it reaching ML: the
+    // importer walks `paging.total`, and the SEND path derives the reply's
+    // recipient from this response — at ML's default page of 10 the newest
+    // counterparty can be off the page entirely. A silently-dropped `limit`
+    // leaves every stubbed test above still green.
+    const casos: Array<[{ limit?: number; offset?: number } | undefined, string]> = [
+      [undefined, ''],
+      [{ limit: 100 }, '&limit=100'],
+      [{ limit: 100, offset: 50 }, '&limit=100&offset=50'],
+      // ML 400s a non-positive limit, so neither is sent — see the guards in api.ts.
+      [{ limit: 0 }, ''],
+      [{ offset: 0 }, ''],
+    ];
+    for (const [paginacao, sufixo] of casos) {
+      const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+        jsonResponse(PACK),
+      );
+      const api = createMercadoLivreApi(cfg(fetchMock));
+
+      await api.getPackMessages('1', '2', paginacao);
+
+      expect(fetchMock.mock.calls[0]![0], JSON.stringify(paginacao)).toBe(
+        'https://api.mercadolibre.com/messages/packs/1/sellers/2' +
+          `?tag=post_sale&mark_as_read=false${sufixo}`,
+      );
+    }
   });
 
   it('surfaces conversation_status and the LIVE seller cap', async () => {
@@ -205,22 +270,23 @@ describe('sendPackMessage', () => {
     expect((init as RequestInit).method).toBe('POST');
   });
 
-  it('addresses the AGENT and sends BOTH ids as strings, per ML’s documented body', async () => {
-    // ⚠️ The single easiest thing to get silently wrong. Since 02/02/2026 the
-    // agent IS the delivery path on MLB, so a message addressed to the buyer's
-    // real id does not reach them — and ML answers 200 either way. Nothing but
-    // this assertion stands between that and a seller whose replies vanish.
+  // ⚠️ This is the TRANSPORT, and it is agnostic about who the recipient is.
+  // WHICH id belongs here is decided per-thread by `postSaleRecipientUserId` —
+  // ML's agent rollout is progressive, so the agent is right on a migrated thread
+  // and the real buyer id on one it has not migrated. This file used to assert
+  // "addresses the AGENT" as a universal, which is what shipped the bug.
+  it.each([
+    ['the site agent, on a migrated thread', postSaleAgentUserId('MLB'), '3037675074'],
+    ['the real buyer, on a thread ML has not migrated', 1234567890, '1234567890'],
+  ])('sends %s through unchanged, BOTH ids as strings per ML’s body', async (_, id, esperado) => {
     const fetchMock = sendMock();
     const api = createMercadoLivreApi(cfg(fetchMock));
 
-    await api.sendPackMessage('pack-1', '415458330', {
-      text: 'Enviado hoje!',
-      toUserId: postSaleAgentUserId('MLB'),
-    });
+    await api.sendPackMessage('pack-1', '415458330', { text: 'Enviado hoje!', toUserId: id });
 
     expect(bodyOf(fetchMock)).toEqual({
       from: { user_id: '415458330' },
-      to: { user_id: '3037675074' },
+      to: { user_id: esperado },
       text: 'Enviado hoje!',
     });
   });
@@ -261,6 +327,10 @@ describe('sendPackMessage', () => {
   });
 });
 
+// ⚠️ The table and this lookup are unchanged, but their ROLE narrowed: they are
+// no longer the recipient of every reply, only the last rung of
+// `postSaleRecipientUserId` — reached when `conversation_status.path` names a
+// `/conversations/` segment and the thread itself named no counterparty.
 describe('postSaleAgentUserId', () => {
   it('maps every site ML published an agent for', () => {
     expect(postSaleAgentUserId('MLA')).toBe(3037674934);

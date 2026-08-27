@@ -7,21 +7,24 @@ import { type Firestore } from 'firebase/firestore';
 import type { Produto } from '@delfrance/schemas';
 import { arquivoCollection } from '@delfrance/storage';
 import { useDocSnapshot } from '@delfrance/data/hooks';
+import { useFirstExistingArquivoUrl } from '@/lib/produtos/fotoCapa';
+import {
+  type FotoVariante,
+  arquivoIdFromRef,
+  fotoArquivoIdCandidates,
+} from '@/lib/produtos/fotoRefs';
 
 /** Accessible label for the broken-image placeholder (missing or failed load). */
 const BROKEN_LABEL = 'Foto indisponível';
 
 /**
- * Bare `<id>` from a `Foto` ref string — the last non-empty path segment, so it
- * handles both `arquivos/<id>` and the canonical Flutter outer-ref form
- * `documents/arquivos/<id>`, or a bare id. Mirrors `arquivoIdFromRef` in
- * `lib/pedido-print/model.ts`.
+ * 400px first here, unlike the list's 200px default: this thumbnail is
+ * click-to-zoom and renders up to `size` px, so the extra detail is worth the
+ * bytes. The 200px rung stays as a middle step because a partially-written
+ * derivative set is possible — `processProductOriginal` writes the three
+ * variants in a loop and a failure between them leaves some present.
  */
-function idFromRef(ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  const segs = ref.split('/').filter(Boolean);
-  return segs[segs.length - 1] ?? null;
-}
+const PREFERENCIA_THUMBNAIL: readonly FotoVariante[] = ['400', '200', 'original'];
 
 /** A centered broken-image icon shown when a photo is missing or fails to load. */
 function BrokenImage({ size }: { size: number }) {
@@ -53,11 +56,12 @@ export interface ProdutoThumbnailProps {
 }
 
 /**
- * A shared, size-configurable product thumbnail. Resolves the first foto's
- * 400px derivative (falling back to the original `arquivoOuterRef`), live-reads
- * its `arquivos/` doc for the public `url`, and renders a Mantine `Image`.
- * Shows a placeholder while the arquivo doc loads and a **broken-image icon**
- * when the produto has no foto, the arquivo doc is missing, or the image fails
+ * A shared, size-configurable product thumbnail. Resolves the first foto down
+ * the 400px → 200px → original ladder — falling through on a **missing
+ * document**, not on a null ref — live-reads that `arquivos/` doc for the
+ * public `url`, and renders a Mantine `Image`. Shows a placeholder while a
+ * candidate is still resolving and a **broken-image icon** only when the
+ * produto has no foto, EVERY candidate document is missing, or the image fails
  * to load. When `zoomable`, clicking opens the original photo in a modal.
  *
  * Promoted from the pedido-local copy (#297) so produtos list, the
@@ -79,30 +83,33 @@ export function ProdutoThumbnail({
   const markErrored = (u: string) => setErroredUrls((prev) => new Set(prev).add(u));
   const [opened, setOpened] = useState(false);
 
-  // Thumbnail source: the 400px derivative, falling back to the original ref.
-  const thumbRef = useMemo(() => {
-    const id = idFromRef(foto?.arquivo400pxOuterRef ?? foto?.arquivoOuterRef);
-    return id ? arquivoCollection.docRef(db, {}, id) : null;
-  }, [db, foto?.arquivo400pxOuterRef, foto?.arquivoOuterRef]);
-  const thumb = useDocSnapshot(thumbRef);
+  // Thumbnail source: the 400px derivative, then 200px, then the original —
+  // resolved by DOCUMENT EXISTENCE, not by which ref string is non-null.
+  // `buildFotoRefs` writes every derivative ref optimistically at upload time,
+  // so a `??` over the refs always picks the 400px one and then resolves it to
+  // nothing whenever the resize function has not produced it; that is what used
+  // to render this as a permanent broken image. See `lib/produtos/fotoCapa.ts`.
+  const thumbIds = useMemo(() => fotoArquivoIdCandidates(foto, PREFERENCIA_THUMBNAIL), [foto]);
+  const thumb = useFirstExistingArquivoUrl(db, thumbIds);
 
   // The original (full-res) photo for the zoom modal — only subscribed while the
   // modal is open, so a list of thumbnails holds one live listener each, not two.
   const originalRef = useMemo(() => {
-    const id = idFromRef(foto?.arquivoOuterRef);
+    const id = arquivoIdFromRef(foto?.arquivoOuterRef);
     return id ? arquivoCollection.docRef(db, {}, id) : null;
   }, [db, foto?.arquivoOuterRef]);
   const original = useDocSnapshot(opened ? originalRef : null);
 
-  const url = thumb.data?.data?.url ?? null;
+  const url = thumb.url;
   // Prefer the original in the modal; fall back to the thumbnail url if the
   // original doc has no url yet.
   const originalUrl = original.data?.data?.url ?? url;
   const canZoom = zoomable && foto !== null;
 
-  // `thumb.data === null` means the arquivo doc does not exist (a missing photo);
-  // `undefined` means it is still loading.
-  const missing = foto === null || thumb.data === null;
+  // Broken means EVERY candidate resolved to nothing — the produto has no foto,
+  // or none of its arquivo docs exists. While a candidate is still being read,
+  // `resolved` is false and the skeleton shows instead.
+  const missing = foto === null || (thumb.resolved && url === null);
   const thumbErrored = url !== null && erroredUrls.has(url);
 
   let content: React.ReactNode;

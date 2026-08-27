@@ -276,6 +276,11 @@ function makeApi(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): Me
   return {
     getShipment: vi.fn(async (id: number | string) => makeShipment({ id: Number(id) })),
     getShipmentPayments: vi.fn(async () => []),
+    // `GET /shipments/{id}/costs` — the only source of the seller's freight cost
+    // since `base_cost` left the wire (#957). Default: no sender row of ours, so
+    // `resolveShipmentSellerCost` reports `null` and `custoCalculado` keeps the
+    // pre-#957 behaviour. Tests that care override it.
+    getShipmentCosts: vi.fn(async () => ({ gross_amount: null, senders: [] })),
     // The documented replacement for the discontinued `shipment.order_id`.
     // Empty by default: the fixture still carries the legacy field, so the
     // fallback only fires for the tests that null it out.

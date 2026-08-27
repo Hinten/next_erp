@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DERIVED_JOB, THIRD_PARTY_JOBS } from '../../../.github/scripts/main-red-alert.mjs';
 import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
-import { checkName, jobBlocks, topBlock } from './lib/workflow-scan.js';
+import { checkName, jobBlocks, stripComments, topBlock } from './lib/workflow-scan.js';
 
 /**
  * Every PR-triggered lane must ALWAYS publish a check, and that check must tell
@@ -95,7 +95,14 @@ const LANES = {
     // This lane also builds and serves apps/integrations on :3001 for the
     // configuracoes suite, so a change there can break it.
     roots: ['@delfrance/web', '@delfrance/integrations-app'],
-    jobs: [{ id: 'vendas', check: 'vendas / e2e', class: 'required', readsFork: true }],
+    // ⚠️ The two jobs are a PARTITION of one suite (`--shard=i/2`), not two
+    // independent suites — same relationship as ci.yml's `CI test web 1of2|2of2`.
+    // Certifying either alone would report a lane where half the specs ran
+    // NOWHERE while both jobs went green. Assertion 16 pins the numerators.
+    jobs: [
+      { id: 'vendas-1', check: 'vendas-1 / e2e', class: 'required', readsFork: true },
+      { id: 'vendas-2', check: 'vendas-2 / e2e', class: 'required', readsFork: true },
+    ],
   },
   '.github/workflows/e2e-emulator.yml': {
     gate: 'E2E gate (emulator)',
@@ -897,6 +904,155 @@ describe('CI lanes always report', () => {
   });
 
   // ------------------------------------------------------------------
+  // 5d. A sharded e2e lane is a PARTITION, and each shard is ISOLATED.
+  // ------------------------------------------------------------------
+  it('every sharded e2e lane partitions its suite and scopes each shard', () => {
+    const shardedLanes = [];
+    const declaresShard = [];
+    for (const [file, lane] of Object.entries(LANES)) {
+      const source = read(file);
+      const jobs = jobBlocks(source);
+      // `shard:`/`run_slot:` are inputs to the reusable engine, so they appear
+      // only in a caller that actually shards. A lane with none is unsharded and
+      // has nothing to check here.
+      //
+      // ⚠️ Detection is deliberately LOOSER than parsing: any `shard:` key at
+      // all marks the lane sharded, and an unparseable VALUE then fails below
+      // rather than silently taking the `continue`. Matching on the numeric
+      // value alone made this whole block vacuous — quoting the value
+      // (`shard: '1/2'`, the ordinary reflex for a YAML scalar containing `/`)
+      // is semantically identical to Actions but invisible to that regex, so
+      // every lane fell through and (a)–(e) evaporated with the test still
+      // green. Same anti-vacuity lesson as 5c's `(a0)`.
+      const sharded = Object.keys(jobs).filter((id) => /^\s+shard\s*:/m.test(jobs[id]));
+      if (sharded.length > 0) declaresShard.push(file);
+      if (sharded.length === 0) continue;
+      shardedLanes.push(file);
+
+      // (a) Anti-vacuity: one shard job is not a partition, it is a typo that
+      //     silently drops the rest of the suite.
+      expect(
+        sharded.length,
+        `${file} declares a single \`shard:\` job. One shard of N runs 1/N of the suite and reports green.`,
+      ).toBeGreaterThanOrEqual(2);
+
+      const specs = sharded.map((id) => {
+        const block = jobs[id];
+        // Quotes optional: `shard: 1/2` and `shard: '1/2'` are the same value.
+        const shard = /^\s+shard\s*:\s*['"]?(\d+)\/(\d+)['"]?\s*$/m.exec(block);
+        expect(
+          shard,
+          `${file} → \`${id}\` declares a \`shard:\` this scanner cannot parse. Fix the ` +
+            'value or widen the pattern — do NOT let it fall through, or every check below ' +
+            'passes over nothing.',
+        ).not.toBeNull();
+        return {
+          id,
+          i: Number(shard[1]),
+          n: Number(shard[2]),
+          slot: (/^\s+run_slot\s*:\s*'?(\w*)'?/m.exec(block) ?? [])[1],
+          slug: (/^\s+slug\s*:\s*(\S+)/m.exec(block) ?? [])[1],
+          projects: (/^\s+projects\s*:\s*(.+)$/m.exec(block) ?? [])[1]?.trim(),
+        };
+      });
+
+      // (b) One denominator, and numerators exactly 1..N each once. Playwright
+      //     shards whole test GROUPS, so a missing numerator means those specs
+      //     run in NO job while every job still reports green — the same silent
+      //     hole as ci.yml's vitest shards (5c).
+      const ns = [...new Set(specs.map((x) => x.n))];
+      expect(ns, `${file} mixes shard denominators: ${ns.join(', ')}.`).toHaveLength(1);
+      expect(
+        specs.map((x) => x.i).sort((a, b) => a - b),
+        [
+          `${file}'s shard set is not a partition of 1..${ns[0]}.`,
+          '',
+          'Found: ' + specs.map((x) => `${x.id} -> ${x.i}/${x.n}`).join(', '),
+          '',
+          'A missing numerator means those specs run in NO job. Both jobs still go',
+          'green, and the gate certifies a lane that never executed half its suite.',
+        ].join('\n'),
+      ).toEqual(Array.from({ length: ns[0] }, (_, k) => k + 1));
+
+      // (c) ⭐ THE isolation invariant. Two shard jobs of ONE workflow run share
+      //     GITHUB_RUN_ID, GITHUB_WORKFLOW and GITHUB_REF, which is every input
+      //     the fixture-isolation keys are built from. `run_slot` (E2E_RUN_SLOT)
+      //     is the only thing separating them. Omit it on one job, or repeat a
+      //     value, and the two jobs sweep each other's LIVE fixtures and delete
+      //     the shared ephemeral auth user MID-SUITE. Nothing at runtime reports
+      //     that: both jobs simply start failing on missing fixtures, which reads
+      //     as flake. See `e2eRunSlot` in tools/test-fixtures/src/admin.ts.
+      const slots = specs.map((x) => x.slot);
+      expect(
+        slots.filter((v) => !/^\d+$/.test(v ?? '')),
+        [
+          `${file} has a sharded job with a missing or non-numeric \`run_slot:\`.`,
+          '',
+          'Every sharded job MUST declare distinct digits. Without it the shards',
+          "share every fixture key and delete each other's live staging fixtures.",
+        ].join('\n'),
+      ).toEqual([]);
+      expect(
+        new Set(slots).size,
+        `${file} reuses a \`run_slot:\` across shards (${slots.join(', ')}) — that is the same as having none.`,
+      ).toBe(specs.length);
+
+      // (c2) Every shard must be handed the IDENTICAL test selection. Playwright
+      //      computes `--shard=i/N` over whatever the projects resolve to, so two
+      //      shards given different `projects:` partition different corpora —
+      //      specs fall out of both halves, or run in both. Tempting to get wrong:
+      //      only shard 1 actually needs the `configuracoes` project, and dropping
+      //      it from shard 2 to skip a build would silently reshape the partition.
+      const selections = [...new Set(specs.map((x) => x.projects))];
+      expect(
+        selections,
+        [
+          `${file}'s shard jobs disagree about \`projects:\`: ${selections.join(' | ')}.`,
+          '',
+          '`--shard=i/N` partitions the selection it is given. Two different',
+          'selections are two different partitions, so specs run twice or never.',
+        ].join('\n'),
+      ).toHaveLength(1);
+
+      // (d) Distinct `slug`, or the shards' upload-artifact steps collide and one
+      //     report silently overwrites the other.
+      const slugs = specs.map((x) => x.slug);
+      expect(
+        new Set(slugs).size,
+        `${file} reuses a \`slug:\` across shards (${slugs.join(', ')}); the report artifacts would collide.`,
+      ).toBe(specs.length);
+
+      // (e) Every shard is certified. Covered generally by assertion 8, pinned
+      //     here too because a partition certified only in part is the whole
+      //     hazard this block exists for.
+      expect(
+        sharded.filter((id) => !lane.jobs.some((j) => j.id === id)),
+        `${file} has shard jobs its gate does not certify.`,
+      ).toEqual([]);
+    }
+
+    // (f) ⭐ Anti-vacuity for the LOOP itself, mirroring 5c's `(a0)`. Everything
+    //     above lives under a `continue`, so if detection ever stops matching,
+    //     every lane skips and this test passes having asserted NOTHING — while
+    //     the isolation invariant it exists to pin goes unguarded. Nothing at
+    //     runtime can see that, which is the same property the block is about.
+    expect(
+      declaresShard,
+      [
+        'No lane was detected as sharded, so 5d asserted nothing.',
+        '',
+        'Either sharding was removed from every lane — in which case delete this',
+        "assertion deliberately, along with the lane's shard jobs — or the `shard:`",
+        'detection stopped matching and this whole block is now vacuous.',
+      ].join('\n'),
+    ).not.toEqual([]);
+    expect(
+      shardedLanes,
+      'a lane declares `shard:` but produced no shard jobs — detection and parsing disagree.',
+    ).toEqual(declaresShard);
+  });
+
+  // ------------------------------------------------------------------
   // 6. The engine stays an engine.
   // ------------------------------------------------------------------
   it('the reusable engine declares no gate and stays workflow_call-only', () => {
@@ -1026,11 +1182,12 @@ describe('CI lanes always report', () => {
             );
           }
         }
-        // Two gate shapes exist on purpose. The four domain lanes are multi-job and
-        // carry a `JOBS:` manifest; the three e2e lanes have exactly one suite job
-        // and name it in `E2E_JOB_NAME`. Unifying them is a deliberate follow-up —
-        // it would mean refactoring three gates that are already merged and
-        // verified. Either way the invariant is the same: the gate must look the
+        // Two gate shapes exist on purpose, and the split is by JOB COUNT, not by
+        // lane family: a multi-job gate carries a `JOBS:` manifest, a single-job
+        // gate names its one job in `E2E_JOB_NAME`. The four domain lanes and
+        // e2e-vendas (sharded in two) are manifest-shaped; e2e-cadastros and
+        // e2e-emulator are single-job. Unifying the two shapes is a deliberate
+        // follow-up. Either way the invariant is the same: the gate must look the
         // job up by the name that job actually publishes.
         if (gate.includes('JOBS: |')) {
           if (!gate.includes(`|${job.class}|${job.check}`)) {
@@ -1460,6 +1617,84 @@ describe('CI lanes always report', () => {
     expect(
       suites.filter((name) => DERIVED_JOB.test(name)),
       '`DERIVED_JOB` matches a SUITE job. It must only match reporters.',
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 16. An apt-backed browser install trims the sources it does not use.
+  // ------------------------------------------------------------------
+  it('every job installing Playwright system deps trims apt sources first', () => {
+    // WHAT WENT WRONG. `playwright install --with-deps` — and the `install-deps`
+    // half it decomposes into — shells out to `apt-get update`, which exits 100
+    // when ANY configured source fails, including one holding nothing it will
+    // install. The ubuntu-latest image ships two packages.microsoft.com repos; on
+    // 2026-08-27 both answered 403 and reddened `E2E gate (emulator)` on PR #1306,
+    // while every package Playwright actually installs — 9 font packages — sat on
+    // azure.archive.ubuntu.com and fetched fine. A concurrent run on another runner
+    // passed that same minute, so it is a per-edge-node flake that recurs.
+    //
+    // Only lanes running BARE on ubuntu-latest are exposed. The staging e2e lanes
+    // run inside `mcr.microsoft.com/playwright`, where the deps are pre-baked and
+    // no apt runs at all — which is why this only ever hit the emulator lane.
+    //
+    // ⚠️ WHY A TEST AND NOT JUST THE COMMENT IN THE WORKFLOW. Deleting the trim
+    // step fails nothing until the next 403, which may be months out and will read
+    // as an unrelated flake when it lands. Same class as `apphosting-next-pinned`
+    // and `ai-root-entry-browser-safe`: a guard whose removal is otherwise silent.
+    //
+    // ⚠️ PROSE IS NOT AN INVOCATION, AND IT HIDES HERE IN TWO PLACES. `jobBlocks`
+    // cannot know that a trailing comment block documents the NEXT job, so prose
+    // lands in the previous job's body — and both the trim comment and
+    // e2e-reusable.yml's container note name `install-deps` in a comment. Hence
+    // `stripComments` below. But a comment is not the only prose: the retry loop
+    // used to `echo` a warning naming the very command it wraps, and matching that
+    // line made this assertion pass while nothing real was detected — the exact
+    // vacuous green the rot check underneath is meant to catch, caught by it. So
+    // annotation and echo lines are excluded too.
+    const APT_INSTALL = /playwright\s+install-deps\b|playwright\s+install\b[^\n]*--with-deps/;
+    const PROSE = /(?:^|\s)echo\s|::(?:warning|error|notice)::/;
+    const TRIM = /sources\.list\.d/;
+
+    const exposed = [];
+    const offenders = [];
+
+    for (const file of findByPathspec(':(glob).github/workflows/*.y*ml').sort()) {
+      for (const [jobId, body] of Object.entries(jobBlocks(read(file)))) {
+        const lines = stripComments(body).split('\n');
+        const apt = lines.findIndex((line) => APT_INSTALL.test(line) && !PROSE.test(line));
+        if (apt === -1) continue;
+        exposed.push(`${file}:${jobId}`);
+        // Order, not presence: a trim running AFTER the install protects nothing.
+        const trim = lines.findIndex((line) => TRIM.test(line));
+        if (trim === -1 || trim > apt) offenders.push(`${file}:${jobId}`);
+      }
+    }
+
+    expect(
+      exposed.length,
+      [
+        'Found no job running an apt-backed Playwright install.',
+        '',
+        'Either the last such lane moved into the Playwright container — in which',
+        'case delete this assertion and say so — or `APT_INSTALL` has rotted and',
+        'this assertion now checks nothing, which is the vacuous-green failure the',
+        'whole file exists to prevent.',
+      ].join('\n'),
+    ).toBeGreaterThanOrEqual(1);
+
+    expect(
+      offenders,
+      [
+        'A job runs an apt-backed Playwright install with no apt-source trim before it.',
+        '',
+        'That job now dies whenever an unrelated third-party repo on the runner image',
+        'is unreachable — a red required check caused by nothing in the PR, clearing',
+        'only on a re-run. Add the `Trim apt sources to the Ubuntu archive` step ahead',
+        'of the install (copy it from e2e-emulator.yml), or move the job into the',
+        'Playwright container, where no apt runs at all.',
+        '',
+        ...offenders.map((o) => `  - ${o}`),
+      ].join('\n'),
     ).toEqual([]);
   });
 });

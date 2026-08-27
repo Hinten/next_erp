@@ -23,6 +23,15 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   query (O(missing)), never a full catalog scan. Both share the idempotent
   `processProductOriginal` (`src/product-images/processOriginal.ts`), which writes
   only missing derivatives and skips the download when complete.
+  ⚠️ **Live diagnostic for "some produtos show no thumbnail":**
+  `scripts/check-derivatives.mjs` (read-only, `limit()`-bounded — the
+  `resizeState` query is NOT index-backed, and Enterprise bills data scanned).
+  It reports the `resizeState: 'pending'` backlog with its oldest entry, and
+  over a sample of produtos how many cover fotos name a derivative document that
+  **does not exist**. That last count separates the two causes: a produto whose
+  photo renders in the editor but not in the list has an intact ORIGINAL and a
+  missing DERIVATIVE, and whether any derivative resolves at all tells you if
+  this is a regression or if resize has never run against the project.
 - **`onArquivoDeleted`** (`onDocumentDeleted('arquivos/{id}')`) — doc-anchored
   Storage cleanup: deleting an `arquivos` doc deletes the object it owned; for a
   product-image original it cascades to the 3 derivative objects + docs. Core logic
