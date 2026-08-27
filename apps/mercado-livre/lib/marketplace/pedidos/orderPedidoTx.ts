@@ -554,7 +554,21 @@ export async function discoverPedidoMercadoLivre(
           p.existingUltimaModificacao == null ||
           p.existingUltimaModificacao < mapped.ultimaModificacao;
         if (shouldWrite) {
-          const toWrite = p.exists ? mergePagamentoUpdate(p.existingRaw, mapped) : mapped;
+          // The stored side goes through the soft (read) parse before merging:
+          // since `pagamentoSchema` dropped `.passthrough()` (#463), a legacy
+          // corpus doc carrying an unmodeled key would otherwise ride the merge
+          // into the strict write parse below and throw — `parseSoftRead`
+          // silently strips it instead, so only a genuinely INCOMING unknown
+          // key can still throw on write.
+          const toWrite = p.exists
+            ? mergePagamentoUpdate(
+                pagamentoCollection.parseRead(p.existingRaw, p.ref.path) as unknown as Record<
+                  string,
+                  unknown
+                >,
+                mapped,
+              )
+            : mapped;
           tx.set(p.ref, pagamentoCollection.parse(toWrite));
         }
       }

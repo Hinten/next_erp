@@ -400,7 +400,21 @@ export async function importPagamentoMercadoLivre(
     }
 
     // (6) create-or-merge upsert at the deterministic id — doc id kept either way.
-    const toWrite = existingRaw == null ? mapped : mergePagamentoUpdate(existingRaw, mapped);
+    // The stored side goes through the soft (read) parse before merging: since
+    // `pagamentoSchema` dropped `.passthrough()` (#463), a legacy corpus doc
+    // carrying an unmodeled key would otherwise ride the merge into the strict
+    // write parse below and throw — `parseSoftRead` silently strips it instead,
+    // so only a genuinely INCOMING unknown key can still throw on write.
+    const toWrite =
+      existingRaw == null
+        ? mapped
+        : mergePagamentoUpdate(
+            pagamentoCollection.parseRead(existingRaw, pagamentoRef.path) as unknown as Record<
+              string,
+              unknown
+            >,
+            mapped,
+          );
     tx.set(pagamentoRef, pagamentoCollection.parse(toWrite));
 
     // (7) estado advance — only inside the write branch, only for a pedido
