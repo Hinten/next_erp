@@ -830,6 +830,14 @@ const mlShipmentCostPartySchema = z
  * `gross_amount` is the shipment total before any discount (the nearest analogue
  * of the legacy top-level `base_cost`); it is typed because it makes a stored
  * `senders[].cost` auditable, not because anything maps it today.
+ *
+ * ⚠️ **`gross_amount - receiver.cost` is NOT the seller's cost.** The identity is
+ * `gross_amount = Σ over parties of (cost + Σ discounts[].promoted_amount)`, and
+ * ML's own example is the counter-example: 24.55 gross, `receiver.cost` 0,
+ * `senders[0].cost` **8.19** — the missing 16.36 is the two `promoted_amount`
+ * entries (4.07 + 12.29). So `senders[].cost` is read DIRECTLY and never derived
+ * by subtraction; anyone reconciling by hand has to include the discounts, which
+ * this schema deliberately leaves on the passthrough.
  */
 export const mlShipmentCostsSchema = z
   .object({
