@@ -29,6 +29,7 @@ import { ContingenciaBanner } from './ContingenciaBanner';
 import { ClienteColumnFilter } from './ClienteColumnFilter';
 import { EmitirLoteDialog } from './EmitirLoteDialog';
 import { NfColumnFilter } from './NfColumnFilter';
+import { PedidoRowReadsContext, usePedidoRowReadPrefetch } from './rowReadPrefetch';
 import { PrintComumDialog } from './print/PrintComumDialog';
 import { usePrintComumAction } from './print/usePrintComumAction';
 import { useDownloadAnexosAction } from './useDownloadAnexosAction';
@@ -161,66 +162,74 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
   const { action: printAction, printModal } = usePrintComumAction();
   const { action: downloadAnexosAction } = useDownloadAnexosAction();
   const { action: duplicarAction } = useDuplicarPedidoAction(direcao);
+  // One batched read per collection for the whole page, instead of one `getDoc`
+  // per row from `ClienteCell` and `FreteCell` (#1216). The provider only ever
+  // makes those cells' reads cheaper — see `rowReadPrefetch` for why it can
+  // never withhold one.
+  const rowReads = usePedidoRowReadPrefetch();
   return (
-    <DirecaoSurface direcao={direcao}>
-      <ContingenciaBanner />
-      <TableView
-        title={
-          direcao === 'entrada' ? (
-            <Group gap="xs" align="center">
-              <Title order={2}>{cfg.listTitle}</Title>
-              <DirecaoBadge direcao={direcao} />
-            </Group>
-          ) : (
-            cfg.listTitle
-          )
-        }
-        description={cfg.listDescription}
-        schema={pedidoSchema}
-        collection={pedidoCollection}
-        db={getFirebaseFirestore()}
-        meta={pedidoMeta}
-        queryParams={{ ehSaida: cfg.ehSaida }}
-        virtualColumns={virtualColumns}
-        fields={{
-          estado: {
-            label: 'Pagamento',
-            renderCell: (value) => (
-              <Badge variant="light">{ESTADO_PEDIDO_LABELS[value as EstadoPedido] ?? '—'}</Badge>
-            ),
-          },
-        }}
-        rowHref={(id) => cfg.editarPath(id)}
-        renderNewButton={() => (
-          <Button component={Link} href={cfg.novoPath}>
-            {cfg.newButtonLabel}
-          </Button>
-        )}
-        selectable
-        // 5 actions on saída (emit + print + download anexos + duplicar +
-        // devolução integral). Default ActionBar threshold is 3 → overflow
-        // menu, which hid labeled buttons and broke every pedidos
-        // bulk-action e2e.
-        overflowThreshold={5}
-        actions={[
-          emitNFeAction,
-          printAction,
-          downloadAnexosAction,
-          duplicarAction,
-          ...extraActions,
-        ]}
-      />
-      <EmitirLoteDialog
-        opened={loteModal.opened}
-        pedidoIds={loteModal.pedidoIds}
-        onClose={loteModal.close}
-      />
-      <PrintComumDialog
-        opened={printModal.opened}
-        pedidoIds={printModal.pedidoIds}
-        alreadyPrintedCount={printModal.alreadyPrintedCount}
-        onClose={printModal.close}
-      />
-    </DirecaoSurface>
+    <PedidoRowReadsContext.Provider value={rowReads.status}>
+      <DirecaoSurface direcao={direcao}>
+        <ContingenciaBanner />
+        <TableView
+          onRowsChange={rowReads.onRows}
+          title={
+            direcao === 'entrada' ? (
+              <Group gap="xs" align="center">
+                <Title order={2}>{cfg.listTitle}</Title>
+                <DirecaoBadge direcao={direcao} />
+              </Group>
+            ) : (
+              cfg.listTitle
+            )
+          }
+          description={cfg.listDescription}
+          schema={pedidoSchema}
+          collection={pedidoCollection}
+          db={getFirebaseFirestore()}
+          meta={pedidoMeta}
+          queryParams={{ ehSaida: cfg.ehSaida }}
+          virtualColumns={virtualColumns}
+          fields={{
+            estado: {
+              label: 'Pagamento',
+              renderCell: (value) => (
+                <Badge variant="light">{ESTADO_PEDIDO_LABELS[value as EstadoPedido] ?? '—'}</Badge>
+              ),
+            },
+          }}
+          rowHref={(id) => cfg.editarPath(id)}
+          renderNewButton={() => (
+            <Button component={Link} href={cfg.novoPath}>
+              {cfg.newButtonLabel}
+            </Button>
+          )}
+          selectable
+          // 5 actions on saída (emit + print + download anexos + duplicar +
+          // devolução integral). Default ActionBar threshold is 3 → overflow
+          // menu, which hid labeled buttons and broke every pedidos
+          // bulk-action e2e.
+          overflowThreshold={5}
+          actions={[
+            emitNFeAction,
+            printAction,
+            downloadAnexosAction,
+            duplicarAction,
+            ...extraActions,
+          ]}
+        />
+        <EmitirLoteDialog
+          opened={loteModal.opened}
+          pedidoIds={loteModal.pedidoIds}
+          onClose={loteModal.close}
+        />
+        <PrintComumDialog
+          opened={printModal.opened}
+          pedidoIds={printModal.pedidoIds}
+          alreadyPrintedCount={printModal.alreadyPrintedCount}
+          onClose={printModal.close}
+        />
+      </DirecaoSurface>
+    </PedidoRowReadsContext.Provider>
   );
 }

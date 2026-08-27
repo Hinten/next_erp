@@ -5,8 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   E2E_FIXTURE_TARGETS,
   prefixEnd,
+  reclaimPredecessorRun,
   sweepOrphanedE2EFixtures,
   sweepStaleE2EProbes,
+  sweepStaleFixtures,
 } from './stale-sweep';
 
 /**
@@ -629,6 +631,95 @@ describe('sweepStaleE2EProbes', () => {
     expect(writes.batchDeletes).not.toContain('depositos/e2e-111-dep-001');
     expect(report.probesReclaimed).toBe(1);
     expect(writes.batchDeletes).toContain('e2e_probe/111');
+  });
+});
+
+/**
+ * `extraPrefixes` must only ever be swept WITH an age gate.
+ *
+ * `pedidos` is the only target carrying one — `UI_PEDIDO_PREFIX` (`E2E-`), the
+ * numero the counter mints for a pedido created through the UI. Those docs carry
+ * no run id at all, so no run/worker/slot scoping can attribute them, and Pass
+ * B's docblock states the consequence outright: the age gate is their ONLY
+ * isolation from a concurrent lane.
+ *
+ * So a `maxAgeMs: null` pass that also matched `E2E-` would query the GLOBAL
+ * range and delete pedidos belonging to whoever else is running — including a
+ * sibling shard of the same workflow run, seconds after they were written. Both
+ * jobs stay green and the victim spec reads as flake.
+ *
+ * The fake does not filter by range, so the observable signal is the NUMBER of
+ * query chains per target: one per prefix per matched axis (the doc id, plus
+ * each `fields` entry). Both counts are derived from the registry rather than
+ * hardcoded, so adding a field or a prefix cannot quietly invalidate them.
+ */
+describe('extraPrefixes are coupled to the age gate', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const PEDIDOS = E2E_FIXTURE_TARGETS.find((t) => t.collection === 'pedidos')!;
+  /** Doc id + one chain per matched field. */
+  const CHAINS_PER_PREFIX = 1 + (PEDIDOS.fields?.length ?? 0);
+
+  const noWrites = (): Writes => ({
+    batchDeletes: [],
+    commits: 0,
+    recursiveDeletes: [],
+    sets: [],
+  });
+
+  function stubCiEnv() {
+    vi.stubEnv('GITHUB_WORKFLOW', 'e2e-vendas');
+    vi.stubEnv('GITHUB_REF', 'refs/pull/1310/merge');
+    vi.stubEnv('GITHUB_RUN_ID', '222');
+    vi.stubEnv('E2E_RUN_SLOT', '2');
+  }
+
+  /** Query chains the sweep opened against `pedidos`. */
+  function pedidoChains(projections: Array<{ path: string }>): number {
+    return projections.filter((p) => p.path === 'pedidos').length;
+  }
+
+  it('sanity-checks the fixture this suite reasons about', () => {
+    expect(PEDIDOS.extraPrefixes).toEqual(['E2E-']);
+    expect(
+      E2E_FIXTURE_TARGETS.filter((t) => t.extraPrefixes?.length).map((t) => t.collection),
+      'a second target gained extraPrefixes — it inherits this hazard, so extend these tests',
+    ).toEqual(['pedidos']);
+  });
+
+  it('Pass A (predecessor reclaim, NO age gate) never opens the unattributable E2E- range', async () => {
+    stubCiEnv();
+    const projections: Array<{ path: string; wheres: unknown[]; selected: unknown[] }> = [];
+
+    // previousRunId differs from GITHUB_RUN_ID, which is the only thing that
+    // makes Pass A actually reclaim rather than no-op.
+    await reclaimPredecessorRun({
+      dryRun: true,
+      database: fakeDb(noWrites(), { pedidos: ['E2E-000042'] }, '111', {}, projections) as never,
+    });
+
+    expect(
+      pedidoChains(projections),
+      'Pass A swept more ranges than its own run prefix — it is matching `E2E-`, ' +
+        "which is unattributable, so at maxAgeMs: null it can delete a live sibling shard's pedidos",
+    ).toBe(CHAINS_PER_PREFIX);
+  });
+
+  it('Pass B (age-gated) still sweeps it, so the assertion above is not vacuous', async () => {
+    stubCiEnv();
+    const projections: Array<{ path: string; wheres: unknown[]; selected: unknown[] }> = [];
+
+    await sweepStaleFixtures({
+      dryRun: true,
+      database: fakeDb(noWrites(), { pedidos: ['E2E-000042'] }, '111', {}, projections) as never,
+    });
+
+    expect(
+      pedidoChains(projections),
+      'Pass B stopped sweeping `E2E-` — those pedidos now leak forever, since it is their only reclaimer',
+    ).toBe(2 * CHAINS_PER_PREFIX);
   });
 });
 
