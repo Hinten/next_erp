@@ -91,6 +91,27 @@ export class FreightServerError extends FreightHttpError {
 }
 
 /**
+ * The route answered 2xx and the body was not the shape this client claims —
+ * the wrong fields, no body at all, or not JSON.
+ *
+ * ⚠️ Nothing here describes what WE send: it is a browser-side `Error` that
+ * never leaves the tab, and `status` records the 2xx the ROUTE sent us.
+ *
+ * ⚠️ A subclass of `FreightHttpError`, so the callers that narrow to that class
+ * (and `throw err` for anything else) keep working. A sibling class would land
+ * as an unhandled rejection in the checkout's `void`-ed print handlers.
+ */
+export class FreightSchemaError extends FreightHttpError {
+  /** Field PATHS that failed, never values. */
+  public readonly campos: string[];
+  constructor(message: string, status: number, campos: string[]) {
+    super(message, status, null);
+    this.name = 'FreightSchemaError';
+    this.campos = campos;
+  }
+}
+
+/**
  * Network-level failure — DNS, connection refused, timeout, abort. The
  * request never reached `apps/integrations`. Distinct from server errors
  * so callers can retry client-side.
