@@ -673,6 +673,65 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     });
   });
 
+  it('getShipmentCosts parses a REAL captured body, whose extra fields the docs never mention', async () => {
+    // Captured live 2026-08-27 from shipment 47868202073 on the staging ML test
+    // seller (3616169770). Kept verbatim, like the two `.old/` shipment payloads in
+    // `orderShipmentMapping.test.ts`: ML's documented example is a strict SUBSET of
+    // what the wire sends, so only a real body can prove the undocumented keys ride
+    // `.passthrough()` instead of being rejected (#957).
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        receiver: {
+          compensations: [],
+          fees: [],
+          cost: 12.99,
+          discounts: [{ rate: 0.5, type: 'gap', promoted_amount: 12.8 }],
+          user_id: 3644236740,
+          cost_details: [{ sender_id: 3616169770, amount: 12.99 }],
+          save: 11.81,
+          compensation: 0,
+        },
+        gross_amount: 38.86,
+        senders: [
+          {
+            compensations: [],
+            charges: { charge_flex: 0 },
+            fees: [],
+            cost: 9.15,
+            discounts: [{ rate: 0.3, type: 'mandatory', promoted_amount: 3.92 }],
+            user_id: 3616169770,
+            save: 3.92,
+            compensation: 0,
+          },
+        ],
+        base_exchange: null,
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const costs = await api.getShipmentCosts(47868202073);
+
+    // What the resolver reads.
+    expect(costs.senders?.[0]?.user_id).toBe(3616169770);
+    expect(costs.senders?.[0]?.cost).toBe(9.15);
+
+    // ⚠️ `save` is documented as removed from this resource in Jan/2025 and it is
+    // BOTH present and non-zero ~20 months later. It stays untyped by choice, not
+    // by absence — see `mlShipmentCostPartySchema`. Asserting it here is what stops
+    // someone "fixing" that comment after seeing the field in a payload.
+    const sender = costs.senders?.[0] as Record<string, unknown>;
+    expect(sender.save).toBe(3.92);
+    expect(sender.charges).toEqual({ charge_flex: 0 });
+    expect(sender.fees).toEqual([]);
+    expect(costs.receiver).toHaveProperty('cost_details');
+    expect(costs).toHaveProperty('base_exchange', null);
+
+    // The reconciliation identity, to the centavo: gross = Σ(cost + Σ promoted).
+    // Pinned because the ORIGINAL guess here was `gross - receiver.cost`, which
+    // gives 25.87 rather than 9.15 — a "mismatch" a human would have reported.
+    expect(12.99 + 12.8 + 9.15 + 3.92).toBeCloseTo(costs.gross_amount!, 2);
+    expect(costs.gross_amount! - costs.receiver!.cost!).not.toBeCloseTo(9.15, 2);
+  });
+
   it('getShipmentOrders hits /shipments/{id}/orders with X-New-Domain and parses the BARE ARRAY', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse([

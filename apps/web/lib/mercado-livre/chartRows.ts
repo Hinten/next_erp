@@ -10,6 +10,7 @@
  */
 import type { MlSizeChart, MlSizeChartRow, Variante } from '@delfrance/schemas';
 import { varianteFakePath } from '@delfrance/schemas';
+import { normalizeLoose } from '@delfrance/ai';
 
 import type { ChartColumn, ChartSpecValue } from './chartSpec';
 
@@ -109,6 +110,56 @@ export function rowsFromVariantes(
     cells: { [mainAttributeId]: { value_id: null, value_name: v.nome, valueList: null } },
     deleted: false,
   }));
+}
+
+/**
+ * Pre-select the size-equivalence cell whose ML option NAME is the row's own
+ * size label — a guia whose rows read `38`, `40`, `42` against a standard list
+ * holding `38`, `40`, `42` is the common case, and asking the operator (or a
+ * model, or a round trip to ML) to restate it is pure friction.
+ *
+ * ⚠️ **Exact match only**, under the same fold `resolveChartAttributeValue` uses
+ * (trim, case, diacritics). Never a prefix, never a numeric near-miss: `4`
+ * matching `40` or `M` matching `MEDIUM` would write a size the operator never
+ * chose onto a listing's size filter, and a wrong equivalence is worse than an
+ * empty one — the empty one is what ML's own validation catches.
+ *
+ * ⚠️ **Only ever fills an EMPTY cell.** A stored value always wins, so opening a
+ * healthy guia cannot dirty its rows and trigger a needless row PUT; the only
+ * charts this touches are the ones already missing the value ML requires.
+ */
+export function prefillSizeEquivalence(
+  rows: readonly ChartRowDraft[],
+  columns: readonly ChartColumn[],
+  mainAttributeId: string,
+): ChartRowDraft[] {
+  const targets = columns
+    .filter((c) => c.sizeEquivalence)
+    .flatMap((c) => c.parts)
+    .filter((p) => p.values.length > 0);
+  if (targets.length === 0) return [...rows];
+
+  return rows.map((row) => {
+    const label = row.cells[mainAttributeId]?.value_name;
+    if (label == null || label.trim() === '') return row;
+    const wanted = normalizeLoose(label);
+
+    let cells: Record<string, ChartCellValue> | null = null;
+    for (const part of targets) {
+      if (isFilled(row.cells[part.attributeId])) continue;
+      const match = part.values.find((v) => normalizeLoose(v.name) === wanted);
+      if (!match) continue;
+      cells ??= { ...row.cells };
+      // A `select` reads `value_id`, a `multiselect` reads `valueList` — write
+      // the shape the column's own widget renders, or the cell looks empty while
+      // still shipping to ML (the trap `aiCellValue` documents).
+      cells[part.attributeId] =
+        part.kind === 'multiselect'
+          ? { value_id: null, value_name: null, valueList: [match] }
+          : { value_id: match.id, value_name: match.name, valueList: null };
+    }
+    return cells == null ? row : { ...row, cells };
+  });
 }
 
 /** The column unit each measurement column starts on. */
@@ -354,6 +405,16 @@ export function describeChartValidationError(problem: {
  * A problem whose row could not be resolved deliberately lands at chart level
  * rather than on a guessed cell: the legacy screen pinned by row VALUE, and a
  * size renamed between sends would otherwise light up the wrong row.
+ *
+ * ⚠️ `rendered` is the set of attribute ids the grid actually draws, and passing
+ * it is not optional politeness — an error pinned to a cell that does not exist
+ * is INVISIBLE. `FILTRABLE_SIZE` was dropped from the columns for months, so
+ * every row of an apparel guia came back
+ * `required_row_attribute_not_found`, landed in `byCell` under a key no
+ * `PartInput` ever looked up, and the operator got "veja os campos destacados"
+ * over a grid with nothing highlighted. ML adds required row attributes
+ * unilaterally, so the next one must degrade to a readable chart-level message
+ * instead of the same dead end.
  */
 export function indexCellErrors(
   errors: ReadonlyArray<{
@@ -365,10 +426,16 @@ export function indexCellErrors(
     rowMainValue: string | null;
   }>,
   chartIndex: number,
+  rendered?: ReadonlySet<string>,
 ): ChartCellErrors {
   const byCell = new Map<string, string[]>();
   const chartLevel: string[] = [];
   let nameRejected = false;
+
+  // Keep the row ML named, if any — "linha M" beats an unplaceable message.
+  const atChartLevel = (text: string, rowMainValue: string | null): void => {
+    chartLevel.push(rowMainValue == null ? text : `${rowMainValue}: ${text}`);
+  };
 
   for (const err of errors) {
     if (err.chartIndex !== chartIndex) continue;
@@ -379,11 +446,19 @@ export function indexCellErrors(
       continue;
     }
     if (err.rowIndex == null || err.attributeIds.length === 0) {
-      // Keep the row ML named, if any — "linha M" beats an unplaceable message.
-      chartLevel.push(err.rowMainValue == null ? text : `${err.rowMainValue}: ${text}`);
+      atChartLevel(text, err.rowMainValue);
       continue;
     }
-    for (const attributeId of err.attributeIds) {
+    // An id the grid does not draw cannot carry its own message. Undefined
+    // `rendered` means "the caller has no column list yet" — pin as before
+    // rather than dumping every error into the banner.
+    const placeable =
+      rendered == null ? err.attributeIds : err.attributeIds.filter((id) => rendered.has(id));
+    if (placeable.length === 0) {
+      atChartLevel(text, err.rowMainValue);
+      continue;
+    }
+    for (const attributeId of placeable) {
       const key = cellErrorKey(err.rowIndex, attributeId);
       const list = byCell.get(key) ?? [];
       list.push(text);

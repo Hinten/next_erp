@@ -180,9 +180,10 @@ export function buildConversaFromQuestion(
  * The buyer's question, as a mensagem.
  *
  * ⚠️ `estadoEnvio: recebido`, NOT the legacy `enviado` (`models.dart:6672`).
- * `MensagemBubble` decides which side of the thread a bubble renders on from
- * `estadoEnvio === recebido || user_id === customerUid`, and this import writes
- * no `user_id` at all — the contact is a cliente now, not a synthetic usuario.
+ * This import writes no `user_id` at all — the contact is a cliente now, not a
+ * synthetic usuario — and for an authorless message `MensagemBubble` decides the
+ * side from the state (`ehEstadoDeSaida`, #1320), falling back to
+ * `user_id === customerUid` for the docs that do carry an author.
  * Carrying the legacy value here would render the BUYER'S OWN QUESTION as an
  * outbound message. It is also what makes the conversa raise the "aguardando
  * resposta" badge, which counts `recebido`.

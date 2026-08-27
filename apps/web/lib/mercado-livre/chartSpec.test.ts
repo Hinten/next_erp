@@ -21,7 +21,8 @@ import { unitLabel } from './units';
  * from the legacy embedded sample (`.old/…/mercado_livre/scripts/domain.dart`):
  * a `GRIDS` group holds a `GRID` component whose CHILD components are the
  * columns, GENDER/BRAND echo back as `TEXT_OUTPUT`, `FILTRABLE_SIZE` is a
- * hidden read-only list ML computes, and every measurement is a
+ * hidden read-only list that is nonetheless `required` per row, and every
+ * measurement is a
  * `LINKED_BY_CONNECTOR_INPUT` FROM/TO pair tagged by measure type.
  */
 const tshirtGrid = {
@@ -88,8 +89,18 @@ const tshirtGrid = {
                     id: 'FILTRABLE_SIZE',
                     name: 'Tamanho padrão',
                     value_type: 'list',
+                    // ⚠️ `required` sits alongside `read_only`/`hidden`, and ML
+                    // means all three: the tags describe how the attribute
+                    // behaves on the LISTING (derived onto the anúncio, absent
+                    // from the VIP page), while `required` is the row contract.
                     tags: ['multivalued', 'read_only', 'hidden', 'required'],
-                    values: [{ id: '3189130', name: '34' }],
+                    // More than one option on purpose — a single-value list
+                    // cannot catch a mapping that drops members.
+                    values: [
+                      { id: '3189130', name: '34' },
+                      { id: '4608574', name: '36' },
+                      { id: '3259450', name: '38' },
+                    ],
                   },
                 ],
               },
@@ -607,8 +618,67 @@ describe('maxRows', () => {
 describe('extractColumns', () => {
   const body = extractColumns(tshirtGrid, 'BODY_MEASURE');
 
-  it('drops the TEXT_OUTPUT echoes and the hidden read-only list', () => {
-    expect(body.map((c) => c.key)).toEqual(['SIZE', 'CHEST_CIRCUMFERENCE_FROM']);
+  it('drops the TEXT_OUTPUT echoes but KEEPS the required hidden list', () => {
+    // ⚠️ The regression this pins. `FILTRABLE_SIZE` used to be dropped on
+    // `hidden`/`read_only` alone, on the belief that ML computes what it marks
+    // read-only. It does not: ML's row contract is "no nível de rows, você terá
+    // de enviar os atributos somente com a tag required", and their own
+    // POST /catalog/charts example sends it in every row next to SIZE. Dropping
+    // it earned `required_row_attribute_not_found` on EVERY row of an apparel
+    // guia — with no cell in the DOM to pin the error to, so the operator got
+    // "veja os campos destacados" over a grid with nothing highlighted.
+    expect(body.map((c) => c.key)).toEqual(['SIZE', 'FILTRABLE_SIZE', 'CHEST_CIRCUMFERENCE_FROM']);
+  });
+
+  it('renders the equivalence column as a multiselect over ML’s closed list', () => {
+    const equiv = byKey(body, 'FILTRABLE_SIZE');
+    expect(equiv).toMatchObject({ required: true, mainCandidate: false, sizeEquivalence: true });
+    expect(equiv.parts[0]!.kind).toBe('multiselect');
+    expect(equiv.parts[0]!.values).toEqual([
+      { id: '3189130', name: '34' },
+      { id: '4608574', name: '36' },
+      { id: '3259450', name: '38' },
+    ]);
+  });
+
+  it('still drops a hidden/read-only attribute ML does NOT mark required', () => {
+    // `AGE_GROUP` on the footwear grid — ML really does derive that one, and it
+    // is `grid_filter` besides. `required` is the whole escape hatch.
+    const spec = {
+      input: {
+        groups: [
+          {
+            components: [
+              {
+                component: 'GRID',
+                components: [
+                  {
+                    component: 'TEXT_INPUT',
+                    label: 'Idade',
+                    attributes: [
+                      {
+                        id: 'AGE_GROUP',
+                        name: 'Idade',
+                        value_type: 'string',
+                        tags: ['hidden', 'read_only'],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    expect(extractColumns(spec, null)).toEqual([]);
+  });
+
+  it('flags ONLY the carve-out as a size equivalence', () => {
+    // A plainly-required column is not an equivalence, or `chartAiGrid` would
+    // tell the model to derive a measurement instead of reading it.
+    expect(byKey(body, 'SIZE').sizeEquivalence).toBe(false);
+    expect(byKey(body, 'CHEST_CIRCUMFERENCE_FROM').sizeEquivalence).toBe(false);
   });
 
   it('folds a FROM/TO pair into ONE column carrying the connector', () => {
@@ -632,6 +702,7 @@ describe('extractColumns', () => {
   it('filters by measure type — a mismatched column is rejected by ML', () => {
     expect(extractColumns(tshirtGrid, 'CLOTHING_MEASURE').map((c) => c.key)).toEqual([
       'SIZE',
+      'FILTRABLE_SIZE',
       'GARMENT_LENGTH_FROM',
     ]);
   });
@@ -639,6 +710,7 @@ describe('extractColumns', () => {
   it('keeps both families when no measure type is chosen yet', () => {
     expect(extractColumns(tshirtGrid, null).map((c) => c.key)).toEqual([
       'SIZE',
+      'FILTRABLE_SIZE',
       'CHEST_CIRCUMFERENCE_FROM',
       'GARMENT_LENGTH_FROM',
     ]);

@@ -56,6 +56,43 @@ describe('DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION — the load-bearing rules', () => 
     expect(DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION).toContain('FOTO');
     expect(DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION).toContain('contradisserem');
   });
+
+  it('carves the size-equivalence column OUT of the transcription rules', () => {
+    // ⚠️ Without this the rules above apply to it verbatim and the model
+    // correctly answers nothing — an equivalence is derived, not printed on the
+    // supplier's sheet — leaving empty the one column ML refuses the guia over
+    // (`required_row_attribute_not_found` on every row).
+    expect(DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION).toContain('EXCEÇÃO');
+    expect(DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION).toContain('equivalência de tamanho');
+    expect(DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION).toContain('valores permitidos');
+  });
+});
+
+describe('buildMedidasPrompt — marking the size-equivalence column', () => {
+  const EQUIV: MedidaColumnSpec = {
+    attributeId: 'FILTRABLE_SIZE',
+    label: 'Tamanho padrão',
+    kind: 'multiselect',
+    values: [{ id: '1', name: '38' }],
+    unitId: null,
+    required: true,
+    sizeEquivalence: true,
+  };
+
+  it('flags it in the column listing so the instruction has a referent', () => {
+    const p = buildMedidasPrompt({
+      tabelaNome: 'T',
+      built: buildMedidasSchema(ROWS, [...COLUMNS, EQUIV]),
+    });
+    expect(p.text).toContain('FILTRABLE_SIZE: Tamanho padrão — EQUIVALÊNCIA DE TAMANHO');
+    expect(p.text).toContain('um ou mais tamanhos padrão');
+  });
+
+  it('leaves an ordinary column unmarked', () => {
+    const p = buildMedidasPrompt({ tabelaNome: 'T', built: built() });
+    expect(p.text).toContain('CHEST: Tórax (em cm)');
+    expect(p.text).not.toContain('EQUIVALÊNCIA DE TAMANHO');
+  });
 });
 
 describe('buildMedidasPrompt', () => {

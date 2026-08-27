@@ -9,6 +9,7 @@ import {
   describeChartValidationError,
   indexCellErrors,
   isFilled,
+  prefillSizeEquivalence,
   rowsFromVariantes,
   sameChart,
   seedRows,
@@ -26,6 +27,7 @@ const sizeColumn: ChartColumn = {
   hint: null,
   required: true,
   mainCandidate: true,
+  sizeEquivalence: false,
   unit: { default: null, options: [] },
   connector: null,
   parts: [{ attributeId: 'SIZE', label: 'Tamanho', kind: 'text', values: [] }],
@@ -37,6 +39,7 @@ const chestColumn: ChartColumn = {
   hint: 'De - Até',
   required: false,
   mainCandidate: false,
+  sizeEquivalence: false,
   unit: {
     default: 'cm',
     options: [
@@ -57,6 +60,7 @@ const equivColumn: ChartColumn = {
   hint: null,
   required: false,
   mainCandidate: false,
+  sizeEquivalence: true,
   unit: { default: null, options: [] },
   connector: null,
   parts: [
@@ -160,6 +164,84 @@ describe('rowsFromVariantes', () => {
     expect(rowsFromVariantes('g1', variantes, 'SIZE').every((r) => r.varianteUid != null)).toBe(
       true,
     );
+  });
+});
+
+describe('prefillSizeEquivalence', () => {
+  const rows = (...sizes: string[]): ChartRowDraft[] =>
+    sizes.map((nome, i) => ({
+      key: `k${String(i)}`,
+      varianteUid: null,
+      id: null,
+      cells: { SIZE: { value_id: null, value_name: nome, valueList: null } },
+      deleted: false,
+    }));
+
+  it('selects the option whose NAME is the row size', () => {
+    const out = prefillSizeEquivalence(rows('38', '40'), columns, 'SIZE');
+    expect(out[0]!.cells.EQUIV?.valueList).toEqual([{ id: '1', name: '38' }]);
+    expect(out[1]!.cells.EQUIV?.valueList).toEqual([{ id: '2', name: '40' }]);
+  });
+
+  it('matches case- and accent-insensitively', () => {
+    const accented: ChartColumn = {
+      ...equivColumn,
+      parts: [{ ...equivColumn.parts[0]!, values: [{ id: 'u', name: 'Único' }] }],
+    };
+    const out = prefillSizeEquivalence(rows('unico'), [sizeColumn, accented], 'SIZE');
+    expect(out[0]!.cells.EQUIV?.valueList).toEqual([{ id: 'u', name: 'Único' }]);
+  });
+
+  it('never matches a PREFIX or a near-miss', () => {
+    // ⚠️ `4` onto `40`, or `M` onto `MEDIUM`, would write a size the operator
+    // never chose onto the listing's size filter. A wrong equivalence is worse
+    // than an empty one — the empty one is what ML's own validation catches.
+    const out = prefillSizeEquivalence(rows('4', '3'), columns, 'SIZE');
+    expect(out[0]!.cells.EQUIV).toBeUndefined();
+    expect(out[1]!.cells.EQUIV).toBeUndefined();
+  });
+
+  it('leaves a cell that already has a value alone', () => {
+    // A stored answer always wins, so opening a healthy guia cannot dirty its
+    // rows and trigger a needless row PUT.
+    const seeded = rows('38');
+    seeded[0]!.cells.EQUIV = {
+      value_id: null,
+      value_name: null,
+      valueList: [{ id: '2', name: '40' }],
+    };
+    const out = prefillSizeEquivalence(seeded, columns, 'SIZE');
+    expect(out[0]!.cells.EQUIV?.valueList).toEqual([{ id: '2', name: '40' }]);
+  });
+
+  it('returns the row object UNTOUCHED when nothing matched', () => {
+    // Identity matters: the seeding block runs on every re-derive, and a fresh
+    // object per row would remount inputs mid-typing.
+    const input = rows('XG');
+    expect(prefillSizeEquivalence(input, columns, 'SIZE')[0]).toBe(input[0]);
+  });
+
+  it('ignores columns that are not a size equivalence', () => {
+    const notEquiv: ChartColumn = { ...equivColumn, sizeEquivalence: false };
+    const out = prefillSizeEquivalence(rows('38'), [sizeColumn, notEquiv], 'SIZE');
+    expect(out[0]!.cells.EQUIV).toBeUndefined();
+  });
+
+  it('writes `value_id` when the column is a single select', () => {
+    // The widget reads a different field per kind; writing the wrong one leaves
+    // a visibly empty cell that still ships to ML.
+    const single: ChartColumn = {
+      ...equivColumn,
+      parts: [{ ...equivColumn.parts[0]!, kind: 'select' }],
+    };
+    const out = prefillSizeEquivalence(rows('38'), [sizeColumn, single], 'SIZE');
+    expect(out[0]!.cells.EQUIV).toEqual({ value_id: '1', value_name: '38', valueList: null });
+  });
+
+  it('is a no-op for a domain with no equivalence column at all', () => {
+    // Footwear: nothing in the grid carries the carve-out.
+    const input = rows('40');
+    expect(prefillSizeEquivalence(input, [sizeColumn, chestColumn], 'SIZE')[0]).toBe(input[0]);
   });
 });
 
@@ -374,6 +456,61 @@ describe('indexCellErrors', () => {
       0,
     );
     expect(idx.byCell.get(cellErrorKey(0, 'SIZE'))).toEqual(['um', 'dois']);
+  });
+
+  it('sends an error naming an UNRENDERED attribute to chart level', () => {
+    // ⚠️ The dead end this exists to close. `FILTRABLE_SIZE` was missing from
+    // the columns, so its per-row rejection landed in `byCell` under a key no
+    // input ever looked up: the toast said "veja os campos destacados" over a
+    // grid with nothing highlighted, and the message was unreachable in the DOM.
+    // ML adds required row attributes unilaterally, so the next one must degrade
+    // to something readable.
+    const idx = indexCellErrors(
+      [
+        {
+          chartIndex: 0,
+          code: 'required_row_attribute_not_found',
+          message: 'Required attribute FUTURE_ATTR was not found in row SIZE 1.',
+          rowIndex: 0,
+          attributeIds: ['FUTURE_ATTR'],
+          rowMainValue: '1',
+        },
+      ],
+      0,
+      new Set(['SIZE', 'CHEST_CIRCUMFERENCE_FROM']),
+    );
+    expect(idx.byCell.size).toBe(0);
+    expect(idx.chartLevel).toEqual(['1: Preencha FUTURE_ATTR nesta linha.']);
+  });
+
+  it('keeps the rendered half of a mixed error on its cell', () => {
+    const idx = indexCellErrors(
+      [
+        {
+          ...base,
+          code: 'required_row_attribute_not_found',
+          message: 'Required attribute X was not found in row SIZE M.',
+          rowIndex: 0,
+          attributeIds: ['SIZE', 'GONE'],
+        },
+      ],
+      0,
+      new Set(['SIZE']),
+    );
+    expect(idx.byCell.get(cellErrorKey(0, 'SIZE'))).toHaveLength(1);
+    expect(idx.byCell.has(cellErrorKey(0, 'GONE'))).toBe(false);
+    expect(idx.chartLevel).toEqual([]);
+  });
+
+  it('pins as before when the caller has no column list yet', () => {
+    // Undefined means "I do not know what is rendered", not "nothing is" —
+    // dumping every error into the banner there would be its own regression.
+    const idx = indexCellErrors(
+      [{ ...base, code: 'a', message: 'um', rowIndex: 0, attributeIds: ['ANYTHING'] }],
+      0,
+    );
+    expect(idx.byCell.get(cellErrorKey(0, 'ANYTHING'))).toEqual(['um']);
+    expect(idx.chartLevel).toEqual([]);
   });
 });
 

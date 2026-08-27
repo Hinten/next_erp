@@ -322,29 +322,86 @@ delete charts last.
 
 The mapping lives in [`orderMapping.ts`](lib/marketplace/pedidos/orderMapping.ts) and
 [`orderPaymentMapping.ts`](lib/marketplace/pedidos/orderPaymentMapping.ts). Both were ported
-verbatim from the Flutter app and **have never been checked against a real order**.
+verbatim from the Flutter app.
 
-| Field                      | Formula in code                                                                 | What to verify                                                                                                                                                                                                                                           | Result |
-| -------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| `quantidade`               | `order_item.quantity`                                                           | trivial                                                                                                                                                                                                                                                  |        |
-| `precoDeVenda`             | `unit_price + Σ discounts[].amounts.full` — a **plus**                          | reconstructs the _gross_ unit price. Confirm ML returns `amounts.full` **positive**; a negative flips the sign                                                                                                                                           |        |
-| `descontoUnitario`         | `Σ discounts[].amounts.full`                                                    | line-level discount                                                                                                                                                                                                                                      |        |
-| `descontoTotal`            | `Σ payments[].coupon_amount`                                                    | order-level **coupon** — a different source from the line discount. Confirm one discount is not counted in both                                                                                                                                          |        |
-| **`valorCobrado`**         | `Σ transaction_amount + Σ shipping_cost − Σ coupon_amount`                      | **the highest-value assertion in this run.** If ML's `transaction_amount` already includes shipping and is already net of coupon, this double-counts. Compare against what the buyer actually paid                                                       |        |
-| `valorFreteInicial`        | `Σ payments[].shipping_cost`                                                    | vs the checkout freight                                                                                                                                                                                                                                  |        |
-| `tarifas` (ML fee)         | `max(0, marketplace_fee + Σ fee_details[].amount + Σ collector→mp charges)`     | vs ML's own sale-fee report                                                                                                                                                                                                                              |        |
-| `numero`                   | `packId ?? order.id`                                                            | a pack collapses siblings onto one pedido                                                                                                                                                                                                                |        |
-| `sku` / `mktplaceId`       | `item.seller_sku` / `variation_id ?? item.id`                                   | binds the line to the ERP produto                                                                                                                                                                                                                        |        |
-| `gtin`, `custo`, `imposto` | always `null`                                                                   | legacy parity — confirm that is still wanted                                                                                                                                                                                                             |        |
-| cliente                    | `GET /orders/{id}/billing_info`                                                 | ⚠️ a non-CPF/CNPJ `identification.type` **throws and is swallowed**, so the pedido never reaches `pago`. Test users are the likeliest place to hit this                                                                                                  |        |
-| endereço                   | billing first, `shipment.receiver_address` fallback                             | ⚠️ if ViaCEP recovery fails the code stores UF **`AC`** with only a warn; `sem-cep` ⇒ no endereço ⇒ never `pago`                                                                                                                                         |        |
-| `estado`                   | `estadoPedidoFromOrderStatus`                                                   | default is `iniciado` (tolerant)                                                                                                                                                                                                                         |        |
-| payment status             | `statusPagamentoFromMlPaymentStatus`                                            | ⚠️ **throws** on an unknown ML status — a new status poisons the import into a retry loop                                                                                                                                                                |        |
-| `pago` advance             | needs `emProcessamento` **and** cliente **and** endereço **and** `freteInicial` | if the pedido stalls, this is why                                                                                                                                                                                                                        |        |
-| `freteInicial`             | `applyFreteStep` (needs a shipment) **or** `applyFreteSemEnvioStep`             | an order sold **"frete a combinar"** carries no Mercado Envios shipment; the seeded block is what lets it reach `pago` at all (#1087). Detected by the `no_shipping` **tag**, never by a missing `shipping.id` — ML attaches the shipment asynchronously |        |
+#### ⚠️ First: `valorCobrado` has TWO owners, and the second one is the real answer
+
+This cost an hour on the 2026-08-27 run, so read it before comparing any number.
+
+|                              | Formula                                                    | Written by                               | When                                                         |
+| ---------------------------- | ---------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| **A** — the create-time seed | `Σ transaction_amount + Σ shipping_cost − Σ coupon_amount` | `orderMapping.ts` → `orderPedidoTx.ts`   | ONCE, at create. On a **pack** it uses **`orders[0]` alone** |
+| **B** — the owner            | `Σ itemSubtotal + freteInicial.valorCobrado`               | `orderImport.ts`, `applyFreteStep`       | from the first frete conference onward                       |
+| **B′** — the #791 repair     | same, from the STORED frete                                | `orderImport.ts`, the `!maisNovo` branch | when a stale shipment payload arrives                        |
+
+**B is the legacy meaning of the field** — `Pedido.total`, labelled _"Valor final cobrado no
+pedido"_ (`models.dart:3184`, `:3320`): **what the customer owes us, freight included**, not
+what the buyer paid the marketplace. The pedido footer's `Subtotal + Frete = Total` renders
+exactly this via `derivePedidoTotals`.
+
+So **A and B are not expected to agree**, and a mismatch between them is not a finding. They
+coincide only when the freight rode the order's own payments.
+
+⚠️ **The owner is decided by the frete block, and only the owner's formula may be judged.**
+No `freteInicial` ⇒ the conference has not run ⇒ **A is still the owner**, and reconciling
+such a pedido against B reports a shortfall of exactly the freight on money that is entirely
+correct. `inspect-pedido.ts` picks the owner for you (`lib/marketplace/pedidos/pedidoMoneyAudit.ts`,
+unit-tested); if you reconcile by hand, pick it yourself first.
+
+⚠️ **A pack bills shipping ONCE, on the shipment.** Each order's payment then carries
+`shipping_cost: 0` and the freight arrives as an approved
+`GET /shipments/{id}/payments` entry. ML's per-order `paid_amount` is order-scoped and
+**structurally cannot see it**, so on a pack `valorCobrado − Σ paid_amount` equals the
+freight _by construction_. That is correct, and it is the safe direction: at the lower
+figure the `pago` advance (`totalAprovado >= valorCobrado`) would fire while the buyer's
+freight payment was still uncounted, and `pago` authorises dispatch and NF-e emission.
+
+| Field                             | Formula in code                                                                 | What to verify                                                                                                                                                                                                                                                                                                                                                 | Result |
+| --------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| `quantidade`                      | `order_item.quantity`                                                           | trivial                                                                                                                                                                                                                                                                                                                                                        |        |
+| `precoDeVenda`                    | `unit_price + Σ discounts[].amounts.full` — a **plus**                          | reconstructs the _gross_ unit price. Confirm ML returns `amounts.full` **positive**; a negative flips the sign                                                                                                                                                                                                                                                 |        |
+| `descontoUnitario`                | `Σ discounts[].amounts.full`                                                    | line-level discount                                                                                                                                                                                                                                                                                                                                            |        |
+| `descontoTotal`                   | `Σ payments[].coupon_amount`                                                    | order-level **coupon** — a different source from the line discount. Confirm one discount is not counted in both                                                                                                                                                                                                                                                |        |
+| **`valorCobrado`** (single order) | **B:** `Σ itemSubtotal + freteInicial.valorCobrado`                             | ✅ **VERIFIED 2026-08-27** on order `2000018143664980`: 62,96 = 49,97 + 12,99, equal to `paid_amount`. There the freight rode the order payment, so A and B agreed — a coincidence of shape, not an invariant                                                                                                                                                  | ✅     |
+| **`valorCobrado`** (PACK)         | same B                                                                          | ✅ **VERIFIED 2026-08-27** on pack `2000014733850447` (orders `…679512` + `…681452`, shipment `47868991350`): 235,93 = 149,94 + 85,99. Σ `paid_amount` is 149,94 and each order's `shipping_cost` is 0 — expected, see the ⚠️ above. Pinned by the `money map de um PACK` suite in `orderImport.test.ts`                                                       | ✅     |
+| `freteInicial.valorCobrado`       | `Σ approved` `GET /shipments/{id}/payments` `[].amount`                         | the freight CHARGE (legacy `valorPagoFrete`). ⚠️ The pedido-level `valorFreteInicial` cache **no longer exists** — #796/#1100 deleted it; this block is the value. ⬜ **Still open:** read `payer_id` on that payment to settle whether the buyer or the seller was billed — `cost_type: "partially_free"` on this shipment implies a remainder the buyer paid |        |
+| `custoCalculado` / `custoFinal`   | `shipment.base_cost` / `lead_time.list_cost`                                    | what the envio COSTS us — never the charge. `null` = "ML did not tell us" (#957)                                                                                                                                                                                                                                                                               |        |
+| `tarifas` (ML fee)                | `max(0, marketplace_fee + Σ fee_details[].amount + Σ collector→mp charges)`     | vs ML's own sale-fee report                                                                                                                                                                                                                                                                                                                                    |        |
+| `numero`                          | `packId ?? order.id`                                                            | a pack collapses siblings onto one pedido                                                                                                                                                                                                                                                                                                                      |        |
+| `sku` / `mktplaceId`              | `item.seller_sku` / `variation_id ?? item.id`                                   | binds the line to the ERP produto                                                                                                                                                                                                                                                                                                                              |        |
+| `gtin`, `custo`, `imposto`        | always `null`                                                                   | legacy parity — confirm that is still wanted                                                                                                                                                                                                                                                                                                                   |        |
+| cliente                           | `GET /orders/{id}/billing_info`                                                 | ⚠️ a non-CPF/CNPJ `identification.type` **throws and is swallowed**, so the pedido never reaches `pago`. Test users are the likeliest place to hit this                                                                                                                                                                                                        |        |
+| endereço                          | billing first, `shipment.receiver_address` fallback                             | ⚠️ if ViaCEP recovery fails the code stores UF **`AC`** with only a warn; `sem-cep` ⇒ no endereço ⇒ never `pago`                                                                                                                                                                                                                                               |        |
+| `estado`                          | `estadoPedidoFromOrderStatus`                                                   | default is `iniciado` (tolerant)                                                                                                                                                                                                                                                                                                                               |        |
+| payment status                    | `statusPagamentoFromMlPaymentStatus`                                            | ⚠️ **throws** on an unknown ML status — a new status poisons the import into a retry loop                                                                                                                                                                                                                                                                      |        |
+| `pago` advance                    | needs `emProcessamento` **and** cliente **and** endereço **and** `freteInicial` | if the pedido stalls, this is why                                                                                                                                                                                                                                                                                                                              |        |
+| `freteInicial`                    | `applyFreteStep` (needs a shipment) **or** `applyFreteSemEnvioStep`             | an order sold **"frete a combinar"** carries no Mercado Envios shipment; the seeded block is what lets it reach `pago` at all (#1087). Detected by the `no_shipping` **tag**, never by a missing `shipping.id` — ML attaches the shipment asynchronously                                                                                                       |        |
 
 ⚠️ `payments[]` and `discounts[]` are read through `as unknown as` passthrough casts — Zod
 never validates them, so a shape change is **silent**. Capture the real bodies (§9).
+
+#### ⬜ Two things step 6.3 (the coupon buy) still has to settle
+
+1. **Is the `− descontoTotal` term right?** `applyFreteStep` used to omit it, so on a coupon
+   order the stored `valorCobrado` **exceeded the footer's Total by the coupon** — and since
+   the advance is `>=`, a fully-paid coupon order never reached `pago`, with no
+   operator-visible cause. Both repairs now go through the canonical
+   `derivePedidoFreteTotals`, so the term is there and the two cannot drift again.
+   ⚠️ **That fix assumes an ML coupon reduces what the buyer owes.** If ML funds the coupon
+   and still pays the seller in full, the OLD formula was the correct one. Record
+   `transaction_amount`, `coupon_amount`, `total_amount` and `paid_amount` together on 6.3,
+   and compare `paid_amount` against the stored total.
+   ⚠️ `pedido.descontoTotal` is itself written once at create from `orders[0]` alone and never
+   recomputed, so on a **pack** it is a sibling-scoped figure either way — a residual this
+   fix does not close.
+2. **The sem-envio path had no total repair at all — now it does.** Both B and B′ need a
+   frete conference, and a **"frete a combinar" pack** (#1273) never reaches one, so it held
+   every sibling's items against `orders[0]`'s total: #791's failure mode (`pago` on a
+   partial payment) on the one path #791 did not cover. `applyFreteSemEnvioStep` now
+   reconciles `valorCobrado` through the same `derivePedidoFreteTotals` — on the seed and on
+   every later run, money only, never `freteInicial.estado`.
+   ⬜ Still verify live: buy a **two-item cart with no Mercado Envios** and read
+   `valorCobrado` against the two orders' `total_amount` before doing anything else.
 
 ### 7.2 — Settle #758 (the PDF label branch)
 
@@ -554,6 +611,38 @@ One captured body fixes that permanently.
 "**No migration window.** No schema change, no backfill, no index, no rules regeneration."
 Now that the code has merged, drop the label when closing — or it sits in the cutover
 queue forever as work that is already done.
+
+### 7.3.1 — `GET /shipments/{id}/costs` ✅ RUN 2026-08-27
+
+The endpoint that feeds `custoCalculado` once `base_cost` left the wire. Run against
+the staging test seller **`3616169770`**; results recorded rather than left as a task.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H 'x-format-new: true' \
+  "https://api.mercadolibre.com/shipments/$SHIPMENT_ID/costs" | python -m json.tool
+```
+
+| Assert                                                                                 | Why it matters                                                                                                                                                                                                                                                 | Result                                                                                                                      |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `senders[]` holds an entry whose `user_id` **is our seller id**                        | the whole design. `resolveShipmentSellerCost` matches on it — ⚠️ **never `senders[0]`**, since "um só envio poderá conter produtos de diferentes vendedores". A miss is silent: `custoCalculado` stays `null` and only the `nenhum sender nosso` warn shows it | ✅ matched on BOTH shipments                                                                                                |
+| `senders[].cost` is a real number                                                      | this is what the seller pays; `custoFinal` (= `lead_time.list_cost`) is the GROSS price and overstates it                                                                                                                                                      | ✅ **9.15** on `47868202073` (vs `list_cost` 22.14), **26.75** on `47868991350`                                             |
+| the identity `gross_amount = Σ over parties of (cost + Σ discounts[].promoted_amount)` | ⚠️ **do NOT expect `gross_amount - receiver.cost` to equal the seller's cost** — it is false, and computing it that way manufactures a mismatch that is not one. That wrong expectation shipped once and had to be retracted                                   | ✅ holds to the centavo: 38.86 = (12.99+12.80)+(9.15+3.92); 154.20 = (85.99+30.00)+(26.75+11.46)                            |
+| a `cost` of `0` is a REAL value, never a miss                                          | a fully subsidised shipment costs the seller nothing; the resolver uses an explicit finite-number test, never truthiness                                                                                                                                       | ⚠️ **not observed** — both live shipments were non-zero. Covered by unit test only; a genuinely free envio would confirm it |
+| a CANCELLED/refunded shipment                                                          | worth knowing whether a refund zeroes the seller's share                                                                                                                                                                                                       | ⛔ **it does NOT.** `47868991350` is a fully refunded pack and the seller still pays **26.75**                              |
+
+⚠️ **`save` is documented as DELETED from this resource and is neither deleted nor
+zero.** ML's page says it stopped being filled in Oct/2024 ("todos os casos o campo
+receberá o valor 0") and was removed in Jan/2025. On the wire ~20 months later it is
+present and non-zero on every party (11.81 / 3.92 / 29.91 / 11.46). It stays untyped
+by CHOICE — a publicly deprecated field is not one to build on — not by absence; do
+not "correct" `mlShipmentCostPartySchema` after seeing it in a payload.
+
+⭐ **Generalise: an ML deprecation notice states INTENT, not the wire.** The live body
+is a strict superset of the documented one in four more ways, all on the passthrough
+and none consumed: `fees`, `compensations` (plural, beside the documented singular
+`compensation`), `charges.charge_flex`, `cost_details[]`, root `base_exchange`.
+Capture the real body before believing a notice in either direction — the captured one
+is pinned verbatim in `packages/integrations/mercado-livre/test/api.test.ts`.
 
 ---
 
