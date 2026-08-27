@@ -13,6 +13,8 @@ import {
   type UsuarioTesteMercadoLivre,
 } from '@delfrance/schemas';
 
+import type { UsuarioTesteRegistrado } from '@/lib/marketplace/conta/testUsers';
+
 const h = vi.hoisted(() => ({
   verifyCaller: vi.fn(),
   loadCtx: vi.fn(),
@@ -69,9 +71,13 @@ const postBody = (body: unknown, qs = '?integracaoId=int-1') =>
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
 
-function record(role: UsuarioTesteMercadoLivre['role']): UsuarioTesteMercadoLivre {
+function record(
+  role: UsuarioTesteMercadoLivre['role'],
+  docId: string = role,
+): UsuarioTesteRegistrado {
   return {
     role,
+    docId,
     id: 120506781,
     nickname: `TEST-${role}`,
     password: 'qatest328',
@@ -172,6 +178,22 @@ describe('GET /api/marketplace/mercado-livre/usuarios-teste', () => {
       quatro: '6781',
       seis: '506781',
     });
+  });
+
+  it('⭐ carries the docId of every record — the panel cannot tell them apart without it', async () => {
+    // Two buyers, one at the pair bootstrap's document and one an additional
+    // mint wrote. Both say `role: 'comprador'`, so the doc id is the only thing
+    // on the wire that distinguishes them — and therefore the only way a screen
+    // can show that a new buyer landed BESIDE the old one rather than on top of
+    // it, or was never created at all.
+    h.storeList.mockResolvedValue([
+      record(USUARIO_TESTE_ROLE.comprador),
+      record(USUARIO_TESTE_ROLE.comprador, 'comprador-777'),
+    ]);
+
+    const body = (await (await GET(get())).json()) as { usuarios: { docId: string }[] };
+
+    expect(body.usuarios.map((u) => u.docId)).toEqual(['comprador', 'comprador-777']);
   });
 
   it('reads back without touching ML or the OAuth context', async () => {
@@ -298,6 +320,34 @@ describe('POST body — the single-role mint', () => {
     expect(h.storeCreate).toHaveBeenCalledWith('comprador-120506781', expect.anything());
     expect(body.criados).toEqual(['comprador']);
     expect(body.usuarios).toHaveLength(1);
+  });
+
+  it('answers with the doc id it just wrote, not the bare role', async () => {
+    // What the browser reveals as "the new buyer" has to name the document that
+    // actually holds it. Reporting `comprador` here would claim the additional
+    // mint landed on the pair bootstrap's document — the exact thing `create`
+    // exists to make impossible.
+    h.storeList.mockResolvedValue([record(USUARIO_TESTE_ROLE.comprador)]);
+
+    const body = (await (await POST(postBody({ role: 'comprador' }))).json()) as {
+      usuarios: { docId: string; role: string }[];
+    };
+
+    expect(body.usuarios).toEqual([
+      expect.objectContaining({ docId: 'comprador-120506781', role: 'comprador' }),
+    ]);
+  });
+
+  it('⚠️ writes no docId INTO the record — the stored schema is passthrough', async () => {
+    // `usuarioTesteMercadoLivreSchema` is `.passthrough()`, so a docId that
+    // reached the store would be persisted as a record field and every
+    // assertion above would still pass.
+    h.storeList.mockResolvedValue([]);
+
+    await POST(postBody({ role: 'comprador' }));
+
+    const escrito = h.storeCreate.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect('docId' in escrito).toBe(false);
   });
 
   it.each([

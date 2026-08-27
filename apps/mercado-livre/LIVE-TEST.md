@@ -139,13 +139,28 @@ integração stored, and ML publishes nothing that lists the rest.
 Tick **Manter esta conta conectada** if you intend to mint another buyer straight
 after; otherwise leave it unticked and the credential is revoked as usual.
 
-| Check                                                                   | Result |
-| ----------------------------------------------------------------------- | ------ |
-| The dialog names the connected account and shows `N de 10`              |        |
-| A new doc `comprador-<mlUserId>`; the `comprador` doc is byte-identical |        |
-| The reveal modal refuses to close before the password is copied         |        |
-| `tokenDuravel` empty (or still populated, if you ticked "manter")       |        |
-| The new buyer signs in and completes a Mercado Pago checkout            |        |
+⚠️ **Deploy this backend first.** A backend older than the single-role mint
+**ignores the `role` in the body** and runs the pair bootstrap instead: it reuses
+both stored accounts, mints nothing, revokes the credential anyway and answers
+**200**. That reported as a success — the list did not change and the reveal
+modal showed the SELLER's password under a "Comprador" badge. The panel now
+refuses that response and tells you to deploy, but the fix is the deploy.
+
+⚠️ **Read the doc ids, not the nicknames.** Every buyer record says
+`role: comprador`, so the doc id is the only thing that separates _beside_ from
+_on top of_: after this step the Compradores group must hold **one more card**
+than before, the old card's `doc comprador…` must be unchanged, and the new one
+must read `doc comprador-<mlUserId>`.
+
+| Check                                                                       | Result |
+| --------------------------------------------------------------------------- | ------ |
+| The dialog names the connected account and shows `N de 10`                  |        |
+| The panel does NOT say the backend is outdated                              |        |
+| `Compradores (N)` grew by exactly one, and every older card is still listed |        |
+| A new doc `comprador-<mlUserId>`; the `comprador` doc is byte-identical     |        |
+| The reveal modal refuses to close before the password is copied             |        |
+| `tokenDuravel` empty (or still populated, if you ticked "manter")           |        |
+| The new buyer signs in and completes a Mercado Pago checkout                |        |
 
 ---
 

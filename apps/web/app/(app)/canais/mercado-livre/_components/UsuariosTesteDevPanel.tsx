@@ -23,6 +23,7 @@ import { USUARIO_TESTE_LIMITE_POR_CONTA } from '@delfrance/schemas';
 
 import { usePermission } from '@/lib/auth';
 import {
+  MercadoLivreBackendDesatualizadoError,
   MercadoLivreClientHttpError,
   type MercadoLivreUsuarioTeste,
   useMercadoLivreClient,
@@ -43,6 +44,21 @@ const IS_DEV = process.env.NODE_ENV !== 'production';
  * the panel replaces it with the one sentence that is.
  */
 const CODIGO_REAUTH = 'ML_REAUTH_REQUIRED';
+
+/**
+ * Shown when the list comes back without doc ids — every backend older than the
+ * field, including one that already mints correctly.
+ *
+ * ⚠️ Named rather than rendered as an empty chip. The doc id is the only thing
+ * on screen that separates "the new buyer landed beside the old one" from "it
+ * landed on top of it", so a blank where it should be is the panel quietly
+ * withdrawing the one answer it was added to give.
+ */
+const DOC_ID_AUSENTE =
+  'Este backend não informa em qual documento cada conta está guardada, então esta lista não ' +
+  'consegue distinguir um comprador criado AO LADO do antigo de um que substituiu o antigo. ' +
+  'As credenciais abaixo estão corretas; faça o deploy de `apps/mercado-livre` para recuperar ' +
+  'essa distinção.';
 
 const PRECISA_RECONECTAR =
   'Conecte novamente a conta real que registrou a aplicação: a criação anterior apagou as ' +
@@ -152,6 +168,12 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
    * the WHOLE list then. A single mint returns ONE record, so seeding would
    * erase every other stored account from the panel until the next refetch, on
    * the one screen whose job is showing which credentials exist.
+   *
+   * ⚠️ Called from `onSettled`, never `onSuccess`. A failed mint is exactly when
+   * the panel is most likely to be showing something false: the request can
+   * refuse AFTER the backend already minted and already revoked the credential
+   * (the client-side post-condition below throws on a 200), leaving "Conectada"
+   * on screen next to a conta that no longer is.
    */
   function refetchListas(): void {
     void queryClient.invalidateQueries({ queryKey });
@@ -161,6 +183,9 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
   }
 
   function descreverFalha(err: unknown, fallback: string): string {
+    // Already written as the one sentence that is actionable — a deploy, or
+    // "check the list before spending another slot". Do not generalise it.
+    if (err instanceof MercadoLivreBackendDesatualizadoError) return err.message;
     if (err instanceof MercadoLivreClientHttpError) {
       return err.code === CODIGO_REAUTH ? PRECISA_RECONECTAR : err.message;
     }
@@ -172,8 +197,8 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
       if (!client) throw new Error('not ready');
       return client.criarUsuariosTeste(integracaoId);
     },
+    onSettled: refetchListas,
     onSuccess: (result) => {
-      refetchListas();
       fecharConfirmacoes();
       notifications.show({
         color: 'green',
@@ -199,12 +224,14 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
         manterCredencial: manter,
       });
     },
+    onSettled: refetchListas,
     onSuccess: (result) => {
-      refetchListas();
       fecharConfirmacoes();
       // The single mint creates exactly one account and reuses nothing, so this
-      // is it. Revealed in a modal that cannot be dismissed before the password
-      // is copied — see `SenhaReveladaModal`.
+      // is it — and `exigirMintAvulso` in the client has already refused any
+      // response where that is not literally true, so `usuarios[0]` cannot be
+      // some other account's credential. Revealed in a modal that cannot be
+      // dismissed before the password is copied — see `SenhaReveladaModal`.
       const novo = result.usuarios[0];
       if (novo) setRevelado(novo);
       notifications.show({
@@ -219,6 +246,10 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
     onError: (err: unknown) => {
       notifications.show({
         color: 'red',
+        // ⚠️ A stale-backend message names a deploy the operator has to go and
+        // do, and reports a credential that was wiped anyway. Four seconds is
+        // not enough to read that, let alone act on it.
+        ...(err instanceof MercadoLivreBackendDesatualizadoError ? { autoClose: false } : {}),
         message: descreverFalha(err, 'Não foi possível criar o comprador de teste.'),
       });
     },
@@ -247,14 +278,19 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
         });
   const listaRetry = queryRetry(query);
 
-  // ⚠️ A SET, not a count. `usuarios.length >= 2` reads a total as if it were
-  // coverage: two extra compradores and no vendedor would disable the pair
-  // bootstrap while the seller half is still missing.
-  const temVendedor = usuarios.some((u) => u.role === 'vendedor');
-  const temComprador = usuarios.some((u) => u.role === 'comprador');
+  // ⚠️ Split by role rather than counted. `usuarios.length >= 2` read a total as
+  // if it were coverage: two extra compradores and no vendedor would disable the
+  // pair bootstrap while the seller half is still missing. The two lists ARE the
+  // coverage, and they are also what the panel renders — one derivation, so the
+  // buttons and the screen can never disagree about what exists.
+  const vendedores = usuarios.filter((u) => u.role === 'vendedor');
+  const compradores = usuarios.filter((u) => u.role === 'comprador');
+  const temVendedor = vendedores.length > 0;
+  const temComprador = compradores.length > 0;
   const parCompleto = temVendedor && temComprador;
 
-  const compradorMaisRecente = usuarios.find((u) => u.role === 'comprador') ?? null;
+  // `ordenarUsuarios` already sorted newest-first inside each role.
+  const compradorMaisRecente = compradores[0] ?? null;
   const conectada = contaQuery.data?.connected === true;
   // ⚠️ "Disconnected" and "we do not know yet" are DIFFERENT, and only the first
   // has a cause worth naming. `conectada` collapses them, so the hint below has
@@ -266,6 +302,10 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
     ? (contaQuery.data.me.nickname ?? `id ${String(contaQuery.data.me.id)}`)
     : null;
   const limiteAtingido = usuarios.length >= USUARIO_TESTE_LIMITE_POR_CONTA;
+  // ⚠️ `some`, not `every`: one record without a doc id is already enough to
+  // make the list unable to answer its own question, and a mixed answer is the
+  // shape a half-deployed backend produces.
+  const semDocId = usuarios.some((u) => u.docId == null);
 
   return (
     <Card withBorder padding="md" data-testid="ml-usuarios-teste-panel">
@@ -286,6 +326,12 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
 
         <ContadorDeVagas registrados={usuarios.length} />
 
+        {semDocId && (
+          <Alert color="yellow" variant="light" data-testid="ml-usuarios-teste-sem-doc-id">
+            {DOC_ID_AUSENTE}
+          </Alert>
+        )}
+
         {listaFailure && (
           <RetryAlert
             color="yellow"
@@ -296,16 +342,18 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
         )}
 
         {usuarios.length > 0 ? (
-          <Stack gap="xs" data-testid="ml-usuarios-teste-lista">
-            {usuarios.map((u) => (
-              // ⚠️ Keyed on the ML user id, not the role: a role stopped being
-              // unique the moment a second comprador could exist.
-              <UsuarioTesteCard
-                key={String(u.id)}
-                usuario={u}
-                maisRecente={u === compradorMaisRecente && temComprador}
-              />
-            ))}
+          <Stack gap="md" data-testid="ml-usuarios-teste-lista">
+            <GrupoDeUsuarios
+              titulo="Vendedores"
+              usuarios={vendedores}
+              testId="ml-usuarios-teste-vendedores"
+            />
+            <GrupoDeUsuarios
+              titulo="Compradores"
+              usuarios={compradores}
+              maisRecente={compradorMaisRecente}
+              testId="ml-usuarios-teste-compradores"
+            />
           </Stack>
         ) : (
           // Suppressed while the read is failing: "nenhum criado" next to "não
@@ -494,6 +542,65 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
         />
       )}
     </Card>
+  );
+}
+
+/**
+ * React key for one account's card.
+ *
+ * ⚠️ The doc id first, because it is unique by CONSTRUCTION — the ML user id is
+ * unique only if nothing was ever stored twice, which is the very property this
+ * panel exists to let you check, so keying on it would assume the answer.
+ *
+ * ⚠️ The fallback exists because a backend older than the field reports no doc
+ * id at all, and `key={undefined}` is not a key: React drops to index
+ * reconciliation on exactly the list this panel needs to be trustworthy. It is
+ * exported so the derivation can be asserted directly — a test that watched for
+ * React's missing-key console warning instead PASSED against a deliberately
+ * broken key (the warning is de-duplicated per component and never reached the
+ * spy), which is a checker that cannot fail.
+ */
+export function chaveDoCard(u: MercadoLivreUsuarioTeste): string {
+  return u.docId ?? `sem-doc-${String(u.id)}`;
+}
+
+/**
+ * One role's accounts, counted in the heading.
+ *
+ * ⚠️ The count is rendered even when it is zero, and every account in the group
+ * is rendered — there is no "and N more". "Compradores (1)" sitting there right
+ * after a mint that was supposed to add one is the fastest way to see that
+ * nothing was created, and a section that collapses or truncates cannot say it.
+ * That question is why this grouping exists at all: the flat list showed every
+ * record too, but with the roles interleaved a buyer count that failed to grow
+ * was invisible.
+ */
+function GrupoDeUsuarios({
+  titulo,
+  usuarios,
+  maisRecente = null,
+  testId,
+}: {
+  titulo: string;
+  usuarios: MercadoLivreUsuarioTeste[];
+  maisRecente?: MercadoLivreUsuarioTeste | null;
+  testId: string;
+}) {
+  return (
+    <Stack gap="xs" data-testid={testId}>
+      <Text size="xs" fw={600} c="dimmed">
+        {titulo} ({usuarios.length})
+      </Text>
+      {usuarios.length === 0 ? (
+        <Text size="xs" c="dimmed">
+          Nenhum registrado.
+        </Text>
+      ) : (
+        usuarios.map((u) => (
+          <UsuarioTesteCard key={chaveDoCard(u)} usuario={u} maisRecente={u === maisRecente} />
+        ))
+      )}
+    </Stack>
   );
 }
 
@@ -743,6 +850,29 @@ function UsuarioTesteCard({
             {usuario.site_status ? ` · ${usuario.site_status}` : ''}
           </Text>
         </Group>
+        {/*
+          ⚠️ The doc id is the whole point of this line. Two accounts can never
+          share one, so it is the only field on screen that distinguishes "the
+          new buyer landed BESIDE the old one" (`comprador` and
+          `comprador-<id>` both listed) from "it landed on top of it" (one doc,
+          new credential) from "it was never created" (nothing new at all).
+          Every buyer record says `role: 'comprador'`, so the records alone
+          cannot tell those three apart.
+        */}
+        <Text size="xs" c={usuario.docId == null ? 'orange' : 'dimmed'}>
+          {usuario.docId == null ? (
+            // ⚠️ Never an empty chip. "doc ⟨nothing⟩" reads as a rendering
+            // glitch; "não informado" reads as the fact it is.
+            <>doc não informado (backend desatualizado)</>
+          ) : (
+            <>
+              doc <Code>{usuario.docId}</Code>
+            </>
+          )}
+          {usuario.createdAt != null
+            ? ` · criado em ${new Date(usuario.createdAt).toLocaleString('pt-BR')}`
+            : ''}
+        </Text>
         <Group gap="xs" align="center">
           <Text size="xs" c="dimmed">
             Senha:

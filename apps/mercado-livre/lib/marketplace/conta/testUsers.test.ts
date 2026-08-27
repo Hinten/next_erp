@@ -20,6 +20,7 @@ import {
   TestUserGuardError,
   type CriarUsuariosTesteDeps,
   type TestUserStore,
+  type UsuarioTesteRegistrado,
   codigosVerificacaoEmail,
   criarUsuariosTeste,
   docIdAdicional,
@@ -63,7 +64,10 @@ function fakeStore(seed: UsuarioTesteMercadoLivre[] = []) {
       docs.set(docId, record);
     },
     async list() {
-      return [...docs.values()];
+      // Mirrors the real store: the map KEY is the doc id, and it rides out on
+      // every record. Returning bare records here would let a production change
+      // that drops `docId` pass every test in this file.
+      return [...docs.entries()].map(([docId, record]) => ({ ...record, docId }));
     },
   };
   return store;
@@ -132,6 +136,21 @@ function registro(over: Partial<UsuarioTesteMercadoLivre> = {}): UsuarioTesteMer
   };
 }
 
+/**
+ * The same record as it comes BACK from the store — with the doc id holding it.
+ *
+ * ⚠️ Deliberately a second helper rather than a `docId` on {@link registro}:
+ * `registro()` feeds the WRITE side (`put`/`create`), and the stored schema is
+ * `.passthrough()`, so a fixture carrying `docId` into a write would persist a
+ * document's own id as one of its fields and no assertion here would notice.
+ */
+function registrado(
+  docId: string,
+  over: Partial<UsuarioTesteMercadoLivre> = {},
+): UsuarioTesteRegistrado {
+  return { ...registro(over), docId };
+}
+
 describe('criarUsuariosTeste', () => {
   it('mints seller then buyer and stores both', async () => {
     const { deps: d, store } = deps({});
@@ -197,7 +216,10 @@ describe('criarUsuariosTeste', () => {
     expect(criarUsuarioTeste).toHaveBeenCalledTimes(1);
     expect(result.reaproveitados).toEqual([USUARIO_TESTE_ROLE.vendedor]);
     expect(result.criados).toEqual([USUARIO_TESTE_ROLE.comprador]);
-    expect(result.usuarios[0]).toEqual(existing);
+    // The stored record, whole — plus the doc id it was read from. Spelled out
+    // rather than matched loosely: dropping a field from a reused record is the
+    // failure this assertion is here to catch, and `password` is unrecoverable.
+    expect(result.usuarios[0]).toEqual({ ...existing, docId: USUARIO_TESTE_ROLE.vendedor });
   });
 
   it('RULE 2: a fully-stored pair mints nothing at all', async () => {
@@ -406,7 +428,7 @@ describe('criarUsuariosTeste — reuse spans BOTH doc-id schemes', () => {
   });
 
   it('reutilizavel matches the role FIELD, not the doc id', () => {
-    const rec = registro({ id: 7 });
+    const rec = registrado('comprador-7', { id: 7 });
     expect(reutilizavel([rec], USUARIO_TESTE_ROLE.comprador)).toBe(rec);
     expect(reutilizavel([rec], USUARIO_TESTE_ROLE.vendedor)).toBeNull();
     expect(reutilizavel([], USUARIO_TESTE_ROLE.comprador)).toBeNull();
@@ -589,5 +611,65 @@ describe('codigosVerificacaoEmail', () => {
 
   it('does not pad a short id', () => {
     expect(codigosVerificacaoEmail(12345)).toEqual({ quatro: '2345', seis: '12345' });
+  });
+});
+
+/**
+ * The doc id the panel needs — and the one place it must NOT reach.
+ *
+ * ⭐ Every buyer record carries `role: 'comprador'`, whether it sits at the pair
+ * bootstrap's bare `comprador` document or at an additional mint's
+ * `comprador-<mlUserId>`. So the records alone cannot distinguish "the new buyer
+ * landed beside the old one" from "it landed on top of it" from "it was never
+ * created" — which is exactly the question the operator asks after clicking
+ * "Novo comprador". The doc id is the only field that answers it, so it travels
+ * out with every record.
+ */
+describe('criarUsuariosTeste — the doc id each account is stored under', () => {
+  it('reports the id an additional mint just wrote', async () => {
+    const store = fakeStore([registro()]);
+    const { deps: d } = deps({
+      store,
+      roles: [USUARIO_TESTE_ROLE.comprador],
+      modo: 'novo',
+    });
+
+    const result = await criarUsuariosTeste(d);
+
+    expect(result.usuarios[0]?.docId).toBe('comprador-1001');
+    // …beside the pair bootstrap's document, which is untouched.
+    expect([...store.docs.keys()].sort()).toEqual(['comprador', 'comprador-1001']);
+  });
+
+  it('reports a REUSED record’s real doc id, not one recomputed from the role', async () => {
+    // A reused account is whatever `list()` handed back, and it may live at
+    // either shape. Deriving the id from `role` would label every additional
+    // mint `comprador` — the panel would then show two rows claiming the same
+    // document, which is the impossible state it exists to rule out.
+    const store = fakeStore();
+    await store.create('comprador-77', registro({ id: 77 }));
+    const { deps: d } = deps({ store, roles: [USUARIO_TESTE_ROLE.comprador] });
+
+    const result = await criarUsuariosTeste(d);
+
+    expect(result.reaproveitados).toEqual([USUARIO_TESTE_ROLE.comprador]);
+    expect(result.usuarios[0]?.docId).toBe('comprador-77');
+  });
+
+  it('⚠️ never lets a docId reach a WRITE — the stored schema is passthrough', async () => {
+    // `usuarioTesteMercadoLivreSchema` is `.passthrough()`, so a `docId` that
+    // reached `put`/`create` would be persisted as a record FIELD and nothing
+    // anywhere would complain. This run reuses a LISTED record (which carries
+    // one) and mints another, so both paths are exercised in one go.
+    const store = fakeStore();
+    await store.create('comprador-77', registro({ id: 77 }));
+    const { deps: d } = deps({ store });
+
+    await criarUsuariosTeste(d);
+
+    expect([...store.docs.keys()].sort()).toEqual(['comprador-77', 'vendedor']);
+    for (const [docId, guardado] of store.docs) {
+      expect({ docId, temDocId: 'docId' in guardado }).toEqual({ docId, temDocId: false });
+    }
   });
 });

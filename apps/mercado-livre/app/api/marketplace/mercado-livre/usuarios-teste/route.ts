@@ -43,8 +43,15 @@
  * Responses:
  *  - 200 `{ usuarios, criados, reaproveitados, credenciaisRemovidas,
  *    credencialRevogada, conta }` (POST) / `{ usuarios }` (GET). Each `usuario`
- *    carries its `password` and the e-mail verification codes derived from its
- *    id.
+ *    carries its `password`, the e-mail verification codes derived from its id,
+ *    and the `docId` of the Firestore document holding it.
+ *
+ * ⚠️ `credencialRevogada` is also the CAPABILITY PROBE the browser uses to spot
+ * a backend older than this file. Before the single-role mint existed this route
+ * ignored its body entirely and always ran the pair bootstrap, so a stale
+ * deployment answers a `{role}` POST with `criados: []`, both stored users, and
+ * no `credencialRevogada` key at all — a 200 for a mint that never happened.
+ * Do not drop the field, and do not make it optional.
  *  - 400 on a malformed body, an unknown `role`, or `manterCredencial` without
  *    a `role`.
  *  - 404 when the flag is off — indistinguishable from "route does not exist".
@@ -59,7 +66,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
-import { usuarioTesteRoleSchema, type UsuarioTesteMercadoLivre } from '@delfrance/schemas';
+import { usuarioTesteRoleSchema } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -70,6 +77,7 @@ import {
   TestUserGuardError,
   codigosVerificacaoEmail,
   criarUsuariosTeste,
+  type UsuarioTesteRegistrado,
 } from '@/lib/marketplace/conta/testUsers';
 
 export const dynamic = 'force-dynamic';
@@ -116,8 +124,16 @@ const bodySchema = z.strictObject({
   manterCredencial: z.boolean().default(false),
 });
 
-/** Adds what the operator needs and ML does not return: the e-mail codes. */
-function toWire(u: UsuarioTesteMercadoLivre) {
+/**
+ * Adds what the operator needs and ML does not return: the e-mail codes.
+ *
+ * ⚠️ Takes a {@link UsuarioTesteRegistrado}, so `docId` rides out to the browser.
+ * Without it the panel cannot answer the only question that matters after an
+ * additional mint — did the new buyer land BESIDE the old one, or on top of it?
+ * Every buyer record carries `role: 'comprador'`, so the records alone cannot
+ * tell "nothing was created" from "the document was replaced".
+ */
+function toWire(u: UsuarioTesteRegistrado) {
   return { ...u, codigosVerificacaoEmail: codigosVerificacaoEmail(u.id) };
 }
 
