@@ -382,15 +382,18 @@ never validates them, so a shape change is **silent**. Capture the real bodies (
 
 #### ⬜ Two things step 6.3 (the coupon buy) still has to settle
 
-1. **Does Formula B need a `− descontoTotal` term?** The canonical
-   `derivePedidoFreteTotals` subtracts the order-level coupon; `applyFreteStep` does not, so
-   on a coupon order the stored `valorCobrado` **exceeds the footer's Total by the coupon** —
-   and since the advance is `>=`, a fully-paid coupon order would never reach `pago`, with no
-   operator-visible cause. Which side is right depends on **who funds an ML coupon**: if ML
-   funds it and still pays the seller in full, the current formula is the correct one.
-   Record `transaction_amount`, `coupon_amount` and `total_amount` together on 6.3.
+1. **Is the `− descontoTotal` term right?** `applyFreteStep` used to omit it, so on a coupon
+   order the stored `valorCobrado` **exceeded the footer's Total by the coupon** — and since
+   the advance is `>=`, a fully-paid coupon order never reached `pago`, with no
+   operator-visible cause. Both repairs now go through the canonical
+   `derivePedidoFreteTotals`, so the term is there and the two cannot drift again.
+   ⚠️ **That fix assumes an ML coupon reduces what the buyer owes.** If ML funds the coupon
+   and still pays the seller in full, the OLD formula was the correct one. Record
+   `transaction_amount`, `coupon_amount`, `total_amount` and `paid_amount` together on 6.3,
+   and compare `paid_amount` against the stored total.
    ⚠️ `pedido.descontoTotal` is itself written once at create from `orders[0]` alone and never
-   recomputed, so on a **pack** it is a sibling-scoped figure either way.
+   recomputed, so on a **pack** it is a sibling-scoped figure either way — a residual this
+   fix does not close.
 2. **`applyFreteSemEnvioStep` never writes `valorCobrado`.** Both B and B′ need a frete
    conference, and the sem-envio path has none — so a **"frete a combinar" pack** (#1273)
    holds every sibling's items against `orders[0]`'s total. That is #791's failure mode

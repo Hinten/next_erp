@@ -88,8 +88,8 @@ import {
   STATUS_PAGAMENTO,
   TIPO_INCIDENTE,
   TIPO_RESOLUCAO,
+  derivePedidoFreteTotals,
   flattenPedidoItens,
-  itemSubtotal,
   toOuterRef,
   idFromRef,
   type EstadoPedido,
@@ -1553,10 +1553,13 @@ async function applyFreteStep(args: {
       // overwrite. Uses the STORED frete's own `valorCobrado`, never this
       // (older) payload's, so it carries no staleness.
       if (freshFrete != null && freshPedido.enderecoFiscalOuterRef != null) {
-        const totalItens = roundReais(
-          flattenPedidoItens(freshPedido.itens).reduce((sum, item) => sum + itemSubtotal(item), 0),
-        );
-        const alvo = roundReais(totalItens + (freshFrete.valorCobrado ?? 0));
+        // Same `derivePedidoFreteTotals` the conference below uses — the two
+        // repairs must agree to the cent or they fight each other across runs.
+        const alvo = derivePedidoFreteTotals({
+          itens: flattenPedidoItens(freshPedido.itens),
+          descontoTotal: freshPedido.descontoTotal ?? 0,
+          freteInicial: freshFrete,
+        }).valorCobrado;
         if (freshPedido.valorCobrado !== alvo) patchParado.valorCobrado = alvo;
       }
       if (Object.keys(patchParado).length > 0) {
@@ -1685,10 +1688,21 @@ async function applyFreteStep(args: {
       );
     }
 
-    const totalItens = roundReais(itensDoPedido.reduce((sum, item) => sum + itemSubtotal(item), 0));
+    // ⚠️ Through `derivePedidoFreteTotals`, NOT a local sum. This used to be
+    // `roundReais(Σ itemSubtotal + frete)`, which silently dropped the
+    // `− descontoTotal` term the canonical derive has — so on an order carrying
+    // an ML coupon the stored total exceeded the pedido footer's Total by the
+    // coupon, and since the advance is `>=`, a fully-paid coupon order could
+    // never reach `pago`: a stall with no operator-visible cause. Sharing the
+    // one implementation is what stops the two drifting apart again; do not
+    // re-inline the arithmetic.
     const patch: Record<string, unknown> = {
       freteInicial: targetFrete,
-      valorCobrado: roundReais(totalItens + (mappedFrete.valorCobrado ?? 0)),
+      valorCobrado: derivePedidoFreteTotals({
+        itens: itensDoPedido,
+        descontoTotal: freshPedido.descontoTotal ?? 0,
+        freteInicial: mappedFrete,
+      }).valorCobrado,
     };
 
     // Recovery. A divergence we recorded has cleared, so undo what we did:
