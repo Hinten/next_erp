@@ -7,7 +7,7 @@ import {
   type MlOrder,
 } from '@delfrance/integrations-mercado-livre';
 
-import { OrderItemsIncompleteError } from './orderMapping';
+import { OrderItemsIncompleteError, mlOrderToPedidoCoreFields } from './orderMapping';
 
 /* -------------------------------------------------------------------------- */
 /*                                   Mocks                                    */
@@ -75,7 +75,12 @@ import {
   TIPO_INCIDENTE,
   UF_SIGLA,
 } from '@delfrance/schemas';
-import type { EnderecoBuildOutcome, EnderecoForcado, FreteDoPedido } from '@delfrance/schemas';
+import type {
+  EnderecoBuildOutcome,
+  EnderecoForcado,
+  FreteDoPedido,
+  ItemDoPedido,
+} from '@delfrance/schemas';
 import type { EnderecoViaCep, ViaCepClient } from '@delfrance/core/cep';
 import { pedidoCollection } from '@delfrance/data/admin/collections';
 
@@ -2151,6 +2156,255 @@ describe('importPedidoMercadoLivre — conferência de itens do envio (#669)', (
 // staleness re-guard. `mappedFrete` is built OUTSIDE the transaction, so an
 // OCC retry re-applies it verbatim: the loser overwrites the winner with an
 // OLDER shipment payload and drags `freteInicial.ultimaModificacao` backwards.
+
+/*
+ * The money map of a PACK — the shape #1087's live run left unverified.
+ *
+ * Vector from the 2026-08-27 run (pack `2000014733850447`): two sibling orders
+ * of R$ 50,00 and R$ 99,94 collapsing onto ONE pedido, and a single shipment
+ * whose `GET /shipments/{id}/payments` carries one approved R$ 85,99.
+ *
+ * ⚠️ **The freight is billed ONCE, on the shipment — not per order.** So each
+ * order's payment carries `shipping_cost: 0` and ML's per-order `paid_amount`
+ * (Σ 149,94) structurally cannot see the 85,99. That is why the create-time
+ * Formula A total and the stored one differ on a pack, and why comparing the
+ * stored value against Σ `paid_amount` reads as an R$ 85,99 defect when nothing
+ * is wrong. `applyFreteStep` is the owner: Σ `itemSubtotal` + frete, i.e. the
+ * legacy `Pedido.total` — "valor final cobrado no pedido", freight included.
+ *
+ * ⚠️ Getting this wrong in the OTHER direction is the dangerous one. At 149,94
+ * the `pago` advance (`totalAprovado >= valorCobrado`) fires while the buyer's
+ * freight payment is still uncounted — and `pago` authorises dispatch and NF-e
+ * emission. The last case below is that assertion.
+ */
+describe('importPedidoMercadoLivre — money map de um PACK (#1087)', () => {
+  const PACK_ID = 9000;
+  const ORDER_A = 9001;
+  const ORDER_B = 9002;
+  const SHIPMENT_ID = 9777;
+  const FRETE = 85.99;
+  const TOTAL_DO_PACK = 235.93; // roundReais(roundReais(50 + 99.94) + 85.99)
+
+  /** One pack sibling: its own line price and its own single approved payment. */
+  function ordemDoPack(id: number, unitPrice: number): DocData {
+    const base = makeOrder({ id, packId: PACK_ID, shippingId: SHIPMENT_ID });
+    return {
+      ...base,
+      total_amount: unitPrice,
+      order_items: [
+        {
+          item: { id: `MLB${id}`, title: 'Produto', seller_sku: null },
+          quantity: 1,
+          unit_price: unitPrice,
+        },
+      ],
+      // `shipping_cost: 0` is the POINT, not a shortcut: on a pack ML charges
+      // the freight on the shipment, so Formula A can only ever see the items.
+      payments: [
+        {
+          id: 5000 + id,
+          status: 'approved',
+          transaction_amount: unitPrice,
+          shipping_cost: 0,
+          coupon_amount: 0,
+        },
+      ],
+    };
+  }
+
+  const ORDENS: ReadonlyMap<number, DocData> = new Map([
+    [ORDER_A, ordemDoPack(ORDER_A, 50)],
+    [ORDER_B, ordemDoPack(ORDER_B, 99.94)],
+  ]);
+
+  function apiDoPack(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): MercadoLivreApi {
+    return makeApi({
+      getOrder: vi.fn(async (id: number | string) => ORDENS.get(Number(id)) ?? ORDENS.get(ORDER_A)),
+      getPack: vi.fn(async () => ({
+        id: PACK_ID,
+        status: 'ready',
+        orders: [{ id: ORDER_A }, { id: ORDER_B }],
+      })),
+      getShipment: vi.fn(async () => ({
+        id: SHIPMENT_ID,
+        order_id: ORDER_A,
+        status: 'ready_to_ship',
+        substatus: null,
+        last_updated: '2026-01-02T00:00:00.000-03:00',
+        shipping_option: {},
+      })),
+      getShipmentPayments: vi.fn(async () => [
+        { payment_id: 7001, status: 'approved', amount: FRETE },
+      ]),
+      // ONE shipment covering BOTH orders' lines — a matching conference. The
+      // default `[]` stub would report `indeterminado` and this block would
+      // silently assert the skip path instead of the pricing it is named for.
+      getShipmentOrders: vi.fn(async () => [
+        {
+          order_id: String(ORDER_A),
+          item_id: `MLB${ORDER_A}`,
+          variation_id: null,
+          seller_id: SELLER_USER_ID,
+          requested_quantity: 1,
+        },
+        {
+          order_id: String(ORDER_B),
+          item_id: `MLB${ORDER_B}`,
+          variation_id: null,
+          seller_id: SELLER_USER_ID,
+          requested_quantity: 1,
+        },
+      ]),
+      ...over,
+    });
+  }
+
+  /** The `getPayment` the shipping payment actually needs — see the ⚠️ below. */
+  const getPaymentDoFrete = () =>
+    vi.fn(async (id: number | string) => ({
+      id: Number(id),
+      status: 'approved',
+      transaction_amount: FRETE,
+      shipping_cost: 0,
+      refunds: [],
+    }));
+
+  /**
+   * Persist the pedido the way `orderPedidoTx` would, but from the items the
+   * REAL `mlOrderItemToItemDoPedido` built during this run's pack fan-out
+   * (`./orderMapping` is not mocked in this file) — so the fixture is a genuine
+   * pack, not a transcription of one. `valorCobrado` is seeded with the REAL
+   * create-time Formula A value for `orders[0]`, which is what makes the repair
+   * assertion below mean something.
+   */
+  function seedPedidoDoPack(db: FakeDb): void {
+    seedConta(db);
+    vi.mocked(discoverPedidoMercadoLivre).mockImplementation(async (args) => {
+      const fake = args.db as unknown as FakeDb;
+      if (!fake.docs('pedidos').has('pedido-1')) {
+        const itens: Record<string, ItemDoPedido[]> = {};
+        for (const lista of args.itensByOrderId.values()) {
+          for (const item of lista) (itens[item.produtoUid ?? 'NONE'] ??= []).push(item);
+        }
+        const core = mlOrderToPedidoCoreFields({ order: args.orders[0]!, packId: PACK_ID });
+        fake.seed('pedidos', 'pedido-1', {
+          estado: 'emProcessamento',
+          clientePedidoOuterRef: 'documents/clientes/cli-1',
+          enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+          freteInicial: null,
+          numero: String(PACK_ID),
+          itens,
+          itensIds: Object.keys(itens),
+          descontoTotal: core.descontoTotal,
+          valorCobrado: core.valorCobrado,
+          ultimaModificacao: NOW_US,
+        });
+      }
+      return { pedidoId: 'pedido-1', created: true };
+    });
+    // One produto per line, so the two lines key under two produtos and no
+    // `ml-prod-*` incidente noise lands in the subcollection.
+    vi.mocked(resolveOrderLineProduto).mockImplementation(async (_db, query) =>
+      query.itemId === `MLB${ORDER_B}`
+        ? { produtoId: 'produto-B', via: 'parent-link' }
+        : { produtoId: 'produto-A', via: 'parent-link' },
+    );
+  }
+
+  it('prices the WHOLE pack: Σ itens das duas ordens + o frete do único envio', async () => {
+    const db = new FakeDb();
+    seedPedidoDoPack(db);
+
+    await importPedidoMercadoLivre(deps(db, apiDoPack()), ORDER_A);
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.valorCobrado).toBe(TOTAL_DO_PACK);
+    expect(written.freteInicial).toMatchObject({
+      externalId: String(SHIPMENT_ID),
+      valorCobrado: FRETE, // one shipment's payments serve every sibling
+    });
+    // Both lines are present and both were priced — the total is not one order's.
+    expect((written.itensIds as string[]).sort()).toEqual(['produto-A', 'produto-B']);
+    // The conference AGREED; this is not the `indeterminado` fall-through.
+    expect(db.docs('pedidos/pedido-1/incidentes').has(`ml-envio-div-${SHIPMENT_ID}`)).toBe(false);
+  });
+
+  it('REPAIRS the create-time orders[0]-only under-count (50,00 → 235,93)', async () => {
+    const db = new FakeDb();
+    seedPedidoDoPack(db);
+
+    await importPedidoMercadoLivre(deps(db, apiDoPack()), ORDER_A);
+
+    // Anti-vacuity, both halves: the fan-out really did carry two orders, and
+    // the seed really was the under-counted Formula A value — so 235,93 cannot
+    // be the number that was already sitting on the document.
+    const args = vi.mocked(discoverPedidoMercadoLivre).mock.calls[0]![0];
+    expect(args.orders.map((o) => o.id)).toEqual([ORDER_A, ORDER_B]);
+    expect(
+      mlOrderToPedidoCoreFields({ order: args.orders[0]!, packId: PACK_ID }).valorCobrado,
+    ).toBe(50);
+    expect(db.lastPatch('pedidos', 'pedido-1')).toMatchObject({ valorCobrado: TOTAL_DO_PACK });
+    // An untouched seeded field proves this was a targeted patch, not a rewrite.
+    expect(db.docs('pedidos').get('pedido-1')!.numero).toBe(String(PACK_ID));
+  });
+
+  it('advances to pago once the freight payment joins the two ordens pagamentos', async () => {
+    const db = new FakeDb();
+    seedPedidoDoPack(db);
+    db.seed('pedidos/pedido-1/pagamentos', 'pag-A', {
+      id: '5001',
+      valor: 50,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    db.seed('pedidos/pedido-1/pagamentos', 'pag-B', {
+      id: '5002',
+      valor: 99.94,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+
+    // ⚠️ `makeApi`'s default `getPayment` answers `{ id, status: 'approved' }`
+    // with NO `transaction_amount`, which maps to `valor: 0` + `estornado`
+    // (`refunds >= valorNet` is `0 >= 0`). The shipping payment would then
+    // contribute nothing and this test would pass for the wrong reason.
+    await importPedidoMercadoLivre(
+      deps(db, apiDoPack({ getPayment: getPaymentDoFrete() })),
+      ORDER_A,
+    );
+
+    // The load-bearing half: the SHIPMENT's payment was registered as a
+    // pagamento, which is what lets Σ aprovados reach the pack total at all.
+    expect(db.docs('pedidos/pedido-1/pagamentos').size).toBe(3);
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('pago');
+  });
+
+  it('does NOT advance a pack whose sibling pagamento was recusado', async () => {
+    // Σ aprovados is 135,99 here. Against the create-time 50,00 this pedido
+    // would be `pago` on a partial payment — #791's failure mode, and the whole
+    // reason the conference owns the total. This case reds the moment anyone
+    // makes `valorCobrado` per-order again.
+    const db = new FakeDb();
+    seedPedidoDoPack(db);
+    db.seed('pedidos/pedido-1/pagamentos', 'pag-A', {
+      id: '5001',
+      valor: 50,
+      status_pagamento: STATUS_PAGAMENTO.aprovado,
+    });
+    db.seed('pedidos/pedido-1/pagamentos', 'pag-B', {
+      id: '5002',
+      valor: 99.94,
+      status_pagamento: STATUS_PAGAMENTO.recusado,
+    });
+
+    await importPedidoMercadoLivre(
+      deps(db, apiDoPack({ getPayment: getPaymentDoFrete() })),
+      ORDER_A,
+    );
+
+    const written = db.docs('pedidos').get('pedido-1')!;
+    expect(written.valorCobrado).toBe(TOTAL_DO_PACK);
+    expect(written.estado).toBe('emProcessamento');
+  });
+});
 
 describe('applyFreteStep — concurrent conferences (OCC)', () => {
   const STORED_US = Date.parse('2026-01-01T00:00:00.000Z') * 1000;
