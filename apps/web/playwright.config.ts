@@ -23,7 +23,15 @@ export default defineConfig({
   // Next dev server; more than ~2 suites compiling at once overwhelms it
   // (connection resets, 40s compiles). CI's runners cope with 4. A fast local
   // machine can override with `--workers=N`.
-  workers: process.env.CI ? 4 : 1,
+  //
+  // PLAYWRIGHT_WORKERS lets a CI lane tune this without editing the shared
+  // config — the lanes have very different shapes (staging round-trips vs. four
+  // emulators plus a Next server on one runner), so one number cannot be right
+  // for all of them. ⚠️ Raise it per lane only on a measured before/after of
+  // BOTH wall clock and the retry-rescued count: these suites are network-bound,
+  // so more workers can buy throughput — or just add contention and convert
+  // passes into retries, which is invisible in the duration alone.
+  workers: Number(process.env.PLAYWRIGHT_WORKERS) || (process.env.CI ? 4 : 1),
   // `list` keeps the in-job step output readable; `html` is the
   // browsable report in the artifact; `json` is a machine-readable dump
   // you can paste into a chat to share the exact failure without needing

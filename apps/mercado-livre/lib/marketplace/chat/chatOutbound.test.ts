@@ -47,6 +47,55 @@ const CONV_PERG = 'conv-perg';
 const CONV_PED = 'conv-ped';
 const QUESTION_ID = 11751825075;
 const PACK_ID = '2000000089077943';
+/** ML's MLB messaging Agent — the `from` on a thread ML has MIGRATED. */
+const AGENTE_MLB = 3037675074;
+/** A real buyer id — the `from` on a thread it has NOT. */
+const COMPRADOR = 1234567890;
+
+/** One post-sale message, `minutos` after the fixture epoch. */
+function msg(minutos: number, from: number | null, over: DocData = {}): DocData {
+  const iso = new Date(Date.parse('2026-02-05T20:01:46.000Z') + minutos * 60_000).toISOString();
+  return {
+    id: `m${minutos}`,
+    site_id: 'MLB',
+    from: from == null ? null : { user_id: from },
+    to: { user_id: SELLER },
+    message_date: { received: iso, available: null, notified: null, created: iso, read: null },
+    ...over,
+  };
+}
+
+/**
+ * A pack thread. Defaults to the AGENT flow — `conversation_status.path` carries
+ * the `/conversations/` segment and the inbound message comes `from` the agent —
+ * because that is what a migrated MLB thread looks like today.
+ */
+function packThread(over: DocData = {}): DocData {
+  return {
+    paging: { limit: 100, offset: 0, total: 1 },
+    conversation_status: {
+      path: `/packs/${PACK_ID}/sellers/${SELLER}/conversations/post_sale`,
+      status: 'active',
+      substatus: null,
+    },
+    messages: [msg(0, AGENTE_MLB)],
+    seller_max_message_length: 350,
+    ...over,
+  };
+}
+
+/** The same thread on the LEGACY flow: no `/conversations/`, a real buyer `from`. */
+function packLegado(over: DocData = {}): DocData {
+  return packThread({
+    conversation_status: {
+      path: `/packs/${PACK_ID}/sellers/${SELLER}`,
+      status: 'active',
+      substatus: null,
+    },
+    messages: [msg(0, COMPRADOR)],
+    ...over,
+  });
+}
 
 function seedPergunta(db: FakeDb, over: DocData = {}) {
   db.seed(CHAT, CONV_PERG, {
@@ -83,11 +132,7 @@ function api(over: ApiStubs = {}): MercadoLivreApi {
     answerQuestion: vi.fn(async () => ({ id: 1, status: 'ACTIVE' })),
     deleteQuestion: vi.fn(async () => undefined),
     blockUserFromQuestions: vi.fn(async () => undefined),
-    getPackMessages: vi.fn(async () => ({
-      conversation_status: { status: 'active', substatus: null },
-      messages: [{ id: 'm1', site_id: 'MLB' }],
-      seller_max_message_length: 350,
-    })),
+    getPackMessages: vi.fn(async () => packThread()),
     sendPackMessage: vi.fn(async () => undefined),
     getClaim: vi.fn(async () => claimComAcoes(['send_message_to_complainant'])),
     sendClaimMessage: vi.fn(async () => undefined),
@@ -208,9 +253,9 @@ describe('responderConversaMercadoLivre — perguntas', () => {
 });
 
 describe('responderConversaMercadoLivre — mensagens de pedido', () => {
-  it('addresses the AGENT, not the buyer (ML, 02/02/2026)', async () => {
-    // The agent is the delivery path; a message addressed around it does not
-    // reach the buyer at all.
+  it('addresses the AGENT on a thread ML has already migrated', async () => {
+    // The agent IS the delivery path there; a message addressed around it is
+    // accepted with a 200 and reaches nobody.
     const db = new FakeDb();
     seedPedido(db);
     const d = deps(db);
@@ -219,8 +264,155 @@ describe('responderConversaMercadoLivre — mensagens de pedido', () => {
 
     expect(d.api.sendPackMessage).toHaveBeenCalledWith(PACK_ID, String(SELLER), {
       text: 'Enviado hoje!',
-      toUserId: 3037675074, // MLB agent
+      toUserId: AGENTE_MLB,
     });
+  });
+
+  it('addresses the REAL BUYER on a thread ML has NOT migrated', async () => {
+    // ⚠️ The regression test. ML's agent rollout is progressive ("começando pela
+    // logística Full"), and addressing the agent here is refused outright with
+    // `400 to_user_id 3037675074 does not belong to pack /packs/…/sellers/…` —
+    // observed live on pack 2000018143664980. Hardcoding the agent WAS that bug.
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db, { getPackMessages: vi.fn(async () => packLegado()) });
+
+    await responderConversaMercadoLivre(d, { conversaId: CONV_PED, texto: 'Enviado hoje!' });
+
+    expect(d.api.sendPackMessage).toHaveBeenCalledWith(PACK_ID, String(SELLER), {
+      text: 'Enviado hoje!',
+      toUserId: COMPRADOR,
+    });
+    const { toUserId } = (d.api.sendPackMessage as ReturnType<typeof vi.fn>).mock.calls[0]![2];
+    expect(toUserId).not.toBe(AGENTE_MLB);
+  });
+
+  it('takes the NEWEST counterparty on a thread migrated mid-life', async () => {
+    // Older buyer-id messages, newer agent-id ones — and ML's array deliberately
+    // out of chronological order, so neither `messages[0]` nor `.at(-1)` passes.
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db, {
+      getPackMessages: vi.fn(async () =>
+        packThread({ messages: [msg(0, COMPRADOR), msg(10, AGENTE_MLB), msg(5, SELLER)] }),
+      ),
+    });
+
+    await responderConversaMercadoLivre(d, { conversaId: CONV_PED, texto: 'oi' });
+
+    expect(d.api.sendPackMessage).toHaveBeenCalledWith(PACK_ID, String(SELLER), {
+      text: 'oi',
+      toUserId: AGENTE_MLB,
+    });
+  });
+
+  it('…and in the other direction — a newer BUYER message beats an older agent one', async () => {
+    // Kills "if any message is from a known agent id, prefer the agent", which
+    // the previous case alone survives.
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db, {
+      getPackMessages: vi.fn(async () =>
+        packLegado({ messages: [msg(0, AGENTE_MLB), msg(10, COMPRADOR)] }),
+      ),
+    });
+
+    await responderConversaMercadoLivre(d, { conversaId: CONV_PED, texto: 'oi' });
+
+    expect(d.api.sendPackMessage).toHaveBeenCalledWith(PACK_ID, String(SELLER), {
+      text: 'oi',
+      toUserId: COMPRADOR,
+    });
+  });
+
+  it('never addresses the SELLER itself, even when ours is the newest message', async () => {
+    // Dropping the isFromSeller filter POSTs `to === from`, which ML refuses with
+    // "Sender and received must not be equals".
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db, {
+      getPackMessages: vi.fn(async () =>
+        packLegado({ messages: [msg(0, COMPRADOR), msg(10, SELLER)] }),
+      ),
+    });
+
+    await responderConversaMercadoLivre(d, { conversaId: CONV_PED, texto: 'oi' });
+
+    expect(d.api.sendPackMessage).toHaveBeenCalledWith(PACK_ID, String(SELLER), {
+      text: 'oi',
+      toUserId: COMPRADOR,
+    });
+  });
+
+  it('falls back to the site AGENT when only the path says the thread is agent-mediated', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db, {
+      getPackMessages: vi.fn(async () => packThread({ messages: [msg(0, SELLER)] })),
+    });
+
+    await responderConversaMercadoLivre(d, { conversaId: CONV_PED, texto: 'oi' });
+
+    expect(d.api.sendPackMessage).toHaveBeenCalledWith(PACK_ID, String(SELLER), {
+      text: 'oi',
+      toUserId: AGENTE_MLB,
+    });
+  });
+
+  it('REFUSES rather than guessing the agent when nothing identifies the recipient', async () => {
+    // ⚠️ The anti-silent-default assertion. It goes red the instant anyone
+    // reinstates `?? postSaleAgentUserId(siteId)` — and it re-pins send-first /
+    // write-second on the new branch: nothing reaches ML, nothing reaches
+    // Firestore. Note the PLURAL `sellers` in the path: that is a legacy thread,
+    // not an agent-mediated one.
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db, {
+      getPackMessages: vi.fn(async () => packLegado({ messages: [msg(0, SELLER)] })),
+    });
+
+    await expect(
+      responderConversaMercadoLivre(d, { conversaId: CONV_PED, texto: 'oi' }),
+    ).rejects.toMatchObject({ codigo: 'ML_DADOS_INSUFICIENTES' });
+    expect(d.api.sendPackMessage).not.toHaveBeenCalled();
+    expect(db.docs(`chat/${CONV_PED}/mensagem`).size).toBe(0);
+  });
+
+  it('asks ML for a FULL page rather than accepting the default ten', async () => {
+    // At ML's default of 10 the newest counterparty can be off the page on a long
+    // thread, which is exactly the mid-life-migration case above.
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db);
+
+    await responderConversaMercadoLivre(d, { conversaId: CONV_PED, texto: 'oi' });
+
+    expect(d.api.getPackMessages).toHaveBeenCalledWith(PACK_ID, String(SELLER), { limit: 100 });
+  });
+
+  it('makes exactly ONE thread read — no walk in the operator’s send path', async () => {
+    // GETs share a 500 rpm post-sale budget and the operator is waiting with their
+    // text on screen, so this must not become `lerThreadCompleta`'s ten round trips.
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db);
+
+    await responderConversaMercadoLivre(d, { conversaId: CONV_PED, texto: 'oi' });
+
+    expect(d.api.getPackMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes the recipient NOWHERE — sender_id stays untouched', async () => {
+    // `sender_id` means "the human counterparty": `acaoPerguntaMercadoLivre` reads
+    // it back as a buyer id to call `blockUserFromQuestions`. An agent id there is
+    // a blacklist call against a marketplace robot.
+    const db = new FakeDb();
+    seedPedido(db);
+    const d = deps(db);
+
+    await responderConversaMercadoLivre(d, { conversaId: CONV_PED, texto: 'oi' });
+
+    expect(db.docs(CHAT).get(CONV_PED)).not.toHaveProperty('sender_id');
   });
 
   it('re-reads the pack and REFUSES a thread blocked since the import', async () => {

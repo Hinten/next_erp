@@ -48,12 +48,19 @@ import {
 import { IconBan, IconCheck, IconFileDownload, IconFileText } from '@tabler/icons-react';
 
 import { CopyIconButton } from '@/components/CopyIconButton';
+import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
 import { DanfeMenu } from '@/components/DanfeMenu';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 import { useLatestNfe } from './useLatestNfe';
+import {
+  clienteQueryKey,
+  intFreteTipoQueryKey,
+  readClienteByRef,
+  usePedidoRowReads,
+} from './rowReadPrefetch';
 
 const DASH = '—';
 
@@ -318,6 +325,7 @@ function formatCpfCnpj(raw: string): string {
 
 export function ClienteCell({ pedido }: { pedido: Pedido }) {
   const db = getFirebaseFirestore();
+  const rowReads = usePedidoRowReads();
   const ref = useMemo(
     () => dereferenceOuterRef(db, pedido.clientePedidoOuterRef),
     [db, pedido.clientePedidoOuterRef],
@@ -325,13 +333,18 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
   const path = ref?.path ?? null;
 
   const { data, isLoading } = useQuery<ClienteDoc | null>({
-    queryKey: ['cliente', path],
-    queryFn: async () => {
-      if (!ref) return null;
-      const snap = await getDoc(ref);
-      return (snap.data() as ClienteDoc | undefined) ?? null;
-    },
-    enabled: !!ref,
+    queryKey: clienteQueryKey(path ?? ''),
+    // ⚠️ The SHARED reader, matching how `rowReadPrefetch` batch-reads the same
+    // documents. Every consumer of `clienteQueryKey` must fill it with the same
+    // provenance: a converter-parsed document and a raw `snap.data()` differ
+    // wherever the schema has a `.default()`, and seeding one into a key the
+    // other reads is how #1303 broke `pedidos-etiqueta-ml` on the int_frete side.
+    queryFn: async () => (ref ? readClienteByRef<ClienteDoc>(db, ref) : null),
+    // Wait for the page-level batch to seed this key, then read whatever it
+    // did not cover. `rowReads` is `'settled'` outside the provider and after
+    // PREFETCH_MAX_WAIT_MS regardless, so this can only ever DELAY the read
+    // briefly — never withhold it.
+    enabled: !!ref && rowReads === 'settled',
     staleTime: 5 * 60 * 1000,
   });
 
@@ -419,7 +432,9 @@ export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: stri
   const knownEtiquetaAction =
     frete?.printLabelId != null || frete?.externalOptionId != null || canFetchLabel;
   const { data: intTipo } = useQuery<IntegracaoFrete | null>({
-    queryKey: ['intFreteTipo', intRef?.path ?? null],
+    queryKey: intFreteTipoQueryKey(intRef?.path ?? ''),
+    // NOT batch-gated: `int_frete` is deliberately left out of the page-level
+    // prefetch (see `intFreteTipoQueryKey`), so there is nothing to wait for.
     enabled: intRef != null && !knownEtiquetaAction,
     staleTime: 5 * 60 * 1000,
     queryFn: async () => {

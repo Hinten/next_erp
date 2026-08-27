@@ -127,6 +127,13 @@ export function mlShipmentToFreteInicial(args: {
   enderecoOuterRef: string | null;
   prazoDespachoUs: number | null;
   modalidadeOverride: string | null;
+  /**
+   * The seller's share of the freight, from `GET /shipments/{id}/costs` — the
+   * authoritative replacement for the discontinued `base_cost` (#957).
+   * Pre-resolved by the caller (`resolveShipmentSellerCost`) so this mapper
+   * stays pure, exactly like `prazoDespachoUs`. `null` means "ML did not say".
+   */
+  custoSellerCost: number | null;
 }): MappedFreteInicialFields {
   const {
     shipment,
@@ -135,6 +142,7 @@ export function mlShipmentToFreteInicial(args: {
     enderecoOuterRef,
     prazoDespachoUs,
     modalidadeOverride,
+    custoSellerCost,
   } = args;
 
   const leadTime = shipmentLeadTime(shipment);
@@ -160,7 +168,15 @@ export function mlShipmentToFreteInicial(args: {
     // that fire on every shipment. Absent now maps to `null` and the merge
     // preserves; `derivePedidoFreteTotals` already reads
     // `custoCalculado ?? custoFinal ?? 0`, so nothing downstream needs a fake 0.
-    custoCalculado: shipmentBaseCost(shipment),
+    //
+    // ⚠️ The two terms are DIFFERENT quantities and the order is deliberate.
+    // `senders[].cost` is the seller's share net of ML's discounts and is what
+    // ML now considers authoritative; the legacy top-level `base_cost` was the
+    // GROSS figure. The authoritative one goes first, and `shipmentBaseCost`
+    // survives only to keep a still-legacy payload working — it returns `null`
+    // on every `x-format-new` body, so on the wire ML actually serves today
+    // this reads `custoSellerCost` or nothing (#957).
+    custoCalculado: custoSellerCost ?? shipmentBaseCost(shipment),
     custoFinal: leadTime?.list_cost ?? null,
     dataPrevisaoEntrega: coerceToMicros(leadTime?.estimated_delivery_time?.date ?? null),
     ultimaModificacao: coerceToMicros(shipment.last_updated ?? null),

@@ -330,6 +330,11 @@ function makeApi(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): Me
       shipping_option: {},
     })),
     getShipmentPayments: vi.fn(async () => []),
+    // `GET /shipments/{id}/costs` — the only source of the seller's freight cost
+    // since `base_cost` left the wire (#957). Default: no sender row of ours, so
+    // `resolveShipmentSellerCost` reports `null` and `custoCalculado` keeps the
+    // pre-#957 behaviour. Tests that care override it.
+    getShipmentCosts: vi.fn(async () => ({ gross_amount: null, senders: [] })),
     // Default `[]` = "ML told us nothing", which the conference reports as
     // `indeterminado` and `applyFreteStep` treats as "not checked" — so every
     // test that predates the cross-check (#669) keeps its original behaviour and

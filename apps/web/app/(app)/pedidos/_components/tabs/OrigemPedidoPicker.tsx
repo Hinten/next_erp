@@ -19,6 +19,7 @@ import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { ESTADO_PEDIDO_LABELS, type Pedido } from '@delfrance/schemas';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
+import { clienteQueryKey, readClienteByRef } from '../rowReadPrefetch';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { isReturnableOrigin } from './devolucaoForm';
 
@@ -186,12 +187,10 @@ function ClienteName({ db, outerRef }: { db: Firestore; outerRef: unknown }) {
   const path = ref?.path ?? null;
 
   const { data } = useQuery({
-    queryKey: ['cliente', path],
-    queryFn: async () => {
-      if (!ref) return null;
-      const snap = await getDoc(ref);
-      return (snap.data() as { nome?: string | null } | undefined) ?? null;
-    },
+    // Shares this cache key with `ClienteCell` and the /pedidos page-level
+    // batch, so it must share their reader too — see `readClienteByRef`.
+    queryKey: clienteQueryKey(path ?? ''),
+    queryFn: async () => (ref ? readClienteByRef<{ nome?: string | null }>(db, ref) : null),
     enabled: !!ref,
     staleTime: 5 * 60 * 1000,
   });
