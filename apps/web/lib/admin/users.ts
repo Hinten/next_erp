@@ -133,7 +133,15 @@ async function call<S extends z.ZodType>(
     }
     const errBody = envelopeDeErro(parsed);
     throw new AdminClientHttpError(
-      errBody?.error ?? `${String(res.status)} ${res.statusText}`,
+      // ⚠️ Not `${status} ${statusText}`: the reason phrase was removed from
+      // HTTP/2, so `res.statusText` is EMPTY for anything served by App
+      // Hosting / Cloud Run and the operator's alert read `502 ` — a bare
+      // number and a trailing space. This branch fires precisely when the body
+      // was not our envelope, which is the sibling clients' "never reached a
+      // route" case; say what they say. The status stays on the error object
+      // for callers that branch on 403 vs 500.
+      errBody?.error ??
+        `Falha na comunicação com o serviço de administração (HTTP ${String(res.status)}).`,
       res.status,
       errBody?.code ?? null,
     );

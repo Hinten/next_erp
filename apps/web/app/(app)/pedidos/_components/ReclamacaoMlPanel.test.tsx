@@ -61,8 +61,11 @@ const ESTADO = {
   tipoReclamacao: 'PDD' as const,
   acoesDisponiveis: ['refund'],
   prazos: [{ acao: 'refund', obrigatoria: false, prazo: null }],
-  podeResponder: false,
-  motivoSemResposta: null,
+  // ⚠️ The WIRE names. These fixtures said `podeResponder` /
+  // `motivoSemResposta`, matching the stale interface rather than the
+  // backend, so the assertion below passed against a shape no route sends.
+  podeEnviarMensagem: false,
+  motivoSemMensagem: null,
   expectativas: [
     { playerRole: 'complainant', expectedResolution: 'return_product', status: 'pending' },
   ],
@@ -127,7 +130,7 @@ describe('ReclamacaoMlPanel', () => {
     h.reclamacaoEstado.mockResolvedValue({
       ...ESTADO,
       acoesDisponiveis: [],
-      motivoSemResposta: 'Reclamação encerrada no Mercado Livre',
+      motivoSemMensagem: 'Reclamação encerrada no Mercado Livre',
     });
     abrir();
     await waitFor(() =>
