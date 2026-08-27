@@ -10,9 +10,9 @@ import {
 } from '@delfrance/integrations-nfe';
 import {
   IND_INTERMED_OPERACAO,
-  STATUS_PAGAMENTO,
   freteDoPedidoSchema,
   integracaoSchema,
+  isPagamentoPagante,
   nfeConfigSchema,
   operacaoSchema,
   pagamentoSchema,
@@ -74,10 +74,11 @@ export interface PedidoBundle {
   /**
    * Pagamentos under `pedidos/{pedidoId}/pagamentos` (subcollection,
    * plural path — mirrors the Flutter ERP's `PAGAMENTO_COLLECTION`).
-   * Already filtered to
-   * `status_pagamento ∈ { null, aprovado }` — matches Flutter's
-   * `pedido_nfe_base.dart:449` predicate. May be empty (the NF-e
-   * stamps `tPag='90'` sem-pagamento in that case).
+   * Already filtered by {@link isPagamentoPagante} — the shared "counts as
+   * paid" rule, which is `status_pagamento ∈ { null, aprovado, em_disputa }`.
+   * A mediation is a HOLD, not a reversal, so a disputed payment still belongs
+   * on the nota; a refund arrives as `estornado`/`devolvido` and drops out.
+   * May be empty (the NF-e stamps `tPag='90'` sem-pagamento in that case).
    */
   readonly pagamentos: readonly Pagamento[];
   /**
@@ -428,10 +429,16 @@ export function intermediadorFromSnap(
 
 /**
  * Parse + filter raw pagamento docs from the `pedidos/{id}/pagamentos`
- * subcollection. Mirrors Flutter's `pedido_nfe_base.dart:449`:
- * keep pagamentos with `status_pagamento` null OR `aprovado`. Docs
- * that fail schema parse are skipped with a warn — a single malformed
- * doc must not block emission.
+ * subcollection. Docs that fail schema parse are skipped with a warn — a single
+ * malformed doc must not block emission.
+ *
+ * ⚠️ The predicate is {@link isPagamentoPagante}, the SHARED rule — not a local
+ * copy of it. This used to inline `status_pagamento === null || === aprovado`,
+ * a faithful port of Flutter's `pedido_nfe_base.dart:449`, and the duplication
+ * was silent debt until the rule changed: widening the shared helper to cover
+ * `em_disputa` left the NF-e bundle disagreeing with the footer, both admin
+ * reconciles and every other "how much is paid?" consumer, with nothing
+ * failing to say so. One rule, one definition.
  */
 export function loadPagamentosFromSnapshot(
   pedidoId: string,
@@ -448,7 +455,7 @@ export function loadPagamentosFromSnapshot(
       continue;
     }
     const p = parsed.data;
-    if (p.status_pagamento === null || p.status_pagamento === STATUS_PAGAMENTO.aprovado) {
+    if (isPagamentoPagante(p.status_pagamento)) {
       out.push(p);
     }
   }

@@ -159,16 +159,36 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
 }
 
 /**
- * Whether a payment counts toward "paid": no status (`null`/`undefined`) OR
- * `aprovado`. This is the canonical rule shared by every "how much is paid?"
- * consumer — the web footer's Vlr. Pago, the NFe bundle (`apps/nfe`'s
- * `bundle.ts`, "matches Flutter"), and the server-side estado reconciles — so
- * the payment total is computed identically everywhere. Every other status
- * (pendente, em disputa, recusado, cancelado, estornado…) does NOT cover the
- * total.
+ * Whether a payment counts toward "paid": no status (`null`/`undefined`),
+ * `aprovado`, or `em_disputa`. This is the canonical rule shared by every "how
+ * much is paid?" consumer — the web footer's Vlr. Pago, the NFe bundle
+ * (`apps/nfe`'s `bundle.ts`), and the server-side estado reconciles — so the
+ * payment total is computed identically everywhere. Every other status
+ * (pendente, recusado, cancelado, estornado…) does NOT cover the total.
+ *
+ * ⚠️ **`em_disputa` counts because the money has not moved.** A mediation is a
+ * HOLD, not a reversal: ML keeps the order `paid` and marks the funds
+ * `retained` until the claim resolves, and only then does the payment become
+ * `refunded`/`charged_back` — which arrives here as `estornado`/`devolvido`
+ * through the **payments** topic and stops covering the total then. Treating
+ * the hold as "unpaid" made the two halves of this file contradict each other:
+ * {@link statusToEstadoPedido} maps `em_disputa` to `pago`, while this rule
+ * dropped it to zero, so `nextPedidoEstado` DOWNGRADED a fully-paid pedido to
+ * `aguardandoConfirmacaoDePagamento` the moment a mediation opened.
+ *
+ * That downgrade fired on the Mercado Pago webhook path and on the operator's
+ * own "reconciliar" button, and it protected nothing: `pago` and
+ * `aguardandoConfirmacaoDePagamento` are BOTH in `ESTADOS_PEDIDO_RESERVA` and
+ * `ESTADOS_PEDIDO_MOVIMENTACAO` (so stock never moved) and neither is in
+ * `EMISSAO_NFE_BLOQUEADA` (so NF-e stayed emittable). All it did was label a
+ * paid order as awaiting payment. The money-at-risk signal belongs to the
+ * dispute overlay on the pedido, which can say so without lying about the
+ * amount received.
  */
 export function isPagamentoPagante(status: number | null | undefined): boolean {
-  return status == null || status === STATUS_PAGAMENTO.aprovado;
+  return (
+    status == null || status === STATUS_PAGAMENTO.aprovado || status === STATUS_PAGAMENTO.em_disputa
+  );
 }
 
 /**
