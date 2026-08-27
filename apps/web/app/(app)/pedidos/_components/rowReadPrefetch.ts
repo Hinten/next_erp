@@ -34,6 +34,7 @@
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { FirebaseError } from 'firebase/app';
+import { getDoc, type DocumentReference, type Firestore } from 'firebase/firestore';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { Pedido } from '@delfrance/schemas';
@@ -102,6 +103,30 @@ export function clienteQueryKey(path: string): readonly unknown[] {
 export function intFreteTipoQueryKey(path: string): readonly unknown[] {
   return ['intFreteTipo', path];
 }
+
+/**
+ * Read ONE cliente exactly as the batch reads them, so every consumer of
+ * {@link clienteQueryKey} fills that key with the same provenance. There are
+ * three today — `ClienteCell`, `OrigemPedidoPicker` and this batch — and a key
+ * written by one and read by another is only safe while they agree.
+ *
+ * ⚠️ Guards the collection rather than assuming it. `dereferenceOuterRef`
+ * accepts three legacy ref shapes and nothing guarantees the path addresses
+ * `clientes`; reading `clienteCollection.docRef(db, {}, ref.id)` for a ref that
+ * points elsewhere would silently fetch a DIFFERENT document that happens to
+ * share an id. Anything outside `clientes` is read as the ref given.
+ */
+export async function readClienteByRef<T>(
+  db: Firestore,
+  ref: DocumentReference,
+): Promise<T | null> {
+  const target =
+    ref.parent.id === CLIENTES_COLLECTION_ID ? clienteCollection.docRef(db, {}, ref.id) : ref;
+  const snap = await getDoc(target);
+  return (snap.data() as T | undefined) ?? null;
+}
+
+const CLIENTES_COLLECTION_ID = 'clientes';
 
 /** `clientes/abc` → `abc`. Returns null for anything that is not a doc path. */
 function idFromPath(path: string): string | null {

@@ -19,7 +19,6 @@ const { getDocsByIdsMock } = vi.hoisted(() => ({ getDocsByIdsMock: vi.fn() }));
 
 vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
 vi.mock('@/lib/data/clienteCollection', () => ({ clienteCollection: {} }));
-vi.mock('@/lib/data/intFreteCollection', () => ({ intFreteCollection: {} }));
 vi.mock('@/lib/data/getDocsByIds', () => ({
   getDocsByIds: (...args: unknown[]) => getDocsByIdsMock(...args),
 }));

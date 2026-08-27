@@ -55,7 +55,12 @@ import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
 import { DanfeMenu } from '@/components/DanfeMenu';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
 import { useLatestNfe } from './useLatestNfe';
-import { clienteQueryKey, intFreteTipoQueryKey, usePedidoRowReads } from './rowReadPrefetch';
+import {
+  clienteQueryKey,
+  intFreteTipoQueryKey,
+  readClienteByRef,
+  usePedidoRowReads,
+} from './rowReadPrefetch';
 
 const DASH = '—';
 
@@ -329,16 +334,12 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
 
   const { data, isLoading } = useQuery<ClienteDoc | null>({
     queryKey: clienteQueryKey(path ?? ''),
-    queryFn: async () => {
-      if (!ref) return null;
-      // ⚠️ Read through the COLLECTION HANDLE, matching how `rowReadPrefetch`
-      // batch-reads the same documents. Both paths must produce the same value:
-      // a converter-parsed document and a raw `snap.data()` differ wherever the
-      // schema has a `.default()`, and seeding one into a key the other reads is
-      // how #1303 broke `pedidos-etiqueta-ml` on the int_frete side.
-      const snap = await getDoc(clienteCollection.docRef(db, {}, ref.id));
-      return (snap.data() as ClienteDoc | undefined) ?? null;
-    },
+    // ⚠️ The SHARED reader, matching how `rowReadPrefetch` batch-reads the same
+    // documents. Every consumer of `clienteQueryKey` must fill it with the same
+    // provenance: a converter-parsed document and a raw `snap.data()` differ
+    // wherever the schema has a `.default()`, and seeding one into a key the
+    // other reads is how #1303 broke `pedidos-etiqueta-ml` on the int_frete side.
+    queryFn: async () => (ref ? readClienteByRef<ClienteDoc>(db, ref) : null),
     // Wait for the page-level batch to seed this key, then read whatever it
     // did not cover. `rowReads` is `'settled'` outside the provider and after
     // PREFETCH_MAX_WAIT_MS regardless, so this can only ever DELAY the read
