@@ -89,16 +89,23 @@ export const ESTADO_PEDIDO = {
  * #462 parity audit). `imposto` stays `z.unknown()`: it round-trips a
  * point-in-time `Imposto` (produto subcollection) snapshot, not a reference,
  * and full modeling is tracked separately (the sibling "nested strictness
- * gap" issue).
+ * gap" issue — that issue also covers making this schema itself reject an
+ * unknown key on write, see the note below).
  *
  * No `.passthrough()` — this is a plain (strip-policy) `z.object`. On READ,
- * `parseSoftRead` (`@delfrance/data`) still tolerates an unmodeled key: it
+ * `parseSoftRead` (`@delfrance/data`) tolerates an unmodeled key here: it
  * strips it silently rather than throwing, which is what keeps a legacy
  * corpus doc carrying a since-retired field readable (root `CLAUDE.md` rule
- * 8). On WRITE, `parseForWrite`/`parseMergePatch` (same package) notice the
- * strip and re-parse with `.strict()`, so a genuinely unknown key throws a
- * `ZodError` instead of being silently persisted — see
- * `packages/data/src/zodParse.ts`.
+ * 8). ⚠️ On WRITE, `parseForWrite`/`parseMergePatch`'s strict re-check (same
+ * package, `zodParse.ts`) is **top-level only** — it diffs `Object.keys` of
+ * the caller's `pedidoSchema` input against the parsed output, and Zod's
+ * `.strict()` does not recurse into a nested schema. A pedido write with an
+ * unmodeled key on an ITEM inside `itens`/`itensDevolvidos` does not throw:
+ * `itens` itself is present on both sides, so nothing looks dropped at the
+ * top level, and the item-level key is silently stripped the same way a
+ * lenient read strips one. This schema's own `.strict()` (exercised directly
+ * in `pedido.test.ts`) is therefore not a shape any production write path
+ * actually applies.
  */
 export const itemDoPedidoSchema = z.object({
   produtoUid: z.string().nullable().default(null),

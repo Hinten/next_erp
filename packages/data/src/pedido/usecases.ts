@@ -127,15 +127,24 @@ const CONCURRENCY_IGNORE = new Set<string>([
   'timestamp',
   'lastMarketplaceUpdate',
   ...CAMPOS_ESTOQUE_SYNC,
-  // Removed derived caches (#796). `baseline`/`current` here are the RAW
-  // Firestore doc data (`snap.data()`), never run through `pedidoSchema.parse`
-  // (see `savePedido` above) — so a key this app no longer writes still rides
-  // the raw diff below regardless of the schema's `.passthrough()` policy
-  // (dropped in #462): migrated pedidos carry all five, recomputed by the
-  // legacy `Pedido.factory` on every integral save it ever made. Without this
-  // the operator would get a conflict modal naming a field that is not on
-  // their screen and that they cannot have authored, which is exactly the
-  // question this set answers.
+  // Removed derived caches (#796). `baseline`/`current` are NOT raw
+  // `snap.data()` — `PedidoDocData`'s contract (`port.ts`) requires the
+  // parsed wire shape, and the client adapter gets that "for free by reading
+  // through the Zod converter" (`clientPort.ts`'s `updatePedido` reads via
+  // `pedidoCollection.docRef`, whose `fromFirestore` is `parseSoftRead`;
+  // `EditarPedidoView.tsx`'s baseline comes from the same converter via
+  // `useDocSnapshot`). Since #462 dropped `.passthrough()`, `parseSoftRead`
+  // now strips these five from BOTH sides on the common path — a doc that
+  // parses successfully — so on that path they can no longer produce a diff
+  // at all; migrated pedidos still carry all five in the raw Firestore
+  // document (recomputed by the legacy `Pedido.factory` on every integral
+  // save it ever made), but the converter removes them before either side
+  // reaches this diff. This entry keeps mattering only on the narrower path
+  // where `parseSoftRead` falls back to the RAW doc on one side (a doc that
+  // fails validation) but not the other, which can still expose a
+  // stale/mismatched value here. Without this ignore, either path could
+  // surface a conflict modal naming a field the operator cannot see or have
+  // authored, which is exactly the question this set answers.
   'valorCusto',
   'valorFreteInicial',
   'custoFreteInicial',
