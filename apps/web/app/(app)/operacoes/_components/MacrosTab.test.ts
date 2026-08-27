@@ -19,6 +19,16 @@ describe('NVE text bridge', () => {
     expect(formatNveText([])).toBeNull();
   });
 
+  it('defensively handles a raw legacy scalar string (a parseSoftRead fallback)', () => {
+    // Belt-and-suspenders alongside regraImpostoSchema's own read-tolerant
+    // preprocess: a doc that fails parseSoftRead for an UNRELATED reason
+    // still comes back with NVE possibly a bare string, and this must not
+    // throw (`.join` is not a string method).
+    expect(formatNveText('AB1234')).toBe('AB1234');
+    expect(formatNveText('   ')).toBeNull();
+    expect(formatNveText('')).toBeNull();
+  });
+
   it('parses a comma-separated string back into a trimmed array', () => {
     expect(parseNveText('12345678, 87654321')).toEqual(['12345678', '87654321']);
   });
@@ -38,23 +48,41 @@ describe('NVE text bridge', () => {
 });
 
 describe('indEscala text bridge', () => {
-  it('formats true/false/null to distinct, round-trippable text', () => {
-    expect(formatIndEscalaText(true)).toBe('sim');
-    expect(formatIndEscalaText(false)).toBe('não');
+  // 'S'/'N' is the domain convention elsewhere in this repo (the NF-e XSD
+  // enum, and the produto/categoria imposto tabs an operator edits through
+  // this same free-text widget) — an operator's muscle memory here is S/N,
+  // not sim/não.
+  it('formats true/false/null to S/N/null, round-trippable', () => {
+    expect(formatIndEscalaText(true)).toBe('S');
+    expect(formatIndEscalaText(false)).toBe('N');
     expect(formatIndEscalaText(null)).toBeNull();
   });
 
-  it('parses "sim" (or any non-negative text) as true', () => {
+  it('parses the affirmative words as true, case-insensitively', () => {
+    expect(parseIndEscalaText('S')).toBe(true);
+    expect(parseIndEscalaText('s')).toBe(true);
     expect(parseIndEscalaText('sim')).toBe(true);
-    expect(parseIndEscalaText('qualquer coisa')).toBe(true);
+    expect(parseIndEscalaText('Sim')).toBe(true);
+    expect(parseIndEscalaText('true')).toBe(true);
+    expect(parseIndEscalaText('1')).toBe(true);
   });
 
-  it('parses the negative words as false, case-insensitively', () => {
+  it('parses the negative words as false, case-insensitively — including bare N', () => {
+    expect(parseIndEscalaText('N')).toBe(false);
+    expect(parseIndEscalaText('n')).toBe(false);
     expect(parseIndEscalaText('não')).toBe(false);
     expect(parseIndEscalaText('Não')).toBe(false);
     expect(parseIndEscalaText('nao')).toBe(false);
     expect(parseIndEscalaText('false')).toBe(false);
     expect(parseIndEscalaText('0')).toBe(false);
+  });
+
+  it('parses unrecognized non-blank text as null (never guesses)', () => {
+    // A silently flipped "N" would be worse than asking the operator to
+    // retype it — so anything outside the known S/N vocabulary is treated
+    // as not-set, never coerced to true.
+    expect(parseIndEscalaText('qualquer coisa')).toBeNull();
+    expect(parseIndEscalaText('talvez')).toBeNull();
   });
 
   it('parses blank text as null (not false)', () => {

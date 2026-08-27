@@ -72,9 +72,17 @@ const EMPTY_FORM: MacroForm = { nome: '', produtos: [], categorias: [], ncms: []
  * plain strings — only knows how to edit a free-text value. Bridged HERE
  * rather than in the shared component so those other three editors are
  * untouched. Round-trips losslessly through an unedited save.
+ *
+ * `formatNveText` takes `unknown`, not `string[] | null`, on purpose: a doc
+ * that fails `parseSoftRead` for an UNRELATED reason (a schema mismatch
+ * anywhere else in it) comes back raw, and `NVE` could still be the legacy
+ * scalar string `regraImpostoSchema`'s own read-tolerant preprocess would
+ * otherwise have caught — this is the last line of defense against `.join`
+ * throwing on the "Editar" click.
  */
-export function formatNveText(nve: string[] | null): string | null {
-  return nve && nve.length > 0 ? nve.join(', ') : null;
+export function formatNveText(nve: unknown): string | null {
+  if (typeof nve === 'string') return nve.trim() || null;
+  return Array.isArray(nve) && nve.length > 0 ? nve.join(', ') : null;
 }
 
 export function parseNveText(text: string | null | undefined): string[] | null {
@@ -86,18 +94,28 @@ export function parseNveText(text: string | null | undefined): string[] | null {
   return codes.length > 0 ? codes : null;
 }
 
-const IND_ESCALA_FALSE_WORDS = new Set(['false', 'não', 'nao', '0']);
+// `indEscala`'s domain values elsewhere in this repo are 'S'/'N' — the NF-e
+// XSD enum (`indEscala: z.enum(['S', 'N'])`) and the produto/categoria
+// imposto tabs an operator edits through this SAME widget both use them, so
+// that is the muscle memory this free-text field inherits. Recognized text
+// maps explicitly both ways; anything else (typos, a stray word) is treated
+// as NOT SET rather than guessed — silently flipping an operator's "N" to
+// `true` is worse than asking them to retype it.
+const IND_ESCALA_TRUE_WORDS = new Set(['s', 'sim', 'true', '1']);
+const IND_ESCALA_FALSE_WORDS = new Set(['n', 'nao', 'não', 'false', '0']);
 
 export function formatIndEscalaText(v: boolean | null): string | null {
-  if (v === true) return 'sim';
-  if (v === false) return 'não';
+  if (v === true) return 'S';
+  if (v === false) return 'N';
   return null;
 }
 
 export function parseIndEscalaText(text: string | null | undefined): boolean | null {
-  const trimmed = text?.trim() ?? '';
+  const trimmed = (text?.trim() ?? '').toLowerCase();
   if (trimmed === '') return null;
-  return !IND_ESCALA_FALSE_WORDS.has(trimmed.toLowerCase());
+  if (IND_ESCALA_TRUE_WORDS.has(trimmed)) return true;
+  if (IND_ESCALA_FALSE_WORDS.has(trimmed)) return false;
+  return null;
 }
 
 function formFromRegra(r: RegraImposto): MacroForm {

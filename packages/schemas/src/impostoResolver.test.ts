@@ -110,6 +110,29 @@ describe('regraImpostoSchema', () => {
     expect(() => regraImpostoSchema.strict().parse({ typo: 1 })).toThrow(/unrecognized_keys|typo/);
   });
 
+  it('tolerates the OLD scalar-string shape this app itself wrote for NVE/indEscala', () => {
+    // Before this schema fixed their type, NVE/indEscala were z.string() and
+    // MacrosTab's editor wrote plain strings through it — an already-stored
+    // operacao/{id}/regras doc can carry that shape, and a bare type swap
+    // would fail the WHOLE-DOCUMENT parse (dropping the rule from the NF-e
+    // resolver's cascade, not just these two fields).
+    const out = regraImpostoSchema.parse({ NVE: 'AB1234', indEscala: 'S' });
+    expect(out.NVE).toEqual(['AB1234']);
+    expect(out.indEscala).toBe(true);
+  });
+
+  it('parses a blank legacy NVE/indEscala string as null, not an empty array/false', () => {
+    const out = regraImpostoSchema.parse({ NVE: '   ', indEscala: '' });
+    expect(out.NVE).toBeNull();
+    expect(out.indEscala).toBeNull();
+  });
+
+  it('parses the legacy indEscala negative words as false, case-insensitively', () => {
+    for (const word of ['n', 'não', 'nao', 'NÃO', 'false', '0']) {
+      expect(regraImpostoSchema.parse({ indEscala: word }).indEscala).toBe(false);
+    }
+  });
+
   it('targets the operacao regras subcollection (legacy Flutter wire name)', () => {
     expect(regraImpostoMeta.collectionPath).toBe('operacao/{operacaoId}/regras');
   });
