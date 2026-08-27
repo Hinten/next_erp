@@ -3,7 +3,7 @@
 import type { ReactNode } from 'react';
 import { Alert, Badge, Group, Loader, Paper, SimpleGrid, Text } from '@mantine/core';
 
-import type { AttrRow } from '@/lib/mercado-livre/attributeForm';
+import { emptyRow, type AttrRow } from '@/lib/mercado-livre/attributeForm';
 import type { MercadoLivreCategoriaAtributo } from '@/lib/mercado-livre/client';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { AttributeField } from './AttributeField';
@@ -80,11 +80,17 @@ export interface AtributosSectionProps {
  * `item.attributes.required`. This is that screen.
  *
  * Order and membership are the SERVER's decision (`projectCategoriaAtributos`):
- * ERP-owned ids (`SELLER_SKU`, `SELLER_PACKAGE_*`), hidden attributes and
- * size-chart attributes never arrive here, and what does arrive is already
- * sorted required-first. The legacy screen wanted that ordering and never
- * shipped it — there is a commented-out `getAtributosObrigatorio` in
+ * produto-derived ids (`SELLER_SKU`, `WEIGHT`, `SELLER_PACKAGE_*`), hidden
+ * attributes and size-chart attributes never arrive here, and what does arrive
+ * is already sorted required-first. The legacy screen wanted that ordering and
+ * never shipped it — there is a commented-out `getAtributosObrigatorio` in
  * `cadastroProdutoMLNew.dart` where it should have been.
+ *
+ * ⚠️ The derived ids are not simply *absent* from the screen — `ListingForm`
+ * shows their values read-only (`DimensoesPesoField`, `CondicaoField`). A
+ * required ML attribute that just vanishes reads as a bug; one that says "this
+ * comes from the produto" reads as a design. Keep any future addition to that
+ * list paired with somewhere to see it.
  */
 export function AtributosSection({
   categoryId,
@@ -174,14 +180,10 @@ export function AtributosSection({
           <Paper key={attr.id} p="xs" radius="sm" bg={stripeBg(index)}>
             <AttributeField
               attr={attr}
-              row={
-                rowById.get(attr.id) ?? {
-                  id: attr.id,
-                  value_id: null,
-                  value_name: null,
-                  unit_id: null,
-                }
-              }
+              // `emptyRow`, not a literal: a `number_unit` blank carries the
+              // unit its picker renders, and a row that disagrees with the
+              // screen reports a phantom edit on the next blur.
+              row={rowById.get(attr.id) ?? emptyRow(attr)}
               onChange={(next) =>
                 onRowsChange(
                   rows.some((r) => r.id === next.id)

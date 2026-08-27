@@ -16,7 +16,7 @@ vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
 
 vi.mock('firebase-functions/logger', () => ({ logger: { info: h.loggerInfo } }));
 
-vi.mock('@/lib/marketplace/mlTasks', () => ({
+vi.mock('@/lib/marketplace/notificacoes/mlTasks', () => ({
   createMlTaskScheduler: () => ({ enqueue: h.enqueue }),
   // The receiver reports the region it targeted on every delivery line — that
   // field is the whole point of the log (a queue in the wrong region is the
@@ -37,7 +37,7 @@ vi.mock('@delfrance/data/admin/collections', () => ({
 }));
 
 const { POST } = await import('./route');
-const { __resetWebhookOriginState } = await import('@/lib/marketplace/webhookOrigin');
+const { __resetWebhookOriginState } = await import('@/lib/marketplace/notificacoes/webhookOrigin');
 
 /** Our registered ML application id, as `MERCADO_LIVRE_CLIENT_ID` would carry it. */
 const APP_ID = 2069392825111111;

@@ -13,7 +13,7 @@
  * is enqueued or written, which removes the anonymous amplification (an enqueue,
  * a Firestore create on the failure path, up to 5 sweep re-drives and one
  * rate-limited ML API call per POST). It fails OPEN when unconfigured or when
- * the field is absent — see lib/marketplace/webhookOrigin.ts for why, and for
+ * the field is absent — see lib/marketplace/notificacoes/webhookOrigin.ts for why, and for
  * why ML's published source-IP list was declined. A header-inventory probe used
  * to run first, to settle from live traffic whether ML ever sends a signature
  * header; the first live run answered NO and the probe was removed, so the
@@ -42,9 +42,16 @@
  * No Bearer token and OUT of the `proxy.ts` CORS matcher — it's a server→server
  * call from ML, not a browser request.
  *
- * ⚠️ CUTOVER: a seller's ML callback URL is ONE registration. Switching it here
- * MUST be paired with disabling the legacy Flutter notification functions (see
- * functions/DEPLOY.md), or the same notification is ingested by both systems.
+ * ⚠️ CUTOVER: a seller's ML callback URL is ONE registration — which is exactly
+ * why the two receivers can never both be receiving, and why the risk is a GAP,
+ * not a double-ingest. (This comment used to end "or the same notification is
+ * ingested by both systems"; that is void — the legacy stack is a different
+ * project and there is no dual run, root `CLAUDE.md` rule 8.) Flip the URL to
+ * this backend FIRST, then disable the legacy Flutter notification functions:
+ * the legacy receiver acks 200 before anything processes the payload, so
+ * disabling it while it is still the registered target drops every delivery in
+ * between, and `missed_feeds` only files what ML could NOT get a 200 for. See
+ * functions/DEPLOY.md, "⚠️ Callback-URL cutover".
  */
 import { NextResponse } from 'next/server';
 import { logger } from 'firebase-functions/logger';
@@ -56,9 +63,9 @@ import {
   parseNotificationBody,
   persistNotificationFailure,
   shouldEnqueueTopic,
-} from '@/lib/marketplace/notificacao';
-import { createMlTaskScheduler, mlTasksRegion } from '@/lib/marketplace/mlTasks';
-import { checkApplicationId } from '@/lib/marketplace/webhookOrigin';
+} from '@/lib/marketplace/notificacoes/notificacao';
+import { createMlTaskScheduler, mlTasksRegion } from '@/lib/marketplace/notificacoes/mlTasks';
+import { checkApplicationId } from '@/lib/marketplace/notificacoes/webhookOrigin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

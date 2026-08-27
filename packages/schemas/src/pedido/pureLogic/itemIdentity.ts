@@ -9,7 +9,7 @@ import type { ExpandSpec } from '@delfrance/core';
  * provides one, so the fallback chain below is the design, not a shortcut:
  *
  *  - `ensureUniqueId` is a real, stable id — but ONLY on Mercado Livre lines
- *    (`apps/mercado-livre/lib/marketplace/orderIds.ts` derives it as a sha256 of
+ *    (`apps/mercado-livre/lib/marketplace/pedidos/orderIds.ts` derives it as a sha256 of
  *    `orderId`/`mktplaceId`/index, and the ML merge is keyed on it). Lines
  *    created in `apps/web` are written with `ensureUniqueId: null` and nothing
  *    ever fills it in.
@@ -42,8 +42,9 @@ export const PEDIDO_ITEM_POSITIONAL_PREFIX = '#';
  * ⚠️ The `#<ordem>` fallback is scoped to the GROUP (`<produtoUid>#<ordem>`),
  * and that scoping is a correctness fix, not tidiness. `#<ordem>` alone is not
  * unique across produtos — the schema default is `ordem: 1`, `devolucaoForm`
- * hardcodes `ordem: 1`, and the legacy Flutter writer is outside our control —
- * and the diff engine assigns its duplicate-occurrence suffix in SORTED
+ * hardcodes `ordem: 1`, and the migrated corpus carries rows the legacy Flutter
+ * app stamped `ordem: 1` (that writer is gone; its rows are not) — and the diff
+ * engine assigns its duplicate-occurrence suffix in SORTED
  * GROUP-KEY order. So with an unscoped key, merely adding an unrelated produto
  * renumbers the occurrences after it and the engine pairs lines belonging to
  * different produtos: an untouched line reports as `added` while a quantity

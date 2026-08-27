@@ -320,6 +320,87 @@ describe('createMercadoLivreApi — claim attachment download (Step 14)', () => 
     expect(headers['User-Agent']).toBe('test-UA');
   });
 
+  // ── post-sale message attachments (#1162) ─────────────────────────────────
+  //
+  // ⚠️ These exist because the shape below is NOT symmetric with the claims
+  // endpoint above, and nothing else in the repo compares it against a real
+  // request — every importer test mocks `downloadPostSaleAttachment` away. With
+  // the URL unpinned, renaming `site_id` to `siteId` (the spelling the
+  // neighbouring `getShipmentInvoiceData`/`listSiteCategories` call sites use,
+  // so a plausible slip) left the whole package suite green, while in production
+  // ML answers the documented `400 Invalid site_id` → classified deterministic →
+  // EVERY post-sale attachment silently skipped, forever, with only a warn.
+  // `buildUrl` takes an arbitrary key/value record, so typecheck cannot see it
+  // either.
+
+  it('downloadPostSaleAttachment sends tag=post_sale AND the REQUIRED site_id', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      bytesResponse(FILE_BYTES),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock, { userAgent: 'test-UA' }));
+    const result = await api.downloadPostSaleAttachment(
+      '415460047_a96d8dea-38cd-4402-938e-80a1c134fc5d.jpg',
+    );
+
+    expect(Array.from(result.bytes)).toEqual(Array.from(FILE_BYTES));
+    expect(result.contentType).toBe('image/jpeg');
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    const parsed = new URL(String(url));
+    expect(parsed.origin + parsed.pathname).toBe(
+      'https://api.mercadolibre.com/messages/attachments/415460047_a96d8dea-38cd-4402-938e-80a1c134fc5d.jpg',
+    );
+    // Asserted by NAME, not by substring: `siteId` would still "contain MLB".
+    expect(parsed.searchParams.get('site_id')).toBe('MLB');
+    expect(parsed.searchParams.get('tag')).toBe('post_sale');
+    // ...and the camelCase spelling must NOT be what we send.
+    expect(parsed.searchParams.has('siteId')).toBe(false);
+
+    expect(String(url)).not.toContain('access_token');
+    expect(init!.method).toBe('GET');
+    const headers = init!.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer live-token');
+    expect(headers['User-Agent']).toBe('test-UA');
+  });
+
+  it('downloadPostSaleAttachment percent-encodes the attachment id', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      bytesResponse(FILE_BYTES),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await api.downloadPostSaleAttachment('foto do defeito #2.jpg');
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('/messages/attachments/foto%20do%20defeito%20%232.jpg');
+  });
+
+  it('downloadPostSaleAttachment maps a 500 to an HTTP error — ML has NO 404 here', async () => {
+    // The documented error table for this route lists only 400 and 500, so a
+    // permanently missing file arrives as a 500. It must surface as a
+    // `MercadoLivreHttpError` (deterministic → skip), never as a network error,
+    // or the Cloud Tasks retry loops forever on a file ML will not serve.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'File can not be saved, try it later' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.downloadPostSaleAttachment('x.jpg')).rejects.toBeInstanceOf(
+      MercadoLivreHttpError,
+    );
+  });
+
+  it('downloadPostSaleAttachment throws a 2xx-carrying error on an empty body', async () => {
+    // The shared `downloadAnexo` guard: a 2xx with no bytes is thrown carrying
+    // the 2xx status, so the caller can tell "empty body" from a real refusal
+    // instead of being handed a zero-byte file to upload.
+    const fetchMock = vi.fn(
+      async (_u: string | URL | Request, _i?: RequestInit) =>
+        new Response(new ArrayBuffer(0), { status: 200 }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.downloadPostSaleAttachment('x.jpg')).rejects.toMatchObject({
+      status: 200,
+    });
+  });
+
   it('downloadClaimAttachment percent-encodes the filename', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       bytesResponse(FILE_BYTES),
@@ -360,5 +441,201 @@ describe('createMercadoLivreApi — claim attachment download (Step 14)', () => 
       constructor: MercadoLivreHttpError,
       status: 200,
     });
+  });
+});
+
+describe('createMercadoLivreApi — claim RESOLUTION (#768, previously untested)', () => {
+  /**
+   * ⚠️ These five endpoints shipped with no API-level coverage at all. They are
+   * the ones that move money, so a silent URL or body-key drift here is the most
+   * expensive kind this client can have.
+   */
+  const RESOLUCOES = [
+    {
+      player_role: 'complainant',
+      user_id: 1,
+      expected_resolution: 'return_product',
+      status: 'rejected',
+    },
+    { player_role: 'respondent', user_id: 2, expected_resolution: 'refund', status: 'accepted' },
+  ];
+
+  function apiWith(body: unknown, status = 200) {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(body, status),
+    );
+    return { api: createMercadoLivreApi(cfg(fetchMock)), fetchMock };
+  }
+
+  it('refundClaim POSTs to expected-resolutions/refund and parses the array', async () => {
+    const { api, fetchMock } = apiWith(RESOLUCOES);
+    const out = await api.refundClaim(5204934310);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain(
+      '/post-purchase/v1/claims/5204934310/expected-resolutions/refund',
+    );
+    expect(init!.method).toBe('POST');
+    expect(out).toHaveLength(2);
+    expect(out[1]!.expected_resolution).toBe('refund');
+  });
+
+  it('allowClaimReturn POSTs to expected-resolutions/allow-return', async () => {
+    const { api, fetchMock } = apiWith(RESOLUCOES);
+    await api.allowClaimReturn(5204934310);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain(
+      '/post-purchase/v1/claims/5204934310/expected-resolutions/allow-return',
+    );
+    expect(init!.method).toBe('POST');
+  });
+
+  it('openClaimDispute POSTs to actions/open-dispute and parses the refreshed CLAIM', async () => {
+    // ⚠️ The one resolution verb whose response is a claim, not a resolution
+    // array — it is how the caller learns the new stage.
+    const { api, fetchMock } = apiWith({ ...LEGACY_CLAIM, stage: 'dispute', status: 'opened' });
+    const out = await api.openClaimDispute(5204934310);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('/post-purchase/v1/claims/5204934310/actions/open-dispute');
+    expect(init!.method).toBe('POST');
+    expect(out.stage).toBe('dispute');
+  });
+
+  it('getClaimExpectedResolutions GETs the read-side list', async () => {
+    const { api, fetchMock } = apiWith(RESOLUCOES);
+    const out = await api.getClaimExpectedResolutions(5204934310);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('/post-purchase/v1/claims/5204934310/expected-resolutions');
+    expect(init!.method).toBe('GET');
+    expect(out[0]!.status).toBe('rejected');
+  });
+
+  it('partialRefundClaim sends the percentage under the key `percentage`', async () => {
+    // ⚠️⚠️ THE assertion in this file. ML DEFAULTS A MISSING PERCENTAGE TO 50%.
+    // So a typo in this body key is not an error the caller ever sees — it is a
+    // silent half refund on every partial, forever. Asserting the key BY NAME is
+    // the only thing that catches it; a `toBeDefined()` or an untyped
+    // deep-equality on a `.passthrough()` response would not.
+    const { api, fetchMock } = apiWith(RESOLUCOES);
+    await api.partialRefundClaim(5204934310, 40);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain(
+      '/post-purchase/v1/claims/5204934310/expected-resolutions/partial-refund',
+    );
+    expect(init!.method).toBe('POST');
+
+    const enviado = JSON.parse(String(init!.body)) as Record<string, unknown>;
+    expect(Object.keys(enviado)).toEqual(['percentage']);
+    expect(enviado.percentage).toBe(40);
+  });
+
+  it('getClaimPartialRefundOffers parses offers AND the typed recommendations/restrictions', async () => {
+    // ⚠️ `recommendations`/`restrictions` rode `.passthrough()` untyped until the
+    // resolution UI needed them. Reading them through the TYPED accessors is the
+    // point: a whole-object `toEqual` would pass on passthrough alone and prove
+    // nothing about the schema.
+    const { api, fetchMock } = apiWith({
+      currency_id: 'BRL',
+      available_offers: [
+        { amount: 268.2, percentage: 90 },
+        { amount: 149, percentage: 50 },
+      ],
+      recommendations: [
+        { percentage: 40, reason: 'PARTIAL_REFUND_BETTER_THAN_RETURN', type: 'maximum' },
+      ],
+      restrictions: [{ percentage: 30, reason: 'PAREX_REJECTED', type: 'minimum' }],
+    });
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+
+    expect(String(fetchMock.mock.calls[0]![0])).toContain(
+      '/post-purchase/v1/claims/5204934310/partial-refund/available-offers',
+    );
+    expect(out.currency_id).toBe('BRL');
+    expect(out.available_offers.map((o) => o.percentage)).toEqual([90, 50]);
+    expect(out.recommendations[0]!.type).toBe('maximum');
+    expect(out.recommendations[0]!.percentage).toBe(40);
+    expect(out.restrictions[0]!.type).toBe('minimum');
+    expect(out.restrictions[0]!.reason).toBe('PAREX_REJECTED');
+  });
+
+  it('getClaimPartialRefundOffers defaults recommendations/restrictions to [] when absent', async () => {
+    // ML's older shape omits both. They must not arrive `undefined` — the picker
+    // maps over them, and an unguarded map is a crash on the money screen.
+    const { api } = apiWith({
+      currency_id: 'BRL',
+      available_offers: [{ amount: 10, percentage: 10 }],
+    });
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+
+    expect(out.recommendations).toEqual([]);
+    expect(out.restrictions).toEqual([]);
+  });
+
+  it('getClaimPartialRefundOffers maps ML 422 (claim not eligible) to an HTTP error', async () => {
+    // Documented for this route: 422 = not eligible (CBT, no return label). It
+    // must stay distinguishable from a transport failure so the UI can say why.
+    const { api } = apiWith({ message: 'not eligible' }, 422);
+    await expect(api.getClaimPartialRefundOffers(5204934310)).rejects.toBeInstanceOf(
+      MercadoLivreHttpError,
+    );
+  });
+});
+
+describe('getClaimPartialRefundOffers — advice DEGRADES, it never fails the read', () => {
+  /**
+   * ⚠️ Typing `recommendations`/`restrictions` made the CONTAINER strict where it
+   * was `.passthrough()`-tolerant — the same failure mode by another door. A
+   * shape drift stopped degrading the advice and started failing the whole offers
+   * read, taking the picker down. These are the shapes that parsed before and
+   * must keep parsing; `.catch([])` is the idiom this file already uses.
+   */
+  function offersApi(over: Record<string, unknown>) {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        currency_id: 'BRL',
+        available_offers: [{ amount: 149, percentage: 50 }],
+        ...over,
+      }),
+    );
+    return createMercadoLivreApi(cfg(fetchMock));
+  }
+
+  it.each([
+    ['an OBJECT where an array is expected', { restrictions: { minimum: 30 } }],
+    ['an array of STRINGS', { recommendations: ['PARTIAL_REFUND_BETTER_THAN_RETURN'] }],
+    ['a null where an array is expected', { restrictions: null }],
+    ['a nested shape ML has not published', { recommendations: [{ nested: { deep: true } }] }],
+  ])('tolerates %s — offers still parse', async (_nome, over) => {
+    const api = offersApi(over);
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+    // The DECISION survives; only the advice is lost.
+    expect(out.available_offers.map((o) => o.percentage)).toEqual([50]);
+  });
+
+  it('accepts a QUOTED percentage — ML does this, and it must not fail the read', async () => {
+    // `mlMissedFeedEntrySchema` already models ML numerics as `string | number`
+    // for exactly this reason.
+    const api = offersApi({
+      restrictions: [{ percentage: '30', reason: 'PAREX_REJECTED', type: 'minimum' }],
+    });
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+    expect(out.restrictions[0]!.percentage).toBe(30);
+    expect(out.restrictions[0]!.type).toBe('minimum');
+  });
+
+  it('still reads well-formed advice — the positive control', async () => {
+    // Without this, every tolerance case above would pass on a schema that
+    // dropped the fields entirely.
+    const api = offersApi({
+      recommendations: [{ percentage: 40, reason: 'BETTER_THAN_RETURN', type: 'maximum' }],
+      restrictions: [{ percentage: 30, reason: 'PAREX_REJECTED', type: 'minimum' }],
+    });
+    const out = await api.getClaimPartialRefundOffers(5204934310);
+    expect(out.recommendations[0]!.percentage).toBe(40);
+    expect(out.restrictions[0]!.percentage).toBe(30);
   });
 });

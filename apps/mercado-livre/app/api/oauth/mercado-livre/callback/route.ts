@@ -32,11 +32,12 @@ import {
   MercadoLivreContaNotConfiguredError,
   loadMercadoLivreContext,
   mercadoLivreRedirectUri,
-} from '@/lib/marketplace/mercadoLivre';
+} from '@/lib/marketplace/core/mercadoLivre';
 import { OauthStateError, verifyState } from '@delfrance/data/admin/oauth-state';
 
-import { mercadoLivreOauthState } from '@/lib/marketplace/oauthState';
-import { isMercadoLivreError } from '@/lib/marketplace/respond';
+import { mercadoLivreOauthState } from '@/lib/marketplace/conta/oauthState';
+import { isMercadoLivreError } from '@/lib/marketplace/core/respond';
+import { validationPaths } from '@/lib/marketplace/core/validationIssues';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -75,28 +76,6 @@ function exchangeFailureReason(err: unknown): string {
   if (err instanceof MercadoLivreValidationError) return 'resposta_invalida';
   if (err instanceof MercadoLivreNetworkError) return 'rede';
   return 'exchange';
-}
-
-/**
- * Zod issue PATHS and codes — never the issue objects themselves.
- *
- * A Zod issue can carry the offending input, and the value under inspection here
- * is a TOKEN RESPONSE: logging the raw issues risks putting a live access_token
- * into Cloud Logging. `refresh_token: invalid_type` is the whole diagnostic value
- * and carries nothing sensitive.
- */
-function validationPaths(issues: unknown): readonly string[] {
-  if (!Array.isArray(issues)) return [];
-  return issues.map((issue) => {
-    // ⚠️ Guard the ELEMENT, not just the array. `issues` is typed `unknown`, and
-    // destructuring a `null` entry throws a TypeError — from inside the catch
-    // block, where it would replace the redirect with a 500. A helper whose whole
-    // job is to make a failure legible must not be able to cause a worse one.
-    if (typeof issue !== 'object' || issue === null) return '(desconhecido)';
-    const { path, code } = issue as { path?: unknown; code?: unknown };
-    const caminho = Array.isArray(path) && path.length > 0 ? path.join('.') : '(raiz)';
-    return `${caminho}: ${typeof code === 'string' ? code : 'desconhecido'}`;
-  });
 }
 
 /**

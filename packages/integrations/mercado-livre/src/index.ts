@@ -6,6 +6,11 @@ import { buildAuthorizeUrl } from './oauth';
 
 export * from './errors';
 export * from './types';
+// ⚠️ No numeric coercer is exported here any more. The rule that reads a quoted
+// provider number lives in `@delfrance/core/wire` (`parseWireDecimal`,
+// `wireNumber()`, `wireInt()`) — Mercado Pago hit the identical exposure on the
+// SAME payment resource through `GET /v1/payments/{id}` (#1251), so a per-channel
+// copy was always going to drift (#810). Import it from core directly.
 export * from './shipmentFields';
 export * from './oauth';
 export * from './api';
@@ -55,7 +60,7 @@ export interface MercadoLivreConfig {
  * caller routed through the plugin contract where it should have called the
  * backend.
  *
- * ⚠️ Operator-visible: `apps/mercado-livre/lib/marketplace/respond.ts` maps this
+ * ⚠️ Operator-visible: `apps/mercado-livre/lib/marketplace/core/respond.ts` maps this
  * message into a 501 body (`code: 'ML_NOT_IMPLEMENTED'`). Keep it diagnostic.
  * Folding these four into the contract is part of #815.
  */

@@ -34,8 +34,8 @@ use `{parentId}` placeholders resolved at runtime
 edge is drawn `PARENT ||--o{ CHILD : "sub: <path segment>"`.
 
 **References are doc-path strings, not native references.** Cross-collection links
-are stored as strings, never Firestore `reference` values — the format the legacy
-Flutter app reads and writes (see
+are stored as strings, never Firestore `reference` values — the format the
+migrated corpus stores, and the one every writer in this repo emits (see
 [`shared/outerRef.ts`](https://github.com/)). Two wire forms exist, both string:
 
 - `*OuterRef` / `*OuterReference` → canonical `documents/<col>/<id>`

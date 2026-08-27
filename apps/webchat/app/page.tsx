@@ -110,6 +110,11 @@ export default function WebchatPage() {
     );
     return onSnapshot(
       q,
+      // The SDK default, stated rather than assumed. This listener only ever
+      // reads `snap.docs`; it has no `fromCache` gate to feed, so the cache ->
+      // server transition would be a re-render for nothing. The shared hooks in
+      // `@delfrance/data` opt IN because their consumers do gate on it.
+      { includeMetadataChanges: false },
       (snap) => {
         const docs = snap.docs.map((d) => ({
           id: d.id,

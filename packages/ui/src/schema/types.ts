@@ -66,10 +66,18 @@ export type FilterableField = Pick<
  * fallback path). Subcollection-lookup filters (e.g. the pedido NF column)
  * encode their chosen child field inside `value` as `"<subfield>:<term>"` so
  * the whole filter round-trips through the URL sync unchanged.
+ *
+ * The LIST form is exclusively for `array-contains-any` (membership of a
+ * document array against several candidates) — the same contract
+ * `PipelineFieldFilter.value` states, so a filter entry spreads straight into
+ * the pipeline `where`. Every other op takes a scalar, and an EMPTY list means
+ * "no rows": `buildPipeline` throws on it rather than querying, so a caller
+ * emitting one must short-circuit (see the TableView guard) or, better, emit
+ * `undefined` and drop the filter entirely.
  */
 export interface ColumnFilterValue {
   op: PipelineFilterOp;
-  value: string | number | boolean | null;
+  value: string | number | boolean | null | ReadonlyArray<string>;
 }
 
 /**
@@ -105,6 +113,24 @@ export interface FieldConfig<TValue = unknown> {
   options?: Array<{ value: string; label: string }>;
   /** ObjectView section/tab grouping. */
   section?: string;
+  /**
+   * Drop this field from the RENDERED surface — the value itself is untouched.
+   * In `ObjectView` it renders no input but is still validated (its errors
+   * surface through `hiddenErrors`) and still SAVED, `prepareForSave` included;
+   * in `TableView` it is neither rendered NOR offered by the ColumnPicker —
+   * "not a column at all", not "off by default" (use
+   * `meta.defaultQuery.columns` / `defaultColumns` for that). The two
+   * TableView lists that must agree on it are `visibleColumns` and
+   * `pickerFields`; honouring it in only one of them is a checkbox that ticks,
+   * persists and renders nothing.
+   *
+   * ⚠️ It does NOT narrow the query, so it is the wrong tool for COST.
+   * `selectFields` derives the Pipelines `select()` projection from
+   * `visibleKeys`, which still carries the hidden key — the field is fetched
+   * and billed while rendering nowhere. To stop paying for a heavy field, drop
+   * it from `defaultQuery.columns` / `defaultColumns` as well (root
+   * `CLAUDE.md` rule 1: Enterprise bills data SCANNED).
+   */
   hidden?: boolean;
   editable?: boolean;
   renderCell?: (value: TValue, row: unknown) => ReactNode;

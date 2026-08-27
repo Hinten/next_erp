@@ -2,7 +2,7 @@
  * Route a listing's persisted Mercado Livre rejection onto the screen.
  *
  * The publisher writes `produtoMercadoLivre.causas` — ML's `cause[]` parsed and
- * already resolved to control keys (`apps/mercado-livre/lib/marketplace/publishFalhas.ts`)
+ * already resolved to control keys (`apps/mercado-livre/lib/marketplace/core/publishFalhas.ts`)
  * — and the editor subscribes to the link doc live. That is deliberately the
  * ONLY channel: it repaints the right listing the moment the publish fails,
  * survives a reload and a second operator, and is the only channel at all for
@@ -21,7 +21,10 @@
  * asymmetry is the whole correctness argument. Resolving to a control is not the
  * same as being VISIBLE on one: `campos` is resolved server-side against the
  * payload we SENT, which by design carries attributes the editor never renders
- * (`SELLER_PACKAGE_*`, `WEIGHT`, `SIZE_GRID_ID`, `SELLER_SKU`), and several
+ * (`SELLER_PACKAGE_*`, `WEIGHT`, `SIZE_GRID_ID`, `SELLER_SKU` and now `BRAND` —
+ * withheld by `attributeOmission`, whose `derivado` arm is what finally made
+ * that list true of the dimensions rather than merely intended, and whose
+ * `herdado` arm added the brand), and several
  * controls come and go — `listing_type_id` becomes read-only once published,
  * `descricao` hides behind a collapsible, and an `attributes.X` row vanishes when
  * the operator changes category. An earlier cut kept single-control causes out of
@@ -110,10 +113,12 @@ export function textoDaCausa(causa: MlCausa): string {
 }
 
 /**
- * Merge two control→messages maps. Used to put Mercado Livre's own rejection and
- * our pre-flight 422 refusal on the same controls: they answer different
- * questions ("ML refused this" vs "we would not even send it") and a listing can
- * legitimately carry both at once.
+ * Merge control→messages maps. Used to put every server-side complaint on the
+ * same controls: Mercado Livre's rejection of a write of ours, ML's POLICY
+ * moderation of the listing itself (`moderacoesPorCampo`, #1087), and our
+ * pre-flight 422 refusal. They answer different questions ("ML refused this" vs
+ * "ML moderated the listing" vs "we would not even send it") and a listing can
+ * legitimately carry all three at once.
  */
 export function mergeServerErrors(
   ...mapas: ReadonlyArray<Record<string, string[]>>

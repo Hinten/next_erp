@@ -7,14 +7,20 @@ import {
   applySuggestions,
   attributesForSave,
   draftTypedValue,
+  effectiveUnit,
   isFilled,
   isNumericAttr,
   naRow,
+  numberUnitOptions,
   resolveTypedValue,
   rowFromSelect,
+  emptyRow,
+  seedRow,
   seedRows,
   selectOptions,
   selectValueOf,
+  splitNumberUnit,
+  unitOptions,
   validateAttr,
   variationColorSizeState,
   widgetKind,
@@ -43,7 +49,7 @@ describe('widgetKind', () => {
   it('maps each ML value_type to a control', () => {
     expect(widgetKind(attr({ id: 'A', valueType: 'string' }))).toBe('text');
     expect(widgetKind(attr({ id: 'A', valueType: 'number' }))).toBe('text');
-    expect(widgetKind(attr({ id: 'A', valueType: 'number_unit' }))).toBe('text');
+    expect(widgetKind(attr({ id: 'A', valueType: 'number_unit' }))).toBe('number_unit');
     expect(widgetKind(attr({ id: 'A', valueType: 'boolean' }))).toBe('select');
     expect(widgetKind(attr({ id: 'A', valueType: 'list' }))).toBe('select');
     expect(widgetKind(attr({ id: 'A', valueType: 'list', multivalued: true }))).toBe('multiselect');
@@ -91,12 +97,337 @@ describe('validateAttr', () => {
   });
 });
 
+/** A length attribute the way ML ships one: several units, one of them default. */
+function lengthAttr(over: Partial<MercadoLivreCategoriaAtributo> = {}) {
+  return attr({
+    id: 'LENGTH',
+    valueType: 'number_unit',
+    defaultUnit: 'cm',
+    allowedUnits: [
+      { id: 'cm', name: 'cm' },
+      { id: 'mm', name: 'mm' },
+      { id: 'm', name: 'm' },
+    ],
+    ...over,
+  });
+}
+
+describe('unitOptions', () => {
+  it("preserves ML's order and labels by id", () => {
+    expect(unitOptions(lengthAttr())).toEqual([
+      { value: 'cm', label: 'cm' },
+      { value: 'mm', label: 'mm' },
+      { value: 'm', label: 'm' },
+    ]);
+  });
+
+  it('spells out the inch unit, whose id is a bare double quote', () => {
+    const a = lengthAttr({
+      allowedUnits: [
+        { id: 'cm', name: 'cm' },
+        { id: '"', name: '"' },
+      ],
+    });
+    // The VALUE stays `"` — that is what ML expects in `unit_id`.
+    expect(unitOptions(a)).toEqual([
+      { value: 'cm', label: 'cm' },
+      { value: '"', label: 'pol. (")' },
+    ]);
+  });
+
+  it('adds a defaultUnit ML left out of allowed_units', () => {
+    const a = lengthAttr({ defaultUnit: 'in', allowedUnits: [{ id: 'cm', name: 'cm' }] });
+    expect(unitOptions(a).map((u) => u.value)).toEqual(['cm', 'in']);
+  });
+
+  it('KEEPS a stored unit the category no longer allows', () => {
+    // Dropping it would leave the Select rendering a value it cannot offer,
+    // which reads as the unit having changed by itself.
+    expect(unitOptions(lengthAttr(), 'pol').map((u) => u.value)).toEqual(['cm', 'mm', 'm', 'pol']);
+  });
+
+  it('never repeats a unit, and ignores blank ids', () => {
+    const a = lengthAttr({
+      allowedUnits: [
+        { id: 'cm', name: 'cm' },
+        { id: '', name: '' },
+        { id: null, name: 'x' },
+      ],
+    });
+    expect(unitOptions(a, 'cm').map((u) => u.value)).toEqual(['cm']);
+  });
+
+  it('is empty for an attribute with no units at all', () => {
+    expect(unitOptions(attr({ id: 'BRAND' }))).toEqual([]);
+  });
+
+  it('treats a unit as ONE unit whatever its casing', () => {
+    // ⚠️ ML's `value_struct.unit` is not guaranteed to match the casing of the
+    // category's `allowed_units` id. Keyed on the raw string, `mL` and `ml`
+    // become two picker entries for one unit.
+    const a = lengthAttr({ defaultUnit: 'ML', allowedUnits: [{ id: 'ml', name: 'ml' }] });
+    // The allow-list's casing wins: it is the category taxonomy.
+    expect(unitOptions(a, 'mL')).toEqual([{ value: 'ml', label: 'ml' }]);
+  });
+});
+
+describe('effectiveUnit', () => {
+  it('prefers what the row stores', () => {
+    expect(effectiveUnit(lengthAttr(), { unit_id: 'mm' })).toBe('mm');
+  });
+
+  it('falls back to the category default', () => {
+    expect(effectiveUnit(lengthAttr(), { unit_id: null })).toBe('cm');
+    expect(effectiveUnit(lengthAttr(), undefined)).toBe('cm');
+  });
+
+  it('falls back to the only unit on offer when there is no default', () => {
+    const a = lengthAttr({ defaultUnit: null });
+    expect(effectiveUnit(a, { unit_id: null })).toBe('cm');
+  });
+
+  it('is null when ML gave the attribute no unit', () => {
+    expect(effectiveUnit(attr({ id: 'BRAND' }), { unit_id: null })).toBeNull();
+  });
+
+  it("answers in the allow-list's casing for a stored unit", () => {
+    // ⚠️ Load-bearing: the Select's `value` must be one of its own options, or
+    // Mantine renders it blank.
+    const a = lengthAttr({ allowedUnits: [{ id: 'ml', name: 'ml' }], defaultUnit: 'ml' });
+    expect(effectiveUnit(a, { unit_id: 'mL' })).toBe('ml');
+  });
+
+  it("answers in the allow-list's casing for a mismatched defaultUnit", () => {
+    const a = lengthAttr({ allowedUnits: [{ id: 'ml', name: 'ml' }], defaultUnit: 'ML' });
+    expect(effectiveUnit(a, { unit_id: null })).toBe('ml');
+  });
+});
+
+describe('splitNumberUnit', () => {
+  it("recovers the unit ML bakes into an item's value_name", () => {
+    // `GET /items` answers `'355 mL'` with NO unit_id — the pair lives in
+    // `value_struct`. This is the parse that keeps the seller's own unit.
+    const a = lengthAttr({
+      allowedUnits: [
+        { id: 'mL', name: 'mL' },
+        { id: 'L', name: 'L' },
+      ],
+    });
+    expect(splitNumberUnit(a, '355 mL')).toEqual({ value: '355', unit: 'mL' });
+  });
+
+  it("returns the allow-list's casing when the value spells it differently", () => {
+    const a = lengthAttr({ allowedUnits: [{ id: 'ml', name: 'ml' }], defaultUnit: 'ml' });
+    expect(splitNumberUnit(a, '355 mL')).toEqual({ value: '355', unit: 'ml' });
+  });
+
+  it("returns ML's casing, not the operator's", () => {
+    const a = lengthAttr({ allowedUnits: [{ id: 'mL', name: 'mL' }] });
+    expect(splitNumberUnit(a, '355 ml').unit).toBe('mL');
+  });
+
+  it('matches the LONGEST unit first', () => {
+    // `m` would otherwise win on `'55 mm'` and turn 55 millimetres into 55 m.
+    expect(splitNumberUnit(lengthAttr(), '55 mm')).toEqual({ value: '55', unit: 'mm' });
+    expect(splitNumberUnit(lengthAttr(), '55 m')).toEqual({ value: '55', unit: 'm' });
+  });
+
+  it('needs no separator, and accepts either decimal convention', () => {
+    expect(splitNumberUnit(lengthAttr(), '62.5cm')).toEqual({ value: '62.5', unit: 'cm' });
+    expect(splitNumberUnit(lengthAttr(), '62,5 cm')).toEqual({ value: '62,5', unit: 'cm' });
+  });
+
+  it('handles the inch unit', () => {
+    const a = lengthAttr({ allowedUnits: [{ id: '"', name: '"' }] });
+    expect(splitNumberUnit(a, '36 "')).toEqual({ value: '36', unit: '"' });
+  });
+
+  it('leaves a bare number alone', () => {
+    expect(splitNumberUnit(lengthAttr(), '55')).toEqual({ value: '55', unit: null });
+  });
+
+  it('NEVER guesses: a non-numeric head is not a measurement', () => {
+    // `'10 - 20 cm'` is a range, not a number plus a unit; splitting it would
+    // be exactly the silent rewrite this function exists to prevent.
+    expect(splitNumberUnit(lengthAttr(), '10 - 20 cm')).toEqual({
+      value: '10 - 20 cm',
+      unit: null,
+    });
+    // A unit with nothing in front of it is whatever was typed.
+    expect(splitNumberUnit(lengthAttr(), 'cm')).toEqual({ value: 'cm', unit: null });
+  });
+
+  it('ignores a unit the category does not know', () => {
+    expect(splitNumberUnit(lengthAttr(), '55 ft')).toEqual({ value: '55 ft', unit: null });
+  });
+
+  it('tolerates an empty value', () => {
+    expect(splitNumberUnit(lengthAttr(), null)).toEqual({ value: '', unit: null });
+  });
+});
+
+describe('numberUnitOptions', () => {
+  const bottle = attr({
+    id: 'VOLUME',
+    valueType: 'number_unit',
+    defaultUnit: 'mL',
+    allowedUnits: [
+      { id: 'mL', name: 'mL' },
+      { id: 'L', name: 'L' },
+    ],
+    values: [
+      { id: 'v1', name: '355 mL' },
+      { id: 'v2', name: '473 mL' },
+      { id: 'v3', name: '1 L' },
+    ],
+  });
+
+  it('offers the NUMBER, not the number-plus-unit the box no longer holds', () => {
+    expect(numberUnitOptions(bottle, 'mL')).toEqual(['355', '473']);
+  });
+
+  it('hides values measured in another unit', () => {
+    // Offering the `1` from `'1 L'` while the box reads millilitres would put a
+    // 1000x error one click away.
+    expect(numberUnitOptions(bottle, 'L')).toEqual(['1']);
+  });
+
+  it('is empty for the attributes ML ships with no values at all', () => {
+    expect(numberUnitOptions(lengthAttr(), 'cm')).toEqual([]);
+  });
+});
+
+describe('seedRow', () => {
+  it('splits a value whose unit is baked in, keeping the SELLER unit', () => {
+    // The tab-through bug: left whole, the first blur ran this through
+    // `digitsOnly` and stamped `defaultUnit` over it, silently restating the
+    // measurement in centimetres.
+    const a = lengthAttr({ defaultUnit: 'cm' });
+    expect(seedRow(a, { id: 'LENGTH', value_name: '55 mm' })).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: '55',
+      unit_id: 'mm',
+    });
+  });
+
+  it('leaves a row that already stores its unit apart', () => {
+    const a = lengthAttr();
+    expect(seedRow(a, { id: 'LENGTH', value_name: '55', unit_id: 'mm' })).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: '55',
+      unit_id: 'mm',
+    });
+  });
+
+  it('does not touch the N/A sentinel', () => {
+    const a = lengthAttr();
+    expect(seedRow(a, { id: 'LENGTH', value_id: NA_VALUE_ID, value_name: 'N/A' })).toEqual({
+      id: 'LENGTH',
+      value_id: NA_VALUE_ID,
+      value_name: 'N/A',
+      unit_id: null,
+    });
+  });
+
+  it('fills in the unit the picker shows, even with nothing to split', () => {
+    // ⚠️ The row must agree with what is on screen. A legacy Flutter row stores
+    // a bare `'55'` with no unit; left null, the field still RENDERS `cm` (the
+    // effective unit) and the next blur resolved to it and reported a change —
+    // unsaved changes on a listing nobody touched, from a tab keypress.
+    expect(seedRow(lengthAttr(), { id: 'LENGTH', value_name: '55' })).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: '55',
+      unit_id: 'cm',
+    });
+  });
+
+  it('drops the pair id when it splits', () => {
+    // ML's value_id names the PAIR — 3681798 IS '355 mL' — and nothing can
+    // rebuild it from the '355' left behind, so a row that kept it would lose it
+    // on the first blur and report a phantom edit.
+    const volume = attr({
+      id: 'VOLUME',
+      valueType: 'number_unit',
+      defaultUnit: 'ml',
+      allowedUnits: [{ id: 'ml', name: 'ml' }],
+    });
+    expect(seedRow(volume, { id: 'VOLUME', value_id: '3681798', value_name: '355 ml' })).toEqual({
+      id: 'VOLUME',
+      value_id: null,
+      value_name: '355',
+      unit_id: 'ml',
+    });
+  });
+
+  it('keeps a value_id it did NOT split', () => {
+    const volume = attr({
+      id: 'VOLUME',
+      valueType: 'number_unit',
+      defaultUnit: 'ml',
+      allowedUnits: [{ id: 'ml', name: 'ml' }],
+    });
+    expect(
+      seedRow(volume, { id: 'VOLUME', value_id: 'v1', value_name: '355', unit_id: 'ml' }).value_id,
+    ).toBe('v1');
+  });
+
+  it('heals a row the OLD code double-unitised', () => {
+    // ⚠️ The shape `main` itself persists. An imported `'55 cm'` (unit_id null)
+    // survives one save of any other attribute: `resolveTypedValue` finds no
+    // enumerated value named `'55 cm'` — LENGTH-style measurements ship none —
+    // so it keeps the name WHOLE and stamps `defaultUnit` beside it. The wire
+    // transform then appends the unit again: `'55 cm cm'`.
+    expect(seedRow(lengthAttr(), { id: 'LENGTH', value_name: '55 cm', unit_id: 'cm' })).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: '55',
+      unit_id: 'cm',
+    });
+  });
+
+  it('prefers the unit INSIDE the value when the stored one disagrees', () => {
+    // `digitsOnly` makes a unit untypeable, so one sitting inside `value_name`
+    // can only have come from ML or the legacy corpus — it is what the seller
+    // actually saw. A contradicting `unit_id` is the spurious `defaultUnit`
+    // stamp described above.
+    expect(seedRow(lengthAttr(), { id: 'LENGTH', value_name: '55 cm', unit_id: 'mm' })).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: '55',
+      unit_id: 'cm',
+    });
+  });
+
+  it('canonicalises a stored unit so the row matches the picker', () => {
+    // The invariant, asserted directly: a row holding `mL` while the Select
+    // renders `ml` makes the next blur resolve to a different row and report a
+    // phantom edit.
+    const a = lengthAttr({ allowedUnits: [{ id: 'ml', name: 'ml' }], defaultUnit: 'ml' });
+    const row = seedRow(a, { id: 'LENGTH', value_name: '355', unit_id: 'mL' });
+    expect(row.unit_id).toBe('ml');
+    expect(row.unit_id).toBe(effectiveUnit(a, row));
+  });
+
+  it('does not split a plain string attribute', () => {
+    // `'Nike Air'` on a BRAND must survive intact even if `m` were a unit.
+    expect(seedRow(attr({ id: 'BRAND' }), { id: 'BRAND', value_name: 'Nike Air' })).toEqual({
+      id: 'BRAND',
+      value_id: null,
+      value_name: 'Nike Air',
+      unit_id: null,
+    });
+  });
+});
+
 describe('draftTypedValue', () => {
   // The reported bug: an operator could not type a space into an attribute.
   // `resolveTypedValue` on the change path trimmed the text the input renders
   // back, so the space vanished before the caret moved.
   it('KEEPS a trailing space, so a multi-word value is typeable', () => {
-    expect(draftTypedValue(attr({ id: 'BRAND' }), 'Nike ')).toEqual({
+    expect(draftTypedValue(attr({ id: 'BRAND' }), 'Nike ', null)).toEqual({
       id: 'BRAND',
       value_id: null,
       value_name: 'Nike ',
@@ -109,7 +440,7 @@ describe('draftTypedValue', () => {
     // matched `Nike ` back to `Nike` and ate the space again — `Nike Air` was
     // unreachable however slowly you typed it.
     const brand = attr({ id: 'BRAND', values: [{ id: 'B1', name: 'Nike' }] });
-    expect(draftTypedValue(brand, 'Nike ')).toEqual({
+    expect(draftTypedValue(brand, 'Nike ', null)).toEqual({
       id: 'BRAND',
       value_id: null,
       value_name: 'Nike ',
@@ -120,13 +451,13 @@ describe('draftTypedValue', () => {
   it('keeps a blank draft so a LEADING space is typeable too', () => {
     // Harmless: `isFilled` tests the trimmed name, so the row still reads as
     // empty everywhere it matters.
-    const row = draftTypedValue(attr({ id: 'MODEL' }), '  ');
+    const row = draftTypedValue(attr({ id: 'MODEL' }), '  ', null);
     expect(row.value_name).toBe('  ');
     expect(isFilled(row)).toBe(false);
   });
 
   it('clears the row only when the field is truly empty', () => {
-    expect(draftTypedValue(attr({ id: 'MODEL' }), '')).toEqual({
+    expect(draftTypedValue(attr({ id: 'MODEL' }), '', null)).toEqual({
       id: 'MODEL',
       value_id: null,
       value_name: null,
@@ -134,10 +465,33 @@ describe('draftTypedValue', () => {
     });
   });
 
-  it('attaches the default unit to a number_unit draft', () => {
-    expect(
-      draftTypedValue(attr({ id: 'LENGTH', valueType: 'number_unit', defaultUnit: 'cm' }), '55'),
-    ).toEqual({ id: 'LENGTH', value_id: null, value_name: '55', unit_id: 'cm' });
+  it('attaches the unit it was GIVEN to a number_unit draft', () => {
+    const length = attr({ id: 'LENGTH', valueType: 'number_unit', defaultUnit: 'cm' });
+    expect(draftTypedValue(length, '55', 'cm')).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: '55',
+      unit_id: 'cm',
+    });
+  });
+
+  it('does NOT fall back to defaultUnit when another unit is passed', () => {
+    // The unpickable-unit bug: this used to read `attr.defaultUnit`, so the
+    // operator's choice was overwritten on the very next keystroke.
+    const length = attr({
+      id: 'LENGTH',
+      valueType: 'number_unit',
+      defaultUnit: 'cm',
+      allowedUnits: [
+        { id: 'cm', name: 'cm' },
+        { id: 'mm', name: 'mm' },
+      ],
+    });
+    expect(draftTypedValue(length, '55', 'mm').unit_id).toBe('mm');
+  });
+
+  it('never attaches a unit to an attribute that has none', () => {
+    expect(draftTypedValue(attr({ id: 'MODEL' }), '55', 'cm').unit_id).toBeNull();
   });
 });
 
@@ -150,7 +504,7 @@ describe('resolveTypedValue', () => {
       valueType: 'list',
       values: [{ id: 'v-alg', name: 'Algodão' }],
     });
-    expect(resolveTypedValue(material, 'algodao')).toEqual({
+    expect(resolveTypedValue(material, 'algodao', null)).toEqual({
       id: 'MATERIAL',
       value_id: 'v-alg',
       value_name: 'Algodão',
@@ -159,7 +513,7 @@ describe('resolveTypedValue', () => {
   });
 
   it('keeps unmatched text as a free value', () => {
-    expect(resolveTypedValue(attr({ id: 'MODEL' }), '  XT-500 ')).toEqual({
+    expect(resolveTypedValue(attr({ id: 'MODEL' }), '  XT-500 ', null)).toEqual({
       id: 'MODEL',
       value_id: null,
       value_name: 'XT-500',
@@ -167,16 +521,33 @@ describe('resolveTypedValue', () => {
     });
   });
 
-  it('attaches the default unit to a number_unit value', () => {
+  it('attaches the unit it was GIVEN to a number_unit value', () => {
     // Without unit_id the wire transform sends a bare number where ML wants
     // "55 cm" — the legacy AI path never set it.
-    expect(
-      resolveTypedValue(attr({ id: 'LENGTH', valueType: 'number_unit', defaultUnit: 'cm' }), '55'),
-    ).toEqual({ id: 'LENGTH', value_id: null, value_name: '55', unit_id: 'cm' });
+    const length = attr({ id: 'LENGTH', valueType: 'number_unit', defaultUnit: 'cm' });
+    expect(resolveTypedValue(length, '55', 'cm')).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: '55',
+      unit_id: 'cm',
+    });
+  });
+
+  it('keeps the operator unit rather than re-deriving the default', () => {
+    const length = attr({
+      id: 'LENGTH',
+      valueType: 'number_unit',
+      defaultUnit: 'cm',
+      allowedUnits: [
+        { id: 'cm', name: 'cm' },
+        { id: 'mm', name: 'mm' },
+      ],
+    });
+    expect(resolveTypedValue(length, '55', 'mm').unit_id).toBe('mm');
   });
 
   it('clears the row on empty input', () => {
-    expect(resolveTypedValue(attr({ id: 'MODEL' }), '   ')).toEqual({
+    expect(resolveTypedValue(attr({ id: 'MODEL' }), '   ', null)).toEqual({
       id: 'MODEL',
       value_id: null,
       value_name: null,
@@ -213,6 +584,43 @@ describe('attributesForSave', () => {
       [{ id: 'SELLER_SKU', value_name: 'SKU-1' }],
       [{ id: 'SELLER_SKU' }],
     );
+    expect(out).toEqual([]);
+  });
+
+  // ⚠️ THE property the whole `herdado` design rests on, asserted from the
+  // consumer's side. `BRAND` reaches this function in NEITHER array — the server
+  // keeps it out of `atributos` AND out of `omitidos` — so it takes the
+  // preserve-the-unmentioned branch. That value is what publish falls back to
+  // when the produto has no Marca, and for such a produto it is the only copy in
+  // existence; pruning it deletes the brand on the next save of any unrelated
+  // field.
+  //
+  // ⚠️ Note nothing in the module special-cases it, and that is the point: this
+  // holds for EVERY version of this bundle, including one built before `BRAND`
+  // was withheld at all — which is what makes the two apps deployable in either
+  // order.
+  it('PRESERVES a stored BRAND the server withheld from both arrays', () => {
+    const out = attributesForSave(
+      [attr({ id: 'MODEL' })],
+      [{ id: 'MODEL', value_id: null, value_name: 'X', unit_id: null }],
+      [
+        { id: 'BRAND', value_id: '9999', value_name: 'Acme' },
+        { id: 'SELLER_SKU', value_name: 'SKU-1' },
+      ],
+      // Only the DERIVED id is reported; BRAND is reported nowhere.
+      [{ id: 'SELLER_SKU' }],
+    );
+    // Verbatim, `value_id` and all: an enumerated ML brand carries one, and
+    // nothing downstream could reconstruct it from the name.
+    expect(out).toContainEqual({ id: 'BRAND', value_id: '9999', value_name: 'Acme' });
+    expect(out.some((a) => a.id === 'SELLER_SKU')).toBe(false);
+  });
+
+  // The control that stops the assertion above being vacuous: this function CAN
+  // delete BRAND, and does the moment the metadata names it. It is the server's
+  // silence that protects the brand, nothing in here.
+  it('would prune BRAND if the metadata ever did list it as withheld', () => {
+    const out = attributesForSave([], [], [{ id: 'BRAND', value_name: 'Acme' }], [{ id: 'BRAND' }]);
     expect(out).toEqual([]);
   });
 
@@ -280,6 +688,90 @@ describe('attributesForSave', () => {
   });
 });
 
+describe('emptyRow', () => {
+  it('starts a number_unit on the unit its picker will show', () => {
+    expect(emptyRow(lengthAttr())).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: null,
+      unit_id: 'cm',
+    });
+  });
+
+  it('reads as empty, so an untouched field is still never saved', () => {
+    expect(isFilled(emptyRow(lengthAttr()))).toBe(false);
+  });
+
+  it('gives an attribute with no units a plain blank row', () => {
+    expect(emptyRow(attr({ id: 'BRAND' }))).toEqual({
+      id: 'BRAND',
+      value_id: null,
+      value_name: null,
+      unit_id: null,
+    });
+  });
+});
+
+describe('clearing a number_unit box', () => {
+  it('KEEPS the unit — emptying the number says nothing about it', () => {
+    // Dropping it snapped the picker back to `defaultUnit` behind the operator.
+    const length = lengthAttr();
+    expect(draftTypedValue(length, '', 'mm')).toEqual({
+      id: 'LENGTH',
+      value_id: null,
+      value_name: null,
+      unit_id: 'mm',
+    });
+    expect(resolveTypedValue(length, '  ', 'mm').unit_id).toBe('mm');
+  });
+
+  it('still counts as empty, so it is never written', () => {
+    const row = draftTypedValue(lengthAttr(), '', 'mm');
+    expect(isFilled(row)).toBe(false);
+    expect(attributesForSave([lengthAttr()], [row], null)).toEqual([]);
+  });
+});
+
+describe('attributesForSave — units', () => {
+  const length = lengthAttr();
+
+  it('stores the number and the unit APART, as the wire transform expects', () => {
+    const out = attributesForSave(
+      [length],
+      [{ id: 'LENGTH', value_id: null, value_name: '55', unit_id: 'mm' }],
+      null,
+    );
+    expect(out).toEqual([{ id: 'LENGTH', value_name: '55', unit_id: 'mm' }]);
+  });
+
+  it("keeps the operator's unit instead of re-deriving defaultUnit", () => {
+    // The whole point of the picker: `defaultUnit` is `cm` here, and `mm` has
+    // to survive the resolution that runs on every save.
+    const out = attributesForSave(
+      [length],
+      [{ id: 'LENGTH', value_id: null, value_name: '55', unit_id: 'mm' }],
+      [{ id: 'LENGTH', value_name: '55', unit_id: 'mm' }],
+    );
+    expect(out[0]!.unit_id).toBe('mm');
+  });
+
+  it('never lets a double-unitised row reach the wire twice', () => {
+    const length = lengthAttr();
+    const stored = [{ id: 'LENGTH', value_name: '55 cm', unit_id: 'cm' }];
+    const out = attributesForSave([length], seedRows([length], stored), stored);
+    // `attributeToMercadoLivre` joins name + unit, so a whole `'55 cm'` here
+    // would ship as `'55 cm cm'`.
+    expect(out).toEqual([{ id: 'LENGTH', value_name: '55', unit_id: 'cm' }]);
+  });
+
+  it('round-trips an imported value through seedRow without changing it', () => {
+    // `'55 mm'` imported from ML, seeded, saved untouched: still 55 mm.
+    const seeded = seedRow(length, { id: 'LENGTH', value_name: '55 mm' });
+    const out = attributesForSave([length], [seeded], [{ id: 'LENGTH', value_name: '55 mm' }]);
+    expect(out).toEqual([{ id: 'LENGTH', value_name: '55', unit_id: 'mm' }]);
+  });
+});
+
 describe('applySuggestions', () => {
   const attrs = [attr({ id: 'BRAND' }), attr({ id: 'MODEL' })];
   const rows: AttrRow[] = [
@@ -316,6 +808,69 @@ describe('applySuggestions', () => {
       [{ id: 'BRAND', value_id: 'v1', value_name: 'Acme', unit_id: null }],
     );
     expect(next[0]).toEqual({ id: 'BRAND', value_id: 'v1', value_name: 'Acme', unit_id: null });
+  });
+
+  it('splits a model answer that spelled the unit out', () => {
+    // Left whole this reaches ML as `'55 mm mm'`, because the wire transform
+    // appends unit_id to the value name.
+    const length = lengthAttr();
+    const next = applySuggestions(
+      [length],
+      [{ id: 'LENGTH', value_id: null, value_name: null, unit_id: null }],
+      [{ id: 'LENGTH', value_id: null, value_name: '55 mm', unit_id: 'cm' }],
+    );
+    expect(next[0]).toEqual({ id: 'LENGTH', value_id: null, value_name: '55', unit_id: 'mm' });
+  });
+
+  it("splits a suggestion that matched one of ML's enumerated values", () => {
+    // ⚠️ `applyAiAttributes`' MATCHED branch emits ML's own name whole with its
+    // id: `{value_id: '3681798', value_name: '355 mL', unit_id: null}`. Left
+    // alone that puts `'355 mL'` in the digits-only box and leaves the row
+    // unitless while the picker shows `mL` — the row disagreeing with the screen
+    // is what makes the next blur report an edit nobody made.
+    const volume = attr({
+      id: 'VOLUME',
+      valueType: 'number_unit',
+      defaultUnit: 'mL',
+      allowedUnits: [
+        { id: 'mL', name: 'mL' },
+        { id: 'L', name: 'L' },
+      ],
+      values: [{ id: '3681798', name: '355 mL' }],
+    });
+    const next = applySuggestions(
+      [volume],
+      [{ id: 'VOLUME', value_id: null, value_name: null, unit_id: null }],
+      [{ id: 'VOLUME', value_id: '3681798', value_name: '355 mL', unit_id: null }],
+    );
+    // The id names the PAIR, so it cannot outlive the split — same rule
+    // `seedRow` and the unit picker both apply.
+    expect(next[0]).toEqual({ id: 'VOLUME', value_id: null, value_name: '355', unit_id: 'mL' });
+  });
+
+  it('falls back to the row unit when the suggestion carries none', () => {
+    const length = lengthAttr();
+    const next = applySuggestions(
+      [length],
+      [{ id: 'LENGTH', value_id: null, value_name: null, unit_id: 'mm' }],
+      [{ id: 'LENGTH', value_id: null, value_name: '55', unit_id: null }],
+    );
+    expect(next[0]!.unit_id).toBe('mm');
+  });
+
+  it('leaves an N/A suggestion on a number_unit alone', () => {
+    const length = lengthAttr();
+    const next = applySuggestions(
+      [length],
+      [{ id: 'LENGTH', value_id: null, value_name: null, unit_id: null }],
+      [{ id: 'LENGTH', value_id: NA_VALUE_ID, value_name: 'N/A', unit_id: null }],
+    );
+    expect(next[0]).toEqual({
+      id: 'LENGTH',
+      value_id: NA_VALUE_ID,
+      value_name: 'N/A',
+      unit_id: null,
+    });
   });
 });
 

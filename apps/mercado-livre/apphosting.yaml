@@ -49,9 +49,15 @@ runConfig:
 # variables, or via Cloud Secret Manager for secrets; required unless marked
 # OPTIONAL):
 #   FIREBASE_PROJECT_ID          OPTIONAL — auto-detected on App Hosting/Cloud Run
-#                                (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
+#                                (via FIREBASE_CONFIG.projectId; Cloud Run sets no project env var); set only to
 #                                override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID         Firestore database id (default: "default")
+#   FIREBASE_STORAGE_BUCKET      OPTIONAL — bucket for the product-photo import. The
+#                                backend reads FIREBASE_CONFIG.storageBucket (which
+#                                App Hosting injects, and which carries the project's
+#                                REAL default — <projectId>.firebasestorage.app for a
+#                                project created after late 2024), so set this only to
+#                                OVERRIDE. Last resort: <projectId>.appspot.com.
 #   MERCADO_LIVRE_CLIENT_ID      ML application id             (Secret Manager)
 #   MERCADO_LIVRE_CLIENT_SECRET  ML application secret         (Secret Manager)
 #   MERCADO_LIVRE_STATE_SECRET   HMAC key for the OAuth state  (Secret Manager)
@@ -70,19 +76,31 @@ runConfig:
 #                                in the console, not below.
 
 env:
-  # ⚠️ The queue region this backend ENQUEUES to. Not a secret, and NOT optional:
-  # unset, four of the five enqueuers fall through to
-  # `MERCADO_LIVRE_TASKS_REGION?.trim() || FUNCTIONS_REGION || 'us-east5'`
-  # (mlMassImportTasks / mlPriceSyncTasks / mlNfeUploadTasks / mlStockTasks) while
-  # their queues live in us-east1 — the value functions/build.mjs inlines. The
-  # Admin SDK then resolves us-central1 and the task is SILENTLY DROPPED: the
-  # route reports success, no failure document is written, and `/enviar-nfe` has
-  # no sweep behind it to notice. Only the webhook path was immune, because
-  # mlTasks.ts hardcodes us-east1.
+  # ⚠️ The queue region this backend ENQUEUES to. Not a secret, and NOT optional.
+  # No enqueuer defaults it any more: `requireRegion` throws on the first enqueue.
+  #
+  # ⚠️ FUNCTIONS_REGION does NOT rescue an unset value for the webhook path.
+  # `mlTasks.ts` is deliberately single-candidate — the queue does not live in the
+  # codebase region, so falling back to it would resolve a queue that does not
+  # exist. The other four enqueuers do fall through; this one must be set.
+  #
+  # A throw is the goal. When these fell back to a literal, an unset value
+  # produced a well-formed path to a queue that does not exist — the Admin SDK
+  # resolved us-central1 and the task was SILENTLY DROPPED: the route reported
+  # success, no failure document was written, and `/enviar-nfe` has no sweep
+  # behind it to notice. A refused enqueue is recoverable; a dropped one is not
+  # even visible.
   #
   # It must equal MERCADO_LIVRE_TASKS_REGION in the shell that deploys the
   # functions codebase; `node tools/deploy-env/preflight.mjs mercado-livre` prints
   # the value being baked in so the two can be compared. See #1108 / #1121.
+  #
+  # ⚠️ Still us-east1, NOT the us-central1 the rest of the repo now targets. This
+  # value configures a LIVE backend: it must name the region the ML queues
+  # actually exist in today. It moves when the functions themselves move, in the
+  # migration window (ADR 0013 / #1115) — changing it earlier points the enqueuer
+  # at a region with no queue, which is now a throw rather than a silent drop, but
+  # is still a broken backend.
   - variable: MERCADO_LIVRE_TASKS_REGION
     value: us-east1
     availability:

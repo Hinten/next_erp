@@ -1,0 +1,75 @@
+'use client';
+
+import { useMemo } from 'react';
+import { getDoc, type Firestore } from 'firebase/firestore';
+import { useQuery } from '@tanstack/react-query';
+import type { Produto } from '@delfrance/schemas';
+import { arquivoCollection } from '@delfrance/storage';
+
+/**
+ * Lazy cover-photo URL resolution for produto rows. A produto's `fotos` carry
+ * only arquivo REFS (`arquivos/<id>`); the public download `url` lives on the
+ * arquivo doc, so a row cannot render a photo from the projected produto alone.
+ *
+ * Resolved per row with a ONE-SHOT cached `useQuery` keyed by arquivo id — not
+ * a realtime listener per row. That matters on a list: `/produtos` paints 50
+ * rows at a time, and `ProdutoThumbnail` (`components/ProdutoThumbnail.tsx`)
+ * would open 50 `onSnapshot` listeners for data that does not change while you
+ * look at it. Keying by arquivo id also means two produtos sharing a photo share
+ * one fetch, and `enabled` gates the query so produtos WITHOUT a photo never
+ * read at all.
+ *
+ * Shared home (#159): the checkout panes and the /produtos Foto column both use
+ * it. Typed structurally on `fotos` so `Produto` and the checkout engine's
+ * `EngineProduto` (whose `fotos` is `Produto['fotos'] | null`) both fit.
+ */
+
+/** Bare `<id>` from a `Foto` ref string (`arquivos/<id>` or `documents/arquivos/<id>`). */
+function arquivoIdFromRef(ref: string | null | undefined): string | null {
+  if (!ref) return null;
+  const segs = ref.split('/').filter(Boolean);
+  const last = segs[segs.length - 1];
+  return last && last.length > 0 ? last : null;
+}
+
+/** The cover foto's small-derivative ref (200 → 400 → original), or null. */
+export function coverArquivoId(produto: Pick<Produto, 'fotos'> | null | undefined): string | null {
+  const foto = produto?.fotos?.[0];
+  if (!foto) return null;
+  return arquivoIdFromRef(
+    foto.arquivo200pxOuterRef ?? foto.arquivo400pxOuterRef ?? foto.arquivoOuterRef,
+  );
+}
+
+/**
+ * The public URL of a produto's cover photo. Keyed by arquivo id so two rows
+ * sharing a photo share one fetch; `enabled` gates the query so produtos
+ * without a foto never read.
+ *
+ * Returns `{ url, resolved }` rather than a bare `string | null` because a
+ * caller has to tell PENDING from RESOLVED-TO-NOTHING. `url` is null in four
+ * different situations — still fetching, the produto has no foto at all, the
+ * arquivo doc is gone, and the arquivo carries no `url` — and a list cell that
+ * reads null as "loading" skeletons forever on the last three. `resolved` is
+ * true once there is nothing left to wait for.
+ */
+export function useProdutoFotoUrl(
+  db: Firestore,
+  produto: Pick<Produto, 'fotos'> | null | undefined,
+): { url: string | null; resolved: boolean } {
+  const arquivoId = useMemo(() => coverArquivoId(produto), [produto]);
+  const query = useQuery({
+    queryKey: ['produto-foto-capa', arquivoId],
+    enabled: arquivoId !== null,
+    // Photos are immutable within a session — cache aggressively.
+    staleTime: Infinity,
+    queryFn: async (): Promise<string | null> => {
+      const snap = await getDoc(arquivoCollection.docRef(db, {}, arquivoId!));
+      return snap.exists() ? (snap.data().url ?? null) : null;
+    },
+  });
+  // No ref to resolve → already settled. Otherwise wait for success OR error:
+  // a failed read is a resolved absence, not a permanent pending state.
+  const resolved = arquivoId === null || query.isSuccess || query.isError;
+  return { url: query.data ?? null, resolved };
+}

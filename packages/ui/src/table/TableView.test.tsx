@@ -158,6 +158,46 @@ describe('TableView', () => {
     expect(stored).toContain('nome');
   });
 
+  it('omits a hidden field from the picker so every checkbox on offer renders a column', () => {
+    // Mirrors /produtos: `nome` is hidden because a virtual column REPLACES it,
+    // and `tipo` is relabelled. The picker used to consult neither — it listed
+    // TWO "Nome" checkboxes, the schema one being a control that ticks,
+    // persists and renders nothing, because `visibleColumns` drops it. On
+    // /produtos that dead entry was the only match for a "integra" search,
+    // while the working column is labelled "Canais de venda".
+    localStorage.setItem('delfrance:tableview:columns:tests', JSON.stringify(['tipo']));
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        fields={{ nome: { hidden: true }, tipo: { label: 'Classificação' } }}
+        virtualColumns={[
+          {
+            key: 'nomeLink',
+            label: 'Nome',
+            dependsOn: ['nome'],
+            renderCell: (row) => <span>{row.data.nome}</span>,
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Configurar colunas' }));
+
+    // Exactly one "Nome" — the virtual column. The hidden schema field is gone.
+    expect(screen.getAllByRole('checkbox', { name: 'Nome' })).toHaveLength(1);
+    // And the picker names a column exactly as its header does.
+    expect(screen.getByRole('checkbox', { name: 'Classificação' })).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: 'Tipo' })).toBeNull();
+
+    // The checkbox that IS on offer produces a column.
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Nome' }));
+    expect(screen.getAllByRole('columnheader').map((th) => th.textContent)).toEqual([
+      'Classificação',
+      'Nome',
+    ]);
+  });
+
   it('reorders columns via the picker and persists the new order', () => {
     wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
     // Default order follows the schema: Nome, Tipo, Observacoes.
@@ -724,6 +764,193 @@ describe('TableView', () => {
         ),
       ).toThrow(/param "tipo"/);
       spy.mockRestore();
+    });
+
+    it('takes the default column set from meta.defaultQuery.columns', () => {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' }],
+              limit: 50,
+              columns: ['tipo'],
+            },
+          }}
+        />,
+      );
+      const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
+      expect(headers).toContain('Tipo');
+      expect(headers).not.toContain('Nome');
+    });
+
+    it('narrows the pipeline projection to meta.defaultQuery.columns', () => {
+      // The column set IS the `select()` projection — Enterprise bills data
+      // scanned, which is why the declaration lives on defaultQuery.
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' }],
+              limit: 50,
+              columns: ['nome'],
+            },
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ select: ['nome'] }),
+      );
+    });
+
+    it('lets the defaultColumns prop override meta.defaultQuery.columns', () => {
+      // One meta can back several screens with different column sets — e.g.
+      // integracaoMeta serves /canais/balcao, /mercado-livre and /whatsapp.
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          defaultColumns={['tipo']}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' }],
+              limit: 50,
+              columns: ['nome'],
+            },
+          }}
+        />,
+      );
+      const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
+      expect(headers).toContain('Tipo');
+      expect(headers).not.toContain('Nome');
+    });
+  });
+
+  describe('forcedOrderBy', () => {
+    const metaBase = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+    const recencyMeta = {
+      ...metaBase,
+      defaultQuery: { orderBy: [{ field: 'observacoes', direction: 'desc' as const }], limit: 50 },
+    };
+
+    it('overrides meta.defaultQuery.orderBy', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={recencyMeta}
+          forcedOrderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'nome', direction: 'asc' }] }),
+      );
+    });
+
+    it('outranks a user header sort', () => {
+      // A header sort would break the same inequality/orderBy coupling the
+      // forced sort exists to satisfy, so it must NOT win.
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={recencyMeta}
+          forcedOrderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      // The forced sort is what reaches Firestore (not `recencyMeta`'s)...
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'nome', direction: 'asc' }] }),
+      );
+      fireEvent.click(screen.getByText('Tipo'));
+      // ...and clicking a header never issues the sort the user asked for.
+      // (`toggleSort` drops the click outright — see the next case for why.)
+      expect(buildPipelineSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'tipo', direction: 'asc' }] }),
+      );
+    });
+
+    it('makes header clicks inert instead of queueing a delayed re-sort', () => {
+      // Recording the click would change nothing NOW and then silently re-sort
+      // the list the moment the forced sort clears — a jump with no visible
+      // cause. Assert the click is dropped, not just outranked: clearing the
+      // forced sort must return to the DECLARED default, not to 'tipo'.
+      const { rerender } = wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={recencyMeta}
+          forcedOrderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Tipo'));
+      buildPipelineSpy.mockClear();
+      rerender(
+        <MantineTestProvider>
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={recencyMeta}
+          />
+        </MantineTestProvider>,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
+      );
+      expect(buildPipelineSpy).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'tipo', direction: 'asc' }] }),
+      );
+    });
+
+    it('falls back to the declared default once cleared', () => {
+      const { rerender } = wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={recencyMeta}
+          forcedOrderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      buildPipelineSpy.mockClear();
+      rerender(
+        <MantineTestProvider>
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={recencyMeta}
+          />
+        </MantineTestProvider>,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
+      );
     });
   });
 });

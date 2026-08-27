@@ -1,12 +1,12 @@
 /**
- * Thin typed client for the WhatsApp Cloud API. Consumed from
- * `apps/integrations` (server-side) when an operator sends an outbound
- * message, or by Cloud Functions reacting to webhook events.
- *
- * The Flutter app currently writes Mensagem documents to Firestore and
- * a Python Cloud Function pushes them to WhatsApp. This client exists
- * for the Next-side equivalent path (e.g. the inbox replying directly
- * via the API) and remains optional during the migration.
+ * Thin typed client for the WhatsApp Cloud API — the transport for this
+ * repo's WhatsApp channel, consumed server-side from `apps/whatsapp`:
+ * `dispatchOutbound` sends through it (driven by the `sendOutbound`
+ * `onDocumentCreated` trigger and the `reprocessStaleOutbound` sweep),
+ * `lib/whatsapp/media.ts` resolves and downloads inbound media with it,
+ * and the health probe plus the `/registro` and `/verificacao` routes
+ * drive the number's registration state. It is a REQUIRED dependency of
+ * the live path, not an optional migration-era alternative.
  *
  * Media URL resolution (`getMediaData`) and download (`downloadMedia`)
  * land with #527 for the inbound pipeline (caching received media);

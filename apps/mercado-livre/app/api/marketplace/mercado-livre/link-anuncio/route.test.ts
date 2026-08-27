@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   resolveChannelContext: vi.fn(),
   createApi: vi.fn(),
   getUserProductFamily: vi.fn(),
+  searchItemsByUserProduct: vi.fn(),
   getItem: vi.fn(),
   docRef: vi.fn(),
 }));
@@ -22,8 +23,8 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
@@ -49,6 +50,7 @@ const CONTA = 'int-1';
 const PRODUTO = 'prod-1';
 const LINK = 'link-1';
 const FAMILIA = '6264141844942250';
+const SELLER = 4242;
 
 function req(body: unknown): Request {
   return new Request('http://localhost:3006/api/marketplace/mercado-livre/link-anuncio', {
@@ -71,12 +73,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
   h.resolveChannelContext.mockResolvedValue({ accessToken: 'AT' });
-  h.loadCtx.mockResolvedValue({ conta: {}, resolveChannelContext: h.resolveChannelContext });
+  h.loadCtx.mockResolvedValue({
+    // The família branch searches items under the conta's own ML id.
+    conta: { user_id: SELLER },
+    resolveChannelContext: h.resolveChannelContext,
+  });
   h.createApi.mockReturnValue({
     getUserProductFamily: h.getUserProductFamily,
+    searchItemsByUserProduct: h.searchItemsByUserProduct,
     getItem: h.getItem,
   });
   h.getUserProductFamily.mockResolvedValue({ user_products_ids: ['MLBU1'] });
+  h.searchItemsByUserProduct.mockResolvedValue({ results: ['MLB999'] });
   h.getItem.mockResolvedValue({ id: 'MLB999', permalink: 'https://ml/MLB999' });
   seedLink({
     contaOuterRef: `documents/integracao/${CONTA}`,
@@ -86,12 +94,34 @@ beforeEach(() => {
 });
 
 describe('POST /api/marketplace/mercado-livre/link-anuncio', () => {
-  it('answers the public page of a User-Products family', async () => {
+  it('answers a buyable ITEM page for a User-Products family', async () => {
     const res = await POST(req(validBody));
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ url: 'https://www.mercadolivre.com.br/up/MLBU1' });
+    // The item's own permalink — never `/up/<MLBU>`, which names a product with
+    // no sale condition and renders indisponível.
+    expect(await res.json()).toEqual({ url: 'https://ml/MLB999' });
     expect(h.getUserProductFamily).toHaveBeenCalledWith(FAMILIA);
+    expect(h.searchItemsByUserProduct).toHaveBeenCalledWith(SELLER, ['MLBU1'], {
+      limit: 1,
+      offset: 0,
+      status: 'active',
+    });
+  });
+
+  it('409s when the conta carries no ML user_id', async () => {
+    // A connection that never identified itself, not a dead anúncio — 404 would
+    // send the operator hunting for a listing that is fine.
+    h.loadCtx.mockResolvedValue({
+      conta: { user_id: null },
+      resolveChannelContext: h.resolveChannelContext,
+    });
+
+    const res = await POST(req(validBody));
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain('user_id');
+    expect(h.getUserProductFamily).not.toHaveBeenCalled();
   });
 
   it('answers a legacy listing without asking ML anything', async () => {
@@ -113,6 +143,7 @@ describe('POST /api/marketplace/mercado-livre/link-anuncio', () => {
     // it just no longer exists, and there is no page to open.
     const gone = new MercadoLivreHttpError('ML 404: not found', 404, null);
     h.getUserProductFamily.mockRejectedValue(gone);
+    h.searchItemsByUserProduct.mockRejectedValue(gone);
     h.getItem.mockRejectedValue(gone);
 
     expect((await POST(req(validBody))).status).toBe(404);

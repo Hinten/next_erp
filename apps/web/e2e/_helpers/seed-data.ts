@@ -1355,6 +1355,11 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     ultimaModificacao: Date.now(),
   });
   batch.set(db().collection('produtos').doc(produtoId), {
+    // Firestore `orderBy` SKIPS docs missing the field, and /produtos now
+    // defaults to `ultimaModificacao desc` (#159) — an unstamped fixture is
+    // invisible in the list. Admin `.set()` bypasses Zod, so the schema
+    // default cannot fill this in for us.
+    ultimaModificacao: Date.now(),
     nome: produtoNome,
     sku: produtoSku,
     codPai: null,
@@ -1487,6 +1492,7 @@ export async function seedPedidoEstoqueFixtures(prefix: string): Promise<{
     dataCadastro: now,
   });
   batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: Date.now(),
     nome: produtoId,
     sku: `${prefix.toUpperCase().replace(/-/g, '_')}_EST_001`,
     codPai: null,
@@ -1721,6 +1727,7 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
     dataCadastro: now,
   });
   batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: Date.now(),
     nome: produtoId,
     sku,
     codPai: null,
@@ -2441,6 +2448,7 @@ export async function seedProdutoComVariacoes(
     .collection('produtos')
     .doc(produtoId)
     .set({
+      ultimaModificacao: Date.now(),
       nome: `${prefix}-pai`,
       sku: `${prefix.toUpperCase().replace(/-/g, '_')}_PAI`,
       paiId: null,
@@ -2483,6 +2491,7 @@ export async function seedProdutoComFilho(prefix: string): Promise<{
   const childSku = `${prefix.toUpperCase().replace(/-/g, '_')}_PAI_P`;
   const now = new Date().toISOString();
   const base = {
+    ultimaModificacao: Date.now(),
     publicado: true,
     ehKit: false,
     ehKitVirtual: false,
@@ -2526,6 +2535,7 @@ export async function seedComponenteKit(
   const nome = `${prefix}-${suffix}`;
   const sku = `${prefix.toUpperCase().replace(/-/g, '_')}_${suffix.toUpperCase()}`;
   await db().collection('produtos').doc(id).set({
+    ultimaModificacao: Date.now(),
     nome,
     sku,
     custo,
@@ -2558,6 +2568,7 @@ export async function seedKitReferencing(
     .collection('produtos')
     .doc(kitId)
     .set({
+      ultimaModificacao: Date.now(),
       nome: kitNome,
       sku: `${prefix.toUpperCase().replace(/-/g, '_')}_KIT`,
       paiId: null,
@@ -2628,6 +2639,7 @@ export async function seedKitEstoqueFixtures(prefix: string): Promise<{
     .collection('produtos')
     .doc(kitId)
     .set({
+      ultimaModificacao: Date.now(),
       nome: `${prefix}-kit`,
       sku: `${prefix.toUpperCase().replace(/-/g, '_')}_KIT`,
       paiId: null,
@@ -2686,6 +2698,7 @@ export async function seedKitParaGerar(prefix: string): Promise<{
   const fake = (v: string) => `documents/grupoDeVariacoes/${grupoTam}/variacoes/${v}`;
   const sku = (s: string) => `${prefix.toUpperCase().replace(/-/g, '_')}_${s}`;
   const base = {
+    ultimaModificacao: Date.now(),
     publicado: true,
     ehKitVirtual: false,
     ofereceFreteGratis: false,
@@ -2798,6 +2811,7 @@ export async function seedProdutoMlPublicado(
   const now = Date.now();
   const batch = db().batch();
   batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: Date.now(),
     nome,
     sku: `${prefix.toUpperCase().replace(/-/g, '_')}_ML`,
     publicado: true,
@@ -2844,6 +2858,108 @@ export async function seedProdutoMlPublicado(
   );
   await batch.commit();
   return { produtoId, nome, mlItemId };
+}
+
+/**
+ * Seed a produto published as a **User-Products FAMILY** (#1142): a parent link
+ * whose `id` is ML's numeric family key, plus one `variacaoMercadoLivre` member
+ * per variation — each with its own `itemId` and its own raw ML status, which is
+ * where a family's real state lives.
+ *
+ * ⚠️ The member links go under the PARENT produto here, not under variation
+ * children. Publish writes them under each child, but the editor reads them by
+ * `produtoMercadoLivreOuterRef` through a collection-group query, so the parent
+ * is a valid — and much cheaper — place to seed them: no child produtos to
+ * create, and none to sweep afterwards. The one thing that must be faithful is
+ * the ref, because that is the key the query matches on.
+ *
+ * The statuses are deliberately DIFFERENT from each other and from the parent's,
+ * so an assertion cannot pass by reading the family summary instead of the
+ * member rows.
+ */
+export async function seedProdutoMlFamilia(
+  prefix: string,
+  integracaoId: string,
+): Promise<{
+  produtoId: string;
+  familyId: string;
+  membros: Array<{ itemId: string; cor: string }>;
+}> {
+  const produtoId = `${prefix}-familia`;
+  const familyId = '6264141844942250';
+  const membros = [
+    { itemId: 'MLB4000000001', cor: 'Azul', status: 'active', sub: [] as string[] },
+    { itemId: 'MLB4000000002', cor: 'Verde', status: 'paused', sub: ['out_of_stock'] },
+  ];
+  const now = Date.now();
+  const batch = db().batch();
+  batch.set(db().collection('produtos').doc(produtoId), {
+    ultimaModificacao: now,
+    nome: produtoId,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_FAM`,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    paiId: null,
+    ordem: null,
+    timestamp: new Date().toISOString(),
+    integracoesComProduto: [integracaoId],
+  });
+  batch.set(
+    db().collection('produtos').doc(produtoId).collection('produtoMercadoLivre').doc(familyId),
+    {
+      contaOuterRef: `documents/integracao/${integracaoId}`,
+      channels: ['marketplace'],
+      estado: 'p',
+      // ⚠️ The FAMILY id, not an item id — that is the shape that made a
+      // member's status unreachable before #1142.
+      id: familyId,
+      sku: null,
+      descricao: null,
+      site_id: 'MLB',
+      title: produtoId,
+      category_id: 'MLB31447',
+      condition: 'new',
+      listing_type_id: 'gold_special',
+      crossdocking: 0,
+      freteGratis: false,
+      precoPublicado: 79.9,
+      tarifaFrete: null,
+      comissao: null,
+      isUserProductModel: true,
+      video_id: null,
+      attributes: null,
+      errors: null,
+      status: 'active',
+      sub_status: [],
+      ultimaModificacao: now,
+      dataCadastro: now,
+    },
+  );
+  for (const m of membros) {
+    batch.set(
+      db().collection('produtos').doc(produtoId).collection('variacaoMercadoLivre').doc(m.itemId),
+      {
+        id: null,
+        itemId: m.itemId,
+        userProductId: null,
+        contaOuterRef: `documents/integracao/${integracaoId}`,
+        produtoVariacaoOuterRef: `documents/produtos/${produtoId}`,
+        produtoMercadoLivreOuterRef: `documents/produtos/${produtoId}/produtoMercadoLivre/${familyId}`,
+        sku: `${m.itemId}-SKU`,
+        attributes: [{ id: 'COLOR', name: 'Cor', value_name: m.cor }],
+        status: m.status,
+        sub_status: m.sub,
+        moderacoes: null,
+      },
+    );
+  }
+  await batch.commit();
+  return { produtoId, familyId, membros: membros.map((m) => ({ itemId: m.itemId, cor: m.cor })) };
 }
 
 /**
@@ -3247,6 +3363,7 @@ export async function docExistsByField(
 /** A produtos doc shaped like the other pedido fixtures (converter-parseable). */
 function checkoutProdutoDoc(nome: string, sku: string, ehKit = false) {
   return {
+    ultimaModificacao: Date.now(),
     nome,
     sku,
     codPai: null,
@@ -3735,6 +3852,7 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
   });
 
   const produtoBody = (nome: string, sku: string, extra: Record<string, unknown> = {}) => ({
+    ultimaModificacao: Date.now(),
     nome,
     sku,
     codPai: null,

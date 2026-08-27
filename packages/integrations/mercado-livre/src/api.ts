@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  MercadoLivreError,
   MercadoLivreHttpError,
   MercadoLivreLabelUnavailableError,
   MercadoLivreNetworkError,
@@ -27,6 +28,7 @@ import {
   type MlClaimSearch,
   type MlDomainDiscovery,
   type MlItem,
+  type MlItemsMultiget,
   type MlItemDescription,
   type MlItemPrices,
   type MlListingPrices,
@@ -64,6 +66,8 @@ import {
   itemDescriptionSchema,
   itemPricesSchema,
   itemSchema,
+  ML_MULTIGET_MAX_IDS,
+  itemsMultigetSchema,
   listingPricesSchema,
   migrationLiveListingSchema,
   mlBillingInfoSchema,
@@ -140,8 +144,11 @@ export interface MlShipmentLabelResult {
   readonly contentType: string | null;
 }
 
-/** Raw file bytes from `downloadClaimAttachment` (claims import, Step 14). */
-export interface MlClaimAttachmentDownload {
+/**
+ * Raw file bytes from either attachment endpoint — `downloadClaimAttachment`
+ * (claims) or `downloadPostSaleAttachment` (post-sale messages).
+ */
+export interface MlAttachmentDownload {
   readonly bytes: Uint8Array;
   readonly contentType: string | null;
 }
@@ -173,6 +180,24 @@ export interface MercadoLivreApi {
    */
   criarUsuarioTeste(siteId: string): Promise<MlTestUser>;
   getItem(id: string): Promise<MlItem>;
+  /**
+   * `GET /items?ids=<csv>&attributes=<csv>` — ML's **Multiget**: up to
+   * {@link ML_MULTIGET_MAX_IDS} items in one request, each entry carrying its own
+   * status code (see {@link itemsMultigetSchema} for why `code` must be read).
+   *
+   * `attributes` trims the response to the named fields. Omit it for whole items
+   * — but prefer naming them: this exists to make a bulk check affordable, and an
+   * unfiltered multiget of 20 full listings is a large body for two fields.
+   *
+   * ⚠️ Passing more than {@link ML_MULTIGET_MAX_IDS} ids throws `MercadoLivreError`
+   * BEFORE the request. ML itself does not error on an over-long multiget — it
+   * TRUNCATES, so the answer silently describes a prefix — and a caller deciding
+   * what to close or delete from that difference would act on a set it only
+   * partly verified. "Chunk at the call site" was a convention held in this
+   * comment; the refusal makes it a property of the seam. Chunk at
+   * {@link ML_MULTIGET_MAX_IDS}.
+   */
+  getItemsByIds(ids: readonly string[], attributes?: readonly string[]): Promise<MlItemsMultiget>;
   /**
    * `GET /moderations/last_moderation/{referenceId}` — the ACTIVE moderation(s)
    * on one element, with ML's own REASON and REMEDY texts (#1087).
@@ -282,11 +307,19 @@ export interface MercadoLivreApi {
    * `paging.total`. A caller that needs completeness — the publish orphan sweep
    * decides what to CLOSE from this — must pass an explicit `limit`/`offset` and
    * check `paging` (see `resolveFamilyItemIds`).
+   *
+   * `status` is ML's own listing-state filter on this endpoint (*Busca de itens*
+   * → "Por estado"), narrowing the answer to e.g. the `active` members of a
+   * family. ⚠️ A caller must still tolerate an EMPTY result when it passes one:
+   * ML combining two filters is not something this repo can exercise (no
+   * sandbox), so a filtered search that comes back empty means "no such member
+   * OR the filter was not honoured", and the only safe reading is to retry
+   * unfiltered (`resolveAnuncioUrl`).
    */
   searchItemsByUserProduct(
     sellerId: number,
     userProductIds: readonly string[],
-    page?: { limit?: number; offset?: number },
+    page?: { limit?: number; offset?: number; status?: string },
   ): Promise<MlUserProductItemsSearch>;
   /**
    * `GET /user-products/{userProductId}/stock` — the per-location stock of a
@@ -585,6 +618,17 @@ export interface MercadoLivreApi {
    * is sent at all — which would refund half the order by omission.
    */
   partialRefundClaim(claimId: number, percentage: number): Promise<MlExpectedResolution[]>;
+  /**
+   * `GET …/claims/{id}/expected-resolutions` — what each party WANTS out of the
+   * claim, and whether it is `pending` / `accepted` / `rejected`.
+   *
+   * ⚠️ Read-side counterpart of the four resolution POSTs, and the one an
+   * operator needs FIRST: choosing between refund, partial refund and
+   * allow-return without knowing what the buyer asked for is guessing. The
+   * POSTs already return this same array as their write result.
+   */
+  getClaimExpectedResolutions(claimId: number): Promise<MlExpectedResolution[]>;
+
   /** `GET /post-purchase/v1/claims/search` — paged claims; only provided params are sent. */
   searchClaims(params: {
     status?: string;
@@ -597,7 +641,23 @@ export interface MercadoLivreApi {
    * a claim-message attachment as raw bytes (legacy `getAttachment`,
    * api.dart:1533-1539). The `filename` ML issues is the download key.
    */
-  downloadClaimAttachment(claimId: number, filename: string): Promise<MlClaimAttachmentDownload>;
+  downloadClaimAttachment(claimId: number, filename: string): Promise<MlAttachmentDownload>;
+  /**
+   * `GET /messages/attachments/{id}?tag=post_sale&site_id=MLB` — a post-sale
+   * message attachment as raw bytes.
+   *
+   * ⚠️ NOT symmetric with the claims endpoint, in three ways that each cost a
+   * round trip to discover:
+   *  - `site_id` is a REQUIRED query param here (omitting it is a documented
+   *    400, `Invalid site_id`); the claims endpoint has no such param.
+   *  - the id is the attachment's opaque `filename` from
+   *    `message_attachments[]` (`<userId>_<uuid>.<ext>`), never
+   *    `original_filename`.
+   *  - ML documents NO 404 for this route — only 400 and 500 — so a
+   *    permanently missing file arrives as a 500. The caller classifies any
+   *    non-2xx as deterministic and skips; see `orderMessageAttachments.ts`.
+   */
+  downloadPostSaleAttachment(attachmentId: string): Promise<MlAttachmentDownload>;
 
   /**
    * `GET /missed_feeds?app_id=&limit=&offset=[&topic=]` (#812) — the
@@ -864,15 +924,18 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
    * the caller can tell "empty body" from a genuine non-2xx) instead of handing
    * the importer a zero-byte file to upload.
    */
-  async function downloadClaimAttachment(
-    claimId: number,
-    filename: string,
-  ): Promise<MlClaimAttachmentDownload> {
+  /**
+   * The shared half of both attachment downloads: Bearer auth, network retry,
+   * error mapping and the empty-body guard. ONE implementation on purpose —
+   * the guard is the part most easily got wrong, and a 2xx-with-no-bytes is
+   * thrown as an HTTP error CARRYING the 2xx status so the caller can tell
+   * "empty body" from a genuine non-2xx, instead of being handed a zero-byte
+   * file to upload.
+   */
+  async function downloadAnexo(url: string): Promise<MlAttachmentDownload> {
     const token = await config.getAccessToken();
     const res = await fetchWithNetworkRetry(
-      buildUrl(
-        `/post-purchase/v1/claims/${claimId}/attachments/${encodeURIComponent(filename)}/download`,
-      ),
+      url,
       {
         method: 'GET',
         headers: {
@@ -888,6 +951,37 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       throw new MercadoLivreHttpError('O Mercado Livre retornou um anexo vazio.', res.status, null);
     }
     return { bytes, contentType: res.headers.get('content-type') };
+  }
+
+  /**
+   * Binary download for claim-message attachments. The token rides the Bearer
+   * header — NEVER the legacy `access_token` query param.
+   */
+  function downloadClaimAttachment(
+    claimId: number,
+    filename: string,
+  ): Promise<MlAttachmentDownload> {
+    return downloadAnexo(
+      buildUrl(
+        `/post-purchase/v1/claims/${claimId}/attachments/${encodeURIComponent(filename)}/download`,
+      ),
+    );
+  }
+
+  /**
+   * Binary download for post-sale MESSAGE attachments.
+   *
+   * ⚠️ `site_id` is REQUIRED — ML answers a documented 400 (`Invalid site_id`)
+   * without it. `MLB` is hardcoded to match the two `siteId: 'MLB'` call sites
+   * above; this backend serves one site.
+   */
+  function downloadPostSaleAttachment(attachmentId: string): Promise<MlAttachmentDownload> {
+    return downloadAnexo(
+      buildUrl(`/messages/attachments/${encodeURIComponent(attachmentId)}`, {
+        tag: 'post_sale',
+        site_id: 'MLB',
+      }),
+    );
   }
 
   return {
@@ -923,6 +1017,29 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     // docs make a point of the flag and its absence looks like an omission.
     getLastModeration: (referenceId) =>
       request('GET', `/moderations/last_moderation/${referenceId}`, mlModerationsSchema),
+    // `async` so the refusal below REJECTS rather than throwing synchronously:
+    // the signature promises a `Promise`, and a caller writing
+    // `getItemsByIds(x).catch(…)` would otherwise take an uncaught exception at
+    // the call site instead. The one caller `await`s inside a `try`, which hides
+    // the difference — which is exactly why it is worth not depending on.
+    getItemsByIds: async (ids, attributes) => {
+      // Refuse locally rather than let ML answer for a prefix. A silent prefix is
+      // the failure nobody notices, and the one caller reads this to decide what
+      // to CLOSE — see `sweepRemovedMembers`.
+      if (ids.length > ML_MULTIGET_MAX_IDS) {
+        throw new MercadoLivreError(
+          `multiget aceita no máximo ${String(ML_MULTIGET_MAX_IDS)} ids (recebeu ${String(ids.length)})`,
+        );
+      }
+      return request('GET', '/items', itemsMultigetSchema, {
+        query: {
+          ids: ids.join(','),
+          ...(attributes != null && attributes.length > 0
+            ? { attributes: attributes.join(',') }
+            : {}),
+        },
+      });
+    },
     getPrices: (itemId) => request('GET', `/items/${itemId}/prices`, itemPricesSchema),
     getOrder: (id) => request('GET', `/orders/${id}`, orderSchema),
     getOrderResponse: async (id) => {
@@ -988,6 +1105,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
           // when the caller does not care, keeping the legacy request shape.
           ...(page?.limit != null ? { limit: String(page.limit) } : {}),
           ...(page?.offset != null ? { offset: String(page.offset) } : {}),
+          // Same rule: absent unless asked for, so the existing callers'
+          // request shape is byte-identical.
+          ...(page?.status != null ? { status: page.status } : {}),
         },
       }),
     getUserProductStock: async (userProductId) => {
@@ -1183,11 +1303,18 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         mlExpectedResolutionsSchema,
         { body: { percentage } },
       ),
+    getClaimExpectedResolutions: (claimId) =>
+      request(
+        'GET',
+        `/post-purchase/v1/claims/${claimId}/expected-resolutions`,
+        mlExpectedResolutionsSchema,
+      ),
     getClaimReason: (reasonId) =>
       request('GET', `/post-purchase/v1/claims/reasons/${reasonId}`, mlClaimReasonSchema),
     searchClaims: (params) =>
       request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, { query: params }),
     downloadClaimAttachment,
+    downloadPostSaleAttachment,
 
     // `buildUrl` drops every `undefined` query value, so an omitted `topic` /
     // `limit` / `offset` simply does not reach the URL — do NOT add `?? 0`
@@ -1254,8 +1381,20 @@ async function parseOk<T>(res: Response, schema: z.ZodType<T>): Promise<T> {
   }
   const result = schema.safeParse(parsed);
   if (!result.success) {
+    // ⚠️ The field names go in the MESSAGE, not only in `issues` — mirroring
+    // `parseTestUser` above. `issues` reaches a log line and nothing else: the
+    // notification pipeline persists `err.message` ALONE into the failures doc
+    // (`persistFailure`, pipeline.ts:215) and the sweep marks with `err.message`
+    // too (pipeline.ts:368). So the durable record of a parked notification —
+    // precisely the artifact that was useless in #1087, saying only "formato
+    // inesperado" while a quoted `order_id` stopped a payment importing — carries
+    // whatever is in this string and nothing more.
+    //
+    // Paths are field names and carry no value, which is what makes this safe;
+    // the raw body must never end up here (see the non-JSON branch above, #1015).
+    const campos = [...new Set(result.error.issues.map((i) => i.path.join('.') || '(raiz)'))];
     throw new MercadoLivreValidationError(
-      'Resposta do Mercado Livre em formato inesperado.',
+      `Resposta do Mercado Livre em formato inesperado. Campos inválidos: ${campos.join(', ')}.`,
       result.error.issues,
     );
   }

@@ -7,7 +7,6 @@ import {
   Button,
   Card,
   Group,
-  NumberInput,
   Stack,
   Table,
   Text,
@@ -36,6 +35,7 @@ import {
   type DevolucaoEditRow,
 } from './devolucaoForm';
 import { OrigemPedidoPicker, type PickedOrigem } from './OrigemPedidoPicker';
+import { DecimalInput } from '@delfrance/ui';
 
 const brl = (n: number): string =>
   n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -247,16 +247,15 @@ function DevolucaoRowEditor({
         )}
       </Table.Td>
       <Table.Td>
-        <NumberInput
-          aria-label={`Quantidade devolvida de ${row.nome || 'item'}`}
+        <DecimalInput
+          ariaLabel={`Quantidade devolvida de ${row.nome || 'item'}`}
           value={row.quantidade}
-          onChange={(v) => {
-            const n = typeof v === 'number' ? v : Number(v);
-            onUpdate(row.rowId, { quantidade: Number.isFinite(n) ? n : 0 });
-          }}
+          onChange={(n) => onUpdate(row.rowId, { quantidade: n ?? 0 })}
           min={0}
           max={row.maxQty ?? undefined}
           decimalScale={3}
+          // `max` is the ONLY guard against returning more than was sold —
+          // nothing downstream re-checks it, so the clamp must stay strict.
           clampBehavior="strict"
           disabled={disabled || row._delete}
           w={96}

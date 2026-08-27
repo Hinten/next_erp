@@ -68,6 +68,20 @@ export interface MercadoLivrePublicarResult {
   orfaosEncerrados?: string[];
 }
 
+/** One member of a re-verified User-Products family (#1142). */
+export interface MercadoLivreReverificarMembro {
+  itemId: string;
+  memberDocId: string;
+  /**
+   * Did ML answer for this member? `false` means its stored status still stands.
+   * ⚠️ Not the same as `status: 'closed'` — an unreadable member is unknown.
+   */
+  lido: boolean;
+  status: string | null;
+  subStatus: string[] | null;
+  enviavel: boolean;
+}
+
 export interface MercadoLivreReverificarResult {
   /** Old-shape estado code derived from the listing's fresh ML status. */
   estado: string;
@@ -76,6 +90,16 @@ export interface MercadoLivreReverificarResult {
   subStatus: string[] | null;
   /** Whether the stock sweep will send to this listing again. */
   enviavel: boolean;
+  /**
+   * Present only for a User-Products FAMILY, one entry per member — the level at
+   * which a family actually has a status. The four fields above are the FOLD
+   * over these, which is all the parent link can carry.
+   *
+   * ⚠️ Only used for the toast's wording. The per-variation table reads the
+   * member links from Firestore directly and repaints from the live snapshot, so
+   * it does not depend on this and shows the same values after a reload.
+   */
+  membros?: MercadoLivreReverificarMembro[];
 }
 
 export interface MercadoLivreImportarResult {
@@ -349,6 +373,61 @@ export interface MercadoLivreTiposAnuncio {
 }
 
 /** What a successful ML chat reply reports back. */
+/** One party's stated expectation on a claim. */
+export interface MercadoLivreExpectativaReclamacao {
+  playerRole: string | null;
+  expectedResolution: string | null;
+  status: string | null;
+}
+
+/** A seller action ML still offers, with its SLA clock. */
+export interface MercadoLivrePrazoAcao {
+  acao: string;
+  obrigatoria: boolean;
+  prazo: string | null;
+}
+
+/** One partial-refund offer, or a recommendation/restriction about them. */
+export interface MercadoLivreOfertaParcial {
+  amount: number | null;
+  percentage: number | null;
+}
+export interface MercadoLivreConselhoParcial {
+  percentage: number | null;
+  reason: string | null;
+  type: string | null;
+}
+
+/**
+ * Live state of one Mercado Livre claim.
+ *
+ * ⚠️ **A snapshot, never a cache.** `acoesDisponiveis` is ML's answer to "what
+ * may this seller do right now", derived from the claim's stage and status, and
+ * it empties as the claim closes. Anything rendered from it has to be refetched
+ * rather than remembered.
+ */
+export interface MercadoLivreReclamacaoEstado {
+  claimId: number;
+  status: string | null;
+  stage: string | null;
+  tipo: string | null;
+  reasonId: string | null;
+  tipoReclamacao: 'PNR' | 'PDD' | null;
+  acoesDisponiveis: string[];
+  prazos: MercadoLivrePrazoAcao[];
+  podeResponder: boolean;
+  motivoSemResposta: string | null;
+  /** `null` WITH `expectativasIndisponiveis` means the read failed, not "none". */
+  expectativas: MercadoLivreExpectativaReclamacao[] | null;
+  expectativasIndisponiveis: boolean;
+  ofertasParciais: {
+    currency_id: string | null;
+    available_offers: MercadoLivreOfertaParcial[];
+    recommendations: MercadoLivreConselhoParcial[];
+    restrictions: MercadoLivreConselhoParcial[];
+  } | null;
+}
+
 export interface MercadoLivreRespostaChat {
   conversaId: string;
   mensagemId: string;
@@ -428,6 +507,14 @@ export interface MercadoLivreUsuariosTesteResult {
   reaproveitados: ('vendedor' | 'comprador')[];
   /** Credential docs deleted from the bootstrap conta — it is now disconnected. */
   credenciaisRemovidas: number;
+  /**
+   * Whether the credential was revoked at all.
+   *
+   * ⚠️ Read THIS, never `credenciaisRemovidas === 0` — a revocation against an
+   * already-empty subcollection also returns zero, so the count cannot tell
+   * "we left this conta connected" from "there was nothing left to delete".
+   */
+  credencialRevogada: boolean;
   conta: { id: number; nickname: string | null };
 }
 
@@ -637,6 +724,14 @@ export interface MercadoLivreClient {
     integracaoId: string;
     produtoId: string;
     listingTypeId?: string;
+    /**
+     * WHICH of the conta's anúncios to publish. A produto can carry more than
+     * one listing on the same account, and the backend's link lookup would
+     * otherwise take the first — silently re-publishing the wrong one. Omit for
+     * a conta whose listing is unambiguous; the backend 404s an id that names a
+     * doc this produto does not have or that belongs to another conta.
+     */
+    linkDocId?: string;
   }): Promise<MercadoLivrePublicarResult>;
   /**
    * Re-read ONE listing from ML and record its real state on the link doc
@@ -837,6 +932,36 @@ export interface MercadoLivreClient {
    * ⚠️ Both are PUBLIC and not undoable from here — a deleted question leaves
    * the listing for everyone, a blocked buyer cannot ask on any listing.
    */
+  /**
+   * Live state of one ML claim (`PERM.incidenteResolucao.read`).
+   *
+   * ⚠️ Never cache the result. `available_actions` is stale the moment it leaves
+   * ML, so the panel refetches rather than remembering.
+   */
+  reclamacaoEstado(input: {
+    integracaoId: string;
+    claimId: number;
+  }): Promise<MercadoLivreReclamacaoEstado>;
+  /**
+   * Run one resolution action on an ML claim
+   * (`PERM.incidenteResolucao.write`).
+   *
+   * ⚠️ **Irreversible and money-moving.** Writes NOTHING locally — the claims
+   * importer stays the single writer of the resulting incidente state, so the
+   * caller learns the outcome by refetching {@link reclamacaoEstado}, which is
+   * ML's own word rather than our guess.
+   *
+   * ⚠️ For `reembolso_parcial` BOTH `valorReembolsoMinor` and
+   * `percentualExibido` are required, and the backend refuses without them:
+   * Mercado Livre treats a MISSING percentage as **50%**.
+   */
+  reclamacaoAcao(input: {
+    integracaoId: string;
+    claimId: number;
+    acao: 'reembolso' | 'reembolso_parcial' | 'aceitar_devolucao' | 'abrir_mediacao';
+    valorReembolsoMinor?: number;
+    percentualExibido?: number;
+  }): Promise<{ ok: boolean; status: string | null; acao: string }>;
   acaoPergunta(input: {
     integracaoId: string;
     conversaId: string;
@@ -871,6 +996,27 @@ export interface MercadoLivreClient {
    * never be called without an explicit confirmation naming that conta.
    */
   criarUsuariosTeste(integracaoId: string): Promise<MercadoLivreUsuariosTesteResult>;
+  /**
+   * Mint ONE additional test user of `role` (PERM.integracao.write) — #1087's
+   * case, where Mercado Pago stopped accepting purchases from the buyer and it
+   * has to be replaced without re-minting the seller that still works.
+   *
+   * ⚠️ **This never reuses.** The stored record of that role is left untouched
+   * and the new account lands at its own doc id, so every call spends one of
+   * the account's ten permanent slots. A retry after a lost response spends a
+   * second one — check the list before clicking again.
+   *
+   * ⚠️ **It needs the real application-owner account connected.** A previous
+   * mint deleted this conta's credential, and the backend resolves a token
+   * before any guard runs, so an unconnected conta answers 409
+   * `ML_REAUTH_REQUIRED`. Pass `manterCredencial` to skip the revocation and
+   * keep the conta connected for a follow-up mint — the default revokes.
+   */
+  criarUsuarioTesteAvulso(
+    integracaoId: string,
+    role: 'vendedor' | 'comprador',
+    opts?: { manterCredencial?: boolean },
+  ): Promise<MercadoLivreUsuariosTesteResult>;
   /**
    * Models the AI settings page may offer, plus what a suggestion would actually
    * use right now (PERM.integracao.read).
@@ -1247,6 +1393,15 @@ export function createMercadoLivreClient(config: {
       ),
     responderConversa: (input) =>
       call<MercadoLivreRespostaChat>('/api/marketplace/mercado-livre/chat/responder', input),
+    reclamacaoEstado: (input) =>
+      call<MercadoLivreReclamacaoEstado>(
+        `/api/marketplace/mercado-livre/reclamacao/estado?integracaoId=${encodeURIComponent(input.integracaoId)}&claimId=${encodeURIComponent(String(input.claimId))}`,
+      ),
+    reclamacaoAcao: (input) =>
+      call<{ ok: boolean; status: string | null; acao: string }>(
+        '/api/marketplace/mercado-livre/reclamacao/acao',
+        input,
+      ),
     acaoPergunta: (input) =>
       call<{ conversaId: string; acao: 'excluir' | 'bloquear' }>(
         '/api/marketplace/mercado-livre/chat/pergunta-acao',
@@ -1259,10 +1414,19 @@ export function createMercadoLivreClient(config: {
     criarUsuariosTeste: (integracaoId) =>
       // `{}` is what makes this a POST — `call` picks the method from the
       // presence of a body. The id stays in the query string so both verbs read
-      // it the same way.
+      // it the same way. An empty body is ALSO the pair bootstrap on the
+      // backend, so this stays correct if the placeholder ever goes away.
       call<MercadoLivreUsuariosTesteResult>(
         `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
         {},
+      ),
+    criarUsuarioTesteAvulso: (integracaoId, role, opts) =>
+      call<MercadoLivreUsuariosTesteResult>(
+        `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+        // ⚠️ Sent explicitly rather than omitted when false: the backend's
+        // schema rejects unknown keys, so a typo here is a 400 rather than a
+        // silently-skipped revocation.
+        { role, manterCredencial: opts?.manterCredencial ?? false },
       ),
     iaModelos: (agenteId) =>
       call<MercadoLivreIaModelos>(

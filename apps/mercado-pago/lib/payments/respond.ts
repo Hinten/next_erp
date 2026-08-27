@@ -4,7 +4,7 @@
  * error; it does not throw) and pass the matched error here. The route's own
  * catch rethrows anything the guard rejects, so unrelated failures surface as
  * 500s instead of being swallowed. Mirrors
- * apps/mercado-livre/lib/marketplace/respond.ts.
+ * apps/mercado-livre/lib/marketplace/core/respond.ts.
  */
 import { NextResponse } from 'next/server';
 import {

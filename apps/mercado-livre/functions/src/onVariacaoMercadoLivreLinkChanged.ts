@@ -1,4 +1,5 @@
 import { logger } from 'firebase-functions';
+import { FUNCTIONS_REGION } from './options';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { variacaoLinkHasListing, variacaoMercadoLivre } from '@delfrance/schemas';
 
@@ -10,7 +11,7 @@ import {
   resolverContaRefDaVariacao,
   sobrevivemVariacoesDoProduto,
   variacaoPodeMudarMembership,
-} from '../../lib/marketplace/integracoesComProduto';
+} from '../../lib/marketplace/anuncios/integracoesComProduto';
 import { getDb } from './lib/admin';
 
 /**
@@ -41,7 +42,7 @@ export const onVariacaoMercadoLivreLinkChanged = onDocumentWritten(
   {
     document: `${variacaoMercadoLivre.meta.collectionPath}/{docId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
-    region: process.env.FUNCTIONS_REGION ?? 'us-east5',
+    region: FUNCTIONS_REGION,
     retry: true,
   },
   async (event) => {

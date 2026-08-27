@@ -3,6 +3,8 @@ import { pedidoSchema, type ItemDoPedido, type Pedido } from '@delfrance/schemas
 import { createFakeDevolucaoPort } from './fakePort';
 import { PedidoConflictError } from './usecases';
 import { PEDIDO_COUNTER_PATH } from './numero';
+import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
+import { DUPLICAR_PEDIDO_STRIP_KEYS } from './duplicar';
 import {
   DEVOLUCAO_INTEGRAL_STRIP_KEYS,
   PEDIDO_PATH,
@@ -361,6 +363,13 @@ describe('criarSaidaComDevolucao', () => {
       entradasRelacionadas: [result.devolucaoId],
     });
 
+    // Both docs written by this transaction carry a creation stamp. `values`
+    // is PedidoForm state, which seeds `timestamp: null` — leaving the saída
+    // undated would sink it to the bottom of the `timestamp desc` /pedidos
+    // default while its own paired devolução sorted normally (#159).
+    expect(docs.get(PEDIDO_PATH(result.saidaId))).toMatchObject({ timestamp: NOW });
+    expect(docs.get(PEDIDO_PATH(result.devolucaoId))).toMatchObject({ timestamp: NOW });
+
     const saida = docs.get(PEDIDO_PATH(result.saidaId));
     expect(saida).toMatchObject({ numero: 'VEN-000011', ehSaida: true });
     expect(saida?.entradasRelacionadas).toEqual([result.devolucaoId]);
@@ -475,6 +484,30 @@ describe('registrarIncidentesDeTroca', () => {
   });
 });
 
+describe('the clone strip lists cover every server-owned estoque field', () => {
+  // ⚠️ This guard exists because the obvious test could not catch the bug.
+  // The strip-key assertion below LOOPS OVER `DEVOLUCAO_INTEGRAL_STRIP_KEYS`
+  // itself, so a key MISSING from that list is simply never checked — it
+  // passed green for as long as the list was wrong.
+  //
+  // Anchoring on `CAMPOS_ESTOQUE_SYNC` instead makes the property real: it is
+  // the independent source of truth for "the estoque sync owns it end to end",
+  // and since #1168 all three are `serverOwnedFields`, so a clone carrying any
+  // of them is a PERMISSION_DENIED on the create rather than a stale value.
+  //
+  // Both clone paths are checked together because they drifted apart:
+  // `duplicar` spreads the constant, `devolucao` hand-listed 8 keys and nulled
+  // `estoqueAplicado` alone.
+  it.each([
+    ['duplicar', DUPLICAR_PEDIDO_STRIP_KEYS],
+    ['devolucao integral', DEVOLUCAO_INTEGRAL_STRIP_KEYS],
+  ])(`%s strips all of CAMPOS_ESTOQUE_SYNC`, (_nome, chaves) => {
+    for (const campo of CAMPOS_ESTOQUE_SYNC) {
+      expect(chaves).toContain(campo);
+    }
+  });
+});
+
 describe('buildDevolucaoIntegralSeed', () => {
   const origin = {
     ehSaida: true,
@@ -488,6 +521,11 @@ describe('buildDevolucaoIntegralSeed', () => {
     saidasRelacionadas: ['y'],
     itensDevolvidos: { o0: { p1: [item('p1', 1, 25)] } },
     estoqueAplicado: { depositoId: 'd1', ehSaida: true },
+    // ⚠️ Both legacy markers, set. An origin the estoque sync has touched is
+    // the ordinary case, and until #1168 they rode through into the clone —
+    // survivable only while they were client-writable.
+    dataIndisponivelEstoque: 1_700_000_000_000_000,
+    dataRemocaoEstoque: 1_700_000_000_000_001,
     observacoesInternas: 'nota interna',
     error: 'boom',
     dtImpressao: 111,
@@ -581,6 +619,11 @@ describe('criarEntradaDevolucaoIntegral', () => {
       numero: 'DEV-000006',
       ehSaida: false,
       saidasRelacionadas: ['o1'],
+      // Stamped at write time (#159). The seed reached the form through
+      // DEVOLUCAO_INTEGRAL_STRIP_KEYS, which drops `timestamp` and re-parses so
+      // the schema default refills it as null — so the coalesce here is what
+      // keeps the entrada out of the bottom of the `timestamp desc` list.
+      timestamp: NOW,
     });
     expect(docs.get(PEDIDO_PATH('o1'))).toMatchObject({
       entradasRelacionadas: ['prev', entradaId],

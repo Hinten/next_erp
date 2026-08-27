@@ -18,18 +18,26 @@
  *    produto fields (`SELLER_SKU`, `WEIGHT`, `SELLER_PACKAGE_*`, `IS_KIT`) so a
  *    round-trip re-publish never sends a duplicated attribute id.
  */
-import { type MlAttribute, attributesWithValue } from './attributes';
+import {
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  type MlAttribute,
+  attributesWithValue,
+} from './attributes';
 import { type EstadoPublicacao, estadoFromMlStatus } from './itemPayload';
 import type { MlItem, MlItemAttribute } from '../types';
 
-/** Attribute ids the publish path re-derives from produto fields (not stored on the link). */
+/**
+ * Attribute ids the publish path re-derives from produto fields (not stored on
+ * the link) — {@link ML_PRODUTO_DERIVED_ATTRIBUTE_IDS} plus one import-only id.
+ *
+ * `IS_KIT` is local rather than shared because it has no publish counterpart:
+ * nothing emits it, so putting it in the shared set would tell the listing editor
+ * to withhold an attribute the ERP does not actually own. Here it is right —
+ * `ehKit` is a produto field, and carrying ML's copy on the link would let the two
+ * disagree.
+ */
 const DERIVED_ATTRIBUTE_IDS: ReadonlySet<string> = new Set([
-  'SELLER_SKU',
-  'WEIGHT',
-  'SELLER_PACKAGE_HEIGHT',
-  'SELLER_PACKAGE_LENGTH',
-  'SELLER_PACKAGE_WIDTH',
-  'SELLER_PACKAGE_WEIGHT',
+  ...ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
   'IS_KIT',
 ]);
 
@@ -75,6 +83,13 @@ export interface MappedMlItem {
   subStatus: string[] | null;
   freteGratis: boolean;
   isUserProductModel: boolean;
+  /**
+   * ML's `user_product_id` — the STOCK identity on a multiorigin
+   * (`warehouse_management`) conta (#706). Present on every item, UP model or
+   * not: before a seller carries `user_product_seller` the relation is simply
+   * 1:1 with the item id.
+   */
+  userProductId: string | null;
   videoId: string | null;
   /** Non-derived attributes, embedded inline on the link (parity). */
   attributes: MlAttribute[];
@@ -133,24 +148,59 @@ export function isKitFromAttributes(attrs: readonly MlItemAttribute[] | null | u
 }
 
 /**
+ * A measurement ML stated in `value_struct`, as the number and unit we store.
+ *
+ * ⚠️ This is the only unit an item response carries. `value_name` bakes it into
+ * the text (`'355 mL'`) and `unit_id` is a field we SEND, never one ML returns —
+ * so without reading the struct, every imported measurement lands unitless and
+ * with its unit stranded inside the value.
+ *
+ * ⚠️ There is deliberately NO fallback that parses the unit out of `value_name`.
+ * This layer sees no category metadata, so it cannot tell a real unit from the
+ * tail of an ordinary string, and a blind split would turn a BRAND of
+ * `'Nike Air'` into `'Nike'` — exactly the silent corruption being fixed. When
+ * ML sends no struct the value is left whole; the editor splits it there, where
+ * `allowedUnits` is on hand to match against.
+ */
+function measurementFromStruct(attr: MlItemAttribute): { value: string; unit: string } | null {
+  const struct = attr.value_struct;
+  if (struct == null) return null;
+  const { number, unit } = struct;
+  if (typeof number !== 'number' || !Number.isFinite(number)) return null;
+  if (typeof unit !== 'string' || unit.trim() === '') return null;
+  return { value: String(number), unit: unit.trim() };
+}
+
+/**
  * Map an item's `attributes[]` to the inline link-doc `attributes`, dropping the
  * ids the publish path re-derives from produto fields (so a re-publish never
  * sends a duplicate id). Empty-value attributes are filtered (publish parity).
+ *
+ * A `number_unit` is stored as the number and the unit APART — the shape the
+ * editor renders and `attributeToMercadoLivre` folds back into `'355 mL'`.
  */
 export function attributesFromItem(
   attrs: readonly MlItemAttribute[] | null | undefined,
 ): MlAttribute[] {
   const mapped: MlAttribute[] = (attrs ?? [])
     .filter((a) => typeof a.id === 'string' && a.id.length > 0 && !DERIVED_ATTRIBUTE_IDS.has(a.id))
-    .map((a) => ({
-      id: a.id as string,
-      value_id: a.value_id ?? null,
-      name: a.name ?? null,
-      value_name: a.value_name ?? null,
-      attribute_group_id: a.attribute_group_id ?? null,
-      attribute_group_name: a.attribute_group_name ?? null,
-      unit_id: a.unit_id ?? null,
-    }));
+    .map((a) => {
+      const measurement = measurementFromStruct(a);
+      return {
+        id: a.id as string,
+        // The struct describes the (number, unit) PAIR, so ML's `value_id` names
+        // that pair too. Splitting them means the id no longer matches the
+        // `value_name` we store, and nothing downstream can rebuild it — drop it
+        // and let ML resolve the value from its name, as it does for every
+        // measurement an operator types.
+        value_id: measurement != null ? null : (a.value_id ?? null),
+        name: a.name ?? null,
+        value_name: measurement?.value ?? a.value_name ?? null,
+        attribute_group_id: a.attribute_group_id ?? null,
+        attribute_group_name: a.attribute_group_name ?? null,
+        unit_id: a.unit_id ?? measurement?.unit ?? null,
+      };
+    });
   return attributesWithValue(mapped);
 }
 
@@ -172,6 +222,34 @@ export function skuGuessFromVariations(item: MlItem): string | null {
     prefixes.add(sku.slice(0, sku.length - 6));
   }
   return prefixes.size === 1 ? [...prefixes][0]! : null;
+}
+
+/**
+ * Does this ML item keep its stock on CHILD produtos rather than on the listing
+ * itself? True for a legacy `variations[]` item (each variation carries its own
+ * quantity) and for every User-Products item (each member becomes a child) —
+ * which is exactly `ownsChildren` in `import.ts`.
+ *
+ * ⚠️ Exported because two components have to agree on it and there is no way to
+ * notice if they stop: the importer (`assembleImportPlan`, through
+ * `args.hasVariations`) and the `items` status-sync both decide from it whether
+ * a parent link may carry a `userProductId` (#706). The answer must be NO
+ * whenever the stock units are the children, because the item in hand is then
+ * one member of a family, and its `user_product_id` on the family's link is the
+ * "one member speaks for the family" mistake #1142 found in four places.
+ *
+ * ⚠️ Deliberately CONSERVATIVE, and the asymmetry is the point. It answers from
+ * the ML ITEM, so it says "children" for a User-Products SINGLE item too — one
+ * whose ERP produto has no variations and whose parent link really is the stock
+ * unit. That costs one `GET /items` the stock send would otherwise skip, once,
+ * and the send stamps the id itself afterwards. The opposite error writes a
+ * MEMBER's id onto a FAMILY's link, which no later read can tell from a real
+ * one. Callers that genuinely know the ERP shape ask a better question instead
+ * — `children.length` in `publish.ts`, `hasVariations` in `importCore.ts`,
+ * `row.children.length` in the sweep.
+ */
+export function itemStockLivesOnChildren(item: MlItem): boolean {
+  return item.family_name != null || (item.variations?.length ?? 0) > 0;
 }
 
 /** Map a fetched simple ML item to the normalized import shape. */
@@ -212,6 +290,7 @@ export function mapMlItemToImport(item: MlItem): MappedMlItem {
     subStatus: item.sub_status ?? null,
     freteGratis: item.shipping?.free_shipping === true,
     isUserProductModel: item.family_name != null,
+    userProductId: item.user_product_id ?? null,
     videoId: item.video_id ?? null,
     attributes: attributesFromItem(item.attributes),
   };

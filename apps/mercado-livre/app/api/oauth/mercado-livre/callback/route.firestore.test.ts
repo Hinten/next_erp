@@ -25,7 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { signState } from '@delfrance/data/admin/oauth-state';
 
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { mercadoLivreOauthState } from '@/lib/marketplace/oauthState';
+import { mercadoLivreOauthState } from '@/lib/marketplace/conta/oauthState';
 
 import { GET } from './route';
 

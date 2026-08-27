@@ -61,6 +61,22 @@ export interface CollectionDefaultQuery {
   orderBy: ReadonlyArray<DefaultQueryOrderBy>;
   /** Initial page size. */
   limit: number;
+  /**
+   * Ordered default column set for the list, by key: either a top-level schema
+   * field or one of the page's `VirtualColumn` keys. Omit to fall back to every
+   * non-opaque schema field followed by every virtual column.
+   *
+   * This lives beside `where`/`orderBy`/`limit` because it is part of the
+   * query's COST, not just its presentation: `TableView` derives the Pipelines
+   * `select()` projection from the visible columns (widened by each visible
+   * virtual column's `dependsOn`), and Enterprise bills data scanned. A page
+   * may still override it with the `defaultColumns` prop — needed where one
+   * meta backs several screens with different column sets.
+   *
+   * NOTE the keys are not statically checkable from this package: virtual
+   * columns are declared in `apps/web`. An unresolvable key renders nothing.
+   */
+  columns?: ReadonlyArray<string>;
 }
 
 /**

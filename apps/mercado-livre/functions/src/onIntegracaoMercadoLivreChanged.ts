@@ -1,4 +1,5 @@
 import { logger } from 'firebase-functions';
+import { FUNCTIONS_REGION } from './options';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { integracaoMeta } from '@delfrance/schemas';
 
@@ -8,8 +9,11 @@ import {
   ehContaMercadoLivre,
   mudouCampoSincronizado,
   sincronizarIntFreteDaConta,
-} from '../../lib/marketplace/intFreteSync';
-import { redriveDeferredForUserId, userIdResolvivel } from '../../lib/marketplace/notificacao';
+} from '../../lib/marketplace/frete/intFreteSync';
+import {
+  redriveDeferredForUserId,
+  userIdResolvivel,
+} from '../../lib/marketplace/notificacoes/notificacao';
 import { getDb } from './lib/admin';
 
 /**
@@ -72,7 +76,7 @@ export const onIntegracaoMercadoLivreChanged = onDocumentWritten(
   {
     document: `${integracaoMeta.collectionPath}/{integracaoId}`,
     database: process.env.FIREBASE_DATABASE_ID ?? 'default',
-    region: process.env.FUNCTIONS_REGION ?? 'us-east5',
+    region: FUNCTIONS_REGION,
     retry: true,
   },
   async (event) => {

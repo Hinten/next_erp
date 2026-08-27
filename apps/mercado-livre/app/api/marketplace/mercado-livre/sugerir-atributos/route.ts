@@ -38,10 +38,16 @@ import { MAX_ANTERIOR, normalizarAnterior } from '@/lib/ai/revisao';
 import { ProdutoNotFoundError, suggestAttributes } from '@/lib/ai/suggestAttributes';
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminBucket, getAdminFirestore } from '@/lib/firebase/admin';
-import { isLeafCategory, projectCategoriaAtributos } from '@/lib/marketplace/categoriaAtributos';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { getCategoriaAtributosCached, getCategoriaCached } from '@/lib/marketplace/mlMetadataCache';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+import {
+  isLeafCategory,
+  projectCategoriaAtributos,
+} from '@/lib/marketplace/categorias/categoriaAtributos';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import {
+  getCategoriaAtributosCached,
+  getCategoriaCached,
+} from '@/lib/marketplace/categorias/mlMetadataCache';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

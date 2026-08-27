@@ -100,6 +100,7 @@ export const grupoDeVariacoesMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'ordem', direction: 'asc' }],
     limit: 50,
+    columns: ['nome', 'codigo', 'ordem', 'permiteFotos'],
   },
 };
 

@@ -65,32 +65,49 @@ export function isStockLatched(link: { estado?: string | null; id?: string | nul
 /**
  * The public URL of a published listing.
  *
- * The two models address listings differently, and the legacy form is a pure
- * string transform — no round trip needed:
+ * Both models resolve to an **item** page — the only ML level that carries a
+ * sale condition, and therefore the only one a buyer can act on:
  *
  *  - **legacy** — `produto.mercadolivre.com.br/MLB-<digits>`; the stored id is
- *    `MLB123`, and the public URL wants the digits with a hyphen.
- *  - **User Products** — `mercadolivre.com.br/up/<user_product_id>`. That id is
- *    per-MEMBER and is not on the link doc (any field we add is dropped the next
- *    time Flutter saves), so it comes from the server. Until it does, linking a
- *    member's own MLB item resolves and redirects, which is why
- *    `firstMemberItemId` is accepted as a fallback.
+ *    `MLB123`, and the public URL wants the digits with a hyphen. A pure string
+ *    transform, no round trip needed.
+ *  - **User Products** — the stored id is `familyId ?? itemId`, and a família id
+ *    addresses nothing public, so the answer comes from the backend
+ *    (`/api/marketplace/mercado-livre/link-anuncio`). `firstMemberItemId` is
+ *    accepted for the case where the caller already knows a member's own MLB
+ *    item, which resolves and redirects with no round trip at all.
+ *
+ * ⚠️ This deliberately does NOT build `mercadolivre.com.br/up/<user_product_id>`,
+ * and neither may anything else. A User Product is a *product*, not an offer, so
+ * that page renders **indisponível** whenever the UP's items are paused or
+ * closed — the bug this function used to have, on a listing that was live and
+ * selling. The server-side ⚠️ in
+ * `apps/mercado-livre/lib/marketplace/anuncios/anuncioUrl.ts` carries ML's own
+ * wording. The temptation is real and now cheap: the link doc gained a
+ * `userProductId` field the day after the original link shipped.
  *
  * Returns null when there is nothing to link to yet.
  */
 export function listingPermalink(
   link: { id?: string | null; isUserProductModel?: boolean | null },
-  opts: { userProductId?: string | null; firstMemberItemId?: string | null } = {},
+  opts: { firstMemberItemId?: string | null } = {},
 ): string | null {
   if (listingModel(link) === 'user-products') {
-    if (opts.userProductId) return `https://www.mercadolivre.com.br/up/${opts.userProductId}`;
     if (opts.firstMemberItemId) return mlbProductUrl(opts.firstMemberItemId);
     return null;
   }
   return link.id ? mlbProductUrl(link.id) : null;
 }
 
-function mlbProductUrl(itemId: string): string | null {
+/**
+ * `produto.mercadolivre.com.br/MLB-<digits>` for ONE item id.
+ *
+ * Exported for the per-variation table (#1142), where each row already holds a
+ * member's own `MLB…` and needs no link-shaped wrapper to turn it into a URL —
+ * a User-Products member IS its own item, which is exactly the case
+ * {@link listingPermalink} cannot answer from a link doc alone.
+ */
+export function mlbProductUrl(itemId: string): string | null {
   const digits = itemId.replace(/\D/g, '');
   return digits ? `https://produto.mercadolivre.com.br/MLB-${digits}` : null;
 }

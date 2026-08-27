@@ -38,7 +38,7 @@ export type {
   DimensionsWeight,
   Me,
 } from '../melhor-envio/types';
-export { isErroredOption } from '../melhor-envio/types';
+export { isErroredOption, parseMePrice } from '../melhor-envio/types';
 
 // Pure request builder (package-vs-volumes) — apps/web composes the
 // calculate request with it before calling `client.calculate`.

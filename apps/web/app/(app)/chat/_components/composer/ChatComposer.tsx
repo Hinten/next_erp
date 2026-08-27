@@ -32,6 +32,7 @@ import { newDocId } from '@/lib/data/newDocId';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { composerGate } from '@/lib/chat/composerGate';
+import { enviaPorRota } from '@/lib/chat/transporteEnvio';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
@@ -47,20 +48,6 @@ import { SendKeySettings } from './SendKeySettings';
 import { AttachmentChips, type PendingAttachment } from './AttachmentChips';
 
 const DRAFT_SAVE_DEBOUNCE_MS = 400;
-
-/**
- * Origens whose reply leaves through the CHANNEL BACKEND (an authenticated HTTP
- * route) rather than by writing a mensagem for a Firestore trigger to transmit.
- *
- * WhatsApp uses the trigger shape, which buys free retries — worth it when
- * failures are transient. Mercado Livre replies are single-shot and their
- * refusals are terminal and operator-actionable, so they go synchronously and
- * the operator sees the real reason with their text still on screen (#533).
- */
-const ORIGENS_ROTA: ReadonlySet<string> = new Set([
-  ORIGEM_CONVERSA.mercadoLivrePerguntas,
-  ORIGEM_CONVERSA.mercadoLivrePedido,
-]);
 
 export interface ChatComposerProps {
   conversaId: string;
@@ -210,10 +197,13 @@ function ComposerInput({
    * Whether this origem sends through the channel BACKEND rather than by
    * writing a mensagem for a trigger to pick up.
    *
-   * Derived from the origem, not from a hardcoded list of channels, so the day
-   * a fourth surface gains a route it changes here and nowhere else.
+   * ⚠️ Genuinely derived now — `TRANSPORTE_ENVIO` is total over the origens, so
+   * the day a fifth surface gains a route it is classified there and nowhere
+   * else. It used to be a hand-kept set right here, and #768 gave `mlclaims` a
+   * route without updating it: every claim reply took the Firestore branch and
+   * was never transmitted.
    */
-  const enviaPorRota = ORIGENS_ROTA.has(conversa.origem);
+  const porRota = enviaPorRota(conversa.origem);
   /**
    * ⚠️ NARROWER than `rules.permiteAnexo` on purpose. That flag states what the
    * CHANNEL accepts (mlped takes one 25 MB file); this states what the composer
@@ -222,7 +212,7 @@ function ComposerInput({
    * then silently drops — the exact #817 failure mode, one layer down.
    * Post-sale attachment upload is tracked separately.
    */
-  const podeAnexar = rules.permiteAnexo && !enviaPorRota;
+  const podeAnexar = rules.permiteAnexo && !porRota;
   const [sendError, setSendError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sendKey, setSendKeyState] = useState<SendKey>('ctrlEnter');
@@ -353,7 +343,7 @@ function ComposerInput({
     setSendError(null);
     setSending(true);
     try {
-      if (enviaPorRota) {
+      if (porRota) {
         // ⚠️ Mercado Livre does NOT go through the Firestore-write path. The
         // reply is single-shot and its refusals are terminal, so the route
         // sends to ML first and only then appends the mensagem — a write here

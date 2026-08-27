@@ -1,11 +1,32 @@
 import { z } from 'zod';
 
+import { wireInt, wireNumber } from '@delfrance/core/wire';
+
 /**
  * Zod shapes for Mercado Livre payloads (OAuth + REST resources). Tolerant by
  * design (user point #3 — ML silently changes fields): unknown keys ride through
  * `.passthrough()`, response fields are mostly `.nullable().optional()`, and only
  * the identifiers we actually key on are required. A field ML renames or drops
  * therefore degrades gracefully instead of throwing.
+ *
+ * ⚠️ **Every numeric field goes through `wireNumber()` / `wireInt()`** (`@delfrance/core/wire`),
+ * never a bare `z.number()`, because ML is inconsistent about whether a number
+ * arrives as a JSON number or as a quoted string — and a `z.number()` that meets
+ * a string rejects the WHOLE resource, not just that field. #1087 is the worked
+ * example: one quoted `order_id` on `GET /collections/{id}` stopped a payment
+ * importing at all. The helper carries the autopsy and the reason
+ * `z.coerce.number()` is not the answer. Enforced by
+ * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`.
+ *
+ * ⚠️ The `z.union([z.number(), z.string()])` fields are the OLDER, per-field form
+ * of the same tolerance and stay as they are. They are not all numeric —
+ * `mlShipmentAddressSchema.street_number` really does carry `'S/N'` and `'123-A'`
+ * — and the id ones exist because every consumer compares them as STRINGS.
+ * Do not "unify" them onto the helper.
+ *
+ * ⚠️ **This file holds RESPONSE schemas only** — there is not one request schema
+ * in it. That is what makes the blanket tolerance above safe: widening a shape
+ * here can never make this ERP SEND a coerced value to ML.
  */
 
 /**
@@ -18,9 +39,9 @@ export const tokenResponseSchema = z
   .object({
     access_token: z.string().min(1),
     token_type: z.string().min(1),
-    expires_in: z.number(),
+    expires_in: wireNumber(),
     scope: z.string().nullable().optional(),
-    user_id: z.number().int().nullable().optional(),
+    user_id: wireInt().nullable().optional(),
     refresh_token: z.string().min(1),
   })
   .passthrough();
@@ -37,7 +58,7 @@ export const tokenErrorSchema = z
     error: z.string().optional(),
     error_description: z.string().optional(),
     message: z.string().optional(),
-    status: z.number().optional(),
+    status: wireNumber().optional(),
   })
   .passthrough();
 export type TokenError = z.infer<typeof tokenErrorSchema>;
@@ -49,7 +70,7 @@ export type TokenError = z.infer<typeof tokenErrorSchema>;
 /** `GET /users/me` (and `/users/{id}`) — only the fields we key on. */
 export const userSchema = z
   .object({
-    id: z.number().int(),
+    id: wireInt(),
     nickname: z.string().nullable().optional(),
     email: z.string().nullable().optional(),
     site_id: z.string().nullable().optional(),
@@ -76,7 +97,7 @@ export type MlUser = z.infer<typeof userSchema>;
  */
 export const testUserSchema = z
   .object({
-    id: z.number().int(),
+    id: wireInt(),
     nickname: z.string().min(1),
     password: z.string().min(1),
     site_status: z.string().nullable().optional(),
@@ -101,6 +122,24 @@ export const itemAttributeSchema = z
     attribute_group_id: z.string().nullable().optional(),
     attribute_group_name: z.string().nullable().optional(),
     unit_id: z.string().nullable().optional(),
+    /**
+     * A `number_unit` measurement, split the way ML stores it.
+     *
+     * ⚠️ This is the ONLY place an item response states the unit. ML answers
+     * `GET /items` with `value_name: '355 mL'` — the unit baked into the text —
+     * and **no `unit_id` at all**; `unit_id` is a field we SEND, not one we get
+     * back. The schema is `.passthrough()`, so this key already survived the
+     * parse and was merely untyped, which is why the import mapper could not
+     * read it and every imported measurement arrived unitless.
+     */
+    value_struct: z
+      .object({
+        number: wireNumber().nullable().optional(),
+        unit: z.string().nullable().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
 export type MlItemAttribute = z.infer<typeof itemAttributeSchema>;
@@ -122,8 +161,8 @@ export const itemVariationSchema = z
   .object({
     // ML has sent numeric and (rarely) string ids over time — accept both.
     id: z.union([z.number(), z.string()]).nullable().optional(),
-    available_quantity: z.number().nullable().optional(),
-    price: z.number().nullable().optional(),
+    available_quantity: wireNumber().nullable().optional(),
+    price: wireNumber().nullable().optional(),
     seller_custom_field: z.string().nullable().optional(),
     /** User-Products model: each variation is its own item. */
     item_relations: z.array(z.unknown()).nullable().optional(),
@@ -147,16 +186,16 @@ export const itemSchema = z
     /** User-Products model — the variation identity lives at the item ROOT (no `variations[]`). */
     attribute_combinations: z.array(itemAttributeSchema).nullable().optional(),
     category_id: z.string().nullable().optional(),
-    price: z.number().nullable().optional(),
+    price: wireNumber().nullable().optional(),
     /** Normal price (promo/`price` may be lower); import uses `base_price ?? price`. */
-    base_price: z.number().nullable().optional(),
-    available_quantity: z.number().nullable().optional(),
+    base_price: wireNumber().nullable().optional(),
+    available_quantity: wireNumber().nullable().optional(),
     condition: z.string().nullable().optional(),
     status: z.string().nullable().optional(),
     /** ML sub-status (`deleted`/`suspended`/`freezed`/`out_of_stock`…) — bot filtering. */
     sub_status: z.array(z.string()).nullable().optional(),
     listing_type_id: z.string().nullable().optional(),
-    seller_id: z.number().int().nullable().optional(),
+    seller_id: wireInt().nullable().optional(),
     seller_custom_field: z.string().nullable().optional(),
     permalink: z.string().nullable().optional(),
     date_created: z.string().nullable().optional(),
@@ -173,6 +212,56 @@ export const itemSchema = z
   })
   .passthrough();
 export type MlItem = z.infer<typeof itemSchema>;
+
+/**
+ * ML's documented Multiget cap (*Busca de itens* → "Multiget": "um máximo de 20
+ * resultados com uma única chamada").
+ *
+ * ⚠️ ML does not error on an over-long multiget — it TRUNCATES, so a caller that
+ * does not chunk gets a silent prefix and, if it is deciding what to DELETE or
+ * CLOSE from the difference, acts on a set it only partly verified. That is why
+ * `getItemsByIds` refuses locally instead of forwarding the request: the trap is
+ * invisible at the ML end, so the seam has to be the one that says no.
+ */
+export const ML_MULTIGET_MAX_IDS = 20;
+
+/**
+ * `GET /items?ids=<csv>&attributes=<csv>` — ML's **Multiget**, capped at 20 ids.
+ *
+ * ⚠️ The response is NOT an array of items. Multiget answers in the *verbose*
+ * envelope — `[{ code, body }, …]`, one entry per requested id, each carrying its
+ * OWN status code — so a partial failure is a 200 overall with a non-200 entry
+ * inside it. A caller that reads `body` without checking `code` treats a missing
+ * or forbidden item as an item with no fields, which for
+ * {@link https://developers.mercadolivre.com.br/pt_br/itens-e-buscas | the docs'}
+ * own example shape is indistinguishable from a real one.
+ *
+ * `body` is modelled narrow on purpose: the only caller asks for two attributes
+ * (`sweepRemovedMembers`' membership check), and `attributes=` makes ML omit
+ * everything else, so reusing `itemSchema` here would claim fields the request
+ * never asked for. `.passthrough()` keeps whatever else a wider caller requests.
+ */
+export const itemsMultigetSchema = z.array(
+  z
+    .object({
+      // `wireInt()`, not `z.number().int()`: ML quoting a number is serializer-level
+      // drift and `parseOk` validates the WHOLE body, so one strict field costs
+      // the entire multiget. Here that would be silent in the worst way — every
+      // entry would fail `code !== 200`, the sweep would confirm nothing, and it
+      // would stop closing anything at all.
+      code: wireInt().nullable().optional(),
+      body: z
+        .object({
+          id: z.string().nullable().optional(),
+          user_product_id: z.string().nullable().optional(),
+        })
+        .passthrough()
+        .nullable()
+        .optional(),
+    })
+    .passthrough(),
+);
+export type MlItemsMultiget = z.infer<typeof itemsMultigetSchema>;
 
 /**
  * `conditions` of one `GET /items/{id}/prices` entry — the applicability
@@ -198,8 +287,8 @@ export const itemPricesEntrySchema = z
   .object({
     id: z.string().nullable().optional(),
     type: z.string().nullable().optional(),
-    amount: z.number().nullable().optional(),
-    regular_amount: z.number().nullable().optional(),
+    amount: wireNumber().nullable().optional(),
+    regular_amount: wireNumber().nullable().optional(),
     currency_id: z.string().nullable().optional(),
     last_updated: z.string().nullable().optional(),
     conditions: itemPricesConditionsSchema.nullable().optional(),
@@ -239,8 +328,8 @@ export const orderItemSchema = z
       .passthrough()
       .nullable()
       .optional(),
-    quantity: z.number().nullable().optional(),
-    unit_price: z.number().nullable().optional(),
+    quantity: wireNumber().nullable().optional(),
+    unit_price: wireNumber().nullable().optional(),
     currency_id: z.string().nullable().optional(),
     element_id: z.union([z.number(), z.string()]).nullable().optional(),
     /**
@@ -281,25 +370,37 @@ export const orderItemSchema = z
 /** `GET /orders/{id}`. Can arrive `206 Partial Content` with `order_items` empty. */
 export const orderSchema = z
   .object({
-    id: z.number().int(),
+    id: wireInt(),
     status: z.string().nullable().optional(),
     date_created: z.string().nullable().optional(),
     last_updated: z.string().nullable().optional(),
-    pack_id: z.number().int().nullable().optional(),
+    pack_id: wireInt().nullable().optional(),
     order_items: z.array(orderItemSchema).nullable().optional(),
-    total_amount: z.number().nullable().optional(),
+    total_amount: wireNumber().nullable().optional(),
     currency_id: z.string().nullable().optional(),
-    buyer: z
-      .object({ id: z.number().int().nullable().optional() })
-      .passthrough()
-      .nullable()
-      .optional(),
-    shipping: z
-      .object({ id: z.number().int().nullable().optional() })
-      .passthrough()
-      .nullable()
-      .optional(),
+    buyer: z.object({ id: wireInt().nullable().optional() }).passthrough().nullable().optional(),
+    shipping: z.object({ id: wireInt().nullable().optional() }).passthrough().nullable().optional(),
     tags: z.array(z.string()).nullable().optional(),
+    /**
+     * The feedback "operação concretizada" flag, surfaced on the order itself.
+     *
+     * ⚠️ It is NOT a shipping status and NOT related to Fulfillment/FULL. ML's
+     * feedback reference defines it as *"Indica se a operação foi ou não foi
+     * concretizada"*, and — the part that makes it load-bearing here — says the
+     * seller's confirmation *"deverá sempre ser aplicada para mudar o status
+     * para entregue em vendas sem Mercado Envios"*. On an order with no
+     * shipment it IS the delivery confirmation, and the only one: the
+     * `delivered`/`not_delivered` TAGS are no longer added automatically
+     * ("o integrador deverá realizar um PUT com a tag correspondente"), so a
+     * delivered sem-envio order still reads `not_delivered` forever.
+     *
+     * ⚠️ `false` does not mean "not delivered yet" — it means the sale did NOT
+     * happen (it requires a `reason` such as `OUT_OF_STOCK`/`BUYER_REGRETS`,
+     * carries `restock_item`, and drives the order back to `status=confirmed`
+     * with the payment refunded). Only `true` is actionable; see
+     * `applyFreteSemEnvioStep`, the single reader.
+     */
+    fulfilled: z.boolean().nullable().optional(),
   })
   .passthrough();
 export type MlOrder = z.infer<typeof orderSchema>;
@@ -310,9 +411,9 @@ export const orderSearchSchema = z
     results: z.array(orderSchema).default([]),
     paging: z
       .object({
-        total: z.number().nullable().optional(),
-        offset: z.number().nullable().optional(),
-        limit: z.number().nullable().optional(),
+        total: wireNumber().nullable().optional(),
+        offset: wireNumber().nullable().optional(),
+        limit: wireNumber().nullable().optional(),
       })
       .passthrough()
       .nullable()
@@ -373,9 +474,9 @@ export const listingPricesSchema = z
   .object({
     listing_type_id: z.string().nullable().optional(),
     /** Commission charged on a sale — the link doc's `comissao`. */
-    sale_fee_amount: z.number().nullable().optional(),
+    sale_fee_amount: wireNumber().nullable().optional(),
     /** Up-front listing fee (0 for the free/classic types). */
-    listing_fee_amount: z.number().nullable().optional(),
+    listing_fee_amount: wireNumber().nullable().optional(),
     currency_id: z.string().nullable().optional(),
   })
   .passthrough();
@@ -413,11 +514,11 @@ export const categoryAttributeSchema = z
     /** `FAMILY` marks an attribute that identifies a User-Products family. */
     hierarchy: z.string().nullable().optional(),
     /** ML's own ordering hint — lower is more important. */
-    relevance: z.number().nullable().optional(),
+    relevance: wireNumber().nullable().optional(),
     tooltip: z.string().nullable().optional(),
     hint: z.string().nullable().optional(),
     /** Max characters ML accepts; over-long values are rejected on publish. */
-    value_max_length: z.number().int().nullable().optional(),
+    value_max_length: wireInt().nullable().optional(),
     default_unit: z.string().nullable().optional(),
     default_unit_id: z.string().nullable().optional(),
     allowed_units: z
@@ -482,14 +583,10 @@ export type MlItemDescription = z.infer<typeof itemDescriptionSchema>;
 /** `GET /packs/{id}` — a cart grouping N orders (1 item-variation each). */
 export const packSchema = z
   .object({
-    id: z.number().int(),
+    id: wireInt(),
     status: z.string().nullable().optional(),
-    orders: z.array(z.object({ id: z.number().int() }).passthrough()).default([]),
-    shipment: z
-      .object({ id: z.number().int().nullable().optional() })
-      .passthrough()
-      .nullable()
-      .optional(),
+    orders: z.array(z.object({ id: wireInt() }).passthrough()).default([]),
+    shipment: z.object({ id: wireInt().nullable().optional() }).passthrough().nullable().optional(),
   })
   .passthrough();
 export type MlPack = z.infer<typeof packSchema>;
@@ -506,8 +603,8 @@ export const mlPaymentChargeDetailSchema = z
       .optional(),
     amounts: z
       .object({
-        original: z.number().nullable().optional(),
-        refunded: z.number().nullable().optional(),
+        original: wireNumber().nullable().optional(),
+        refunded: wireNumber().nullable().optional(),
       })
       .passthrough()
       .nullable()
@@ -519,7 +616,7 @@ export type MlPaymentChargeDetail = z.infer<typeof mlPaymentChargeDetailSchema>;
 /** One entry of `payment.fee_details[]` (legacy `FeeDetailsMercadoLivrePayment`, models.dart:4787-4800) — only `amount` feeds `toPagamento`'s tarifas total; `fee_payer`/`type` ride through `.passthrough()` untyped. */
 export const mlPaymentFeeDetailSchema = z
   .object({
-    amount: z.number().nullable().optional(),
+    amount: wireNumber().nullable().optional(),
   })
   .passthrough();
 export type MlPaymentFeeDetail = z.infer<typeof mlPaymentFeeDetailSchema>;
@@ -527,7 +624,7 @@ export type MlPaymentFeeDetail = z.infer<typeof mlPaymentFeeDetailSchema>;
 /** One entry of `payment.refunds[]` (legacy `MercadoLivreRefund`, models.dart:4813-4845) — only `amount` feeds `toPagamento`'s refund total. */
 export const mlPaymentRefundSchema = z
   .object({
-    amount: z.number().nullable().optional(),
+    amount: wireNumber().nullable().optional(),
   })
   .passthrough();
 export type MlPaymentRefund = z.infer<typeof mlPaymentRefundSchema>;
@@ -541,35 +638,35 @@ export type MlPaymentRefund = z.infer<typeof mlPaymentRefundSchema>;
  */
 export const mlPaymentSchema = z
   .object({
-    id: z.number().int(),
+    id: wireInt(),
     date_created: z.string().nullable().optional(),
     date_approved: z.string().nullable().optional(),
     date_last_updated: z.string().nullable().optional(),
     last_modified: z.string().nullable().optional(),
     reason: z.string().nullable().optional(),
-    transaction_amount: z.number().nullable().optional(),
-    total_paid_amount: z.number().nullable().optional(),
-    shipping_cost: z.number().nullable().optional(),
-    coupon_amount: z.number().nullable().optional(),
+    transaction_amount: wireNumber().nullable().optional(),
+    total_paid_amount: wireNumber().nullable().optional(),
+    shipping_cost: wireNumber().nullable().optional(),
+    coupon_amount: wireNumber().nullable().optional(),
     status: z.string().nullable().optional(),
     /** Consumed by the payments-topic handler (legacy tasks.dart:1172/1176 — NONE-marketplace skip + order-key resolution). */
     marketplace: z.string().nullable().optional(),
     /** Consumed by the payments-topic handler for order-key resolution (legacy tasks.dart:1176). */
     external_reference: z.string().nullable().optional(),
     /** Consumed by the payments-topic handler for order-key resolution (legacy tasks.dart:1176). */
-    order_id: z.number().int().nullable().optional(),
-    installments: z.number().nullable().optional(),
+    order_id: wireInt().nullable().optional(),
+    installments: wireNumber().nullable().optional(),
     payment_type: z.string().nullable().optional(),
     payment_type_id: z.string().nullable().optional(),
     payment_method_id: z.string().nullable().optional(),
-    card_id: z.number().nullable().optional(),
+    card_id: wireNumber().nullable().optional(),
     card: z
       .object({ last_four_digits: z.string().nullable().optional() })
       .passthrough()
       .nullable()
       .optional(),
     authorization_code: z.string().nullable().optional(),
-    marketplace_fee: z.number().nullable().optional(),
+    marketplace_fee: wireNumber().nullable().optional(),
     fee_details: z.array(mlPaymentFeeDetailSchema).nullable().optional(),
     charge_details: z.array(mlPaymentChargeDetailSchema).nullable().optional(),
     charges_details: z.array(mlPaymentChargeDetailSchema).nullable().optional(),
@@ -604,7 +701,7 @@ const mlShipmentEstimatedDateSchema = z
  */
 export const mlShipmentLeadTimeSchema = z
   .object({
-    list_cost: z.number().nullable().optional(),
+    list_cost: wireNumber().nullable().optional(),
     estimated_delivery_limit: mlShipmentEstimatedDateSchema.nullable().optional(),
     estimated_delivery_time: mlShipmentEstimatedDateSchema.nullable().optional(),
   })
@@ -646,7 +743,7 @@ const mlShipmentAddressSchema = z
  */
 export const mlShipmentSchema = z
   .object({
-    id: z.number().int(),
+    id: wireInt(),
     status: z.string().nullable().optional(),
     substatus: z.string().nullable().optional(),
     tracking_number: z.string().nullable().optional(),
@@ -760,8 +857,8 @@ export type MlShipmentSla = z.infer<typeof mlShipmentSlaSchema>;
  */
 export const mlShipmentInvoiceSchema = z
   .object({
-    id: z.number().int().nullable().optional(),
-    shipment_id: z.number().int().nullable().optional(),
+    id: wireInt().nullable().optional(),
+    shipment_id: wireInt().nullable().optional(),
     status: z.string().nullable().optional(),
   })
   .passthrough();
@@ -893,9 +990,9 @@ export const userProductItemsSearchSchema = z
      */
     paging: z
       .object({
-        total: z.number().int().nullable().optional(),
-        limit: z.number().int().nullable().optional(),
-        offset: z.number().int().nullable().optional(),
+        total: wireInt().nullable().optional(),
+        limit: wireInt().nullable().optional(),
+        offset: wireInt().nullable().optional(),
       })
       .passthrough()
       .nullable()
@@ -951,7 +1048,7 @@ export const userProductStockLocationSchema = z
     type: z.string().nullable().optional(),
     store_id: z.union([z.string(), z.number()]).nullable().optional(),
     network_node_id: z.union([z.string(), z.number()]).nullable().optional(),
-    quantity: z.number().nullable().optional(),
+    quantity: wireNumber().nullable().optional(),
   })
   .passthrough();
 export type MlUserProductStockLocation = z.infer<typeof userProductStockLocationSchema>;
@@ -992,7 +1089,7 @@ export const sellerItemsScanSchema = z
     scroll_id: z.string().nullable().optional(),
     results: z.array(z.string()).default([]),
     paging: z
-      .object({ total: z.number().nullable().optional() })
+      .object({ total: wireNumber().nullable().optional() })
       .passthrough()
       .nullable()
       .optional(),
@@ -1149,7 +1246,7 @@ export const mlClaimPlayerSchema = z
   .object({
     role: z.string().nullable().default(null),
     type: z.string().nullable().default(null),
-    user_id: z.number().int().nullable().default(null),
+    user_id: wireInt().nullable().default(null),
     available_actions: z
       .array(mlClaimAvailableActionSchema)
       .nullish()
@@ -1186,12 +1283,12 @@ export type MlClaimResolution = z.infer<typeof mlClaimResolutionSchema>;
  */
 export const mlClaimSchema = z
   .object({
-    id: z.number().int(),
+    id: wireInt(),
     type: z.string().nullable().default(null),
     stage: z.string().nullable().default(null),
     status: z.string().nullable().default(null),
     /** The complained-about resource id — an order/pack/shipment/payment id depending on `resource`. */
-    resource_id: z.number().int(),
+    resource_id: wireInt(),
     /** `order`/`pack`/`shipment`/`payment`/`purchase` (legacy `_ResourceClaims`, models.dart:3724-3755). */
     resource: z.string(),
     reason_id: z.string().nullable().default(null),
@@ -1216,7 +1313,7 @@ export const mlClaimMessageAttachmentSchema = z
     filename: z.string(),
     original_filename: z.string().nullable().optional(),
     type: z.string().nullable().optional(),
-    size: z.number().nullable().optional(),
+    size: wireNumber().nullable().optional(),
     date_created: z.string().nullable().optional(),
   })
   .passthrough();
@@ -1304,9 +1401,9 @@ export const mlClaimSearchSchema = z
   .object({
     paging: z
       .object({
-        total: z.number().nullable().optional(),
-        offset: z.number().nullable().optional(),
-        limit: z.number().nullable().optional(),
+        total: wireNumber().nullable().optional(),
+        offset: wireNumber().nullable().optional(),
+        limit: wireNumber().nullable().optional(),
       })
       .passthrough()
       .default({}),
@@ -1368,8 +1465,8 @@ export const mlMissedFeedSchema = z
     /** `http_code` is logged as a histogram; the rest is dropped. */
     response: z
       .object({
-        http_code: z.number().nullable().optional().catch(null),
-        req_time: z.number().nullable().optional().catch(null),
+        http_code: wireNumber().nullable().optional().catch(null),
+        req_time: wireNumber().nullable().optional().catch(null),
       })
       .passthrough()
       .nullable()
@@ -1417,7 +1514,7 @@ export type MlQuestionAnswer = z.infer<typeof mlQuestionAnswerSchema>;
 /** The asker, as `GET /questions/{id}?api_version=4` returns it. */
 export const mlQuestionFromSchema = z
   .object({
-    id: z.number().int().nullable().default(null),
+    id: wireInt().nullable().default(null),
     nickname: z.string().nullable().default(null),
   })
   .passthrough();
@@ -1451,9 +1548,9 @@ export type MlQuestionFrom = z.infer<typeof mlQuestionFromSchema>;
  */
 export const mlQuestionSchema = z
   .object({
-    id: z.number().int(),
-    seller_id: z.number().int().nullable().default(null),
-    buyer_id: z.number().int().nullable().default(null),
+    id: wireInt(),
+    seller_id: wireInt().nullable().default(null),
+    buyer_id: wireInt().nullable().default(null),
     item_id: z.string().nullable().default(null),
     status: z.string().nullable().default(null),
     /** Empty when `status` is `BANNED` — ML strips moderated text. */
@@ -1519,7 +1616,7 @@ export const mlMessageAttachmentSchema = z
     filename: z.string().nullable().default(null),
     original_filename: z.string().nullable().default(null),
     type: z.string().nullable().default(null),
-    size: z.number().nullable().default(null),
+    size: wireNumber().nullable().default(null),
   })
   .passthrough();
 export type MlMessageAttachment = z.infer<typeof mlMessageAttachmentSchema>;
@@ -1598,9 +1695,9 @@ export type MlPostSaleMessage = z.infer<typeof mlPostSaleMessageSchema>;
  */
 export const mlPagingSchema = z
   .object({
-    limit: z.number().nullable().default(null),
-    offset: z.number().nullable().default(null),
-    total: z.number().nullable().default(null),
+    limit: wireNumber().nullable().default(null),
+    offset: wireNumber().nullable().default(null),
+    total: wireNumber().nullable().default(null),
   })
   .passthrough();
 export type MlPaging = z.infer<typeof mlPagingSchema>;
@@ -1614,8 +1711,8 @@ export const mlPackMessagesSchema = z
       .array(mlPostSaleMessageSchema)
       .nullish()
       .transform((v) => v ?? []),
-    seller_max_message_length: z.number().int().nullable().default(null),
-    buyer_max_message_length: z.number().int().nullable().default(null),
+    seller_max_message_length: wireInt().nullable().default(null),
+    buyer_max_message_length: wireInt().nullable().default(null),
   })
   .passthrough();
 export type MlPackMessages = z.infer<typeof mlPackMessagesSchema>;
@@ -1676,16 +1773,45 @@ export type MlAnswerResult = z.infer<typeof mlAnswerResultSchema>;
  */
 export const mlPartialRefundOfferSchema = z
   .object({
-    amount: z.number().nullable().default(null),
-    percentage: z.number().nullable().default(null),
+    amount: wireNumber().nullable().default(null),
+    percentage: wireNumber().nullable().default(null),
   })
   .passthrough();
 export type MlPartialRefundOffer = z.infer<typeof mlPartialRefundOfferSchema>;
 
 /**
- * The `available-offers` envelope. `recommendations`/`restrictions` ride
- * `.passthrough()` untyped — they are advice for a human, and nothing here
- * decides on them.
+ * One `recommendations`/`restrictions` entry on the `available-offers` envelope.
+ *
+ * ⚠️ `type` is a plain nullable string, never an enum. ML publishes `"maximum"`
+ * and `"minimum"` today and adds vocabulary without notice; a Zod enum here
+ * would turn a new value into a parse failure on the whole offers read, which
+ * would take the partial-refund picker down rather than degrade it.
+ */
+export const mlPartialRefundAdviceSchema = z
+  .object({
+    // ⚠️ Tolerant like every other numeric in this file — a quoted `"30"` must not
+    // fail the read. `wireNumber()` rather than the hand-rolled union this started
+    // as: that one coerced with a bare `Number(v)`, which reads `'1e3'` as 1000
+    // and `'0x1F'` as 31. `@delfrance/core/wire` is the one place that rule is written.
+    // `.catch(null)` keeps a percentage ML sends as garbage from taking the whole
+    // offers read down — this is advice for a human, not a value anything decides
+    // on, so degrading it beats failing the picker.
+    percentage: wireNumber().nullable().default(null).catch(null),
+    reason: z.string().nullable().default(null).catch(null),
+    type: z.string().nullable().default(null).catch(null),
+  })
+  .passthrough();
+export type MlPartialRefundAdvice = z.infer<typeof mlPartialRefundAdviceSchema>;
+
+/**
+ * The `available-offers` envelope.
+ *
+ * ⚠️ `recommendations`/`restrictions` used to ride `.passthrough()` untyped, on
+ * the grounds that they are "advice for a human, and nothing here decides on
+ * them". That was true while nothing rendered them. The resolution UI does: a
+ * `type: "minimum"` restriction is the difference between ML answering
+ * `400 invalid/below minimum` AFTER the operator commits, and the offer being
+ * unclickable in the first place. Typed so the picker can read them.
  */
 export const mlPartialRefundOffersSchema = z
   .object({
@@ -1694,6 +1820,24 @@ export const mlPartialRefundOffersSchema = z
       .array(mlPartialRefundOfferSchema)
       .nullish()
       .transform((v) => v ?? []),
+    // ⚠️ `.catch([])`, the idiom this file already uses (see `.catch(null)` on
+    // the order schema above). Typing these turned the CONTAINER strict where it
+    // was `.passthrough()`-tolerant, which is the same failure mode by another
+    // door: a shape drift stopped degrading the ADVICE and started failing the
+    // whole offers read → `MercadoLivreValidationError` → the picker is down.
+    // An object instead of an array, an array of strings, a quoted number — all
+    // parsed before and must keep parsing. Advice is exactly the field that may
+    // be lost without costing the operator the decision.
+    recommendations: z
+      .array(mlPartialRefundAdviceSchema)
+      .nullish()
+      .transform((v) => v ?? [])
+      .catch([]),
+    restrictions: z
+      .array(mlPartialRefundAdviceSchema)
+      .nullish()
+      .transform((v) => v ?? [])
+      .catch([]),
   })
   .passthrough();
 export type MlPartialRefundOffers = z.infer<typeof mlPartialRefundOffersSchema>;
@@ -1706,7 +1850,7 @@ export type MlPartialRefundOffers = z.infer<typeof mlPartialRefundOffersSchema>;
 export const mlExpectedResolutionSchema = z
   .object({
     player_role: z.string().nullable().default(null),
-    user_id: z.number().int().nullable().default(null),
+    user_id: wireInt().nullable().default(null),
     expected_resolution: z.string().nullable().default(null),
     status: z.string().nullable().default(null),
   })
@@ -1720,10 +1864,34 @@ export const mlExpectedResolutionsSchema = z.array(mlExpectedResolutionSchema);
 export const mlClaimAttachmentUploadSchema = z
   .object({
     filename: z.string(),
-    user_id: z.number().int().nullable().default(null),
+    user_id: wireInt().nullable().default(null),
   })
   .passthrough();
 export type MlClaimAttachmentUpload = z.infer<typeof mlClaimAttachmentUploadSchema>;
+
+/**
+ * Post-sale MESSAGE attachment limits — deliberately separate from
+ * {@link ML_CLAIM_ANEXO}, which they do not match.
+ *
+ * ML: 25 MB, JPG/PNG/PDF/TXT, at most 25 per message, `original_filename` up to
+ * 200 chars. (Claims: 5 MB, no TXT, filename up to 125.)
+ *
+ * ⚠️ **Documentation-only today — nothing reads it.** The download path
+ * (`orderMessageAttachments.ts`) validates neither size, format nor count: ML is
+ * the one enforcing them, and a file it already accepted on the way IN is one we
+ * can always fetch back. Same status as {@link ML_CLAIM_ANEXO}'s size/format
+ * fields on the download half. What the separation buys is that the numbers are
+ * recorded per endpoint, so whoever adds an OUTBOUND post-sale attachment (the
+ * upload direction, where the limits are enforced BEFORE spending a write
+ * against the shared 500 rpm) reaches for the right ones instead of the claim
+ * values sitting next door.
+ */
+export const ML_POST_SALE_ANEXO = {
+  maxBytes: 25_000_000,
+  formatos: ['jpg', 'jpeg', 'png', 'pdf', 'txt'] as readonly string[],
+  maxPorMensagem: 25,
+  maxNomeOriginal: 200,
+} as const;
 
 /**
  * ML's claim-attachment rules, from the post-purchase reference. Enforced

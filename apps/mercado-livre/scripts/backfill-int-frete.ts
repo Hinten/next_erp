@@ -29,7 +29,7 @@ import {
   buscarIntFreteDaConta,
   montarCamposIntFrete,
   sincronizarIntFreteDaConta,
-} from '../lib/marketplace/intFreteSync';
+} from '../lib/marketplace/frete/intFreteSync';
 
 const PAGE_SIZE = 200;
 

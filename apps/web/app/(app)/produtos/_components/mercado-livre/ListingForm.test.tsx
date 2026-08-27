@@ -38,6 +38,23 @@ vi.mock('@/lib/mercado-livre/listingPort', () => ({
 
 const { ListingForm } = await import('./ListingForm');
 
+/** A produto with every dimension filled — the default, so a test that does not
+ * care about the package block never has to think about it. Whole numbers, so
+ * the rounding is not what any assertion here is measuring. */
+const MEDIDAS = {
+  alturaCm: 5,
+  larguraCm: 10,
+  profundidadeCm: 10,
+  pesoBrutoKg: 1,
+  pesoLiquidoKg: 0.9,
+};
+
+/** A produto with a Marca — the default, for the same reason as MEDIDAS: a
+ * test that does not care about the brand block never has to think about it.
+ * ⚠️ It must not be `''`, which would raise "Falta preencher: Marca" and
+ * break the two `queryByText(/Falta preencher/)` assertions above. */
+const MARCA = 'Hering';
+
 function renderForm(
   over: Partial<ProdutoMercadoLivreLink> = {},
   props: Record<string, unknown> = {},
@@ -60,6 +77,8 @@ function renderForm(
       produtoNome="Camiseta Básica"
       produtoEhUsado={false}
       produtoCondicao={null}
+      produtoMedidas={MEDIDAS}
+      produtoMarca={MARCA}
       link={l}
       db={{} as Firestore}
       canWrite
@@ -390,6 +409,114 @@ describe('ListingForm', () => {
   });
 });
 
+describe('Dimensões e peso come from the produto', () => {
+  it('renders the package AND the net weight publish will send, read-only', () => {
+    // Five attributes leave on every publish rebuilt from the produto — the four
+    // SELLER_PACKAGE_* plus WEIGHT — which is why the category grid never offers
+    // them as inputs. Showing them is what stops that filtering reading as five
+    // missing fields.
+    renderForm();
+    expect(screen.getByText('5 × 10 × 10 cm · 1000 g')).toBeDefined();
+    expect(screen.getByText('Peso líquido 0,9 kg')).toBeDefined();
+    expect(screen.getByText(/Dimensões e peso do produto/)).toBeDefined();
+  });
+
+  // ⚠️ THE regression a reviewer caught on the first cut of this PR. `WEIGHT` is
+  // withheld from the grid, pruned from the link doc and dropped from
+  // `link.attributes` on every publish — but it is only re-derived from
+  // `pesoLiquidoKg`, which the GROSS weight does not stand in for. With the
+  // missing-field check keyed on `pesoBrutoKg ?? pesoLiquidoKg` this produto
+  // looked complete: a reassuring package, no warning, and `WEIGHT` silently
+  // gone from every publish with its stored copy already pruned.
+  it('warns when only the GROSS weight is filled — WEIGHT has no fallback', () => {
+    renderForm(
+      {},
+      {
+        produtoMedidas: {
+          alturaCm: 5,
+          larguraCm: 10,
+          profundidadeCm: 10,
+          pesoBrutoKg: 1,
+          pesoLiquidoKg: null,
+        },
+      },
+    );
+    // The package still resolves on the gross weight, and still shows.
+    expect(screen.getByText('5 × 10 × 10 cm · 1000 g')).toBeDefined();
+    // ...but the net weight does not, and the screen says so.
+    expect(screen.getByText('Falta preencher: Peso líquido')).toBeDefined();
+    expect(screen.getByText('Peso líquido —')).toBeDefined();
+  });
+
+  it('a net weight with no gross weight is complete — no warning', () => {
+    renderForm(
+      {},
+      {
+        produtoMedidas: {
+          alturaCm: 5,
+          larguraCm: 10,
+          profundidadeCm: 10,
+          pesoBrutoKg: null,
+          pesoLiquidoKg: 2,
+        },
+      },
+    );
+    expect(screen.queryByText(/Falta preencher/)).toBeNull();
+    expect(screen.getByText('Peso líquido 2 kg')).toBeDefined();
+    // The package weighs the net value when there is no gross one.
+    expect(screen.getByText('5 × 10 × 10 cm · 2000 g')).toBeDefined();
+  });
+
+  // ⚠️ THE display↔payload assertion. ML accepts only whole cm/g, so a produto
+  // measured 5.5 publishes 6 — a screen printing "5,5" would describe a payload
+  // that does not exist. Same trap `CondicaoField` documents.
+  it('shows the ROUNDED values, not the raw produto fields', () => {
+    renderForm(
+      {},
+      {
+        produtoMedidas: {
+          alturaCm: 5.5,
+          larguraCm: 10.01,
+          profundidadeCm: 30,
+          pesoBrutoKg: 0.2504,
+          pesoLiquidoKg: null,
+        },
+      },
+    );
+    expect(screen.getByText('6 × 11 × 30 cm · 250 g')).toBeDefined();
+    expect(screen.queryByText(/5,5|5\.5/)).toBeNull();
+  });
+
+  // ML requires all four package attributes for ME2 cross docking and does NOT
+  // tag them `required` in its per-category attributes, so nothing else on this
+  // screen can warn — and publish omits all four when one is missing rather
+  // than sending three.
+  it('names every empty produto field instead of failing silently at ML', () => {
+    renderForm(
+      {},
+      {
+        produtoMedidas: {
+          alturaCm: 5,
+          larguraCm: null,
+          profundidadeCm: null,
+          pesoBrutoKg: 1,
+          pesoLiquidoKg: null,
+        },
+      },
+    );
+    expect(screen.getByText('Falta preencher: Peso líquido, Largura e Profundidade')).toBeDefined();
+    expect(screen.getByText(/Preencha na aba Dimensões e peso/)).toBeDefined();
+  });
+
+  // ⚠️ `null` is "the produto snapshot has not landed", not "the produto is
+  // empty". Collapsing the two flashes the warning on every open — the bug
+  // `produtoFotoCount` avoids by staying null while loading.
+  it('stays quiet while the produto snapshot is still loading', () => {
+    renderForm({}, { produtoMedidas: null });
+    expect(screen.queryByText(/Falta preencher/)).toBeNull();
+  });
+});
+
 describe('Condição comes from the produto', () => {
   it('renders the produto value read-only, with no editable control', () => {
     // Whether a product is used is a fact about the PRODUCT, not about one of
@@ -431,8 +558,13 @@ describe('Condição comes from the produto', () => {
   it('names Dados extras when that is the field that decided', () => {
     // Pointing at "Produto usado" would send the operator to a switch that is
     // already off and cannot explain what they see.
+    //
+    // ⚠️ Matches the FIELD NAME, not just the tab. A bare /Dados extras/ became
+    // ambiguous the moment Marca started pointing at the same tab — two matches,
+    // and `getByText` throws on that. The caption's job is to name which field
+    // decided, so that is what this asserts.
     renderForm({ id: null }, { produtoEhUsado: false, produtoCondicao: 2 });
-    expect(screen.getByText(/Dados extras/)).toBeDefined();
+    expect(screen.getByText(/campo "Condição" na aba Dados extras/)).toBeDefined();
   });
 
   it('leaves novo to the next tier rather than deciding', () => {
@@ -774,5 +906,71 @@ describe('Preencher com dados de teste', () => {
     await waitFor(() => {
       expect(screen.queryByText('Dados de teste preenchidos')).toBeNull();
     });
+  });
+});
+
+describe('Marca comes from the produto', () => {
+  it('renders the produto Marca read-only, naming where it came from', () => {
+    // `BRAND` used to be typed here, per listing, while the produto already had
+    // a Marca two tabs away — two copies of one fact, and the produto's was the
+    // one being ignored.
+    renderForm();
+    expect(screen.getByText('Hering')).toBeDefined();
+    expect(screen.getByText(/campo "Marca" na aba Dados extras/)).toBeDefined();
+  });
+
+  it('beats a brand already stored on the listing', () => {
+    renderForm({ attributes: [{ id: 'BRAND', value_name: 'Acme' }] });
+    expect(screen.getByText('Hering')).toBeDefined();
+    expect(screen.queryByText('Acme')).toBeNull();
+  });
+
+  // ⚠️ The tier that makes `BRAND` `herdado` rather than `derivado`. Operators
+  // typed brands into the grid for this app's whole history, and `BRAND` is
+  // required in most ML categories — so showing nothing here (and publishing
+  // nothing) for a produto with no Marca would break the existing catalogue.
+  it('falls back to the brand stored on the listing, and says so', () => {
+    renderForm({ attributes: [{ id: 'BRAND', value_name: 'Acme' }] }, { produtoMarca: '' });
+    expect(screen.getByText('Acme')).toBeDefined();
+    expect(screen.getByText(/Valor guardado neste anúncio/)).toBeDefined();
+    expect(screen.queryByText('Falta preencher: Marca')).toBeNull();
+  });
+
+  it('names the gap when neither the produto nor the listing has a brand', () => {
+    renderForm({ attributes: [] }, { produtoMarca: '' });
+    expect(screen.getByText('Falta preencher: Marca')).toBeDefined();
+    expect(screen.getByText(/exige a marca/)).toBeDefined();
+  });
+
+  it('reads a whitespace-only Marca as empty rather than as a value', () => {
+    renderForm({ attributes: [] }, { produtoMarca: '   ' });
+    expect(screen.getByText('Falta preencher: Marca')).toBeDefined();
+  });
+
+  // ⚠️ `null` is "the extraData singleton has not landed", NOT "Marca is empty"
+  // — `''` is the empty one. extraData resolves AFTER the first render here, so
+  // collapsing the two flashes this warning on every open.
+  it('stays quiet while the extraData singleton is still loading', () => {
+    renderForm({ attributes: [] }, { produtoMarca: null });
+    expect(screen.queryByText('Falta preencher: Marca')).toBeNull();
+  });
+
+  // ⚠️ The N/A sentinel is an ANSWER, not a blank: the operator declared the
+  // product has no brand. Read as a blank it nags them; read as a value it
+  // prints a brand literally named "N/A" beside the real empty marker, "—".
+  it('shows an N/A listing as "Não se aplica" and does not nag', () => {
+    renderForm(
+      { attributes: [{ id: 'BRAND', value_id: '-1', value_name: 'N/A' }] },
+      { produtoMarca: '' },
+    );
+    expect(screen.getByText('Não se aplica')).toBeDefined();
+    expect(screen.queryByText('N/A')).toBeNull();
+    expect(screen.queryByText('Falta preencher: Marca')).toBeNull();
+  });
+
+  it("lets the produto's Marca outrank an N/A left on the listing", () => {
+    renderForm({ attributes: [{ id: 'BRAND', value_id: '-1', value_name: 'N/A' }] });
+    expect(screen.getByText('Hering')).toBeDefined();
+    expect(screen.queryByText('Não se aplica')).toBeNull();
   });
 });

@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-eight exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -147,17 +147,42 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-eight exports:
   **"Caro" is the warning label, not a joke**: the walk calls `listCollections()`
   on every document it reaches, leaves included, so the toll scales with subtree
   SIZE. It is noise on a two-document credential subtree deleted a few times a
-  month, and the wrong tool on a hot delete path or a wide subtree — write a
-  targeted kinded sweep there instead. The walk is discovery-driven on purpose:
-  it reclaims `integracao/{id}/brandshopee`, which `integracaoMeta.cascade`
-  never declared.
+  month, and the wrong tool on a **hot delete path** — width alone is not
+  disqualifying (see `onConversaDeleted`), delete FLOW is. The walk is
+  discovery-driven on purpose: it reclaims `integracao/{id}/brandshopee`, which
+  `integracaoMeta.cascade` never declared.
+- **`onConversaDeleted`** (`onDocumentDeleted('chat/{docId}')`) — the fourth
+  cascade off the same factory, and the only **budgeted** one (#980). A conversa's
+  `mensagem` subcollection was the largest of the six declared-but-unenforced
+  cascades: every deleted conversa orphaned its entire message history,
+  permanently and invisibly. #980 proposed a targeted kinded sweep instead,
+  because `mensagem` docs are LEAVES and each one costs a `listCollections()` that
+  returns nothing; **owner call was to use the factory anyway** — an operator
+  deletes a conversa by hand and almost never, so the toll is paid once, and the
+  discovery walk keeps reclaiming whatever the legacy corpus left under a conversa
+  that this repo never modeled.
+  ⚠️ **It is the one cascade that can outlast an invocation**, so it is the one
+  with a defined truncation contract: `budgetMs: 400_000` under
+  `timeoutSeconds: 540` (`BUDGET_MS_PADRAO` / `TIMEOUT_SECONDS_PADRAO`, sized like
+  `ORCAMENTO_MS` in `aplicarBalanco.ts`). At the budget the walk stops CLEANLY,
+  `deleteDocumentSubtree` closes its BulkWriter so everything reached is
+  committed, and the handler throws `CascadeTruncatedError` — which is why this
+  trigger alone is defined `retry: true`. The redelivered event re-walks a
+  strictly smaller subtree, so progress is monotone. Without the budget the
+  runtime would just kill the walk mid-flight: queued deletes never flushed,
+  nothing logged, remainder orphaned exactly as if no cascade existed.
+  ⚠️ `retry` is **derived from `budgetMs`**, never passed separately — the other
+  three stay at `retry: false`, where a redelivery could only reproduce a
+  permanent failure the BulkWriter already exhausted. A `failedDeletes` report
+  never throws under either mode.
 - ⚠️ **`pedidos` and `clientes` declare a cascade and deliberately have NO
   trigger** (owner call, 2026-08) — both carry fiscal data an emitted NF-e still
   depends on (`pedidos/{id}/nfev4`; and a cliente's endereço, which the NF-e
   orchestrator reads LIVE by ref rather than from a snapshot). They orphan on
   purpose; the reasoning is recorded at each `cascade:` declaration in
-  `packages/schemas`. `chat/{conversaId}/mensagem` is deferred to its own issue.
-- ⚠️ **None of the nine cascades may use `db.recursiveDelete` (#728).** It
+  `packages/schemas`. (`chat/{conversaId}/mensagem` used to be listed here; it is
+  enforced as of #980 — see `onConversaDeleted` above.)
+- ⚠️ **None of the ten cascades may use `db.recursiveDelete` (#728).** It
   issues a kindless all-descendants query — `COLLECTION_GROUP * SELECT __name__
   LIMIT 5000` — which this Enterprise edition cannot index and cannot be *given*
   an index for: there is no wildcard index and no field predicate to seek on, so
@@ -300,7 +325,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-eight exports:
   is **not** replaced by the deploy. It must be deleted explicitly, or it lingers
   and keeps writing the estado/frete trails from its stale code:
   ```bash
-  firebase functions:delete onPedidoEstadoChanged --region us-east1 --project <id> --force
+  firebase functions:delete onPedidoEstadoChanged --region <FUNCTIONS_REGION> --project <id> --force
   ```
   Both rows are keyed on `event.id`, so while both exist the duplicate estado /
   frete writes are content-identical and harmless — the zombie is a cost and
@@ -385,7 +410,8 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-eight exports:
   and `sharp` are `external`; everything else (incl. `@delfrance/data`,
   `@delfrance/schemas`) is inlined.
 - The function **region is inlined at build time** (`build.mjs`, esbuild
-  `define`), defaulting to `us-east1` — the Storage bucket region the gen2
+  `define`), and REQUIRED — there is no default, so an unset value stops the
+  build. It must equal the Storage bucket region, which the gen2
   trigger must match. It is **never** read from `.env.local` (secrets). Override
   for another env via the `FUNCTIONS_REGION` env var only.
 
@@ -423,7 +449,8 @@ deploy config or `prepare-deploy.mjs`.
 
 2. **Never read `.env.local` during deploy** (it holds secrets). The only
    build-time value is the region, a non-secret constant — `build.mjs` defaults
-   it to `us-east1`. Do not reintroduce a `dotenv -e .env.local` predeploy.
+   it REQUIRED, with no default. Do not reintroduce a `dotenv -e .env.local`
+   predeploy, and do not reintroduce a default region.
 
 3. **Cloud `npm install` cannot resolve pnpm `workspace:*`**
    (`EUNSUPPORTEDPROTOCOL: Unsupported URL Type "workspace:"`). The gen2
@@ -475,7 +502,7 @@ deploy config or `prepare-deploy.mjs`.
    allowed`** — if a function with the same name already exists with a different
    trigger type (e.g. a leftover HTTPS stub from an earlier attempt), Firebase
    won't switch it in place. Delete it first, then redeploy:
-   `firebase functions:delete resizeProductImage --region us-east1 --project <id> --force`.
+   `firebase functions:delete resizeProductImage --region <FUNCTIONS_REGION> --project <id> --force`.
    (Deleting deployed cloud functions is a destructive shared-infra action — the
    agent is correctly blocked from doing it; ask the user to run the delete.)
 

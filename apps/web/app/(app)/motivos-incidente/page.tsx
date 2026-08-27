@@ -21,7 +21,6 @@ export default function MotivosIncidentePage() {
       collection={motivoIncidenteCollection}
       db={getFirebaseFirestore()}
       meta={motivoIncidenteMeta}
-      defaultColumns={['nome', 'ativo']}
       rowHref={(id) => `/motivos-incidente/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/motivos-incidente/novo">

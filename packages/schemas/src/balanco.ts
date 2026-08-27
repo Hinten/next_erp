@@ -170,6 +170,7 @@ export const balancoMeta: CollectionMetadata = {
   defaultQuery: {
     orderBy: [{ field: 'timestamp', direction: 'desc' }],
     limit: 50,
+    columns: ['nome', 'estado', 'timestamp', 'dataFinalizado'],
   },
   serverOwnedFields: ['estado', 'dataFinalizado', 'finalizacao'],
 };

@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import {
   ESTADO_PUBLICACAO_ML,
   ML_CAUSA_TIPO,
   type MlCausa,
+  type MlModeracao,
   type ProdutoMercadoLivreLink,
 } from '@delfrance/schemas';
 
@@ -122,8 +123,8 @@ describe('ListingStatusStrip', () => {
   });
 
   it('offers nothing for a UP family whose id is empty — the backend calls that unpublished', () => {
-    // `''` is legal in the schema (no `.min(1)`) and the Flutter app writes
-    // these docs concurrently; the route answers 409 for it.
+    // `''` is in the migrated corpus, which is why the schema has no `.min(1)`
+    // and the strip must render it, not crash; the route answers 409 for it.
     renderStrip({ ...FAMILIA, id: '' }, vi.fn(), { onAbrirAnuncio: vi.fn() });
 
     expect(screen.queryByRole('button', { name: 'ver no Mercado Livre' })).toBeNull();
@@ -241,5 +242,347 @@ describe('ListingStatusStrip', () => {
   it('does not offer it for a draft that merely failed validation', () => {
     renderStrip({ estado: ESTADO_PUBLICACAO_ML.erro, id: null });
     expect(screen.queryByRole('button', { name: 'Reverificar anúncio' })).toBeNull();
+  });
+});
+
+/**
+ * #1087. ML pauses or removes a listing for a policy reason; before this the
+ * strip showed `paused · moderation_penalty` and the operator had nowhere at all
+ * to learn what ML objected to.
+ *
+ * ⚠️ The distinction every test here defends: `remedio: null` means two
+ * different things depending on `motivo`. With a reason it is ML saying there is
+ * no way back; without one it is ML saying nothing. Rendering the second as the
+ * first tells the operator to abandon a listing that may be perfectly fixable.
+ */
+describe('ListingStatusStrip — moderações do Mercado Livre (#1087)', () => {
+  const moderacaoFixture = (over: Partial<MlModeracao> = {}): MlModeracao => ({
+    nome: 'POOR_QUALITY_THUMBNAIL',
+    dataCriacao: null,
+    motivo: 'Pausamos o anúncio porque ele infringe nossas políticas.',
+    remedio: 'Ajuste o título e/ou substitua as fotos.',
+    secoes: ['pictures'],
+    evidencias: [],
+    ...over,
+  });
+
+  it('shows nothing at all for a listing with no moderation', () => {
+    renderStrip({ moderacoes: null });
+    expect(screen.queryByTestId('ml-moderacoes')).toBeNull();
+  });
+
+  it('shows the reason AND how to fix it', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.pausado,
+      status: 'paused',
+      sub_status: ['moderation_penalty'],
+      moderacoes: [moderacaoFixture()],
+    });
+
+    const alerta = screen.getByTestId('ml-moderacoes');
+    expect(alerta.textContent).toContain('infringe nossas políticas');
+    expect(alerta.textContent).toContain('Como corrigir: Ajuste o título');
+    // Where ML found it, translated — `pictures` means nothing to an operator.
+    expect(alerta.textContent).toContain('Onde: Fotos');
+    // The filter id rides along dimmed, exactly as a causa's `code` does.
+    expect(alerta.textContent).toContain('POOR_QUALITY_THUMBNAIL');
+  });
+
+  /**
+   * ML's docs are explicit: a removed listing returns REASON and no REMEDY
+   * *because there is no way back*. Offering a fix here would send the operator
+   * to edit a listing that can never be reactivated.
+   */
+  it('says plainly that a removed listing cannot be recovered, and offers no fix', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.emRevisao,
+      status: 'under_review',
+      sub_status: ['forbidden'],
+      moderacoes: [
+        moderacaoFixture({
+          nome: 'DENYLIST',
+          motivo: 'Seu anúncio foi cancelado porque a Apple confirmou a denúncia.',
+          remedio: null,
+          secoes: ['title'],
+        }),
+      ],
+    });
+
+    const alerta = screen.getByTestId('ml-moderacoes');
+    expect(alerta.textContent).toContain('não pode ser reativado');
+    expect(alerta.textContent).not.toContain('Como corrigir');
+  });
+
+  /**
+   * ⚠️ THE mistake worth its own test. This entry also carries `remedio: null`,
+   * so anything keying on `remedio` alone would render it as the removal above —
+   * telling the operator to give up on a listing ML merely failed to explain.
+   */
+  it('an UNEXPLAINED moderation must not read as an unrecoverable one', () => {
+    renderStrip({
+      status: 'paused',
+      sub_status: ['moderation_penalty'],
+      moderacoes: [
+        moderacaoFixture({ motivo: null, remedio: null, secoes: ['title', 'pictures'] }),
+      ],
+    });
+
+    const alerta = screen.getByTestId('ml-moderacoes');
+    expect(alerta.textContent).toContain('não informou o motivo');
+    expect(alerta.textContent).not.toContain('não pode ser reativado');
+    expect(alerta.textContent).not.toContain('Como corrigir');
+    // It still says everything ML DID give — which is more than "pausado".
+    expect(alerta.textContent).toContain('POOR_QUALITY_THUMBNAIL');
+    expect(alerta.textContent).toContain('Onde: Título, Fotos');
+  });
+
+  /**
+   * ⚠️ `motivo` and `remedio` are INDEPENDENT `wordings` lookups, so ML can send
+   * a REMEDY with no REASON — and the backend deliberately keeps that shape
+   * (`mapModeracoes`, "keeps a REMEDY-only entry"). Gating the remedy line on
+   * `severidade === 'com-conserto'` threw away the one actionable sentence ML
+   * had sent and left the operator with "não informou o motivo" and nothing to
+   * do about it.
+   *
+   * The whole `motivo: null` family previously fixed `remedio: null` too, which
+   * is exactly why no test could see it. The two now vary independently.
+   */
+  it('shows a remedy ML sent even when it sent no reason', () => {
+    renderStrip({
+      moderacoes: [
+        moderacaoFixture({
+          motivo: null,
+          remedio: 'Troque a foto de capa por uma nítida.',
+          secoes: ['pictures'],
+        }),
+      ],
+    });
+
+    const alerta = screen.getByTestId('ml-moderacoes');
+    expect(alerta.textContent).toContain('Como corrigir: Troque a foto de capa');
+    expect(alerta.textContent).toContain('não informou o motivo');
+    // Still not a removal: ML withheld the reason, not the way back.
+    expect(alerta.textContent).not.toContain('não pode ser reativado');
+  });
+
+  it('never shows a remedy and the no-remedy line at the same time', () => {
+    // They are mutually exclusive by construction — `sem-conserto` implies
+    // `remedio == null` — and this pins that so neither gate can drift.
+    // All FOUR combinations of the two independent wordings, not just the two
+    // the severity names.
+    for (const moderacoes of [
+      [moderacaoFixture()],
+      [moderacaoFixture({ remedio: null })],
+      [moderacaoFixture({ motivo: null })],
+      [moderacaoFixture({ motivo: null, remedio: null })],
+    ]) {
+      renderStrip({ moderacoes });
+      const texto = screen.getByTestId('ml-moderacoes').textContent ?? '';
+      const temConserto = texto.includes('Como corrigir');
+      const semConserto = texto.includes('não pode ser reativado');
+      expect(temConserto && semConserto).toBe(false);
+      cleanup();
+    }
+  });
+
+  /**
+   * ⚠️ Not gated on `estado`. `poor_quality_thumbnail` leaves the listing
+   * `active` and merely strips its exposure — it is exactly the case that made
+   * `moderacoes` a separate field from `errors`, whose stock re-arm would have
+   * cleared the diagnosis on a sendable listing. Gating the block on an error
+   * state would hide the one moderation nothing else can surface.
+   */
+  it('renders on a listing ML still calls ACTIVE', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.publicado,
+      status: 'active',
+      sub_status: ['poor_quality_thumbnail'],
+      moderacoes: [moderacaoFixture({ nome: 'WATERMARK' })],
+    });
+
+    expect(screen.getByTestId('ml-moderacoes').textContent).toContain('infringe nossas políticas');
+  });
+
+  it('shows the offending value ML matched', () => {
+    // For a `title` moderation this is the actual offending phrase, which is the
+    // most actionable thing in the whole payload.
+    renderStrip({
+      moderacoes: [moderacaoFixture({ secoes: ['title'], evidencias: ['Apple - Iphone-BDM-BDS'] })],
+    });
+
+    expect(screen.getByTestId('ml-moderacoes').textContent).toContain('Apple - Iphone-BDM-BDS');
+  });
+
+  it('caps a long evidence list instead of flooding the strip', () => {
+    renderStrip({
+      moderacoes: [moderacaoFixture({ evidencias: ['a', 'b', 'c', 'd', 'e'] })],
+    });
+
+    const texto = screen.getByTestId('ml-moderacoes').textContent ?? '';
+    expect(texto).toContain('a, b, c');
+    expect(texto).toContain('(+2)');
+    expect(texto).not.toContain('d, e');
+  });
+
+  /**
+   * A moderação is ML's verdict on the LISTING; a causa is ML refusing a write
+   * of ours. They are different problems and a listing can carry both, so
+   * neither block may swallow the other.
+   */
+  it('sits alongside the causas alert rather than replacing it', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.erro,
+      moderacoes: [moderacaoFixture()],
+      causas: [causaFixture({ mensagem: 'Categoria inválida', campos: ['category_id'] })],
+    });
+
+    expect(screen.getByTestId('ml-moderacoes').textContent).toContain('infringe nossas políticas');
+    expect(screen.getByTestId('ml-causas-gerais').textContent).toContain('Categoria inválida');
+  });
+
+  /**
+   * ⚠️ The additive rule `listingCausas.ts` records the hard way. `title` DOES
+   * resolve to a form control, and the entry is listed here anyway: resolving to
+   * a control is not the same as being visible on one, and a block that depended
+   * on the mapping is one refactor from displaying nothing.
+   */
+  it('lists a moderation even when a control will also show it', () => {
+    renderStrip({ moderacoes: [moderacaoFixture({ secoes: ['title'] })] });
+
+    expect(screen.getByTestId('ml-moderacoes').textContent).toContain('infringe nossas políticas');
+  });
+
+  it('renders every moderation when ML reports more than one', () => {
+    renderStrip({
+      moderacoes: [
+        moderacaoFixture({ motivo: 'Primeira' }),
+        moderacaoFixture({ nome: 'DENYLIST', motivo: 'Segunda', remedio: null }),
+      ],
+    });
+
+    const texto = screen.getByTestId('ml-moderacoes').textContent ?? '';
+    expect(texto).toContain('Primeira');
+    expect(texto).toContain('Segunda');
+  });
+
+  it('drops an entry that carries neither a reason nor a filter name', () => {
+    // It would paint an alert with no content — the "red alert saying nothing"
+    // this feature exists to avoid.
+    renderStrip({
+      moderacoes: [moderacaoFixture({ motivo: null, nome: null, remedio: null, secoes: [] })],
+    });
+
+    expect(screen.queryByTestId('ml-moderacoes')).toBeNull();
+  });
+});
+
+/**
+ * The `moderacoes: null` third state (#1239) — ML reports a moderation and
+ * nobody fetched the reason. It needs its OWN button: the latch one below is
+ * gated on `isStockLatched` (`estado === 'E'`), and a moderated listing is `pa`,
+ * `v` or an `active` `p`, so that affordance renders on none of these.
+ */
+describe('ListingStatusStrip — moderação não consultada (#1239)', () => {
+  const MODERADO: Partial<ProdutoMercadoLivreLink> = {
+    estado: ESTADO_PUBLICACAO_ML.pausado,
+    status: 'paused',
+    sub_status: ['moderation_penalty'],
+    moderacoes: null,
+  };
+
+  it('tells the operator a reason exists and offers to fetch it', () => {
+    renderStrip(MODERADO);
+    expect(screen.getByTestId('ml-moderacao-nao-consultada').textContent).toContain(
+      'ainda não foi consultado',
+    );
+    expect(screen.getByRole('button', { name: 'Consultar motivo' })).toBeTruthy();
+  });
+
+  it('asks for a moderation re-check, not a stock one', () => {
+    const onReverificar = renderStrip(MODERADO);
+    fireEvent.click(screen.getByRole('button', { name: 'Consultar motivo' }));
+    expect(onReverificar).toHaveBeenCalledWith('moderacao');
+  });
+
+  /**
+   * ⚠️ The reason the button had to be its own: on a moderated listing the latch
+   * affordance is not on screen at all, so "prompt the existing button" was never
+   * available.
+   */
+  it('is the ONLY affordance here — the stock-latch button is not rendered', () => {
+    renderStrip(MODERADO);
+    expect(screen.queryByRole('button', { name: 'Reverificar anúncio' })).toBeNull();
+  });
+
+  it('stays silent for an ASKED-and-none, even while the status still says moderated', () => {
+    renderStrip({ ...MODERADO, moderacoes: [] });
+    expect(screen.queryByTestId('ml-moderacao-nao-consultada')).toBeNull();
+  });
+
+  it('stays silent on a healthy listing whose field was never populated', () => {
+    renderStrip({ status: 'active', sub_status: null, moderacoes: null });
+    expect(screen.queryByTestId('ml-moderacao-nao-consultada')).toBeNull();
+  });
+
+  /**
+   * ⚠️ Not gated on `estado`, for the same reason the moderation alert is not: a
+   * `poor_quality_thumbnail` listing is ACTIVE and merely losing exposure, and it
+   * is the case the operator has no other way to discover.
+   */
+  /**
+   * ⚠️ The wording must be true on BOTH arms of the gate. `under_review` with no
+   * moderation sub_status is ML REVIEWING — it can conclude with no moderation,
+   * and it is what every freshly published anúncio looks like (#1252), so this is
+   * the notice's most common appearance. Claiming a moderation exists would be
+   * false exactly there.
+   */
+  it('does not claim a moderation EXISTS on a listing merely under review', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.publicado,
+      status: 'under_review',
+      sub_status: null,
+      moderacoes: null,
+    });
+
+    const texto = screen.getByTestId('ml-moderacao-nao-consultada').textContent ?? '';
+    expect(texto).toContain('ainda não foi consultado');
+    expect(texto).toContain('possível');
+    // The assertive phrasing this replaced — a moderation stated as fact.
+    expect(texto).not.toContain('indica uma moderação');
+  });
+
+  it('renders on a listing ML still calls ACTIVE', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.publicado,
+      status: 'active',
+      sub_status: ['poor_quality_thumbnail'],
+      moderacoes: null,
+    });
+    expect(screen.getByTestId('ml-moderacao-nao-consultada')).toBeTruthy();
+  });
+
+  it('never co-renders with the moderation alert — the two states are exclusive', () => {
+    renderStrip({
+      ...MODERADO,
+      moderacoes: [
+        {
+          nome: 'POOR_QUALITY_THUMBNAIL',
+          dataCriacao: null,
+          motivo: 'Foto de baixa qualidade.',
+          remedio: 'Suba outra foto.',
+          secoes: ['pictures'],
+          evidencias: [],
+        },
+      ],
+    });
+    expect(screen.getByTestId('ml-moderacoes')).toBeTruthy();
+    expect(screen.queryByTestId('ml-moderacao-nao-consultada')).toBeNull();
+  });
+
+  it('cannot be pressed by a read-only operator', () => {
+    renderStrip(MODERADO, vi.fn(), { canWrite: false });
+    expect(screen.getByRole('button', { name: 'Consultar motivo' }).hasAttribute('disabled')).toBe(
+      true,
+    );
   });
 });

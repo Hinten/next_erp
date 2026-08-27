@@ -20,11 +20,14 @@ export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
 export { onBalancoDeleted } from './estoques/onBalancoDeleted';
 export { onOperacaoDeleted } from './operacoes/onOperacaoDeleted';
 export { onCategoriaDeleted } from './categorias/onCategoriaDeleted';
-// Same cascade, three collections, one factory — see cascadeCaroGenerico.ts.
+// Same cascade, four collections, one factory — see cascadeCaroGenerico.ts.
+// `onConversaDeleted` is the budgeted one: a conversa's `mensagem` subcollection
+// can outlast a single invocation, so it stops at its budget and is redelivered.
 export {
   onIntegracaoDeleted,
   onIntFreteDeleted,
   onMetodoPagamentoDeleted,
+  onConversaDeleted,
 } from './cascades/caroGenericoTriggers';
 export { onNfeDeleted } from './nfe/onNfeDeleted';
 export { onPedidoChanged } from './pedidos/registrarHistoricoPedido';

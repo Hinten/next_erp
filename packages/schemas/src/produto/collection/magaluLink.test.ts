@@ -40,7 +40,7 @@ describe('produtoMagaluLinkSchema', () => {
     expect(parsed.extra_data).toBeNull();
   });
 
-  it('requires a non-empty title (Flutter reader does a null-unsafe cast)', () => {
+  it('requires a non-empty title — our consumers and the Magalu payload assume one', () => {
     expect(
       produtoMagaluLinkSchema.safeParse({
         contaMagaluOuterRef: 'documents/integracao/int1',

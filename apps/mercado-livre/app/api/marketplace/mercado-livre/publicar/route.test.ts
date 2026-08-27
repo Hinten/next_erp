@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MercadoLivreReauthRequiredError } from '@delfrance/integrations-mercado-livre';
 
-import { MercadoLivrePublishError } from '@/lib/marketplace/publishCore';
+import { MercadoLivrePublishError } from '@/lib/marketplace/anuncios/publishCore';
 
 // verifyCaller / context loader / orchestrator are mocked; the route's own
 // logic (body validation, deps wiring, error mapping) runs real.
@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   loadCtx: vi.fn(),
   resolveChannelContext: vi.fn(),
   publishProduto: vi.fn(),
+  docRef: vi.fn(),
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({
@@ -21,14 +22,27 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
-vi.mock('@/lib/marketplace/publish', () => ({
+vi.mock('@/lib/marketplace/anuncios/publish', () => ({
   publishProduto: h.publishProduto,
 }));
+
+// Only the ownership probe the route runs when `linkDocId` is present — the rest
+// of the collections module stays real.
+vi.mock('@delfrance/data/admin/collections', async (importActual) => {
+  const actual = await importActual<typeof import('@delfrance/data/admin/collections')>();
+  return {
+    ...actual,
+    produtoMercadoLivreLinkCollection: {
+      ...actual.produtoMercadoLivreLinkCollection,
+      docRef: h.docRef,
+    },
+  };
+});
 
 const { POST } = await import('./route');
 
@@ -40,8 +54,16 @@ function req(body: unknown): Request {
   });
 }
 
+/** Point the mocked `docRef(...).get()` at a link doc (or at nothing). */
+function seedLink(data: Record<string, unknown> | null): void {
+  h.docRef.mockReturnValue({
+    get: async () => ({ exists: data !== null, data: () => data ?? undefined }),
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  seedLink({ contaOuterRef: 'documents/integracao/int-1', id: null, estado: 'r' });
   h.verifyCaller.mockResolvedValue({ uid: 'u1' });
   h.resolveChannelContext.mockResolvedValue({
     integracaoId: 'int-1',
@@ -72,6 +94,39 @@ describe('POST /api/marketplace/mercado-livre/publicar', () => {
       integracaoId: 'int-1',
       tabelaNormalOuterRef: 'documents/listaDePrecos/lista-1',
       depositoOuterRef: 'documents/depositos/dep-1',
+    });
+  });
+
+  /**
+   * The conta's `shipping.mode` reaches `PublishDeps` from the integração doc,
+   * the same way the two outer refs above do.
+   */
+  describe('shippingMode', () => {
+    async function depsFor(modo: unknown): Promise<Record<string, unknown>> {
+      h.loadCtx.mockResolvedValue({
+        integracaoId: 'int-1',
+        conta: { modoEnvioMercadoLivre: modo },
+        resolveChannelContext: h.resolveChannelContext,
+      });
+      await POST(req({ integracaoId: 'int-1', produtoId: 'prod-1' }));
+      return h.publishProduto.mock.calls[0]![0] as Record<string, unknown>;
+    }
+
+    it('forwards a configured mode', async () => {
+      expect(await depsFor('me2')).toMatchObject({ shippingMode: 'me2' });
+    });
+
+    it('sends null when the conta has none', async () => {
+      expect(await depsFor(null)).toMatchObject({ shippingMode: null });
+      expect(await depsFor(undefined)).toMatchObject({ shippingMode: null });
+    });
+
+    // ⚠️ `ctx.conta` is untyped passthrough. A doc carrying a mode this build
+    // does not know — a value added later, a legacy shape — must degrade to
+    // "send no shipping node", never throw and fail the whole publish.
+    it('degrades an unparseable stored value to null instead of throwing', async () => {
+      expect(await depsFor('custom')).toMatchObject({ shippingMode: null });
+      expect(await depsFor(7)).toMatchObject({ shippingMode: null });
     });
   });
 
@@ -108,5 +163,70 @@ describe('POST /api/marketplace/mercado-livre/publicar', () => {
     h.verifyCaller.mockResolvedValue(denied);
     const res = await POST(req({ integracaoId: 'int-1', produtoId: 'prod-1' }));
     expect(res.status).toBe(403);
+  });
+});
+
+/**
+ * A produto can carry more than one anúncio on the SAME conta, and the
+ * orchestrator's link lookup would otherwise take whichever comes first —
+ * silently re-publishing the wrong listing. `linkDocId` names the one meant.
+ */
+describe('POST /api/marketplace/mercado-livre/publicar — linkDocId', () => {
+  it('forwards the named listing to the orchestrator', async () => {
+    const res = await POST(
+      req({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'ML-DOC-2' }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(h.publishProduto.mock.calls[0]![0]).toMatchObject({ linkDocId: 'ML-DOC-2' });
+    // The probe ran against THIS produto's subcollection, not a global lookup.
+    expect(h.docRef.mock.calls[0]!.slice(1)).toEqual([{ produtoId: 'prod-1' }, 'ML-DOC-2']);
+  });
+
+  it('passes null when the caller names no listing', async () => {
+    // The regression guard for every existing caller: the historical behaviour
+    // is "the conta's first link doc", and it must survive untouched.
+    const res = await POST(req({ integracaoId: 'int-1', produtoId: 'prod-1' }));
+
+    expect(res.status).toBe(200);
+    expect(h.publishProduto.mock.calls[0]![0]).toMatchObject({ linkDocId: null });
+    // No ownership probe to run, so no read spent on one.
+    expect(h.docRef).not.toHaveBeenCalled();
+  });
+
+  it('404s a listing this produto does not have', async () => {
+    seedLink(null);
+    const res = await POST(
+      req({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'ML-DOC-FANTASMA' }),
+    );
+
+    expect(res.status).toBe(404);
+    expect(h.publishProduto).not.toHaveBeenCalled();
+  });
+
+  it('404s a listing that belongs to another conta', async () => {
+    // Without this the body alone would decide whose listing gets published,
+    // under whichever conta's token the caller named.
+    seedLink({ contaOuterRef: 'documents/integracao/outra-conta', id: 'MLB1', estado: 'p' });
+    const res = await POST(
+      req({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId: 'ML-DOC-2' }),
+    );
+
+    expect(res.status).toBe(404);
+    expect(h.publishProduto).not.toHaveBeenCalled();
+  });
+
+  it('400s a present-but-unusable linkDocId without touching Firestore', async () => {
+    // Each of these reaches `.doc(id)` and misbehaves there, which is outside
+    // any `try` this handler owns — so without the guard a client error escapes
+    // as a 500. `'a/b'` throws on the odd component count; `'a/b/c'` does NOT
+    // throw at all, it silently resolves two levels deeper than the collection
+    // we meant. Both measured against a real firebase-admin Firestore.
+    for (const linkDocId of [1, '', {}, [], 'a/b', 'a/b/c', '/leading']) {
+      const res = await POST(req({ integracaoId: 'int-1', produtoId: 'prod-1', linkDocId }));
+      expect(res.status).toBe(400);
+    }
+    expect(h.docRef).not.toHaveBeenCalled();
+    expect(h.publishProduto).not.toHaveBeenCalled();
   });
 });

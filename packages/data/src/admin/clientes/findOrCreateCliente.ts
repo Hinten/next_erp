@@ -4,7 +4,7 @@
  * (`.old/packages/clientes/lib/src/models.dart:254-419`), minus the `userPath`
  * dedup step and the vector-embedding generation.
  *
- * It lived in `apps/mercado-livre/lib/marketplace/orderCliente.ts` until #786.
+ * It lived in `apps/mercado-livre/lib/marketplace/pedidos/orderCliente.ts` until #786.
  * Every channel that imports an order needs the same resolution, and the copy
  * that existed had a defect worth never writing twice:
  *
@@ -170,8 +170,11 @@ async function pageCandidates(
  * data migration (`tools/migrations`), not a side effect of an unrelated
  * import. Doing it here would bump `ultimaModificacao` on documents that did
  * not otherwise change, churning `clienteMeta.defaultQuery`'s sort and the
- * TableView update monitor, against a collection the Flutter app writes
- * concurrently.
+ * TableView update monitor — both OURS, and both index-MANDATORY under root
+ * `CLAUDE.md` rule 1, so on Enterprise every needless bump is re-sorted, re-read
+ * and BILLED as data scanned. The concurrency on this collection is ours too:
+ * the importers, the channel webhooks and two operators in two tabs — not the
+ * Flutter app, which writes no document this app writes (rule 8).
  *
  * The stored form differs by field on purpose: `cpf_cnpj` HAS a canonical form
  * the schema enforces (`^[0-9A-Z]*$` rejects punctuation), so the normalized
@@ -317,7 +320,7 @@ export async function findOrCreateCliente(
       value: identityValue(fields.idMercadoLivre),
     },
     // The legacy `userPath` dedup step is intentionally skipped — see
-    // apps/mercado-livre/lib/marketplace/orderCliente.ts's header doc.
+    // apps/mercado-livre/lib/marketplace/pedidos/orderCliente.ts's header doc.
     {
       key: CLIENTE_MATCH_KEY.telefone,
       op: 'in',

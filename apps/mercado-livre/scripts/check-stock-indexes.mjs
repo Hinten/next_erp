@@ -7,7 +7,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // (agents never run firebase; index deploy is a coordinated human step).
 //
 // Live proof that `fetchStockFamilies` AND the ledger pre-pass
-// (`fetchMovimentosDaJanela`) in lib/marketplace/bulkEstoquePlan.ts ride the declared
+// (`fetchMovimentosDaJanela`) in lib/marketplace/estoque/bulkEstoquePlan.ts ride the declared
 // indexes instead of silently full-scanning: this Firestore Enterprise
 // edition auto-creates NO indexes, an unindexed subquery scans its collection
 // ONCE PER OUTER ROW, and Enterprise bills data scanned. Pipelines have no
@@ -234,7 +234,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 // overridable via FIREBASE_DATABASE_ID.
 //
 // ⚠️ KEEP IN SYNC with `fetchStockFamilies` AND `fetchMovimentosDaJanela` in
-// apps/mercado-livre/lib/marketplace/bulkEstoquePlan.ts — this script mirrors
+// apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts — this script mirrors
 // both in plain JS (the TS module is not importable from a .mjs script); a
 // shape change there must be reflected here or the proof goes stale.
 // ⚠️ The window filter deliberately has NO component arm (ADR 0014): a kit sale
@@ -472,6 +472,7 @@ async function seedProbeData() {
         status: 'active',
         sub_status: [],
         isUserProductModel: false,
+        userProductId: 'MLBU000CHECK',
       },
     ],
     [
@@ -479,6 +480,7 @@ async function seedProbeData() {
       {
         itemId: 'MLB000CHECKV',
         id: 12345,
+        userProductId: 'MLBU000CHECKV',
         produtoMercadoLivreOuterRef: `documents/produtos/${anchorId}/produtoMercadoLivre/${linkId}`,
       },
     ],
@@ -595,6 +597,7 @@ const linkJoin = () =>
       'status',
       'sub_status',
       'isUserProductModel',
+      'userProductId',
       pipelines.documentId(pipelines.field('__name__')).as('linkDocId'),
     )
     .toArrayExpression();
@@ -616,7 +619,15 @@ const childrenJoin = () =>
       compEstoques('childKitKeys').as('componentEstoques'),
       pipelines
         .subcollection('variacaoMercadoLivre')
-        .select('itemId', 'id', 'produtoMercadoLivreOuterRef', 'status', 'sub_status')
+        .select(
+          'itemId',
+          'id',
+          'produtoMercadoLivreOuterRef',
+          'status',
+          'sub_status',
+          'userProductId',
+          pipelines.documentId(pipelines.field('__name__')).as('varLinkDocId'),
+        )
         .toArrayExpression()
         .as('varLinks'),
     )

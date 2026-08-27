@@ -10,7 +10,7 @@
  * transient. An ML reply is single-shot and its refusals are terminal and
  * operator-actionable — already answered, thread blocked, mediation open, grant
  * dead — so the operator must see the real reason with their text still on
- * screen. See `lib/marketplace/chatOutbound.ts`.
+ * screen. See `lib/marketplace/chat/chatOutbound.ts`.
  *
  * ⚠️ The stored `conversa.respostaBloqueada` is a UI hint and is NEVER trusted
  * here: the handler re-reads the question or the pack from ML and that read is
@@ -32,9 +32,9 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import {
   ChatOutboundRefusedError,
   responderConversaMercadoLivre,
-} from '@/lib/marketplace/chatOutbound';
-import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
-import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
+} from '@/lib/marketplace/chat/chatOutbound';
+import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

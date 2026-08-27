@@ -5,7 +5,6 @@ import {
   Button,
   Group,
   Modal,
-  NumberInput,
   ScrollArea,
   Select,
   Stack,
@@ -28,6 +27,7 @@ import type { TipoMovimentacao } from '@delfrance/data/produto';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { historicoEstoqueCollection } from '@/lib/data/historicoEstoqueCollection';
 import { movimentarEstoque } from '@/lib/produtos/clientPort';
+import { DecimalInput } from '@delfrance/ui';
 
 const TIPO_OPTIONS: { value: TipoMovimentacao; label: string }[] = [
   { value: 'entrada', label: 'Entrada' },
@@ -78,8 +78,8 @@ export function EstoqueMovimentacaoModal({
   hasExisting,
 }: EstoqueMovimentacaoModalProps) {
   const [tipo, setTipo] = useState<TipoMovimentacao>('entrada');
-  const [qtd, setQtd] = useState<number | string>('');
-  const [qtdReservada, setQtdReservada] = useState<number | string>(0);
+  const [qtd, setQtd] = useState<number | null>(null);
+  const [qtdReservada, setQtdReservada] = useState<number | null>(0);
   const [motivo, setMotivo] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -106,7 +106,7 @@ export function EstoqueMovimentacaoModal({
 
   const reset = () => {
     setTipo('entrada');
-    setQtd('');
+    setQtd(null);
     setQtdReservada(0);
     setMotivo('');
   };
@@ -118,8 +118,10 @@ export function EstoqueMovimentacaoModal({
   };
 
   const handleSave = async () => {
-    const quantidadeNum = typeof qtd === 'number' ? qtd : Number(qtd);
-    const reservadaNum = typeof qtdReservada === 'number' ? qtdReservada : Number(qtdReservada);
+    // `DecimalInput` hands back a finite number or `null`; an empty box is not
+    // a zero movement (`Number('')` used to make it one).
+    const quantidadeNum = qtd ?? Number.NaN;
+    const reservadaNum = qtdReservada ?? 0;
     if (Number.isNaN(quantidadeNum) || Number.isNaN(reservadaNum)) {
       notifications.show({ color: 'red', message: 'Informe uma quantidade válida.' });
       return;
@@ -186,7 +188,7 @@ export function EstoqueMovimentacaoModal({
           allowDeselect={false}
           disabled={saving}
         />
-        <NumberInput
+        <DecimalInput
           label={qtdLabel}
           description={
             tipo === 'balanco'
@@ -198,14 +200,16 @@ export function EstoqueMovimentacaoModal({
           decimalScale={2}
           step={1}
           disabled={saving}
+          allowNegative
         />
-        <NumberInput
+        <DecimalInput
           label="Quantidade reservada"
           value={qtdReservada}
           onChange={setQtdReservada}
           decimalScale={2}
           step={1}
           disabled={saving}
+          allowNegative
         />
         <Textarea
           label="Motivo"

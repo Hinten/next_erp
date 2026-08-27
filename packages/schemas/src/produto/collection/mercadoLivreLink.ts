@@ -108,7 +108,7 @@ export const ML_CAUSA_TIPO = {
  * references[], message}` (ML developers site, *Guia para produtos →
  * Validações*). It is NOT universal: a 403 carries no `cause` at all and other
  * endpoints spell it `causes`, so the parser
- * (`apps/mercado-livre/lib/marketplace/publishFalhas.ts`) is deliberately
+ * (`apps/mercado-livre/lib/marketplace/core/publishFalhas.ts`) is deliberately
  * tolerant and this schema keeps every field optional but `mensagem`.
  */
 export const mlCausaSchema = z
@@ -170,7 +170,7 @@ export function campoAtributo(id: string): string {
  * The wire shape is `GET /moderations/last_moderation/{item_id}-ITM` (ML
  * developers site, *Moderações → Gerenciar moderações*), whose entries carry
  * `{name, id, date_created, evidences[], wordings[]}`. The mapper
- * (`apps/mercado-livre/lib/marketplace/moderacoes.ts`) is deliberately tolerant:
+ * (`apps/mercado-livre/lib/marketplace/anuncios/moderacoes.ts`) is deliberately tolerant:
  * ML's own docs spell the evidence key BOTH `evidences` and `evidence` on
  * different pages, and several documented responses carry no `wordings` at all.
  *
@@ -237,6 +237,87 @@ export const mlModeracaoSchema = z
   .passthrough();
 export type MlModeracao = z.infer<typeof mlModeracaoSchema>;
 
+/**
+ * The `sub_status` values that mean "ML has a moderation on this listing".
+ *
+ * Assembled from the status/substatus/tag table in *Gerenciar moderações* plus
+ * the two companion pages, *Moderações com pausa* and *Moderações de imagens*:
+ *
+ *  | status         | sub_status / tag                      |
+ *  |----------------|---------------------------------------|
+ *  | `under_review` | waiting_for_patch · forbidden · held  |
+ *  |                | pending_documentation · suspended     |
+ *  |                | suspended_for_prevention · warning    |
+ *  |                | picture_downloading_pending           |
+ *  | `paused`       | moderation_penalty                    |
+ *  |                | picture_download_pending              |
+ *  | `active`       | poor_quality_thumbnail · moderation_penalty |
+ *  | `closed`       | moderation_penalty                    |
+ *
+ * ⚠️ Both `picture_download_pending` and `picture_downloading_pending` are here
+ * on purpose. They are not a typo of one another — ML's pages use the first for
+ * the `paused` case and the second for the `under_review` one, and normalising
+ * them to a single spelling would miss whichever page is right.
+ *
+ * ⚠️ `active` earns a place in this table, which is what makes moderation a poor
+ * fit for `errors`: a `poor_quality_thumbnail` listing is LIVE and sendable, so
+ * the stock re-arm gate would have cleared the diagnosis on the same write that
+ * produced it.
+ *
+ * ⚠️ A `ReadonlySet<string>`, deliberately NOT a `z.enum`. `sub_status` is
+ * `z.string()` precisely so an ML value we have not catalogued still parses (see
+ * the field below), and {@link precisaConsultarModeracao}'s `under_review` arm
+ * exists to catch exactly those. An enum here would reject the unknown value on
+ * the way in and defeat both.
+ */
+const MODERATION_SUB_STATUS: ReadonlySet<string> = new Set([
+  'moderation_penalty',
+  'poor_quality_thumbnail',
+  'picture_download_pending',
+  'picture_downloading_pending',
+  'waiting_for_patch',
+  'forbidden',
+  'held',
+  'pending_documentation',
+  'suspended',
+  'suspended_for_prevention',
+  'warning',
+]);
+
+/**
+ * Does ML's own reading of this listing say a moderation exists?
+ *
+ * `under_review` qualifies on the STATUS alone: ML's docs put every one of its
+ * substatuses in the moderation table, and a listing under review with a
+ * sub_status we have not catalogued is exactly the case where the operator most
+ * needs the reason. Everything else has to name a moderation sub_status.
+ *
+ * ⚠️ **Pure and total — no clock, no network, no Firestore.** That is what lets
+ * it live here and be shared, and it is load-bearing in two directions:
+ *
+ *  - **Server** (`apps/mercado-livre`): being a predicate rather than "always
+ *    fetch" is what keeps the `items` stream affordable — it fires for every
+ *    change to every listing a seller owns, and a healthy one must keep costing
+ *    the single `GET /items/{id}` it costs today. It is also the reason the
+ *    CLEARING half of the `moderacoes` invariant is free on every path: a
+ *    `false` here means any stored reason is stale, with no ML call to prove it.
+ *  - **Client** (`apps/web`): it separates "ML reports a moderation nobody
+ *    fetched" (`moderacoes == null` AND this predicate) from a link whose field
+ *    was simply never populated — a legacy row, or one a publish/stock/price
+ *    send created. Without it, `null` alone would warn on healthy listings.
+ *
+ * It lived in `apps/mercado-livre/lib/marketplace/anuncios/moderacoes.ts` until
+ * apps/web needed it too. It cannot go back: apps/web has no dependency edge to
+ * that app, and none is possible — sharing in this repo goes through packages.
+ */
+export function precisaConsultarModeracao(
+  status: string | null | undefined,
+  subStatus: readonly string[] | null | undefined,
+): boolean {
+  if (status === 'under_review') return true;
+  return (subStatus ?? []).some((s) => MODERATION_SUB_STATUS.has(s));
+}
+
 /** `produtos/{id}/produtoMercadoLivre/{docId}` — the listing link doc. */
 export const produtoMercadoLivreLinkSchema = z
   .object({
@@ -250,7 +331,9 @@ export const produtoMercadoLivreLinkSchema = z
      * (`deleted`/`suspended`/`freezed`/`out_of_stock`/…), stamped on import +
      * the `items` status-sync (#440). `estado` is the derived short code; these
      * keep the raw values so a product-maintenance bot can filter by ML status.
-     * Additive/nullable — the Flutter reader ignores them (no rules change).
+     * Additive/nullable: the migrated corpus simply lacks the keys and nothing
+     * outside this repo reads these docs. No rules change — the generated
+     * ruleset covers this collection through the parent produto's permissions.
      */
     status: z.string().nullable().default(null),
     sub_status: z.array(z.string()).nullable().default(null),
@@ -267,6 +350,28 @@ export const produtoMercadoLivreLinkSchema = z
      * apps/mercado-livre is the worked example.
      */
     id: z.string().nullable().default(null),
+
+    /**
+     * ML's `user_product_id` (`MLBU…`) for this listing — the STOCK identity on
+     * a multiorigin (`warehouse_management`) conta, where `PUT /items`
+     * `available_quantity` is ignored and stock moves through
+     * `PUT /user-products/{id}/stock/type/seller_warehouse` (#706).
+     *
+     * ⚠️ Distinct from {@link id} above, which is `familyId ?? itemId` under
+     * User Products. A User Product describes a product at VARIATION level, so a
+     * family's members each have their own — the parent link's value is only
+     * meaningful for a listing with no children.
+     *
+     * Nullable and self-healing: it is stamped wherever the fetched ML item is
+     * already in hand (import, publish, the items status-sync), and the stock
+     * send resolves it lazily with the `getItem` it already has a seam for, then
+     * folds the answer into the writeback it was going to make anyway. So a link
+     * predating #706 costs one extra ML read ONCE, and no backfill.
+     *
+     * ⚠️ Null on every legacy `variations[]` child — ML variation objects carry
+     * no `user_product_id`, only UP members (each its own item) do.
+     */
+    userProductId: z.string().nullable().default(null),
     sku: z.string().nullable().default(null),
     // ML plain-text descriptions run to ~50k; the old 10000 cap was a Flutter
     // FORM validator the deployed backend never enforced, so a re-import/re-publish
@@ -295,9 +400,10 @@ export const produtoMercadoLivreLinkSchema = z
 
     /**
      * Structured detail behind {@link errors} — ML's `cause[]` parsed and
-     * resolved to form controls. Additive and nullable, so it is invisible to
-     * the Flutter reader exactly like `status`/`sub_status` above; `errors`
-     * keeps its `string[]` wire type because Flutter reads THAT one.
+     * resolved to form controls. Additive and nullable, handled exactly like
+     * `status`/`sub_status` above: the migrated corpus carries neither key, so
+     * our reader takes the `null` default. `errors` keeps its `string[]` wire
+     * type because that is the shape already stored in the corpus.
      *
      * ⚠️ Cleared EVERYWHERE `errors` is cleared (publish success, the stock
      * writeback, `itemsStatusSync`, `reverificarAnuncio`, import). A surviving
@@ -322,16 +428,41 @@ export const produtoMercadoLivreLinkSchema = z
      * VANISH the moment ML stops reporting one, even mid-review. Sharing `errors`
      * would have wiped the first case on the very write that set it.
      *
-     * ⚠️ The invariant that replaces that rule, and it is stronger: `moderacoes`
-     * is written in the SAME patch as the `status`/`sub_status` it explains, on
-     * every status write, either to a value or to `[]`. A reason outliving the
-     * state it explains is therefore impossible by construction rather than by
-     * discipline — which matters, because a stale moderação on a healthy listing
-     * is indistinguishable from a real one.
+     * ⚠️ The invariant that replaces that rule: `moderacoes` is written in the
+     * SAME patch as the `status`/`sub_status` it explains — never on its own,
+     * never left behind by a writer that moved the status. A reason outliving the
+     * state it explains is what that prevents, and it matters because a stale
+     * moderação on a healthy listing is indistinguishable from a real one.
      *
-     * ⚠️ **Only a writer that just asked ML about moderation may touch this
-     * field** — today `itemsStatusSync` and `reverificarAnuncio`. It is NOT in
-     * `clearFalha()`, and that omission is deliberate: `errors`/`causas` record
+     * ⚠️ It holds UNCONDITIONALLY in the direction that produces that bug. Every
+     * writer can tell from the item's own `status`/`sub_status` whether ML is
+     * reporting a moderation at all (`precisaConsultarModeracao`, a pure
+     * predicate), so a listing ML calls healthy is written `[]` with no ML call —
+     * the stale reason is cleared for free, on every path, including the mass
+     * import that deliberately skips the lookup.
+     *
+     * ⚠️ It is QUALIFIED in the other direction, and the qualification is the
+     * third value: `null` means **"never asked"**, distinct from `[]` = "asked,
+     * ML reported none". A writer that could not or would not ask about a
+     * genuinely moderated listing omits the key rather than inventing `[]`, so
+     * the stored value stands. Both cases are the importer's: the mass path
+     * (`lerModeracoes: false`) and a `/moderations` call that failed. Both
+     * self-heal through the `items` webhook or "Reverificar anúncio". Collapsing
+     * `null` into `[]` would record "not moderated" about a listing nobody asked
+     * about — on disk byte-identical to a healthy one, which is the exact state
+     * the 404-is-data narrow and the transient rethrow exist to prevent.
+     * `applyMemberStatusAndFold` relies on the same three-valued contract.
+     *
+     * ⚠️ **Only ML's own answer may touch this field — never a caller's success.**
+     * Two groups qualify (#1252). A writer that ASKED — `itemsStatusSync`,
+     * `reverificarAnuncio`, the importer — may write any value. A writer that
+     * merely holds a fresh `status`/`sub_status` may write `[]` and nothing
+     * else, because {@link precisaConsultarModeracao} is pure: when it reports
+     * no moderation, that IS ML's verdict, obtained for free. That is publish,
+     * the UP member publish, the stock send — on both its success writeback and
+     * its terminal-4xx verification path — and the price send, which otherwise
+     * omit the key.
+     * It is NOT in `clearFalha()`, and that omission is deliberate: `errors`/`causas` record
      * OUR failed write, which a later success invalidates, but a moderação is
      * ML's verdict and nothing we do lifts it. The stock writeback calls
      * `clearFalha()` after a successful `PUT /items` — and a
@@ -362,6 +493,18 @@ export const variacaoMercadoLivreLinkSchema = z
     id: z.number().int().nullable().default(null),
     /** ML item id (User-Products model) — each variation is its own item. */
     itemId: z.string().nullable().default(null),
+    /**
+     * ML's `user_product_id` (`MLBU…`) for THIS member — the stock identity on a
+     * multiorigin (`warehouse_management`) conta (#706). See the parent link's
+     * field of the same name for the protocol.
+     *
+     * ⚠️ Null on a legacy `variations[]` child and it will stay null: an ML
+     * variation object carries no `user_product_id`, only a UP member (which is
+     * its own item) does — exactly like {@link itemId} beside it. The stock send
+     * treats a null as "resolve it from ML, or skip this listing and say so",
+     * never as "send zero".
+     */
+    userProductId: z.string().nullable().default(null),
     /**
      * Canonical `documents/integracao/<id>` path to the owning integracao —
      * the same denorm the PARENT link has carried all along (#920).
@@ -418,8 +561,17 @@ export const variacaoMercadoLivreLinkSchema = z
      * Storing it per member is what keeps that fold free: `foldFamilyStatus` reads
      * the siblings' stored values and never has to `GET` a moderation per member.
      *
-     * ⚠️ Same rule as the parent's copy: written in the SAME patch as this
-     * member's `status`/`sub_status`, value or `[]`, never on its own.
+     * ⚠️ Same rule as the parent's copy, third value included: written in the
+     * SAME patch as this member's `status`/`sub_status`, never on its own — `[]`
+     * when ML was asked and reported none, and `null` ("never asked") omitting
+     * the key so whatever was stored stands.
+     *
+     * ⚠️ A LEGACY `variations[]` member never gets one, exactly as it never gets
+     * a `status`. It is not a listing of its own — it has no ML item id, no
+     * lifecycle and therefore nothing for ML to moderate — so every writer of a
+     * legacy member link (the importer, #707's phantom prune) leaves whatever was
+     * stored alone rather than writing `[]`. Only the User-Products branch, where
+     * a member IS its own item, ever populates this.
      */
     moderacoes: z.array(mlModeracaoSchema).nullable().default(null),
   })

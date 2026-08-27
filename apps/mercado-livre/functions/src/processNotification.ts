@@ -5,7 +5,8 @@ import {
   MERCADO_LIVRE_NOTIFICATION_QUEUE,
   TASK_MAX_ATTEMPTS,
   handleNotificationTask,
-} from '../../lib/marketplace/notificacao';
+} from '../../lib/marketplace/notificacoes/notificacao';
+import { describeValidationFailure } from '../../lib/marketplace/core/validationIssues';
 import { getDb } from './lib/admin';
 import { readCacheSummary } from '@delfrance/data/admin/cache';
 import { TASKS_SCHEDULER_REGION } from './options';
@@ -51,7 +52,40 @@ export const processMercadoLivreNotification = onTaskDispatched(
     secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],
   },
   async (req) => {
-    const result = await handleNotificationTask(getDb(), req.data, req.retryCount ?? 0);
+    const payload = req.data as { resource?: unknown; user_id?: unknown } | null;
+    let result;
+    try {
+      result = await handleNotificationTask(getDb(), req.data, req.retryCount ?? 0);
+    } catch (err) {
+      // ⚠️ Name the field BEFORE rethrowing. Without this the throw went straight
+      // to the runtime's unhandled-rejection printer, which is `util.inspect` at
+      // depth 2 — and a Zod issue's `path` sits at depth 3 (error -> `issues[]` ->
+      // issue -> `path`), so the ONE field that identifies the culprit printed as
+      // `path: [Array]`. That is how #1087's payment failure reached the log
+      // saying `expected: 'number'` with no way to tell WHICH of
+      // `mlPaymentSchema`'s numeric fields ML had quoted. The information existed
+      // and was discarded at print time.
+      //
+      // ⚠️ Paths and codes ONLY, and as structured fields so `logger` serializes
+      // them as JSON rather than inspecting them. NEVER `err.issues` raw: `parseOk`
+      // puts the RAW RESPONSE BODY on a `MercadoLivreValidationError`, which is the
+      // #1015 leak shape.
+      //
+      // Log-and-rethrow, never log-and-swallow: the throw/persist disposition
+      // belongs to `handleNotificationTask` + the Cloud Tasks retry envelope, and
+      // swallowing here would ack a notification that did nothing.
+      const campos = describeValidationFailure(err);
+      if (campos != null) {
+        logger.error('[mercado-livre] notification task failed schema validation', {
+          queue: MERCADO_LIVRE_NOTIFICATION_QUEUE,
+          campos,
+          resource: typeof payload?.resource === 'string' ? payload.resource : null,
+          user_id: typeof payload?.user_id === 'number' ? payload.user_id : null,
+          retryCount: req.retryCount ?? 0,
+        });
+      }
+      throw err;
+    }
     // ⚠️ `outcome` alone is not enough, and that gap is not theoretical: on the
     // first live run this line reported a bare success for every delivery while
     // the listing status never changed, because `done` is the disposition for
@@ -65,7 +99,6 @@ export const processMercadoLivreNotification = onTaskDispatched(
     //
     // ONE call on purpose - the fields land in `jsonPayload` and are filterable
     // (`jsonPayload.detail="no-link"`), so more fields beat more lines.
-    const payload = req.data as { resource?: unknown; user_id?: unknown } | null;
     logger.info('[mercado-livre] processed notification task', {
       queue: MERCADO_LIVRE_NOTIFICATION_QUEUE,
       outcome: result.outcome,

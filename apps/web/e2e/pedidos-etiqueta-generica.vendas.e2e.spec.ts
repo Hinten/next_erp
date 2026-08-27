@@ -69,6 +69,8 @@ test.describe.serial('Pedidos — etiqueta genérica (row action)', () => {
    * format buttons. ⚠️ Both are matched EXACTLY: Playwright's `name` is a
    * substring match, so a bare `'Imprimir etiqueta'` would resolve to two
    * elements and fail strict mode.
+   *
+   * ⚠️ The hover is retried rather than waited on — see the note at the call.
    */
   async function clickEtiqueta(page: Page, label: string): Promise<void> {
     await page.goto('/pedidos');
@@ -81,9 +83,23 @@ test.describe.serial('Pedidos — etiqueta genérica (row action)', () => {
     await expectRowVisible(page, fixtures.motPedidoId);
 
     const row = page.getByRole('row', { name: new RegExp(fixtures.motPedidoId) });
-    await row.getByText('Iniciado', { exact: true }).hover();
     const button = page.getByRole('button', { name: label, exact: true });
-    await expect(button).toBeVisible({ timeout: 15_000 });
+
+    // ⚠️ RE-HOVER on every attempt — never one hover plus a longer wait.
+    // The HoverCard carries `openDelay={150}` (`PedidoCells.tsx:147`) and
+    // `/pedidos` is a LIVE TableView, so a snapshot landing inside that 150ms
+    // window re-renders the row, drops the hover, and the card never opens. A
+    // single `.hover()` then burns its whole timeout AND all three Playwright
+    // retries — the run reports a hard failure, not a flake.
+    //
+    // Waiting longer cannot fix it: the hover is already lost. Only re-issuing
+    // it can. Observed failing 3/3 on branches carrying ZERO code changes, so
+    // this is the spec racing the UI, not the UI being wrong.
+    await expect(async () => {
+      await row.getByText('Iniciado', { exact: true }).hover();
+      await expect(button).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 20_000 });
+
     // Not yet posted — no risk confirm, prints straight away.
     await button.click();
   }

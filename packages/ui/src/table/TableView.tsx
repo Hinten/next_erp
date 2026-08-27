@@ -88,9 +88,17 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
 
   /**
    * Default visible columns AND their order. Keys are resolved against
-   * the schema first, then against `virtualColumns`. Omit to show every
-   * non-`unknown` schema field (in schema order) followed by every
-   * virtual column.
+   * the schema first, then against `virtualColumns`.
+   *
+   * Prefer declaring the set on the schema as `meta.defaultQuery.columns` —
+   * the column set drives the Pipelines `select()` projection, so it belongs
+   * with the rest of the query. This prop OVERRIDES that declaration, for the
+   * cases where one meta backs several screens with different columns (e.g.
+   * `integracaoMeta` serves /canais/balcao, /canais/mercado-livre and
+   * /canais/whatsapp) or the screen passes no `meta` at all.
+   *
+   * Omit both to show every non-`unknown` schema field (in schema order)
+   * followed by every virtual column.
    */
   defaultColumns?: string[];
 
@@ -177,6 +185,20 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * it by clicking column headers.
    */
   orderBy?: { field: string; direction?: 'asc' | 'desc' };
+  /**
+   * Page-owned sort that FORCES the issued order while set, overriding both
+   * `meta.defaultQuery.orderBy` and the user's header sort. Unlike `orderBy`
+   * (which only seeds the initial state) this is reactive: clear it and the
+   * previous order applies again.
+   *
+   * Exists for Firestore's inequality/orderBy coupling: when a page adds a
+   * RANGE `extraFilter` on some field, that field must be the first `orderBy`
+   * or the query is invalid (classic path) / stops matching its composite index
+   * (Pipelines path, where Enterprise silently full-scans instead of erroring).
+   * A header sort would break the same rule, which is why this outranks it.
+   * See `apps/web/app/(app)/produtos/page.tsx` — its nome-prefix search.
+   */
+  forcedOrderBy?: { field: string; direction?: 'asc' | 'desc' };
 
   /**
    * Page-owned server-side filters, AND-combined with the `meta.defaultQuery`
@@ -258,6 +280,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   meta,
   queryParams,
   pageSize,
+  forcedOrderBy,
   orderBy,
   extraFilters,
   queryOverride,
@@ -272,16 +295,22 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // pageSize prop wins, then the declared default, then 50.
   const resolvedPageSize = pageSize ?? defaultQuery?.limit ?? 50;
 
-  // Columns visible by default: caller-supplied keys, or every non-unknown
+  // Columns visible by default: the `defaultColumns` prop wins, then the
+  // schema's declared `meta.defaultQuery.columns`, then every non-unknown
   // schema field (drops embeddings and other opaque blobs automatically)
   // followed by every virtual column.
+  //
+  // This is not only presentation: `selectFields` below derives the Pipelines
+  // projection from the VISIBLE columns, and Enterprise bills data scanned —
+  // which is why the declaration lives next to where/orderBy/limit.
   const defaultVisibleKeys = useMemo<string[]>(
     () =>
-      defaultColumns ?? [
+      defaultColumns ??
+      (defaultQuery?.columns ? [...defaultQuery.columns] : undefined) ?? [
         ...descriptors.filter((d) => d.kind !== 'unknown').map((d) => d.key),
         ...virtualColumns.map((v) => v.key),
       ],
-    [defaultColumns, descriptors, virtualColumns],
+    [defaultColumns, defaultQuery, descriptors, virtualColumns],
   );
 
   // Storage key is per-collection so /clientes and /categorias never
@@ -478,24 +507,46 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // an empty table. Under `queryOverride` the extras (and the short-circuit)
   // don't apply: that query is caller-owned.
   const extraFiltersSerial = useMemo(() => JSON.stringify(extraFilters ?? null), [extraFilters]);
+  // Same rule for a USER column filter carrying a candidate list (a virtual
+  // column's `renderFilter` can emit `array-contains-any`). Its UI is expected
+  // to emit `undefined` rather than `[]` — dropping the filter is what "nothing
+  // selected" means — so this is the backstop for the one that doesn't: an
+  // empty list reaches `buildPipeline` as a THROW, which blanks the screen with
+  // an uncaught error instead of rendering zero rows.
+  const columnFilterEmpty = useMemo(
+    () =>
+      Object.values(serverFilters).some(
+        (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
+      ),
+    [serverFiltersSerial],
+  );
   const extraEmpty =
-    !queryOverride &&
-    (extraFilters ?? []).some(
-      (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
-    );
+    columnFilterEmpty ||
+    (!queryOverride &&
+      (extraFilters ?? []).some(
+        (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
+      ));
 
   // Sort actually issued to Firestore: an explicit user/prop sort wins;
   // otherwise the declared default `orderBy` (full array — supports multi-key
   // defaults and matches the declared composite index).
+  const forcedSort: SortState | undefined = forcedOrderBy
+    ? { field: forcedOrderBy.field, direction: forcedOrderBy.direction ?? 'asc' }
+    : undefined;
   const effectiveOrderBy = useMemo<PipelineOrderSpec[] | undefined>(() => {
+    // `forcedOrderBy` outranks the user sort on purpose — see its prop doc.
+    if (forcedSort) return [{ field: forcedSort.field, direction: forcedSort.direction }];
     if (sort) return [{ field: sort.field, direction: sort.direction }];
     if (defaultQuery?.orderBy?.length) {
       return defaultQuery.orderBy.map((o) => ({ field: o.field, direction: o.direction }));
     }
     return undefined;
-  }, [sort?.field, sort?.direction, defaultQuery]);
-  // Column the header arrow points at when the user hasn't sorted yet.
+  }, [forcedSort?.field, forcedSort?.direction, sort?.field, sort?.direction, defaultQuery]);
+  // Column the header arrow points at. Mirrors what was actually issued, so a
+  // forced sort is visible to the user rather than silently disagreeing with
+  // the arrow.
   const displaySort: SortState | undefined =
+    forcedSort ??
     sort ??
     (defaultQuery?.orderBy?.[0]
       ? { field: defaultQuery.orderBy[0].field, direction: defaultQuery.orderBy[0].direction }
@@ -525,7 +576,18 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // raw `sort` state — otherwise the first click on a column shown ascending
   // by the meta default would re-set ascending (a visual no-op) instead of
   // going to descending. A different column starts ascending.
+  // While a forced sort is active the headers are not interactive — see
+  // `toggleSort`. Say so rather than leaving a pointer cursor on a dead control.
+  const FORCED_SORT_TITLE = 'Ordenação fixada pela busca ativa';
+  const sortable = !forcedSort;
+
   function toggleSort(fieldKey: string) {
+    // A forced sort outranks the user's, so recording their click would do
+    // nothing NOW and then silently re-sort the list the moment the forced sort
+    // clears — a delayed jump with no visible cause, which reads worse than the
+    // click being inert. Ignore it while forced; the header renders as
+    // non-interactive so it should not be reachable anyway.
+    if (forcedSort) return;
     const current = displaySort?.field === fieldKey ? displaySort.direction : undefined;
     setSort({ field: fieldKey, direction: current === 'asc' ? 'desc' : 'asc' });
   }
@@ -698,6 +760,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     queryParamsSerial,
     sort?.field,
     sort?.direction,
+    forcedSort?.field,
+    forcedSort?.direction,
   ]);
 
   // Drop selected ids that left the current row set (filter change, refresh,
@@ -748,6 +812,28 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     }
     return out;
   }, [visibleKeysArr, descriptors, virtualColumns, fieldOverrides]);
+
+  /**
+   * Columns offered by the ColumnPicker. It MUST apply the same exclusions as
+   * `visibleColumns` above: `hidden` is a design-time decision by the page, so
+   * a hidden field is not a column the user may turn on, and offering its
+   * checkbox anyway is a control that does nothing — it ticks, it persists, and
+   * no column appears. #1264 shipped exactly that on /produtos, where the
+   * picker's label search matched only the dead "Integracoes Com Produto"
+   * entry and never the virtual "Canais de venda" column that replaced it.
+   *
+   * The label comes from the override too, so the picker names a column exactly
+   * as its header does (same expression as the schema header below).
+   */
+  const pickerFields = useMemo(
+    () => [
+      ...descriptors
+        .filter((d) => d.kind !== 'unknown' && !fieldOverrides[d.key]?.hidden)
+        .map((d) => ({ key: d.key, label: fieldOverrides[d.key]?.label ?? d.label })),
+      ...virtualColumns.map((v) => ({ key: v.key, label: v.label })),
+    ],
+    [descriptors, fieldOverrides, virtualColumns],
+  );
 
   /**
    * Subset of schema descriptors that are currently visible — for legacy
@@ -862,12 +948,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                 </Tooltip>
               )}
               <ColumnPicker
-                fields={[
-                  ...descriptors
-                    .filter((d) => d.kind !== 'unknown')
-                    .map((d) => ({ key: d.key, label: d.label })),
-                  ...virtualColumns.map((v) => ({ key: v.key, label: v.label })),
-                ]}
+                fields={pickerFields}
                 visibleKeys={visibleKeys}
                 onToggle={toggleColumn}
                 order={visibleKeysArr}
@@ -934,9 +1015,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                             <Group
                               gap={2}
                               wrap="nowrap"
-                              style={sf ? { cursor: 'pointer', userSelect: 'none' } : undefined}
+                              style={
+                                sf
+                                  ? { cursor: sortable ? 'pointer' : 'default', userSelect: 'none' }
+                                  : undefined
+                              }
                               onClick={sf ? () => toggleSort(sf) : undefined}
-                              title={sf ? 'Ordenar por esta coluna' : vc.tooltip}
+                              title={
+                                sf
+                                  ? sortable
+                                    ? 'Ordenar por esta coluna'
+                                    : FORCED_SORT_TITLE
+                                  : vc.tooltip
+                              }
                             >
                               <span title={vc.tooltip}>{vc.label}</span>
                               {sf && (
@@ -983,9 +1074,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                           <Group
                             gap={2}
                             wrap="nowrap"
-                            style={{ cursor: 'pointer', userSelect: 'none' }}
+                            style={{
+                              cursor: sortable ? 'pointer' : 'default',
+                              userSelect: 'none',
+                            }}
                             onClick={() => toggleSort(d.key)}
-                            title="Ordenar por esta coluna"
+                            title={sortable ? 'Ordenar por esta coluna' : FORCED_SORT_TITLE}
                           >
                             <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
                             <SortIndicator

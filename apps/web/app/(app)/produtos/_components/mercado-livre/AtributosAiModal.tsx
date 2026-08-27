@@ -10,6 +10,7 @@ import type {
   MercadoLivreCategoriaAtributo,
 } from '@/lib/mercado-livre/client';
 import { isFilled, isNaRow, type AttrRow } from '@/lib/mercado-livre/attributeForm';
+import { unitLabel } from '@/lib/mercado-livre/units';
 
 export interface AtributosAiModalProps {
   opened: boolean;
@@ -81,7 +82,7 @@ export function AtributosAiModal({
           render: (s) => (
             <Text size="sm" fw={500} c={isNaRow(s) ? 'dimmed' : undefined}>
               {isNaRow(s) ? 'Não se aplica' : s.value_name}
-              {s.unit_id != null && !isNaRow(s) ? ` ${s.unit_id}` : ''}
+              {s.unit_id != null && !isNaRow(s) ? ` ${unitLabel(s.unit_id)}` : ''}
             </Text>
           ),
         },

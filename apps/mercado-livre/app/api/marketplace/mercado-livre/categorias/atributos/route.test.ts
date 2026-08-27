@@ -17,8 +17,8 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   return { ...actual, verifyCaller: h.verifyCaller };
 });
 
-vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
-  const actual = await importActual<typeof import('@/lib/marketplace/mercadoLivre')>();
+vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('@/lib/marketplace/core/mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadCtx };
 });
 
@@ -49,6 +49,11 @@ beforeEach(() => {
   h.getCategory.mockResolvedValue({ id: 'MLB31447', children_categories: [] });
   h.getCategoryAttributes.mockResolvedValue([
     { id: 'BRAND', name: 'Marca', value_type: 'string', tags: { required: true } },
+    // A required attribute that IS editable, so the required-first ordering
+    // below still has two rows to order. BRAND used to play that part and no
+    // longer reaches `atributos` at all — it is `herdado`, filled from the
+    // produto's Marca.
+    { id: 'MATERIAL', name: 'Material', value_type: 'string', tags: { required: true } },
     { id: 'MODEL', name: 'Modelo', value_type: 'string', relevance: 2 },
     { id: 'SELLER_SKU', name: 'SKU', value_type: 'string' },
     { id: 'ESCONDIDO', name: 'Oculto', value_type: 'string', tags: { hidden: true } },
@@ -81,10 +86,14 @@ describe('GET /api/marketplace/mercado-livre/categorias/atributos', () => {
       omitidos: Array<{ id: string; motivo: string }>;
     };
     expect(body.leaf).toBe(true);
-    expect(body.atributos.map((a) => a.id)).toEqual(['BRAND', 'MODEL']);
+    expect(body.atributos.map((a) => a.id)).toEqual(['MATERIAL', 'MODEL']);
     expect(body.atributos[0]!.required).toBe(true);
+    // ⚠️ BRAND appears in NEITHER array over the wire. `omitidos` is the prune
+    // list, so naming it there is what would delete the stored brand — on any
+    // apps/web bundle, old or new. Its absence is the mechanism.
+    expect(body.omitidos.some((o) => o.id === 'BRAND')).toBe(false);
     expect(body.omitidos).toEqual([
-      { id: 'SELLER_SKU', motivo: 'bloqueado' },
+      { id: 'SELLER_SKU', motivo: 'derivado' },
       { id: 'ESCONDIDO', motivo: 'oculto' },
       { id: 'SIZE_GRID_ID', motivo: 'tabela-de-medidas' },
       { id: 'SLEEVE', motivo: 'somente-variacao' },

@@ -1,6 +1,6 @@
 ---
 title: 0013 — Firebase project migration (legacy prod → a new Enterprise project)
-description: How the production data leaves the legacy Flutter project for a new Firestore Enterprise project with its own billing — the phase order, why the freeze can be short, what an export silently leaves behind, and what this licenses during development.
+description: How the production data leaves the legacy Flutter project for a new Firestore Enterprise project with its own billing — the phase order, the still-open region decision, why the freeze can be short, what an export silently leaves behind, and what this licenses during development.
 ---
 
 ## Context
@@ -59,15 +59,11 @@ Do this weeks early. Nothing here is reversible in a hurry, and one item
    `gcloud firestore databases create --database=default --edition=enterprise --location=<region>`.
    The id is literally `default`, not `(default)` — see the root `CLAUDE.md`
    Critical rule 1, and everything that passes it explicitly to `getFirestore()`.
-   ⚠️ **The region is effectively permanent, and only two regions qualify —
-   `us-central1` and `us-east4`.** The decision, with the full service matrix, is
-   issue #1115; read it before running this command. The binding constraint is
-   **Firebase App Hosting, which exists in six regions worldwide**, so `us-east1`
-   is out (seven backends need it) and so is `southamerica-east1`, despite being
-   the latency-optimal choice for a Brazilian operation. **`us-east5` has neither
-   Cloud Tasks nor Cloud Scheduler** — that is what failed 11 of 15 Mercado Livre
-   functions on 2026-08-19, and the repo provisions **9 queues and 12 scheduler
-   jobs** in total.
+   ⚠️ **`<region>` is a placeholder, not shorthand for a value already agreed.
+   The region has NOT been decided** — the shortlist, the trade-off and the check
+   to run first are *The region is not yet decided* below, and issue #1115 is
+   where the choice gets made and recorded. Do not run this command before that
+   issue carries an answer: the location is effectively permanent.
    The **Storage bucket must be created in that same region** or the gen2 Eventarc
    storage triggers break *silently*, with no error surfaced anywhere
    (`apps/functions/src/options.ts`).
@@ -101,6 +97,147 @@ Do this weeks early. Nothing here is reversible in a hurry, and one item
    is a prerequisite, not a nice-to-have.
 9. **Dress rehearsal into a throwaway project.** The measured export → import
    wall clock *is* the downtime budget.
+
+### ⚠️ The region is not yet decided
+
+This is an **open decision**, tracked in issue #1115, and it blocks Phase 0 step 2.
+Nothing below is a choice already made — it is the groundwork so the choice can be
+made quickly and once. The location of a Firestore database cannot be changed after
+creation, and an App Hosting backend's region is fixed when the backend is created,
+so this is one of the few items in this ADR with no second attempt.
+
+⚠️ **Nothing in the codebase may pre-empt it.** No `build.mjs` default, `.env*`
+example, `apphosting.yaml` or workflow moves to a candidate region before #1115 is
+answered. The current `us-east1` / `us-east5` split is the #1108 workaround and is
+load-bearing for the live project — reverting it early breaks a working deploy to
+settle a question that is not settled.
+
+#### Run this first
+
+The repo carries no `.firebaserc` and no Terraform, so it cannot answer where the
+*current* project actually lives. A human runs:
+
+```bash
+gcloud firestore databases list --project <current-project-id>
+gcloud storage buckets describe gs://<bucket> --format='value(location)'
+firebase apphosting:backends:list --project <current-project-id>
+```
+
+⚠️ This also bounds what can be fixed *before* the window. If the current project's
+Firestore sits in `us-east1` or `southamerica-east1` — neither of which has App
+Hosting — then no arrangement of backends can be co-located with it, and its
+inter-region data-transfer charge is **structural**. Only the new project can end it.
+
+#### The shortlist, and why it is only two
+
+Verified against Google's own location tables (August 2026). The binding constraint
+is **Firebase App Hosting, which exists in six regions worldwide** — `us-central1`,
+`us-east4`, `us-east5`, `asia-east1`, `asia-southeast1`, `europe-west4` — and seven
+backends need it.
+
+The full service matrix across the realistic candidates. Every row here is an
+**availability** fact checked against Google's location tables — these are what decide
+the shortlist, and they are not estimates:
+
+| | `us-central1` Iowa | `us-east1` S. Carolina | `us-east4` N. Virginia | `us-east5` Columbus | `southamerica-east1` São Paulo |
+|---|---|---|---|---|---|
+| **App Hosting** — 7 backends | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **Cloud Tasks** — 10 queues | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Cloud Scheduler** — 12 jobs | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Firestore Enterprise + Pipelines** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Cloud Functions gen2** | ✅ Tier 1 | ✅ Tier 1 | ✅ Tier 1 | ⚠️ not listed Tier 1; deploys in practice | ✅ |
+| **Eventarc · Cloud Storage · Secret Manager** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Viable for this project** | ✅ **yes** | ❌ | ✅ **yes** | ❌ | ❌ |
+
+Two of the five survive, and both failures are single-service gaps rather than anything
+about the regions themselves.
+
+`us-east5` is not a hypothetical: it is what failed **11 of 15** Mercado Livre
+functions on 2026-08-19 — the 5 `onTaskDispatched` plus the 6 `onSchedule`, while the
+4 Firestore triggers deployed cleanly, and that asymmetry was the diagnosis. The repo
+provisions **10 Cloud Tasks queues and 12 Cloud Scheduler jobs** in total.
+
+⚠️ **`us-east1` is the expensive exclusion, and it is worth understanding why.** It
+has Cloud Tasks, Cloud Scheduler, Firestore Enterprise and Tier-1 Functions; it sits on
+the US East Coast, so its latency to Brazil is comparable to `us-east4`'s; and it is
+one of the three **baseline-priced** US regions (with `us-central1` and `us-west1` — the
+trio Google's Always Free quotas apply to), so it does **not** carry `us-east4`'s ~15%
+premium. On every axis that matters it is `us-east4`'s equal or better — it is simply
+not an App Hosting region, and seven backends need one. That is also where most of the
+functions already run today, which is why the current layout looks so nearly right.
+**If App Hosting ever reaches `us-east1`, this decision should be reopened.**
+
+Both survivors cover everything this project uses: Firestore Enterprise **with the
+Pipelines API**, the 128 declared composite indexes, App Hosting, Cloud Functions gen2
+(both are Tier 1), Cloud Tasks, Cloud Scheduler, Eventarc + Pub/Sub, Cloud Storage,
+Secret Manager, Artifact Registry and Cloud Build — and BigQuery, which nothing uses
+today but which would have to be co-located if a Firestore→BigQuery stream is ever
+added.
+
+**Vertex AI is not a constraint in either direction.** `DEFAULT_AI_LOCATION` is
+`'global'` (`packages/ai/src/admin/provider.ts`) because the shipped Gemini 3.x models
+are served only at global/multi-region and **404 on any regional endpoint**,
+`us-central1` included — a property of that model family, not of a region. So the
+project region can neither remove AI capability nor add any, and AI traffic is billed
+by tokens rather than by inter-region egress. The one thing `global` does not offer is
+tuning, batch prediction and context caching; should those ever be wanted, `us-east4`
+is a supported regional Vertex AI location (Vector Search yes, RAG Engine subject to
+allowlisting).
+
+#### The tie-break
+
+Both pass every gate, so the decision is cost against latency:
+
+| | `us-east4` — N. Virginia | `us-central1` — Iowa |
+|---|---|---|
+| Latency from São Paulo | **~115–130 ms** — the best any App Hosting region offers | ~150–165 ms |
+| Cloud Functions / Cloud Run | Tier 1 — **identical price** | Tier 1 |
+| Firestore Enterprise write units | `$0.30` / M (list) — **≈ +15%** | **`$0.26` / M — the base rate every published figure quotes** |
+| Firestore Enterprise read units | scales with the same multiplier | `$0.05` / M |
+| Cloud Storage Standard | `≈ $0.023` / GB-month — **≈ +15%** | `$0.020` / GB-month |
+| `getFunctions().taskQueue()` fallback | fallback stays `us-central1`, so the #1108 **silent task drop** stays possible | fallback **is** the real region, so that failure mode becomes a no-op |
+| New Firebase / Firestore features | usually later | usually first |
+
+⚠️ **Confirm the rates in the console's pricing calculator before committing.** The
+figures above come from published pricing summaries, not from a rate card read at
+decision time, and the choice is permanent.
+
+Two things the table is saying that are easy to miss. **Compute is a tie** — both are
+Cloud Run Tier 1 and price identically, so the whole delta lands on Firestore and
+Cloud Storage. And on Enterprise the billing unit is **data scanned**, which is this
+project's dominant cost line, so a ~15% regional multiplier applies to the largest
+number on the invoice, permanently.
+
+The `us-central1` row deserves its weight too: when an enqueuer's region is missing or
+mismatched the Admin SDK resolves `us-central1`, the queue does not exist there, and
+the task is **silently dropped while the route still returns 200**
+(`tools/deploy-env/preflight.mjs`, #1108). Choosing `us-central1` turns that trap into
+a harmless default; choosing `us-east4` leaves it live and keeps the preflight
+cross-check load-bearing.
+
+So the trade is explicit: **`us-central1` is the cheaper region and the safer one;
+`us-east4` buys ~30 ms per round trip for Brazilian operators and pays ~15% on
+Firestore and Storage for it.** Neither is wrong — but "cheapest" and "lowest latency"
+are not the same answer here, and the decision should not be recorded as though they
+were.
+
+⚠️ **Keep the magnitudes straight.** Consolidating into *one* region — whichever one —
+is the change that removes the inter-region data-transfer charge entirely, because
+same-region traffic between Google Cloud services is free. The `us-central1` vs
+`us-east4` delta is a second-order ~15% on a subset of lines. Do not let the tie-break
+delay the consolidation.
+
+**Direction as of 2026-08-21: `us-central1`, to be tested.** The cheaper region and
+the safer one; the ~30 ms is the price paid, and it is paid on a client-first app whose
+steady state is served from Firestore's local cache. Still not the final word — record
+the outcome in #1115 before running Phase 0 step 2.
+
+⚠️ **This is a direction, not a deployed fact**, and the codebase should not record it
+as one. The region belongs in the environment, with the code **throwing** when it is
+unset — so revisiting the choice costs an env change rather than a sweep through the 23
+source files that currently carry a hardcoded fallback. Making that true is the
+follow-up work; until it lands, a literal in `build.mjs` is what actually decides the
+region at deploy time.
 
 ### Phase 1 — the freeze
 
@@ -157,10 +294,19 @@ Do this weeks early. Nothing here is reversible in a hurry, and one item
    result is persisted — `arquivos.url`, and `conversa`'s `anexo_url`,
    `image_url`, `video_url`, `thumbnail_url`.
    ⚠️ The new project's default bucket is `<project>.firebasestorage.app`, **not**
-   `<project>.appspot.com`, so `FIREBASE_STORAGE_BUCKET` and
-   `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` must both be set explicitly — the
-   `.appspot.com` fallback in `resolveStorageBucketName()` is wrong for this
-   project and will resolve to a bucket that does not exist.
+   `<project>.appspot.com` — so the `.appspot.com` fallback still sitting at the
+   BOTTOM of `resolveStorageBucketName()` names a bucket that does not exist here.
+   The two halves are no longer symmetric:
+   - **Server side, handled.** `resolveStorageBucketName()` now reads
+     `FIREBASE_CONFIG.storageBucket` above that fallback, and App Hosting /
+     Cloud Functions inject `FIREBASE_CONFIG` with the correct bucket. So
+     `FIREBASE_STORAGE_BUCKET` does **not** need setting on the new project; it
+     stays an override. (`apps/functions` never needed it — its bare
+     `initializeApp()` makes firebase-admin load the same blob itself.)
+   - **Client side, still manual and permanently so.**
+     `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` **must** be set explicitly: it is
+     inlined into the browser bundle by `next build`, and there is no
+     `FIREBASE_CONFIG` in a browser. Same for every other `NEXT_PUBLIC_FIREBASE_*`.
 
 ### Phase 3 — cut the traffic over
 
