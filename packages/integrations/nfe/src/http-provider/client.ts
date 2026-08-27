@@ -11,7 +11,6 @@ import { z } from 'zod';
 
 import { lerRespostaJson } from '@delfrance/core/wire';
 import { estadoNFeSchema } from '@delfrance/schemas';
-import type { EstadoNFe } from '@delfrance/schemas';
 
 import {
   NFeAuthError,
@@ -137,18 +136,43 @@ export type NFeVerificarChaveResult = z.infer<typeof nfeVerificarChaveResultSche
 /** Mirrors `apps/nfe/app/api/nfe/verificar/route.ts` response. */
 export const nfeVerificarResultSchema = z.object({
   filialId: z.string(),
-  results: z.array(nfeVerificarChaveResultSchema).default([]),
+  // ⚠️ No `.default([])` on either array. `verificarEnviNfeMsgs` always returns
+  // both (`orchestrator/verificar.ts` returns `{ filialId, results,
+  // msgsNaoEncontradas }` unconditionally) and no consumer reads them as
+  // `?? []`, so a default could only ever rescue a FUTURE revision that dropped
+  // the key — turning it into "zero chaves updated" instead of failing. That is
+  // the same silent-empty-success this PR exists to remove. A `.default()` here
+  // is earned by evidence about the wire, and there is none.
+  results: z.array(nfeVerificarChaveResultSchema),
   /** Requested enviNfe msg ids that had no doc under the filial. */
-  msgsNaoEncontradas: z.array(z.string()).default([]),
+  msgsNaoEncontradas: z.array(z.string()),
 });
 export type NFeVerificarResult = z.infer<typeof nfeVerificarResultSchema>;
 
-/** Mirrors `apps/nfe/app/api/nfe/processar-pendentes/route.ts` response. */
+/** One pendente the sweep could not resolve. */
+export const nfeProcessarPendentesErroSchema = z.object({
+  chave: z.string().nullable(),
+  error: z.string(),
+});
+
+/**
+ * Mirrors `apps/nfe/app/api/nfe/processar-pendentes/route.ts` response, which
+ * is `runProcessarPendentes`'s `ProcessarPendentesResult` serialised verbatim.
+ *
+ * ⚠️ `errors` is a LIST, not a count. The interface this schema replaced
+ * declared `errors: number` and had done since it was written — a lie the cast
+ * made harmless and validation would have made fatal, because `z.number()`
+ * rejects an array INCLUDING the clean-run `[]`. That would have been a 100%
+ * outage of the ops poller, and the three fixtures in `client.test.ts` all
+ * encoded the same wrong shape, so nothing in the suite could have caught it.
+ * Exactly the `estado: 'aprovada'` failure this PR already documents, one field
+ * over. Read the ROUTE, never the interface.
+ */
 export const nfeProcessarPendentesResultSchema = z.object({
   scanned: z.number(),
   recovered: z.number(),
   stillPending: z.number(),
-  errors: z.number(),
+  errors: z.array(nfeProcessarPendentesErroSchema),
 });
 export type NFeProcessarPendentesResult = z.infer<typeof nfeProcessarPendentesResultSchema>;
 
@@ -243,7 +267,9 @@ export const nfeConsultaCadastroResultSchema = z.object({
   xMotivo: z.string().nullable(),
   /** `true` on a transport failure where the request was otherwise valid. */
   degraded: z.boolean().optional(),
-  infCad: z.array(nfeConsultaCadastroInfCadSchema).default([]),
+  // No `.default([])`: all four branches of `consulta-cadastro/route.ts` send
+  // `infCad`, including both `supported:false` ones and the degraded one.
+  infCad: z.array(nfeConsultaCadastroInfCadSchema),
 });
 export type NFeConsultaCadastroResult = z.infer<typeof nfeConsultaCadastroResultSchema>;
 
