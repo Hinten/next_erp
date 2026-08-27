@@ -191,6 +191,33 @@ export function wireInt() {
   return z.preprocess(toNumberish, z.number().int());
 }
 
+/** This repo's JSON error envelope, as every channel route emits it. */
+export interface EnvelopeDeErro {
+  error?: string;
+  code?: string;
+  issues?: string[];
+}
+
+/**
+ * Read a non-2xx body as our `{ error, code, issues }` envelope, or `null` when
+ * it is not one.
+ *
+ * ⚠️ The object-ness check is the point. Every client used to do a bare
+ * `parsed as { error?: string }`, so a JSON body that happened to be an ARRAY or
+ * a scalar was read as the envelope and `errBody?.error` came back `undefined`,
+ * quietly discarding the real status message. `3a4b7278` fixed exactly this in
+ * the Mercado Livre client and the three siblings never got the same treatment.
+ */
+export function envelopeDeErro(parsed: unknown): EnvelopeDeErro | null {
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  return {
+    ...(typeof obj.error === 'string' ? { error: obj.error } : {}),
+    ...(typeof obj.code === 'string' ? { code: obj.code } : {}),
+    ...(Array.isArray(obj.issues) ? { issues: obj.issues.map((i) => String(i)) } : {}),
+  };
+}
+
 /**
  * What {@link lerRespostaJson} found. Three outcomes, because the three need
  * different words in front of an operator: the request never reached a route

@@ -16,7 +16,7 @@
 import { useMemo } from 'react';
 import type { z } from 'zod';
 
-import { lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
+import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
 import { useAuth } from '@/lib/auth/useAuth';
 
@@ -766,14 +766,6 @@ export function mercadoLivreHttpFallbackMessage(status: number): string {
   return `Falha na comunicação com o Mercado Livre (HTTP ${String(status)}).`;
 }
 
-/** Our JSON error envelope, when the body actually parsed as one. */
-function errorEnvelope(
-  parsed: unknown,
-): { error?: string; code?: string; issues?: string[] } | null {
-  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  return parsed as { error?: string; code?: string; issues?: string[] };
-}
-
 /** Pull the filename out of a `Content-Disposition` header, if present. */
 function filenameFromDisposition(header: string | null): string | null {
   if (!header) return null;
@@ -850,12 +842,12 @@ export function createMercadoLivreClient(config: {
           } else throw err;
         }
       }
-      const errBody = errorEnvelope(parsed);
+      const errBody = envelopeDeErro(parsed);
       throw new MercadoLivreClientHttpError(
         errBody?.error ?? mercadoLivreHttpFallbackMessage(res.status),
         res.status,
         errBody?.code ?? null,
-        Array.isArray(errBody?.issues) ? errBody.issues : null,
+        errBody?.issues ?? null,
       );
     }
 
@@ -927,7 +919,7 @@ export function createMercadoLivreClient(config: {
           else throw err;
         }
       }
-      const errBody = errorEnvelope(parsed);
+      const errBody = envelopeDeErro(parsed);
       if (nonJsonBody != null) {
         logarCorpoNaoJson(path, res.status, nonJsonBody);
       }
