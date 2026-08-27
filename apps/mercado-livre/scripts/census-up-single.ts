@@ -14,9 +14,9 @@
  * being wrong. If it reports a non-zero count, the one-time `tools/migrations`
  * script is written then — with the count telling us what it has to handle.
  *
- *   pnpm --filter @delfrance/mercado-livre-app census:up-single -- --project <id>
+ *   pnpm --filter @delfrance/mercado-livre-app census:up-single --project <id>
  *   # ...and list the produtos rather than just counting them
- *   pnpm --filter @delfrance/mercado-livre-app census:up-single -- --project <id> --listar
+ *   pnpm --filter @delfrance/mercado-livre-app census:up-single --project <id> --listar
  *
  * It NEVER writes. `--project` is REQUIRED and never inferred — the same
  * discipline as `tools/migrations` and `check-deposito-source.ts` — so a stray

@@ -12,9 +12,9 @@
  * the bare `integracao/<id>` form.
  *
  *   # dry run — reports what WOULD change, writes nothing
- *   pnpm --filter @delfrance/mercado-livre-app backfill:int-frete -- --project <id>
+ *   pnpm --filter @delfrance/mercado-livre-app backfill:int-frete --project <id>
  *   # apply
- *   pnpm --filter @delfrance/mercado-livre-app backfill:int-frete -- --project <id> --apply
+ *   pnpm --filter @delfrance/mercado-livre-app backfill:int-frete --project <id> --apply
  *
  * `--project` is REQUIRED and never inferred — the same discipline as
  * `tools/migrations` — so a stray `FIREBASE_PROJECT_ID` can't point this at
