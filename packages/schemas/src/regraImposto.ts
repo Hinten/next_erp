@@ -37,6 +37,15 @@ const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
  *
  * Imposto blob fields are **typed** (`taxConfigFields`, shared with the tribute
  * engine via `@delfrance/schemas`) rather than pass-through.
+ *
+ * Two more legacy wire fields, both read fallbacks alongside a new-app
+ * counterpart (never written by the new editor):
+ * - `estados` — `List` of UF codes (`_$RegraImpostoToJson`'s
+ *   `ufsOperacaoToJson`) that scopes the rule to specific interstate
+ *   destinations. Not yet consumed by the resolver's match semantics
+ *   (deferred to #422) — modeled here so a legacy doc round-trips.
+ * - `timeStamp` (capital S) — the legacy ms-epoch creation stamp. `dataCadastro`
+ *   is the new-app field; a legacy doc carries `timeStamp` instead.
  */
 export const regraImpostoSchema = z.object({
   id: z.string().nullable().default(null),
@@ -52,16 +61,22 @@ export const regraImpostoSchema = z.object({
   CFOP: z.string().nullable().optional(),
   cfopInterestadual: z.string().nullable().optional(),
   NCM: z.string().nullable().optional(),
-  NVE: z.string().nullable().optional(),
+  /** Legacy wire type is a `List`, not a scalar string. */
+  NVE: z.array(z.string()).nullable().default(null),
   CEST: z.string().nullable().optional(),
-  indEscala: z.string().nullable().optional(),
+  /** Legacy wire type is a `bool`, not a string. */
+  indEscala: z.boolean().nullable().default(null),
   CNPJFab: z.string().nullable().optional(),
   cBenef: z.string().nullable().optional(),
   extipi: z.string().nullable().optional(),
   unidade: z.string().nullable().optional(),
   compoeValorTotalDaNFe: z.boolean().nullable().optional(),
+  /** UF codes scoping the rule to specific destinations. See class doc. */
+  estados: z.array(z.string()).nullable().default(null),
   ...taxConfigFields,
   dataCadastro: millisSinceEpoch().nullable().default(null),
+  /** Legacy wire key (capital S). Read fallback for `dataCadastro`. */
+  timeStamp: millisSinceEpoch().nullable().default(null),
 });
 
 export type RegraImposto = z.infer<typeof regraImpostoSchema>;
