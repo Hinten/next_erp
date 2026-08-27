@@ -58,7 +58,15 @@ export class MercadoLivreClientNetworkError extends Error {
 export class MercadoLivreBackendDesatualizadoError extends Error {
   constructor(
     message: string,
-    /** Which check failed — the panel picks its copy from this. */
+    /**
+     * Which check failed, as a machine-readable discriminator.
+     *
+     * ⚠️ NOT a copy selector — the panel renders `message` verbatim for both
+     * values and keys its sticky notification on `instanceof`. It exists so the
+     * two refusals cannot silently merge into one: the tests pin it, and a
+     * `contrato-violado` that started reporting `backend-desatualizado` would
+     * otherwise send the operator to a deploy that fixes nothing.
+     */
     readonly motivo: 'backend-desatualizado' | 'contrato-violado',
   ) {
     super(message);
@@ -511,8 +519,16 @@ export interface MercadoLivreUsuarioTeste {
    * answer "did the new buyer land beside the old one, or on top of it?". Every
    * buyer carries `role: 'comprador'`, so without it a list that failed to grow
    * is indistinguishable from a document that was replaced.
+   *
+   * ⚠️ **`null` means the backend does not report it**, which every deployment
+   * older than this field does — including one that already mints correctly.
+   * Typed nullable rather than left required-and-absent on purpose: `call<T>()`
+   * casts instead of validating, so a required `docId` would have rendered as a
+   * blank chip and keyed every row `undefined`, which is the same silent-nothing
+   * this whole change exists to remove. The GET normalises it here (see
+   * `comDocId`) and the panel NAMES the absence.
    */
-  docId: string;
+  docId: string | null;
   id: number;
   nickname: string;
   password: string;
@@ -586,6 +602,23 @@ function exigirMintAvulso(
     );
   }
   return result;
+}
+
+/**
+ * Normalise one test-user record coming off the wire.
+ *
+ * ⚠️ The ONLY thing it fixes is `docId`, and it does so by degrading rather than
+ * refusing. Unlike the mint's post-condition below, this read must never fail on
+ * a stale backend: the stored passwords are the single copy that exists — ML
+ * reissues none — and the list is the only surface that shows them. Breaking the
+ * read to punish an old deployment would destroy more than it protects.
+ *
+ * What it must NOT do is degrade silently. `undefined` reaching the panel meant
+ * a blank chip and `key={undefined}` on every card; `null` is a value the panel
+ * can and does render as "this backend does not say".
+ */
+function comDocId(u: MercadoLivreUsuarioTeste): MercadoLivreUsuarioTeste {
+  return typeof u.docId === 'string' && u.docId !== '' ? u : { ...u, docId: null };
 }
 
 /** Result of the dev-only mint. */
@@ -1497,10 +1530,12 @@ export function createMercadoLivreClient(config: {
         '/api/marketplace/mercado-livre/chat/pergunta-acao',
         input,
       ),
-    usuariosTeste: (integracaoId) =>
-      call<{ usuarios: MercadoLivreUsuarioTeste[] }>(
+    usuariosTeste: async (integracaoId) => {
+      const { usuarios } = await call<{ usuarios: MercadoLivreUsuarioTeste[] }>(
         `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
-      ),
+      );
+      return { usuarios: usuarios.map(comDocId) };
+    },
     criarUsuariosTeste: (integracaoId) =>
       // `{}` is what makes this a POST — `call` picks the method from the
       // presence of a body. The id stays in the query string so both verbs read

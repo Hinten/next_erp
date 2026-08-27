@@ -44,7 +44,7 @@ vi.mock('@/lib/auth', async (importActual) => {
   return { ...actual, usePermission: () => ({ allowed: true, loading: false }) };
 });
 
-const { UsuariosTesteDevPanel } = await import('./UsuariosTesteDevPanel');
+const { UsuariosTesteDevPanel, chaveDoCard } = await import('./UsuariosTesteDevPanel');
 const { MercadoLivreBackendDesatualizadoError, MercadoLivreClientHttpError } =
   await import('@/lib/mercado-livre/client');
 const { notifications } = await import('@mantine/notifications');
@@ -606,5 +606,48 @@ describe('UsuariosTesteDevPanel — a non-404 failure', () => {
 
     expect(await screen.findByTestId('ml-usuarios-teste-panel')).toBeTruthy();
     expect(screen.queryByTestId('ml-usuarios-teste-flag-off')).toBeNull();
+  });
+});
+
+describe('UsuariosTesteDevPanel — a backend that reports no doc id', () => {
+  /**
+   * ⚠️ The state that exists RIGHT NOW, before this backend is deployed — and it
+   * is reachable without minting anything, unlike the POST post-condition. Every
+   * deployment older than the field answers the GET without it, including one
+   * that already mints correctly.
+   */
+  it('⭐ NAMES the absence instead of rendering an empty chip', async () => {
+    setUsuarios([usuario('comprador', { docId: null, id: 2 })]);
+    renderPanel();
+
+    await screen.findByText('TEST-comprador');
+    expect(screen.getByTestId('ml-usuarios-teste-sem-doc-id').textContent).toContain('deploy');
+    expect(screen.getByTestId('ml-usuarios-teste-compradores').textContent).toContain(
+      'doc não informado',
+    );
+  });
+
+  it('⚠️ still keys every row uniquely — `key={undefined}` is no key at all', () => {
+    // ⚠️ Asserts the DERIVATION, not React's console warning. The first version
+    // of this test spied on `console.error` looking for the missing-key warning
+    // and PASSED against a deliberately broken `key={u.docId ?? undefined}` —
+    // React de-duplicates that warning per component, so it never reached the
+    // spy. A checker that cannot fail is worse than no checker, so it was
+    // replaced rather than tuned.
+    const antigo = usuario('comprador', { docId: null, id: 1 });
+    const novo = usuario('comprador', { docId: null, id: 2 });
+
+    expect(chaveDoCard(antigo)).not.toBe(chaveDoCard(novo));
+    // And the doc id still wins wherever there is one.
+    expect(chaveDoCard(usuario('comprador', { docId: 'comprador-2', id: 2 }))).toBe('comprador-2');
+  });
+
+  it('says nothing when every record HAS a doc id', async () => {
+    // The control. A banner that is always on is a banner nobody reads.
+    setUsuarios([usuario('comprador', { docId: 'comprador-2', id: 2 })]);
+    renderPanel();
+
+    await screen.findByText('TEST-comprador');
+    expect(screen.queryByTestId('ml-usuarios-teste-sem-doc-id')).toBeNull();
   });
 });

@@ -356,3 +356,75 @@ describe('criarUsuarioTesteAvulso — the stale-backend post-condition', () => {
     ).resolves.toEqual(corpo);
   });
 });
+
+/**
+ * `usuariosTeste` — the READ side of the same deployment skew, and why it
+ * degrades where the mint refuses.
+ *
+ * ⚠️ The asymmetry is deliberate. The mint's post-condition throws, because a
+ * wrong answer there means one account's password is about to be presented as
+ * another's. This read must never throw: the stored passwords are the single
+ * copy that exists — ML reissues none — and this list is the only surface that
+ * shows them, so failing it on a stale backend destroys more than it protects.
+ *
+ * What it may not do is degrade SILENTLY. `undefined` reaching the panel meant a
+ * blank chip where the doc id should be and `key={undefined}` on every card,
+ * which is the same silent-nothing the mint guard exists to remove.
+ */
+describe('usuariosTeste — a backend that reports no docId', () => {
+  function okList(usuarios: unknown[]): Response {
+    return new Response(JSON.stringify({ usuarios }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  const SEM_DOC_ID = {
+    role: 'comprador',
+    id: 2,
+    nickname: 'TEST-comprador',
+    password: 'qatest328',
+    site_id: 'MLB',
+    site_status: 'active',
+    email: null,
+    createdAt: 1_700_000_000_000,
+    createdByUserId: 999,
+    codigosVerificacaoEmail: { quatro: '0002', seis: '000002' },
+  };
+
+  it('⭐ resolves — the stored password is the only copy there is', async () => {
+    const c = client(async () => okList([SEM_DOC_ID]));
+
+    const { usuarios } = await c.usuariosTeste('i1');
+
+    expect(usuarios).toHaveLength(1);
+    expect(usuarios[0]?.password).toBe('qatest328');
+  });
+
+  it('⭐ normalises the absence to null, never leaves it undefined', async () => {
+    // `call<T>()` casts rather than validates, so without this the panel gets
+    // `undefined` for a field its type declares present — a blank chip and no
+    // React key. `null` is a value the panel can render as "this backend does
+    // not say".
+    const c = client(async () => okList([SEM_DOC_ID]));
+
+    const { usuarios } = await c.usuariosTeste('i1');
+
+    expect(usuarios[0]?.docId).toBeNull();
+  });
+
+  it('treats an empty string the same as absent', async () => {
+    // `doc ⟨empty⟩` renders identically to the bug being fixed.
+    const c = client(async () => okList([{ ...SEM_DOC_ID, docId: '' }]));
+
+    expect((await c.usuariosTeste('i1')).usuarios[0]?.docId).toBeNull();
+  });
+
+  it('leaves a real doc id untouched', async () => {
+    // The control. A normaliser that flattened everything to null would pass
+    // every assertion above and delete the feature.
+    const c = client(async () => okList([{ ...SEM_DOC_ID, docId: 'comprador-2' }]));
+
+    expect((await c.usuariosTeste('i1')).usuarios[0]?.docId).toBe('comprador-2');
+  });
+});

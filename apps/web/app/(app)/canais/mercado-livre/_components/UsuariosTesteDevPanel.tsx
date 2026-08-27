@@ -45,6 +45,21 @@ const IS_DEV = process.env.NODE_ENV !== 'production';
  */
 const CODIGO_REAUTH = 'ML_REAUTH_REQUIRED';
 
+/**
+ * Shown when the list comes back without doc ids — every backend older than the
+ * field, including one that already mints correctly.
+ *
+ * ⚠️ Named rather than rendered as an empty chip. The doc id is the only thing
+ * on screen that separates "the new buyer landed beside the old one" from "it
+ * landed on top of it", so a blank where it should be is the panel quietly
+ * withdrawing the one answer it was added to give.
+ */
+const DOC_ID_AUSENTE =
+  'Este backend não informa em qual documento cada conta está guardada, então esta lista não ' +
+  'consegue distinguir um comprador criado AO LADO do antigo de um que substituiu o antigo. ' +
+  'As credenciais abaixo estão corretas; faça o deploy de `apps/mercado-livre` para recuperar ' +
+  'essa distinção.';
+
 const PRECISA_RECONECTAR =
   'Conecte novamente a conta real que registrou a aplicação: a criação anterior apagou as ' +
   'credenciais desta conta, e o backend precisa de um token antes de qualquer verificação.';
@@ -287,6 +302,10 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
     ? (contaQuery.data.me.nickname ?? `id ${String(contaQuery.data.me.id)}`)
     : null;
   const limiteAtingido = usuarios.length >= USUARIO_TESTE_LIMITE_POR_CONTA;
+  // ⚠️ `some`, not `every`: one record without a doc id is already enough to
+  // make the list unable to answer its own question, and a mixed answer is the
+  // shape a half-deployed backend produces.
+  const semDocId = usuarios.some((u) => u.docId == null);
 
   return (
     <Card withBorder padding="md" data-testid="ml-usuarios-teste-panel">
@@ -306,6 +325,12 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
         </Text>
 
         <ContadorDeVagas registrados={usuarios.length} />
+
+        {semDocId && (
+          <Alert color="yellow" variant="light" data-testid="ml-usuarios-teste-sem-doc-id">
+            {DOC_ID_AUSENTE}
+          </Alert>
+        )}
 
         {listaFailure && (
           <RetryAlert
@@ -521,6 +546,25 @@ function UsuariosTestePanel({ integracaoId }: { integracaoId: string }) {
 }
 
 /**
+ * React key for one account's card.
+ *
+ * ⚠️ The doc id first, because it is unique by CONSTRUCTION — the ML user id is
+ * unique only if nothing was ever stored twice, which is the very property this
+ * panel exists to let you check, so keying on it would assume the answer.
+ *
+ * ⚠️ The fallback exists because a backend older than the field reports no doc
+ * id at all, and `key={undefined}` is not a key: React drops to index
+ * reconciliation on exactly the list this panel needs to be trustworthy. It is
+ * exported so the derivation can be asserted directly — a test that watched for
+ * React's missing-key console warning instead PASSED against a deliberately
+ * broken key (the warning is de-duplicated per component and never reached the
+ * spy), which is a checker that cannot fail.
+ */
+export function chaveDoCard(u: MercadoLivreUsuarioTeste): string {
+  return u.docId ?? `sem-doc-${String(u.id)}`;
+}
+
+/**
  * One role's accounts, counted in the heading.
  *
  * ⚠️ The count is rendered even when it is zero, and every account in the group
@@ -553,10 +597,7 @@ function GrupoDeUsuarios({
         </Text>
       ) : (
         usuarios.map((u) => (
-          // ⚠️ Keyed on the DOC ID. The ML user id is unique only if nothing was
-          // ever stored twice, which is the very property this panel exists to
-          // let you check; a Firestore doc id is unique by construction.
-          <UsuarioTesteCard key={u.docId} usuario={u} maisRecente={u === maisRecente} />
+          <UsuarioTesteCard key={chaveDoCard(u)} usuario={u} maisRecente={u === maisRecente} />
         ))
       )}
     </Stack>
@@ -818,8 +859,16 @@ function UsuarioTesteCard({
           Every buyer record says `role: 'comprador'`, so the records alone
           cannot tell those three apart.
         */}
-        <Text size="xs" c="dimmed">
-          doc <Code>{usuario.docId}</Code>
+        <Text size="xs" c={usuario.docId == null ? 'orange' : 'dimmed'}>
+          {usuario.docId == null ? (
+            // ⚠️ Never an empty chip. "doc ⟨nothing⟩" reads as a rendering
+            // glitch; "não informado" reads as the fact it is.
+            <>doc não informado (backend desatualizado)</>
+          ) : (
+            <>
+              doc <Code>{usuario.docId}</Code>
+            </>
+          )}
           {usuario.createdAt != null
             ? ` · criado em ${new Date(usuario.createdAt).toLocaleString('pt-BR')}`
             : ''}
