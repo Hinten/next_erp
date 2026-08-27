@@ -555,6 +555,38 @@ One captured body fixes that permanently.
 Now that the code has merged, drop the label when closing — or it sits in the cutover
 queue forever as work that is already done.
 
+### 7.3.1 — `GET /shipments/{id}/costs` ✅ RUN 2026-08-27
+
+The endpoint that feeds `custoCalculado` once `base_cost` left the wire. Run against
+the staging test seller **`3616169770`**; results recorded rather than left as a task.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H 'x-format-new: true' \
+  "https://api.mercadolibre.com/shipments/$SHIPMENT_ID/costs" | python -m json.tool
+```
+
+| Assert                                                                                 | Why it matters                                                                                                                                                                                                                                                 | Result                                                                                                                      |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `senders[]` holds an entry whose `user_id` **is our seller id**                        | the whole design. `resolveShipmentSellerCost` matches on it — ⚠️ **never `senders[0]`**, since "um só envio poderá conter produtos de diferentes vendedores". A miss is silent: `custoCalculado` stays `null` and only the `nenhum sender nosso` warn shows it | ✅ matched on BOTH shipments                                                                                                |
+| `senders[].cost` is a real number                                                      | this is what the seller pays; `custoFinal` (= `lead_time.list_cost`) is the GROSS price and overstates it                                                                                                                                                      | ✅ **9.15** on `47868202073` (vs `list_cost` 22.14), **26.75** on `47868991350`                                             |
+| the identity `gross_amount = Σ over parties of (cost + Σ discounts[].promoted_amount)` | ⚠️ **do NOT expect `gross_amount - receiver.cost` to equal the seller's cost** — it is false, and computing it that way manufactures a mismatch that is not one. That wrong expectation shipped once and had to be retracted                                   | ✅ holds to the centavo: 38.86 = (12.99+12.80)+(9.15+3.92); 154.20 = (85.99+30.00)+(26.75+11.46)                            |
+| a `cost` of `0` is a REAL value, never a miss                                          | a fully subsidised shipment costs the seller nothing; the resolver uses an explicit finite-number test, never truthiness                                                                                                                                       | ⚠️ **not observed** — both live shipments were non-zero. Covered by unit test only; a genuinely free envio would confirm it |
+| a CANCELLED/refunded shipment                                                          | worth knowing whether a refund zeroes the seller's share                                                                                                                                                                                                       | ⛔ **it does NOT.** `47868991350` is a fully refunded pack and the seller still pays **26.75**                              |
+
+⚠️ **`save` is documented as DELETED from this resource and is neither deleted nor
+zero.** ML's page says it stopped being filled in Oct/2024 ("todos os casos o campo
+receberá o valor 0") and was removed in Jan/2025. On the wire ~20 months later it is
+present and non-zero on every party (11.81 / 3.92 / 29.91 / 11.46). It stays untyped
+by CHOICE — a publicly deprecated field is not one to build on — not by absence; do
+not "correct" `mlShipmentCostPartySchema` after seeing it in a payload.
+
+⭐ **Generalise: an ML deprecation notice states INTENT, not the wire.** The live body
+is a strict superset of the documented one in four more ways, all on the passthrough
+and none consumed: `fees`, `compensations` (plural, beside the documented singular
+`compensation`), `charges.charge_flex`, `cost_details[]`, root `base_exchange`.
+Capture the real body before believing a notice in either direction — the captured one
+is pinned verbatim in `packages/integrations/mercado-livre/test/api.test.ts`.
+
 ---
 
 ## 9. Phase 8 — capture fixtures, clean up, decide on CI
