@@ -119,11 +119,11 @@ jobs:
           shopt -s nullglob
           for f in /etc/apt/sources.list.d/*; do
             [ -f "$f" ] || continue
-            if grep -qE 'ubuntu[.]com|apt-mirrors[.]txt' "$f"; then continue; fi
+            if grep -qE '^[^#]*(ubuntu[.]com|apt-mirrors[.]txt)' "$f"; then continue; fi
             sudo mv "$f" "$f.disabled"
             echo "disabled $f"
           done
-          if ! grep -rqE 'ubuntu[.]com|apt-mirrors[.]txt' --exclude='*.disabled' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+          if ! grep -rqE '^[^#]*(ubuntu[.]com|apt-mirrors[.]txt)' --exclude='*.disabled' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
             echo "::error::the apt trim left no Ubuntu archive source — refusing to continue"
             exit 1
           fi

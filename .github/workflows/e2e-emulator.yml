@@ -202,6 +202,17 @@ jobs:
       # restore some other version's browsers, which `playwright install` would
       # re-download anyway while the post-step saved both sets. That install
       # revalidates whatever it finds, so a partial or stale restore self-heals.
+      #
+      # ⚠️ HOW MUCH THIS ACTUALLY PAYS — less than it looks. A cache written by a
+      # `pull_request` run is scoped to that PR's ref; only DEFAULT-BRANCH entries
+      # are readable from every branch. This lane has no `push:` trigger, and
+      # copilot-setup-steps.yml's is `paths:`-filtered to itself, so a key reaches
+      # `main`'s scope only when a PR touching THAT file merges. Since
+      # `actions/cache` never overwrites an existing key, the first PR after a
+      # Playwright bump pays one cold download and hits only on its later pushes.
+      # So: a per-PR-after-the-first-run win, not a per-run one, degrading to that
+      # again on every version bump. A `push:` trigger would fix it and is
+      # deliberately NOT added — that is a lane-design change (rule 4).
       - name: Cache Playwright browsers
         uses: actions/cache@v5
         with:
@@ -224,6 +235,13 @@ jobs:
       # that moves the archive into sources.list.d survives this), and the
       # post-check exits 1 if the trim left no Ubuntu source at all.
       #
+      # ⚠️ Both greps anchor to a NON-COMMENT line (`^[^#]*`). Matching anywhere in
+      # the file would let a third-party source survive on nothing more than a
+      # `# see https://help.ubuntu.com/…` line in its own header — some vendor
+      # packages ship exactly that — and the trim would silently stop covering the
+      # repo it exists to drop, with no failure until the next 403. deb822 is
+      # unaffected: `URIs: http://azure.archive.ubuntu.com/ubuntu/` carries no `#`.
+      #
       # ⚠️ Deleting this step fails nothing until the next 403, so
       # `ci-lane-gates.test.js` asserts it precedes the apt step below.
       - name: Trim apt sources to the Ubuntu archive
@@ -231,11 +249,11 @@ jobs:
           shopt -s nullglob
           for f in /etc/apt/sources.list.d/*; do
             [ -f "$f" ] || continue
-            if grep -qE 'ubuntu[.]com|apt-mirrors[.]txt' "$f"; then continue; fi
+            if grep -qE '^[^#]*(ubuntu[.]com|apt-mirrors[.]txt)' "$f"; then continue; fi
             sudo mv "$f" "$f.disabled"
             echo "disabled $f"
           done
-          if ! grep -rqE 'ubuntu[.]com|apt-mirrors[.]txt' --exclude='*.disabled' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+          if ! grep -rqE '^[^#]*(ubuntu[.]com|apt-mirrors[.]txt)' --exclude='*.disabled' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
             echo "::error::the apt trim left no Ubuntu archive source — refusing to continue"
             exit 1
           fi
