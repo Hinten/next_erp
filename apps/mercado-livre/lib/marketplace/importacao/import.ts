@@ -752,6 +752,31 @@ function uniqueFirstSeen(values: readonly string[]): string[] {
  * Never throws for an ML failure. A non-ML error (a bug, a Firestore fault)
  * still propagates — the catch narrows rather than swallowing.
  */
+async function lerModeracoesDoItem(
+  api: MercadoLivreApi,
+  itemId: string,
+  item: MlItem,
+  enabled: boolean,
+  integracaoId: string,
+): Promise<MlModeracao[] | null> {
+  // Free, and the half of the invariant worth keeping everywhere: ML's own
+  // status says there is nothing to explain, so any stored reason is stale.
+  if (!precisaConsultarModeracao(item.status, item.sub_status)) return [];
+  if (!enabled) return null;
+  try {
+    return await consultarModeracoes(api, itemId, item.status, item.sub_status);
+  } catch (err) {
+    if (!(err instanceof MercadoLivreError)) throw err;
+    console.warn('[mercado-livre] import: falha ao consultar moderações — motivo não atualizado', {
+      integracaoId,
+      itemId,
+      status: item.status,
+      erro: err.message,
+    });
+    return null;
+  }
+}
+
 /**
  * ML's BILLABLE weight for this listing, in grams — or null.
  *
@@ -775,6 +800,13 @@ async function lerPesoFaturavel(
   if (!enabled || sellerUserId == null) return null;
   // Free: the listing already says what it weighs, so there is nothing to ask.
   if (pesoBrutoDeclaradoKg(item) != null) return null;
+  // ⚠️ Also free, and it is the case the docblock below PREDICTS: ML serves this
+  // endpoint only for items live on the marketplace, so a paused/under-review
+  // listing buys a round trip whose 4xx we already expect plus a `console.warn`
+  // that reads like an incident. Decided from the item already in hand — the same
+  // shape as `precisaConsultarModeracao` gating the moderations read. It is not a
+  // loss: `estado` returning to active makes the next import ask.
+  if (item.status !== 'active') return null;
   try {
     const resp = await api.getFreeShippingOptions(sellerUserId, {
       itemId,
@@ -787,31 +819,6 @@ async function lerPesoFaturavel(
     console.warn('[mercado-livre] import: falha ao consultar peso de envio — peso nao importado', {
       integracaoId,
       itemId,
-      erro: err.message,
-    });
-    return null;
-  }
-}
-
-async function lerModeracoesDoItem(
-  api: MercadoLivreApi,
-  itemId: string,
-  item: MlItem,
-  enabled: boolean,
-  integracaoId: string,
-): Promise<MlModeracao[] | null> {
-  // Free, and the half of the invariant worth keeping everywhere: ML's own
-  // status says there is nothing to explain, so any stored reason is stale.
-  if (!precisaConsultarModeracao(item.status, item.sub_status)) return [];
-  if (!enabled) return null;
-  try {
-    return await consultarModeracoes(api, itemId, item.status, item.sub_status);
-  } catch (err) {
-    if (!(err instanceof MercadoLivreError)) throw err;
-    console.warn('[mercado-livre] import: falha ao consultar moderações — motivo não atualizado', {
-      integracaoId,
-      itemId,
-      status: item.status,
       erro: err.message,
     });
     return null;

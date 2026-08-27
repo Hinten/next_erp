@@ -42,6 +42,7 @@ import {
   createMercadoLivreApi,
   mapMlItemToImport,
   mapMlVariationsToImport,
+  MercadoLivreError,
   MercadoLivreHttpError,
   pesoBrutoDeclaradoKg,
   type MappedMlItem,
@@ -314,9 +315,14 @@ async function main(): Promise<void> {
           })
           .then((r) => r.coverage?.all_country?.billable_weight ?? null)
           .catch((err: unknown) => {
-            if (!(err instanceof MercadoLivreHttpError)) throw err;
+            // ⚠️ `MercadoLivreError`, matching `lerPesoFaturavel` — NOT the narrower
+            // `MercadoLivreHttpError`. The importer degrades on a validation failure
+            // and a socket hangup too, so narrowing tighter here would kill the one
+            // tool you reach for to EXPLAIN those exact failures.
+            if (!(err instanceof MercadoLivreError)) throw err;
+            const detalhe = err instanceof MercadoLivreHttpError ? `ML ${err.status}` : err.message;
             log(
-              `  ⚠️  peso de envio indisponível (ML ${err.status}) — pesoBrutoKg abaixo é só o declarado`,
+              `  ⚠️  peso de envio indisponível (${detalhe}) — pesoBrutoKg abaixo é só o declarado`,
             );
             return null;
           });

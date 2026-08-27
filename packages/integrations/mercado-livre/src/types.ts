@@ -141,7 +141,7 @@ export const itemAttributeSchema = z
       .nullable()
       .optional(),
     /**
-     * ML's `values[]` — the allowed/selected values, each with its OWN `struct`.
+     * ML's `values[]` — read for ONE thing: `values[0].struct`.
      *
      * ⚠️ **The struct is not always at the attribute root.** A live
      * `GET /items/{id}?include_attributes=all` (MLB5146021467, 27/08/2026) returned
@@ -150,16 +150,29 @@ export const itemAttributeSchema = z
      * `values: [{ id: null, name: '10 cm', struct: { number: 10, unit: 'cm' } }]`.
      * So a reader that consults `value_struct` alone sees nothing on that response.
      *
-     * Typed rather than left to `.passthrough()` because a caller cannot read what
-     * the type does not describe — the exact reason `value_struct` had to be added
-     * above (#1087). Only the fields a reader needs are named; the rest passes through.
+     * ⚠️ **`id` and `name` are deliberately NOT typed, and the `.catch` is not
+     * decoration.** This key used to be inert — unknown to the schema, preserved by
+     * `.passthrough()`, incapable of failing anything. Typing it makes every element
+     * of every attribute of every item a validation surface, and this object has no
+     * outer `.catch()`: one odd `values[0].id` (a NUMBER, which ML has form for — see
+     * {@link itemVariationSchema}'s own id union) would fail the WHOLE
+     * `GET /items` parse and kill the import, the publish, `itemsStatusSync` and the
+     * notification handlers for that listing. That directly contradicts this
+     * schema's stated invariant one docblock up: *"Every field is optional so a
+     * single odd entry (or ML drift) never fails the whole item parse."* Nothing in
+     * the repo reads `id` or `name` here, so typing them buys no reader anything and
+     * costs a new way to lose a produto. Same reasoning, same remedy as
+     * {@link mlMissedFeedSchema}'s per-field catches.
+     *
+     * The `.catch(undefined)` covers the shapes narrowing cannot: a non-array
+     * `values`, or a `struct` whose `number`/`unit` drift. Drift degrades to "no
+     * struct" — `cmFromMeasurement` then falls through to `value_name` — rather
+     * than throwing.
      */
     values: z
       .array(
         z
           .object({
-            id: z.string().nullable().optional(),
-            name: z.string().nullable().optional(),
             struct: z
               .object({
                 number: wireNumber().nullable().optional(),
@@ -172,7 +185,8 @@ export const itemAttributeSchema = z
           .passthrough(),
       )
       .nullable()
-      .optional(),
+      .optional()
+      .catch(undefined),
   })
   .passthrough();
 export type MlItemAttribute = z.infer<typeof itemAttributeSchema>;

@@ -2168,6 +2168,29 @@ describe('importProduto — ML billable weight (the last-resort gross weight)', 
     expect(db.docs('produtos').get(res.produtoId)!.pesoBrutoKg).toBeNull();
   });
 
+  it('⚠️ spends no call on a PAUSED listing — ML cannot answer for one', async () => {
+    // ML serves `/shipping_options/free` only for items live on the marketplace,
+    // so calling for a paused listing buys a 4xx we already predict plus a warn
+    // that reads like an incident. Decided from the item already in hand.
+    const db = new FakeDb();
+    const api = makeApi({ ...SEM_PESO, status: 'paused' }, undefined, undefined, [], PESO_ML);
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(api.getFreeShippingOptions).not.toHaveBeenCalled();
+    expect(db.docs('produtos').get(res.produtoId)!.pesoBrutoKg).toBeNull();
+  });
+
+  it('⚠️ CONTROL — the same listing ACTIVE does spend the call', async () => {
+    // Without this the assertion above passes against a function that never calls
+    // at all. The pair is what makes the status gate observable.
+    const db = new FakeDb();
+    const api = makeApi(SEM_PESO, undefined, undefined, [], PESO_ML);
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(api.getFreeShippingOptions).toHaveBeenCalled();
+    expect(db.docs('produtos').get(res.produtoId)!.pesoBrutoKg).toBe(1.539);
+  });
+
   it('spends no call without a sellerUserId — the URL needs one', async () => {
     // `sellerUserId: null` is refused by an earlier guard, so this pins the
     // helper's own check rather than the reachable path: it must never build a

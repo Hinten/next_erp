@@ -489,3 +489,93 @@ describe('pesoBrutoDeclaradoKg — the spend-or-not gate the IO layer reads', ()
     expect(pesoBrutoDeclaradoKg(simpleItem({ attributes: [] }))).toBeNull();
   });
 });
+
+/**
+ * ⚠️ `values[]` must never be able to fail an item parse.
+ *
+ * It used to be an unknown key surviving on `.passthrough()` — inert, incapable
+ * of throwing. Typing it for `values[0].struct` briefly made every element of
+ * every attribute of every item a validation surface, and `itemSchema` carries no
+ * outer `.catch()`: one odd entry killed `GET /items` for that listing, taking the
+ * import, the publish, `itemsStatusSync` and the notification handlers with it.
+ *
+ * These are the exact five shapes that failed before the narrow + `.catch`.
+ */
+describe('itemAttributeSchema.values — drift must degrade, never throw', () => {
+  const comAtributo = (attr: unknown) =>
+    itemSchema.safeParse({
+      id: 'MLB1',
+      attributes: [{ id: 'BRAND', value_name: 'Acme' }, attr],
+    });
+
+  const derivas: Array<[string, unknown]> = [
+    // ML has form for numeric ids — `itemVariationSchema.id` is a union for that
+    // very reason. This one alone used to fail at `attributes.1.values.0.id`.
+    ['numeric id', { id: 'HEIGHT', values: [{ id: 123, name: '10 cm' }] }],
+    ['object name', { id: 'HEIGHT', values: [{ id: null, name: { x: 1 } }] }],
+    ['struct.number non-numeric', { id: 'HEIGHT', values: [{ struct: { number: 'abc' } }] }],
+    ['struct.unit numeric', { id: 'HEIGHT', values: [{ struct: { number: 10, unit: 5 } }] }],
+    ['values as an object', { id: 'HEIGHT', values: { struct: { number: 10, unit: 'cm' } } }],
+  ];
+
+  for (const [label, attr] of derivas) {
+    it(`parses through: ${label}`, () => {
+      const r = comAtributo(attr);
+      // Asserted as a string so a regression names the failing PATH, not just `false`.
+      expect(r.success ? 'parses' : `FAILS at ${r.error.issues[0]?.path.join('.')}`).toBe('parses');
+    });
+  }
+
+  it('⚠️ CONTROL — drift degrades to no dimensions, it does not invent them', () => {
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [
+        { id: 'HEIGHT', values: [{ struct: { number: 'abc' } }] },
+        { id: 'WIDTH', values: [{ struct: { number: 22, unit: 'cm' } }] },
+        { id: 'LENGTH', values: [{ struct: { number: 33, unit: 'cm' } }] },
+      ],
+    });
+    const m = mapMlItemToImport(item);
+    // The trio is all-or-nothing, so one unreadable axis yields none.
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([null, null, null]);
+  });
+
+  it('⚠️ CONTROL — a well-formed struct still reads, so the narrow did not gut it', () => {
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [
+        { id: 'HEIGHT', values: [{ id: 'x', name: '11 cm', struct: { number: 11, unit: 'cm' } }] },
+        { id: 'WIDTH', values: [{ struct: { number: 22, unit: 'cm' } }] },
+        { id: 'LENGTH', values: [{ struct: { number: 33, unit: 'cm' } }] },
+      ],
+    });
+    const m = mapMlItemToImport(item);
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([11, 22, 33]);
+  });
+
+  it('⚠️ the NARROW earns its keep: an odd id must not cost the struct beside it', () => {
+    // `.catch(undefined)` alone already stops the throw — but it discards the WHOLE
+    // `values` array to do it, taking the struct with it and losing the dimension.
+    // Only NOT typing `id`/`name` keeps the readable half readable. Without this
+    // case, re-typing `id` is invisible: every other test here still passes,
+    // because the catch quietly absorbs it. (Found by a surviving mutation.)
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [
+        { id: 'HEIGHT', values: [{ id: 123, name: '11 cm', struct: { number: 11, unit: 'cm' } }] },
+        { id: 'WIDTH', values: [{ id: 456, struct: { number: 22, unit: 'cm' } }] },
+        { id: 'LENGTH', values: [{ id: 789, struct: { number: 33, unit: 'cm' } }] },
+      ],
+    });
+    const m = mapMlItemToImport(item);
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([11, 22, 33]);
+  });
+
+  it('a drifting values[] still round-trips onto the link, as it did untyped', () => {
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [{ id: 'BRAND', name: 'Marca', value_name: 'Acme', values: [{ id: 9 }] }],
+    });
+    expect(mapMlItemToImport(item).attributes.map((a) => a.id)).toEqual(['BRAND']);
+  });
+});
