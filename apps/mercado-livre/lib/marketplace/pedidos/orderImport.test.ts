@@ -2811,6 +2811,54 @@ describe('importPedidoMercadoLivre — order with no Mercado Envios shipment', (
       expect(written.estado).toBe('emProcessamento');
     });
 
+    it('reconciles AND advances in the same transaction — both writes land', async () => {
+      // ⚠️ The only arm where BOTH `tx.update`s fire: the money repair, then the
+      // delivery advance, on the same pedido in one transaction. That ordering
+      // is a deliberate design claim (`orderImport.ts`: "Runs FIRST so it cannot
+      // mask the advance's own patch"), and every other case here runs with
+      // `fulfilled` unset — so without this test the claim is unexercised.
+      //
+      // Needs BOTH: a stale total (the pack shape) and a `fulfilled: true`
+      // payload NEWER than `lastMarketplaceUpdate`, or the advance's µs
+      // freshness gate refuses and only one write happens.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPackSemEnvio(db, {
+        lastMarketplaceUpdate: Date.parse('2026-01-01T00:00:00.000-03:00') * 1000,
+        freteInicial: {
+          estado: 'iniciado',
+          modalidade: '1',
+          externalOptionIntegracao: null,
+          enderecoFreteOuterReference: 'documents/clientes/cli-1/enderecos/end-1',
+          ultimaModificacao: Date.parse('2026-01-01T00:00:00.000-03:00') * 1000,
+        },
+      });
+      const api = makeApi({
+        getOrder: vi.fn(async () =>
+          makeOrder({
+            id: 1,
+            tags: ['no_shipping', 'not_delivered', 'paid'],
+            fulfilled: true,
+            lastUpdated: '2026-02-01T00:00:00.000-03:00',
+          }),
+        ),
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      const written = db.docs('pedidos').get('pedido-1')!;
+      // ⚠️ Asserted on the DOCUMENT, not on `db.lastPatch`: that helper is
+      // last-write-wins per doc path, so here it returns the ADVANCE's patch and
+      // the money write is invisible to it. Reading the patch would silently
+      // assert half of what this test is named for.
+      expect(written.valorCobrado).toBe(149.94);
+      expect((written.freteInicial as DocData).estado).toBe('entregue');
+      // …and the ordering claim itself: the advance is the one that landed last.
+      expect(db.lastPatch('pedidos', 'pedido-1')).toMatchObject({
+        freteInicial: expect.objectContaining({ estado: 'entregue' }),
+      });
+    });
+
     it('repairs a sibling that merged AFTER the block was seeded', async () => {
       // The seed is create-only, so a pack assembling across notifications gets
       // its block from the first order and its second line later. Only a repair
