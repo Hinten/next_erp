@@ -81,14 +81,52 @@ describe('ProdutoThumbnail', () => {
     expect(screen.queryByRole('img', { name: 'X' })).toBeNull();
   });
 
-  it('renders the broken-image placeholder when the arquivo doc is missing', () => {
-    setSnaps({ deriv1: MISSING });
+  it('renders the broken-image placeholder when EVERY candidate doc is missing', () => {
+    setSnaps({ deriv1: MISSING, orig1: MISSING });
     wrap(<ProdutoThumbnail db={db} produto={produtoWithFoto()} zoomable={false} />);
     expect(screen.getByLabelText('Foto indisponível')).toBeTruthy();
   });
 
+  it('falls back to the ORIGINAL when the derivative doc was never created', () => {
+    // The bug this ladder exists for. `buildFotoRefs` writes
+    // `arquivo400pxOuterRef` optimistically at upload time, so the ref string is
+    // always non-null; when `resizeProductImage` has not produced the document
+    // it names, a `??` over the REFS never reaches the original and the row
+    // renders a permanent broken image even though the photo is perfectly fine.
+    setSnaps({ deriv1: MISSING, orig1: loaded('https://cdn/orig1.jpg') });
+    wrap(<ProdutoThumbnail db={db} produto={produtoWithFoto()} zoomable={false} />);
+    expect(screen.getByRole('img', { name: 'Camiseta' }).getAttribute('src')).toBe(
+      'https://cdn/orig1.jpg',
+    );
+    expect(screen.queryByLabelText('Foto indisponível')).toBeNull();
+  });
+
+  it('does not read the original once the derivative has resolved', () => {
+    // The fallback must not cost a second listener in the healthy case: with the
+    // derivative present, the original rung is passed a null ref and never read
+    // — so a stale/other url sitting under `orig1` cannot win.
+    setSnaps({
+      deriv1: loaded('https://cdn/deriv1.jpg'),
+      orig1: loaded('https://cdn/orig1.jpg'),
+    });
+    wrap(<ProdutoThumbnail db={db} produto={produtoWithFoto()} zoomable={false} />);
+    expect(screen.getByRole('img', { name: 'Camiseta' }).getAttribute('src')).toBe(
+      'https://cdn/deriv1.jpg',
+    );
+  });
+
   it('shows the loading skeleton while the arquivo doc resolves', () => {
     setSnaps({ deriv1: LOADING });
+    wrap(<ProdutoThumbnail db={db} produto={produtoWithFoto()} zoomable={false} />);
+    expect(screen.getByTestId('produto-thumbnail-loading')).toBeTruthy();
+    expect(screen.queryByLabelText('Foto indisponível')).toBeNull();
+  });
+
+  it('keeps showing the skeleton while a LATER candidate is still resolving', () => {
+    // The derivative is gone but the original has not answered yet — that is
+    // pending, not broken. Flashing the broken icon here would be a visible
+    // regression on every row of a list whose derivatives are missing.
+    setSnaps({ deriv1: MISSING, orig1: LOADING });
     wrap(<ProdutoThumbnail db={db} produto={produtoWithFoto()} zoomable={false} />);
     expect(screen.getByTestId('produto-thumbnail-loading')).toBeTruthy();
     expect(screen.queryByLabelText('Foto indisponível')).toBeNull();

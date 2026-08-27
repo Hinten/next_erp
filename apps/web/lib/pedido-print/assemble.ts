@@ -38,11 +38,10 @@ import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 
 import {
-  arquivoIdFromRef,
   countTotalItens,
   itemsSubtotal,
   kitComponentQuantidade,
-  pickCoverFotoRef,
+  pickCoverFotoIds,
   resolveVariacoesText,
   stockText,
   type PedidoPrintModel,
@@ -330,18 +329,28 @@ async function readProdutos(db: Firestore, ids: readonly string[]): Promise<Map<
   return map;
 }
 
-/** produtoId → cover-photo download URL (or null). */
+/**
+ * produtoId → cover-photo download URL (or null).
+ *
+ * ⚠️ Each produto contributes a candidate LIST (200px → 400px → original), not
+ * a single id, and the resolver returns the first candidate that actually
+ * resolved. `buildFotoRefs` writes derivative refs optimistically, so reading
+ * only the preferred one prints nothing at all for every produto whose
+ * derivatives the resize function never produced — and a print has no
+ * broken-image placeholder to make that visible. Every distinct id is still
+ * fetched exactly once, shared across the produtos that name it.
+ */
 async function buildFotoResolver(
   db: Firestore,
   produtos: ReadonlyMap<string, Produto>,
 ): Promise<(produtoId: string | null) => string | null> {
-  const arquivoIdByProduto = new Map<string, string>();
+  const arquivoIdsByProduto = new Map<string, readonly string[]>();
   const arquivoIds = new Set<string>();
   for (const [pid, p] of produtos) {
-    const aid = arquivoIdFromRef(pickCoverFotoRef(p));
-    if (aid) {
-      arquivoIdByProduto.set(pid, aid);
-      arquivoIds.add(aid);
+    const aids = pickCoverFotoIds(p);
+    if (aids.length > 0) {
+      arquivoIdsByProduto.set(pid, aids);
+      for (const aid of aids) arquivoIds.add(aid);
     }
   }
   const urlById = new Map<string, string | null>();
@@ -353,8 +362,11 @@ async function buildFotoResolver(
   );
   return (produtoId) => {
     if (!produtoId) return null;
-    const aid = arquivoIdByProduto.get(produtoId);
-    return aid ? (urlById.get(aid) ?? null) : null;
+    for (const aid of arquivoIdsByProduto.get(produtoId) ?? []) {
+      const url = urlById.get(aid) ?? null;
+      if (url !== null) return url;
+    }
+    return null;
   };
 }
 

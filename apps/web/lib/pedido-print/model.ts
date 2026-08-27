@@ -8,9 +8,10 @@
  * Faithful port of the Flutter `pdf_orcamento.dart` / `pdf_formato.dart` row
  * builders (`.old/packages/pedido_impressao`).
  */
-import type { Foto, GrupoDeVariacoes, ItemDoPedido, Produto } from '@delfrance/schemas';
+import type { GrupoDeVariacoes, ItemDoPedido, Produto } from '@delfrance/schemas';
 import { itemSubtotal, parseFakePath } from '@delfrance/schemas';
 
+import { coverArquivoIds } from '../produtos/fotoRefs';
 import { formatQuantidade, microsToDate } from './format';
 
 /* -------------------------------------------------------------------------- */
@@ -121,28 +122,21 @@ export interface PedidoPrintModel {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Bare `<id>` from a `Foto` ref string (`arquivos/<id>` or
- * `documents/arquivos/<id>`), or `null` — the last non-empty path segment.
- * Mirrors the `idFromRef` in `components/ProdutoThumbnail.tsx`.
+ * The `arquivos` ids the cover photo of a produto can be rendered from, best
+ * first — the 200px derivative (compact + fast for batch), then 400px, then the
+ * original. Empty when there is no photo.
+ *
+ * ⚠️ This is a LIST, not a single pick, and the reason is
+ * `packages/schemas/src/storage/foto.ts`: `buildFotoRefs` writes every
+ * derivative ref **optimistically** at upload time, so the 200px ref string is
+ * non-null whether or not `resizeProductImage` ever produced the document it
+ * names. Picking one ref with `??` and reading only that doc prints no photo at
+ * all for every produto whose derivatives are missing — silently, since a print
+ * has no placeholder. The caller falls through on document existence; see
+ * `buildFotoResolver` in `./assemble.ts`.
  */
-export function arquivoIdFromRef(ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  const segs = ref.split('/').filter(Boolean);
-  const last = segs[segs.length - 1];
-  return last && last.length > 0 ? last : null;
-}
-
-/**
- * The cover photo ref of a produto — the first foto, preferring the 200px
- * derivative (compact + fast for batch), then 400px, then the original. Returns
- * the ref string (still `arquivos/<id>`) or `null` when there's no photo.
- */
-export function pickCoverFotoRef(
-  produto: Pick<Produto, 'fotos'> | null | undefined,
-): string | null {
-  const foto: Foto | undefined = produto?.fotos?.[0] ?? undefined;
-  if (!foto) return null;
-  return foto.arquivo200pxOuterRef ?? foto.arquivo400pxOuterRef ?? foto.arquivoOuterRef ?? null;
+export function pickCoverFotoIds(produto: Pick<Produto, 'fotos'> | null | undefined): string[] {
+  return coverArquivoIds(produto);
 }
 
 /**
