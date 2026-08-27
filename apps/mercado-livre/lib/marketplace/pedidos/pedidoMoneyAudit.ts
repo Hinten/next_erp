@@ -9,8 +9,9 @@
  *  - **the seed** (`mlOrderToPedidoCoreFields` → `orderPedidoTx`):
  *    `Σ transaction_amount + Σ shipping_cost − Σ coupon_amount`, written ONCE at
  *    create and, on a **pack**, computed from `orders[0]` ALONE;
- *  - **the frete conference** (`applyFreteStep`): `Σ itemSubtotal + frete`, from
- *    the first shipment payload onward, and the legacy meaning of the field —
+ *  - **the frete conference** (`applyFreteStep`): the canonical
+ *    `derivePedidoFreteTotals`, `Σ itemSubtotal − descontoTotal + frete`, from
+ *    the first shipment payload onward — the legacy meaning of the field,
  *    `Pedido.total`, "valor final cobrado no pedido".
  *
  * The discriminator is the frete block: no `freteInicial` ⇒ the conference has
@@ -41,9 +42,15 @@ export type VeredictoValorCobrado =
   /** Nothing stored — the advance to `pago` refuses a null total (#791). */
   | { readonly tipo: 'ausente' }
   /**
-   * Off by exactly `descontoTotal`. Known and named rather than reported:
-   * `applyFreteStep` omits the coupon term the canonical derive has, and who
-   * funds an ML coupon decides which is right (LIVE-TEST §7.1, step 6.3).
+   * Off by exactly `descontoTotal`.
+   *
+   * ⚠️ Kept as a GUARD, not as a live expectation. `applyFreteStep` used to omit
+   * the coupon term the canonical derive has; it no longer does, so on current
+   * code this verdict cannot fire from that cause. It stays because a pedido
+   * written by the OLD code is still on disk with the old total, and because
+   * whether the term belongs there at all is unsettled until LIVE-TEST §7.1
+   * step 6.3 says who funds an ML coupon — if the answer reverts the term, this
+   * is the branch that keeps the reconciliation honest instead of noisy.
    */
   | { readonly tipo: 'diferenca-conhecida'; readonly descontoTotal: number }
   /** A real finding: a gap that is neither zero nor the coupon. */
@@ -104,7 +111,9 @@ export function auditarValorCobrado(args: {
   }
   const gap = roundReais(valorCobradoArmazenado - esperado);
   // Only the conference can produce the coupon gap — the seed subtracts the
-  // coupon itself, so an off-by-descontoTotal there is a genuine finding.
+  // coupon itself, so an off-by-descontoTotal there is a genuine finding. See
+  // the type's note: on current code this is a legacy/unsettled guard, not a
+  // live expectation.
   if (dono === 'conferencia' && descontoTotal !== 0 && bate(gap, descontoTotal)) {
     return {
       dono,

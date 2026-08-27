@@ -31,9 +31,10 @@
  * context only.
  *
  * ⚠️ The row this script reconciles against post-conference is the **canonical
- * derive**, which is `Σ itemSubtotal − descontoTotal + frete` — B itself omits
- * the `− descontoTotal` term, so on a coupon order the two disagree by the
- * coupon and the script says so by name rather than calling it a finding.
+ * derive**, `Σ itemSubtotal − descontoTotal + frete` — which `applyFreteStep`
+ * now shares. It used to omit the coupon term, so a pedido written by the old
+ * code can still be off by exactly the coupon; the script names that gap rather
+ * than calling it a finding.
  *
  * ⚠️ `descontoTotal` gets NO verdict on a pack: it is written once at create
  * from `orders[0]` alone, while the sum here spans every order in the mirror.
