@@ -122,6 +122,64 @@ describe('regraImpostoSchema', () => {
     expect(out.cfop ?? null).toBeNull();
   });
 
+  it('defaults estados, NVE, indEscala and timeStamp to null', () => {
+    const out = regraImpostoSchema.parse({});
+    expect(out.estados).toBeNull();
+    expect(out.NVE).toBeNull();
+    expect(out.indEscala).toBeNull();
+    expect(out.timeStamp).toBeNull();
+  });
+
+  it('reads a full legacy _$RegraImpostoToJson doc verbatim', () => {
+    // Shape lifted from the legacy wire (issue #468): estados/timeStamp are
+    // fields the old (nullable().optional()) schema silently dropped, and
+    // NVE/indEscala carried the wrong scalar types.
+    const out = regraImpostoSchema.parse({
+      produtos: ['prod-a'],
+      categorias: ['cat-1'],
+      ncms: ['61091000'],
+      CFOP: '5405',
+      estados: ['SP', 'MG'],
+      timeStamp: 1_700_000_000_000,
+      NVE: ['12345678'],
+      indEscala: true,
+      configuracaoICMS: { crt: '1', csosn: '102' },
+    });
+    expect(out.estados).toEqual(['SP', 'MG']);
+    expect(out.timeStamp).toBe(1_700_000_000_000);
+    expect(out.NVE).toEqual(['12345678']);
+    expect(out.indEscala).toBe(true);
+  });
+
+  it('rejects a genuinely unknown key on a strict (write-path) parse', () => {
+    // Mirrors the strict re-check `parseForWrite`/`parseMergePatch`
+    // (`@delfrance/data`) run internally on a dropped supplied key.
+    expect(() => regraImpostoSchema.strict().parse({ typo: 1 })).toThrow(/unrecognized_keys|typo/);
+  });
+
+  it('tolerates the OLD scalar-string shape this app itself wrote for NVE/indEscala', () => {
+    // Before this schema fixed their type, NVE/indEscala were z.string() and
+    // MacrosTab's editor wrote plain strings through it — an already-stored
+    // operacao/{id}/regras doc can carry that shape, and a bare type swap
+    // would fail the WHOLE-DOCUMENT parse (dropping the rule from the NF-e
+    // resolver's cascade, not just these two fields).
+    const out = regraImpostoSchema.parse({ NVE: 'AB1234', indEscala: 'S' });
+    expect(out.NVE).toEqual(['AB1234']);
+    expect(out.indEscala).toBe(true);
+  });
+
+  it('parses a blank legacy NVE/indEscala string as null, not an empty array/false', () => {
+    const out = regraImpostoSchema.parse({ NVE: '   ', indEscala: '' });
+    expect(out.NVE).toBeNull();
+    expect(out.indEscala).toBeNull();
+  });
+
+  it('parses the legacy indEscala negative words as false, case-insensitively', () => {
+    for (const word of ['n', 'não', 'nao', 'NÃO', 'false', '0']) {
+      expect(regraImpostoSchema.parse({ indEscala: word }).indEscala).toBe(false);
+    }
+  });
+
   it('targets the operacao regras subcollection (legacy Flutter wire name)', () => {
     expect(regraImpostoMeta.collectionPath).toBe('operacao/{operacaoId}/regras');
   });

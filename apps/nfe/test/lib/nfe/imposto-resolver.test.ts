@@ -197,6 +197,10 @@ describe('resolveItemImposto — cascade priority', () => {
       categorias: [],
       ncms: [],
       dataCadastro: null,
+      timeStamp: null,
+      NVE: null,
+      indEscala: null,
+      estados: null,
       ...VALID_IMPOSTO_BLOB,
     };
     const deps = makeDeps({
@@ -215,6 +219,10 @@ describe('resolveItemImposto — cascade priority', () => {
       categorias: ['cat-7'],
       ncms: [],
       dataCadastro: null,
+      timeStamp: null,
+      NVE: null,
+      indEscala: null,
+      estados: null,
       ...VALID_IMPOSTO_BLOB,
     };
     const deps = makeDeps({
@@ -234,6 +242,10 @@ describe('resolveItemImposto — cascade priority', () => {
       categorias: [],
       ncms: ['61091000'],
       dataCadastro: null,
+      timeStamp: null,
+      NVE: null,
+      indEscala: null,
+      estados: null,
       ...VALID_IMPOSTO_BLOB,
     };
     const deps = makeDeps({
@@ -302,6 +314,10 @@ describe('resolveItemImposto — cascade priority', () => {
       categorias: [],
       ncms: [],
       dataCadastro: null,
+      timeStamp: null,
+      NVE: null,
+      indEscala: null,
+      estados: null,
       ...VALID_IMPOSTO_BLOB,
     };
     const second: RegraImposto = {
@@ -311,6 +327,10 @@ describe('resolveItemImposto — cascade priority', () => {
       categorias: [],
       ncms: [],
       dataCadastro: null,
+      timeStamp: null,
+      NVE: null,
+      indEscala: null,
+      estados: null,
       ...BLOB_400,
     };
     const deps = makeDeps({
@@ -331,6 +351,10 @@ describe('resolveItemImposto — NCM + entry-shape normalization (#398)', () => 
       categorias: [],
       ncms,
       dataCadastro: null,
+      timeStamp: null,
+      NVE: null,
+      indEscala: null,
+      estados: null,
       ...blob,
     } as RegraImposto;
   }
@@ -364,6 +388,10 @@ describe('resolveItemImposto — NCM + entry-shape normalization (#398)', () => 
         categorias: [],
         ncms: [],
         dataCadastro: null,
+        timeStamp: null,
+        NVE: null,
+        indEscala: null,
+        estados: null,
         ...VALID_IMPOSTO_BLOB,
       };
       const deps = makeDeps({
@@ -382,6 +410,10 @@ describe('resolveItemImposto — NCM + entry-shape normalization (#398)', () => 
       categorias: ['documents/categorias/cat-7'],
       ncms: [],
       dataCadastro: null,
+      timeStamp: null,
+      NVE: null,
+      indEscala: null,
+      estados: null,
       ...VALID_IMPOSTO_BLOB,
     };
     const deps = makeDeps({
@@ -572,6 +604,10 @@ describe('resolveItemImposto — verbatim legacy Flutter wire (#423)', () => {
       categorias: [],
       ncms: [],
       dataCadastro: null,
+      timeStamp: null,
+      NVE: null,
+      indEscala: null,
+      estados: null,
       CFOP: '5405',
       ...VALID_IMPOSTO_BLOB,
     };
@@ -591,6 +627,10 @@ describe('resolveItemImposto — verbatim legacy Flutter wire (#423)', () => {
       categorias: [],
       ncms: [],
       dataCadastro: null,
+      timeStamp: null,
+      NVE: null,
+      indEscala: null,
+      estados: null,
       cfop: '5102',
       CFOP: '5405',
       ...VALID_IMPOSTO_BLOB,
