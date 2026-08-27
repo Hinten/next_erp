@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { lerRespostaJson } from './index';
+import { lerRespostaJson, resumirCampos } from './index';
 
 /**
  * Each case below is one of the ways `return parsed as T` used to answer
@@ -26,14 +26,22 @@ describe('the three ways a 2xx body used to lie', () => {
     expect(r.ok ? [] : r.motivo === 'formato' ? r.campos : []).toEqual(['connected', 'nickname']);
   });
 
-  it('⭐ refuses an EMPTY body rather than handing back null', () => {
+  it('⭐ refuses an EMPTY body, and calls it VAZIO — not a format problem', () => {
     // `null as T` is the quietest of the three: nothing fails here, it fails
     // later at the first property access, in a stack that names neither the
     // endpoint nor the response.
+    //
+    // ⚠️ The motivo matters as much as the refusal. This used to fall into
+    // `safeParse(null)` and come back `'formato'`, so the ML client told the
+    // operator "o backend e esta tela estão em versões diferentes — faça o
+    // deploy" and named `Campos inválidos: (raiz)`. An empty body is not
+    // version skew; it is the HTML case without the HTML, and sending someone
+    // to deploy a backend that was never the problem is the defect this module
+    // exists to remove, surviving in the branch that looked handled.
     const r = lerRespostaJson('', conta);
 
     expect(r.ok).toBe(false);
-    expect(r.ok ? null : r.motivo).toBe('formato');
+    expect(r.ok ? null : r.motivo).toBe('vazio');
   });
 
   it('⭐ separates a NON-JSON body from a wrong-shaped one', () => {
@@ -61,9 +69,14 @@ describe('an empty body is opt-in, not a special case', () => {
     // This is what makes the rule enforceable rather than a convention: a route
     // that legitimately answers 204/empty says so in its schema, and every
     // other route rejects the same body without anyone remembering to check.
+    // ⚠️ The `'vazio'` check runs AFTER the parse for exactly this reason: a
+    // route that legitimately answers empty says so in its schema, and moving
+    // the check earlier would silently break that opt-in.
     expect(lerRespostaJson('', z.null()).ok).toBe(true);
     expect(lerRespostaJson('', z.unknown()).ok).toBe(true);
-    expect(lerRespostaJson('', z.object({ ok: z.boolean() })).ok).toBe(false);
+    const rejeitado = lerRespostaJson('', z.object({ ok: z.boolean() }));
+    expect(rejeitado.ok).toBe(false);
+    expect(rejeitado.ok ? null : rejeitado.motivo).toBe('vazio');
   });
 });
 
@@ -122,7 +135,12 @@ describe('campos — paths only, never values', () => {
     ]);
   });
 
-  it('⚠️ caps a body that disagrees about EVERY field — that is one fact, not forty', () => {
+  it('⚠️ `campos` stays PURE paths — the cap belongs to the message', () => {
+    // The cap used to append `…e mais 28` into this array, which is the same
+    // array that becomes `RespostaInvalidaError.campos` — documented as field
+    // paths. Harmless while only the message read it, wrong the moment anything
+    // else does (telemetry, highlighting the offending inputs, a retry
+    // predicate). `resumirCampos` caps the SENTENCE instead.
     const forma: Record<string, z.ZodType> = {};
     const corpo: Record<string, string> = {};
     for (let i = 0; i < 40; i += 1) {
@@ -132,16 +150,35 @@ describe('campos — paths only, never values', () => {
     const r = lerRespostaJson(JSON.stringify(corpo), z.object(forma));
 
     const campos = r.ok ? [] : r.motivo === 'formato' ? r.campos : [];
-    expect(campos).toHaveLength(13);
-    expect(campos.at(-1)).toBe('…e mais 28');
+    expect(campos).toHaveLength(40);
+    expect(campos.every((c) => !c.includes('e mais'))).toBe(true);
+  });
+
+  it('⚠️ …and the MESSAGE is still capped — forty fields is one fact, not forty', () => {
+    const campos = Array.from({ length: 40 }, (_v, i) => `campo${String(i)}`);
+
+    const texto = resumirCampos(campos);
+
+    expect(texto.endsWith('…e mais 28')).toBe(true);
+    // The first twelve are named; the thirteenth onward are only counted.
+    expect(texto).toContain('campo11');
+    expect(texto).not.toContain('campo12');
+  });
+
+  it('leaves a short list alone', () => {
+    // The control: the cap must not rewrite a message that was already fine.
+    expect(resumirCampos(['a', 'b'])).toBe('a, b');
   });
 });
 
 describe('what it deliberately does NOT do', () => {
-  it('lets a non-SyntaxError escape instead of reporting it as a bad body', () => {
-    // Repo rule 6: narrow, then rethrow. A schema whose own refinement throws is
-    // not a malformed response, and calling it one sends the operator to check
-    // a backend that is answering correctly.
+  it('lets a schema that throws escape instead of reporting it as a bad body', () => {
+    // ⚠️ This covers the SAFEPARSE path, not the `instanceof SyntaxError`
+    // narrowing above it — that throw is not inside any `try`, so deleting the
+    // narrowing leaves this green. The narrowing is genuinely untestable
+    // (`JSON.parse` throws nothing but `SyntaxError`); what this pins is that a
+    // schema whose own refinement throws is not reported as a malformed
+    // response, which would send the operator to check a healthy backend.
     const explode = z.custom(() => {
       throw new RangeError('boom');
     });

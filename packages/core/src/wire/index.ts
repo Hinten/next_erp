@@ -226,6 +226,18 @@ export function envelopeDeErro(parsed: unknown): EnvelopeDeErro | null {
  */
 export type LeituraResposta<T> =
   | { readonly ok: true; readonly data: T }
+  /**
+   * The body was EMPTY and the schema did not admit it.
+   *
+   * ⚠️ Its own outcome, not a `'formato'` with an empty path. It used to fall
+   * into `safeParse(null)` and come back as `'formato'`, so the caller told the
+   * operator "o backend e esta tela estão em versões diferentes — faça o deploy"
+   * and named `Campos inválidos: (raiz)`. An empty body is not version skew: it
+   * is the same class as an HTML one — the request did not reach a route that
+   * answers JSON — and sending someone to deploy a backend that was never the
+   * problem is the shape of defect this whole module exists to remove.
+   */
+  | { readonly ok: false; readonly motivo: 'vazio' }
   | { readonly ok: false; readonly motivo: 'nao-json'; readonly texto: string }
   | { readonly ok: false; readonly motivo: 'formato'; readonly campos: string[] };
 
@@ -290,10 +302,29 @@ export function lerRespostaJson<S extends z.ZodType>(
   const result = schema.safeParse(parsed);
   if (result.success) return { ok: true, data: result.data as z.infer<S> };
 
+  // ⚠️ AFTER the parse, never before: a route that legitimately answers empty
+  // says so with `z.null()` / `z.unknown()`, and that opt-in has to keep
+  // working. Only an empty body the schema REJECTED is the `'vazio'` outcome.
+  if (texto.length === 0) return { ok: false, motivo: 'vazio' };
+
   return { ok: false, motivo: 'formato', campos: camposInvalidos(result.error.issues) };
 }
 
-/** How many distinct paths a message may name before it stops being readable. */
+/**
+ * The field list as one line of operator-facing text, capped.
+ *
+ * ⚠️ The cap lives HERE and not in `camposInvalidos`, because that function's
+ * result is `RespostaInvalidaError.campos` — an array documented as field paths.
+ * Appending `…e mais 28` to it put a sentence fragment in a list of paths, which
+ * is harmless while only the message reads it and wrong the moment anything
+ * else does (telemetry, highlighting the offending inputs, a retry predicate).
+ */
+export function resumirCampos(campos: readonly string[], max = MAX_CAMPOS): string {
+  if (campos.length <= max) return campos.join(', ');
+  return `${campos.slice(0, max).join(', ')} …e mais ${String(campos.length - max)}`;
+}
+
+/** How many distinct paths a MESSAGE may name before it stops being readable. */
 const MAX_CAMPOS = 12;
 
 /**
@@ -317,9 +348,7 @@ function camposInvalidos(issues: readonly z.core.$ZodIssue[]): string[] {
       .replace(/\.\[\]/g, '[]');
     vistos.add(caminho === '' ? '(raiz)' : caminho);
   }
-  const campos = [...vistos];
-  // A backstop for the other direction: a body that disagrees about EVERY field
-  // is one fact ("this is not the shape we asked for"), not forty.
-  if (campos.length <= MAX_CAMPOS) return campos;
-  return [...campos.slice(0, MAX_CAMPOS), `…e mais ${String(campos.length - MAX_CAMPOS)}`];
+  // ⚠️ Returns every path, uncapped. The cap belongs to the MESSAGE
+  // (`resumirCampos`), not to this list — see the note there.
+  return [...vistos];
 }

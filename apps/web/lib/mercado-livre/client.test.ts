@@ -426,10 +426,13 @@ describe('usuariosTeste — a backend that reports no docId', () => {
   });
 
   it('⭐ normalises the absence to null, never leaves it undefined', async () => {
-    // `call<T>()` casts rather than validates, so without this the panel gets
-    // `undefined` for a field its type declares present — a blank chip and no
-    // React key. `null` is a value the panel can render as "this backend does
-    // not say".
+    // ⚠️ This is now the SCHEMA's transform, not a client-side normaliser.
+    // `usuarioTesteSchema.docId` is `.nullish()` with a transform to
+    // `string | null`, so an absent key can never reach the panel as
+    // `undefined` — a blank chip and no React key. The `comDocId()` that used to
+    // do this became a provable no-op the moment the schema landed and is gone;
+    // deleting it leaves these four cases green, which is exactly why the
+    // comment had to stop naming it.
     const c = client(async () => okList([SEM_DOC_ID]));
 
     const { usuarios } = await c.usuariosTeste('i1');
@@ -486,6 +489,34 @@ describe('a 2xx whose body is not what we claimed', () => {
     const c = client(async () => ok(''));
 
     await expect(c.conta('i1')).rejects.toBeInstanceOf(MercadoLivreClientRespostaInvalidaError);
+  });
+
+  it('⭐ does NOT blame a deploy for an empty body — and logs it', async () => {
+    // ⚠️ The regression this pins. An empty body used to fall into the same
+    // branch as a wrong SHAPE, so the operator was told "o backend e esta tela
+    // estão em versões diferentes — faça o deploy de apps/mercado-livre" and
+    // shown `Campos inválidos: (raiz)`, about a backend that was never the
+    // problem — with no console record to contradict them, because only the
+    // non-JSON branch logged. An empty body is the HTML case without the HTML.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const c = client(async () => ok(''));
+
+    const err = (await c.conta('i1').catch((e: unknown) => e)) as MercadoLivreClientHttpError;
+
+    expect(err.message).toContain('não chegou à rota esperada');
+    expect(err.message).not.toContain('deploy');
+    expect(spy).toHaveBeenCalledOnce();
+    expect(String(spy.mock.calls[0]?.[1])).toContain('corpo vazio');
+  });
+
+  it('still blames the deploy for a WRONG SHAPE, which IS version skew', async () => {
+    // The control for the case above: the two diagnoses must stay apart.
+    const c = client(async () => ok('{}'));
+
+    const err = (await c.conta('i1').catch((e: unknown) => e)) as MercadoLivreClientHttpError;
+
+    expect(err.message).toContain('deploy');
+    expect(err.message).toContain('apps/mercado-livre');
   });
 
   it('⭐ throws AND logs when a 200 carries HTML', async () => {
@@ -615,8 +646,7 @@ describe('fetchArtifact — a 200 that is not a label', () => {
   });
 
   it('still returns a real artifact', async () => {
-    // The control, and it also pins that a MISSING content-type is tolerated —
-    // the proxy does not CORS-expose every header.
+    // The control. A guard that only ever refuses is a broken print button.
     const c = client(
       async () =>
         new Response('%PDF-1.4', { status: 200, headers: { 'content-type': 'application/pdf' } }),
@@ -624,6 +654,24 @@ describe('fetchArtifact — a 200 that is not a label', () => {
 
     const art = await c.etiqueta('p1', 'pdf');
 
+    expect(art.contentType).toBe('application/pdf');
+  });
+
+  it('⭐ tolerates a MISSING content-type — the proxy does not expose every header', async () => {
+    // ⚠️ The `contentType !== null` half of the guard, which had no coverage:
+    // the case above sets the header explicitly, so it pinned the opposite of
+    // what its comment claimed. Get this branch wrong and every label stops
+    // printing the moment the proxy drops the header.
+    //
+    // ⚠️ A STRING body would not test it — the Response spec fills in
+    // `text/plain;charset=UTF-8` for one. Bytes set no content-type at all.
+    const c = client(
+      async () => new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { status: 200 }),
+    );
+
+    const art = await c.etiqueta('p1', 'pdf');
+
+    // Falls back to the caller-supplied default rather than refusing.
     expect(art.contentType).toBe('application/pdf');
   });
 });
