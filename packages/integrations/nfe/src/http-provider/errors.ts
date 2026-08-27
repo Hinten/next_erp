@@ -148,6 +148,15 @@ export class NFeServerError extends NFeHttpError {
  * response never arrived). Distinct from server-side errors so
  * callers can decide to retry on the client side.
  */
+export class NFeNetworkError extends Error {
+  public override readonly cause?: unknown;
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = 'NFeNetworkError';
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
 /**
  * The route answered 2xx and the body was not the shape this client claims —
  * the wrong fields, no body at all, or not JSON.
@@ -169,15 +178,6 @@ export class NFeSchemaError extends NFeHttpError {
     super(message, status, null);
     this.name = 'NFeSchemaError';
     this.campos = campos;
-  }
-}
-
-export class NFeNetworkError extends Error {
-  public override readonly cause?: unknown;
-  constructor(message: string, cause?: unknown) {
-    super(message);
-    this.name = 'NFeNetworkError';
-    if (cause !== undefined) this.cause = cause;
   }
 }
 

@@ -294,7 +294,15 @@ describe('createNFeHttpClient — processarPendentes', () => {
   it('POSTs to /api/nfe/processar-pendentes with empty body', async () => {
     const fetch = mockFetch({
       status: 200,
-      body: { scanned: 5, recovered: 3, stillPending: 1, errors: 1 },
+      body: {
+        scanned: 5,
+        recovered: 3,
+        stillPending: 1,
+        // ⚠️ A LIST, as the route actually sends. This fixture said
+        // `errors: 1` — matching the old interface's lie rather than the
+        // route, which is why nothing here caught it.
+        errors: [{ chave: '35260514200166000187550010000000071000000018', error: 'x' }],
+      },
     });
     const got = await makeClient(fetch).processarPendentes();
 
@@ -303,6 +311,65 @@ describe('createNFeHttpClient — processarPendentes', () => {
     expect(url).toBe('http://localhost:3004/api/nfe/processar-pendentes');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({});
+  });
+});
+
+describe('createNFeHttpClient — processarPendentes errors is a LIST', () => {
+  // The route serialises `ProcessarPendentesResult` verbatim and its `errors`
+  // is `ReadonlyArray<{ chave: string | null; error: string }>`. The interface
+  // in this client said `errors: number`, and all three fixtures in this file
+  // encoded that same lie — so a `z.number()` schema passed every lane while
+  // making the HAPPY PATH a hard failure, `errors: []` included.
+  const ERRO = {
+    chave: '35260514200166000187550010000000071000000018',
+    error: 'NFeTransportError',
+  };
+
+  it('⭐ accepts the clean run — an EMPTY errors list', async () => {
+    // The case a count-shaped schema breaks most quietly: nothing went wrong,
+    // and the poller dies anyway.
+    const client = makeClient(
+      mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: [] } }),
+    );
+
+    await expect(client.processarPendentes()).resolves.toMatchObject({ errors: [] });
+  });
+
+  it('⭐ carries each failure through with its chave', async () => {
+    const client = makeClient(
+      mockFetch({
+        status: 200,
+        body: { scanned: 3, recovered: 1, stillPending: 1, errors: [ERRO] },
+      }),
+    );
+
+    const got = await client.processarPendentes();
+
+    expect(got.errors).toEqual([ERRO]);
+  });
+
+  it('tolerates a null chave — a pendente with no key yet', async () => {
+    const client = makeClient(
+      mockFetch({
+        status: 200,
+        body: { scanned: 1, recovered: 0, stillPending: 0, errors: [{ chave: null, error: 'x' }] },
+      }),
+    );
+
+    await expect(client.processarPendentes()).resolves.toMatchObject({
+      errors: [{ chave: null }],
+    });
+  });
+
+  it('⚠️ REJECTS the count shape the old interface claimed', async () => {
+    // The anti-vacuity control, and the regression guard: if `errors` ever goes
+    // back to `z.number()`, the three cases above fail — but so does this one,
+    // which is the one that says WHY.
+    const client = makeClient(
+      mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 } }),
+    );
+
+    await expect(client.processarPendentes()).rejects.toBeInstanceOf(NFeSchemaError);
   });
 });
 
@@ -610,7 +677,7 @@ describe('createNFeHttpClient — baseUrl normalisation', () => {
   it('strips a single trailing slash off baseUrl', async () => {
     const fetch = mockFetch({
       status: 200,
-      body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 },
+      body: { scanned: 0, recovered: 0, stillPending: 0, errors: [] },
     });
     const client = createNFeHttpClient({
       baseUrl: 'http://localhost:3004/',
@@ -625,7 +692,7 @@ describe('createNFeHttpClient — baseUrl normalisation', () => {
   it('calls getAuthToken on every request (token refresh)', async () => {
     const fetch = mockFetch({
       status: 200,
-      body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 },
+      body: { scanned: 0, recovered: 0, stillPending: 0, errors: [] },
     });
     const getAuthToken = vi.fn().mockResolvedValue(TOKEN);
     const client = createNFeHttpClient({
