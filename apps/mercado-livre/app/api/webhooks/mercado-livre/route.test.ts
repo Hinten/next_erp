@@ -88,6 +88,23 @@ describe('POST /api/webhooks/mercado-livre', () => {
     await POST(req({ _id: 'N3c', resource: '/claims/4', topic: 'claims', user_id: 1 }));
     expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
 
+    // ⚠️ #1322 — `post_purchase` is the spelling live traffic actually sends,
+    // and it needs the delay MORE than the others: a claim's sub-resources
+    // arrive as separate deliveries seconds apart (`…/actions-history`), so
+    // the same claim is re-read several times and an unsettled first read
+    // upserts an incidente from state ML has already moved past. Adding the
+    // topic to TOPIC_DISPOSITION without adding it here would fail nothing.
+    h.enqueue.mockClear();
+    await POST(
+      req({
+        _id: 'N3p',
+        resource: '/post-purchase/v1/claims/4',
+        topic: 'post_purchase',
+        user_id: 1,
+      }),
+    );
+    expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
+
     // ⚠️ `questions` is load-bearing here and was NOT covered. The importer
     // reads `status`/`hold`/`suspected_spam` to decide whether a thread opens
     // at all, and ML's question GET is eventually consistent — without the

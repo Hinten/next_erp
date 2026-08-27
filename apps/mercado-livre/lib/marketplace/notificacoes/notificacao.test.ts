@@ -14,6 +14,7 @@ import {
   handleNotificationTask,
   isIgnoredTopic,
   isKnownTopic,
+  parseClaimResourceId,
   parseNotificationBody,
   redriveDeferredForUserId,
   reprocessDeferredNotifications,
@@ -332,6 +333,46 @@ afterEach(() => {
 
 /* ------------------------------ parse + topics --------------------------- */
 
+describe('parseClaimResourceId (#1322)', () => {
+  it('accepts every post-sale resource shape ML has been observed sending', () => {
+    // The bare legacy spelling, the migrated `/post-purchase` prefix, and the
+    // SUB-RESOURCE deliveries — all three must resolve to the SAME claim id.
+    for (const resource of [
+      '/claims/5567065796',
+      'claims/5567065796',
+      '/post-purchase/v1/claims/5567065796',
+      '/post-purchase/v1/claims/5567065796/actions-history',
+      '/post-purchase/v1/claims/5567065796/status-history',
+      '/post-purchase/v1/claims/5567065796/messages',
+    ]) {
+      expect(parseClaimResourceId(resource), resource).toBe(5567065796);
+    }
+  });
+
+  it('anchors on `claims/<digits>`, so a NON-claim resource is malformed', () => {
+    // ⚠️ Not "the last numeric segment": that is `parseOrderResourceId`, and
+    // using it here would have made `/post-purchase/v1/orders/123` import as a
+    // claim. The caller drops a null WITHOUT dispatching a bogus import.
+    for (const resource of [
+      '/post-purchase/v1/orders/2000018144679512',
+      '/orders/123',
+      '/claims/abc',
+      '/claims/',
+      'claims',
+      '',
+    ]) {
+      expect(parseClaimResourceId(resource), resource).toBeNull();
+    }
+  });
+
+  it('does not match a segment merely ENDING in "claims"', () => {
+    // `myclaims/7` is not a claim resource; the `(?:^|\/)` anchor is what stops
+    // it, and without that anchor this would import claim 7.
+    expect(parseClaimResourceId('/myclaims/7')).toBeNull();
+    expect(parseClaimResourceId('/v1/subclaims/7')).toBeNull();
+  });
+});
+
 describe('parseNotificationBody', () => {
   it('extracts a well-formed notification into a lean payload (accepts _id and id)', () => {
     const a = parseNotificationBody({
@@ -505,12 +546,19 @@ describe('TOPIC_DISPOSITION', () => {
     // silently return `done` — no failure doc, no parked doc, no warn line, i.e.
     // #813 reintroduced through the table meant to prevent it.
     //
-    // The discriminator is an UNPARSEABLE resource. Every handled branch parses
-    // the resource id first, so it must answer `dropped` (malformed-resource).
-    // A branch that has gone missing cannot: it falls through to the fallback,
-    // which now parks (`handler-pendente`). So `dropped` proves the branch ran,
-    // and both failure modes — `parked` from the fallback, `done` from the old
-    // silent ack — fail this assertion.
+    // The discriminator is an UNPARSEABLE resource: every handled branch parses
+    // the resource id first, so reaching one produces a `malformed-resource`
+    // outcome. A branch that has gone missing cannot — it falls through to the
+    // fallback, which parks as `handler-pendente`.
+    //
+    // ⚠️ The assertion is on the park REASON, not on `dropped` (#1322). It used
+    // to require `dropped`, which worked only while every handled topic
+    // resolved `malformed-resource` the same way — and `post_purchase`
+    // deliberately parks instead (ML is migrating resource shapes under it, so
+    // an unrecognised one is data-bearing). Reading the reason keeps ONE guard
+    // covering every topic, and is strictly stronger than the old shape: it
+    // names the regression it exists to catch instead of inferring it from a
+    // disposition that two different code paths can produce.
     const handled = Object.entries(TOPIC_DISPOSITION)
       .filter(([, d]) => d === 'handled')
       .map(([t]) => t);
@@ -521,10 +569,17 @@ describe('TOPIC_DISPOSITION', () => {
       seedConta(db, 'conta-A', 55);
       const r = await handleNotificationTask(
         asDb(db),
-        payloadOf({ topic, resource: '/nao-parseavel' }),
+        payloadOf({ id: `guard-${topic}`, topic, resource: '/nao-parseavel' }),
         0,
       );
-      expect(r.outcome, `topic '${topic}' did not reach its dispatch branch`).toBe('dropped');
+      const doc = db.docs(NOTIF).get(`guard-${topic}`);
+      const erro = String(doc?.erro ?? '');
+      // The regression: the fallback caught it, i.e. the branch is gone.
+      expect(erro, `topic '${topic}' did not reach its dispatch branch`).not.toContain(
+        'sem branch de dispatch',
+      );
+      // And the old silent-ack failure mode stays excluded.
+      expect(r.outcome, `topic '${topic}' resolved as work performed`).not.toBe('done');
     }
   });
 
@@ -1937,6 +1992,257 @@ describe('handleNotificationTask — claims claim-import dispatch (Step 14)', ()
     } finally {
       nowSpy.mockRestore();
     }
+  });
+});
+
+/* ---------- post_purchase — the subtopic spelling ML actually sends -------- */
+
+describe('handleNotificationTask — post_purchase claim dispatch (#1322)', () => {
+  /** The runner result shape, so each case overrides only what it is about. */
+  function claimRunner(over: Record<string, unknown> = {}) {
+    return vi.fn(async () => ({
+      pedidoId: 'ped1',
+      incidenteId: 'inc1',
+      conversaId: 'conv1',
+      skipped: null,
+      ...over,
+    }));
+  }
+
+  it('routes the live wire shape — topic post_purchase, actions ["claims"], /post-purchase-prefixed resource', async () => {
+    // The exact payload ML delivered on the 2026-08-27 run. Before #1322 the
+    // topic was absent from TOPIC_DISPOSITION, so this PARKED a permanent
+    // document and the claim was never ingested at all.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = claimRunner();
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: 'N200',
+        resource: '/post-purchase/v1/claims/5567065796',
+        topic: 'post_purchase',
+        actions: ['claims'],
+      }),
+      0,
+      { claimImportRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'post_purchase' });
+    expect(claimImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 5567065796);
+    // The whole point: nothing parks any more.
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('the /actions-history SUB-RESOURCE resolves to the same claim — not malformed', async () => {
+    // ⚠️ The assertion that pins the second half of the bug. ML delivers a
+    // claim's sub-resources as their own notifications, and this one's LAST
+    // SEGMENT is `actions-history` — non-numeric. A topic-only fix would trade
+    // `unknown-topic` for `malformed-resource` and the claim would still never
+    // import. Mutation check: point the branch back at `parseOrderResourceId`
+    // and this flips to `dropped`.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = claimRunner();
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: 'N201',
+        resource: '/post-purchase/v1/claims/5567065796/actions-history',
+        topic: 'post_purchase',
+        actions: ['claims_actions'],
+      }),
+      0,
+      { claimImportRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A' });
+    expect(claimImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 5567065796);
+  });
+
+  it('claims_actions routes to the SAME importer as claims — one handler, two subtopics', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = claimRunner();
+    await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: 'N202',
+        resource: '/post-purchase/v1/claims/42',
+        topic: 'post_purchase',
+        actions: ['claims_actions'],
+      }),
+      0,
+      { claimImportRunner },
+    );
+    expect(claimImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 42);
+  });
+
+  it('an UNRECOGNISED post_purchase action PARKS — it must never ack (#813)', async () => {
+    // A post-purchase subtopic we do not know is data-bearing by construction:
+    // ML files returns, changes and cancellations under this same entity. An
+    // `ack` here is the silent drop #813 exists to prevent, and parking is what
+    // made #1322 itself findable.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = claimRunner();
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: 'N203',
+        resource: '/post-purchase/v1/claims/42',
+        topic: 'post_purchase',
+        actions: ['returns_review'],
+      }),
+      0,
+      { claimImportRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'parked' });
+    expect(claimImportRunner).not.toHaveBeenCalled();
+    // Parked means REPLAYABLE — the document is the record.
+    expect(db.docs(NOTIF).size).toBe(1);
+  });
+
+  it('an ABSENT actions array still imports — the legacy `claims` spelling carries none', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = claimRunner();
+    await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N204', resource: '/claims/7', topic: 'claims' }),
+      0,
+      { claimImportRunner },
+    );
+    expect(claimImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 7);
+  });
+
+  it('BOTH spellings stay in the table — ML migrates per-account, so neither is a spare', () => {
+    // Same reasoning as the stock-location/stock-locations pair (#1129): ML's
+    // published reference is not a reliable guide to what a given application
+    // receives on a given day, and a missing key PARKS a permanent document per
+    // delivery.
+    for (const topic of ['post_purchase', 'claims'] as const) {
+      expect(isKnownTopic(topic), `'${topic}' must be a known topic`).toBe(true);
+      expect(TOPIC_DISPOSITION[topic], `'${topic}' must be handled`).toBe('handled');
+    }
+  });
+
+  it('rides the import outcome out on `detail` — a skip must not read as work performed', async () => {
+    // The claims branch was the last data-bearing importer discarding its
+    // result, so `sem-conversa-acionavel` (incidente only) and a full import
+    // logged identically. That blind spot is why #1322 could only be found by
+    // reading the parked dump by hand.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: 'N205',
+        resource: '/post-purchase/v1/claims/8',
+        topic: 'post_purchase',
+        actions: ['claims'],
+      }),
+      0,
+      { claimImportRunner: claimRunner({ skipped: 'sem-conversa-acionavel' as const }) },
+    );
+    expect(r).toMatchObject({ outcome: 'done', detail: 'sem-conversa-acionavel' });
+
+    const db2 = new FakeDb();
+    seedConta(db2, 'conta-A', 55);
+    const r2 = await handleNotificationTask(
+      asDb(db2),
+      payloadOf({
+        id: 'N206',
+        resource: '/post-purchase/v1/claims/8',
+        topic: 'post_purchase',
+        actions: ['claims'],
+      }),
+      0,
+      { claimImportRunner: claimRunner() },
+    );
+    expect(r2).toMatchObject({ outcome: 'done', detail: 'imported' });
+  });
+
+  it('a resource naming no claim at all never reaches the importer', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = claimRunner();
+    await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: 'N207',
+        resource: '/post-purchase/v1/orders/123',
+        topic: 'post_purchase',
+        actions: ['claims'],
+      }),
+      0,
+      { claimImportRunner },
+    );
+    expect(claimImportRunner).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ an unparseable post_purchase resource PARKS in the TASK phase, unlike every other topic', async () => {
+    // Every other topic DROPS here, and that is right for them: `/orders/<id>`
+    // has not moved in years, so an unparseable one is an anomaly not worth a
+    // document. Post-sale is the opposite — ML is actively migrating shapes
+    // under this topic, and THIS PR exists because two changed at once. An
+    // unrecognised resource here is the same class of signal as an
+    // unrecognised subtopic: data-bearing, and worth one replayable document.
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: 'N208',
+        resource: '/post-purchase/v1/returns/999',
+        topic: 'post_purchase',
+        actions: ['claims'],
+      }),
+      0,
+      { claimImportRunner: claimRunner() },
+    );
+    expect(r).toMatchObject({ outcome: 'parked' });
+    expect(db.docs(NOTIF).size).toBe(1);
+
+    // The contrast that makes the carve-out visible: orders still drops.
+    const db2 = new FakeDb();
+    seedConta(db2, 'conta-A', 55);
+    const r2 = await handleNotificationTask(
+      asDb(db2),
+      payloadOf({ id: 'N209', resource: '/orders/nao-numerico', topic: 'orders_v2' }),
+      0,
+    );
+    expect(r2).toMatchObject({ outcome: 'dropped' });
+    expect(db2.docs(NOTIF).size).toBe(0);
+  });
+
+  it('⚠️ a missed_feeds REPLAY keeps its subtopic, so an unknown one still parks', async () => {
+    // The review finding. `toWire` built the replay payload from eight keys and
+    // `actions` was not among them, so every entry the daily backstop recovered
+    // arrived with `actions: null` — past the unknown-subtopic guard, into
+    // `parseClaimResourceId`, and out as a task-phase DROP. The same event that
+    // parks when the webhook delivers it was silently lost when the mechanism
+    // whose whole job is recovery replayed it.
+    //
+    // Two independent fixes, and this asserts the first: `toWire` now forwards
+    // `actions`. (The second — post_purchase parking on an unparseable resource
+    // — is the test above, and would have caught this one too.)
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const claimImportRunner = claimRunner();
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: 'N210',
+        resource: '/post-purchase/v1/returns/999',
+        topic: 'post_purchase',
+        actions: ['returns_review'],
+        origem: 'missed_feeds',
+      }),
+      0,
+      { claimImportRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'parked' });
+    expect(claimImportRunner).not.toHaveBeenCalled();
+    expect(db.docs(NOTIF).size).toBe(1);
   });
 });
 

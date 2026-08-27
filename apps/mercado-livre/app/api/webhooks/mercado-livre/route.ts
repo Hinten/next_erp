@@ -87,6 +87,14 @@ const REFETCH_DELAY_TOPICS: ReadonlySet<string> = new Set([
   'orders',
   'payments',
   'shipments',
+  // #1322 — BOTH post-sale spellings, for the same reason and with the same
+  // delay. The claim handler re-fetches `GET /post-purchase/v1/claims/{id}`,
+  // so an immediate read races ML's own write exactly like the four above.
+  // ⚠️ `post_purchase` carries the extra hazard that its sub-resources arrive
+  // as separate deliveries (`…/actions-history`), so the SAME claim is read
+  // several times within seconds — reading it before ML has settled would
+  // upsert an incidente from a state that is already stale.
+  'post_purchase',
   'claims',
   // #532 — the handler re-fetches `GET /questions/{id}`, and ML is eventually
   // consistent: an immediate read can 404, or return the status from BEFORE the

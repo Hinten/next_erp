@@ -303,6 +303,17 @@ function toWire(entry: MlMissedFeed): Record<string, unknown> {
     attempts: entry.attempts,
     sent: entry.sent,
     received: entry.received,
+    // ⚠️ The SUBTOPIC array, and it is not optional detail (#1322). A replay is
+    // supposed to be the same event the webhook lost; dropping `actions` makes
+    // it a DIFFERENT one, because two topics dispatch on it. `messages` used to
+    // absorb the omission harmlessly (absent ⇒ treated as `created` ⇒ import,
+    // so a replayed read receipt merely re-imported), which is why it went
+    // unnoticed — but `post_purchase` degrades the other way: absent ⇒ past the
+    // unknown-subtopic guard ⇒ an unparseable resource then DROPS in the task
+    // phase instead of parking. That is the silent loss #813 exists to prevent,
+    // arriving through the one mechanism whose whole job is recovering
+    // deliveries nothing else can.
+    actions: entry.actions,
     origem: 'missed_feeds',
   };
 }

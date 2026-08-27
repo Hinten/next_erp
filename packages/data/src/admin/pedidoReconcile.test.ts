@@ -630,8 +630,9 @@ describe('reconcilePedidoEstado', () => {
         valorCobrado: 100,
         freteInicial: { estado: 'despachoAutorizado' },
       },
-      // Refunded — `isPagamentoPagante` counts only a null or `aprovado` status,
-      // so `valorPago` drops to 0 and the pedido is no longer covered.
+      // Refunded — a real reversal, so `valorPago` drops to 0 and the pedido
+      // is no longer covered. Contrast the `em_disputa` case below: that one
+      // is a HOLD and must NOT downgrade.
       'pedidos/p1/pagamentos/pay1': {
         valor: 100,
         status_pagamento: STATUS_PAGAMENTO.estornado,
@@ -652,6 +653,42 @@ describe('reconcilePedidoEstado', () => {
     // record even once the trigger is in play.
     expect(trailWrites(writes, 'historicoEstadoPedido')).toEqual([]);
     expect(trailWrites(writes, 'historicoFtIni')).toEqual([]);
+  });
+
+  it('does NOT downgrade a pago pedido whose payment went em_disputa (#1322)', async () => {
+    // ⚠️ The regression this reconcile used to produce. ML keeps the order
+    // `paid` for the whole mediation and holds the money as `retained`; the
+    // payments topic mirrors that as `em_disputa`. Counting it as unpaid
+    // dropped `valorPago` to 0 and downgraded the pedido to
+    // `aguardandoConfirmacaoDePagamento` — a paid order labelled as awaiting
+    // payment, on the Mercado Pago webhook path and on the operator's own
+    // "reconciliar" button.
+    //
+    // It protected nothing: `pago` and `aguardandoConfirmacaoDePagamento` are
+    // both in ESTADOS_PEDIDO_RESERVA and ESTADOS_PEDIDO_MOVIMENTACAO (stock
+    // never moved) and neither is in EMISSAO_NFE_BLOQUEADA (NF-e stayed
+    // emittable). The money-at-risk signal belongs to the dispute overlay.
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'pago',
+        valorCobrado: 100,
+        freteInicial: { estado: 'despachoAutorizado' },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.em_disputa,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: null });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    // No transition means no write at all — not a write that happens to land
+    // on the same value.
+    expect(writes.updates).toHaveLength(0);
+    expect(writes.sets).toHaveLength(0);
   });
 
   it('never auto-reverts a terminal estado (e.g. finalizado) even if fully paid', async () => {

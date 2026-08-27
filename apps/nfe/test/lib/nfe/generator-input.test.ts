@@ -198,6 +198,19 @@ describe('buildGeneratorInput — Σ vPag ↔ vNF guard', () => {
     expect(() => build(bundle)).toThrow(/90\.00.*100\.00.*865/s);
   });
 
+  it('the frete-emitente hint fires ONLY on that shape, not on every mismatch', () => {
+    // A hint that appears on every failure teaches nothing. Two payments with
+    // NO emitente frete, and a single payment WITH one, must both stay silent.
+    const semFrete = fullBundle({
+      pagamentos: [
+        { valor: 40, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
+        { valor: 10, forma_de_pagamento: FORMA_PAGAMENTO.pix },
+      ],
+    });
+    expect(() => build(semFrete)).toThrow(/865/);
+    expect(() => build(semFrete)).not.toThrow(/emitente/);
+  });
+
   it('Σ vPag > vNF → throws (would be SEFAZ 866)', () => {
     const bundle = fullBundle({
       pagamentos: [
@@ -242,6 +255,54 @@ describe('buildGeneratorInput — Σ vPag ↔ vNF guard', () => {
     });
     const out = build(bundle);
     expect(out.pagXml).toContain('<vPag>120.00</vPag>');
+  });
+
+  it('⚠️ frete-emitente + TWO payments → override does NOT apply, and the guard throws', () => {
+    // Pinned as a DECISION, not left as a discovery (#1322 review).
+    //
+    // The override is gated on `pagamentos.length === 1` — a faithful port of
+    // Flutter's `pedido_nfe_base.dart:1790-1821`, which only ever handled the
+    // single-payment shape. With two payments there is no defined rule for
+    // WHICH one absorbs the freight, so the sum falls short of vNF and the
+    // Σ vPag ↔ vNF guard throws (SEFAZ 865) rather than emitting a nota whose
+    // payment breakdown we invented.
+    //
+    // ⚠️ This is pre-existing — two `aprovado` payments plus CIF frete throw
+    // today. What #1322 changed is REACHABILITY: `isPagamentoPagante` now
+    // counts `em_disputa`, so an ML combo payment (card + account money) with
+    // one leg in mediation arrives here as two entries where it used to arrive
+    // as one. Generalising the override is a FISCAL decision, not a mechanical
+    // one, and it would have to be made identically in
+    // `buildCobrFromPagamentos` — where the same gate sets duplicata amounts,
+    // which are credit instruments. That is deliberately not decided here.
+    const bundle = fullBundle({
+      pagamentos: [
+        { valor: 90, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
+        { valor: 10, forma_de_pagamento: FORMA_PAGAMENTO.pix },
+      ],
+      frete: { modalidade: MODALIDADE_FRETE.cif, valorCobrado: 20 } as FreteDoPedido,
+    });
+    // Σ = 100, vNF = 120 → blocked, loudly, before numeração is allocated.
+    expect(() => build(bundle)).toThrow(/100\.00.*120\.00.*865/s);
+    // And the message must NAME the override, or an operator staring at two
+    // correct pagamentos has no way to reach that explanation.
+    expect(() => build(bundle)).toThrow(/frete é por conta do emitente/);
+    expect(() => build(bundle)).toThrow(/UM único pagamento/);
+  });
+
+  it('a lone em_disputa payment now emits a REAL total, not "sem pagamento"', () => {
+    // The other half of the #1322 trade, and the bigger win. Before
+    // `isPagamentoPagante` counted `em_disputa`, this pedido reached the
+    // orchestrator with ZERO pagamentos, took the empty-list default
+    // (`tPag: '90'`, vPag 0), skipped the guard via `allSemPagamento` — and
+    // emitted a nota declaring NO PAYMENT for a sale that was really paid.
+    // A wrong nota, silently. That is what the widening fixes.
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 100, forma_de_pagamento: FORMA_PAGAMENTO.pix }],
+    });
+    const out = build(bundle);
+    expect(out.pagXml).toContain('<vPag>100.00</vPag>');
+    expect(out.pagXml).not.toContain('<tPag>90</tPag>');
   });
 });
 
