@@ -667,17 +667,19 @@ export const medidaSugestaoSchema = z.object({
    * `valueList` stops arriving — with no error anywhere — and every
    * size-equivalence suggestion collapses back to its first member.
    *
-   * ⚠️ **`.optional()` deliberately.** `apps/mercado-livre` deploys BEFORE
-   * `apps/web`, and apps/web calls the DEPLOYED backend even in local dev, so a
-   * browser running ahead of that deploy sees the field absent. Required, it
-   * would fail the WHOLE response and take the working half of the AI fill down
-   * with it; optional, the suggestion degrades to its scalar value. Same
-   * reasoning as `credencialRevogada` above.
+   * ⚠️ **`.default(null)`, per rule 2 in this file's header.**
+   * `apps/mercado-livre` deploys BEFORE `apps/web`, and apps/web calls the
+   * DEPLOYED backend even in local dev, so a browser running ahead of that
+   * deploy sees the field absent. Required, it would fail the WHOLE response and
+   * take the working half of the AI fill down with it. The default is the
+   * fallback `aiCellValue` already applies (`s.valueList ?? …`), which is what
+   * keeps the public type `… | null` instead of widening every consumer to
+   * `undefined`.
    */
   valueList: z
     .array(z.object({ id: z.string(), name: z.string() }))
     .nullable()
-    .optional(),
+    .default(null),
 });
 export type MercadoLivreMedidaSugestao = z.infer<typeof medidaSugestaoSchema>;
 

@@ -6,6 +6,7 @@ import {
   categoriasSchema,
   contaSchema,
   massImportStatusSchema,
+  medidaSugestaoSchema,
   publicarResultSchema,
   usuarioTesteSchema,
   usuariosTesteResultSchema,
@@ -82,6 +83,56 @@ describe('a field the deployed backend may not send yet', () => {
   it('fills an absent categoria roots with null, the value the caller expects', () => {
     // `categoriaTree.ts:113` reads `data.roots ?? []`.
     expect(categoriasSchema.parse({ node: null }).roots).toBeNull();
+  });
+
+  it('⭐ fills an absent medida valueList with null, the fallback aiCellValue applies', () => {
+    // `apps/mercado-livre` deploys BEFORE `apps/web`, so a browser running ahead
+    // of that deploy sees no `valueList`. Required, it would fail the WHOLE
+    // suggestion response and take the working half of the AI fill down with it.
+    expect(
+      medidaSugestaoSchema.parse({
+        rowKey: 'g/1/v/p',
+        attributeId: 'CHEST',
+        value_id: null,
+        value_name: '52',
+      }).valueList,
+    ).toBeNull();
+  });
+});
+
+describe('medidaSugestao.valueList — declared, or silently stripped', () => {
+  it('⭐ KEEPS every member of a size-equivalence suggestion', () => {
+    // ⚠️ The regression this exists for: a `z.object` strips unknown keys, so an
+    // UNDECLARED `valueList` would stop arriving the day this endpoint moves
+    // behind validation — with no error anywhere — and every size-equivalence
+    // suggestion would collapse back to its first member. The mapping onto ML's
+    // standard sizes IS the feature (their docs map one row onto 34/36/38/40),
+    // so losing it silently is worse than losing the whole response.
+    expect(
+      medidaSugestaoSchema.parse({
+        rowKey: 'g/1/v/p',
+        attributeId: 'FILTRABLE_SIZE',
+        value_id: '3189130',
+        value_name: '34, 36, 38',
+        valueList: [
+          { id: '3189130', name: '34' },
+          { id: '4608574', name: '36' },
+          { id: '3259450', name: '38' },
+        ],
+      }).valueList,
+    ).toHaveLength(3);
+  });
+
+  it('accepts an explicit null for a scalar column', () => {
+    expect(
+      medidaSugestaoSchema.parse({
+        rowKey: 'g/1/v/p',
+        attributeId: 'CHEST',
+        value_id: null,
+        value_name: '52',
+        valueList: null,
+      }).valueList,
+    ).toBeNull();
   });
 });
 
@@ -206,6 +257,21 @@ describe('⚠️ ANTI-VACUITY — a wrong body is still rejected', () => {
 
   it('rejects null where an object is required', () => {
     expect(categoriasSchema.safeParse(null).success).toBe(false);
+  });
+
+  it('rejects a malformed valueList MEMBER, so the tolerant cases above mean something', () => {
+    // `.nullable().default(null)` tolerates absent and null — it must not
+    // tolerate a list of the wrong shape, or the two cases pinning the members
+    // survive against `z.any()`.
+    expect(
+      medidaSugestaoSchema.safeParse({
+        rowKey: 'g/1/v/p',
+        attributeId: 'FILTRABLE_SIZE',
+        value_id: null,
+        value_name: '38',
+        valueList: [{ id: '38' }],
+      }).success,
+    ).toBe(false);
   });
 
   it('names the offending field paths, which is what the operator error will carry', () => {
