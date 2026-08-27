@@ -2,12 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { GrupoDeVariacoes, ItemDoPedido, Produto } from '@delfrance/schemas';
 
 import {
-  arquivoIdFromRef,
   countTotalItens,
   isDispatchOverdue,
   itemsSubtotal,
   kitComponentQuantidade,
-  pickCoverFotoRef,
+  pickCoverFotoIds,
   resolveVariacoesText,
   stockText,
 } from './model';
@@ -70,21 +69,8 @@ describe('stockText', () => {
   });
 });
 
-describe('arquivoIdFromRef', () => {
-  it('strips the arquivos/ prefix', () => {
-    expect(arquivoIdFromRef('arquivos/abc123')).toBe('abc123');
-  });
-  it('takes the last segment of a documents/ path', () => {
-    expect(arquivoIdFromRef('documents/arquivos/abc123')).toBe('abc123');
-  });
-  it('returns null for empty/absent', () => {
-    expect(arquivoIdFromRef(null)).toBeNull();
-    expect(arquivoIdFromRef('')).toBeNull();
-  });
-});
-
-describe('pickCoverFotoRef', () => {
-  it('prefers the 200px derivative', () => {
+describe('pickCoverFotoIds', () => {
+  it('orders 200px, then 400px, then the original', () => {
     const produto = {
       fotos: [
         {
@@ -94,22 +80,26 @@ describe('pickCoverFotoRef', () => {
         },
       ],
     } as unknown as Produto;
-    expect(pickCoverFotoRef(produto)).toBe('arquivos/p200');
+    // ⚠️ All three, not just the preferred one: the print resolver falls
+    // through on a MISSING DOCUMENT, and the derivative refs are written
+    // optimistically, so p200 may name a doc that was never created.
+    expect(pickCoverFotoIds(produto)).toEqual(['p200', 'p400', 'orig']);
   });
-  it('falls back to 400px then the original', () => {
+  it('drops absent refs, keeping the order of what remains', () => {
     const only400 = {
       fotos: [{ arquivoOuterRef: 'arquivos/orig', arquivo400pxOuterRef: 'arquivos/p400' }],
     } as unknown as Produto;
-    expect(pickCoverFotoRef(only400)).toBe('arquivos/p400');
+    expect(pickCoverFotoIds(only400)).toEqual(['p400', 'orig']);
 
+    // A legacy foto (`buildOriginalFotoRef`) — null derivatives, one candidate.
     const onlyOrig = {
       fotos: [{ arquivoOuterRef: 'arquivos/orig' }],
     } as unknown as Produto;
-    expect(pickCoverFotoRef(onlyOrig)).toBe('arquivos/orig');
+    expect(pickCoverFotoIds(onlyOrig)).toEqual(['orig']);
   });
-  it('returns null when there is no photo', () => {
-    expect(pickCoverFotoRef({ fotos: null })).toBeNull();
-    expect(pickCoverFotoRef(null)).toBeNull();
+  it('returns nothing when there is no photo', () => {
+    expect(pickCoverFotoIds({ fotos: null })).toEqual([]);
+    expect(pickCoverFotoIds(null)).toEqual([]);
   });
 });
 

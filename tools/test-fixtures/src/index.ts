@@ -1,4 +1,4 @@
-export { db, getApp, e2eRunId, E2E_PROBE_COLLECTION } from './admin';
+export { db, getApp, e2eRunId, e2eRunSlot, e2eRunSlotSuffix, E2E_PROBE_COLLECTION } from './admin';
 export {
   seedClientesComEnderecos,
   cleanupClientesComEnderecos,
