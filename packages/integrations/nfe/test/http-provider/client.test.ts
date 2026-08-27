@@ -4,6 +4,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
+import { ESTADO_NFE } from '@delfrance/schemas';
+
 import {
   createNFeHttpClient,
   NFeAuthError,
@@ -15,7 +17,9 @@ import {
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,
+  NFeHttpError,
   NFeRuntimeNotReadyError,
+  NFeSchemaError,
   NFeServerError,
   type NFeEmitResult,
   type NFeVerificarResult,
@@ -53,7 +57,7 @@ describe('createNFeHttpClient — emitir', () => {
     const result: NFeEmitResult = {
       nfeId: 'nfev4-001',
       pedidoId: 'PED-001',
-      estado: 'aprovada',
+      estado: ESTADO_NFE.aprovada,
       chave: '35260514200166000187550010000000071000000018',
       nRec: '12345',
       cStat: '100',
@@ -113,7 +117,7 @@ describe('createNFeHttpClient — emitir', () => {
       body: {
         nfeId: 'nfev4-002',
         pedidoId: 'PED-002',
-        estado: 'rejeitada',
+        estado: ESTADO_NFE.rejeitada,
         chave: '35260514200166000187550010000000081000000019',
         nRec: null,
         cStat: '226',
@@ -227,8 +231,8 @@ describe('createNFeHttpClient — verificar', () => {
       {
         chave: '35260514200166000187550010000000071000000018',
         status: 'atualizada',
-        estadoAnterior: 'e',
-        estadoNovo: 'a',
+        estadoAnterior: ESTADO_NFE.error,
+        estadoNovo: ESTADO_NFE.aprovada,
         cStat: '100',
         xMotivo: 'Autorizado o uso da NF-e',
         error: null,
@@ -236,8 +240,8 @@ describe('createNFeHttpClient — verificar', () => {
       {
         chave: '35260514200166000187550010000000081000000019',
         status: 'skipped-final',
-        estadoAnterior: 'c',
-        estadoNovo: 'c',
+        estadoAnterior: ESTADO_NFE.cancelada,
+        estadoNovo: ESTADO_NFE.cancelada,
         cStat: '101',
         xMotivo: 'Cancelamento de NF-e homologado',
         error: null,
@@ -290,7 +294,15 @@ describe('createNFeHttpClient — processarPendentes', () => {
   it('POSTs to /api/nfe/processar-pendentes with empty body', async () => {
     const fetch = mockFetch({
       status: 200,
-      body: { scanned: 5, recovered: 3, stillPending: 1, errors: 1 },
+      body: {
+        scanned: 5,
+        recovered: 3,
+        stillPending: 1,
+        // ⚠️ A LIST, as the route actually sends. This fixture said
+        // `errors: 1` — matching the old interface's lie rather than the
+        // route, which is why nothing here caught it.
+        errors: [{ chave: '35260514200166000187550010000000071000000018', error: 'x' }],
+      },
     });
     const got = await makeClient(fetch).processarPendentes();
 
@@ -302,11 +314,70 @@ describe('createNFeHttpClient — processarPendentes', () => {
   });
 });
 
+describe('createNFeHttpClient — processarPendentes errors is a LIST', () => {
+  // The route serialises `ProcessarPendentesResult` verbatim and its `errors`
+  // is `ReadonlyArray<{ chave: string | null; error: string }>`. The interface
+  // in this client said `errors: number`, and all three fixtures in this file
+  // encoded that same lie — so a `z.number()` schema passed every lane while
+  // making the HAPPY PATH a hard failure, `errors: []` included.
+  const ERRO = {
+    chave: '35260514200166000187550010000000071000000018',
+    error: 'NFeTransportError',
+  };
+
+  it('⭐ accepts the clean run — an EMPTY errors list', async () => {
+    // The case a count-shaped schema breaks most quietly: nothing went wrong,
+    // and the poller dies anyway.
+    const client = makeClient(
+      mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: [] } }),
+    );
+
+    await expect(client.processarPendentes()).resolves.toMatchObject({ errors: [] });
+  });
+
+  it('⭐ carries each failure through with its chave', async () => {
+    const client = makeClient(
+      mockFetch({
+        status: 200,
+        body: { scanned: 3, recovered: 1, stillPending: 1, errors: [ERRO] },
+      }),
+    );
+
+    const got = await client.processarPendentes();
+
+    expect(got.errors).toEqual([ERRO]);
+  });
+
+  it('tolerates a null chave — a pendente with no key yet', async () => {
+    const client = makeClient(
+      mockFetch({
+        status: 200,
+        body: { scanned: 1, recovered: 0, stillPending: 0, errors: [{ chave: null, error: 'x' }] },
+      }),
+    );
+
+    await expect(client.processarPendentes()).resolves.toMatchObject({
+      errors: [{ chave: null }],
+    });
+  });
+
+  it('⚠️ REJECTS the count shape the old interface claimed', async () => {
+    // The anti-vacuity control, and the regression guard: if `errors` ever goes
+    // back to `z.number()`, the three cases above fail — but so does this one,
+    // which is the one that says WHY.
+    const client = makeClient(
+      mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 } }),
+    );
+
+    await expect(client.processarPendentes()).rejects.toBeInstanceOf(NFeSchemaError);
+  });
+});
+
 describe('createNFeHttpClient — cancelar', () => {
   const cancelled: NFeEmitResult = {
     nfeId: 'nfev4-001',
     pedidoId: 'PED-001',
-    estado: 'c',
+    estado: ESTADO_NFE.cancelada,
     chave: '35260514200166000187550010000000071000000018',
     nRec: null,
     cStat: '135',
@@ -606,7 +677,7 @@ describe('createNFeHttpClient — baseUrl normalisation', () => {
   it('strips a single trailing slash off baseUrl', async () => {
     const fetch = mockFetch({
       status: 200,
-      body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 },
+      body: { scanned: 0, recovered: 0, stillPending: 0, errors: [] },
     });
     const client = createNFeHttpClient({
       baseUrl: 'http://localhost:3004/',
@@ -621,7 +692,7 @@ describe('createNFeHttpClient — baseUrl normalisation', () => {
   it('calls getAuthToken on every request (token refresh)', async () => {
     const fetch = mockFetch({
       status: 200,
-      body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 },
+      body: { scanned: 0, recovered: 0, stillPending: 0, errors: [] },
     });
     const getAuthToken = vi.fn().mockResolvedValue(TOKEN);
     const client = createNFeHttpClient({
@@ -699,5 +770,139 @@ describe('createNFeHttpClient — certificado', () => {
       .deleteCertificado('F-1')
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(NFeCertificateError);
+  });
+});
+
+/**
+ * The highest-consequence of the six clients that ended in `return parsed as T`.
+ *
+ * ⭐ An EMPTY 200 on `/api/nfe/emitir` produced `null as NFeEmitResult` — "the
+ * nota was authorized" asserted with no `chave`, no `nRec` and no `cStat`, in a
+ * fiscal state machine that then read `undefined` off it.
+ *
+ * ⚠️ Note what this suite already proved about itself: two fixtures in this file
+ * carried `estado: 'aprovada'` / `'rejeitada'`, which are the enum KEYS — the
+ * wire values are `'a'` and `'n'`. Nothing caught it, because `test/**` is
+ * outside this package's tsconfig `include` and the cast validated nothing. The
+ * fixture claimed a shape no route could ever send, and the test passed.
+ */
+describe('createNFeHttpClient — a 2xx that is not the shape we claimed', () => {
+  it('⭐ refuses an EMPTY 200 instead of asserting an authorized nota', async () => {
+    const client = makeClient(mockFetch({ status: 200, text: '' }));
+
+    await expect(client.emitir('PED-001')).rejects.toBeInstanceOf(NFeSchemaError);
+  });
+
+  it('⭐ refuses a 200 missing the chave', async () => {
+    // The half-shape is the dangerous one: enough fields to look like a result,
+    // and the one field the whole fiscal record is keyed on is absent.
+    const client = makeClient(
+      mockFetch({
+        status: 200,
+        body: {
+          nfeId: 'nfev4-001',
+          pedidoId: 'PED-001',
+          estado: ESTADO_NFE.aprovada,
+          nRec: '1',
+          cStat: '100',
+          xMotivo: 'ok',
+        },
+      }),
+    );
+
+    const err = (await client.emitir('PED-001').catch((e: unknown) => e)) as NFeSchemaError;
+
+    expect(err).toBeInstanceOf(NFeSchemaError);
+    expect(err.campos).toEqual(['chave']);
+  });
+
+  it('⭐ refuses an estado SEFAZ could never send', async () => {
+    // Exactly the fixture bug above, now caught: `'aprovada'` is the enum key.
+    const client = makeClient(
+      mockFetch({
+        status: 200,
+        body: {
+          nfeId: 'n1',
+          pedidoId: 'PED-001',
+          estado: 'aprovada',
+          chave: '35260514200166000187550010000000071000000018',
+          nRec: null,
+          cStat: '100',
+          xMotivo: 'ok',
+        },
+      }),
+    );
+
+    await expect(client.emitir('PED-001')).rejects.toBeInstanceOf(NFeSchemaError);
+  });
+
+  it('refuses a 200 that is not JSON at all', async () => {
+    const client = makeClient(mockFetch({ status: 200, text: '<!DOCTYPE html><html></html>' }));
+
+    const err = (await client.emitir('PED-001').catch((e: unknown) => e)) as NFeSchemaError;
+
+    expect(err).toBeInstanceOf(NFeSchemaError);
+    expect(err.message).toContain('sem um corpo JSON');
+  });
+
+  it('is caught by callers narrowing to NFeHttpError', async () => {
+    // ⚠️ Why it is a subclass rather than a sibling: the fiscal call sites
+    // narrow to this family and rethrow anything else.
+    const client = makeClient(mockFetch({ status: 200, text: '' }));
+
+    await expect(client.emitir('PED-001')).rejects.toBeInstanceOf(NFeHttpError);
+  });
+
+  it('⚠️ names the field but never the value', async () => {
+    // A fiscal 200 carries the taxpayer's data. `NFeSchemaError` also carries no
+    // `body`, for the same reason `MelhorEnvioSchemaError` does not.
+    const client = makeClient(
+      mockFetch({
+        status: 200,
+        body: { supported: true, uf: 'SP', cStat: null, xMotivo: null, infCad: 'nao-e-array' },
+      }),
+    );
+
+    const err = (await client
+      .consultaCadastro('12345678000199', 'SP', 'f1')
+      .catch((e: unknown) => e)) as NFeSchemaError;
+
+    expect(err.campos).toEqual(['infCad']);
+    expect(err.message).not.toContain('12345678000199');
+    expect(err.body).toBeNull();
+  });
+
+  it('keeps `reused` optional — older route revisions omit it', async () => {
+    // The doc block on the field says so in as many words. That is a statement
+    // about the wire, so the schema has to honour it or every emission through
+    // an older deployment fails.
+    const client = makeClient(
+      mockFetch({
+        status: 200,
+        body: {
+          nfeId: 'n1',
+          pedidoId: 'PED-001',
+          estado: ESTADO_NFE.aprovada,
+          chave: '35260514200166000187550010000000071000000018',
+          nRec: null,
+          cStat: '100',
+          xMotivo: 'ok',
+        },
+      }),
+    );
+
+    await expect(client.emitir('PED-001')).resolves.toMatchObject({ chave: expect.any(String) });
+  });
+
+  it('still leaves the error path alone', async () => {
+    // ⚠️ The control that matters most. The non-2xx branch keeps its raw-text
+    // fallback and its injectable `mapError` — a 422 must still arrive as the
+    // typed rejection the fiscal UI reads, not as a schema complaint.
+    const client = makeClient(mockFetch({ status: 500, text: 'nginx: upstream timed out' }));
+
+    const err = await client.emitir('PED-001').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(NFeServerError);
+    expect(err).not.toBeInstanceOf(NFeSchemaError);
   });
 });

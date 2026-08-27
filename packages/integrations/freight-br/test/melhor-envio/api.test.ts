@@ -4,7 +4,11 @@ import { mockFetch } from '../_helpers/mockFetch';
 import { createMelhorEnvioApi } from '../../src/melhor-envio/api';
 import { buildCalculatePayload } from '../../src/melhor-envio/calculate';
 import { isErroredOption } from '../../src/melhor-envio/types';
-import { MelhorEnvioValidationError } from '../../src/melhor-envio/errors';
+import {
+  MelhorEnvioError,
+  MelhorEnvioSchemaError,
+  MelhorEnvioValidationError,
+} from '../../src/melhor-envio/errors';
 import { melhorEnvioBaseUrl } from '../../src/melhor-envio/oauth';
 
 function api(fetchImpl: typeof globalThis.fetch) {
@@ -173,5 +177,97 @@ describe('createMelhorEnvioApi account', () => {
     );
     const bal = await api(balFetch).getBalance();
     expect(bal.balance).toBe(42.5);
+  });
+});
+
+/**
+ * ⚠️ The API client called `schema.parse(parsed)` on the success path while its
+ * own sibling `oauth.ts` had already been fixed to `safeParse` — with a comment
+ * saying why, and a dedicated `MelhorEnvioSchemaError` created for it whose doc
+ * block describes this exact failure. A raw `ZodError` is not a
+ * `MelhorEnvioError`, so `isMelhorEnvioError(err)` rejected it, every route
+ * guard fell through, and a malformed 200 from ME surfaced as an unhandled 500
+ * naming nothing.
+ *
+ * ⚠️ Note which endpoints these use, and why. `meSchema` and `balanceSchema` are
+ * fully tolerant — every field `.optional().nullable()`, the object
+ * `.passthrough()` — so `{}` is a perfectly VALID `/me`. That tolerance is
+ * correct for a provider payload we barely read, and it means the only way to
+ * fail those is a field of the wrong TYPE. `printResponseSchema` is the
+ * contrast: its `url` is required, because the buy flow cannot do anything
+ * without it.
+ */
+describe('a malformed 200 from Melhor Envio', () => {
+  function respondendo(body: unknown) {
+    return api(
+      mockFetch(
+        async () =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+  }
+
+  it('⭐ throws a MelhorEnvioError the route guards recognise', async () => {
+    // `print` needs `url`; a 200 without it cannot be acted on.
+    const err = await respondendo({})
+      .print(['1'])
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MelhorEnvioSchemaError);
+    // ⚠️ THE decisive assertion, and why `instanceof MelhorEnvioError` rather
+    // than the guard itself: `isMelhorEnvioError` lives in apps/melhor-envio and
+    // is not importable from this package, but the only thing it asks of this
+    // error is exactly this. A bare `ZodError` fails it — which was the bug.
+    expect(err).toBeInstanceOf(MelhorEnvioError);
+  });
+
+  it('names the failing field without echoing the body', async () => {
+    // ⚠️ A ME 200 body holds account data, and this message reaches the browser.
+    // Field PATHS only — the same rule the class doc states for `issues`, and
+    // the reason that class deliberately carries no `body`.
+    const err = (await respondendo({ id: 123, firstname: 'Fulano da Silva' })
+      .getMe()
+      .catch((e: unknown) => e)) as MelhorEnvioSchemaError;
+
+    expect(err).toBeInstanceOf(MelhorEnvioSchemaError);
+    expect(err.message).toContain('id');
+    expect(err.message).not.toContain('Fulano');
+    expect(err.message).not.toContain('123');
+  });
+
+  it('leaves the deliberate tolerance alone', async () => {
+    // The control that matters most here. `/me` is `.passthrough()` with every
+    // field optional, so an unfamiliar payload is VALID by design — this fix
+    // must not quietly turn that into a rejection.
+    await expect(respondendo({ campo: 'que nunca vimos' }).getMe()).resolves.toMatchObject({
+      campo: 'que nunca vimos',
+    });
+  });
+
+  it('still returns a well-formed body', async () => {
+    await expect(respondendo({ url: 'https://me/label.pdf' }).print(['1'])).resolves.toMatchObject({
+      url: 'https://me/label.pdf',
+    });
+  });
+
+  it('⭐ collapses array indices — a 20-option quote names the column ONCE', async () => {
+    // ⚠️ `calculate` and `listAgencies` return ARRAYS, and the local
+    // `new Set(issues.map(i => i.path.join('.')))` this replaced de-duplicated
+    // AFTER the index was baked into the path. One null `name` across twenty
+    // options produced `0.name, 1.name, … 19.name` in a message
+    // `melhorEnvioErrorResponse` hands to the browser. `camposInvalidos` says
+    // `[].name`, and caps the list.
+    const vinte = Array.from({ length: 20 }, (_v, i) => ({ id: i + 1, name: null }));
+
+    const err = (await respondendo(vinte)
+      .calculate({ from: { postal_code: '01001000' }, to: { postal_code: '20040002' } } as never)
+      .catch((e: unknown) => e)) as MelhorEnvioSchemaError;
+
+    expect(err).toBeInstanceOf(MelhorEnvioSchemaError);
+    expect(err.message).toContain('[].name');
+    expect(err.message).not.toContain('19.name');
   });
 });

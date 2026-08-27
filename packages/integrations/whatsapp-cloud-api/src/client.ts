@@ -54,6 +54,30 @@ export class WhatsAppHttpError extends Error {
 }
 
 /**
+ * `messages[0].id` out of a Cloud API send response, or null.
+ *
+ * ⚠️ Replaces `(await res.json()) as { messages?: Array<{ id: string }> }` at
+ * all three send sites. The cast asserted a shape Meta never promised: an `id`
+ * arriving as a NUMBER satisfied nothing at runtime and was returned as the
+ * `wamid` we persist on the mensagem doc and later reconcile against inbound
+ * status webhooks — where it could never match.
+ *
+ * Returning null lands on the guard the callers ALREADY have
+ * (`WhatsAppHttpError(..., 'response missing messages[0].id')`), so a provider
+ * shape change surfaces as the error that endpoint already knows how to raise
+ * rather than as a new one nobody narrows on.
+ */
+function primeiroMessageId(json: unknown): string | null {
+  if (json === null || typeof json !== 'object') return null;
+  const messages: unknown = (json as { messages?: unknown }).messages;
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const first: unknown = messages[0];
+  if (first === null || typeof first !== 'object') return null;
+  const id: unknown = (first as { id?: unknown }).id;
+  return typeof id === 'string' && id !== '' ? id : null;
+}
+
+/**
  * A transport-level failure reaching the Graph API — the `fetch` itself rejected
  * (DNS / connection reset / timeout), so no HTTP response was received. Transient:
  * the #529 outbound disposition RETHROWS so Eventarc retries.
@@ -227,8 +251,7 @@ export class WhatsAppClient {
       const text = await res.text();
       throw new WhatsAppHttpError('sendText', res.status, text);
     }
-    const json = (await res.json()) as { messages?: Array<{ id: string }> };
-    const id = json.messages?.[0]?.id;
+    const id = primeiroMessageId((await res.json()) as unknown);
     if (!id) {
       throw new WhatsAppHttpError('sendText', res.status, 'response missing messages[0].id');
     }
@@ -271,8 +294,7 @@ export class WhatsAppClient {
       const text = await res.text();
       throw new WhatsAppHttpError('sendMedia', res.status, text);
     }
-    const json = (await res.json()) as { messages?: Array<{ id: string }> };
-    const id = json.messages?.[0]?.id;
+    const id = primeiroMessageId((await res.json()) as unknown);
     if (!id) {
       throw new WhatsAppHttpError('sendMedia', res.status, 'response missing messages[0].id');
     }
@@ -317,8 +339,7 @@ export class WhatsAppClient {
       const text = await res.text();
       throw new WhatsAppHttpError('sendTemplate', res.status, text);
     }
-    const json = (await res.json()) as { messages?: Array<{ id: string }> };
-    const id = json.messages?.[0]?.id;
+    const id = primeiroMessageId((await res.json()) as unknown);
     if (!id) {
       throw new WhatsAppHttpError('sendTemplate', res.status, 'response missing messages[0].id');
     }

@@ -11,9 +11,61 @@
  * — that's a misconfiguration, not a runtime fallback.
  */
 
+import { z } from 'zod';
+
+import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
+
 const BASE =
   process.env.NEXT_PUBLIC_INTEGRATIONS_URL ??
   (process.env.NODE_ENV === 'development' ? 'http://localhost:3001' : '');
+
+/**
+ * Non-2xx from the admin endpoints.
+ *
+ * ⚠️ This file used to throw a BARE `Error`, discarding the status entirely, so
+ * the caller could not tell a 403 (this operator may not grant that bit) from a
+ * 500 (the backend is broken) and offered the same unhelpful message for both.
+ */
+export class AdminClientHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null,
+  ) {
+    super(message);
+    this.name = 'AdminClientHttpError';
+  }
+}
+
+/**
+ * Never reached the admin backend.
+ *
+ * ⚠️ Also new. The raw `TypeError` from `fetch` used to escape straight into the
+ * React handler, where it reads as a programming bug rather than "the
+ * integrations app is not running" — which, in local dev, is the usual cause.
+ */
+export class AdminClientNetworkError extends Error {
+  constructor(
+    message: string,
+    override readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'AdminClientNetworkError';
+  }
+}
+
+/** The backend answered 2xx with something that is not the shape we claimed. */
+export class AdminClientRespostaInvalidaError extends AdminClientHttpError {
+  constructor(
+    message: string,
+    status: number,
+    /** Field PATHS that failed, never values. */
+    readonly campos: string[],
+  ) {
+    super(message, status, 'RESPOSTA_INVALIDA');
+    this.name = 'AdminClientRespostaInvalidaError';
+  }
+}
 
 export interface CreateUserPayload {
   email: string;
@@ -24,47 +76,131 @@ export interface CreateUserPayload {
   isSuperUser?: boolean;
 }
 
-export interface CreateUserResult {
-  uid: string;
+export const createUserResultSchema = z.object({ uid: z.string() });
+export type CreateUserResult = z.infer<typeof createUserResultSchema>;
+
+export const refreshClaimsResultSchema = z.object({
+  uid: z.string(),
+  /** BigInt-encoded permission bits — a STRING, to dodge the JS 53-bit limit. */
+  permissions: z.string(),
+});
+export type RefreshClaimsResult = z.infer<typeof refreshClaimsResultSchema>;
+
+/**
+ * ⚠️ This helper was the least defended of the six in the repo. Before:
+ *
+ *  - `(await res.json()) as T` sat OUTSIDE any try, so an empty or non-JSON 2xx
+ *    threw a raw `SyntaxError` at the React caller;
+ *  - the `fetch` rejection was not wrapped at all, so a network failure arrived
+ *    as a bare `TypeError`;
+ *  - a non-2xx threw a bare `Error`, dropping the status and the code.
+ *
+ * All three now match the channel clients: read the text once, narrow, and
+ * validate the success body against the schema that describes it.
+ */
+async function call<S extends z.ZodType>(
+  path: string,
+  schema: S,
+  init: RequestInit,
+  idToken: string,
+): Promise<z.infer<S>> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers: {
+        ...(init.headers ?? {}),
+        'content-type': 'application/json',
+        authorization: `Bearer ${idToken}`,
+      },
+    });
+  } catch (err) {
+    throw new AdminClientNetworkError(err instanceof Error ? err.message : 'fetch falhou', err);
+  }
+
+  const text = await res.text();
+
+  if (!res.ok) {
+    let parsed: unknown = null;
+    if (text.length > 0) {
+      try {
+        parsed = JSON.parse(text);
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          logarCorpoNaoJson(path, res.status, text);
+        } else throw err;
+      }
+    }
+    const errBody = envelopeDeErro(parsed);
+    throw new AdminClientHttpError(
+      // ⚠️ Not `${status} ${statusText}`: the reason phrase was removed from
+      // HTTP/2, so `res.statusText` is EMPTY for anything served by App
+      // Hosting / Cloud Run and the operator's alert read `502 ` — a bare
+      // number and a trailing space. This branch fires precisely when the body
+      // was not our envelope, which is the sibling clients' "never reached a
+      // route" case; say what they say. The status stays on the error object
+      // for callers that branch on 403 vs 500.
+      errBody?.error ??
+        `Falha na comunicação com o serviço de administração (HTTP ${String(res.status)}).`,
+      res.status,
+      errBody?.code ?? null,
+    );
+  }
+
+  const leitura = lerRespostaJson(text, schema);
+  if (leitura.ok) return leitura.data;
+
+  if (leitura.motivo !== 'formato') {
+    // ⚠️ EMPTY and NON-JSON share this branch: neither is version skew — in
+    // both the request failed to reach a route that answers JSON, so neither
+    // may tell the operator to deploy anything.
+    logarCorpoNaoJson(
+      path,
+      res.status,
+      leitura.motivo === 'nao-json' ? leitura.texto : '(corpo vazio)',
+    );
+    throw new AdminClientRespostaInvalidaError(
+      `O serviço de administração respondeu HTTP ${String(res.status)} sem um corpo JSON — o ` +
+        'pedido não chegou à rota esperada. Atualize a página e, se continuar, avise o suporte.',
+      res.status,
+      [],
+    );
+  }
+
+  throw new AdminClientRespostaInvalidaError(
+    'O serviço de administração respondeu num formato que este aplicativo não reconhece. ' +
+      `Campos inválidos: ${resumirCampos(leitura.campos)}. Normalmente isso significa que o ` +
+      'backend e esta tela estão em versões diferentes — faça o deploy de `apps/integrations` ' +
+      'e recarregue a página.',
+    res.status,
+    leitura.campos,
+  );
 }
 
-async function call<T>(path: string, init: RequestInit, idToken: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: {
-      ...(init.headers ?? {}),
-      'content-type': 'application/json',
-      authorization: `Bearer ${idToken}`,
-    },
-  });
-  if (!res.ok) {
-    let detail = '';
-    try {
-      const body = (await res.json()) as { error?: string };
-      detail = body.error ?? '';
-    } catch (err) {
-      if (!(err instanceof SyntaxError)) throw err;
-      // SyntaxError: non-JSON response body — fall back to status text.
-    }
-    throw new Error(detail || `${res.status} ${res.statusText}`);
-  }
-  return (await res.json()) as T;
+/**
+ * Log a body the operator will never see, capped so a whole HTML document
+ * cannot flood the console.
+ */
+function logarCorpoNaoJson(path: string, status: number, corpo: string): void {
+  console.error(
+    `[admin] resposta não-JSON em ${path} (HTTP ${String(status)})`,
+    corpo.slice(0, 500),
+  );
 }
 
 export function createUser(payload: CreateUserPayload, idToken: string): Promise<CreateUserResult> {
-  return call<CreateUserResult>(
+  return call(
     '/api/admin/users',
+    createUserResultSchema,
     { method: 'POST', body: JSON.stringify(payload) },
     idToken,
   );
 }
 
-export function refreshClaims(
-  uid: string,
-  idToken: string,
-): Promise<{ uid: string; permissions: string }> {
-  return call<{ uid: string; permissions: string }>(
+export function refreshClaims(uid: string, idToken: string): Promise<RefreshClaimsResult> {
+  return call(
     `/api/admin/users/${encodeURIComponent(uid)}/claims`,
+    refreshClaimsResultSchema,
     { method: 'POST' },
     idToken,
   );

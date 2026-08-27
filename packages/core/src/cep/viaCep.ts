@@ -14,6 +14,8 @@
  * the *unexpected* ones (network failure, timeout, malformed JSON) so callers
  * can tell "this CEP does not exist" from "we could not ask".
  */
+import { z } from 'zod';
+
 import { cleanCep } from './cep';
 
 export interface EnderecoViaCep {
@@ -25,14 +27,29 @@ export interface EnderecoViaCep {
   codigoMunicipio: string;
 }
 
-interface ViaCepResponse {
-  logradouro?: string;
-  bairro?: string;
-  localidade?: string;
-  uf?: string;
-  ibge?: string;
-  erro?: boolean | string;
-}
+/**
+ * ViaCEP's answer, as much of it as this module reads.
+ *
+ * ⚠️ Every field carries `.catch(undefined)`, which makes this schema strictly
+ * MORE tolerant than the `as ViaCepResponse` cast it replaces: an unusable
+ * field degrades to absent and the rest of the address still resolves, so
+ * nothing that works today can start failing. What it fixes is the other
+ * direction — the fields below are read as `?? ''` and then `.trim()`ed by the
+ * caller, so a numeric `localidade` used to be a TypeError thrown out of a CEP
+ * lookup rather than a missing town.
+ *
+ * ⚠️ `erro` really is `boolean | string`: ViaCEP signals "not found" with
+ * `{ "erro": true }` and sometimes the STRING "true", both with HTTP 200.
+ */
+const viaCepResponseSchema = z.object({
+  logradouro: z.string().optional().catch(undefined),
+  bairro: z.string().optional().catch(undefined),
+  localidade: z.string().optional().catch(undefined),
+  uf: z.string().optional().catch(undefined),
+  ibge: z.string().optional().catch(undefined),
+  erro: z.union([z.boolean(), z.string()]).optional().catch(undefined),
+});
+type ViaCepResponse = z.infer<typeof viaCepResponseSchema>;
 
 /**
  * ViaCEP could not be reached or did not answer with usable JSON. Carries the
@@ -134,9 +151,9 @@ export function createViaCepClient(config: ViaCepConfig = {}): ViaCepClient {
     // would poison the cache for the process lifetime — return without caching.
     if (!res.ok) return null;
 
-    let data: ViaCepResponse;
+    let bruto: unknown;
     try {
-      data = (await res.json()) as ViaCepResponse;
+      bruto = (await res.json()) as unknown;
     } catch (err) {
       if (err instanceof SyntaxError || err instanceof TypeError) {
         throw new ViaCepError(`Resposta inválida do ViaCEP para o CEP ${clean}.`, clean, {
@@ -145,6 +162,14 @@ export function createViaCepClient(config: ViaCepConfig = {}): ViaCepClient {
       }
       throw err;
     }
+
+    // The per-field `.catch()`es mean only a non-OBJECT body can fail here, and
+    // that is the same "unusable answer" the non-JSON branch above reports.
+    const leitura = viaCepResponseSchema.safeParse(bruto);
+    if (!leitura.success) {
+      throw new ViaCepError(`Resposta inválida do ViaCEP para o CEP ${clean}.`, clean);
+    }
+    const data: ViaCepResponse = leitura.data;
 
     // ViaCEP signals "not found" with `{ "erro": true }` (sometimes the string
     // "true") and HTTP 200 — both are truthy here. This one IS definitive, so

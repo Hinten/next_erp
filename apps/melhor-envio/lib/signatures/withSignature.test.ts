@@ -45,7 +45,11 @@ describe('withSignature', () => {
 
   it('forwards parsed JSON to the inner handler on valid signature', async () => {
     const body = '{"event":"order.created","id":"abc"}';
-    const handler = withSignature<{ event: string; id: string }>(
+    // ⚠️ No type argument any more, and `json` is `unknown`. It used to be
+    // `withSignature<{ event, id }>` with `JSON.parse(payload) as T` inside —
+    // a shape the caller ASSERTED about a body an attacker chooses. The HMAC
+    // proves the sender knew the secret, never that the payload is well formed.
+    const handler = withSignature(
       { secret: SECRET, getSignature: (r) => r.headers.get('x-signature') },
       async ({ json }) => Response.json({ got: json }),
     );
