@@ -268,6 +268,34 @@ export const ESTADO_ENVIO = {
   desconhecido: 8,
 } as const satisfies Record<string, EstadoEnvioMensagem>;
 
+/**
+ * The states a message WE sent can be in — `recebido` is the only inbound one.
+ *
+ * ⚠️ This is what decides which side of the thread a bubble renders on **for a
+ * message with no author**, which is every message the marketplace importers
+ * write: identity is a `cliente` now, so nothing stamps `user_id` (#768). When a
+ * `user_id` IS present it wins, because it says *which operator* — something a
+ * state can never answer.
+ *
+ * ⚠️ `excluido`, `banida` and `desconhecido` are deliberately OUT. They are
+ * ambiguous — a moderated message may be the contact's — and the safe direction
+ * is inbound: showing someone else's message as ours is a misattribution an
+ * operator cannot detect, while the reverse is obvious.
+ */
+export const ESTADO_ENVIO_SAIDA = [
+  ESTADO_ENVIO.salva,
+  ESTADO_ENVIO.enviando,
+  ESTADO_ENVIO.enviado,
+  ESTADO_ENVIO.erro,
+] as const satisfies readonly EstadoEnvioMensagem[];
+
+const ESTADOS_DE_SAIDA: ReadonlySet<number> = new Set(ESTADO_ENVIO_SAIDA);
+
+/** Whether this state means "we sent it" rather than "the contact sent it". */
+export function ehEstadoDeSaida(estado: EstadoEnvioMensagem | null | undefined): boolean {
+  return estado != null && ESTADOS_DE_SAIDA.has(estado);
+}
+
 export const ESTADO_ENVIO_LABELS: Record<EstadoEnvioMensagem, string> = {
   1: 'Salva',
   2: 'Enviando',
@@ -331,10 +359,18 @@ export const mensagemSchema = z.object({
    * writers. See `clienteOuterRef` on the conversa.
    *
    * ⚠️ This is NOT what decides which side of the thread a bubble renders on.
-   * `MensagemBubble` reads `estadoEnvio === recebido` for that, so an inbound
-   * message must be stamped `recebido` regardless of which author field it
-   * carries — dropping `user_id` without that stamp renders buyer and seller
-   * messages identically.
+   * For a message with NO `user_id` — which is every message the marketplace
+   * importers write — that is {@link ehEstadoDeSaida}: an inbound message must
+   * be stamped `recebido` and an outbound one a saída state, whichever author
+   * field it carries. When a `user_id` IS present it wins, because it names the
+   * operator.
+   *
+   * ⚠️ This comment used to say `MensagemBubble` "reads `estadoEnvio === recebido`
+   * for that", full stop. Only the INBOUND half was ever true: the side came off
+   * `user_id === myUid` alone, so an authorless message could never render as
+   * ours and every ML reply we sent landed on the customer's side, grey and with
+   * no delivery tick. Three files repeated the claim and the importers were
+   * written against it. Do not restate it without checking the renderer.
    */
   clienteMensagemOuterRef: outerRefSchema.nullable().default(null),
   urlAvatar: z.string().nullable().default(null),

@@ -389,7 +389,7 @@ export function ReclamacaoMlPanel({ claimId, integracaoId }: ReclamacaoMlPanelPr
               </Text>
               {estado.data.acoesDisponiveis.length === 0 ? (
                 <Text size="xs" c="dimmed">
-                  {estado.data.motivoSemResposta ??
+                  {estado.data.motivoSemMensagem ??
                     'O Mercado Livre não oferece nenhuma ação nesta reclamação.'}
                 </Text>
               ) : !podeExecutar ? (

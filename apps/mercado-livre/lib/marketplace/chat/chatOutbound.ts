@@ -30,12 +30,16 @@ import {
   TIPO_MENSAGEM,
   type OrigemConversa,
 } from '@delfrance/schemas';
-import { postSaleAgentUserId, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import type { MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { ANSWER_MENSAGEM_ID } from './questionIds';
 import { makeMensagemProvisoriaId } from './mensagemProvisoria';
 import { questionActionability } from './questionMapping';
-import { orderMessageActionability } from './orderMessageMapping';
+import {
+  PAGINA_MENSAGENS_THREAD,
+  orderMessageActionability,
+  postSaleRecipientUserId,
+} from './orderMessageMapping';
 import { claimActionability, receiverRoleDaAcao } from '../claims/claimActionability';
 
 /**
@@ -199,7 +203,14 @@ async function responderMensagemPedido(
   }
 
   // The authority, and it also carries the LIVE character cap.
-  const pack = await api.getPackMessages(packId, String(sellerId));
+  //
+  // ⚠️ The full page, not ML's default of 10 — same single round trip. The
+  // recipient is derived from this response, and at 100 a thread of ≤100 messages
+  // comes back WHOLE, so the derivation stops depending on which ten ML chose or
+  // on a sort order nothing in this repo proves.
+  const pack = await api.getPackMessages(packId, String(sellerId), {
+    limit: PAGINA_MENSAGENS_THREAD,
+  });
   const acao = orderMessageActionability(pack.conversation_status, pack.seller_max_message_length);
   if (!acao.podeResponder) {
     refuse('ML_NAO_RESPONDIVEL', acao.motivo ?? 'Conversa bloqueada no Mercado Livre.');
@@ -209,12 +220,47 @@ async function responderMensagemPedido(
     refuse('ML_TEXTO_LONGO', `A mensagem excede o limite do Mercado Livre (${limite} caracteres).`);
   }
 
-  // ⚠️ Addressed to the AGENT, never to the buyer (ML, 02/02/2026). The site
-  // comes off the thread's own messages; `postSaleAgentUserId` defaults to MLB.
-  const siteId = pack.messages.find((m) => m.site_id != null)?.site_id ?? null;
+  // ⚠️ The recipient is DERIVED from the thread ML just returned, never assumed.
+  // ML's agent architecture rolls out PROGRESSIVELY — its own reference says
+  // "de forma progressiva… começando pela logística Full" — so a thread may be on
+  // either flow and nothing outside the thread says which. Addressing the agent on
+  // one ML has NOT migrated is refused with `400 to_user_id … does not belong to
+  // pack`; addressing the buyer on one it HAS is accepted with a 200 that reaches
+  // nobody. Doing this unconditionally was that bug.
+  const destinatario = postSaleRecipientUserId(pack, sellerId);
+  if (destinatario == null) {
+    // ⚠️ Deliberately NOT a default to the agent. A thread reaching here is by
+    // construction one we have NO evidence about, so either default is a coin
+    // flip — the same bug on a smaller set. And because the buyer must start
+    // every post-sale conversation, this population is near-empty: a refusal
+    // firing in production means something we believe about ML is false, which a
+    // default would hide forever.
+    refuse(
+      'ML_DADOS_INSUFICIENTES',
+      'O Mercado Livre não informou quem recebe esta mensagem. Responda pelo site do Mercado Livre.',
+    );
+  }
+
+  // ⚠️ `agente-path` is the one rung whose failure is SILENT: it infers the agent
+  // from a documented path convention rather than observing an address ML used,
+  // so if that convention ever changes ML answers 200 and the reply reaches
+  // nobody. The refusal above is already visible; this makes the inference
+  // visible too, which is the only way a wrong `/conversations/` heuristic could
+  // ever be noticed. `paginaTruncada` rides along because it is what flips the
+  // rung precedence.
+  if (destinatario.fonte !== 'mensagem' || destinatario.paginaTruncada) {
+    console.info('[mercado-livre] destinatário pós-venda inferido', {
+      packId,
+      fonte: destinatario.fonte,
+      paginaTruncada: destinatario.paginaTruncada,
+      mensagensLidas: pack.messages.length,
+      total: pack.paging?.total ?? null,
+    });
+  }
+
   await api.sendPackMessage(packId, String(sellerId), {
     text: texto,
-    toUserId: postSaleAgentUserId(siteId),
+    toUserId: destinatario.userId,
   });
 
   // ML mints the message id and does not return it on the POST, so this bubble

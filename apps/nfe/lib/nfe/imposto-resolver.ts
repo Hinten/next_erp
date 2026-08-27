@@ -157,7 +157,13 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
         deps.bundle.operacaoId,
       );
       if (categoriaMatch) {
-        const parsed = impostoSchema.safeParse(categoriaMatch);
+        // Legacy `categorias/{}/imposto` docs carry an UPPERCASE `CFOP` — fold
+        // it into the engine's lowercase `cfop` (a lowercase value, when
+        // present, wins), same as the regraImposto tier below.
+        const parsed = impostoSchema.safeParse({
+          ...categoriaMatch,
+          cfop: categoriaMatch.cfop ?? categoriaMatch.CFOP,
+        });
         if (parsed.success) {
           cache.set(cacheKey, { value: parsed.data });
           return parsed.data;

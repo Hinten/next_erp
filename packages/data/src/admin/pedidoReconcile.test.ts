@@ -304,6 +304,44 @@ describe('reconcilePedidoFromPagamento', () => {
     expect(stored.metodoPagamentoOuterRef).toBe('documents/metodo_pgto/mp1');
   });
 
+  it('merges a gateway redelivery onto a legacy stored pagamento carrying an unmodeled key (#463)', async () => {
+    // `pagamentoSchema` dropped `.passthrough()` in #463: the merge below used
+    // to spread the raw stored doc straight into the strict write parse, so an
+    // unmodeled legacy key would throw `ZodError: unrecognized_keys` instead of
+    // being silently stripped as the read-tolerance contract requires (root
+    // `CLAUDE.md` rule 8).
+    const { db, store } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: { estado: 'iniciado', codRastreio: null },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 40,
+        status_pagamento: STATUS_PAGAMENTO.pendente,
+        ultimaModificacao: T_OLD,
+        someRetiredLegacyField: 'whatever',
+      },
+    });
+
+    const result = await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_NEW,
+      }),
+    });
+
+    expect(result.transition).toBe('pago');
+    const stored = store['pedidos/p1/pagamentos/pay1']!;
+    expect(stored.valor).toBe(100);
+    expect(stored.status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    // The unmodeled key is stripped on the way through, not re-written.
+    expect(stored).not.toHaveProperty('someRetiredLegacyField');
+  });
+
   it('skips a stale delivery (existing ultimaModificacao newer) without writing', async () => {
     const { db, store, writes } = makeDb({
       'pedidos/p1': { estado: 'aguardandoConfirmacaoDePagamento', valorCobrado: 100 },

@@ -208,7 +208,16 @@ export async function reconcilePedidoFromPagamento(
       // UPDATE — INVERTED merge: the stored doc is the base (operator edits and
       // out-of-band first-write fields survive) and only the {@link GATEWAY_OWNED}
       // fields are overlaid from the incoming (webhook-derived) pagamento.
-      const existingData = existing.data() ?? {};
+      // The stored side goes through the soft (read) parse first: `pagamentoSchema`
+      // no longer carries `.passthrough()` (#463), so a legacy corpus doc with an
+      // unmodeled key would otherwise survive the spread below into the strict
+      // write parse and throw. `parseSoftRead` silently strips it instead — the
+      // read-tolerance root `CLAUDE.md` rule 8 requires — so only a genuinely
+      // INCOMING unknown key can still throw on write.
+      const existingData = pagamentoCollection.parseRead(
+        existing.data() ?? {},
+        pagamentoCollection.docPath({ pedidoId }, pagamentoId),
+      ) as unknown as Record<string, unknown>;
       const incoming = pagamento as unknown as Record<string, unknown>;
       toWrite = { ...existingData };
       for (const key of GATEWAY_OWNED) {

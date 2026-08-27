@@ -13,6 +13,7 @@ const columns: ChartColumn[] = [
     hint: null,
     required: false,
     mainCandidate: false,
+    sizeEquivalence: false,
     unit: { default: 'cm', options: [] },
     connector: null,
     parts: [{ attributeId: 'CHEST', label: 'de', kind: 'number', values: [] }],
@@ -47,6 +48,44 @@ function show(r: MercadoLivreMedidasSugestao) {
     </MantineTestProvider>,
   );
 }
+
+describe('SizeChartAiModal — what the operator is asked to approve', () => {
+  const sugestao = (over: Partial<MercadoLivreMedidasSugestao['sugestoes'][number]> = {}) => ({
+    rowKey: 'g/1/v/p',
+    attributeId: 'CHEST',
+    value_id: null,
+    value_name: '52',
+    valueList: null,
+    ...over,
+  });
+
+  it('shows EVERY member of a size-equivalence suggestion, not just the first', () => {
+    // ⚠️ Nothing is applied until Aplicar, so this row IS the decision. A cell
+    // that maps one size onto 38/40/42 and renders as "38" asks the operator to
+    // approve something other than what would be written.
+    show(
+      resultado({
+        sugestoes: [
+          sugestao({
+            attributeId: 'FILTRABLE_SIZE',
+            value_id: '1',
+            value_name: '38, 40',
+            valueList: [
+              { id: '1', name: '38' },
+              { id: '2', name: '40' },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(screen.getByText('38, 40')).not.toBeNull();
+  });
+
+  it('falls back to value_name for a scalar suggestion', () => {
+    show(resultado({ sugestoes: [sugestao()] }));
+    expect(screen.getByText('52')).not.toBeNull();
+  });
+});
 
 describe('SizeChartAiModal — what the model was actually given', () => {
   it('tells an operator with NO photo to upload one', () => {

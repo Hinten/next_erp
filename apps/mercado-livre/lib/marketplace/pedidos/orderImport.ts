@@ -88,8 +88,8 @@ import {
   STATUS_PAGAMENTO,
   TIPO_INCIDENTE,
   TIPO_RESOLUCAO,
+  derivePedidoFreteTotals,
   flattenPedidoItens,
-  itemSubtotal,
   toOuterRef,
   idFromRef,
   type EstadoPedido,
@@ -1165,6 +1165,16 @@ async function applyFreteSemEnvioStep(args: {
     // The block already exists → the SEED is done; only the delivery advance is
     // still on the table. Re-derived from the tx-fresh doc, never the pre-read.
     if (freshPedido.freteInicial != null) {
+      // …and the total, which nothing else on this path ever recomputes. Runs
+      // FIRST so it cannot mask the advance's own patch for a reader of
+      // `lastPatch`, and so a converged pedido still writes nothing at all.
+      reconciliarTotalSemEnvio({
+        tx,
+        pedidoRef,
+        freshPedido,
+        frete: freshPedido.freteInicial,
+        nowUs,
+      });
       advanceFreteSemEnvioParaEntregue({
         tx,
         pedidoRef,
@@ -1221,14 +1231,76 @@ async function applyFreteSemEnvioStep(args: {
       ultimaModificacao: nowUs,
     };
 
+    // The seed is the first moment this pedido HAS a frete block, so it is also
+    // the first moment the total can be reconciled — folded into this same patch
+    // rather than issued as a second write.
+    const alvo = alvoValorCobradoSemEnvio(freshPedido, semEnvio);
     tx.update(
       pedidoRef,
       pedidoCollection.parseMerge({
         freteInicial: semEnvio,
+        ...(alvo != null ? { valorCobrado: alvo } : {}),
         ultimaModificacao: avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs),
       }) as DocumentData,
     );
   });
+}
+
+/**
+ * The `valorCobrado` a sem-envio pedido should be carrying, or `null` when it
+ * already is (so a converged pedido writes nothing).
+ *
+ * ⚠️ **This exists because a sem-envio PACK had no repair at all.** Both of the
+ * shipment path's repairs live in `applyFreteStep` — the conference and the
+ * `!maisNovo` branch — and an order sold "frete a combinar" never reaches
+ * either. Meanwhile `mlOrderToPedidoCoreFields` runs on `orders[0]` ALONE
+ * (`orderPedidoTx.ts`) and the pedido then absorbs every sibling's items, so a
+ * sem-envio pack held all the goods against one sibling's money and nothing
+ * ever recomputed it. `podeAvancarParaPago` compares
+ * `totalAprovado >= valorCobrado`, so that is a perfectly correct comparison
+ * against a wrong threshold: `pago` on a partial payment, which authorises
+ * dispatch and NF-e emission. #791's failure mode, on the one path #791 did not
+ * cover.
+ *
+ * Gated exactly like the `!maisNovo` repair: only where a frete block and a
+ * fiscal address both exist, so `valorCobrado` is not taken away from the
+ * create-time value before this path owns it. Computed through the canonical
+ * `derivePedidoFreteTotals`, same as both shipment-path repairs — a sem-envio
+ * block carries no freight charge, so in practice this is
+ * `Σ itemSubtotal − descontoTotal`.
+ */
+function alvoValorCobradoSemEnvio(freshPedido: Pedido, frete: FreteDoPedido): number | null {
+  if (freshPedido.enderecoFiscalOuterRef == null) return null;
+  const alvo = derivePedidoFreteTotals({
+    itens: flattenPedidoItens(freshPedido.itens),
+    descontoTotal: freshPedido.descontoTotal ?? 0,
+    freteInicial: frete,
+  }).valorCobrado;
+  return freshPedido.valorCobrado === alvo ? null : alvo;
+}
+
+/** Writes the reconciled total, and nothing else, when it has moved. */
+function reconciliarTotalSemEnvio(args: {
+  tx: FirebaseFirestore.Transaction;
+  pedidoRef: FirebaseFirestore.DocumentReference;
+  freshPedido: Pedido;
+  frete: FreteDoPedido;
+  nowUs: number;
+}): void {
+  const { tx, pedidoRef, freshPedido, frete, nowUs } = args;
+  const alvo = alvoValorCobradoSemEnvio(freshPedido, frete);
+  if (alvo == null) return;
+  // ⚠️ Money only. This function must never touch `freteInicial.estado` — that
+  // block is NOT marketplace-locked, the operator's Frete tab edits it freely,
+  // and `estado` crossing into `ESTADOS_FRETE_REMOVE_ESTOQUE` moves physical
+  // stock irreversibly. The delivery advance owns that decision and its guards.
+  tx.update(
+    pedidoRef,
+    pedidoCollection.parseMerge({
+      valorCobrado: alvo,
+      ultimaModificacao: avancarWatermark(coerceToMicros(freshPedido.ultimaModificacao), nowUs),
+    }) as DocumentData,
+  );
 }
 
 /**
@@ -1553,10 +1625,13 @@ async function applyFreteStep(args: {
       // overwrite. Uses the STORED frete's own `valorCobrado`, never this
       // (older) payload's, so it carries no staleness.
       if (freshFrete != null && freshPedido.enderecoFiscalOuterRef != null) {
-        const totalItens = roundReais(
-          flattenPedidoItens(freshPedido.itens).reduce((sum, item) => sum + itemSubtotal(item), 0),
-        );
-        const alvo = roundReais(totalItens + (freshFrete.valorCobrado ?? 0));
+        // Same `derivePedidoFreteTotals` the conference below uses — the two
+        // repairs must agree to the cent or they fight each other across runs.
+        const alvo = derivePedidoFreteTotals({
+          itens: flattenPedidoItens(freshPedido.itens),
+          descontoTotal: freshPedido.descontoTotal ?? 0,
+          freteInicial: freshFrete,
+        }).valorCobrado;
         if (freshPedido.valorCobrado !== alvo) patchParado.valorCobrado = alvo;
       }
       if (Object.keys(patchParado).length > 0) {
@@ -1685,10 +1760,21 @@ async function applyFreteStep(args: {
       );
     }
 
-    const totalItens = roundReais(itensDoPedido.reduce((sum, item) => sum + itemSubtotal(item), 0));
+    // ⚠️ Through `derivePedidoFreteTotals`, NOT a local sum. This used to be
+    // `roundReais(Σ itemSubtotal + frete)`, which silently dropped the
+    // `− descontoTotal` term the canonical derive has — so on an order carrying
+    // an ML coupon the stored total exceeded the pedido footer's Total by the
+    // coupon, and since the advance is `>=`, a fully-paid coupon order could
+    // never reach `pago`: a stall with no operator-visible cause. Sharing the
+    // one implementation is what stops the two drifting apart again; do not
+    // re-inline the arithmetic.
     const patch: Record<string, unknown> = {
       freteInicial: targetFrete,
-      valorCobrado: roundReais(totalItens + (mappedFrete.valorCobrado ?? 0)),
+      valorCobrado: derivePedidoFreteTotals({
+        itens: itensDoPedido,
+        descontoTotal: freshPedido.descontoTotal ?? 0,
+        freteInicial: mappedFrete,
+      }).valorCobrado,
     };
 
     // Recovery. A divergence we recorded has cleared, so undo what we did:

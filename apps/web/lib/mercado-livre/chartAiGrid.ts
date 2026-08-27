@@ -57,6 +57,7 @@ export function buildChartAiGrid(input: {
         values: part.values,
         unitId: input.units[column.key] ?? column.unit.default,
         required: column.required,
+        sizeEquivalence: column.sizeEquivalence,
       })),
   );
 

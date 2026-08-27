@@ -34,7 +34,9 @@
  *    stamped `enviado` on EVERY claim message, buyer ones included, and the
  *    thread only rendered them correctly because the synthetic usuario made
  *    `MensagemBubble`'s second test pass. This import writes no `user_id`,
- *    so direction rests on `estadoEnvio` alone.
+ *    so direction rests on `estadoEnvio` alone — which the renderer only
+ *    honoured for INBOUND until #1320, so every seller reply landed on the
+ *    buyer's side. Both halves now go through `ehEstadoDeSaida`.
  *  - The chat CONVERSA is gated on the seller still holding a send action
  *    (`claimActionability.ts`); the INCIDENTE is written for EVERY claim —
  *    it is pedido business history and outlives the claim being answerable.
@@ -394,6 +396,12 @@ const STATUS_NAO_ENTREGUE: ReadonlySet<string> = new Set(['rejected', 'moderated
  * rendered those correctly because the synthetic usuario satisfied its second
  * test (`user_id === customerUid`). This import writes no `user_id`, so
  * direction rests on `estadoEnvio` alone.
+ *
+ * ⚠️ The synthetic usuario was load-bearing in BOTH directions and the port only
+ * noticed one. It also made `user_id === myUid` fire for an operator's own reply,
+ * which was the ONLY outbound rule the renderer had — so dropping it left every
+ * seller message rendering as the buyer's, grey and tickless, until #1320 gave
+ * the outbound half its own state-based rule (`ehEstadoDeSaida`).
  *
  * ⚠️ A `rejected`/`moderated` message of OURS is one ML did not deliver — it
  * filters the counterparty's moderated messages out of this endpoint but returns

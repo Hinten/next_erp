@@ -214,39 +214,49 @@ export function sumPagamentosPagos(
  * Pagamento — subcoleção `pedidos/{pedidoId}/pagamentos` (plural, matching the
  * Flutter ERP's `PAGAMENTO_COLLECTION` constant,
  * `.old/packages/pedido/lib/src/models.dart:24`). Mirrors
- * `packages/pedido/lib/src/models.dart` Pagamento. Cartão / cheque details
- * remain pass-through; the typed surface is what this app reads and writes today.
+ * `packages/pedido/lib/src/models.dart` Pagamento — all 19 legacy fields
+ * (`.old` `models.dart:1802-1993`, confirmed against every producer by the
+ * #463 parity audit) are enumerated below. `cartao` / `cheque` stay
+ * `z.unknown()`: they round-trip an opaque embedded map, not a reference.
+ *
+ * No `.passthrough()` — this is a plain (strip-policy) `z.object`. On READ,
+ * `parseSoftRead` (`@delfrance/data`) still tolerates an unmodeled key: it
+ * strips it silently rather than throwing, which is what keeps a legacy
+ * corpus doc carrying a since-retired field readable (root `CLAUDE.md` rule
+ * 8). On WRITE, `parseForWrite`/`parseMergePatch` (same package) notice the
+ * strip and re-parse with `.strict()`, so a genuinely unknown top-level key
+ * throws a `ZodError` instead of being silently persisted — see
+ * `packages/data/src/zodParse.ts`.
  */
-export const pagamentoSchema = z
-  .object({
-    id: z.string().nullable().default(null),
-    // Reference to the payment-integration doc (`metodo_pgto`, e.g. Mercado
-    // Pago): a `documents/metodo_pgto/<id>` doc-path string. Pass-through (the
-    // editor spreads it from the existing doc); a gateway's `tipo` is read by
-    // dereferencing it, not off the ref value.
-    metodoPagamentoOuterRef: outerRefSchema.nullable().default(null),
-    forma_de_pagamento: formaPagamentoSchema.default(FORMA_PAGAMENTO.dinheiro),
-    status_pagamento: statusPagamentoSchema.nullable().default(null),
-    cartao: z.unknown().nullable().default(null),
-    cheque: z.unknown().nullable().default(null),
-    descricaoPagamento: z.string().nullable().default(null),
-    valor: z.number().min(0),
-    parcelas: z.number().int().min(1).default(1),
-    juros: z.number().min(0).nullable().default(null),
-    tarifas: z.number().min(0).nullable().default(null),
-    aVista: z.boolean().default(true),
-    duplicata: z.boolean().default(false),
-    nFat: z.string().max(60).nullable().default(null),
-    // Datetime fields — microseconds since epoch (`microsSinceEpoch()`), the
-    // project standard. Migrated from the legacy ISO-8601 strings; the builder
-    // reads both during rollout (see tools/migrations/pedido-pagamento-micros).
-    vencimento: microsSinceEpoch('Vencimento').nullable().default(null),
-    ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
-    dataCancelamento: microsSinceEpoch('Data de cancelamento').nullable().default(null),
-    dataAprovacao: microsSinceEpoch('Data de aprovação').nullable().default(null),
-    dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
-  })
-  .passthrough();
+export const pagamentoSchema = z.object({
+  id: z.string().nullable().default(null),
+  // Reference to the payment-integration doc (`metodo_pgto`, e.g. Mercado
+  // Pago): a `documents/metodo_pgto/<id>` doc-path string. Modeled (not
+  // literally pass-through anymore); the editor spreads it from the existing
+  // doc, and a gateway's `tipo` is read by dereferencing it, not off the ref
+  // value.
+  metodoPagamentoOuterRef: outerRefSchema.nullable().default(null),
+  forma_de_pagamento: formaPagamentoSchema.default(FORMA_PAGAMENTO.dinheiro),
+  status_pagamento: statusPagamentoSchema.nullable().default(null),
+  cartao: z.unknown().nullable().default(null),
+  cheque: z.unknown().nullable().default(null),
+  descricaoPagamento: z.string().nullable().default(null),
+  valor: z.number().min(0),
+  parcelas: z.number().int().min(1).default(1),
+  juros: z.number().min(0).nullable().default(null),
+  tarifas: z.number().min(0).nullable().default(null),
+  aVista: z.boolean().default(true),
+  duplicata: z.boolean().default(false),
+  nFat: z.string().max(60).nullable().default(null),
+  // Datetime fields — microseconds since epoch (`microsSinceEpoch()`), the
+  // project standard. Migrated from the legacy ISO-8601 strings; the builder
+  // reads both during rollout (see tools/migrations/pedido-pagamento-micros).
+  vencimento: microsSinceEpoch('Vencimento').nullable().default(null),
+  ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
+  dataCancelamento: microsSinceEpoch('Data de cancelamento').nullable().default(null),
+  dataAprovacao: microsSinceEpoch('Data de aprovação').nullable().default(null),
+  dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
+});
 
 export type Pagamento = z.infer<typeof pagamentoSchema>;
 

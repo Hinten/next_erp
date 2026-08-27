@@ -192,11 +192,16 @@ describe('remotelyChangedFields', () => {
   });
 
   it('ignores the removed money caches so they cannot raise a phantom conflict', () => {
-    // #796. These five are gone from `pedidoSchema`, but `pedidoSchema` is
-    // `.passthrough()` and every migrated pedido carries them — the legacy
-    // `Pedido.factory` recomputed them on each integral save — so they keep
-    // appearing in the raw diff with NOBODY on this side writing them. Without the ignore the operator gets a
-    // conflict modal naming a field that is not on their screen.
+    // #796, keep-ignored per the #462 review: these five are gone from
+    // `pedidoSchema`, and the client adapter's `baseline`/`current` DO go
+    // through the Zod converter (`parseSoftRead`) — so on a doc that parses
+    // successfully, both sides already strip them and this entry never fires.
+    // It still matters when `parseSoftRead` falls back to the RAW doc on one
+    // side only (a validation failure); every migrated pedido carries all
+    // five in the raw Firestore doc (the legacy `Pedido.factory` recomputed
+    // them on each integral save), so a raw-fallback vs. clean-parse mismatch
+    // could otherwise surface a conflict modal naming a field that is not on
+    // the operator's screen.
     for (const field of CACHES_REMOVIDOS) {
       expect(isIgnoredForConcurrency(field)).toBe(true);
     }
