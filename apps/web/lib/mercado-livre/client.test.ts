@@ -4,10 +4,12 @@ import {
   MercadoLivreBackendDesatualizadoError,
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
+  MercadoLivreClientRespostaInvalidaError,
   type MercadoLivreUsuarioTeste,
   createMercadoLivreClient,
   mercadoLivreHttpFallbackMessage,
 } from './client';
+import { isRetryableMercadoLivreError } from './errors';
 
 /**
  * The regression these pin: a non-2xx response whose body is NOT our JSON
@@ -142,12 +144,34 @@ describe('mercadoLivreHttpFallbackMessage', () => {
 });
 
 describe('sugerirMedidas — the body', () => {
-  /** Captures the JSON body of the single request the call makes. */
+  /**
+   * Captures the JSON body of the single request the call makes.
+   *
+   * ⚠️ The stub answers a REAL `MedidasSugestao`. It used to answer `'{}'`,
+   * which was accepted only because `call()` cast instead of validating — the
+   * fixture claimed a type it did not have, and these two tests passed against
+   * a response no route could ever send. That is the same defect the client
+   * change fixes, one layer up.
+   */
   async function bodyOf(input: Parameters<ReturnType<typeof client>['sugerirMedidas']>[0]) {
     let sent: Record<string, unknown> = {};
     const c = client(async (_url, init) => {
       sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(
+        JSON.stringify({
+          sugestoes: [],
+          celulas: 0,
+          contexto: {
+            fotos: 0,
+            anexadas: 0,
+            descricao: false,
+            codigo: false,
+            referencia: false,
+          },
+          truncado: false,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
     });
     await c.sugerirMedidas(input);
     return sent;
@@ -426,5 +450,180 @@ describe('usuariosTeste — a backend that reports no docId', () => {
     const c = client(async () => okList([{ ...SEM_DOC_ID, docId: 'comprador-2' }]));
 
     expect((await c.usuariosTeste('i1')).usuarios[0]?.docId).toBe('comprador-2');
+  });
+});
+
+/**
+ * The three ways a 2xx used to be reported as a success, now that `call()`
+ * validates instead of casting.
+ *
+ * ⭐ Every one of these previously RESOLVED. That is the whole defect: the
+ * caller could not tell a good response from an empty one, an HTML one, or a
+ * body describing a different endpoint's answer — which is how a stale backend
+ * reported a mint that never happened and the panel revealed the seller's
+ * password under a "Comprador" badge (#1295 → #1302).
+ */
+describe('a 2xx whose body is not what we claimed', () => {
+  function ok(body: string, contentType = 'application/json'): Response {
+    return new Response(body, { status: 200, headers: { 'content-type': contentType } });
+  }
+
+  it('⭐ throws instead of handing back a WRONG-SHAPED object', async () => {
+    // Used to resolve with `{}` cast to `MercadoLivreConta`, so `connected` read
+    // `undefined` — falsy — and the screen told the operator to reconnect an
+    // account that was perfectly connected.
+    const c = client(async () => ok('{}'));
+
+    const err = await c.conta('i1').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MercadoLivreClientRespostaInvalidaError);
+    expect((err as MercadoLivreClientRespostaInvalidaError).campos).toEqual(['connected', 'me']);
+  });
+
+  it('⭐ throws instead of handing back null for an EMPTY body', async () => {
+    // The quietest of the three: `null as T` fails later, at the first property
+    // access, in a stack naming neither the endpoint nor the response.
+    const c = client(async () => ok(''));
+
+    await expect(c.conta('i1')).rejects.toBeInstanceOf(MercadoLivreClientRespostaInvalidaError);
+  });
+
+  it('⭐ throws AND logs when a 200 carries HTML', async () => {
+    // ⚠️ The strictest regression here. `nonJsonBody` was captured and then read
+    // only inside the `!res.ok` branch, so a 200 with a proxy's HTML returned
+    // `null as T` and logged NOTHING, anywhere.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const c = client(async () => ok(NEXT_404, 'text/html'));
+
+    const err = await c.conta('i1').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MercadoLivreClientRespostaInvalidaError);
+    expect(spy).toHaveBeenCalledOnce();
+    expect(String(spy.mock.calls[0]?.[1])).toContain('404: This page could not be found.');
+  });
+
+  it('caps the logged body on the 2xx path too', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const c = client(async () => ok('x'.repeat(50_000), 'text/html'));
+
+    await c.conta('i1').catch(() => undefined);
+
+    expect(String(spy.mock.calls[0]?.[1]).length).toBeLessThanOrEqual(500);
+  });
+
+  it('⚠️ never puts the offending VALUE in the message', async () => {
+    // A response body is a live credential often enough that this cannot be left
+    // to the call site: the ML test-user list carries passwords ML never
+    // reissues. `campos` is field PATHS, and the message is built from those.
+    const senha = 'qatest328-uma-senha-real';
+    const c = client(async () =>
+      ok(
+        JSON.stringify({
+          usuarios: [
+            {
+              role: 'comprador',
+              docId: 'comprador-2',
+              // `id` is what fails; `password` is the field that must not leak.
+              id: { nao: 'um numero' },
+              nickname: 'TEST-comprador',
+              password: senha,
+              site_id: 'MLB',
+              site_status: 'active',
+              email: null,
+              createdAt: 1,
+              createdByUserId: 1,
+              codigosVerificacaoEmail: { quatro: '0002', seis: '000002' },
+            },
+          ],
+        }),
+      ),
+    );
+
+    const err = await c.usuariosTeste('i1').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MercadoLivreClientRespostaInvalidaError);
+    expect((err as Error).message).not.toContain(senha);
+  });
+
+  it('names the deploy, because that is what actually fixes it', async () => {
+    // The skew is the usual cause: apps/web calls the DEPLOYED backend, never
+    // the one in this checkout. An error that says only "invalid format" sends
+    // the operator to support instead of to a deploy.
+    const c = client(async () => ok('{}'));
+
+    const err = await c.conta('i1').catch((e: unknown) => e);
+
+    expect((err as Error).message).toContain('deploy');
+    expect((err as Error).message).toContain('apps/mercado-livre');
+  });
+
+  it('⭐ is caught by the 27 call sites that narrow to MercadoLivreClientHttpError', async () => {
+    // ⚠️ THE reason this class is a subclass rather than a sibling. Those sites
+    // `throw err` for anything else, and ~24 are imperative handlers with no
+    // TanStack error state — a sibling class would land as an unhandled
+    // rejection: spinner stops, no alert, button looks untouched, operator
+    // clicks the irreversible action again.
+    const c = client(async () => ok('{}'));
+
+    const err = await c.conta('i1').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(MercadoLivreClientHttpError);
+    expect((err as MercadoLivreClientHttpError).code).toBe('RESPOSTA_INVALIDA');
+  });
+
+  it('carries the REAL 2xx it arrived on, not a hardcoded 200', async () => {
+    // `enviarNfe` answers 202. A hardcoded status would make the error lie about
+    // which response it came from, and `code` already does the discriminating.
+    const c = client(async () => new Response('{}', { status: 202 }));
+
+    const err = await c.enviarNfe({ pedidoId: 'p1', nfeId: 'n1' }).catch((e: unknown) => e);
+
+    expect((err as MercadoLivreClientHttpError).status).toBe(202);
+  });
+
+  it('still passes a well-formed body straight through', async () => {
+    // The control. A client that only ever throws is indistinguishable from a
+    // backend that is down, and every assertion above would still pass.
+    const c = client(async () => ok(JSON.stringify({ connected: true, me: null })));
+
+    await expect(c.conta('i1')).resolves.toEqual({ connected: true, me: null });
+  });
+
+  it('does not retry a shape mismatch — the same backend answers the same way', async () => {
+    const err = new MercadoLivreClientRespostaInvalidaError('x', 200, ['a']);
+
+    expect(isRetryableMercadoLivreError(err)).toBe(false);
+  });
+});
+
+/**
+ * `etiqueta` is the one success path a schema cannot reach: the body is bytes.
+ * What can still go wrong is the same thing — a 200 that is not the artifact.
+ */
+describe('fetchArtifact — a 200 that is not a label', () => {
+  it('⭐ refuses an HTML page instead of handing it over as a "label"', async () => {
+    // Without this the operator "prints" it: a blank label, or a label printer
+    // fed a chunk of markup. The route answers PDF or ZPL and never HTML.
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const c = client(
+      async () => new Response(NEXT_404, { status: 200, headers: { 'content-type': 'text/html' } }),
+    );
+
+    await expect(c.etiqueta('p1', 'pdf')).rejects.toBeInstanceOf(
+      MercadoLivreClientRespostaInvalidaError,
+    );
+  });
+
+  it('still returns a real artifact', async () => {
+    // The control, and it also pins that a MISSING content-type is tolerated —
+    // the proxy does not CORS-expose every header.
+    const c = client(
+      async () =>
+        new Response('%PDF-1.4', { status: 200, headers: { 'content-type': 'application/pdf' } }),
+    );
+
+    const art = await c.etiqueta('p1', 'pdf');
+
+    expect(art.contentType).toBe('application/pdf');
   });
 });

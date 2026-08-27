@@ -425,13 +425,6 @@ export const categoriaAtributosSchema = z.object({
 });
 export type MercadoLivreCategoriaAtributos = z.infer<typeof categoriaAtributosSchema>;
 
-/** The listing types available for a leaf category (`GET tipos-anuncio`). */
-export const tiposAnuncioSchema = z.object({
-  leaf: z.boolean(),
-  tipos: z.array(categoriaNoSchema),
-});
-export type MercadoLivreTiposAnuncio = z.infer<typeof tiposAnuncioSchema>;
-
 /** One party's stated expectation on a claim. */
 export const expectativaReclamacaoSchema = z.object({
   playerRole: z.string().nullable(),

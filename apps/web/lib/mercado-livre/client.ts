@@ -14,9 +14,13 @@
  * subpath export like `@delfrance/integrations-freight-br/http-client`.
  */
 import { useMemo } from 'react';
+import type { z } from 'zod';
+
+import { lerRespostaJson } from '@delfrance/core/wire';
 
 import { useAuth } from '@/lib/auth/useAuth';
 
+import * as wire from './wire';
 import type {
   MercadoLivreAnuncioTeste,
   MercadoLivreAtributoSugestao,
@@ -42,7 +46,6 @@ import type {
   MercadoLivreRespostaChat,
   MercadoLivreReverificarResult,
   MercadoLivreSyncChartsResult,
-  MercadoLivreTiposAnuncio,
   MercadoLivreUsuarioTeste,
   MercadoLivreUsuariosTesteResult,
 } from './wire';
@@ -61,6 +64,45 @@ export class MercadoLivreClientHttpError extends Error {
   ) {
     super(message);
     this.name = 'MercadoLivreClientHttpError';
+  }
+}
+
+/**
+ * The backend answered 2xx, and the body was not the shape this app claims it
+ * is — the wrong fields, no body at all, or not JSON.
+ *
+ * ⚠️ **Nothing about this class describes what WE send.** It is a browser-side
+ * `Error` that never leaves the tab; `status` records the status the backend
+ * sent US, which for this failure is always a 2xx. That is the point: the
+ * transport succeeded and the payload was still unusable, and until now that
+ * combination was reported to the caller as a success.
+ *
+ * ⚠️ **A subclass of `MercadoLivreClientHttpError`, deliberately.** 27 catch
+ * sites in `apps/web` narrow to exactly that class and `…NetworkError` and
+ * `throw err` for anything else, and ~24 of them are imperative handlers with
+ * no TanStack error state to fall into. A brand-new sibling class would sail
+ * past every one of them and land as an unhandled rejection —
+ * `ReclamacaoMlPanel.tsx` documents that exact outcome for the token-refresh
+ * case: the operator confirms an irreversible refund, the spinner stops, no
+ * alert appears, and they click again. Subclassing means all 27 keep working
+ * unchanged, and `code === 'RESPOSTA_INVALIDA'` is what tells the two apart
+ * where it matters.
+ */
+export class MercadoLivreClientRespostaInvalidaError extends MercadoLivreClientHttpError {
+  constructor(
+    message: string,
+    /** The real 2xx the backend sent — never a hardcoded 200; `enviarNfe` answers 202. */
+    status: number,
+    /**
+     * The field paths that failed, de-duplicated and with array indices
+     * collapsed. ⚠️ Paths only, never values: a response body is a live
+     * credential often enough (an ML test user's `password`) that the rule has
+     * to hold unconditionally.
+     */
+    readonly campos: string[],
+  ) {
+    super(message, status, 'RESPOSTA_INVALIDA');
+    this.name = 'MercadoLivreClientRespostaInvalidaError';
   }
 }
 
@@ -154,7 +196,6 @@ export type {
   MercadoLivreReverificarMembro,
   MercadoLivreReverificarResult,
   MercadoLivreSyncChartsResult,
-  MercadoLivreTiposAnuncio,
   MercadoLivreUsuarioTeste,
   MercadoLivreUsuariosTesteResult,
 } from './wire';
@@ -182,10 +223,17 @@ export interface MercadoLivreMassImportOptions {
  * before the single-role mint existed that route **ignored its body entirely**
  * and always ran the pair bootstrap. Against a stale deployment a
  * `{role: 'comprador'}` POST therefore reuses both stored users, mints nothing,
- * wipes the conta's credential anyway, and answers **200**. `call<T>()` casts
- * rather than validates, so every one of those was reported as a success:
+ * wipes the conta's credential anyway, and answers **200**. `call()` used to
+ * cast rather than validate, so every one of those was reported as a success:
  * the list did not change, and the reveal modal showed `usuarios[0]` — the
  * SELLER — under a "Comprador" badge, with the seller's password.
+ *
+ * ⚠️ **The schema does not make this redundant, and must not be made to.** The
+ * old shape is a perfectly well-formed `UsuariosTesteResult`; what is wrong
+ * with it is SEMANTIC — it describes work that did not happen — and no schema
+ * catches that class. `credencialRevogada` is therefore `.optional()` in
+ * `wire.ts` on purpose, so the refusal stays here where it can name the deploy
+ * to run instead of reciting a field list.
  *
  * Two checks, because the remedies differ:
  *
@@ -484,11 +532,6 @@ export interface MercadoLivreClient {
     categoryId: string;
     escopo?: 'item' | 'variacao';
   }): Promise<MercadoLivreCategoriaAtributos>;
-  /** The listing types ML offers for a LEAF category (PERM.integracao.read). */
-  tiposAnuncio(input: {
-    integracaoId: string;
-    categoryId: string;
-  }): Promise<MercadoLivreTiposAnuncio>;
   /**
    * Send a reply on a Mercado Livre conversa (PERM.mensagem.write, #533).
    *
@@ -765,7 +808,23 @@ export function createMercadoLivreClient(config: {
   const baseUrl = config.baseUrl.replace(/\/$/, '');
   const doFetch = config.fetch ?? globalThis.fetch;
 
-  async function call<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  /**
+   * Log a body the operator will never see, capped so a whole HTML document
+   * cannot flood the console (#818).
+   */
+  function logarCorpoNaoJson(path: string, status: number, corpo: string): void {
+    console.error(
+      `[mercado-livre] resposta não-JSON em ${path} (HTTP ${String(status)})`,
+      corpo.slice(0, 500),
+    );
+  }
+
+  async function call<S extends z.ZodType>(
+    path: string,
+    schema: S,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<z.infer<S>> {
     const token = await config.getAuthToken();
     let res: Response;
     try {
@@ -788,27 +847,21 @@ export function createMercadoLivreClient(config: {
       );
     }
 
-    let parsed: unknown = null;
-    let nonJsonBody: string | null = null;
     const text = await res.text();
-    if (text.length > 0) {
-      try {
-        parsed = JSON.parse(text);
-      } catch (err) {
-        if (err instanceof SyntaxError) nonJsonBody = text;
-        else throw err;
-      }
-    }
 
     if (!res.ok) {
-      const errBody = errorEnvelope(parsed);
-      if (nonJsonBody != null) {
-        // The body never reaches the UI, so keep it reachable for debugging.
-        console.error(
-          `[mercado-livre] resposta não-JSON em ${path} (HTTP ${String(res.status)})`,
-          nonJsonBody.slice(0, 500),
-        );
+      let parsed: unknown = null;
+      if (text.length > 0) {
+        try {
+          parsed = JSON.parse(text);
+        } catch (err) {
+          if (err instanceof SyntaxError) {
+            // The body never reaches the UI, so keep it reachable for debugging.
+            logarCorpoNaoJson(path, res.status, text);
+          } else throw err;
+        }
       }
+      const errBody = errorEnvelope(parsed);
       throw new MercadoLivreClientHttpError(
         errBody?.error ?? mercadoLivreHttpFallbackMessage(res.status),
         res.status,
@@ -816,7 +869,32 @@ export function createMercadoLivreClient(config: {
         Array.isArray(errBody?.issues) ? errBody.issues : null,
       );
     }
-    return parsed as T;
+
+    const leitura = lerRespostaJson(text, schema);
+    if (leitura.ok) return leitura.data;
+
+    if (leitura.motivo === 'nao-json') {
+      // ⚠️ A 2xx carrying HTML used to be the QUIETEST failure of the three:
+      // `nonJsonBody` was captured and then only read inside the `!res.ok`
+      // branch, so this case returned `null as T` and logged nothing anywhere.
+      logarCorpoNaoJson(path, res.status, leitura.texto);
+      throw new MercadoLivreClientRespostaInvalidaError(
+        `A integração com o Mercado Livre respondeu HTTP ${String(res.status)} sem um corpo ` +
+          'JSON — o pedido não chegou à rota esperada. Atualize a página e, se continuar, ' +
+          'avise o suporte.',
+        res.status,
+        [],
+      );
+    }
+
+    throw new MercadoLivreClientRespostaInvalidaError(
+      'O backend do Mercado Livre respondeu num formato que este aplicativo não reconhece. ' +
+        `Campos inválidos: ${leitura.campos.join(', ')}. Normalmente isso significa que o ` +
+        'backend e esta tela estão em versões diferentes — faça o deploy de ' +
+        '`apps/mercado-livre` e recarregue a página.',
+      res.status,
+      leitura.campos,
+    );
   }
 
   /** Like `call`, but for a binary (non-JSON) success body. Errors are JSON. */
@@ -851,10 +929,7 @@ export function createMercadoLivreClient(config: {
       }
       const errBody = errorEnvelope(parsed);
       if (nonJsonBody != null) {
-        console.error(
-          `[mercado-livre] resposta não-JSON em ${path} (HTTP ${String(res.status)})`,
-          nonJsonBody.slice(0, 500),
-        );
+        logarCorpoNaoJson(path, res.status, nonJsonBody);
       }
       throw new MercadoLivreClientHttpError(
         errBody?.error ?? mercadoLivreHttpFallbackMessage(res.status),
@@ -862,6 +937,26 @@ export function createMercadoLivreClient(config: {
         errBody?.code ?? null,
       );
     }
+
+    const contentType = res.headers.get('content-type');
+    // ⚠️ The one success path a schema cannot reach: the body is bytes, so
+    // there is nothing to parse. What can still go wrong is the same thing —
+    // a 200 that is not the artifact at all. A proxy login page or an App
+    // Hosting error page arrives as `text/html`, and without this check it
+    // became a `Blob` the operator "printed": a silent blank label, or a label
+    // printer fed a chunk of markup. The route answers PDF or ZPL and never
+    // HTML, so `text/html` on a 2xx means the request did not reach it.
+    if (contentType !== null && /^\s*text\/html\b/i.test(contentType)) {
+      logarCorpoNaoJson(path, res.status, await res.text());
+      throw new MercadoLivreClientRespostaInvalidaError(
+        `A integração com o Mercado Livre respondeu HTTP ${String(res.status)} com uma página ` +
+          'HTML em vez da etiqueta — o pedido não chegou à rota esperada. Atualize a página e, ' +
+          'se continuar, avise o suporte.',
+        res.status,
+        [],
+      );
+    }
+
     const blob = await res.blob();
     return {
       blob,
@@ -876,46 +971,51 @@ export function createMercadoLivreClient(config: {
 
   return {
     oauthStart: (integracaoId) =>
-      call<{ authorizeUrl: string }>(
+      call(
         `/api/marketplace/mercado-livre/oauth/start?integracaoId=${encodeURIComponent(integracaoId)}`,
+        wire.authorizeUrlSchema,
       ),
     conta: (integracaoId) =>
-      call<MercadoLivreConta>(
+      call(
         `/api/marketplace/mercado-livre/conta?integracaoId=${encodeURIComponent(integracaoId)}`,
+        wire.contaSchema,
       ),
     publicar: (input) =>
-      call<MercadoLivrePublicarResult>('/api/marketplace/mercado-livre/publicar', input),
+      call('/api/marketplace/mercado-livre/publicar', wire.publicarResultSchema, input),
     reverificarAnuncio: (input) =>
-      call<MercadoLivreReverificarResult>(
+      call(
         '/api/marketplace/mercado-livre/reverificar-anuncio',
+        wire.reverificarResultSchema,
         input,
       ),
     linkAnuncio: (input) =>
-      call<{ url: string }>('/api/marketplace/mercado-livre/link-anuncio', input),
+      call('/api/marketplace/mercado-livre/link-anuncio', wire.urlSchema, input),
     importar: (input) =>
-      call<MercadoLivreImportarResult>('/api/marketplace/mercado-livre/importar', input),
+      call('/api/marketplace/mercado-livre/importar', wire.importarResultSchema, input),
     startMassImport: (input) =>
-      call<{ jobId: string }>('/api/marketplace/mercado-livre/importar-todos', {
+      call('/api/marketplace/mercado-livre/importar-todos', wire.jobIdSchema, {
         integracaoId: input.integracaoId,
         options: input.options,
       }),
     massImportStatus: (input) =>
-      call<MercadoLivreMassImportStatus>(
+      call(
         `/api/marketplace/mercado-livre/importar-todos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
+        wire.massImportStatusSchema,
       ),
     cancelMassImport: (input) =>
-      call<{ status: 'cancelled' }>('/api/marketplace/mercado-livre/importar-todos/cancelar', {
+      call('/api/marketplace/mercado-livre/importar-todos/cancelar', wire.cancelledSchema, {
         integracaoId: input.integracaoId,
         jobId: input.jobId,
       }),
     startPriceSync: (input) =>
-      call<{ jobId: string }>('/api/marketplace/mercado-livre/atualizar-precos', {
+      call('/api/marketplace/mercado-livre/atualizar-precos', wire.jobIdSchema, {
         integracaoId: input.integracaoId,
         baixarPreco: input.baixarPreco,
       }),
     enviarEstoque: (input) =>
-      call<MercadoLivreEnvioEstoqueResult>(
+      call(
         '/api/marketplace/mercado-livre/enviar-estoque',
+        wire.envioEstoqueResultSchema,
         {
           integracaoId: input.integracaoId,
           produtoIds: input.produtoIds,
@@ -924,8 +1024,9 @@ export function createMercadoLivreClient(config: {
         input.signal,
       ),
     enviarPrecos: (input) =>
-      call<MercadoLivreEnvioPrecoResult>(
+      call(
         '/api/marketplace/mercado-livre/enviar-precos',
+        wire.envioPrecoResultSchema,
         {
           integracaoId: input.integracaoId,
           produtoIds: input.produtoIds,
@@ -934,58 +1035,63 @@ export function createMercadoLivreClient(config: {
         input.signal,
       ),
     priceSyncStatus: (input) =>
-      call<MercadoLivrePriceSyncStatus>(
+      call(
         `/api/marketplace/mercado-livre/atualizar-precos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
+        wire.priceSyncStatusSchema,
       ),
     jobsEmAndamento: (input) =>
-      call<MercadoLivreJobsEmAndamento>(
+      call(
         `/api/marketplace/mercado-livre/jobs-em-andamento?integracaoIds=${encodeURIComponent(input.integracaoIds.join(','))}`,
+        wire.jobsEmAndamentoSchema,
       ),
     categorias: (input) =>
-      call<MercadoLivreCategorias>(
+      call(
         `/api/marketplace/mercado-livre/categorias?integracaoId=${encodeURIComponent(input.integracaoId)}` +
           (input.categoryId ? `&categoryId=${encodeURIComponent(input.categoryId)}` : ''),
+        wire.categoriasSchema,
       ),
     sugerirCategorias: (input) =>
-      call<{ sugestoes: MercadoLivreCategoriaSugestao[] }>(
+      call(
         `/api/marketplace/mercado-livre/categorias/sugestoes?integracaoId=${encodeURIComponent(input.integracaoId)}` +
           `&q=${encodeURIComponent(input.q)}` +
           (input.limit == null ? '' : `&limit=${String(input.limit)}`),
+        wire.sugestoesCategoriaSchema,
       ),
     categoriaAtributos: (input) =>
-      call<MercadoLivreCategoriaAtributos>(
+      call(
         `/api/marketplace/mercado-livre/categorias/atributos?integracaoId=${encodeURIComponent(input.integracaoId)}` +
           `&categoryId=${encodeURIComponent(input.categoryId)}` +
           (input.escopo == null ? '' : `&escopo=${input.escopo}`),
-      ),
-    tiposAnuncio: (input) =>
-      call<MercadoLivreTiposAnuncio>(
-        `/api/marketplace/mercado-livre/tipos-anuncio?integracaoId=${encodeURIComponent(input.integracaoId)}` +
-          `&categoryId=${encodeURIComponent(input.categoryId)}`,
+        wire.categoriaAtributosSchema,
       ),
     anuncioTeste: (integracaoId) =>
-      call<MercadoLivreAnuncioTeste>(
+      call(
         `/api/marketplace/mercado-livre/anuncio-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+        wire.anuncioTesteSchema,
       ),
     responderConversa: (input) =>
-      call<MercadoLivreRespostaChat>('/api/marketplace/mercado-livre/chat/responder', input),
+      call('/api/marketplace/mercado-livre/chat/responder', wire.respostaChatSchema, input),
     reclamacaoEstado: (input) =>
-      call<MercadoLivreReclamacaoEstado>(
+      call(
         `/api/marketplace/mercado-livre/reclamacao/estado?integracaoId=${encodeURIComponent(input.integracaoId)}&claimId=${encodeURIComponent(String(input.claimId))}`,
+        wire.reclamacaoEstadoSchema,
       ),
     reclamacaoAcao: (input) =>
-      call<{ ok: boolean; status: string | null; acao: string }>(
+      call(
         '/api/marketplace/mercado-livre/reclamacao/acao',
+        wire.reclamacaoAcaoResultSchema,
         input,
       ),
     acaoPergunta: (input) =>
-      call<{ conversaId: string; acao: 'excluir' | 'bloquear' }>(
+      call(
         '/api/marketplace/mercado-livre/chat/pergunta-acao',
+        wire.acaoPerguntaResultSchema,
         input,
       ),
     usuariosTeste: async (integracaoId) => {
-      const { usuarios } = await call<{ usuarios: MercadoLivreUsuarioTeste[] }>(
+      const { usuarios } = await call(
         `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+        wire.usuariosTesteListSchema,
       );
       return { usuarios: usuarios.map(comDocId) };
     },
@@ -994,14 +1100,16 @@ export function createMercadoLivreClient(config: {
       // presence of a body. The id stays in the query string so both verbs read
       // it the same way. An empty body is ALSO the pair bootstrap on the
       // backend, so this stays correct if the placeholder ever goes away.
-      call<MercadoLivreUsuariosTesteResult>(
+      call(
         `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+        wire.usuariosTesteResultSchema,
         {},
       ),
     criarUsuarioTesteAvulso: async (integracaoId, role, opts) =>
       exigirMintAvulso(
-        await call<MercadoLivreUsuariosTesteResult>(
+        await call(
           `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
+          wire.usuariosTesteResultSchema,
           // ⚠️ Sent explicitly rather than omitted when false: the backend's
           // schema rejects unknown keys, so a typo here is a 400 rather than a
           // silently-skipped revocation.
@@ -1010,39 +1118,40 @@ export function createMercadoLivreClient(config: {
         role,
       ),
     iaModelos: (agenteId) =>
-      call<MercadoLivreIaModelos>(
+      call(
         '/api/marketplace/mercado-livre/ia/modelos' +
           (agenteId != null ? `?agente=${encodeURIComponent(agenteId)}` : ''),
+        wire.iaModelosSchema,
       ),
     sizeChartDomains: (integracaoId) =>
-      call<{ domains: MercadoLivreChartDomain[] }>(
+      call(
         `/api/marketplace/mercado-livre/size-charts/domains?integracaoId=${encodeURIComponent(integracaoId)}`,
+        wire.chartDomainsSchema,
       ),
     sizeChartSpecs: (input) =>
-      call<MercadoLivreChartSpecs>('/api/marketplace/mercado-livre/size-charts/specs', input),
+      call('/api/marketplace/mercado-livre/size-charts/specs', wire.chartSpecsSchema, input),
     sugerirAtributos: (input) =>
-      call<MercadoLivreAtributosSugestao>(
-        '/api/marketplace/mercado-livre/sugerir-atributos',
-        input,
-      ),
+      call('/api/marketplace/mercado-livre/sugerir-atributos', wire.atributosSugestaoSchema, input),
     sugerirMedidas: ({ fatos, ...rest }) =>
       // `fatos` → `facts` on the wire: the route's own vocabulary is English,
       // and renaming here keeps the browser-facing API consistent with the rest
       // of this client.
-      call<MercadoLivreMedidasSugestao>('/api/marketplace/mercado-livre/sugerir-medidas', {
+      call('/api/marketplace/mercado-livre/sugerir-medidas', wire.medidasSugestaoSchema, {
         ...rest,
         ...(fatos ? { facts: fatos } : {}),
       }),
     sizeChartSync: (input) =>
-      call<MercadoLivreSyncChartsResult>('/api/marketplace/mercado-livre/size-charts/sync', input),
+      call('/api/marketplace/mercado-livre/size-charts/sync', wire.syncChartsResultSchema, input),
     sizeChartExcluir: (input) =>
-      call<MercadoLivreChartDeleteResult>(
+      call(
         '/api/marketplace/mercado-livre/size-charts/excluir',
+        wire.chartDeleteResultSchema,
         input,
       ),
     sizeChartVerificarExclusao: (input) =>
-      call<MercadoLivreChartDeleteCheckResult>(
+      call(
         '/api/marketplace/mercado-livre/size-charts/verificar-exclusao',
+        wire.chartDeleteCheckResultSchema,
         input,
       ),
     etiqueta: (pedidoId, formato) =>
@@ -1055,7 +1164,7 @@ export function createMercadoLivreClient(config: {
           : { filename: `etiqueta-${pedidoId}.zip`, contentType: 'application/zip' },
       ),
     enviarNfe: (input) =>
-      call<{ enqueued: boolean }>('/api/marketplace/mercado-livre/enviar-nfe', input),
+      call('/api/marketplace/mercado-livre/enviar-nfe', wire.enqueuedSchema, input),
   };
 }
 

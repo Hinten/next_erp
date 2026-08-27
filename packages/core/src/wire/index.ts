@@ -190,3 +190,109 @@ export function wireNumber() {
 export function wireInt() {
   return z.preprocess(toNumberish, z.number().int());
 }
+
+/**
+ * What {@link lerRespostaJson} found. Three outcomes, because the three need
+ * different words in front of an operator: the request never reached a route
+ * that answers JSON, it reached one and the body was not what we claimed, or it
+ * worked.
+ */
+export type LeituraResposta<T> =
+  | { readonly ok: true; readonly data: T }
+  | { readonly ok: false; readonly motivo: 'nao-json'; readonly texto: string }
+  | { readonly ok: false; readonly motivo: 'formato'; readonly campos: string[] };
+
+/**
+ * Read a 2xx response body against the schema that describes it.
+ *
+ * ## What it replaces
+ *
+ * Six near-identical HTTP clients in this repo ended their success path with
+ * `return parsed as T` — a compile-time assertion with no runtime check. On a
+ * 2xx the caller got whatever arrived wearing a type nobody verified, and the
+ * three failure modes were all silent:
+ *
+ * | body on a 2xx | what the caller used to receive |
+ * | --- | --- |
+ * | the wrong shape | the object, cast; missing fields simply `undefined` |
+ * | empty | `null as T`, blowing up later at the first property access |
+ * | not JSON (a proxy's HTML) | `null as T`, or worse `{error: '<html>…'} as T` — a TRUTHY object, so `if (conta)` guards pass and `conta.connected` reads `undefined` |
+ *
+ * ## Why it returns instead of throwing
+ *
+ * Each client owns an error taxonomy its callers already narrow on
+ * (`MercadoLivreClientHttpError`, `FreightValidationError`, …). Throwing a type
+ * from here would be a class none of those `instanceof` chains know, which in
+ * `apps/web` means an unhandled rejection rather than a message. Handing back a
+ * result lets each client raise its own, and keeps `@delfrance/core`
+ * channel-agnostic.
+ *
+ * ## Why it takes text rather than a Response
+ *
+ * Every caller has already read the body — they must, to build an error from a
+ * non-2xx. Taking the string keeps this pure, keeps the status/verb/error
+ * mapping where it belongs, and makes it testable without a fetch.
+ *
+ * ⚠️ **An empty body is a failure unless the schema says otherwise.** `texto`
+ * of length zero parses as `null`, so a schema admitting it (`z.null()`,
+ * `z.void()`, `z.unknown()`) opts in explicitly and every other schema rejects
+ * it. That is what stops `null as T` from being reachable at all.
+ *
+ * ⚠️ **`campos` carries field PATHS and never values.** A response body is a
+ * live credential often enough — an ML test user's `password` is one, and ML
+ * reissues none — and these strings end up in `err.message`, which reaches
+ * logs, an operator's screen, and (on the server clients) the durable failure
+ * doc the notification pipeline writes. Same rule, and the same reason, as
+ * `parseOk` in `packages/integrations/mercado-livre/src/api.ts` (#1015).
+ */
+export function lerRespostaJson<S extends z.ZodType>(
+  texto: string,
+  schema: S,
+): LeituraResposta<z.infer<S>> {
+  let parsed: unknown = null;
+  if (texto.length > 0) {
+    try {
+      parsed = JSON.parse(texto);
+    } catch (err) {
+      // Narrow, per repo rule 6: only a malformed body is ours to report.
+      if (err instanceof SyntaxError) return { ok: false, motivo: 'nao-json', texto };
+      throw err;
+    }
+  }
+
+  const result = schema.safeParse(parsed);
+  if (result.success) return { ok: true, data: result.data as z.infer<S> };
+
+  return { ok: false, motivo: 'formato', campos: camposInvalidos(result.error.issues) };
+}
+
+/** How many distinct paths a message may name before it stops being readable. */
+const MAX_CAMPOS = 12;
+
+/**
+ * The distinct field paths a failed parse blames, as text.
+ *
+ * ⚠️ **Array indices are collapsed to `[]` BEFORE de-duplicating**, and that is
+ * the whole point rather than cosmetics. `issue.path` carries the index, so one
+ * wrong column in a 200-row response yields 200 *distinct* paths
+ * (`linhas.0.id` … `linhas.199.id`) and a plain `new Set` collapses none of
+ * them. The message then names one field two hundred times and buries every
+ * other failure in it — and on the server clients that message is what gets
+ * persisted into the failure doc, so it is the only record anyone gets.
+ * `linhas[].id` says the same thing once.
+ */
+function camposInvalidos(issues: readonly z.core.$ZodIssue[]): string[] {
+  const vistos = new Set<string>();
+  for (const issue of issues) {
+    const caminho = issue.path
+      .map((seg) => (typeof seg === 'number' ? '[]' : String(seg)))
+      .join('.')
+      .replace(/\.\[\]/g, '[]');
+    vistos.add(caminho === '' ? '(raiz)' : caminho);
+  }
+  const campos = [...vistos];
+  // A backstop for the other direction: a body that disagrees about EVERY field
+  // is one fact ("this is not the shape we asked for"), not forty.
+  if (campos.length <= MAX_CAMPOS) return campos;
+  return [...campos.slice(0, MAX_CAMPOS), `…e mais ${String(campos.length - MAX_CAMPOS)}`];
+}
