@@ -379,19 +379,30 @@ export const pedidoMeta: CollectionMetadata = {
     //     pedidos-nfe-snapshot.
     //
     // ⭐ The lesson those two produced: never WITHHOLD a per-row read to bound
-    // cost — BATCH it. `rowReadPrefetch` now issues one chunked `getDocsByIds`
-    // per collection for the whole page, replacing up to 2N one-shot `getDoc`s
-    // from `ClienteCell` and `FreteCell`, and seeds them into the cache keys
-    // those cells already read. It cannot make data unreachable: a cell that
-    // the batch missed, or whose batch failed or never ran, falls back to its
-    // own read after PREFETCH_MAX_WAIT_MS.
+    // cost — BATCH it. `rowReadPrefetch` issues one chunked `getDocsByIds` for
+    // the page's clientes, replacing up to N one-shot `getDoc`s from
+    // `ClienteCell`, and seeds them into the cache key that cell already reads.
+    // It cannot make data unreachable: a cell the batch missed, or whose batch
+    // failed or never ran, falls back to its own read after
+    // PREFETCH_MAX_WAIT_MS. That is a real improvement and it ships.
     //
-    // If this reds the vendas lane again, put it back to 50 — the rotating
-    // /pedidos LIST spec failure above is the signature to look for, and it
-    // means first-paint cost is still the binding constraint.
+    // ⛔ It is STILL not enough to raise this, and that has now been measured
+    // FOUR times. With batching in place the lane came back 1 failed / 3 flaky
+    // / 167 passed at 100, against main's 171 / 0 / 0 at 50 — the same rotating
+    // /pedidos LIST spec signature (`pedidos-anexos`, `pedidos-devolucao`,
+    // `pedidos-etiqueta-ml`, `pedidos-nfe-snapshot`) that #159 recorded.
+    //
+    // ⚠️ So the binding constraint is NOT any single per-row read. Removing the
+    // NF listener's growth (#1283) and then the cliente read fan-out (#1303)
+    // each helped and neither was sufficient, which points at the aggregate
+    // first-paint cost of rendering 100 rows of this table — the Pipelines
+    // fetch, the row components, and the remaining per-row work together.
+    // Whoever tries next should MEASURE where first-paint time actually goes
+    // before removing another read; three of the four attempts so far were
+    // aimed at reads that turned out not to be the bottleneck.
     // `limit` is the FIRST page only; "Carregar mais" grows it by the same
     // amount per click.
-    limit: 100,
+    limit: 50,
     // Same nine columns legacy showed (`pedidoTableView.dart:2221-2256`).
     // Every virtual column declares `dependsOn`, so the Pipelines projection
     // stays on for this heavy collection — see `CollectionDefaultQuery.columns`.
