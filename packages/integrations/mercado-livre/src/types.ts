@@ -1529,6 +1529,18 @@ export const mlMissedFeedSchema = z
     attempts: z.union([z.string(), z.number()]).nullable().optional().catch(null),
     sent: z.string().nullable().optional().catch(null),
     received: z.string().nullable().optional().catch(null),
+    /**
+     * The SUBTOPIC array, on the topics that use it (`messages`,
+     * `post_purchase`).
+     *
+     * ⚠️ Modelled because the sweep must FORWARD it (#1322). A replay is meant
+     * to be the same event the webhook lost, and dropping `actions` makes it a
+     * different one: the receiving branch cannot tell `["claims"]` from a
+     * post-purchase subtopic it does not know, so an unrecognised one stops
+     * parking and starts dropping — the silent loss #813 exists to prevent,
+     * arriving through the one mechanism whose whole job is recovery.
+     */
+    actions: z.array(z.string()).nullable().optional().catch(null),
     /** Dropped by the sweep — see the docstring. */
     request: z.record(z.string(), z.unknown()).nullable().optional().catch(null),
     /** `http_code` is logged as a histogram; the rest is dropped. */
