@@ -1,19 +1,27 @@
 /**
  * `POST /api/marketplace/mercado-livre/publicar` — publish (or re-publish) a
  * produto as a Mercado Livre listing. Body:
- * `{ integracaoId, produtoId, listingTypeId? }` — `listingTypeId` applies only
- * to FIRST publishes (the link doc's persisted value wins on re-publish).
+ * `{ integracaoId, produtoId, listingTypeId?, linkDocId? }` — `listingTypeId`
+ * applies only to FIRST publishes (the link doc's persisted value wins on
+ * re-publish); `linkDocId` names WHICH of the conta's anúncios to publish, for
+ * a produto that carries more than one on the same account. Omitting it keeps
+ * the historical behaviour (the conta's first link doc, else a new one).
  * Requires `PERM.integracao.write`.
  *
- * Responses: 200 `{ itemId, estado, permalink }`; 422 `ML_PUBLISH_BLOCKED`
- * with the validation issues (missing price/category/photos…); ML/API errors
- * map through `mercadoLivreErrorResponse` (reauth → 409, upstream → 502…).
+ * Responses: 200 `{ itemId, estado, permalink }`; 404 when `linkDocId` names a
+ * doc this produto does not have or that belongs to another conta; 422
+ * `ML_PUBLISH_BLOCKED` with the validation issues (missing price/category/
+ * photos…); ML/API errors map through `mercadoLivreErrorResponse` (reauth →
+ * 409, upstream → 502…).
  */
 import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import { modoEnvioMercadoLivreSchema } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
+import { naoDocId, refMatchesIntegracao } from '@/lib/marketplace/core/linkRefs';
 import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 import { publishProduto } from '@/lib/marketplace/anuncios/publish';
@@ -39,15 +47,51 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
   }
-  const body = parsed as { integracaoId?: string; produtoId?: string; listingTypeId?: string };
+  const body = parsed as {
+    integracaoId?: string;
+    produtoId?: string;
+    listingTypeId?: string;
+    linkDocId?: string;
+  };
   if (!body.integracaoId || !body.produtoId) {
     return NextResponse.json(
       { error: 'integracaoId e produtoId são obrigatórios.' },
       { status: 400 },
     );
   }
+  // Shared with the sibling `reverificar-anuncio` route, which had the same hole:
+  // the guard is about what `.doc()` will accept, and `.doc()` validates the
+  // resulting PATH outside any `try` this handler owns — so a truthy non-string,
+  // a blank, or a separator-bearing id all escape as a 500 for a client error.
+  // See `naoDocId`. Optional here, so only a PRESENT-and-wrong value is rejected.
+  if (body.linkDocId !== undefined && naoDocId(body.linkDocId)) {
+    return NextResponse.json(
+      { error: 'linkDocId, quando enviado, deve ser um id de documento válido.' },
+      { status: 400 },
+    );
+  }
+  const linkDocId = body.linkDocId ?? null;
 
   const db = getAdminFirestore();
+
+  // Prove the named anúncio exists AND belongs to the conta the caller named,
+  // before spending an OAuth refresh and an ML round trip on it. Never trust the
+  // body alone: without the ownership check a caller could publish one conta's
+  // listing under another's token. `publishProduto` re-derives the same thing
+  // from the snapshot it already reads — this is the half that can answer 404.
+  if (linkDocId != null) {
+    const snap = await produtoMercadoLivreLinkCollection
+      .docRef(db, { produtoId: body.produtoId }, linkDocId)
+      .get();
+    if (!snap.exists) {
+      return NextResponse.json({ error: 'Anúncio não encontrado neste produto.' }, { status: 404 });
+    }
+    const link = (snap.data() ?? {}) as Record<string, unknown>;
+    if (!refMatchesIntegracao(link.contaOuterRef, body.integracaoId)) {
+      return NextResponse.json({ error: 'Anúncio não pertence a esta conta.' }, { status: 404 });
+    }
+  }
+
   try {
     const ctx = await loadMercadoLivreContext(db, body.integracaoId);
     const channelCtx = await ctx.resolveChannelContext();
@@ -63,7 +107,14 @@ export async function POST(req: Request): Promise<NextResponse> {
         // The seller whose items the User-Products orphan sweep enumerates —
         // same source `/importar` uses for the family fan-out.
         sellerUserId: asNumberOrNull(ctx.conta.user_id),
+        // `safeParse`, not a cast: `ctx.conta` is untyped passthrough, and a
+        // doc carrying a mode this build does not know (a value added later, a
+        // legacy shape) must degrade to "send no shipping node" rather than
+        // throw mid-publish. `.data` is undefined on failure, hence `?? null`.
+        shippingMode:
+          modoEnvioMercadoLivreSchema.safeParse(ctx.conta.modoEnvioMercadoLivre).data ?? null,
         listingTypeId: body.listingTypeId ?? null,
+        linkDocId,
       },
       body.produtoId,
     );

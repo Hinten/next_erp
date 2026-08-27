@@ -1,9 +1,9 @@
 'use client';
 
 import { Controller, type FieldPath, type UseFormReturn } from 'react-hook-form';
-import { NumberInput, Switch, TextInput } from '@mantine/core';
+import { Switch, TextInput } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
-import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
+import { epochToPickerString, pickerStringToEpoch, DecimalInput } from '@delfrance/ui';
 import type { Pedido } from '@delfrance/schemas';
 import type { FreteInicialFormState, PedidoFormState } from '../../types';
 
@@ -42,11 +42,11 @@ export function FreteNumberField({
       control={form.control}
       name={fretePath(name)}
       render={({ field, fieldState }) => (
-        <NumberInput
+        <DecimalInput
           label={label}
           description={description}
-          value={(field.value as number | null) ?? ''}
-          onChange={(v) => field.onChange(typeof v === 'number' ? v : null)}
+          value={(field.value as number | null) ?? null}
+          onChange={field.onChange}
           onBlur={field.onBlur}
           min={0}
           decimalScale={decimalScale}

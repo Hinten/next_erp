@@ -358,7 +358,7 @@ re-drives before parking, i.e. a one-week horizon), `ONE_HOUR_MS` (hot window),
 
 **Env per channel**: `<CANAL>_TASKS_DISABLED=1` → sweep-only mode (the receiver
 persists instead of enqueuing — never a silent drop); `<CANAL>_TASKS_REGION`
-(falls back to `FUNCTIONS_REGION`, default `us-east5`).
+(falls back to `FUNCTIONS_REGION`; there is no default — an unset value throws).
 
 **Signature posture today** — verify before copying a pattern: WhatsApp is
 mandatory-fail-closed (`X-Hub-Signature-256`; secret unset → 503); Melhor Envio

@@ -410,6 +410,123 @@ export function estimarDimensoes(
 }
 
 /**
+ * The shipping package a marketplace is told about, in the units and the
+ * precision the wire demands: whole centimetres and whole grams.
+ *
+ * ⚠️ Not {@link DimensoesCm}. That one is a box in real numbers, produced by
+ * {@link estimarDimensoes} to answer "what will this fit in"; this one is a
+ * DECLARATION, and its integrality is a validation rule of the receiving API
+ * rather than a rounding convenience.
+ */
+export interface DimensoesPacote {
+  alturaCm: number;
+  larguraCm: number;
+  profundidadeCm: number;
+  pesoG: number;
+}
+
+/** A produto's own dimension/weight fields — the input {@link dimensoesDoPacote} reads. */
+export type MedidasDoPacote = Pick<
+  ProdutoMedidas,
+  'alturaCm' | 'larguraCm' | 'profundidadeCm' | 'pesoBrutoKg' | 'pesoLiquidoKg'
+>;
+
+/**
+ * The package a produto declares to a marketplace, or `null` when the produto
+ * does not carry one.
+ *
+ * ⚠️ **Shared on purpose, exactly like {@link resolveCondicaoAnuncio}.** Two very
+ * different callers need the same answer and any drift between them is
+ * invisible: `apps/mercado-livre` turns it into the `SELLER_PACKAGE_*`
+ * attributes of an item payload, and the produto's Mercado Livre tab shows the
+ * operator what those attributes will say. One side is a wire value and the
+ * other a screen — the failure mode is a screen that promises `10 cm` while the
+ * payload ships `11 cm`, which nothing can catch. It lives here rather than in
+ * the channel package because the channel package's root entry is not
+ * browser-safe.
+ *
+ * **All four or nothing.** ML rejects a partial set outright
+ * (`item.attribute.missing.seller.package.dimensions` — *"the attributes
+ * seller_package_height, seller_package_length, seller_package_width,
+ * seller_package_weight are all required"*), so a produto missing one axis
+ * declares no package at all rather than three quarters of one. The caller is
+ * expected to TELL the operator, not to invent the fourth: the legacy app filled
+ * 10×10×10 cm and 0.25 kg, which publishes a measurement nobody took and which
+ * ML's own realism check (`item.attribute.invalid.seller.package.dimensions`)
+ * may reject anyway.
+ *
+ * **Gross weight wins.** `pesoBrutoKg ?? pesoLiquidoKg` — what ships is the
+ * product plus its packaging, and that is what the carrier bills. `WEIGHT`, the
+ * separate product-spec attribute, is the NET weight and is derived elsewhere;
+ * the two are deliberately different numbers.
+ *
+ * **No parent fallback**, unlike {@link medidasDo}. A produto declares its own
+ * package or declares none — inheriting a parent's box would silently ship the
+ * parent's measurements for a variation that is a different size, and the
+ * publish path this feeds already runs against the produto it is publishing.
+ */
+export function dimensoesDoPacote(
+  medidas: MedidasDoPacote | null | undefined,
+): DimensoesPacote | null {
+  if (!medidas) return null;
+  const { alturaCm, larguraCm, profundidadeCm } = medidas;
+  const pesoKg = medidas.pesoBrutoKg ?? medidas.pesoLiquidoKg;
+  if (alturaCm == null || larguraCm == null || profundidadeCm == null || pesoKg == null) {
+    return null;
+  }
+  // Centimetres round UP: the package has to CONTAIN the product, and declaring
+  // 5cm for a 5.5cm item is the error that costs a reship. Grams round to
+  // nearest — the carrier bills the true weight, not a padded one.
+  //
+  // Everything floors at 1. `0 cm`/`0 g` is not a package, and a marketplace
+  // that validates dimensions for realism rejects it; a produto weighing 0.0004
+  // kg used to round to a flat zero.
+  const cm = (v: number) => Math.max(1, Math.ceil(v));
+  return {
+    alturaCm: cm(alturaCm),
+    larguraCm: cm(larguraCm),
+    profundidadeCm: cm(profundidadeCm),
+    pesoG: Math.max(1, Math.round(pesoKg * 1000)),
+  };
+}
+
+/** A produto field a screen can send the operator to, named as that tab labels it. */
+export type CampoMedidaProduto = 'Peso líquido' | 'Altura' | 'Largura' | 'Profundidade';
+
+/**
+ * Which produto fields a marketplace listing needs and does not have, in the
+ * order the produto's "Dimensões e peso" tab shows them — so a screen can name
+ * the empty fields instead of saying "incompleto". Empty means publish can send
+ * a complete declaration.
+ *
+ * ⚠️ **This is NOT "what {@link dimensoesDoPacote} is missing", and the
+ * difference is the whole reason it exists.** Publish derives *two* independent
+ * things from these fields: the package (`SELLER_PACKAGE_*`) and the product's
+ * NET weight, which rides ML's separate `WEIGHT` attribute. The package's weight
+ * happily falls back to the net one, so keying on `pesoBrutoKg ?? pesoLiquidoKg`
+ * makes a produto with only a GROSS weight look complete — the package resolves,
+ * this returns nothing, and the screen shows a reassuring package with no
+ * warning while `WEIGHT` is silently absent from every publish. `WEIGHT` has no
+ * fallback: net weight is a different fact from gross, and publishing one as the
+ * other would invent data.
+ *
+ * So the weight entry keys on **`pesoLiquidoKg` alone**. That also covers the
+ * both-null case in one actionable line, since filling Peso líquido satisfies
+ * the package too. A produto with a net weight and no gross weight is complete —
+ * nothing is missing, the package just weighs the net value.
+ */
+export function medidasFaltandoParaAnuncio(
+  medidas: MedidasDoPacote | null | undefined,
+): CampoMedidaProduto[] {
+  const faltando: CampoMedidaProduto[] = [];
+  if (medidas?.pesoLiquidoKg == null) faltando.push('Peso líquido');
+  if (medidas?.alturaCm == null) faltando.push('Altura');
+  if (medidas?.larguraCm == null) faltando.push('Largura');
+  if (medidas?.profundidadeCm == null) faltando.push('Profundidade');
+  return faltando;
+}
+
+/**
  * `componentesKit` reshaped into the item list {@link estimarDimensoes} takes.
  * The map KEY is the component produto id, and only `quantidade` is consumed —
  * `limitarEstoque` constrains stock, never volume.

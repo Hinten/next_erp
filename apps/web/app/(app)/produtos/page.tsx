@@ -9,12 +9,15 @@ import { PERM } from '@delfrance/auth';
 import { type Produto, produtoMeta, produtoSchema } from '@delfrance/schemas';
 import { usePermission } from '@/lib/auth';
 import { produtoCollection } from '@/lib/data/produtoCollection';
+import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import {
   ProdutoFotoCell,
+  ProdutoIntegracoesCell,
   ProdutoPrecoCell,
   useListaPrecoPadraoId,
 } from './_components/ProdutoListCells';
+import { IntegracoesColumnFilter } from './_components/IntegracoesColumnFilter';
 import { ImportarMercadoLivreModal } from './_components/ImportarMercadoLivreModal';
 import { EnviarEstoqueDialog } from './_components/EnviarEstoqueDialog';
 import { EnviarPrecoDialog } from './_components/EnviarPrecoDialog';
@@ -125,6 +128,14 @@ export default function ProdutosPage() {
   const db = getFirebaseFirestore();
   // One read for the whole table, not one per row — see the hook.
   const listaPadraoId = useListaPrecoPadraoId(db);
+  // Same deal for the Canais de venda column: `integracoesComProduto` stores
+  // bare integração ids, so the names and colours come from one cached read of
+  // the (tiny) `integracao` collection, shared with the pickers.
+  const {
+    rows: integracoes,
+    byId: integracoesById,
+    status: integracoesStatus,
+  } = useIntegracoes(db);
 
   // Foto and Preço are virtual columns because neither renders from a projected
   // scalar: `fotos` holds arquivo REFS that need a second read, and the price is
@@ -147,8 +158,35 @@ export default function ProdutosPage() {
         dependsOn: ['precos'],
         renderCell: (row) => <ProdutoPrecoCell produto={row.data} listaPadraoId={listaPadraoId} />,
       },
+      {
+        // Legacy's "Canais de Venda" column, finally joined (#159 deferred it).
+        key: 'integracoes',
+        label: 'Canais de venda',
+        dependsOn: ['integracoesComProduto'],
+        renderCell: (row) => (
+          <ProdutoIntegracoesCell
+            produto={row.data}
+            byId={integracoesById}
+            status={integracoesStatus}
+          />
+        ),
+        // ⚠️ Deliberately NO `sortField`. Firestore would accept
+        // `orderBy('integracoesComProduto')`, but it orders by the ARRAY — i.e.
+        // by the first integração's random document id, which is not an order
+        // anyone can read. Sorting by NAME needs a join Firestore cannot do, or
+        // a denormalized name array kept in sync by a trigger plus a backfill.
+        // The badges are sorted by nome inside the cell instead, and the filter
+        // below does the grouping work.
+        filter: {
+          field: 'integracoesComProduto',
+          label: 'Canais de venda',
+          renderFilter: ({ value, onChange }) => (
+            <IntegracoesColumnFilter integracoes={integracoes} value={value} onChange={onChange} />
+          ),
+        },
+      },
     ],
-    [db, listaPadraoId],
+    [db, listaPadraoId, integracoes, integracoesById, integracoesStatus],
   );
 
   return (
@@ -176,11 +214,23 @@ export default function ProdutosPage() {
         virtualColumns={virtualColumns}
         fields={{
           // The schema field is REPLACED by the `nomeLink` virtual column, not
-          // merely left out of the declared columns: the ColumnPicker lists every
-          // schema field, so leaving it visible there put two identical "Nome"
-          // checkboxes in the picker and let a user toggle on a plain-text
-          // duplicate of the linked column.
+          // merely left out of the declared columns: without `hidden` the
+          // ColumnPicker offers every schema field, which put two identical
+          // "Nome" checkboxes in the picker and let a user toggle on a
+          // plain-text duplicate of the linked column.
           nome: { hidden: true },
+          // Same reason as `nome`: the `integracoes` virtual column REPLACES
+          // this field. Left visible, the ColumnPicker would offer both — the
+          // badge column and a raw "Integracoes Com Produto" duplicate still
+          // rendering the generic array cell's `N item(s)`.
+          //
+          // ⚠️ `hidden` did not reach the picker until #1264 was fixed up: it
+          // was consulted only when rendering, so both duplicates were still
+          // listed and ticking one silently rendered nothing — and the picker's
+          // label search matched "integra" on the dead entry ALONE, never on
+          // "Canais de venda". Keep `pickerFields` and `visibleColumns` in
+          // TableView applying the same exclusions.
+          integracoesComProduto: { hidden: true },
           publicado: {
             label: 'Status',
             renderCell: (value) =>

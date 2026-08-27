@@ -475,3 +475,114 @@ describe('ListingStatusStrip — moderações do Mercado Livre (#1087)', () => {
     expect(screen.queryByTestId('ml-moderacoes')).toBeNull();
   });
 });
+
+/**
+ * The `moderacoes: null` third state (#1239) — ML reports a moderation and
+ * nobody fetched the reason. It needs its OWN button: the latch one below is
+ * gated on `isStockLatched` (`estado === 'E'`), and a moderated listing is `pa`,
+ * `v` or an `active` `p`, so that affordance renders on none of these.
+ */
+describe('ListingStatusStrip — moderação não consultada (#1239)', () => {
+  const MODERADO: Partial<ProdutoMercadoLivreLink> = {
+    estado: ESTADO_PUBLICACAO_ML.pausado,
+    status: 'paused',
+    sub_status: ['moderation_penalty'],
+    moderacoes: null,
+  };
+
+  it('tells the operator a reason exists and offers to fetch it', () => {
+    renderStrip(MODERADO);
+    expect(screen.getByTestId('ml-moderacao-nao-consultada').textContent).toContain(
+      'ainda não foi consultado',
+    );
+    expect(screen.getByRole('button', { name: 'Consultar motivo' })).toBeTruthy();
+  });
+
+  it('asks for a moderation re-check, not a stock one', () => {
+    const onReverificar = renderStrip(MODERADO);
+    fireEvent.click(screen.getByRole('button', { name: 'Consultar motivo' }));
+    expect(onReverificar).toHaveBeenCalledWith('moderacao');
+  });
+
+  /**
+   * ⚠️ The reason the button had to be its own: on a moderated listing the latch
+   * affordance is not on screen at all, so "prompt the existing button" was never
+   * available.
+   */
+  it('is the ONLY affordance here — the stock-latch button is not rendered', () => {
+    renderStrip(MODERADO);
+    expect(screen.queryByRole('button', { name: 'Reverificar anúncio' })).toBeNull();
+  });
+
+  it('stays silent for an ASKED-and-none, even while the status still says moderated', () => {
+    renderStrip({ ...MODERADO, moderacoes: [] });
+    expect(screen.queryByTestId('ml-moderacao-nao-consultada')).toBeNull();
+  });
+
+  it('stays silent on a healthy listing whose field was never populated', () => {
+    renderStrip({ status: 'active', sub_status: null, moderacoes: null });
+    expect(screen.queryByTestId('ml-moderacao-nao-consultada')).toBeNull();
+  });
+
+  /**
+   * ⚠️ Not gated on `estado`, for the same reason the moderation alert is not: a
+   * `poor_quality_thumbnail` listing is ACTIVE and merely losing exposure, and it
+   * is the case the operator has no other way to discover.
+   */
+  /**
+   * ⚠️ The wording must be true on BOTH arms of the gate. `under_review` with no
+   * moderation sub_status is ML REVIEWING — it can conclude with no moderation,
+   * and it is what every freshly published anúncio looks like (#1252), so this is
+   * the notice's most common appearance. Claiming a moderation exists would be
+   * false exactly there.
+   */
+  it('does not claim a moderation EXISTS on a listing merely under review', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.publicado,
+      status: 'under_review',
+      sub_status: null,
+      moderacoes: null,
+    });
+
+    const texto = screen.getByTestId('ml-moderacao-nao-consultada').textContent ?? '';
+    expect(texto).toContain('ainda não foi consultado');
+    expect(texto).toContain('possível');
+    // The assertive phrasing this replaced — a moderation stated as fact.
+    expect(texto).not.toContain('indica uma moderação');
+  });
+
+  it('renders on a listing ML still calls ACTIVE', () => {
+    renderStrip({
+      estado: ESTADO_PUBLICACAO_ML.publicado,
+      status: 'active',
+      sub_status: ['poor_quality_thumbnail'],
+      moderacoes: null,
+    });
+    expect(screen.getByTestId('ml-moderacao-nao-consultada')).toBeTruthy();
+  });
+
+  it('never co-renders with the moderation alert — the two states are exclusive', () => {
+    renderStrip({
+      ...MODERADO,
+      moderacoes: [
+        {
+          nome: 'POOR_QUALITY_THUMBNAIL',
+          dataCriacao: null,
+          motivo: 'Foto de baixa qualidade.',
+          remedio: 'Suba outra foto.',
+          secoes: ['pictures'],
+          evidencias: [],
+        },
+      ],
+    });
+    expect(screen.getByTestId('ml-moderacoes')).toBeTruthy();
+    expect(screen.queryByTestId('ml-moderacao-nao-consultada')).toBeNull();
+  });
+
+  it('cannot be pressed by a read-only operator', () => {
+    renderStrip(MODERADO, vi.fn(), { canWrite: false });
+    expect(screen.getByRole('button', { name: 'Consultar motivo' }).hasAttribute('disabled')).toBe(
+      true,
+    );
+  });
+});

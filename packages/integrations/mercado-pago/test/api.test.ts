@@ -166,3 +166,127 @@ describe('createMercadoPagoApi — retries + errors', () => {
     await expect(api.getMe()).rejects.toBeInstanceOf(MercadoPagoValidationError);
   });
 });
+
+/**
+ * The #1087 regression, reached through Mercado Pago's own door.
+ *
+ * On 2026-08-21 `GET /collections/174034247387` — Mercado Livre's alias for THIS
+ * resource — answered with `order_id` as the string `"2000018052464608"` while
+ * `id` stayed a JSON number. `z.number()` rejected the WHOLE body, the pagamento
+ * never imported, the pedido stuck at `emProcessamento`, and Cloud Tasks retried
+ * identically until the notification parked. The same payment is what
+ * `getPayment` fetches here (#1251), so the exposure was never analogous — it
+ * was the same object.
+ */
+describe('a quoted number no longer discards the whole payment', () => {
+  const QUOTED_PAYMENT = {
+    ...PAYMENT,
+    // Quoted exactly the way the live payload mixed them: a stringified id next
+    // to dot-decimal money, C-formatted zeros, and a stringified count.
+    id: '174034247387',
+    transaction_amount: '1000.02',
+    shipping_cost: '0.00',
+    installments: '1',
+    marketplace_fee: '835.02',
+    fee_details: [{ amount: '4.50', type: 'mercadopago_fee' }],
+    refunds: [{ amount: '10.5' }],
+    charges_details: [
+      {
+        amounts: { original: '150.50', refunded: '0' },
+        accounts: { from: 'collector', to: 'mercadopago' },
+      },
+    ],
+  };
+
+  it('every quoted numeric field comes back as a number', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(QUOTED_PAYMENT),
+    );
+    const payment = await createMercadoPagoApi(cfg(fetchMock)).getPayment(174034247387);
+
+    // ⚠️ The required id first — it is the field that could throw away every
+    // other value on the response.
+    expect(payment.id).toBe(174034247387);
+    expect(payment.transaction_amount).toBe(1000.02);
+    expect(payment.shipping_cost).toBe(0);
+    expect(payment.installments).toBe(1);
+    expect(payment.marketplace_fee).toBe(835.02);
+    expect(payment.fee_details?.[0]?.amount).toBe(4.5);
+    expect(payment.refunds?.[0]?.amount).toBe(10.5);
+    expect(payment.charges_details?.[0]?.amounts?.original).toBe(150.5);
+    expect(payment.charges_details?.[0]?.amounts?.refunded).toBe(0);
+  });
+
+  it('getMe survives a quoted user id, which is also required', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ ...USER, id: '123' }),
+    );
+    const me = await createMercadoPagoApi(cfg(fetchMock)).getMe();
+    expect(me.id).toBe(123);
+    expect(me.nickname).toBe('SELLER');
+  });
+
+  it.each([
+    ['an empty string', 'z.coerce.number() reads it as 0'],
+    ['1,50', 'a locale parse would say 1.5 OR 150'],
+    ['0x1F', 'bare Number() says 31'],
+    ['1e3', 'bare Number() says 1000'],
+  ])('⛔ still REJECTS transaction_amount %s — %s', async (amount) => {
+    // Tolerance, not coercion. A payment silently recorded as R$ 0,00
+    // reconciles against nothing and is strictly worse than this failure.
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ ...PAYMENT, transaction_amount: amount === 'an empty string' ? '' : amount }),
+    );
+    await expect(createMercadoPagoApi(cfg(fetchMock)).getPayment(987654321)).rejects.toBeInstanceOf(
+      MercadoPagoValidationError,
+    );
+  });
+});
+
+/**
+ * The notification pipeline persists `err.message` ALONE into the failures doc
+ * and the sweep marks with `err.message` too — so this string is the entire
+ * durable record of a parked notification. In #1087 it said only "formato
+ * inesperado" while a quoted number stopped a payment importing.
+ */
+describe('a validation failure names the field it choked on', () => {
+  async function messageFrom(body: unknown): Promise<string> {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(body),
+    );
+    try {
+      await createMercadoPagoApi(cfg(fetchMock)).getPayment(1);
+    } catch (err) {
+      if (err instanceof MercadoPagoValidationError) return err.message;
+      throw err;
+    }
+    throw new Error('expected a MercadoPagoValidationError');
+  }
+
+  it('names a top-level field', async () => {
+    expect(await messageFrom({ ...PAYMENT, transaction_amount: '1,50' })).toMatch(
+      /transaction_amount/,
+    );
+  });
+
+  it('names a NESTED path, joined with dots', async () => {
+    const body = {
+      ...PAYMENT,
+      charges_details: [{ amounts: { original: 'abc', refunded: 0 }, accounts: {} }],
+    };
+    expect(await messageFrom(body)).toMatch(/charges_details\.0\.amounts\.original/);
+  });
+
+  it('reports `(raiz)` when the whole body is the wrong shape', async () => {
+    expect(await messageFrom('not-an-object')).toMatch(/\(raiz\)/);
+  });
+
+  it('⚠️ carries field PATHS and never a value from the body (#1015)', async () => {
+    // Paths are field names and carry no value, which is what makes putting them
+    // in the message safe. `authorization_code` is a real value on the fixture.
+    const message = await messageFrom({ ...PAYMENT, transaction_amount: '1,50' });
+    expect(message).not.toContain('123456');
+    expect(message).not.toContain('FULANO');
+    expect(message).not.toContain('payer@x.z');
+  });
+});

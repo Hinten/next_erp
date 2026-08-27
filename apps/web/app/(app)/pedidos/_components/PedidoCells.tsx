@@ -3,24 +3,20 @@
 /**
  * Per-cell components for the Pedidos TableView's virtual columns.
  *
- * The NF column subscribes to the latest NFe doc in `pedidos/{pedidoId}/nfev4`
- * via `useSnapshot` — one Firestore listener per rendered row — so the cell
- * reflects async state transitions (SEFAZ replies authoring `estado` from
- * the orchestrator in `apps/integrations`) without a page refresh.
- * "Visible rows only" is satisfied by TableView's page-level pagination
- * (default `limit(50)` on the query); cells unmount on page change and
- * their listeners tear down with them.
+ * The NF column stays realtime — it reflects async state transitions (SEFAZ
+ * replies authoring `estado` from the orchestrator) without a page refresh —
+ * but its listener is GATED on the row being on screen and torn down once the
+ * row scrolls away, so the list's page size is no longer its concurrent-
+ * listener count. `useLatestNfe` owns that mechanism and documents why (#1216).
  *
  * The other cells are static — `ClienteCell` does a one-shot cached read
  * via TanStack Query + `getDoc`, `FreteCell` and `ImpCell` are passthroughs.
  */
-import { useMemo } from 'react';
+import { type ReactNode, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
-import { useSnapshot } from '@delfrance/data/hooks';
-import { buildQuery, limit, orderByField } from '@delfrance/data';
 import {
   ESTADO_FRETE_LABELS,
   ESTADO_NFE,
@@ -39,6 +35,7 @@ import { formatReais } from '@delfrance/core/money';
 import {
   Anchor,
   Badge,
+  Box,
   Button,
   Group,
   HoverCard,
@@ -52,11 +49,11 @@ import { IconBan, IconCheck, IconFileDownload, IconFileText } from '@tabler/icon
 
 import { CopyIconButton } from '@/components/CopyIconButton';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
-import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
 import { DanfeMenu } from '@/components/DanfeMenu';
 import { EtiquetaRowAction } from './EtiquetaRowAction';
+import { useLatestNfe } from './useLatestNfe';
 
 const DASH = '—';
 
@@ -78,10 +75,11 @@ function formatMicros(us: number | null | undefined): string {
 /* -------------------------------------------------------------------------- */
 /*                                  NFCell                                    */
 /*                                                                            */
-/*  Subscribes to the latest doc in `pedidos/{pedidoId}/nfev4` (ordered by    */
-/*  timestamp desc, limit 1) and renders a colored badge per estado. Hovering */
-/*  the badge opens a HoverCard with the Estado, cStat, xMotivo, Número,      */
-/*  Chave, and Erro fields — each copyable via an icon button when present.   */
+/*  Renders a colored badge for the latest doc in `pedidos/{pedidoId}/nfev4`  */
+/*  (ordered by `ultima_modificacao` desc, limit 1 — see `useLatestNfe`, which */
+/*  owns the query and its viewport gate). Hovering the badge opens a          */
+/*  HoverCard with the Estado, cStat, xMotivo, Número, Chave and Erro fields — */
+/*  each copyable via an icon button when present.                            */
 /* -------------------------------------------------------------------------- */
 
 const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
@@ -99,24 +97,23 @@ const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
 };
 
 export function NFCell({ pedidoId }: { pedidoId: string }) {
-  const db = getFirebaseFirestore();
-  const q = useMemo(() => {
-    const base = nfeCollection.ref(db, { pedidoId });
-    // `ultima_modificacao` is set on every nfev4 write by the orchestrator
-    // (both the initial `tx.set` and `persistPatch`). Ordering by it
-    // ensures the doc actually appears in the snapshot — Firestore
-    // excludes docs whose ordered field is absent, and the schema's
-    // generic `timestamp` field is never set in Phase A.
-    return buildQuery(base, [orderByField('ultima_modificacao', 'desc'), limit(1)]);
-  }, [db, pedidoId]);
-  const { data, loading } = useSnapshot(q);
+  const { ref, status, badge: latest, doc, latestId } = useLatestNfe(pedidoId);
   const router = useRouter();
 
-  if (loading) return <Skeleton height={20} width={70} />;
-  const latest = data?.[0]?.data;
-  // The nfev4 doc id of the latest NF-e — the `[nfeId]` for the CC-e route.
-  const latestId = data?.[0]?.id;
-  if (!latest) return <Text c="dimmed">{DASH}</Text>;
+  // EVERY branch renders through this wrapper. The IntersectionObserver needs a
+  // non-zero box BEFORE any data exists, so an unresolved cell must still hold
+  // the badge's space instead of collapsing — a zero-height target never
+  // intersects, and the row would stay unsubscribed forever.
+  const wrap = (children: ReactNode) => (
+    <Box ref={ref} display="inline-block" mih={20} miw={70}>
+      {children}
+    </Box>
+  );
+
+  // `idle` (not subscribed, nothing remembered) and `loading` are both "we do
+  // not know yet" — never the dash below, which asserts the pedido HAS no NF-e.
+  if (status !== 'ready') return wrap(<Skeleton height={20} width={70} />);
+  if (!latest) return wrap(<Text c="dimmed">{DASH}</Text>);
   // Only an authorized NF-e can be cancelled (110111) or corrected (CC-e, 110110).
   const isAprovada = latest.estado === ESTADO_NFE.aprovada;
   // A DANFE can be printed for an authorized NF-e, a cancelada one (it
@@ -130,7 +127,13 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   // The XML download reads straight from the nfev4 doc (no HTTP round-trip),
   // so it's available whenever any XML has been persisted — authorized,
   // EPEC, or the signed pre-transmission anchor.
-  const hasXml = selectNfeXml(latest) != null;
+  //
+  // ⚠️ `doc` is the LIVE document and is undefined for a memo-backed render
+  // (`useLatestNfe`). Every action below hangs off it rather than off the badge:
+  // handing the operator a remembered `procNFe` would serve a stale fiscal
+  // document, and `xml_assinado` is nulled by the same write that persists
+  // `xml_nfe_proc`, so a remembered copy can disagree about which XML exists.
+  const hasXml = doc != null && selectNfeXml(doc) != null;
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
   // tpEmis === 1 is the normal (SEFAZ síncrono) path. Anything else
@@ -140,7 +143,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   const hasCStatMsg = latest.cStat != null && latest.xMotivo != null;
   const messageCopyValue =
     latest.error ?? (hasCStatMsg ? `${latest.cStat} - ${latest.xMotivo}` : null);
-  return (
+  return wrap(
     <HoverCard
       withinPortal
       shadow="md"
@@ -223,7 +226,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
             </Group>
           )}
 
-          {latestId && (canPrintDanfe || hasXml) && (
+          {doc != null && latestId && (canPrintDanfe || hasXml) && (
             <Group gap="xs" mt="xs">
               {canPrintDanfe && <DanfeMenu pedidoId={pedidoId} nfeId={latestId} />}
               {hasXml && (
@@ -236,7 +239,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
                     // Stop the row's navigate-onClick; download the XML
                     // straight from the doc already in hand.
                     e.stopPropagation();
-                    downloadNfeXml(latest);
+                    downloadNfeXml(doc);
                   }}
                 >
                   Baixar XML
@@ -278,7 +281,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
           )}
         </Stack>
       </HoverCard.Dropdown>
-    </HoverCard>
+    </HoverCard>,
   );
 }
 

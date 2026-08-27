@@ -8,6 +8,7 @@ import {
   produtoMercadoLivreLinkSchema,
   variacaoMercadoLivreLinkSchema,
   estadoPublicacaoMlSchema,
+  precisaConsultarModeracao,
 } from './mercadoLivreLink';
 
 describe('produtoMercadoLivreLinkSchema', () => {
@@ -293,5 +294,60 @@ describe('the moderacoes field on both link schemas', () => {
     });
     expect(parsed.moderacoes?.[0]?.motivo).toBe('foto de baixa qualidade');
     expect(parsed.moderacoes?.[0]?.remedio).toBeNull();
+  });
+});
+
+/**
+ * The gate the whole `moderacoes` three-value contract rests on. It moved here
+ * from `apps/mercado-livre` when apps/web needed the same decision (#1239) —
+ * being PURE is what lets both sides share it, so these tests must stay pure
+ * too: no clock, no network, no Firestore.
+ */
+describe('precisaConsultarModeracao', () => {
+  /**
+   * The gate is the cost model. `items` fires for every change to every listing
+   * the seller owns, so a healthy one must keep costing the single
+   * `GET /items/{id}` it costs today.
+   */
+  it('never fires for a plainly healthy listing', () => {
+    expect(precisaConsultarModeracao('active', null)).toBe(false);
+    expect(precisaConsultarModeracao('active', [])).toBe(false);
+    expect(precisaConsultarModeracao('paused', ['out_of_stock'])).toBe(false);
+    expect(precisaConsultarModeracao('closed', ['deleted'])).toBe(false);
+    expect(precisaConsultarModeracao(null, null)).toBe(false);
+  });
+
+  it('fires on under_review whatever the sub_status — every one is a moderation', () => {
+    // Including one we have not catalogued: a listing under review with an
+    // unfamiliar sub_status is exactly where the reason matters most.
+    for (const sub of [null, [], ['waiting_for_patch'], ['algo_novo_do_ml']]) {
+      expect(precisaConsultarModeracao('under_review', sub)).toBe(true);
+    }
+  });
+
+  /**
+   * ⚠️ The case that made `moderacoes` a separate field rather than a reuse of
+   * `errors`: the listing is LIVE and sendable, so the #781 stock re-arm gate
+   * would have wiped the diagnosis on the very write that produced it.
+   */
+  it('fires for an ACTIVE listing carrying an image moderation', () => {
+    expect(precisaConsultarModeracao('active', ['poor_quality_thumbnail'])).toBe(true);
+    expect(precisaConsultarModeracao('active', ['moderation_penalty'])).toBe(true);
+  });
+
+  it('fires for the preventive pause and the closed penalty', () => {
+    expect(precisaConsultarModeracao('paused', ['moderation_penalty'])).toBe(true);
+    expect(precisaConsultarModeracao('closed', ['moderation_penalty'])).toBe(true);
+  });
+
+  it('fires for BOTH of ML picture-pending spellings', () => {
+    // Not a typo of one another — ML uses one per page, and normalising to a
+    // single spelling would miss whichever page turns out to be right.
+    expect(precisaConsultarModeracao('paused', ['picture_download_pending'])).toBe(true);
+    expect(precisaConsultarModeracao('under_review', ['picture_downloading_pending'])).toBe(true);
+  });
+
+  it('fires when a moderation sub_status sits alongside ordinary ones', () => {
+    expect(precisaConsultarModeracao('paused', ['out_of_stock', 'moderation_penalty'])).toBe(true);
   });
 });

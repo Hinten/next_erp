@@ -23,6 +23,7 @@ import {
   MercadoLivreHttpError,
   type MlAttribute,
   type MlItem,
+  type MlShippingMode,
   type MlUser,
   buildItemPayload,
   estadoFromMlStatus,
@@ -45,6 +46,7 @@ import {
   idFromRef,
   mlSizeChartsForConta,
   parseFakePath,
+  precisaConsultarModeracao,
   toOuterRef,
 } from '@delfrance/schemas';
 import {
@@ -60,13 +62,13 @@ import {
 import { isFailedPrecondition, isNotFound } from '@delfrance/data/admin';
 
 import {
-  ML_DERIVED_ATTRIBUTE_IDS,
   MercadoLivrePublishError,
   type PublishGrupoVariacao,
   type PublishLink,
   type PublishProduto,
   type PublishVariationChild,
   assemblePublishInput,
+  linkAttributesAfterPublish,
   publishModeIssues,
   resolveCondition,
   resolveListingModel,
@@ -101,6 +103,14 @@ export interface PublishDeps {
   tabelaNormalOuterRef: string | null;
   depositoOuterRef: string | null;
   /**
+   * The conta's `shipping.mode` (`integracao.modoEnvioMercadoLivre`), same
+   * source as the two refs above. Null/absent sends no `shipping` node at all,
+   * which is what every publish did before this existed — so an unconfigured
+   * conta is unaffected. Rides on republishes too, so an existing "a combinar"
+   * listing self-heals the next time it is published.
+   */
+  shippingMode?: MlShippingMode | null;
+  /**
    * The conta's ML `user_id` — the seller whose items the removed-variation
    * sweep searches. Null disables the sweep (it cannot enumerate a family
    * without it), never anything else.
@@ -108,6 +118,16 @@ export interface PublishDeps {
   sellerUserId?: number | null;
   /** Listing type for FIRST publishes (link doc value wins on re-publish). */
   listingTypeId?: string | null;
+  /**
+   * Publish THIS link doc instead of whichever one comes first.
+   *
+   * A conta can hold several anúncios on one produto — storage has always
+   * allowed it, and the stock and price sweeps already loop every one — but the
+   * selection below could only ever name the first, which is what made a second
+   * anúncio unpublishable. Null or absent keeps that historical behaviour
+   * exactly: first match, else a freshly minted id for a first publish.
+   */
+  linkDocId?: string | null;
   /** Injectable for tests — downloads image bytes from `arquivo.url`. */
   fetchImpl?: typeof globalThis.fetch;
   /**
@@ -167,9 +187,45 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 
   // ---- Existing link docs (this integração) ------------------------------
   const linkSnap = await produtoMercadoLivreLinkCollection.ref(db, { produtoId }).get();
-  const linkDoc = linkSnap.docs
+  const contaLinks = linkSnap.docs
     .map((d) => ({ docId: d.id, data: d.data() as Partial<ProdutoMercadoLivreLink> }))
-    .find((d) => refMatchesIntegracao(d.data.contaOuterRef, integracaoId));
+    .filter((d) => refMatchesIntegracao(d.data.contaOuterRef, integracaoId));
+  /**
+   * WHICH of the conta's anúncios this publish is for.
+   *
+   * Without `deps.linkDocId` this is the historical behaviour verbatim — the
+   * first link matching the conta, or a fresh doc id when there is none. That
+   * first-match is exactly what makes a second anúncio unpublishable, so the
+   * caller that means a specific one says so.
+   *
+   * ⚠️ Ownership is re-derived from `contaLinks`, never taken on trust: the id
+   * arrives in a request body, and resolving it against the whole subcollection
+   * would let a caller publish one produto's listing under another conta. The
+   * route 404s both cases before we get here (`publicar/route.ts`); this is the
+   * backstop, and it is free because the snapshot is already in hand.
+   */
+  // Empty string counts as ABSENT.
+  //
+  // ⚠️ NOT for the reason `link.id !== ''` exists elsewhere in this module. That
+  // one is about the **ML item id**, a schema field (`z.string().nullable()`,
+  // no `.min(1)`) whose blank value really is in the migrated corpus. This is a
+  // **Firestore document id**, and one can never be `''` — `.doc('')` throws
+  // "Path must be a non-empty string". So `''` here cannot name a real doc, and
+  // treating it as absent beats treating it as a guaranteed refusal.
+  //
+  // ⚠️ The route ahead of this one 400s a PRESENT `''` rather than ignoring it,
+  // and the divergence is deliberate: a route can reject a body the caller
+  // plainly got wrong, while a library entry point should degrade to its default
+  // instead of failing a caller who passed a falsy variable through. Do not
+  // "unify" them without deciding which of the two you are.
+  const alvoLinkDocId = deps.linkDocId != null && deps.linkDocId !== '' ? deps.linkDocId : null;
+  const linkDoc =
+    alvoLinkDocId != null ? contaLinks.find((d) => d.docId === alvoLinkDocId) : contaLinks[0];
+  if (alvoLinkDocId != null && linkDoc == null) {
+    throw new MercadoLivrePublishError([
+      'anúncio não encontrado nesta conta — recarregue a página e tente de novo',
+    ]);
+  }
   const link: PublishLink | null = linkDoc
     ? {
         docId: linkDoc.docId,
@@ -197,6 +253,9 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 
   const pubProduto = toPublishProduto(produtoId, produto);
   const condicao = typeof extra?.condicao === 'number' ? extra.condicao : null;
+  // Same singleton, same read — `buildParentAttributes` turns this into the
+  // listing's `BRAND`, falling back to whatever the link doc already stores.
+  const marca = typeof extra?.marca === 'string' ? extra.marca : null;
 
   /**
    * Write the fields publish OWNS onto the link doc, and nothing else.
@@ -457,6 +516,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const input = assemblePublishInput({
     produto: pubProduto,
     condicao,
+    marca,
     priceListId,
     priceListNome,
     availableQuantity,
@@ -469,6 +529,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
     isUserProductSeller: listingModel === 'user-products',
     sizeChart: tabela.resolved,
+    shippingMode: deps.shippingMode ?? null,
   });
 
   const now = Date.now();
@@ -567,20 +628,37 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     precoPublicado: family ? null : (item.price ?? null),
     freteGratis: item.shipping?.free_shipping ?? false,
     isUserProductModel: input.isUserProductSeller,
-    // #799 bug 7: the attributes we just sent, minus the ones rebuilt from
-    // the produto on every publish (appending those back would duplicate
-    // them). Without this a produto the legacy app never published keeps
+    // #799 bug 7: the attributes we just sent, minus the ids publish does not
+    // own. Without this a produto the legacy app never published keeps
     // `attributes: null` forever and the editor has nothing to load.
-    // `id` is optional on MlAttribute for ML's id-less custom characteristic,
-    // which only ever appears in a variation's combinations — never here. The
-    // link doc's wire schema requires an id, so drop any that lacks one.
-    attributes: (input.attributes ?? []).filter(
-      (a): a is MlAttribute & { id: string } => a.id != null && !ML_DERIVED_ATTRIBUTE_IDS.has(a.id),
-    ),
+    //
+    // ⚠️ The derived ids and the herdado ones are excluded for OPPOSITE reasons
+    // and the stored `BRAND` is carried back verbatim — see
+    // `linkAttributesAfterPublish`, which is where that whole argument lives.
+    attributes: linkAttributesAfterPublish(input.attributes, linkDoc?.data.attributes),
     errors: [],
     // Cleared WITH `errors`: a surviving falha paints a red field on a listing
     // that just published successfully, which reads exactly like a rejection.
     causas: [],
+    // ⚠️ #1252, and it is NOT the same clear as the two above. `errors`/`causas`
+    // record OUR failed write, so this success invalidates them outright. A
+    // moderação is ML's verdict and nothing we do lifts it — so the ONLY thing
+    // authorising a clear here is ML's own answer, read off the response we
+    // already hold: `precisaConsultarModeracao` is pure, so a listing ML now
+    // calls healthy is written `[]` with no `/moderations` call at all.
+    //
+    // The other arm OMITS the key rather than writing `null`. `writeLinkDoc`'s
+    // merge is `update()`-backed, so an absent key leaves the stored reason
+    // standing — which is right: this path never asked ML why, and inventing
+    // `[]` would record "not moderated" we never confirmed. A republish of a
+    // still-moderated listing therefore keeps the reason the operator can see.
+    //
+    // ⚠️ On a UP family `item` is `family.items[0]` — the same "primary member"
+    // whose status this patch already publishes as the family's (see above).
+    // The clear follows that member deliberately: one listing, one status, one
+    // reason. Folding across siblings here would read every member on the
+    // publish path and disagree with the `status` sitting beside it.
+    ...(precisaConsultarModeracao(item.status, item.sub_status) ? {} : { moderacoes: [] }),
     ultimaModificacao: now,
   });
 

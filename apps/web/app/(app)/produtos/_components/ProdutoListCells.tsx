@@ -1,13 +1,20 @@
 'use client';
 
-import { Center, Image, Skeleton, Text } from '@mantine/core';
+import { Badge, Center, Group, Image, Skeleton, Text, Tooltip } from '@mantine/core';
 import { IconPhotoOff } from '@tabler/icons-react';
 import { getDocs, type Firestore } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { formatReais } from '@delfrance/core';
-import type { Produto } from '@delfrance/schemas';
+import {
+  INTEGRACAO_TIPO_LABELS,
+  type Integracao,
+  type IntegracaoTipo,
+  type Produto,
+} from '@delfrance/schemas';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
+import type { IntegracoesStatus } from '@/lib/data/useIntegracoes';
+import { integracaoBadgeStyle } from '@/lib/integracoes/cor';
 import { coverArquivoId, useProdutoFotoUrl } from '@/lib/produtos/fotoCapa';
 
 /** Edge of the square thumbnail rendered in the Foto column, in px. */
@@ -117,4 +124,107 @@ export function ProdutoPrecoCell({
     );
   }
   return <Text size="sm">{formatReais(valor)}</Text>;
+}
+/**
+ * The "Canais de venda" column — one badge per integração a produto is listed
+ * on, painted in that channel's registered `cor`.
+ *
+ * `produto.integracoesComProduto` holds bare `integracao` document ids, which
+ * is why this needs the `byId` map the page loads once for the whole table
+ * (`useIntegracoes`) rather than a read per row. Without the join the generic
+ * array renderer prints `N item(s)` — the count that this column replaces.
+ *
+ * Legacy showed the same set as plain text, sorted alphabetically, with the
+ * `nome(tipo)` label in a tooltip (`produtoTableView.dart:1701-1739`). Kept:
+ * the sort, the tooltip label, and rendering NOTHING for a produto on no
+ * channel (its `SizedBox.shrink()`). Added: the colour, which legacy stored on
+ * `Integracao.cor` but only ever used in the sales chart.
+ *
+ * ⚠️ An id that resolves to nothing is shown, not dropped. The denorm drifts —
+ * `apps/mercado-livre/lib/marketplace/preco/precoReconciliacao.ts` documents
+ * produtos whose `integracoesComProduto` disagrees with the live listings — and
+ * the id can also name a deleted conta. Silently rendering an empty cell would
+ * read as "listed nowhere", which is the opposite of what the row says.
+ *
+ * ⚠️ `desconhecida` is reserved for that DATA verdict, which is why `status` is
+ * a required prop rather than an empty `byId` being read as "nothing resolves".
+ * The lookup is empty while it loads and empty when it fails — a user without
+ * `PERM.integracao.read` gets `permission-denied` — and in both cases every
+ * badge on every row would claim a drifted denorm. Those are system states and
+ * they render as such: a skeleton while pending, one explicit "indisponível"
+ * badge on error.
+ */
+export function ProdutoIntegracoesCell({
+  produto,
+  byId,
+  status,
+}: {
+  produto: Produto;
+  byId: Map<string, Integracao>;
+  status: IntegracoesStatus;
+}) {
+  const ids = produto.integracoesComProduto ?? [];
+  if (ids.length === 0) return null;
+
+  // Sized like a badge so the column does not reflow when the lookup lands.
+  if (status === 'pending') {
+    return (
+      <Group gap={4} wrap="wrap">
+        {ids.map((id) => (
+          <Skeleton key={id} h={20} w={72} radius="xl" />
+        ))}
+      </Group>
+    );
+  }
+
+  if (status === 'error') {
+    return (
+      <Tooltip label={`Não foi possível carregar os canais de venda (${ids.length}).`} withArrow>
+        <Badge size="sm" variant="light" color="gray">
+          indisponível
+        </Badge>
+      </Tooltip>
+    );
+  }
+
+  // Sorted by the label the operator reads, not by id — legacy's `opcoes.sort()`.
+  // Unresolved ids sort last, together, under their placeholder label.
+  const entries = ids
+    .map((id) => ({ id, integracao: byId.get(id) ?? null }))
+    .sort((a, b) =>
+      (a.integracao?.nome ?? '\uffff').localeCompare(b.integracao?.nome ?? '\uffff', 'pt-BR'),
+    );
+
+  return (
+    <Group gap={4} wrap="wrap">
+      {entries.map(({ id, integracao }) => {
+        if (integracao === null) {
+          return (
+            <Tooltip key={id} label={`Integração não encontrada (${id})`} withArrow>
+              <Badge size="sm" variant="light" color="gray">
+                desconhecida
+              </Badge>
+            </Tooltip>
+          );
+        }
+        // No registered `cor` → a neutral badge rather than an invented colour.
+        // Every Mercado Livre conta is in that state today: `cor` is excluded
+        // from that channel's form.
+        const style = integracaoBadgeStyle(integracao.cor);
+        const tipoLabel = INTEGRACAO_TIPO_LABELS[integracao.tipo as IntegracaoTipo];
+        return (
+          <Tooltip key={id} label={`${integracao.nome} (${tipoLabel})`} withArrow>
+            <Badge
+              size="sm"
+              variant={style ? 'filled' : 'light'}
+              color={style ? undefined : 'gray'}
+              style={style ?? undefined}
+            >
+              {integracao.nome}
+            </Badge>
+          </Tooltip>
+        );
+      })}
+    </Group>
+  );
 }

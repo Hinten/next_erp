@@ -100,6 +100,11 @@ import {
   importPagamentoMercadoLivre,
 } from '../pedidos/orderPaymentImport';
 import {
+  type BootstrapAgendamento,
+  type PendingOrderBootstrapArgs,
+  agendarBootstrapPedido,
+} from '../pedidos/pendingOrderBootstrap';
+import {
   type ShipmentImportResult,
   importShipmentMercadoLivre,
 } from '../pedidos/orderShipmentImport';
@@ -742,6 +747,26 @@ const runPaymentImport: PaymentImportRunner = async (db, integracaoId, resourceI
 };
 
 /**
+ * The #1087 pedido-bootstrap seam: enqueue a synthetic `orders_v2` for an order
+ * ML has not yet made seller-visible. Injectable exactly like the import runners
+ * above, because the real one reaches Cloud Tasks and a test must be able to
+ * COUNT enqueues (the unbounded-loop guard) without one.
+ */
+export type PendingOrderBootstrapRunner = (
+  args: PendingOrderBootstrapArgs,
+) => Promise<BootstrapAgendamento>;
+
+/**
+ * Production bootstrap. The Cloud Tasks scheduler is constructed inside
+ * `pendingOrderBootstrap.ts`, NOT here, and that placement is deliberate:
+ * `mlTasks.ts` imports `MERCADO_LIVRE_NOTIFICATION_QUEUE` from this module, so a
+ * direct `mlTasks` import here would close a file-level import cycle. Keeping the
+ * edge in one file leaves this module's import list free of the Functions SDK.
+ */
+const runPendingOrderBootstrap: PendingOrderBootstrapRunner = (args) =>
+  agendarBootstrapPedido(args);
+
+/**
  * The Step 9 PR 3 shipment-sync seam invoked for `shipments` notifications —
  * shaped exactly like `OrderImportRunner`/`PaymentImportRunner` (topic handler
  * → typed runner, injectable for tests, defaulted to the real
@@ -959,9 +984,117 @@ async function wrapImportRunner<T extends { skipped?: unknown }>(
   }
 }
 
+/**
+ * What the `orders_v2`/`orders` import actually DID, for the log.
+ *
+ * `created` vs `updated` is the distinction that matters most here: re-importing
+ * an order the ERP already has is the common case, and before this it was
+ * indistinguishable from the first import that created the pedido.
+ */
+export type OrderImportOutcome =
+  | 'created'
+  | 'updated'
+  /**
+   * ⚠️ The `-sem-envio` pair is not redundant with `created`/`updated`: the order
+   * carries NO Mercado Envios shipment ("frete a combinar"), so its freight was
+   * synthesized and no `shipments` notification will ever arrive to complete it.
+   * The freight itself still has to be ARRANGED by a human — the synthesized
+   * block is a FOB seed with no carrier, no tracking and no label, and nothing
+   * will fill those in. What no longer needs one is the DELIVERY step: since
+   * `applyFreteSemEnvioStep` learned to read `order.fulfilled`, the seller's
+   * confirmation in the ML panel advances the block to `entregue` on its own
+   * (and moves the stock). Before that it could not: ML stopped adding the
+   * `delivered` tag automatically, so a delivered sem-envio order reads
+   * `not_delivered` / `paid` forever and the pedido stranded at `iniciado`.
+   * Still invisible otherwise, which is why this stays its own outcome. Spelled
+   * as a pair rather than replacing created/updated so the log still says
+   * whether the pedido was new — losing information to save an enum member is
+   * the habit this whole series exists to break.
+   */
+  | 'created-sem-envio'
+  | 'updated-sem-envio'
+  | 'seller-mismatch'
+  | 'no-buyer';
+
+/**
+ * What the `payments` import actually DID, for the log. Every member but
+ * `imported` is a deterministic skip that writes NOTHING — and every one of them
+ * used to ack as a bare `done`, which is how a payment that never imported read
+ * as a success while the pedido sat at `emProcessamento` (#1087).
+ */
+export type PaymentImportOutcome =
+  | 'imported'
+  | 'payment-404'
+  | 'marketplace-none'
+  | 'sem-order-key'
+  /** No pedido owns the order, and the payment carried no order key to ask with. */
+  | 'pedido-nao-encontrado'
+  /**
+   * #1087 — a bootstrap was owed but the enqueue seam is off
+   * (`MERCADO_LIVRE_TASKS_DISABLED`). NOT a success: it disposes as `fail`, so the
+   * doc survives for the sweep to re-drive once the valve is back. Reporting it as
+   * `done` would let the SWEEP delete the failure doc, consuming the delivery and
+   * losing the bootstrap for good — the exact "success that did nothing" shape this
+   * issue is about.
+   */
+  | 'pedido-bootstrap-sem-fila'
+  /** #1087 — a synthetic `orders_v2` was enqueued; the pedido is on its way. */
+  | 'pedido-bootstrap-agendado'
+  /** #1087 — no pedido, and the payment is too old (or future-dated) to bootstrap one. */
+  | 'pedido-nao-encontrado-expirado'
+  /** #1087 — no pedido, and the payment is terminally dead. Nothing to reserve. */
+  | 'pedido-nao-encontrado-pagamento-morto'
+  | 'stale';
+
+/**
+ * The `pedido-nao-encontrado` arms that must NOT read as work performed. They
+ * dispose as `drop`, so the task reports `dropped` and the sweep counts them
+ * under their own key — the `ack` vs `ignore` distinction #813 turned on, where
+ * `done` for something that did nothing is indistinguishable from success.
+ */
+const PAYMENT_OUTCOMES_DROP: ReadonlySet<PaymentImportOutcome> = new Set([
+  'pedido-nao-encontrado-expirado',
+  'pedido-nao-encontrado-pagamento-morto',
+]);
+
+/**
+ * The one payments arm that must SURVIVE rather than be dropped: the work is
+ * still owed and only a deployment valve is in the way, so the doc has to outlive
+ * this delivery. `fail` keeps it for the hot sweep, which re-drives it (the
+ * pagamento upsert is idempotent) and resolves the moment the valve is back.
+ */
+const PAYMENT_OUTCOME_FAIL: PaymentImportOutcome = 'pedido-bootstrap-sem-fila';
+
+/**
+ * What the `shipments` import actually DID, for the log. The fourth and last of
+ * the data-bearing importers — structurally identical to `payments` above, and
+ * with just as rich a skip union, so leaving it bare would have kept exactly the
+ * blind spot this change exists to close.
+ */
+export type ShipmentImportOutcome =
+  | 'synced'
+  | 'shipment-404'
+  | 'sem-order-id'
+  | 'pedido-nao-encontrado'
+  | 'sem-frete-inicial'
+  | 'stale';
+
+/**
+ * The union of every handler's own outcome. ⚠️ Kept as a union of the concrete
+ * unions rather than widened to `string`: `TaskResult.detail` widens it for the
+ * log and that is right THERE, but the widening also meant renaming or dropping a
+ * member compiled everywhere in silence. Narrowing the PRODUCER makes the next
+ * such change a typecheck error at the branch that produces it.
+ */
+export type HandlerOutcome =
+  | ItemsSyncOutcome
+  | OrderImportOutcome
+  | PaymentImportOutcome
+  | ShipmentImportOutcome;
+
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
-  | { kind: 'done'; integracaoId: string; detail?: ItemsSyncOutcome } // known topic processed
+  | { kind: 'done'; integracaoId: string; detail?: HandlerOutcome } // known topic processed
   //   `detail` is the HANDLER's own outcome, when it has one worth reporting.
   //   ⚠️ `done` is a DISPOSITION, not an assertion that work happened: an
   //   items sync that found no link and one that rewrote the listing both
@@ -972,7 +1105,9 @@ export type ProcessOutcome =
   //   widens it for the log and that is the right shape there, but the widening
   //   also meant renaming or dropping a member compiled everywhere in silence.
   //   Narrowing the PRODUCER makes the next such change a typecheck error here.
-  //   A second handler wanting its own detail widens this to a union of unions.
+  //   A second handler wanting its own detail widens this to a union of unions —
+  //   which is exactly what `HandlerOutcome` above now is (#1087, second round:
+  //   `orders_v2` and `payments` were the two topics #1136 left behind).
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
   | { kind: 'ignored-topic' } // TOPIC_DISPOSITION says `ignore` — no account resolved, nothing written
@@ -996,6 +1131,7 @@ export interface NotificationRunners {
   claimImportRunner?: ClaimImportRunner;
   questionImportRunner?: QuestionImportRunner;
   orderMessageImportRunner?: OrderMessageImportRunner;
+  pendingOrderBootstrapRunner?: PendingOrderBootstrapRunner;
 }
 
 /**
@@ -1014,6 +1150,7 @@ export async function processNotificationPayload(
   const migrationRunner = runners.migrationRunner ?? runUptinMigration;
   const orderImportRunner = runners.orderImportRunner ?? runOrderImport;
   const paymentImportRunner = runners.paymentImportRunner ?? runPaymentImport;
+  const bootstrapRunner = runners.pendingOrderBootstrapRunner ?? runPendingOrderBootstrap;
   const shipmentImportRunner = runners.shipmentImportRunner ?? runShipmentImport;
   const claimImportRunner = runners.claimImportRunner ?? runClaimImport;
   const questionImportRunner = runners.questionImportRunner ?? runQuestionImport;
@@ -1081,7 +1218,20 @@ export async function processNotificationPayload(
         skipped: result.skipped,
       });
     }
-    return { kind: 'done', integracaoId };
+    // The runner's outcome rides out on `detail`, the same way the `items` topic
+    // does since #1136. Discarding it made an import that skipped EVERYTHING log
+    // identically to one that created a pedido — and #1087 is the live run where
+    // that cost a day of "outcome: done" over an order that never arrived.
+    const detail: OrderImportOutcome =
+      result.skipped ??
+      (result.created
+        ? result.semEnvio
+          ? 'created-sem-envio'
+          : 'created'
+        : result.semEnvio
+          ? 'updated-sem-envio'
+          : 'updated');
+    return { kind: 'done', integracaoId, detail };
   }
 
   // `payments` — payment status/amount sync onto an already-imported pedido's
@@ -1110,7 +1260,29 @@ export async function processNotificationPayload(
         skipped: result.skipped,
       });
     }
-    return { kind: 'done', integracaoId };
+    // #1087 — the order EXISTS at ML but is not seller-visible yet, so no
+    // `orders_v2` will ever arrive for it and the pedido would never exist,
+    // leaving the unit unreserved while the buyer holds it. Ask the order topic
+    // to import it. `orderImport.ts` stays the only pedido creator; this only
+    // addresses it. The two refusal arms (`-expirado`, `-pagamento-morto`) never
+    // reach here — they carry their own skip value and dispose as `drop`.
+    if (result.skipped === 'pedido-nao-encontrado' && result.orderId != null) {
+      const agendamento = await bootstrapRunner({
+        orderId: result.orderId,
+        userId: payload.user_id,
+        recebidoMs: payload.received ?? null,
+      });
+      return {
+        kind: 'done',
+        integracaoId,
+        detail: agendamento === 'agendado' ? 'pedido-bootstrap-agendado' : PAYMENT_OUTCOME_FAIL,
+      };
+    }
+    // Same as `orders_v2` above. This is the branch #1087 was actually watching:
+    // a payment that never imported acked `done` and looked exactly like one that
+    // advanced the pedido to `pago`.
+    const detail: PaymentImportOutcome = result.skipped ?? 'imported';
+    return { kind: 'done', integracaoId, detail };
   }
 
   // `shipments` — shipment/freteInicial status sync onto an already-imported
@@ -1139,7 +1311,11 @@ export async function processNotificationPayload(
         skipped: result.skipped,
       });
     }
-    return { kind: 'done', integracaoId };
+    // As `orders_v2` and `payments` above. A shipment sync that wrote nothing to
+    // `freteInicial` must not log identically to one that advanced the tracking
+    // state.
+    const detail: ShipmentImportOutcome = result.skipped ?? 'synced';
+    return { kind: 'done', integracaoId, detail };
   }
 
   // `claims` — claim → incidente/conversa/mensagens import (Step 14).
@@ -1256,7 +1432,11 @@ export interface TaskResult {
    * `done` that processed a topic from one that dropped an ignored topic.
    */
   kind?: ProcessOutcome['kind'];
-  /** The handler's own outcome (today: the `items` sync result). */
+  /**
+   * The handler's own outcome — `items`, `orders_v2`/`orders` and `payments` each
+   * report their own. Widened to `string` deliberately: this is the log-facing
+   * shape, and `HandlerOutcome` is the narrow union the PRODUCER is held to.
+   */
   detail?: string;
 }
 /** The operator-facing reason for a seller that maps to no active integração. */
@@ -1387,6 +1567,27 @@ function pipelineFor(runners: NotificationRunners = {}) {
           kind: 'fail',
           reason: `ML API retornou 500 (não é erro do cliente): ${outcome.message}`,
         };
+      }
+      // #1087 — two `payments` arms do real deciding and then do NOTHING, on
+      // purpose. Reporting them as `done` is the failure mode this issue is
+      // about: an outcome indistinguishable from work performed. They `drop`, so
+      // the task reports `dropped` and each is counted under its own key.
+      // Deliberately narrow: every OTHER `done` keeps its bare `resolve`, so no
+      // existing operator counter gets renamed.
+      const detalhe = outcome.kind === 'done' ? outcome.detail : undefined;
+      if (detalhe != null && PAYMENT_OUTCOMES_DROP.has(detalhe as PaymentImportOutcome)) {
+        return { kind: 'drop', label: detalhe };
+      }
+      if (detalhe === PAYMENT_OUTCOME_FAIL) {
+        return {
+          kind: 'fail',
+          reason:
+            'bootstrap do pedido não enfileirado — MERCADO_LIVRE_TASKS_DISABLED; ' +
+            'mantido para a varredura re-dirigir quando a fila voltar',
+        };
+      }
+      if (detalhe === 'pedido-bootstrap-agendado') {
+        return { kind: 'resolve', label: detalhe };
       }
       return { kind: 'resolve' }; // done
     },

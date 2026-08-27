@@ -71,6 +71,13 @@ const UI_PROBE = 'packages/ui/src/testing/mantine-transitions.test.tsx';
  *   `<Activity>` entirely (`TabsPanel.mjs:19`), and an inactive panel having its
  *   effects torn down and re-run is precisely what that file pins. Every OTHER
  *   SectionTabs test keeps the helper.
+ * - `ContaTabs.persistence.test.tsx`: same mechanism, other direction. The
+ *   Mercado Livre account tabs opt OUT of `<Activity>` with
+ *   `keepMountedMode="display-none"`, because an off-screen account whose
+ *   effects unmount silently drops its listings from the editor's flush
+ *   registry. Under `env="test"` the two modes are indistinguishable, so the
+ *   assertion would survive deleting the prop it exists to guard. Every OTHER
+ *   ContaTabs test keeps the helper.
  *
  * Note these files are still protected from the leaked timer: the lever is
  * `DEFAULT_THEME.respectReducedMotion` in `vitest.setup.ts`, which applies to a
@@ -80,6 +87,7 @@ const ALLOWED_BARE_PROVIDER = new Set([
   WEB_PROBE,
   UI_PROBE,
   'packages/ui/src/object/SectionTabs.persistence.test.tsx',
+  'apps/web/app/(app)/produtos/_components/mercado-livre/ContaTabs.persistence.test.tsx',
 ]);
 
 /**

@@ -246,11 +246,22 @@ export const produtoMeta: CollectionMetadata = {
     orderBy: [{ field: 'ultimaModificacao', direction: 'desc' }],
     limit: 50,
     // Legacy showed Foto · SKU · Nome · Preço · Canais de Venda
-    // (`produtoTableView.dart:1568-1587`). `foto` and `preco` are page-owned
-    // virtual columns; `ultimaModificacao` is here because it is the sort key —
-    // without it the list is ordered by a column nobody can see and no sort
-    // arrow renders. "Canais de venda" is deferred (needs a join) — see #159.
-    columns: ['foto', 'nomeLink', 'sku', 'gtin', 'preco', 'publicado', 'ultimaModificacao'],
+    // (`produtoTableView.dart:1568-1587`). `foto`, `preco` and `integracoes`
+    // are page-owned virtual columns; `ultimaModificacao` is here because it is
+    // the sort key — without it the list is ordered by a column nobody can see
+    // and no sort arrow renders. "Canais de venda" was deferred by #159 for
+    // needing a join; it is now the `integracoes` column, which resolves the
+    // `integracoesComProduto` ids through one cached read of `integracao`.
+    columns: [
+      'foto',
+      'nomeLink',
+      'sku',
+      'gtin',
+      'preco',
+      'integracoes',
+      'publicado',
+      'ultimaModificacao',
+    ],
   },
 };
 

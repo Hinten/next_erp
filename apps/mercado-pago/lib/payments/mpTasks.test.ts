@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { MissingRegionError } from '@delfrance/core/region';
+
 // Mock the transport seams: the Functions SDK (queue/enqueue) and the admin app
 // binding. The scheduler's own env-driven wiring runs real.
 const h = vi.hoisted(() => ({
@@ -49,27 +51,38 @@ describe('createMpTaskScheduler', () => {
     expect(h.enqueue).toHaveBeenCalledWith(payload);
   });
 
-  it('defaults the region to us-east5 when nothing is configured', async () => {
+  it('REFUSES to enqueue when no region is configured', async () => {
     vi.stubEnv('MERCADO_PAGO_TASKS_DISABLED', '');
-    // Truly unset (not empty) so the `?? default` chain falls through.
     vi.stubEnv('MERCADO_PAGO_TASKS_REGION', undefined);
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createMpTaskScheduler();
-    await scheduler.enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east5/functions/processMercadoPagoNotification',
-    );
+
+    // There is deliberately no default. The old one (us-east5) produced a
+    // well-formed path to a queue that does not exist, and the Admin SDK then
+    // resolved us-central1 and DROPPED the task while this call resolved
+    // successfully. A throw is the only visible outcome available.
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
   });
 
-  it('treats blank MERCADO_PAGO_TASKS_REGION as unset and falls through to default', async () => {
+  it('treats a blank MERCADO_PAGO_TASKS_REGION as unset, not as a value', async () => {
     vi.stubEnv('MERCADO_PAGO_TASKS_DISABLED', '');
-    // Empty string should be treated as unset
     vi.stubEnv('MERCADO_PAGO_TASKS_REGION', '');
     vi.stubEnv('FUNCTIONS_REGION', undefined);
     const scheduler = createMpTaskScheduler();
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+  });
+
+  it('falls through to FUNCTIONS_REGION when only that is set', async () => {
+    vi.stubEnv('MERCADO_PAGO_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_PAGO_TASKS_REGION', '');
+    vi.stubEnv('FUNCTIONS_REGION', 'us-central1');
+    const scheduler = createMpTaskScheduler();
     await scheduler.enqueue(payload);
+
     expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east5/functions/processMercadoPagoNotification',
+      'locations/us-central1/functions/processMercadoPagoNotification',
     );
   });
 

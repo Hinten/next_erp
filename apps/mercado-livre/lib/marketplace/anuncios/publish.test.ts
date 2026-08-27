@@ -1401,10 +1401,16 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
         id: `MLB90${++n}`,
         family_id: 4260899048783356,
       })),
-      // The orphan sweep's two hops. Membership == exactly what was published,
-      // so the default fixture closes nothing.
+      // The orphan sweep's hops. Membership == exactly what was published, so
+      // the default fixture closes nothing.
       getUserProductFamily: vi.fn(async () => ({ user_products_ids: ['MLBU1', 'MLBU2'] })),
       searchItemsByUserProduct: vi.fn(async () => ({ results: ['MLB901', 'MLB902'] })),
+      // Hop three: the sweep PROVES membership before closing, so an id it
+      // cannot confirm stays open. Confirms whatever it is asked about — a
+      // fixture that wants a refusal overrides this.
+      getItemsByIds: vi.fn(async (ids: readonly string[]) =>
+        ids.map((id) => ({ code: 200, body: { id, user_product_id: 'MLBU1' } })),
+      ),
       ...overrides,
     });
   }
@@ -1914,5 +1920,263 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(/UPtin/);
 
     expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ estado: 'am', errors: null });
+  });
+
+  /**
+   * #1252 at MEMBER level. The parent link's clear lives in the top-level
+   * describe below; this is the `variacaoMercadoLivre` half, which publish writes
+   * through `writeMemberLink`.
+   *
+   * ⚠️ It is asserted from HERE rather than from `publishUserProduct.test.ts`,
+   * which mocks the ML API and holds no Firestore at all — a link-doc assertion
+   * has nowhere to live there. This block already drives the family fan-out
+   * against `FakeDb`, so the write is observable.
+   */
+  it('clears a member reason ML has stopped reporting, with no moderation call', async () => {
+    const db = new FakeDb();
+    seedFamily(db);
+    db.seed('produtos/child-1/variacaoMercadoLivre', 'var-child-1', {
+      produtoVariacaoOuterRef: 'documents/produtos/child-1',
+      produtoMercadoLivreOuterRef: `documents/produtos/${PROD}/produtoMercadoLivre/ML-DOC-1`,
+      itemId: 'MLB901',
+      moderacoes: [{ nome: 'WATERMARK', motivo: "Marca d'água" }],
+    });
+    const { api, mocks } = upApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // ML answered `active` with no sub_status, so the stored reason is stale.
+    expect([...db.docs('produtos/child-1/variacaoMercadoLivre').values()][0]).toMatchObject({
+      status: 'active',
+      moderacoes: [],
+    });
+    // And it cost nothing. ⚠️ Asserted on the API SURFACE, not via
+    // `expect(mocks.getLastModeration).toBeUndefined()` — `makeApi`'s mocks are a
+    // fixed literal with no such key, so that can never fail and would read as a
+    // guard while checking nothing. The surface lacking the endpoint is the real
+    // guarantee: a lookup would throw.
+    expect(Object.keys(mocks)).not.toContain('getLastModeration');
+  });
+
+  /**
+   * ⚠️ The other arm. `writeMemberLink`'s patch is `update()`-backed, so OMITTING
+   * the key is what leaves a stored reason standing — writing `null` would be a
+   * schema violation on a merge and writing `[]` would record a verdict publish
+   * never asked for.
+   */
+  it('leaves a member reason alone while ML is still reporting one', async () => {
+    const db = new FakeDb();
+    seedFamily(db);
+    const moderacao = { nome: 'WATERMARK', motivo: "Marca d'água" };
+    db.seed('produtos/child-1/variacaoMercadoLivre', 'var-child-1', {
+      produtoVariacaoOuterRef: 'documents/produtos/child-1',
+      produtoMercadoLivreOuterRef: `documents/produtos/${PROD}/produtoMercadoLivre/ML-DOC-1`,
+      itemId: 'MLB901',
+      moderacoes: [moderacao],
+    });
+    // ⚠️ Both verbs: a member with a seeded link doc is UPDATED, one without is
+    // CREATED, and the fan-out here does each at least once. Overriding only
+    // `createItem` leaves the update answering a bare `active` and the assertion
+    // then passes for the wrong reason.
+    let n = 0;
+    const moderado = async () => ({
+      ...ITEM_RESPONSE,
+      id: `MLB90${++n}`,
+      family_id: 4260899048783356,
+      status: 'active',
+      sub_status: ['poor_quality_thumbnail'],
+    });
+    const { api } = upApi({
+      createItem: vi.fn(moderado),
+      updateItem: vi.fn(moderado),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect([...db.docs('produtos/child-1/variacaoMercadoLivre').values()][0]).toMatchObject({
+      moderacoes: [moderacao],
+    });
+  });
+});
+
+/**
+ * #1252 — publish joins the roster of writers that keep `moderacoes` honest.
+ *
+ * It never asks ML about moderation, and it does not need to: the gate is a pure
+ * predicate over the `status`/`sub_status` the create/update response already
+ * carried, so a listing ML now calls healthy is written `[]` for free. What that
+ * buys is the stale-reason case — a republish of a listing whose moderação ML has
+ * since lifted used to leave the old reason standing forever, and a stale
+ * moderação on a healthy listing is indistinguishable from a real one.
+ */
+describe('publishProduto — ML moderations on the parent link (#1252)', () => {
+  const MODERACAO = { nome: 'WATERMARK', motivo: "A foto de capa contém marcas d'água." };
+
+  it('CLEARS a reason ML has stopped reporting', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, moderacoes: [MODERACAO] });
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // ⚠️ One `toMatchObject` carrying BOTH: the invariant is that the reason and
+    // the status it explains move in the same patch, so asserting them apart
+    // would pass on a writer that split them.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({
+      status: 'active',
+      moderacoes: [],
+    });
+  });
+
+  /**
+   * ⚠️ The case the clear must NOT swallow. `poor_quality_thumbnail` leaves the
+   * listing `active` — it is live and merely losing exposure — so a republish
+   * succeeds while the moderation is still in force. Clearing on the publish's
+   * own authority would erase a live reason.
+   */
+  it('leaves a reason alone while ML is STILL reporting one', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, moderacoes: [MODERACAO] });
+    // ⚠️ `FLUTTER_LINK` carries an `id`, so this is a REPUBLISH — the response
+    // comes from `updateItem`, not `createItem`. Overriding the wrong one makes
+    // the fixture inert and the test pass for no reason.
+    const { api } = makeApi({
+      updateItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        status: 'active',
+        sub_status: ['poor_quality_thumbnail'],
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({
+      sub_status: ['poor_quality_thumbnail'],
+      moderacoes: [MODERACAO],
+    });
+  });
+
+  it('costs no moderation lookup either way — the gate is pure', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // ⚠️ The API surface publish is given has no moderation endpoint, so a
+    // lookup would THROW rather than fail an assertion — that absence is the
+    // real guard. `expect(mocks.getLastModeration).toBeUndefined()` would be
+    // vacuous here: the mocks object is a fixed literal without the key.
+    expect(Object.keys(mocks)).not.toContain('getLastModeration');
+  });
+});
+
+describe('publishProduto — which anúncio a publish targets', () => {
+  /**
+   * A conta holding TWO listings on one produto. Storage has always allowed
+   * this — the schema mints auto-ids and both sweeps loop every link with no
+   * `limit(1)` — but the selection here could only ever name the first, so a
+   * second anúncio was unpublishable and Publicar silently re-published #1.
+   *
+   * `ML-DOC-1` comes from `seedBase`; this adds the sibling. Insertion order is
+   * what makes `ML-DOC-1` the "first" one, matching the Firestore snapshot order
+   * the real query returns.
+   */
+  function seedSegundoAnuncio(db: FakeDb): void {
+    db.seed(LINKS_PATH, 'ML-DOC-2', {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      channels: ['marketplace'],
+      estado: 'r',
+      id: null,
+      site_id: 'MLB',
+      title: 'Camiseta Básica — Premium',
+      category_id: 'MLB31447',
+      condition: 'new',
+      listing_type_id: 'gold_pro',
+      isUserProductModel: false,
+    });
+  }
+
+  it('publishes the named link doc and leaves its sibling untouched', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    seedSegundoAnuncio(db);
+    const { api, mocks } = makeApi();
+
+    await publishProduto({ ...makeDeps(db, api), linkDocId: 'ML-DOC-2' }, PROD);
+
+    expect(mocks.createItem).toHaveBeenCalledTimes(1);
+    // The listing type comes off the TARGETED doc, which is the whole point:
+    // reading it off the first link would publish the wrong listing's shape.
+    expect(mocks.createItem!.mock.calls[0]![0]).toMatchObject({ listing_type_id: 'gold_pro' });
+    expect(db.docs(LINKS_PATH).get('ML-DOC-2')).toMatchObject({ id: 'MLB777', estado: 'p' });
+    // Still the rascunho `seedBase` wrote — publish never reached it.
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ id: null, estado: 'r' });
+  });
+
+  it('falls back to the conta first link when no linkDocId is given', async () => {
+    // The regression guard for every existing caller: omitting the id must keep
+    // the historical behaviour byte for byte.
+    const db = new FakeDb();
+    seedBase(db);
+    seedSegundoAnuncio(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ id: 'MLB777', estado: 'p' });
+    expect(db.docs(LINKS_PATH).get('ML-DOC-2')).toMatchObject({ id: null, estado: 'r' });
+  });
+
+  it('refuses an id this conta does not own, without calling ML', async () => {
+    // The route 404s this first, so reaching here means the doc moved conta
+    // between the two reads — or that someone called the orchestrator directly.
+    // Either way it must not publish someone else's listing under this token.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-OUTRA', {
+      contaOuterRef: 'documents/integracao/outra-conta',
+      estado: 'r',
+      id: null,
+      site_id: 'MLB',
+      title: 'De outra conta',
+      category_id: 'MLB31447',
+      condition: 'new',
+    });
+    const { api, mocks } = makeApi();
+
+    await expect(
+      publishProduto({ ...makeDeps(db, api), linkDocId: 'ML-DOC-OUTRA' }, PROD),
+    ).rejects.toThrow(/não encontrado nesta conta/);
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('refuses an id that does not exist at all', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    const { api, mocks } = makeApi();
+
+    await expect(
+      publishProduto({ ...makeDeps(db, api), linkDocId: 'ML-DOC-FANTASMA' }, PROD),
+    ).rejects.toThrow(/não encontrado nesta conta/);
+    expect(mocks.createItem).not.toHaveBeenCalled();
+  });
+
+  it('treats an empty linkDocId as absent rather than as a doc that cannot exist', async () => {
+    // ⚠️ Not because `''` is a plausible doc id — it is not: `.doc('')` throws.
+    // (The `link.id !== ''` test elsewhere in this module is about the ML ITEM
+    // id, a schema field whose blank value IS in the corpus; a Firestore doc id
+    // is a different thing.) It is because a caller threading a falsy variable
+    // through should get the default, not a guaranteed refusal.
+    const db = new FakeDb();
+    seedBase(db);
+    const { api } = makeApi();
+
+    await publishProduto({ ...makeDeps(db, api), linkDocId: '' }, PROD);
+
+    expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ id: 'MLB777', estado: 'p' });
   });
 });

@@ -79,22 +79,24 @@ function compileFilter(f: ColumnFilterValue): (value: unknown) => boolean {
       return (value) => value != null && Number(value) >= bound;
     }
     case 'array-contains':
-      // The one array op `ColumnFilterValue` can express: a single scalar
-      // candidate. The built-in ColumnFilter UI never emits it, but
-      // `buildPipeline` can wire it by hand as an `extraFilter`, and the
-      // client-side fallback has to agree with what the server would return.
+      // A single scalar candidate. The built-in ColumnFilter UI never emits it,
+      // but a virtual column's `renderFilter` can, `buildPipeline` can wire it
+      // by hand as an `extraFilter`, and the client-side fallback has to agree
+      // with what the server would return.
       return (value) => Array.isArray(value) && value.includes(f.value);
-    case 'array-contains-any':
-      // `ColumnFilterValue.value` is `string | number | boolean | null`, so the
-      // candidate LIST this op needs can never arrive — it would silently
-      // degrade to a one-candidate `array-contains` and return the wrong rows.
-      // Same posture as `filterExpr` (pipeline-queries.ts): surfacing the error
-      // beats quietly querying nonsense.
-      throw new Error(
-        `filterRows: op "array-contains-any" needs a list of candidates, but ` +
-          `ColumnFilterValue.value is a scalar (${typeof f.value}). ` +
-          `Use "array-contains" for a single value.`,
-      );
+    case 'array-contains-any': {
+      // Membership against a LIST of candidates — `ColumnFilterValue.value`
+      // carries the array form for this op alone (see its jsdoc). A scalar is
+      // still accepted and behaves as a one-candidate list, which is what
+      // `arrayContainsAny` does server-side.
+      //
+      // An EMPTY list means "no rows" and must never reach here: `buildPipeline`
+      // throws on it, and TableView short-circuits before querying. Matching
+      // nothing keeps the two paths agreeing if it somehow does.
+      const candidates = new Set<unknown>(Array.isArray(f.value) ? f.value : [f.value]);
+      return (value) =>
+        Array.isArray(value) && value.some((entry) => candidates.has(entry as unknown));
+    }
     default:
       return () => true;
   }

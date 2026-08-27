@@ -40,9 +40,15 @@ cross-theme edges this layout exists to expose. Same convention as
   `importacao/` and `anuncios/`. _That_ fan-out is one-directional and intended.
 - ⚠️ **But `notificacoes/` as a folder is also an inbound sink**, via two
   modules that have nothing to do with dispatch:
-  - `mlTasks.ts` — imported by `estoque/` (×4), `preco/` and `nfe/`. This is
-    precisely why a `tasks/` folder cannot exist, and it is the edge that would
-    have to move first if `notificacoes/` were ever split.
+  - `mlTasks.ts` — imported by `estoque/` (×4), `preco/`, `nfe/` and (since
+    #1087) `pedidos/pendingOrderBootstrap.ts`. This is precisely why a `tasks/`
+    folder cannot exist, and it is the edge that would have to move first if
+    `notificacoes/` were ever split. ⚠️ That last importer is where the
+    `pedidos/` bootstrap builds its scheduler **on purpose**: `mlTasks.ts`
+    imports `MERCADO_LIVRE_NOTIFICATION_QUEUE` (a value) from `notificacao.ts`,
+    so building it in the dispatcher instead would close a file-level cycle.
+    Keeping the edge in one leaf file leaves `notificacao.ts` free of the
+    Functions SDK.
   - `notificacaoFrescor.ts` — imported by `chat/orderMessageImport.ts` and
     `chat/questionImport.ts`.
 
@@ -55,6 +61,15 @@ cross-theme edges this layout exists to expose. Same convention as
 - **`anuncios/ ⇄ estoque/ ⇄ preco/`** all meet at `estoque/bulkEstoquePlan.ts`
   and `core/publishFalhas.ts`. If those edges start to chafe, hoisting
   `bulkEstoquePlan.ts` into `core/` is the obvious next move.
+- **`importacao/ → anuncios/moderacoes.ts`** (#1087). One-directional. The
+  importer is the third writer of the link doc's `moderacoes`, beside the `items`
+  sync and `reverificarAnuncio`, and it deliberately shares their module rather
+  than restating the `-ITM` reference and the 404-is-data narrow — the places
+  those could drift. `moderacoes.ts` lives in `anuncios/` because listing
+  lifecycle is its subject; the import merely reads it. ⚠️ The **gate** (_when_ to
+  ask) is no longer part of this edge: `precisaConsultarModeracao` moved to
+  `@delfrance/schemas` in #1239 so `apps/web` could reach it, and all three
+  writers import it from there.
 
 ## Paths that are load-bearing outside this folder
 

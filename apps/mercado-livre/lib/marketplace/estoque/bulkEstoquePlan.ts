@@ -200,6 +200,12 @@
 import type { Firestore } from 'firebase-admin/firestore';
 // Pipeline expression builders live in the `/pipelines` subpath (admin
 // `@google-cloud/firestore` v8). Namespace import — the module is `export =`d.
+// ⚠️ This import is why `next.config.ts` must keep `@google-cloud/firestore` in
+// `serverExternalPackages`: `firebase-admin` (which supplies `db`) is external by
+// default and this package is not, so bundling it gives the two a SEPARATE module
+// instance each — and every pipeline stage overloads on `instanceof`, so the
+// mismatch surfaces only at runtime, as `TypeError: selectables is not iterable`.
+// Guarded by `packages/config-eslint/rules/next-firestore-external.test.js`.
 import * as pipelines from '@google-cloud/firestore/pipelines';
 import {
   type ComponentesKit,

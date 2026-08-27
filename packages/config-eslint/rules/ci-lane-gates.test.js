@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DERIVED_JOB, THIRD_PARTY_JOBS } from '../../../.github/scripts/main-red-alert.mjs';
 import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
+import { checkName, jobBlocks, topBlock } from './lib/workflow-scan.js';
 
 /**
  * Every PR-triggered lane must ALWAYS publish a check, and that check must tell
@@ -66,8 +67,8 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  * The pinned contract, one entry per gated lane.
  *
  * `check` strings are what a human types into the `protect-main` ruleset (id
- * 16348427). ⚠️ A check-run name carries NO workflow-name prefix — `ci.yml`'s job
- * publishes as bare `lint-typecheck-test` — so every name here must be unique
+ * 16348427). ⚠️ A check-run name carries NO workflow-name prefix — a job with
+ * no `name:` publishes as its bare job id — so every name here must be unique
  * across the WHOLE repo, which assertion 5 enforces. They are pure ASCII on
  * purpose: they get pasted into a JSON payload from PowerShell on Windows, and a
  * mangled em dash produces a required check that never matches and an unmergeable
@@ -228,8 +229,13 @@ const LANES = {
  */
 const UNGATED = {
   '.github/workflows/ci.yml':
-    'Full-graph lane. No `paths:` at all and its suite job carries no `if:`, so ' +
-    '`lint-typecheck-test` is directly pinnable and needs no gate of its own.',
+    'Full-graph lane, split into five sibling jobs (typecheck / lint / ' +
+    'format-check / test / build) so they run concurrently instead of ' +
+    'sequentially. No `paths:` at all and NONE of the five carries an `if:`, so ' +
+    'every one of them is unskippable and directly pinnable — `CI typecheck`, ' +
+    '`CI lint`, `CI format check`, `CI test`, `CI build` — and the lane needs no ' +
+    'gate of its own. ⚠️ Adding an `if:` to any of them would make it skippable, ' +
+    'and GitHub counts a `skipped` job as SATISFYING a required check.',
   '.github/workflows/e2e-reusable.yml':
     'The shared engine. `workflow_call`-only — asserted separately below.',
   '.github/workflows/nfe-epec-scheduled.yml':
@@ -252,6 +258,32 @@ const UNGATED = {
     'deliberate shape as copilot-setup-steps.yml.',
 };
 
+/**
+ * `ci.yml`'s five suite jobs: job id → the check-run name it publishes.
+ *
+ * ⚠️ This exists because `ci.yml` lives in UNGATED, which carries no
+ * `jobs[].check` structure — so assertion 9's `published !== job.check`
+ * comparison, which protects every GATED lane's names, never runs for it.
+ * Without this table the five names that a human types into `protect-main`
+ * (#1052) are asserted NOWHERE: they appear only in prose — CLAUDE.md rule 2,
+ * SKILL.md's table, the UNGATED string above. Renaming `name: CI test` to
+ * anything else would keep this whole suite green, silently rot both documents,
+ * and once the name is pinned leave branch protection waiting forever on a check
+ * that never reports — the unmergeable-`main` failure mode this file's header
+ * warns about.
+ *
+ * Pure ASCII, no `:` and no `/`, for the reasons in the LANES docstring.
+ */
+const CI_YML_JOBS = {
+  typecheck: 'CI typecheck',
+  lint: 'CI lint',
+  'format-check': 'CI format check',
+  test: 'CI test',
+  'test-web-1': 'CI test web 1of2',
+  'test-web-2': 'CI test web 2of2',
+  build: 'CI build',
+};
+
 /** Same discovery shape as `env-example-location.test.js` — see its long note. */
 function findByPathspec(pathspec) {
   return gitLsFiles(pathspec);
@@ -267,19 +299,6 @@ function findByPathspec(pathspec) {
  * single point every assertion reads through.
  */
 const read = (file) => readFileSync(resolve(REPO_ROOT, file), 'utf8').split('\r\n').join('\n');
-
-/** Lines of a top-level block (`on:`, `jobs:`), exclusive of the header. */
-function topBlock(source, key) {
-  const lines = source.split('\n');
-  const start = lines.findIndex((l) => new RegExp(`^(?:${key}|'${key}'|"${key}")\\s*:`).test(l));
-  if (start === -1) return { header: null, body: [] };
-  const body = [];
-  for (const line of lines.slice(start + 1)) {
-    if (/^\S/.test(line)) break;
-    body.push(line);
-  }
-  return { header: lines[start], body };
-}
 
 /** Lines of a sub-block of `on:` (`pull_request:`, `push:`), or null if absent. */
 function onSubBlock(source, key) {
@@ -341,27 +360,6 @@ export function yamlListUnder(lines, key) {
   return out;
 }
 
-/** `{ jobId: body }` for the top-level `jobs:` mapping, with the indent derived. */
-export function jobBlocks(source) {
-  const { body } = topBlock(source, 'jobs');
-  const firstReal = body.find((l) => l.trim() && !l.trim().startsWith('#'));
-  const indent = firstReal ? firstReal.match(/^\s*/)[0] : '  ';
-  const idRe = new RegExp(`^${indent}([A-Za-z_][A-Za-z0-9_-]*)\\s*:\\s*(?:#.*)?$`);
-
-  const jobs = {};
-  let current = null;
-  for (const line of body) {
-    const m = line.match(idRe);
-    if (m) {
-      current = m[1];
-      jobs[current] = [];
-    } else if (current) {
-      jobs[current].push(line);
-    }
-  }
-  return Object.fromEntries(Object.entries(jobs).map(([k, v]) => [k, v.join('\n')]));
-}
-
 /**
  * Every `e2e-affected.mjs` invocation in a workflow, with the shell around it.
  *
@@ -405,13 +403,6 @@ export function scopeInvocations(source) {
     });
   }
   return found;
-}
-
-/** The check-run name GitHub publishes for a job: its `name:`, else its id. */
-function checkName(jobId, jobBody) {
-  const m = jobBody.match(/^\s{4}name\s*:\s*(.+?)\s*$/m);
-  if (!m) return jobId;
-  return m[1].replace(/^['"]|['"]$/g, '');
 }
 
 describe('CI lanes always report', () => {
@@ -480,7 +471,13 @@ describe('CI lanes always report', () => {
 
     // ...and it still reads real files in this repo.
     expect(Object.keys(jobBlocks(read('.github/workflows/ci.yml')))).toEqual([
-      'lint-typecheck-test',
+      'typecheck',
+      'lint',
+      'format-check',
+      'test',
+      'test-web-1',
+      'test-web-2',
+      'build',
       'report-failure',
     ]);
 
@@ -731,6 +728,170 @@ describe('CI lanes always report', () => {
         'breaks the gates, which locate their jobs by name through the jobs API.',
         '',
         ...dupes.map((d) => `  - ${d}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 5b. ci.yml is gateless BECAUSE it is unskippable. Enforce both halves.
+  // ------------------------------------------------------------------
+  it('ci.yml publishes the five pinnable names and none of the five can skip', () => {
+    const CI = '.github/workflows/ci.yml';
+    const jobs = jobBlocks(read(CI));
+    const suite = Object.keys(jobs).filter((id) => !/^report-/.test(id));
+
+    // (a) The suite jobs are exactly the five declared. A sixth added without a
+    //     table entry would be unasserted; a removed one silently drops a check.
+    expect(
+      suite.sort(),
+      [
+        `${CI}'s suite jobs drifted from CI_YML_JOBS.`,
+        '',
+        'Add the new job to that table (and to CLAUDE.md rule 2 + the SKILL.md',
+        'table), or this lane gains a check that nothing pins and nothing describes.',
+      ].join('\n'),
+    ).toEqual(Object.keys(CI_YML_JOBS).sort());
+
+    // (b) Each publishes the exact name a human pins on the ruleset.
+    const names = Object.fromEntries(suite.map((id) => [id, checkName(id, jobs[id])]));
+    expect(
+      names,
+      [
+        `A ${CI} check-run name changed.`,
+        '',
+        'These are the names #1052 pins on `protect-main` (id 16348427). GitHub',
+        'matches a required check BY NAME: a renamed check is never reported and the',
+        'branch waits on it forever. If the rename is intentional, update CI_YML_JOBS,',
+        'CLAUDE.md rule 2, the SKILL.md table and the ruleset in the same change.',
+      ].join('\n'),
+    ).toEqual(CI_YML_JOBS);
+
+    // (c) None of them carries an `if:`. This is the WHOLE reason ci.yml needs no
+    //     gate, and until now it was asserted only in prose. A job skipped by `if:`
+    //     publishes `skipped`, which GitHub counts as SATISFYING a required check —
+    //     so an `if:` here turns a pinned check into a permanent free pass.
+    const skippable = suite.filter((id) => /^\s{4}if\s*:/m.test(jobs[id]));
+    expect(
+      skippable,
+      [
+        `These ${CI} jobs gained an \`if:\`, which makes them SKIPPABLE.`,
+        '',
+        'A skipped job publishes `skipped`, and GitHub counts that as satisfying a',
+        'required status check — so each of these becomes a permanent free pass once',
+        'pinned. Unskippability is the entire reason this lane is allowed to sit in',
+        'UNGATED with no gate job of its own.',
+        '',
+        'If the condition is genuinely needed, this lane must grow a `gate` job and',
+        'move into LANES — do not just delete this assertion.',
+        '',
+        ...skippable.map((id) => `  - ${id}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 5c. The web test shards are a PARTITION, and web runs in them alone.
+  // ------------------------------------------------------------------
+  it('ci.yml shards @delfrance/web completely and exactly once', () => {
+    const CI = '.github/workflows/ci.yml';
+    // Comments in this file legitimately write `--shard=i/N` while explaining the
+    // rule, so match only a real numeric argument. Stripping comments first would
+    // also work, but this cannot be fooled by a commented-out command either.
+    const source = read(CI);
+    const shards = [...source.matchAll(/--shard=(\d+)\/(\d+)/g)].map((m) => ({
+      i: Number(m[1]),
+      n: Number(m[2]),
+    }));
+
+    // (a0) Anti-vacuity FIRST. With the shard jobs gone, `shards` is empty and the
+    //      checks below pass over nothing — (a) would even report "mixes shard
+    //      denominators: " with an empty list, which reads like a parser bug rather
+    //      than the real defect. Fail here, with the real reason.
+    expect(
+      shards.length,
+      `${CI} declares no numeric \`--shard=\` command at all. Either the shard jobs were removed (in which case delete this assertion and CI_YML_JOBS' entries deliberately), or the argument shape changed and this scanner silently stopped seeing it.`,
+    ).toBeGreaterThanOrEqual(2);
+
+    // (a) There is exactly one denominator. Bumping one job to `--shard=1/3` and
+    //     forgetting the third job leaves a third of the suite running NOWHERE.
+    const denominators = [...new Set(shards.map((s) => s.n))];
+    expect(
+      denominators,
+      [
+        `${CI} mixes shard denominators: ${denominators.join(', ')}.`,
+        '',
+        'Every `--shard=i/N` for one suite must share the same N. A mismatched pair',
+        'silently drops or double-runs files, and every job still reports green.',
+      ].join('\n'),
+    ).toHaveLength(1);
+
+    // (b) The numerators are exactly 1..N, each once. This is the completeness
+    //     proof: union of the shards is the whole suite, intersection is empty.
+    const n = denominators[0];
+    expect(
+      shards.map((s) => s.i).sort((a, b) => a - b),
+      [
+        `${CI}'s shard set is not a partition of 1..${n}.`,
+        '',
+        'Found: ' + shards.map((s) => `${s.i}/${s.n}`).join(', '),
+        '',
+        '`vitest --shard=i/N` splits by FILE. A missing numerator means those files',
+        'run in NO job — the suite reports green having never executed them, which',
+        'no other check in this repo can see. A repeated one runs them twice.',
+      ].join('\n'),
+    ).toEqual(Array.from({ length: n }, (_, k) => k + 1));
+
+    // (c) The unsharded `test` job must EXCLUDE web, or it runs three times over
+    //     (once whole, once per shard) and the sharding saves nothing. The inverse
+    //     mistake — dropping the shard jobs but keeping the exclusion — is caught
+    //     by assertion 5b, which pins the job set.
+    const jobs = jobBlocks(source);
+    expect(
+      /--filter '!@delfrance\/web'/.test(jobs.test ?? ''),
+      [
+        `${CI}'s \`test\` job does not exclude @delfrance/web.`,
+        '',
+        'Web has its own shard jobs, so leaving it in the unfiltered `turbo run test`',
+        'runs the whole 222-file suite a third time and puts this job straight back',
+        'on the critical path — the exact cost the shards exist to remove.',
+      ].join('\n'),
+    ).toBe(true);
+
+    // (c2) Every shard command must name the package AND carry `--fail-if-no-match`.
+    //      Measured on pnpm 11.2.2 (the version `packageManager` pins): a `--filter`
+    //      matching nothing prints "No projects matched the filters" and exits **0**
+    //      — for a bad NAME and for a missing SCRIPT alike. So pnpm carries the same
+    //      silent-exit-0 hazard as `turbo run`, and this file previously claimed the
+    //      opposite. Without the flag, renaming the workspace leaves both shard jobs
+    //      GREEN having run ZERO of the 222 files.
+    //
+    //      ⚠️ (a)-(c) above cannot see this: a `--shard=i/N` substring says nothing
+    //      about WHAT is being sharded, or whether the filter matched anything.
+    //
+    //      ⚠️ The package match is a REGEX with a trailing boundary, not
+    //      `.includes('@delfrance/web')`. A substring test passes for
+    //      `@delfrance/webb` — the exact typo this is meant to catch — and mutation
+    //      testing caught that here before it shipped. Same lesson as the gate rule
+    //      "never locate a job by substring".
+    const shardCommands = source.split('\n').filter((l) => /^\s*run:.*--shard=\d+\/\d+/.test(l));
+    const unguarded = shardCommands.filter(
+      (l) => !(l.includes('--fail-if-no-match') && /--filter @delfrance\/web(?![\w-])/.test(l)),
+    );
+    expect(
+      unguarded,
+      [
+        `${CI} has a shard command that is not pinned to a matching package.`,
+        '',
+        'Each must contain BOTH `--fail-if-no-match` and `@delfrance/web`:',
+        '',
+        '  pnpm --fail-if-no-match --filter @delfrance/web exec vitest run --shard=i/N',
+        '',
+        'Without the flag `pnpm --filter <unknown>` exits 0 having run nothing —',
+        'verified on pnpm 11.2.2 for a bad package name AND a missing script. A rename',
+        'would leave these jobs green over an empty file set, which is the exact silent',
+        'pass this file exists to eliminate.',
+        '',
+        ...unguarded.map((l) => `  - ${l.trim()}`),
       ].join('\n'),
     ).toEqual([]);
   });

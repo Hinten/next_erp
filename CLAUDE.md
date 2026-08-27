@@ -29,8 +29,16 @@ Five rules you must not break without reading it first:
    not a skip, *nothing* — and a job skipped by `if:` publishes `skipped`, which
    GitHub counts as **satisfying** a required check. Both are silent passes.
 2. ⚠️ **A check-run name carries no workflow prefix**, so every name must be
-   unique repo-wide. The pinnable ones are `E2E gate (cadastros|vendas|emulator)`,
-   `CI gate (nfe|freight|mercado-livre|storage|rules)` and `lint-typecheck-test`.
+   unique repo-wide. The fifteen pinnable ones are
+   `E2E gate (cadastros|vendas|emulator)`,
+   `CI gate (nfe|freight|mercado-livre|storage|rules)` and — since `ci.yml` split
+   its single `lint-typecheck-test` job into seven concurrent ones —
+   `CI typecheck`, `CI lint`, `CI format check`, `CI test`,
+   `CI test web 1of2`, `CI test web 2of2`, `CI build`. ⚠️ The last two are a
+   `vitest --shard` **partition** of `@delfrance/web`, and `CI test` excludes
+   that workspace: change one and you must change the others, or a slice of the
+   222-file suite runs **nowhere** while every job still reports green.
+   `ci-lane-gates.test.js` asserts the partition.
 3. ⚠️ **A job-level `if:` replaces the implicit `success()`** — putting one on a
    downstream job makes it run even after its upstream failed. Let `needs:` carry
    the skip instead.
@@ -376,10 +384,10 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Ten custom lint rules in `packages/config-eslint/rules/`:
+- Eleven custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding`,
   `no-optional-without-nullable`, `no-client-estado-history-write`,
-  `no-env-secrets-access` and
+  `no-env-secrets-access`, `no-hardcoded-gcp-region` and
   `prefer-schema-enum` (error), `no-inline-admin-collection`,
   `no-lossy-date-parse`, `no-ambient-timezone` and
   `no-error-as-sole-instanceof` (warn). `no-ambient-timezone` bans reading the
@@ -389,7 +397,19 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   runner's own third zone hides it. `no-env-secrets-access` bans any literal
   naming `.env.secrets` — the repo's credential template, which nothing automated
   may read; its non-JS half (workflows, firebase configs, shell) is the
-  `env-secrets-no-copy` backstop test, since ESLint parses neither. `no-client-estado-history-write` guards
+  `env-secrets-no-copy` backstop test, since ESLint parses neither.
+  `no-hardcoded-gcp-region` bans a bare region id (`us-east1`, `nam5`) as a string
+  literal: the region belongs in the environment, read through `requireRegion`
+  (`@delfrance/core/region`) or `requireBuildRegion` (`tools/deploy-env`), both of
+  which **throw** when it is unset. A hardcoded fallback is how this repo drifted
+  into three regions with nothing failing — a function deployed to the wrong region
+  deploys fine, and an enqueue against the wrong one is **dropped while the route
+  returns 200** (#1108), so the first signal was the inter-region transfer bill.
+  Tests and `preflight.mjs`'s `REGIONS_WITHOUT_TASKS` are exempt (both must name a
+  region to mean anything); config files legitimately hold the literal, and the
+  matching `functions-region-supplied` backstop asserts the inverse there — every
+  workflow that builds a functions bundle must SET `FUNCTIONS_REGION`, since a
+  missing one now refuses the build. `no-client-estado-history-write` guards
   BOTH server-owned pedido audit trails — `historicoEstadoPedido` and
   `historicoFtIni` — whose sole writer is the `onPedidoChanged` trigger.
   `prefer-schema-enum` is the only **type-aware** one, so it is enabled inside
@@ -450,11 +470,29 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `cleanupUnusedCatalogs: true` deletes `next: 16.2.6` from the catalog on the
   next install. Do not bump it with `pnpm add` — under `catalogMode: strict`
   that rewrites the spec back to `catalog:`, the exact string that blocks the
-  deploy. **`packageManager` is the sole authority for pnpm** — corepack
+  deploy. **`packageManager` is the sole authority for pnpm *in CI*** — corepack
   honours it over any activated default, so CI runs only `corepack enable`
   and never pins a version. Do not re-add a `corepack prepare pnpm@x.y.z`:
   it is silently overridden, which is exactly how the workflows drifted to
-  declaring a version they never used (#612).
+  declaring a version they never used (#612). ⚠️ **App Hosting does NOT read
+  it.** `google.nodejs.pnpm`'s `detectPNPMVersion` gives **`engines.pnpm`
+  precedence over `packageManager`**, and falls back to a pinned/`latest`
+  version only when BOTH are empty — so CI and the cloud resolve pnpm through
+  *different fields*, and `engines.pnpm` must be an **exact** version **equal
+  to** `packageManager`'s, never a range. Same failure class as the `next` pin
+  above: no lockfile reaches the cloud, so a range is resolved against the npm
+  registry at DEPLOY time to the highest published match — which includes a
+  version published under a **non-`latest` dist-tag whose GitHub release does
+  not exist yet**. On 2026-08-24 `>=11.0.0` resolved to `11.24.0` (dist-tag
+  `next-11`; npm `latest` was `11.23.0`) and the staging deploy died fetching
+  `pnpm-linux-x64.tar.gz` — **HTTP 404**, inside the pnpm buildpack, before a
+  line of app code was built. Nothing in the repo had changed, and nothing
+  changes when it heals: the coin flip belongs to pnpm's publish schedule.
+  Guarded by `packages/config-eslint/rules/apphosting-pnpm-pinned.test.js`.
+  ⚠️ `engines.node` deliberately stays a **range** — pnpm hard-fails an install
+  outright (`ERR_PNPM_UNSUPPORTED_ENGINE`) when the running version does not
+  satisfy `engines`, and the deployed runtime comes from
+  `GOOGLE_RUNTIME_VERSION` (24.19.0 today), not from that field.
 - **Turbo is the only test aggregator — there is no root vitest config.** Each
   workspace owns a `vitest.config.ts` and a `test` script; `pnpm test`
   (= `turbo run test`) fans out across them with caching, and `ci.yml` filters

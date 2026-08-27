@@ -21,9 +21,11 @@
  *     same error). There is no sweep to fall back on — the trigger logs + skips
  *     while the valve is on, and the poke/route re-drive is the recovery path
  *     once it lifts — so the valve must stay a deliberate, short-lived state.
- *   - `MERCADO_LIVRE_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) —
+ *   - `MERCADO_LIVRE_TASKS_REGION` (falls back to `FUNCTIONS_REGION`; no
+ *     default — an unset value THROWS on the first enqueue) —
  *     see `mlTasks.ts` for why the region-qualified path is mandatory.
  */
+import { requireRegion } from '@delfrance/core/region';
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../../firebase/admin';
@@ -36,9 +38,10 @@ import {
 
 /** Region the NF-e upload function/queue live in (shared knob with mlTasks.ts). */
 function mlTasksRegion(): string {
-  return (
-    process.env.MERCADO_LIVRE_TASKS_REGION?.trim() || process.env.FUNCTIONS_REGION || 'us-east5'
-  );
+  return requireRegion({
+    MERCADO_LIVRE_TASKS_REGION: process.env.MERCADO_LIVRE_TASKS_REGION,
+    FUNCTIONS_REGION: process.env.FUNCTIONS_REGION,
+  });
 }
 
 /**

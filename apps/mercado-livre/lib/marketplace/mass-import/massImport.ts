@@ -284,8 +284,9 @@ function asNumberOrNull(v: unknown): number | null {
 }
 
 /**
- * A missing Storage bucket NAME is a backend/env misconfiguration
- * (`FIREBASE_STORAGE_BUCKET` / derivable project id unset), never a per-item
+ * A missing Storage bucket NAME is a backend/env misconfiguration — all three
+ * tiers failed (`FIREBASE_STORAGE_BUCKET`, `FIREBASE_CONFIG.storageBucket`, and a
+ * derivable project id are ALL unset), never a per-item
  * concern — `importProduto` already treats a missing `bucket` as "skip this
  * item's photos", so a mass-import run degrades the SAME way instead of
  * failing the entire batch over a Storage config gap. `tryGetAdminBucket`
@@ -459,6 +460,15 @@ export async function processMassImportJob(
           bucket: ctx.bucket,
           options: toImportOptions(job.options),
           familyFanOut: false,
+          // #1087: no `/moderations` lookup on the mass path. This drain walks a
+          // whole catalogue, and a per-moderated-listing call would spend ML's
+          // rate budget on a diagnostic the operator can pull per-listing with
+          // "Reverificar anúncio". ⚠️ It suppresses the CALL, not the write — a
+          // listing whose own status warrants no moderation still lands
+          // `moderacoes: []` (that verdict comes from the item already fetched),
+          // so a full re-import still clears every stale reason for free. Only a
+          // genuinely moderated listing degrades to "never asked".
+          lerModeracoes: false,
         };
         const res = await importProduto(importDeps, itemId);
         imported += 1;

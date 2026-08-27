@@ -95,11 +95,14 @@ function parentAttributes(p: SourceProduto): MlAttribute[] {
     ...p.atributos,
     attrSku(p.sku),
     attrWeightKg(p.pesoLiquidoKg),
+    // The app calls `dimensoesDoPacote` here; this package cannot import
+    // `@delfrance/schemas`, and the fixture's values are whole numbers, so the
+    // literal equivalent is the same four fields with kg → g.
     ...attrPackageDimensions({
       alturaCm: p.alturaCm,
       larguraCm: p.larguraCm,
       profundidadeCm: p.profundidadeCm,
-      pesoKg: p.pesoBrutoKg,
+      pesoG: Math.round(p.pesoBrutoKg * 1000),
     }),
   ];
 }

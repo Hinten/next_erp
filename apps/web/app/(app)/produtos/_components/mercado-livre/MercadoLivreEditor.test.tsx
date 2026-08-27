@@ -10,6 +10,8 @@ import {
   type ProdutoMercadoLivreLink,
 } from '@delfrance/schemas';
 
+import { PERM } from '@delfrance/auth';
+
 import { linkFixture } from '@/lib/mercado-livre/linkFixture';
 import { MercadoLivreClientHttpError } from '@/lib/mercado-livre/client';
 
@@ -19,6 +21,8 @@ type ListingSaveFn = (mode: 'button' | 'flush') => Promise<ListingSaveOutcome>;
 const h = vi.hoisted(() => ({
   contas: [] as Array<{ id: string; data: Record<string, unknown> }>,
   links: [] as Array<{ id: string; data: unknown }>,
+  /** What the per-variation table's group query answers (#1142). */
+  membros: [] as Array<{ id: string; data: Record<string, unknown> }>,
   /** Every ListingForm stub's registered save, keyed by link doc id. */
   saves: new Map<string, ReturnType<typeof vi.fn>>(),
   /** The control→messages map each ListingForm stub received, keyed by link doc id. */
@@ -38,29 +42,44 @@ const h = vi.hoisted(() => ({
    * the ones that drive an action.
    */
   client: {} as Record<string, unknown>,
+  createListingDraft: vi.fn(async () => ({ docId: 'novo', outcome: 'created' as const })),
+  removeListingDraft: vi.fn(async () => 'removed' as const),
+  /**
+   * Which permission bits `usePermission` grants.
+   *
+   * ⚠️ A single boolean here made the delete-permission test VACUOUS: it turned
+   * off `integracao.write` and `produto.delete` together, so "absent without the
+   * produto's delete permission" stayed green even if the control were gated on
+   * the publish bit — which is the one thing that test's name claims to check.
+   */
+  permitidos: new Set<bigint>(),
 }));
 
 vi.mock('@mantine/notifications', () => ({ notifications: { show: h.notify } }));
 
 vi.mock('@delfrance/data', () => ({
-  buildQuery: () => ({}),
+  // ⚠️ `buildQuery` PASSES THE BASE THROUGH so a query can be told apart by what
+  // it was built on — see the `useSnapshot` mock below for why that matters now.
+  buildQuery: (base: unknown) => base ?? {},
+  groupQuery: () => ({ __grupo: 'variacaoMercadoLivre' }),
   limit: () => ({}),
   whereEqual: () => ({}),
 }));
 
 vi.mock('@delfrance/data/hooks', () => ({
-  // The editor calls `useSnapshot` twice per render, always contas-then-links
-  // (`MercadoLivreEditor.tsx`, the two `useMemo` queries). Hooks are order-stable
-  // by definition, so a per-render counter discriminates them safely — the mocked
-  // `buildQuery` returns an opaque object that could carry no tag.
-  useSnapshot: (() => {
-    let call = 0;
-    return () => {
-      const isContas = call % 2 === 0;
-      call += 1;
-      return { data: isContas ? h.contas : h.links, loading: false, error: null };
-    };
-  })(),
+  // ⚠️ Discriminated by WHAT THE QUERY WAS BUILT ON, never by call order. This
+  // used to be a per-render counter keyed on "the editor calls `useSnapshot`
+  // twice, contas-then-links" — true when written, and silently wrong the moment
+  // a third caller appeared: `VariacoesAnuncioTable` subscribes once per anúncio
+  // (#1142) and, for a legacy listing, with a `null` query. Either way it
+  // consumed a slot and shifted every later call by one, swapping contas and
+  // links. Tagging is order-free, so a fourth caller cannot break it either.
+  useSnapshot: (q: { __col?: string; __grupo?: string } | null) => {
+    if (q?.__col === 'integracao') return { data: h.contas, loading: false, error: null };
+    if (q?.__col === 'produtoMercadoLivre') return { data: h.links, loading: false, error: null };
+    // The per-variation table: its group query, or `null` on a legacy listing.
+    return { data: h.membros, loading: false, error: null };
+  },
   useDocSnapshot: () => ({
     data: { id: 'prod-1', data: { nome: 'Camiseta Básica', fotos: ['a'], ehUsado: false } },
     // Unlike the two `useSnapshot` queries above, this one does NOT hold back the
@@ -71,13 +90,24 @@ vi.mock('@delfrance/data/hooks', () => ({
   }),
 }));
 
-vi.mock('@/lib/auth', () => ({ usePermission: () => ({ allowed: true }) }));
+vi.mock('@/lib/auth', () => ({
+  usePermission: (bit: bigint) => ({ allowed: h.permitidos.has(bit) }),
+}));
 vi.mock('@/lib/mercado-livre/client', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/mercado-livre/client')>();
   return { ...actual, useMercadoLivreClient: () => h.client };
 });
-vi.mock('@/lib/data/integracaoCollection', () => ({ integracaoCollection: { ref: () => ({}) } }));
+// ⚠️ Each `ref()` returns a TAGGED base so `useSnapshot` can tell the queries
+// apart by what they were built on — see its mock above.
+vi.mock('@/lib/data/integracaoCollection', () => ({
+  integracaoCollection: { ref: () => ({ __col: 'integracao' }) },
+}));
 vi.mock('@/lib/data/produtoCollection', () => ({ produtoCollection: { docRef: () => ({}) } }));
+// Stubbed like its siblings so the real module's `defineCollection` call never
+// runs against the `@delfrance/data` mock above.
+vi.mock('@/lib/data/variacaoMercadoLivreLinkCollection', () => ({
+  variacaoMercadoLivreLinkCollection: { converter: {} },
+}));
 // The editor reads `extraData.condicao` (the second input `resolveCondicaoAnuncio`
 // uses). Stubbed like its siblings so the real module's `defineCollection` call
 // never runs against the `@delfrance/data` mock above.
@@ -85,7 +115,11 @@ vi.mock('@/lib/data/produtoExtraDataCollection', () => ({
   produtoExtraDataCollection: { docRef: () => ({}) },
 }));
 vi.mock('@/lib/data/produtoMercadoLivreLinkCollection', () => ({
-  produtoMercadoLivreLinkCollection: { ref: () => ({}) },
+  produtoMercadoLivreLinkCollection: { ref: () => ({ __col: 'produtoMercadoLivre' }) },
+}));
+vi.mock('@/lib/mercado-livre/listingDraft', () => ({
+  createListingDraft: h.createListingDraft,
+  removeListingDraft: h.removeListingDraft,
 }));
 
 /**
@@ -145,6 +179,7 @@ function renderEditor() {
 beforeEach(() => {
   h.contas = [conta('conta-1', 'Loja Principal')];
   h.links = [];
+  h.membros = [];
   h.saves = new Map();
   h.serverErrors = new Map();
   h.outcomes = new Map();
@@ -153,7 +188,15 @@ beforeEach(() => {
   h.produtoLoading = false;
   h.notify.mockClear();
   h.client = {};
+  h.createListingDraft.mockClear();
+  h.removeListingDraft.mockClear();
+  h.permitidos = new Set([PERM.integracao.write, PERM.produto.delete]);
 });
+
+/** Open one account's tab — the panels are lazy, so nothing renders until then. */
+async function abrirConta(nome: string) {
+  fireEvent.click(await screen.findByRole('tab', { name: new RegExp(nome) }));
+}
 
 describe('Enviar estoque is offered only for a PUBLISHED listing', () => {
   it('is absent when the conta holds only an unpublished draft', async () => {
@@ -787,5 +830,501 @@ describe('a moderação reaches the control it names', () => {
 
     expect(h.serverErrors.get('L-LIMPO')).toEqual({});
     expect(screen.queryByTestId('ml-moderacoes')).toBeNull();
+  });
+});
+
+describe('publishing names the listing it means', () => {
+  const PUBLISHED = { itemId: 'MLB777', estado: 'p', permalink: null, itemIds: ['MLB777'] };
+
+  it('sends the link doc id of the anúncio whose button was clicked', async () => {
+    // Without it the backend resolves the account's FIRST link doc, so
+    // publishing the second would silently re-publish the first.
+    h.links = [link('L-UM', { id: 'MLB111' }), link('L-DOIS', { id: 'MLB222' })];
+    const publicar = vi.fn(async () => PUBLISHED);
+    h.client = { publicar };
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DOIS')).toBeDefined());
+
+    const segundo = screen.getByTestId('ml-anuncio-L-DOIS');
+    await act(async () => {
+      fireEvent.click(
+        [...segundo.querySelectorAll('button')].find((b) => b.textContent === 'Republicar')!,
+      );
+    });
+
+    expect(publicar).toHaveBeenCalledWith({
+      integracaoId: 'conta-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-DOIS',
+    });
+  });
+
+  it('marks only the listing a blocked publish came from', async () => {
+    // A 422 describes ONE publish. Keyed by conta, it painted every sibling
+    // listing's fields red for a rejection that was never about them.
+    h.links = [link('L-UM', { id: 'MLB111' }), link('L-DOIS', { id: 'MLB222' })];
+    h.client = {
+      publicar: vi.fn(async () => {
+        throw new MercadoLivreClientHttpError('bloqueado', 422, 'ML_PUBLISH_BLOCKED', [
+          'produto sem título',
+        ]);
+      }),
+    };
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DOIS')).toBeDefined());
+
+    const segundo = screen.getByTestId('ml-anuncio-L-DOIS');
+    await act(async () => {
+      fireEvent.click(
+        [...segundo.querySelectorAll('button')].find((b) => b.textContent === 'Republicar')!,
+      );
+    });
+
+    await waitFor(() => expect(segundo.textContent).toContain('produto sem título'));
+    expect(screen.getByTestId('ml-anuncio-L-UM').textContent).not.toContain('produto sem título');
+  });
+
+  it("spins only the clicked listing's button", async () => {
+    // The two publish actions share one handler, and both listings share the
+    // account — so the in-flight marker has to name the listing AND the variant.
+    h.links = [link('L-UM', { id: 'MLB111' }), link('L-DOIS', { id: 'MLB222' })];
+    let solta: (() => void) | null = null;
+    h.client = {
+      publicar: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            solta = () => resolve(PUBLISHED);
+          }),
+      ),
+    };
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DOIS')).toBeDefined());
+
+    const segundo = screen.getByTestId('ml-anuncio-L-DOIS');
+    fireEvent.click(
+      [...segundo.querySelectorAll('button')].find((b) => b.textContent === 'Republicar')!,
+    );
+
+    await waitFor(() => {
+      expect(segundo.querySelector('button[data-loading]')).not.toBeNull();
+    });
+    // The sibling listing is untouched — same account, different anúncio.
+    expect(screen.getByTestId('ml-anuncio-L-UM').querySelector('button[data-loading]')).toBeNull();
+
+    await act(async () => {
+      solta?.();
+    });
+  });
+});
+
+describe('Novo anúncio', () => {
+  it('creates the FIRST draft on an account that has none', async () => {
+    renderEditor();
+    fireEvent.click(await screen.findByTestId('ml-novo-anuncio-conta-1'));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Criar anúncio' }));
+    });
+
+    expect(h.createListingDraft).toHaveBeenCalledWith(
+      expect.anything(),
+      'prod-1',
+      expect.objectContaining({ integracaoId: 'conta-1', modo: 'primeiro' }),
+    );
+  });
+
+  it('creates an ADDITIONAL draft on an account that already has one', async () => {
+    // The mode is decided from what the account holds, not from which button was
+    // pressed — there is only one button.
+    h.links = [link('L-UM', { id: 'MLB111' })];
+    renderEditor();
+    fireEvent.click(await screen.findByTestId('ml-novo-anuncio-conta-1'));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Criar anúncio' }));
+    });
+
+    expect(h.createListingDraft).toHaveBeenCalledWith(
+      expect.anything(),
+      'prod-1',
+      expect.objectContaining({ modo: 'adicional' }),
+    );
+  });
+
+  it('is offered whether or not the account already has an anúncio', async () => {
+    // The old "Preparar anúncio" was gated on `contaLinks.length === 0`, which
+    // is exactly what made a second listing impossible to create.
+    h.links = [link('L-UM', { id: 'MLB111' })];
+    renderEditor();
+    expect(await screen.findByTestId('ml-novo-anuncio-conta-1')).toBeDefined();
+  });
+});
+
+describe('one account at a time', () => {
+  it('builds only the account whose tab is open', async () => {
+    // Each ListingForm fetches its category metadata and attribute grid, so an
+    // account nobody opened must cost nothing.
+    h.contas = [conta('conta-1', 'Loja A'), conta('conta-2', 'Loja B')];
+    h.links = [
+      link('L-UM', { id: 'MLB111' }),
+      { id: 'L-DOIS', data: linkFixture({ contaOuterRef: 'documents/integracao/conta-2' }) },
+    ];
+    renderEditor();
+
+    await waitFor(() => expect(screen.getByTestId('listing-form-L-UM')).toBeDefined());
+    expect(screen.queryByTestId('listing-form-L-DOIS')).toBeNull();
+
+    await abrirConta('Loja B');
+    await waitFor(() => expect(screen.getByTestId('listing-form-L-DOIS')).toBeDefined());
+  });
+
+  it('keeps a hidden account registered for the produto save', async () => {
+    // The invariant the whole tab strip rests on: an off-screen account's
+    // listings stay mounted, so their save closures stay in the flush registry
+    // and the produto's "Salvar alterações" still reaches them.
+    h.contas = [conta('conta-1', 'Loja A'), conta('conta-2', 'Loja B')];
+    h.links = [
+      link('L-UM', { id: 'MLB111' }),
+      { id: 'L-DOIS', data: linkFixture({ contaOuterRef: 'documents/integracao/conta-2' }) },
+    ];
+    const flushRef: { current: (() => Promise<void>) | null } = { current: null };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MantineTestProvider>
+        <QueryClientProvider client={qc}>
+          <MercadoLivreEditor produtoId="prod-1" db={{} as Firestore} flushRef={flushRef} />
+        </QueryClientProvider>
+      </MantineTestProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('listing-form-L-UM')).toBeDefined());
+    await abrirConta('Loja B');
+    await waitFor(() => expect(screen.getByTestId('listing-form-L-DOIS')).toBeDefined());
+    // Back to the first account: its listing is now the hidden one.
+    await abrirConta('Loja A');
+
+    await act(async () => {
+      await flushRef.current?.();
+    });
+
+    // BOTH saves ran — the wiring reaches an account that is not on screen.
+    //
+    // ⚠️ This does NOT guard `keepMountedMode`: under `env="test"` Mantine skips
+    // `<Activity>` whatever the mode says, so it would pass with the prop
+    // deleted. `ContaTabs.persistence.test.tsx` is what pins that, through a
+    // bare provider. This pins the other half — that the registry is keyed and
+    // enumerated so a hidden account's listings are actually in it.
+    expect(h.saves.get('L-UM')).toHaveBeenCalledWith('flush');
+    expect(h.saves.get('L-DOIS')).toHaveBeenCalledWith('flush');
+  });
+});
+
+describe('Excluir anúncio', () => {
+  function botaoExcluir(linkDocId: string) {
+    return [...screen.getByTestId(`ml-anuncio-${linkDocId}`).querySelectorAll('button')].find(
+      (b) => b.textContent === 'Excluir anúncio',
+    );
+  }
+
+  it('is offered on a listing that never reached Mercado Livre', async () => {
+    h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
+
+    expect(botaoExcluir('L-DRAFT')).toBeDefined();
+  });
+
+  it('is absent on a PUBLISHED listing', async () => {
+    // Removing one would orphan a live anúncio: the status sync would stop
+    // resolving it, both sweeps would stop reaching it, and its child
+    // variação link docs would dangle. Delisting remotely first is #476.
+    h.links = [link('L-PUB', { id: 'MLB777' })];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-PUB')).toBeDefined());
+
+    expect(botaoExcluir('L-PUB')).toBeUndefined();
+  });
+
+  it("is absent without the produto's delete permission, WITH publish still granted", async () => {
+    // ⚠️ The discriminating case, and the only one that proves the claim.
+    // Firestore gates a `produtoMercadoLivre` doc by the PARENT produto's
+    // permissions, so the control follows the rule that would actually reject
+    // the write — a different bit from the one gating publish. Revoking both at
+    // once would leave this green even if the control were gated on
+    // `integracao.write`, so publish is deliberately left granted: Republicar is
+    // asserted enabled, and Excluir absent, in the same render.
+    h.permitidos = new Set([PERM.integracao.write]);
+    h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
+
+    const bloco = screen.getByTestId('ml-anuncio-L-DRAFT');
+    const publicar = [...bloco.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Publicar no Mercado Livre',
+    );
+    expect(publicar).toBeDefined();
+    expect(publicar!.disabled).toBe(false);
+    expect(botaoExcluir('L-DRAFT')).toBeUndefined();
+  });
+
+  it('asks before removing, then removes the listing it was opened for', async () => {
+    h.links = [
+      link('L-A', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho }),
+      link('L-B', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-B')).toBeDefined());
+
+    fireEvent.click(botaoExcluir('L-B')!);
+    expect(h.removeListingDraft).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    });
+    expect(h.removeListingDraft).toHaveBeenCalledWith(expect.anything(), 'prod-1', 'L-B');
+  });
+
+  it("drops the listing's blocked-publish issues with the listing", async () => {
+    // ⚠️ The FIRST draft on an account takes the integração id as its doc id, so
+    // a recreated draft lands on the same `blockedIssues` key. Without the clear,
+    // publicar → 422 → excluir → novo anúncio greets the operator with a red
+    // alert from a publish that was never attempted on the new draft.
+    h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    h.client = {
+      publicar: vi.fn(async () => {
+        throw new MercadoLivreClientHttpError('bloqueado', 422, 'ML_PUBLISH_BLOCKED', [
+          'produto sem título',
+        ]);
+      }),
+    };
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
+
+    const bloco = screen.getByTestId('ml-anuncio-L-DRAFT');
+    await act(async () => {
+      fireEvent.click(
+        [...bloco.querySelectorAll('button')].find(
+          (b) => b.textContent === 'Publicar no Mercado Livre',
+        )!,
+      );
+    });
+    await waitFor(() => expect(bloco.textContent).toContain('produto sem título'));
+
+    fireEvent.click(botaoExcluir('L-DRAFT')!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    });
+
+    // The live snapshot has not dropped the doc in this harness, so the block is
+    // still on screen — which is what lets us see that the ISSUES went even
+    // though the listing's key did not change.
+    await waitFor(() =>
+      expect(screen.getByTestId('ml-anuncio-L-DRAFT').textContent).not.toContain(
+        'produto sem título',
+      ),
+    );
+  });
+
+  it('says so when the listing was published while the confirm was open', async () => {
+    // The race the transaction catches. It is reported, not retried: the doc is
+    // a live anúncio now and deleting it is no longer the right action.
+    h.links = [link('L-DRAFT', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho })];
+    h.removeListingDraft.mockResolvedValueOnce('published' as never);
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('ml-anuncio-L-DRAFT')).toBeDefined());
+
+    fireEvent.click(botaoExcluir('L-DRAFT')!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    });
+
+    expect(h.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'yellow',
+        message: expect.stringContaining('publicado enquanto você confirmava'),
+      }),
+    );
+  });
+});
+
+/**
+ * The two entry points into `handleReverificar` want different feedback (#1239).
+ * Nothing covered this flow before — the older tests only assert the latch
+ * button's GATING — so both branches are pinned here.
+ */
+describe('reverificar — the reason decides what the operator is told', () => {
+  const RESULT = {
+    estado: ESTADO_PUBLICACAO_ML.pausado,
+    status: 'paused',
+    subStatus: [],
+    enviavel: false,
+  };
+
+  function wireReverificar() {
+    const reverificarAnuncio = vi.fn(async () => RESULT);
+    h.client = { reverificarAnuncio };
+    return reverificarAnuncio;
+  }
+
+  it('"Consultar motivo" re-checks the listing and does NOT talk about stock', async () => {
+    h.links = [
+      link('L-MOD', {
+        id: 'MLB1',
+        estado: ESTADO_PUBLICACAO_ML.pausado,
+        status: 'paused',
+        sub_status: ['moderation_penalty'],
+        moderacoes: null,
+      }),
+    ];
+    const reverificarAnuncio = wireReverificar();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Consultar motivo' }));
+    });
+
+    expect(reverificarAnuncio).toHaveBeenCalledWith({
+      integracaoId: 'conta-1',
+      produtoId: 'prod-1',
+      linkDocId: 'L-MOD',
+    });
+    const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
+    expect(shown?.message).not.toContain('estoque');
+  });
+
+  /**
+   * ⚠️ The stock wording must survive untouched on its own button. It is correct
+   * there and only there — the latch IS about stock.
+   */
+  it('the latch button keeps its stock wording', async () => {
+    h.links = [link('L-LATCH', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.erro })];
+    wireReverificar();
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reverificar anúncio' }));
+    });
+
+    const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
+    expect(shown?.message).toContain('estoque');
+  });
+});
+
+/**
+ * The per-variation table is rendered by `AnuncioBlock`, so only a test that
+ * drives the whole tab proves it is actually WIRED — its own spec renders the
+ * component directly and would stay green if nothing ever mounted it.
+ */
+describe('variações de uma família User-Products (#1142)', () => {
+  const membro = (over: Record<string, unknown> = {}) => ({
+    itemId: 'MLB-A',
+    produtoVariacaoOuterRef: 'documents/produtos/child-1',
+    produtoMercadoLivreOuterRef: 'documents/produtos/prod-1/produtoMercadoLivre/L-FAM',
+    sku: 'CAM-AZ-M',
+    attributes: [{ id: 'COLOR', name: 'Cor', value_name: 'Azul' }],
+    status: 'active',
+    sub_status: [],
+    moderacoes: null,
+    ...over,
+  });
+
+  it('lists each member under the anúncio it belongs to', async () => {
+    h.links = [link('L-FAM', { id: '6264141844942250', isUserProductModel: true })];
+    h.membros = [
+      { id: 'v1', data: membro() },
+      {
+        id: 'v2',
+        data: membro({
+          itemId: 'MLB-B',
+          sku: 'CAM-VD-G',
+          attributes: [{ id: 'COLOR', name: 'Cor', value_name: 'Verde' }],
+          status: 'paused',
+        }),
+      },
+    ];
+    renderEditor();
+
+    expect(await screen.findByText('Variações no Mercado Livre')).toBeDefined();
+    expect(screen.getByText('Cor: Azul')).toBeDefined();
+    expect(screen.getByText('Cor: Verde')).toBeDefined();
+  });
+
+  it('shows nothing for a LEGACY listing, whose variations are not listings', async () => {
+    h.links = [link('L-LEG', { id: 'MLB1', isUserProductModel: false })];
+    h.membros = [{ id: 'v1', data: membro() }];
+    renderEditor();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('listing-form-L-LEG')).toBeDefined();
+    });
+    expect(screen.queryByText('Variações no Mercado Livre')).toBeNull();
+  });
+
+  it('a família re-check reports HOW MANY variations were re-read', async () => {
+    // The title only ever shows the FOLD, so without this the operator cannot
+    // tell a família from a simple anúncio — nor that the status above is a
+    // summary of several listings.
+    h.links = [
+      link('L-FAM', {
+        id: '6264141844942250',
+        isUserProductModel: true,
+        estado: ESTADO_PUBLICACAO_ML.erro,
+      }),
+    ];
+    h.client = {
+      reverificarAnuncio: vi.fn(async () => ({
+        estado: ESTADO_PUBLICACAO_ML.publicado,
+        status: 'active',
+        subStatus: [],
+        enviavel: true,
+        membros: [
+          {
+            itemId: 'MLB-A',
+            memberDocId: 'v1',
+            lido: true,
+            status: 'active',
+            subStatus: [],
+            enviavel: true,
+          },
+          {
+            itemId: 'MLB-B',
+            memberDocId: 'v2',
+            lido: false,
+            status: null,
+            subStatus: null,
+            enviavel: false,
+          },
+        ],
+      })),
+    };
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reverificar anúncio' }));
+    });
+
+    const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
+    expect(shown?.message).toContain('2 variações reverificadas');
+    // ⚠️ A member ML could not answer for keeps its stored status, so a silent
+    // partial refresh would read as a complete one.
+    expect(shown?.message).toContain('1 não respondeu');
+  });
+
+  it('a SIMPLE listing gets no variation preamble', async () => {
+    h.links = [link('L-SIMPLES', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.erro })];
+    h.client = {
+      reverificarAnuncio: vi.fn(async () => ({
+        estado: ESTADO_PUBLICACAO_ML.publicado,
+        status: 'active',
+        subStatus: [],
+        enviavel: true,
+      })),
+    };
+    renderEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reverificar anúncio' }));
+    });
+
+    const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
+    expect(shown?.message).not.toContain('variaç');
   });
 });

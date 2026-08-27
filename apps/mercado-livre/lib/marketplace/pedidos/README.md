@@ -22,6 +22,32 @@ topic; everything else is either a pure mapper or a resolver they share.
   Tier-2 guarded in **µs**.
 - `orderShipmentImport.ts` — `shipments` topic; refreshes `freteInicial`.
   Tier-2 guarded in **µs**, null-tolerant the opposite way from payments.
+- `pedidoTravadoSweep.ts` — **#1087 follow-up**, the WEEKLY release of pedidos
+  stuck awaiting a payment that never resolved. Every other release path in this
+  channel is event-driven, so a reservation whose terminal `orders_v2`/`payments`
+  event never arrived was held forever; this is the only time-based one.
+  ⚠️ Mostly a RE-DRIVER: it asks ML what happened and enqueues a synthetic
+  `orders_v2` so the import arms decide, writing `pagamentoNaoRealizado` itself
+  only when ML still reports the order pre-payment past the horizon.
+  ⚠️ **`integracaoPedidoOuterRef` is NOT the marketplace gate** — a human-created
+  pedido is required by the form to set it. The gate is `lastMarketplaceUpdate`,
+  whose sole writer is `discoverPedidoMercadoLivre`.
+  ⚠️ It ENDS SALES, so it is doubly flag-gated with a dry-run mode, and it never
+  acts on an unverifiable ML read.
+
+- `pendingOrderBootstrap.ts` — **#1087**. A payment whose order the ERP has never
+  seen used to be dropped, so no pedido existed and no stock was reserved while
+  the buyer held the unit. ML fires `orders_v2` only for _"vendas confirmadas"_,
+  so a `payment_in_process` order arrives on the payments topic and **nowhere
+  else**. This enqueues a synthetic `orders_v2` for `/orders/{id}` — so
+  `orderImport.ts` stays the only pedido creator — and inherits the notification
+  pipeline's own bounds rather than inventing a counter.
+  ⚠️ Its `id: null` is load-bearing: the pipeline's `docIdOf` falls back to
+  `derivedDocId`, which keys the dedup on the **order**. A synthesised id would
+  key it on the payment, of which ML sends several per order.
+  ⚠️ It owns this folder's only edge into `notificacoes/mlTasks.ts`, deliberately
+  — `mlTasks.ts` imports a value from `notificacao.ts`, so reaching it from the
+  dispatcher instead would close a file-level import cycle.
 
 **Pure mapping and identity**
 

@@ -1,16 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import {
-  ActionIcon,
-  Button,
-  Divider,
-  Group,
-  NumberInput,
-  Stack,
-  Text,
-  TextInput,
-} from '@mantine/core';
+import { ActionIcon, Button, Divider, Group, Stack, Text, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
@@ -22,6 +13,7 @@ import { pesoPedido, volumePadrao } from './pesoPedido';
 import { estimarDimensoes, type EstimativaDimensoes } from '@delfrance/schemas';
 import { notificarAvisoDimensoes } from './notificarAviso';
 import { loadProdutoPesoMap } from './produtoPeso';
+import { DecimalInput } from '@delfrance/ui';
 
 export interface VolumesEditorProps {
   form: PedidoFormHandle;
@@ -107,10 +99,10 @@ export function VolumesEditor({ form, db, disabled, maxVolumes }: VolumesEditorP
     onChange: (v: number | null) => void,
     decimalScale = 2,
   ) => (
-    <NumberInput
+    <DecimalInput
       label={label}
-      value={value ?? ''}
-      onChange={(v) => onChange(typeof v === 'number' ? v : null)}
+      value={value}
+      onChange={onChange}
       min={0}
       decimalScale={decimalScale}
       allowDecimal={decimalScale > 0}

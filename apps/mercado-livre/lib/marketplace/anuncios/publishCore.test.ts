@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildItemPayload } from '@delfrance/integrations-mercado-livre';
+import {
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
+  attrBrand,
+  buildItemPayload,
+} from '@delfrance/integrations-mercado-livre';
+import { MARCA_ATTRIBUTE_ID } from '@delfrance/schemas';
 import {
   MercadoLivrePublishError,
   type PublishGrupoVariacao,
@@ -7,6 +13,7 @@ import {
   assemblePublishInput,
   buildParentAttributes,
   combinationsFromVariacoes,
+  linkAttributesAfterPublish,
   mergeStoredCombinations,
   publishModeIssues,
   resolveCondition,
@@ -227,11 +234,12 @@ describe('resolveCondition', () => {
 
 describe('buildParentAttributes', () => {
   it('emits link customs + SELLER_SKU + WEIGHT + package dimensions', () => {
-    const attrs = buildParentAttributes(produto, {
-      docId: 'l',
-      id: null,
-      attributes: [{ id: 'BRAND', value_name: 'Acme' }],
-    });
+    const attrs = buildParentAttributes(
+      produto,
+      { docId: 'l', id: null, attributes: [{ id: 'BRAND', value_name: 'Acme' }] },
+      null,
+      { marca: null },
+    );
     expect(attrs.map((a) => a.id)).toEqual([
       'BRAND',
       'SELLER_SKU',
@@ -246,7 +254,55 @@ describe('buildParentAttributes', () => {
   });
 
   it('omits dimensions when any side is missing', () => {
-    const attrs = buildParentAttributes({ ...produto, alturaCm: null }, null);
+    const attrs = buildParentAttributes({ ...produto, alturaCm: null }, null, null, {
+      marca: null,
+    });
+    expect(attrs.map((a) => a.id)).toEqual(['SELLER_SKU', 'WEIGHT']);
+  });
+
+  // ⚠️ The stale-copy path. A link doc written before the editor withheld these
+  // ids can still carry one, and `attributesForSave` cannot prune an id the
+  // CATEGORY does not list — so a stored `WEIGHT` in such a category survives
+  // every save. Appending the derived copy beside it ships the attribute TWICE,
+  // once with the operator's old value. Publish owns these ids unconditionally.
+  it('drops a stored copy of a derived id instead of duplicating it', () => {
+    const attrs = buildParentAttributes(
+      produto,
+      {
+        docId: 'l',
+        id: null,
+        attributes: [
+          { id: 'BRAND', value_name: 'Acme' },
+          { id: 'WEIGHT', value_name: '99 kg' },
+          { id: 'SELLER_PACKAGE_HEIGHT', value_name: '99 cm' },
+        ],
+      },
+      null,
+      { marca: null },
+    );
+    expect(attrs.filter((a) => a.id === 'WEIGHT')).toHaveLength(1);
+    expect(attrs.filter((a) => a.id === 'SELLER_PACKAGE_HEIGHT')).toHaveLength(1);
+    // The produto's value wins, not the stale one.
+    expect(attrs.find((a) => a.id === 'WEIGHT')?.value_name).not.toBe('99 kg');
+    expect(attrs.find((a) => a.id === 'SELLER_PACKAGE_HEIGHT')?.value_name).not.toBe('99 cm');
+    // A non-derived stored attribute is still preserved.
+    expect(attrs.find((a) => a.id === 'BRAND')?.value_name).toBe('Acme');
+  });
+
+  // The stored copy goes even when the produto cannot replace it — a value the
+  // ERP owns and could not derive is not a value to fall back on: it is the one
+  // the operator is being told to fill in on the produto.
+  it('drops a stored derived id even with nothing to replace it', () => {
+    const attrs = buildParentAttributes(
+      { ...produto, alturaCm: null },
+      {
+        docId: 'l',
+        id: null,
+        attributes: [{ id: 'SELLER_PACKAGE_HEIGHT', value_name: '99 cm' }],
+      },
+      null,
+      { marca: null },
+    );
     expect(attrs.map((a) => a.id)).toEqual(['SELLER_SKU', 'WEIGHT']);
   });
 
@@ -256,8 +312,72 @@ describe('buildParentAttributes', () => {
     // parent's. The legacy removes it by id (models.dart:1508-1515).
     const attrs = buildParentAttributes({ ...produto, alturaCm: null }, null, null, {
       includeSku: false,
+      marca: null,
     });
     expect(attrs.map((a) => a.id)).toEqual(['WEIGHT']);
+  });
+
+  // ---- BRAND: herdado, not derived -------------------------------------
+  // The produto decides when it has a Marca; otherwise the listing's own stored
+  // brand stands. Both halves matter and they fail in opposite directions.
+
+  it("replaces a stored BRAND with the produto's Marca", () => {
+    const attrs = buildParentAttributes(
+      produto,
+      {
+        docId: 'l',
+        id: null,
+        attributes: [{ id: 'BRAND', value_id: '9999', value_name: 'Acme' }],
+      },
+      null,
+      { marca: 'Hering' },
+    );
+    expect(attrs.filter((a) => a.id === 'BRAND')).toEqual([{ id: 'BRAND', value_name: 'Hering' }]);
+    expect(attrs.map((a) => a.id)).toEqual([
+      'BRAND',
+      'SELLER_SKU',
+      'WEIGHT',
+      'SELLER_PACKAGE_HEIGHT',
+      'SELLER_PACKAGE_LENGTH',
+      'SELLER_PACKAGE_WIDTH',
+      'SELLER_PACKAGE_WEIGHT',
+    ]);
+  });
+
+  // ⚠️ THE regression this whole design exists to prevent. Treating BRAND like a
+  // derived id would drop this entry and publish nothing in its place — for
+  // every produto whose Marca is still empty, which today is most of them. The
+  // `value_id` assertion is the second half: an enumerated ML brand carries one,
+  // and rebuilding the entry through `attrBrand` would silently discard it.
+  it('keeps a stored BRAND verbatim, value_id and all, when the produto has no Marca', () => {
+    const armazenada = { id: 'BRAND', value_id: '9999', value_name: 'Acme' };
+    const attrs = buildParentAttributes(
+      produto,
+      { docId: 'l', id: null, attributes: [armazenada] },
+      null,
+      { marca: null },
+    );
+    expect(attrs.filter((a) => a.id === 'BRAND')).toEqual([armazenada]);
+  });
+
+  it('reads a whitespace-only Marca as absent rather than blanking the stored brand', () => {
+    const attrs = buildParentAttributes(
+      produto,
+      { docId: 'l', id: null, attributes: [{ id: 'BRAND', value_name: 'Acme' }] },
+      null,
+      { marca: '   ' },
+    );
+    expect(attrs.find((a) => a.id === 'BRAND')?.value_name).toBe('Acme');
+  });
+
+  it('trims the produto Marca on the way to the wire', () => {
+    const attrs = buildParentAttributes(produto, null, null, { marca: '  Hering  ' });
+    expect(attrs.find((a) => a.id === 'BRAND')?.value_name).toBe('Hering');
+  });
+
+  it('emits no BRAND at all when neither the produto nor the listing has one', () => {
+    const attrs = buildParentAttributes(produto, null, null, { marca: null });
+    expect(attrs.some((a) => a.id === 'BRAND')).toBe(false);
   });
 });
 
@@ -386,6 +506,7 @@ describe('assemblePublishInput', () => {
   const baseArgs = {
     produto,
     condicao: 1,
+    marca: null,
     priceListId: 'lista-1',
     priceListNome: null,
     availableQuantity: 10,
@@ -484,6 +605,23 @@ describe('assemblePublishInput', () => {
       { id: 'SIZE', value_name: 'M' },
       { id: 'VOLTAGE', value_name: '220V' },
     ]);
+  });
+
+  it('passes the conta shipping mode through, and normalises absent to null', () => {
+    expect(assemblePublishInput({ ...baseArgs, shippingMode: 'me2' }).shippingMode).toBe('me2');
+    // Absent must reach the builder as an explicit null rather than undefined:
+    // both suppress the node today, but null is the value the conta actually
+    // stores, and it keeps this boundary honest about "nothing configured".
+    expect(assemblePublishInput(baseArgs).shippingMode).toBeNull();
+    expect(assemblePublishInput({ ...baseArgs, shippingMode: null }).shippingMode).toBeNull();
+  });
+
+  it('does NOT validate the shipping mode against the seller', () => {
+    // Whether a mode is available is an account/category fact only ML holds, and
+    // it already answers with a readable `shipping.me2_adoption_mandatory` cause.
+    // A local guess would be a second, staler copy of that answer — so this must
+    // assemble cleanly and let the publish carry it.
+    expect(() => assemblePublishInput({ ...baseArgs, shippingMode: 'me1' })).not.toThrow();
   });
 
   it('only merges a stored attribute EVERY child can supply (review #1064)', () => {
@@ -788,5 +926,85 @@ describe('assemblePublishInput', () => {
         ],
       }),
     ).toThrowError(/sem atributos de combinação/);
+  });
+});
+
+describe('linkAttributesAfterPublish', () => {
+  const enviado = [
+    { id: 'MODEL', value_name: 'X' },
+    { id: 'BRAND', value_name: 'Hering' },
+    { id: 'SELLER_SKU', value_name: 'SKU-1' },
+    { id: 'WEIGHT', value_name: '0.9 kg' },
+  ];
+
+  it('stores what was sent, minus the derived ids (#799 bug 7)', () => {
+    expect(linkAttributesAfterPublish(enviado, null).map((a) => a.id)).toEqual(['MODEL']);
+  });
+
+  // ⚠️ THE latching bug. Publish derives BRAND from the produto's Marca; storing
+  // that value makes the Marca its own fallback, so clearing Marca on the
+  // produto could never again clear the listing's brand — `resolveMarcaAnuncio`
+  // would just read back the value publish itself wrote, and the screen would
+  // caption it "Valor guardado neste anúncio" while telling the operator to fill
+  // the very field they had just emptied.
+  it('never persists the BRAND it derived from the produto', () => {
+    const out = linkAttributesAfterPublish(enviado, null);
+    expect(out.some((a) => a.id === 'BRAND')).toBe(false);
+  });
+
+  // ⚠️ The opposite direction, and the one that loses data. This entry is the
+  // FALLBACK publish reads when the produto has no Marca — for a produto whose
+  // Marca is empty it is the only copy in existence — so a publish that USED it
+  // must not delete it on the way out.
+  it('carries a stored BRAND back verbatim, value_id and all', () => {
+    const armazenado = { id: 'BRAND', value_id: '9999', value_name: 'Acme' };
+    const out = linkAttributesAfterPublish(enviado, [armazenado]);
+    expect(out.filter((a) => a.id === 'BRAND')).toEqual([armazenado]);
+  });
+
+  it('keeps the stored one rather than the derived one when both exist', () => {
+    const armazenado = { id: 'BRAND', value_id: '9999', value_name: 'Acme' };
+    const out = linkAttributesAfterPublish(enviado, [armazenado]);
+    expect(out.filter((a) => a.id === 'BRAND')).toHaveLength(1);
+    expect(out.find((a) => a.id === 'BRAND')?.value_name).toBe('Acme');
+  });
+
+  // A stale derived id sitting on the doc is NOT carried back — only herdado
+  // ids are, and this is the asymmetry the two sets exist to express.
+  it('does not resurrect a stored derived id', () => {
+    const out = linkAttributesAfterPublish(enviado, [{ id: 'WEIGHT', value_name: '99 kg' }]);
+    expect(out.some((a) => a.id === 'WEIGHT')).toBe(false);
+  });
+
+  it('drops an id-less attribute, which the link wire schema forbids', () => {
+    const out = linkAttributesAfterPublish([{ name: 'Sabor', value_name: 'Uva' }], null);
+    expect(out).toEqual([]);
+  });
+});
+
+// ⚠️ `BRAND` is spelled in two packages that CANNOT import each other: the ML
+// package must not depend on `@delfrance/schemas` (its root carries the OAuth
+// core, and `apps/web` reaches schemas), so `attrBrand` and
+// `ML_PRODUTO_HERDADO_ATTRIBUTE_IDS` hold their own literal while
+// `MARCA_ATTRIBUTE_ID` holds the shared one. Nothing in either package can see
+// the disagreement — but this app imports both, so it can.
+//
+// A drift here is silent and total: publish would filter on one id and re-add
+// the other, shipping the attribute twice (once with the operator's stale value)
+// while the produto's Marca never replaced anything.
+describe('the BRAND id agrees across the two packages that cannot import each other', () => {
+  it('is what attrBrand emits', () => {
+    expect(attrBrand('Hering').id).toBe(MARCA_ATTRIBUTE_ID);
+  });
+
+  it('is the herdado list membership', () => {
+    expect(ML_PRODUTO_HERDADO_ATTRIBUTE_IDS).toContain(MARCA_ATTRIBUTE_ID);
+  });
+
+  // The control: the constant is a real id, not an empty string that would make
+  // both assertions above pass against anything.
+  it('is a non-empty id no derived rule also claims', () => {
+    expect(MARCA_ATTRIBUTE_ID.length).toBeGreaterThan(0);
+    expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain(MARCA_ATTRIBUTE_ID);
   });
 });

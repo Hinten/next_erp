@@ -10,6 +10,7 @@ import noAmbientTimezone from './rules/no-ambient-timezone.js';
 import preferSchemaEnum from './rules/prefer-schema-enum.js';
 import noClientEstadoHistoryWrite from './rules/no-client-estado-history-write.js';
 import noEnvSecretsAccess from './rules/no-env-secrets-access.js';
+import noHardcodedGcpRegion from './rules/no-hardcoded-gcp-region.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -129,6 +130,7 @@ const config = [
           'prefer-schema-enum': preferSchemaEnum,
           'no-client-estado-history-write': noClientEstadoHistoryWrite,
           'no-env-secrets-access': noEnvSecretsAccess,
+          'no-hardcoded-gcp-region': noHardcodedGcpRegion,
           'no-lossy-date-parse': noLossyDateParse,
           'no-ambient-timezone': noAmbientTimezone,
         },
@@ -297,6 +299,15 @@ const config = [
       // surface ESLint cannot parse (workflows, firebase configs, shell scripts) is
       // covered by `rules/env-secrets-no-copy.test.js`.
       'delfrance/no-env-secrets-access': 'error',
+
+      // A Google Cloud region must come from the environment, never a literal.
+      // ERROR, not a ratchet: the sweep that removed the last 30 sites landed
+      // first, so there is no pre-existing population to grandfather — and the
+      // failure it guards is silent. A function deployed to the wrong region
+      // deploys fine, and an enqueue against the wrong one is DROPPED while the
+      // route still returns 200 (#1108); the bill was the first signal that this
+      // repo had drifted into three regions.
+      'delfrance/no-hardcoded-gcp-region': 'error',
     },
   },
 ];

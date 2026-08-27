@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { MissingRegionError } from '@delfrance/core/region';
+
 // Mock the transport seams: the Functions SDK (queue/enqueue) and the admin app
 // binding. The scheduler's own env-driven wiring runs real. Mirrors
 // apps/mercado-livre/lib/marketplace/estoque/mlStockTasks.test.ts's pattern.
@@ -52,25 +54,33 @@ describe('createBalancoScheduler', () => {
     expect(h.taskQueue).toHaveBeenCalledWith(`locations/us-west1/functions/${BALANCO_QUEUE}`);
   });
 
-  it('defaults the region to us-east1 when nothing is configured', async () => {
+  it('REFUSES to enqueue when nothing is configured', async () => {
     vi.stubEnv('BALANCO_TASKS_DISABLED', '');
-    // Truly unset (not blank) — the plain fall-through.
     vi.stubEnv('BALANCO_TASKS_REGION', undefined);
     vi.stubEnv('FUNCTIONS_REGION', undefined);
-    await createBalancoScheduler().enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith(`locations/us-east1/functions/${BALANCO_QUEUE}`);
+
+    // There is deliberately no default left to fall through to. This queue has
+    // NO sweep backstop — the balanço document is the only checkpoint — so a
+    // dropped enqueue is unrecoverable, and refusing is the only safe outcome.
+    await expect(createBalancoScheduler().enqueue(payload)).rejects.toBeInstanceOf(
+      MissingRegionError,
+    );
+    expect(h.taskQueue).not.toHaveBeenCalled();
   });
 
   // #887: `??` does NOT fall through on '', so a declared-but-blank var used to
   // resolve to `locations//functions/processarBalanco` — a malformed path the
   // Admin SDK sends to us-central1, where the queue does not exist. The enqueue
-  // then drops silently, and this queue has NO sweep backstop.
-  it('treats a blank BALANCO_TASKS_REGION as unset and falls through to the default', async () => {
+  // then drops silently. Blank must still count as unset; what changed is that
+  // "unset" now throws instead of reaching a literal.
+  it('treats a blank BALANCO_TASKS_REGION as unset, and unset now throws', async () => {
     vi.stubEnv('BALANCO_TASKS_DISABLED', '');
     vi.stubEnv('BALANCO_TASKS_REGION', '');
     vi.stubEnv('FUNCTIONS_REGION', undefined);
-    await createBalancoScheduler().enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith(`locations/us-east1/functions/${BALANCO_QUEUE}`);
+
+    await expect(createBalancoScheduler().enqueue(payload)).rejects.toBeInstanceOf(
+      MissingRegionError,
+    );
   });
 
   it('treats a whitespace-only BALANCO_TASKS_REGION as unset too', async () => {

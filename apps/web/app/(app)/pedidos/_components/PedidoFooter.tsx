@@ -3,16 +3,16 @@
 import { useMemo } from 'react';
 import { Controller, useWatch, type UseFormReturn } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
-import { Alert, Button, Group, NumberInput, Paper, Stack, Text, Tooltip } from '@mantine/core';
+import { Alert, Button, Group, Paper, Stack, Text, Tooltip } from '@mantine/core';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { ESTADO_PEDIDO, derivePedidoTotals, type Pedido, type Pagamento } from '@delfrance/schemas';
 import { formatReais, roundReais } from '@delfrance/core/money';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
-import { parseBrl } from '@/app/(app)/produtos/_components/CurrencyInput';
 import { sumPagamentosPagos } from './PagamentoForm';
 import { OrcamentoShareMenu } from './print/OrcamentoShareMenu';
 import type { FlatItem, PedidoFormState } from './types';
+import { DecimalInput } from '@delfrance/ui';
 
 const brl = (n: number): string => formatReais(n);
 
@@ -192,15 +192,13 @@ export function PedidoFooter({
                 control={form.control}
                 name="descontoTotal"
                 render={({ field }) => (
-                  <NumberInput
-                    aria-label="Desconto total"
+                  <DecimalInput
+                    ariaLabel="Desconto total"
                     value={field.value ?? 0}
-                    onChange={(v) => field.onChange(parseBrl(v) ?? 0)}
+                    onChange={(n) => field.onChange(n ?? 0)}
                     onBlur={field.onBlur}
                     min={0}
                     decimalScale={2}
-                    decimalSeparator=","
-                    allowedDecimalSeparators={[',', '.']}
                     w={110}
                     size="xs"
                     disabled={descontoDisabled ?? disabled}

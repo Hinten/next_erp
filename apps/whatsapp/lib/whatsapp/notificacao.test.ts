@@ -301,7 +301,11 @@ describe('conversa create / reopen / spam', () => {
     expect(conv.origem).toBe('whatsapp');
     expect(conv.estadoConversa).toBe(0);
     expect(conv.sender_id).toBe(SENDER);
-    expect(conv.cor_etiqueta).toBe(5);
+    // `conta.cor` is a 24-bit RGB int; `cor_etiqueta` is a 32-bit ARGB
+    // `Color.value`, so the importer LIFTS it (`corToEtiquetaArgb`) instead of
+    // copying. A raw 5 here would paint correctly but never equal any of the
+    // seven palette constants the chat etiqueta filter matches with `==`.
+    expect(conv.cor_etiqueta).toBe(0xff000005);
     expect(conv.externalLink).toBe(`https://api.whatsapp.com/send?phone=${FROM}`);
 
     const evento = db.docs(CONV_PATH).get('evento_nova')!;

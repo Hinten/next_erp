@@ -9,7 +9,17 @@
  *    admin-only, so the browser has no other way to read them; without this the
  *    passwords would vanish on the first refresh, and ML never reissues one.
  *  - `POST` — mint/reuse the pair, then disconnect the conta
- *    (`PERM.integracao.write`).
+ *    (`PERM.integracao.write`). With a `role` in the body it instead mints ONE
+ *    fresh account of that role — #1087's case, where Mercado Pago stopped
+ *    accepting purchases from the buyer and it must be replaced without
+ *    re-minting the seller that still works.
+ *
+ * ⚠️ **A successful POST leaves this conta unable to POST again.** The mint's
+ * last step deletes every `tokenDuravel` doc, and `resolveChannelContext()`
+ * below runs BEFORE any guard — so the next call dies at `ML_REAUTH_REQUIRED`
+ * even when it would have minted nothing. Reconnecting the real
+ * application-owner account is therefore a PRECONDITION of an additional mint,
+ * not an error; `manterCredencial` is the deliberate opt-out.
  *
  * ⚠️ **`POST` is destructive.** It deletes every credential doc on the conta it
  * used, which is the point — the bootstrap account is a real seller account and
@@ -25,12 +35,28 @@
  *  2. The conta must not already be a test user (`ML_CONTA_JA_E_TESTE`, 409).
  *  3. The UI confirms, naming the account about to be disconnected.
  *
+ * POST body (all optional; `{}` is the pair bootstrap and stays byte-compatible
+ * with the client that sends it today):
+ *  - `role` — `vendedor` | `comprador`, validated against the schema enum.
+ *  - `manterCredencial` — skip the revocation. Only valid alongside a `role`.
+ *
  * Responses:
- *  - 200 `{ usuarios, criados, reaproveitados, credenciaisRemovidas, conta }`
- *    (POST) / `{ usuarios }` (GET). Each `usuario` carries its `password` and
- *    the e-mail verification codes derived from its id.
+ *  - 200 `{ usuarios, criados, reaproveitados, credenciaisRemovidas,
+ *    credencialRevogada, conta }` (POST) / `{ usuarios }` (GET). Each `usuario`
+ *    carries its `password`, the e-mail verification codes derived from its id,
+ *    and the `docId` of the Firestore document holding it.
+ *
+ * ⚠️ `credencialRevogada` is also the CAPABILITY PROBE the browser uses to spot
+ * a backend older than this file. Before the single-role mint existed this route
+ * ignored its body entirely and always ran the pair bootstrap, so a stale
+ * deployment answers a `{role}` POST with `criados: []`, both stored users, and
+ * no `credencialRevogada` key at all — a 200 for a mint that never happened.
+ * Do not drop the field, and do not make it optional.
+ *  - 400 on a malformed body, an unknown `role`, or `manterCredencial` without
+ *    a `role`.
  *  - 404 when the flag is off — indistinguishable from "route does not exist".
- *  - 409 `ML_CONTA_JA_E_TESTE`.
+ *  - 409 `ML_CONTA_JA_E_TESTE` / `ML_LIMITE_USUARIOS_TESTE` /
+ *    `ML_USUARIO_TESTE_DUPLICADO`.
  *  - ML/context errors map through `mercadoLivreErrorResponse`.
  *
  * ⚠️ Nothing here may log the response. `mercadoLivreErrorResponse` writes a
@@ -38,8 +64,9 @@
  * why `criarUsuarioTeste` puts field NAMES there rather than the body it parsed.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
-import type { UsuarioTesteMercadoLivre } from '@delfrance/schemas';
+import { usuarioTesteRoleSchema } from '@delfrance/schemas';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -50,6 +77,7 @@ import {
   TestUserGuardError,
   codigosVerificacaoEmail,
   criarUsuariosTeste,
+  type UsuarioTesteRegistrado,
 } from '@/lib/marketplace/conta/testUsers';
 
 export const dynamic = 'force-dynamic';
@@ -73,8 +101,39 @@ function integracaoIdFrom(req: Request): string | null {
   return new URL(req.url).searchParams.get('integracaoId');
 }
 
-/** Adds what the operator needs and ML does not return: the e-mail codes. */
-function toWire(u: UsuarioTesteMercadoLivre) {
+/**
+ * The POST body. Every field optional, so the historical `{}` (and an empty
+ * body) still means "mint the pair" — this route ignored its body entirely
+ * until #1087 needed a single-role mint.
+ */
+const bodySchema = z.strictObject({
+  /**
+   * Absent ⇒ the pair bootstrap. Present ⇒ mint ONE fresh account of that role.
+   * Validated against the schema enum, never taken as a raw string: this value
+   * becomes a Firestore doc-id prefix and picks which side of the run is spent.
+   */
+  role: usuarioTesteRoleSchema.optional(),
+  /**
+   * Skip the credential revocation and leave the conta connected.
+   *
+   * ⚠️ Defaults to FALSE — i.e. revoke. Absent, misspelt (`.strictObject` 400s
+   * on an unknown key) and wrong-typed values must all fail CLOSED: a security
+   * step that a missing field can switch off is #1059's shape, and here it
+   * would leave a real seller account wired to the ERP.
+   */
+  manterCredencial: z.boolean().default(false),
+});
+
+/**
+ * Adds what the operator needs and ML does not return: the e-mail codes.
+ *
+ * ⚠️ Takes a {@link UsuarioTesteRegistrado}, so `docId` rides out to the browser.
+ * Without it the panel cannot answer the only question that matters after an
+ * additional mint — did the new buyer land BESIDE the old one, or on top of it?
+ * Every buyer record carries `role: 'comprador'`, so the records alone cannot
+ * tell "nothing was created" from "the document was replaced".
+ */
+function toWire(u: UsuarioTesteRegistrado) {
   return { ...u, codigosVerificacaoEmail: codigosVerificacaoEmail(u.id) };
 }
 
@@ -106,6 +165,50 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'integracaoId é obrigatório.' }, { status: 400 });
   }
 
+  // Read as TEXT first: an empty body is legal on a POST and used to be the
+  // whole contract here, so it must keep meaning `{}` rather than becoming a
+  // 400 the day someone stops sending the placeholder object.
+  const raw = (await req.text()).trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw === '' ? '{}' : raw);
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
+    }
+    throw err;
+  }
+  // `JSON.parse` legally yields null/arrays/scalars — those are 400s, not the
+  // 500 a `.safeParse` on a non-object would eventually turn into downstream.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
+  }
+  const body = bodySchema.safeParse(parsed);
+  if (!body.success) {
+    return NextResponse.json(
+      {
+        error:
+          'Body inválido: `role` deve ser "vendedor" ou "comprador" e `manterCredencial` é ' +
+          'booleano — ambos opcionais, e nenhum outro campo é aceito.',
+      },
+      { status: 400 },
+    );
+  }
+  const { role, manterCredencial } = body.data;
+  // Refused, never ignored. The pair bootstrap's revocation is unconditional by
+  // design, so honouring the flag there would silently weaken it — and dropping
+  // the flag silently would tell the caller it applied when it did not.
+  if (manterCredencial && role === undefined) {
+    return NextResponse.json(
+      {
+        error:
+          '`manterCredencial` só vale para a criação avulsa: informe também o `role`. ' +
+          'A criação do par sempre revoga a credencial da conta usada.',
+      },
+      { status: 400 },
+    );
+  }
+
   const db = getAdminFirestore();
   try {
     const ctx = await loadMercadoLivreContext(db, integracaoId);
@@ -116,6 +219,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       api,
       store: createTestUserStore(db, integracaoId),
       tokens: ctx.store,
+      ...(role === undefined
+        ? {}
+        : { roles: [role], modo: 'novo' as const, revogarCredencial: !manterCredencial }),
     });
 
     return NextResponse.json({

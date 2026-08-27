@@ -414,7 +414,10 @@ describe('importClaimMercadoLivre — happy create path', () => {
       sender_id: String(BUYER_ID),
       // The seller still holds a send action, so the thread is NOT handled.
       atendido: false,
-      cor_etiqueta: 7,
+      // Lifted into the etiqueta's ARGB domain by `corToEtiquetaArgb` — the
+      // conta stores 24-bit RGB, `cor_etiqueta` is a 32-bit `Color.value`, and
+      // the chat filter matches the palette with an exact `==`.
+      cor_etiqueta: 0xff000007,
       estadoConversa: ESTADO_CONVERSA.naoRespondido,
       data_cadastro: DATE_CREATED_MS,
       ultima_modificacao: LAST_UPDATED_MS,

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MissingRegionError } from '@delfrance/core/region';
 
 // Mock the transport seams: the Functions SDK (queue/enqueue) and the admin app
 // binding. The scheduler's own env-driven wiring runs real. Mirrors
@@ -53,46 +54,42 @@ describe('createMlTaskScheduler', () => {
     expect(h.enqueue).toHaveBeenCalledWith(payload, undefined);
   });
 
-  it('defaults the region to us-east1 when nothing is configured', async () => {
+  it('REFUSES to enqueue when nothing is configured', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
-    // Truly unset (not empty) so the `?? default` chain falls through.
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
     const scheduler = createMlTaskScheduler();
-    await scheduler.enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east1/functions/processMercadoLivreNotification',
-    );
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
   });
 
-  it('treats blank MERCADO_LIVRE_TASKS_REGION as unset and falls through to default', async () => {
+  it('treats a blank MERCADO_LIVRE_TASKS_REGION as unset, and unset now throws', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
-    // Empty string should be treated as unset
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', '');
     const scheduler = createMlTaskScheduler();
-    await scheduler.enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east1/functions/processMercadoLivreNotification',
-    );
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
   });
 
   it('IGNORES FUNCTIONS_REGION — the queue does not live in the codebase region', async () => {
-    // The queue functions are pinned to us-east1 because Cloud Tasks does not
-    // exist in us-east5, while the Firestore triggers stay in the data region.
-    // A FUNCTIONS_REGION fallback used to sit in this resolver; on a backend
-    // where that variable names the data region it would resolve a queue that
-    // does not exist, and the Admin SDK would silently target us-central1.
+    // Where Cloud Tasks does not exist the queue functions are pinned separately
+    // while the Firestore triggers stay in the data region. A FUNCTIONS_REGION
+    // fallback used to sit in this resolver; on a backend where that variable
+    // names the data region it would resolve a queue that does not exist, and the
+    // Admin SDK would silently target us-central1. So a FUNCTIONS_REGION that is
+    // set must NOT rescue an unset MERCADO_LIVRE_TASKS_REGION — it throws.
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
     vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', undefined);
     vi.stubEnv('FUNCTIONS_REGION', 'us-east5');
     const scheduler = createMlTaskScheduler();
-    await scheduler.enqueue(payload);
-    expect(h.taskQueue).toHaveBeenCalledWith(
-      'locations/us-east1/functions/processMercadoLivreNotification',
-    );
+
+    await expect(scheduler.enqueue(payload)).rejects.toBeInstanceOf(MissingRegionError);
+    expect(h.taskQueue).not.toHaveBeenCalled();
   });
 
   it('passes scheduleDelaySeconds through to the underlying queue.enqueue (order-family delay, Step 9)', async () => {
     vi.stubEnv('MERCADO_LIVRE_TASKS_DISABLED', '');
+    vi.stubEnv('MERCADO_LIVRE_TASKS_REGION', 'us-central1');
     const scheduler = createMlTaskScheduler();
     await scheduler.enqueue(payload, { scheduleDelaySeconds: 10 });
     expect(h.enqueue).toHaveBeenCalledWith(payload, { scheduleDelaySeconds: 10 });

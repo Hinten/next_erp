@@ -126,6 +126,11 @@ export function useEmitirNFeAction(): {
     // re-query here would only flash the list to skeletons and drop the selection
     // — and for a lote it fires before emission even finishes (the dialog returns
     // immediately). So leave the table alone (#259).
+    //
+    // Still true after #1216: the listener is gated on the row being on screen,
+    // and a row the operator just selected for emission is by definition on
+    // screen. A row scrolled far away resubscribes — and repaints from the
+    // `useLatestNfe` memo — when it comes back.
     confirm: {
       title: 'Emitir NF-e',
       message: 'Emitir NF-e para o(s) pedido(s) selecionado(s)?',

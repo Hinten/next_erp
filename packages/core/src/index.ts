@@ -5,5 +5,6 @@ export * from './documents';
 export * from './phone';
 export * from './tenant';
 export * from './plugins';
+export * from './cor';
 export * from './equality';
 export * from './diff';

@@ -635,6 +635,28 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       });
       // Zero out dirty state while preserving the persisted (transformed) values.
       form.reset(values as typeof raw);
+      // Re-base the tier-3 baseline onto what we just wrote: after a successful
+      // save, the version the operator last knew IS this one.
+      //
+      // Without this, "Salvar e continuar" leaves the form mounted holding the
+      // PRE-save baseline while the server has the post-save value, so a second
+      // edit of the same field collides with the operator's own previous write —
+      // a false conflict, which #791 already established is worse than no guard
+      // at all ("operators would learn to click through it"). `useServerTruthSeed`
+      // cannot repair it: it corrects once per record id and that already
+      // happened on open, so no later snapshot re-seeds this.
+      //
+      // Merged, not replaced, and only when a baseline was actually armed. A null
+      // one is the deliberate fail-open hole documented above the create-mode
+      // effect; building a baseline out of a patch would claim knowledge of every
+      // field the patch does not carry. Same reasoning as the conflict re-base
+      // below: whatever they decide next is judged against what they last wrote.
+      if (baseline.current) {
+        baseline.current = {
+          ...baseline.current,
+          ...(result.patch as Record<string, unknown>),
+        };
+      }
       // If we just created, retain the id so subsequent saves are updates.
       if (!internalId) setInternalId(result.id);
       // Sibling writes that belong to this save (e.g. a manager flushing
@@ -915,6 +937,31 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
 
   const loading = internalId && docSnap.loading;
 
+  /**
+   * Which snapshot is currently on screen: `pending` (nothing emitted yet — an
+   * unresolved listener, a load error, or create mode), `cache` (the local copy,
+   * so a server correction is still owed) or `server` (the authoritative
+   * `fromCache: false` snapshot landed).
+   *
+   * Exposed on the form below because that difference is otherwise invisible from
+   * the outside, and the invisibility is what costs: a field still showing the
+   * cached pre-save value and a genuinely lost write render identically, so an
+   * assertion that only reads the value cannot say which it hit. That ambiguity is
+   * the whole reason `expectFieldAfterReload` kept costing investigations.
+   *
+   * ⚠️ It reports which snapshot ARRIVED — never that the form matches the server.
+   * `useServerTruthSeed` deliberately withholds the re-seed while the form is dirty,
+   * so on a dirty form `server` coexists with the operator's own unsaved value. That
+   * is correct, and it is why this must not be read as "converged".
+   *
+   * ⚠️ It also leads the inputs by one paint: this flips during render, while
+   * `form.reset` runs in the effect that follows. A reader must therefore poll for
+   * the value it expects, never take one synchronous reading the moment it turns
+   * `server`.
+   */
+  const snapshotSource =
+    docSnap.fromCache === undefined ? 'pending' : docSnap.fromCache ? 'cache' : 'server';
+
   // In genuine edit mode (a `recordId` was supplied) surface load errors and
   // missing documents instead of rendering an empty, un-saveable form — saving
   // would throw on `tx.update` for a non-existent doc. Gated on `recordId`, not
@@ -931,6 +978,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     // SKUs from the parent's unsaved `sku` via `useFormContext().getValues`).
     <FormProvider {...form}>
       <form
+        // Which Firestore snapshot the fields below were painted from. See
+        // `snapshotSource` above for the two things it does NOT mean.
+        data-snapshot-source={snapshotSource}
         // Zod (via the resolver) owns ALL validation. Without noValidate the
         // browser's native constraint validation intercepts the submit when
         // any control carries the native `required` attribute (e.g. Mantine

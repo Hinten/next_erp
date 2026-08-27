@@ -20,7 +20,7 @@ import { describe, expect, it } from 'vitest';
  * (`*.emulator.e2e.spec.ts`), which owns its own backend.
  *
  * This runs under Vitest (`e2e/**\/*.test.ts`), not Playwright — offline, in
- * ci.yml's lint-typecheck-test. See apps/web/CLAUDE.md rule 8.
+ * ci.yml's `CI test` job. See apps/web/CLAUDE.md rule 8.
  */
 
 /**

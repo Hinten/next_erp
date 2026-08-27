@@ -429,17 +429,37 @@ export function falhaPatch(
  * field has the same "stale is worse than absent" property. `errors`/`causas`
  * record OUR failed write, so a later success genuinely invalidates them — but a
  * moderação is ML's POLICY verdict on the listing, and nothing this module's
- * callers do implies ML lifted it. Two of them prove it: the stock writeback
- * clears on a successful `PUT /items`, and a `poor_quality_thumbnail` listing is
- * `active` and accepts stock updates **while moderated**; an import re-reads the
- * item but never asks `/moderations`. Clearing there would erase a live,
+ * callers do implies ML lifted it. The stock writeback proves it: it clears on a
+ * successful `PUT /items`, and a `poor_quality_thumbnail` listing is `active` and
+ * accepts stock updates **while moderated**. Clearing there would erase a live,
  * still-true reason and show a clean listing that is really still penalised —
  * the inverse of the bug, and worse, because it hides a real problem instead of
  * merely failing to explain one.
  *
- * The rule instead: **only a writer that just asked ML about moderation may
- * write `moderacoes`** — `itemsStatusSync` and `reverificarAnuncio`, each of
- * which sets it in the same patch as the status it explains, value or `[]`.
+ * The rule instead: **`moderacoes` is written only on ML's authority, never on a
+ * caller's success** — and there are two ways to hold that authority (#1252).
+ * A writer that ASKED (`itemsStatusSync`, `reverificarAnuncio`, the importer)
+ * may write any value. A writer that merely holds a fresh `status`/`sub_status`
+ * may write `[]` and nothing else, because `precisaConsultarModeracao` is pure:
+ * when it says no moderation is being reported, that IS ML's answer, and it cost
+ * no call. That second group is publish, the UP member publish, the stock send
+ * (on both its success writeback and its terminal-4xx verification path, where
+ * the evidence is a real `GET /items`) and the price send — each gated, each
+ * omitting the key on the other arm. Either way the
+ * write rides the same patch as the status it explains — value or `[]`, or, on
+ * the importer's two skip paths, not at all (`null` = "never asked", which
+ * leaves the stored reason standing rather than overwriting it with a
+ * healthy-looking `[]`).
+ *
+ * ⚠️ The paragraph above still holds for `clearFalha()` itself, and the stock
+ * writeback is still the example: it must not clear on the SEND's authority. It
+ * now clears on ML's, from the same response — and `poor_quality_thumbnail` is
+ * one of the sub_statuses the gate matches, so the very listing that paragraph
+ * is about is left untouched. ⚠️ The importer is why this docblock
+ * no longer cites it as a second example of a caller that clears without asking:
+ * it calls `clearFalha()` AND reads `/moderations`, and its own `moderacoes` key
+ * is spread on top of this patch. What it does not do is DERIVE the field from
+ * this one — see `assembleImportPlan`.
  *
  * A function rather than a shared constant so each call site owns its arrays —
  * a spread copies the object but not the empty arrays inside it, and one caller

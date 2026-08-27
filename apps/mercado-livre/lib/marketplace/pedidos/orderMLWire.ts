@@ -47,6 +47,7 @@
  * promoted to named properties on the plugin's inferred type yet.
  */
 import { coerceToMillis } from '@delfrance/core/datetime';
+import { parseWireDecimal } from '@delfrance/core/wire';
 import { toOuterRef } from '@delfrance/schemas';
 import type { MlOrder } from '@delfrance/integrations-mercado-livre';
 
@@ -205,8 +206,31 @@ function buildBuyerWire(order: MlOrder): Record<string, unknown> | null {
 /*                                payments wire                               */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A money field off the raw order-embedded payment.
+ *
+ * ⚠️ Accepts a numeric STRING as well as a number. ML quotes numeric fields
+ * inconsistently — #1087 is the live case, where `GET /collections/{id}` sent
+ * `order_id` quoted — and the same drift reaches the order-embedded payment
+ * summary. This used to be `typeof v === 'number' ? v : null`, which does not
+ * throw: it silently wrote `null` into the pedido's `orderML` mirror for every
+ * quoted amount. A quiet null is worse than the loud failure the plugin schema
+ * raises, because nothing ever reports it.
+ *
+ * This does NOT diverge from the legacy-parity contract this file defends.
+ * Dart's `json['transaction_amount'] as num?` THROWS on a string, so there is no
+ * working legacy behaviour that produced `null` here to reproduce.
+ *
+ * ⚠️ The string rule is `parseWireDecimal` from `@delfrance/core/wire`, NOT a
+ * local regex. It still never invents a value — `Number('')` is 0,
+ * `Number('0x1F')` is 31 and `Number('1e3')` is 1000, all of which it
+ * refuses — and keeping ONE definition is the #810 lesson: the private copy
+ * that drifted from its sibling is what stopped repo-wide ingestion with no
+ * error at all.
+ */
 function asNumber(v: unknown): number | null {
-  return typeof v === 'number' ? v : null;
+  if (typeof v === 'number') return v;
+  return parseWireDecimal(v);
 }
 
 function asMaybeString(v: unknown): string | null {

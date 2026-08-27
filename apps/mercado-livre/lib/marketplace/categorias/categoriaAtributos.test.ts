@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { MlCategoryAttribute } from '@delfrance/integrations-mercado-livre';
+import {
+  ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
+  ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
+  type MlCategoryAttribute,
+} from '@delfrance/integrations-mercado-livre';
 
 import {
   ML_BLOCKED_ATTRIBUTE_IDS,
@@ -14,9 +18,67 @@ function attr(over: Partial<MlCategoryAttribute> & { id: string }): MlCategoryAt
 }
 
 describe('attributeOmission', () => {
-  it('drops every ERP- or variation-owned id', () => {
+  it('drops every catalogue- or variation-owned id', () => {
     for (const id of ML_BLOCKED_ATTRIBUTE_IDS) {
       expect(attributeOmission(attr({ id }), 'item')).toBe('bloqueado');
+    }
+  });
+
+  // ⚠️ Every fixture here is deliberately UNTAGGED. ML tags `SELLER_PACKAGE_*`
+  // `hidden` in many categories — MLB457167 among them — so a fixture carrying
+  // that tag would come back `oculto` and pass against the version of this code
+  // that had no `derivado` rule at all. The whole point is the category that
+  // omits the tag, which is where the duplicated attribute used to ship.
+  it('withholds a produto-derived id even when ML does not tag it hidden', () => {
+    for (const id of ML_PRODUTO_DERIVED_ATTRIBUTE_IDS) {
+      expect(attributeOmission(attr({ id }), 'item')).toBe('derivado');
+      expect(attributeOmission(attr({ id }), 'variacao')).toBe('derivado');
+    }
+    // Named explicitly too: iterating the constant under test cannot catch it
+    // being emptied, and WEIGHT is the one an operator actually reported seeing.
+    expect(attributeOmission(attr({ id: 'WEIGHT', value_type: 'number_unit' }), 'item')).toBe(
+      'derivado',
+    );
+    expect(attributeOmission(attr({ id: 'SELLER_PACKAGE_HEIGHT' }), 'item')).toBe('derivado');
+  });
+
+  // ⚠️ Same untagged-fixture rule, and here it is not merely prudent: ML does
+  // not tag BRAND `hidden` in ANY category — it is `required` in most of them —
+  // so an omission leaning on that tag would never fire for this id at all.
+  it('withholds BRAND as herdado, never as derivado', () => {
+    expect(attributeOmission(attr({ id: 'BRAND' }), 'item')).toBe('herdado');
+    expect(attributeOmission(attr({ id: 'BRAND' }), 'variacao')).toBe('herdado');
+    // ⚠️ The verdicts must not converge. apps/web prunes a `derivado` id's
+    // stored value on the next save, and for BRAND that stored value is exactly
+    // what publish falls back to when the produto has no Marca.
+    expect(attributeOmission(attr({ id: 'BRAND' }), 'item')).not.toBe('derivado');
+    for (const id of ML_PRODUTO_HERDADO_ATTRIBUTE_IDS) {
+      expect(attributeOmission(attr({ id }), 'item')).toBe('herdado');
+    }
+  });
+
+  // Being ML-required is BRAND's normal state and changes nothing here: the
+  // value is not missing, it just lives on the produto.
+  it('withholds BRAND even where the category marks it required', () => {
+    expect(attributeOmission(attr({ id: 'BRAND', tags: { required: true } }), 'item')).toBe(
+      'herdado',
+    );
+  });
+
+  // The two spellings are different ML attributes and must not converge:
+  // `PACKAGE_*` is ML's read-only factory data, `SELLER_PACKAGE_*` is ours.
+  it('separates the read-only PACKAGE_* group from the derived SELLER_PACKAGE_* one', () => {
+    expect(attributeOmission(attr({ id: 'PACKAGE_HEIGHT' }), 'item')).toBe('bloqueado');
+    expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain('PACKAGE_HEIGHT');
+    expect(ML_BLOCKED_ATTRIBUTE_IDS).not.toContain('SELLER_PACKAGE_HEIGHT');
+  });
+
+  it('leaves the ficha técnica editable — those are not the package dimensions', () => {
+    // HEIGHT/WIDTH/LENGTH describe the PRODUCT, arrive untagged (verified against
+    // MLB457167) and nothing derives them. Withholding them would blank four
+    // fields operators fill by hand.
+    for (const id of ['HEIGHT', 'WIDTH', 'LENGTH', 'DEPTH', 'DIAMETER']) {
+      expect(attributeOmission(attr({ id, value_type: 'number_unit' }), 'item')).toBeNull();
     }
   });
 
@@ -69,15 +131,20 @@ describe('isAttributeRequired', () => {
 });
 
 describe('projectCategoriaAtributos', () => {
+  // ⚠️ The fixture must be an id the projection actually RENDERS. This was
+  // `BRAND` — a fine stand-in for "an ordinary required attribute" until BRAND
+  // became `herdado` and stopped reaching `atributos` at all, at which point the
+  // assertion read `undefined` and told you nothing about the normalisation it
+  // is here to check. `MODEL` is withheld by no rule.
   it('normalises the fields the editor renders', () => {
     const { atributos } = projectCategoriaAtributos(
       [
         attr({
-          id: 'BRAND',
-          name: 'Marca',
+          id: 'MODEL',
+          name: 'Modelo',
           value_type: 'string',
           values: [{ id: 'v1', name: 'Acme' }],
-          tooltip: 'A marca do produto',
+          tooltip: 'O modelo do produto',
           value_max_length: 60,
           attribute_group_id: 'MAIN',
           attribute_group_name: 'Principais',
@@ -87,11 +154,11 @@ describe('projectCategoriaAtributos', () => {
       'item',
     );
     expect(atributos[0]).toEqual({
-      id: 'BRAND',
-      name: 'Marca',
+      id: 'MODEL',
+      name: 'Modelo',
       valueType: 'string',
       values: [{ id: 'v1', name: 'Acme' }],
-      hint: 'A marca do produto',
+      hint: 'O modelo do produto',
       valueMaxLength: 60,
       defaultUnit: null,
       allowedUnits: [],
@@ -169,6 +236,8 @@ describe('projectCategoriaAtributos', () => {
     const { atributos, omitidos } = projectCategoriaAtributos(
       [
         attr({ id: 'SELLER_SKU' }),
+        attr({ id: 'WEIGHT', value_type: 'number_unit' }),
+        attr({ id: 'PACKAGE_HEIGHT' }),
         attr({ id: 'ESCONDIDO', tags: { hidden: true } }),
         attr({ id: 'SIZE_GRID_ID', value_type: 'grid_id' }),
         attr({ id: 'VISIVEL' }),
@@ -177,9 +246,50 @@ describe('projectCategoriaAtributos', () => {
     );
     expect(atributos.map((a) => a.id)).toEqual(['VISIVEL']);
     expect(omitidos).toEqual([
-      { id: 'SELLER_SKU', motivo: 'bloqueado' },
+      { id: 'SELLER_SKU', motivo: 'derivado' },
+      { id: 'WEIGHT', motivo: 'derivado' },
+      { id: 'PACKAGE_HEIGHT', motivo: 'bloqueado' },
       { id: 'ESCONDIDO', motivo: 'oculto' },
       { id: 'SIZE_GRID_ID', motivo: 'tabela-de-medidas' },
+    ]);
+  });
+
+  // `omitidos` is what `attributesForSave` is allowed to prune from the link
+  // doc, so a derived id landing there is what finally clears the stale copies
+  // an earlier build stored (legacy's `deleteNonShownAttributes`).
+  it('lists every derived id in omitidos so the stored copy can be pruned', () => {
+    const { omitidos } = projectCategoriaAtributos(
+      ML_PRODUTO_DERIVED_ATTRIBUTE_IDS.map((id) => attr({ id })),
+      'item',
+    );
+    expect(omitidos.map((o) => o.id).sort()).toEqual([...ML_PRODUTO_DERIVED_ATTRIBUTE_IDS].sort());
+  });
+
+  // ⚠️ THE invariant the herdado design rests on, and it is an ABSENCE: `BRAND`
+  // is reported in NEITHER array. `omitidos` is the list `attributesForSave` is
+  // allowed to prune, so naming BRAND there is what would delete the brand — and
+  // it would do so on ANY apps/web bundle, including one deployed before this
+  // change. Saying nothing instead hands the id to the "unknown to this category
+  // — preserve verbatim" branch, which every version of that function has had.
+  it('reports BRAND in NEITHER atributos NOR omitidos', () => {
+    const { atributos, omitidos } = projectCategoriaAtributos(
+      [attr({ id: 'BRAND', tags: { required: true } }), attr({ id: 'VISIVEL' })],
+      'item',
+    );
+    expect(atributos.map((a) => a.id)).toEqual(['VISIVEL']);
+    expect(omitidos).toEqual([]);
+  });
+
+  // The control: every OTHER withheld id must still be reported, or the stale
+  // copies #799 removed come straight back.
+  it('still reports every non-herdado omission', () => {
+    const { omitidos } = projectCategoriaAtributos(
+      [attr({ id: 'BRAND' }), attr({ id: 'SELLER_SKU' }), attr({ id: 'GTIN' })],
+      'item',
+    );
+    expect(omitidos).toEqual([
+      { id: 'SELLER_SKU', motivo: 'derivado' },
+      { id: 'GTIN', motivo: 'bloqueado' },
     ]);
   });
 });

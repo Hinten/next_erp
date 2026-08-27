@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
+import type { OrderImportResult } from '../pedidos/orderImport';
+import type { PaymentImportResult } from '../pedidos/orderPaymentImport';
+import type { ShipmentImportResult } from '../pedidos/orderShipmentImport';
 
 import {
   MAX_TENTATIVAS,
@@ -39,13 +42,15 @@ const h = vi.hoisted(() => ({
     async (_deps: { nowUs: number; nowMs: number; integracaoId: string }, _resourceId: number) => ({
       pedidoId: 'ped1',
       created: true,
+      semEnvio: false,
       skipped: null,
     }),
   ),
   importPagamentoMercadoLivre: vi.fn(
     async (_deps: { nowUs: number; contaId: string }, _resourceId: number) => ({
-      pedidoId: 'ped1',
-      skipped: null,
+      orderId: 7 as number | null,
+      pedidoId: 'ped1' as string | null,
+      skipped: null as string | null,
     }),
   ),
   importShipmentMercadoLivre: vi.fn(
@@ -1263,6 +1268,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: 'ped1',
       created: true,
+      semEnvio: false,
       skipped: null,
     }));
     const r = await handleNotificationTask(
@@ -1282,6 +1288,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: 'ped2',
       created: false,
+      semEnvio: false,
       skipped: null,
     }));
     const r = await handleNotificationTask(
@@ -1300,6 +1307,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: null,
       created: false,
+      semEnvio: false,
       skipped: null,
     }));
     const r = await handleNotificationTask(
@@ -1318,6 +1326,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: null,
       created: false,
+      semEnvio: false,
       skipped: 'seller-mismatch' as const,
     }));
     const r = await handleNotificationTask(
@@ -1336,6 +1345,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: null,
       created: false,
+      semEnvio: false,
       skipped: null,
     }));
     const r = await handleNotificationTask(
@@ -1399,6 +1409,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
     h.importPedidoMercadoLivre.mockResolvedValue({
       pedidoId: 'ped9',
       created: true,
+      semEnvio: false,
       skipped: null,
     });
 
@@ -1432,9 +1443,14 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
       const orderImportRunner = vi.fn(async () => ({
         pedidoId: 'ped-o',
         created: true,
+        semEnvio: false,
         skipped: null,
       }));
-      const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped1', skipped: null }));
+      const paymentImportRunner = vi.fn(async () => ({
+        orderId: 7,
+        pedidoId: 'ped1',
+        skipped: null,
+      }));
       const shipmentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-s', skipped: null }));
       const r = await handleNotificationTask(
         asDb(db),
@@ -1442,7 +1458,12 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         0,
         { orderImportRunner, paymentImportRunner, shipmentImportRunner },
       );
-      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
+      expect(r).toMatchObject({
+        outcome: 'done',
+        integracaoId: 'conta-A',
+        topic: 'payments',
+        detail: 'imported',
+      });
       expect(paymentImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 123456);
       expect(orderImportRunner).not.toHaveBeenCalled();
       expect(shipmentImportRunner).not.toHaveBeenCalled();
@@ -1453,6 +1474,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
       const db = new FakeDb();
       seedConta(db, 'conta-A', 55);
       const paymentImportRunner = vi.fn(async () => ({
+        orderId: null,
         pedidoId: null,
         skipped: 'payment-404' as const,
       }));
@@ -1462,14 +1484,25 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         0,
         { paymentImportRunner },
       );
-      expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
+      // ⚠️ `done` alone is NOT the assertion. A skipped import and a real one are
+      // the same disposition; `detail` is the only thing that separates them.
+      expect(r).toMatchObject({
+        outcome: 'done',
+        integracaoId: 'conta-A',
+        topic: 'payments',
+        detail: 'payment-404',
+      });
       expect(db.docs(NOTIF).size).toBe(0);
     });
 
     it('a malformed (non-numeric) resource is dropped WITHOUT dispatching to the runner', async () => {
       const db = new FakeDb();
       seedConta(db, 'conta-A', 55);
-      const paymentImportRunner = vi.fn(async () => ({ pedidoId: null, skipped: null }));
+      const paymentImportRunner = vi.fn(async () => ({
+        orderId: 7,
+        pedidoId: null,
+        skipped: null,
+      }));
       const r = await handleNotificationTask(
         asDb(db),
         payloadOf({ id: 'N62', resource: '/payments/abc', topic: 'payments' }),
@@ -1528,7 +1561,11 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
           account: {},
         }),
       });
-      h.importPagamentoMercadoLivre.mockResolvedValue({ pedidoId: 'ped9', skipped: null });
+      h.importPagamentoMercadoLivre.mockResolvedValue({
+        orderId: 7,
+        pedidoId: 'ped9',
+        skipped: null,
+      });
       const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
       try {
         const r = await handleNotificationTask(
@@ -1557,9 +1594,14 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
       const orderImportRunner = vi.fn(async () => ({
         pedidoId: 'ped-o',
         created: true,
+        semEnvio: false,
         skipped: null,
       }));
-      const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-p', skipped: null }));
+      const paymentImportRunner = vi.fn(async () => ({
+        orderId: 7,
+        pedidoId: 'ped-p',
+        skipped: null,
+      }));
       const shipmentImportRunner = vi.fn(async () => ({ pedidoId: 'ped1', skipped: null }));
       const r = await handleNotificationTask(
         asDb(db),
@@ -1689,7 +1731,11 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         resource: '/shipments/601',
         topic: 'shipments',
       });
-      const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped1', skipped: null }));
+      const paymentImportRunner = vi.fn(async () => ({
+        orderId: 7,
+        pedidoId: 'ped1',
+        skipped: null,
+      }));
       const shipmentImportRunner = vi.fn(async () => ({ pedidoId: 'ped2', skipped: null }));
 
       const res = await reprocessNotifications(
@@ -1718,9 +1764,14 @@ describe('handleNotificationTask — claims claim-import dispatch (Step 14)', ()
     const orderImportRunner = vi.fn(async () => ({
       pedidoId: 'ped-o',
       created: true,
+      semEnvio: false,
       skipped: null,
     }));
-    const paymentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-p', skipped: null }));
+    const paymentImportRunner = vi.fn(async () => ({
+      orderId: 7,
+      pedidoId: 'ped-p',
+      skipped: null,
+    }));
     const shipmentImportRunner = vi.fn(async () => ({ pedidoId: 'ped-s', skipped: null }));
     const claimImportRunner = vi.fn(async () => ({
       pedidoId: 'ped1',
@@ -2256,3 +2307,242 @@ describe('#808 acceptance — a notification survives a connect-after-the-fact',
 // with `indexSatisfies`. The hand-rolled block that used to live here compared
 // `fieldPath` only and ignored `order`, so flipping user_id to DESCENDING passed
 // it while breaking the query — verified before deleting it (#823).
+
+/**
+ * #1087, second round. #1136 fixed this for the `items` topic and left the other
+ * two data-bearing importers behind: `orders_v2` and `payments` returned a bare
+ * `{ kind: 'done' }`, so an import that skipped EVERYTHING logged identically to
+ * one that created a pedido or advanced it to `pago`. During the live run that
+ * read as a healthy stream over a payment that never imported.
+ *
+ * The property under test is not "detail is present" — it is that two runs which
+ * DID DIFFERENT THINGS can no longer produce the same log line.
+ */
+describe('orders_v2 / payments report what they actually did (#1087)', () => {
+  async function runPayment(skipped: PaymentImportResult['skipped']) {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    return handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: `NP-${String(skipped)}`, resource: '/payments/1', topic: 'payments' }),
+      0,
+      {
+        paymentImportRunner: vi.fn(async () => ({ orderId: 7, pedidoId: 'ped1', skipped })),
+        // #1087 — `pedido-nao-encontrado` now reaches the bootstrap seam. Without
+        // a fake it would build the REAL Cloud Tasks scheduler; that it does so by
+        // default is the wiring proof, asserted in its own suite.
+        pendingOrderBootstrapRunner: vi.fn(async () => 'agendado' as const),
+      },
+    );
+  }
+
+  async function runOrder(over: {
+    created: boolean;
+    semEnvio?: boolean;
+    skipped: OrderImportResult['skipped'];
+  }) {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    return handleNotificationTask(
+      asDb(db),
+      payloadOf({
+        id: `NO-${String(over.skipped)}-${String(over.created)}`,
+        resource: '/orders/1',
+        topic: 'orders_v2',
+      }),
+      0,
+      { orderImportRunner: vi.fn(async () => ({ pedidoId: 'ped1', semEnvio: false, ...over })) },
+    );
+  }
+
+  const PAYMENT_CASES: ReadonlyArray<readonly [PaymentImportResult['skipped'], string]> = [
+    [null, 'imported'],
+    ['payment-404', 'payment-404'],
+    ['marketplace-none', 'marketplace-none'],
+    ['sem-order-key', 'sem-order-key'],
+    // #1087 — a missing pedido is no longer terminal: it schedules a bootstrap.
+    ['pedido-nao-encontrado', 'pedido-bootstrap-agendado'],
+    ['stale', 'stale'],
+  ];
+
+  /**
+   * #1087's other half. These two arms DECIDE something and then deliberately do
+   * NOTHING, and reporting them as `done` is the failure mode the whole issue is
+   * about: an outcome indistinguishable from work performed. They must report
+   * `dropped` — the `ack` vs `ignore` distinction #813 turned on — and each must
+   * keep its own `detail` so an operator can tell WHICH guard fired.
+   */
+  const PAYMENT_DROP_CASES: ReadonlyArray<PaymentImportResult['skipped']> = [
+    'pedido-nao-encontrado-expirado',
+    'pedido-nao-encontrado-pagamento-morto',
+  ];
+
+  it.each(PAYMENT_DROP_CASES)('payments: a refused bootstrap (%s) reports DROPPED', async (s) => {
+    expect(await runPayment(s)).toMatchObject({ outcome: 'dropped', detail: s });
+  });
+
+  /**
+   * The dispatch half of #1087: which skips reach the bootstrap seam, with what,
+   * and what happens when the enqueue cannot run.
+   */
+  describe('the payments branch addresses the bootstrap correctly', () => {
+    async function runComBootstrap(
+      skipped: PaymentImportResult['skipped'],
+      orderId: number | null,
+      agendamento: 'agendado' | 'tasks-desabilitado' = 'agendado',
+    ) {
+      const db = new FakeDb();
+      seedConta(db, 'conta-A', 55);
+      const pendingOrderBootstrapRunner = vi.fn(async () => agendamento);
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({
+          id: `NB-${String(skipped)}`,
+          resource: '/payments/1',
+          topic: 'payments',
+          user_id: 55,
+          received: 1_700_000_000_000,
+        }),
+        0,
+        {
+          paymentImportRunner: vi.fn(async () => ({ orderId, pedidoId: null, skipped })),
+          pendingOrderBootstrapRunner,
+        },
+      );
+      return { r, pendingOrderBootstrapRunner, db };
+    }
+
+    it('passes the ORDER id and the seller through to the bootstrap', async () => {
+      const { r, pendingOrderBootstrapRunner } = await runComBootstrap(
+        'pedido-nao-encontrado',
+        424242,
+      );
+      expect(pendingOrderBootstrapRunner).toHaveBeenCalledTimes(1);
+      expect(pendingOrderBootstrapRunner).toHaveBeenCalledWith({
+        orderId: 424242,
+        userId: 55,
+        recebidoMs: 1_700_000_000_000,
+      });
+      expect(r).toMatchObject({ outcome: 'done', detail: 'pedido-bootstrap-agendado' });
+    });
+
+    it.each(['pedido-nao-encontrado-expirado', 'pedido-nao-encontrado-pagamento-morto'] as const)(
+      'never enqueues when the guard refused (%s)',
+      async (skipped) => {
+        const { pendingOrderBootstrapRunner } = await runComBootstrap(skipped, 424242);
+        expect(pendingOrderBootstrapRunner).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['payment-404', 'marketplace-none', 'sem-order-key', 'stale', null] as const)(
+      'never enqueues for an unrelated skip (%s)',
+      async (skipped) => {
+        const { pendingOrderBootstrapRunner } = await runComBootstrap(skipped, 424242);
+        expect(pendingOrderBootstrapRunner).not.toHaveBeenCalled();
+      },
+    );
+
+    it('cannot enqueue without an order key — no bootstrap, no throw', async () => {
+      const { r, pendingOrderBootstrapRunner } = await runComBootstrap(
+        'pedido-nao-encontrado',
+        null,
+      );
+      expect(pendingOrderBootstrapRunner).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ outcome: 'done', detail: 'pedido-nao-encontrado' });
+    });
+
+    it('KEEPS the notification when the tasks valve is off — never reports done', async () => {
+      // Sweep-only mode is where reporting `done` bites: the receiver persists a
+      // `failed` doc, the SWEEP runs this code, and a `resolve` would DELETE that
+      // doc — consuming the delivery, losing the bootstrap for good, and counting
+      // it identically to a payment that genuinely synced. `fail` keeps the doc so
+      // the sweep re-drives it once the valve is back (the pagamento upsert is
+      // idempotent), and it parks with a reason if the valve never returns.
+      const { r, db } = await runComBootstrap('pedido-nao-encontrado', 42, 'tasks-desabilitado');
+      expect(r).toMatchObject({ outcome: 'failed', detail: 'pedido-bootstrap-sem-fila' });
+      expect(db.docs(NOTIF).size).toBe(1);
+      const doc = [...db.docs(NOTIF).values()][0] as Record<string, unknown>;
+      expect(doc.status).toBe('failed');
+      expect(String(doc.erro)).toContain('MERCADO_LIVRE_TASKS_DISABLED');
+    });
+
+    it('persists NOTHING on any of these paths — the pipeline stays enqueue-first', async () => {
+      const { db } = await runComBootstrap('pedido-nao-encontrado', 42);
+      expect(db.docs(NOTIF).size).toBe(0);
+    });
+  });
+
+  it.each(PAYMENT_CASES)(
+    'payments: a runner skip of %s reports detail %s',
+    async (skipped, detail) => {
+      expect(await runPayment(skipped)).toMatchObject({ outcome: 'done', detail });
+    },
+  );
+
+  const ORDER_CASES: ReadonlyArray<
+    readonly [
+      { created: boolean; semEnvio?: boolean; skipped: OrderImportResult['skipped'] },
+      string,
+    ]
+  > = [
+    // ⚠️ The sem-envio pair keeps created/updated rather than replacing it — an
+    // order that will never ship still needs to say whether the pedido was new.
+    [{ created: true, semEnvio: true, skipped: null }, 'created-sem-envio'],
+    [{ created: false, semEnvio: true, skipped: null }, 'updated-sem-envio'],
+    [{ created: true, skipped: null }, 'created'],
+    [{ created: false, skipped: null }, 'updated'],
+    [{ created: false, skipped: 'seller-mismatch' }, 'seller-mismatch'],
+    [{ created: false, skipped: 'no-buyer' }, 'no-buyer'],
+  ];
+
+  it.each(ORDER_CASES)('orders_v2: %o reports detail %s', async (over, detail) => {
+    expect(await runOrder(over)).toMatchObject({ outcome: 'done', detail });
+  });
+
+  async function runShipment(skipped: ShipmentImportResult['skipped']) {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    return handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: `NS-${String(skipped)}`, resource: '/shipments/1', topic: 'shipments' }),
+      0,
+      { shipmentImportRunner: vi.fn(async () => ({ pedidoId: 'ped1', skipped })) },
+    );
+  }
+
+  const SHIPMENT_CASES: ReadonlyArray<readonly [ShipmentImportResult['skipped'], string]> = [
+    [null, 'synced'],
+    ['shipment-404', 'shipment-404'],
+    ['sem-order-id', 'sem-order-id'],
+    ['pedido-nao-encontrado', 'pedido-nao-encontrado'],
+    ['sem-frete-inicial', 'sem-frete-inicial'],
+    ['stale', 'stale'],
+  ];
+
+  it.each(SHIPMENT_CASES)(
+    'shipments: a runner skip of %s reports detail %s',
+    async (skipped, detail) => {
+      expect(await runShipment(skipped)).toMatchObject({ outcome: 'done', detail });
+    },
+  );
+
+  it('a payment that imported and one that skipped are no longer the same log line', async () => {
+    // The whole point. Before this both were `{ outcome: 'done' }` and nothing
+    // downstream could tell them apart.
+    const imported = await runPayment(null);
+    const skipped = await runPayment('pedido-nao-encontrado');
+    expect(imported.outcome).toBe(skipped.outcome);
+    expect(imported.detail).not.toBe(skipped.detail);
+  });
+
+  it('all four data-bearing importers report a detail — none left behind', async () => {
+    // `items` gained this in #1136; the other three here. A fifth importer added
+    // without one is the same blind spot again, so assert the set, not each one.
+    const results = [
+      await runOrder({ created: true, skipped: null }),
+      await runPayment(null),
+      await runShipment(null),
+    ];
+    expect(results.map((r) => r.detail)).toEqual(['created', 'imported', 'synced']);
+  });
+});
