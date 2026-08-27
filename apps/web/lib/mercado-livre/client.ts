@@ -17,6 +17,36 @@ import { useMemo } from 'react';
 
 import { useAuth } from '@/lib/auth/useAuth';
 
+import type {
+  MercadoLivreAnuncioTeste,
+  MercadoLivreAtributoSugestao,
+  MercadoLivreAtributosSugestao,
+  MercadoLivreCategoriaAtributos,
+  MercadoLivreCategoriaSugestao,
+  MercadoLivreCategorias,
+  MercadoLivreChartDeleteCheckResult,
+  MercadoLivreChartDeleteResult,
+  MercadoLivreChartDomain,
+  MercadoLivreChartSpecs,
+  MercadoLivreConta,
+  MercadoLivreEnvioEstoqueResult,
+  MercadoLivreEnvioPrecoResult,
+  MercadoLivreIaModelos,
+  MercadoLivreImportarResult,
+  MercadoLivreJobsEmAndamento,
+  MercadoLivreMassImportStatus,
+  MercadoLivreMedidasSugestao,
+  MercadoLivrePriceSyncStatus,
+  MercadoLivrePublicarResult,
+  MercadoLivreReclamacaoEstado,
+  MercadoLivreRespostaChat,
+  MercadoLivreReverificarResult,
+  MercadoLivreSyncChartsResult,
+  MercadoLivreTiposAnuncio,
+  MercadoLivreUsuarioTeste,
+  MercadoLivreUsuariosTesteResult,
+} from './wire';
+
 const DEFAULT_MERCADO_LIVRE_URL = 'http://localhost:3006';
 
 /** Non-2xx response from the mercado-livre backend. */
@@ -74,72 +104,60 @@ export class MercadoLivreBackendDesatualizadoError extends Error {
   }
 }
 
-export interface MercadoLivreConta {
-  connected: boolean;
-  me: { id: number; nickname: string | null; email: string | null } | null;
-}
-
-export interface MercadoLivrePublicarResult {
-  /** The parent link's external id — a FAMILY id under User Products (#798). */
-  itemId: string;
-  /** Old-shape estado code, 1–2 chars ('p' publicado, 'pa' pausado, 'E' erro, …). */
-  estado: string;
-  permalink: string | null;
-  /**
-   * Every ML item the publish wrote: one normally, one PER VARIATION for a
-   * User-Products family.
-   *
-   * ⚠️ Optional because this app talks to the DEPLOYED channel backend, not the
-   * one in this checkout — a revision predating #798 answers without it.
-   */
-  itemIds?: string[];
-  /** Items closed because their ERP variação no longer exists (UP only). */
-  orfaosEncerrados?: string[];
-}
-
-/** One member of a re-verified User-Products family (#1142). */
-export interface MercadoLivreReverificarMembro {
-  itemId: string;
-  memberDocId: string;
-  /**
-   * Did ML answer for this member? `false` means its stored status still stands.
-   * ⚠️ Not the same as `status: 'closed'` — an unreadable member is unknown.
-   */
-  lido: boolean;
-  status: string | null;
-  subStatus: string[] | null;
-  enviavel: boolean;
-}
-
-export interface MercadoLivreReverificarResult {
-  /** Old-shape estado code derived from the listing's fresh ML status. */
-  estado: string;
-  /** Raw ML `status` as of the re-check (`active`/`paused`/`closed`/…). */
-  status: string | null;
-  subStatus: string[] | null;
-  /** Whether the stock sweep will send to this listing again. */
-  enviavel: boolean;
-  /**
-   * Present only for a User-Products FAMILY, one entry per member — the level at
-   * which a family actually has a status. The four fields above are the FOLD
-   * over these, which is all the parent link can carry.
-   *
-   * ⚠️ Only used for the toast's wording. The per-variation table reads the
-   * member links from Firestore directly and repaints from the live snapshot, so
-   * it does not depend on this and shows the same values after a reload.
-   */
-  membros?: MercadoLivreReverificarMembro[];
-}
-
-export interface MercadoLivreImportarResult {
-  /** The created/updated ERP produto id. */
-  produtoId: string;
-  /** Old-shape estado code derived from the ML listing status. */
-  estado: string;
-  nome: string;
-  /** True when a new produto was created (false = an existing one was re-synced). */
-  created: boolean;
-}
+/**
+ * The wire types moved to `./wire`, where each is inferred from the Zod
+ * schema that validates it — one definition instead of a hand-written type
+ * and an unchecked cast that could disagree with it.
+ *
+ * Re-exported here so every consumer keeps importing them from
+ * `@/lib/mercado-livre/client`, which is where 42 files already look.
+ */
+export type {
+  MercadoLivreAnuncioTeste,
+  MercadoLivreAtributoSugestao,
+  MercadoLivreAtributosSugestao,
+  MercadoLivreCategoriaAtributo,
+  MercadoLivreCategoriaAtributos,
+  MercadoLivreCategoriaNo,
+  MercadoLivreCategoriaSugestao,
+  MercadoLivreCategorias,
+  MercadoLivreChartDeleteCheckResult,
+  MercadoLivreChartDeleteResult,
+  MercadoLivreChartDomain,
+  MercadoLivreChartSpecs,
+  MercadoLivreChartValidationError,
+  MercadoLivreConselhoParcial,
+  MercadoLivreConta,
+  MercadoLivreEnvioEstoqueListing,
+  MercadoLivreEnvioEstoqueResult,
+  MercadoLivreEnvioEstoqueSemEnvio,
+  MercadoLivreEnvioPrecoListing,
+  MercadoLivreEnvioPrecoResult,
+  MercadoLivreExpectativaReclamacao,
+  MercadoLivreIaModelo,
+  MercadoLivreIaModelos,
+  MercadoLivreImportarResult,
+  MercadoLivreJobsEmAndamento,
+  MercadoLivreMassImportFailure,
+  MercadoLivreMassImportStatus,
+  MercadoLivreMedidaSugestao,
+  MercadoLivreMedidasContexto,
+  MercadoLivreMedidasSugestao,
+  MercadoLivreOfertaParcial,
+  MercadoLivrePrazoAcao,
+  MercadoLivrePriceSyncFailure,
+  MercadoLivrePriceSyncSkip,
+  MercadoLivrePriceSyncStatus,
+  MercadoLivrePublicarResult,
+  MercadoLivreReclamacaoEstado,
+  MercadoLivreRespostaChat,
+  MercadoLivreReverificarMembro,
+  MercadoLivreReverificarResult,
+  MercadoLivreSyncChartsResult,
+  MercadoLivreTiposAnuncio,
+  MercadoLivreUsuarioTeste,
+  MercadoLivreUsuariosTesteResult,
+} from './wire';
 
 /** The `massImportOptionsSchema` booleans — all optional here, server defaults the rest. */
 export interface MercadoLivreMassImportOptions {
@@ -154,397 +172,6 @@ export interface MercadoLivreMassImportOptions {
   importarCategorias?: boolean;
   /** Default false — a re-scan skips listings already linked to this account. */
   atualizarCadastrados?: boolean;
-}
-
-/** One per-item failure recorded on a mass-import job (capped server-side). */
-export interface MercadoLivreMassImportFailure {
-  itemId: string;
-  error: string;
-}
-
-/** Progress snapshot of a mass-import job (`GET importar-todos/status`). */
-export interface MercadoLivreMassImportStatus {
-  /** `cancelled` is operator-initiated — see `cancelMassImport`. */
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
-  scanned: number;
-  imported: number;
-  created: number;
-  skipped: number;
-  failureCount: number;
-  failures: MercadoLivreMassImportFailure[];
-  startedAt: number;
-  finishedAt: number | null;
-  erro: string | null;
-}
-
-/** One contained per-item skip on a price-sync job (`itemId` is null for plan-time skips). */
-export interface MercadoLivrePriceSyncSkip {
-  itemId: string | null;
-  produtoId: string;
-  code: string;
-}
-
-/** One per-item failure recorded on a price-sync job — a skip plus its error (capped server-side). */
-export interface MercadoLivrePriceSyncFailure extends MercadoLivrePriceSyncSkip {
-  error: string;
-}
-
-/** Progress snapshot of a price-sync job (`GET atualizar-precos/status`). */
-export interface MercadoLivrePriceSyncStatus {
-  status: 'running' | 'completed' | 'failed';
-  baixarPreco: boolean;
-  planejados: number;
-  enviados: number;
-  pulados: number;
-  /**
-   * Anúncios the job could not have enumerated — a drifted denorm, a link on a
-   * variation child, or a malformed `paiId` (#1072).
-   *
-   * ⚠️ This is a SUBSET of `pulados`, not a sibling of it: each finding is
-   * recorded through the same `registerSkip` that increments `pulados`, so it
-   * rides the shared `skips` sample where the operator can actually read the
-   * rows. What this counter adds is that it is exact and uncapped — the `skips`
-   * list stops at 200 and can be exhausted by the plan phase alone, so on a
-   * drifted catalogue the count is the only honest number. Zero is what makes
-   * `completed` mean what it says.
-   */
-  naoEnumerados: number;
-  falhas: number;
-  pausas: number;
-  /** The first skips, for display — capped server-side; `pulados` stays exact. */
-  skips: MercadoLivrePriceSyncSkip[];
-  /** The first failures, for display — capped server-side; `falhas` stays exact. */
-  failures: MercadoLivrePriceSyncFailure[];
-  startedAt: number;
-  updatedAt: number;
-  finishedAt: number | null;
-  erro: string | null;
-}
-
-/**
- * One listing's outcome from an on-demand stock push (#819).
- *
- * Channel-NEUTRAL on purpose (`anuncioId`, not `itemId`): the second
- * marketplace's `/api/marketplace/<canal>/enviar-estoque` answers with the same
- * envelope, and `lib/marketplace/estoque` dispatches without knowing which one
- * replied.
- */
-export interface MercadoLivreEnvioEstoqueListing {
-  produtoId: string;
-  produtoNome: string | null;
-  variacaoProdutoId: string | null;
-  anuncioId: string | null;
-  linkDocId: string | null;
-  outcome: 'enviado' | 'pulado' | 'falha' | 'nao-tentado';
-  /** Machine code; null only on `'enviado'`. */
-  motivo: string | null;
-  /** Operator-facing pt-BR text — the BACKEND owns this wording. */
-  mensagem: string;
-  quantidade: number | null;
-  variacoes: number | null;
-  rearme: { executado: boolean; estado: string | null; enviavel: boolean } | null;
-}
-
-/** A requested produto that produced no listing at all, and why. */
-export interface MercadoLivreEnvioEstoqueSemEnvio {
-  produtoId: string;
-  produtoNome: string | null;
-  motivo: string;
-  mensagem: string;
-}
-
-export interface MercadoLivreEnvioEstoqueResult {
-  canal: 'mercado-livre';
-  integracaoId: string;
-  contaNome: string | null;
-  solicitados: number;
-  familias: number;
-  resumo: { enviados: number; pulados: number; falhas: number; naoTentados: number };
-  listings: MercadoLivreEnvioEstoqueListing[];
-  produtosSemEnvio: MercadoLivreEnvioEstoqueSemEnvio[];
-  /** ISO-8601 — set when the conta is rate-limit paused. */
-  pausadoAte: string | null;
-}
-
-/**
- * One listing's outcome from an on-demand PRICE push (#804).
- *
- * Channel-NEUTRAL on purpose (`anuncioId`, not `itemId`): the second
- * marketplace's `/api/marketplace/<canal>/enviar-precos` answers with the same
- * envelope, and `lib/marketplace/preco` dispatches without knowing which one
- * replied.
- *
- * ⚠️ `motivo` is UPPER_SNAKE here and kebab on the stock envelope. That is not
- * an oversight — these are the price stack's own codes, the same ones the
- * account-wide job persists in its `skips` list. Nothing in this layer reads
- * them; `mensagem` is what gets rendered.
- */
-export interface MercadoLivreEnvioPrecoListing {
-  produtoId: string;
-  produtoNome: string | null;
-  variacaoProdutoId: string | null;
-  anuncioId: string | null;
-  linkDocId: string | null;
-  outcome: 'enviado' | 'pulado' | 'falha' | 'nao-tentado';
-  /** Machine code; null only on `'enviado'`. */
-  motivo: string | null;
-  /** Operator-facing pt-BR text — the BACKEND owns this wording. */
-  mensagem: string;
-  /** The price actually sent; null when nothing was sent. */
-  preco: number | null;
-  /** What the listing carried before, when the run got far enough to read it. */
-  precoAnterior: number | null;
-  variacoes: number | null;
-}
-
-export interface MercadoLivreEnvioPrecoResult {
-  canal: 'mercado-livre';
-  integracaoId: string;
-  contaNome: string | null;
-  solicitados: number;
-  familias: number;
-  resumo: { enviados: number; pulados: number; falhas: number; naoTentados: number };
-  listings: MercadoLivreEnvioPrecoListing[];
-  produtosSemEnvio: MercadoLivreEnvioEstoqueSemEnvio[];
-  /** ISO-8601 — set when ML rate-limited the conta. */
-  pausadoAte: string | null;
-}
-
-/**
- * The RUNNING jobs of both bulk flows for a set of contas
- * (`GET jobs-em-andamento`). Each entry carries the `jobId` the caller then
- * polls through the per-flow `…Status` methods, plus the `integracaoId` that
- * places it against a row. Running-only by design: a job that finished while
- * the page was closed is not listed (#816).
- */
-export interface MercadoLivreJobsEmAndamento {
-  importacoes: Array<MercadoLivreMassImportStatus & { jobId: string; integracaoId: string }>;
-  enviosPreco: Array<MercadoLivrePriceSyncStatus & { jobId: string; integracaoId: string }>;
-}
-
-/** A node of the ML category tree (`GET categorias`). */
-export interface MercadoLivreCategoriaNo {
-  id: string;
-  name: string | null;
-}
-
-export interface MercadoLivreCategorias {
-  /** Populated only when no `categoryId` was asked for. */
-  roots: MercadoLivreCategoriaNo[] | null;
-  node: {
-    id: string;
-    name: string | null;
-    /** Ancestors, root-first — the cascade's breadcrumb. */
-    pathFromRoot: MercadoLivreCategoriaNo[];
-    children: MercadoLivreCategoriaNo[];
-    /** Only a leaf has listing types and attributes. */
-    isLeaf: boolean;
-    settings: Record<string, unknown> | null;
-  } | null;
-}
-
-/** One ML category suggestion (`GET categorias/sugestoes`). */
-export interface MercadoLivreCategoriaSugestao {
-  categoryId: string;
-  categoryName: string | null;
-  domainId: string | null;
-  domainName: string | null;
-  /**
-   * Ancestor trail, root-first, resolved server-side because
-   * `domain_discovery/search` returns only the LEAF name.
-   *
-   * ⚠️ Without it the picker is unusable, not merely terse: ML files the same
-   * leaf name (e.g. "Camisetas e Regatas") under several different parents, so
-   * every suggestion renders identically and the operator cannot tell which is
-   * which. `null` when the path could not be resolved — the row degrades to its
-   * leaf name rather than disappearing.
-   */
-  pathFromRoot: Array<{ id: string; name: string | null }> | null;
-}
-
-/**
- * One editable ML category attribute (`GET categorias/atributos`).
- *
- * Already filtered and normalised server-side: ERP-owned ids (SELLER_SKU,
- * PACKAGE_*), hidden attributes, size-chart attributes and out-of-scope
- * variation attributes never appear here, and the list arrives ordered
- * required-first.
- */
-export interface MercadoLivreCategoriaAtributo {
-  id: string;
-  name: string | null;
-  /** `string | number | number_unit | boolean | list`, or whatever ML adds. */
-  valueType: string | null;
-  values: Array<{ id: string | null; name: string | null }>;
-  /** Helper text (`hint`, falling back to `tooltip`). */
-  hint: string | null;
-  valueMaxLength: number | null;
-  defaultUnit: string | null;
-  allowedUnits: Array<{ id: string | null; name: string | null }>;
-  groupId: string | null;
-  groupName: string | null;
-  required: boolean;
-  multivalued: boolean;
-  readOnly: boolean;
-  relevance: number | null;
-}
-
-export interface MercadoLivreCategoriaAtributos {
-  /** False ⇒ a mid-tree category; keep the operator in the cascade. */
-  leaf: boolean;
-  atributos: MercadoLivreCategoriaAtributo[];
-  /** Why an attribute was withheld, so a gap is explainable. */
-  omitidos: Array<{ id: string; motivo: string }>;
-}
-
-/** The listing types available for a leaf category (`GET tipos-anuncio`). */
-export interface MercadoLivreTiposAnuncio {
-  leaf: boolean;
-  tipos: MercadoLivreCategoriaNo[];
-}
-
-/** What a successful ML chat reply reports back. */
-/** One party's stated expectation on a claim. */
-export interface MercadoLivreExpectativaReclamacao {
-  playerRole: string | null;
-  expectedResolution: string | null;
-  status: string | null;
-}
-
-/** A seller action ML still offers, with its SLA clock. */
-export interface MercadoLivrePrazoAcao {
-  acao: string;
-  obrigatoria: boolean;
-  prazo: string | null;
-}
-
-/** One partial-refund offer, or a recommendation/restriction about them. */
-export interface MercadoLivreOfertaParcial {
-  amount: number | null;
-  percentage: number | null;
-}
-export interface MercadoLivreConselhoParcial {
-  percentage: number | null;
-  reason: string | null;
-  type: string | null;
-}
-
-/**
- * Live state of one Mercado Livre claim.
- *
- * ⚠️ **A snapshot, never a cache.** `acoesDisponiveis` is ML's answer to "what
- * may this seller do right now", derived from the claim's stage and status, and
- * it empties as the claim closes. Anything rendered from it has to be refetched
- * rather than remembered.
- */
-export interface MercadoLivreReclamacaoEstado {
-  claimId: number;
-  status: string | null;
-  stage: string | null;
-  tipo: string | null;
-  reasonId: string | null;
-  tipoReclamacao: 'PNR' | 'PDD' | null;
-  acoesDisponiveis: string[];
-  prazos: MercadoLivrePrazoAcao[];
-  podeResponder: boolean;
-  motivoSemResposta: string | null;
-  /** `null` WITH `expectativasIndisponiveis` means the read failed, not "none". */
-  expectativas: MercadoLivreExpectativaReclamacao[] | null;
-  expectativasIndisponiveis: boolean;
-  ofertasParciais: {
-    currency_id: string | null;
-    available_offers: MercadoLivreOfertaParcial[];
-    recommendations: MercadoLivreConselhoParcial[];
-    restrictions: MercadoLivreConselhoParcial[];
-  } | null;
-}
-
-export interface MercadoLivreRespostaChat {
-  conversaId: string;
-  mensagemId: string;
-  /**
-   * Non-null when the send also CLOSED the thread — answering a question is
-   * terminal, so the composer must go read-only immediately rather than wait
-   * for the next notification to import the new status.
-   */
-  respostaBloqueada: string | null;
-}
-
-/**
- * `GET /anuncio-teste` — the data ML requires a test listing to carry, resolved
- * against the live catalogue, plus whether the target account is a test user.
- */
-export interface MercadoLivreAnuncioTeste {
-  title: string;
-  descricao: string;
-  /**
-   * A **leaf** under ML's "Outros", which the route descends to — only a leaf can
-   * be published into. Null when the site has no such root, or when no leaf is
-   * reachable beneath it within the depth cap; the operator then picks.
-   */
-  categoryId: string | null;
-  /**
-   * Names from the "Outros" root down to `categoryId`, so the alert can say which
-   * category was chosen. Null whenever `categoryId` is.
-   */
-  categoriaPath: string[] | null;
-  /**
-   * Why there is no category, when there isn't one. `'sem-raiz'` = ML's site has
-   * no root named "Outros"; `'sem-folha'` = it has one, but no leaf was reachable
-   * beneath it. Null when a category WAS resolved. The two need different
-   * actions, so one "não foi possível" message for both sent operators hunting.
-   */
-  categoriaMotivo: 'sem-raiz' | 'sem-folha' | null;
-  /** Lowest-exposure type the category offers; null ⇒ the operator picks. */
-  listingTypeId: string | null;
-  conta: {
-    nickname: string | null;
-    /** False ⇒ warn: ML forbids test listings on a real seller account. */
-    ehContaDeTeste: boolean;
-  };
-}
-
-/**
- * One Mercado Livre test user, as stored by the backend.
- *
- * ⚠️ `password` is a live credential ML shows exactly once and never reissues.
- * Render it, let the operator copy it — do not log it, and do not put it in a
- * query string or an analytics event.
- */
-export interface MercadoLivreUsuarioTeste {
-  role: 'vendedor' | 'comprador';
-  /**
-   * The Firestore document holding this record — `vendedor` / `comprador` for
-   * the pair bootstrap, `${role}-${id}` for an additional mint.
-   *
-   * ⚠️ Rendered next to every account because it is the ONLY field that can
-   * answer "did the new buyer land beside the old one, or on top of it?". Every
-   * buyer carries `role: 'comprador'`, so without it a list that failed to grow
-   * is indistinguishable from a document that was replaced.
-   *
-   * ⚠️ **`null` means the backend does not report it**, which every deployment
-   * older than this field does — including one that already mints correctly.
-   * Typed nullable rather than left required-and-absent on purpose: `call<T>()`
-   * casts instead of validating, so a required `docId` would have rendered as a
-   * blank chip and keyed every row `undefined`, which is the same silent-nothing
-   * this whole change exists to remove. The GET normalises it here (see
-   * `comDocId`) and the panel NAMES the absence.
-   */
-  docId: string | null;
-  id: number;
-  nickname: string;
-  password: string;
-  site_id: string;
-  site_status: string | null;
-  email: string | null;
-  createdAt: number | null;
-  createdByUserId: number | null;
-  /**
-   * ML's e-mail verification code for this account — the trailing digits of
-   * `id`, in both lengths ML may ask for. There is no inbox to check, so
-   * without these the operator cannot get past a verification prompt.
-   */
-  codigosVerificacaoEmail: { quatro: string; seis: string };
 }
 
 /**
@@ -623,32 +250,6 @@ function comDocId(u: MercadoLivreUsuarioTeste): MercadoLivreUsuarioTeste {
   return typeof u.docId === 'string' && u.docId !== '' ? u : { ...u, docId: null };
 }
 
-/** Result of the dev-only mint. */
-export interface MercadoLivreUsuariosTesteResult {
-  usuarios: MercadoLivreUsuarioTeste[];
-  /** Roles minted on this run — each consumed one of the account's ten slots. */
-  criados: ('vendedor' | 'comprador')[];
-  /** Roles already stored, reused instead of re-minted. */
-  reaproveitados: ('vendedor' | 'comprador')[];
-  /** Credential docs deleted from the bootstrap conta — it is now disconnected. */
-  credenciaisRemovidas: number;
-  /**
-   * Whether the credential was revoked at all.
-   *
-   * ⚠️ Read THIS, never `credenciaisRemovidas === 0` — a revocation against an
-   * already-empty subcollection also returns zero, so the count cannot tell
-   * "we left this conta connected" from "there was nothing left to delete".
-   */
-  credencialRevogada: boolean;
-  conta: { id: number; nickname: string | null };
-}
-
-/** One model the AI settings page may offer. */
-export interface MercadoLivreIaModelo {
-  id: string;
-  label: string;
-}
-
 /** One grid row as the suggestion route describes it. */
 export interface MercadoLivreMedidaRow {
   /** The editor's stable row key — round-tripped, never shown to the model. */
@@ -667,165 +268,12 @@ export interface MercadoLivreMedidaColumn {
   required: boolean;
 }
 
-/** One suggested cell. `value_id` is set only for a closed-list match. */
-export interface MercadoLivreMedidaSugestao {
-  rowKey: string;
-  attributeId: string;
-  value_id: string | null;
-  value_name: string;
-}
-
-/**
- * What the model was actually given.
- *
- * ⚠️ Per source, not one `comFoto` flag: the operator has to tell "the model had
- * nothing to read" apart from "the model read it and could not do it". A silent
- * text-only run is what made a working feature look broken.
- */
-export interface MercadoLivreMedidasContexto {
-  /** How many photos reached the model. */
-  fotos: number;
-  /**
-   * How many photos the tabela has, read or not.
-   *
-   * ⚠️ `anexadas > 0` with `fotos === 0` is a photo that exists but has no
-   * readable copy yet — the operator must be told to WAIT, not to upload the
-   * photo they are looking at.
-   */
-  anexadas: number;
-  descricao: boolean;
-  codigo: boolean;
-  /** Whether an already-filled chart from another conta was sent as reference. */
-  referencia: boolean;
-}
-
 /** The tabela's fields as the BROWSER has them — including unsaved edits. */
 export interface MercadoLivreMedidasFatos {
   nome?: string | null;
   codigo?: string | null;
   descricao?: string | null;
   fotos?: unknown[] | null;
-}
-
-/** `POST /sugerir-medidas` — staged suggestions, never applied server-side. */
-/**
- * One attribute the model proposes, in the shape the listing's rows already use.
- *
- * ⚠️ Redeclared here rather than imported. `@delfrance/integrations-mercado-livre`
- * is server-only at its root (its OAuth core holds the app clientSecret), which
- * is why every ML wire type in this file is a local declaration.
- */
-export interface MercadoLivreAtributoSugestao {
-  id: string;
-  /** ML's enumerated value id, the `-1` N/A sentinel, or null for free text. */
-  value_id: string | null;
-  value_name: string;
-  unit_id: string | null;
-}
-
-/** `POST /sugerir-atributos` — suggestions to STAGE, never applied by the server. */
-export interface MercadoLivreAtributosSugestao {
-  /** False ⇒ a mid-tree category; no model call was made. */
-  leaf: boolean;
-  /** How many attributes were offered to the model. */
-  atributos: number;
-  sugestoes: MercadoLivreAtributoSugestao[];
-  /** Whether a produto photo reached the model at all. */
-  comFoto: boolean;
-}
-
-export interface MercadoLivreMedidasSugestao {
-  sugestoes: MercadoLivreMedidaSugestao[];
-  /** How many cells were offered to the model. */
-  celulas: number;
-  contexto: MercadoLivreMedidasContexto;
-  /** True when a cap or a duplicate size label dropped part of the grid. */
-  truncado: boolean;
-}
-
-/** `GET /ia/modelos` — the catalogue plus the currently effective resolution. */
-export interface MercadoLivreIaModelos {
-  modelos: MercadoLivreIaModelo[];
-  /**
-   * `'live'` = straight from the provider. `'fallback'` = the shipped list,
-   * because the provider could not be reached or answered nothing usable. The
-   * page must say which, rather than implying the catalogue is current.
-   */
-  fonte: 'live' | 'fallback';
-  /** Why the list is a fallback. Present only when `fonte === 'fallback'`. */
-  erro?: string;
-  /**
-   * The shipped system instruction, verbatim — what runs when `promptSistema` is
-   * left empty.
-   *
-   * ⚠️ It arrives over the wire rather than being imported: the ML integrations
-   * package root is **server-only** (its OAuth core holds the app clientSecret),
-   * and a copy kept in `apps/web` would drift from the text the model is
-   * actually given.
-   */
-  promptPadrao: string;
-  efetivo: {
-    /** What a suggestion would use right now. */
-    modelo: string;
-    /** True ⇒ the stored model is not served and this is a substitute. */
-    substituido: boolean;
-    /**
-     * Which link of the chain won. `'env'` is the one worth surfacing: a
-     * backend env var silently overrides the shipped default and the operator
-     * has no other way to discover it.
-     */
-    origem: 'config' | 'env' | 'padrao';
-    padrao: string;
-  };
-}
-
-/** One chart-enabled ML domain (`GET size-charts/domains`). */
-export interface MercadoLivreChartDomain {
-  domain_id: string;
-  name: string | null;
-}
-
-/**
- * The domain technical-specs tree (`POST size-charts/specs`) — deeply nested,
- * ML-owned and consumed only by the chart editor's walk, so it stays opaque
- * here (`unknown`); `chartSpec.ts` reads it defensively.
- */
-export type MercadoLivreChartSpecs = Record<string, unknown>;
-
-/** One ML chart-validation problem (`POST size-charts/sync` → 200 data). */
-export interface MercadoLivreChartValidationError {
-  chartIndex: number;
-  code: string | null;
-  message: string | null;
-  /** Offending row, or null for a chart-level problem (a rejected name, …). */
-  rowIndex: number | null;
-  /** Attribute ids the cell covers — more than one for a combined column. */
-  attributeIds: string[];
-  /** The row's main-attribute value as ML echoed it, for when `rowIndex` is null. */
-  rowMainValue: string | null;
-}
-
-export interface MercadoLivreSyncChartsResult {
-  /** The charts after the sync (ML ids written back where accepted). */
-  tabelas: unknown[];
-  validationErrors: MercadoLivreChartValidationError[];
-  updated: boolean;
-}
-
-/** `POST size-charts/excluir` — ML accepted the REMOVAL REQUEST (see the method doc). */
-export interface MercadoLivreChartDeleteResult {
-  requested: true;
-  message: string | null;
-  tabelas: unknown[];
-}
-
-/** `POST size-charts/verificar-exclusao` — the verdict on a pending removal. */
-export interface MercadoLivreChartDeleteCheckResult {
-  /** True ⇒ ML confirmed the removal and the guia is off the tabMedi doc. */
-  removed: boolean;
-  /** `'ACTIVE'` = still linked to a listing; null once ML stopped serving it. */
-  chartStatus: string | null;
-  tabelas: unknown[];
 }
 
 /** A binary shipment label fetched from the mercado-livre backend (`GET etiqueta`). */
