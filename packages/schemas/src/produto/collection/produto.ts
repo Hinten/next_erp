@@ -252,16 +252,14 @@ export const produtoMeta: CollectionMetadata = {
     // and no sort arrow renders. "Canais de venda" was deferred by #159 for
     // needing a join; it is now the `integracoes` column, which resolves the
     // `integracoesComProduto` ids through one cached read of `integracao`.
-    columns: [
-      'foto',
-      'nomeLink',
-      'sku',
-      'gtin',
-      'preco',
-      'integracoes',
-      'publicado',
-      'ultimaModificacao',
-    ],
+    //
+    // ⚠️ This set is FIXED on screen: /produtos passes
+    // `showColumnPicker={false}`, so the ⚙ is gone and nothing else can edit
+    // it. That makes the list below the whole truth about both what renders AND
+    // what is projected — there is no per-user override widening the read.
+    // `gtin` was dropped when the set was fixed; restoring it is a one-line
+    // change here, not a user preference.
+    columns: ['foto', 'nomeLink', 'sku', 'preco', 'publicado', 'integracoes', 'ultimaModificacao'],
   },
 };
 

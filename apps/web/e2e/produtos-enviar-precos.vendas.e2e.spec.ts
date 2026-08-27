@@ -8,6 +8,7 @@ import {
   seedProdutoMlPublicado,
 } from './_helpers/seed-data';
 import { warmRoutes } from './helpers/warmup';
+import { searchTableView } from './helpers/table-view';
 
 /**
  * The produtos-table bulk **Enviar preços** action (#804) — the port of the
@@ -47,7 +48,7 @@ test.describe.serial('Produtos — bulk price push to the marketplaces', () => {
 
   test('enables the action only once a produto is selected', async ({ page }) => {
     await page.goto('/produtos');
-    await page.getByPlaceholder('Buscar por nome…').fill(prefix);
+    await searchTableView(page, prefix);
     await expect(page.getByRole('link', { name: produtoNome, exact: true })).toBeVisible({
       timeout: 30_000,
     });
@@ -61,7 +62,7 @@ test.describe.serial('Produtos — bulk price push to the marketplaces', () => {
 
   test('asks before sending, with decreases allowed by default', async ({ page }) => {
     await page.goto('/produtos');
-    await page.getByPlaceholder('Buscar por nome…').fill(prefix);
+    await searchTableView(page, prefix);
     await expect(page.getByRole('link', { name: produtoNome, exact: true })).toBeVisible({
       timeout: 30_000,
     });
@@ -78,7 +79,7 @@ test.describe.serial('Produtos — bulk price push to the marketplaces', () => {
   test('reports a push it could not deliver, per row', async ({ page }) => {
     await page.route('**/api/marketplace/mercado-livre/enviar-precos', (route) => route.abort());
     await page.goto('/produtos');
-    await page.getByPlaceholder('Buscar por nome…').fill(prefix);
+    await searchTableView(page, prefix);
     await expect(page.getByRole('link', { name: produtoNome, exact: true })).toBeVisible({
       timeout: 30_000,
     });
