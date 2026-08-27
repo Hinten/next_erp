@@ -95,7 +95,8 @@ export const fooCollection = defineCollection({ path: 'foos', schema: fooSchema 
 ### 3.3 List — `app/(app)/foos/page.tsx`
 
 `'use client'` + `<TableView>`. Per-column filters, header sorting, column
-projection, column-visibility persistence (localStorage) and syncing
+projection, column-visibility persistence (localStorage — unless
+`showColumnPicker={false}`, which fixes the set) and syncing
 filters/sort/search to the query string are **automatic** — nothing to wire. The
 "Copiar" button (`copyHref`) and the update-monitor banner (auto-detected
 `monitorField`) are opt-in — see §4.
@@ -217,6 +218,7 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `schema`, `collection`, `db` | Required. `db = getFirebaseFirestore()`. |
 | `title`, `description` | Header. |
 | `defaultColumns` | Initial visible columns. Omitted → every non-`unknown` field. |
+| `showColumnPicker` | Render the ⚙ column picker (default `true`). `false` ALSO stops reading/writing the persisted column set — the ⚙ is the only way to edit it, so a stale entry would strand a returning operator on columns they cannot change, and (since the projection follows the visible set) would decide the screen's read cost from a choice nobody can see. Use it when the column set is the schema's declaration, not a preference — `/produtos`. |
 | `orderBy` | Initial sort `{ field, direction }`. User changes it by clicking the header. |
 | `rowHref` | `(id, row) => string` — row-click target. |
 | `onRowClick` | `(id, row) => void` — row-click handler instead of navigation (e.g. a modal editor for an embedded subcollection table). `rowHref` is ignored while set. |
@@ -234,7 +236,7 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `pageSize` | Rows per page (default 50). |
 | `pathContext` | For sub-collections (`{ parentId }`). |
 | `extraFilters` | `ReadonlyArray<PipelineFieldFilter>` — page-owned server-side filters (no filter UI, never in the URL), AND-combined with `meta.defaultQuery` base filters and the user's column filters. An `array-contains-any` entry whose value is an EMPTY array short-circuits to an empty result set without querying (a resolved candidate list that came back empty); an array value on any OTHER op throws (programmer error), never silently renders an empty table. Ignored under `queryOverride`. On the classic fallback path `array-contains-any` is capped at 30 values and `contains`/`startsWith` throw (pipeline-only). |
-| `search` | `{ placeholder?, toFilters(term), toForcedOrderBy?(term) }` — opt-in free-text box owned by `TableView`: the term lives in the URL as `?q=` and is restored with the rest of the list state. `toFilters` widens `extraFilters`; `toForcedOrderBy` supplies the order the term requires (a prefix RANGE must be the first `orderBy`), and the explicit `forcedOrderBy` prop still outranks it. Only for a term the page can turn into filters **synchronously** — see `useSearchTermParam` for the async ones. |
+| `search` | `{ placeholder?, toFilters(term), toForcedOrderBy?(term), resolveIds?(term) }` — opt-in free-text box owned by `TableView`: the term lives in the URL as `?q=` and is restored with the rest of the list state. `toFilters` widens `extraFilters`; `toForcedOrderBy` supplies the order the term requires (a prefix RANGE must be the first `orderBy`), and the explicit `forcedOrderBy` prop still outranks it. **`resolveIds`** covers a term whose match the collection cannot be filtered by at all — a marketplace item id lives in a produto's link subcollection — by resolving it to document ids first (async), then constraining through the same `idIn` a subcollection-lookup filter uses. Returning `null` DECLINES the term and falls through to `toFilters`, which is what lets one box serve two modes; `{ ids: [] }` is a real answer ("handled, nothing matched") and renders empty **without** querying; either way `toFilters`/`toForcedOrderBy` are skipped, since the modes are alternatives and never conjuncts. `/clientes` and `/nfe/comunicacoes` predate it and still own their input via `useSearchTermParam`. |
 | `queryOverride` | Escape hatch: pass a ready-made Firestore `Query`. |
 
 ## 5. Reference — `ObjectView` (`packages/ui/src/object/ObjectView.tsx`)

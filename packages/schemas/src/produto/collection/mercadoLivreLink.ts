@@ -625,3 +625,41 @@ export function variacaoLinkHasListing(link: Record<string, unknown> | null | un
   if (typeof link.id === 'string' && link.id.length > 0) return true;
   return typeof link.itemId === 'string' && link.itemId.length > 0;
 }
+
+/**
+ * Split a `produtoMercadoLivreOuterRef` into the parent produto + link doc ids.
+ * Tolerates both the canonical `documents/produtos/<id>/produtoMercadoLivre/<docId>`
+ * and a bare `produtos/...`; returns null for anything else, including a ref
+ * whose third segment is not the literal `produtoMercadoLivre` leaf.
+ *
+ * ⚠️ This is the ANCHOR resolver, and that is what makes it worth sharing.
+ * A variation link doc lives under the variation CHILD produto, but every
+ * catalog query filters `paiId == null` — so a reader that resolves an ML
+ * identifier through `variacaoMercadoLivre` and stops at the doc's own parent
+ * has resolved a produto the list will then silently drop. This ref points at
+ * the family anchor's link doc, so parsing it yields the anchor with no extra
+ * read.
+ *
+ * ⚠️ `.nullable()` on the field: rows imported from the legacy project arrive
+ * without it (`tools/migrations/src/2026-08-ml-integracoes-com-produto`
+ * backfills them). A caller that must not miss those needs a `paiId` fallback.
+ *
+ * ⚠️ It lives HERE, beside the schema, rather than in whichever app needed it
+ * first: the readers now span `apps/mercado-livre` (Admin SDK) and `apps/web`
+ * (client SDK), and a copy per deployable is exactly how `integracao.cor`
+ * drifted into two incompatible encodings (#1264/#1267). `apps/mercado-livre`
+ * still carries private copies in `core/linkRefs.ts`, `import.ts`,
+ * `importMigration.ts` and `orderProdutoResolve.ts` — byte-identical, and
+ * collapsing them onto this export stays the mechanical follow-up it was
+ * already deemed at `linkRefs.ts`.
+ */
+export function parseProdutoMercadoLivreOuterRef(
+  ref: unknown,
+): { produtoId: string; linkId: string } | null {
+  if (typeof ref !== 'string') return null;
+  const segs = ref.split('/').filter(Boolean);
+  const i = segs.indexOf('produtos');
+  if (i === -1 || i + 3 >= segs.length) return null;
+  if (segs[i + 2] !== 'produtoMercadoLivre') return null;
+  return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
+}

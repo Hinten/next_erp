@@ -189,6 +189,26 @@
       ]
     },
     {
+      "collectionGroup": "produtoMercadoLivre",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "sku",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "variacaoMercadoLivre",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "sku",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "clientes",
       "queryScope": "COLLECTION",
       "fields": [

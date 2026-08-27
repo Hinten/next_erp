@@ -64,6 +64,7 @@ import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@t
 import { ColumnFilter, FilterPopover } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
 import { SearchBar } from './SearchBar';
+import { type SearchIdResolver, useSearchIdResolution } from './useSearchIdResolution';
 import { SEARCH_CHIP_KEY, buildFilterChips, subcollectionLookupFormatter } from './describeFilter';
 import { applyColumnFilters } from './filterRows';
 import {
@@ -125,6 +126,24 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * followed by every virtual column.
    */
   defaultColumns?: string[];
+
+  /**
+   * Render the ⚙ column picker (default true).
+   *
+   * `false` ALSO stops reading and writing the persisted column set. That
+   * coupling is the whole point rather than a side effect: the ⚙ is the only
+   * way to change columns, so honouring a stale
+   * `delfrance:tableview:columns:<path>` entry would strand a returning
+   * operator on a set they can no longer edit — and since `selectFields`
+   * derives the query projection from that set, it would also make the read
+   * cost of the screen depend on a choice nobody can see or undo. With the
+   * picker off, columns come straight from `defaultColumns` /
+   * `meta.defaultQuery.columns`, which is then the whole truth about the
+   * screen.
+   *
+   * Reorder mode goes with it — the ⚙ is its only entry point.
+   */
+  showColumnPicker?: boolean;
 
   /** Per-field overrides keyed by field key. */
   fields?: Record<string, FieldConfig>;
@@ -249,16 +268,33 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * inequality field be the first `orderBy`. It behaves exactly like the
    * `forcedOrderBy` prop, which still outranks it when both are set.
    *
-   * ⚠️ Only for a term the page can turn into filters SYNCHRONOUSLY. Two
-   * screens (`/clientes` address search, `/nfe/comunicacoes`) resolve their
-   * term through a query into an id list first; they keep their own input and
-   * their own `?q=` handling, and must NOT set this prop — see
-   * `useSearchTermParam` in `apps/web`.
+   * `resolveIds` covers the terms `toFilters` cannot: one whose match lives
+   * somewhere the collection cannot be filtered by, so finding it costs a
+   * query FIRST (a marketplace item id sits in a produto's link subcollection).
+   * Returning `null` declines the term and falls through to `toFilters`, which
+   * is what lets ONE box serve two search modes; returning ids constrains the
+   * query to them via the same `idIn` a subcollection-lookup filter uses.
+   *
+   * ⚠️ An empty `ids` array is a real answer — "handled, nothing matched" —
+   * and renders an empty table WITHOUT querying the collection. It is NOT the
+   * same as `null`: falling through there would run the other mode's filter
+   * over a term it was never meant for and report ITS miss instead.
+   *
+   * ⚠️ `toFilters` and `toForcedOrderBy` are skipped entirely while a
+   * resolution is pending or has produced ids. Two search modes must never be
+   * AND-ed: a nome range plus an id restriction asks for rows that satisfy
+   * both, which is not what either mode means.
+   *
+   * ⚠️ Without `resolveIds` this prop stays SYNCHRONOUS-only. `/clientes`
+   * and `/nfe/comunicacoes` still own their input and their `?q=` handling
+   * through `useSearchTermParam` in `apps/web`; they predate `resolveIds` and
+   * could migrate onto it, but until they do, do not give them this prop.
    */
   search?: {
     placeholder?: string;
     toFilters: (term: string) => ReadonlyArray<PipelineFieldFilter>;
     toForcedOrderBy?: (term: string) => { field: string; direction?: 'asc' | 'desc' } | undefined;
+    resolveIds?: SearchIdResolver;
   };
 
   /**
@@ -323,6 +359,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   db,
   pathContext = {},
   defaultColumns,
+  showColumnPicker = true,
   fields: fieldOverrides = {},
   virtualColumns = [],
   actions = [],
@@ -386,10 +423,17 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Persisted visible columns. `useLocalStorage` returns defaultValue on
   // the server + first client render, then reads localStorage in an effect
   // (getInitialValueInEffect default) — no hydration mismatch.
-  const [visibleKeysArr, setVisibleKeysArr] = useLocalStorage<string[]>({
+  const [storedKeysArr, setVisibleKeysArr] = useLocalStorage<string[]>({
     key: columnsStorageKey,
     defaultValue: defaultVisibleKeys,
   });
+  // ⚠️ With no ⚙ there is no way to edit the persisted set, so honouring it
+  // would pin a returning operator to whatever they last picked — including a
+  // set saved BEFORE the screen went fixed, which is how a newly declared
+  // default column reaches nobody who has already opened the page. The hook
+  // still runs unconditionally (rules of hooks); only its value is bypassed,
+  // and nothing writes the key while `showColumnPicker` is false.
+  const visibleKeysArr = showColumnPicker ? storedKeysArr : defaultVisibleKeys;
 
   // Right-side action panel (opt-in). Collapse state persists per
   // collection, same key scheme as the column prefs above.
@@ -474,15 +518,31 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const [pages, setPages] = useState(() => Math.min(restored?.pages ?? 1, MAX_RESTORED_PAGES));
   const effectiveLimit = resolvedPageSize * pages;
 
+  // A term whose match cannot be expressed as a filter on this collection is
+  // resolved to a candidate id list first — see the `search.resolveIds` prop.
+  // `undefined` ids means the resolver declined (or there is none), which is
+  // what falls the term through to `toFilters` below.
+  const searchResolve = useSearchIdResolution(searchConfig?.resolveIds, searchTerm);
+  const searchIdsActive = searchResolve.ids !== undefined;
+  // While a resolution is in flight we do not yet know WHICH mode the term
+  // belongs to, so neither mode may run: issuing the filter search first would
+  // paint rows for a term that is about to resolve to different ones.
+  const searchResolving = searchResolve.loading;
+
   // The page's own extra filters, widened by whatever the search term implies.
   // Kept as one value so every downstream consumer (serial, empty-list guard,
   // pipeline, classic fallback) sees the same set.
+  //
+  // ⚠️ A resolved term contributes NO filters. The two search modes are
+  // alternatives, not conjuncts: AND-ing a nome range onto an id restriction
+  // asks for rows satisfying both, which is neither mode's meaning.
   const effectiveExtraFilters = useMemo<ReadonlyArray<PipelineFieldFilter> | undefined>(() => {
     if (!searchConfig || searchTerm === '') return extraFilters;
+    if (searchIdsActive || searchResolving) return extraFilters;
     const fromSearch = searchConfig.toFilters(searchTerm);
     if (fromSearch.length === 0) return extraFilters;
     return [...(extraFilters ?? []), ...fromSearch];
-  }, [extraFilters, searchConfig, searchTerm]);
+  }, [extraFilters, searchConfig, searchTerm, searchIdsActive, searchResolving]);
 
   // Value renderers for filters whose stored value is not self-describing.
   // A subcollection-lookup filter packs its child field into the value as
@@ -569,10 +629,36 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
 
   const subLookup = useSubcollectionIdLookup(db, subLookupSpec);
   const lookupActive = subLookupSpec !== null;
-  const lookupLoading = lookupActive && subLookup.loading;
+
+  // TWO independent id restrictions can now be active at once: a
+  // subcollection-lookup filter (the pedido NF column) and an async search
+  // term (`search.resolveIds`). Both mean "the row must be one of these", so
+  // the only correct combination is the INTERSECTION — a union would widen
+  // each past what its own control asked for, and honouring just one would
+  // silently drop the other's restriction while its chip still claims to apply.
+  const combinedIds = useMemo<string[] | undefined>(() => {
+    const fromLookup = lookupActive ? (subLookup.ids ?? undefined) : undefined;
+    const fromSearch = searchResolve.ids;
+    if (fromLookup && fromSearch) {
+      const keep = new Set(fromSearch);
+      return fromLookup.filter((id) => keep.has(id));
+    }
+    if (fromLookup) return [...fromLookup];
+    return fromSearch ? [...fromSearch] : undefined;
+  }, [lookupActive, subLookup.ids, searchResolve.ids]);
+
+  const lookupLoading = (lookupActive && subLookup.loading) || searchResolving;
   // Resolved to zero matches → no rows; don't build a whole-collection query.
-  const lookupEmpty = lookupActive && Array.isArray(subLookup.ids) && subLookup.ids.length === 0;
-  const idIn = lookupActive ? (subLookup.ids ?? undefined) : undefined;
+  const lookupEmpty = combinedIds !== undefined && combinedIds.length === 0;
+  const idIn = combinedIds;
+  // Is the row set restricted to a resolved id list at all — from EITHER
+  // source, and including while one is still resolving? Only the pipeline can
+  // honour `idIn`, so the classic fallback keys on this to render nothing
+  // rather than the whole collection. ⚠️ `lookupActive` alone is not this
+  // question: it covers the subcollection filter only, and a search resolution
+  // that fell back would silently paint the entire catalog under a term that
+  // matched one produto.
+  const idRestrictionActive = lookupActive || searchIdsActive || searchResolving;
   // JSON (not join) so an id containing the separator can't collide and strand
   // the pipeline memo on a stale value.
   const idInSerial = idIn ? JSON.stringify(idIn) : '';
@@ -661,8 +747,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // invalid on the classic path and silently stops matching its composite
   // index on the Pipelines path. The explicit prop still outranks it — a page
   // that states its order means it.
+  // ⚠️ A term resolved to ids contributes no order either: its forced sort
+  // exists to make the RANGE `toFilters` builds index-seekable, and that range
+  // is not being issued. Forcing `nome asc` anyway would re-sort the id hits by
+  // a rule nothing on screen is applying.
   const searchForcedOrderBy =
-    searchConfig && searchTerm !== '' ? searchConfig.toForcedOrderBy?.(searchTerm) : undefined;
+    searchConfig && searchTerm !== '' && !searchIdsActive && !searchResolving
+      ? searchConfig.toForcedOrderBy?.(searchTerm)
+      : undefined;
   const resolvedForcedOrderBy = forcedOrderBy ?? searchForcedOrderBy;
   const forcedSort: SortState | undefined = resolvedForcedOrderBy
     ? {
@@ -792,9 +884,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const fallbackQuery: Query<z.infer<S>> | null = useMemo(() => {
     if (queryOverride) return queryOverride;
     if (pipeline) return null;
-    // A subcollection lookup resolves via `idIn` (pipeline-only). On the classic
-    // fallback we can't honor it, so render nothing rather than the whole list.
-    if (lookupActive) return null;
+    // An id restriction resolves via `idIn` (pipeline-only) — a subcollection
+    // lookup or an async search term. On the classic fallback we can't honor
+    // it, so render nothing rather than the whole list.
+    if (idRestrictionActive) return null;
     // Same short-circuit as the pipeline path: an empty extra-filter
     // candidate list means "no rows" — don't build a query.
     if (extraEmpty) return null;
@@ -1156,6 +1249,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     field: resolvedMonitorField,
   });
 
+  // The top-right toolbar row. Every member is conditional, so without this
+  // guard a screen that has none of them (picker off, nothing stale, actions
+  // in the docked rail — exactly /produtos) still renders an empty flex row
+  // and pays for its vertical space.
+  const actionBarShown =
+    !panelEnabled && (actions.length > 0 || !!newHref || !!renderNewButton || !!copyHref);
+  const headerToolbarShown = monitor.stale || showColumnPicker || actionBarShown;
+
+  // An id restriction that hit its cap is showing a PREFIX of the real answer.
+  // Both sources compute this and neither used to render it, so the 30-row cap
+  // read as a complete result set — the failure mode a silent cap always has.
+  const lookupTruncated = subLookup.truncated || searchResolve.truncated;
+
   return (
     <Stack>
       {(title || description) && (
@@ -1173,53 +1279,57 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           table shrink inside the nowrap flex row instead of overflowing. */}
       <Group align="flex-start" wrap="nowrap" gap="md">
         <Stack style={{ flex: 1, minWidth: 0 }}>
-          <Group justify="flex-end" wrap="nowrap" align="flex-end">
-            <Group gap="xs">
-              {monitor.stale && (
-                <Tooltip
-                  label="Os dados desta coleção foram alterados desde que a página carregou. Clique para atualizar."
-                  withinPortal
-                  multiline
-                  maw={260}
-                >
-                  <ActionIcon
-                    variant="subtle"
-                    color="yellow"
-                    aria-label="Página desatualizada — atualizar"
-                    onClick={() => {
-                      monitor.acknowledge();
+          {headerToolbarShown && (
+            <Group justify="flex-end" wrap="nowrap" align="flex-end">
+              <Group gap="xs">
+                {monitor.stale && (
+                  <Tooltip
+                    label="Os dados desta coleção foram alterados desde que a página carregou. Clique para atualizar."
+                    withinPortal
+                    multiline
+                    maw={260}
+                  >
+                    <ActionIcon
+                      variant="subtle"
+                      color="yellow"
+                      aria-label="Página desatualizada — atualizar"
+                      onClick={() => {
+                        monitor.acknowledge();
+                        setRefreshKey((k) => k + 1);
+                      }}
+                    >
+                      <IconRefreshAlert size={18} />
+                    </ActionIcon>
+                  </Tooltip>
+                )}
+                {showColumnPicker && (
+                  <ColumnPicker
+                    fields={pickerFields}
+                    visibleKeys={visibleKeys}
+                    onToggle={toggleColumn}
+                    order={visibleKeysArr}
+                    onReorder={reorderColumns}
+                  />
+                )}
+                {actionBarShown && (
+                  <ActionBar
+                    actions={actions}
+                    selectedRows={selectedRows}
+                    visibleRows={rows ?? []}
+                    newHref={newHref}
+                    renderNewButton={renderNewButton}
+                    copyHref={copyHref}
+                    actionsLayout={actionsLayout}
+                    overflowThreshold={overflowThreshold}
+                    onActionComplete={() => {
+                      setSelected(new Set());
                       setRefreshKey((k) => k + 1);
                     }}
-                  >
-                    <IconRefreshAlert size={18} />
-                  </ActionIcon>
-                </Tooltip>
-              )}
-              <ColumnPicker
-                fields={pickerFields}
-                visibleKeys={visibleKeys}
-                onToggle={toggleColumn}
-                order={visibleKeysArr}
-                onReorder={reorderColumns}
-              />
-              {!panelEnabled && (actions.length > 0 || newHref || renderNewButton || copyHref) && (
-                <ActionBar
-                  actions={actions}
-                  selectedRows={selectedRows}
-                  visibleRows={rows ?? []}
-                  newHref={newHref}
-                  renderNewButton={renderNewButton}
-                  copyHref={copyHref}
-                  actionsLayout={actionsLayout}
-                  overflowThreshold={overflowThreshold}
-                  onActionComplete={() => {
-                    setSelected(new Set());
-                    setRefreshKey((k) => k + 1);
-                  }}
-                />
-              )}
+                  />
+                )}
+              </Group>
             </Group>
-          </Group>
+          )}
 
           {searchConfig && (
             <SearchBar
@@ -1237,9 +1347,16 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             onClearAll={clearAll}
           />
 
-          {(snap.error || subLookup.error) && (
+          {lookupTruncated && (
+            <Text c="dimmed" size="sm">
+              Mais resultados do que o limite da busca — apenas os primeiros foram carregados.
+              Refine o termo.
+            </Text>
+          )}
+
+          {(snap.error || subLookup.error || searchResolve.error) && (
             <Alert color="red" title="Erro ao carregar">
-              {(snap.error ?? subLookup.error)?.message}
+              {(snap.error ?? subLookup.error ?? searchResolve.error)?.message}
             </Alert>
           )}
 

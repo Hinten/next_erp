@@ -19,6 +19,7 @@ const {
   pipelineSupportedRef,
   whereOpSpy,
   whereArrayContainsSpy,
+  buildQuerySpy,
 } = vi.hoisted(() => ({
   snapState: {
     current: {
@@ -39,6 +40,9 @@ const {
   // extraFilters op maps to. Return values only matter as identities.
   whereOpSpy: vi.fn(() => ({ __c: 'where' })),
   whereArrayContainsSpy: vi.fn(() => ({ __c: 'whereArrayContains' })),
+  // Spied so a test can assert the classic fallback built NO query at all —
+  // the difference between "renders nothing" and "renders the whole table".
+  buildQuerySpy: vi.fn(() => ({ __fakeQuery: true })),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -75,7 +79,7 @@ vi.mock('@delfrance/data', async () => {
     ...actual,
     // Bypass real query construction — the TableView calls these but the
     // returned object only matters as a stable identity for useSnapshot deps.
-    buildQuery: () => ({ __fakeQuery: true }),
+    buildQuery: buildQuerySpy,
     orderByField: () => ({ __c: 'orderBy' }),
     limit: () => ({ __c: 'limit' }),
     whereOp: whereOpSpy,
@@ -154,6 +158,37 @@ describe('TableView', () => {
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
     expect(headers).toContain('Nome');
     expect(headers).not.toContain('Tipo');
+  });
+
+  it('renders no column picker under showColumnPicker={false}', () => {
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        showColumnPicker={false}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Configurar colunas' })).toBeNull();
+  });
+
+  it('ignores a persisted column set under showColumnPicker={false}', () => {
+    // ⚠️ This, not the hidden button, is what makes the screen fixed. Hiding
+    // the ⚙ while still hydrating localStorage would pin every returning
+    // operator to whatever they last picked — including a set saved BEFORE the
+    // screen went fixed — with no control left to change it, and would decide
+    // the query's projection from a choice nobody can see.
+    localStorage.setItem('delfrance:tableview:columns:tests', JSON.stringify(['nome']));
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        showColumnPicker={false}
+      />,
+    );
+    const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
+    expect(headers).toEqual(expect.arrayContaining(['Nome', 'Tipo', 'Observacoes']));
   });
 
   it('persists a column toggle to localStorage', () => {
@@ -1388,6 +1423,92 @@ describe('TableView', () => {
     it('renders no search box when the prop is absent', () => {
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
       expect(screen.queryByLabelText('Buscar')).toBeNull();
+    });
+
+    describe('resolveIds', () => {
+      function renderWithResolver(resolveIds: (term: string) => Promise<unknown>) {
+        searchParamsRef.current = new URLSearchParams('q=MLB1');
+        buildPipelineSpy.mockClear();
+        wrap(
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            search={{ ...search, resolveIds: resolveIds as never }}
+          />,
+        );
+      }
+
+      afterEach(() => {
+        searchParamsRef.current = new URLSearchParams();
+      });
+
+      it('constrains the query to the resolved ids and drops the term filters', async () => {
+        // The two search modes are alternatives, never conjuncts: AND-ing the
+        // nome range onto an id restriction asks for rows satisfying both.
+        renderWithResolver(() => Promise.resolve({ ids: ['a', 'b'] }));
+        await vi.waitFor(() =>
+          expect(buildPipelineSpy).toHaveBeenLastCalledWith(
+            expect.anything(),
+            expect.objectContaining({ idIn: ['a', 'b'], filters: [] }),
+          ),
+        );
+        // ⚠️ Matcher, not `.mock.lastCall[1]`: indexing a `vi.fn` call tuple
+        // is `TS2493` under this repo's tsconfig.
+        expect(buildPipelineSpy).not.toHaveBeenLastCalledWith(
+          expect.anything(),
+          expect.objectContaining({ orderBy: [{ field: 'nome', direction: 'asc' }] }),
+        );
+      });
+
+      it('falls through to toFilters when the resolver declines the term', async () => {
+        renderWithResolver(() => Promise.resolve(null));
+        await vi.waitFor(() =>
+          expect(buildPipelineSpy).toHaveBeenLastCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+              filters: [{ field: 'nome', op: 'gte', value: 'MLB1' }],
+              orderBy: [{ field: 'nome', direction: 'asc' }],
+            }),
+          ),
+        );
+      });
+
+      it('renders an empty table WITHOUT querying when the resolver matched nothing', async () => {
+        // ⚠️ `{ ids: [] }` is a real answer, not an absence. Falling through
+        // here would run the nome range over a term nobody meant as a name and
+        // report ITS miss instead.
+        renderWithResolver(() => Promise.resolve({ ids: [] }));
+        await vi.waitFor(() => expect(screen.getByText('Nenhum resultado.')).toBeTruthy());
+        expect(buildPipelineSpy).not.toHaveBeenCalled();
+      });
+
+      it('warns when the resolution hit its cap instead of passing off a prefix as the answer', async () => {
+        renderWithResolver(() => Promise.resolve({ ids: ['a'], truncated: true }));
+        await vi.waitFor(() => expect(screen.getByText(/Refine o termo/)).toBeTruthy());
+      });
+
+      it('surfaces a resolver failure instead of rendering an empty list', async () => {
+        renderWithResolver(() => Promise.reject(new Error('boom')));
+        await vi.waitFor(() => expect(screen.getByText('boom')).toBeTruthy());
+      });
+
+      it('builds NO classic query while an id restriction is active', async () => {
+        // Only the pipeline can honour `idIn`. On the classic fallback the
+        // choice is between rendering nothing and rendering the WHOLE
+        // collection under a term that matched one row — the same reason the
+        // subcollection lookup bails there, which a search resolution has to
+        // share rather than fall through.
+        pipelineSupportedRef.current = false;
+        buildQuerySpy.mockClear();
+        // `truncated` is the settle beacon: `useSnapshot` is mocked to return
+        // rows whatever query it is handed, so the empty state cannot say
+        // whether the resolution landed — this hint only renders once it has.
+        renderWithResolver(() => Promise.resolve({ ids: ['a', 'b'], truncated: true }));
+        await vi.waitFor(() => expect(screen.getByText(/Refine o termo/)).toBeTruthy());
+        expect(buildQuerySpy).not.toHaveBeenCalled();
+        pipelineSupportedRef.current = true;
+      });
     });
   });
 });
