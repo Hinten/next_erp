@@ -793,11 +793,20 @@ export const mlShipmentPaymentsSchema = z.array(mlShipmentPaymentSchema);
  * buyer) or one entry of `senders` (a seller). `cost` is that party's FINAL
  * share of the shipment, net of every discount ML applied to them.
  *
- * ⚠️ `save` is deliberately NOT typed. ML stopped filling it in October/2024
- * ("todos os casos o campo receberá o valor 0") and removed it from the resource
- * in January/2025, so a reader would silently get a fabricated zero. `discounts`
- * is likewise untyped: nothing consumes the breakdown, and both ride through
- * `.passthrough()` for anyone who needs them knowingly.
+ * ⚠️ `save` is deliberately NOT typed — but NOT for the reason the docs give.
+ * ML's *Gerenciamento de Envios* page says it stopped being filled in Oct/2024
+ * ("todos os casos o campo receberá o valor 0") and was removed from the resource
+ * in Jan/2025. **Both halves are false on the wire**: a live capture on 2026-08-27,
+ * ~20 months later, still carries it and still carries it NON-ZERO (`save: 11.81`
+ * on a receiver, `3.92` on a sender). It is left untyped because a field ML has
+ * publicly deprecated is not one to build on, not because it is absent — do not
+ * "correct" this comment by adding it back when you see it in a payload.
+ *
+ * The live body is a strict SUPERSET of the documented one in other ways too, all
+ * riding the passthrough and none consumed: `fees`, `compensations` (plural,
+ * beside the documented singular `compensation`), `charges.charge_flex` on a
+ * sender, `cost_details[]` on the receiver, and a root `base_exchange`. `discounts`
+ * is untyped on the same footing: nothing reads the breakdown.
  */
 const mlShipmentCostPartySchema = z
   .object({
@@ -832,12 +841,22 @@ const mlShipmentCostPartySchema = z
  * `senders[].cost` auditable, not because anything maps it today.
  *
  * ⚠️ **`gross_amount - receiver.cost` is NOT the seller's cost.** The identity is
- * `gross_amount = Σ over parties of (cost + Σ discounts[].promoted_amount)`, and
- * ML's own example is the counter-example: 24.55 gross, `receiver.cost` 0,
- * `senders[0].cost` **8.19** — the missing 16.36 is the two `promoted_amount`
- * entries (4.07 + 12.29). So `senders[].cost` is read DIRECTLY and never derived
- * by subtraction; anyone reconciling by hand has to include the discounts, which
- * this schema deliberately leaves on the passthrough.
+ * `gross_amount = Σ over parties of (cost + Σ discounts[].promoted_amount)`, verified
+ * to the centavo against two LIVE shipments on 2026-08-27:
+ *
+ * | shipment | gross | receiver cost + promoted | sender cost + promoted |
+ * | --- | --- | --- | --- |
+ * | `47868202073` | 38.86 | 12.99 + 12.80 | **9.15** + 3.92 |
+ * | `47868991350` | 154.20 | 85.99 + 30.00 | **26.75** + 11.46 |
+ *
+ * The subtraction gives 25.87 and 68.21 — nowhere near the real 9.15 and 26.75,
+ * because every party's discounts sit between them. So `senders[].cost` is read
+ * DIRECTLY and never derived; anyone reconciling by hand has to add the
+ * `promoted_amount`s back, which this schema deliberately leaves on the passthrough.
+ *
+ * ⚠️ The second row is a CANCELLED, fully refunded pack shipment and its sender
+ * cost is 26.75, not 0 — a refund does not zero what the seller pays here, so do
+ * not treat a cancelled shipment as free.
  */
 export const mlShipmentCostsSchema = z
   .object({
