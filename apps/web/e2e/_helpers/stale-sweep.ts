@@ -191,9 +191,38 @@ export function prefixEnd(prefix: string): string {
   return `${prefix.slice(0, -1)}${String.fromCharCode(last + 1)}`;
 }
 
-/** Every prefix a target should be matched on. */
-function prefixesFor(target: E2EFixtureTarget, basePrefixes: readonly string[]): string[] {
-  return [...basePrefixes, ...(target.extraPrefixes ?? [])];
+/**
+ * Every prefix a target should be matched on.
+ *
+ * ⚠️ `extraPrefixes` are included ONLY when an age gate is active, and that
+ * coupling is the whole point rather than a tuning choice. The one extra prefix
+ * today is {@link UI_PEDIDO_PREFIX} (`E2E-`), the numero the counter mints for a
+ * pedido created through the UI — which carries **no run id at all**, so no
+ * amount of run/worker/slot scoping can attribute it to a run. Pass B's docblock
+ * already states the consequence: for those docs "the age gate is their only
+ * isolation from a concurrent lane."
+ *
+ * A no-age-gate pass (`maxAgeMs: null` — {@link reclaimPredecessorRun} and
+ * {@link sweepCurrentRunFixtures}) that also matched `E2E-` would therefore
+ * query the GLOBAL range and delete pedidos belonging to whoever else is
+ * running, including a sibling shard of the SAME workflow run, seconds after
+ * they were written. Both jobs stay green and the victim spec reads as flake.
+ * Sharding made that same-run and systematic on the one lane that mints `E2E-`
+ * pedidos, which is why it is enforced here instead of at each call site: a new
+ * `maxAgeMs: null` caller cannot reintroduce it by forgetting a flag.
+ *
+ * The cost is that a UI-minted pedido this run created outlives teardown and
+ * waits for Pass B's {@link STALE_E2E_FIXTURE_AGE_MS} gate. That is already the
+ * documented division of labour — and the specs that care stamp the run prefix
+ * into `observacoesInternas`, which the BASE prefixes match, so those are still
+ * reclaimed immediately.
+ */
+function prefixesFor(
+  target: E2EFixtureTarget,
+  basePrefixes: readonly string[],
+  ageGated: boolean,
+): string[] {
+  return ageGated ? [...basePrefixes, ...(target.extraPrefixes ?? [])] : [...basePrefixes];
 }
 
 export interface SweepReport {
@@ -437,7 +466,7 @@ async function sweep(options: SweepOptions): Promise<SweepReport> {
     const { docs, truncated } = await collectCandidates(
       database,
       target,
-      prefixesFor(target, options.prefixes),
+      prefixesFor(target, options.prefixes, options.maxAgeMs !== null),
       deadline,
     );
 

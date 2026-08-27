@@ -332,6 +332,15 @@ jobs:
                   row "$check" "$result" "**DID NOT RUN** — $WHY"
                   note "**\`$check\` did not run on this PR** — $WHY"
                   echo "::warning title=$LANE::\`$check\` did not run — $WHY"
+                elif [ -z "$guards" ] && [ "${GUARD_FORK:-}" = "true" ]; then
+                  # A `required` job carries no guards, so `explain_skip` above is
+                  # never consulted for it and the `else` below would blame an
+                  # `if:` nobody added. The verdict stays RED on purpose --
+                  # `required` is how a lane says "unverified is not verified" --
+                  # but a fork skip has a known cause and a remedy, and printing
+                  # the wrong one sends the maintainer hunting.
+                  row "$check" "$result" "**DID NOT RUN** -- fork PR"
+                  RED="${RED}\`$check\` did not run: this PR comes from a fork, and fork PRs cannot read the repo secrets this job needs, so that code has NOT been exercised. It is \`required\`, so this reads RED rather than green. A maintainer can verify it from an in-repo branch -- \`gh pr checkout $PR && git push origin HEAD:fix/pr-$PR-verify\` -- and merge that instead. "
                 else
                   row "$check" "$result" "**UNEXPLAINED SKIP**"
                   RED="${RED}\`$check\` was skipped and this gate cannot explain why: the lane is in scope and no recorded guard (${guards:-none, this job is required}) accounts for it. Someone added an \`if:\` without teaching the gate about it. "
