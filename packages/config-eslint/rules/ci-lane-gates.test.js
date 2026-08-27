@@ -907,14 +907,27 @@ describe('CI lanes always report', () => {
   // 5d. A sharded e2e lane is a PARTITION, and each shard is ISOLATED.
   // ------------------------------------------------------------------
   it('every sharded e2e lane partitions its suite and scopes each shard', () => {
+    const shardedLanes = [];
+    const declaresShard = [];
     for (const [file, lane] of Object.entries(LANES)) {
       const source = read(file);
       const jobs = jobBlocks(source);
       // `shard:`/`run_slot:` are inputs to the reusable engine, so they appear
       // only in a caller that actually shards. A lane with none is unsharded and
       // has nothing to check here.
-      const sharded = Object.keys(jobs).filter((id) => /^\s+shard\s*:\s*\d+\/\d+/m.test(jobs[id]));
+      //
+      // ⚠️ Detection is deliberately LOOSER than parsing: any `shard:` key at
+      // all marks the lane sharded, and an unparseable VALUE then fails below
+      // rather than silently taking the `continue`. Matching on the numeric
+      // value alone made this whole block vacuous — quoting the value
+      // (`shard: '1/2'`, the ordinary reflex for a YAML scalar containing `/`)
+      // is semantically identical to Actions but invisible to that regex, so
+      // every lane fell through and (a)–(e) evaporated with the test still
+      // green. Same anti-vacuity lesson as 5c's `(a0)`.
+      const sharded = Object.keys(jobs).filter((id) => /^\s+shard\s*:/m.test(jobs[id]));
+      if (sharded.length > 0) declaresShard.push(file);
       if (sharded.length === 0) continue;
+      shardedLanes.push(file);
 
       // (a) Anti-vacuity: one shard job is not a partition, it is a typo that
       //     silently drops the rest of the suite.
@@ -925,10 +938,18 @@ describe('CI lanes always report', () => {
 
       const specs = sharded.map((id) => {
         const block = jobs[id];
+        // Quotes optional: `shard: 1/2` and `shard: '1/2'` are the same value.
+        const shard = /^\s+shard\s*:\s*['"]?(\d+)\/(\d+)['"]?\s*$/m.exec(block);
+        expect(
+          shard,
+          `${file} → \`${id}\` declares a \`shard:\` this scanner cannot parse. Fix the ` +
+            'value or widen the pattern — do NOT let it fall through, or every check below ' +
+            'passes over nothing.',
+        ).not.toBeNull();
         return {
           id,
-          i: Number(/^\s+shard\s*:\s*(\d+)\/(\d+)/m.exec(block)[1]),
-          n: Number(/^\s+shard\s*:\s*(\d+)\/(\d+)/m.exec(block)[2]),
+          i: Number(shard[1]),
+          n: Number(shard[2]),
           slot: (/^\s+run_slot\s*:\s*'?(\w*)'?/m.exec(block) ?? [])[1],
           slug: (/^\s+slug\s*:\s*(\S+)/m.exec(block) ?? [])[1],
           projects: (/^\s+projects\s*:\s*(.+)$/m.exec(block) ?? [])[1]?.trim(),
@@ -1009,6 +1030,26 @@ describe('CI lanes always report', () => {
         `${file} has shard jobs its gate does not certify.`,
       ).toEqual([]);
     }
+
+    // (f) ⭐ Anti-vacuity for the LOOP itself, mirroring 5c's `(a0)`. Everything
+    //     above lives under a `continue`, so if detection ever stops matching,
+    //     every lane skips and this test passes having asserted NOTHING — while
+    //     the isolation invariant it exists to pin goes unguarded. Nothing at
+    //     runtime can see that, which is the same property the block is about.
+    expect(
+      declaresShard,
+      [
+        'No lane was detected as sharded, so 5d asserted nothing.',
+        '',
+        'Either sharding was removed from every lane — in which case delete this',
+        "assertion deliberately, along with the lane's shard jobs — or the `shard:`",
+        'detection stopped matching and this whole block is now vacuous.',
+      ].join('\n'),
+    ).not.toEqual([]);
+    expect(
+      shardedLanes,
+      'a lane declares `shard:` but produced no shard jobs — detection and parsing disagree.',
+    ).toEqual(declaresShard);
   });
 
   // ------------------------------------------------------------------
