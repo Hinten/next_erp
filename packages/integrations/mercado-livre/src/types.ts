@@ -735,7 +735,10 @@ const mlShipmentAddressSchema = z
  *    Resolve the order through `GET /shipments/{id}/orders` instead
  *    (`getShipmentOrders`); the passthrough keeps the raw value readable for as
  *    long as ML still happens to send it.
- *  - `base_cost` — no counterpart; `lead_time.cost` is the nearest analogue.
+ *  - `base_cost` — no counterpart IN THIS BODY, and `lead_time.cost` is
+ *    emphatically not one (see `shipmentBaseCost`). What the seller actually
+ *    pays now comes from `GET /shipments/{id}/costs` — `senders[].cost`,
+ *    `mlShipmentCostsSchema` below.
  *  - `logistic_type` — moved under `logistic.type`.
  *
  * Still tolerant per house style: only what the readers consume is typed, and
@@ -784,6 +787,58 @@ export const mlShipmentPaymentSchema = z
 export type MlShipmentPayment = z.infer<typeof mlShipmentPaymentSchema>;
 /** The array wrapper for `getShipmentPayments` — see `mlShipmentPaymentSchema`. */
 export const mlShipmentPaymentsSchema = z.array(mlShipmentPaymentSchema);
+
+/**
+ * One party's side of `GET /shipments/{shipmentId}/costs` — `receiver` (the
+ * buyer) or one entry of `senders` (a seller). `cost` is that party's FINAL
+ * share of the shipment, net of every discount ML applied to them.
+ *
+ * ⚠️ `save` is deliberately NOT typed. ML stopped filling it in October/2024
+ * ("todos os casos o campo receberá o valor 0") and removed it from the resource
+ * in January/2025, so a reader would silently get a fabricated zero. `discounts`
+ * is likewise untyped: nothing consumes the breakdown, and both ride through
+ * `.passthrough()` for anyone who needs them knowingly.
+ */
+const mlShipmentCostPartySchema = z
+  .object({
+    user_id: wireInt().nullable().optional(),
+    cost: wireNumber().nullable().optional(),
+    compensation: wireNumber().nullable().optional(),
+  })
+  .passthrough();
+
+/**
+ * `GET /shipments/{shipmentId}/costs` — "os custos do envio a serem pagos pelo
+ * usuário" (ML docs, *Gerenciamento de Envios* → Costs). **The authoritative
+ * answer to "what does the SELLER pay for this shipment?"**, which the
+ * `x-format-new` body no longer carries: it dropped `base_cost` and offers no
+ * counterpart (see `shipmentBaseCost` for why `lead_time.cost` is not one).
+ *
+ * ⚠️ **`senders` is a LIST, and the first entry is not necessarily ours.** ML's
+ * own note: "um só envio poderá conter produtos de diferentes vendedores". The
+ * entry to read is the one whose `user_id` is the connected account's seller id —
+ * `senders[0]` would book another seller's freight cost onto our pedido, and on a
+ * single-seller shipment it would look right every time. `resolveShipmentSellerCost`
+ * in `apps/mercado-livre` is the only reader and matches on `user_id` (#957).
+ *
+ * ⚠️ A `cost` of `0` is a REAL value — a fully subsidised shipment genuinely
+ * costs the seller nothing — never a missing one.
+ *
+ * Unlike `/shipments/{id}/payments`, this resource does NOT require the shipment
+ * to be tied to a `pack_id`.
+ *
+ * `gross_amount` is the shipment total before any discount (the nearest analogue
+ * of the legacy top-level `base_cost`); it is typed because it makes a stored
+ * `senders[].cost` auditable, not because anything maps it today.
+ */
+export const mlShipmentCostsSchema = z
+  .object({
+    gross_amount: wireNumber().nullable().optional(),
+    receiver: mlShipmentCostPartySchema.nullable().optional(),
+    senders: z.array(mlShipmentCostPartySchema).nullable().optional(),
+  })
+  .passthrough();
+export type MlShipmentCosts = z.infer<typeof mlShipmentCostsSchema>;
 
 /**
  * One entry of `GET /shipments/{shipmentId}/orders` — "Vendas associadas a um

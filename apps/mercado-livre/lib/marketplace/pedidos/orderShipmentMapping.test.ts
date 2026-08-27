@@ -44,6 +44,7 @@ describe('mlShipmentToFreteInicial', () => {
       enderecoOuterRef: 'documents/endereco/end1',
       prazoDespachoUs: 1_753_000_000_000_000,
       modalidadeOverride: null,
+      custoSellerCost: null,
     });
 
     expect(mapped.externalId).toBe('41602594503');
@@ -73,6 +74,7 @@ describe('mlShipmentToFreteInicial', () => {
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
+      custoSellerCost: null,
     });
     expect(mapped.valorCobrado).toBe(8.5);
   });
@@ -85,6 +87,7 @@ describe('mlShipmentToFreteInicial', () => {
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
+      custoSellerCost: null,
     });
     expect(mapped.valorCobrado).toBe(0);
   });
@@ -100,6 +103,7 @@ describe('mlShipmentToFreteInicial', () => {
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
+      custoSellerCost: null,
     });
     expect(mapped.custoFinal).toBeNull();
     expect(mapped.custoCalculado).toBe(16.2); // present → still mapped
@@ -114,6 +118,7 @@ describe('mlShipmentToFreteInicial', () => {
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: '0',
+      custoSellerCost: null,
     });
     expect(mapped.modalidade).toBe('0');
   });
@@ -126,6 +131,7 @@ describe('mlShipmentToFreteInicial', () => {
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
+      custoSellerCost: null,
     });
     expect(mapped.estado).toBe('aguardandoNFe');
   });
@@ -149,6 +155,7 @@ describe('mlShipmentToFreteInicial', () => {
         enderecoOuterRef: null,
         prazoDespachoUs: null,
         modalidadeOverride: null,
+        custoSellerCost: null,
       });
       expect(mapped.estado).toBe(expected);
     }
@@ -162,6 +169,7 @@ describe('mlShipmentToFreteInicial', () => {
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
+      custoSellerCost: null,
     });
     expect(mapped.custoFinal).toBeNull();
     expect(mapped.custoCalculado).toBeNull();
@@ -261,6 +269,7 @@ describe('mlShipmentToFreteInicial — real captured payloads', () => {
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
+      custoSellerCost: null,
     });
     expect(mapped.custoCalculado).toBe(38.9);
     expect(mapped.custoCalculado).not.toBe(0);
@@ -282,6 +291,7 @@ describe('mlShipmentToFreteInicial — real captured payloads', () => {
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
+      custoSellerCost: null,
     });
     expect(mapped.custoCalculado).toBe(16.2);
     expect(mapped.custoFinal).toBe(8.91);
@@ -298,10 +308,70 @@ describe('mlShipmentToFreteInicial — real captured payloads', () => {
       enderecoOuterRef: null,
       prazoDespachoUs: null,
       modalidadeOverride: null,
+      custoSellerCost: null,
     });
     expect(mapped.custoCalculado).toBeNull();
 
     const merged = mergeFreteInicial({ custoCalculado: 38.9, custoFinal: 19.45 } as never, mapped);
     expect(merged.custoCalculado).toBe(38.9);
+  });
+});
+
+/* --------- custoSellerCost: GET /shipments/{id}/costs is now the real source --------- */
+// `base_cost` is gone from every `x-format-new` body, so without this input
+// `custoCalculado` would be `null` on every shipment for ever and the pedido's
+// freight cost would fall through to `custoFinal` = the GROSS `list_cost` (#957).
+
+describe('mlShipmentToFreteInicial — custoSellerCost', () => {
+  it('prefers the seller cost from /costs over the legacy base_cost', () => {
+    // Both present: only a payload still carrying `base_cost` can reach this,
+    // and ML's own resource wins. They are different quantities — `base_cost`
+    // is gross, `senders[].cost` is net of ML's discounts.
+    const mapped = mlShipmentToFreteInicial({
+      shipment: shipment({ base_cost: 16.2 }),
+      shippingPayments: [],
+      integracaoFreteOuterRef: null,
+      enderecoOuterRef: null,
+      prazoDespachoUs: null,
+      modalidadeOverride: null,
+      custoSellerCost: 9.15,
+    });
+    expect(mapped.custoCalculado).toBe(9.15);
+  });
+
+  it('writes a ZERO seller cost as 0, not as "missing"', () => {
+    // A fully subsidised shipment genuinely costs the seller nothing. `??` only
+    // skips null/undefined, so this is the assertion that a real 0 survives the
+    // chain rather than falling through to `base_cost` — the exact inverse of
+    // the `lead_time.cost` trap the captured payloads above pin.
+    const mapped = mlShipmentToFreteInicial({
+      shipment: shipment({ base_cost: 38.9 }),
+      shippingPayments: [],
+      integracaoFreteOuterRef: null,
+      enderecoOuterRef: null,
+      prazoDespachoUs: null,
+      modalidadeOverride: null,
+      custoSellerCost: 0,
+    });
+    expect(mapped.custoCalculado).toBe(0);
+    expect(mapped.custoCalculado).not.toBe(38.9);
+  });
+
+  it('on a real x-format-new body with no costs read, custoCalculado is null — never a fabricated 0', () => {
+    // The shape ML actually serves today: no `base_cost`, and the /costs call
+    // failed or named no sender of ours. `mergeFreteInicial` then preserves.
+    const mapped = mlShipmentToFreteInicial({
+      shipment: shipment({ base_cost: null }),
+      shippingPayments: [],
+      integracaoFreteOuterRef: null,
+      enderecoOuterRef: null,
+      prazoDespachoUs: null,
+      modalidadeOverride: null,
+      custoSellerCost: null,
+    });
+    expect(mapped.custoCalculado).toBeNull();
+
+    const merged = mergeFreteInicial({ custoCalculado: 9.15, custoFinal: 22.14 } as never, mapped);
+    expect(merged.custoCalculado).toBe(9.15);
   });
 });
