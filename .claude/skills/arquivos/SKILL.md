@@ -152,15 +152,27 @@ save via `prepareForSave: stripMarkedForDeletion`. Both from `@delfrance/ui`
 at save time. The `arquivos` doc + Storage object are reaped *after* the produto
 write drops the ref — by the eager reaper (§8), not by the form.
 
-**Thumbnail URL resolution** — refs are doc-path strings, not URLs. Resolve the
-arquivo doc live and prefer the 200px derivative, falling back to the original
-until resize finishes:
+**Thumbnail URL resolution** — refs are doc-path strings, not URLs. Do NOT write
+your own: use the shared ladder in `apps/web/lib/produtos/fotoRefs.ts`
+(`fotoArquivoIdCandidates` / `coverArquivoIds`, pure, React-free) plus
+`useFirstExistingArquivoUrl` (`lib/produtos/fotoCapa.ts`) for the live read or a
+plain loop for a batch one (`lib/pedido-print/assemble.ts`).
 
 ```ts
-const id = arquivo200pxOuterRef?.replace(/^arquivos\//, '');
-const snap = useDocSnapshot(id ? arquivoCollection.docRef(db, {}, id) : null); // client arquivoCollection
-const url = snap.data?.data?.url ?? originalSnap.data?.data?.url ?? null;
+const ids = fotoArquivoIdCandidates(foto); // ['<id>_200', '<id>_400', '<id>'] — best first
+const { url, resolved } = useFirstExistingArquivoUrl(db, ids);
 ```
+
+⚠️ **The fallback must be on DOCUMENT EXISTENCE, never on a null ref string.**
+`buildFotoRefs` fills all four refs **optimistically** at upload time (derivative
+ids are deterministic), so `arquivo200pxOuterRef ?? arquivo400pxOuterRef ??
+arquivoOuterRef` **always** picks the 200px ref — and then resolves it to
+nothing whenever `resizeProductImage` did not produce that document. The `??`
+chain looks like a fallback and is dead code for every modern upload; it only
+ever fires for LEGACY fotos (`buildOriginalFotoRef`, null derivatives). This bug
+shipped in three readers at once and showed up as produtos whose photo renders
+in the editor's Imagens tab but as a broken icon in the `/produtos` list — the
+editor's `PhotoManager` was the only reader that gated on doc existence.
 
 ## 7. Reference (wire) shapes
 

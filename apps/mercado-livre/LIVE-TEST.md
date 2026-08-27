@@ -372,7 +372,26 @@ pnpm --filter @delfrance/mercado-livre-app dump:notificacoes --project <project-
 | A notification for an **unconnected** seller | lands in the **deferred** lane; `redriveDeferredForUserId` pulls it back on connect (#808)                                                                                                                                                                 |        |
 | A **replayed** notification                  | dedups via `docIdOf` / ALREADY_EXISTS (#807)                                                                                                                                                                                                               |        |
 | `missed_feeds` backstop (#812)               | make the backend return non-200 for a few minutes; the 05:00 sweep replays. ⚠️ `MERCADO_LIVRE_TASKS_DISABLED=1` is **not** a usable lever — it still acks 200                                                                                              |        |
-| `questions` / `messages`                     | **deferred to a later run** — they `park` until #532/#533 ship                                                                                                                                                                                             |        |
+| `questions` / `messages`                     | handled since #532/#533 — a buyer message must land as a conversa in `/chat`, not `park`. The REPLY half is §8.2                                                                                                                                           |        |
+
+### 8.2 — A post-sale reply reaches the buyer
+
+⚠️ **A 200 from ML proves nothing here**, and that is the whole point of this
+section. ML accepts a reply addressed to the wrong `to.user_id` and silently never
+delivers it, so the only acceptance criterion is the message appearing in the
+**buyer's** inbox. The one failure that IS loud — `400 to_user_id {agente} does not
+belong to pack /packs/{pack}/sellers/{seller}` — was observed on
+`2000018143664980` on 2026-08-27, from addressing every thread to ML's messaging
+Agent when its rollout is progressive.
+
+Run both rows: which flow a thread is on is ML's choice, not ours, and the two
+mistakes are each other's mirror image.
+
+| Row  | Step                                                            | Assert                                                                                                                            | Result |
+| ---- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| 8.2a | Buyer messages on a **non-Full** order, then reply from `/chat` | no red banner; the reply is visible in the BUYER's ML inbox. `conversation_status.path` carries **no** `/conversations/` segment  |        |
+| 8.2b | Same on a **Full** order (the flow ML migrated first)           | same, with `path` carrying `/conversations/`. Confirms the agent half still works — the fix must not trade one flow for the other |        |
+| 8.2c | Reply again after ML has blocked the thread                     | 409 with ML's own reason, no bubble written                                                                                       |        |
 
 ### 8.1 — Moderation reasons reach the link doc (#1087)
 
@@ -477,6 +496,24 @@ production does not reproduce here, which is worth knowing before trusting the r
 
 ### 7.3 — Settle #957 (the shipment `x-format-new` body)
 
+> ✅ **DONE on 2026-08-27 — #957 is closed.** Shipment `47868202073` (order
+> `2000018143664980`, `logistic.mode: me2` / `type: xd_drop_off`) returned every field
+> at its NEW location: `lead_time.cost` 12.99, `lead_time.list_cost` 22.14,
+> `destination.shipping_address` full, no legacy-shaped key anywhere. The table below
+> is kept as the record of what was checked.
+>
+> Two things the run turned up that the table did not anticipate:
+>
+> - **`base_cost` really is absent**, so `custoCalculado` had NO source at all and the
+>   pedido's freight cost was falling through to the GROSS `list_cost`. Fixed by
+>   implementing `GET /shipments/{id}/costs` (`senders[].cost`) — see
+>   `pedidos/shipmentSellerCost.ts`.
+> - **The compat fallbacks in `shipmentFields.ts` STAY.** Their deletion trigger needs a
+>   clean log for the PRODUCTION seller account, and that account does not reach this
+>   backend until the cutover. A staging test-user run cannot settle it. The exact
+>   `gcloud` query is in that file's header — grep `formato LEGADO`, **not**
+>   `legacy-shape`, which appears in no emitted output.
+
 The **code already shipped**: `x-format-new: true` now rides on `getShipment` and
 `getShipmentPayments` (deliberately NOT on `getShipmentSla`, whose documented example
 omits it), `mlShipmentSchema` types `lead_time` / `logistic` / `destination`, and
@@ -517,6 +554,38 @@ One captured body fixes that permanently.
 "**No migration window.** No schema change, no backfill, no index, no rules regeneration."
 Now that the code has merged, drop the label when closing — or it sits in the cutover
 queue forever as work that is already done.
+
+### 7.3.1 — `GET /shipments/{id}/costs` ✅ RUN 2026-08-27
+
+The endpoint that feeds `custoCalculado` once `base_cost` left the wire. Run against
+the staging test seller **`3616169770`**; results recorded rather than left as a task.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" -H 'x-format-new: true' \
+  "https://api.mercadolibre.com/shipments/$SHIPMENT_ID/costs" | python -m json.tool
+```
+
+| Assert                                                                                 | Why it matters                                                                                                                                                                                                                                                 | Result                                                                                                                      |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `senders[]` holds an entry whose `user_id` **is our seller id**                        | the whole design. `resolveShipmentSellerCost` matches on it — ⚠️ **never `senders[0]`**, since "um só envio poderá conter produtos de diferentes vendedores". A miss is silent: `custoCalculado` stays `null` and only the `nenhum sender nosso` warn shows it | ✅ matched on BOTH shipments                                                                                                |
+| `senders[].cost` is a real number                                                      | this is what the seller pays; `custoFinal` (= `lead_time.list_cost`) is the GROSS price and overstates it                                                                                                                                                      | ✅ **9.15** on `47868202073` (vs `list_cost` 22.14), **26.75** on `47868991350`                                             |
+| the identity `gross_amount = Σ over parties of (cost + Σ discounts[].promoted_amount)` | ⚠️ **do NOT expect `gross_amount - receiver.cost` to equal the seller's cost** — it is false, and computing it that way manufactures a mismatch that is not one. That wrong expectation shipped once and had to be retracted                                   | ✅ holds to the centavo: 38.86 = (12.99+12.80)+(9.15+3.92); 154.20 = (85.99+30.00)+(26.75+11.46)                            |
+| a `cost` of `0` is a REAL value, never a miss                                          | a fully subsidised shipment costs the seller nothing; the resolver uses an explicit finite-number test, never truthiness                                                                                                                                       | ⚠️ **not observed** — both live shipments were non-zero. Covered by unit test only; a genuinely free envio would confirm it |
+| a CANCELLED/refunded shipment                                                          | worth knowing whether a refund zeroes the seller's share                                                                                                                                                                                                       | ⛔ **it does NOT.** `47868991350` is a fully refunded pack and the seller still pays **26.75**                              |
+
+⚠️ **`save` is documented as DELETED from this resource and is neither deleted nor
+zero.** ML's page says it stopped being filled in Oct/2024 ("todos os casos o campo
+receberá o valor 0") and was removed in Jan/2025. On the wire ~20 months later it is
+present and non-zero on every party (11.81 / 3.92 / 29.91 / 11.46). It stays untyped
+by CHOICE — a publicly deprecated field is not one to build on — not by absence; do
+not "correct" `mlShipmentCostPartySchema` after seeing it in a payload.
+
+⭐ **Generalise: an ML deprecation notice states INTENT, not the wire.** The live body
+is a strict superset of the documented one in four more ways, all on the passthrough
+and none consumed: `fees`, `compensations` (plural, beside the documented singular
+`compensation`), `charges.charge_flex`, `cost_details[]`, root `base_exchange`.
+Capture the real body before believing a notice in either direction — the captured one
+is pinned verbatim in `packages/integrations/mercado-livre/test/api.test.ts`.
 
 ---
 

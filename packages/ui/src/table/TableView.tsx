@@ -249,6 +249,18 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * TableView owns the selection either way.
    */
   onSelectionChange?: (rows: SnapshotRow<z.infer<S>>[]) => void;
+  /**
+   * Called whenever the LOADED row set changes (and once with `[]` on mount).
+   * Lets a page do per-page work the cells would otherwise do per-row — above
+   * all batching reads that a `renderCell` fires one at a time, which is what
+   * makes a virtual column's cost scale with `limit`.
+   *
+   * Purely observational, exactly like {@link onSelectionChange}: TableView owns
+   * the rows either way, and a consumer must not assume it is called before the
+   * cells render. Anything built on it has to work — more slowly — when it never
+   * fires at all.
+   */
+  onRowsChange?: (rows: SnapshotRow<z.infer<S>>[]) => void;
 }
 
 /**
@@ -287,6 +299,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   actionsPanel,
   renderActionsPanelExtra,
   onSelectionChange,
+  onRowsChange,
 }: TableViewProps<S>) {
   // Derive once per schema identity.
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
@@ -889,6 +902,22 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   useEffect(() => {
     selectionNotifyRef.current.cb?.(selectionNotifyRef.current.rows);
   }, [selected]);
+
+  // Same shape as the selection notifier above, and for the same reason: notify
+  // on the row IDENTITY set, never on the `rows` array, so a re-render that
+  // produces an equal-but-new array does not re-fire the callback (a consumer
+  // that batches reads would re-issue them every render).
+  const rowIdsSerial = JSON.stringify((rows ?? []).map((r) => r.id));
+  const rowsNotifyRef = useRef<{
+    rows: SnapshotRow<z.infer<S>>[];
+    cb: TableViewProps<S>['onRowsChange'];
+  }>({ rows: rows ?? [], cb: onRowsChange });
+  useEffect(() => {
+    rowsNotifyRef.current = { rows: rows ?? [], cb: onRowsChange };
+  });
+  useEffect(() => {
+    rowsNotifyRef.current.cb?.(rowsNotifyRef.current.rows);
+  }, [rowIdsSerial]);
 
   // Update-monitor field: explicit prop wins; otherwise prefer a
   // last-modified field, then the creation timestamp.

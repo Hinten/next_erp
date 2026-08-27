@@ -11,6 +11,7 @@ import {
   seedProdutoComFilho,
 } from './_helpers/seed-data';
 import { clickSave, fillField, selectFieldWithSearch } from './helpers/object-view';
+import { applyTextFilter } from './helpers/table-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -77,6 +78,16 @@ test.describe.serial('Balanço e2e — lista, cadastro, contagem e revisão', ()
     await page.goto('/balanco');
     await expect(page.getByRole('table')).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText('Erro ao carregar')).toHaveCount(0);
+
+    // Narrow to this run before asserting. `balancoMeta.defaultQuery` is
+    // `orderBy timestamp desc, limit 50`, so unfiltered this depended on the
+    // seeded row making page 1 — true only until 50 newer balanços exist, which
+    // a concurrent lane or a batch of orphaned fixtures supplies for free. The
+    // filter is a SERVER-side narrowing (TableView pushes column filters into
+    // the query, so `limit` applies after it), which is what makes this
+    // independent of how much else is in the collection. Same remedy as
+    // `logistica.vendas.e2e.spec.ts` and the other 15 list specs.
+    await applyTextFilter(page, 'Nome', prefix);
 
     const linha = page.getByRole('row').filter({ hasText: `${prefix}-contagem` });
     await expect(linha).toBeVisible({ timeout: 30_000 });

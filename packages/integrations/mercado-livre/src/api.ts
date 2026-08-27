@@ -43,6 +43,7 @@ import {
   type MlSellerItemsScan,
   type MlSellerShippingSchedule,
   type MlShipment,
+  type MlShipmentCosts,
   type MlShipmentInvoice,
   type MlShipmentOrder,
   type MlShipmentPayment,
@@ -85,6 +86,7 @@ import {
   mlMissedFeedsSchema,
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
+  mlShipmentCostsSchema,
   mlShipmentInvoiceSchema,
   mlShipmentOrdersSchema,
   mlShipmentPaymentsSchema,
@@ -242,6 +244,21 @@ export interface MercadoLivreApi {
    * envelope (order import, Step 9).
    */
   getShipmentPayments(shipmentId: number | string): Promise<MlShipmentPayment[]>;
+  /**
+   * `GET /shipments/{shipmentId}/costs` — what each party actually pays for the
+   * shipment (order import, Step 9). **The authoritative source for the SELLER's
+   * freight cost**, which the `x-format-new` body stopped carrying when it
+   * dropped `base_cost` (#957).
+   *
+   * ⚠️ `senders` is a LIST — one shipment may cover products from several
+   * sellers — so the caller must match on its own `user_id`, never take
+   * `senders[0]`. `resolveShipmentSellerCost` in `apps/mercado-livre` is the one
+   * reader and does exactly that.
+   *
+   * Unlike `/payments`, this resource does NOT require the shipment to be tied to
+   * a `pack_id`.
+   */
+  getShipmentCosts(shipmentId: number | string): Promise<MlShipmentCosts>;
   /**
    * `GET /shipments/{shipmentId}/orders` — the orders covered by a shipment and,
    * per (order, listing, variation) row, the units the buyer requested.
@@ -499,9 +516,16 @@ export interface MercadoLivreApi {
    * `POST /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale` — reply on
    * a post-sale thread (#533).
    *
-   * ⚠️ `to.user_id` must be the site’s **messaging AGENT**, not the buyer —
-   * see `postSaleAgentUserId`. ML also caps the body at the thread’s own
-   * `seller_max_message_length`, which the caller reads from a prior GET.
+   * ⚠️ `to.user_id` is the thread’s **counterparty**, which is the site’s
+   * messaging AGENT on a thread ML has migrated to the 02/02/2026 architecture
+   * and the **real buyer id** on one it has not. The rollout is progressive, so
+   * neither is right unconditionally — the caller derives it from the thread
+   * (`postSaleRecipientUserId`). Getting it wrong fails asymmetrically: the agent
+   * on a legacy thread is a hard `400 … does not belong to pack`, the buyer on a
+   * migrated one is a **200** that reaches nobody.
+   *
+   * ML also caps the body at the thread’s own `seller_max_message_length`, which
+   * the caller reads from a prior GET.
    */
   sendPackMessage(
     packId: string,
@@ -1068,6 +1092,13 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema, {
         // Same mandate; this resource's body is unchanged by it (ML's own curl
         // example for it carries the header).
+        headers: { 'x-format-new': 'true' },
+      }),
+    getShipmentCosts: (shipmentId) =>
+      request('GET', `/shipments/${shipmentId}/costs`, mlShipmentCostsSchema, {
+        // ML's own curl for this resource carries it. NOT `X-Costos-New: true` —
+        // that is legacy's 2018-era header (`api.dart:1649`) and appears nowhere
+        // in the current docs (#957).
         headers: { 'x-format-new': 'true' },
       }),
     getShipmentOrders: (shipmentId) =>

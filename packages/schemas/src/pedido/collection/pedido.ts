@@ -359,33 +359,54 @@ export const pedidoMeta: CollectionMetadata = {
     // different /pedidos LIST spec each time, while every pedido EDITOR spec
     // passed); at 50 it was 166 passed, 0 failed, 0 flaky.
     //
-    // ⚠️ STILL 50 — #1216 did NOT buy 100 back. Read this before trying again;
-    // the attempt is written up so it is not repeated blind.
+    // ⚠️ Raising this is gated on FIRST-PAINT cost, not on the sustained count,
+    // and the history is worth reading before touching it again.
     //
-    // #1216 made the NF listener RELEASABLE: `useLatestNfe` subscribes every row
-    // at mount and tears the listener down once the IntersectionObserver reports
-    // the row off screen. That genuinely cuts the SUSTAINED count and is what
-    // shipped. It does not cut the FIRST-PAINT peak, which stays at exactly this
-    // number — and the peak is the quantity #159 measured.
+    // #1216 first made the NF listener RELEASABLE (`useLatestNfe`: subscribe at
+    // mount, tear down once the IntersectionObserver reports the row off
+    // screen). That cuts the SUSTAINED count but not the peak, and two attempts
+    // at bounding the peak through the observer were both rejected by the
+    // vendas lane, for opposite reasons:
     //
-    // Two ways of bounding the peak were tried on the vendas lane; both failed,
-    // for opposite reasons:
-    //
-    //  1. Wait for the observer before subscribing. That puts intersection
-    //     delivery on the critical path of the first badge — those callbacks are
+    //  1. Waiting for the observer before subscribing put intersection delivery
+    //     on the critical path of the first badge — those callbacks are
     //     throttled and can lag by seconds while 100 rows render — and
     //     `pedidos-nfe-snapshot` went fail/fail/pass, pass, fail/fail/fail.
-    //  2. Ration the optimistic subscriptions (a 30-slot budget). Worse: rows
-    //     past the ration never subscribe AT ALL when delivery is unreliable, so
-    //     their badges never resolve. FOUR /pedidos LIST specs then failed 3/3 —
-    //     pedidos-anexos, pedidos-devolucao, pedidos-etiqueta-ml,
-    //     pedidos-nfe-snapshot — the same rotating-list-spec signature #159
-    //     recorded, on a branch that already contained main.
+    //  2. Rationing the optimistic subscriptions (a 30-slot budget) was worse:
+    //     rows past the ration never subscribe AT ALL when delivery is
+    //     unreliable, so their badges never resolve. FOUR /pedidos LIST specs
+    //     failed 3/3 — pedidos-anexos, pedidos-devolucao, pedidos-etiqueta-ml,
+    //     pedidos-nfe-snapshot.
     //
-    // So raising this needs the first-paint cost cut somewhere OTHER than the NF
-    // listener. The remaining per-row reads are `ClienteCell`'s cliente `getDoc`
-    // and `FreteCell`'s `intFreteTipo` `getDoc` — up to one of each per row,
-    // ungated, which #1216 explicitly flags and nothing has yet addressed.
+    // ⭐ The lesson those two produced: never WITHHOLD a per-row read to bound
+    // cost — BATCH it. `rowReadPrefetch` issues one chunked `getDocsByIds` for
+    // the page's clientes, replacing up to N one-shot `getDoc`s from
+    // `ClienteCell`, and seeds them into the cache key that cell already reads.
+    // It cannot make data unreachable: a cell the batch missed, or whose batch
+    // failed or never ran, falls back to its own read after
+    // PREFETCH_MAX_WAIT_MS. That is a real improvement and it ships.
+    //
+    // ⛔ Attempts at 100 so far: observer-gated NF listener (#1283) →
+    // fail/fail/pass, pass, fail/fail/fail; rationed subscriptions → four LIST
+    // specs 3/3; cliente batching (#1303) → 1 failed / 3 flaky / 167, against
+    // main's 171 / 0 / 0 at 50. Always the rotating /pedidos LIST spec
+    // signature #159 recorded (pedidos-anexos, pedidos-devolucao,
+    // pedidos-etiqueta-ml, pedidos-nfe-snapshot) while editor specs pass.
+    //
+    // ⚠️ The batching run is NOT valid evidence about batching, and the reason
+    // is worth knowing before trusting any of these numbers: `TableView` fires
+    // `onRowsChange([])` once at mount, and the gate treated that as "nothing
+    // to batch" and released every cell BEFORE a row existed. So each cell
+    // still issued its own `getDoc` AND the batch ran on top — the page paid
+    // roughly double, which is very likely why that run was worse than the one
+    // before it. Fixed in `rowReadPrefetch` (an empty row set is "not loaded
+    // yet", never "nothing to do"); the measurement was never repeated.
+    //
+    // ⭐ So before raising this again: re-measure with the gate actually
+    // gating, and MEASURE WHERE FIRST-PAINT TIME GOES rather than removing
+    // another read on a hunch. Three of the four attempts targeted reads that
+    // were not the bottleneck, and the fourth measured a mechanism that was
+    // silently inert.
     // `limit` is the FIRST page only; "Carregar mais" grows it by the same
     // amount per click.
     limit: 50,

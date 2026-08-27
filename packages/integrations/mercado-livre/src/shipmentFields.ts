@@ -19,11 +19,33 @@
  * Reading both is therefore not indecision, it is the only shape that is
  * correct before AND after the switch, on one account or on all of them.
  *
- * **Deletion trigger:** once a real `curl -H 'x-format-new: true'` against a
- * production shipment confirms the new body — and the `legacy-shape` warnings
- * below stop appearing in the logs — every `?? legacy…` branch here goes, and
- * this file shrinks to plain property reads. That is one small PR, and #957
- * tracks it.
+ * **Deletion trigger — BOTH halves, and neither is satisfied yet.**
+ *
+ *  1. A real `curl -H 'x-format-new: true'` against a production shipment
+ *     confirms the new body. ✅ Settled 2026-08-27 on shipment `47868202073`
+ *     (#957): every field arrived at its new location.
+ *  2. The warning below stops appearing in the logs **for the account whose
+ *     shipments actually matter**. ❌ Not settled. The query is
+ *
+ *     ```
+ *     gcloud logging read 'textPayload:"formato LEGADO"' \
+ *       --project <projeto> --freshness=30d
+ *     ```
+ *
+ *     ⚠️ Grep for **`formato LEGADO`** — the exact string `registrarFormatoDoEnvio`
+ *     emits. #957 once ran this query for `legacy-shape`, a phrase that appears
+ *     only in prose and in no emitted output, so it returned zero results and
+ *     proved nothing. A checker with no known-bad control is not evidence.
+ *
+ *     ⚠️ And it must be the PRODUCTION seller account. Today this backend only
+ *     ever talks to ML through staging test users; the real account is still
+ *     driven by the legacy Flutter app and does not reach this code until the
+ *     cutover (root `CLAUDE.md` rule 8). A clean staging log says nothing about
+ *     the body ML serves that account.
+ *
+ * When both hold, every `?? legacy…` branch here goes and this file shrinks to
+ * plain property reads. That is one small PR — it is deliberately NOT tracked on
+ * #957, which closed once the migration itself was verified.
  */
 import type { MlShipment, MlShipmentLeadTime } from './types';
 
@@ -87,9 +109,13 @@ export function shipmentLogisticType(shipment: MlShipment): string | null {
  * silently replacing it with a different quantity is not.
  *
  * The authoritative source for what the SELLER actually pays is
- * `GET /shipments/{id}/costs` (`senders[].cost`), which this plugin does not
- * implement and legacy did (`api.dart:1645-1650`). That is the real fix, once
- * someone can verify it against a live shipment — tracked on #957.
+ * `GET /shipments/{id}/costs` (`senders[].cost`). That is now implemented —
+ * `getShipmentCosts` + `mlShipmentCostsSchema`, read by
+ * `resolveShipmentSellerCost` in `apps/mercado-livre` — and it, not this
+ * accessor, is what fills `custoCalculado`. This one remains only as the
+ * second term of that `??` chain, for a payload still carrying the legacy
+ * field. (Legacy declared `get_shipment_costs` at `api.dart:1644-1650` but
+ * never called it, so there was no parity model to port.)
  */
 export function shipmentBaseCost(shipment: MlShipment): number | null {
   return legacy(shipment).base_cost ?? null;
@@ -139,6 +165,11 @@ let avisouFormatoLegado = false;
  * passes through. Once per process rather than once per shipment: this is a
  * one-bit fact about the account, and a per-shipment warn on a busy backend
  * would be noise nobody reads.
+ *
+ * ⚠️ **The literal string is the interface.** Whoever reads these logs greps for
+ * `formato LEGADO`; the file header carries the exact `gcloud` query. Do not
+ * reword the message — the history already written under it is the evidence, and
+ * a rewrite silently invalidates every query anyone has run against it.
  */
 export function registrarFormatoDoEnvio(shipment: MlShipment): void {
   if (avisouFormatoLegado || !ehFormatoLegado(shipment)) return;

@@ -179,10 +179,104 @@ jobs:
       - name: Install firebase-tools (pinned)
         run: npm i -g firebase-tools@15.15.0
 
-      # Not the Playwright container here (that image lacks the JVM); ubuntu-latest
-      # + `--with-deps` installs Chromium and its apt system libraries.
-      - name: Ensure Chromium + system deps
-        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
+      # Not the Playwright container here (that image lacks the JVM), so unlike the
+      # staging lanes this one fetches Chromium and its apt system libraries itself.
+      # The two halves are separate steps so a failure names which one broke.
+      - name: Resolve the Playwright version
+        id: playwright
+        run: |
+          # Extract the semver rather than taking the last field: a pnpm notice on
+          # stdout would otherwise make this multi-line, and a multi-line value
+          # written to $GITHUB_OUTPUT without a delimiter fails opaquely.
+          v="$(pnpm --filter @delfrance/web exec playwright --version | grep -oE '[0-9]+[.][0-9]+[.][0-9]+' | head -1)"
+          if [ -z "$v" ]; then
+            echo "::error::could not resolve the Playwright version — the cache key below would collapse to a constant and serve one version's browsers to every other"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # Keyed on the Playwright version, NOT on hashFiles('pnpm-lock.yaml') like the
+      # caches either side of it: the browser build is a function of that version
+      # alone, while the lockfile changes on most PRs — a lockfile key would start
+      # cold nearly every run. No `restore-keys` on purpose: a prefix hit would
+      # restore some other version's browsers, which `playwright install` would
+      # re-download anyway while the post-step saved both sets. That install
+      # revalidates whatever it finds, so a partial or stale restore self-heals.
+      #
+      # ⚠️ HOW MUCH THIS ACTUALLY PAYS — less than it looks. A cache written by a
+      # `pull_request` run is scoped to that PR's ref; only DEFAULT-BRANCH entries
+      # are readable from every branch. This lane has no `push:` trigger, and
+      # copilot-setup-steps.yml's is `paths:`-filtered to itself, so a key reaches
+      # `main`'s scope only when a PR touching THAT file merges. Since
+      # `actions/cache` never overwrites an existing key, the first PR after a
+      # Playwright bump pays one cold download and hits only on its later pushes.
+      # So: a per-PR-after-the-first-run win, not a per-run one, degrading to that
+      # again on every version bump. A `push:` trigger would fix it and is
+      # deliberately NOT added — that is a lane-design change (rule 4).
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      # ⚠️ Playwright's system-deps install shells out to `apt-get update`, which
+      # exits 100 when ANY configured source fails — including a source holding
+      # nothing it will install. The runner image ships two packages.microsoft.com
+      # repos (azure-cli, prod); on 2026-08-27 both answered 403 and reddened this
+      # required gate (run 33069232271, attempt 1) while every package Playwright
+      # actually installs — 9 font packages — sat on azure.archive.ubuntu.com and
+      # fetched fine. A concurrent run on another runner passed that same minute, so
+      # it is a per-edge-node flake rather than an outage window: it recurs, and
+      # re-running was the only remedy. Caching the browser would NOT have helped —
+      # apt runs before Playwright looks at what is already on disk.
+      #
+      # Two controls, so the trim cannot go wrong silently in either direction: the
+      # `continue` keeps any file naming an Ubuntu host (so a future deb822 image
+      # that moves the archive into sources.list.d survives this), and the
+      # post-check exits 1 if the trim left no Ubuntu source at all.
+      #
+      # ⚠️ Both greps anchor to a NON-COMMENT line (`^[^#]*`). Matching anywhere in
+      # the file would let a third-party source survive on nothing more than a
+      # `# see https://help.ubuntu.com/…` line in its own header — some vendor
+      # packages ship exactly that — and the trim would silently stop covering the
+      # repo it exists to drop, with no failure until the next 403. deb822 is
+      # unaffected: `URIs: http://azure.archive.ubuntu.com/ubuntu/` carries no `#`.
+      #
+      # ⚠️ Deleting this step fails nothing until the next 403, so
+      # `ci-lane-gates.test.js` asserts it precedes the apt step below.
+      - name: Trim apt sources to the Ubuntu archive
+        run: |
+          shopt -s nullglob
+          for f in /etc/apt/sources.list.d/*; do
+            [ -f "$f" ] || continue
+            if grep -qE '^[^#]*(ubuntu[.]com|apt-mirrors[.]txt)' "$f"; then continue; fi
+            sudo mv "$f" "$f.disabled"
+            echo "disabled $f"
+          done
+          if ! grep -rqE '^[^#]*(ubuntu[.]com|apt-mirrors[.]txt)' --exclude='*.disabled' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+            echo "::error::the apt trim left no Ubuntu archive source — refusing to continue"
+            exit 1
+          fi
+
+      # Retried because the trim cannot help when azure.archive.ubuntu.com itself
+      # blips: that mirror IS where the font packages come from.
+      - name: Chromium system deps (apt)
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm --filter @delfrance/web exec playwright install-deps chromium; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::Chromium system deps failed (attempt $attempt/3) — retrying"
+              sleep "${attempt}0"
+            fi
+          done
+          echo "::error::Chromium system deps failed 3 times — the Ubuntu archive itself is unreachable, which the source trim above cannot help with"
+          exit 1
+
+      # Near-instant on a cache hit: Playwright revalidates the browsers it finds.
+      - name: Ensure Chromium
+        run: pnpm --filter @delfrance/web exec playwright install chromium
 
       - name: Build functions bundle
         run: pnpm --filter @delfrance/functions build
