@@ -30,12 +30,113 @@ const COLUMNS: MedidaColumnSpec[] = [
   },
 ];
 
+/**
+ * ML's size-equivalence column, as an apparel domain sends it: a CLOSED list
+ * tagged `multivalued`, so one row maps onto several standard sizes.
+ */
+const EQUIV: MedidaColumnSpec = {
+  attributeId: 'FILTRABLE_SIZE',
+  label: 'Tamanho padrão',
+  kind: 'multiselect',
+  unitId: null,
+  required: true,
+  sizeEquivalence: true,
+  values: [
+    { id: '3189130', name: '34' },
+    { id: '4608574', name: '36' },
+    { id: '3259450', name: '38' },
+    { id: '3259451', name: '40' },
+  ],
+};
+
 const apply = (answer: unknown) => applyAiMedidas(ROWS, COLUMNS, answer);
+const applyEquiv = (answer: unknown) => applyAiMedidas(ROWS, [...COLUMNS, EQUIV], answer);
+
+describe('applyAiMedidas — the size-equivalence column', () => {
+  it('resolves an ARRAY answer to every matching option', () => {
+    // The whole point of the column: ML's own docs map one row ("Small") onto
+    // 34/36/38/40, and that set is what the listing's size filter is built from.
+    expect(applyEquiv({ P: { FILTRABLE_SIZE: ['34', '36', '38'] } })).toEqual([
+      {
+        rowKey: 'g/1/v/p',
+        attributeId: 'FILTRABLE_SIZE',
+        value_id: '3189130',
+        value_name: '34, 36, 38',
+        valueList: [
+          { id: '3189130', name: '34' },
+          { id: '4608574', name: '36' },
+          { id: '3259450', name: '38' },
+        ],
+      },
+    ]);
+  });
+
+  it('reaches the array path at all — `coerceText` would have dropped it', () => {
+    // ⚠️ The regression this guards: `coerceText` returns null for an array ("a
+    // cell value is a scalar"), so an array checked AFTER it is silently thrown
+    // away and the one column ML refuses the guia over comes back empty.
+    expect(applyEquiv({ P: { FILTRABLE_SIZE: ['38'] } })).toHaveLength(1);
+  });
+
+  it('dedupes repeated members', () => {
+    // ML answers `duplicated_measure_value` on a repeat, and "38, 38, 40" is a
+    // plausible read of a printed range.
+    expect(applyEquiv({ P: { FILTRABLE_SIZE: ['38', '38', '40'] } })[0]?.valueList).toEqual([
+      { id: '3259450', name: '38' },
+      { id: '3259451', name: '40' },
+    ]);
+  });
+
+  it('drops members outside the closed list, keeping the rest', () => {
+    expect(applyEquiv({ P: { FILTRABLE_SIZE: ['38', 'XG', '40'] } })[0]?.valueList).toEqual([
+      { id: '3259450', name: '38' },
+      { id: '3259451', name: '40' },
+    ]);
+  });
+
+  it('drops the whole cell when NO member matched', () => {
+    // A multiselect renders its members by id. An unmatched value applied as
+    // `{id: ''}` shows an EMPTY box and still ships to ML — the same failure
+    // `aiApplicable` guards for `select`.
+    expect(applyEquiv({ P: { FILTRABLE_SIZE: ['XG', 'XGG'] } })).toEqual([]);
+    expect(applyEquiv({ P: { FILTRABLE_SIZE: 'XG' } })).toEqual([]);
+  });
+
+  it('drops the `-1` sentinel by id inside a list, whatever ML calls it', () => {
+    const withNa: MedidaColumnSpec = {
+      ...EQUIV,
+      values: [{ id: '-1', name: 'Sem especificar' }, ...EQUIV.values],
+    };
+    expect(
+      applyAiMedidas(ROWS, [withNa], { P: { FILTRABLE_SIZE: ['Sem especificar', '38'] } })[0]
+        ?.valueList,
+    ).toEqual([{ id: '3259450', name: '38' }]);
+  });
+
+  it('wraps a SCALAR answer into a one-member list', () => {
+    // A model answering "38" instead of ["38"] is still right; the cell's widget
+    // only ever reads `valueList`, so the shape has to be normalised here.
+    expect(applyEquiv({ P: { FILTRABLE_SIZE: '38' } })[0]).toMatchObject({
+      value_id: '3259450',
+      valueList: [{ id: '3259450', name: '38' }],
+    });
+  });
+
+  it('leaves a scalar column with `valueList: null`', () => {
+    expect(apply({ P: { CHEST: '52' } })[0]?.valueList).toBeNull();
+  });
+});
 
 describe('applyAiMedidas — resolving the answer onto rows', () => {
   it('maps a size label back to the editor row key', () => {
     expect(apply({ P: { CHEST: '52' } })).toEqual([
-      { rowKey: 'g/1/v/p', attributeId: 'CHEST', value_id: null, value_name: '52' },
+      {
+        rowKey: 'g/1/v/p',
+        attributeId: 'CHEST',
+        value_id: null,
+        value_name: '52',
+        valueList: null,
+      },
     ]);
   });
 
@@ -46,7 +147,13 @@ describe('applyAiMedidas — resolving the answer onto rows', () => {
 
   it('resolves a closed-list value to its id, matching accent-insensitively', () => {
     expect(apply({ P: { FIT: 'justa' } })).toEqual([
-      { rowKey: 'g/1/v/p', attributeId: 'FIT', value_id: 'F1', value_name: 'Justa' },
+      {
+        rowKey: 'g/1/v/p',
+        attributeId: 'FIT',
+        value_id: 'F1',
+        value_name: 'Justa',
+        valueList: null,
+      },
     ]);
   });
 

@@ -115,7 +115,15 @@ export function SizeChartAiModal({
           label: 'Sugerido',
           render: (s) => (
             <Text size="sm" fw={500}>
-              {s.value_name}
+              {/*
+                A size-equivalence cell maps one row onto SEVERAL standard sizes,
+                so the list is what the operator has to judge. `value_name`
+                already carries the members joined, but reading them off the list
+                keeps this row honest if that ever stops being true.
+              */}
+              {s.valueList != null && s.valueList.length > 0
+                ? s.valueList.map((v) => v.name).join(', ')
+                : s.value_name}
             </Text>
           ),
         },

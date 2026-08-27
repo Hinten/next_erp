@@ -70,11 +70,20 @@ export interface AiPromptRequest {
  * account and the tree-walk test that enforces it.
  */
 export interface JsonSchemaNode {
-  type: 'object' | 'string';
+  type: 'object' | 'string' | 'array';
   description?: string;
   enum?: string[];
   maxLength?: number;
   properties?: Record<string, JsonSchemaNode>;
+  /**
+   * The member schema of an `array` node.
+   *
+   * ⚠️ An array is still an OMITTABLE property — it never gets a `minItems`, for
+   * the same reason nothing here gets a `required`. A model that cannot read a
+   * multi-valued cell must be able to leave it out; a floor of one would make
+   * inventing a member the cheapest legal answer.
+   */
+  items?: JsonSchemaNode;
   /** Always ABSENT on purpose — declared so tests can assert it is not set. */
   required?: string[];
   additionalProperties?: false;
