@@ -1,20 +1,36 @@
 /**
  * #1087 §7 — **did the order import everything, and is the money right?**
  *
- * `orderMapping.ts` and `orderPaymentMapping.ts` were ported verbatim from the
- * Flutter app and have never been checked against a real Mercado Livre order.
- * The formulas are not obviously right:
+ * ⚠️ **`pedido.valorCobrado` has TWO owners, and reconciling against the wrong
+ * one manufactures findings.** That mistake cost an hour on the 2026-08-27 run,
+ * so the layout below exists to make it unrepeatable:
  *
- *   valorCobrado    = Σ transaction_amount + Σ shipping_cost − Σ coupon_amount
+ *  - **Formula A — the create-time seed** (`orderMapping.ts`,
+ *    `mlOrderToPedidoCoreFields`): `Σ transaction_amount + Σ shipping_cost −
+ *    Σ coupon_amount`, written ONCE by `orderPedidoTx.ts` and, on a **pack**,
+ *    computed from `orders[0]` ALONE.
+ *  - **Formula B — the frete conference takes ownership** (`orderImport.ts`,
+ *    `applyFreteStep`): `Σ itemSubtotal + freteInicial.valorCobrado`. From the
+ *    first shipment payload onward this is what is stored, and it is the
+ *    legacy meaning of the field — `Pedido.total`, *"valor final cobrado no
+ *    pedido"*, i.e. **what the customer owes us, freight included**.
+ *
+ * So A and B are NOT expected to agree, and a mismatch between them is not a
+ * defect. They coincide only when the freight rode the order's own payments.
+ * They diverge — correctly — on a **pack**, where Mercado Livre bills shipping
+ * once on the SHIPMENT: each order's payment then carries `shipping_cost: 0`,
+ * the freight arrives as an approved `GET /shipments/{id}/payments` entry, and
+ * `Σ paid_amount` (order-scoped) structurally cannot see it.
+ *
+ * The rows this script gives a VERDICT to are therefore the post-conference
+ * invariant (the canonical `derivePedidoFreteTotals`) and the `pago` threshold.
+ * Formula A is printed for context only.
+ *
+ * The line-level formulas are still worth eyeballing:
+ *
  *   precoDeVenda    = unit_price + Σ discounts[].amounts.full     ← a PLUS
  *   descontoTotal   = Σ payments[].coupon_amount                  ← order level
  *   descontoUnitario= Σ order_items[].discounts[].amounts.full    ← line level
- *
- * If ML's `transaction_amount` already includes shipping, or is already net of
- * the coupon, the first line double-counts. This script settles it by putting
- * the recomputed value next to ML's own `paid_amount` — the amount the buyer
- * actually paid — which the import already mirrors to
- * `pedidos/{pedidoId}/orderML/{orderId}`.
  *
  *   pnpm --filter @delfrance/mercado-livre-app inspect:pedido \
  *     --project <id> --pedidoId <id>
@@ -37,6 +53,12 @@ import {
   pedidoCollection,
 } from '@delfrance/data/admin/collections';
 import { formatReais, roundReais } from '@delfrance/core/money';
+import {
+  STATUS_PAGAMENTO,
+  derivePedidoFreteTotals,
+  flattenPedidoItens,
+  type ItemDoPedido,
+} from '@delfrance/schemas';
 
 import { getAdminFirestore } from '../lib/firebase/admin';
 
@@ -133,6 +155,31 @@ function verdict(stored: unknown, esperado: number): string {
   return Math.abs(stored - esperado) < 0.005 ? '  confere' : '≠ DIVERGE';
 }
 
+/** True when two reais figures agree to the cent. */
+function bate(a: number, b: number): boolean {
+  return Math.abs(a - b) < 0.005;
+}
+
+/**
+ * The pedido's frete block, narrowed to the three money fields the totals read.
+ * Raw Firestore data — read defensively, exactly like every other row here.
+ */
+function freteDoPedido(pedido: Record<string, unknown>): {
+  valorCobrado: number | null;
+  custoCalculado: number | null;
+  custoFinal: number | null;
+} | null {
+  const frete = pedido.freteInicial as Record<string, unknown> | null | undefined;
+  if (frete == null) return null;
+  const numeroOuNulo = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  return {
+    valorCobrado: numeroOuNulo(frete.valorCobrado),
+    custoCalculado: numeroOuNulo(frete.custoCalculado),
+    custoFinal: numeroOuNulo(frete.custoFinal),
+  };
+}
+
 /* ----------------------------------- main ---------------------------------- */
 
 async function main(): Promise<void> {
@@ -206,42 +253,104 @@ async function main(): Promise<void> {
     }
   }
 
-  const valorCobradoEsperado = roundReais(totalTransacoes + totalFrete - totalCupom);
+  const sementeFormulaA = roundReais(totalTransacoes + totalFrete - totalCupom);
+
+  /* ---- the frete block: what we CHARGE for shipping, and what it COSTS ---- */
+
+  const freteMoney = freteDoPedido(pedido);
+  const freteCobrado = freteMoney?.valorCobrado ?? 0;
 
   log('');
-  log('## Dinheiro — armazenado × recalculado × o que o Mercado Livre diz');
-  log(`  Σ transaction_amount           ${money(totalTransacoes)}`);
-  log(`  Σ shipping_cost              + ${money(totalFrete)}`);
-  log(`  Σ coupon_amount              − ${money(totalCupom)}`);
+  log('## Frete — o bloco `freteInicial` (a fonte do valor cobrado de frete)');
+  if (freteMoney == null) {
+    log('  (sem freteInicial — a conferência do envio ainda não rodou)');
+  } else {
+    log(
+      `  valorCobrado=${money(freteMoney.valorCobrado)}   ← Σ shipping_payments aprovados` +
+        `  |  custoCalculado=${money(freteMoney.custoCalculado)}  custoFinal=${money(freteMoney.custoFinal)}` +
+        '   ← o que o envio CUSTA',
+    );
+  }
+
+  /* ------------------------ the two reconciliations ------------------------ */
+
+  const itensDoPedido = flattenPedidoItens(
+    (pedido.itens ?? {}) as Record<string, ItemDoPedido[]>,
+  ) as ItemDoPedido[];
+  const descontoTotal = num(pedido.descontoTotal);
+  const canonico = derivePedidoFreteTotals({
+    itens: itensDoPedido,
+    descontoTotal,
+    freteInicial: freteMoney,
+  });
+
+  log('');
+  log('## Dinheiro — a fórmula B (a que VALE depois da conferência do envio)');
+  log('   `valorCobrado` = Σ itemSubtotal − descontoTotal + freteInicial.valorCobrado');
+  log(
+    `  Σ itemSubtotal                 ${money(canonico.valorCobrado - freteCobrado + descontoTotal)}`,
+  );
+  log(`  descontoTotal                − ${money(descontoTotal)}`);
+  log(`  freteInicial.valorCobrado    + ${money(freteCobrado)}`);
   log(`  ${'-'.repeat(46)}`);
   log(
     `  valorCobrado   armazenado=${money(pedido.valorCobrado as number | null)}` +
-      `  recalculado=${money(valorCobradoEsperado)}   ${verdict(pedido.valorCobrado, valorCobradoEsperado)}`,
+      `  recalculado=${money(canonico.valorCobrado)}   ${verdict(pedido.valorCobrado, canonico.valorCobrado)}`,
   );
   log(
     `  descontoTotal  armazenado=${money(pedido.descontoTotal as number | null)}` +
       `  recalculado=${money(roundReais(totalCupom))}   ${verdict(pedido.descontoTotal, roundReais(totalCupom))}`,
   );
+  if (
+    typeof pedido.valorCobrado === 'number' &&
+    !bate(pedido.valorCobrado, canonico.valorCobrado)
+  ) {
+    const gap = roundReais((pedido.valorCobrado as number) - canonico.valorCobrado);
+    log(
+      bate(gap, descontoTotal)
+        ? `     ⚠️ a diferença é EXATAMENTE o descontoTotal (${money(descontoTotal)}) — conhecido: ` +
+            '`applyFreteStep` não subtrai o cupom, ao contrário de `derivePedidoFreteTotals`. ' +
+            'Quem financia o cupom do ML decide qual está certo (LIVE-TEST §7.1, passo 6.3).'
+        : `     ❌ diferença de ${money(gap)} que NÃO é o cupom — registre em LIVE-TEST.md §7.1.`,
+    );
+  }
+
+  log('');
+  log('## Fórmula A — a SEMENTE de criação, só para contexto (NÃO é um veredito)');
+  log(`  Σ transaction_amount           ${money(totalTransacoes)}`);
+  log(`  Σ shipping_cost              + ${money(totalFrete)}`);
+  log(`  Σ coupon_amount              − ${money(totalCupom)}`);
+  log(`  ${'-'.repeat(46)}`);
+  log(`  semente (fórmula A)            ${money(sementeFormulaA)}`);
   log(
-    `  valorFrete     armazenado=${money(pedido.valorFreteInicial as number | null)}` +
-      `  recalculado=${money(roundReais(totalFrete))}   ${verdict(pedido.valorFreteInicial, roundReais(totalFrete))}`,
+    `  Só se espera que bata com o armazenado ANTES da conferência do envio rodar — e, num ` +
+      'PACK, ela foi calculada com `orders[0]` SOZINHO.',
   );
 
   log('');
-  log('  ⚠️ A PERGUNTA QUE ESTE SCRIPT EXISTE PARA RESPONDER:');
-  log(`     ML total_amount = ${money(mlTotalAmount)}`);
+  log('  ⚠️ O QUE O COMPRADOR PAGOU × O QUE COBRAMOS:');
+  log(`     ML total_amount = ${money(mlTotalAmount)}   (Σ dos itens, por ordem)`);
   log(
-    `     ML paid_amount  = ${temPaidAmount ? money(mlPaidAmount) : 'ausente'}   ← o que o comprador pagou`,
+    `     ML paid_amount  = ${temPaidAmount ? money(mlPaidAmount) : 'ausente'}   ← por ORDEM: não ` +
+      'enxerga um pagamento de frete feito no ENVIO',
   );
   log(`     nosso valorCobrado = ${money(pedido.valorCobrado as number | null)}`);
   if (temPaidAmount && typeof pedido.valorCobrado === 'number') {
-    const delta = roundReais(pedido.valorCobrado - mlPaidAmount);
-    log(
-      delta === 0
-        ? '     ✅ IGUAIS — a fórmula herdada do Flutter está correta para este pedido.'
-        : `     ❌ DIFERENÇA de ${money(delta)} — a fórmula soma frete e subtrai cupom por cima ` +
-            'de um transaction_amount que talvez já os contenha. Registre isto em LIVE-TEST.md §7.1.',
-    );
+    const delta = roundReais((pedido.valorCobrado as number) - mlPaidAmount);
+    if (bate(delta, 0)) {
+      log('     ✅ IGUAIS — o frete veio nos pagamentos da própria ordem.');
+    } else if (bate(delta, freteCobrado)) {
+      log(
+        `     ✅ a diferença é EXATAMENTE o frete (${money(freteCobrado)}) — esperado: o Mercado ` +
+          'Livre cobra o frete UMA vez, no envio, então `shipping_cost` fica 0 em cada ordem e ' +
+          'o pagamento aparece em `GET /shipments/{id}/payments`. É a forma normal de um PACK.',
+      );
+    } else {
+      log(
+        `     ❌ diferença de ${money(delta)}, que não é 0 nem o frete (${money(freteCobrado)}) — ` +
+          'isto sim é um achado. Registre em LIVE-TEST.md §7.1.',
+      );
+    }
   }
 
   /* --------------------------------- itens --------------------------------- */
@@ -291,12 +400,37 @@ async function main(): Promise<void> {
   const pagSnaps = await pagamentoCollection.ref(db, { pedidoId }).get();
   log('');
   log(`## Pagamentos gravados — ${pagSnaps.size}`);
+  let totalAprovado = 0;
   for (const d of pagSnaps.docs) {
     const p = d.data() as Record<string, unknown>;
+    const aprovado = p.status_pagamento === STATUS_PAGAMENTO.aprovado;
+    if (aprovado) totalAprovado += num(p.valor);
     log(
       `  id=${d.id}  valor=${money(p.valor as number | null)}  tarifas=${money(p.tarifas as number | null)}` +
-        `  parcelas=${fmt(p.parcelas)}  status=${fmt(p.status)}  forma=${fmt(p.forma_de_pagamento)}`,
+        // The field is `status_pagamento`; a bare `status` was always undefined.
+        `  parcelas=${fmt(p.parcelas)}  status_pagamento=${fmt(p.status_pagamento)}` +
+        `${aprovado ? ' (aprovado)' : ''}  forma=${fmt(p.forma_de_pagamento)}`,
     );
+  }
+  totalAprovado = roundReais(totalAprovado);
+
+  // The actual `pago` gate on both ML paths: `totalAprovado >= valorCobrado`,
+  // APPROVED-ONLY (#791/O13) — stricter than the null-tolerant
+  // `sumPagamentosPagos` the web footer and the generic reconcile use, so this
+  // number can be lower than the "Vlr. Pago" on screen.
+  log('');
+  log('## Limiar do `pago` — Σ pagamentos APROVADOS × valorCobrado');
+  log(`  Σ aprovados    ${money(totalAprovado)}`);
+  log(`  valorCobrado   ${money(pedido.valorCobrado as number | null)}`);
+  if (typeof pedido.valorCobrado === 'number') {
+    const falta = roundReais((pedido.valorCobrado as number) - totalAprovado);
+    log(
+      falta > 0.005
+        ? `  ✗ faltam ${money(falta)} — o pedido NÃO pode avançar para \`pago\``
+        : `  ✔ coberto${falta < -0.005 ? ` (troco de ${money(-falta)})` : ' exatamente'}`,
+    );
+  } else {
+    log('  ✗ valorCobrado ausente — o avanço exige um valor não-nulo (#791)');
   }
 
   /* ------------------------- why the pedido may be stuck -------------------- */
