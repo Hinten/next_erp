@@ -68,11 +68,13 @@ import {
   type PublishProduto,
   type PublishVariationChild,
   assemblePublishInput,
+  classificarMembroUnico,
   linkAttributesAfterPublish,
   publishModeIssues,
   resolveCondition,
   resolveListingModel,
 } from './publishCore';
+import { garantirMembroUnico } from './upSoleMemberWrite';
 import { quantidadeParaEnvio } from '../estoque/bulkEstoquePlan';
 import { readListaDePrecos } from './listaDePrecosCache';
 import {
@@ -365,8 +367,6 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     }
   }
   const listingModel = resolveListingModel(link, sellerIsUserProduct);
-  /** A User-Products family: N ML items sharing a `family_name`, not one item. */
-  const isUserProductFamily = listingModel === 'user-products' && children.length > 0;
   const modeIssues = publishModeIssues({
     estado: link?.estado ?? null,
     model: listingModel,
@@ -374,6 +374,51 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     childrenCount: children.length,
   });
   if (modeIssues.length > 0) throw new MercadoLivrePublishError(modeIssues);
+
+  // ---- The User-Products SOLE MEMBER (#1087) -------------------------------
+  // ML auto-generates a family for EVERY user product, so a childless UP produto
+  // is a family of one that has no member yet. The importer already writes that
+  // shape (parent + one child, stock on the child); publish used to write a root
+  // produto instead, which is why a produto did not survive delete -> re-import.
+  //
+  // ⚠️ Strictly AFTER `publishModeIssues`, which must see the ORIGINAL
+  // `children.length`. Materialise first and its `childrenCount === 0` arm stops
+  // firing — and that arm is the one childless state publish must REFUSE rather
+  // than repair (a family id on the link means live ML members we would orphan).
+  const acaoMembroUnico = classificarMembroUnico({
+    model: listingModel,
+    linkId: link?.id ?? null,
+    childrenCount: children.length,
+  });
+  // Enumerated rather than `!== 'nenhum'`: 'recusar' already threw through
+  // `publishModeIssues` above, and naming the two repairable cases explicitly is
+  // what keeps that true if the guard above is ever moved or relaxed.
+  if (acaoMembroUnico === 'criar' || acaoMembroUnico === 'adotar') {
+    children.push(
+      await garantirMembroUnico(
+        { db, integracaoId },
+        {
+          acao: acaoMembroUnico,
+          produtoId,
+          produto,
+          parentLinkDocId: linkDocId,
+          link: {
+            id: link?.id ?? null,
+            status: linkDoc?.data.status ?? null,
+            sub_status: linkDoc?.data.sub_status ?? null,
+            userProductId: linkDoc?.data.userProductId ?? null,
+            moderacoes: linkDoc?.data.moderacoes ?? null,
+          },
+          now: Date.now(),
+        },
+      ),
+    );
+  }
+
+  /** A User-Products family: N ML items sharing a `family_name`, not one item. */
+  // Reads `children` AFTER the sole member above, so a UP produto is always a
+  // family here — which is the whole point of #1087.
+  const isUserProductFamily = listingModel === 'user-products' && children.length > 0;
 
   // ---- Stock (integração's depósito when set; else every depósito) -------
   // Kit-aware (#797 E5): a kit publishes what its components can assemble, not

@@ -7,10 +7,15 @@
  *    ⚠️ `family_name` is CREATE-ONLY — see the note on the assignment itself —
  *    so a User-Products UPDATE carries no name field at all, while a legacy one
  *    still carries `title` (a rename is legitimate there).
- *    ⚠️ A User-Products produto that HAS variations does not come through here
- *    at all: each variation is its own ML item, built one at a time by
- *    {@link buildUserProductItemPayload}. This function only serves a UP produto
- *    with no children (one item, one implicit user product).
+ *    ⚠️ A User-Products produto does not come through here at all any more:
+ *    every variation is its own ML item, built one at a time by
+ *    {@link buildUserProductItemPayload}. Since #1087 that includes the SINGLE —
+ *    ML auto-generates a family for every user product, so publish materialises
+ *    the sole member and takes the family path for it too, which is what makes a
+ *    produto survive delete → re-import. The `isUserProductSeller` branch below
+ *    is therefore unreachable from `publish.ts`; it is kept because the flag is
+ *    still what `userProductMemberInputs` reads to project each member, and
+ *    removing it would make this builder silently wrong for any future caller.
  *  - Create-only fields: `family_name` (User Products only), `category_id`,
  *    `currency_id: 'BRL'`, `condition`, `site_id: 'MLB'`,
  *    `buying_mode: 'buy_it_now'`, `listing_type_id`, and `seller_custom_field`
@@ -317,6 +322,18 @@ export interface BuildUserProductItemPayloadInput {
    * so the node has to ride on each one; a family does not carry it centrally.
    */
   shippingMode?: MlShippingMode | null;
+  /**
+   * True when this family has exactly ONE member (#1087) — the User-Products
+   * shape of what used to be a plain simple item.
+   *
+   * ⚠️ It exists for ONE reason: `buildItemPayload` reactivates a paused listing
+   * on every edit ("the old app's behavior"), and routing the sole member through
+   * this builder would silently drop that — an operator who pauses a listing,
+   * edits it and republishes would find it still paused, with nothing to say why.
+   * A REAL family deliberately keeps the old behaviour: reactivating every member
+   * because one was edited is a decision no one asked for.
+   */
+  soleMember?: boolean;
 }
 
 export function buildUserProductItemPayload(
@@ -343,6 +360,12 @@ export function buildUserProductItemPayload(
     // whole member on an item with an active ML price automation
     // (`item.price.not_modifiable`).
     if (input.price != null) data.price = input.price;
+  }
+
+  // Editing reactivates — but only for a family of ONE, where this builder stands
+  // in for `buildItemPayload` and has to keep its behaviour (see `soleMember`).
+  if (input.isUpdate && input.soleMember === true) {
+    data.status = 'active';
   }
 
   // ⚠️ NEVER a `title`: ML computes it from `family_name` + the attributes, and
@@ -412,6 +435,7 @@ export function userProductMemberInputs(
     attributes: input.attributes,
     pictures: input.pictures,
     shippingMode: input.shippingMode,
+    soleMember: (input.variations ?? []).length === 1,
     // ⚠️ Load-bearing: this is the ONLY thing that puts a `shipping` node on a
     // User-Products family. `publishUserProductMembers` builds every member from
     // this projection, so dropping it here would ship single items with a mode

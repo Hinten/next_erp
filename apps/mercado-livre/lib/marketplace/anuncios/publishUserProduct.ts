@@ -159,7 +159,14 @@ export async function publishUserProductMembers(
       // written `[]` without a `/moderations` call. Evaluated HERE because this
       // is where the ML item still exists as one object — see the arg's docblock.
       moderacoes: precisaConsultarModeracao(item.status, item.sub_status) ? null : [],
-      userProductId: item.user_product_id ?? null,
+      // ⚠️ Preserved-or-taken, never blindly overwritten. ML does not always echo
+      // `user_product_id` on a PUT, and this is the #706 STOCK identity on a
+      // `warehouse_management` conta — writing null over a good one because a
+      // response omitted it silently costs that listing its send unit until some
+      // later `items` webhook or import puts it back.
+      userProductId:
+        item.user_product_id ??
+        (typeof state?.raw.userProductId === 'string' ? state.raw.userProductId : null),
     });
   }
 

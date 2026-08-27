@@ -4,6 +4,7 @@ import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrat
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import { type PublishDeps, publishProduto } from './publish';
+import { MercadoLivrePublishError } from './publishCore';
 
 /**
  * Regression tests for the LEGACY-WIRE contract of the publish orchestrator. The
@@ -16,6 +17,34 @@ import { type PublishDeps, publishProduto } from './publish';
  */
 
 type DocData = Record<string, unknown>;
+
+/**
+ * Resolve the `FieldValue` transforms this module actually writes.
+ *
+ * ⚠️ Without this the fake stores the SENTINEL OBJECT, so a test asserting a
+ * number passes only while the code under test writes a plain value — i.e. it goes
+ * green exactly when the rule-7-safe version is replaced by the unsafe one. Both
+ * transforms expose `operand`, and their constructor names are the only thing that
+ * tells them apart.
+ */
+function aplicarSentinelas(atual: DocData | undefined, patch: DocData): DocData {
+  const out: DocData = {};
+  for (const [k, v] of Object.entries(patch)) {
+    const nome = (v as { constructor?: { name?: string } } | null)?.constructor?.name;
+    const operand = (v as { operand?: unknown } | null)?.operand;
+    const anterior = atual?.[k];
+    if (nome === 'NumericIncrementTransform' && typeof operand === 'number') {
+      out[k] = (typeof anterior === 'number' ? anterior : 0) + operand;
+    } else if (nome === 'NumericMaximumTransform' && typeof operand === 'number') {
+      out[k] = typeof anterior === 'number' ? Math.max(anterior, operand) : operand;
+    } else if (nome === 'NumericMinimumTransform' && typeof operand === 'number') {
+      out[k] = typeof anterior === 'number' ? Math.min(anterior, operand) : operand;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
@@ -55,6 +84,61 @@ class FakeDb {
     return this.col(path);
   }
 
+  /**
+   * A WriteBatch with REAL atomicity: nothing is applied until `commit()`, and a
+   * failing `create` applies NOTHING.
+   *
+   * ⚠️ The all-or-nothing half is the point, not a nicety. #1087's materialisation
+   * is unrecoverable if it half-lands (a produto that gained a child is never
+   * re-entered), so a fake that applied ops as they were queued would let the exact
+   * defect the batch exists to prevent pass its own test.
+   */
+  batch() {
+    const self = this;
+    const ops: Array<{
+      path: string;
+      id: string;
+      data: DocData;
+      kind: 'create' | 'set' | 'update';
+    }> = [];
+    return {
+      create(ref: { __path: string; __id: string }, data: DocData) {
+        ops.push({ path: ref.__path, id: ref.__id, data, kind: 'create' });
+      },
+      set(ref: { __path: string; __id: string }, data: DocData) {
+        ops.push({ path: ref.__path, id: ref.__id, data, kind: 'set' });
+      },
+      update(ref: { __path: string; __id: string }, data: DocData) {
+        ops.push({ path: ref.__path, id: ref.__id, data, kind: 'update' });
+      },
+      async commit() {
+        // Validate FIRST, mutate second — a rejected batch must leave no trace.
+        for (const op of ops) {
+          const col = self.col(op.path);
+          if (op.kind === 'create' && col.has(op.id)) {
+            const err = new Error(`ALREADY_EXISTS: ${op.path}/${op.id}`) as Error & {
+              code: number;
+            };
+            err.code = 6;
+            throw err;
+          }
+          if (op.kind === 'update' && !col.has(op.id)) {
+            const err = new Error(`NOT_FOUND: ${op.path}/${op.id}`) as Error & { code: number };
+            err.code = 5;
+            throw err;
+          }
+        }
+        for (const op of ops) {
+          const col = self.col(op.path);
+          const atual = col.get(op.id);
+          const resolvido = aplicarSentinelas(atual, op.data);
+          col.set(op.id, op.kind === 'create' ? resolvido : { ...(atual ?? {}), ...resolvido });
+          self.bump(`${op.path}/${op.id}`);
+        }
+      },
+    };
+  }
+
   collection(path: string) {
     const col = this.col(path);
     const self = this;
@@ -64,6 +148,10 @@ class FakeDb {
         const key = `${path}/${docId}`;
         return {
           id: docId,
+          // How `batch()` addresses this doc — the fake's stand-in for a real
+          // DocumentReference's own path.
+          __path: path,
+          __id: docId,
           get: async () => {
             const snap = {
               exists: col.has(docId),
@@ -79,7 +167,22 @@ class FakeDb {
             return snap;
           },
           set: async (data: DocData, opts?: { merge?: boolean }) => {
-            col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
+            const atual = col.get(docId);
+            const resolvido = aplicarSentinelas(atual, data);
+            col.set(docId, opts?.merge ? { ...(atual ?? {}), ...resolvido } : { ...resolvido });
+            self.bump(key);
+          },
+          // Real `create()` semantics, and the ALREADY_EXISTS half is the point:
+          // the sole-member materialisation (#1087) treats gRPC 6 as an ADOPTION,
+          // so a double is indistinguishable from a first run only if this throws
+          // the way Firestore does.
+          create: async (data: DocData) => {
+            if (col.has(docId)) {
+              const err = new Error(`ALREADY_EXISTS: ${key}`) as Error & { code: number };
+              err.code = 6;
+              throw err;
+            }
+            col.set(docId, { ...data });
             self.bump(key);
           },
           update: async (patch: DocData, precondition?: { lastUpdateTime?: unknown }) => {
@@ -104,7 +207,7 @@ class FakeDb {
               err.code = 9;
               throw err;
             }
-            col.set(docId, { ...current, ...patch });
+            col.set(docId, { ...current, ...aplicarSentinelas(current, patch) });
             self.bump(key);
             self.updates.push({ path: key, patch });
           },
@@ -1716,7 +1819,13 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
         // `updateItem` — with `{status}` bodies, and AFTER the link write — so an
         // ungated mock re-applied the "concurrent" fields once more at the end
         // and the assertion below passed under a full-clobber implementation.
-        if (!('status' in payload)) {
+        //
+        // ⚠️ The discriminator is the payload's SIZE, not the absence of a
+        // `status` key: since #1087 a family of ONE carries `status: 'active'` on
+        // its member PUT too (it stands in for a simple item, which has always
+        // reactivated on edit), so "no status" stopped telling the two apart and
+        // silently disabled this whole mock.
+        if (Object.keys(payload).length > 1) {
           const doc = db.docs('produtos/child-1/variacaoMercadoLivre').get('var-child-1')!;
           doc.attributes = [{ id: 'VOLTAGE', value_name: '220V' }];
           doc.campoLegadoDesconhecido = 'preservar';
@@ -2178,5 +2287,160 @@ describe('publishProduto — which anúncio a publish targets', () => {
     await publishProduto({ ...makeDeps(db, api), linkDocId: '' }, PROD);
 
     expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ id: 'MLB777', estado: 'p' });
+  });
+});
+
+/* ------------------- the User-Products SOLE MEMBER (#1087) ------------------ */
+
+describe('publishProduto — the User-Products sole member (#1087)', () => {
+  /** `XMLB000000000000000<parentLinkDocId>vMLB<itemId>` — the importer's own id. */
+  const CHILD = 'XMLB000000000000000ML-DOC-1vMLBMLB777';
+
+  function seedPublishedSingle(db: FakeDb): void {
+    seedBase(db);
+    // A produto published under the OLD convention: User-Products model, a REAL
+    // item id on the link (not a family id), and no children.
+    db.seed(LINKS_PATH, 'ML-DOC-1', {
+      ...FLUTTER_LINK,
+      isUserProductModel: true,
+      userProductId: 'MLBU-1',
+      status: 'active',
+      sub_status: [],
+    });
+  }
+
+  it('⛔ ADOPTS the live listing — it must never POST a second item', async () => {
+    // This is the assertion the whole change hangs on. Materialise the child
+    // WITHOUT seeding its member link with `link.id` and `findVariacaoLink`
+    // returns null, the member counts as new, `createItem` POSTs a duplicate,
+    // and `sweepRemovedMembers` then confirms the ORIGINAL as an orphan and
+    // pauses-then-closes it — a live, selling listing with its sales history and
+    // its search ranking. Do not delete this test.
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).toHaveBeenCalled();
+    expect(mocks.updateItem!.mock.calls[0]![0]).toBe('MLB777');
+  });
+
+  it('seeds the member link with the existing item id, which is what makes it a PUT', async () => {
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const member = db.docs(`produtos/${CHILD}/variacaoMercadoLivre`).get(CHILD)!;
+    expect(member.itemId).toBe('MLB777');
+    expect(member.userProductId).toBe('MLBU-1');
+  });
+
+  it('mints the child at the id a later IMPORT would use, so the two converge', async () => {
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const child = db.docs('produtos').get(CHILD)!;
+    expect(child.paiId).toBe(PROD);
+    expect(child.sku).toBe('SKU-1');
+    // A sole member has nothing to vary, so it carries no variation taxonomy —
+    // exactly what the importer writes for an empty `attribute_combinations`.
+    expect(child.variacoesUid).toBeNull();
+    expect(child.grupoDeVariacoesUid).toBeNull();
+  });
+
+  it('moves the AVAILABLE stock to the child and leaves the reserve on the parent', async () => {
+    // 10 in the warehouse, 2 owed to an open pedido whose release decrements the
+    // PARENT. The sweep prices a family off its children, so the child must own
+    // the sellable 8 — but moving the 2 as well would strand that release.
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(db.docs(`produtos/${CHILD}/estoques`).get(`est-${CHILD}-dep-1`)!.quantidade).toBe(8);
+    expect(db.docs(`produtos/${PROD}/estoques`).get('est-1')!.quantidade).toBe(2);
+  });
+
+  it('is idempotent — publishing twice leaves ONE child and does not re-move stock', async () => {
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    // The picture must resolve from cache on the second pass; re-uploading is a
+    // different code path and not what this test is about.
+    db.seed('arquivos', 'arq-1', {
+      filename: 'foto.jpg',
+      contentType: 'image/jpeg',
+      url: 'https://storage/foto.jpg',
+      externalIds: [{ integracaoPath: `documents/integracao/${CONTA}`, id: 'PIC-1' }],
+    });
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const filhos = [...db.docs('produtos').keys()].filter((id) => id !== PROD);
+    expect(filhos).toEqual([CHILD]);
+    // The second pass must NOT copy the parent's now-reduced quantity over the
+    // child's good row.
+    expect(db.docs(`produtos/${CHILD}/estoques`).get(`est-${CHILD}-dep-1`)!.quantidade).toBe(8);
+  });
+
+  it('⛔ a LOST race applies NOTHING — the reshape is all-or-nothing', async () => {
+    // The defect this guards is unrecoverable, not untidy: once the child produto
+    // exists the produto HAS children, so `classificarMembroUnico` answers
+    // `'nenhum'` and `garantirMembroUnico` is never entered again. A half-applied
+    // reshape would therefore be permanent — stock stranded on the parent for ever,
+    // or counted twice — with no later run able to finish it.
+    //
+    // Here a concurrent publish mints the child in the window between our existence
+    // check and our commit, so our `batch.create` loses with ALREADY_EXISTS. What
+    // must be true afterwards is that our OTHER three writes did not land either.
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    db.afterGet = {
+      path: `produtos/${CHILD}`,
+      fn: () => db.seed('produtos', CHILD, { nome: 'vencedor da corrida', paiId: PROD }),
+    };
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // eslint-disable-next-line no-console
+    // ⛔ The loser must STILL end up adopting. Its batch — the one that would have
+    // written the member link — is exactly the one that failed, so without a
+    // recovery here `findVariacaoLink` finds nothing, the member counts as new, and
+    // this POSTs a SECOND ML item that the orphan sweep then closes the original
+    // for. Measured: before the recovery existed, this was `createItem: 1`.
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).toHaveBeenCalled();
+
+    // The parent's stock is untouched — not reduced by a delta whose child row
+    // never materialised.
+    expect(db.docs(`produtos/${PROD}/estoques`).get('est-1')!.quantidade).toBe(10);
+    // ...and no child estoque row was left behind on its own.
+    expect(db.docs(`produtos/${CHILD}/estoques`).size).toBe(0);
+    // The winner's document stands; we did not overwrite it.
+    expect(db.docs('produtos').get(CHILD)!.nome).toBe('vencedor da corrida');
+  });
+
+  it('still REFUSES a family id with no children — that one is not repairable here', async () => {
+    // `link.id` all digits means the ERP variations were deleted out from under a
+    // family that may still have live ML members. Materialising a sole member
+    // there would POST into it and the sweep would orphan the siblings.
+    const db = new FakeDb();
+    seedBase(db);
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, isUserProductModel: true, id: '426089904' });
+    const { api, mocks } = makeApi();
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(MercadoLivrePublishError);
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).not.toHaveBeenCalled();
   });
 });
