@@ -372,7 +372,26 @@ pnpm --filter @delfrance/mercado-livre-app dump:notificacoes --project <project-
 | A notification for an **unconnected** seller | lands in the **deferred** lane; `redriveDeferredForUserId` pulls it back on connect (#808)                                                                                                                                                                 |        |
 | A **replayed** notification                  | dedups via `docIdOf` / ALREADY_EXISTS (#807)                                                                                                                                                                                                               |        |
 | `missed_feeds` backstop (#812)               | make the backend return non-200 for a few minutes; the 05:00 sweep replays. ⚠️ `MERCADO_LIVRE_TASKS_DISABLED=1` is **not** a usable lever — it still acks 200                                                                                              |        |
-| `questions` / `messages`                     | **deferred to a later run** — they `park` until #532/#533 ship                                                                                                                                                                                             |        |
+| `questions` / `messages`                     | handled since #532/#533 — a buyer message must land as a conversa in `/chat`, not `park`. The REPLY half is §8.2                                                                                                                                           |        |
+
+### 8.2 — A post-sale reply reaches the buyer
+
+⚠️ **A 200 from ML proves nothing here**, and that is the whole point of this
+section. ML accepts a reply addressed to the wrong `to.user_id` and silently never
+delivers it, so the only acceptance criterion is the message appearing in the
+**buyer's** inbox. The one failure that IS loud — `400 to_user_id {agente} does not
+belong to pack /packs/{pack}/sellers/{seller}` — was observed on
+`2000018143664980` on 2026-08-27, from addressing every thread to ML's messaging
+Agent when its rollout is progressive.
+
+Run both rows: which flow a thread is on is ML's choice, not ours, and the two
+mistakes are each other's mirror image.
+
+| Row  | Step                                                            | Assert                                                                                                                            | Result |
+| ---- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| 8.2a | Buyer messages on a **non-Full** order, then reply from `/chat` | no red banner; the reply is visible in the BUYER's ML inbox. `conversation_status.path` carries **no** `/conversations/` segment  |        |
+| 8.2b | Same on a **Full** order (the flow ML migrated first)           | same, with `path` carrying `/conversations/`. Confirms the agent half still works — the fix must not trade one flow for the other |        |
+| 8.2c | Reply again after ML has blocked the thread                     | 409 with ML's own reason, no bubble written                                                                                       |        |
 
 ### 8.1 — Moderation reasons reach the link doc (#1087)
 
