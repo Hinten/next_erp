@@ -908,6 +908,14 @@ export async function seedMensagem(
  * any other value makes the composer render a read-only notice and the
  * "entra na conversa e responde" spec fails on a missing input.
  */
+/**
+ * How far in the past a seeded conversa's `prazo_resposta` sits. Only has to
+ * beat every other pendente conversa staging accumulates; a year is far past
+ * any real deadline and past the 3h fixture age gate, so no leftover fixture
+ * from a concurrent lane can sort ahead of it either.
+ */
+const PRAZO_BACKDATE_MS = 365 * 24 * 60 * 60 * 1000;
+
 export async function seedConversas(prefix: string): Promise<SeededChat> {
   const now = Date.now();
   const vermelhaId = `${prefix}-conv-vermelha`;
@@ -931,7 +939,16 @@ export async function seedConversas(prefix: string): Promise<SeededChat> {
       data_cadastro: now,
       ultima_modificacao: now + order,
       ultimaModificacaoIntegracao: now + order,
-      prazo_resposta: now + order,
+      // ⚠️ BACKDATED, and deliberately the opposite direction to the two fields
+      // above. `ultima_modificacao` is future-dated because the Todas and
+      // Atendimento tabs sort it DESC, so a future value lands the fixture on
+      // page 1. The Pendentes tab sorts `prazo_resposta` **ASC**
+      // (`DEFAULT_ORDEM` / `ORDER_SPEC` in lib/chat/conversaConstraints.ts), so
+      // the same future value sorted the fixture LAST — behind every other
+      // pendente conversa in staging, with `CONVERSA_PAGE_SIZE = 200` above it.
+      // A past prazo is also what the field MEANS here: an overdue deadline
+      // belongs at the top of a most-urgent-first list.
+      prazo_resposta: now - PRAZO_BACKDATE_MS + order,
       recebido_fora_atendimento: null,
       recebido_durante_atendimento: null,
       nome: id,
