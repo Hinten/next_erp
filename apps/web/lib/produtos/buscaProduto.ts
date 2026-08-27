@@ -26,14 +26,41 @@ import { getDocsByIds } from '@/lib/data/getDocsByIds';
 export const MAX_PRODUTOS_BUSCA = 30;
 
 /**
- * Fewest digits a BARE number is treated as a marketplace item id.
+ * Fewest digits any term needs before it is read as a marketplace item id.
  *
  * ML item ids run 10–13 digits, so a short number is far more likely an SKU —
  * and it still resolves, because the SKU lookups below run for every term
  * regardless. The threshold only decides whether we ALSO spend three queries
  * probing the id fields for it.
+ *
+ * ⚠️ It guards the PREFIXED branch too, not just bare numbers. Without it
+ * `MAX-3` was read as an item id on a single digit, and the cost of a wrong
+ * claim is not a wasted query — see {@link resolveProdutoIdsPorTermo}.
  */
-const MIN_DIGITOS_ID_NU = 5;
+const MIN_DIGITOS_ID = 5;
+
+/**
+ * Every Mercado Livre site code. The regex below is BUILT from this list rather
+ * than approximating it as `M` + two letters.
+ *
+ * ⚠️ The approximation is what let `MOD-12`, `MAX-3`, `MIN-4` and `MED-10`
+ * through — ordinary catalog terms, claimed as listings. Deriving the pattern
+ * from the list is also what stops the two drifting: the old rule enumerated
+ * these codes in its own prose while matching something wider.
+ */
+const ML_SITE_IDS = [
+  'MLB',
+  'MLA',
+  'MLM',
+  'MLU',
+  'MLC',
+  'MCO',
+  'MPE',
+  'MEC',
+  'MRD',
+  'MPT',
+  'MLV',
+] as const;
 
 /**
  * A marketplace item id, in either form an operator can paste.
@@ -43,17 +70,19 @@ const MIN_DIGITOS_ID_NU = 5;
  * what a copy-paste necessarily produces — legacy normalised the same two forms
  * (`.old/lib/produtos/pages/produtoTableView.dart:98-102`).
  *
- * The prefix is matched as `M` + two letters rather than any three letters:
- * every ML site code starts with `M` (MLB, MLA, MLM, MLU, MLC, MCO, MPE, MEC,
- * MRD, MPT, MLV), and requiring it keeps an SKU shaped like `AB-1234` out of
- * the id branch — where a miss means "no such listing" and would otherwise
- * suppress the name search for a perfectly ordinary term.
+ * The prefix must be a REAL {@link ML_SITE_IDS} code, and the digits must
+ * clear {@link MIN_DIGITOS_ID}. Both bounds exist because a wrong claim is not
+ * free: it used to make the term's miss final, hiding a produto whose NAME the
+ * operator was typing.
  *
- * ⚠️ Case-insensitive across the WHOLE prefix, leading `M` included. An id
- * gets pasted as often as it gets typed, and a term that differs from a
- * working one only in case is the kind of miss nobody reports as a bug.
+ * ⚠️ Case-insensitive across the whole prefix. An id gets pasted as often as it
+ * gets typed, and a term that differs from a working one only in case is the
+ * kind of miss nobody reports as a bug.
  */
-const RE_ID_COM_SITE = /^(M[A-Z]{2})-?(\d+)$/i;
+// ⚠️ `[0-9]`, not `\d`: this pattern is assembled as a STRING, and a
+// template literal swallows a lone `\d` into a bare `d` — a regex that
+// silently matches the LETTER. The character class has no escape to lose.
+const RE_ID_COM_SITE = new RegExp(`^(${ML_SITE_IDS.join('|')})-?([0-9]+)$`, 'i');
 const RE_SO_DIGITOS = /^\d+$/;
 
 /**
@@ -71,6 +100,15 @@ export interface MarketplaceIdTerm {
    * its parent item. Only a bare-number term can be one.
    */
   variationId: number | null;
+  /**
+   * Did the term arrive as a NAKED number, with no site prefix?
+   *
+   * ⚠️ Load-bearing, not descriptive. Typing `MLB1234567890` says "listing", so
+   * its miss is an answer. Typing `12345` says nothing of the kind — this file
+   * itself calls that "far more likely an SKU" — so its miss must not be
+   * allowed to suppress the nome search. See {@link resolveProdutoIdsPorTermo}.
+   */
+  bareNumber: boolean;
 }
 
 /**
@@ -84,13 +122,18 @@ export function parseMarketplaceIdTerm(term: string): MarketplaceIdTerm | null {
   if (trimmed === '') return null;
 
   const comSite = RE_ID_COM_SITE.exec(trimmed);
-  if (comSite) {
-    return { candidates: [`${comSite[1]!.toUpperCase()}${comSite[2]!}`], variationId: null };
+  if (comSite && comSite[2]!.length >= MIN_DIGITOS_ID) {
+    return {
+      candidates: [`${comSite[1]!.toUpperCase()}${comSite[2]!}`],
+      variationId: null,
+      bareNumber: false,
+    };
   }
 
-  if (RE_SO_DIGITOS.test(trimmed) && trimmed.length >= MIN_DIGITOS_ID_NU) {
+  if (RE_SO_DIGITOS.test(trimmed) && trimmed.length >= MIN_DIGITOS_ID) {
     const asNumber = Number(trimmed);
     return {
+      bareNumber: true,
       candidates: SITES_PARA_NUMERO.map((site) => `${site}${trimmed}`),
       // ⚠️ Guard the precision boundary rather than trusting `Number`: past
       // 2^53 the parse rounds SILENTLY, and the rounded value would query a
@@ -133,9 +176,16 @@ function limitarIds(
  *   probes are pointless for anything else.
  *
  * Return contract (see `search.resolveIds` in `@delfrance/ui`):
- * `null` → not ours, fall through to the nome search. `{ ids: [] }` → it WAS an
- * id term and nothing matched, so show an empty list rather than the nome
- * search's separate miss for a term nobody meant as a name.
+ * `null` → not ours, fall through to the nome search. `{ ids: [] }` → it WAS a
+ * SITE-PREFIXED id and nothing matched, so show an empty list rather than the
+ * nome search's separate miss for a term nobody meant as a name.
+ *
+ * ⚠️ A BARE-NUMBER miss returns `null`, not `{ ids: [] }`, and the asymmetry is
+ * deliberate. `MLB1234567890` is the operator saying "listing", so its miss is
+ * an answer. `12345` says nothing of the kind — this file calls it "far more
+ * likely an SKU" — and a produto named `10000 Lumens …` must stay reachable by
+ * typing its name. Costs nothing when the term really was an id: the nome
+ * prefix search then matches nothing either.
  */
 export async function resolveProdutoIdsPorTermo(
   db: Firestore,
@@ -248,8 +298,9 @@ export async function resolveProdutoIdsPorTermo(
   }
 
   const { ids, truncated } = limitarIds(encontrados, cap);
-  // Nothing matched AND the term was never an id: hand it back so the nome
-  // search gets its turn. An id term that missed stays ours — see the jsdoc.
-  if (ids.length === 0 && !idTerm) return null;
+  // Nothing matched, and the term was either never an id or only a naked
+  // number: hand it back so the nome search gets its turn. Only a
+  // SITE-PREFIXED miss stays ours — see the jsdoc.
+  if (ids.length === 0 && (!idTerm || idTerm.bareNumber)) return null;
   return { ids, truncated };
 }

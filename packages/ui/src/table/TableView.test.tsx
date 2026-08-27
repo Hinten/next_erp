@@ -20,6 +20,7 @@ const {
   whereOpSpy,
   whereArrayContainsSpy,
   buildQuerySpy,
+  monitorRef,
 } = vi.hoisted(() => ({
   snapState: {
     current: {
@@ -43,6 +44,14 @@ const {
   // Spied so a test can assert the classic fallback built NO query at all —
   // the difference between "renders nothing" and "renders the whole table".
   buildQuerySpy: vi.fn(() => ({ __fakeQuery: true })),
+  // The update-monitor drives the only refresh affordance /produtos has
+  // left in its header. Stubbed so a test can raise `stale` and click it;
+  // `stale: false` is what the real hook reports for every other case.
+  monitorRef: { current: { stale: false, acknowledge: vi.fn() } },
+}));
+
+vi.mock('./useCollectionMonitor', () => ({
+  useCollectionMonitor: () => monitorRef.current,
 }));
 
 vi.mock('next/navigation', () => ({
@@ -129,6 +138,7 @@ describe('TableView', () => {
     // so one case's query string doesn't bleed into the next.
     window.history.replaceState(null, '', '/clientes');
     pipelineSupportedRef.current = true;
+    monitorRef.current = { stale: false, acknowledge: vi.fn() };
   });
 
   it('renders one header per non-unknown field by default', () => {
@@ -1491,6 +1501,20 @@ describe('TableView', () => {
       it('surfaces a resolver failure instead of rendering an empty list', async () => {
         renderWithResolver(() => Promise.reject(new Error('boom')));
         await vi.waitFor(() => expect(screen.getByText('boom')).toBeTruthy());
+      });
+
+      it('re-resolves the term when the update-monitor refreshes', async () => {
+        // ⚠️ Without `refreshKey` threaded into the hook, "Atualizar" re-runs
+        // the row query against the id list resolved MINUTES ago — fresh rows
+        // read from a stale set, which is the exact state that banner exists to
+        // get the operator out of.
+        monitorRef.current = { stale: true, acknowledge: vi.fn() };
+        const resolveIds = vi.fn(() => Promise.resolve({ ids: ['a'] }));
+        renderWithResolver(resolveIds);
+        await vi.waitFor(() => expect(resolveIds).toHaveBeenCalledTimes(1));
+
+        fireEvent.click(screen.getByRole('button', { name: 'Página desatualizada — atualizar' }));
+        await vi.waitFor(() => expect(resolveIds).toHaveBeenCalledTimes(2));
       });
 
       it('builds NO classic query while an id restriction is active', async () => {

@@ -104,15 +104,45 @@ describe('parseMarketplaceIdTerm', () => {
     ['mlb-1234567890', 'MLB1234567890'],
     ['  MLB-1234567890  ', 'MLB1234567890'],
     ['MLU-999888', 'MLU999888'],
-    ['MLA123', 'MLA123'],
+    ['MLA123456789', 'MLA123456789'],
   ])('normalises %s to %s', (term, expected) => {
-    expect(parseMarketplaceIdTerm(term)).toEqual({ candidates: [expected], variationId: null });
+    expect(parseMarketplaceIdTerm(term)).toEqual({
+      candidates: [expected],
+      variationId: null,
+      bareNumber: false,
+    });
   });
+
+  it.each([
+    ['MOD-12'],
+    ['MOD12'],
+    ['MAX-3'],
+    ['MIN-4'],
+    ['MED-10'],
+    // ⚠️ The discriminating pair: long enough to clear MIN_DIGITOS_ID, so ONLY
+    // the site-code list can reject them. Without these the list is untested —
+    // the digit floor alone kills every short case above.
+    ['MOD-12345'],
+    ['MAX123456'],
+  ])('rejects %j — an ordinary catalog term, not a site code', (term) => {
+    // These are why the prefix is matched against the real ML site-code list
+    // rather than `M` + two letters. Claiming one is not a wasted query: it
+    // used to make the miss FINAL, hiding a produto whose name was being typed.
+    expect(parseMarketplaceIdTerm(term)).toBeNull();
+  });
+
+  it.each([['MLB-123'], ['MLB1234'], ['MLU-9']])(
+    'rejects %j — a real site code, but too few digits for an item id',
+    (term) => {
+      expect(parseMarketplaceIdTerm(term)).toBeNull();
+    },
+  );
 
   it('prefixes a bare number for every configured site AND keeps it as a variation id', () => {
     expect(parseMarketplaceIdTerm('123456789')).toEqual({
       candidates: ['MLB123456789', 'MLU123456789'],
       variationId: 123456789,
+      bareNumber: true,
     });
   });
 
@@ -121,6 +151,7 @@ describe('parseMarketplaceIdTerm', () => {
     expect(parseMarketplaceIdTerm(grande)).toEqual({
       candidates: [`MLB${grande}`, `MLU${grande}`],
       variationId: null,
+      bareNumber: true,
     });
   });
 
@@ -220,12 +251,20 @@ describe('resolveProdutoIdsPorTermo', () => {
     expect(res?.ids).toEqual(['anchor-3', 'pai-4']);
   });
 
-  it('reports an id term that matched nothing as HANDLED, so the nome search is skipped', async () => {
+  it('reports a SITE-PREFIXED term that matched nothing as HANDLED, skipping the nome search', async () => {
     routeDocs({});
     await expect(resolveProdutoIdsPorTermo(db, 'MLB1234567890')).resolves.toEqual({
       ids: [],
       truncated: false,
     });
+  });
+
+  it('declines a BARE-NUMBER miss, so a produto named "10000 Lumens" stays reachable', async () => {
+    // Typing `MLB1234567890` says "listing", so its miss is an answer. Typing
+    // `10000` says nothing of the kind — the module itself calls a short number
+    // "far more likely an SKU" — so its miss must not suppress the nome search.
+    routeDocs({});
+    await expect(resolveProdutoIdsPorTermo(db, '10000')).resolves.toBeNull();
   });
 
   it('dedupes across queries before capping, so one produto found twice counts once', async () => {

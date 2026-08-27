@@ -29,15 +29,22 @@ export interface SearchIdResolutionState {
   truncated: boolean;
 }
 
-/** The last settled resolution, tagged with the term it answers. */
+/** The last settled resolution, tagged with the term + generation it answers. */
 interface Settled {
   term: string;
+  generation: number;
   ids: readonly string[] | undefined;
   error: Error | null;
   truncated: boolean;
 }
 
-const NOTHING_SETTLED: Settled = { term: '', ids: undefined, error: null, truncated: false };
+const NOTHING_SETTLED: Settled = {
+  term: '',
+  generation: -1,
+  ids: undefined,
+  error: null,
+  truncated: false,
+};
 const IDLE: SearchIdResolutionState = {
   ids: undefined,
   loading: false,
@@ -70,16 +77,24 @@ const IDLE: SearchIdResolutionState = {
  * shape) as `useSubcollectionIdLookup`.
  *
  * ⚠️ Only the settled ANSWER is state; `loading` is derived from whether that
- * answer is tagged with the term being asked about. Storing it would mean
+ * answer is tagged with the question being asked. Storing it would mean
  * flipping it on synchronously inside the effect — a cascading render on every
  * keystroke past the debounce, and what `react-hooks/set-state-in-effect`
  * flags. The tag also does the staleness work for free: two resolutions can be
  * in flight at once and settle out of order, and a late answer for `MLB1`
  * landing after a fast one for `MLB12` is simply not the current term's.
+ *
+ * ⚠️ `generation` is the other half of that tag, and it is what makes the
+ * answer INVALIDATABLE. Without it a term's resolution is cached for the life
+ * of the component: the update-monitor's "Atualizar" would re-execute the row
+ * query against a **stale id set** — a fresh read of the wrong documents, which
+ * is precisely the state that banner exists to get the operator out of. Pass
+ * the same counter that re-drives the query (`refreshKey` in `TableView`).
  */
 export function useSearchIdResolution(
   resolve: SearchIdResolver | undefined,
   term: string,
+  generation = 0,
 ): SearchIdResolutionState {
   const [settled, setSettled] = useState<Settled>(NOTHING_SETTLED);
 
@@ -92,6 +107,7 @@ export function useSearchIdResolution(
         if (cancelled) return;
         setSettled({
           term,
+          generation,
           ids: res?.ids,
           error: null,
           truncated: res?.truncated === true,
@@ -103,6 +119,7 @@ export function useSearchIdResolution(
         // non-Error throw so consumers always get a `.message`.
         setSettled({
           term,
+          generation,
           ids: undefined,
           error: err instanceof Error ? err : new Error(String(err)),
           truncated: false,
@@ -115,10 +132,10 @@ export function useSearchIdResolution(
     // `resolve` is expected to be stable (module-level or memoized) exactly like
     // the rest of the `search` config, which TableView already treats as
     // identity-tracked. An inline arrow here would re-run this every render.
-  }, [resolve, term]);
+  }, [resolve, term, generation]);
 
   if (resolve === undefined || term === '') return IDLE;
-  if (settled.term !== term) {
+  if (settled.term !== term || settled.generation !== generation) {
     return { ids: undefined, loading: true, error: null, truncated: false };
   }
   return {

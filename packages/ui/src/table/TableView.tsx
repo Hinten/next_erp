@@ -522,7 +522,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // resolved to a candidate id list first — see the `search.resolveIds` prop.
   // `undefined` ids means the resolver declined (or there is none), which is
   // what falls the term through to `toFilters` below.
-  const searchResolve = useSearchIdResolution(searchConfig?.resolveIds, searchTerm);
+  // ⚠️ `refreshKey` is passed so the update-monitor's "Atualizar" invalidates
+  // the RESOLUTION too, not just the row query. Without it a refresh re-reads
+  // the documents named by a stale id list — fresh rows, wrong set.
+  const searchResolve = useSearchIdResolution(searchConfig?.resolveIds, searchTerm, refreshKey);
   const searchIdsActive = searchResolve.ids !== undefined;
   // While a resolution is in flight we do not yet know WHICH mode the term
   // belongs to, so neither mode may run: issuing the filter search first would
