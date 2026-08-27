@@ -48,6 +48,7 @@ import {
 import { IconBan, IconCheck, IconFileDownload, IconFileText } from '@tabler/icons-react';
 
 import { CopyIconButton } from '@/components/CopyIconButton';
+import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
@@ -330,7 +331,12 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
     queryKey: clienteQueryKey(path ?? ''),
     queryFn: async () => {
       if (!ref) return null;
-      const snap = await getDoc(ref);
+      // ⚠️ Read through the COLLECTION HANDLE, matching how `rowReadPrefetch`
+      // batch-reads the same documents. Both paths must produce the same value:
+      // a converter-parsed document and a raw `snap.data()` differ wherever the
+      // schema has a `.default()`, and seeding one into a key the other reads is
+      // how #1303 broke `pedidos-etiqueta-ml` on the int_frete side.
+      const snap = await getDoc(clienteCollection.docRef(db, {}, ref.id));
       return (snap.data() as ClienteDoc | undefined) ?? null;
     },
     // Wait for the page-level batch to seed this key, then read whatever it
@@ -402,7 +408,6 @@ export function ExpedicaoCell({ pedido }: { pedido: Pedido }) {
 
 export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: string }) {
   const db = getFirebaseFirestore();
-  const rowReads = usePedidoRowReads();
   const frete = pedido.freteInicial;
   const estado = frete?.estado;
 
@@ -427,8 +432,9 @@ export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: stri
     frete?.printLabelId != null || frete?.externalOptionId != null || canFetchLabel;
   const { data: intTipo } = useQuery<IntegracaoFrete | null>({
     queryKey: intFreteTipoQueryKey(intRef?.path ?? ''),
-    // Same batch gate as ClienteCell above — delayed at worst, never withheld.
-    enabled: intRef != null && !knownEtiquetaAction && rowReads === 'settled',
+    // NOT batch-gated: `int_frete` is deliberately left out of the page-level
+    // prefetch (see `intFreteTipoQueryKey`), so there is nothing to wait for.
+    enabled: intRef != null && !knownEtiquetaAction,
     staleTime: 5 * 60 * 1000,
     queryFn: async () => {
       const snap = await getDoc(intRef!);

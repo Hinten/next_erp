@@ -36,12 +36,11 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { FirebaseError } from 'firebase/app';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { SnapshotRow } from '@delfrance/data/hooks';
-import type { IntegracaoFrete, Pedido } from '@delfrance/schemas';
+import type { Pedido } from '@delfrance/schemas';
 
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getDocsByIds } from '@/lib/data/getDocsByIds';
-import { intFreteCollection } from '@/lib/data/intFreteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
 /**
@@ -71,7 +70,26 @@ export function clienteQueryKey(path: string): readonly unknown[] {
   return ['cliente', path];
 }
 
-/** The TanStack key `FreteCell` / `EtiquetaRowAction` read the tipo under. */
+/**
+ * The TanStack key `FreteCell` / `EtiquetaRowAction` read the tipo under.
+ *
+ * ⛔ **NOT batched, deliberately.** Seeding this key is how PR #1303 broke
+ * `pedidos-etiqueta-ml`, and the reason is worth keeping: `getDocsByIds` reads
+ * through the collection handle's CONVERTER, so Zod applies
+ * `tipo: integracoesFreteSchema.default('outros')` — while both consumers'
+ * `queryFn` read RAW `snap.data()`. A doc whose stored `tipo` did not parse came
+ * back as `'outros'`, `freightCapsFor('outros').labelMode` is `'generic'`, and
+ * the cell rendered the generic-label branch instead of the Mercado Livre
+ * fetch-label one. The ZPL2 button simply did not exist.
+ *
+ * ⚠️ Matching the seeded value's SHAPE is not enough — it must match its
+ * PROVENANCE. A converter-parsed document and a raw `snap.data()` are different
+ * values wherever the schema has a `.default()`, a coercion or a transform.
+ *
+ * It also bought almost nothing: a page references at most a handful of DISTINCT
+ * `int_frete` docs (there are only a few freight integrations), and TanStack
+ * already dedupes them by key — so this was ~3 reads, not ~N.
+ */
 export function intFreteTipoQueryKey(path: string): readonly unknown[] {
   return ['intFreteTipo', path];
 }
@@ -94,22 +112,16 @@ interface Target {
 export function collectRowReadTargets(
   rows: ReadonlyArray<SnapshotRow<Pedido>>,
   toRefPath: (ref: unknown) => string | null,
-): { readonly clientes: Target[]; readonly intFretes: Target[] } {
+): { readonly clientes: Target[] } {
   const clientes = new Map<string, Target>();
-  const intFretes = new Map<string, Target>();
   for (const row of rows) {
     const clientePath = toRefPath(row.data.clientePedidoOuterRef);
     if (clientePath) {
       const id = idFromPath(clientePath);
       if (id) clientes.set(clientePath, { path: clientePath, id });
     }
-    const fretePath = toRefPath(row.data.freteInicial?.integracaoFreteOuterRef);
-    if (fretePath) {
-      const id = idFromPath(fretePath);
-      if (id) intFretes.set(fretePath, { path: fretePath, id });
-    }
   }
-  return { clientes: [...clientes.values()], intFretes: [...intFretes.values()] };
+  return { clientes: [...clientes.values()] };
 }
 
 /**
@@ -123,16 +135,10 @@ export function seedRowReads(
   queryClient: QueryClient,
   clientes: ReadonlyArray<Target>,
   clienteDocs: ReadonlyMap<string, unknown>,
-  intFretes: ReadonlyArray<Target>,
-  intFreteDocs: ReadonlyMap<string, { tipo?: IntegracaoFrete | null }>,
 ): void {
   for (const t of clientes) {
     const doc = clienteDocs.get(t.id);
     if (doc !== undefined) queryClient.setQueryData(clienteQueryKey(t.path), doc);
-  }
-  for (const t of intFretes) {
-    const doc = intFreteDocs.get(t.id);
-    if (doc !== undefined) queryClient.setQueryData(intFreteTipoQueryKey(t.path), doc.tipo ?? null);
   }
 }
 
@@ -159,36 +165,25 @@ export function usePedidoRowReadPrefetch(): RowReadPrefetch {
   const onRows = useCallback(
     (rows: SnapshotRow<Pedido>[]) => {
       const runId = (runIdRef.current += 1);
-      const { clientes, intFretes } = collectRowReadTargets(rows, (ref) => {
+      const { clientes } = collectRowReadTargets(rows, (ref) => {
         const deref = dereferenceOuterRef(db, ref);
         return deref?.path ?? null;
       });
-      if (clientes.length === 0 && intFretes.length === 0) {
+      if (clientes.length === 0) {
         setStatus('settled');
         return;
       }
       void (async () => {
         try {
-          const [clienteDocs, intFreteDocs] = await Promise.all([
-            clientes.length
-              ? getDocsByIds(
-                  db,
-                  clienteCollection,
-                  clientes.map((c) => c.id),
-                )
-              : Promise.resolve(new Map()),
-            intFretes.length
-              ? getDocsByIds(
-                  db,
-                  intFreteCollection,
-                  intFretes.map((f) => f.id),
-                )
-              : Promise.resolve(new Map()),
-          ]);
+          const clienteDocs = await getDocsByIds(
+            db,
+            clienteCollection,
+            clientes.map((c) => c.id),
+          );
           // A newer page superseded this batch — its seeds are for rows nobody
           // is looking at, and its `settled` would race the newer run's.
           if (runId !== runIdRef.current) return;
-          seedRowReads(queryClient, clientes, clienteDocs, intFretes, intFreteDocs);
+          seedRowReads(queryClient, clientes, clienteDocs);
         } catch (err) {
           // A prefetch is pure optimisation: every cell reads for itself in the
           // `finally` below, so a Firestore failure here costs a fallback read

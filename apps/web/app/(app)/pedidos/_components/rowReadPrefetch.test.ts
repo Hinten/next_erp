@@ -10,7 +10,6 @@ import {
   PREFETCH_MAX_WAIT_MS,
   clienteQueryKey,
   collectRowReadTargets,
-  intFreteTipoQueryKey,
   seedRowReads,
   usePedidoRowReadPrefetch,
 } from './rowReadPrefetch';
@@ -71,44 +70,35 @@ describe('collectRowReadTargets', () => {
       row('p2', 'clientes/a', 'int_frete/x'),
       row('p3', 'clientes/b', 'int_frete/x'),
     ];
-    const { clientes, intFretes } = collectRowReadTargets(rows, toPath);
+    const { clientes } = collectRowReadTargets(rows, toPath);
 
     expect(clientes.map((c) => c.id)).toEqual(['a', 'b']);
-    expect(intFretes.map((f) => f.id)).toEqual(['x']);
   });
 
   it('skips rows with no ref instead of emitting empty ids', () => {
-    const { clientes, intFretes } = collectRowReadTargets(
+    const { clientes } = collectRowReadTargets(
       [row('p1', null, null), row('p2', 'clientes/a', null)],
       toPath,
     );
 
     expect(clientes.map((c) => c.id)).toEqual(['a']);
-    expect(intFretes).toEqual([]);
   });
 });
 
 describe('seedRowReads', () => {
-  it('seeds each cell key with the shape that cell’s own queryFn returns', () => {
-    // ⚠️ ClienteCell stores the cliente DOCUMENT; FreteCell stores only `tipo`.
-    // Seeding the wrong shape renders a differently-shaped object.
+  it('seeds the cliente key with what that cell’s own queryFn returns', () => {
+    // ⚠️ The seeded value must match what ClienteCell's own `queryFn`
+    // returns — same shape AND same provenance (both read through the handle).
     const qc = makeClient();
     const cliente = { nome: 'Fulano', cpf_cnpj: '1' };
-    seedRowReads(
-      qc,
-      [{ path: 'clientes/a', id: 'a' }],
-      new Map([['a', cliente]]),
-      [{ path: 'int_frete/x', id: 'x' }],
-      new Map([['x', { tipo: 'melhorEnvios' as never }]]),
-    );
+    seedRowReads(qc, [{ path: 'clientes/a', id: 'a' }], new Map([['a', cliente]]));
 
     expect(qc.getQueryData(clienteQueryKey('clientes/a'))).toEqual(cliente);
-    expect(qc.getQueryData(intFreteTipoQueryKey('int_frete/x'))).toBe('melhorEnvios');
   });
 
   it('leaves a missed id unseeded so that cell falls back to its own read', () => {
     const qc = makeClient();
-    seedRowReads(qc, [{ path: 'clientes/a', id: 'a' }], new Map(), [], new Map());
+    seedRowReads(qc, [{ path: 'clientes/a', id: 'a' }], new Map());
 
     expect(qc.getQueryData(clienteQueryKey('clientes/a'))).toBeUndefined();
   });
@@ -177,13 +167,11 @@ describe('usePedidoRowReadPrefetch', () => {
       await vi.runAllTimersAsync();
     });
 
-    // One call per collection — chunking at the 30-id `in` cap happens inside
-    // `getDocsByIds`, not here.
-    expect(getDocsByIdsMock).toHaveBeenCalledTimes(2);
+    // ONE call — chunking at the 30-id `in` cap happens inside `getDocsByIds`,
+    // not here. `int_frete` is deliberately not batched (see the hook).
+    expect(getDocsByIdsMock).toHaveBeenCalledTimes(1);
     const clienteIds = getDocsByIdsMock.mock.calls[0]?.[2] as string[];
     expect(clienteIds).toHaveLength(40);
-    const freteIds = getDocsByIdsMock.mock.calls[1]?.[2] as string[];
-    expect(freteIds).toHaveLength(3);
     expect(result.current.status).toBe('settled');
   });
 
