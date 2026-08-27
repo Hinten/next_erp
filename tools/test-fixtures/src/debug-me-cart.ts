@@ -297,24 +297,31 @@ async function calculate(token: string, base: Record<string, unknown>): Promise<
     console.log(`[calculate] HTTP ${res.status}: ${text.slice(0, 300)}`);
     return [];
   }
-  // A hand-run debug script whose whole job is printing what arrived, so it
-  // widens rather than asserting — the shape below is a reading aid, not a
-  // claim about Melhor Envio's response.
-  const parsed = JSON.parse(text) as unknown as Array<{
-    id: number;
-    name: string;
-    price?: string | null;
-    error?: string | null;
-    company?: { id?: number; name?: string };
-  }>;
-  return parsed.map((s) => ({
-    id: s.id,
-    name: s.name,
-    companyId: s.company?.id ?? null,
-    company: s.company?.name ?? '?',
-    price: s.price ?? null,
-    error: s.error ?? null,
-  }));
+  // ⚠️ Widened and then actually NARROWED. This said `as unknown as Array<…>`
+  // with a comment claiming it widened — it did not: the double cast yields
+  // `Array<…>`, exactly what the single cast it replaced yielded, and
+  // `parsed.map` a line later proved it. A debug script whose job is printing
+  // what arrived is the last place that should assert a shape.
+  const parsed = JSON.parse(text) as unknown;
+  if (!Array.isArray(parsed)) {
+    console.log(`[calculate] resposta não é uma lista: ${text.slice(0, 300)}`);
+    return [];
+  }
+  return parsed.map((raw: unknown) => {
+    const s = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    const co = (s.company !== null && typeof s.company === 'object' ? s.company : {}) as Record<
+      string,
+      unknown
+    >;
+    return {
+      id: typeof s.id === 'number' ? s.id : -1,
+      name: typeof s.name === 'string' ? s.name : '?',
+      companyId: typeof co.id === 'number' ? co.id : null,
+      company: typeof co.name === 'string' ? co.name : '?',
+      price: typeof s.price === 'string' ? s.price : null,
+      error: typeof s.error === 'string' ? s.error : null,
+    };
+  });
 }
 
 interface MeAgency {

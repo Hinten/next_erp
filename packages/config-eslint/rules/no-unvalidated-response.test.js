@@ -184,6 +184,32 @@ ruleTester.run('no-unvalidated-response', rule, {
       errors: [{ messageId: 'castToTypeParam', data: { typeName: 'T' } }],
     },
     {
+      name: '⭐ `as unknown as <concrete type>` is a BYPASS, not the escape hatch',
+      // The hole this closes. `unwrap()` stripped `await` and `!` but not a
+      // nested cast, so shape 1 saw the inner `TSAsExpression` instead of the
+      // `JSON.parse`, and shape 2 only fires on a type PARAMETER — `Array` is
+      // not one. The double cast produces `Array<…>`, exactly what a single cast
+      // produces, so it asserted just as hard while reading like restraint.
+      code: `
+        async function quote(url) {
+          const res = await fetch(url);
+          const text = await res.text();
+          return JSON.parse(text) as unknown as Array<{ id: number; name: string }>;
+        }`,
+      filename: '/repo/tools/test-fixtures/src/debug-me-cart.ts',
+      errors: [{ messageId: 'castOnBody' }],
+    },
+    {
+      name: 'the same bypass on `.json()`',
+      code: `
+        async function conta(path) {
+          const res = await fetch(path);
+          return (await res.json()) as unknown as Conta;
+        }`,
+      filename: IN,
+      errors: [{ messageId: 'castOnBody', data: { typeName: 'Conta' } }],
+    },
+    {
       name: '⚠️ `as unknown as T` is NOT an escape inside a fetch helper',
       // The double cast is honest about widening, but the OUTER assertion still
       // claims a caller-chosen shape for a body nothing checked. The fix is a

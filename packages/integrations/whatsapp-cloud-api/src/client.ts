@@ -41,6 +41,18 @@ function snippet(body: string): string {
  * caller's perspective (bad request / auth / permanent Graph error): the #529
  * outbound disposition maps it to `estadoEnvio = erro`.
  */
+export class WhatsAppHttpError extends Error {
+  readonly status: number;
+  readonly body: string;
+  constructor(operation: string, status: number, body: string) {
+    const trimmed = snippet(body);
+    super(`WhatsApp ${operation} failed (${status}): ${trimmed}`);
+    this.name = 'WhatsAppHttpError';
+    this.status = status;
+    this.body = trimmed;
+  }
+}
+
 /**
  * `messages[0].id` out of a Cloud API send response, or null.
  *
@@ -63,18 +75,6 @@ function primeiroMessageId(json: unknown): string | null {
   if (first === null || typeof first !== 'object') return null;
   const id: unknown = (first as { id?: unknown }).id;
   return typeof id === 'string' && id !== '' ? id : null;
-}
-
-export class WhatsAppHttpError extends Error {
-  readonly status: number;
-  readonly body: string;
-  constructor(operation: string, status: number, body: string) {
-    const trimmed = snippet(body);
-    super(`WhatsApp ${operation} failed (${status}): ${trimmed}`);
-    this.name = 'WhatsAppHttpError';
-    this.status = status;
-    this.body = trimmed;
-  }
 }
 
 /**

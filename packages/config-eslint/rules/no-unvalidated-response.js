@@ -60,9 +60,16 @@
 // `JSON.parse(text) as unknown` is ALLOWED and is the repo's own good pattern
 // (`packages/ai/src/admin/provider.ts`): it widens instead of asserting, so the
 // caller is forced to narrow. Say it once, honestly, rather than claiming a
-// shape nothing checked. Shape 2 has no escape on purpose — a caller-chosen
-// type parameter in a fetch helper is exactly the thing being removed, and the
-// fix is to take a schema.
+// shape nothing checked.
+//
+// ⚠️ `as unknown as Foo` is NOT the escape — it is flagged, and `unwrap()` sees
+// through it on purpose. The double cast yields `Foo`, exactly what a single
+// cast yields: nothing is widened, nothing is narrowed, and the only thing it
+// adds is the appearance of care. Narrowing means `typeof`/`Array.isArray`
+// checks or a schema, not a second `as`.
+//
+// Shape 2 has no escape at all — a caller-chosen type parameter in a fetch
+// helper is exactly the thing being removed, and the fix is to take a schema.
 //
 // ## What it CANNOT catch — do not mistake a green run for coverage
 //
@@ -145,11 +152,29 @@ function isResponseBodyRead(node) {
   return true;
 }
 
-/** Strip `await` and `!` so `(await res.json()) as X` is seen. */
+/**
+ * Strip `await`, `!` and NESTED CASTS so `(await res.json()) as X` and
+ * `JSON.parse(t) as unknown as X` both reach the body read underneath.
+ *
+ * ⚠️ The nested-cast step is the important one and it was missing. Without it
+ * `JSON.parse(text) as unknown as Foo` was invisible to shape 1 (the operand it
+ * saw was the inner `TSAsExpression`, not the `JSON.parse`) and to shape 2
+ * (which only fires when the OUTER type is a type parameter — `Foo` is not).
+ * So the double cast was a BYPASS of this rule while reading like its escape
+ * hatch, and it produces `Foo`, not `unknown`: nothing is widened and nothing is
+ * narrowed. `as unknown` on its own is the escape; a second cast on top of it
+ * is the assertion this rule exists to remove.
+ */
 function unwrap(node) {
   let cur = node;
-  while (cur && (cur.type === 'AwaitExpression' || cur.type === 'TSNonNullExpression')) {
-    cur = cur.type === 'AwaitExpression' ? cur.argument : cur.expression;
+  while (
+    cur &&
+    (cur.type === 'AwaitExpression' ||
+      cur.type === 'TSNonNullExpression' ||
+      cur.type === 'TSAsExpression')
+  ) {
+    if (cur.type === 'AwaitExpression') cur = cur.argument;
+    else cur = cur.expression;
   }
   return cur;
 }
