@@ -70,6 +70,26 @@ describe('classificarIncidenteBloqueante', () => {
     }
   });
 
+  it("⚠️ the ERP's OWN devolução/troca incidentes never block — the exact pair `registrarIncidentesDeRetorno` writes", () => {
+    // The concrete regression the origem filter prevents, spelled out with the
+    // real constants `packages/data/src/pedido/devolucao.ts` uses (`:441` and
+    // `:598`). Every ERP-native devolução and troca stamps a `returns`/`t`
+    // incidente on its ORIGIN pedido, and those rows carry NO `claimStatus` and
+    // NO `resolucao` — so under the `resolucao == null` fallback they read as
+    // permanently open. Without this filter the entire devolução feature would
+    // block `finalizado` on every pedido it ever touched, for ever.
+    const paresDoErp = [
+      { origem: ORIGEM_INCIDENTE.devolucao, tipo: TIPO_INCIDENTE.devolucao },
+      { origem: ORIGEM_INCIDENTE.troca, tipo: TIPO_INCIDENTE.troca },
+    ];
+    for (const par of paresDoErp) {
+      expect(
+        classificarIncidenteBloqueante(inc({ ...par, claimStatus: null, resolucao: null })),
+        `${par.origem}/${par.tipo} must not block`,
+      ).toBeNull();
+    }
+  });
+
   it('non-blocking tipos stay non-blocking even from the marketplace', () => {
     // A late delivery is a reason to ship FASTER, not to refuse shipping; `o`
     // is the passthrough-subtipo carrier the estoque sync writes drift rows
