@@ -117,10 +117,23 @@ export function buildGeneratorInput(
   if (!allSemPagamento) {
     const somaVPag = roundReais(payments.reduce((sum, pay) => sum + pay.vPag, 0));
     if (somaVPag !== totals.vNF) {
+      // ⚠️ Name the frete-emitente override when it is the likely cause (#1322).
+      // The shortfall is EXACTLY the freight whenever the issuer contracts the
+      // carrier and there is more than one pagamento: the adjustment that would
+      // have absorbed it is gated on `pagamentos.length === 1` (Flutter parity,
+      // `pedido_nfe_base.dart:1790-1821`). Without this sentence an operator
+      // reads "fix the pagamentos" while looking at two pagamentos that are
+      // both correct, with no route to the real explanation.
+      const freteEmitente =
+        bundle.frete?.modalidade === MODALIDADE_FRETE.cif && (bundle.frete.valorCobrado ?? 0) > 0;
+      const pista =
+        freteEmitente && bundle.pagamentos.length > 1
+          ? ` O frete é por conta do emitente (R$ ${(bundle.frete?.valorCobrado ?? 0).toFixed(2)}) e o pedido tem ${bundle.pagamentos.length} pagamentos — o ajuste que soma o frete ao pagamento só se aplica quando há UM único pagamento.`
+          : '';
       throw new NFeOrchestratorError(
         `pedido '${bundle.pedidoId}': payments total (R$ ${somaVPag.toFixed(2)}) differs ` +
           `from the NF-e total (R$ ${totals.vNF.toFixed(2)}) — SEFAZ would reject with cStat ` +
-          `${somaVPag < totals.vNF ? '865' : '866'}. Fix the pedido's pagamentos before emitting.`,
+          `${somaVPag < totals.vNF ? '865' : '866'}. Fix the pedido's pagamentos before emitting.${pista}`,
       );
     }
   }
