@@ -240,13 +240,23 @@ export function evaluatePreSave(input: EvaluatePreSaveInput): PreSaveResult {
   // gate is silent, which is exactly how an operator ends up shipping goods
   // that are about to be refunded.
   //
-  // ⚠️ A `block`, never a `confirm`, and the release is NOT here. The other two
-  // guards (NF-e emission, advancing to `finalizado`) are server-side and have
-  // no dialog to show, so a confirm loop local to this screen would make the
-  // dispatch block the one an operator can wave away and the other two
-  // immovable. The single release is the audited, permission-gated override
-  // recorded on the incidente itself — this gate just reads its result and
-  // says where to go.
+  // ⚠️ A `block`, never a `confirm`, and the release is NOT here. One release —
+  // the audited, permission-gated override recorded on the incidente — serves
+  // all three guards; a confirm loop local to this screen would make DISPATCH,
+  // the irreversible one, the only block an operator can wave away without
+  // leaving a record.
+  //
+  // ⚠️ The three guards are NOT equally enforced, and the comment here used to
+  // imply otherwise. NF-e emission is server-side (`prepareEmission`, Admin
+  // SDK). This one is client-side but its state is server-owned, so a forged
+  // clear is not reachable from the browser. `finalizado` is **advisory only**:
+  // it is a disabled `<Select>` option in `EstadoHistoricoTab`, `estado` is not
+  // in `pedidoMeta.serverOwnedFields`, and no rule or callable enforces it — a
+  // write from any other surface still lands `finalizado` on a pedido with an
+  // open return. That is a deliberate scoping call rather than an oversight
+  // (a premature `finalizado` is a wrong label an operator can correct, where
+  // shipping goods that get refunded is not), but it is a real gap and the
+  // reason to state it here rather than let the asymmetry read as accidental.
   if (bloqueioDespachoAtivo(fresh)) {
     const desde = new Date(Math.round(fresh.disputaAbertaEm! / 1000)).toLocaleDateString('pt-BR');
     return makeBlock(

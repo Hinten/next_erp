@@ -256,9 +256,27 @@ export const incidenteSchema = z
      * marketplace-owned frete) never report at all.
      */
     entregue: z.boolean().nullable().default(null).describe('Reclamação sobre item entregue'),
+    /**
+     * ⚠️ `.nullable().optional()`, NOT `.nullable().default(null)` — the repo's
+     * documented shape for "server-stamped, the client never writes it", and
+     * here it is load-bearing rather than stylistic.
+     *
+     * This field is `serverOwned`, so the generated rule denies any client
+     * update whose `affectedKeys()` contains it. The Incidentes tab saves
+     * through a converter-parsed `set` (`buildIncidenteOp`), and a `.default()`
+     * would make `parse` ADD `overrideBloqueio: null` to every document stored
+     * without the key — every incidente that exists today, and every legacy row
+     * the migration imports. The added key lands in `affectedKeys()` and the
+     * write is denied, so an operator gets PERMISSION_DENIED editing any
+     * pre-existing incidente, with nothing on screen explaining why.
+     *
+     * Optional keeps the key absent, so those documents round-trip untouched;
+     * one that already carries an override writes the same value back, which
+     * `diff()` does not count as affected either.
+     */
     overrideBloqueio: overrideBloqueioSchema
       .nullable()
-      .default(null)
+      .optional()
       .describe('Liberação de bloqueio'),
   })
   .passthrough();

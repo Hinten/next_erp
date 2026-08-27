@@ -9,6 +9,7 @@ import {
   bloqueioLiberado,
   bloqueioNFeAtivo,
   classificarIncidenteBloqueante,
+  incidenteSchema,
   type IncidenteBloqueanteInput,
 } from './pedido';
 
@@ -132,6 +133,32 @@ describe('classificarIncidenteBloqueante', () => {
     expect(
       classificarIncidenteBloqueante(inc({ claimStatus: STATUS_CLAIM.fechada, resolucao: null })),
     ).toBeNull();
+  });
+});
+
+describe('overrideBloqueio is server-owned AND absent-by-default', () => {
+  it('⚠️ parse does NOT add the key to a legacy-shaped incidente', () => {
+    // The rule generated from `serverOwnedFields` denies any client update
+    // whose `affectedKeys()` contains `overrideBloqueio`, and `affectedKeys()`
+    // counts an ADDED key. The Incidentes tab saves through a converter-parsed
+    // `set`, so a `.default(null)` here would stamp the key onto every document
+    // stored without it — every incidente that exists today, and every legacy
+    // row the migration imports — and the operator would get PERMISSION_DENIED
+    // editing any of them, with nothing on screen explaining why.
+    //
+    // Mutation check: swap `.optional()` back to `.default(null)` and this
+    // fails. Nothing else in the suite does.
+    const legado = incidenteSchema.parse({ tipo: 'returns', origem: 2 });
+    expect(Object.keys(legado)).not.toContain('overrideBloqueio');
+  });
+
+  it('a stored override still round-trips untouched', () => {
+    const comOverride = incidenteSchema.parse({
+      tipo: 'mediations',
+      origem: 2,
+      overrideBloqueio: { acoes: ['despacho'] },
+    });
+    expect(comOverride.overrideBloqueio).toMatchObject({ acoes: ['despacho'] });
   });
 });
 
