@@ -11,6 +11,7 @@ import preferSchemaEnum from './rules/prefer-schema-enum.js';
 import noClientEstadoHistoryWrite from './rules/no-client-estado-history-write.js';
 import noEnvSecretsAccess from './rules/no-env-secrets-access.js';
 import noHardcodedGcpRegion from './rules/no-hardcoded-gcp-region.js';
+import noUnvalidatedResponse from './rules/no-unvalidated-response.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -133,6 +134,7 @@ const config = [
           'no-hardcoded-gcp-region': noHardcodedGcpRegion,
           'no-lossy-date-parse': noLossyDateParse,
           'no-ambient-timezone': noAmbientTimezone,
+          'no-unvalidated-response': noUnvalidatedResponse,
         },
       },
     },
@@ -308,6 +310,27 @@ const config = [
       // route still returns 200 (#1108); the bill was the first signal that this
       // repo had drifted into three regions.
       'delfrance/no-hardcoded-gcp-region': 'error',
+
+      // Never assert a type onto a value that came off the network. Six
+      // near-identical HTTP clients ended in `return parsed as T`, so on any 2xx
+      // the caller got whatever arrived wearing a type nobody verified — and the
+      // three failure modes were all SILENT: a wrong shape came back cast, an
+      // empty body came back as `null as T`, and a proxy's HTML came back as
+      // `{error: '<html>…'}`, a truthy object that sailed through `if (conta)`.
+      // That is what reported a mint as successful while it had reused two
+      // accounts and wiped a credential (#1295 -> #1302).
+      //
+      // ERROR, not a ratchet: the sweep that removed all six landed first, so
+      // there is no pre-existing population to grandfather — the condition this
+      // repo states for `error` (see the `warn` entries above).
+      //
+      // Two shapes, both syntactic: a cast directly on `JSON.parse(…)`/`.json()`,
+      // and a cast to a TYPE PARAMETER of a function that also performs HTTP.
+      // The second is scoped to HTTP functions on purpose — `snap.data() as T`
+      // on a Firestore snapshot is the identical shape and perfectly correct.
+      // `as unknown` is the sanctioned escape; the rule header explains the rest,
+      // including the three things it deliberately cannot catch.
+      'delfrance/no-unvalidated-response': 'error',
     },
   },
 ];
