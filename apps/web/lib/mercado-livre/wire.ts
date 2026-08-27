@@ -392,7 +392,7 @@ export const categoriaAtributoSchema = z.object({
   name: z.string().nullable(),
   /** `string | number | number_unit | boolean | list`, or whatever ML adds. */
   valueType: z.string().nullable(),
-  values: z.array(z.object({ id: z.string().nullable(), name: z.string().nullable() })).default([]),
+  values: z.array(z.object({ id: z.string().nullable(), name: z.string().nullable() })),
   /** Helper text (`hint`, falling back to `tooltip`). */
   hint: z.string().nullable(),
   /** ML-sourced, hence tolerant (rule 3). */
@@ -421,7 +421,7 @@ export const categoriaAtributosSchema = z.object({
   leaf: z.boolean(),
   atributos: z.array(categoriaAtributoSchema),
   /** Why an attribute was withheld, so a gap is explainable. */
-  omitidos: z.array(z.object({ id: z.string(), motivo: z.string() })).default([]),
+  omitidos: z.array(z.object({ id: z.string(), motivo: z.string() })),
 });
 export type MercadoLivreCategoriaAtributos = z.infer<typeof categoriaAtributosSchema>;
 
@@ -479,19 +479,42 @@ export const reclamacaoEstadoSchema = z.object({
   tipo: z.string().nullable(),
   reasonId: z.string().nullable(),
   tipoReclamacao: z.enum(['PNR', 'PDD']).nullable(),
-  acoesDisponiveis: z.array(z.string()).default([]),
-  prazos: z.array(prazoAcaoSchema).default([]),
-  podeResponder: z.boolean(),
-  motivoSemResposta: z.string().nullable(),
+  /**
+   * ⚠️ No `.default([])`, and this is the one where it would cost something.
+   * The doc above says this list "empties as the claim closes", so a defaulted
+   * `[]` renders "no actions available" identically to a claim ML did not
+   * answer for at all — the silent-nothing this stack exists to remove.
+   * `claimResolve.ts:207` sets it unconditionally, so there is no evidence for
+   * a default and no wire shape it would rescue.
+   */
+  acoesDisponiveis: z.array(z.string()),
+  prazos: z.array(prazoAcaoSchema),
+  /**
+   * ⚠️ These are the WIRE names, and they are not what the interface said.
+   *
+   * `claimResolve.ts:109-110` declares `podeEnviarMensagem` /
+   * `motivoSemMensagem` — renamed on the backend in `dbe53a99` and never
+   * carried across to `apps/web`, which kept `podeResponder` /
+   * `motivoSemResposta`. The cast hid it, and it is a LIVE bug on main:
+   * `ReclamacaoMlPanel` read `motivoSemResposta`, always got `undefined`, and
+   * always fell through to the generic "o Mercado Livre não oferece nenhuma
+   * ação" instead of ML's real reason.
+   *
+   * Internally the backend still calls it `podeResponder`
+   * (`claimResolve.ts:209` maps `acionabilidade.podeResponder` onto the wire
+   * name), which is exactly how the two drifted apart.
+   */
+  podeEnviarMensagem: z.boolean(),
+  motivoSemMensagem: z.string().nullable(),
   /** `null` WITH `expectativasIndisponiveis` means the read failed, not "none". */
   expectativas: z.array(expectativaReclamacaoSchema).nullable(),
   expectativasIndisponiveis: z.boolean(),
   ofertasParciais: z
     .object({
       currency_id: z.string().nullable(),
-      available_offers: z.array(ofertaParcialSchema).default([]),
-      recommendations: z.array(conselhoParcialSchema).default([]),
-      restrictions: z.array(conselhoParcialSchema).default([]),
+      available_offers: z.array(ofertaParcialSchema),
+      recommendations: z.array(conselhoParcialSchema),
+      restrictions: z.array(conselhoParcialSchema),
     })
     .nullable(),
 });
@@ -776,7 +799,7 @@ export const chartValidationErrorSchema = z.object({
   /** Offending row, or null for a chart-level problem (a rejected name, …). */
   rowIndex: wireInt().nullable(),
   /** Attribute ids the cell covers — more than one for a combined column. */
-  attributeIds: z.array(z.string()).default([]),
+  attributeIds: z.array(z.string()),
   /** The row's main-attribute value as ML echoed it, for when `rowIndex` is null. */
   rowMainValue: z.string().nullable(),
 });
@@ -785,7 +808,7 @@ export type MercadoLivreChartValidationError = z.infer<typeof chartValidationErr
 export const syncChartsResultSchema = z.object({
   /** The charts after the sync (ML ids written back where accepted). */
   tabelas: tabelasSchema,
-  validationErrors: z.array(chartValidationErrorSchema).default([]),
+  validationErrors: z.array(chartValidationErrorSchema),
   updated: z.boolean(),
 });
 export type MercadoLivreSyncChartsResult = z.infer<typeof syncChartsResultSchema>;
