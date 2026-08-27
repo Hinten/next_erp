@@ -192,6 +192,54 @@ describe('buildIncidenteFromClaim', () => {
         valor: 0,
         frete: null,
       },
+      // Structured claim state (#1322). These used to live ONLY inside the
+      // `comentarios` sentence above, where nothing can query them — so the
+      // pedido could not tell an open mediation from a closed one without a
+      // human reading prose.
+      claimStatus: 'closed',
+      claimStage: 'claim',
+      // The canonical sample IS a delivered-item claim (`fulfilled: true` in
+      // ML's own published payload) — which is exactly the case that must
+      // classify as a devolução rather than a dispatch block.
+      entregue: true,
+    });
+  });
+
+  describe('structured claim state (#1322)', () => {
+    it('carries status, stage and fulfilled through as modelled fields', () => {
+      const inc = buildIncidenteFromClaim(
+        makeClaim({ status: 'opened', stage: 'dispute', fulfilled: true }),
+        undefined,
+        NOW_US,
+      );
+      expect(inc.claimStatus).toBe('opened');
+      expect(inc.claimStage).toBe('dispute');
+      expect(inc.entregue).toBe(true);
+    });
+
+    it('an UNRECOGNISED status/stage stores null rather than failing the import', () => {
+      // A claim ML labels with a stage we do not model still has an incidente
+      // worth writing — refusing it would trade a missing field for a missing
+      // record, which is strictly worse.
+      const inc = buildIncidenteFromClaim(
+        makeClaim({ status: 'reopened_maybe', stage: 'algo_novo' }),
+        undefined,
+        NOW_US,
+      );
+      expect(inc.claimStatus).toBeNull();
+      expect(inc.claimStage).toBeNull();
+    });
+
+    it('`fulfilled` distinguishes absent from false — only an explicit boolean is kept', () => {
+      // ⚠️ `entregue` decides whether the pedido refuses DISPATCH or refuses
+      // CONSOLIDATION, so "ML did not say" must not collapse into "not
+      // delivered".
+      expect(
+        buildIncidenteFromClaim(makeClaim({ fulfilled: null }), undefined, NOW_US).entregue,
+      ).toBeNull();
+      expect(
+        buildIncidenteFromClaim(makeClaim({ fulfilled: false }), undefined, NOW_US).entregue,
+      ).toBe(false);
     });
   });
 

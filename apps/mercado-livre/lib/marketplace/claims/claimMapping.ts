@@ -57,6 +57,8 @@ import {
   toOuterRef,
   type Resolucao,
   type TipoIncidente,
+  stageClaimSchema,
+  statusClaimSchema,
   type TipoResolucao,
 } from '@delfrance/schemas';
 import { coerceToMicros, coerceToMillis } from '@delfrance/core/datetime';
@@ -267,6 +269,20 @@ export function buildIncidenteFromClaim(
     ultimaModificacao: coerceToMicros(claim.last_updated ?? claim.date_created) ?? nowUs,
     externalId: String(claim.id),
     resolucao: buildResolucao(claim.resolution),
+    // Structured claim state (#1322). These used to exist ONLY inside the
+    // `comentarios` string above, where nothing can query them — so the pedido
+    // could not tell an open mediation from a closed one without a human
+    // reading the sentence. `statusClaimSchema`/`stageClaimSchema` are the
+    // parse gate; an unrecognised value stores null rather than failing the
+    // whole import, because a claim ML labelled with a stage we do not know
+    // still has an incidente worth writing.
+    claimStatus: statusClaimSchema.safeParse(claim.status).data ?? null,
+    claimStage: stageClaimSchema.safeParse(claim.stage).data ?? null,
+    // ML's own "was it already delivered?" — the input that decides whether
+    // this blocks DISPATCH or blocks CONSOLIDATION. Deliberately not derived
+    // from our frete estado, which lags and, on a marketplace-owned frete, may
+    // never report at all.
+    entregue: typeof claim.fulfilled === 'boolean' ? claim.fulfilled : null,
   };
 }
 

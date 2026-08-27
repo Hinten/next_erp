@@ -1334,7 +1334,14 @@ export type MlClaimResolution = z.infer<typeof mlClaimResolutionSchema>;
  * `status`, `reason_id`) is a plain nullable string — the legacy Dart enums
  * (`_typeClaims`/`_StageClaims`/`_StatusClaims`) THREW on unknown values, which
  * is exactly the failure mode this schema avoids. `labels`, `coverages`,
- * `fulfilled`, `site_id`… ride through `.passthrough()` untyped.
+ * `site_id`… ride through `.passthrough()` untyped.
+ *
+ * ⚠️ `fulfilled` was in that untyped list until #1322 and is now modelled,
+ * because it stopped being display trivia: it is ML's own answer to "was the
+ * item already DELIVERED when this claim opened", which decides whether the
+ * pedido must refuse DISPATCH or refuse CONSOLIDATION. Reading it off
+ * `.passthrough()` would have made a load-bearing branch depend on an
+ * untyped key that a schema tidy-up could drop without a typecheck error.
  */
 export const mlClaimSchema = z
   .object({
@@ -1352,6 +1359,13 @@ export const mlClaimSchema = z
       .nullish()
       .transform((v) => v ?? []),
     resolution: mlClaimResolutionSchema.nullable().default(null),
+    /**
+     * Whether the claim was opened on an item that had already been DELIVERED
+     * (#1322). Nullable because ML omits it on some claim types, and "unknown"
+     * must stay distinguishable from `false` — the consumer treats only an
+     * explicit `true` as delivered.
+     */
+    fulfilled: z.boolean().nullable().default(null),
     date_created: z.string(),
     last_updated: z.string().nullable().default(null),
   })

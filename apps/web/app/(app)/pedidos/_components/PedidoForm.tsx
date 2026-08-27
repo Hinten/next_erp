@@ -42,6 +42,7 @@ import {
   PlaceholderTab,
   PrincipalTab,
 } from './tabs';
+import { BloqueioMarketplaceAlert } from './BloqueioMarketplaceAlert';
 import { PagamentosSection } from './PagamentosSection';
 import { PedidoFooter } from './PedidoFooter';
 import { regroupItens } from './regroupItens';
@@ -493,6 +494,17 @@ export function PedidoForm({
         gap: 'var(--mantine-spacing-md)',
       }}
     >
+      {/*
+        The marketplace dispute overlay (#1322), ABOVE the tabs on purpose.
+        Every other notice in this form is scoped to the tab it constrains, but
+        this one exists because the pedido looks perfectly healthy: during a
+        mediation ML keeps the order `paid`, so `estado` reads "Pago", the
+        cliente is bound, the endereço is valid and the frete is fine. An
+        operator who never opens the Incidentes tab has, until now, had nothing
+        at all telling them the money is about to be refunded.
+      */}
+      <BloqueioMarketplaceAlert bloqueio={defaultValues ?? undefined} />
+
       <div style={{ flex: '1 0 auto', minHeight: 0 }}>
         <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
           <Tabs.List>
@@ -638,7 +650,12 @@ export function PedidoForm({
           )}
 
           <Tabs.Panel value="estado" pt="md">
-            <EstadoHistoricoTab form={form} disabled={disabled} pedidoId={pedidoId} />
+            <EstadoHistoricoTab
+              form={form}
+              disabled={disabled}
+              pedidoId={pedidoId}
+              bloqueio={defaultValues ?? undefined}
+            />
           </Tabs.Panel>
 
           <Tabs.Panel value="estoque" pt="md">
