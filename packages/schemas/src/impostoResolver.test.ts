@@ -45,29 +45,26 @@ describe('impostoCategoriaSchema', () => {
     expect(out.cfop ?? null).toBeNull();
   });
 
-  it('models NVE as a string array, not a scalar (#467 wire audit)', () => {
-    const out = impostoCategoriaSchema.parse({ NVE: ['12345678'] });
-    expect(out.NVE).toEqual(['12345678']);
-  });
-
-  it('models indEscala as a boolean, not a string (#467 wire audit)', () => {
-    const out = impostoCategoriaSchema.parse({ indEscala: false });
-    expect(out.indEscala).toBe(false);
-  });
-
-  it('reads a legacy doc verbatim: UPPERCASE CFOP + array NVE + boolean indEscala', () => {
+  // NVE (wire: List<String>?) and indEscala (wire: bool?) are DELIBERATELY
+  // kept as lenient strings, not retyped to match the wire — see the class
+  // doc comment. The shared ImpostoConfigEditor renders both as plain text
+  // inputs producing `string | null`, and `categoriaImpostoCarriesInfo`
+  // (apps/web/lib/categorias/clientPort.ts) keys emptiness off
+  // `typeof v === 'string'`; retyping either broke the categoria save path
+  // (caught in review on #467's own PR).
+  it('reads a legacy doc verbatim: UPPERCASE CFOP alongside string NVE/indEscala', () => {
     const out = impostoCategoriaSchema.parse({
       impostoCategoriaOperacaoOuterRef: null,
       CFOP: '5405',
       origem: '0',
       NCM: '61091000',
-      NVE: ['12345678'],
-      indEscala: false,
+      NVE: 'some legacy value',
+      indEscala: 'S',
       configuracaoICMS: { crt: '1', csosn: '102' },
     });
     expect(out.CFOP).toBe('5405');
-    expect(out.NVE).toEqual(['12345678']);
-    expect(out.indEscala).toBe(false);
+    expect(out.NVE).toBe('some legacy value');
+    expect(out.indEscala).toBe('S');
   });
 
   // No `.passthrough()`: an unmodeled key is stripped on a lenient parse (the
