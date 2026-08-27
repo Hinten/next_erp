@@ -155,8 +155,32 @@ The per-surface notes below stay the authority on behaviour.
   derived from ML's own response so it cannot collide, written with `store.create`
   rather than `put` so a collision FAILS (`ML_USUARIO_TESTE_DUPLICADO`) instead of
   overwriting a password nothing reissues. ⚠️ Do not collapse `put` and `create`: `put`
-  overwriting is what makes a partial re-run of the PAIR safe, and `create` refusing is
-  what protects the additional one.
+  is IDEMPOTENT for the same ML account (re-writing identical content is what makes a
+  partial re-run of the PAIR safe) and `create` refuses any existing document. Neither
+  can replace a stored credential — `put` was a bare `set`, safe only by the argument
+  that `reutilizavel` had just read the role as absent, and that argument lived outside
+  the write; it now re-derives the check from its own `tx.get` (class A in the
+  transaction inventory).
+  ⚠️ **`list()` carries the DOC ID out to the wire, and that is load-bearing.** Every
+  buyer record says `role: 'comprador'` whether it sits at the pair's bare `comprador`
+  document or an additional mint's `comprador-<mlUserId>`, so the records alone cannot
+  tell "the new buyer landed beside the old one" from "it landed on top of it" from "it
+  was never created". Nothing may write `docId` back: the stored schema is
+  `.passthrough()`, so a `docId` reaching `put`/`create` is persisted silently as a
+  record field. `toRecord` is the only producer of a written record and returns a bare
+  record; the doc id is attached AFTER the write.
+  ⚠️ **`credencialRevogada` is also apps/web's CAPABILITY PROBE — never drop it, never
+  make it optional.** Before the single-role mint this route ignored its body entirely,
+  so a backend older than that answers a `{role}` POST by running the PAIR bootstrap:
+  it reuses both stored accounts, mints nothing, revokes the credential anyway and
+  returns **200**. `apps/web` calls the DEPLOYED backend even in local dev and its
+  `call<T>()` casts rather than validates, so all of that arrived as a success — the
+  list did not change, and the reveal modal showed `usuarios[0]`, which for the pair is
+  the SELLER, under a "Comprador" badge with the seller's password. `exigirMintAvulso`
+  in `apps/web/lib/mercado-livre/client.ts` now refuses any response that is not
+  exactly one freshly-minted account of the requested role, and dates the backend from
+  that field's absence. ⚠️ The check cannot move here: the half that is wrong is the
+  half not running this code.
   ⚠️ **The ten-slot cap is now refused server-side** (`ML_LIMITE_USUARIOS_TESTE`, 409,
   before any mint) against `USUARIO_TESTE_LIMITE_POR_CONTA` in `packages/schemas` —
   shared with the counter apps/web shows. ⚠️ It compares what WE stored, which is a
@@ -621,6 +645,55 @@ the User-Products shape (`family_name`, no `variations` array); items already
 published under the legacy model and not yet migrated stay editable with the
 legacy payload. Both paths are live for the whole migration, which is why
 `isUserProductModel` is per-link and flips only via the UPtin takeover.
+
+⚠️ **A User-Products produto is ALWAYS a family — parent produto + at least one
+child (#1087).** ML auto-generates a family for every user product ("a família é
+autogerada"), so a produto with no ERP variations is a family of ONE, not a
+simple item, and that is what the importer has always written. Publish used to
+write a root produto with no children instead, so the two sides disagreed for
+exactly that case and a produto did not survive delete → re-import: it came back
+with a different shape, a different `sku` and a different `link.id`. Publish now
+materialises the sole member first (`anuncios/upSoleMember.ts` decides it,
+`upSoleMemberWrite.ts` writes it) and every UP produto takes the family fan-out.
+
+⛔ The dangerous half is the ALREADY-PUBLISHED produto. Its member link must be
+seeded with the existing `link.id` BEFORE the fan-out runs, or `findVariacaoLink`
+finds nothing, `createItem` POSTs a SECOND item, and `sweepRemovedMembers` then
+confirms the original as an orphan and pauses-then-closes it — a live, selling
+listing with its sales history and ranking. `publish.test.ts` asserts
+`createItem` is never called on that path; do not delete that assertion.
+
+⚠️ `publishModeIssues` still runs against the ORIGINAL child count, above the
+materialisation. Move it below and its `childrenCount === 0` arm stops firing —
+and that arm is the one childless state publish must REFUSE rather than repair
+(a family id on the link means live ML members a new POST would orphan).
+
+⚠️ Stock moves to the child, because the sweep prices a family off its children
+and a child with no estoque row reads ZERO. Only the AVAILABLE units move: an
+open pedido's reservation is keyed on the produto its LINE names — the parent —
+so the reserved remainder stays there for the release to decrement, applied as
+`FieldValue.increment(-movido)` so an *entrada* booked in the window is not
+erased. The residual is that those units sit on the parent once the pedido ships
+and have to be moved by hand; they are visible in the Balanço rather than lost,
+and this is the only tier that neither blocks a publish nor oversells.
+
+⚠️ **The reshape is ONE atomic `WriteBatch`, and it must stay one.** Publish only
+reaches `garantirMembroUnico` while the produto has NO children, so the instant
+the child exists this code is never entered again — which makes a PARTIAL write
+permanent, not untidy: stock stranded on the parent for ever, or counted twice,
+with no later run able to finish the job. The batch removes the intermediate
+states instead of trying to recover from them. ⛔ Whoever LOSES the create race
+must still end up with a member link, because the batch that would have written
+it is the one that just failed — without that recovery the loser's fan-out POSTs
+a duplicate item and the sweep closes the original.
+
+⚠️ **The materialisation sits ABOVE every later throw site** — `assemblePublishInput`'s
+issue list, the picture uploads, every ML 4xx. So a publish the operator sees
+**fail** has still converted the produto into a family of one and moved its stock
+onto the child. That is the intended end shape and nothing is corrupted, but the
+parent's available quantity is now 0 for anything in the ERP that still names the
+parent (a manual pedido line, a future entrada), with no message saying the shape
+changed. Moving it below the cheap validations is the open follow-up.
 
 Four facts from the ML docs that the payload builder now encodes (#797) — check
 these before "fixing" what looks wrong in `publishCore.ts`:

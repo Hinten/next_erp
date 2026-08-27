@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { Firestore } from 'firebase/firestore';
-import { Alert, Anchor, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
+import { Alert, Anchor, Badge, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useFormContext, type FieldValues } from 'react-hook-form';
 import { PERM } from '@delfrance/auth';
@@ -26,12 +26,18 @@ import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection'
 import { SizeChartConflictError } from '@/lib/mercado-livre/chartConflict';
 import { sameChart } from '@/lib/mercado-livre/chartRows';
 import {
+  SIZE_CHART_MOTIVOS,
+  type SizeChartGateInput,
+  sizeChartGate,
+} from '@/lib/mercado-livre/sizeChartDisabled';
+import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
   type MercadoLivreChartValidationError,
   type MercadoLivreClient,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
+import { SizeChartActionButton } from './SizeChartActionButton';
 import { SizeChartEditorModal, type SizeGroupOption } from './SizeChartEditorModal';
 
 const MAX_CONTAS = 50;
@@ -79,7 +85,7 @@ export function MedidasMercadoLivreManager({
 }) {
   const client = useMercadoLivreClient();
   // Backend gates: read for domains/specs, write for sync.
-  const { allowed: canRead } = usePermission(PERM.integracao.read);
+  const { allowed: canRead, loading: permsLoading } = usePermission(PERM.integracao.read);
   const { allowed: canWrite } = usePermission(PERM.integracao.write);
 
   /**
@@ -339,6 +345,27 @@ export function MedidasMercadoLivreManager({
     }
   }
 
+  // ⚠️ The loading gate comes FIRST, and `permsLoading` belongs in it.
+  // `usePermission` answers `allowed: false` WHILE the claims resolve, so with
+  // the `!canRead` return ahead of this every ordinary page load flashed a
+  // permission denial at an operator who has the bit — the same false-negative
+  // `publishDisabled.ts` ranks `loading` first to avoid.
+  //
+  // It also means nothing below can be a loading artefact: by the time a button
+  // renders the claims have settled, which is why `sizeChartGate` needs no
+  // `loading` input at all.
+  //
+  // It cannot hang: `useSnapshot(null)` sets `loading: false` on its first
+  // effect, and `useTenant` resolves `loading` on every path — so a reader
+  // without the bit still reaches the message below, one render later.
+  if (permsLoading || contasSnap.loading || docSnap.loading || gruposSnap.loading) {
+    return (
+      <Group justify="center" py="md">
+        <Loader size="sm" />
+      </Group>
+    );
+  }
+
   // No integração.read → the contas query is idle (never issued). Say so
   // instead of falling through to the misleading "no account" empty state.
   if (!canRead) {
@@ -346,14 +373,6 @@ export function MedidasMercadoLivreManager({
       <Text size="sm" c="dimmed">
         Requer permissão de leitura em integrações para gerenciar as guias de tamanho.
       </Text>
-    );
-  }
-
-  if (contasSnap.loading || docSnap.loading || gruposSnap.loading) {
-    return (
-      <Group justify="center" py="md">
-        <Loader size="sm" />
-      </Group>
     );
   }
 
@@ -387,6 +406,16 @@ export function MedidasMercadoLivreManager({
 
       {contas.map((conta) => {
         const stored = mlSizeChartsForConta(chartsMap, conta.id);
+        // ⚠️ ONE place decides both whether a control is disabled and what its
+        // tooltip says, so the two can never disagree — the bug class here is a
+        // tooltip that drifts from the boolean beside it and starts explaining a
+        // state the button is not in. Everything below feeds `sizeChartGate`.
+        const gateBase: Omit<SizeChartGateInput, 'busy' | 'enviada'> = {
+          readOnly: Boolean(disabled),
+          hasClient: client != null,
+          canWrite,
+          hasGrupos: grupos.length > 0,
+        };
 
         return (
           <Card key={conta.id} withBorder padding="md" data-testid={`ml-medida-conta-${conta.id}`}>
@@ -408,6 +437,14 @@ export function MedidasMercadoLivreManager({
                 const chartSent = chart.id != null && chart.id !== '';
                 const pendingDeletion = chart.exclusaoSolicitadaEm != null;
                 const rowBusy = busyChart === `${conta.id}#${String(index)}`;
+                const rowInput: SizeChartGateInput = {
+                  ...gateBase,
+                  // One three-way value, not two booleans — `busyChart` cannot be
+                  // this row's key and null at once, and the gate's type should
+                  // not pretend it can.
+                  busy: rowBusy ? 'estaGuia' : busyChart !== null ? 'outraGuia' : 'none',
+                  enviada: chartSent,
+                };
                 return (
                   <Group
                     key={chart.id ?? `rascunho-${String(index)}`}
@@ -436,61 +473,76 @@ export function MedidasMercadoLivreManager({
                         </Badge>
                       )}
                       {pendingDeletion && (
-                        <Button
+                        <SizeChartActionButton
                           size="compact-xs"
                           variant="light"
                           loading={rowBusy}
-                          disabled={disabled || !client || !canWrite || busyChart !== null}
+                          gate={sizeChartGate('verificar', rowInput)}
                           onClick={() => void verifyDeletion(conta.id, index, chart)}
                         >
                           Verificar
-                        </Button>
+                        </SizeChartActionButton>
                       )}
-                      <Button
+                      {/* Opening the editor is a read — deliberately NOT gated on
+                          `canWrite`, which is why the gate takes the action. The
+                          modal owns the write bit for its own "Enviar". */}
+                      <SizeChartActionButton
                         size="compact-xs"
                         variant="light"
-                        disabled={disabled || !client || busyChart !== null}
+                        gate={sizeChartGate('editar', rowInput)}
                         onClick={() => {
                           openEditor({ integracaoId: conta.id, chart, chartIndex: index });
                         }}
                       >
                         Editar
-                      </Button>
-                      <Button
+                      </SizeChartActionButton>
+                      <SizeChartActionButton
                         size="compact-xs"
                         variant="subtle"
                         color="red"
                         loading={rowBusy}
-                        disabled={disabled || !client || !canWrite || busyChart !== null}
+                        gate={sizeChartGate('excluir', rowInput)}
                         onClick={() => void removeChart(conta.id, index, chart)}
                       >
                         Excluir
-                      </Button>
+                      </SizeChartActionButton>
                     </Group>
                   </Group>
                 );
               })}
 
               <Group>
-                <Button
+                {/* Belongs to no row, so the lock can only ever be held elsewhere —
+                    and this control stays ungated on it anyway: it only opens the
+                    editor, which rebuilds the conta's array from the live snapshot
+                    when it saves. `enviada` is inert here; only Verificar reads it. */}
+                <SizeChartActionButton
                   size="xs"
                   variant="light"
                   onClick={() => {
                     openEditor({ integracaoId: conta.id, chart: null, chartIndex: null });
                   }}
-                  disabled={disabled || !client || grupos.length === 0}
+                  gate={sizeChartGate('novaGuia', {
+                    ...gateBase,
+                    busy: busyChart !== null ? 'outraGuia' : 'none',
+                    enviada: false,
+                  })}
                 >
                   Nova guia
-                </Button>
+                </SizeChartActionButton>
               </Group>
+              {/* Kept ALONGSIDE the tooltips, reading the same constants so the two
+                  cannot drift: a tooltip is not reachable without a hover, and the
+                  grupos line is real guidance — it says what to go and create.
+                  `AnuncioBlock` keeps a visible copy for the same reason. */}
               {grupos.length === 0 && (
                 <Text size="xs" c="dimmed">
-                  Cadastre um grupo de variações do tipo Tamanho para criar guias.
+                  {SIZE_CHART_MOTIVOS.semGrupos}
                 </Text>
               )}
               {!canWrite && (
                 <Text size="xs" c="dimmed">
-                  Requer permissão de escrita em integrações para enviar ao Mercado Livre.
+                  {SIZE_CHART_MOTIVOS.semEscrita}
                 </Text>
               )}
             </Stack>

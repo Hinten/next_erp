@@ -76,6 +76,10 @@ const INVENTARIO = {
     'Adds the reservation BACK into `quantidade` (ML `available_quantity` is `disponivel`). Both arms floor with `reservaEfetiva`; a raw negative would shrink stock on every re-import.',
   'apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts':
     'Sweep math over RAW pipeline rows. Every availability read goes through `estoqueDisponivel`. `desfazerMovimento` may synthesize a negative on purpose — floored downstream, pinned by a test.',
+  'apps/mercado-livre/lib/marketplace/anuncios/upSoleMember.ts':
+    '#1087 sole-member plan. SPLITS the parent row when publish gives a User-Products produto its one child: the child takes `quantidade - reservaEfetiva(...)` and the parent is left holding exactly the reserve. Floored through `reservaEfetiva`, then `Math.max(0, ...)` on the difference, so a negative stored value can neither inflate what moves nor push the remainder below zero. The reserve stays put deliberately — an open pedido’s release decrements the produto its LINE names, which is the parent.',
+  'apps/mercado-livre/lib/marketplace/anuncios/upSoleMemberWrite.ts':
+    '#1087 sole-member writer. Reads `quantidadeReservada` off the stored row and hands it to the planner above UNFLOORED and untyped — the floor is that planner’s, in one place, and this file does no arithmetic on it.',
   'apps/mercado-livre/scripts/check-deposito-source.ts':
     '#802 pre-flip check. Compares `disponivel` at the conta’s depósito against the legacy hardcoded one, both through `estoqueDisponivel`, so the floor is the sweep’s own. A missing doc or a missing field reads as 0 — deliberately, since that is exactly what the sweep publishes for a family with no estoque at the depósito.',
   'apps/web/app/(app)/pedidos/_components/useEstoqueDisponivel.ts':
