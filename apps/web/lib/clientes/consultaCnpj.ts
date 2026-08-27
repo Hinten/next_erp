@@ -20,6 +20,8 @@
  * see CLAUDE.md rule 6).
  */
 
+import { z } from 'zod';
+
 import type { UF } from '@delfrance/schemas';
 
 /** Address shape aligned to `enderecoSchema` keys, ready to seed an address form. */
@@ -47,19 +49,34 @@ export interface ClienteCnpjData {
 }
 
 /** BrasilAPI CNPJ response — every field optional (defensive). */
-interface BrasilApiCnpj {
-  razao_social?: string;
-  nome_fantasia?: string;
-  descricao_tipo_de_logradouro?: string;
-  logradouro?: string;
-  numero?: string;
-  complemento?: string;
-  bairro?: string;
-  cep?: string | number;
-  municipio?: string;
-  uf?: string;
-  codigo_municipio_ibge?: string | number;
-}
+/**
+ * BrasilAPI's CNPJ answer, as much of it as this module reads.
+ *
+ * ⚠️ Every field carries `.catch(undefined)`, which makes this schema strictly
+ * MORE tolerant than the `as BrasilApiCnpj` cast it replaces: an unusable field
+ * degrades to absent and the rest of the record still fills the form, so
+ * nothing that works today can start failing. What it fixes is the other
+ * direction — `razao_social`, `uf`, `municipio` and friends are `.trim()`ed
+ * immediately below, so a numeric field was a TypeError thrown at the operator
+ * mid-form rather than a "não encontrado".
+ *
+ * ⚠️ `cep` and `codigo_municipio_ibge` really are `string | number` — that is
+ * why they were already typed as a union, and `digitsOnly` handles both.
+ */
+const brasilApiCnpjSchema = z.object({
+  razao_social: z.string().optional().catch(undefined),
+  nome_fantasia: z.string().optional().catch(undefined),
+  descricao_tipo_de_logradouro: z.string().optional().catch(undefined),
+  logradouro: z.string().optional().catch(undefined),
+  numero: z.string().optional().catch(undefined),
+  complemento: z.string().optional().catch(undefined),
+  bairro: z.string().optional().catch(undefined),
+  cep: z.union([z.string(), z.number()]).optional().catch(undefined),
+  municipio: z.string().optional().catch(undefined),
+  uf: z.string().optional().catch(undefined),
+  codigo_municipio_ibge: z.union([z.string(), z.number()]).optional().catch(undefined),
+});
+type BrasilApiCnpj = z.infer<typeof brasilApiCnpjSchema>;
 
 /** Strip a typed/pasted CNPJ down to the clean wire format (uppercase alphanumeric, max 14). */
 export function cleanCnpj(input: string): string {
@@ -109,7 +126,13 @@ export async function buscarCnpj(cnpj: string): Promise<ClienteCnpjData | null> 
   if (res.status === 404) return null;
   if (!res.ok) return null;
 
-  const data = (await res.json()) as BrasilApiCnpj;
+  const leitura = brasilApiCnpjSchema.safeParse((await res.json()) as unknown);
+  // Only a non-object body reaches here — every field degrades on its own — and
+  // a body that is not an object is a miss, which is what this lookup already
+  // returns for a CNPJ it cannot resolve.
+  if (!leitura.success) return null;
+  const data = leitura.data;
+
   const nome = (data.razao_social ?? '').trim();
   if (!nome) return null;
 

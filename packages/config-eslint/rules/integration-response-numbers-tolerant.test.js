@@ -64,6 +64,24 @@
 //    because ME types them by ENDPOINT (strings in `calculate`, numbers in the cart
 //    201), and the union spelling is skipped below. `parseMePrice` is the one place
 //    they are read.
+// 7. ⚠️ It deliberately does NOT scan the browser wire schemas added alongside
+//    it — `apps/web/lib/*/wire.ts`, `apps/web/lib/{mercado-pago,whatsapp}/client.ts`,
+//    `packages/integrations/nfe/src/http-provider/client.ts`. Extending the
+//    pathspec there looks like closing a gap and would instead break a
+//    deliberate design.
+//
+//    This guard's premise is that EVERY numeric field in a scanned file came
+//    from a provider. That holds for the three packages above, which describe
+//    provider responses and nothing else. It is false for the browser clients:
+//    those describe OUR OWN backends' answers, which mix a few forwarded
+//    provider ids (an ML user id, an MP collector id, a claim id — those DO use
+//    `wireInt()`) with counters, timestamps and echoed request fields that
+//    apps/mercado-livre and apps/nfe computed themselves. A string in one of
+//    those is our own serialisation bug, and tolerating it hides exactly what
+//    should be loud. The NF-e client is the sharpest case: SEFAZ sends its own
+//    values as STRINGS (`cStat`, `nProt`), so every number in those shapes is
+//    ours by construction. See the rule-3 block at the top of
+//    `apps/web/lib/mercado-livre/wire.ts`.
 import { describe, expect, it } from 'vitest';
 
 import { gitGrep } from './lib/repo-scan.js';

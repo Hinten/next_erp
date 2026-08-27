@@ -297,7 +297,10 @@ async function calculate(token: string, base: Record<string, unknown>): Promise<
     console.log(`[calculate] HTTP ${res.status}: ${text.slice(0, 300)}`);
     return [];
   }
-  const parsed = JSON.parse(text) as Array<{
+  // A hand-run debug script whose whole job is printing what arrived, so it
+  // widens rather than asserting — the shape below is a reading aid, not a
+  // claim about Melhor Envio's response.
+  const parsed = JSON.parse(text) as unknown as Array<{
     id: number;
     name: string;
     price?: string | null;
