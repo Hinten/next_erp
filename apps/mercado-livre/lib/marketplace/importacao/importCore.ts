@@ -249,6 +249,24 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
 
   const precosOps = buildPrecosOps(args);
 
+  /**
+   * ⚠️ `sobrescreverDadosProduto` is a STRONGER form of "update the produto", so it
+   * cannot outlive that permission being withdrawn — derived ONCE here rather than
+   * `&&`-ed at each use, because the two sites live in different blocks and the
+   * one outside the `atualizarProdutoPai` gate is exactly the one that drifted.
+   *
+   * The gap it closes: `extraData` is written OUTSIDE that gate (as `descricao`
+   * always has been), so the overwrite reached `marca` even with produto updates
+   * off — while `MassImportDialog` renders the checkbox `disabled={!atualizarProdutoPai}`,
+   * promising the opposite. Mantine keeps a DISABLED checkbox's `checked` state,
+   * so tick-then-untick still sent `sobrescreverDadosProduto: true`, and the one
+   * field the whole publish path derives from was the one it clobbered.
+   *
+   * ⚠️ The FILL-blank half stays ungated on purpose — a blank Marca is not the
+   * operator's typed work, and gating it would diverge from `descricao` for no gain.
+   */
+  const sobrescrever = options.atualizarProdutoPai && options.sobrescreverDadosProduto;
+
   // ---- produto ----------------------------------------------------------
   let produto: { data: Record<string, unknown>; full: boolean } | null = null;
   if (isCreate) {
@@ -288,7 +306,7 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
       // an instruction to erase the ERP's copy of it.
       const fill = (key: keyof MappedMlItem & string, value: unknown) => {
         const vazio = (existingProduto?.[key] ?? null) == null;
-        if ((vazio || options.sobrescreverDadosProduto) && value != null) patch[key] = value;
+        if ((vazio || sobrescrever) && value != null) patch[key] = value;
       };
       fill('sku', mapped.sku);
       fill('pesoLiquidoKg', mapped.pesoLiquidoKg);
@@ -350,7 +368,7 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
   const { marca } = marcaArmazenadaDe(mapped.attributes);
   const marcaNova = marca?.trim().slice(0, MARCA_MAX) || null;
   const marcaExistente = typeof existingExtra?.marca === 'string' ? existingExtra.marca.trim() : '';
-  if (marcaNova && (!marcaExistente || options.sobrescreverDadosProduto)) {
+  if (marcaNova && (!marcaExistente || sobrescrever)) {
     extraPatch.marca = marcaNova;
   }
   if (Object.keys(extraPatch).length > 0) extra = extraPatch;
@@ -687,9 +705,17 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     // The toggle-covered half — blanks always, filled values only under
     // `sobrescreverDadosProduto`. Kept beside `fillNull` rather than replacing it
     // because `categoriaProdutoOuterRef` below must stay fill-blank-only.
+    //
+    // ⚠️ The `&& options.atualizarProdutoPai` is redundant TODAY — every `fill`
+    // call below already sits inside that gate — and is written anyway, for the
+    // same reason `assembleImportPlan` derives it once: the overwrite must never
+    // outlive that permission, and the one site where the two drifted apart was
+    // the one that had escaped the gate. Redundant here is how it stays true if a
+    // future call moves out.
+    const sobrescrever = options.atualizarProdutoPai && options.sobrescreverDadosProduto;
     const fill = (key: string, value: unknown) => {
       const vazio = (existingProduto?.[key] ?? null) == null;
-      if ((vazio || options.sobrescreverDadosProduto) && value != null) patch[key] = value;
+      if ((vazio || sobrescrever) && value != null) patch[key] = value;
     };
     fill('sku', mappedVariation.sku);
     if ((existingProduto?.publicado ?? null) == null) patch.publicado = true;

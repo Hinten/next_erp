@@ -1274,6 +1274,38 @@ describe('assembleImportPlan — extraData.marca', () => {
     expect(extraDe(updateArgs({ existingExtra: { marca: 'Hering' } }))?.marca).toBeUndefined();
   });
 
+  // The overwrite is a STRONGER form of "update the produto", so it cannot
+  // outlive that permission being withdrawn. The mass dialog renders the
+  // checkbox `disabled={!atualizarProdutoPai}`, and Mantine keeps a disabled
+  // checkbox CHECKED — so tick-then-untick still sends the flag.
+  it('does not overwrite the Marca while atualizarProdutoPai is off', () => {
+    expect(
+      extraDe(
+        updateArgs({
+          existingExtra: { marca: 'Hering' },
+          options: {
+            ...DEFAULT_IMPORT_OPTIONS,
+            atualizarProdutoPai: false,
+            sobrescreverDadosProduto: true,
+          },
+        }),
+      )?.marca,
+    ).toBeUndefined();
+  });
+
+  // ...but the FILL half stays ungated, exactly as `descricao` already is. A
+  // blank Marca is not the operator's typed work, so there is nothing to protect.
+  it('still fills a BLANK Marca while atualizarProdutoPai is off', () => {
+    expect(
+      extraDe(
+        updateArgs({
+          existingExtra: { marca: null },
+          options: { ...DEFAULT_IMPORT_OPTIONS, atualizarProdutoPai: false },
+        }),
+      ),
+    ).toMatchObject({ marca: 'Acme' });
+  });
+
   it('overwrites it under sobrescreverDadosProduto', () => {
     expect(
       extraDe(
