@@ -24,6 +24,7 @@ import {
   type TRetEnviNFe,
 } from '@delfrance/integrations-nfe';
 import {
+  bloqueioNFeAtivo,
   CONTINGENCIA_MODO,
   emissaoNFeBloqueadaPorEstado,
   ESTADO_NFE,
@@ -136,6 +137,25 @@ export async function prepareEmission(
     throw new NFeBlockedError(
       pedidoId,
       `estado '${estado}' não permite emissão de NF-e (venda cancelada/estornada/fraude)`,
+    );
+  }
+  // An open marketplace dispute (#1322). ⚠️ A SEPARATE check from
+  // `bloquearEmissaoNFe` above, deliberately: that flag is operator-owned and
+  // client-writable, so sharing it would let a claim closing on ML silently
+  // clear a manual block an operator set for their own reasons — and the
+  // inverse, an operator clearing a mediation block by hand.
+  //
+  // ⚠️ `emissaoNFeBloqueadaPorEstado` cannot cover this case either, which is
+  // the whole point. ML keeps the order `paid` throughout a mediation, so the
+  // pedido is legitimately `pago` and that deny-list — a set of VOIDED-sale
+  // estados — correctly matches nothing. A nota emitted here is a real tax
+  // liability on a sale about to be refunded, and SEFAZ accepts a cancelamento
+  // only within 24h.
+  if (bloqueioNFeAtivo(bundle.pedido)) {
+    throw new NFeBlockedError(
+      pedidoId,
+      'o pedido tem uma reclamação/mediação aberta no marketplace — ' +
+        'resolva a reclamação ou libere a emissão na aba Incidentes do pedido',
     );
   }
   // Operações marcadas "não fiscal" (transferência interna, orçamento, …) don't

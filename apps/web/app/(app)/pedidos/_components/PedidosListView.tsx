@@ -19,6 +19,7 @@ import { useEmitirNFeAction } from '@/lib/nfe/bulkEmit';
 import {
   ClienteCell,
   CriacaoCell,
+  DisputaCell,
   ExpedicaoCell,
   FreteCell,
   ImpCell,
@@ -74,6 +75,23 @@ const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
       },
       renderFilter: ({ value, onChange }) => <NfColumnFilter value={value} onChange={onChange} />,
     },
+  },
+  {
+    // The marketplace dispute overlay (#1322). Deliberately narrow and next to
+    // NF, because this list IS the dispatch surface: an operator picks orders to
+    // ship from here, and during a mediation ML keeps the order `paid` — so the
+    // "Pagamento" column reads a healthy "Pago" and every other cell looks
+    // normal. Without this the only warning lives inside a tab nobody opens.
+    //
+    // ⚠️ Reads two scalars off the pedido doc, so it costs NO extra read and
+    // needs NO index — it rides the projection the list already fetches. A
+    // FILTER on it would need one (`pedidos(disputaAbertaEm, …)`); deliberately
+    // not offered here, so the column cannot quietly become an unindexed query.
+    key: 'disputa',
+    label: '',
+    tooltip: 'Reclamação / devolução no marketplace',
+    dependsOn: ['disputaAbertaEm', 'devolucaoAbertaEm', 'bloqueiosLiberados'],
+    renderCell: (r) => <DisputaCell pedido={r.data} />,
   },
   {
     key: 'cliente',

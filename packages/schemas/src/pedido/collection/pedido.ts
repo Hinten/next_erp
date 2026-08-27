@@ -3,6 +3,8 @@ import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../shared/datetime';
 import { freteDoPedidoSchema } from '../../shared/frete';
 import { outerRefSchema } from '../../shared/outerRef';
+// One-way edge: `incidente.ts` imports nothing from here, so this cannot cycle.
+import { acaoBloqueadaSchema } from './incidente';
 
 const PERM_PEDIDO_READ = 1n << 16n;
 const PERM_PEDIDO_WRITE = 1n << 17n;
@@ -314,6 +316,46 @@ export const pedidoSchema = z.object({
   infCpl: z.string().nullable().default(null).describe('Informações complementares'),
   /** Persisted error message from the last failed write / emission. */
   error: z.string().nullable().default(null).describe('Erro'),
+  // Marketplace dispute overlay (#1322) ------------------------------------
+  // Two denormalized markers, µs of the OLDEST still-open blocking incidente
+  // of each kind (null = none). Derived state: the source of truth is the
+  // `incidentes` subcollection, and `onIncidenteBloqueioSync` is the sole writer.
+  //
+  // ⚠️ Why a denorm at all. The dispatch decision is made on the /pedidos
+  // LIST and in the checkout transaction, neither of which can afford a
+  // subcollection read per row — and the whole failure this closes is an
+  // operator looking at a perfectly healthy `pago` order with nothing on
+  // screen to say a mediation is open. A scalar on the pedido doc rides the
+  // projection both surfaces already fetch.
+  //
+  // ⚠️ Why µs rather than a boolean: null/not-null answers the guard, and the
+  // timestamp additionally tells the banner HOW LONG the dispute has been
+  // open — free information a boolean throws away. Same unit and shape as
+  // `dataRemocaoEstoque` / `dtImpressao`.
+  //
+  // ⚠️ These are NOT interchangeable, and each blocks something different.
+  // A dispute on an undelivered order must not SHIP; a return is goods
+  // already with the buyer, so shipping is moot and what must not happen is
+  // consolidating the sale — `finalizado` asserts the return window closed,
+  // which an open return says is false by definition.
+  /** Oldest open marketplace dispute/mediation (µs), or null. */
+  disputaAbertaEm: microsSinceEpoch('Disputa aberta em').nullable().default(null),
+  /** Oldest open marketplace return/devolução (µs), or null. */
+  devolucaoAbertaEm: microsSinceEpoch('Devolução aberta em').nullable().default(null),
+  /**
+   * Which blocked actions an operator has released, unioned across the
+   * pedido's OPEN blocking incidentes.
+   *
+   * ⚠️ Derived from the incidentes, never edited here — which is what makes
+   * it self-clearing: the trigger recomputes from OPEN incidentes only, so a
+   * release evaporates with the claim that justified it and cannot silently
+   * unblock the next dispute on the same pedido.
+   */
+  bloqueiosLiberados: z
+    .array(acaoBloqueadaSchema)
+    .nullable()
+    .default(null)
+    .describe('Bloqueios liberados'),
 });
 
 export type Pedido = z.infer<typeof pedidoSchema>;
@@ -461,7 +503,20 @@ export const pedidoMeta: CollectionMetadata = {
   // control authors them, `EstoqueSyncTab` only displays them, and `duplicar`
   // strips them. The update guard keys on `diff().affectedKeys()`, so an update
   // that leaves them untouched is unaffected.
-  serverOwnedFields: ['estoqueAplicado', 'dataIndisponivelEstoque', 'dataRemocaoEstoque'],
+  // ⚠️ The two dispute markers are server-owned for the same reason
+  // `estoqueAplicado` is: they GATE things. Left client-writable, any holder of
+  // `d_pedido` write could clear a mediation flag from the client SDK and ship
+  // an order that is about to be refunded — the exact failure the overlay
+  // exists to prevent. The escape hatch is the audited per-action override on
+  // the incidente, not editing the flag.
+  serverOwnedFields: [
+    'estoqueAplicado',
+    'dataIndisponivelEstoque',
+    'dataRemocaoEstoque',
+    'disputaAbertaEm',
+    'devolucaoAbertaEm',
+    'bloqueiosLiberados',
+  ],
 };
 
 export const pedido = { schema: pedidoSchema, meta: pedidoMeta };

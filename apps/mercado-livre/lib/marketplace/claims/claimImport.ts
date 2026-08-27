@@ -344,11 +344,28 @@ export async function importClaimMercadoLivre(
     // on the wire — every new-message webhook) must not wipe an
     // operator-entered resolução, and a null `last_updated` must not regress
     // `ultimaModificacao` to the date_created fallback.
+    // ⚠️ The claim STATE must ride every update, not just the create (#1322).
+    // These three are ML's own facts — nothing else writes them — and the
+    // pedido's dispute overlay reads `claimStatus` with priority over
+    // `resolucao`. Left out of this patch (as they were on the first pass) the
+    // stored value stays `'opened'` for the life of the incidente: the claim
+    // closes on ML, the `claims_actions` delivery merges only the resolução,
+    // and despacho / NF-e / finalizar stay refused FOREVER on a settled order.
+    // `classificarIncidenteBloqueante`'s `resolucao == null` fallback cannot
+    // rescue it, because `claimStatus` is not null.
+    //
+    // Merged only when NON-NULL, matching the null-coalescing discipline the
+    // rest of this patch documents: a value we could not parse must keep the
+    // last one ML gave us rather than blanking a good reading. `status` and
+    // `stage` are a closed vocabulary, so this is the rare path, not the norm.
     const patch = {
       ...(claim.last_updated != null
         ? { ultimaModificacao: incidenteFields.ultimaModificacao }
         : {}),
       ...(incidenteFields.resolucao != null ? { resolucao: incidenteFields.resolucao } : {}),
+      ...(incidenteFields.claimStatus != null ? { claimStatus: incidenteFields.claimStatus } : {}),
+      ...(incidenteFields.claimStage != null ? { claimStage: incidenteFields.claimStage } : {}),
+      ...(incidenteFields.entregue != null ? { entregue: incidenteFields.entregue } : {}),
     };
     if (Object.keys(patch).length > 0) {
       await incidenteCollection.merge(db, { pedidoId }, incidenteId, patch);

@@ -509,6 +509,62 @@ describe('importClaimMercadoLivre — redelivery idempotency', () => {
     });
   });
 
+  it('⚠️ an UPDATE refreshes the claim STATE, or the pedido block never clears (#1322)', async () => {
+    // The update branch used to merge only {ultimaModificacao, resolucao}, so
+    // `claimStatus` stayed at whatever the CREATE wrote — `'opened'` — for the
+    // life of the incidente. `classificarIncidenteBloqueante` reads
+    // `claimStatus` with priority over `resolucao`, so despacho / NF-e /
+    // finalizar stayed refused FOREVER on a claim ML had already closed, and
+    // the `resolucao == null` fallback could not rescue it.
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    db.seed(INCIDENTES_PATH, INCIDENTE_ID, {
+      timestamp: 111,
+      ultimaModificacao: 222,
+      claimStatus: 'opened',
+      claimStage: 'claim',
+      entregue: false,
+      resolucao: null,
+    });
+    const api = makeApi({
+      getClaim: vi.fn(async () => makeClaim({ status: 'closed', stage: 'none', fulfilled: true })),
+    });
+
+    const result = await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    expect(result.skipped).toBeNull();
+    const incidente = db.docs(INCIDENTES_PATH).get(INCIDENTE_ID)!;
+    expect(incidente.claimStatus).toBe('closed');
+    expect(incidente.claimStage).toBe('none');
+    expect(incidente.entregue).toBe(true);
+  });
+
+  it('an UNPARSEABLE status keeps the last good reading rather than blanking it', async () => {
+    // Merged only when non-null, matching the null-coalescing discipline the
+    // rest of this patch documents: a stage ML invents must not erase a status
+    // we already read correctly.
+    const db = new FakeDb();
+    seedPedido(db);
+    seedOrderMl(db);
+    db.seed(INCIDENTES_PATH, INCIDENTE_ID, {
+      timestamp: 111,
+      ultimaModificacao: 222,
+      claimStatus: 'closed',
+      claimStage: 'dispute',
+      resolucao: null,
+    });
+    const api = makeApi({
+      getClaim: vi.fn(async () => makeClaim({ status: 'algo_novo', stage: 'outra_coisa' })),
+    });
+
+    await importClaimMercadoLivre(deps(db, api), CLAIM_ID);
+
+    const incidente = db.docs(INCIDENTES_PATH).get(INCIDENTE_ID)!;
+    expect(incidente.claimStatus).toBe('closed');
+    expect(incidente.claimStage).toBe('dispute');
+  });
+
   it('a still-OPEN claim (resolution null) preserves a stored/operator resolucao — legacy copyWith null-coalesced', async () => {
     const db = new FakeDb();
     seedPedido(db);

@@ -2,6 +2,7 @@ import { getDoc, runTransaction, type Firestore } from 'firebase/firestore';
 import {
   ESTADO_PEDIDO,
   ESTADO_FRETE,
+  bloqueioDespachoAtivo,
   checkCompleteness,
   checkoutFretePedidoSchema,
   toItemCheckoutPedido,
@@ -11,6 +12,7 @@ import {
   type EstadoPedido,
   type ExpectedItem,
   type FreteDoPedido,
+  type AcaoBloqueada,
   type ItemDoPedido,
   type ScanLogEntry,
 } from '@delfrance/schemas';
@@ -72,6 +74,19 @@ export interface PreSaveFresh {
   estado: EstadoPedido;
   numero: string | null;
   freteInicial: FreteDoPedido | null;
+  /**
+   * Marketplace dispute overlay (#1322) — µs of the oldest open blocking
+   * incidente, or null. Server-owned; the sole writer is the
+   * `onIncidenteBloqueioSync` trigger.
+   *
+   * ⚠️ Only `disputaAbertaEm` gates DISPATCH. `devolucaoAbertaEm` deliberately
+   * does not: a return means the goods are already with the buyer, so there is
+   * nothing left to ship and refusing the checkout would block the operator
+   * from processing the pedido at all. What a return blocks is `finalizado`.
+   */
+  disputaAbertaEm: number | null;
+  /** Actions released by an audited override on an open incidente (#1322). */
+  bloqueiosLiberados: readonly AcaoBloqueada[] | null;
 }
 
 export interface EvaluatePreSaveInput {
@@ -218,6 +233,40 @@ export function evaluatePreSave(input: EvaluatePreSaveInput): PreSaveResult {
       `O pedido está no estado "${fresh.estado}". Para salvar o checkout ele precisa estar Pago.`,
     );
   }
+  // 13. An open marketplace dispute (#1322). LAST on purpose: it is the only
+  // gate whose whole point is that everything ABOVE it passes — during a
+  // mediation ML keeps the order `paid`, so the pedido is legitimately `pago`
+  // with a bound cliente, a valid endereço and a healthy frete. Every earlier
+  // gate is silent, which is exactly how an operator ends up shipping goods
+  // that are about to be refunded.
+  //
+  // ⚠️ A `block`, never a `confirm`, and the release is NOT here. One release —
+  // the audited, permission-gated override recorded on the incidente — serves
+  // all three guards; a confirm loop local to this screen would make DISPATCH,
+  // the irreversible one, the only block an operator can wave away without
+  // leaving a record.
+  //
+  // ⚠️ The three guards are NOT equally enforced, and the comment here used to
+  // imply otherwise. NF-e emission is server-side (`prepareEmission`, Admin
+  // SDK). This one is client-side but its state is server-owned, so a forged
+  // clear is not reachable from the browser. `finalizado` is **advisory only**:
+  // it is a disabled `<Select>` option in `EstadoHistoricoTab`, `estado` is not
+  // in `pedidoMeta.serverOwnedFields`, and no rule or callable enforces it — a
+  // write from any other surface still lands `finalizado` on a pedido with an
+  // open return. That is a deliberate scoping call rather than an oversight
+  // (a premature `finalizado` is a wrong label an operator can correct, where
+  // shipping goods that get refunded is not), but it is a real gap and the
+  // reason to state it here rather than let the asymmetry read as accidental.
+  if (bloqueioDespachoAtivo(fresh)) {
+    const desde = new Date(Math.round(fresh.disputaAbertaEm! / 1000)).toLocaleDateString('pt-BR');
+    return makeBlock(
+      'pedido-em-disputa',
+      'Pedido em disputa',
+      `Este pedido tem uma reclamação/mediação aberta no marketplace desde ${desde}. ` +
+        'Despachar agora pode significar enviar mercadoria que será reembolsada. ' +
+        'Resolva a reclamação na aba Incidentes do pedido, ou libere o despacho por lá.',
+    );
+  }
 
   return {
     ok: true,
@@ -296,6 +345,17 @@ export async function salvarCheckoutTransacao(
     }
     if (fresh.estado !== ESTADO_PEDIDO_PAGO) {
       throw new CheckoutSaveError('nao-pago', `O pedido está em "${fresh.estado}", não Pago.`);
+    }
+    // The dispute gate, re-derived from the TX snapshot (#1322) — the same
+    // reason every other gate here is re-checked: `evaluatePreSave` ran against
+    // a re-fetch taken before the operator worked through the scan screen, and
+    // a mediation can open in that window. Trusting the pre-save verdict would
+    // be the stale-read bug this function's own comments were written about.
+    if (bloqueioDespachoAtivo(fresh)) {
+      throw new CheckoutSaveError(
+        'pedido-em-disputa',
+        'O pedido tem uma reclamação/mediação aberta no marketplace.',
+      );
     }
     const freteAllowed =
       ALLOWED_FRETE_ESTADOS.has(frete.estado) ||
