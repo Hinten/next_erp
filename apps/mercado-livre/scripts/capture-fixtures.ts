@@ -151,9 +151,13 @@ interface ManifestEntry {
   readonly bytes: number;
 }
 
+/**
+ * ⚠️ Only a **200** takes the bare slug. A `206 Partial Content` order body omits
+ * fields rather than nulling them, so under a complete body's name it would later
+ * read as "ML returns this for an order" — the rule, and the 204 case, are
+ * asserted in `fixtureCapture.test.ts`.
+ */
 function gravar(result: CaptureResult): ManifestEntry {
-  // ⚠️ `fixtureFileName` is what keeps a 404 body off the name a success body
-  // would take — the rule is asserted in `fixtureCapture.test.ts`.
   const arquivo = fixtureFileName(result);
   // The body goes to disk VERBATIM — no `JSON.parse`, no re-serialisation, no
   // pretty-printing. Byte-faithfulness is the product.
@@ -164,6 +168,14 @@ function gravar(result: CaptureResult): ManifestEntry {
     arquivo,
     bytes: Buffer.byteLength(result.body, 'utf-8'),
   };
+}
+
+/** 206 and an empty 2xx are flagged in the run output, never left looking complete. */
+function marcaDe(entrada: ManifestEntry): string {
+  if (entrada.status === 404) return '✗ ';
+  if (entrada.status === 206) return '◐ ';
+  if (entrada.bytes === 0) return '⚠️ ';
+  return '  ';
 }
 
 /* ----------------------------------- main ---------------------------------- */
@@ -216,7 +228,7 @@ async function main(): Promise<void> {
       manifesto.push(entrada);
       persistirManifesto();
 
-      const marca = r.ok ? (entrada.bytes === 0 ? '⚠️ ' : '  ') : '✗ ';
+      const marca = marcaDe(entrada);
       log(
         `${marca}${String(r.status).padEnd(3)}  ${entrada.path}  → ${entrada.arquivo} (${entrada.bytes} B)`,
       );
@@ -224,11 +236,22 @@ async function main(): Promise<void> {
   );
 
   log('');
+  const completos = manifesto.filter((m) => m.status === 200);
+  const parciais = manifesto.filter((m) => m.status === 206);
   const faltando = manifesto.filter((m) => m.status === 404);
   const vazios = manifesto.filter((m) => m.status !== 404 && m.bytes === 0);
-  log(`✅ ${manifesto.length - faltando.length} corpo(s) capturado(s); ${faltando.length} 404.`);
+  log(
+    `✅ ${completos.length} corpo(s) completo(s); ${parciais.length} parcial(is) (206); ` +
+      `${faltando.length} 404.`,
+  );
   if (faltando.length > 0) {
     log('   Um 404 é DADO — ficou gravado como `<slug>.404.json` e nunca como um corpo válido.');
+  }
+  if (parciais.length > 0) {
+    log('   ⚠️ Um 206 OMITE campos em vez de anulá-los, e as omissões são');
+    log('      indistinguíveis das omissões reais do ML. Gravado como `<slug>.206.json` —');
+    log('      NÃO use como fixture de "corpo completo do pedido":');
+    for (const parcial of parciais) log(`      ${parcial.path}`);
   }
   if (vazios.length > 0) {
     log(

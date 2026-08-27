@@ -23,6 +23,14 @@ is a plain `fetch` and `await res.text()`, written to disk verbatim.
 duplicate of the shipment body. `fixtureCapture.test.ts` pins all four so the SLA
 exception cannot be tidied into the shipment group.
 
+⚠️ **Only a `200` body takes the bare `<slug>.json` name.** The rule keys on the
+status, never on `res.ok`, which is true across the whole 2xx range: ML answers
+`206 Partial Content` for an order it can only partly materialise, and a partial
+body **omits** fields rather than nulling them (`api.ts:226-230`) — omissions
+indistinguishable from ML's real ones, which is the single distinction this module
+exists to preserve. A 206 is filed as `<slug>.206.json`, a 204 as `<slug>.204.json`,
+a 404 as `<slug>.404.json`.
+
 ⚠️ **A 404 is data; everything else is a failure.** A missing claim is expected on
 the test account, so a 404 is recorded and the run continues — a partial capture
 is useful. A transient 5xx (or a 401 on a dead grant, or a 429) **throws**:

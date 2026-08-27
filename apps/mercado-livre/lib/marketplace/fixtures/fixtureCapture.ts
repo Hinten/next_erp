@@ -162,16 +162,32 @@ export function buildCapturePlan(ids: CaptureIds): CaptureTarget[] {
 }
 
 /**
- * The name the body is filed under.
+ * The name the body is filed under. **Only a 200 takes the bare slug.**
  *
- * ⚠️ **A 404 body never takes the name a success body would take.** The 404 is
- * worth keeping — it is a real ML answer, and "this account has no such claim" is
- * a finding — but filed as `<slug>.json` it becomes exactly the lie this script
- * exists to avoid: months later it reads as "ML returns this for an order". The
- * status goes in the name instead.
+ * ⚠️ **The rule keys on the status, NOT on `ok`** — `res.ok` is true across the
+ * whole 2xx range, and two of those statuses are bodies that must never wear a
+ * complete body's name:
+ *
+ *  - **`206 Partial Content`**, which ML answers for an order it can only partly
+ *    materialise — and a partial body **OMITS fields rather than nulling them**
+ *    (`api.ts:226-230`, `types.ts:417`; there is a whole `getOrderResponse` method
+ *    whose only job is to surface the distinction, #793). Those omissions are
+ *    indistinguishable from ML's real omissions, which is the one thing this
+ *    module exists to preserve — so a 206 filed as `<slug>.json` would later read
+ *    as "ML returns this for an order", and any "our Zod schema parses this REAL
+ *    body without loss" assertion would be validated against a body ML itself
+ *    flagged as incomplete.
+ *  - **`204 No Content`**, documented for `/shipments/{id}/items`, whose empty
+ *    body under a `.json` name is a captured-nothing that reads as an answer.
+ *
+ * A 404 is the same rule from the other side: worth keeping (it is a real ML
+ * answer, and "this account has no such claim" is a finding), never under the name
+ * a complete body would take.
  */
-export function fixtureFileName(result: Pick<CaptureResult, 'target' | 'ok' | 'status'>): string {
-  return result.ok ? `${result.target.slug}.json` : `${result.target.slug}.${result.status}.json`;
+export function fixtureFileName(result: Pick<CaptureResult, 'target' | 'status'>): string {
+  return result.status === 200
+    ? `${result.target.slug}.json`
+    : `${result.target.slug}.${result.status}.json`;
 }
 
 /**

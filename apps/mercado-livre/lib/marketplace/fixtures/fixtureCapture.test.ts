@@ -171,19 +171,46 @@ describe('buildCapturePlan — the per-resource headers', () => {
 describe('fixtureFileName', () => {
   const alvoOrder: CaptureTarget = { slug: 'orders-1', path: '/orders/1' };
 
-  it('files a captured body under the bare slug', () => {
-    expect(fixtureFileName({ target: alvoOrder, ok: true, status: 200 })).toBe('orders-1.json');
+  /**
+   * ⚠️ Built as a FULL `CaptureResult`, `ok` included and set the way a real
+   * response would set it — `ok: true` for 206 and 204, since `res.ok` spans the
+   * whole 2xx range. An assertion that omitted `ok` would pass against an
+   * implementation keyed on it (undefined is falsy) and so would not pin anything.
+   */
+  const resultado = (status: number): CaptureResult => ({
+    target: alvoOrder,
+    status,
+    ok: status >= 200 && status < 300,
+    body: '{}',
+  });
+
+  const completo = fixtureFileName(resultado(200));
+
+  it('files a complete 200 body under the bare slug', () => {
+    expect(completo).toBe('orders-1.json');
   });
 
   /**
-   * The file-on-disk half of the same anti-lie rule the 5xx throw enforces: a
-   * not-found body sitting under the name a success body would take reads, months
-   * later, as "ML returns this for an order".
+   * The file-on-disk half of the same anti-lie rule the 5xx throw enforces: a body
+   * sitting under the name a COMPLETE body would take reads, months later, as "ML
+   * returns this for an order".
+   *
+   * ⚠️ 206 is the case that makes this key on the status rather than on `ok` —
+   * `res.ok` is true across the whole 2xx range. ML answers `206 Partial Content`
+   * for an order it can only partly materialise, and a partial body **omits**
+   * fields rather than nulling them (`api.ts:226-230`, `types.ts:417`) — omissions
+   * indistinguishable from ML's real ones, which is the single distinction this
+   * module exists to preserve.
    */
-  it('never lets a 404 body take the name a success body would take', () => {
-    const naoEncontrado = fixtureFileName({ target: alvoOrder, ok: false, status: 404 });
-    expect(naoEncontrado).toBe('orders-1.404.json');
-    expect(naoEncontrado).not.toBe(fixtureFileName({ target: alvoOrder, ok: true, status: 200 }));
+  // 206 = a partial order body · 204 = an empty body · 404 = not found.
+  it.each([
+    [206, 'orders-1.206.json'],
+    [204, 'orders-1.204.json'],
+    [404, 'orders-1.404.json'],
+  ])('files %i as %s, never under the complete body name', (status, esperado) => {
+    const nome = fixtureFileName(resultado(status));
+    expect(nome).toBe(esperado);
+    expect(nome).not.toBe(completo);
   });
 });
 
