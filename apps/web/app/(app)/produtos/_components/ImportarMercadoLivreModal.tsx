@@ -12,6 +12,7 @@ import { useSnapshot } from '@delfrance/data/hooks';
 
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
+import { isValidMlbItemId, maskMlbItemId } from '@/lib/mercado-livre/itemId';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
@@ -73,17 +74,18 @@ export function ImportarMercadoLivreModal({
   const [busy, setBusy] = useState(false);
   const [issues, setIssues] = useState<string[] | null>(null);
 
-  const trimmedItem = itemId.trim();
-  const canSubmit = canImport && !!integracaoId && trimmedItem.length > 0 && !busy;
+  // `itemId` is already masked on every keystroke, so it is either canonical or invalid.
+  const itemIdValido = isValidMlbItemId(itemId);
+  const canSubmit = canImport && !!integracaoId && itemIdValido && !busy;
 
   async function handleImport() {
-    if (!client || !integracaoId || !trimmedItem) return;
+    if (!client || !integracaoId || !itemIdValido) return;
     setBusy(true);
     setIssues(null);
     try {
       const result = await client.importar({
         integracaoId,
-        itemId: trimmedItem,
+        itemId,
         options: {
           importarEstoque,
           sobrescreverEstoque,
@@ -138,8 +140,14 @@ export function ImportarMercadoLivreModal({
         <TextInput
           label="Código do anúncio (MLB)"
           placeholder="MLB1234567890"
+          description="Aceita colar o link do anúncio ou o código com hífen (MLB-1234567890)."
           value={itemId}
-          onChange={(e) => setItemId(e.currentTarget.value)}
+          onChange={(e) => setItemId(maskMlbItemId(e.currentTarget.value))}
+          error={
+            itemId.length > 0 && !itemIdValido
+              ? 'Informe um código no formato MLB1234567890.'
+              : undefined
+          }
           disabled={!canImport}
         />
 
