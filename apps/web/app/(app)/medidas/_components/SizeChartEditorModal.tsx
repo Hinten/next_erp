@@ -25,6 +25,11 @@ import { FirebaseError } from 'firebase/app';
 import type { MlSizeChart } from '@delfrance/schemas';
 
 import {
+  SIZE_CHART_MOTIVOS,
+  type SizeChartEditorGateInput,
+  sizeChartEditorGate,
+} from '@/lib/mercado-livre/sizeChartDisabled';
+import {
   type ChartCellValue,
   type ChartRowDraft,
   duplicateChart,
@@ -67,6 +72,7 @@ import {
 import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { SizeChartAiModal } from './SizeChartAiModal';
+import { SizeChartActionButton } from './SizeChartActionButton';
 import { SizeChartGrid } from './SizeChartGrid';
 
 /** A size variation group (tipo 1) the chart's rows bind to. */
@@ -528,7 +534,7 @@ export function SizeChartEditorModal({
 
   const blockingError =
     validateChartName(nome) ??
-    (domainId == null ? 'Selecione o domínio.' : null) ??
+    (domainId == null ? SIZE_CHART_MOTIVOS.semDominio : null) ??
     (answered ? null : 'Responda os atributos da guia.') ??
     (missingRequired ? `Informe ${missingRequired.name}.` : null) ??
     (rows.filter((r) => !r.deleted).length === 0 ? 'A guia precisa de ao menos um tamanho.' : null);
@@ -537,6 +543,27 @@ export function SizeChartEditorModal({
     rowCap != null && rows.filter((r) => !r.deleted).length > rowCap
       ? `O Mercado Livre aceita no máximo ${String(rowCap)} tamanhos por guia.`
       : null;
+
+  // ⚠️ ONE input, four verdicts, and every control below takes BOTH its
+  // `disabled` and its tooltip from the same one — so a control can never be
+  // dead with nothing to say. Three of the four said nothing at all before, and
+  // the status line beside them reported neither `busy` nor `overCap`.
+  const gateInput: SizeChartEditorGateInput = {
+    canWrite,
+    busy,
+    // ⚠️ `aiBusy` is separate state from `busy`, and Mantine's `Button` computes
+    // `disabled: disabled || loading` — so without this the IA button spent the
+    // whole AI call disabled with `motivo: null` and its tooltip switched off.
+    // That is the one invariant this module exists to hold, and it was open in
+    // the single control whose `loading` did not reach the gate.
+    aiBusy,
+    aiFillable: chartAiGridIsFillable(aiGrid),
+    hasNome: nome.trim().length > 0,
+    hasDominio: domainId != null,
+    blockingError,
+    overCap,
+  };
+  const enviarGate = sizeChartEditorGate('enviar', gateInput);
 
   async function run(kind: 'draft' | 'send'): Promise<void> {
     setBusy(kind);
@@ -849,23 +876,24 @@ export function SizeChartEditorModal({
           <Text size="sm" c="dimmed">
             Preencha a grade a partir da foto da tabela do fornecedor.
           </Text>
-          <Button
+          {/* Nothing to fill without a grid, and the route rejects an empty one
+              anyway — better to disable than to spend a round trip on a
+              guaranteed 422. ⚠️ The gate reads `aiGrid`, the SAME derivation the
+              request sends: counting `rows`/`columns` instead let a grid that
+              looks populated (every row deleted, or only the size column
+              visible) enable the button and come back "Monte a grade da guia
+              antes de pedir sugestões" — which is now the tooltip, said before
+              the round trip rather than after it. */}
+          <SizeChartActionButton
             size="compact-sm"
             variant="light"
             onClick={() => void runAi()}
             loading={aiBusy}
-            // Nothing to fill without a grid, and the route rejects an empty one
-            // anyway — better to disable than to spend a round trip on a
-            // guaranteed 422. ⚠️ Reads `aiGrid`, the SAME derivation the request
-            // sends: counting `rows`/`columns` here let a grid that looks
-            // populated (every row deleted, or only the size column visible)
-            // enable the button and come back "Monte a grade da guia antes de
-            // pedir sugestões".
-            disabled={!canWrite || busy !== null || !chartAiGridIsFillable(aiGrid)}
+            gate={sizeChartEditorGate('preencherIa', gateInput)}
             data-testid="ml-size-chart-ai-fill"
           >
             Preencher com IA
-          </Button>
+          </SizeChartActionButton>
         </Group>
 
         {allColumns.length > 0 && (
@@ -960,30 +988,40 @@ export function SizeChartEditorModal({
         <Divider />
 
         <Group justify="space-between">
+          {/* The same verdict the Enviar tooltip shows, kept always-visible
+              because a tooltip needs a hover to be found. ⚠️ It used to be built
+              from `canWrite` and `blockingError` alone, so a send blocked by the
+              row cap — or by a save already running — left this line cheerfully
+              reporting the guia was ready. */}
           <Text size="xs" c="dimmed">
-            {canWrite
-              ? (blockingError ?? 'Pronto para enviar.')
-              : 'Requer permissão de escrita em integrações para enviar ao Mercado Livre.'}
+            {enviarGate.motivo ?? 'Pronto para enviar.'}
           </Text>
           <Group>
-            <Button variant="default" onClick={onClose} disabled={busy !== null}>
+            <SizeChartActionButton
+              variant="default"
+              onClick={onClose}
+              gate={sizeChartEditorGate('cancelar', gateInput)}
+            >
               Cancelar
-            </Button>
-            <Button
+            </SizeChartActionButton>
+            {/* A draft is a local Firestore write, so it is deliberately NOT
+                gated on `integracao.write` — only the two calls that reach
+                Mercado Livre are. */}
+            <SizeChartActionButton
               variant="light"
               loading={busy === 'draft'}
-              disabled={busy !== null || nome.trim().length === 0 || domainId == null}
+              gate={sizeChartEditorGate('salvarRascunho', gateInput)}
               onClick={() => void run('draft')}
             >
               Salvar rascunho
-            </Button>
-            <Button
+            </SizeChartActionButton>
+            <SizeChartActionButton
               loading={busy === 'send'}
-              disabled={busy !== null || !canWrite || blockingError != null || overCap != null}
+              gate={enviarGate}
               onClick={() => void run('send')}
             >
               Enviar ao Mercado Livre
-            </Button>
+            </SizeChartActionButton>
           </Group>
         </Group>
       </Stack>
