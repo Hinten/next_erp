@@ -12,7 +12,7 @@ import { useSnapshot } from '@delfrance/data/hooks';
 
 import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
-import { isValidMlbItemId, maskMlbItemId } from '@/lib/mercado-livre/itemId';
+import { isPartialMlbItemId, isValidMlbItemId, maskMlbItemId } from '@/lib/mercado-livre/itemId';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
@@ -143,8 +143,11 @@ export function ImportarMercadoLivreModal({
           description="Aceita colar o link do anúncio ou o código com hífen (MLB-1234567890)."
           value={itemId}
           onChange={(e) => setItemId(maskMlbItemId(e.currentTarget.value))}
+          // Quiet while the id can still become valid — the disabled button already
+          // says "not ready yet". Only a value that can NEVER be an MLB id (another
+          // site's code, reduced to bare digits by the mask) earns an error.
           error={
-            itemId.length > 0 && !itemIdValido
+            itemId.length > 0 && !itemIdValido && !isPartialMlbItemId(itemId)
               ? 'Informe um código no formato MLB1234567890.'
               : undefined
           }

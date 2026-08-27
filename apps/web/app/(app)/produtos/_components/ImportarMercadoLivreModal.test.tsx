@@ -97,8 +97,12 @@ describe('ImportarMercadoLivreModal — máscara do código do anúncio', () => 
     expect(h.importar.mock.calls[0]?.[0].itemId).toBe('MLB5146021467');
   });
 
-  it('accepts a pasted permalink', async () => {
-    await abrirEPreencher('https://produto.mercadolivre.com.br/MLB-5146021467');
+  // ⚠️ A REAL permalink — slug + tracking fragment. Sweeping every digit after
+  // `MLB` would yield `MLB514602146742`, which still passes the submit gate.
+  it('accepts a pasted permalink, slug and tracking fragment included', async () => {
+    await abrirEPreencher(
+      'https://produto.mercadolivre.com.br/MLB-5146021467-camiseta-preta-42-_JM#position=1&tracking_id=8f1a',
+    );
     expect(campoCodigo().value).toBe('MLB5146021467');
     expect(botaoImportar().disabled).toBe(false);
   });
@@ -113,9 +117,15 @@ describe('ImportarMercadoLivreModal — máscara do código do anúncio', () => 
     expect(screen.getByText(/formato MLB1234567890/i)).toBeTruthy();
   });
 
-  it('keeps the button disabled while the code is still being typed', async () => {
+  it('keeps the button disabled while the code is still being typed, without flagging an error', async () => {
     await abrirEPreencher('ML');
     expect(campoCodigo().value).toBe('ML');
+    expect(botaoImportar().disabled).toBe(true);
+    expect(screen.queryByText(/formato MLB1234567890/i)).toBeNull();
+
+    // Still quiet with the prefix plus a few digits — a correct id in progress.
+    fireEvent.change(campoCodigo(), { target: { value: 'MLB514' } });
+    expect(screen.queryByText(/formato MLB1234567890/i)).toBeNull();
     expect(botaoImportar().disabled).toBe(true);
   });
 });
