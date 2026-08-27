@@ -470,6 +470,13 @@ export async function processMassImportJob(
           // so a full re-import still clears every stale reason for free. Only a
           // genuinely moderated listing degrades to "never asked".
           lerModeracoes: false,
+          // Same trade, sharper: `/shipping_options/free` answers PER ITEM, so
+          // unlike a category or a domain there is nothing to cache across the
+          // drain. On a seller whose listings are all ME2 — the population that
+          // needs the fallback at all — every single listing would cost one extra
+          // ML round trip. The weight arrives the moment the operator re-imports
+          // that produto on its own.
+          lerPesoEnvio: false,
         };
         const res = await importProduto(importDeps, itemId);
         imported += 1;

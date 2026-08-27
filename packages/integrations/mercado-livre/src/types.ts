@@ -140,6 +140,39 @@ export const itemAttributeSchema = z
       .passthrough()
       .nullable()
       .optional(),
+    /**
+     * ML's `values[]` — the allowed/selected values, each with its OWN `struct`.
+     *
+     * ⚠️ **The struct is not always at the attribute root.** A live
+     * `GET /items/{id}?include_attributes=all` (MLB5146021467, 27/08/2026) returned
+     * every `number_unit` attribute as `value_name: '10 cm'`, `unit_id: null`,
+     * **no** top-level `value_struct`, and the split only here:
+     * `values: [{ id: null, name: '10 cm', struct: { number: 10, unit: 'cm' } }]`.
+     * So a reader that consults `value_struct` alone sees nothing on that response.
+     *
+     * Typed rather than left to `.passthrough()` because a caller cannot read what
+     * the type does not describe — the exact reason `value_struct` had to be added
+     * above (#1087). Only the fields a reader needs are named; the rest passes through.
+     */
+    values: z
+      .array(
+        z
+          .object({
+            id: z.string().nullable().optional(),
+            name: z.string().nullable().optional(),
+            struct: z
+              .object({
+                number: wireNumber().nullable().optional(),
+                unit: z.string().nullable().optional(),
+              })
+              .passthrough()
+              .nullable()
+              .optional(),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .optional(),
   })
   .passthrough();
 export type MlItemAttribute = z.infer<typeof itemAttributeSchema>;
@@ -969,6 +1002,45 @@ export const mlSellerShippingScheduleSchema = z
   })
   .passthrough();
 export type MlSellerShippingSchedule = z.infer<typeof mlSellerShippingScheduleSchema>;
+
+/**
+ * `GET /users/{sellerId}/shipping_options/free` — ML's own estimate of what an
+ * item costs to ship, plus the weight it BILLS for.
+ *
+ * Reached with `item_id` (ML documents `item_id` OR `dimensions` as the one
+ * mandatory pair), and the only field the importer reads is
+ * `coverage.all_country.billable_weight`.
+ *
+ * ⚠️ **`billable_weight` is in GRAMS, and it is not a measured mass.** Grams is
+ * the unit throughout ML's shipping API (`dimensions=AxBxC,peso`,
+ * `shipment.dimensions.weight`). It is a BILLABLE figure — ML's own assumed
+ * package, and potentially volumetric — so it belongs in a produto's GROSS weight
+ * and never in its net one. See `mapMlItemToImport`.
+ *
+ * ⚠️ Every field is optional: ML omits `discount` entirely when none applies,
+ * and this is a cost SIMULATION, so a partial body must never fail the parse and
+ * lose the import along with it.
+ */
+export const mlFreeShippingOptionsSchema = z
+  .object({
+    coverage: z
+      .object({
+        all_country: z
+          .object({
+            list_cost: wireNumber().nullable().optional(),
+            currency_id: z.string().nullable().optional(),
+            billable_weight: wireNumber().nullable().optional(),
+          })
+          .passthrough()
+          .nullable()
+          .optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+export type MlFreeShippingOptions = z.infer<typeof mlFreeShippingOptionsSchema>;
 
 /**
  * `GET /orders/{orderId}/billing_info` sent with header `x-version: 2` (legacy

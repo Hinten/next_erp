@@ -268,9 +268,18 @@ function makeApi(
   // is thrown instead, which is how the 404-is-data and the transient-degrade
   // branches are driven. Default `[]`: ML has nothing on this listing.
   moderations: DocData[] | Error = [],
+  // What `GET /users/{id}/shipping_options/free` answers. Default: a body with
+  // no `billable_weight` at all — i.e. ML told us nothing — so every test written
+  // before the weight fallback existed keeps its exact produto. An `Error` drives
+  // the degrade branch.
+  freeShipping: DocData | Error = { coverage: { all_country: {} } },
 ): MercadoLivreApi {
   return {
     getItem: vi.fn(async () => item),
+    getFreeShippingOptions: vi.fn(async () => {
+      if (freeShipping instanceof Error) throw freeShipping;
+      return freeShipping;
+    }),
     getItemDescription: vi.fn(async () => ({ plain_text: description })),
     getCategory: vi.fn(async () => {
       if (category instanceof Error) throw category;
@@ -1494,6 +1503,9 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
         if (found instanceof Error) throw found;
         return found ?? [];
       }),
+      // No billable weight: a family's members declare their own packages here,
+      // so the fallback must stay out of these fixtures' way.
+      getFreeShippingOptions: vi.fn(async () => ({ coverage: { all_country: {} } })),
     } as unknown as MercadoLivreApi;
   }
 
@@ -2068,5 +2080,103 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       expect(db.docs('produtos').has(expectedChildId(MEMBER_A_ID))).toBe(true);
       expect([...db.docs('produtos/erp-filho-G/variacaoMercadoLivre').keys()]).toEqual(['link-B']);
     });
+  });
+});
+
+/**
+ * The ML weight lookup (`/shipping_options/free`) — when it is spent, when it is
+ * not, and what happens when it fails.
+ *
+ * ⚠️ It is a NETWORK call on the hot import path, so the tests that matter most
+ * are the ones asserting it did NOT happen: a listing that declares its own
+ * weight, and the mass drain.
+ */
+describe('importProduto — ML billable weight (the last-resort gross weight)', () => {
+  /** A listing with no package weight of its own — the case that earns the call. */
+  const SEM_PESO: DocData = { ...SIMPLE_ITEM, shipping: { free_shipping: true } };
+  const COM_PESO: DocData = {
+    ...SIMPLE_ITEM,
+    attributes: [
+      { id: 'SELLER_SKU', value_name: 'SKU1' },
+      { id: 'SELLER_PACKAGE_WEIGHT', value_name: '600 g' },
+    ],
+  };
+  const PESO_ML: DocData = { coverage: { all_country: { billable_weight: 1539 } } };
+
+  it('fills pesoBrutoKg from ML billable weight when the listing declares none', async () => {
+    const db = new FakeDb();
+    const api = makeApi(SEM_PESO, undefined, undefined, [], PESO_ML);
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(api.getFreeShippingOptions).toHaveBeenCalledWith(55, {
+      itemId: 'MLB123',
+      freeShipping: true,
+    });
+    const produto = db.docs('produtos').get(res.produtoId)!;
+    expect(produto.pesoBrutoKg).toBe(1.539);
+    // Never the net weight — that publishes as ML's WEIGHT attribute.
+    expect(produto.pesoLiquidoKg).toBeNull();
+  });
+
+  it('⚠️ spends NO call when the listing already declares SELLER_PACKAGE_WEIGHT', async () => {
+    const db = new FakeDb();
+    const api = makeApi(COM_PESO, undefined, undefined, [], PESO_ML);
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(api.getFreeShippingOptions).not.toHaveBeenCalled();
+    expect(db.docs('produtos').get(res.produtoId)!.pesoBrutoKg).toBe(0.6);
+  });
+
+  it('⚠️ lerPesoEnvio:false (the mass path) spends no call and leaves the weight null', async () => {
+    // The drain walks a whole catalogue and this answer is per ITEM — nothing to
+    // cache across it. The weight arrives when the operator re-imports that one.
+    const db = new FakeDb();
+    const api = makeApi(SEM_PESO, undefined, undefined, [], PESO_ML);
+    const res = await importProduto(deps(db, api, { lerPesoEnvio: false }), 'MLB123');
+
+    expect(api.getFreeShippingOptions).not.toHaveBeenCalled();
+    expect(db.docs('produtos').get(res.produtoId)!.pesoBrutoKg).toBeNull();
+  });
+
+  it('a failing lookup is best-effort — the import still completes, weight null', async () => {
+    // ML serves this endpoint only for items live on the marketplace, so a 4xx is
+    // the EXPECTED case. Throwing would discard the produto, its extraData, its
+    // stock, its photos and its children over a weight.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const db = new FakeDb();
+    const api = makeApi(
+      SEM_PESO,
+      undefined,
+      undefined,
+      [],
+      new MercadoLivreHttpError('ML 400', 400, null),
+    );
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    const produto = db.docs('produtos').get(res.produtoId)!;
+    expect(produto.pesoBrutoKg).toBeNull();
+    expect(produto.nome).toBe('Camiseta Preta'); // the import itself survived
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('⚠️ a body with no billable_weight is not a zero weight', async () => {
+    const db = new FakeDb();
+    const api = makeApi(SEM_PESO, undefined, undefined, [], {
+      coverage: { all_country: { list_cost: 15.05 } },
+    });
+    const res = await importProduto(deps(db, api), 'MLB123');
+    expect(db.docs('produtos').get(res.produtoId)!.pesoBrutoKg).toBeNull();
+  });
+
+  it('spends no call without a sellerUserId — the URL needs one', async () => {
+    // `sellerUserId: null` is refused by an earlier guard, so this pins the
+    // helper's own check rather than the reachable path: it must never build a
+    // `/users/null/...` URL if that guard ever moves.
+    const db = new FakeDb();
+    const api = makeApi(SEM_PESO, undefined, undefined, [], PESO_ML);
+    await expect(importProduto(deps(db, api, { sellerUserId: null }), 'MLB123')).rejects.toThrow(
+      /user_id/,
+    );
+    expect(api.getFreeShippingOptions).not.toHaveBeenCalled();
   });
 });

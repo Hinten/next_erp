@@ -43,6 +43,7 @@ import {
   mapMlItemToImport,
   mapMlVariationsToImport,
   MercadoLivreHttpError,
+  pesoBrutoDeclaradoKg,
   type MappedMlItem,
   type MlItem,
 } from '@delfrance/integrations-mercado-livre';
@@ -258,6 +259,10 @@ async function main(): Promise<void> {
   const ctx = await loadMercadoLivreContext(db, integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
   const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const sellerUserId =
+    typeof ctx.conta.user_id === 'number' && Number.isFinite(ctx.conta.user_id)
+      ? ctx.conta.user_id
+      : null;
 
   log(`[inspect:anuncio] project=${projectId} integracao=${integracaoId} item=${itemId}`);
 
@@ -293,8 +298,31 @@ async function main(): Promise<void> {
   const produto = (produtoSnap.data() ?? {}) as Record<string, unknown>;
   log(`  produto=${hit.produtoId} link=${hit.linkDocId} nome=${fmt(produto.nome)}`);
 
+  // ⚠️ The importer asks ML for a billable weight whenever the listing declares
+  // none, so this script has to ask too — it claims to print what a re-import
+  // WOULD write, and a `pesoBrutoKg` of null here against a real import that
+  // fills it is the diagnostic disagreeing with the thing it diagnoses. Same
+  // guard as `lerPesoFaturavel`: only when the listing has no weight of its own,
+  // and a failure degrades rather than killing the report.
+  const pesoFaturavelG =
+    pesoBrutoDeclaradoKg(item) != null || sellerUserId == null
+      ? null
+      : await api
+          .getFreeShippingOptions(sellerUserId, {
+            itemId,
+            freeShipping: item.shipping?.free_shipping === true,
+          })
+          .then((r) => r.coverage?.all_country?.billable_weight ?? null)
+          .catch((err: unknown) => {
+            if (!(err instanceof MercadoLivreHttpError)) throw err;
+            log(
+              `  ⚠️  peso de envio indisponível (ML ${err.status}) — pesoBrutoKg abaixo é só o declarado`,
+            );
+            return null;
+          });
+
   // What a re-import would write back. This is the round-trip answer.
-  const reimport: MappedMlItem = mapMlItemToImport(item);
+  const reimport: MappedMlItem = mapMlItemToImport(item, { billableWeightG: pesoFaturavelG });
 
   printTable('Produto — origem × re-import', [
     row('nome', produto.nome, reimport.nome),

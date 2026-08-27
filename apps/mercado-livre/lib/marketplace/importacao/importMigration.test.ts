@@ -314,6 +314,9 @@ function makeMigrationApi(opts: {
     }),
     getItemDescription: vi.fn(async () => ({ plain_text: 'Descrição' })),
     getCategory: vi.fn(async () => ({ id: 'MLB1430', name: 'Roupas' })),
+    // ML reports no billable weight, so a migrated produto keeps exactly the
+    // dimensions its source listing declared.
+    getFreeShippingOptions: vi.fn(async () => ({ coverage: { all_country: {} } })),
   } as unknown as MercadoLivreApi;
 }
 
