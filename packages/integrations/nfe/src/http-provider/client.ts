@@ -9,7 +9,7 @@
  */
 import { z } from 'zod';
 
-import { lerRespostaJson } from '@delfrance/core/wire';
+import { lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 import { estadoNFeSchema } from '@delfrance/schemas';
 
 import {
@@ -548,14 +548,18 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
     // 2xx it is a body claiming to be a fiscal result, and handing it on is how
     // an empty 200 on `/api/nfe/emitir` used to assert "authorized" with no
     // chave, no nRec and no cStat.
+    // ⚠️ EMPTY and NON-JSON share the first arm: neither is version skew — in
+    // both the request failed to reach a route that answers JSON. An empty 200
+    // on `/api/nfe/emitir` is the sharpest case in the repo, so it must not be
+    // reported as a field problem.
     throw new NFeSchemaError(
-      leitura.motivo === 'nao-json'
+      leitura.motivo !== 'formato'
         ? `A integração fiscal respondeu HTTP ${String(res.status)} sem um corpo JSON — o ` +
             'pedido não chegou à rota esperada.'
         : 'A integração fiscal respondeu num formato que este aplicativo não reconhece. ' +
-            `Campos inválidos: ${leitura.campos.join(', ')}.`,
+            `Campos inválidos: ${resumirCampos(leitura.campos)}.`,
       res.status,
-      leitura.motivo === 'nao-json' ? [] : leitura.campos,
+      leitura.motivo !== 'formato' ? [] : leitura.campos,
     );
   }
 
