@@ -22,6 +22,7 @@ import {
   type Pedido,
 } from '@delfrance/schemas';
 
+import { intFreteTipoQueryKey } from './rowReadPrefetch';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
@@ -50,7 +51,10 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
   );
   const intFreteId = intRef?.id ?? null;
   const { data: tipo } = useQuery<IntegracaoFrete | null>({
-    queryKey: ['intFreteTipo', intRef?.path ?? null],
+    // The shared key builder, not a hand-rolled copy — this and `FreteCell`
+    // must agree exactly, and they had already drifted in the absent-ref case
+    // (`null` here vs `''` there), which is two cache entries for one document.
+    queryKey: intFreteTipoQueryKey(intRef?.path ?? ''),
     enabled: intRef != null,
     staleTime: 5 * 60 * 1000,
     queryFn: async () => {

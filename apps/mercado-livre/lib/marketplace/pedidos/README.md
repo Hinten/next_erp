@@ -70,3 +70,6 @@ topic; everything else is either a pure mapper or a resolver they share.
   what the pedido stores.
 - `shipmentOrderId.ts` — answers "which ML order does this shipment belong to?"
   after ML dropped `shipment.order_id`.
+- `shipmentSellerCost.ts` — answers "what does the SELLER pay for this shipment?"
+  from `GET /shipments/{id}/costs` after ML dropped `base_cost`. ⚠️ Matches the
+  `senders[]` row on our own `user_id`, never `senders[0]`.

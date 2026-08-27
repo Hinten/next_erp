@@ -56,8 +56,11 @@ jobs:
       # `copilot-` prefix this lane was the only writer, so it started cold on
       # almost every run; the shared namespace is refreshed by every merge to the
       # default branch, and default-branch caches are readable from any branch.
-      # The Playwright and Next.js caches below stay on `copilot-` prefixes —
-      # their contents genuinely differ from what the CI lanes store.
+      # The Next.js cache below stays on a `copilot-` prefix — its build genuinely
+      # differs from what the CI lanes store. The Playwright cache no longer does:
+      # it holds the same browser build the e2e lanes download, so it shares their
+      # `playwright-` namespace and is keyed on the Playwright version instead of
+      # the lockfile. See e2e-emulator.yml for why that key, and not this one.
       - name: Cache pnpm store
         uses: actions/cache@v5
         with:
@@ -65,14 +68,6 @@ jobs:
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: |
             pnpm-store-${{ runner.os }}-
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/ms-playwright
-          key: copilot-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            copilot-playwright-${{ runner.os }}-
 
       - name: Cache Next.js emulator build artifacts
         uses: actions/cache@v5
@@ -88,11 +83,67 @@ jobs:
       - name: Install firebase-tools
         run: npm i -g firebase-tools@15.15.0
 
-      # Ubuntu runners need browser packages and apt dependencies installed
-      # explicitly because this setup workflow does not use the Playwright
-      # container image.
-      - name: Install Chromium and system dependencies
-        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
+      # This lane does not use the Playwright container image, so it fetches the
+      # browser and its apt system libraries itself — the same shape as
+      # e2e-emulator.yml, and carrying the same hazard.
+      - name: Resolve the Playwright version
+        id: playwright
+        run: |
+          # Extract the semver rather than taking the last field: a pnpm notice on
+          # stdout would otherwise make this multi-line, and a multi-line value
+          # written to $GITHUB_OUTPUT without a delimiter fails opaquely.
+          v="$(pnpm --filter @delfrance/web exec playwright --version | grep -oE '[0-9]+[.][0-9]+[.][0-9]+' | head -1)"
+          if [ -z "$v" ]; then
+            echo "::error::could not resolve the Playwright version — the cache key below would collapse to a constant and serve one version's browsers to every other"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      # ⚠️ Playwright's system-deps install shells out to `apt-get update`, which
+      # exits 100 when ANY configured source fails — including the two
+      # packages.microsoft.com repos on the runner image, which answered 403 on
+      # 2026-08-27 and reddened the emulator gate. Every package it installs comes
+      # from the Ubuntu archive, so drop the rest. Full account, and the two
+      # controls this check carries, in e2e-emulator.yml.
+      #
+      # ⚠️ Deleting this step fails nothing until the next 403, so
+      # `ci-lane-gates.test.js` asserts it precedes the apt step below.
+      - name: Trim apt sources to the Ubuntu archive
+        run: |
+          shopt -s nullglob
+          for f in /etc/apt/sources.list.d/*; do
+            [ -f "$f" ] || continue
+            if grep -qE '^[^#]*(ubuntu[.]com|apt-mirrors[.]txt)' "$f"; then continue; fi
+            sudo mv "$f" "$f.disabled"
+            echo "disabled $f"
+          done
+          if ! grep -rqE '^[^#]*(ubuntu[.]com|apt-mirrors[.]txt)' --exclude='*.disabled' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+            echo "::error::the apt trim left no Ubuntu archive source — refusing to continue"
+            exit 1
+          fi
+
+      - name: Chromium system deps (apt)
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm --filter @delfrance/web exec playwright install-deps chromium; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::Chromium system deps failed (attempt $attempt/3) — retrying"
+              sleep "${attempt}0"
+            fi
+          done
+          echo "::error::Chromium system deps failed 3 times — the Ubuntu archive itself is unreachable, which the source trim above cannot help with"
+          exit 1
+
+      - name: Ensure Chromium
+        run: pnpm --filter @delfrance/web exec playwright install chromium
 
       - name: Build functions bundle
         env:
