@@ -34,9 +34,56 @@ describe('impostoCategoriaSchema', () => {
     expect(impostoCategoriaMeta.collectionPath).toBe('categorias/{categoriaId}/imposto');
   });
 
-  it('accepts an empty doc with passthrough fields', () => {
+  it('accepts an empty doc with a typed imposto blob', () => {
     const out = impostoCategoriaSchema.parse({ configuracaoICMS: { crt: '1', csosn: '500' } });
     expect(out.configuracaoICMS).toEqual({ crt: '1', csosn: '500' });
+  });
+
+  it('keeps the legacy UPPERCASE CFOP as a read fallback alongside cfop (#467)', () => {
+    const out = impostoCategoriaSchema.parse({ CFOP: '5405' });
+    expect(out.CFOP).toBe('5405');
+    expect(out.cfop ?? null).toBeNull();
+  });
+
+  // NVE (wire: List<String>?) and indEscala (wire: bool?) are DELIBERATELY
+  // kept as lenient strings, not retyped to match the wire — see the class
+  // doc comment. The shared ImpostoConfigEditor renders both as plain text
+  // inputs producing `string | null`, and `categoriaImpostoCarriesInfo`
+  // (apps/web/lib/categorias/clientPort.ts) keys emptiness off
+  // `typeof v === 'string'`; retyping either broke the categoria save path
+  // (caught in review on #467's own PR).
+  it('reads a legacy doc verbatim: UPPERCASE CFOP alongside string NVE/indEscala', () => {
+    const out = impostoCategoriaSchema.parse({
+      impostoCategoriaOperacaoOuterRef: null,
+      CFOP: '5405',
+      origem: '0',
+      NCM: '61091000',
+      NVE: 'some legacy value',
+      indEscala: 'S',
+      configuracaoICMS: { crt: '1', csosn: '102' },
+    });
+    expect(out.CFOP).toBe('5405');
+    expect(out.NVE).toBe('some legacy value');
+    expect(out.indEscala).toBe('S');
+  });
+
+  // No `.passthrough()`: an unmodeled key is stripped on a lenient parse (the
+  // read path, `parseSoftRead` in `@delfrance/data`) — this is what keeps a
+  // legacy corpus doc carrying a since-retired field readable (root
+  // `CLAUDE.md` rule 8) — but throws on the write path, which re-parses
+  // strictly whenever the lenient parse dropped a caller-supplied key
+  // (`parseForWrite`/`parseMergePatch`, `packages/data/src/zodParse.ts`).
+  it('silently strips a genuinely unknown top-level key on a lenient (read) parse', () => {
+    const parsed = impostoCategoriaSchema.parse({ origem: '0', someRetiredLegacyField: 'x' });
+    expect(parsed).not.toHaveProperty('someRetiredLegacyField');
+  });
+
+  it('rejects a genuinely unknown top-level key on a strict (write) parse', () => {
+    // Mirrors the `.strict()` re-parse `parseForWrite`/`parseMergePatch` run
+    // internally once they notice the lenient parse above dropped a key.
+    expect(() =>
+      impostoCategoriaSchema.strict().parse({ origem: '0', someUnknownField: 'x' }),
+    ).toThrow(/nrecognized/);
   });
 });
 
