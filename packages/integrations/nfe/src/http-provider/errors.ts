@@ -158,6 +158,30 @@ export class NFeNetworkError extends Error {
 }
 
 /**
+ * The route answered 2xx and the body was not the shape this client claims —
+ * the wrong fields, no body at all, or not JSON.
+ *
+ * ⚠️ Nothing here describes what WE send: it is a client-side `Error`, and
+ * `status` records the 2xx the ROUTE sent us. That combination is the point —
+ * an empty 200 on `/api/nfe/emitir` used to become `null as NFeEmitResult`,
+ * asserting an authorized nota with no chave, no nRec and no cStat.
+ *
+ * ⚠️ A subclass of `NFeHttpError`, so every caller that narrows to that family
+ * (and rethrows anything else) keeps working. `body` is deliberately `null`:
+ * on this path the body is a FISCAL result, and the failing field names carry
+ * the whole diagnostic — the same reasoning as `MelhorEnvioSchemaError`.
+ */
+export class NFeSchemaError extends NFeHttpError {
+  /** Field PATHS that failed, never values. */
+  public readonly campos: string[];
+  constructor(message: string, status: number, campos: string[]) {
+    super(message, status, null);
+    this.name = 'NFeSchemaError';
+    this.campos = campos;
+  }
+}
+
+/**
  * Is this NF-e client error transient (worth a client-side retry)? `true` only
  * for the three non-deterministic failures: a dropped connection
  * (`NFeNetworkError`), a 5xx (`NFeServerError`), or the runtime-not-ready 503
