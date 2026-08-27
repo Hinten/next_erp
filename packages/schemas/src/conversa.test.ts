@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   ESTADO_CONVERSA,
   ESTADO_ENVIO,
+  ESTADO_ENVIO_SAIDA,
   conversaSchema,
+  ehEstadoDeSaida,
   mensagemSchema,
   podeReabrirConversa,
 } from './conversa';
@@ -90,6 +92,43 @@ describe('mensagemSchema', () => {
 
   it('rejects unknown tipo characters', () => {
     expect(mensagemSchema.safeParse({ tipo: 'z' }).success).toBe(false);
+  });
+
+  describe('ehEstadoDeSaida', () => {
+    // ⚠️ Iterating the ENUM, not a hand-written list, so a new estado has to be
+    // classified deliberately instead of defaulting into the inbound side by
+    // omission. (A list of the same four values here would just restate the
+    // constant and assert nothing.)
+    const esperado: Record<number, boolean> = {
+      [ESTADO_ENVIO.salva]: true,
+      [ESTADO_ENVIO.enviando]: true,
+      [ESTADO_ENVIO.enviado]: true,
+      [ESTADO_ENVIO.erro]: true,
+      [ESTADO_ENVIO.recebido]: false,
+      [ESTADO_ENVIO.excluido]: false,
+      [ESTADO_ENVIO.banida]: false,
+      [ESTADO_ENVIO.desconhecido]: false,
+    };
+
+    it('classifies every estado in the enum', () => {
+      const codigos = Object.values(ESTADO_ENVIO);
+      expect(Object.keys(esperado)).toHaveLength(codigos.length);
+      for (const value of codigos) {
+        expect(ehEstadoDeSaida(value), `estado ${value}`).toBe(esperado[value]);
+      }
+    });
+
+    it('is false for null and undefined — absent is not "we sent it"', () => {
+      expect(ehEstadoDeSaida(null)).toBe(false);
+      expect(ehEstadoDeSaida(undefined)).toBe(false);
+    });
+
+    it('keeps `recebido` out of the saída set — it is the only inbound state', () => {
+      // The whole direction rule rests on this: widening the set to include it
+      // would render the customer's own messages as ours.
+      expect(ESTADO_ENVIO_SAIDA).not.toContain(ESTADO_ENVIO.recebido);
+      expect([...ESTADO_ENVIO_SAIDA]).toHaveLength(4);
+    });
   });
 
   it('models anexo_url (snake_case) and no longer knows the camelCase anexoUrl (#464)', () => {

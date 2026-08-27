@@ -12,6 +12,7 @@ const sizeColumn: ChartColumn = {
   hint: null,
   required: true,
   mainCandidate: true,
+  sizeEquivalence: false,
   unit: { default: null, options: [] },
   connector: null,
   parts: [{ attributeId: 'SIZE', label: 'Tamanho', kind: 'text', values: [] }],
@@ -23,6 +24,7 @@ const chestColumn: ChartColumn = {
   hint: 'De - Até',
   required: false,
   mainCandidate: false,
+  sizeEquivalence: false,
   unit: {
     default: 'cm',
     options: [
@@ -67,6 +69,47 @@ describe('buildChartAiGrid', () => {
       'CHEST_CIRCUMFERENCE_TO',
     ]);
     expect(grid.rows).toEqual([{ key: 'g/1/v/p', size: 'P' }]);
+  });
+
+  it('carries the size-equivalence flag through to the request', () => {
+    // ⚠️ Without it the model gets the column with a measurement description and
+    // the "never invent, omit what you cannot read" rules apply verbatim — so it
+    // correctly returns nothing for the one column ML refuses the guia over.
+    const equivColumn: ChartColumn = {
+      key: 'FILTRABLE_SIZE',
+      label: 'Equivalências',
+      hint: null,
+      required: true,
+      mainCandidate: false,
+      sizeEquivalence: true,
+      unit: { default: null, options: [] },
+      connector: null,
+      parts: [
+        {
+          attributeId: 'FILTRABLE_SIZE',
+          label: 'Tamanho padrão',
+          kind: 'multiselect',
+          values: [{ id: '1', name: '38' }],
+        },
+      ],
+    };
+    const grid = buildChartAiGrid({ ...base, rows: [row('P')], columns: [equivColumn] });
+    expect(grid.columns).toEqual([
+      {
+        attributeId: 'FILTRABLE_SIZE',
+        label: 'Equivalências',
+        kind: 'multiselect',
+        values: [{ id: '1', name: '38' }],
+        unitId: null,
+        required: true,
+        sizeEquivalence: true,
+      },
+    ]);
+  });
+
+  it('leaves an ordinary column unflagged', () => {
+    const grid = buildChartAiGrid({ ...base, rows: [row('P')], columns: [chestColumn] });
+    expect(grid.columns.every((c) => c.sizeEquivalence === false)).toBe(true);
   });
 
   it('drops rows staged for deletion', () => {

@@ -63,6 +63,11 @@ export const DEFAULT_MEDIDAS_SYSTEM_INSTRUCTION = [
   'Informe o número na unidade indicada para a coluna, exatamente como está na tabela — NUNCA converta unidades.',
   'Se a tabela mostrar um intervalo (por exemplo 88-92), use os campos "de" e "até" correspondentes; nunca some, calcule a média nem escolha um dos extremos.',
   'Se a tabela usar nomes de tamanho diferentes dos pedidos, preencha apenas as linhas que você conseguir corresponder com segurança.',
+  // ⚠️ The one exception to "omit what you cannot read", and it has to be stated
+  // as such: the equivalence column is a size-system correspondence, not a
+  // measurement printed on the sheet. Without this the rules above apply to it
+  // verbatim, the model leaves it empty, and ML refuses the whole guia over it.
+  'EXCEÇÃO: as colunas marcadas como "equivalência de tamanho" NÃO são medidas da tabela — deduza a que tamanho padrão do Mercado Livre cada tamanho corresponde, usando o nome do tamanho e as medidas da linha, e escolha somente entre os valores permitidos da coluna.',
 ].join(' ');
 
 const MEASURE_TYPE_LABEL: Record<string, string> = {
@@ -105,7 +110,7 @@ export function buildMedidasPrompt(input: MedidasPromptInput): AiPromptRequest {
   if (columns.length > 0) {
     facts.push(
       `Medidas a preencher em cada tamanho:\n${columns
-        .map((c) => `- ${c.attributeId}: ${c.label}${unitSuffix(c.unitId)}`)
+        .map((c) => `- ${c.attributeId}: ${c.label}${unitSuffix(c.unitId)}${equivalenceSuffix(c)}`)
         .join('\n')}`,
     );
   }
@@ -149,6 +154,20 @@ function renderReferencia(referencia: MedidaReference | null | undefined): strin
 
 function unitSuffix(unitId: string | null): string {
   return unitId != null && unitId !== '' ? ` (em ${unitId})` : '';
+}
+
+/**
+ * Names the equivalence column in the listing the model reads, so the system
+ * instruction's "colunas marcadas como equivalência de tamanho" has something to
+ * refer to. The binding rule is still the per-column `description` in the schema
+ * — a custom system instruction saved in the settings doc replaces the default
+ * wholesale, and this marker would then point at a rule that is no longer there.
+ */
+function equivalenceSuffix(column: BuiltMedidasSchema['columns'][number]): string {
+  if (column.sizeEquivalence !== true) return '';
+  return column.kind === 'multiselect'
+    ? ' — EQUIVALÊNCIA DE TAMANHO (não é medida; um ou mais tamanhos padrão)'
+    : ' — EQUIVALÊNCIA DE TAMANHO (não é medida)';
 }
 
 function nonBlank(value: string | null | undefined): boolean {

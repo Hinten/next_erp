@@ -297,6 +297,12 @@ export interface MercadoLivreMedidaColumn {
   values: Array<{ id: string; name: string }>;
   unitId: string | null;
   required: boolean;
+  /**
+   * ML's size-equivalence column (`FILTRABLE_SIZE`): which standard Mercado
+   * Livre size(s) the row corresponds to. The only column in the grid the model
+   * DERIVES rather than transcribes, and the flag is what tells it so.
+   */
+  sizeEquivalence: boolean;
 }
 
 /** The tabela's fields as the BROWSER has them — including unsaved edits. */

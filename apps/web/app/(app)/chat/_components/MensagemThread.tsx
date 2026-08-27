@@ -320,6 +320,7 @@ export function MensagemThread({
                   mensagem={m}
                   myUid={user?.uid}
                   customerUid={customerUid}
+                  origem={conversa.origem}
                   isHtml={isHtml}
                   searchRegex={searchMode ? search.regex : null}
                   searchActive={activeSet.has(key)}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TIPO_MENSAGEM } from '@delfrance/schemas';
+import { ESTADO_ENVIO, ORIGEM_CONVERSA, TIPO_MENSAGEM } from '@delfrance/schemas';
 
 import { lastMensagemPreview, type PreviewMensagem } from './preview';
 
@@ -34,6 +34,49 @@ describe('lastMensagemPreview', () => {
     expect(lastMensagemPreview(msg({ conteudo: 'oi', user_id: 'op1' }), { meuUid: 'op1' })).toBe(
       '(Eu) oi',
     );
+  });
+
+  it('prefixes "(Eu) " for an AUTHORLESS message whose state says we sent it', () => {
+    // Every marketplace reply is authorless — identity is a cliente, so nothing
+    // stamps `user_id`. Keying on the author alone dropped the prefix on exactly
+    // the messages we did send. Same rule the thread uses for the bubble side.
+    expect(
+      lastMensagemPreview(
+        msg({ conteudo: 'oi', user_id: null, estadoEnvio: ESTADO_ENVIO.enviado }),
+        { meuUid: 'op1', origem: ORIGEM_CONVERSA.mercadoLivrePedido },
+      ),
+    ).toBe('(Eu) oi');
+  });
+
+  it('⚠️ keeps the prefix on a WhatsApp auto-reply the customer has READ', () => {
+    // `processStatus` writes `estadoEnvio: recebido` onto our own message on the
+    // Cloud API `read` status, so a state-only rule dropped the "(Eu) " at the
+    // same instant the thread bubble jumped sides.
+    expect(
+      lastMensagemPreview(
+        msg({ conteudo: 'oi', user_id: null, estadoEnvio: ESTADO_ENVIO.recebido }),
+        { meuUid: 'op1', origem: ORIGEM_CONVERSA.whatsapp },
+      ),
+    ).toBe('(Eu) oi');
+  });
+
+  it('does not prefix without a meuUid, matching the authored arm', () => {
+    // `MensagemQuote` calls this with no options and prints the author itself.
+    expect(
+      lastMensagemPreview(
+        msg({ conteudo: 'oi', user_id: null, estadoEnvio: ESTADO_ENVIO.enviado }),
+        {},
+      ),
+    ).toBe('oi');
+  });
+
+  it('does NOT prefix an authorless message the contact sent', () => {
+    expect(
+      lastMensagemPreview(
+        msg({ conteudo: 'oi', user_id: null, estadoEnvio: ESTADO_ENVIO.recebido }),
+        { meuUid: 'op1', origem: ORIGEM_CONVERSA.mercadoLivrePedido },
+      ),
+    ).toBe('oi');
   });
 
   it('prefixes the author name for a known non-operator author', () => {

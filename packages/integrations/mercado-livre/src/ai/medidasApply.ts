@@ -20,6 +20,14 @@ export interface AiMedidaSuggestion {
   /** Set only when the value matched a closed-list option. */
   value_id: string | null;
   value_name: string;
+  /**
+   * Every matched option, for a `multiselect` column — the shape that cell's
+   * widget actually reads. Null for a scalar column.
+   *
+   * ⚠️ `value_name` stays populated alongside it (the members joined) so the
+   * review table has something to print without knowing the column's kind.
+   */
+  valueList: Array<{ id: string; name: string }> | null;
 }
 
 /** Reads as "does not apply" in any of the spellings a model reaches for. */
@@ -71,6 +79,22 @@ export function applyAiMedidas(
       const column = columnById.get(attributeId);
       if (!column) continue;
 
+      // ⚠️ BEFORE `coerceText`, which drops an array outright ("a cell value is a
+      // scalar"). A `multiselect` column asks for one, so reaching the scalar
+      // path first would silently throw every multi-valued answer away.
+      if (Array.isArray(raw)) {
+        const picked = matchList(raw, column);
+        if (picked.length === 0) continue;
+        out.push({
+          rowKey,
+          attributeId,
+          value_id: picked[0]!.id,
+          value_name: picked.map((v) => v.name).join(', '),
+          valueList: picked,
+        });
+        continue;
+      }
+
       const text = coerceText(raw);
       if (text == null) continue;
       if (NA_TEXTS.has(normalizeLoose(text))) continue;
@@ -85,19 +109,59 @@ export function applyAiMedidas(
         // the sentinel straight through as a staged measurement. The id is the
         // identity — drop it whatever ML calls it.
         if (match.id === NA_VALUE_ID) continue;
-        out.push({ rowKey, attributeId, value_id: match.id, value_name: match.name });
+        out.push({
+          rowKey,
+          attributeId,
+          value_id: match.id,
+          value_name: match.name,
+          // A scalar answer to a multi-valued column is still legal — one member.
+          valueList: column.kind === 'multiselect' ? [{ id: match.id, name: match.name }] : null,
+        });
         continue;
       }
+
+      // An unmatched value on a CLOSED list has no shape its widget can render:
+      // a `multiselect` reads ids, and a member ML never offered is not one.
+      // Dropping beats staging a suggestion that applies as a visibly empty cell
+      // and ships anyway — the same reason `aiApplicable` guards `select`.
+      if (column.kind === 'multiselect') continue;
 
       out.push({
         rowKey,
         attributeId,
         value_id: null,
         value_name: column.kind === 'number' ? normalizeDecimal(text) : text,
+        valueList: null,
       });
     }
   }
 
+  return out;
+}
+
+/**
+ * The closed-list members of an array answer, in the order the model gave them.
+ *
+ * Everything the scalar path drops, this drops too: blanks, the "does not apply"
+ * spellings, the `-1` sentinel by **id**, and anything outside the list. It also
+ * dedupes — ML answers `duplicated_measure_value` on a repeated member, and a
+ * model listing "38, 38, 40" is a plausible read of a printed range.
+ */
+function matchList(raw: unknown[], column: MedidaColumnSpec): Array<{ id: string; name: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ id: string; name: string }> = [];
+  for (const entry of raw) {
+    const text = coerceText(entry);
+    if (text == null) continue;
+    if (NA_TEXTS.has(normalizeLoose(text))) continue;
+    const match = column.values.find(
+      (v) => typeof v.name === 'string' && normalizeLoose(v.name) === normalizeLoose(text),
+    );
+    if (!match || match.id === NA_VALUE_ID) continue;
+    if (seen.has(match.id)) continue;
+    seen.add(match.id);
+    out.push({ id: match.id, name: match.name });
+  }
   return out;
 }
 
