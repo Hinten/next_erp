@@ -155,8 +155,32 @@ The per-surface notes below stay the authority on behaviour.
   derived from ML's own response so it cannot collide, written with `store.create`
   rather than `put` so a collision FAILS (`ML_USUARIO_TESTE_DUPLICADO`) instead of
   overwriting a password nothing reissues. ⚠️ Do not collapse `put` and `create`: `put`
-  overwriting is what makes a partial re-run of the PAIR safe, and `create` refusing is
-  what protects the additional one.
+  is IDEMPOTENT for the same ML account (re-writing identical content is what makes a
+  partial re-run of the PAIR safe) and `create` refuses any existing document. Neither
+  can replace a stored credential — `put` was a bare `set`, safe only by the argument
+  that `reutilizavel` had just read the role as absent, and that argument lived outside
+  the write; it now re-derives the check from its own `tx.get` (class A in the
+  transaction inventory).
+  ⚠️ **`list()` carries the DOC ID out to the wire, and that is load-bearing.** Every
+  buyer record says `role: 'comprador'` whether it sits at the pair's bare `comprador`
+  document or an additional mint's `comprador-<mlUserId>`, so the records alone cannot
+  tell "the new buyer landed beside the old one" from "it landed on top of it" from "it
+  was never created". Nothing may write `docId` back: the stored schema is
+  `.passthrough()`, so a `docId` reaching `put`/`create` is persisted silently as a
+  record field. `toRecord` is the only producer of a written record and returns a bare
+  record; the doc id is attached AFTER the write.
+  ⚠️ **`credencialRevogada` is also apps/web's CAPABILITY PROBE — never drop it, never
+  make it optional.** Before the single-role mint this route ignored its body entirely,
+  so a backend older than that answers a `{role}` POST by running the PAIR bootstrap:
+  it reuses both stored accounts, mints nothing, revokes the credential anyway and
+  returns **200**. `apps/web` calls the DEPLOYED backend even in local dev and its
+  `call<T>()` casts rather than validates, so all of that arrived as a success — the
+  list did not change, and the reveal modal showed `usuarios[0]`, which for the pair is
+  the SELLER, under a "Comprador" badge with the seller's password. `exigirMintAvulso`
+  in `apps/web/lib/mercado-livre/client.ts` now refuses any response that is not
+  exactly one freshly-minted account of the requested role, and dates the backend from
+  that field's absence. ⚠️ The check cannot move here: the half that is wrong is the
+  half not running this code.
   ⚠️ **The ten-slot cap is now refused server-side** (`ML_LIMITE_USUARIOS_TESTE`, 409,
   before any mint) against `USUARIO_TESTE_LIMITE_POR_CONTA` in `packages/schemas` —
   shared with the counter apps/web shows. ⚠️ It compares what WE stored, which is a
