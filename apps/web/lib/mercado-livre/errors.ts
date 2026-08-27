@@ -41,6 +41,16 @@ const NON_RETRYABLE_CODES: ReadonlySet<string> = new Set([
   'ML_CONTA_SEM_DEPOSITO',
   'ML_CONTA_PAUSADA',
   'ML_CONTA_MULTIORIGEM',
+  // A 2xx whose body was not the shape this app claims. The same backend
+  // answers the same way on a retry, so a button here only burns requests —
+  // the fix is a deploy, which is what the message says.
+  //
+  // ⚠️ Listed explicitly even though the answer would come out `false` anyway:
+  // `MercadoLivreClientRespostaInvalidaError` carries the real 2xx it arrived
+  // on, and `retryableStatus` happens to reject those. Leaving it to that
+  // coincidence means the decision lives in a function about SERVER faults and
+  // silently flips if either side ever changes.
+  'RESPOSTA_INVALIDA',
 ]);
 
 export interface MercadoLivreFailureFallbacks {
