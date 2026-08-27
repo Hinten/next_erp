@@ -8,6 +8,7 @@ import type { Pedido } from '@delfrance/schemas';
 
 import {
   PREFETCH_MAX_WAIT_MS,
+  PREFETCH_MOUNT_BACKSTOP_MS,
   clienteQueryKey,
   collectRowReadTargets,
   seedRowReads,
@@ -62,6 +63,14 @@ function row(id: string, cliente: string | null, frete: string | null): Snapshot
 
 const toPath = (ref: unknown) => (typeof ref === 'string' && ref.length > 0 ? ref : null);
 
+/** Fire `onRows` and let its batch (and timers) run to completion. */
+async function actSettle(fn: () => void): Promise<void> {
+  await act(async () => {
+    fn();
+    await vi.runAllTimersAsync();
+  });
+}
+
 describe('collectRowReadTargets', () => {
   it('dedupes shared refs so N rows do not become N reads', () => {
     // The saving is real precisely because rows share clientes and int_fretes.
@@ -115,19 +124,58 @@ describe('usePedidoRowReadPrefetch', () => {
     vi.useRealTimers();
   });
 
+  it('does NOT settle on the empty onRows TableView fires at mount', () => {
+    // ⚠️ THE bug this gate had. `TableView` calls `onRowsChange([])` once on
+    // mount, before its snapshot lands. Settling there releases every cell
+    // BEFORE a row exists, so each issues the `getDoc` the batch exists to
+    // replace and the batch runs on top — the page pays both costs and the
+    // gate is pure overhead.
+    const { result } = renderHook(() => usePedidoRowReadPrefetch(), { wrapper });
+
+    act(() => {
+      result.current.onRows([]);
+    });
+
+    expect(result.current.status).toBe('pending');
+    expect(getDocsByIdsMock).not.toHaveBeenCalled();
+
+    // …and the batch deadline has not been spent either, so a row set arriving
+    // later still gets its full budget.
+    act(() => {
+      vi.advanceTimersByTime(PREFETCH_MAX_WAIT_MS);
+    });
+    expect(result.current.status).toBe('pending');
+  });
+
   it('releases the cells even when onRows NEVER fires', () => {
-    // The graceful-degradation floor. If the provider is wired but the callback
-    // never arrives — an empty page, a TableView that changed shape — the cells
-    // must still read for themselves rather than wait forever.
+    // The graceful-degradation floor: a wiring failure must not blank the
+    // column. Longer than the per-batch budget on purpose — this one is
+    // insurance, not a deadline for the batch.
     const { result } = renderHook(() => usePedidoRowReadPrefetch(), { wrapper });
     expect(result.current.status).toBe('pending');
 
     act(() => {
-      vi.advanceTimersByTime(PREFETCH_MAX_WAIT_MS);
+      vi.advanceTimersByTime(PREFETCH_MOUNT_BACKSTOP_MS);
     });
 
     expect(result.current.status).toBe('settled');
     expect(getDocsByIdsMock).not.toHaveBeenCalled();
+  });
+
+  it('re-gates each new row set so a later page waits for its own batch', async () => {
+    // "Carregar mais" / a column filter / an update-monitor refresh all mount
+    // fresh cells. Leaving `status` at 'settled' would let them read one at a
+    // time while the batch for the same rows runs alongside.
+    getDocsByIdsMock.mockResolvedValue(new Map());
+    const { result } = renderHook(() => usePedidoRowReadPrefetch(), { wrapper });
+
+    await actSettle(() => result.current.onRows([row('p1', 'clientes/a', null)]));
+    expect(result.current.status).toBe('settled');
+
+    act(() => {
+      result.current.onRows([row('p2', 'clientes/b', null)]);
+    });
+    expect(result.current.status).toBe('pending');
   });
 
   it('releases the cells when the batch REJECTS', async () => {
@@ -143,7 +191,9 @@ describe('usePedidoRowReadPrefetch', () => {
     expect(result.current.status).toBe('settled');
   });
 
-  it('settles immediately when the page references nothing to batch', async () => {
+  it('settles immediately when the rows reference no cliente at all', async () => {
+    // A real, non-empty page whose rows simply have no cliente ref — distinct
+    // from the empty mount call above, which means "not loaded yet".
     const { result } = renderHook(() => usePedidoRowReadPrefetch(), { wrapper });
 
     await act(async () => {

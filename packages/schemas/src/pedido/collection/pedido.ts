@@ -386,20 +386,27 @@ export const pedidoMeta: CollectionMetadata = {
     // failed or never ran, falls back to its own read after
     // PREFETCH_MAX_WAIT_MS. That is a real improvement and it ships.
     //
-    // ⛔ It is STILL not enough to raise this, and that has now been measured
-    // FOUR times. With batching in place the lane came back 1 failed / 3 flaky
-    // / 167 passed at 100, against main's 171 / 0 / 0 at 50 — the same rotating
-    // /pedidos LIST spec signature (`pedidos-anexos`, `pedidos-devolucao`,
-    // `pedidos-etiqueta-ml`, `pedidos-nfe-snapshot`) that #159 recorded.
+    // ⛔ Attempts at 100 so far: observer-gated NF listener (#1283) →
+    // fail/fail/pass, pass, fail/fail/fail; rationed subscriptions → four LIST
+    // specs 3/3; cliente batching (#1303) → 1 failed / 3 flaky / 167, against
+    // main's 171 / 0 / 0 at 50. Always the rotating /pedidos LIST spec
+    // signature #159 recorded (pedidos-anexos, pedidos-devolucao,
+    // pedidos-etiqueta-ml, pedidos-nfe-snapshot) while editor specs pass.
     //
-    // ⚠️ So the binding constraint is NOT any single per-row read. Removing the
-    // NF listener's growth (#1283) and then the cliente read fan-out (#1303)
-    // each helped and neither was sufficient, which points at the aggregate
-    // first-paint cost of rendering 100 rows of this table — the Pipelines
-    // fetch, the row components, and the remaining per-row work together.
-    // Whoever tries next should MEASURE where first-paint time actually goes
-    // before removing another read; three of the four attempts so far were
-    // aimed at reads that turned out not to be the bottleneck.
+    // ⚠️ The batching run is NOT valid evidence about batching, and the reason
+    // is worth knowing before trusting any of these numbers: `TableView` fires
+    // `onRowsChange([])` once at mount, and the gate treated that as "nothing
+    // to batch" and released every cell BEFORE a row existed. So each cell
+    // still issued its own `getDoc` AND the batch ran on top — the page paid
+    // roughly double, which is very likely why that run was worse than the one
+    // before it. Fixed in `rowReadPrefetch` (an empty row set is "not loaded
+    // yet", never "nothing to do"); the measurement was never repeated.
+    //
+    // ⭐ So before raising this again: re-measure with the gate actually
+    // gating, and MEASURE WHERE FIRST-PAINT TIME GOES rather than removing
+    // another read on a hunch. Three of the four attempts targeted reads that
+    // were not the bottleneck, and the fourth measured a mechanism that was
+    // silently inert.
     // `limit` is the FIRST page only; "Carregar mais" grows it by the same
     // amount per click.
     limit: 50,

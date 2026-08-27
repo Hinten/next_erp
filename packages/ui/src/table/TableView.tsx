@@ -907,7 +907,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // on the row IDENTITY set, never on the `rows` array, so a re-render that
   // produces an equal-but-new array does not re-fire the callback (a consumer
   // that batches reads would re-issue them every render).
-  const rowIdsSerial = (rows ?? []).map((r) => r.id).join(' ');
+  const rowIdsSerial = JSON.stringify((rows ?? []).map((r) => r.id));
   const rowsNotifyRef = useRef<{
     rows: SnapshotRow<z.infer<S>>[];
     cb: TableViewProps<S>['onRowsChange'];

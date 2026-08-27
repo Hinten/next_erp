@@ -50,6 +50,15 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
  */
 export const PREFETCH_MAX_WAIT_MS = 2_000;
 
+/**
+ * Ultimate backstop for the case where `onRowsChange` never fires **at all** —
+ * a wiring mistake, or a TableView that changed shape. Deliberately much longer
+ * than {@link PREFETCH_MAX_WAIT_MS}: this one is not a budget for the batch, it
+ * is insurance against the batch never being asked for, and spending it early
+ * is what makes the gate useless (see `onRows`).
+ */
+export const PREFETCH_MOUNT_BACKSTOP_MS = 10_000;
+
 export type RowReadsStatus = 'pending' | 'settled';
 
 /**
@@ -154,17 +163,45 @@ export function usePedidoRowReadPrefetch(): RowReadPrefetch {
   const [status, setStatus] = useState<RowReadsStatus>('pending');
   const runIdRef = useRef(0);
 
-  // The safety net. Armed on mount, NOT on the first `onRows` — if that callback
-  // never fires (no provider wiring, an empty page, a TableView that changed
-  // shape), the cells must still be released.
+  const deadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Insurance against `onRowsChange` never firing at all. Long on purpose — it
+  // must NOT double as the batch's budget, or a slow pedidos query spends it
+  // before the batch is even asked for.
   useEffect(() => {
-    const timer = setTimeout(() => setStatus('settled'), PREFETCH_MAX_WAIT_MS);
+    const timer = setTimeout(() => setStatus('settled'), PREFETCH_MOUNT_BACKSTOP_MS);
     return () => clearTimeout(timer);
   }, []);
 
+  useEffect(
+    () => () => {
+      if (deadlineRef.current) clearTimeout(deadlineRef.current);
+    },
+    [],
+  );
+
   const onRows = useCallback(
     (rows: SnapshotRow<Pedido>[]) => {
+      // ⚠️ An EMPTY row set is "the page has not loaded yet", NOT "there is
+      // nothing to batch". `TableView` fires `onRowsChange` once with `[]` on
+      // mount, before its snapshot lands. Treating that as a settle — which an
+      // earlier revision did — releases every cell BEFORE a single row exists,
+      // so each one issues the `getDoc` this batch was meant to replace and the
+      // batch then runs on top of them. The gate never gated, and the page paid
+      // both costs. Returning here is what makes the batch subtract rather than
+      // add.
+      if (rows.length === 0) return;
+
       const runId = (runIdRef.current += 1);
+      // Re-gate for every new row set — "Carregar mais", a column filter, an
+      // update-monitor refresh all mount fresh cells that should wait for their
+      // own batch. Cells already holding data keep rendering it: TanStack serves
+      // a cached value while a query is disabled.
+      setStatus('pending');
+      if (deadlineRef.current) clearTimeout(deadlineRef.current);
+      deadlineRef.current = setTimeout(() => {
+        if (runId === runIdRef.current) setStatus('settled');
+      }, PREFETCH_MAX_WAIT_MS);
       const { clientes } = collectRowReadTargets(rows, (ref) => {
         const deref = dereferenceOuterRef(db, ref);
         return deref?.path ?? null;
