@@ -58,10 +58,13 @@ import type {
 } from '../schema/types';
 import { ActionBar } from './ActionBar';
 import { ActionSidePanel } from './ActionSidePanel';
+import { ActiveFilters } from './ActiveFilters';
 import { useCollectionMonitor } from './useCollectionMonitor';
 import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@tabler/icons-react';
 import { ColumnFilter, FilterPopover } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
+import { SearchBar } from './SearchBar';
+import { SEARCH_CHIP_KEY, buildFilterChips, subcollectionLookupFormatter } from './describeFilter';
 import { applyColumnFilters } from './filterRows';
 import {
   type SortState,
@@ -70,6 +73,20 @@ import {
   useTableUrlState,
 } from './useTableUrlState';
 import { renderCell } from './cell-renderers';
+
+/**
+ * Ceiling on the "Carregar mais" window recovered from the sticky list memory.
+ *
+ * Restoring the window costs a re-read of every row in it, and this database is
+ * Firestore ENTERPRISE, which bills DATA SCANNED (root `CLAUDE.md` rule 1) — so
+ * an operator who once clicked through ten pages would pay for ten pages on
+ * every return to that screen, forever. #1216 measured the same quantity from
+ * the other side: on `/pedidos` the page size is effectively a concurrent
+ * listener count, which is what capped that list at 50 rows in the first place.
+ * Three pages restores the useful case (you were a screen or two down) without
+ * reopening either wound.
+ */
+export const MAX_RESTORED_PAGES = 3;
 
 // Re-exported for back-compat; the implementations now live in
 // ./useTableUrlState alongside the hook that owns this state.
@@ -215,6 +232,29 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   extraFilters?: ReadonlyArray<PipelineFieldFilter>;
 
   /**
+   * Opt-in free-text search box, rendered above the table and owned by this
+   * component: the term lives in the URL as `?q=` and is restored with the rest
+   * of the list state, which a page-owned `useState` never could.
+   *
+   * `toFilters` turns the term into server-side filters (AND-combined with
+   * `extraFilters`), and `toForcedOrderBy` supplies the sort that term requires
+   * — the produtos nome search is a prefix RANGE, and Firestore demands the
+   * inequality field be the first `orderBy`. It behaves exactly like the
+   * `forcedOrderBy` prop, which still outranks it when both are set.
+   *
+   * ⚠️ Only for a term the page can turn into filters SYNCHRONOUSLY. Two
+   * screens (`/clientes` address search, `/nfe/comunicacoes`) resolve their
+   * term through a query into an id list first; they keep their own input and
+   * their own `?q=` handling, and must NOT set this prop — see
+   * `useSearchTermParam` in `apps/web`.
+   */
+  search?: {
+    placeholder?: string;
+    toFilters: (term: string) => ReadonlyArray<PipelineFieldFilter>;
+    toForcedOrderBy?: (term: string) => { field: string; direction?: 'asc' | 'desc' } | undefined;
+  };
+
+  /**
    * Escape hatch: pass a custom `Query` (e.g. with composite filters the
    * Pipelines wrapper doesn't cover). When set, search/orderBy/pageSize and
    * `meta.defaultQuery` are ignored — the caller owns the query lifecycle.
@@ -295,6 +335,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   forcedOrderBy,
   orderBy,
   extraFilters,
+  search: searchConfig,
   queryOverride,
   actionsPanel,
   renderActionsPanelExtra,
@@ -365,12 +406,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Bumped by the update-monitor's "Atualizar" button to force the row query
   // to re-execute (the Pipelines path is one-shot — see `pipeline` below).
   const [refreshKey, setRefreshKey] = useState(0);
-  // "Carregar mais": grows the query limit by `resolvedPageSize` per click.
-  // Each bump re-reads the whole window (the one-shot pipeline has no cursor) —
-  // fine for admin lists; true cursor pagination is deliberately deferred.
-  const [pages, setPages] = useState(1);
-  const effectiveLimit = resolvedPageSize * pages;
-
   // The copy action needs row selection; enabling copy implies `selectable`.
   const selectionEnabled = selectable || !!copyHref;
 
@@ -400,12 +435,80 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [descriptors, virtualFilterFields],
   );
 
-  // URL-synced per-column filters + sort (hydrated from the query string,
-  // mirrored back via history.replaceState). `orderBy` is the initial-sort
-  // fallback when the URL carries none.
-  const { filters, setFilters, filtersSerial, sort, setSort } = useTableUrlState(
-    filterableFields,
-    orderBy,
+  // URL-synced per-column filters + sort + search term (hydrated from the query
+  // string, mirrored back via history.replaceState), plus the per-screen
+  // sessionStorage memory that reopens this list where it was last left.
+  // `orderBy` is the initial-sort fallback when the URL carries none.
+  const {
+    filters,
+    setFilters,
+    filtersSerial,
+    sort,
+    setSort,
+    search: searchTerm,
+    setSearch,
+    clearAll,
+    restored,
+    rememberView,
+  } = useTableUrlState(filterableFields, orderBy, {
+    collectionPath: collection.resolvePath(pathContext),
+    // Only claim `?q=` when this component actually renders the search box;
+    // otherwise the param belongs to the page and must survive our URL sync.
+    ownsSearch: !!searchConfig,
+  });
+
+  // "Carregar mais": grows the query limit by `resolvedPageSize` per click.
+  // Each bump re-reads the whole window (the one-shot pipeline has no cursor) —
+  // fine for admin lists; true cursor pagination is deliberately deferred.
+  //
+  // Seeded from the sticky list memory (capped — see `MAX_RESTORED_PAGES`) in
+  // the initializer rather than an effect, so a restored window is issued as
+  // ONE query instead of a default page followed immediately by a wider re-read.
+  const [pages, setPages] = useState(() => Math.min(restored?.pages ?? 1, MAX_RESTORED_PAGES));
+  const effectiveLimit = resolvedPageSize * pages;
+
+  // The page's own extra filters, widened by whatever the search term implies.
+  // Kept as one value so every downstream consumer (serial, empty-list guard,
+  // pipeline, classic fallback) sees the same set.
+  const effectiveExtraFilters = useMemo<ReadonlyArray<PipelineFieldFilter> | undefined>(() => {
+    if (!searchConfig || searchTerm === '') return extraFilters;
+    const fromSearch = searchConfig.toFilters(searchTerm);
+    if (fromSearch.length === 0) return extraFilters;
+    return [...(extraFilters ?? []), ...fromSearch];
+  }, [extraFilters, searchConfig, searchTerm]);
+
+  // Value renderers for filters whose stored value is not self-describing.
+  // A subcollection-lookup filter packs its child field into the value as
+  // `"<subfield>:<term>"`, which a chip would otherwise print raw
+  // (`numeracao:1234` on the pedido NF column); a custom popover can supply
+  // its own via `filter.formatValue`.
+  const filterValueFormatters = useMemo(() => {
+    const out: Record<string, (value: ColumnFilterValue['value']) => string> = {};
+    for (const v of virtualColumns) {
+      const f = v.filter;
+      if (!f) continue;
+      if (f.formatValue) out[f.field] = f.formatValue;
+      else if (f.subcollectionLookup) {
+        out[f.field] = subcollectionLookupFormatter(f.subcollectionLookup.fields);
+      }
+    }
+    return out;
+  }, [virtualColumns]);
+
+  // Everything currently narrowing the list, as chips. Labels resolve exactly
+  // the way the column HEADER resolves them — a relabelled column whose chip
+  // used the raw descriptor label would name a column that is not on screen.
+  const activeFilterChips = useMemo(
+    () =>
+      buildFilterChips({
+        filters,
+        fields: filterableFields,
+        labelFor: (f) => fieldOverrides[f.key]?.label ?? f.label,
+        formatters: filterValueFormatters,
+        search: searchTerm,
+      }),
+    // filtersSerial stands in for the `filters` object content.
+    [filtersSerial, filterableFields, fieldOverrides, filterValueFormatters, searchTerm],
   );
 
   // Apply/clear a single column filter (shared by schema + virtual columns).
@@ -519,7 +622,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // `buildPipeline` guard (or the fallback guard below) and throw, not render
   // an empty table. Under `queryOverride` the extras (and the short-circuit)
   // don't apply: that query is caller-owned.
-  const extraFiltersSerial = useMemo(() => JSON.stringify(extraFilters ?? null), [extraFilters]);
+  const extraFiltersSerial = useMemo(
+    () => JSON.stringify(effectiveExtraFilters ?? null),
+    [effectiveExtraFilters],
+  );
   // Same rule for a USER column filter carrying a candidate list (a virtual
   // column's `renderFilter` can emit `array-contains-any`). Its UI is expected
   // to emit `undefined` rather than `[]` — dropping the filter is what "nothing
@@ -536,15 +642,26 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const extraEmpty =
     columnFilterEmpty ||
     (!queryOverride &&
-      (extraFilters ?? []).some(
+      (effectiveExtraFilters ?? []).some(
         (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
       ));
 
   // Sort actually issued to Firestore: an explicit user/prop sort wins;
   // otherwise the declared default `orderBy` (full array — supports multi-key
   // defaults and matches the declared composite index).
-  const forcedSort: SortState | undefined = forcedOrderBy
-    ? { field: forcedOrderBy.field, direction: forcedOrderBy.direction ?? 'asc' }
+  // The built-in search box forces its own order for the same reason the prop
+  // exists: a prefix RANGE has to be the first `orderBy` or the query is
+  // invalid on the classic path and silently stops matching its composite
+  // index on the Pipelines path. The explicit prop still outranks it — a page
+  // that states its order means it.
+  const searchForcedOrderBy =
+    searchConfig && searchTerm !== '' ? searchConfig.toForcedOrderBy?.(searchTerm) : undefined;
+  const resolvedForcedOrderBy = forcedOrderBy ?? searchForcedOrderBy;
+  const forcedSort: SortState | undefined = resolvedForcedOrderBy
+    ? {
+        field: resolvedForcedOrderBy.field,
+        direction: resolvedForcedOrderBy.direction ?? 'asc',
+      }
     : undefined;
   const effectiveOrderBy = useMemo<PipelineOrderSpec[] | undefined>(() => {
     // `forcedOrderBy` outranks the user sort on purpose — see its prop doc.
@@ -626,7 +743,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         // reads like the declared query.
         filters: [
           ...baseFilters,
-          ...(extraFilters ?? []),
+          ...(effectiveExtraFilters ?? []),
           ...Object.entries(serverFilters).map(([field, v]) => ({ field, ...v })),
         ],
         // Constrain to the parent ids a subcollection lookup resolved (NF
@@ -684,7 +801,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // operator, which caps the candidate list at 30 values (Firestore limit —
     // callers must truncate); `contains`/`startsWith` have no classic
     // equivalent, so extra filters using them are pipeline-only by contract.
-    for (const f of extraFilters ?? []) {
+    for (const f of effectiveExtraFilters ?? []) {
       // Mirror `buildPipeline`'s guard: only `array-contains-any` takes a
       // list. Surfacing the error beats silently querying nonsense.
       if (f.op !== 'array-contains-any' && Array.isArray(f.value)) {
@@ -764,7 +881,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Collapse "Carregar mais" back to one page whenever the query shape changes
   // (filters, sort, base filters or bound params) — the expanded window only
   // makes sense for the result set the user was looking at.
+  //
+  // ⚠️ Skips its FIRST run. Every `useEffect` fires once on mount, and the
+  // window is now seeded from the sticky memory in `useState` above — so an
+  // unguarded reset here would collapse a restored window back to one page a
+  // beat after it was recovered, and the page count would silently never come
+  // back. Resetting on mount was a no-op before this seed existed, so nothing
+  // is lost by skipping it.
+  const pagesResetArmed = useRef(false);
   useEffect(() => {
+    if (!pagesResetArmed.current) {
+      pagesResetArmed.current = true;
+      return;
+    }
     setPages(1);
   }, [
     filtersSerial,
@@ -776,6 +905,49 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     forcedSort?.field,
     forcedSort?.direction,
   ]);
+
+  // Remember the window for the next visit.
+  useEffect(() => {
+    rememberView({ pages });
+  }, [pages, rememberView]);
+
+  // Remember where the operator was scrolled to.
+  //
+  // The WINDOW is the scroller, not any element here: this component wraps the
+  // table in plain `Stack`/`Group` with no overflow, and Mantine's `AppShell`
+  // runs in its default `mode: "fixed"`, where `AppShell.Main` sets a
+  // `min-height` and no overflow at all. Reading a container's `scrollTop`
+  // would sample a constant zero.
+  useEffect(() => {
+    let frame = 0;
+    const onScroll = () => {
+      // Coalesce a scroll burst into one write per frame — this fires at input
+      // rate and every call reaches JSON.stringify + sessionStorage.
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        rememberView({ scroll: window.scrollY });
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [rememberView]);
+
+  // Put it back, once, after the rows that give the page its height exist —
+  // scrolling to an offset the document is not yet tall enough for silently
+  // lands at the bottom instead.
+  const scrollRestoredRef = useRef(false);
+  useEffect(() => {
+    if (scrollRestoredRef.current) return;
+    if (!restored || restored.scroll <= 0) return;
+    if (!rows || rows.length === 0) return;
+    scrollRestoredRef.current = true;
+    const target = restored.scroll;
+    window.requestAnimationFrame(() => window.scrollTo(0, target));
+  }, [rows, restored]);
 
   // Drop selected ids that left the current row set (filter change, refresh,
   // delete in another tab) so bulk actions and the header checkbox never act
@@ -1001,6 +1173,22 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
               )}
             </Group>
           </Group>
+
+          {searchConfig && (
+            <SearchBar
+              placeholder={searchConfig.placeholder}
+              value={searchTerm}
+              onChange={setSearch}
+            />
+          )}
+
+          <ActiveFilters
+            chips={activeFilterChips}
+            onRemove={(key) =>
+              key === SEARCH_CHIP_KEY ? setSearch('') : setColumnFilter(key, undefined)
+            }
+            onClearAll={clearAll}
+          />
 
           {(snap.error || subLookup.error) && (
             <Alert color="red" title="Erro ao carregar">
