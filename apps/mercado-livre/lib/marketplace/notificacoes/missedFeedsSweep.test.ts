@@ -495,6 +495,33 @@ describe('runMissedFeedsSweep — entry normalization', () => {
     return enqueue.mock.calls[0]![0] as unknown as Record<string, unknown>;
   }
 
+  it('⚠️ forwards the SUBTOPIC `actions` — a replay must be the SAME event (#1322)', async () => {
+    // `toWire` built the payload from eight keys and `actions` was not among
+    // them, so every recovered entry arrived with `actions: null`. Two topics
+    // dispatch on that field, so the omission made a replay a DIFFERENT event
+    // from the delivery it was recovering.
+    //
+    // `messages` absorbed it harmlessly (absent ⇒ treated as `created` ⇒
+    // import, so a replayed read receipt merely re-imported), which is why it
+    // went unnoticed for so long. `post_purchase` degrades the other way:
+    // absent ⇒ past the unknown-subtopic guard ⇒ an unparseable resource then
+    // DROPS in the task phase instead of parking — the silent loss #813 exists
+    // to prevent, through the one mechanism whose whole job is recovery.
+    const p = await enqueuedPayload(
+      feed({
+        topic: 'post_purchase',
+        resource: '/post-purchase/v1/claims/5567065796',
+        actions: ['claims_actions'],
+      }),
+    );
+    expect(p.actions).toEqual(['claims_actions']);
+  });
+
+  it('an entry ML sent no `actions` for stays null — the field is forwarded, not invented', async () => {
+    const p = await enqueuedPayload(feed());
+    expect(p.actions).toBeNull();
+  });
+
   it('ISO-8601 sent/received coerce to epoch millis', async () => {
     const p = await enqueuedPayload(feed());
     expect(p.sent).toBe(Date.parse('2026-08-11T07:00:00.000Z'));
