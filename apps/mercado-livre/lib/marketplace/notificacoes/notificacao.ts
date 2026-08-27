@@ -1674,7 +1674,17 @@ function pipelineFor(runners: NotificationRunners = {}) {
         };
       }
       if (outcome.kind === 'malformed-resource') {
-        if (phase === 'sweep') {
+        // ⚠️ `post_purchase` parks in BOTH phases, unlike every other topic
+        // (#1322). The task-phase drop above is justified by the resource shape
+        // being STABLE — `/orders/<id>` has not moved in years, so an
+        // unparseable one is a coding or ML-side anomaly not worth a document.
+        // Post-sale is the opposite: ML is actively migrating shapes under this
+        // topic, and this very PR exists because two of them changed at once
+        // (the `/post-purchase` prefix, and sub-resources arriving as their own
+        // deliveries). A resource shape we do not recognise HERE is the same
+        // class of signal as a subtopic we do not recognise — data-bearing, and
+        // worth one replayable document rather than a warn nobody reads.
+        if (phase === 'sweep' || payload.topic === 'post_purchase') {
           return { kind: 'park', reason: `resource malformado: ${payload.resource}` };
         }
         console.warn('[mercado-livre] notification DROPPED — unparseable resource', {

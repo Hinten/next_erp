@@ -30,7 +30,7 @@ import { notificacaoMercadoLivreCollection } from '@delfrance/data/admin/collect
 import type { Query } from 'firebase-admin/firestore';
 
 import { getAdminFirestore } from '../lib/firebase/admin';
-import { TOPIC_DISPOSITION } from '../lib/marketplace/notificacoes/notificacao';
+import { TOPIC_DISPOSITION, isKnownTopic } from '../lib/marketplace/notificacoes/notificacao';
 
 function log(message: string): void {
   // eslint-disable-next-line no-console -- CLI output
@@ -262,7 +262,12 @@ async function main(): Promise<void> {
   for (const d of docs) {
     const topico = d.data.topic;
     if (d.data.status !== 'parked' || typeof topico !== 'string') continue;
-    if (topico in TOPIC_DISPOSITION) continue;
+    // `isKnownTopic`, nunca `topico in TOPIC_DISPOSITION`: o operador `in`
+    // percorre a cadeia de protótipos, então `constructor` / `toString` /
+    // `hasOwnProperty` leriam como conhecidos e sumiriam deste relatório. E o
+    // resto do canal (`processNotificationPayload`, `missedFeedsSweep`) já usa
+    // esse helper — uma única definição de "tópico conhecido".
+    if (isKnownTopic(topico)) continue;
     parkedDesconhecidos.set(topico, (parkedDesconhecidos.get(topico) ?? 0) + 1);
   }
   if (parkedDesconhecidos.size > 0) {
