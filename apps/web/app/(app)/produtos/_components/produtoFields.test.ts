@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { produtoSchema } from '@delfrance/schemas';
 import {
   PRODUTO_PERSISTENT_SECTIONS,
   PRODUTO_SECTIONS,
   PRODUTO_SECTIONS_BASE,
   PRODUTO_SECTIONS_EDITAR,
+  PRODUTO_TRANSIENT_FIELDS,
   SECTION_MERCADO_LIVRE,
   SECTION_MODIFICACOES,
+  produtoObjectViewSchema,
 } from './produtoFields';
 
 /**
@@ -60,5 +63,70 @@ describe('produto section (tab) order', () => {
       expect(PRODUTO_SECTIONS).toContain(section);
       expect(PRODUTO_SECTIONS_EDITAR).toContain(section);
     }
+  });
+});
+
+/**
+ * Backstop for the invariant `.passthrough()`'s removal from `produtoSchema`
+ * made load-bearing (#461): **every key of the produto page model is either a
+ * modeled produto-document field or listed in `PRODUTO_TRANSIENT_FIELDS`.**
+ *
+ * `ObjectView` strips only `transientFields` before handing the form values to
+ * `saveRecord`, whose CREATE arm writes the full object through the collection
+ * converter — `parseForWrite` (`packages/data/src/zodParse.ts`), which since
+ * #461 re-parses `.strict()` the moment the lenient parse drops a key. So a
+ * page-model field that is neither modeled nor transient no longer rides
+ * `.passthrough()` into the document: it throws a `ZodError` in the operator's
+ * browser, on create, at save time. Before #461 it was persisted silently.
+ *
+ * The EDIT arm is deliberately out of scope: it writes `tx.update(ref, patch)`,
+ * which bypasses `toFirestore` entirely, so a stray key there is dropped by
+ * `pickDirty` rather than rejected. Create is the surface that breaks.
+ */
+describe('produto page model vs. the produto document write', () => {
+  /**
+   * The keys `ObjectView` would actually send to the produto doc write: page
+   * model minus what `transientFields` strips, minus what the schema models.
+   * Takes both sets as arguments so the test can feed it a known-BAD input —
+   * a checker only proves something when it fails on one.
+   */
+  const keysReachingTheProdutoWrite = (
+    pageKeys: readonly string[],
+    transientFields: readonly string[],
+  ): string[] => {
+    const modeled = new Set(Object.keys(produtoSchema.shape));
+    const stripped = new Set(transientFields);
+    return pageKeys.filter((key) => !modeled.has(key) && !stripped.has(key));
+  };
+
+  const pageKeys = Object.keys(produtoObjectViewSchema.shape);
+
+  it('leaves no page-model key unmodeled and unstripped', () => {
+    expect(keysReachingTheProdutoWrite(pageKeys, PRODUTO_TRANSIENT_FIELDS)).toEqual([]);
+  });
+
+  it('cannot pass vacuously — both source sets are populated and overlap', () => {
+    // An empty `pageKeys` (a renamed export resolving to `{}`) or an empty
+    // modeled set would make the assertion above trivially true.
+    expect(pageKeys.length).toBeGreaterThan(0);
+    expect(Object.keys(produtoSchema.shape).length).toBeGreaterThan(0);
+    expect(PRODUTO_TRANSIENT_FIELDS.length).toBeGreaterThan(0);
+    // The transient list must describe keys that are really on the page model —
+    // a typo'd entry strips nothing and the real key reaches the write.
+    for (const field of PRODUTO_TRANSIENT_FIELDS) {
+      expect(pageKeys).toContain(field);
+    }
+  });
+
+  it('flags a page-model field whose transientFields entry was forgotten', () => {
+    // The known-BAD control: a checker that never fails proves nothing. The
+    // input is synthetic rather than `[...pageKeys, 'abaNova']` so this stays
+    // independent of the assertion above — it must keep isolating the checker
+    // even on the day the real page model regresses. `nome` exercises the
+    // modeled arm, `extraData` the transient arm, and `abaNova` is what adding
+    // a tab-only field and forgetting `PRODUTO_TRANSIENT_FIELDS` looks like.
+    expect(
+      keysReachingTheProdutoWrite(['nome', 'extraData', 'abaNova'], PRODUTO_TRANSIENT_FIELDS),
+    ).toEqual(['abaNova']);
   });
 });

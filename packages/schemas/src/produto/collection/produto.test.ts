@@ -47,13 +47,11 @@ describe('produtoSchema', () => {
     ).toBe(false);
   });
 
-  it('parses componentesKit against kitSchema and preserves unknown top-level fields', () => {
+  it('parses componentesKit against kitSchema', () => {
     const parsed = produtoSchema.parse({
       nome: 'Kit',
       ehKit: true,
       componentesKit: { 'sku-a': { quantidade: 2 } },
-      // unknown extra field — should be preserved by .passthrough()
-      _customField: 'whatever',
     });
     // componentesKit is now typed: kitSchema fills its defaults.
     expect(parsed.componentesKit?.['sku-a']).toMatchObject({
@@ -61,7 +59,25 @@ describe('produtoSchema', () => {
       limitarEstoque: true,
       timestamp: null,
     });
-    expect((parsed as Record<string, unknown>)._customField).toBe('whatever');
+  });
+
+  // No `.passthrough()`: an unmodeled key is stripped on a lenient parse
+  // (the read path, `parseSoftRead` in `@delfrance/data`) — this is what
+  // keeps a legacy corpus doc carrying a since-retired field readable
+  // (root `CLAUDE.md` rule 8) — but throws on the write path, which
+  // re-parses strictly whenever the lenient parse dropped a caller-supplied
+  // key (`parseForWrite`/`parseMergePatch`, `packages/data/src/zodParse.ts`).
+  it('silently strips a genuinely unknown top-level key on a lenient (read) parse', () => {
+    const parsed = produtoSchema.parse({ nome: 'X', someRetiredLegacyField: 'whatever' });
+    expect(parsed).not.toHaveProperty('someRetiredLegacyField');
+  });
+
+  it('rejects a genuinely unknown top-level key on a strict (write) parse', () => {
+    // Mirrors the `.strict()` re-parse `parseForWrite`/`parseMergePatch` run
+    // internally once they notice the lenient parse above dropped a key.
+    expect(() => produtoSchema.strict().parse({ nome: 'X', someUnknownField: 'whatever' })).toThrow(
+      /nrecognized/,
+    );
   });
 
   it('parses the fotos array against fotoSchema (typed, not pass-through)', () => {
