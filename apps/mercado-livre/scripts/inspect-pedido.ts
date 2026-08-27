@@ -22,9 +22,22 @@
  * the freight arrives as an approved `GET /shipments/{id}/payments` entry, and
  * `Σ paid_amount` (order-scoped) structurally cannot see it.
  *
- * The rows this script gives a VERDICT to are therefore the post-conference
- * invariant (the canonical `derivePedidoFreteTotals`) and the `pago` threshold.
- * Formula A is printed for context only.
+ * ⚠️ **Which one is the owner is decided by the frete block, and the verdict
+ * follows the owner.** With no `freteInicial` the conference has not run, A is
+ * still the owner, and judging by B would be short by exactly the freight — a
+ * phantom on a healthy pedido. So this script judges A before the conference
+ * and the canonical `derivePedidoFreteTotals` after it, plus the `pago`
+ * threshold in both cases; the formula that is not the owner is printed for
+ * context only.
+ *
+ * ⚠️ The row this script reconciles against post-conference is the **canonical
+ * derive**, `Σ itemSubtotal − descontoTotal + frete` — which `applyFreteStep`
+ * now shares. It used to omit the coupon term, so a pedido written by the old
+ * code can still be off by exactly the coupon; the script names that gap rather
+ * than calling it a finding.
+ *
+ * ⚠️ `descontoTotal` gets NO verdict on a pack: it is written once at create
+ * from `orders[0]` alone, while the sum here spans every order in the mirror.
  *
  * The line-level formulas are still worth eyeballing:
  *
@@ -53,13 +66,13 @@ import {
   pedidoCollection,
 } from '@delfrance/data/admin/collections';
 import { formatReais, roundReais } from '@delfrance/core/money';
-import {
-  STATUS_PAGAMENTO,
-  derivePedidoFreteTotals,
-  flattenPedidoItens,
-  type ItemDoPedido,
-} from '@delfrance/schemas';
+import { STATUS_PAGAMENTO, flattenPedidoItens, type ItemDoPedido } from '@delfrance/schemas';
 
+import {
+  auditarDescontoTotal,
+  auditarValorCobrado,
+  type VeredictoValorCobrado,
+} from '../lib/marketplace/pedidos/pedidoMoneyAudit';
 import { getAdminFirestore } from '../lib/firebase/admin';
 
 function log(message: string): void {
@@ -149,10 +162,18 @@ function lineDiscount(line: Record<string, unknown>): number {
   }, 0);
 }
 
-/** Compare a stored value against the recomputed one; `≠` marks a mismatch. */
-function verdict(stored: unknown, esperado: number): string {
-  if (typeof stored !== 'number') return '✗ ausente';
-  return Math.abs(stored - esperado) < 0.005 ? '  confere' : '≠ DIVERGE';
+/** One-column rendering of an audited verdict. */
+function vereditoValorCobrado(v: VeredictoValorCobrado): string {
+  switch (v.tipo) {
+    case 'ausente':
+      return '✗ ausente';
+    case 'confere':
+      return '  confere';
+    case 'diferenca-conhecida':
+      return '~ conhecida';
+    case 'achado':
+      return '≠ DIVERGE';
+  }
 }
 
 /** True when two reais figures agree to the cent. */
@@ -229,6 +250,8 @@ async function main(): Promise<void> {
   let mlPaidAmount = 0;
   let mlTotalAmount = 0;
   let temPaidAmount = false;
+  /** Per-order coupon totals — `descontoTotal` only ever holds ONE order's. */
+  const cupomPorOrdem = new Map<string, number>();
 
   log('');
   log('## Pagamentos da ordem — as entradas da conta');
@@ -244,6 +267,7 @@ async function main(): Promise<void> {
       totalTransacoes += num(p.transaction_amount);
       totalFrete += num(p.shipping_cost);
       totalCupom += num(p.coupon_amount);
+      cupomPorOrdem.set(d.id, roundReais((cupomPorOrdem.get(d.id) ?? 0) + num(p.coupon_amount)));
       log(
         `  order=${d.id}  transaction_amount=${money(num(p.transaction_amount))}` +
           `  shipping_cost=${money(num(p.shipping_cost))}` +
@@ -252,8 +276,6 @@ async function main(): Promise<void> {
       );
     }
   }
-
-  const sementeFormulaA = roundReais(totalTransacoes + totalFrete - totalCupom);
 
   /* ---- the frete block: what we CHARGE for shipping, and what it COSTS ---- */
 
@@ -278,54 +300,118 @@ async function main(): Promise<void> {
     (pedido.itens ?? {}) as Record<string, ItemDoPedido[]>,
   ) as ItemDoPedido[];
   const descontoTotal = num(pedido.descontoTotal);
-  const canonico = derivePedidoFreteTotals({
+  const ehPack = orderSnaps.size > 1;
+
+  // ⚠️ The decisions live in `lib/marketplace/pedidos/pedidoMoneyAudit.ts`, and
+  // deliberately not here: `scripts/` is outside this app's vitest `include`, so
+  // logic written in this file can never be tested. Everything below is
+  // rendering.
+  const auditoria = auditarValorCobrado({
+    valorCobradoArmazenado: pedido.valorCobrado,
     itens: itensDoPedido,
     descontoTotal,
-    freteInicial: freteMoney,
+    frete: freteMoney,
+    totalTransacoes,
+    totalShippingCost: totalFrete,
+    totalCupom,
   });
 
   log('');
-  log('## Dinheiro — a fórmula B (a que VALE depois da conferência do envio)');
-  log('   `valorCobrado` = Σ itemSubtotal − descontoTotal + freteInicial.valorCobrado');
   log(
-    `  Σ itemSubtotal                 ${money(canonico.valorCobrado - freteCobrado + descontoTotal)}`,
+    auditoria.dono === 'conferencia'
+      ? '## Dinheiro — o derive canônico `derivePedidoFreteTotals` (o DONO, pós-conferência)'
+      : '## Dinheiro — a fórmula A ainda é a DONA (o frete não chegou; sem conferência)',
   );
-  log(`  descontoTotal                − ${money(descontoTotal)}`);
-  log(`  freteInicial.valorCobrado    + ${money(freteCobrado)}`);
+
+  if (auditoria.dono === 'conferencia') {
+    log('   `valorCobrado` = Σ itemSubtotal − descontoTotal + freteInicial.valorCobrado');
+    log(
+      `  Σ itemSubtotal                 ${money(auditoria.canonico - freteCobrado + descontoTotal)}`,
+    );
+    log(`  descontoTotal                − ${money(descontoTotal)}`);
+    log(`  freteInicial.valorCobrado    + ${money(freteCobrado)}`);
+  } else {
+    log('   `valorCobrado` = Σ transaction_amount + Σ shipping_cost − Σ coupon_amount');
+    log(`  Σ transaction_amount           ${money(totalTransacoes)}`);
+    log(`  Σ shipping_cost              + ${money(totalFrete)}`);
+    log(`  Σ coupon_amount              − ${money(totalCupom)}`);
+  }
   log(`  ${'-'.repeat(46)}`);
   log(
     `  valorCobrado   armazenado=${money(pedido.valorCobrado as number | null)}` +
-      `  recalculado=${money(canonico.valorCobrado)}   ${verdict(pedido.valorCobrado, canonico.valorCobrado)}`,
+      `  recalculado=${money(auditoria.esperado)}   ${vereditoValorCobrado(auditoria.veredicto)}`,
   );
-  log(
-    `  descontoTotal  armazenado=${money(pedido.descontoTotal as number | null)}` +
-      `  recalculado=${money(roundReais(totalCupom))}   ${verdict(pedido.descontoTotal, roundReais(totalCupom))}`,
-  );
-  if (
-    typeof pedido.valorCobrado === 'number' &&
-    !bate(pedido.valorCobrado, canonico.valorCobrado)
-  ) {
-    const gap = roundReais((pedido.valorCobrado as number) - canonico.valorCobrado);
+
+  const v = auditoria.veredicto;
+  if (v.tipo === 'diferenca-conhecida') {
     log(
-      bate(gap, descontoTotal)
-        ? `     ⚠️ a diferença é EXATAMENTE o descontoTotal (${money(descontoTotal)}) — conhecido: ` +
-            '`applyFreteStep` não subtrai o cupom, ao contrário de `derivePedidoFreteTotals`. ' +
-            'Quem financia o cupom do ML decide qual está certo (LIVE-TEST §7.1, passo 6.3).'
-        : `     ❌ diferença de ${money(gap)} que NÃO é o cupom — registre em LIVE-TEST.md §7.1.`,
+      `     ⚠️ a diferença é EXATAMENTE o descontoTotal (${money(v.descontoTotal)}) — conhecido: ` +
+        '`applyFreteStep` não subtrai o cupom, ao contrário de `derivePedidoFreteTotals`. ' +
+        'Quem financia o cupom do ML decide qual está certo (LIVE-TEST §7.1, passo 6.3).',
+    );
+  } else if (v.tipo === 'achado') {
+    log(
+      `     ❌ diferença de ${money(v.gap)} — isto sim é um achado. Registre em LIVE-TEST.md §7.1.`,
     );
   }
 
-  log('');
-  log('## Fórmula A — a SEMENTE de criação, só para contexto (NÃO é um veredito)');
-  log(`  Σ transaction_amount           ${money(totalTransacoes)}`);
-  log(`  Σ shipping_cost              + ${money(totalFrete)}`);
-  log(`  Σ coupon_amount              − ${money(totalCupom)}`);
-  log(`  ${'-'.repeat(46)}`);
-  log(`  semente (fórmula A)            ${money(sementeFormulaA)}`);
-  log(
-    `  Só se espera que bata com o armazenado ANTES da conferência do envio rodar — e, num ` +
-      'PACK, ela foi calculada com `orders[0]` SOZINHO.',
-  );
+  if (auditoria.dono === 'semente') {
+    if (ehPack) {
+      log(
+        '     ⚠️ num PACK a semente foi gravada com `orders[0]` SOZINHO, e a soma acima percorre ' +
+          'TODAS as ordens — confira o veredito contra UMA ordem, não contra o pack.',
+      );
+    }
+    log(
+      `     Quando a conferência do envio rodar, o valor passa a ser ${money(auditoria.canonico)} ` +
+        '+ o frete do envio. Nada a fazer até lá.',
+    );
+  }
+
+  /* ---- descontoTotal: judged only where the writer and the sum agree ------ */
+
+  const cupom = auditarDescontoTotal({
+    descontoTotalArmazenado: pedido.descontoTotal,
+    totalCupom,
+    ehPack,
+  });
+  if (cupom.tipo === 'sem-veredito-pack') {
+    log(
+      `  descontoTotal  armazenado=${money(pedido.descontoTotal as number | null)}` +
+        `  Σ do pack=${money(cupom.somaDoPack)}   (sem veredito — ver abaixo)`,
+    );
+    log(
+      `     cupom por ordem: ${
+        cupomPorOrdem.size > 0
+          ? [...cupomPorOrdem].map(([id, valor]) => `${id}=${money(valor)}`).join('  ')
+          : '(nenhum)'
+      }`,
+    );
+    log(
+      '     `descontoTotal` é gravado UMA vez, na criação, a partir de `orders[0]` sozinho ' +
+        '(`orderPedidoTx`), e nunca é recalculado — bater com UMA ordem só é o esperado.',
+    );
+  } else {
+    log(
+      `  descontoTotal  armazenado=${money(pedido.descontoTotal as number | null)}` +
+        `  recalculado=${money(roundReais(totalCupom))}   ` +
+        `${cupom.tipo === 'confere' ? '  confere' : cupom.tipo === 'ausente' ? '✗ ausente' : '≠ DIVERGE'}`,
+    );
+  }
+
+  if (auditoria.dono === 'conferencia') {
+    log('');
+    log('## Fórmula A — a SEMENTE de criação, só para contexto (NÃO é um veredito)');
+    log(`  Σ transaction_amount           ${money(totalTransacoes)}`);
+    log(`  Σ shipping_cost              + ${money(totalFrete)}`);
+    log(`  Σ coupon_amount              − ${money(totalCupom)}`);
+    log(`  ${'-'.repeat(46)}`);
+    log(`  semente (fórmula A)            ${money(auditoria.semente)}`);
+    log(
+      `  Só se esperava que batesse com o armazenado ANTES da conferência do envio rodar — e, ` +
+        'num PACK, ela foi calculada com `orders[0]` SOZINHO.',
+    );
+  }
 
   log('');
   log('  ⚠️ O QUE O COMPRADOR PAGOU × O QUE COBRAMOS:');
