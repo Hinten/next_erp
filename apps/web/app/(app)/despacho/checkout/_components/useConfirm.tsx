@@ -26,7 +26,21 @@ interface Pending extends ConfirmOptions {
 export interface ConfirmHandle {
   /** Open the dialog; resolves `true` on confirm, `false` on cancel/close. */
   confirm: (opts: ConfirmOptions) => Promise<boolean>;
-  /** Mount this once near the screen root. */
+  /**
+   * Mount this once near the screen root — **NEVER inside another `<Modal>`.**
+   *
+   * Not a style preference: Mantine's `keepMounted` defaults to `false`, so the
+   * parent modal closing UNMOUNTS this element while a `confirm()` is still
+   * pending. The stored `resolve` (see `settle` below) is then stranded and
+   * every caller awaiting it hangs forever — there is no timeout and no error,
+   * just a promise that never settles. #1096 wedged the despacho reprint print
+   * mutex exactly that way: `usePrintInFlight`'s `finally` never ran, so both
+   * reprint buttons spun for the life of the pane.
+   *
+   * Portalling does not save you — `ModalBase` portals to `document.body`
+   * regardless of JSX nesting, so a nested dialog LOOKS correct right up until
+   * the parent closes.
+   */
   element: React.ReactNode;
 }
 
