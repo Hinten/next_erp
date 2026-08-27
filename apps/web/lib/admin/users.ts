@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 
-import { envelopeDeErro, lerRespostaJson } from '@delfrance/core/wire';
+import { envelopeDeErro, lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
 const BASE =
   process.env.NEXT_PUBLIC_INTEGRATIONS_URL ??
@@ -150,8 +150,15 @@ async function call<S extends z.ZodType>(
   const leitura = lerRespostaJson(text, schema);
   if (leitura.ok) return leitura.data;
 
-  if (leitura.motivo === 'nao-json') {
-    logarCorpoNaoJson(path, res.status, leitura.texto);
+  if (leitura.motivo !== 'formato') {
+    // ⚠️ EMPTY and NON-JSON share this branch: neither is version skew — in
+    // both the request failed to reach a route that answers JSON, so neither
+    // may tell the operator to deploy anything.
+    logarCorpoNaoJson(
+      path,
+      res.status,
+      leitura.motivo === 'nao-json' ? leitura.texto : '(corpo vazio)',
+    );
     throw new AdminClientRespostaInvalidaError(
       `O serviço de administração respondeu HTTP ${String(res.status)} sem um corpo JSON — o ` +
         'pedido não chegou à rota esperada. Atualize a página e, se continuar, avise o suporte.',
@@ -162,7 +169,7 @@ async function call<S extends z.ZodType>(
 
   throw new AdminClientRespostaInvalidaError(
     'O serviço de administração respondeu num formato que este aplicativo não reconhece. ' +
-      `Campos inválidos: ${leitura.campos.join(', ')}. Normalmente isso significa que o ` +
+      `Campos inválidos: ${resumirCampos(leitura.campos)}. Normalmente isso significa que o ` +
       'backend e esta tela estão em versões diferentes — faça o deploy de `apps/integrations` ' +
       'e recarregue a página.',
     res.status,
