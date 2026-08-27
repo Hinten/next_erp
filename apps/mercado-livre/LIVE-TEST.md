@@ -342,6 +342,12 @@ exactly this via `derivePedidoTotals`.
 So **A and B are not expected to agree**, and a mismatch between them is not a finding. They
 coincide only when the freight rode the order's own payments.
 
+⚠️ **The owner is decided by the frete block, and only the owner's formula may be judged.**
+No `freteInicial` ⇒ the conference has not run ⇒ **A is still the owner**, and reconciling
+such a pedido against B reports a shortfall of exactly the freight on money that is entirely
+correct. `inspect-pedido.ts` picks the owner for you (`lib/marketplace/pedidos/pedidoMoneyAudit.ts`,
+unit-tested); if you reconcile by hand, pick it yourself first.
+
 ⚠️ **A pack bills shipping ONCE, on the shipment.** Each order's payment then carries
 `shipping_cost: 0` and the freight arrives as an approved
 `GET /shipments/{id}/payments` entry. ML's per-order `paid_amount` is order-scoped and
