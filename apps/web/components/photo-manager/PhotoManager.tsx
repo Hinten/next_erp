@@ -15,6 +15,7 @@ import {
   SimpleGrid,
   Stack,
   Text,
+  UnstyledButton,
 } from '@mantine/core';
 import { Dropzone, IMAGE_MIME_TYPE, type FileWithPath } from '@mantine/dropzone';
 import { notifications } from '@mantine/notifications';
@@ -22,6 +23,7 @@ import {
   IconArrowBackUp,
   IconFolderUp,
   IconGripVertical,
+  IconMaximize,
   IconPhotoPlus,
   IconStar,
   IconStarFilled,
@@ -55,6 +57,8 @@ import {
 } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { DELETE_MARK } from '@delfrance/ui';
+import { idFromRef } from './arquivoRef';
+import { FotoViewerModal } from './FotoViewerModal';
 
 /** A `Foto` plus the transient staged-deletion marker (keyed by `DELETE_MARK`). */
 type EditableFoto = Foto & { [DELETE_MARK]?: boolean };
@@ -118,15 +122,6 @@ function stripeBg(index: number): string | undefined {
   return index % 2 === 1 ? 'var(--mantine-color-default-hover)' : undefined;
 }
 
-const ARQUIVOS_PREFIX = 'arquivos/';
-
-/** `arquivos/<id>` → `<id>` (or `null` for an absent ref). */
-function idFromRef(ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  const id = ref.startsWith(ARQUIVOS_PREFIX) ? ref.slice(ARQUIVOS_PREFIX.length) : ref;
-  return id || null;
-}
-
 export interface PhotoManagerProps {
   /**
    * Upload adapter: takes the dropped file's bytes and resolves to the new
@@ -185,6 +180,12 @@ export function PhotoManager({
   const fotos = useMemo<EditableFoto[]>(() => value ?? [], [value]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The fullscreen viewer, held as {which gallery, position within it} rather
+  // than a global `fotos` index: sections are separate galleries, so paging stays
+  // inside the one that was clicked. The gallery itself is DERIVED from
+  // `sectionLists` on every render, so a foto disappearing underneath the viewer
+  // (staged delete, a group change) closes it instead of showing the wrong photo.
+  const [viewer, setViewer] = useState<{ sectionKey: string; pos: number } | null>(null);
 
   // Live sibling field via the ObjectView FormProvider: the variant sections
   // follow the parent's CURRENT `variacoesUid` (even unsaved edits from the
@@ -422,8 +423,25 @@ export function PhotoManager({
         disabled={disabled}
         onCover={makeCover}
         onToggleDelete={toggleDelete}
+        onOpen={(pos) => setViewer({ sectionKey, pos })}
       />
     );
+  }
+
+  /** The gallery the viewer is paging through, re-derived on every render. */
+  const viewerIndexes = viewer
+    ? (sectionLists.find((s) => s.key === viewer.sectionKey)?.indexes ?? [])
+    : [];
+  const viewerFoto = viewer ? (fotos[viewerIndexes[viewer.pos] ?? -1] ?? null) : null;
+
+  /** Step within the viewer's gallery; a step past either end is a no-op. */
+  function navigateViewer(delta: -1 | 1) {
+    setViewer((prev) => {
+      if (!prev) return prev;
+      const indexes = sectionLists.find((s) => s.key === prev.sectionKey)?.indexes ?? [];
+      const next = prev.pos + delta;
+      return next >= 0 && next < indexes.length ? { ...prev, pos: next } : prev;
+    });
   }
 
   function sectionDeleteLabel(indexes: number[]) {
@@ -519,6 +537,16 @@ export function PhotoManager({
           </Paper>
         ))}
       </DndContext>
+
+      {/* Top level on purpose — never nested inside another <Modal>. */}
+      <FotoViewerModal
+        db={db}
+        foto={viewerFoto}
+        pos={viewer?.pos ?? 0}
+        total={viewerFoto ? viewerIndexes.length : 0}
+        onNavigate={navigateViewer}
+        onClose={() => setViewer(null)}
+      />
     </Stack>
   );
 }
@@ -535,6 +563,8 @@ interface SectionGridProps {
   disabled?: boolean;
   onCover: (index: number) => void;
   onToggleDelete: (index: number) => void;
+  /** Open the fullscreen viewer at `pos` — the position WITHIN this gallery. */
+  onOpen: (pos: number) => void;
 }
 
 /**
@@ -552,6 +582,7 @@ function SectionGrid({
   disabled,
   onCover,
   onToggleDelete,
+  onOpen,
 }: SectionGridProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `${CONTAINER_PREFIX}${sectionKey}` });
   return (
@@ -586,7 +617,7 @@ function SectionGrid({
           </Group>
         ) : (
           <SimpleGrid cols={{ base: 2, sm: 3, md: 4 }}>
-            {indexes.map((index) => {
+            {indexes.map((index, pos) => {
               const foto = fotos[index]!;
               return (
                 <SortableFoto
@@ -594,12 +625,14 @@ function SectionGrid({
                   sortableId={sortableIds[index]!}
                   foto={foto}
                   db={db}
+                  pos={pos}
                   isCover={withCover && index === 0}
                   showCover={withCover}
                   marked={!!foto[DELETE_MARK]}
                   disabled={disabled}
                   onCover={() => onCover(index)}
                   onToggleDelete={() => onToggleDelete(index)}
+                  onOpen={() => onOpen(pos)}
                 />
               );
             })}
@@ -615,6 +648,8 @@ interface SortableFotoProps {
   sortableId: string;
   foto: Foto;
   db: Firestore;
+  /** 0-based position within its gallery, for the "ampliar" label. */
+  pos: number;
   isCover: boolean;
   /** Cover actions only exist in the parent-level gallery. */
   showCover: boolean;
@@ -623,18 +658,22 @@ interface SortableFotoProps {
   disabled?: boolean;
   onCover: () => void;
   onToggleDelete: () => void;
+  /** Open this foto in the fullscreen viewer. */
+  onOpen: () => void;
 }
 
 function SortableFoto({
   sortableId,
   foto,
   db,
+  pos,
   isCover,
   showCover,
   marked,
   disabled,
   onCover,
   onToggleDelete,
+  onOpen,
 }: SortableFotoProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: sortableId,
@@ -670,7 +709,34 @@ function SortableFoto({
     <Paper ref={setNodeRef} style={style} withBorder p={4} pos="relative">
       <Box pos="relative">
         {url ? (
-          <Image src={url} alt="Foto do produto" h={140} fit="cover" radius="sm" />
+          // ⚠️ This gallery renders inside ObjectView's <form>, so this control
+          // must never become a SUBMIT button — clicking a photo would save the
+          // record. `UnstyledButton` already defaults to `type="button"`; the
+          // explicit prop keeps that guarantee visible if the element changes.
+          // Deliberately outside the `!disabled` guards — viewing a photo is
+          // exactly what a read-only screen is for. The dnd listeners live on the
+          // grip alone, so this click is unclaimed.
+          <UnstyledButton
+            type="button"
+            onClick={onOpen}
+            aria-label={`Ampliar foto ${pos + 1}`}
+            style={{ display: 'block', width: '100%', cursor: 'zoom-in' }}
+          >
+            <Image src={url} alt="Foto do produto" h={140} fit="cover" radius="sm" />
+            {/* Affordance cue only — the button owns the click. */}
+            <IconMaximize
+              size={16}
+              aria-hidden
+              style={{
+                position: 'absolute',
+                bottom: 4,
+                right: 4,
+                color: 'var(--mantine-color-white)',
+                filter: 'drop-shadow(0 0 2px rgba(0, 0, 0, 0.8))',
+                pointerEvents: 'none',
+              }}
+            />
+          </UnstyledButton>
         ) : (
           <Group justify="center" h={140}>
             <Loader size="sm" />
