@@ -74,7 +74,10 @@ import {
   ORIGEM_INCIDENTE,
   TIPO_INCIDENTE,
   UF_SIGLA,
+  derivePedidoFreteTotals,
+  flattenPedidoItens,
 } from '@delfrance/schemas';
+import { roundReais } from '@delfrance/core/money';
 import type {
   EnderecoBuildOutcome,
   EnderecoForcado,
@@ -2272,7 +2275,7 @@ describe('importPedidoMercadoLivre — money map de um PACK (#1087)', () => {
    * create-time Formula A value for `orders[0]`, which is what makes the repair
    * assertion below mean something.
    */
-  function seedPedidoDoPack(db: FakeDb): void {
+  function seedPedidoDoPack(db: FakeDb, over: DocData = {}): void {
     seedConta(db);
     vi.mocked(discoverPedidoMercadoLivre).mockImplementation(async (args) => {
       const fake = args.db as unknown as FakeDb;
@@ -2293,6 +2296,7 @@ describe('importPedidoMercadoLivre — money map de um PACK (#1087)', () => {
           descontoTotal: core.descontoTotal,
           valorCobrado: core.valorCobrado,
           ultimaModificacao: NOW_US,
+          ...over,
         });
       }
       return { pedidoId: 'pedido-1', created: true };
@@ -2370,6 +2374,47 @@ describe('importPedidoMercadoLivre — money map de um PACK (#1087)', () => {
     // pagamento, which is what lets Σ aprovados reach the pack total at all.
     expect(db.docs('pedidos/pedido-1/pagamentos').size).toBe(3);
     expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('pago');
+  });
+
+  it('subtracts descontoTotal, agreeing with derivePedidoFreteTotals to the cent', async () => {
+    // The conference used to compute `roundReais(Σ itemSubtotal) + frete` and
+    // drop the `− descontoTotal` term the canonical derive has. On an order
+    // carrying an ML coupon that made the stored total exceed the pedido
+    // footer's Total by the coupon — and since the advance is `>=`, a
+    // fully-paid coupon order could never reach `pago`.
+    //
+    // ⚠️ The assertion is a CROSS-CHECK against `derivePedidoFreteTotals`, not a
+    // literal: either side moving reds this. That is the point — the two are one
+    // formula now, and the lane is what keeps them one.
+    //
+    // ⚠️ Which side was right is not self-evident, and this test does not claim
+    // it is. It rests on an ML coupon reducing what the buyer owes; if ML funds
+    // the coupon and still pays the seller in full, the term is wrong and the
+    // OLD formula was right. LIVE-TEST.md §7.1 step 6.3 is what settles it.
+    const CUPOM = 12.5;
+
+    // The same pack, run twice: once as ML sent it, once with an order-level
+    // coupon on the pedido (`descontoTotal` = `Σ payments[].coupon_amount`).
+    const dbSemCupom = new FakeDb();
+    seedPedidoDoPack(dbSemCupom);
+    await importPedidoMercadoLivre(deps(dbSemCupom, apiDoPack()), ORDER_A);
+    const semCupom = dbSemCupom.docs('pedidos').get('pedido-1')!.valorCobrado;
+
+    const dbCupom = new FakeDb();
+    seedPedidoDoPack(dbCupom, { descontoTotal: CUPOM });
+    await importPedidoMercadoLivre(deps(dbCupom, apiDoPack()), ORDER_A);
+
+    const written = dbCupom.docs('pedidos').get('pedido-1')!;
+    const canonico = derivePedidoFreteTotals({
+      itens: flattenPedidoItens(written.itens as Record<string, ItemDoPedido[]>),
+      descontoTotal: written.descontoTotal as number,
+      freteInicial: written.freteInicial as FreteDoPedido,
+    });
+    expect(written.valorCobrado).toBe(canonico.valorCobrado);
+    // …and the coupon is the ONLY thing that moved: the no-coupon run of the
+    // same pack is exactly `CUPOM` higher. Without this the cross-check would
+    // pass even if both sides ignored the term.
+    expect(roundReais((semCupom as number) - (written.valorCobrado as number))).toBe(CUPOM);
   });
 
   it('does NOT advance a pack whose sibling pagamento was recusado', async () => {
