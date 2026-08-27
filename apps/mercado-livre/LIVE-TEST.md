@@ -394,11 +394,14 @@ never validates them, so a shape change is **silent**. Capture the real bodies (
    ⚠️ `pedido.descontoTotal` is itself written once at create from `orders[0]` alone and never
    recomputed, so on a **pack** it is a sibling-scoped figure either way — a residual this
    fix does not close.
-2. **`applyFreteSemEnvioStep` never writes `valorCobrado`.** Both B and B′ need a frete
-   conference, and the sem-envio path has none — so a **"frete a combinar" pack** (#1273)
-   holds every sibling's items against `orders[0]`'s total. That is #791's failure mode
-   (`pago` on a partial payment) on the one path #791 did not cover. Buy a two-item cart with
-   no Mercado Envios and read `valorCobrado` before doing anything else.
+2. **The sem-envio path had no total repair at all — now it does.** Both B and B′ need a
+   frete conference, and a **"frete a combinar" pack** (#1273) never reaches one, so it held
+   every sibling's items against `orders[0]`'s total: #791's failure mode (`pago` on a
+   partial payment) on the one path #791 did not cover. `applyFreteSemEnvioStep` now
+   reconciles `valorCobrado` through the same `derivePedidoFreteTotals` — on the seed and on
+   every later run, money only, never `freteInicial.estado`.
+   ⬜ Still verify live: buy a **two-item cart with no Mercado Envios** and read
+   `valorCobrado` against the two orders' `total_amount` before doing anything else.
 
 ### 7.2 — Settle #758 (the PDF label branch)
 

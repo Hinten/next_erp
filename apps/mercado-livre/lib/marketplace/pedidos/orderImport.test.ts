@@ -2740,6 +2740,248 @@ describe('importPedidoMercadoLivre — order with no Mercado Envios shipment', (
     });
   });
 
+  describe('valorCobrado on a sem-envio PACK (#791 on the path #791 did not cover)', () => {
+    /**
+     * A pack pedido as it exists before any repair: BOTH siblings' items, but
+     * `orders[0]`'s money — because `mlOrderToPedidoCoreFields` runs on
+     * `orders[0]` alone and `orderPedidoTx` never recomputes the total when it
+     * appends a sibling.
+     */
+    function seedPackSemEnvio(db: FakeDb, over: DocData = {}): void {
+      seedPedidoPronto(db, {
+        valorCobrado: 50, // orders[0] alone…
+        itens: {
+          'produto-A': [
+            {
+              produtoUid: 'produto-A',
+              ordem: 1,
+              mktplaceId: 'MLB9001',
+              precoDeVenda: 50,
+              quantidade: 1,
+              descontoUnitario: 0,
+            },
+          ],
+          'produto-B': [
+            {
+              produtoUid: 'produto-B',
+              ordem: 2,
+              mktplaceId: 'MLB9002',
+              precoDeVenda: 99.94, // …while the pedido holds 149,94 of goods
+              quantidade: 1,
+              descontoUnitario: 0,
+            },
+          ],
+        },
+        ...over,
+      });
+    }
+
+    const apiSemEnvio = (): MercadoLivreApi =>
+      makeApi({ getOrder: vi.fn(async () => makeOrder({ id: 1, tags: ['no_shipping', 'paid'] })) });
+
+    it('reconciles the total on the SEED — a sem-envio pack reaches no conference', async () => {
+      // Both of the shipment path's repairs live in `applyFreteStep`, which an
+      // order sold "frete a combinar" never enters. Without this the pedido
+      // keeps 50,00 for ever while holding 149,94 of goods.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPackSemEnvio(db);
+
+      await importPedidoMercadoLivre(deps(db, apiSemEnvio()), 1);
+
+      const written = db.docs('pedidos').get('pedido-1')!;
+      expect(written.valorCobrado).toBe(149.94);
+      // A sem-envio block carries no freight charge, so the total is the goods.
+      expect((written.freteInicial as DocData).valorCobrado ?? 0).toBe(0);
+    });
+
+    it('does NOT let a partial payment reach pago once the total is whole', async () => {
+      // The failure this exists to stop. Σ aprovados is 50,00 — the first
+      // sibling's payment — and against the un-repaired 50,00 threshold that is
+      // a correct `>=` comparison producing a WRONG `pago`, which authorises
+      // dispatch and NF-e emission for goods the buyer has not paid for.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPackSemEnvio(db);
+      db.seed('pedidos/pedido-1/pagamentos', 'pag-A', {
+        id: '5001',
+        valor: 50,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+      });
+
+      await importPedidoMercadoLivre(deps(db, apiSemEnvio()), 1);
+
+      const written = db.docs('pedidos').get('pedido-1')!;
+      expect(written.valorCobrado).toBe(149.94);
+      expect(written.estado).toBe('emProcessamento');
+    });
+
+    it('reconciles AND advances in the same transaction — both writes land', async () => {
+      // ⚠️ The only arm where BOTH `tx.update`s fire: the money repair, then the
+      // delivery advance, on the same pedido in one transaction. That ordering
+      // is a deliberate design claim (`orderImport.ts`: "Runs FIRST so it cannot
+      // mask the advance's own patch"), and every other case here runs with
+      // `fulfilled` unset — so without this test the claim is unexercised.
+      //
+      // Needs BOTH: a stale total (the pack shape) and a `fulfilled: true`
+      // payload NEWER than `lastMarketplaceUpdate`, or the advance's µs
+      // freshness gate refuses and only one write happens.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPackSemEnvio(db, {
+        lastMarketplaceUpdate: Date.parse('2026-01-01T00:00:00.000-03:00') * 1000,
+        freteInicial: {
+          estado: 'iniciado',
+          modalidade: '1',
+          externalOptionIntegracao: null,
+          enderecoFreteOuterReference: 'documents/clientes/cli-1/enderecos/end-1',
+          ultimaModificacao: Date.parse('2026-01-01T00:00:00.000-03:00') * 1000,
+        },
+      });
+      const api = makeApi({
+        getOrder: vi.fn(async () =>
+          makeOrder({
+            id: 1,
+            tags: ['no_shipping', 'not_delivered', 'paid'],
+            fulfilled: true,
+            lastUpdated: '2026-02-01T00:00:00.000-03:00',
+          }),
+        ),
+      });
+
+      await importPedidoMercadoLivre(deps(db, api), 1);
+
+      const written = db.docs('pedidos').get('pedido-1')!;
+      // ⚠️ Asserted on the DOCUMENT, not on `db.lastPatch`: that helper is
+      // last-write-wins per doc path, so here it returns the ADVANCE's patch and
+      // the money write is invisible to it. Reading the patch would silently
+      // assert half of what this test is named for.
+      expect(written.valorCobrado).toBe(149.94);
+      expect((written.freteInicial as DocData).estado).toBe('entregue');
+      // …and the ordering claim itself: the advance is the one that landed last.
+      expect(db.lastPatch('pedidos', 'pedido-1')).toMatchObject({
+        freteInicial: expect.objectContaining({ estado: 'entregue' }),
+      });
+    });
+
+    it('repairs a sibling that merged AFTER the block was seeded', async () => {
+      // The seed is create-only, so a pack assembling across notifications gets
+      // its block from the first order and its second line later. Only a repair
+      // that runs on EVERY invocation catches that — this is the arm the
+      // shipment path calls `!maisNovo`.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPedidoPronto(db, {
+        valorCobrado: 50,
+        freteInicial: {
+          estado: 'iniciado',
+          modalidade: '1',
+          externalOptionIntegracao: null,
+          enderecoFreteOuterReference: 'documents/clientes/cli-1/enderecos/end-1',
+          ultimaModificacao: Date.parse('2026-01-01T00:00:00.000-03:00') * 1000,
+        },
+        itens: {
+          'produto-A': [
+            {
+              produtoUid: 'produto-A',
+              ordem: 1,
+              mktplaceId: 'MLB9001',
+              precoDeVenda: 50,
+              quantidade: 1,
+              descontoUnitario: 0,
+            },
+          ],
+          'produto-B': [
+            {
+              produtoUid: 'produto-B',
+              ordem: 2,
+              mktplaceId: 'MLB9002',
+              precoDeVenda: 99.94,
+              quantidade: 1,
+              descontoUnitario: 0,
+            },
+          ],
+        },
+      });
+
+      await importPedidoMercadoLivre(deps(db, apiSemEnvio()), 1);
+      expect(db.docs('pedidos').get('pedido-1')!.valorCobrado).toBe(149.94);
+
+      // …and it is INERT once converged. State comparison cannot tell "wrote the
+      // same value" from "did not write", so clear the patches and re-run.
+      db.clearPatches();
+      await importPedidoMercadoLivre(deps(db, apiSemEnvio()), 1);
+      expect(db.lastPatch('pedidos', 'pedido-1')).toBeUndefined();
+    });
+
+    it('touches MONEY only — never freteInicial.estado, which moves physical stock', async () => {
+      // `estado` crossing into `ESTADOS_FRETE_REMOVE_ESTOQUE` deducts the goods
+      // from the depósito and is irreversible from the frete side. The delivery
+      // advance owns that decision and its guards; this repair must not have a
+      // second opinion.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPedidoPronto(db, {
+        valorCobrado: 50,
+        freteInicial: {
+          ...{
+            estado: 'iniciado',
+            modalidade: '1',
+            externalOptionIntegracao: null,
+            enderecoFreteOuterReference: 'documents/clientes/cli-1/enderecos/end-1',
+            ultimaModificacao: Date.parse('2026-01-01T00:00:00.000-03:00') * 1000,
+          },
+          estado: 'postado',
+        },
+        itens: {
+          'produto-A': [
+            {
+              produtoUid: 'produto-A',
+              ordem: 1,
+              mktplaceId: 'MLB9001',
+              precoDeVenda: 149.94,
+              quantidade: 1,
+              descontoUnitario: 0,
+            },
+          ],
+        },
+      });
+
+      await importPedidoMercadoLivre(deps(db, apiSemEnvio()), 1);
+
+      const patch = db.lastPatch('pedidos', 'pedido-1')!;
+      expect(Object.keys(patch).sort()).toEqual(['ultimaModificacao', 'valorCobrado']);
+      expect((db.docs('pedidos').get('pedido-1')!.freteInicial as DocData).estado).toBe('postado');
+    });
+
+    it('waits for the fiscal address, exactly like the block seed does', async () => {
+      // ⚠️ Seeded WITH a frete block on purpose. On the seed arm the step
+      // already returns before reaching the money, so a no-block fixture would
+      // pass whether the gate exists or not — a vacuous test. The arm the gate
+      // actually guards is this one: a block that arrived some other way (an
+      // operator, an earlier shipment) on a pedido whose `sem-cep` endereço has
+      // not resolved. There `valorCobrado` is still the create-time value and is
+      // not this path's to overwrite yet.
+      const db = new FakeDb();
+      seedConta(db);
+      seedPackSemEnvio(db, {
+        enderecoFiscalOuterRef: null,
+        freteInicial: {
+          estado: 'iniciado',
+          modalidade: '1',
+          externalOptionIntegracao: null,
+          enderecoFreteOuterReference: null,
+          ultimaModificacao: Date.parse('2026-01-01T00:00:00.000-03:00') * 1000,
+        },
+      });
+
+      await importPedidoMercadoLivre(deps(db, apiSemEnvio()), 1);
+
+      expect(db.docs('pedidos').get('pedido-1')!.valorCobrado).toBe(50);
+      expect(db.lastPatch('pedidos', 'pedido-1')).toBeUndefined();
+    });
+  });
+
   it('⚠️ stamps ultimaModificacao, or a later real shipment could never overwrite it', () => {
     // `seedFreteInicial` leaves the stamp null, and the SHIPMENTS-topic policy
     // reads an unstamped STORED block as "already newer" — the deliberate inverse
