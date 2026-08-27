@@ -375,6 +375,48 @@ describe('buildParentAttributes', () => {
     expect(attrs.find((a) => a.id === 'BRAND')?.value_name).toBe('Hering');
   });
 
+  // ⚠️ The case the IMPORT backfill created (#1087). Since the importer began
+  // filling `extraData.marca` from the listing's own BRAND, the common produto is
+  // one whose Marca was COPIED from the entry already on the link — so rebuilding
+  // it through `attrBrand` would strip the `value_id` ML had already matched, on
+  // every listing the import touched, and hand ML back a bare name to resolve
+  // again. Same answer, strictly poorer copy.
+  it('keeps the stored value_id when the produto Marca says the same thing', () => {
+    const armazenada = { id: 'BRAND', value_id: '9999', value_name: 'Acme' };
+    const attrs = buildParentAttributes(
+      produto,
+      { docId: 'l', id: null, attributes: [armazenada] },
+      null,
+      { marca: 'Acme' },
+    );
+    expect(attrs.filter((a) => a.id === 'BRAND')).toEqual([armazenada]);
+  });
+
+  // The remove-then-add pair has to stay symmetric: skipping the add while still
+  // running the remove would publish NO brand at all.
+  it('emits exactly one BRAND when the stored value matches', () => {
+    const attrs = buildParentAttributes(
+      produto,
+      { docId: 'l', id: null, attributes: [{ id: 'BRAND', value_id: '9999', value_name: 'Acme' }] },
+      null,
+      { marca: '  Acme  ' },
+    );
+    expect(attrs.filter((a) => a.id === 'BRAND')).toHaveLength(1);
+  });
+
+  // ⚠️ Only an EXACT match may skip the rebuild. A differing Marca means the
+  // operator retyped it and must win — a case-insensitive test here would keep
+  // publishing the stale brand.
+  it('still rebuilds when the Marca differs only in case', () => {
+    const attrs = buildParentAttributes(
+      produto,
+      { docId: 'l', id: null, attributes: [{ id: 'BRAND', value_id: '9999', value_name: 'Acme' }] },
+      null,
+      { marca: 'ACME' },
+    );
+    expect(attrs.filter((a) => a.id === 'BRAND')).toEqual([{ id: 'BRAND', value_name: 'ACME' }]);
+  });
+
   it('emits no BRAND at all when neither the produto nor the listing has one', () => {
     const attrs = buildParentAttributes(produto, null, null, { marca: null });
     expect(attrs.some((a) => a.id === 'BRAND')).toBe(false);

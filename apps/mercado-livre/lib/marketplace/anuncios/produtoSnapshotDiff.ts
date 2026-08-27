@@ -275,7 +275,43 @@ export function compararSubcolecoes(
     if (SUBCOLECOES_ESPERADAS_PERDIDAS.has(nome)) esperadasPerdidas.push(r);
     else roundTrip.push(r);
   }
+  roundTrip.push(...compararExtraData(antes, depois));
   return { roundTrip, esperadasPerdidas };
+}
+
+/** The `extraData` doc id is always the literal `singleton` (`PRODUTO_EXTRA_DATA_DOC_ID`). */
+const EXTRA_DATA_DOC_ID = 'singleton';
+
+/**
+ * extraData fields an ML import can restore, so the report can say whether they
+ * actually came back.
+ *
+ * `marca` is the one that motivated this (#1087): the importer began filling it
+ * from the listing's `BRAND`, and nothing here could see it.
+ */
+export const CAMPOS_EXTRA_DATA_ROUND_TRIP: readonly string[] = ['marca', 'descricao', 'condicao'];
+
+/**
+ * Compare the `extraData/singleton` doc FIELD BY FIELD.
+ *
+ * ⚠️ Without this the subcollection comparison above reports `extraData` by
+ * DOCUMENT COUNT alone — so a `marca` of `'Nike'` coming back `null` reads as
+ * "1 doc → 1 doc, ok". A checker that cannot fail is the exact hazard this
+ * module's own header names, and `marca` sat squarely inside it: the round-trip
+ * report was clean for the whole time nothing imported the field.
+ */
+function compararExtraData(antes: ProdutoDump, depois: ProdutoDump): Row[] {
+  const doc = (d: ProdutoDump): Record<string, unknown> | null =>
+    d.subcolecoes.extraData?.find((x) => x.id === EXTRA_DATA_DOC_ID)?.data ?? null;
+  const a = doc(antes);
+  const b = doc(depois);
+  // Neither side has one — nothing to say. The count row above already reports a
+  // singleton that vanished outright.
+  if (a == null && b == null) return [];
+  return compararCampos(CAMPOS_EXTRA_DATA_ROUND_TRIP, a, b).map((r) => ({
+    ...r,
+    campo: `extraData.${r.campo}`,
+  }));
 }
 
 export interface DiffResult {

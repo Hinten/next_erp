@@ -21,6 +21,7 @@ export function MassImportDialog({ state }: { state: MassImportActionState }) {
   const [importarFotos, setImportarFotos] = useState(true);
   const [importarCategorias, setImportarCategorias] = useState(true);
   const [atualizarProdutoPai, setAtualizarProdutoPai] = useState(true);
+  const [sobrescreverDadosProduto, setSobrescreverDadosProduto] = useState(false);
   const [atualizarCadastrados, setAtualizarCadastrados] = useState(false);
 
   return (
@@ -69,6 +70,13 @@ export function MassImportDialog({ state }: { state: MassImportActionState }) {
           onChange={(e) => setAtualizarProdutoPai(e.currentTarget.checked)}
         />
         <Checkbox
+          label="Sobrescrever dados do produto (marca, dimensões, SKU)"
+          description="Por padrão a importação só preenche campos vazios. Marque para substituir também os valores já cadastrados. A descrição e a categoria nunca são substituídas."
+          checked={sobrescreverDadosProduto}
+          onChange={(e) => setSobrescreverDadosProduto(e.currentTarget.checked)}
+          disabled={!atualizarProdutoPai}
+        />
+        <Checkbox
           label="Atualizar anúncios já cadastrados"
           checked={atualizarCadastrados}
           onChange={(e) => setAtualizarCadastrados(e.currentTarget.checked)}
@@ -83,6 +91,7 @@ export function MassImportDialog({ state }: { state: MassImportActionState }) {
               importarFotos,
               importarCategorias,
               atualizarProdutoPai,
+              sobrescreverDadosProduto,
               atualizarCadastrados,
             });
           }}

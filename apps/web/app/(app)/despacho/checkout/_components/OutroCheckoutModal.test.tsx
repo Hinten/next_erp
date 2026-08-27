@@ -37,8 +37,8 @@ function makeRow(over: Partial<OutroCheckoutRow> = {}): OutroCheckoutRow {
   };
 }
 
-function renderModal(row: OutroCheckoutRow | null) {
-  return render(
+function modalTree(row: OutroCheckoutRow | null) {
+  return (
     <MantineTestProvider>
       <OutroCheckoutModal
         row={row}
@@ -50,8 +50,21 @@ function renderModal(row: OutroCheckoutRow | null) {
         formatoDanfe="simplificadoPdf"
         formatoEtiqueta="pdf"
       />
-    </MantineTestProvider>,
+    </MantineTestProvider>
   );
+}
+
+function renderModal(row: OutroCheckoutRow | null) {
+  const utils = render(modalTree(row));
+  return {
+    ...utils,
+    /**
+     * Re-render the SAME component instance with a different row — `row={null}`
+     * is the operator closing the reprint modal. One tree, so the two can't
+     * drift apart.
+     */
+    rerenderWith: (next: OutroCheckoutRow | null) => utils.rerender(modalTree(next)),
+  };
 }
 
 beforeEach(() => {
@@ -201,5 +214,43 @@ describe("OutroCheckoutModal — reprints target the row's OWN pedido", () => {
     expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledTimes(1);
     resolveFirst();
     await waitFor(() => expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps a pending confirm answerable after the modal closes, so the print mutex releases', async () => {
+    // Before #1096, confirm.element was nested inside the <Modal>, so closing
+    // the parent modal unmounted it. keepMounted defaults to false, so the
+    // stored resolve never fired, and printInFlight.run's finally block never
+    // ran — leaving the print mutex wedged for the life of the pane. Both
+    // reprint buttons would spin forever.
+    h.reprintCheckoutEtiqueta.mockImplementation(
+      async (args: { ui: { confirmRisk: (msg: string) => Promise<boolean> } }) => {
+        const ok = await args.ui.confirmRisk('etiqueta já postada — reimprimir?');
+        return { status: ok ? 'printed' : 'skipped' };
+      },
+    );
+
+    const { rerenderWith } = renderModal(makeRow());
+    fireEvent.click(screen.getByRole('button', { name: /Reimprimir Frete/ }));
+    await waitFor(() => expect(screen.getByText(/já postada/)).toBeTruthy());
+
+    // The operator closes the reprint modal while the risk confirm is still open.
+    rerenderWith(null);
+
+    // The confirm dialog must STILL be in the document so the operator can
+    // still answer it.
+    expect(screen.queryByText(/já postada/)).not.toBeNull();
+
+    // …and answering it must actually SETTLE the promise — mounted-but-dead is
+    // the same wedge. Only a resolved `confirmRisk` lets reprintCheckoutEtiqueta
+    // return, which is what runs printInFlight.run's `finally`; reportEtiqueta's
+    // `printed` arm fires strictly after that, so this toast IS the mutex
+    // releasing. Asserting DOM presence alone would stay green if `settle` ever
+    // broke.
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    await waitFor(() =>
+      expect(h.showCopyableNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Etiqueta enviada para impressão.' }),
+      ),
+    );
   });
 });

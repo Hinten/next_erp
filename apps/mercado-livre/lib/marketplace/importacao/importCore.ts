@@ -9,7 +9,12 @@
  * with Lucas's option overrides:
  *  - a re-import PRESERVES the ERP produto — parent fields are filled only where
  *    they're currently null (never overwritten); `nome`/kit flags are never
- *    touched on update (the legacy `oldProduto?.x ?? new`);
+ *    touched on update (the legacy `oldProduto?.x ?? new`). ⚠️ Since #1087 the
+ *    operator can opt OUT of that preservation for a narrow set of fields with
+ *    `sobrescreverDadosProduto` — see its doc for exactly which, and which are
+ *    deliberately left out;
+ *  - `extraData.marca` is filled from the listing's `BRAND` (the import half of
+ *    #1293), blank-only unless that same flag is set;
  *  - stock: create when absent (`importarEstoque`); overwrite ONLY when
  *    `sobrescreverEstoque` (default FALSE — never clobber ERP stock);
  *  - price: written on create (`importarPreco`) or overwrite (`sobrescreverPreco`);
@@ -31,8 +36,10 @@ import type {
 } from '@delfrance/integrations-mercado-livre';
 import {
   CONDICAO_PRODUTO,
+  type MedidasDoPacote,
   type MlModeracao,
   makeEstoqueUid,
+  marcaArmazenadaDe,
   reservaEfetiva,
   toOuterRef,
 } from '@delfrance/schemas';
@@ -60,6 +67,25 @@ export interface ImportOptions {
   sobrescreverPreco: boolean;
   /** `completarDadosProdutoPai` — fill the produto's null fields on re-import. */
   atualizarProdutoPai: boolean;
+  /**
+   * Let a re-import REPLACE produto data the ERP already holds, instead of only
+   * filling blanks. Default FALSE — a re-import must never silently overwrite
+   * typed work, the same stance `sobrescreverEstoque` takes.
+   *
+   * ⚠️ Deliberately narrow. It covers exactly `sku`, the five dimension/weight
+   * fields and `extraData.marca` — the fields an operator asked to be able to
+   * refresh from the listing. It does NOT cover:
+   *  - `descricao`, the most destructive thing to clobber here and not asked for;
+   *  - `publicado`, which keeps its own carve-out (never re-expose a hidden produto);
+   *  - `categoriaProdutoOuterRef`, gated by `importarCategorias` and documented as
+   *    never clobbering a manually-set ERP category;
+   *  - `nome`/`ehKit`/`ehUsado`, which stay create-only.
+   * Widening it is a decision about someone's typed data, not a refactor.
+   *
+   * ⚠️ It also does NOT reach the child→parent dimension rollup
+   * ({@link rollupDimensoesDosFilhos}), which is fill-blank-only by its own rule.
+   */
+  sobrescreverDadosProduto: boolean;
   /** Import the listing's photos (additive, high-quality — #439). */
   importarFotos: boolean;
   /** Create/link the ERP Categoria chain from the ML category (#442). */
@@ -72,6 +98,7 @@ export const DEFAULT_IMPORT_OPTIONS: ImportOptions = {
   importarPreco: true,
   sobrescreverPreco: true,
   atualizarProdutoPai: true,
+  sobrescreverDadosProduto: false,
   importarFotos: true,
   importarCategorias: true,
 };
@@ -169,6 +196,14 @@ export interface ImportPlan {
 const DESCRICAO_MAX = 3000;
 
 /**
+ * extraData.marca is capped at 255 chars (`produtoExtraDataSchema`).
+ *
+ * ⚠️ Matched to the SCHEMA, not to a nearby constant. A cap borrowed from an
+ * unrelated bound is how #1068 made valid saved records 400 on every click.
+ */
+const MARCA_MAX = 255;
+
+/**
  * produto.nome is capped at 100 chars (`produtoSchema`). A composed variation
  * child nome (title + value names) can exceed it — ML titles alone go up to 60.
  */
@@ -214,6 +249,24 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
 
   const precosOps = buildPrecosOps(args);
 
+  /**
+   * ⚠️ `sobrescreverDadosProduto` is a STRONGER form of "update the produto", so it
+   * cannot outlive that permission being withdrawn — derived ONCE here rather than
+   * `&&`-ed at each use, because the two sites live in different blocks and the
+   * one outside the `atualizarProdutoPai` gate is exactly the one that drifted.
+   *
+   * The gap it closes: `extraData` is written OUTSIDE that gate (as `descricao`
+   * always has been), so the overwrite reached `marca` even with produto updates
+   * off — while `MassImportDialog` renders the checkbox `disabled={!atualizarProdutoPai}`,
+   * promising the opposite. Mantine keeps a DISABLED checkbox's `checked` state,
+   * so tick-then-untick still sent `sobrescreverDadosProduto: true`, and the one
+   * field the whole publish path derives from was the one it clobbered.
+   *
+   * ⚠️ The FILL-blank half stays ungated on purpose — a blank Marca is not the
+   * operator's typed work, and gating it would diverge from `descricao` for no gain.
+   */
+  const sobrescrever = options.atualizarProdutoPai && options.sobrescreverDadosProduto;
+
   // ---- produto ----------------------------------------------------------
   let produto: { data: Record<string, unknown>; full: boolean } | null = null;
   if (isCreate) {
@@ -247,15 +300,20 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     // never re-validated. Every field here fills only a currently-null value.
     const patch: Record<string, unknown> = { ultimaModificacao: now };
     if (options.atualizarProdutoPai) {
-      const fillNull = (key: keyof MappedMlItem & string, value: unknown) => {
-        if ((existingProduto?.[key] ?? null) == null && value != null) patch[key] = value;
+      // Fill a blank field always; replace a filled one only under
+      // `sobrescreverDadosProduto` (see its doc for what it deliberately omits).
+      // A null `value` never lands either way — ML not reporting a field is not
+      // an instruction to erase the ERP's copy of it.
+      const fill = (key: keyof MappedMlItem & string, value: unknown) => {
+        const vazio = (existingProduto?.[key] ?? null) == null;
+        if ((vazio || sobrescrever) && value != null) patch[key] = value;
       };
-      fillNull('sku', mapped.sku);
-      fillNull('pesoLiquidoKg', mapped.pesoLiquidoKg);
-      fillNull('pesoBrutoKg', mapped.pesoBrutoKg);
-      fillNull('alturaCm', mapped.alturaCm);
-      fillNull('larguraCm', mapped.larguraCm);
-      fillNull('profundidadeCm', mapped.profundidadeCm);
+      fill('sku', mapped.sku);
+      fill('pesoLiquidoKg', mapped.pesoLiquidoKg);
+      fill('pesoBrutoKg', mapped.pesoBrutoKg);
+      fill('alturaCm', mapped.alturaCm);
+      fill('larguraCm', mapped.larguraCm);
+      fill('profundidadeCm', mapped.profundidadeCm);
       // publicado is fill-null too — never re-expose a produto the user hid.
       if ((existingProduto?.publicado ?? null) == null) patch.publicado = true;
     }
@@ -283,13 +341,36 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     produto = Object.keys(patch).length > 0 ? { data: patch, full: false } : null;
   }
 
-  // ---- extraData (condicao + best-effort descricao) ---------------------
+  // ---- extraData (condicao + best-effort descricao + marca) -------------
   let extra: Record<string, unknown> | null = null;
   const extraPatch: Record<string, unknown> = {};
   const condicao = mapped.ehUsado ? CONDICAO_PRODUTO.usado : CONDICAO_PRODUTO.novo;
   if (isCreate) extraPatch.condicao = condicao;
   const descricao = args.descricao?.slice(0, DESCRICAO_MAX) ?? null;
   if (descricao && (existingExtra?.descricao ?? null) == null) extraPatch.descricao = descricao;
+
+  // The listing's `BRAND` → the produto's Marca — the IMPORT half of #1293,
+  // which built only the ERP→ML direction. The value is already on hand: the
+  // import keeps `BRAND` on `link.attributes` verbatim (it is `herdado`, not
+  // `derivado`, so `attributesFromItem` never strips it), and that stored entry
+  // is exactly what `resolveMarcaAnuncio` falls back to. All that was missing was
+  // the copy onto the produto.
+  //
+  // ⚠️ Read through `marcaArmazenadaDe`, the SAME helper publish uses, never by
+  // hand. It is what turns ML's N/A sentinel (`value_id: '-1'`, whose
+  // `value_name` is the literal string `'N/A'`) into "no brand" instead of a
+  // brand literally named "N/A" — and #1293 extracted it precisely because two
+  // hand-written copies of that rule drift.
+  //
+  // ⚠️ An absent BRAND writes NOTHING. Persisting the absence would let an
+  // import that simply lost the attribute erase a Marca the operator typed —
+  // and that Marca is the value the whole publish path now derives from.
+  const { marca } = marcaArmazenadaDe(mapped.attributes);
+  const marcaNova = marca?.trim().slice(0, MARCA_MAX) || null;
+  const marcaExistente = typeof existingExtra?.marca === 'string' ? existingExtra.marca.trim() : '';
+  if (marcaNova && (!marcaExistente || sobrescrever)) {
+    extraPatch.marca = marcaNova;
+  }
   if (Object.keys(extraPatch).length > 0) extra = extraPatch;
 
   // ---- stock ------------------------------------------------------------
@@ -621,7 +702,22 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     const fillNull = (key: string, value: unknown) => {
       if ((existingProduto?.[key] ?? null) == null && value != null) patch[key] = value;
     };
-    fillNull('sku', mappedVariation.sku);
+    // The toggle-covered half — blanks always, filled values only under
+    // `sobrescreverDadosProduto`. Kept beside `fillNull` rather than replacing it
+    // because `categoriaProdutoOuterRef` below must stay fill-blank-only.
+    //
+    // ⚠️ The `&& options.atualizarProdutoPai` is redundant TODAY — every `fill`
+    // call below already sits inside that gate — and is written anyway, for the
+    // same reason `assembleImportPlan` derives it once: the overwrite must never
+    // outlive that permission, and the one site where the two drifted apart was
+    // the one that had escaped the gate. Redundant here is how it stays true if a
+    // future call moves out.
+    const sobrescrever = options.atualizarProdutoPai && options.sobrescreverDadosProduto;
+    const fill = (key: string, value: unknown) => {
+      const vazio = (existingProduto?.[key] ?? null) == null;
+      if ((vazio || sobrescrever) && value != null) patch[key] = value;
+    };
+    fill('sku', mappedVariation.sku);
     if ((existingProduto?.publicado ?? null) == null) patch.publicado = true;
 
     // Fill-null-OR-EMPTY (never overwrite a non-empty array) — same D2 rationale as
@@ -635,11 +731,11 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     fillEmptyArray('variacoesUid', varianteFakes);
 
     if (options.atualizarProdutoPai) {
-      fillNull('pesoLiquidoKg', parent.dims.pesoLiquidoKg);
-      fillNull('pesoBrutoKg', parent.dims.pesoBrutoKg);
-      fillNull('alturaCm', parent.dims.alturaCm);
-      fillNull('larguraCm', parent.dims.larguraCm);
-      fillNull('profundidadeCm', parent.dims.profundidadeCm);
+      fill('pesoLiquidoKg', parent.dims.pesoLiquidoKg);
+      fill('pesoBrutoKg', parent.dims.pesoBrutoKg);
+      fill('alturaCm', parent.dims.alturaCm);
+      fill('larguraCm', parent.dims.larguraCm);
+      fill('profundidadeCm', parent.dims.profundidadeCm);
       fillNull('categoriaProdutoOuterRef', parent.categoriaOuterRef);
     }
 
@@ -751,4 +847,117 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
       ...(args.up ? { relevantData: { isUserProductModel: true } } : {}),
     },
   };
+}
+
+/* -------------------------------------------------------------------------- */
+
+/** The five produto fields the rollup below moves, in produto field names. */
+export const CAMPOS_MEDIDAS = [
+  'pesoLiquidoKg',
+  'pesoBrutoKg',
+  'alturaCm',
+  'larguraCm',
+  'profundidadeCm',
+] as const satisfies readonly (keyof MedidasDoPacote)[];
+
+/** A child produto considered by the rollup, in the order it should be consulted. */
+export interface FilhoMedidas extends MedidasDoPacote {
+  /** The child produto's id — the tie-break that makes the choice deterministic. */
+  produtoId: string;
+}
+
+/**
+ * A produto's dimensions AFTER a plan is applied: the raw stored doc with the
+ * plan's own write laid over it.
+ *
+ * Both callers already hold both halves, so this replaces a read-back — which
+ * would additionally risk observing a CONCURRENT writer and attributing its
+ * value to this import.
+ *
+ * ⚠️ Reads the patch with `in`, not `?? existing`. A plan may legitimately write
+ * an explicit `null` (the parent create path writes five of them when ML
+ * reported no package), and `??` would silently fall back to the stale stored
+ * value, reporting a measurement this import did not write.
+ */
+export function medidasEfetivas(
+  existente: Record<string, unknown> | null | undefined,
+  patch: Record<string, unknown> | null | undefined,
+): MedidasDoPacote {
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const out = {} as MedidasDoPacote;
+  for (const campo of CAMPOS_MEDIDAS) {
+    out[campo] = num(patch && campo in patch ? patch[campo] : existente?.[campo]);
+  }
+  return out;
+}
+
+/**
+ * The dimensions a family PARENT should adopt from its children (#1087).
+ *
+ * A simple listing re-imports as a parent produto plus one variation, so the
+ * measurements can end up on the child while the "produto base" the operator
+ * opens shows none. `dimensoesDoPacote` has NO parent fallback by design — a
+ * produto declares its own package or declares none — so a blank parent
+ * publishes no package at all rather than borrowing one. This repairs the blank
+ * instead of teaching the reader to look elsewhere.
+ *
+ * ⚠️ Fill-BLANK-only, and deliberately NOT gated by `sobrescreverDadosProduto`.
+ * The rule is "the variations have them and the parent does not"; a measurement
+ * the operator typed on the parent is never replaced by a child's, whatever the
+ * import flags say. That also keeps the repair safe to run on every import.
+ *
+ * ⚠️ Every field comes from ONE child — the first that resolves a complete
+ * geometric set — never per-field across children. Mixing axes from different
+ * variations would invent a box no variation actually has, and ML rejects a
+ * partial set outright (`item.attribute.missing.seller.package.dimensions`),
+ * which is why `dimensoesDoPacote` is all-or-nothing in the first place.
+ *
+ * ⚠️ The donor is chosen from `filhos` sorted by `produtoId` HERE, rather than in
+ * whatever order the caller happened to collect them. Two variations with
+ * different complete boxes are both "right", so the choice is arbitrary — but it
+ * must not CHANGE between re-imports, or the parent's box silently flips. The
+ * callers cannot supply that: `importVariationChildren` pushes in
+ * `mappedVariations` order, i.e. ML's `variations[]` response order, which
+ * nothing in the contract pins (the User-Products path has a single member, so
+ * the question does not arise there). Sorting here makes the stability a property
+ * of this function instead of a promise about its input. Same first-member-wins
+ * arbitrariness `upFamilyStatus.ts` names for `status`/`moderacoes`; the
+ * difference is that this one is enforced rather than asserted.
+ *
+ * Returns only the keys to write, or `null` when there is nothing to do.
+ */
+export function rollupDimensoesDosFilhos(
+  pai: MedidasDoPacote,
+  filhos: readonly FilhoMedidas[],
+): Partial<MedidasDoPacote> | null {
+  const faltando = CAMPOS_MEDIDAS.filter((campo) => pai[campo] == null);
+  if (faltando.length === 0) return null;
+
+  // A usable donor is one with a full set of positive axes. The weights are NOT
+  // part of the test: `pesoBrutoKg` is legitimately absent whenever a produto
+  // carries only a net weight (`dimensoesDoPacote` falls back to it), so
+  // requiring it would reject the very children this exists to read.
+  //
+  // Sorted by `produtoId` first — see the ⚠️ above. A copy, because `filhos` is
+  // the caller's array and `sort` mutates in place.
+  const doador = [...filhos]
+    .sort((a, b) => (a.produtoId < b.produtoId ? -1 : a.produtoId > b.produtoId ? 1 : 0))
+    .find(
+      (f) =>
+        f.alturaCm != null &&
+        f.alturaCm > 0 &&
+        f.larguraCm != null &&
+        f.larguraCm > 0 &&
+        f.profundidadeCm != null &&
+        f.profundidadeCm > 0,
+    );
+  if (!doador) return null;
+
+  const patch: Partial<MedidasDoPacote> = {};
+  for (const campo of faltando) {
+    const valor = doador[campo];
+    if (valor != null) patch[campo] = valor;
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
 }

@@ -165,6 +165,7 @@ const BASE_OPTIONS: MassImportOptions = {
   importarPreco: true,
   sobrescreverPreco: true,
   atualizarProdutoPai: true,
+  sobrescreverDadosProduto: false,
   importarFotos: false,
   importarCategorias: false,
   atualizarCadastrados: false,

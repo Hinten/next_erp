@@ -248,3 +248,46 @@ describe('the field lists', () => {
     expect(overlap).toEqual([]);
   });
 });
+
+/**
+ * extraData used to be compared by DOCUMENT COUNT alone, so a `marca` of
+ * 'Nike' coming back null read as "1 doc → 1 doc, ok" — the round-trip report
+ * was clean for the entire time nothing imported the field. Two controls, per
+ * this module's own contract.
+ */
+describe('diffSnapshots — extraData is compared field by field', () => {
+  const comExtra = (extra: Record<string, unknown>): ProdutoDump => ({
+    produtoId: 'p1',
+    produto: PRODUTO_BASE,
+    subcolecoes: {
+      produtoMercadoLivre: [{ id: 'l1', data: LINK_BASE }],
+      extraData: [{ id: 'singleton', data: extra }],
+    },
+  });
+
+  const MARCA_OK = { marca: 'Nike', descricao: 'Um vaso', condicao: 1 };
+
+  it('control A — an unchanged extraData reports nothing', () => {
+    const s = snap(comExtra(MARCA_OK));
+    expect(diffSnapshots(s, s).achados).toEqual([]);
+  });
+
+  it('control B — a lost marca IS a finding', () => {
+    const r = diffSnapshots(snap(comExtra(MARCA_OK)), snap(comExtra({ ...MARCA_OK, marca: null })));
+    expect(r.achados.map((a) => a.campo)).toEqual(['extraData.marca']);
+  });
+
+  it('reports a marca that came back DIFFERENT, not just one that vanished', () => {
+    const r = diffSnapshots(
+      snap(comExtra(MARCA_OK)),
+      snap(comExtra({ ...MARCA_OK, marca: 'Adidas' })),
+    );
+    expect(r.achados.map((a) => a.campo)).toEqual(['extraData.marca']);
+  });
+
+  it('says nothing when neither side has an extraData doc', () => {
+    const s = snap(dump(PRODUTO_BASE, LINK_BASE));
+    expect(diffSnapshots(s, s).achados).toEqual([]);
+    expect(diffSnapshots(s, s).subcolecoes.map((r) => r.campo)).not.toContain('extraData.marca');
+  });
+});

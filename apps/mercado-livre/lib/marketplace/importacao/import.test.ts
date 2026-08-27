@@ -1829,6 +1829,156 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     });
   });
 
+  /**
+   * #1087 — a simple produto re-imports as a parent plus one variation, so the
+   * measurements can sit on the child while the "produto base" the operator
+   * opens shows none. `dimensoesDoPacote` has no parent fallback, so that parent
+   * publishes no package at all until someone retypes the box.
+   *
+   * The reachable shape: the ML item carries no `SELLER_PACKAGE_*` (so `mapped`
+   * resolves five nulls and the fill-null path has nothing to give the parent),
+   * while the ERP child already holds the real box.
+   */
+  describe('child → parent dimension rollup', () => {
+    /** MEMBER_A with every package attribute stripped — mapped dims are all null. */
+    const MEMBER_SEM_MEDIDAS: DocData = { ...MEMBER_A };
+
+    const CAIXA = {
+      pesoLiquidoKg: 0.9,
+      pesoBrutoKg: 1,
+      alturaCm: 5,
+      larguraCm: 10,
+      profundidadeCm: 10,
+    };
+
+    /** Seed the ERP child that already carries the box, linked to the family parent. */
+    function seedFilhoComCaixa(db: FakeDb): void {
+      db.seed('produtos', expectedChildId(MEMBER_A_ID), {
+        nome: 'Camiseta G',
+        sku: 'SKU-A',
+        paiId: expectedParentId,
+        ...CAIXA,
+      });
+    }
+
+    it("fills the blank parent from the child's box", async () => {
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta Família', sku: FAMILY_ID });
+      seedFilhoComCaixa(db);
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      expect(db.docs('produtos').get(expectedParentId)).toMatchObject(CAIXA);
+    });
+
+    // ⚠️ Fill-BLANK-only. The parent's numbers differ from the child's on every
+    // axis, so a rollup that overwrote would be caught here rather than passing
+    // against equal fixtures.
+    it('never replaces a box the parent already has', async () => {
+      const db = new FakeDb();
+      const doPai = {
+        pesoLiquidoKg: 7,
+        pesoBrutoKg: 8,
+        alturaCm: 70,
+        larguraCm: 80,
+        profundidadeCm: 90,
+      };
+      db.seed('produtos', expectedParentId, {
+        nome: 'Camiseta Família',
+        sku: FAMILY_ID,
+        ...doPai,
+      });
+      seedFilhoComCaixa(db);
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      expect(db.docs('produtos').get(expectedParentId)).toMatchObject(doPai);
+    });
+
+    // ⚠️ Rule 7 tier 1. The pre-loop produto read is stale by the time the rollup
+    // runs — `importVariationChildren` sits in between — so an operator saving the
+    // produto editor inside that window would be silently clobbered by a rollup
+    // holding the blank it saw earlier.
+    //
+    // `afterGet` is the seam for exactly this: it fires between the read a patch
+    // is derived from and the write that applies it. The edit is triggered off
+    // the CHILD already existing, which is only true once the children loop has
+    // run — i.e. precisely at the rollup's own re-read, deterministically.
+    it('does not clobber a box the operator typed while the children were importing', async () => {
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta Família', sku: FAMILY_ID });
+      seedFilhoComCaixa(db);
+
+      let jaEditou = false;
+      db.afterGet = (path) => {
+        if (path !== `produtos/${expectedParentId}` || jaEditou) return;
+        // The marker has to be something the children loop CREATES. The child
+        // produto itself is seeded by this test, so it is present from the very
+        // first read — using it fired the edit before the import had even written
+        // the parent, which exercised the whole-import retry instead of this
+        // guard and left the rollup path untested (the no-retry mutation
+        // survived, which is how that showed up). The child LINK is written
+        // inside the loop and nowhere else.
+        const childLinks = db.docs(`produtos/${expectedChildId(MEMBER_A_ID)}/variacaoMercadoLivre`);
+        if (childLinks.size === 0) return;
+        jaEditou = true;
+        db.seed('produtos', expectedParentId, {
+          ...db.docs('produtos').get(expectedParentId),
+          alturaCm: 12,
+        });
+      };
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      const pai = db.docs('produtos').get(expectedParentId);
+      // The operator's 12 survives — the child's 5 never lands on that axis.
+      expect(pai?.alturaCm).toBe(12);
+      // …and the axes they did NOT touch are still repaired.
+      expect(pai).toMatchObject({ larguraCm: 10, profundidadeCm: 10, pesoLiquidoKg: 0.9 });
+    });
+
+    // Tier 1 means the losing write FAILS rather than silently wins, so the
+    // precondition has to actually ride along. A double that only recorded it
+    // would hide the bug it exists to catch — this FakeDb enforces it.
+    it('carries a lastUpdateTime precondition on the rollup write', async () => {
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta Família', sku: FAMILY_ID });
+      seedFilhoComCaixa(db);
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      const rollupWrite = db.updates.find(
+        (u) => u.path === `produtos/${expectedParentId}` && 'alturaCm' in u.patch,
+      );
+      expect(rollupWrite).toBeDefined();
+      expect(rollupWrite?.precondition).toMatchObject({ lastUpdateTime: expect.anything() });
+    });
+
+    it('leaves the parent blank when the child has no box either', async () => {
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta Família', sku: FAMILY_ID });
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      expect(db.docs('produtos').get(expectedParentId)?.alturaCm ?? null).toBeNull();
+    });
+  });
+
   describe('ERP-first family children (#801)', () => {
     const fake = (grupoId: string, varianteId: string) =>
       `documents/grupoDeVariacoes/${grupoId}/variacoes/${varianteId}`;

@@ -148,6 +148,8 @@ export interface MercadoLivreMassImportOptions {
   importarPreco?: boolean;
   sobrescreverPreco?: boolean;
   atualizarProdutoPai?: boolean;
+  /** Default false — fill blanks only, never replace produto data already stored. */
+  sobrescreverDadosProduto?: boolean;
   importarFotos?: boolean;
   importarCategorias?: boolean;
   /** Default false — a re-scan skips listings already linked to this account. */
@@ -898,6 +900,9 @@ export interface MercadoLivreClient {
       sobrescreverEstoque?: boolean;
       importarPreco?: boolean;
       sobrescreverPreco?: boolean;
+      atualizarProdutoPai?: boolean;
+      /** Default false — fill blanks only, never replace produto data already stored. */
+      sobrescreverDadosProduto?: boolean;
       importarFotos?: boolean;
       importarCategorias?: boolean;
     };

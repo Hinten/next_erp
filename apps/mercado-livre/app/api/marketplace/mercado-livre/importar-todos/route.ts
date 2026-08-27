@@ -134,6 +134,7 @@ function sanitizeMassImportOptions(v: unknown): MassImportOptions {
     importarPreco: bool('importarPreco', true),
     sobrescreverPreco: bool('sobrescreverPreco', true),
     atualizarProdutoPai: bool('atualizarProdutoPai', true),
+    sobrescreverDadosProduto: bool('sobrescreverDadosProduto', false),
     importarFotos: bool('importarFotos', true),
     importarCategorias: bool('importarCategorias', true),
     atualizarCadastrados: bool('atualizarCadastrados', false),
