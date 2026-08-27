@@ -411,7 +411,12 @@ export function PhotoManager({
     onChange(listsFotos.flat());
   }
 
-  function renderGrid(sectionKey: string, indexes: number[], withCover: boolean) {
+  function renderGrid(
+    sectionKey: string,
+    indexes: number[],
+    withCover: boolean,
+    galleryLabel: string | null,
+  ) {
     return (
       <SectionGrid
         sectionKey={sectionKey}
@@ -420,6 +425,7 @@ export function PhotoManager({
         sortableIds={sortableIds}
         db={db}
         withCover={withCover}
+        galleryLabel={galleryLabel}
         disabled={disabled}
         onCover={makeCover}
         onToggleDelete={toggleDelete}
@@ -491,7 +497,7 @@ export function PhotoManager({
         {/* Zebra-striped sections (alternating background) so each gallery
             reads as its own block — the parent gallery is stripe 0. */}
         <Paper p="sm" radius="md" bg={stripeBg(0)}>
-          {renderGrid('general', sections.general, true)}
+          {renderGrid('general', sections.general, true, null)}
         </Paper>
 
         {sections.variants.map((section, idx) => (
@@ -517,7 +523,12 @@ export function PhotoManager({
                 }
                 labelPosition="left"
               />
-              {renderGrid(section.uid, section.fotoIndexes, false)}
+              {renderGrid(
+                section.uid,
+                section.fotoIndexes,
+                false,
+                `${section.grupoNome}: ${section.varianteNome}`,
+              )}
               {!disabled && (
                 <Dropzone
                   onDrop={(files) => handleDrop(files, section)}
@@ -560,6 +571,11 @@ interface SectionGridProps {
   sortableIds: string[];
   db: Firestore;
   withCover: boolean;
+  /**
+   * Human name of this gallery ("Cores: Azul"), or `null` for the parent-level
+   * one — disambiguates the per-card "Ampliar foto N" label across sections.
+   */
+  galleryLabel: string | null;
   disabled?: boolean;
   onCover: (index: number) => void;
   onToggleDelete: (index: number) => void;
@@ -579,6 +595,7 @@ function SectionGrid({
   sortableIds,
   db,
   withCover,
+  galleryLabel,
   disabled,
   onCover,
   onToggleDelete,
@@ -626,6 +643,7 @@ function SectionGrid({
                   foto={foto}
                   db={db}
                   pos={pos}
+                  galleryLabel={galleryLabel}
                   isCover={withCover && index === 0}
                   showCover={withCover}
                   marked={!!foto[DELETE_MARK]}
@@ -650,6 +668,8 @@ interface SortableFotoProps {
   db: Firestore;
   /** 0-based position within its gallery, for the "ampliar" label. */
   pos: number;
+  /** Gallery name for that label, or `null` for the parent-level gallery. */
+  galleryLabel: string | null;
   isCover: boolean;
   /** Cover actions only exist in the parent-level gallery. */
   showCover: boolean;
@@ -667,6 +687,7 @@ function SortableFoto({
   foto,
   db,
   pos,
+  galleryLabel,
   isCover,
   showCover,
   marked,
@@ -719,7 +740,13 @@ function SortableFoto({
           <UnstyledButton
             type="button"
             onClick={onOpen}
-            aria-label={`Ampliar foto ${pos + 1}`}
+            // Scoped to the gallery: `pos` restarts at 0 in every section, so
+            // without this a produto with variações carries several buttons
+            // named exactly "Ampliar foto 1" — a Playwright strict-mode
+            // violation for the first spec that reaches for one.
+            aria-label={
+              galleryLabel ? `Ampliar foto ${pos + 1} (${galleryLabel})` : `Ampliar foto ${pos + 1}`
+            }
             style={{ display: 'block', width: '100%', cursor: 'zoom-in' }}
           >
             <Image src={url} alt="Foto do produto" h={140} fit="cover" radius="sm" />

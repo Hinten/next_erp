@@ -54,6 +54,18 @@ export function FotoViewerModal({
   const [erroredUrls, setErroredUrls] = useState<ReadonlySet<string>>(() => new Set());
   const markErrored = (u: string) => setErroredUrls((prev) => new Set(prev).add(u));
 
+  // This component never unmounts — it is rendered unconditionally at
+  // `PhotoManager`'s top level — so without a reset a single transient failure
+  // (a signed-URL hiccup, a dropped request) would pin that photo to
+  // "indisponível" for the life of the produto screen. Closing buys one fresh
+  // attempt per open, while paging inside ONE open still remembers which urls
+  // failed. Reset in the handler, not an effect: every user-initiated close
+  // (Escape, the X, click-outside) funnels through Mantine's `onClose`.
+  const handleClose = () => {
+    setErroredUrls(new Set());
+    onClose();
+  };
+
   const originalRef = useMemo(() => {
     const id = idFromRef(foto?.arquivoOuterRef);
     return id ? arquivoCollection.docRef(db, {}, id) : null;
@@ -65,15 +77,38 @@ export function FotoViewerModal({
   const hasNext = pos < total - 1;
 
   // The hook stays mounted while the viewer is closed (so Mantine keeps its
-  // open/close transition), hence the `foto` guard — arrow keys must not steal
-  // events from the surrounding form.
+  // open/close transition), hence the `foto` guard.
+  // ⚠️ The guard has to sit on `preventDefault` TOO, not just inside the
+  // handler: `useHotkeys` calls `event.preventDefault()` BEFORE invoking the
+  // handler (`use-hotkeys.mjs`: `if (options.preventDefault) event.preventDefault();
+  // handler(event);`), and it defaults to `true` when no options object is
+  // passed. A handler-only guard therefore stops the navigation but still
+  // swallows the DEFAULT ACTION of every arrow key on the page — document-wide,
+  // for as long as the Fotos tab is mounted.
   useHotkeys([
-    ['ArrowLeft', () => foto !== null && hasPrev && onNavigate(-1)],
-    ['ArrowRight', () => foto !== null && hasNext && onNavigate(1)],
+    [
+      'ArrowLeft',
+      () => foto !== null && hasPrev && onNavigate(-1),
+      { preventDefault: foto !== null },
+    ],
+    [
+      'ArrowRight',
+      () => foto !== null && hasNext && onNavigate(1),
+      { preventDefault: foto !== null },
+    ],
   ]);
 
   let content: React.ReactNode;
-  if (url !== null && !erroredUrls.has(url)) {
+  if (foto === null) {
+    // Closing: `foto` is already null, so `useDocSnapshot(null)` has reset to
+    // `{data: undefined, loading: false}` — but Mantine keeps these children
+    // mounted for the whole ~200ms exit transition (`Transition.mjs`:
+    // `isExited ? null : children(...)`), so falling through would flash the
+    // grey "indisponível" placeholder over the photo on EVERY close.
+    // ⚠️ Unreachable under vitest: `MantineTestProvider` sets `env="test"`,
+    // which makes `Transition` drop its children synchronously.
+    content = null;
+  } else if (url !== null && !erroredUrls.has(url)) {
     content = (
       <Image
         src={url}
@@ -105,7 +140,7 @@ export function FotoViewerModal({
   return (
     <Modal
       opened={foto !== null}
-      onClose={onClose}
+      onClose={handleClose}
       fullScreen
       title={total > 0 ? `Foto ${pos + 1} de ${total}` : ''}
     >

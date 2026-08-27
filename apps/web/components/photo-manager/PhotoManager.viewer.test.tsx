@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import { FormProvider, useForm } from 'react-hook-form';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Firestore } from 'firebase/firestore';
+import { type GrupoComId, varianteFakePath } from '@delfrance/schemas';
 import type { Foto } from '@delfrance/schemas';
 import type { SnapshotState } from '@delfrance/data/hooks';
 
@@ -88,6 +90,48 @@ function renderManager(fotos: Foto[], opts: { disabled?: boolean } = {}) {
 function viewerImage(): HTMLImageElement {
   const dialog = screen.getByRole('dialog');
   return within(dialog).getByRole('img') as HTMLImageElement;
+}
+
+/** Dispatch a cancelable keydown the way a browser would, to read back `defaultPrevented`. */
+function pressKey(key: string): KeyboardEvent {
+  const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+  document.body.dispatchEvent(ev);
+  return ev;
+}
+
+/** "Cores" allows photos and has Azul selected; "Tamanhos" does not. */
+function grupos(): GrupoComId[] {
+  return [
+    {
+      id: 'CORES',
+      data: {
+        nome: 'Cores',
+        ordem: 1,
+        permiteFotos: true,
+        variacoesIds: ['az'],
+        variacoes: [{ id: 'az', nome: 'Azul', codigo: 'AZ' }],
+      },
+    },
+  ] as unknown as GrupoComId[];
+}
+
+/**
+ * PhotoManager reads `variacoesUid` off the ObjectView FormProvider, so the
+ * variant galleries only exist inside one.
+ */
+function WithVariantGallery({ fotos, uids }: { fotos: Foto[]; uids: string[] }) {
+  const form = useForm({ defaultValues: { variacoesUid: uids } });
+  return (
+    <FormProvider {...form}>
+      <PhotoManager
+        db={db}
+        uploadFoto={async () => foto('Z')}
+        grupos={grupos()}
+        value={fotos}
+        onChange={() => {}}
+      />
+    </FormProvider>
+  );
 }
 
 afterEach(() => {
@@ -210,5 +254,54 @@ describe('PhotoManager fullscreen viewer', () => {
 
     fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('leaves the arrow keys alone while the viewer is CLOSED', () => {
+    // `useHotkeys` calls preventDefault BEFORE the handler, so a handler-only
+    // guard would swallow every arrow key on the page for as long as the Fotos
+    // tab is mounted. The open case below is the control: the guard must not
+    // be so wide that it never prevents anything either.
+    seedSnaps(['A', 'B']);
+    renderManager([foto('A'), foto('B')]);
+
+    expect(pressKey('ArrowRight').defaultPrevented).toBe(false);
+    expect(pressKey('ArrowLeft').defaultPrevented).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ampliar foto 1' }));
+    expect(pressKey('ArrowRight').defaultPrevented).toBe(true);
+  });
+
+  it('retries a photo that failed to load once the viewer is reopened', () => {
+    // The component never unmounts, so an un-pruned errored-url set would pin a
+    // transient failure to "indisponível" for the life of the produto screen.
+    seedSnaps(['A']);
+    renderManager([foto('A')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Ampliar foto 1' }));
+
+    fireEvent.error(viewerImage());
+    expect(within(screen.getByRole('dialog')).getByLabelText('Foto indisponível')).toBeTruthy();
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Ampliar foto 1' }));
+    expect(viewerImage().getAttribute('src')).toBe('https://cdn/origA-full.jpg');
+  });
+
+  it('scopes the zoom label to its gallery so variant sections do not collide', () => {
+    const az = varianteFakePath('CORES', 'az');
+    const tagged: Foto = { ...foto('B'), variantePath: az, grupoDeVariacoesOuterRef: null };
+    seedSnaps(['A', 'B']);
+    render(
+      <MantineTestProvider>
+        <WithVariantGallery fotos={[foto('A'), tagged]} uids={[az]} />
+      </MantineTestProvider>,
+    );
+
+    // Both galleries hold their own photo #1; the labels must still differ.
+    expect(screen.getByRole('button', { name: 'Ampliar foto 1' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Ampliar foto 1 (Cores: Azul)' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ampliar foto 1 (Cores: Azul)' }));
+    expect(viewerImage().getAttribute('src')).toBe('https://cdn/origB-full.jpg');
+    expect(screen.getByText('Foto 1 de 1')).toBeTruthy();
   });
 });
