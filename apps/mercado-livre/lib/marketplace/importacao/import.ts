@@ -72,6 +72,7 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import {
+  type FilhoMedidas,
   type ImportOptions,
   type ImportPlan,
   DEFAULT_IMPORT_OPTIONS,
@@ -545,22 +546,28 @@ export async function importProduto(
   // `dimensoesDoPacote` has no parent fallback, so a blank parent publishes no
   // package at all. Repair the blank rather than teach every reader to look down.
   //
-  // Costs ZERO extra reads: `medidas` comes back from the loop that already read
-  // each child, and the parent's own effective values are the doc this call just
-  // read merged with the patch it just wrote.
+  // ⚠️ Rule 7, tier 1 — and the parent's nullness is RE-READ here rather than
+  // carried down from `existingProduto`. That read happened before
+  // `importVariationChildren`, which is N children × (read produto, read estoque,
+  // write produto, write estoque, write link, arrayUnion) — a window measured in
+  // seconds. Inside it an operator can save the produto editor with a box they
+  // just typed, and a rollup holding the pre-loop blank would merge a child's
+  // number straight over it. Rule 7 puts an interactive edit at tier 3
+  // ("raises a conflict, never a silent drop"), and silently losing one is
+  // exactly what the earlier "both values come from the same listing" reasoning
+  // missed: the competing writer is not another import, it is a person.
   //
-  // ⚠️ Rule 7: this is a SECOND write to a produto this call already wrote, and it
-  // is deliberately unguarded. It only ever sets fields observed null in the read
-  // above — the same guarantee `fillNull` has always given — and the value comes
-  // from a child of this very listing, so the worst a lost race can do is write
-  // the measurement a concurrent writer was about to write anyway. A
-  // `lastUpdateTime` precondition would turn that non-event into a 500.
+  // So: one fresh read gives BOTH a current nullness check and a usable
+  // `updateTime`. `produtoSnap`'s own stamp is unusable — this call invalidated
+  // it itself — which is the same trap the precos write above documents.
+  //
+  // ⚠️ A lost race here SKIPS the repair rather than failing the import. The
+  // rollup is a best-effort repair of a blank, so leaving the blank is the status
+  // quo and self-heals on the next import; killing an otherwise complete import
+  // over it would be a far worse trade. Bounded at one retry — a second
+  // concurrent writer in the same instant is not worth a loop.
   if (ownsChildren && variationsResult.medidas.length > 0) {
-    const medidasDoPai = medidasEfetivas(existingProduto, plan.produto?.data);
-    const rollup = rollupDimensoesDosFilhos(medidasDoPai, variationsResult.medidas);
-    if (rollup) {
-      await produtoCollection.merge(db, {}, produtoId, { ...rollup, ultimaModificacao: now });
-    }
+    await aplicarRollupDimensoes(db, produtoId, variationsResult.medidas, now);
   }
 
   // Photos (#439) — additive, high-quality, best-effort. After the produto exists;
@@ -936,6 +943,59 @@ function parsePmlOuterRef(ref: string): { produtoId: string; linkId: string } | 
   if (i === -1 || i + 3 >= segs.length) return null;
   if (segs[i + 2] !== 'produtoMercadoLivre') return null;
   return { produtoId: segs[i + 1]!, linkId: segs[i + 3]! };
+}
+
+/**
+ * Apply the child -> parent dimension rollup (#1087), guarded at rule 7 tier 1.
+ *
+ * Re-reads the parent so the "which fields are blank" decision and the
+ * `lastUpdateTime` precondition come from the SAME fresh snapshot. The caller's
+ * `existingProduto` is deliberately not reused: it predates
+ * `importVariationChildren`, and an operator saving the produto editor inside
+ * that window would be clobbered silently.
+ *
+ * A losing race SKIPS the repair. The rollup fills a blank the produto already
+ * had, so not filling it is the status quo and the next import retries it;
+ * failing a complete import over a best-effort repair would be the worse trade.
+ * `tentativas` bounds it at one retry.
+ */
+async function aplicarRollupDimensoes(
+  db: Firestore,
+  produtoId: string,
+  medidasDosFilhos: readonly FilhoMedidas[],
+  now: number,
+  tentativas = 1,
+): Promise<void> {
+  const ref = produtoCollection.docRef(db, {}, produtoId);
+  const snap = await ref.get();
+  if (!snap.exists) return;
+
+  const rollup = rollupDimensoesDosFilhos(
+    medidasEfetivas((snap.data() ?? {}) as Record<string, unknown>, null),
+    medidasDosFilhos,
+  );
+  if (!rollup) return;
+
+  // `updateTime` is always present on an existing doc from the real SDK; the
+  // fallback exists only so an in-memory double may omit it (same contract the
+  // precos write above states).
+  const lastUpdateTime = snap.updateTime;
+  try {
+    const patch = { ...rollup, ultimaModificacao: now };
+    await (lastUpdateTime ? ref.update(patch, { lastUpdateTime }) : ref.update(patch));
+  } catch (err) {
+    if (!isFailedPrecondition(err)) throw err;
+    if (tentativas > 0) {
+      await aplicarRollupDimensoes(db, produtoId, medidasDosFilhos, now, tentativas - 1);
+      return;
+    }
+    // Someone else is writing this produto right now. Their value is newer than
+    // ours by construction, so the blank is either already filled or will be
+    // repaired by the next import.
+    console.warn('[mercado-livre] import: rollup de dimensoes ignorado (produto alterado)', {
+      produtoId,
+    });
+  }
 }
 
 /** Stable hex hash for deterministic produto / link ids (legacy-id convergence). */

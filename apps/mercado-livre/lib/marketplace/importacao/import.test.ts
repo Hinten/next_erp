@@ -1901,6 +1901,71 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       expect(db.docs('produtos').get(expectedParentId)).toMatchObject(doPai);
     });
 
+    // ⚠️ Rule 7 tier 1. The pre-loop produto read is stale by the time the rollup
+    // runs — `importVariationChildren` sits in between — so an operator saving the
+    // produto editor inside that window would be silently clobbered by a rollup
+    // holding the blank it saw earlier.
+    //
+    // `afterGet` is the seam for exactly this: it fires between the read a patch
+    // is derived from and the write that applies it. The edit is triggered off
+    // the CHILD already existing, which is only true once the children loop has
+    // run — i.e. precisely at the rollup's own re-read, deterministically.
+    it('does not clobber a box the operator typed while the children were importing', async () => {
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta Família', sku: FAMILY_ID });
+      seedFilhoComCaixa(db);
+
+      let jaEditou = false;
+      db.afterGet = (path) => {
+        if (path !== `produtos/${expectedParentId}` || jaEditou) return;
+        // The marker has to be something the children loop CREATES. The child
+        // produto itself is seeded by this test, so it is present from the very
+        // first read — using it fired the edit before the import had even written
+        // the parent, which exercised the whole-import retry instead of this
+        // guard and left the rollup path untested (the no-retry mutation
+        // survived, which is how that showed up). The child LINK is written
+        // inside the loop and nowhere else.
+        const childLinks = db.docs(`produtos/${expectedChildId(MEMBER_A_ID)}/variacaoMercadoLivre`);
+        if (childLinks.size === 0) return;
+        jaEditou = true;
+        db.seed('produtos', expectedParentId, {
+          ...db.docs('produtos').get(expectedParentId),
+          alturaCm: 12,
+        });
+      };
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      const pai = db.docs('produtos').get(expectedParentId);
+      // The operator's 12 survives — the child's 5 never lands on that axis.
+      expect(pai?.alturaCm).toBe(12);
+      // …and the axes they did NOT touch are still repaired.
+      expect(pai).toMatchObject({ larguraCm: 10, profundidadeCm: 10, pesoLiquidoKg: 0.9 });
+    });
+
+    // Tier 1 means the losing write FAILS rather than silently wins, so the
+    // precondition has to actually ride along. A double that only recorded it
+    // would hide the bug it exists to catch — this FakeDb enforces it.
+    it('carries a lastUpdateTime precondition on the rollup write', async () => {
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta Família', sku: FAMILY_ID });
+      seedFilhoComCaixa(db);
+
+      await importProduto(
+        deps(db, makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_SEM_MEDIDAS } })),
+        MEMBER_A_ID,
+      );
+
+      const rollupWrite = db.updates.find(
+        (u) => u.path === `produtos/${expectedParentId}` && 'alturaCm' in u.patch,
+      );
+      expect(rollupWrite).toBeDefined();
+      expect(rollupWrite?.precondition).toMatchObject({ lastUpdateTime: expect.anything() });
+    });
+
     it('leaves the parent blank when the child has no box either', async () => {
       const db = new FakeDb();
       db.seed('produtos', expectedParentId, { nome: 'Camiseta Família', sku: FAMILY_ID });

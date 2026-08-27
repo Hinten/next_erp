@@ -913,11 +913,17 @@ export function medidasEfetivas(
  * partial set outright (`item.attribute.missing.seller.package.dimensions`),
  * which is why `dimensoesDoPacote` is all-or-nothing in the first place.
  *
- * ⚠️ `filhos` must arrive in a STABLE order (the imported member first, then by
- * produto id). Two variations with different boxes are both "right", so an
- * unstable order would make the parent's box flip between re-imports. This is
- * the same first-member-wins arbitrariness `upFamilyStatus.ts` calls out for
- * `status`/`moderacoes`; pinning the order is what stops it drifting.
+ * ⚠️ The donor is chosen from `filhos` sorted by `produtoId` HERE, rather than in
+ * whatever order the caller happened to collect them. Two variations with
+ * different complete boxes are both "right", so the choice is arbitrary — but it
+ * must not CHANGE between re-imports, or the parent's box silently flips. The
+ * callers cannot supply that: `importVariationChildren` pushes in
+ * `mappedVariations` order, i.e. ML's `variations[]` response order, which
+ * nothing in the contract pins (the User-Products path has a single member, so
+ * the question does not arise there). Sorting here makes the stability a property
+ * of this function instead of a promise about its input. Same first-member-wins
+ * arbitrariness `upFamilyStatus.ts` names for `status`/`moderacoes`; the
+ * difference is that this one is enforced rather than asserted.
  *
  * Returns only the keys to write, or `null` when there is nothing to do.
  */
@@ -932,15 +938,20 @@ export function rollupDimensoesDosFilhos(
   // part of the test: `pesoBrutoKg` is legitimately absent whenever a produto
   // carries only a net weight (`dimensoesDoPacote` falls back to it), so
   // requiring it would reject the very children this exists to read.
-  const doador = filhos.find(
-    (f) =>
-      f.alturaCm != null &&
-      f.alturaCm > 0 &&
-      f.larguraCm != null &&
-      f.larguraCm > 0 &&
-      f.profundidadeCm != null &&
-      f.profundidadeCm > 0,
-  );
+  //
+  // Sorted by `produtoId` first — see the ⚠️ above. A copy, because `filhos` is
+  // the caller's array and `sort` mutates in place.
+  const doador = [...filhos]
+    .sort((a, b) => (a.produtoId < b.produtoId ? -1 : a.produtoId > b.produtoId ? 1 : 0))
+    .find(
+      (f) =>
+        f.alturaCm != null &&
+        f.alturaCm > 0 &&
+        f.larguraCm != null &&
+        f.larguraCm > 0 &&
+        f.profundidadeCm != null &&
+        f.profundidadeCm > 0,
+    );
   if (!doador) return null;
 
   const patch: Partial<MedidasDoPacote> = {};

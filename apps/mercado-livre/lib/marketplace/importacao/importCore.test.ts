@@ -1508,6 +1508,30 @@ describe('rollupDimensoesDosFilhos', () => {
     });
   });
 
+  // ⚠️ The donor is chosen by produtoId ORDER, not by array position, so the
+  // parent's box cannot flip between re-imports when ML returns the variations
+  // in a different order. Both arrays hold the same children; only the order
+  // differs, and the numbers differ per child so a position-based pick shows up.
+  it('picks the same donor whatever order the caller collected the children in', () => {
+    const a = medidas({ produtoId: 'aaa', alturaCm: 5, larguraCm: 30, profundidadeCm: 20 });
+    const b = medidas({ produtoId: 'bbb', alturaCm: 8, larguraCm: 88, profundidadeCm: 88 });
+    const esperado = {
+      pesoLiquidoKg: 0.5,
+      pesoBrutoKg: 0.6,
+      alturaCm: 5,
+      larguraCm: 30,
+      profundidadeCm: 20,
+    };
+    expect(rollupDimensoesDosFilhos(PAI_VAZIO, [a, b])).toEqual(esperado);
+    expect(rollupDimensoesDosFilhos(PAI_VAZIO, [b, a])).toEqual(esperado);
+  });
+
+  it('does not mutate the array it was handed', () => {
+    const filhos = [medidas({ produtoId: 'zzz' }), medidas({ produtoId: 'aaa' })];
+    rollupDimensoesDosFilhos(PAI_VAZIO, filhos);
+    expect(filhos.map((f) => f.produtoId)).toEqual(['zzz', 'aaa']);
+  });
+
   // ⚠️ Every axis from ONE child. Mixing them would invent a box no variation
   // has, and ML rejects a partial/unrealistic package outright.
   it('takes every axis from the FIRST usable child, never mixing donors', () => {
