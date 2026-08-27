@@ -172,6 +172,26 @@ export const TOPIC_DISPOSITION = {
   items: 'handled',
   shipments: 'handled',
   payments: 'handled',
+
+  // Post-sale (claims, mediations, devoluções) — TWO keys for ONE handler, and
+  // neither is a spare to tidy away (#1322, the same reasoning #1129 used for
+  // `stock-location`/`stock-locations`).
+  //
+  // `post_purchase` is ML's SUBTOPIC ("tipificado") shape and the one live
+  // traffic actually sends: `topic: "post_purchase"` with the kind in
+  // `actions` (`["claims"]` / `["claims_actions"]`). `claims` is the older
+  // per-resource spelling this channel was written against. ML has been
+  // migrating per-account for over a year and its published reference is not a
+  // reliable guide to what a given application receives on a given day, so we
+  // accept both.
+  //
+  // ⚠️ This is not hypothetical tolerance. Until #1322, `post_purchase` was
+  // absent from this table, so EVERY claim delivery routed to `unknown-topic`
+  // and PARKED — ML mints a fresh `_id` per delivery, so `docIdOf` cannot
+  // collapse them and one mediation left three permanent documents behind.
+  // Claims, mediations and post-sale messages were not ingested AT ALL, while
+  // the pedido stayed a healthy-looking `pago`.
+  post_purchase: 'handled',
   claims: 'handled',
 
   // Recognised, nothing to do.
@@ -202,12 +222,18 @@ export const TOPIC_DISPOSITION = {
   'stock-location': 'ack',
   'stock-locations': 'ack',
 
-  // Data-bearing, handler pending (#532/#533). NOT `ack`: acking these is the
-  // data loss #813 was filed about — at the callback cutover they would stop
-  // being ingested with no failure doc, no parked doc and no warn line. Parking
-  // costs a document per delivery and buys a replayable record until the
-  // importers land; the whole stack deploys together, so that window is a
-  // review cycle, not production time.
+  // Chat (#532/#533) — both importers ARE written; their branches are below.
+  //
+  // ⚠️ These are data-bearing in the strong sense: a question or a buyer
+  // message is a ONE-TIME payload, so a dropped delivery loses the text from
+  // our side forever. They must never be demoted to `ack` — that is the exact
+  // data loss #813 was filed about. (This comment used to say "handler
+  // pending"; it had been stale since the importers landed, which is the kind
+  // of drift that makes a table look less trustworthy than it is.)
+  //
+  // ⚠️ `messages` is ALSO a subtopic topic (`["created"]` / `["read"]`) — see
+  // its branch, which drops a read receipt rather than spending two ML calls
+  // to write nothing.
   questions: 'handled',
   messages: 'handled',
 
@@ -959,6 +985,49 @@ function parseOrderResourceId(resource: string): number | null {
 }
 
 /**
+ * A post-sale notification's `resource` → the CLAIM id.
+ *
+ * ⚠️ `parseOrderResourceId` is not enough here, and the difference is the whole
+ * reason this exists (#1322). ML's post-sale migration changed the shape twice
+ * over: the path gained a `/post-purchase` prefix ("que antes não era
+ * enviado"), and — the half that bites — a claim's SUB-RESOURCES arrive as
+ * their own deliveries. The 2026-08-27 live run recorded all three of these
+ * against one mediation:
+ *
+ * ```
+ * /post-purchase/v1/claims/5567065796
+ * /post-purchase/v1/claims/5567065796/actions-history
+ * ```
+ *
+ * `lastSegment` on the second one yields `actions-history`, which fails the
+ * numeric test — so a topic-only fix trades `unknown-topic` for
+ * `malformed-resource` and the claim STILL never imports. Anchor on the
+ * segment following `claims/` instead of on the end of the path, so every
+ * sub-resource ML invents next (`/status-history`, `/messages`, `/returns`)
+ * resolves to the same claim rather than being dropped.
+ *
+ * Returns null when there is no `claims/<digits>` segment at all — a genuinely
+ * malformed resource, which the caller drops WITHOUT dispatching a bogus
+ * import.
+ */
+export function parseClaimResourceId(resource: string): number | null {
+  const match = /(?:^|\/)claims\/(\d+)(?:\/|$)/.exec(resource);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The `post_purchase` subtopics this channel imports — the two ML documents in
+ * its application manager under *Post Purchase*: `claims` ("a reclamação
+ * mudou") and `claims_actions` ("uma ação foi executada no claim").
+ *
+ * Both route to the same importer; membership here decides only whether a
+ * delivery is DISPATCHED or PARKED. Adding a member is how a new post-purchase
+ * subtopic stops parking — do not widen it to "anything", which would ack
+ * subtopics whose content we do not read.
+ */
+const CLAIM_ACTIONS: ReadonlySet<string> = new Set(['claims', 'claims_actions']);
+
+/**
  * Wrapper for topic-specific runners (order/payment/shipment/claim import) that
  * catches ML 500 errors (N7) and converts them to a non-retryable outcome
  * instead of throwing. A known routine ML-side transient (HTTP 500) should not
@@ -1086,11 +1155,35 @@ export type ShipmentImportOutcome =
  * member compiled everywhere in silence. Narrowing the PRODUCER makes the next
  * such change a typecheck error at the branch that produces it.
  */
+/**
+ * What the post-sale (claims) import actually DID, for the log.
+ *
+ * ⚠️ The claims branch used to discard its runner's result entirely — the ONE
+ * data-bearing importer that attached no `detail`, unlike `orders_v2`,
+ * `payments` and `shipments` (#1136/#1087). So `sem-conversa-acionavel` (an
+ * incidente landed, no thread), `pedido-nao-encontrado` (nothing landed) and a
+ * full import all logged as a bare `done`. That is precisely the blind spot the
+ * other three branches were fixed to close, and it is why #1322 could only be
+ * found by reading the parked-document dump by hand.
+ *
+ * `imported` is the success arm — the incidente was written. Every other member
+ * is a deterministic skip the runner already names.
+ */
+export type ClaimImportOutcome =
+  | 'imported'
+  | 'claim-404'
+  | 'resource-nao-suportado'
+  | 'pedido-nao-encontrado'
+  | 'reclamacao-do-vendedor'
+  | 'sem-cliente'
+  | 'sem-conversa-acionavel';
+
 export type HandlerOutcome =
   | ItemsSyncOutcome
   | OrderImportOutcome
   | PaymentImportOutcome
-  | ShipmentImportOutcome;
+  | ShipmentImportOutcome
+  | ClaimImportOutcome;
 
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
@@ -1318,18 +1411,45 @@ export async function processNotificationPayload(
     return { kind: 'done', integracaoId, detail };
   }
 
-  // `claims` — claim → incidente/conversa/mensagens import (Step 14).
+  // `post_purchase` (and the older per-resource spelling `claims`) — claim →
+  // incidente/conversa/mensagens import (Step 14, rerouted by #1322).
   // Idempotent, keyed by the byte-exact legacy doc ids (`claimIds.ts`).
   // THROWS on a transient failure (ML API / Firestore / network) so the
   // queue/sweep retry. A 404'd claim, an unsupported resource, an
   // unresolvable pedido, a seller-side complaint, or a cliente-less pedido
   // are deterministic skips (logged inside the handler and here), still
   // acked `done` — a retry cannot fix any of them. A resource with no
-  // parseable numeric id is malformed: dropped WITHOUT dispatching a bogus
+  // parseable claim id is malformed: dropped WITHOUT dispatching a bogus
   // import (mirrors the orders_v2 malformed-resource drop above). ML 500
   // errors (N7) are caught and converted to non-retryable outcomes.
-  if (payload.topic === 'claims') {
-    const resourceId = parseOrderResourceId(payload.resource);
+  if (payload.topic === 'post_purchase' || payload.topic === 'claims') {
+    // ⚠️ `post_purchase` is a SUBTOPIC topic: the kind rides in `actions`.
+    // Both known kinds route to the SAME importer, on purpose — `claims` is
+    // "the claim changed" and `claims_actions` is "an action ran on it", and
+    // either way the only correct response is to re-read the claim and upsert
+    // it. Splitting them would buy two code paths converging on one call.
+    //
+    // ⚠️ An UNRECOGNISED action must PARK, never `ack`. A post-purchase
+    // subtopic we do not know is data-bearing by construction (ML files
+    // returns, changes and cancellations under this entity), and acking one
+    // is the silent drop #813 exists to prevent: no failure doc, no parked
+    // doc, no warn line, and an outcome indistinguishable from real work.
+    // Parking costs one document and keeps the delivery replayable, which is
+    // exactly how #1322 itself became visible.
+    //
+    // An ABSENT/empty `actions` is not unknown — the legacy `claims` spelling
+    // carries none, and a `post_purchase` body that lost it still names a
+    // claim in its `resource`. Import; the claim read is the authority.
+    const acoes = payload.actions ?? [];
+    if (acoes.length > 0 && !acoes.some((a) => CLAIM_ACTIONS.has(a))) {
+      console.warn('[mercado-livre] post_purchase: ação desconhecida — parked', {
+        integracaoId,
+        resource: payload.resource,
+        actions: acoes,
+      });
+      return { kind: 'handler-pendente', integracaoId };
+    }
+    const resourceId = parseClaimResourceId(payload.resource);
     if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
     const result = await wrapImportRunner(integracaoId, () =>
       claimImportRunner(db, integracaoId, resourceId),
@@ -1344,7 +1464,11 @@ export async function processNotificationPayload(
         skipped: result.skipped,
       });
     }
-    return { kind: 'done', integracaoId };
+    // The runner's outcome rides out on `detail`, like every other data-bearing
+    // importer since #1136 — see `ClaimImportOutcome` for why this branch was
+    // the last one still throwing its result away.
+    const detail: ClaimImportOutcome = result.skipped ?? 'imported';
+    return { kind: 'done', integracaoId, detail };
   }
 
   // `questions` — a pre-sale buyer question (#532). Idempotent by ML question

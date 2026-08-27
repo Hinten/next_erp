@@ -244,6 +244,37 @@ async function main(): Promise<void> {
         'TOPIC_DISPOSITION, ML mudou/variou a grafia e cada entrega parqueia (#1129).',
     );
   }
+
+  // ⚠️ O check acima NÃO pegou #1322, e o motivo é instrutivo: ele parte dos
+  // tópicos `ack` da tabela, então só enxerga um nome que ESTÁ nela. Quando ML
+  // migrou claims para o modelo de subtópicos, `post_purchase` estava AUSENTE
+  // da tabela inteira — cada entrega ia para `unknown-topic` e parqueava, e o
+  // resumo listava os documentos sem apontar nada como errado. Claims,
+  // mediações e mensagens de pós-venda deixaram de ser ingeridas por completo,
+  // e isso só apareceu porque um humano leu este dump linha a linha.
+  //
+  // O sinal é o INVERSO do anterior: **um tópico desconhecido parqueando
+  // repetidamente**. Um único doc pode ser ruído (ML inventou um tópico que
+  // não nos interessa); vários da mesma grafia é uma migração de nome que a
+  // tabela ainda não conhece — exatamente o custo que a distinção
+  // `ack`/`park` do #813 existe para tornar visível.
+  const parkedDesconhecidos = new Map<string, number>();
+  for (const d of docs) {
+    const topico = d.data.topic;
+    if (d.data.status !== 'parked' || typeof topico !== 'string') continue;
+    if (topico in TOPIC_DISPOSITION) continue;
+    parkedDesconhecidos.set(topico, (parkedDesconhecidos.get(topico) ?? 0) + 1);
+  }
+  if (parkedDesconhecidos.size > 0) {
+    log('');
+    for (const [topico, n] of [...parkedDesconhecidos].sort((a, b) => b[1] - a[1])) {
+      log(
+        `  ❌ tópico DESCONHECIDO '${topico}' parqueou ${n} documento(s) — ausente de ` +
+          'TOPIC_DISPOSITION. Se repete, ML passou a entregar sob um nome novo e o ' +
+          'handler correspondente não roda para NINGUÉM (#1322: `claims` → `post_purchase`).',
+      );
+    }
+  }
 }
 
 await main();
