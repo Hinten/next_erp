@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import Link from 'next/link';
 import {
   ActionIcon,
@@ -109,17 +109,18 @@ export function PrincipalTab({
     () => (listaRef ? listaDePrecosCollection.docRef(db, {}, listaRef.id) : null),
     [db, listaRef],
   );
-  // Two questions, two sources — conflating them is what made simply OPENING a
-  // pedido re-price it (see the effect below):
-  //  - WHICH lista, and whether it CHANGED: the form field, resolved
-  //    synchronously by `dereferenceOuterRef`. Already correct on the first
-  //    render, so it never transitions null -> id on its own.
-  //  - whether that lista still EXISTS: the snapshot, which necessarily lands a
-  //    beat later. Keeps `handlePick`'s "Selecione uma tabela de preços" guard
-  //    honest when the pedido points at a lista that was deleted.
+  // WHICH lista: the form field, resolved synchronously by
+  // `dereferenceOuterRef` — correct on the very first render.
   const listaIdSelecionada = listaRef?.id ?? null;
+  // Whether that lista still EXISTS: only the snapshot can answer that, and it
+  // lands a beat later. ⚠️ `useDocSnapshot` reports the two states separately —
+  // `undefined` is "still loading", `null` is "the doc is not there"
+  // (packages/data/src/hooks/useSnapshot.ts) — so test for `null` explicitly.
+  // `listaDoc?.id ?? null` collapsed them, which made `handlePick` answer
+  // "Selecione uma tabela de preços" during the load window for a lista that
+  // exists perfectly well.
   const { data: listaDoc } = useDocSnapshot(listaRefTyped);
-  const listaId = listaDoc?.id ?? null;
+  const listaId = listaDoc === null ? null : listaIdSelecionada;
 
   // Surfaced by PedidoForm's resolver when the pedido has no items — the items
   // table has no inline error slot of its own, so render it next to the title.
@@ -150,65 +151,67 @@ export function PrincipalTab({
   // preços — fetch each distinct produto, look up its price for the new lista,
   // and overwrite `precoDeVenda` ONLY when a price is found.
   //
-  // ⚠️ The signal must be `listaIdSelecionada` (the synchronous ref id), never
-  // `listaId` (the snapshot id). `useDocSnapshot` starts at `data: undefined`,
-  // so the snapshot id goes null → 'X' on every mount once the subscription
-  // lands, and that transition is indistinguishable from an operator picking a
-  // new tabela — which is why merely opening a pedido rewrote every row's price
-  // and left the form dirty. `keepMounted={false}` on PedidoForm's Tabs made it
-  // repeat on each switch back to Principal.
-  const prevListaId = useRef<string | null | undefined>(undefined);
-  useEffect(() => {
-    const prev = prevListaId.current;
-    // Recorded BEFORE the `disabled` bail-out: a pedido that unlocks later must
-    // not fire a deferred re-price for a change the operator never made.
-    prevListaId.current = listaIdSelecionada;
-    // First run (undefined) or no actual change → nothing to do.
-    if (prev === undefined || prev === listaIdSelecionada || !listaIdSelecionada) return;
-    // Locked pedido (estado past checkout, or no write permission): its prices
-    // are history — never rewritten.
+  // ⚠️ Driven by the picker's `onChange`, which is the one unambiguous "the
+  // operator chose a different tabela" signal on this screen: the picker never
+  // auto-selects, and nothing else in the app writes `listaDePrecosOuterRef`.
+  // This used to be a `useEffect` watching the lista id, and an effect cannot
+  // tell the operator's pick from the value merely ARRIVING. Three different
+  // arrivals looked identical to it, and each one rewrote historical prices and
+  // left the form dirty:
+  //   - the lista snapshot resolving on mount, so simply OPENING a saved pedido
+  //     re-priced it (the reported bug — worst on a pago pedido, whose prices
+  //     are history and whose fields are locked);
+  //   - a remount, since PedidoForm's Tabs use `keepMounted={false}`;
+  //   - `useServerTruthSeed`'s `form.reset` correcting a stale cache-painted
+  //     copy to server truth (PedidoForm.tsx), where another operator's lista
+  //     change arrives as a plain value transition.
+  // None of those is the operator. Do not move this back into an effect.
+  const repriceToken = useRef(0);
+
+  async function reprecificarPelaLista(outerRef: string | null) {
+    // A locked pedido's prices are history. The picker itself is already
+    // `disabled`, so this is defence in depth for any programmatic caller.
     if (disabled) return;
+    const novaListaId = dereferenceOuterRef(db, outerRef)?.id ?? null;
+    if (!novaListaId) return;
     const rows = form.getValues('_itensFlat') ?? [];
     const produtoIds = Array.from(
       new Set(rows.filter((r) => !!r.produtoUid && !r._delete).map((r) => r.produtoUid as string)),
     );
     if (produtoIds.length === 0) return;
 
-    let cancelled = false;
-    void (async () => {
-      const priceById = new Map<string, number | null>();
-      await Promise.all(
-        produtoIds.map(async (id) => {
-          // A per-produto Firestore failure must not reject the whole batch —
-          // treat it as "no price found" so the row keeps its current price.
-          try {
-            const snap = await getDoc(produtoCollection.docRef(db, {}, id));
-            const data = snap.data();
-            priceById.set(id, data ? await precoFromProduto(db, data, listaIdSelecionada) : null);
-          } catch (err) {
-            if (!(err instanceof FirebaseError)) throw err;
-            priceById.set(id, null);
-          }
-        }),
-      );
-      if (cancelled) return;
-      const current = form.getValues('_itensFlat') ?? [];
-      current.forEach((row, i) => {
-        if (!row.produtoUid || row._delete) return;
-        const preco = priceById.get(row.produtoUid);
-        if (typeof preco === 'number') {
-          form.setValue(`_itensFlat.${i}.precoDeVenda`, preco, {
-            shouldDirty: true,
-            shouldValidate: true,
-          });
+    // Two picks in quick succession: only the LAST may write. Without this the
+    // first lookup can land second and restore the prices it read.
+    const token = ++repriceToken.current;
+    const priceById = new Map<string, number | null>();
+    await Promise.all(
+      produtoIds.map(async (id) => {
+        // A per-produto Firestore failure must not reject the whole batch —
+        // treat it as "no price found" so the row keeps its current price.
+        try {
+          const snap = await getDoc(produtoCollection.docRef(db, {}, id));
+          const data = snap.data();
+          priceById.set(id, data ? await precoFromProduto(db, data, novaListaId) : null);
+        } catch (err) {
+          if (!(err instanceof FirebaseError)) throw err;
+          priceById.set(id, null);
         }
-      });
-      notifications.show({ message: 'Preços atualizados pela nova tabela' });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [listaIdSelecionada, disabled, db, form]);
+      }),
+    );
+    if (token !== repriceToken.current) return;
+    const current = form.getValues('_itensFlat') ?? [];
+    current.forEach((row, i) => {
+      if (!row.produtoUid || row._delete) return;
+      const preco = priceById.get(row.produtoUid);
+      if (typeof preco === 'number') {
+        form.setValue(`_itensFlat.${i}.precoDeVenda`, preco, {
+          shouldDirty: true,
+          shouldValidate: true,
+        });
+      }
+    });
+    notifications.show({ message: 'Preços atualizados pela nova tabela' });
+  }
 
   return (
     <Stack>
@@ -264,7 +267,10 @@ export function PrincipalTab({
             <ListaDePrecosPicker
               db={db}
               value={field.value}
-              onChange={(ref) => field.onChange(ref)}
+              onChange={(ref) => {
+                field.onChange(ref);
+                void reprecificarPelaLista(ref);
+              }}
               disabled={disabled}
               error={fieldState.error?.message}
             />
