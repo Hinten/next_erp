@@ -148,6 +148,30 @@ export class NFeServerError extends NFeHttpError {
  * response never arrived). Distinct from server-side errors so
  * callers can decide to retry on the client side.
  */
+/**
+ * The route answered 2xx and the body was not the shape this client claims —
+ * the wrong fields, no body at all, or not JSON.
+ *
+ * ⚠️ Nothing here describes what WE send: it is a client-side `Error`, and
+ * `status` records the 2xx the ROUTE sent us. That combination is the point —
+ * an empty 200 on `/api/nfe/emitir` used to become `null as NFeEmitResult`,
+ * asserting an authorized nota with no chave, no nRec and no cStat.
+ *
+ * ⚠️ A subclass of `NFeHttpError`, so every caller that narrows to that family
+ * (and rethrows anything else) keeps working. `body` is deliberately `null`:
+ * on this path the body is a FISCAL result, and the failing field names carry
+ * the whole diagnostic — the same reasoning as `MelhorEnvioSchemaError`.
+ */
+export class NFeSchemaError extends NFeHttpError {
+  /** Field PATHS that failed, never values. */
+  public readonly campos: string[];
+  constructor(message: string, status: number, campos: string[]) {
+    super(message, status, null);
+    this.name = 'NFeSchemaError';
+    this.campos = campos;
+  }
+}
+
 export class NFeNetworkError extends Error {
   public override readonly cause?: unknown;
   constructor(message: string, cause?: unknown) {

@@ -41,5 +41,6 @@ export {
   NFePedidoNotFoundError,
   NFeRejectedError,
   NFeRuntimeNotReadyError,
+  NFeSchemaError,
   NFeServerError,
 } from './errors';
