@@ -107,11 +107,68 @@ export function db(serviceAccountPath?: string): Firestore {
 export const E2E_PROBE_COLLECTION = 'e2e_probe';
 
 /**
+ * The shard slot of this Playwright process, or `null` when the lane is not
+ * sharded. THE single source of truth for that suffix — every run-scoped key
+ * derives it from here so the three axes below cannot drift apart.
+ *
+ * A lane that splits its suite across two jobs of ONE workflow run shares
+ * `GITHUB_RUN_ID`, `GITHUB_WORKFLOW` and `GITHUB_REF` with its sibling, and every
+ * fixture-isolation key is built from those. Three things break, each its own
+ * way, and fixing a subset is worse than fixing none:
+ *
+ *  1. {@link e2eRunId} keys `e2e_probe/<runId>`, so the sibling's `runTeardown`
+ *     deletes the probe this job is still reading — a 404 in its `globalSetup`.
+ *  2. `getRunId()` (`apps/web/e2e/_helpers/run-id.ts`) keys `e2ePrefix` and the
+ *     ephemeral auth user. Shared, both jobs mint identical `-w<n>-` prefixes
+ *     (worker indices restart at 0 per job), and whichever finishes first sweeps
+ *     `e2e-<runId>-` and deletes the other's LIVE fixtures — then deletes the
+ *     auth user out from under its session.
+ *  3. `concurrencyGroupId()` (`apps/web/e2e/_helpers/stale-sweep.ts`) keys the
+ *     predecessor marker. Distinct run ids over a SHARED group id is the worst of
+ *     the three: the second job reads the first's run id as `previous`, concludes
+ *     `cancel-in-progress` superseded it, and sweeps its prefix with
+ *     `maxAgeMs: null` — no age gate, mid-run.
+ *
+ * Unset (the default) reproduces the pre-sharding value byte for byte, so an
+ * unsharded lane is untouched.
+ *
+ * ⚠️ Throws rather than ignoring a malformed value: silently reading
+ * `E2E_RUN_SLOT=x` as "unsharded" IS failure mode 2.
+ */
+export function e2eRunSlot(): string | null {
+  const raw = process.env.E2E_RUN_SLOT?.trim();
+  if (!raw) return null;
+  if (!/^[0-9]+$/.test(raw)) {
+    throw new Error(
+      `E2E_RUN_SLOT must be digits only (got ${JSON.stringify(raw)}). It scopes every ` +
+        'fixture-isolation key, so a value that parsed as "unsharded" would put two ' +
+        "sharded jobs on one key and have them delete each other's live fixtures.",
+    );
+  }
+  return raw;
+}
+
+/**
+ * The `-s<slot>` segment appended to every run-scoped key; `''` when unsharded.
+ *
+ * ⚠️ The separator and the trailing dash callers append are load-bearing
+ * together: a sweep matches a plain `startsWith` range and the slot is not
+ * fixed-width, so `e2e-<id>-s1-` must not prefix `e2e-<id>-s11-`. It does not —
+ * the character after `s1` is `-` in one and `1` in the other. Same positional
+ * trap as the worker segment in `e2ePrefix` (`w3` ⊂ `w31`), fixed in #1051.
+ */
+export function e2eRunSlotSuffix(): string {
+  const slot = e2eRunSlot();
+  return slot ? `-s${slot}` : '';
+}
+
+/**
  * Deterministic per-run key, isolating parallel runs against the shared staging
- * project. Stable across re-run attempts by design — GitHub reuses
+ * project. Carries {@link e2eRunSlotSuffix}, so two shards of one run own
+ * separate probes. Stable across re-run attempts by design — GitHub reuses
  * `GITHUB_RUN_ID` and only bumps `GITHUB_RUN_ATTEMPT`, so attempt 2 reclaims
  * attempt 1's doc instead of leaking it.
  */
 export function e2eRunId(): string {
-  return process.env.GITHUB_RUN_ID ?? 'local';
+  return `${process.env.GITHUB_RUN_ID ?? 'local'}${e2eRunSlotSuffix()}`;
 }
