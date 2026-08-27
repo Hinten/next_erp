@@ -252,4 +252,22 @@ describe('a malformed 200 from Melhor Envio', () => {
       url: 'https://me/label.pdf',
     });
   });
+
+  it('⭐ collapses array indices — a 20-option quote names the column ONCE', async () => {
+    // ⚠️ `calculate` and `listAgencies` return ARRAYS, and the local
+    // `new Set(issues.map(i => i.path.join('.')))` this replaced de-duplicated
+    // AFTER the index was baked into the path. One null `name` across twenty
+    // options produced `0.name, 1.name, … 19.name` in a message
+    // `melhorEnvioErrorResponse` hands to the browser. `camposInvalidos` says
+    // `[].name`, and caps the list.
+    const vinte = Array.from({ length: 20 }, (_v, i) => ({ id: i + 1, name: null }));
+
+    const err = (await respondendo(vinte)
+      .calculate({ from: { postal_code: '01001000' }, to: { postal_code: '20040002' } } as never)
+      .catch((e: unknown) => e)) as MelhorEnvioSchemaError;
+
+    expect(err).toBeInstanceOf(MelhorEnvioSchemaError);
+    expect(err.message).toContain('[].name');
+    expect(err.message).not.toContain('19.name');
+  });
 });

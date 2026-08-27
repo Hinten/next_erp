@@ -307,8 +307,14 @@ const MAX_CAMPOS = 12;
  * other failure in it — and on the server clients that message is what gets
  * persisted into the failure doc, so it is the only record anyone gets.
  * `linhas[].id` says the same thing once.
+ *
+ * ⚠️ Exported because every hand-rolled copy loses both properties. The one in
+ * `freight-br/src/melhor-envio/api.ts` de-duplicated AFTER the index was baked
+ * into the path, and its schemas include `calculateResponseSchema` (an ARRAY),
+ * so one null `name` across a 20-option quote produced twenty entries —
+ * `0.name, 1.name, … 19.name` — in a message the route hands to the browser.
  */
-function camposInvalidos(issues: readonly z.core.$ZodIssue[]): string[] {
+export function camposInvalidos(issues: readonly z.core.$ZodIssue[]): string[] {
   const vistos = new Set<string>();
   for (const issue of issues) {
     const caminho = issue.path
