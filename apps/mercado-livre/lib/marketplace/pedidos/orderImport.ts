@@ -149,6 +149,7 @@ import {
 } from '@delfrance/schemas';
 import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
+import { resolveShipmentSellerCost } from './shipmentSellerCost';
 
 /**
  * Re-exported for the callers that already import them from here
@@ -1432,6 +1433,15 @@ async function applyFreteStep(args: {
     sellerId: contaBag.sellerUserId ?? 0,
     fallbackUs: freteAntigo?.prazoDespacho ?? null,
   });
+  // The seller's freight cost — `GET /shipments/{id}/costs`, the authoritative
+  // replacement for the `base_cost` the `x-format-new` body discontinued (#957).
+  // Fetched HERE with the other ML round-trips, never inside the transaction,
+  // and it degrades to `null` on any failure rather than poisoning the import.
+  const custoSellerCost = await resolveShipmentSellerCost(
+    api,
+    shippingInstance.id,
+    contaBag.sellerUserId ?? null,
+  );
 
   // Shipment↔pedido item conference (#669). Fetched HERE, never inside the
   // transaction: an ML round-trip in the OCC window would hold a document the
@@ -1471,6 +1481,7 @@ async function applyFreteStep(args: {
     enderecoOuterRef: null,
     prazoDespachoUs,
     modalidadeOverride: contaBag.modalidadeFreteImportacao,
+    custoSellerCost,
   });
 
   // Set by the FINAL (committed) attempt. Held in a record rather than a bare

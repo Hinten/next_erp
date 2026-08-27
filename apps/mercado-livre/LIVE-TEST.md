@@ -477,6 +477,24 @@ production does not reproduce here, which is worth knowing before trusting the r
 
 ### 7.3 — Settle #957 (the shipment `x-format-new` body)
 
+> ✅ **DONE on 2026-08-27 — #957 is closed.** Shipment `47868202073` (order
+> `2000018143664980`, `logistic.mode: me2` / `type: xd_drop_off`) returned every field
+> at its NEW location: `lead_time.cost` 12.99, `lead_time.list_cost` 22.14,
+> `destination.shipping_address` full, no legacy-shaped key anywhere. The table below
+> is kept as the record of what was checked.
+>
+> Two things the run turned up that the table did not anticipate:
+>
+> - **`base_cost` really is absent**, so `custoCalculado` had NO source at all and the
+>   pedido's freight cost was falling through to the GROSS `list_cost`. Fixed by
+>   implementing `GET /shipments/{id}/costs` (`senders[].cost`) — see
+>   `pedidos/shipmentSellerCost.ts`.
+> - **The compat fallbacks in `shipmentFields.ts` STAY.** Their deletion trigger needs a
+>   clean log for the PRODUCTION seller account, and that account does not reach this
+>   backend until the cutover. A staging test-user run cannot settle it. The exact
+>   `gcloud` query is in that file's header — grep `formato LEGADO`, **not**
+>   `legacy-shape`, which appears in no emitted output.
+
 The **code already shipped**: `x-format-new: true` now rides on `getShipment` and
 `getShipmentPayments` (deliberately NOT on `getShipmentSla`, whose documented example
 omits it), `mlShipmentSchema` types `lead_time` / `logistic` / `destination`, and
