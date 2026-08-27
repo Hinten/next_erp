@@ -36,8 +36,16 @@ import { getFirestore } from 'firebase-admin/firestore';
 
 const projectId = process.env.FIREBASE_PROJECT_ID ?? 'veste-france-debug';
 const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
-const PENDING_SAMPLE = Number(process.env.PENDING_SAMPLE ?? '200');
-const PRODUTO_SAMPLE = Number(process.env.PRODUTO_SAMPLE ?? '200');
+// Guarded like the sibling `check-sweep-indexes.mjs`: a non-numeric value would
+// otherwise reach `.limit(NaN)` and die with "Value for argument limit is not a
+// valid integer" from the Admin SDK before printing anything useful. A
+// non-positive value is refused for the same reason.
+const amostra = (nome, padrao) => {
+  const bruto = Number(process.env[nome]);
+  return Number.isInteger(bruto) && bruto > 0 ? bruto : padrao;
+};
+const PENDING_SAMPLE = amostra('PENDING_SAMPLE', 200);
+const PRODUTO_SAMPLE = amostra('PRODUTO_SAMPLE', 200);
 
 const app = initializeApp({ projectId });
 const db = getFirestore(app, databaseId);

@@ -1,10 +1,9 @@
 'use client';
 
-import { useMemo } from 'react';
-import { getDoc, type Firestore } from 'firebase/firestore';
+import { useEffect, useMemo, useState } from 'react';
+import { getDoc, onSnapshot, type Firestore } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import type { Produto } from '@delfrance/schemas';
-import { useDocSnapshot } from '@delfrance/data/hooks';
 import { arquivoCollection } from '@delfrance/storage';
 import { coverArquivoIds } from './fotoRefs';
 
@@ -39,46 +38,95 @@ export {
   fotoArquivoIdCandidates,
 } from './fotoRefs';
 
+/** Separator for the candidate-list dep key. NUL cannot occur in a Firestore id. */
+const KEY_SEP = '\u0000';
+
 /**
  * The first of `ids` whose `arquivos` document exists AND carries a `url`, read
- * live. Subscribes to one candidate at a time: the next listener only opens
- * once the one before it has resolved to nothing, and every later one is
- * released as soon as an earlier rung produces a url — so the steady state is
- * ONE listener per thumbnail, and the thumbnail still upgrades automatically
- * when the resize function later writes the derivative.
+ * live — walking the ladder with **exactly one `onSnapshot` open at a time**.
+ * The winning rung stays subscribed, so a later edit to that document still
+ * updates the thumbnail; every rung it rejected is released.
  *
- * ⚠️ Covers the first three candidates, because hooks cannot be called in a
- * loop. That is the whole ladder in practice: `PREFERENCIA_MINIATURA` has three
- * rungs and the last one is the original, which always exists.
+ * ⚠️ **This is deliberately ONE effect, not a chain of `useDocSnapshot` calls
+ * gated on each other.** That shape was tried and is measurably wrong, twice
+ * over: `useDocSnapshot` starts at `{ data: undefined, loading: true }` and only
+ * subscribes in an effect, so gating rung N+1 on "rung N has no url" opens ALL
+ * of them on the first render (null reads as "still loading" and as "settled
+ * empty"); and adding `&& !loading` does not fix it either, because a listener
+ * that was just handed a new ref sits at `{ data: undefined, loading: false }`
+ * for one render and reads as "settled empty" again. A correct chain needs to
+ * know which ref the state belongs to — which is what walking the list inside a
+ * single effect gives for free. The release is also one-directional in the
+ * chained form: an EARLIER rung producing a url releases the later ones, but a
+ * later rung producing it releases nothing, so the degraded case this whole PR
+ * exists for held three permanent listeners per thumbnail. Reviewed on #1315.
  */
 export function useFirstExistingArquivoUrl(
   db: Firestore,
   ids: readonly string[],
 ): { url: string | null; resolved: boolean } {
-  const [id0, id1, id2] = ids;
-  const ref0 = useMemo(() => (id0 ? arquivoCollection.docRef(db, {}, id0) : null), [db, id0]);
-  const ref1 = useMemo(() => (id1 ? arquivoCollection.docRef(db, {}, id1) : null), [db, id1]);
-  const ref2 = useMemo(() => (id2 ? arquivoCollection.docRef(db, {}, id2) : null), [db, id2]);
+  // Depend on the CONTENT of `ids`, not its identity — callers rebuild the array
+  // every render. Split back inside the effect so the dep list stays honest.
+  const key = useMemo(() => ids.join(KEY_SEP), [ids]);
+  const [state, setState] = useState<{ url: string | null; resolved: boolean; key: string }>(
+    () => ({ url: null, resolved: false, key }),
+  );
 
-  // Each rung is gated on the one before it having produced no url — a missing
-  // doc AND a doc whose `url` is still null (the transient state of the
-  // create-first upload) both fall through. Passing `null` releases the listener.
-  const snap0 = useDocSnapshot(ref0);
-  const url0 = snap0.data?.data?.url ?? null;
-  const snap1 = useDocSnapshot(url0 === null ? ref1 : null);
-  const url1 = snap1.data?.data?.url ?? null;
-  const snap2 = useDocSnapshot(url0 === null && url1 === null ? ref2 : null);
-  const url2 = snap2.data?.data?.url ?? null;
+  useEffect(() => {
+    // Nothing to resolve — answered at the return below, so the effect never
+    // has to setState synchronously (react-hooks/set-state-in-effect).
+    if (key === '') return;
+    const lista = key.split(KEY_SEP);
+    let cancelado = false;
+    let unsub: (() => void) | undefined;
 
-  const url = url0 ?? url1 ?? url2;
-  // Only the rung currently being read can hold us pending; a rung whose ref is
-  // null is settled by definition (no candidate left to try).
-  const pending =
-    (ref0 !== null && snap0.loading) ||
-    (ref1 !== null && url0 === null && snap1.loading) ||
-    (ref2 !== null && url0 === null && url1 === null && snap2.loading);
+    // ⚠️ Advancing is deferred a microtask so that `unsub` is always assigned
+    // before the next rung tries to release it. A snapshot callback can fire
+    // BEFORE `onSnapshot` returns, and advancing inline from inside it would
+    // read a stale `unsub` and leak the listener it meant to close.
+    const percorrer = (i: number) => {
+      if (cancelado) return;
+      // Release the rung we are leaving BEFORE opening the next one.
+      unsub?.();
+      unsub = undefined;
+      if (i >= lista.length) {
+        setState({ url: null, resolved: true, key });
+        return;
+      }
+      unsub = onSnapshot(
+        arquivoCollection.docRef(db, {}, lista[i]!),
+        (snap) => {
+          if (cancelado) return;
+          // A missing doc AND a doc whose `url` is still null (the transient
+          // state of a create-first upload) both fall through to the next rung.
+          const url = snap.data()?.url ?? null;
+          if (url === null) {
+            queueMicrotask(() => percorrer(i + 1));
+            return;
+          }
+          setState({ url, resolved: true, key });
+        },
+        // A denied/failed read is a resolved absence for this rung, not a stall.
+        () => queueMicrotask(() => percorrer(i + 1)),
+      );
+    };
+    percorrer(0);
 
-  return { url, resolved: url !== null || !pending };
+    return () => {
+      cancelado = true;
+      unsub?.();
+    };
+  }, [db, key]);
+
+  // No candidates at all — settled, with nothing to show. Derived rather than
+  // stored so a produto swapped to one WITHOUT a photo settles immediately
+  // instead of waiting for a state write the effect no longer makes.
+  if (key === '') return { url: null, resolved: true };
+  // Between a candidate change and the effect running, `state` still describes
+  // the PREVIOUS list — report pending rather than the wrong photo.
+  return state.key === key
+    ? { url: state.url, resolved: state.resolved }
+    : { url: null, resolved: false };
 }
 
 /**

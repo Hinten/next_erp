@@ -337,37 +337,60 @@ async function readProdutos(db: Firestore, ids: readonly string[]): Promise<Map<
  * resolved. `buildFotoRefs` writes derivative refs optimistically, so reading
  * only the preferred one prints nothing at all for every produto whose
  * derivatives the resize function never produced — and a print has no
- * broken-image placeholder to make that visible. Every distinct id is still
+ * broken-image placeholder to make that visible. Exported for `assemble.test.ts`,
+ * which pins the read count. Every distinct id is still
  * fetched exactly once, shared across the produtos that name it.
  */
-async function buildFotoResolver(
+export async function buildFotoResolver(
   db: Firestore,
   produtos: ReadonlyMap<string, Produto>,
 ): Promise<(produtoId: string | null) => string | null> {
-  const arquivoIdsByProduto = new Map<string, readonly string[]>();
-  const arquivoIds = new Set<string>();
+  const idsByProduto = new Map<string, readonly string[]>();
+  let maxRungs = 0;
   for (const [pid, p] of produtos) {
     const aids = pickCoverFotoIds(p);
     if (aids.length > 0) {
-      arquivoIdsByProduto.set(pid, aids);
-      for (const aid of aids) arquivoIds.add(aid);
+      idsByProduto.set(pid, aids);
+      maxRungs = Math.max(maxRungs, aids.length);
     }
   }
+
+  // ⚠️ LAZY, one rung at a time — never `Promise.all` over every candidate.
+  // Fetching the whole ladder up front would make the HEALTHY case cost 3x the
+  // reads it used to (a produto whose 200px derivative exists would still pay
+  // for the 400px and the original), permanently, on the batch print path and
+  // on a database that bills data scanned (root `CLAUDE.md` rule 1). Instead
+  // each wave asks only for the produtos still unresolved, so the healthy case
+  // is one wave and ~N reads, and only the degraded produtos pay for a second.
+  const urlByProduto = new Map<string, string | null>();
   const urlById = new Map<string, string | null>();
-  await Promise.all(
-    [...arquivoIds].map(async (aid) => {
-      const snap = await getDoc(arquivoCollection.docRef(db, {}, aid));
-      urlById.set(aid, snap.exists() ? (snap.data().url ?? null) : null);
-    }),
-  );
-  return (produtoId) => {
-    if (!produtoId) return null;
-    for (const aid of arquivoIdsByProduto.get(produtoId) ?? []) {
-      const url = urlById.get(aid) ?? null;
-      if (url !== null) return url;
+  for (let rung = 0; rung < maxRungs; rung++) {
+    const querer = new Set<string>();
+    for (const [pid, aids] of idsByProduto) {
+      if (urlByProduto.has(pid)) continue;
+      const aid = aids[rung];
+      if (aid !== undefined && !urlById.has(aid)) querer.add(aid);
     }
-    return null;
-  };
+    await Promise.all(
+      [...querer].map(async (aid) => {
+        const snap = await getDoc(arquivoCollection.docRef(db, {}, aid));
+        urlById.set(aid, snap.exists() ? (snap.data().url ?? null) : null);
+      }),
+    );
+    // Settle every produto whose rung resolved; the rest fall to the next wave.
+    for (const [pid, aids] of idsByProduto) {
+      if (urlByProduto.has(pid)) continue;
+      const aid = aids[rung];
+      if (aid === undefined) {
+        urlByProduto.set(pid, null); // ladder shorter than the deepest one
+        continue;
+      }
+      const url = urlById.get(aid) ?? null;
+      if (url !== null) urlByProduto.set(pid, url);
+    }
+  }
+
+  return (produtoId) => (produtoId ? (urlByProduto.get(produtoId) ?? null) : null);
 }
 
 /** produtoId → `Grupo:Valor/...` variation label (or null). */
