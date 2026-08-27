@@ -150,6 +150,21 @@ export type PostSaleRecipientFonte = 'mensagem' | 'agente-path';
 export interface PostSaleRecipient {
   readonly userId: number;
   readonly fonte: PostSaleRecipientFonte;
+  /** Whether ML returned fewer messages than `paging.total` — see the rung order. */
+  readonly paginaTruncada: boolean;
+}
+
+/**
+ * Whether `pack.messages` is the WHOLE thread rather than one page of it.
+ *
+ * ⚠️ An absent `paging.total` counts as complete, matching
+ * `orderMessageImport.lerThreadCompleta`, which stops walking on the same
+ * condition. ML returns `paging` on the pack read; the by-id read, which does
+ * not, never reaches here.
+ */
+export function threadCompleta(pack: MlPackMessages): boolean {
+  const total = pack.paging?.total ?? null;
+  return total == null || pack.messages.length >= total;
 }
 
 /** A `from`/`to` user id as a positive safe integer, or null. ML prints both. */
@@ -181,24 +196,50 @@ function carimboMs(message: MlPostSaleMessage): number | null {
  * never reaches anybody. Both directions are wrong, so this is derived, never
  * assumed — from the pack the caller already read, at no extra cost.
  *
- * ⚠️ The rungs are ordered by EVIDENCE, and rung 2 is one-directional.
+ * ⚠️ The rungs are ordered by EVIDENCE, and their PRECEDENCE FLIPS on a
+ * truncated page. Two signals, each authoritative about a different thing:
  *
- * 1. The newest counterparty message's `from.user_id` — not an inference about
- *    ML's roadmap but the address ML itself just delivered from. That is the
- *    agent under the new flow and the real buyer under the old one, and it
- *    self-corrects as the rollout advances. **Newest**, because a thread migrated
- *    mid-life carries older buyer-id messages and newer agent-id ones and only
- *    the latest reflects what ML will validate the POST against — and newest **by
- *    timestamp, never by array position**, since nothing proves ML's sort order.
- * 2. `conversation_status.path` naming a `/conversations/` segment ⇒ the site's
- *    agent. ⚠️ Match that segment and NOTHING else: `sellers` (plural) appears on
- *    ordinary legacy threads too — the 400 above quotes it — so reading the
- *    plural as the tell re-breaks exactly the threads this fixes. The rung can
- *    only ever answer "agent", because `path` carries no buyer id; its absence
- *    proves nothing and must never be read as "use the buyer id".
- * 3. `null` — the caller refuses. There is deliberately no default: a thread
- *    reaching here is by construction one we have NO evidence about, so either
- *    default is a coin flip, which is the bug above on a smaller set.
+ * - **OBSERVED** — the newest counterparty message's `from.user_id`. Not an
+ *   inference about ML's roadmap but the address ML itself just delivered from:
+ *   the agent under the new flow, the real buyer under the old one, and it
+ *   self-corrects as the rollout advances. Stronger than the per-site table,
+ *   which would miss an agent id ML newly minted. **Newest**, because a thread
+ *   migrated mid-life carries older buyer-id messages and newer agent-id ones and
+ *   only the latest reflects what ML will validate the POST against.
+ * - **PATH** — `conversation_status.path` naming a `/conversations/` segment ⇒
+ *   the site's agent. Read from THIS response, so never stale, but it can only
+ *   ever answer "agent": `path` carries no buyer id, so its absence proves
+ *   nothing and must never be read as "use the buyer id".
+ *   ⚠️ Match that segment and NOTHING else. `sellers` (plural) appears on
+ *   ordinary legacy threads too — the 400 above quotes it — so reading the plural
+ *   as the tell re-breaks exactly the threads this fixes.
+ *
+ * ⚠️ **OBSERVED wins only on a page we can vouch for.** The send path makes ONE
+ * call at `offset: 0`, so a thread longer than `PAGINA_MENSAGENS_THREAD` yields
+ * whichever page ML chose — and its sort order is not proven anywhere. If ML
+ * pages ascending, a MIGRATED thread over 100 messages hands back its OLDEST
+ * page, whose newest counterparty is the pre-migration **real buyer id** ⇒ a
+ * `200` that reaches nobody, the silent half of this whole bug one page deeper.
+ * So on a truncated page PATH decides first.
+ *
+ * ⚠️ The converse is NOT a refusal, and that asymmetry is deliberate: a truncated
+ * page with no `/conversations/` is a LEGACY thread, and a legacy thread's
+ * counterparty is the pack's buyer — **one pack, one buyer, an id that does not
+ * change over the thread's life**. Migration is the only thing that changes it,
+ * and PATH is exactly what reports migration. Refusing there would strand the
+ * operator on a 100+-message thread, which is precisely the problem order they
+ * most need to answer.
+ *
+ * Nothing at all ⇒ `null`, and the caller refuses. There is deliberately no
+ * default: such a thread is by construction one we have NO evidence about, so
+ * either default is a coin flip — the bug above on a smaller set.
+ *
+ * ⚠️ "Newest" is by TIMESTAMP, never by array position — nothing proves ML's sort
+ * order. The one exception is candidates that carry no usable
+ * `message_date.created`/`received` at all: among those the first seen wins, so
+ * a wholly-undated set does fall back to array order. A dated candidate always
+ * beats an undated one regardless of position. `message_date` is always present
+ * in practice.
  */
 export function postSaleRecipientUserId(
   pack: MlPackMessages,
@@ -208,6 +249,8 @@ export function postSaleRecipientUserId(
   // every message would read as a counterparty and this could return our own id
   // — ML answers `400 Sender and received must not be equals`.
   if (sellerUserId == null) return null;
+
+  const paginaTruncada = !threadCompleta(pack);
 
   let melhor: { userId: number; ms: number | null } | null = null;
   for (const m of pack.messages) {
@@ -224,15 +267,25 @@ export function postSaleRecipientUserId(
     // array position.
     if (ms != null && (melhor.ms == null || ms > melhor.ms)) melhor = { userId, ms };
   }
-  if (melhor != null) return { userId: melhor.userId, fonte: 'mensagem' };
+  const observado: PostSaleRecipient | null =
+    melhor == null ? null : { userId: melhor.userId, fonte: 'mensagem', paginaTruncada };
 
   const path = pack.conversation_status?.path ?? '';
-  if (path.includes('/conversations/')) {
-    const siteId = pack.messages.find((m) => m.site_id != null)?.site_id ?? null;
-    return { userId: postSaleAgentUserId(siteId), fonte: 'agente-path' };
-  }
+  const agentePorPath: PostSaleRecipient | null = path.includes('/conversations/')
+    ? {
+        userId: postSaleAgentUserId(pack.messages.find((m) => m.site_id != null)?.site_id ?? null),
+        fonte: 'agente-path',
+        paginaTruncada,
+      }
+    : null;
 
-  return null;
+  // ⚠️ The precedence flip. On a page we can vouch for, the OBSERVED id wins —
+  // it is the address ML actually used. On a TRUNCATED one it must not: we may be
+  // holding the oldest 100 messages of a thread ML has since migrated, whose
+  // counterparty is the stale pre-migration buyer. PATH comes off THIS response,
+  // so it cannot be stale, and it decides. See the docblock for why the fallback
+  // is still OBSERVED rather than a refusal.
+  return paginaTruncada ? (agentePorPath ?? observado) : (observado ?? agentePorPath);
 }
 
 export interface ConversaFromPackContext {

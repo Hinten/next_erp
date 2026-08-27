@@ -240,6 +240,24 @@ async function responderMensagemPedido(
       'O Mercado Livre não informou quem recebe esta mensagem. Responda pelo site do Mercado Livre.',
     );
   }
+
+  // ⚠️ `agente-path` is the one rung whose failure is SILENT: it infers the agent
+  // from a documented path convention rather than observing an address ML used,
+  // so if that convention ever changes ML answers 200 and the reply reaches
+  // nobody. The refusal above is already visible; this makes the inference
+  // visible too, which is the only way a wrong `/conversations/` heuristic could
+  // ever be noticed. `paginaTruncada` rides along because it is what flips the
+  // rung precedence.
+  if (destinatario.fonte !== 'mensagem' || destinatario.paginaTruncada) {
+    console.info('[mercado-livre] destinatário pós-venda inferido', {
+      packId,
+      fonte: destinatario.fonte,
+      paginaTruncada: destinatario.paginaTruncada,
+      mensagensLidas: pack.messages.length,
+      total: pack.paging?.total ?? null,
+    });
+  }
+
   await api.sendPackMessage(packId, String(sellerId), {
     text: texto,
     toUserId: destinatario.userId,

@@ -176,7 +176,7 @@ describe('postSaleRecipientUserId', () => {
     // The live 400 this exists to prevent: ML's agent rollout is progressive, so
     // a legacy thread refuses the agent outright.
     const r = postSaleRecipientUserId(pack([em(0, { from: { user_id: COMPRADOR } })]), SELLER);
-    expect(r).toEqual({ userId: COMPRADOR, fonte: 'mensagem' });
+    expect(r).toEqual({ userId: COMPRADOR, fonte: 'mensagem', paginaTruncada: false });
     expect(r?.userId).not.toBe(AGENTE_MLB);
   });
 
@@ -184,6 +184,7 @@ describe('postSaleRecipientUserId', () => {
     expect(postSaleRecipientUserId(pack([em(0)]), SELLER)).toEqual({
       userId: AGENTE_MLB,
       fonte: 'mensagem',
+      paginaTruncada: false,
     });
   });
 
@@ -258,7 +259,7 @@ describe('postSaleRecipientUserId', () => {
         pack(semContraparte, { path: '/packs/1/sellers/2/conversations/post_sale' }),
         SELLER,
       ),
-    ).toEqual({ userId: AGENTE_MLB, fonte: 'agente-path' });
+    ).toEqual({ userId: AGENTE_MLB, fonte: 'agente-path', paginaTruncada: false });
   });
 
   it('reads the site off the thread for that fallback, defaulting to MLB', () => {
@@ -288,6 +289,67 @@ describe('postSaleRecipientUserId', () => {
     expect(
       postSaleRecipientUserId(pack([em(0, { from: null } as never)], { path: null }), SELLER),
     ).toBeNull();
+  });
+
+  /** A pack ML paged: `total` messages exist, only `messages` came back. */
+  function packTruncado(
+    messages: readonly MlPostSaleMessage[],
+    total: number,
+    statusOver: Partial<MlConversationStatus> = {},
+  ): MlPackMessages {
+    return {
+      ...pack(messages, statusOver),
+      paging: { limit: 100, offset: 0, total },
+    } as MlPackMessages;
+  }
+
+  it('⚠️ on a TRUNCATED page the path outranks the messages', () => {
+    // The silent half, one page deeper. The send path reads offset 0 only, and
+    // ML's sort order is not proven anywhere — so a MIGRATED thread over 100
+    // messages can hand back its OLDEST page, whose newest counterparty is the
+    // stale pre-migration buyer id. Trusting it gets a 200 that reaches nobody.
+    const r = postSaleRecipientUserId(
+      packTruncado([em(0, { from: { user_id: COMPRADOR } })], 250, {
+        path: '/packs/1/sellers/2/conversations/post_sale',
+      }),
+      SELLER,
+    );
+    expect(r).toEqual({ userId: AGENTE_MLB, fonte: 'agente-path', paginaTruncada: true });
+  });
+
+  it('…but a truncated LEGACY thread still resolves, it does not refuse', () => {
+    // No `/conversations/` ⇒ not migrated, and one pack has exactly one buyer
+    // whose id does not change over the thread's life. Migration is the only
+    // thing that could change it, and that is what the path reports. Refusing
+    // here would strand the operator on a 100+-message thread — the problem
+    // order they most need to answer.
+    const r = postSaleRecipientUserId(
+      packTruncado([em(0, { from: { user_id: COMPRADOR } })], 250),
+      SELLER,
+    );
+    expect(r).toEqual({ userId: COMPRADOR, fonte: 'mensagem', paginaTruncada: true });
+  });
+
+  it('a COMPLETE page keeps the observed id ahead of the path', () => {
+    // The observed address is stronger than the per-site table, which would miss
+    // an agent id ML newly minted. `total` equal to what came back is complete.
+    const r = postSaleRecipientUserId(
+      packTruncado([em(0, { from: { user_id: 99999 } })], 1, {
+        path: '/packs/1/sellers/2/conversations/post_sale',
+      }),
+      SELLER,
+    );
+    expect(r).toEqual({ userId: 99999, fonte: 'mensagem', paginaTruncada: false });
+  });
+
+  it('treats an ABSENT paging.total as complete, like the importer does', () => {
+    // `lerThreadCompleta` stops walking on the same condition.
+    const semPaging = { ...pack([em(0, { from: { user_id: COMPRADOR } })]), paging: null };
+    expect(postSaleRecipientUserId(semPaging as MlPackMessages, SELLER)).toEqual({
+      userId: COMPRADOR,
+      fonte: 'mensagem',
+      paginaTruncada: false,
+    });
   });
 
   it('returns null without a seller id rather than addressing ourselves', () => {
