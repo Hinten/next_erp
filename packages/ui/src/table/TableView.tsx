@@ -900,6 +900,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // the second run computes the same signature and finds nothing changed — and
   // it also says what this effect actually means: reset when the result set
   // the window described is no longer the one being queried.
+  // Declared here rather than beside its own effect so the shape effect below
+  // can burn it: the two halves of the restored position have to expire
+  // together.
+  const scrollRestoredRef = useRef(false);
+
   const pagesResetShape = useRef<string | null>(null);
   useEffect(() => {
     const shape = JSON.stringify([
@@ -915,7 +920,15 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     if (pagesResetShape.current === shape) return;
     const firstRun = pagesResetShape.current === null;
     pagesResetShape.current = shape;
-    if (!firstRun) setPages(1);
+    if (firstRun) return;
+    setPages(1);
+    // The remembered offset described the result set the operator LEFT, so it
+    // is meaningless against a different one. Burn the latch rather than let it
+    // sit armed: the search box and the chip row are interactive while the
+    // first (possibly slow, restored-window-sized) query is still loading, so
+    // an operator who types there would otherwise be thrown down a result set
+    // they never scrolled the moment their own rows land.
+    scrollRestoredRef.current = true;
   }, [
     filtersSerial,
     baseFiltersSerial,
@@ -974,7 +987,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Put it back, once, after the rows that give the page its height exist —
   // scrolling to an offset the document is not yet tall enough for silently
   // lands at the bottom instead.
-  const scrollRestoredRef = useRef(false);
   useEffect(() => {
     if (scrollRestoredRef.current) return;
     if (!restored || restored.scroll <= 0) return;

@@ -84,14 +84,25 @@ export function useSearchTermParam(param = 'q'): [string, (term: string) => void
     () => searchParams.get(param) ?? readSearchTerm(pathname, param),
   );
 
-  // A term recovered from the memory is not in the URL yet. Put it there, so
+  // Reconcile the two tiers on mount, in whichever direction is missing.
+  //
+  // A term recovered from the memory is not in the URL yet — put it there, so
   // the address bar agrees with the input and a reload (or a copied link)
   // reproduces what is on screen.
-  const mirrorRestored = useRef(searchParams.get(param) === null && term !== '');
+  //
+  // ⚠️ And the inverse, which is the easier half to forget: a term that arrived
+  // FROM the URL was never written to the memory, because only `commit` writes
+  // and the operator never typed. The screen would then hold a stale older term
+  // and restore THAT on the next bare-path return — showing a search the
+  // operator had already navigated away from. `useTableUrlState` has no such
+  // gap: its sync effect persists on its first run too. Match it.
+  const openingTerm = useRef(term);
   useEffect(() => {
-    if (!mirrorRestored.current) return;
-    mirrorRestored.current = false;
-    mirrorToUrl(pathname, param, term);
+    if (searchParams.get(param) === null) {
+      if (openingTerm.current !== '') mirrorToUrl(pathname, param, openingTerm.current);
+    } else {
+      writeSearchTerm(pathname, param, openingTerm.current);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only by design
   }, []);
 

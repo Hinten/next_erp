@@ -1128,6 +1128,36 @@ describe('TableView', () => {
       vi.useRealTimers();
     });
 
+    it('abandons the remembered scroll once the operator changes the query', async () => {
+      // The search box and the chip row are interactive while the first query
+      // — sized to the RESTORED window, so possibly slow — is still loading.
+      // An operator who filters in that gap must not be thrown down a result
+      // set they never scrolled when their own rows finally land.
+      const scrollTo = vi.fn();
+      vi.stubGlobal('scrollTo', scrollTo);
+      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      const withRows = snapState.current;
+      snapState.current = { data: [], loading: false, error: undefined };
+
+      const { rerender } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      // Their own filter, before any row has arrived.
+      fireEvent.click(screen.getByRole('button', { name: 'Filtrar Nome' }));
+      fireEvent.change(screen.getByLabelText('Nome contém'), { target: { value: 'ana' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar' }));
+
+      snapState.current = withRows;
+      rerender(
+        <MantineTestProvider>
+          <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />
+        </MantineTestProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(scrollTo).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    });
+
     it('does not zero a remembered offset when it unmounts without a scroll', async () => {
       // The StrictMode mount/cleanup/remount cycle would otherwise flush
       // `scrollY` 0 over the offset the restore is still on its way to

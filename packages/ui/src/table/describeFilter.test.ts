@@ -157,6 +157,51 @@ describe('buildFilterChips', () => {
     expect(chips).toEqual([]);
   });
 
+  it('emits ONE chip when a virtual filter field shadows a schema key', () => {
+    // `fields` is [...descriptors, ...virtualFilterFields] and the collision is
+    // routine: /pedidos collides on valorCobrado, timestamp, dtImpressao and
+    // clientePedidoOuterRef; /produtos on integracoesComProduto. Two chips
+    // shared one React key, and the schema-labelled one names a column that is
+    // hidden or replaced — so it points at a column that is not on screen.
+    const schemaField = field('valorCobrado', 'currency', { label: 'Valor cobrado' });
+    const virtualField = field('valorCobrado', 'currency', { label: 'Valor' });
+    const chips = buildFilterChips({
+      filters: { valorCobrado: { op: 'gte', value: 100 } },
+      fields: [schemaField, virtualField],
+    });
+    expect(chips).toHaveLength(1);
+    // The virtual column's label wins — it is the one the operator clicked,
+    // and it matches the precedence `parseFiltersFromParams` already applies.
+    expect(chips[0]!.text).toBe('Valor ≥ 100');
+  });
+
+  it('emits no duplicate chip keys, whatever the field list contains', () => {
+    // Duplicate keys are a React warning AND, when the labels happen to match,
+    // two byte-identical chips — the Playwright strict-mode hazard again.
+    const chips = buildFilterChips({
+      filters: {
+        cliente: { op: 'eq', value: 'x' },
+        nome: { op: 'contains', value: 'ana' },
+      },
+      fields: [
+        field('cliente', 'string', { label: 'Cliente' }),
+        NOME,
+        field('cliente', 'string', { label: 'Cliente' }),
+      ],
+      search: 'termo',
+    });
+    expect(new Set(chips.map((c) => c.key)).size).toBe(chips.length);
+    expect(new Set(chips.map((c) => c.text)).size).toBe(chips.length);
+  });
+
+  it('keeps schema order when a shadowed field is deduped', () => {
+    const chips = buildFilterChips({
+      filters: { nome: { op: 'contains', value: 'a' }, preco: { op: 'gte', value: 1 } },
+      fields: [NOME, PRECO, field('preco', 'currency', { label: 'Vlr' })],
+    });
+    expect(chips.map((c) => c.key)).toEqual(['nome', 'preco']);
+  });
+
   it('never emits a chip whose whole text is just a column label', () => {
     // Guards the Playwright strict-mode hazard: `clickColumnSort` is
     // getByText(label, { exact: true }), so a chip equal to a header label

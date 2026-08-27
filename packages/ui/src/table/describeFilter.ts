@@ -149,7 +149,24 @@ export function buildFilterChips(params: {
   const { filters, fields, labelFor, formatters, search = '', searchLabel = 'Busca' } = params;
   const chips: FilterChip[] = [];
   if (search !== '') chips.push({ key: SEARCH_CHIP_KEY, text: `${searchLabel}: "${search}"` });
-  for (const field of fields) {
+
+  // ⚠️ One chip per FILTER, not per field entry. `fields` is
+  // `[...descriptors, ...virtualFilterFields]` and a virtual column's
+  // `filter.field` routinely names a real schema key — `/pedidos` collides on
+  // `valorCobrado`, `timestamp`, `dtImpressao` and `clientePedidoOuterRef`,
+  // `/produtos` on `integracoesComProduto`. Iterating the raw array emitted the
+  // same filter twice: two chips sharing one React key, one of them labelled
+  // for a column that is not on screen (the schema field is `hidden` or
+  // replaced by the virtual column), and — for the pairs whose labels happen to
+  // match — two byte-identical chips, which is exactly the Playwright
+  // strict-mode hazard the single-text-node rule exists to avoid.
+  //
+  // A Map keeps the LAST entry per key, so the virtual column's descriptor wins
+  // — the same precedence `parseFiltersFromParams` already gets from
+  // `new Map(fields.map(...))`, and the right one: it carries the label the
+  // operator actually clicked. Insertion order still follows the schema.
+  const byKey = new Map(fields.map((f) => [f.key, f]));
+  for (const field of byKey.values()) {
     const filter = filters[field.key];
     if (!filter) continue;
     chips.push({

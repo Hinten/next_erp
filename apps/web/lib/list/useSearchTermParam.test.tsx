@@ -45,6 +45,16 @@ describe('useSearchTermParam', () => {
     expect(window.location.search).toBe('?q=rua+das+flores');
   });
 
+  it('persists a URL-supplied term, so a later bare return does not restore a stale one', () => {
+    // Only `commit` used to write, so a term that arrived from the URL was
+    // never remembered: the screen kept an older term and restored THAT on the
+    // next return to the bare path — a search the operator had already left.
+    writeSearchTerm('/clientes', 'q', 'termo-antigo');
+    searchParamsRef.current = new URLSearchParams('q=termo-do-link');
+    renderHook(() => useSearchTermParam());
+    expect(readSearchTerm('/clientes', 'q')).toBe('termo-do-link');
+  });
+
   it('lets the URL win over the memory', () => {
     writeSearchTerm('/clientes', 'q', 'remembered');
     searchParamsRef.current = new URLSearchParams('q=from-the-link');
