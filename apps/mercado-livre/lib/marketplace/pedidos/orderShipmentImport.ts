@@ -207,6 +207,13 @@ export async function importShipmentMercadoLivre(
   // `GET /shipments/{id}/costs` — the seller's share, replacing the `base_cost`
   // the `x-format-new` body discontinued (#957). Degrades to `null` on any
   // failure, which the merge below then reads as "keep what is stored".
+  //
+  // ⚠️ UNCONDITIONAL on this path, unlike `applyFreteStep` — which has a pre-read
+  // freshness early-out above its own fetches. Here the verdict lives INSIDE the
+  // transaction (`mergeFreteInicialSeMaisNovo`), so every `shipments` redelivery
+  // pays this GET even when the merge then discards the result. That is the same
+  // shape as the three calls above it, and it must stay above the transaction:
+  // an ML round-trip inside the OCC window is the thing this file does not do.
   const custoSellerCost = await resolveShipmentSellerCost(
     api,
     shipment.id,
