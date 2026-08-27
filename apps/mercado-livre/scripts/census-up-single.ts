@@ -23,11 +23,13 @@
  * `FIREBASE_PROJECT_ID` cannot point it at production by accident.
  *
  * ⚠️ **Cost.** Firestore Enterprise bills DATA SCANNED and auto-creates ZERO
- * indexes, so phase 1 needs the `produtoMercadoLivre(isUserProductModel, __name__)`
- * COLLECTION_GROUP index declared in `firestore.indexes.json`. Until that index is
- * DEPLOYED the query still runs — Enterprise never throws `FAILED_PRECONDITION` —
- * it just full-scans every link document and puts the difference on the invoice.
- * The script prints the index it wants so the reading is never a surprise.
+ * indexes. Phase 1 rides `produtoMercadoLivre(isUserProductModel, __name__)`, which
+ * IS declared in `firestore.indexes.json` — but declaring is not deploying, and
+ * deploying is a human step (root `CLAUDE.md` rules 2/8; agents never run
+ * `firebase deploy`). Until it is deployed the query still RUNS — Enterprise never
+ * throws `FAILED_PRECONDITION` — it just full-scans every link document and puts
+ * the difference on the invoice. The script prints the index it rides so the
+ * reading is never a surprise, and so an operator can check it is live first.
  *
  * ⚠️ Three documents, no join. The predicate spans the link (`isUserProductModel`),
  * the produto (`paiId == null`) and its children (none) — and a collectionGroup

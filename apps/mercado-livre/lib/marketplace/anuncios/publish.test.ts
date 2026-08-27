@@ -18,6 +18,34 @@ import { MercadoLivrePublishError } from './publishCore';
 
 type DocData = Record<string, unknown>;
 
+/**
+ * Resolve the `FieldValue` transforms this module actually writes.
+ *
+ * ⚠️ Without this the fake stores the SENTINEL OBJECT, so a test asserting a
+ * number passes only while the code under test writes a plain value — i.e. it goes
+ * green exactly when the rule-7-safe version is replaced by the unsafe one. Both
+ * transforms expose `operand`, and their constructor names are the only thing that
+ * tells them apart.
+ */
+function aplicarSentinelas(atual: DocData | undefined, patch: DocData): DocData {
+  const out: DocData = {};
+  for (const [k, v] of Object.entries(patch)) {
+    const nome = (v as { constructor?: { name?: string } } | null)?.constructor?.name;
+    const operand = (v as { operand?: unknown } | null)?.operand;
+    const anterior = atual?.[k];
+    if (nome === 'NumericIncrementTransform' && typeof operand === 'number') {
+      out[k] = (typeof anterior === 'number' ? anterior : 0) + operand;
+    } else if (nome === 'NumericMaximumTransform' && typeof operand === 'number') {
+      out[k] = typeof anterior === 'number' ? Math.max(anterior, operand) : operand;
+    } else if (nome === 'NumericMinimumTransform' && typeof operand === 'number') {
+      out[k] = typeof anterior === 'number' ? Math.min(anterior, operand) : operand;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly updates: Array<{ path: string; patch: DocData }> = [];
@@ -56,6 +84,61 @@ class FakeDb {
     return this.col(path);
   }
 
+  /**
+   * A WriteBatch with REAL atomicity: nothing is applied until `commit()`, and a
+   * failing `create` applies NOTHING.
+   *
+   * ⚠️ The all-or-nothing half is the point, not a nicety. #1087's materialisation
+   * is unrecoverable if it half-lands (a produto that gained a child is never
+   * re-entered), so a fake that applied ops as they were queued would let the exact
+   * defect the batch exists to prevent pass its own test.
+   */
+  batch() {
+    const self = this;
+    const ops: Array<{
+      path: string;
+      id: string;
+      data: DocData;
+      kind: 'create' | 'set' | 'update';
+    }> = [];
+    return {
+      create(ref: { __path: string; __id: string }, data: DocData) {
+        ops.push({ path: ref.__path, id: ref.__id, data, kind: 'create' });
+      },
+      set(ref: { __path: string; __id: string }, data: DocData) {
+        ops.push({ path: ref.__path, id: ref.__id, data, kind: 'set' });
+      },
+      update(ref: { __path: string; __id: string }, data: DocData) {
+        ops.push({ path: ref.__path, id: ref.__id, data, kind: 'update' });
+      },
+      async commit() {
+        // Validate FIRST, mutate second — a rejected batch must leave no trace.
+        for (const op of ops) {
+          const col = self.col(op.path);
+          if (op.kind === 'create' && col.has(op.id)) {
+            const err = new Error(`ALREADY_EXISTS: ${op.path}/${op.id}`) as Error & {
+              code: number;
+            };
+            err.code = 6;
+            throw err;
+          }
+          if (op.kind === 'update' && !col.has(op.id)) {
+            const err = new Error(`NOT_FOUND: ${op.path}/${op.id}`) as Error & { code: number };
+            err.code = 5;
+            throw err;
+          }
+        }
+        for (const op of ops) {
+          const col = self.col(op.path);
+          const atual = col.get(op.id);
+          const resolvido = aplicarSentinelas(atual, op.data);
+          col.set(op.id, op.kind === 'create' ? resolvido : { ...(atual ?? {}), ...resolvido });
+          self.bump(`${op.path}/${op.id}`);
+        }
+      },
+    };
+  }
+
   collection(path: string) {
     const col = this.col(path);
     const self = this;
@@ -65,6 +148,10 @@ class FakeDb {
         const key = `${path}/${docId}`;
         return {
           id: docId,
+          // How `batch()` addresses this doc — the fake's stand-in for a real
+          // DocumentReference's own path.
+          __path: path,
+          __id: docId,
           get: async () => {
             const snap = {
               exists: col.has(docId),
@@ -80,7 +167,9 @@ class FakeDb {
             return snap;
           },
           set: async (data: DocData, opts?: { merge?: boolean }) => {
-            col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
+            const atual = col.get(docId);
+            const resolvido = aplicarSentinelas(atual, data);
+            col.set(docId, opts?.merge ? { ...(atual ?? {}), ...resolvido } : { ...resolvido });
             self.bump(key);
           },
           // Real `create()` semantics, and the ALREADY_EXISTS half is the point:
@@ -118,7 +207,7 @@ class FakeDb {
               err.code = 9;
               throw err;
             }
-            col.set(docId, { ...current, ...patch });
+            col.set(docId, { ...current, ...aplicarSentinelas(current, patch) });
             self.bump(key);
             self.updates.push({ path: key, patch });
           },
@@ -2301,6 +2390,44 @@ describe('publishProduto — the User-Products sole member (#1087)', () => {
     // The second pass must NOT copy the parent's now-reduced quantity over the
     // child's good row.
     expect(db.docs(`produtos/${CHILD}/estoques`).get(`est-${CHILD}-dep-1`)!.quantidade).toBe(8);
+  });
+
+  it('⛔ a LOST race applies NOTHING — the reshape is all-or-nothing', async () => {
+    // The defect this guards is unrecoverable, not untidy: once the child produto
+    // exists the produto HAS children, so `classificarMembroUnico` answers
+    // `'nenhum'` and `garantirMembroUnico` is never entered again. A half-applied
+    // reshape would therefore be permanent — stock stranded on the parent for ever,
+    // or counted twice — with no later run able to finish it.
+    //
+    // Here a concurrent publish mints the child in the window between our existence
+    // check and our commit, so our `batch.create` loses with ALREADY_EXISTS. What
+    // must be true afterwards is that our OTHER three writes did not land either.
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    db.afterGet = {
+      path: `produtos/${CHILD}`,
+      fn: () => db.seed('produtos', CHILD, { nome: 'vencedor da corrida', paiId: PROD }),
+    };
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // eslint-disable-next-line no-console
+    // ⛔ The loser must STILL end up adopting. Its batch — the one that would have
+    // written the member link — is exactly the one that failed, so without a
+    // recovery here `findVariacaoLink` finds nothing, the member counts as new, and
+    // this POSTs a SECOND ML item that the orphan sweep then closes the original
+    // for. Measured: before the recovery existed, this was `createItem: 1`.
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).toHaveBeenCalled();
+
+    // The parent's stock is untouched — not reduced by a delta whose child row
+    // never materialised.
+    expect(db.docs(`produtos/${PROD}/estoques`).get('est-1')!.quantidade).toBe(10);
+    // ...and no child estoque row was left behind on its own.
+    expect(db.docs(`produtos/${CHILD}/estoques`).size).toBe(0);
+    // The winner's document stands; we did not overwrite it.
+    expect(db.docs('produtos').get(CHILD)!.nome).toBe('vencedor da corrida');
   });
 
   it('still REFUSES a family id with no children — that one is not repairable here', async () => {

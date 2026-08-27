@@ -147,6 +147,41 @@ describe('round-trip: what ML changed on the way back', () => {
     expect(attributeToMercadoLivre(height).value_name).toBe('12 cm');
   });
 
+  // ⚠️ One row per shape ML is known to return. The first two passed before #1087's
+  // second pass; the last two are the ones that still compounded, one shape over —
+  // a comma decimal (`Number('1,5')` is NaN) and a unit whose DISPLAY case differs
+  // from its id (`'mL'` vs `unit_id: 'ml'`).
+  it.each([
+    ['12 cm', 'cm', '12 cm'],
+    ['1.5 cm', 'cm', '1.5 cm'],
+    ['1,5 cm', 'cm', '1,5 cm'],
+    ['355 mL', 'ml', '355 ml'],
+    ['1,5 mL', 'ml', '1,5 ml'],
+  ])(
+    'does not accumulate the unit: %s + unit_id=%s republishes as %s',
+    (nome, unitId, esperado) => {
+      const [attr] = attributesFromItem([
+        { id: 'HEIGHT', value_name: nome, unit_id: unitId, value_id: '1' },
+      ]);
+      expect(attributeToMercadoLivre(attr!).value_name).toBe(esperado);
+    },
+  );
+
+  it('⚠️ never splits a value ML did NOT name a unit for — a BRAND stays whole', () => {
+    // The reason the fallback is narrow: this layer has no category metadata, so a
+    // blind split would turn `Nike Air` into `Nike`. It splits only a trailing token
+    // ML itself reported in `unit_id`, and only over a number.
+    const [semUnidade] = attributesFromItem([
+      { id: 'BRAND', value_name: 'Nike Air', value_id: '1' },
+    ]);
+    expect(attributeToMercadoLivre(semUnidade!).value_name).toBe('Nike Air');
+    // ...and not even then, when the head is not a number.
+    const [naoNumero] = attributesFromItem([
+      { id: 'BRAND', value_name: 'Nike cm', unit_id: 'cm', value_id: '1' },
+    ]);
+    expect(attributeToMercadoLivre(naoNumero!).value_name).toBe('Nike cm');
+  });
+
   it('⛔ a SECOND round trip is idempotent — the unit does not accumulate', () => {
     // The property that actually matters. One extra " cm" per republish is
     // invisible until ML rejects the value, and by then every listing carries it.

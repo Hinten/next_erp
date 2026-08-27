@@ -1215,6 +1215,20 @@
       ]
     },
     {
+      "collectionGroup": "produtoMercadoLivre",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "isUserProductModel",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "produtos",
       "queryScope": "COLLECTION",
       "fields": [

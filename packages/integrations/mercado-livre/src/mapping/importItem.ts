@@ -150,17 +150,19 @@ export function isKitFromAttributes(attrs: readonly MlItemAttribute[] | null | u
 /**
  * A measurement ML stated in `value_struct`, as the number and unit we store.
  *
- * ⚠️ This is the only unit an item response carries. `value_name` bakes it into
- * the text (`'355 mL'`) and `unit_id` is a field we SEND, never one ML returns —
- * so without reading the struct, every imported measurement lands unitless and
- * with its unit stranded inside the value.
+ * `value_name` bakes the unit into the text (`'355 mL'`), so without reading the
+ * struct an imported measurement lands unitless with its unit stranded in the value.
  *
- * ⚠️ There is deliberately NO fallback that parses the unit out of `value_name`.
- * This layer sees no category metadata, so it cannot tell a real unit from the
- * tail of an ordinary string, and a blind split would turn a BRAND of
- * `'Nike Air'` into `'Nike'` — exactly the silent corruption being fixed. When
- * ML sends no struct the value is left whole; the editor splits it there, where
- * `allowedUnits` is on hand to match against.
+ * ⚠️ This is no longer the ONLY unit an item response carries — ML does sometimes
+ * return `unit_id` beside a baked `value_name`, which is what
+ * {@link measurementFromBakedValueName} recovers the split from (#1087). That
+ * fallback is narrow ON PURPOSE, and the reason this docblock used to forbid one
+ * outright still stands: this layer sees no category metadata, so a BLIND split
+ * would turn a BRAND of `'Nike Air'` into `'Nike'`. What makes the fallback safe is
+ * that it never guesses — it splits only a trailing token ML ITSELF named in
+ * `unit_id`, and only when what remains is a number. With no `unit_id` and no
+ * struct the value is still left whole for the editor, where `allowedUnits` is on
+ * hand to match against.
  */
 function measurementFromStruct(attr: MlItemAttribute): { value: string; unit: string } | null {
   const struct = attr.value_struct;
@@ -191,13 +193,48 @@ function measurementFromBakedValueName(
   const unit = typeof attr.unit_id === 'string' ? attr.unit_id.trim() : '';
   const valueName = typeof attr.value_name === 'string' ? attr.value_name.trim() : '';
   if (unit === '' || valueName === '') return null;
-  const sufixo = ` ${unit}`;
-  if (!valueName.endsWith(sufixo)) return null;
-  const value = valueName.slice(0, -sufixo.length).trim();
-  // Only a NUMBER may be split off. Anything else and the trailing word is part
-  // of the value, not a unit ML appended.
-  if (value === '' || !Number.isFinite(Number(value))) return null;
-  return { value, unit };
+
+  // The same shape `parseNumberWithUnit` matches, and deliberately so: a decimal
+  // that may use EITHER separator, then the unit as a bare word.
+  const match = valueName.match(/^(-?\d+(?:[.,]\d+)?)\s*([a-zA-Z]+)$/);
+  if (!match) return null;
+
+  // ⚠️ Case-INSENSITIVE. ML's display text and its unit id differ in case for
+  // several units — it returns `'355 mL'` next to `unit_id: 'ml'` — and a
+  // case-sensitive compare silently declined to split exactly those, so they went
+  // on compounding (`'355 mL ml'`, `'355 mL ml ml'`, …).
+  if (match[2]!.toLowerCase() !== unit.toLowerCase()) return null;
+
+  // The head is returned VERBATIM, comma and all: ML sent it, so it round-trips
+  // back to ML unchanged. `Number(...)` only has to confirm it IS a number, and it
+  // needs the separator normalised to do that — `Number('1,5')` is NaN, which is
+  // what used to make every comma decimal fall through and compound.
+  const head = match[1]!;
+  if (!Number.isFinite(Number(head.replace(',', '.')))) return null;
+
+  // The stored unit is ML's own ID, not its display form, so the value we send
+  // next time is the one ML canonically names.
+  return { value: head, unit };
+}
+
+/**
+ * The unit to store beside a value — or null when the value already carries it.
+ *
+ * ⛔ The invariant that makes a republish idempotent: the stored `value_name` must
+ * never already end with the stored `unit_id`, because `attributeToMercadoLivre`
+ * re-joins the two on the way out. Splitting the pair satisfies it wherever the
+ * value is a number; this covers the rest — a value ML reported a `unit_id` for but
+ * which cannot be split (the head is not numeric), where the only way to keep the
+ * pair whole AND idempotent is to drop the duplicate unit.
+ *
+ * Keeping both is what produced `'12 cm cm'`, then `'12 cm cm cm'`, silently, on
+ * every republish (#1087).
+ */
+function unidadeParaValor(valueName: string | null, unit: string | null): string | null {
+  const u = typeof unit === 'string' ? unit.trim() : '';
+  if (u === '') return null;
+  const v = typeof valueName === 'string' ? valueName.trim() : '';
+  return v.toLowerCase().endsWith(` ${u.toLowerCase()}`) ? null : u;
 }
 
 /**
@@ -215,6 +252,7 @@ export function attributesFromItem(
     .filter((a) => typeof a.id === 'string' && a.id.length > 0 && !DERIVED_ATTRIBUTE_IDS.has(a.id))
     .map((a) => {
       const measurement = measurementFromStruct(a) ?? measurementFromBakedValueName(a);
+      const valueName = measurement?.value ?? a.value_name ?? null;
       return {
         id: a.id as string,
         // The struct describes the (number, unit) PAIR, so ML's `value_id` names
@@ -224,10 +262,13 @@ export function attributesFromItem(
         // measurement an operator types.
         value_id: measurement != null ? null : (a.value_id ?? null),
         name: a.name ?? null,
-        value_name: measurement?.value ?? a.value_name ?? null,
+        value_name: valueName,
         attribute_group_id: a.attribute_group_id ?? null,
         attribute_group_name: a.attribute_group_name ?? null,
-        unit_id: a.unit_id ?? measurement?.unit ?? null,
+        // ⚠️ Precedence unchanged: a `unit_id` ML actually SENT still outranks the
+        // struct's own unit. `unidadeParaValor` only drops it when the value we are
+        // about to store already ends with it — see that function.
+        unit_id: unidadeParaValor(valueName, a.unit_id ?? measurement?.unit ?? null),
       };
     });
   return attributesWithValue(mapped);

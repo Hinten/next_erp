@@ -647,10 +647,29 @@ and that arm is the one childless state publish must REFUSE rather than repair
 ⚠️ Stock moves to the child, because the sweep prices a family off its children
 and a child with no estoque row reads ZERO. Only the AVAILABLE units move: an
 open pedido's reservation is keyed on the produto its LINE names — the parent —
-so the reserved remainder stays there for the release to decrement. The residual
-is that those units sit on the parent once the pedido ships and have to be moved
-by hand; they are visible in the Balanço rather than lost, and this is the only
-tier that neither blocks a publish nor oversells.
+so the reserved remainder stays there for the release to decrement, applied as
+`FieldValue.increment(-movido)` so an *entrada* booked in the window is not
+erased. The residual is that those units sit on the parent once the pedido ships
+and have to be moved by hand; they are visible in the Balanço rather than lost,
+and this is the only tier that neither blocks a publish nor oversells.
+
+⚠️ **The reshape is ONE atomic `WriteBatch`, and it must stay one.** Publish only
+reaches `garantirMembroUnico` while the produto has NO children, so the instant
+the child exists this code is never entered again — which makes a PARTIAL write
+permanent, not untidy: stock stranded on the parent for ever, or counted twice,
+with no later run able to finish the job. The batch removes the intermediate
+states instead of trying to recover from them. ⛔ Whoever LOSES the create race
+must still end up with a member link, because the batch that would have written
+it is the one that just failed — without that recovery the loser's fan-out POSTs
+a duplicate item and the sweep closes the original.
+
+⚠️ **The materialisation sits ABOVE every later throw site** — `assemblePublishInput`'s
+issue list, the picture uploads, every ML 4xx. So a publish the operator sees
+**fail** has still converted the produto into a family of one and moved its stock
+onto the child. That is the intended end shape and nothing is corrupted, but the
+parent's available quantity is now 0 for anything in the ERP that still names the
+parent (a manual pedido line, a future entrada), with no message saying the shape
+changed. Moving it below the cheap validations is the open follow-up.
 
 Four facts from the ML docs that the payload builder now encodes (#797) — check
 these before "fixing" what looks wrong in `publishCore.ts`:

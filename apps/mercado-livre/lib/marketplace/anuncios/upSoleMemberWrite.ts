@@ -5,27 +5,48 @@
  * so the planner stays importable without `firebase-admin` — the one-time
  * `tools/migrations` script shares the planner and brings its own writer.
  *
- * ---- Write ORDER is load-bearing, not stylistic
+ * ---- ⛔ The reshape is ONE atomic WriteBatch, and it has to be
  *
- * Child produto → child estoques → child member link → parent estoque zeros →
- * parent link patch. The parent link goes **last** because `linkHasLiveListing`
- * (`id` non-empty AND `estado !== 'c'`) is what puts the produto in
- * `produtos.integracoesComProduto`, the anchor pre-filter BOTH sweeps open with.
- * Staging the parent through any state where that predicate is false would drop
- * the produto out of stock and price sync — silently, with nothing logged, until
- * some later write happened to put it back.
+ * `garantirMembroUnico` is only ever reached while the produto has NO children, so
+ * the instant the child produto exists every later publish sees
+ * `children.length === 1`, `classificarMembroUnico` answers `'nenhum'`, and this
+ * code is never called again. That makes a partial write PERMANENT rather than
+ * merely untidy, in one of two directions:
+ *
+ *   - child minted, stock not moved → the child owns nothing, and the family
+ *     publishes and sweeps at quantidade 0 for ever on a produto that has stock;
+ *   - child's rows written, parent's not reduced → both hold the units and the ERP
+ *     counts the same stock twice.
+ *
+ * Neither is reachable from a batch: it commits whole or not at all, and "not at
+ * all" leaves the produto childless — exactly the state the next publish expects,
+ * so the retry is simply the next publish. Same argument `aplicarEstoque` makes for
+ * its own reshape ("ONE atomic WriteBatch").
+ *
+ * The parent LINK patch stays outside the batch: it is idempotent, and it must also
+ * run on the adoption path where the batch is skipped. It never touches `id` or
+ * `estado`, so it cannot drop the produto out of `integracoesComProduto` — the
+ * anchor pre-filter BOTH sweeps open with.
+ *
+ * ---- Rule 7: the parent's stock moves as a DELTA
+ *
+ * The quantities come from a read taken several `await`s earlier. Writing an
+ * absolute `quantidade` back would erase any *entrada* booked in that window, with
+ * no `historicoEstoque` row and nothing to reconcile against — so the parent is
+ * reduced with `FieldValue.increment(-movido)` and its clock advanced with
+ * `FieldValue.maximum(now)`, both tier 0. The CHILD row stays an absolute `create`:
+ * it is a brand-new document, so there is no concurrent writer to lose.
  *
  * ---- Idempotence
  *
- * The child produto and its link are `create()`d at a deterministic id, and an
+ * The child produto and its link are `create()`d at a deterministic id, so an
  * ALREADY_EXISTS is an ADOPTION, not an error: a retried publish, a Cloud Tasks
  * redelivery and a concurrent second publish all converge on the same documents
- * (root `CLAUDE.md` rule 7, tier 0 — the race is made impossible rather than
- * guarded). The estoque move is the one step that is not naturally idempotent, so
- * it is skipped whenever the child already had a row: re-running the move after a
- * partial write would copy an already-zeroed parent quantity over a good child one.
+ * (rule 7 tier 0 — the race is made impossible rather than guarded). Because the
+ * four writes share one batch, that ALREADY_EXISTS also proves the other three
+ * landed, so there is nothing left to reconcile.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 
 import { isAlreadyExists } from '@delfrance/data/admin';
 import {
@@ -64,9 +85,10 @@ export interface GarantirMembroUnicoArgs {
  * Make sure this UP produto has its sole member child, and return it in the shape
  * `publish.ts` already uses for a variation child.
  *
- * Throws {@link MercadoLivrePublishError} when the planner refuses (today: an open
- * reservation on the stock being moved), so the route's existing 422 mapping
- * carries the reason to the operator unchanged.
+ * Throws {@link MercadoLivrePublishError} when the planner refuses — today only an
+ * adoption asked for with no anúncio to adopt — so the route's existing 422 mapping
+ * carries the reason to the operator unchanged. ⚠️ A reserved depósito is NOT a
+ * refusal: it splits the move (see `planejarMembroUnico`).
  */
 export async function garantirMembroUnico(
   deps: GarantirMembroUnicoDeps,
@@ -75,12 +97,12 @@ export async function garantirMembroUnico(
   const { db, integracaoId } = deps;
   const { produtoId, produto, parentLinkDocId } = args;
 
-  // ⚠️ Does the child ALREADY exist? Asked first, and it decides whether there is a
-  // stock move at all. A republish — by far the common case — has nothing to move:
-  // the child was materialised on an earlier run and already owns the stock.
-  // Planning a move anyway would re-copy the parent's now-ZEROED quantity over a
-  // good child row, AND hit the reservation refusal below, blocking a publish that
-  // touches no stock whatsoever.
+  // ⚠️ Does the child ALREADY exist? Asked first, because it decides whether there
+  // is a stock move at all. This is a RACE guard rather than the common path: once
+  // the child exists the produto has a child, so `classificarMembroUnico` answers
+  // `'nenhum'` and this function is not called. It only fires when a concurrent
+  // publish minted the child between our own read of `children` and here — and
+  // re-applying the move there would double the delta.
   const childIdPrevisto = membroUnicoChildId(args.acao, produtoId, parentLinkDocId, args.link.id);
   const childJaExiste = (await produtoCollection.docRef(db, {}, childIdPrevisto).get()).exists;
 
@@ -129,57 +151,86 @@ export async function garantirMembroUnico(
   if (!resultado.ok) throw new MercadoLivrePublishError(resultado.recusas);
   const plano = resultado.plano;
 
-  // ---- 1. the child produto -------------------------------------------------
   const childRef = produtoCollection.docRef(db, {}, plano.childProdutoId);
-  let childCreated = true;
-  try {
-    await childRef.create(plano.produto);
-  } catch (err) {
-    // Not an error: a retry, a redelivery or a concurrent publish already minted
-    // it. Adopt rather than overwrite — the stored child may carry operator edits.
-    if (!isAlreadyExists(err)) throw err;
-    childCreated = false;
-  }
-
-  // ---- 2. the child's stock, and only on the run that minted the child -------
-  // ⚠️ Gated on `childCreated`, or a second pass copies the parent's ALREADY
-  // ZEROED quantity over a good child row.
-  if (childCreated) {
-    for (const e of plano.estoques) {
-      await estoqueCollection.docRef(db, { produtoId: plano.childProdutoId }, e.docId).set(e.data);
-    }
-  }
-
-  // ---- 3. the member link ---------------------------------------------------
-  // ⛔ Before the fan-out reads it. `publish.ts`'s `findVariacaoLink` is what turns
-  // an adoption into a PUT; without this doc the fan-out POSTs a second item and
-  // the orphan sweep closes the original.
   const memberRef = variacaoMercadoLivreLinkCollection.docRef(
     db,
     { produtoId: plano.childProdutoId },
     plano.childLinkDocId,
   );
-  try {
-    await memberRef.create(plano.link);
-  } catch (err) {
-    if (!isAlreadyExists(err)) throw err;
-  }
 
-  // ---- 4. what the parent keeps: its RESERVED units -------------------------
-  // ⚠️ Rewritten, never deleted: `onEstoqueDeleted` cascades into the row's whole
-  // `historicoEstoque` subcollection, so a delete here would destroy the produto's
-  // stock audit trail — and would also remove the row an open pedido's release
-  // still decrements.
-  if (childCreated) {
-    for (const z of plano.parentEstoqueRestos) {
-      await estoqueCollection.docRef(db, { produtoId }, z.docId).set(z.data, { merge: true });
+  // ---- 1. the whole reshape, atomically — see the module docblock -----------
+  // True unless OUR batch is the one that landed: either the child already existed
+  // when we looked, or our `create` lost to a concurrent publish.
+  let perdeuACorrida = true;
+  if (!childJaExiste) {
+    const batch = db.batch();
+    batch.create(childRef, plano.produto);
+    for (const e of plano.estoques) {
+      batch.create(
+        estoqueCollection.docRef(db, { produtoId: plano.childProdutoId }, e.docId),
+        e.data,
+      );
+    }
+    // ⛔ The member link, and it is what makes an adoption safe: `publish.ts`'s
+    // `findVariacaoLink` reads it to decide PUT vs POST. Without it the fan-out
+    // POSTs a SECOND item and `sweepRemovedMembers` closes the original.
+    batch.create(memberRef, plano.link);
+    for (const s of plano.parentEstoqueSaidas) {
+      // Nothing moved (a fully reserved depósito) ⇒ no write at all, rather than a
+      // no-op that still bumps the row's clock.
+      if (s.movido === 0) continue;
+      batch.update(estoqueCollection.docRef(db, { produtoId }, s.docId), {
+        quantidade: FieldValue.increment(-s.movido),
+        ultimaModificacao: FieldValue.maximum(args.now),
+      });
+    }
+
+    try {
+      await batch.commit();
+      perdeuACorrida = false;
+    } catch (err) {
+      // A concurrent publish won the race and committed the SAME four writes,
+      // atomically. Nothing to redo — and, the point of the batch, no half-move
+      // left behind to repair.
+      if (!isAlreadyExists(err)) throw err;
     }
   }
 
-  // ---- 5. the parent link, LAST — see the module docblock -------------------
-  await produtoMercadoLivreLinkCollection
-    .docRef(db, { produtoId }, parentLinkDocId)
-    .set(plano.parentLinkPatch, { merge: true });
+  // ⛔ Whoever LOSES the race still has to end up with a member link, and this is
+  // not housekeeping. `publish.ts`'s `findVariacaoLink` reads it to decide PUT vs
+  // POST: without it the loser's fan-out treats the member as new, `createItem`
+  // POSTs a SECOND ML item, and `sweepRemovedMembers` then confirms the original as
+  // an orphan and closes it. The batch that would have written this link is exactly
+  // the one that just failed, so the recovery has to be here.
+  //
+  // The stock move is deliberately NOT retried: the winner's batch already applied
+  // it whole, and re-applying a delta would double it.
+  if (perdeuACorrida) {
+    try {
+      await memberRef.create(plano.link);
+    } catch (err) {
+      // The winner's own batch already wrote it, carrying the same item id.
+      if (!isAlreadyExists(err)) throw err;
+    }
+  }
+
+  // ---- 2. the parent link ---------------------------------------------------
+  // `mergeIfExists`, not a raw `set(..., { merge: true })`: if the link doc was
+  // deleted between the read at the top of `publishProduto` and here, an upsert
+  // would resurrect a ghost carrying only `userProductId` and a clock. Same helper
+  // `writeLinkDoc` uses, for the same reason.
+  // ⚠️ No `ultimaModificacao` here, deliberately. Every path out of `publishProduto`
+  // already stamps it on this doc — `writeLinkDoc` on success, `stampErrorLinkDoc`
+  // on an ML failure — so writing it too would be redundant, and it could only be a
+  // PLAIN write: `mergeIfExists` validates through Zod, which rejects a
+  // `FieldValue` sentinel, and a plain `now` captured at the top of the request can
+  // move the field backwards over a later commit.
+  await produtoMercadoLivreLinkCollection.mergeIfExists(
+    db,
+    { produtoId },
+    parentLinkDocId,
+    plano.parentLinkPatch,
+  );
 
   const childSnap = await childRef.get();
   return {

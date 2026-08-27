@@ -118,12 +118,11 @@ describe('planejarMembroUnico — adoption (the produto was already published)',
 });
 
 describe('planejarMembroUnico — the estoque move', () => {
-  it('with nothing reserved, the WHOLE quantity moves and the parent is left at 0', () => {
+  it('with nothing reserved, the WHOLE quantity moves off the parent', () => {
     const p = plano();
     expect(p.estoques).toHaveLength(1);
     expect(p.estoques[0]!.data).toMatchObject({ parentId: p.childProdutoId, quantidade: 7 });
-    expect(p.parentEstoqueRestos).toHaveLength(1);
-    expect(p.parentEstoqueRestos[0]!.data).toMatchObject({ quantidade: 0 });
+    expect(p.parentEstoqueSaidas).toEqual([{ docId: 'est-dep1', movido: 7 }]);
   });
 
   it('⚠️ moves only the AVAILABLE units — the reserved ones stay on the parent', () => {
@@ -134,16 +133,19 @@ describe('planejarMembroUnico — the estoque move', () => {
       estoques: [{ docId: 'est-dep1', depositoId: 'dep1', quantidade: 10, quantidadeReservada: 2 }],
     });
     expect(p.estoques[0]!.data.quantidade).toBe(8);
-    expect(p.parentEstoqueRestos[0]!.data.quantidade).toBe(2);
+    expect(p.parentEstoqueSaidas[0]!.movido).toBe(8);
   });
 
-  it('conserves the total: what the child gains plus what the parent keeps is unchanged', () => {
+  it('⚠️ the parent side is a DELTA, not a resulting quantity (rule 7)', () => {
+    // The writer applies it as `increment(-movido)`, so an entrada booked between
+    // the read and the write survives. An absolute quantity would erase it.
     const p = plano({
       estoques: [{ docId: 'est-dep1', depositoId: 'dep1', quantidade: 10, quantidadeReservada: 3 }],
     });
-    const total =
-      Number(p.estoques[0]!.data.quantidade) + Number(p.parentEstoqueRestos[0]!.data.quantidade);
-    expect(total).toBe(10);
+    expect(p.parentEstoqueSaidas[0]).toEqual({ docId: 'est-dep1', movido: 7 });
+    // What leaves the parent is exactly what the child gains — nothing is created
+    // or destroyed by the reshape.
+    expect(p.parentEstoqueSaidas[0]!.movido).toBe(Number(p.estoques[0]!.data.quantidade));
   });
 
   it('a fully reserved produto moves nothing and still plans (publish is never blocked)', () => {
@@ -151,7 +153,7 @@ describe('planejarMembroUnico — the estoque move', () => {
       estoques: [{ docId: 'est-dep1', depositoId: 'dep1', quantidade: 2, quantidadeReservada: 2 }],
     });
     expect(p.estoques[0]!.data.quantidade).toBe(0);
-    expect(p.parentEstoqueRestos[0]!.data.quantidade).toBe(2);
+    expect(p.parentEstoqueSaidas[0]!.movido).toBe(0);
   });
 
   it('⚠️ never DELETES the parent row — that would cascade its historicoEstoque away', () => {
@@ -167,13 +169,19 @@ describe('planejarMembroUnico — the estoque move', () => {
       ],
     });
     expect(p.estoques.map((e) => e.data.quantidade)).toEqual([7, 3]);
-    expect(p.parentEstoqueRestos).toHaveLength(2);
+    expect(p.parentEstoqueSaidas.map((s) => s.movido)).toEqual([7, 3]);
   });
 
   it('a produto with no estoque at all still plans cleanly', () => {
     const p = plano({ estoques: [] });
     expect(p.estoques).toEqual([]);
-    expect(p.parentEstoqueRestos).toEqual([]);
+    expect(p.parentEstoqueSaidas).toEqual([]);
+  });
+
+  it('the parent link patch carries NO clock — the writer stamps a monotonic one', () => {
+    // `ultimaModificacao` here would be a plain write of a `now` captured at the top
+    // of `publishProduto`, which can move the field BACKWARDS over a later commit.
+    expect(plano().parentLinkPatch).toEqual({ userProductId: null });
   });
 });
 

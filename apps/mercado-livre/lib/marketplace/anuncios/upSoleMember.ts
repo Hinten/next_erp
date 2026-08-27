@@ -109,20 +109,31 @@ export interface MembroUnicoPlano {
   /** Child estoque rows to create — one per depósito the parent held. */
   estoques: ReadonlyArray<{ docId: string; data: Record<string, unknown> }>;
   /**
-   * What the parent's rows are left holding — the RESERVED units, and never a
-   * delete.
+   * How many units LEAVE each of the parent's rows — a DELTA, never the resulting
+   * quantity, and never a delete.
    *
-   * ⚠️ `onEstoqueDeleted` cascades into the row's whole `historicoEstoque`
-   * subcollection, so deleting here would destroy the produto's stock audit trail
-   * to save one document. Rewriting the quantity keeps the ledger AND keeps the
-   * row an open pedido's release still needs.
+   * ⚠️ A delta because the writer applies it as `FieldValue.increment(-movido)`
+   * (rule 7 tier 0). An absolute quantity would be derived from a read taken
+   * several `await`s earlier, so an *entrada* booked in that window — which
+   * `aplicarEstoque` applies as its own increment — would be silently erased.
+   * `aplicarEstoque` uses increments for exactly this reason.
+   *
+   * ⚠️ Never a delete: `onEstoqueDeleted` cascades into the row's whole
+   * `historicoEstoque` subcollection, so removing the row would destroy the
+   * produto's stock audit trail AND the row an open pedido's release still
+   * decrements.
    */
-  parentEstoqueRestos: ReadonlyArray<{ docId: string; data: Record<string, unknown> }>;
+  parentEstoqueSaidas: ReadonlyArray<{ docId: string; movido: number }>;
   /**
    * Patch for the parent link. Under a family the `user_product_id` belongs to the
    * MEMBER (#706/#1142) — `publish.ts` and `importCore.ts` both write `null` here
    * once children exist, and leaving a stale one is "one member speaking for the
    * whole family".
+   *
+   * ⚠️ Carries no `ultimaModificacao`: the writer stamps it as
+   * `FieldValue.maximum(now)` so it cannot move BACKWARDS over a write that landed
+   * in the meantime (#387). That field is what the 15-minute incremental stock
+   * sweep keys on, so a regression there silently drops the produto from a cycle.
    */
   parentLinkPatch: Record<string, unknown>;
 }
@@ -154,12 +165,12 @@ export function membroUnicoChildId(
 /**
  * Plan the sole member, or refuse with reasons. Pure.
  *
- * ⚠️ The one refusal that is not a validation nicety: a depósito holding a RESERVE.
+ * ⚠️ A RESERVE is not a refusal — it SPLITS the move. There is exactly one refusal
+ * here, and it is a caller error: an adoption asked for with no anúncio to adopt.
  * An open pedido's reservation is keyed on the pedido line's produtoId, which names
- * the PARENT, so moving the row out from under it strands the release — the later
- * decrement lands on a document whose quantity we changed, and the difference is an
- * oversell nobody sees. Refusing whole (never half) is safe because both callers are
- * re-runnable: the produto is picked up on a later pass once the pedido closes.
+ * the PARENT, so the reserved units stay there for the release to decrement while
+ * only the available ones move (see `parentEstoqueSaidas`). Refusing instead would
+ * block publishing any produto with an open order, which is most of them.
  */
 export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoResultado {
   const recusas: string[] = [];
@@ -262,13 +273,10 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
     } as Record<string, unknown>,
   }));
 
-  const parentEstoqueRestos = args.estoques.map((e) => ({
+  const parentEstoqueSaidas = args.estoques.map((e) => ({
     // The row's own id, never a derived one — see `MembroUnicoEstoque.docId`.
     docId: e.docId,
-    data: {
-      quantidade: e.quantidade - disponivelDe(e),
-      ultimaModificacao: now,
-    } as Record<string, unknown>,
+    movido: disponivelDe(e),
   }));
 
   return {
@@ -279,8 +287,8 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
       produto,
       link,
       estoques,
-      parentEstoqueRestos,
-      parentLinkPatch: { userProductId: null, ultimaModificacao: now },
+      parentEstoqueSaidas,
+      parentLinkPatch: { userProductId: null },
     },
   };
 }
