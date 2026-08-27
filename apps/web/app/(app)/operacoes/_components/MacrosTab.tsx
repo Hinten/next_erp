@@ -65,14 +65,63 @@ interface MacroForm {
 
 const EMPTY_FORM: MacroForm = { nome: '', produtos: [], categorias: [], ncms: [], imposto: {} };
 
+/**
+ * `NVE`/`indEscala` are `string[]`/`boolean` on {@link RegraImposto} (the
+ * legacy wire shape, #468), but the shared `DadosGeraisSection` — reused
+ * as-is by the produto/categoria/operação editors, which still store both as
+ * plain strings — only knows how to edit a free-text value. Bridged HERE
+ * rather than in the shared component so those other three editors are
+ * untouched. Round-trips losslessly through an unedited save.
+ */
+export function formatNveText(nve: string[] | null): string | null {
+  return nve && nve.length > 0 ? nve.join(', ') : null;
+}
+
+export function parseNveText(text: string | null | undefined): string[] | null {
+  if (text == null) return null;
+  const codes = text
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return codes.length > 0 ? codes : null;
+}
+
+const IND_ESCALA_FALSE_WORDS = new Set(['false', 'não', 'nao', '0']);
+
+export function formatIndEscalaText(v: boolean | null): string | null {
+  if (v === true) return 'sim';
+  if (v === false) return 'não';
+  return null;
+}
+
+export function parseIndEscalaText(text: string | null | undefined): boolean | null {
+  const trimmed = text?.trim() ?? '';
+  if (trimmed === '') return null;
+  return !IND_ESCALA_FALSE_WORDS.has(trimmed.toLowerCase());
+}
+
 function formFromRegra(r: RegraImposto): MacroForm {
-  const { id: _id, nome, produtos, categorias, ncms, dataCadastro: _dc, ...imposto } = r;
+  const {
+    id: _id,
+    nome,
+    produtos,
+    categorias,
+    ncms,
+    dataCadastro: _dc,
+    NVE,
+    indEscala,
+    ...rest
+  } = r;
   return {
     nome: nome ?? '',
     produtos: produtos ?? [],
     categorias: categorias ?? [],
     ncms: ncms ?? [],
-    imposto: imposto as ImpostoConfigValue,
+    imposto: {
+      ...rest,
+      NVE: formatNveText(NVE),
+      indEscala: formatIndEscalaText(indEscala),
+    } as ImpostoConfigValue,
   };
 }
 
@@ -143,12 +192,17 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
     setSaving(true);
     setSaveError(null);
     // The regra doc = matching criteria + the imposto blob (origem/CFOP/configs).
+    // NVE/indEscala come back out of the shared editor's free-text shape into
+    // regraImpostoSchema's real wire types — see formFromRegra.
+    const { NVE: nveText, indEscala: indEscalaText, ...restImposto } = form.imposto;
     const docData = {
       nome: form.nome.trim() || null,
       produtos: form.produtos,
       categorias: form.categorias,
       ncms,
-      ...form.imposto,
+      ...restImposto,
+      NVE: parseNveText(nveText as string | null | undefined),
+      indEscala: parseIndEscalaText(indEscalaText as string | null | undefined),
       // Preserve the creation stamp on edit; only mint a new one on create.
       dataCadastro: editing.id ? (editing.dataCadastro ?? nowMillis()) : nowMillis(),
     };

@@ -38,14 +38,20 @@ const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
  * Imposto blob fields are **typed** (`taxConfigFields`, shared with the tribute
  * engine via `@delfrance/schemas`) rather than pass-through.
  *
- * Two more legacy wire fields, both read fallbacks alongside a new-app
- * counterpart (never written by the new editor):
+ * Two more legacy wire fields, modeled as their own field rather than merged
+ * into a new-app counterpart (same posture as the `CFOP`/`cfop` pair above —
+ * a consumer that needs the fold does it itself, the schema just stops
+ * dropping the raw value):
  * - `estados` — `List` of UF codes (`_$RegraImpostoToJson`'s
  *   `ufsOperacaoToJson`) that scopes the rule to specific interstate
  *   destinations. Not yet consumed by the resolver's match semantics
  *   (deferred to #422) — modeled here so a legacy doc round-trips.
- * - `timeStamp` (capital S) — the legacy ms-epoch creation stamp. `dataCadastro`
- *   is the new-app field; a legacy doc carries `timeStamp` instead.
+ * - `timeStamp` (capital S) — the legacy ms-epoch creation stamp, never
+ *   written by the new editor (which stamps `dataCadastro` instead). ⚠️ NOT
+ *   auto-folded into `dataCadastro`: a legacy doc carrying only `timeStamp`
+ *   still sorts as undated wherever a consumer orders by `dataCadastro`
+ *   (e.g. the Macros tab's list query) — same gap the field had before this
+ *   schema modeled it at all, since `dataCadastro` itself is unchanged.
  */
 export const regraImpostoSchema = z.object({
   id: z.string().nullable().default(null),
@@ -53,8 +59,9 @@ export const regraImpostoSchema = z.object({
   produtos: z.array(z.string()).default([]),
   categorias: z.array(z.string()).default([]),
   ncms: z.array(z.string()).default([]),
-  // Dados Gerais (lenient strings, optional — a rule may omit them; the
-  // resolver re-validates via the engine `impostoSchema`).
+  // Dados Gerais — a rule may omit any of them; the resolver re-validates
+  // via the engine `impostoSchema`. Mostly lenient strings; NVE/indEscala
+  // are typed to the legacy wire (see their own comments below).
   origem: z.string().nullable().optional(),
   cfop: z.string().nullable().optional(),
   /** Legacy Flutter wire key (uppercase). Read fallback for `cfop` — never written by the new editor. */
