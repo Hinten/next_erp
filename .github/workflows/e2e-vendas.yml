@@ -127,12 +127,13 @@ jobs:
             echo "::warning title=E2E scope (vendas)::the scope script is missing from this PR's head commit — running the suite (fail safe). Merge main into the branch."
           fi
 
-  vendas:
+  vendas-1:
     needs: [changes]
     # Fork PRs can't see repo secrets, so the run would only fail noisily at
     # the Firebase steps — skip it. The gate below reports that skip as RED:
     # unverified is not the same as verified. Manual dispatch always runs
-    # (same-repo).
+    # (same-repo). ⚠️ A maintainer verifying a fork PR re-runs it from an
+    # in-repo branch: `gh pr checkout <n> && git push origin HEAD:fix/pr-<n>-verify`.
     if: >-
       ${{ needs.changes.outputs.run_e2e == 'true' &&
           (github.event_name == 'workflow_dispatch' ||
@@ -140,7 +141,45 @@ jobs:
     uses: ./.github/workflows/e2e-reusable.yml
     with:
       projects: configuracoes crud-vendas
-      slug: vendas
+      # ⚠️ `slug` names the report artifact, so it MUST differ per shard —
+      # two jobs uploading `playwright-report-vendas` would collide.
+      slug: vendas-1
+      shard: 1/2
+      # ⚠️ The ONLY thing keeping these two jobs from sharing every
+      # fixture-isolation key. They are one workflow run, so GITHUB_RUN_ID,
+      # GITHUB_WORKFLOW and GITHUB_REF are identical across them; without a
+      # distinct slot each would sweep the other's LIVE fixtures and delete the
+      # shared ephemeral auth user mid-suite. Must be digits, and must differ.
+      run_slot: '1'
+      # configuracoes.spec.ts POSTs to /api/admin/users + .../claims, which are
+      # served by apps/integrations on :3001, not by apps/web.
+      integrations: true
+    secrets: inherit
+
+  vendas-2:
+    needs: [changes]
+    # Fork PRs can't see repo secrets, so the run would only fail noisily at
+    # the Firebase steps — skip it. The gate below reports that skip as RED:
+    # unverified is not the same as verified. Manual dispatch always runs
+    # (same-repo). ⚠️ A maintainer verifying a fork PR re-runs it from an
+    # in-repo branch: `gh pr checkout <n> && git push origin HEAD:fix/pr-<n>-verify`.
+    if: >-
+      ${{ needs.changes.outputs.run_e2e == 'true' &&
+          (github.event_name == 'workflow_dispatch' ||
+           github.event.pull_request.head.repo.fork == false) }}
+    uses: ./.github/workflows/e2e-reusable.yml
+    with:
+      projects: configuracoes crud-vendas
+      # ⚠️ `slug` names the report artifact, so it MUST differ per shard —
+      # two jobs uploading `playwright-report-vendas` would collide.
+      slug: vendas-2
+      shard: 2/2
+      # ⚠️ The ONLY thing keeping these two jobs from sharing every
+      # fixture-isolation key. They are one workflow run, so GITHUB_RUN_ID,
+      # GITHUB_WORKFLOW and GITHUB_REF are identical across them; without a
+      # distinct slot each would sweep the other's LIVE fixtures and delete the
+      # shared ephemeral auth user mid-suite. Must be digits, and must differ.
+      run_slot: '2'
       # configuracoes.spec.ts POSTs to /api/admin/users + .../claims, which are
       # served by apps/integrations on :3001, not by apps/web.
       integrations: true
@@ -156,10 +195,10 @@ jobs:
   # report on. Do not add one.
   gate:
     name: E2E gate (vendas)
-    needs: [changes, vendas]
+    needs: [changes, vendas-1, vendas-2]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -170,93 +209,176 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           LANE: E2E gate (vendas)
-          # The check-run name GitHub publishes for a reusable-workflow call is
-          # "<caller job id> / <called job id>". Keep in sync with the job id above.
-          E2E_JOB_NAME: vendas / e2e
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          SUITE_RESULT: ${{ needs.vendas.result }}
-          RUN_E2E: ${{ needs.changes.outputs.run_e2e }}
-          REASON: ${{ needs.changes.outputs.reason }}
-          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          SCOPE_JOB: E2E scope (vendas)
           PR: ${{ github.event.pull_request.number }}
+
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_LANE: ${{ needs.changes.outputs.run_e2e }}
+          REASON: ${{ needs.changes.outputs.reason }}
+
+          # --- recorded guards. ONLY these can excuse a skip. ------------------
+          GUARD_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          GUARD_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+
+          # --- per-job results -------------------------------------------------
+          RESULT_SHARD_1: ${{ needs.vendas-1.result }}
+          RESULT_SHARD_2: ${{ needs.vendas-2.result }}
+
+          # --- the manifest. One row per certified job:
+          #       <result env var>|required|optional:<guard>[+<guard>]|<published check-run name>
+          #     The check-run name must match the job's `name:` byte for byte — it
+          #     is how the anti-vacuity lock finds the job in the jobs API. A
+          #     reusable-workflow call publishes as "<caller job id> / <called job
+          #     id>", hence `vendas-N / e2e`.
+          #
+          #     ⚠️ BOTH rows are `required`, and both must stay. The two jobs are a
+          #     PARTITION of one suite (`--shard=i/2`): certifying either alone
+          #     would report a lane where half the specs never ran, which is the
+          #     exact failure this gate exists to make impossible. A fork skip is
+          #     therefore RED here, deliberately — unverified is not verified.
+          JOBS: |
+            RESULT_SHARD_1|required|vendas-1 / e2e
+            RESULT_SHARD_2|required|vendas-2 / e2e
         run: |
           set -uo pipefail
+          ROWS="$RUNNER_TEMP/gate-rows.md";        : > "$ROWS"
+          NOTES="$RUNNER_TEMP/gate-notes.md";      : > "$NOTES"
+          CERTIFY="$RUNNER_TEMP/gate-certify.txt"; : > "$CERTIFY"
 
-          fail() {
+          row()  { printf '| `%s` | `%s` | %s |\n' "$1" "$2" "$3" >> "$ROWS"; }
+          note() { printf '%s\n\n' "$1" >> "$NOTES"; }
+
+          report() {
             {
-              echo "### $LANE — NOT verified"
+              echo "### $LANE — $1"
               echo
-              echo "$1"
+              echo "$2"
               echo
-              echo "| input | value |"
-              echo "| --- | --- |"
-              echo "| scope job result | \`$CHANGES_RESULT\` |"
-              echo "| scope verdict | \`${RUN_E2E:-<empty>}\` |"
-              echo "| suite job result | \`$SUITE_RESULT\` |"
+              echo "| check run | result | verdict |"
+              echo "| --- | --- | --- |"
+              cat "$ROWS"
+              echo
+              echo "Scope (\`$SCOPE_JOB\`): \`run=${RUN_LANE:-<empty>}\` — ${REASON:-<none recorded>}"
+              echo
+              cat "$NOTES"
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error title=$LANE::$1"
-            exit 1
           }
 
-          pass() {
-            {
-              echo "### $LANE — verified"
-              echo
-              echo "$1"
-            } >> "$GITHUB_STEP_SUMMARY"
-            # Mirror the verdict into the log and the run UI. Without this a PASS is
-            # only visible in the step summary, so a green gate cannot be audited
-            # from the logs the failure reporters already collect.
-            echo "::notice title=$LANE::$1"
-            exit 0
-          }
+          fail() { report "NOT verified" "$1"; echo "::error title=$LANE::$1";  exit 1; }
+          # Mirror a PASS into the log too: otherwise a green gate is visible only
+          # in the step summary, which is not part of what the failure reporters
+          # collect, so a green gate could never be audited from the logs.
+          pass() { report "verified"     "$1"; echo "::notice title=$LANE::$1"; exit 0; }
 
-          # (1) The decider must have concluded. If it did not, nobody decided
-          #     whether this PR needs e2e, and "we do not know" is never green.
+          # (1) The decider must have concluded. "We do not know" is never green.
           [ "$CHANGES_RESULT" = "success" ] || \
-            fail "The scope job concluded \`$CHANGES_RESULT\`, so nothing decided whether this PR needs e2e."
+            fail "The scope job concluded \`$CHANGES_RESULT\`, so nothing decided whether this lane had to run."
 
-          # (2) ...and it must have produced a verdict. An empty output means the
-          #     step died between the API call and the write to \$GITHUB_OUTPUT.
-          case "$RUN_E2E" in
+          # (2) ...and it must have produced a verdict.
+          case "$RUN_LANE" in
             true|false) : ;;
-            *) fail "The scope job produced no verdict (\`run_e2e=${RUN_E2E:-<empty>}\`)." ;;
+            *) fail "The scope job produced no verdict (\`run=${RUN_LANE:-<empty>}\`)." ;;
           esac
 
-          # (3) The ONLY green-without-a-run path: nothing this lane depends on
-          #     changed, and the suite was skipped on purpose.
-          if [ "$RUN_E2E" = "false" ] && [ "$SUITE_RESULT" = "skipped" ]; then
-            pass "No e2e run was required — $REASON See the \`E2E scope (vendas)\` job summary for the full path attribution."
-          fi
+          # explain_skip <guard-spec>: 0 + sets WHY when a RECORDED input accounts
+          # for the skip, 1 otherwise. This is the whole trick — the gate re-derives
+          # the predicate that should have caused the skip instead of trusting the
+          # job's declared class. An `if:` clause nobody taught this function about
+          # matches no guard, so the skip goes RED.
+          explain_skip() {
+            WHY=""
+            if [ "$GUARD_DISPATCH" = "true" ]; then return 1; fi
+            local g
+            local IFS='+'
+            for g in $1; do
+              case "$g" in
+                not_fork)
+                  if [ "${GUARD_FORK:-}" = "true" ]; then
+                    WHY="this PR comes from a fork, and fork PRs cannot read repo secrets. A maintainer can verify from an in-repo branch: \`gh pr checkout $PR && git push origin HEAD:fix/pr-$PR-verify\`."
+                    return 0
+                  fi ;;
+                *) return 1 ;;
+              esac
+            done
+            return 1
+          }
 
-          # (4) Needed, but skipped. On this lane the only `if:` that can do that
-          #     is the fork guard.
-          if [ "$SUITE_RESULT" = "skipped" ]; then
-            if [ "$IS_FORK" = "true" ]; then
-              fail "This PR touches code this lane depends on, but the suite was skipped: it comes from a fork, and fork PRs cannot read the staging Firebase secrets. This code has NOT been exercised against staging. A maintainer must re-run it from an in-repo branch — \`gh pr checkout $PR && git push origin HEAD:fix/pr-$PR-verify\` — and merge that instead."
-            fi
-            fail "The scope job said this PR needs e2e, but the suite job was skipped for a reason other than the fork guard. Someone added an \`if:\` to it."
-          fi
+          # (3) Walk the manifest.
+          #     `done <<< "$JOBS"` is a HERESTRING, not a pipe: a pipe would run the
+          #     loop in a subshell and every RED/BROKEN assignment would be
+          #     discarded, making this gate unconditionally green.
+          RED=""; BROKEN=""
+          while IFS='|' read -r var class check; do
+            case "${var:-}" in ''|'#'*) continue ;; esac
+            result="${!var:-}"
 
-          # (5) Anything other than a clean success is not a pass. `cancelled`
-          #     covers both concurrency cancel-in-progress and the job timeout,
-          #     and is deliberately red: a suite that was killed proved nothing.
-          [ "$SUITE_RESULT" = "success" ] || \
-            fail "The e2e suite concluded \`$SUITE_RESULT\`."
+            case "$class" in
+              required)   guards='' ;;
+              optional:*) guards="${class#optional:}" ;;
+              *) fail "Gate manifest error: \`$check\` declares an unknown class \`$class\`. Refusing to certify a lane whose own manifest this gate cannot parse." ;;
+            esac
 
-          # (6) Positive proof, not merely the absence of failure.
-          #     `needs.<job>.result` reports the CALLED WORKFLOW's outcome; it does
-          #     not assert that the Playwright job ever existed. Ask the API for it
-          #     by name. This is what makes a vacuous pass impossible: if the
-          #     reusable workflow is refactored so `e2e` stops running, the gate
-          #     goes red instead of inheriting a hollow success.
-          if ! conclusion=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
-                 --jq '[.jobs[] | select(.name == env.E2E_JOB_NAME) | .conclusion] | last // "missing"')
+            case "$result" in
+              success)
+                printf '%s\n' "$check" >> "$CERTIFY"
+                row "$check" "$result" "ran and passed"
+                ;;
+              skipped)
+                if [ -n "$BROKEN" ]; then
+                  row "$check" "$result" "not reached — \`$BROKEN\` did not succeed"
+                elif [ "$RUN_LANE" = "false" ]; then
+                  row "$check" "$result" "not required — nothing this lane depends on changed"
+                elif [ -n "$guards" ] && explain_skip "$guards"; then
+                  row "$check" "$result" "**DID NOT RUN** — $WHY"
+                  note "**\`$check\` did not run on this PR** — $WHY"
+                  echo "::warning title=$LANE::\`$check\` did not run — $WHY"
+                else
+                  row "$check" "$result" "**UNEXPLAINED SKIP**"
+                  RED="${RED}\`$check\` was skipped and this gate cannot explain why: the lane is in scope and no recorded guard (${guards:-none, this job is required}) accounts for it. Someone added an \`if:\` without teaching the gate about it. "
+                fi
+                ;;
+              '')
+                row "$check" "$result" "**NO RESULT**"
+                RED="${RED}This gate has no result for \`$check\` — its \`needs:\` list and its manifest disagree. "
+                ;;
+              *)
+                row "$check" "$result" "**NOT a pass**"
+                # `cancelled` covers concurrency cancel-in-progress AND the job
+                # timeout, and is deliberately red: a suite that was killed proved
+                # nothing.
+                RED="${RED}\`$check\` concluded \`$result\`. "
+                BROKEN="$check"
+                ;;
+            esac
+          done <<< "$JOBS"
+
+          # (4) Positive proof, not merely the absence of failure — the e2e gate's
+          #     anti-vacuity lock generalised to N jobs. `needs.<job>.result` reports
+          #     what the runner thinks; it does not assert a job of that name ever
+          #     existed. Ask the API, once.
+          if ! gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+                 --jq '.jobs[] | [.name, (.conclusion // "pending")] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
           then
-            conclusion="unreachable"
+            fail "Could not list this run's jobs, so this gate cannot prove the certified jobs actually ran. Refusing to certify on \`needs.*.result\` alone."
           fi
 
-          [ "$conclusion" = "success" ] || \
-            fail "The called workflow reported success, but the job \`$E2E_JOB_NAME\` in this run concluded \`$conclusion\`. Refusing to certify a lane whose suite job cannot be found."
+          while IFS= read -r check; do
+            [ -n "$check" ] || continue
+            # Last match wins, mirroring the e2e gate's `| last`: re-running a single
+            # job appends a second entry under the same name.
+            actual=$(awk -F'\t' -v n="$check" '$1 == n { c = $2 } END { print (c == "" ? "missing" : c) }' "$RUNNER_TEMP/jobs.tsv")
+            if [ "$actual" != "success" ]; then
+              RED="${RED}\`needs\` reported success for \`$check\`, but the job of that name in this run concluded \`$actual\`. Refusing to certify a lane whose job cannot be found. "
+            fi
+          done < "$CERTIFY"
 
-          pass "\`$E2E_JOB_NAME\` concluded \`success\`. Scope: $REASON"
+          # (5) No advisory step to surface here: unlike ci-nfe.yml, this lane has
+          #     no `continue-on-error` steps, so every failure inside it is already
+          #     fatal and shows up through the normal result path above.
+
+          [ -z "$RED" ] || fail "$RED"
+
+          if [ ! -s "$CERTIFY" ]; then
+            pass "No run was required — $REASON See the \`$SCOPE_JOB\` job summary for the full path attribution."
+          fi
+          pass "Every required job for this lane concluded \`success\`. Scope: $REASON"

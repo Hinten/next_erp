@@ -52,7 +52,7 @@
  */
 import { FieldPath, type Firestore, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { deleteDocumentSubtree } from '@delfrance/data/admin';
-import { E2E_PROBE_COLLECTION, db, e2eRunId } from '@delfrance/test-fixtures';
+import { E2E_PROBE_COLLECTION, db, e2eRunId, e2eRunSlotSuffix } from '@delfrance/test-fixtures';
 import { requiresAuthEnv } from '../helpers/env';
 import { getRunId } from './run-id';
 
@@ -487,12 +487,21 @@ async function sweep(options: SweepOptions): Promise<SweepReport> {
  * operates on, so the run it names is the one this run superseded. `null` for a
  * local run, which has no such group and therefore no predecessor to reclaim.
  * `/` is illegal in a document id, hence the substitution.
+ *
+ * ⚠️ The slot segment is what makes SHARDING survivable, and it is the axis
+ * whose omission is worst. `GITHUB_WORKFLOW` and `GITHUB_REF` are identical
+ * across two sharded jobs of one run, while {@link getRunId} is not — so on a
+ * shared group id the second job to claim reads the first's run id as
+ * `previous`, concludes `cancel-in-progress` killed it, and hands its prefix to
+ * {@link reclaimPredecessorRun}, which sweeps with `maxAgeMs: null`. That
+ * deletes a LIVE sibling's fixtures, with no age gate, mid-run. Scoping the run
+ * id without scoping this is strictly worse than scoping neither.
  */
-function concurrencyGroupId(): string | null {
+export function concurrencyGroupId(): string | null {
   const workflow = process.env.GITHUB_WORKFLOW;
   const ref = process.env.GITHUB_REF;
   if (!workflow || !ref) return null;
-  return `${workflow}__${ref}`.replace(/\//g, '_');
+  return `${workflow}__${ref}${e2eRunSlotSuffix()}`.replace(/\//g, '_');
 }
 
 /**
