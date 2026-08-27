@@ -14,6 +14,7 @@ import {
   handleNotificationTask,
   isIgnoredTopic,
   isKnownTopic,
+  parseClaimResourceId,
   parseNotificationBody,
   redriveDeferredForUserId,
   reprocessDeferredNotifications,
@@ -331,6 +332,46 @@ afterEach(() => {
 });
 
 /* ------------------------------ parse + topics --------------------------- */
+
+describe('parseClaimResourceId (#1322)', () => {
+  it('accepts every post-sale resource shape ML has been observed sending', () => {
+    // The bare legacy spelling, the migrated `/post-purchase` prefix, and the
+    // SUB-RESOURCE deliveries — all three must resolve to the SAME claim id.
+    for (const resource of [
+      '/claims/5567065796',
+      'claims/5567065796',
+      '/post-purchase/v1/claims/5567065796',
+      '/post-purchase/v1/claims/5567065796/actions-history',
+      '/post-purchase/v1/claims/5567065796/status-history',
+      '/post-purchase/v1/claims/5567065796/messages',
+    ]) {
+      expect(parseClaimResourceId(resource), resource).toBe(5567065796);
+    }
+  });
+
+  it('anchors on `claims/<digits>`, so a NON-claim resource is malformed', () => {
+    // ⚠️ Not "the last numeric segment": that is `parseOrderResourceId`, and
+    // using it here would have made `/post-purchase/v1/orders/123` import as a
+    // claim. The caller drops a null WITHOUT dispatching a bogus import.
+    for (const resource of [
+      '/post-purchase/v1/orders/2000018144679512',
+      '/orders/123',
+      '/claims/abc',
+      '/claims/',
+      'claims',
+      '',
+    ]) {
+      expect(parseClaimResourceId(resource), resource).toBeNull();
+    }
+  });
+
+  it('does not match a segment merely ENDING in "claims"', () => {
+    // `myclaims/7` is not a claim resource; the `(?:^|\/)` anchor is what stops
+    // it, and without that anchor this would import claim 7.
+    expect(parseClaimResourceId('/myclaims/7')).toBeNull();
+    expect(parseClaimResourceId('/v1/subclaims/7')).toBeNull();
+  });
+});
 
 describe('parseNotificationBody', () => {
   it('extracts a well-formed notification into a lean payload (accepts _id and id)', () => {
