@@ -16,7 +16,7 @@
 import { useMemo } from 'react';
 import type { z } from 'zod';
 
-import { lerRespostaJson } from '@delfrance/core/wire';
+import { lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
 import { useAuth } from '@/lib/auth/useAuth';
 
@@ -279,23 +279,6 @@ function exigirMintAvulso(
     );
   }
   return result;
-}
-
-/**
- * Normalise one test-user record coming off the wire.
- *
- * ⚠️ The ONLY thing it fixes is `docId`, and it does so by degrading rather than
- * refusing. Unlike the mint's post-condition below, this read must never fail on
- * a stale backend: the stored passwords are the single copy that exists — ML
- * reissues none — and the list is the only surface that shows them. Breaking the
- * read to punish an old deployment would destroy more than it protects.
- *
- * What it must NOT do is degrade silently. `undefined` reaching the panel meant
- * a blank chip and `key={undefined}` on every card; `null` is a value the panel
- * can and does render as "this backend does not say".
- */
-function comDocId(u: MercadoLivreUsuarioTeste): MercadoLivreUsuarioTeste {
-  return typeof u.docId === 'string' && u.docId !== '' ? u : { ...u, docId: null };
 }
 
 /** One grid row as the suggestion route describes it. */
@@ -873,11 +856,22 @@ export function createMercadoLivreClient(config: {
     const leitura = lerRespostaJson(text, schema);
     if (leitura.ok) return leitura.data;
 
-    if (leitura.motivo === 'nao-json') {
-      // ⚠️ A 2xx carrying HTML used to be the QUIETEST failure of the three:
-      // `nonJsonBody` was captured and then only read inside the `!res.ok`
-      // branch, so this case returned `null as T` and logged nothing anywhere.
-      logarCorpoNaoJson(path, res.status, leitura.texto);
+    if (leitura.motivo !== 'formato') {
+      // ⚠️ EMPTY and NON-JSON share this branch, and they must: neither is
+      // version skew — in both the request failed to reach a route that answers
+      // JSON. An empty body used to fall through to the 'formato' arm below,
+      // which told the operator to deploy `apps/mercado-livre` and logged
+      // nothing at all — the quietest failure left in the file, sitting in the
+      // branch that looked handled.
+      //
+      // A 2xx carrying HTML was the original of this pair: `nonJsonBody` was
+      // captured and then read only inside the `!res.ok` branch, so it returned
+      // `null as T` and logged nowhere.
+      logarCorpoNaoJson(
+        path,
+        res.status,
+        leitura.motivo === 'nao-json' ? leitura.texto : '(corpo vazio)',
+      );
       throw new MercadoLivreClientRespostaInvalidaError(
         `A integração com o Mercado Livre respondeu HTTP ${String(res.status)} sem um corpo ` +
           'JSON — o pedido não chegou à rota esperada. Atualize a página e, se continuar, ' +
@@ -889,7 +883,7 @@ export function createMercadoLivreClient(config: {
 
     throw new MercadoLivreClientRespostaInvalidaError(
       'O backend do Mercado Livre respondeu num formato que este aplicativo não reconhece. ' +
-        `Campos inválidos: ${leitura.campos.join(', ')}. Normalmente isso significa que o ` +
+        `Campos inválidos: ${resumirCampos(leitura.campos)}. Normalmente isso significa que o ` +
         'backend e esta tela estão em versões diferentes — faça o deploy de ' +
         '`apps/mercado-livre` e recarregue a página.',
       res.status,
@@ -1093,7 +1087,7 @@ export function createMercadoLivreClient(config: {
         `/api/marketplace/mercado-livre/usuarios-teste?integracaoId=${encodeURIComponent(integracaoId)}`,
         wire.usuariosTesteListSchema,
       );
-      return { usuarios: usuarios.map(comDocId) };
+      return { usuarios };
     },
     criarUsuariosTeste: (integracaoId) =>
       // `{}` is what makes this a POST — `call` picks the method from the
