@@ -7,9 +7,11 @@
 import { coerceToMillis } from '@delfrance/core/datetime';
 import { ESTADO_ENVIO, ORIGEM_CONVERSA, TIPO_MENSAGEM } from '@delfrance/schemas';
 import type { Conversa, Mensagem } from '@delfrance/schemas';
+import { postSaleAgentUserId } from '@delfrance/integrations-mercado-livre';
 import type {
   MlConversationStatus,
   MlMessageResource,
+  MlPackMessages,
   MlPostSaleMessage,
 } from '@delfrance/integrations-mercado-livre';
 
@@ -131,6 +133,108 @@ export function isFromSeller(message: MlPostSaleMessage, sellerUserId: number | 
   return from != null && String(from) === String(sellerUserId);
 }
 
+/**
+ * ML pages the pack thread at **10 by default**. Ask for the biggest page ML
+ * documents no ceiling on, so a single request returns the whole thread for all
+ * but the pathological ones.
+ *
+ * ⚠️ Shared by the importer (which then walks `paging.total`) and by the SEND
+ * path (which makes exactly one call). The send path's correctness rests on it:
+ * see `postSaleRecipientUserId`.
+ */
+export const PAGINA_MENSAGENS_THREAD = 100;
+
+/** How {@link postSaleRecipientUserId} arrived at its answer. */
+export type PostSaleRecipientFonte = 'mensagem' | 'agente-path';
+
+export interface PostSaleRecipient {
+  readonly userId: number;
+  readonly fonte: PostSaleRecipientFonte;
+}
+
+/** A `from`/`to` user id as a positive safe integer, or null. ML prints both. */
+function userIdNumerico(valor: number | string | null | undefined): number | null {
+  if (valor == null) return null;
+  const texto = String(valor).trim();
+  if (!/^\d+$/.test(texto)) return null;
+  const n = Number(texto);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** The message's own epoch-ms, with `buildOrderMensagem`'s precedence. */
+function carimboMs(message: MlPostSaleMessage): number | null {
+  return (
+    coerceToMillis(message.message_date?.created) ?? coerceToMillis(message.message_date?.received)
+  );
+}
+
+/**
+ * Who a seller reply on this thread must be addressed to.
+ *
+ * ⚠️ **It is NOT always ML's messaging Agent.** The 02/02/2026 architecture is
+ * rolling out PROGRESSIVELY — ML's own reference says *"de forma progressiva…
+ * começando pela logística Full"* — so a thread may be on either flow and
+ * nothing outside the thread says which. Addressing the agent on a thread ML has
+ * not migrated is refused with
+ * `400 to_user_id {agente} does not belong to pack /packs/{pack}/sellers/{seller}`,
+ * and addressing the buyer on one it HAS migrated is accepted with a **200** that
+ * never reaches anybody. Both directions are wrong, so this is derived, never
+ * assumed — from the pack the caller already read, at no extra cost.
+ *
+ * ⚠️ The rungs are ordered by EVIDENCE, and rung 2 is one-directional.
+ *
+ * 1. The newest counterparty message's `from.user_id` — not an inference about
+ *    ML's roadmap but the address ML itself just delivered from. That is the
+ *    agent under the new flow and the real buyer under the old one, and it
+ *    self-corrects as the rollout advances. **Newest**, because a thread migrated
+ *    mid-life carries older buyer-id messages and newer agent-id ones and only
+ *    the latest reflects what ML will validate the POST against — and newest **by
+ *    timestamp, never by array position**, since nothing proves ML's sort order.
+ * 2. `conversation_status.path` naming a `/conversations/` segment ⇒ the site's
+ *    agent. ⚠️ Match that segment and NOTHING else: `sellers` (plural) appears on
+ *    ordinary legacy threads too — the 400 above quotes it — so reading the
+ *    plural as the tell re-breaks exactly the threads this fixes. The rung can
+ *    only ever answer "agent", because `path` carries no buyer id; its absence
+ *    proves nothing and must never be read as "use the buyer id".
+ * 3. `null` — the caller refuses. There is deliberately no default: a thread
+ *    reaching here is by construction one we have NO evidence about, so either
+ *    default is a coin flip, which is the bug above on a smaller set.
+ */
+export function postSaleRecipientUserId(
+  pack: MlPackMessages,
+  sellerUserId: number | null,
+): PostSaleRecipient | null {
+  // Without a seller id `isFromSeller` reports false for OUR messages too, so
+  // every message would read as a counterparty and this could return our own id
+  // — ML answers `400 Sender and received must not be equals`.
+  if (sellerUserId == null) return null;
+
+  let melhor: { userId: number; ms: number | null } | null = null;
+  for (const m of pack.messages) {
+    if (isFromSeller(m, sellerUserId)) continue;
+    const userId = userIdNumerico(m.from?.user_id);
+    if (userId == null || userId === sellerUserId) continue;
+    const ms = carimboMs(m);
+    if (melhor == null) {
+      melhor = { userId, ms };
+      continue;
+    }
+    // A scored candidate always beats an unscored one; between two scored ones
+    // the newest wins; a tie keeps the first seen rather than falling back to
+    // array position.
+    if (ms != null && (melhor.ms == null || ms > melhor.ms)) melhor = { userId, ms };
+  }
+  if (melhor != null) return { userId: melhor.userId, fonte: 'mensagem' };
+
+  const path = pack.conversation_status?.path ?? '';
+  if (path.includes('/conversations/')) {
+    const siteId = pack.messages.find((m) => m.site_id != null)?.site_id ?? null;
+    return { userId: postSaleAgentUserId(siteId), fonte: 'agente-path' };
+  }
+
+  return null;
+}
+
 export interface ConversaFromPackContext {
   readonly clienteOuterRef: string | null;
   readonly integracaoOuterRef: string;
@@ -202,9 +306,12 @@ export function buildConversaFromPack(ctx: ConversaFromPackContext): Partial<Con
  * `enviado` (`models.dart:3374-3404`), which under the new identity model would
  * render the whole thread as our own outgoing messages.
  *
- * ⚠️ Since 02/02/2026 on MLB, `from.user_id` on a read is the AI Agent's id, not
- * the buyer's — so "is this ours" is decided by comparing against the SELLER id,
- * never by matching the buyer.
+ * ⚠️ On a thread ML has MIGRATED to the 02/02/2026 agent architecture,
+ * `from.user_id` on a read is the AI Agent's id rather than the buyer's — and on
+ * one it has not, it is the buyer's. Comparing against the SELLER id is therefore
+ * not a workaround for the new flow: it is the only test that is correct under
+ * BOTH, which is precisely why it is the rule. Matching the buyer would have to
+ * know which flow the thread is on; this does not.
  */
 export function buildOrderMensagem(
   message: MlPostSaleMessage,

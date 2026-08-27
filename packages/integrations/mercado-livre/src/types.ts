@@ -1628,9 +1628,14 @@ export type MlMessageAttachment = z.infer<typeof mlMessageAttachmentSchema>;
  * reference prints them BOTH ways across its samples (`123456789000` in one,
  * `"415458330"` in the next). Every consumer here compares them as strings.
  *
- * ⚠️ Since the 02/02/2026 MLB messaging change, `from.user_id` on a READ is the
- * **AI Agent's** id, not the buyer's — the agent intermediates the conversation.
- * Do not use it to identify the contact; the pedido does that.
+ * ⚠️ On a thread ML has MIGRATED to the 02/02/2026 agent architecture,
+ * `from.user_id` on a READ is the **AI Agent's** id rather than the buyer's — the
+ * agent intermediates the conversation. Do not use it to identify the contact;
+ * the pedido does that.
+ *
+ * ⚠️ That is about IDENTITY and does NOT generalise to ROUTING. `from.user_id` is
+ * the correct address to REPLY to under BOTH architectures, precisely because it
+ * is the one ML just delivered from — see `ML_POST_SALE_AGENT_USER_ID` below.
  */
 export const mlPostSaleMessageSchema = z
   .object({
@@ -1720,13 +1725,29 @@ export type MlPackMessages = z.infer<typeof mlPackMessagesSchema>;
 /**
  * ML's post-sale **messaging Agent** user id, per site.
  *
- * ⚠️ Since **02/02/2026** ML intermediates buyer↔seller post-sale conversations
- * with an AI Agent, starting with Fulfillment logistics and rolling forward.
- * A seller message must be addressed to the AGENT, not to the buyer — and on a
- * read, `from.user_id` is the agent's id rather than the buyer's.
+ * ⚠️ **The rollout is PROGRESSIVE, so this is NOT the recipient of every reply.**
+ * Since 02/02/2026 ML intermediates buyer↔seller post-sale conversations with an
+ * AI Agent — but its own reference says *"de forma progressiva… começando pela
+ * logística Full"*, so at any moment some threads are on the new flow and some
+ * are not, and nothing outside a thread says which.
  *
- * Sending to the real buyer id is not a soft failure: the agent is the delivery
- * path, so a message addressed around it does not reach the buyer.
+ * Both directions are hard failures, and they fail differently, which is what
+ * makes this worth spelling out:
+ *
+ * - agent id on a thread ML has **not** migrated ⇒ `400 to_user_id {agente} does
+ *   not belong to pack /packs/{pack}/sellers/{seller}` — loud, observed live;
+ * - real buyer id on a thread it **has** ⇒ **200**, and the message reaches
+ *   nobody, because the agent is the delivery path.
+ *
+ * ⇒ The recipient is derived PER THREAD by `postSaleRecipientUserId`
+ * (`apps/mercado-livre/lib/marketplace/chat/orderMessageMapping.ts`), from the
+ * pack read the send path already makes. This table is only that derivation's
+ * last rung, reached when `conversation_status.path` names a `/conversations/`
+ * segment and the thread itself named no counterparty.
+ *
+ * ⚠️ Do NOT use it to validate a derived id: an id absent from this table may be
+ * an unlisted site's agent or one ML has newly minted, and rejecting it would
+ * discard a correct answer.
  */
 export const ML_POST_SALE_AGENT_USER_ID = {
   MLB: 3037675074,

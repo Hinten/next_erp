@@ -499,9 +499,16 @@ export interface MercadoLivreApi {
    * `POST /messages/packs/{packId}/sellers/{sellerId}?tag=post_sale` — reply on
    * a post-sale thread (#533).
    *
-   * ⚠️ `to.user_id` must be the site’s **messaging AGENT**, not the buyer —
-   * see `postSaleAgentUserId`. ML also caps the body at the thread’s own
-   * `seller_max_message_length`, which the caller reads from a prior GET.
+   * ⚠️ `to.user_id` is the thread’s **counterparty**, which is the site’s
+   * messaging AGENT on a thread ML has migrated to the 02/02/2026 architecture
+   * and the **real buyer id** on one it has not. The rollout is progressive, so
+   * neither is right unconditionally — the caller derives it from the thread
+   * (`postSaleRecipientUserId`). Getting it wrong fails asymmetrically: the agent
+   * on a legacy thread is a hard `400 … does not belong to pack`, the buyer on a
+   * migrated one is a **200** that reaches nobody.
+   *
+   * ML also caps the body at the thread’s own `seller_max_message_length`, which
+   * the caller reads from a prior GET.
    */
   sendPackMessage(
     packId: string,

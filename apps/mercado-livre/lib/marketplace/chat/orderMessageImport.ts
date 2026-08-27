@@ -20,8 +20,14 @@
  * a side effect, and an importer must not clear the seller's unread state.
  *
  * ⚠️ The identity of the counterparty is the PEDIDO's cliente, never the message
- * `from`. Since 02/02/2026 on MLB, ML's AI Agent intermediates the conversation
- * and `from.user_id` on a read is the AGENT's id.
+ * `from`. On a thread ML has MIGRATED to the 02/02/2026 agent architecture,
+ * `from.user_id` on a read is the AGENT's id.
+ *
+ * ⚠️ That is a statement about IDENTITY, and it does not generalise to ROUTING.
+ * `from.user_id` is exactly the right address to REPLY to — it is the one ML just
+ * delivered from — which is what `postSaleRecipientUserId` derives. Reading the
+ * warning above as "the field is useless" is what addressed every outbound reply
+ * to the agent unconditionally, and 400'd every thread ML had not migrated.
  */
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import {
@@ -43,6 +49,7 @@ import { ensureOrderMessageAttachmentArquivo } from './orderMessageAttachments';
 import { makeAttachmentMensagemId } from '../claims/claimIds';
 import { limparMensagensProvisorias } from './mensagemProvisoria';
 import {
+  PAGINA_MENSAGENS_THREAD,
   buildConversaFromPack,
   buildOrderAttachmentMensagem,
   buildOrderMensagem,
@@ -98,13 +105,6 @@ function is404(err: unknown): boolean {
 }
 
 /**
- * ML pages this endpoint at **10 by default**, so a bare read returns the ten
- * newest messages and says nothing about the rest. Ask for the biggest page ML
- * documents no ceiling on, then walk `paging.total`.
- */
-const PAGINA_MENSAGENS = 100;
-
-/**
  * Hard stop on the walk. GETs share a **500 rpm** post-sale budget across the
  * whole application, so one pathological thread must not be able to spend it.
  * Hitting this WARNS rather than truncating silently.
@@ -123,7 +123,7 @@ async function lerThreadCompleta(
   sellerId: string,
 ): Promise<MlPackMessages> {
   const primeira = await api.getPackMessages(packOrOrderId, sellerId, {
-    limit: PAGINA_MENSAGENS,
+    limit: PAGINA_MENSAGENS_THREAD,
   });
   const total = primeira.paging?.total ?? null;
   const mensagens = [...primeira.messages];
@@ -132,7 +132,7 @@ async function lerThreadCompleta(
   let paginas = 1;
   while (mensagens.length < total && paginas < MAX_PAGINAS_MENSAGENS) {
     const proxima = await api.getPackMessages(packOrOrderId, sellerId, {
-      limit: PAGINA_MENSAGENS,
+      limit: PAGINA_MENSAGENS_THREAD,
       offset: mensagens.length,
     });
     // Defensive: ML returning an empty page while `total` still says otherwise
