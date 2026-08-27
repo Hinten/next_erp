@@ -21,6 +21,9 @@
  * never pull in server-only credential-handling code.
  */
 import { useMemo } from 'react';
+import { z } from 'zod';
+
+import { envelopeDeErro, lerRespostaJson } from '@delfrance/core/wire';
 
 import { useAuth } from '@/lib/auth/useAuth';
 
@@ -36,6 +39,29 @@ export class WhatsappClientHttpError extends Error {
   ) {
     super(message);
     this.name = 'WhatsappClientHttpError';
+  }
+}
+
+/**
+ * The backend answered 2xx and the body was not the shape this app claims — the
+ * wrong fields, no body at all, or not JSON.
+ *
+ * ⚠️ Nothing here describes what WE send: it is a browser-side `Error` that
+ * never leaves the tab, and `status` records the 2xx the backend sent US.
+ *
+ * ⚠️ A SUBCLASS of `WhatsappClientHttpError`, matching the ML client: the conta
+ * panel narrows to that class and rethrows anything else, so a sibling would
+ * land as an unhandled rejection instead of a message.
+ */
+export class WhatsappClientRespostaInvalidaError extends WhatsappClientHttpError {
+  constructor(
+    message: string,
+    status: number,
+    /** Field PATHS that failed, never values. */
+    readonly campos: string[],
+  ) {
+    super(message, status, 'RESPOSTA_INVALIDA');
+    this.name = 'WhatsappClientRespostaInvalidaError';
   }
 }
 
@@ -60,34 +86,56 @@ export class WhatsappClientNetworkError extends Error {
  * `apps/whatsapp/lib/whatsapp/whatsapp.ts`) is present only when `connected`;
  * it stays snake_case to match the wire response exactly rather than relabeling.
  */
-export interface WhatsappConta {
-  connected: boolean;
-  hasToken: boolean;
+export const contaSchema = z.object({
+  connected: z.boolean(),
+  hasToken: z.boolean(),
   /** Why a stored credential is not live — currently only the número gap. */
-  reason?: 'numero_nao_configurado';
-  phone: { display_phone_number: string | null; verified_name: string | null } | null;
-}
+  reason: z.literal('numero_nao_configurado').optional(),
+  phone: z
+    .object({
+      display_phone_number: z.string().nullable(),
+      verified_name: z.string().nullable(),
+    })
+    .nullable(),
+});
+export type WhatsappConta = z.infer<typeof contaSchema>;
 
 /** One check row of the account-health response (`GET /api/whatsapp/health`). */
-export interface WhatsappHealthCheck {
-  id: string;
-  status: 'ok' | 'warn' | 'fail' | 'skip';
-  label: string;
-  detail: string | null;
-  hint: string | null;
-}
+export const healthCheckSchema = z.object({
+  id: z.string(),
+  status: z.enum(['ok', 'warn', 'fail', 'skip']),
+  label: z.string(),
+  detail: z.string().nullable(),
+  hint: z.string().nullable(),
+});
+export type WhatsappHealthCheck = z.infer<typeof healthCheckSchema>;
 
 /**
  * The account-health aggregation as returned by `GET /api/whatsapp/health`
  * (`apps/whatsapp/lib/whatsapp/health.ts`). `canReceive` is tri-state: `null`
  * when it can't be determined (e.g. no WABA id to check the subscription).
  */
-export interface WhatsappHealth {
-  generatedAt: number;
-  canSend: boolean;
-  canReceive: boolean | null;
-  checks: WhatsappHealthCheck[];
-}
+export const healthSchema = z.object({
+  generatedAt: z.number(),
+  canSend: z.boolean(),
+  canReceive: z.boolean().nullable(),
+  checks: z.array(healthCheckSchema).default([]),
+});
+export type WhatsappHealth = z.infer<typeof healthSchema>;
+
+/**
+ * ⚠️ Six of the nine methods `await call(...)` and THROW THE BODY AWAY — the
+ * "did it work?" signal is the absence of a throw. That made them the quietest
+ * call sites in the repo: an empty body, an HTML body and a real `{ ok }` were
+ * all indistinguishable from success. Validating them costs nothing, because
+ * nothing downstream reads the value.
+ */
+export const okSchema = z.object({ ok: z.boolean() });
+
+export const templateMessageSchema = z.object({
+  ok: z.boolean(),
+  messageId: z.string().optional(),
+});
 
 export interface WhatsappClient {
   /** Connection status: the Cloud API phone-number identity or `connected: false`. */
@@ -120,6 +168,17 @@ export interface WhatsappClient {
   templateMessage(conversaId: string): Promise<{ ok: boolean; messageId?: string }>;
 }
 
+/**
+ * Log a body the operator will never see, capped so a whole HTML document
+ * cannot flood the console.
+ */
+function logarCorpoNaoJson(path: string, status: number, corpo: string): void {
+  console.error(
+    `[whatsapp] resposta não-JSON em ${path} (HTTP ${String(status)})`,
+    corpo.slice(0, 500),
+  );
+}
+
 export function createWhatsappClient(config: {
   baseUrl: string;
   getAuthToken: () => Promise<string>;
@@ -128,11 +187,12 @@ export function createWhatsappClient(config: {
   const baseUrl = config.baseUrl.replace(/\/$/, '');
   const doFetch = config.fetch ?? globalThis.fetch;
 
-  async function call<T>(
+  async function call<S extends z.ZodType>(
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
+    schema: S,
     body?: unknown,
-  ): Promise<T> {
+  ): Promise<z.infer<S>> {
     const token = await config.getAuthToken();
     let res: Response;
     try {
@@ -152,71 +212,101 @@ export function createWhatsappClient(config: {
       );
     }
 
-    let parsed: unknown = null;
     const text = await res.text();
-    if (text.length > 0) {
-      try {
-        parsed = JSON.parse(text);
-      } catch (err) {
-        if (err instanceof SyntaxError) parsed = { error: text };
-        else throw err;
-      }
-    }
 
     if (!res.ok) {
-      const errBody = parsed as { error?: string; code?: string } | null;
+      let parsed: unknown = null;
+      if (text.length > 0) {
+        try {
+          parsed = JSON.parse(text);
+        } catch (err) {
+          // ⚠️ The body used to become `{ error: text }`, so a proxy's whole HTML
+          // document ended up verbatim in `err.message`. The ML client fixed this
+          // in 3a4b7278; this one never got the same treatment.
+          if (err instanceof SyntaxError) {
+            logarCorpoNaoJson(path, res.status, text);
+          } else throw err;
+        }
+      }
+      const errBody = envelopeDeErro(parsed);
       throw new WhatsappClientHttpError(
-        errBody?.error ?? `HTTP ${res.status}`,
+        errBody?.error ?? `Falha na comunicação com o WhatsApp (HTTP ${String(res.status)}).`,
         res.status,
         errBody?.code ?? null,
       );
     }
-    return parsed as T;
+
+    const leitura = lerRespostaJson(text, schema);
+    if (leitura.ok) return leitura.data;
+
+    if (leitura.motivo === 'nao-json') {
+      logarCorpoNaoJson(path, res.status, leitura.texto);
+      throw new WhatsappClientRespostaInvalidaError(
+        `A integração com o WhatsApp respondeu HTTP ${String(res.status)} sem um corpo JSON — ` +
+          'o pedido não chegou à rota esperada. Atualize a página e, se continuar, avise o ' +
+          'suporte.',
+        res.status,
+        [],
+      );
+    }
+
+    throw new WhatsappClientRespostaInvalidaError(
+      'O backend do WhatsApp respondeu num formato que este aplicativo não reconhece. ' +
+        `Campos inválidos: ${leitura.campos.join(', ')}. Normalmente isso significa que o ` +
+        'backend e esta tela estão em versões diferentes — faça o deploy de `apps/whatsapp` e ' +
+        'recarregue a página.',
+      res.status,
+      leitura.campos,
+    );
   }
 
   return {
     conta: (integracaoId) =>
-      call<WhatsappConta>(
+      call(
         'GET',
         `/api/whatsapp/conta?integracaoId=${encodeURIComponent(integracaoId)}`,
+        contaSchema,
       ),
     setToken: async (integracaoId, token) => {
-      await call<{ ok: boolean }>('POST', '/api/whatsapp/token', { integracaoId, token });
+      await call('POST', '/api/whatsapp/token', okSchema, { integracaoId, token });
     },
     revokeToken: async (integracaoId) => {
-      await call<{ ok: boolean }>(
+      await call(
         'DELETE',
         `/api/whatsapp/token?integracaoId=${encodeURIComponent(integracaoId)}`,
+        okSchema,
       );
     },
     requestCode: async (integracaoId, metodo) => {
-      await call<{ ok: boolean }>('POST', '/api/whatsapp/verificacao/solicitar', {
+      await call('POST', '/api/whatsapp/verificacao/solicitar', okSchema, {
         integracaoId,
         metodo,
       });
     },
     verifyCode: async (integracaoId, codigo) => {
-      await call<{ ok: boolean }>('POST', '/api/whatsapp/verificacao/confirmar', {
+      await call('POST', '/api/whatsapp/verificacao/confirmar', okSchema, {
         integracaoId,
         codigo,
       });
     },
     registerNumber: async (integracaoId, pin) => {
-      await call<{ ok: boolean }>('POST', '/api/whatsapp/registro', { integracaoId, pin });
+      await call('POST', '/api/whatsapp/registro', okSchema, { integracaoId, pin });
     },
     deregisterNumber: async (integracaoId) => {
-      await call<{ ok: boolean }>(
+      await call(
         'DELETE',
         `/api/whatsapp/registro?integracaoId=${encodeURIComponent(integracaoId)}`,
+        okSchema,
       );
     },
     health: (integracaoId) =>
-      call<WhatsappHealth>(
+      call(
         'GET',
         `/api/whatsapp/health?integracaoId=${encodeURIComponent(integracaoId)}`,
+        healthSchema,
       ),
     templateMessage: (conversaId) =>
-      call<{ ok: boolean; messageId?: string }>('POST', '/api/whatsapp/template-message', {
+      call('POST', '/api/whatsapp/template-message', templateMessageSchema, {
         conversaId,
       }),
   };
