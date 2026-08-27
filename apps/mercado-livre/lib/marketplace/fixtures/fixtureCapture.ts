@@ -66,21 +66,32 @@ export interface CaptureDeps {
 /**
  * A response that is neither 2xx nor 404.
  *
- * ⚠️ `body` is carried for a caller that genuinely needs it, but the script prints
- * `message` alone: #1015 is the worked example of a raw ML body reaching a log
- * stream. The path and the status are enough to act on.
+ * ⚠️ **`body` is NON-ENUMERABLE, and that is a security property, not a style
+ * choice.** #1015 is the worked example of a raw ML body reaching a log stream,
+ * and the population that reaches this branch is exactly that one — a 401 on a
+ * dead grant, a 403, a 429. Keeping the body off `message` is not enough: an
+ * uncaught throw becomes an unhandled rejection, and Node's default handler
+ * `util.inspect`s the error, which appends **every own enumerable property** —
+ * so a plain `this.body = body` prints the credential response verbatim to
+ * stderr, and `JSON.stringify(err)` carries it too. Non-enumerable keeps it
+ * readable for a caller that genuinely needs it and invisible to both.
+ *
+ * The second half of the same guard lives in `scripts/capture-fixtures.ts`, whose
+ * `main()` narrows on this class and prints `message` alone rather than letting
+ * the rejection reach Node's handler at all. `path` and `status` stay enumerable
+ * — both are ours, and they are what makes a stack dump actionable.
  */
 export class FixtureCaptureHttpError extends Error {
   readonly path: string;
   readonly status: number;
-  readonly body: string;
+  readonly body!: string;
 
   constructor(path: string, status: number, body: string) {
     super(`Mercado Livre respondeu ${status} em ${path} — captura interrompida.`);
     this.name = 'FixtureCaptureHttpError';
     this.path = path;
     this.status = status;
-    this.body = body;
+    Object.defineProperty(this, 'body', { value: body, enumerable: false });
   }
 }
 

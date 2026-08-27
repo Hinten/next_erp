@@ -1,3 +1,5 @@
+import { inspect } from 'node:util';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -344,6 +346,30 @@ describe('captureAll — a 404 is data, everything else is a failure', () => {
     expect(http.message).toContain('503');
     expect(http.message).toContain('/orders/1');
     expect(http.message).not.toContain('segredo-do-corpo');
+  });
+
+  /**
+   * ⚠️ Keeping the body off `message` is NOT enough. An uncaught throw becomes an
+   * unhandled rejection, and Node's default handler `util.inspect`s the error,
+   * appending every own enumerable property — so an enumerable `body` prints the
+   * response verbatim to stderr. The population reaching this branch is a 401 on
+   * a dead grant, a 403, a 429: exactly the bodies #1015 was about.
+   */
+  it('keeps the body out of util.inspect and JSON.stringify, but readable', () => {
+    const segredo = '{"access_token":"APP_USR-NAO-DEVE-VAZAR"}';
+    const err = new FixtureCaptureHttpError('/orders/1', 401, segredo);
+
+    const impresso = inspect(err);
+    expect(impresso).not.toContain('APP_USR-NAO-DEVE-VAZAR');
+    expect(JSON.stringify(err)).not.toContain('APP_USR-NAO-DEVE-VAZAR');
+    expect(Object.keys(err)).not.toContain('body');
+
+    // What a stack dump SHOULD still say — the two fields that make it actionable.
+    expect(impresso).toContain('/orders/1');
+    expect(impresso).toContain('401');
+
+    // …and the body stays reachable for a caller that genuinely needs it.
+    expect(err.body).toBe(segredo);
   });
 
   it('emits every result BEFORE the throw, so a partial capture survives', async () => {

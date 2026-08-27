@@ -52,6 +52,7 @@ import { resolve } from 'node:path';
 import { getAdminFirestore } from '../lib/firebase/admin';
 import { loadMercadoLivreContext } from '../lib/marketplace/core/mercadoLivre';
 import {
+  FixtureCaptureHttpError,
   buildCapturePlan,
   captureAll,
   fixtureFileName,
@@ -265,4 +266,18 @@ async function main(): Promise<void> {
   log('   não anexe nada disso a uma issue sem revisar.');
 }
 
-await main();
+/**
+ * ⚠️ **The rejection must not reach Node's default handler.** That handler
+ * `util.inspect`s the error and prints every own enumerable property — which is
+ * how a raw ML body would reach stderr (#1015). `FixtureCaptureHttpError` keeps
+ * its `body` non-enumerable for the same reason; this is the other half, and it
+ * also gives the operator a readable line instead of a stack.
+ *
+ * Narrow, never generic: anything that is not this class is rethrown untouched.
+ */
+await main().catch((err: unknown) => {
+  if (!(err instanceof FixtureCaptureHttpError)) throw err;
+  console.error(`❌ ${err.message}`);
+  console.error('   As capturas anteriores continuam em out/fixtures/ — veja o _manifest.json.');
+  process.exit(1);
+});
