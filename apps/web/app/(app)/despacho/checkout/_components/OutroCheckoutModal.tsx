@@ -255,67 +255,69 @@ export function OutroCheckoutModal({
   const canReprintFrete = row !== null && row.frete?.modalidade !== MODALIDADE_FRETE.semTransporte;
 
   return (
-    <Modal
-      opened={row !== null}
-      onClose={onClose}
-      centered
-      title={row !== null ? `Reimpressão — Pedido ${row.numero ?? row.pedidoId}` : ''}
-    >
-      {row !== null && (
-        <Stack gap="sm">
-          {row.timestampMs != null && (
-            <Text size="xs" c="dimmed">
-              Conferido em {new Date(row.timestampMs).toLocaleString('pt-BR')}
-            </Text>
-          )}
-          {row.obs != null && row.obs.length > 0 && (
-            <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-              {row.obs}
-            </Text>
-          )}
-
-          <Group gap="xs">
-            <Badge variant="light" color="gray">
-              {total} {total === 1 ? 'lançamento' : 'lançamentos'}
-            </Badge>
-            {comErro > 0 && (
-              <Badge variant="light" color="red">
-                {comErro} com erro
-              </Badge>
+    <>
+      <Modal
+        opened={row !== null}
+        onClose={onClose}
+        centered
+        title={row !== null ? `Reimpressão — Pedido ${row.numero ?? row.pedidoId}` : ''}
+      >
+        {row !== null && (
+          <Stack gap="sm">
+            {row.timestampMs != null && (
+              <Text size="xs" c="dimmed">
+                Conferido em {new Date(row.timestampMs).toLocaleString('pt-BR')}
+              </Text>
             )}
-            {excluidos > 0 && (
-              <Badge variant="light" color="yellow">
-                {excluidos} excluído{excluidos === 1 ? '' : 's'}
-              </Badge>
+            {row.obs != null && row.obs.length > 0 && (
+              <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+                {row.obs}
+              </Text>
             )}
-          </Group>
 
-          <Divider />
+            <Group gap="xs">
+              <Badge variant="light" color="gray">
+                {total} {total === 1 ? 'lançamento' : 'lançamentos'}
+              </Badge>
+              {comErro > 0 && (
+                <Badge variant="light" color="red">
+                  {comErro} com erro
+                </Badge>
+              )}
+              {excluidos > 0 && (
+                <Badge variant="light" color="yellow">
+                  {excluidos} excluído{excluidos === 1 ? '' : 's'}
+                </Badge>
+              )}
+            </Group>
 
-          <Group gap="sm" grow>
-            <Button
-              variant="light"
-              leftSection={<IconPrinter size={16} />}
-              loading={printInFlight.inFlight}
-              onClick={handleReimprimirNfe}
-            >
-              Reimprimir NF-e
-            </Button>
-            {canReprintFrete && (
+            <Divider />
+
+            <Group gap="sm" grow>
               <Button
                 variant="light"
-                color="teal"
-                leftSection={<IconTruck size={16} />}
+                leftSection={<IconPrinter size={16} />}
                 loading={printInFlight.inFlight}
-                onClick={handleReimprimirFrete}
+                onClick={handleReimprimirNfe}
               >
-                Reimprimir Frete
+                Reimprimir NF-e
               </Button>
-            )}
-          </Group>
-        </Stack>
-      )}
+              {canReprintFrete && (
+                <Button
+                  variant="light"
+                  color="teal"
+                  leftSection={<IconTruck size={16} />}
+                  loading={printInFlight.inFlight}
+                  onClick={handleReimprimirFrete}
+                >
+                  Reimprimir Frete
+                </Button>
+              )}
+            </Group>
+          </Stack>
+        )}
+      </Modal>
       {confirm.element}
-    </Modal>
+    </>
   );
 }
