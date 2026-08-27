@@ -9,6 +9,14 @@ name: E2E (reusable)
 # offline `CI` workflow, not gated on it. Each caller is its own workflow run →
 # its own GITHUB_RUN_ID → a distinct Firestore namespace + ephemeral user, so
 # the two themes run concurrently without colliding.
+#
+# ⚠️ That last sentence stops holding the moment a caller runs this workflow
+# MORE THAN ONCE (sharding). Two such jobs share GITHUB_RUN_ID, GITHUB_WORKFLOW
+# and GITHUB_REF — which is every input the fixture-isolation keys are built
+# from — so they would sweep each other's LIVE fixtures and delete each other's
+# ephemeral auth user. `run_slot` is what restores the invariant; see the
+# `e2eRunSlot` docblock in tools/test-fixtures/src/admin.ts for the three axes
+# it scopes. A sharded caller MUST pass a distinct `run_slot` per job.
 
 on:
   workflow_call:
@@ -20,6 +28,38 @@ on:
       slug:
         description: Short theme id used for the report artifact name.
         required: true
+        type: string
+      shard:
+        description: >-
+          Playwright `--shard=i/N` for a lane split across several jobs. Empty
+          (the default) runs the whole selection in one job. Safe here because
+          Playwright distributes whole test GROUPS and never splits one, and
+          every spec in these lanes is `test.describe.serial` — so a shard
+          boundary always falls between files, never inside a serial block.
+          ⚠️ It balances by TEST COUNT, not duration.
+        required: false
+        default: ''
+        type: string
+      run_slot:
+        description: >-
+          Digits identifying this job among a sharded caller's jobs, exported as
+          E2E_RUN_SLOT. ⚠️ REQUIRED whenever `shard` is set, and it must differ
+          per job: it is the only thing keeping two jobs of ONE workflow run from
+          sharing every fixture-isolation key and deleting each other's live
+          fixtures mid-suite. Empty for an unsharded lane, which then behaves
+          byte-identically to before.
+        required: false
+        default: ''
+        type: string
+      workers:
+        description: >-
+          Playwright worker processes, as PLAYWRIGHT_WORKERS. Defaults to the
+          config's own CI value. The runner is 4 vCPU but these suites are
+          network-bound on staging Firebase, so the ceiling is not obviously 4 —
+          raise it per lane only with a measured before/after on BOTH wall clock
+          and the retry-rescued count.
+        required: false
+        default: ''
         type: string
       integrations:
         description: >-
@@ -49,6 +89,12 @@ jobs:
     permissions:
       contents: read
     env:
+      # Job-level on purpose: the `always()` reclaim step below invokes
+      # global-teardown.ts DIRECTLY, and it must resolve the same slot as the
+      # suite or it sweeps a prefix nothing seeded (leaking this job's fixtures)
+      # or, worse, one a sibling shard is still using.
+      E2E_RUN_SLOT: ${{ inputs.run_slot }}
+      PLAYWRIGHT_WORKERS: ${{ inputs.workers }}
       FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
       NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
@@ -64,10 +110,13 @@ jobs:
       # Where apps/web's admin HTTP client points. Next INLINES NEXT_PUBLIC_* at
       # build time, so this has to be set for the build below, not just at test
       # time. Deliberately unconditional: both lanes then produce an identical
-      # web build, so the `nextjs-web-e2e-*` cache they share (same key, same
-      # SHA, concurrent runs) can't hand one lane a build carrying the other's
-      # inlined value. Inert without `integrations: true` — no cadastros spec
-      # calls the admin endpoints.
+      # web build, so the `nextjs-web-e2e-*` cache they share can't hand one lane
+      # a build carrying the other's inlined value. ⚠️ That key is now shared
+      # ACROSS COMMITS too (the head SHA came out of it), so this must stay
+      # unconditional — a lane-conditional NEXT_PUBLIC_* would now poison the
+      # cache for every later run, not just for a concurrent sibling. Inert
+      # without `integrations: true` — no cadastros spec calls the admin
+      # endpoints.
       NEXT_PUBLIC_INTEGRATIONS_URL: http://localhost:3001
       # ⚠️ REQUIRED, and deliberately NOT `us-central1` like every other lane.
       #
@@ -138,15 +187,31 @@ jobs:
 
       # Persist Next.js's incremental build cache between runs so `next build`
       # isn't cold every time. `-e2e-` keeps this distinct from ci.yml's web
-      # build (this one emits source maps). Keyed on the head SHA (the ref
-      # actually built): restore the newest prior cache, save this commit's.
+      # build (this one emits source maps).
+      #
+      # ⚠️ The key deliberately does NOT carry the head SHA any more. It used to,
+      # so that each run saved "this commit's" cache — but `actions/cache` only
+      # skips the save on an EXACT key hit, so a per-commit key meant every run of
+      # every lane wrote a fresh ~350 MB entry that only its own PR could ever
+      # read back (Actions scopes a cache to its branch plus the default branch,
+      # and these lanes have no `push:` trigger, so no `main`-scoped entry exists
+      # to restore from either). Measured 2026-08-27: 58 live `nextjs-web-e2e-*`
+      # entries, the repo pinned at 9.97 GB of its 10 GB ceiling, LRU evicting the
+      # pnpm store — which is why `pnpm-store-*` then missed its own exact key and
+      # re-saved too, for 35–49 s of `Post Run actions/cache` on every job
+      # measured, spent AFTER the tests had already finished.
+      #
+      # Without the SHA, run 2+ of a branch hits the exact key and saves nothing.
+      # The trade is a build cache frozen at the branch's first run for a given
+      # lockfile; Next's cache is content-hash-keyed internally, so a stale entry
+      # degrades to a miss per changed module rather than to a wrong build.
       - name: Cache Next.js build (web)
         uses: actions/cache@v5
         with:
           path: apps/web/.next/cache
-          key: nextjs-web-e2e-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.event.pull_request.head.sha || github.sha }}
+          key: nextjs-web-e2e-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: |
-            nextjs-web-e2e-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            nextjs-web-e2e-${{ runner.os }}-
 
       - name: Build web (production)
         # NEXT_PUBLIC_* + E2E_SOURCEMAPS are inlined here. Call next directly to
@@ -188,6 +253,8 @@ jobs:
         run: |
           args=""
           for p in ${{ inputs.projects }}; do args="$args --project=$p"; done
+          if [ -n "${{ inputs.shard }}" ]; then args="$args --shard=${{ inputs.shard }}"; fi
+          echo "playwright test$args"
           pnpm --filter @delfrance/web exec playwright test $args
 
       # Playwright's own globalTeardown does NOT run when the job is cancelled,
