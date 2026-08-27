@@ -54,9 +54,15 @@ describe('pagamentoSchema', () => {
   it('rejects a genuinely unknown top-level key on a strict (write) parse', () => {
     // Mirrors the `.strict()` re-parse `parseForWrite`/`parseMergePatch` run
     // internally once they notice the lenient parse above dropped a key.
-    expect(() =>
-      pagamentoSchema.strict().parse({ valor: 100, someUnknownField: 'whatever' }),
-    ).toThrow(/nrecognized/);
+    // Asserts the issue CODE, not the message: this repo installs a pt-BR Zod
+    // error map, so the rendered message is locale text ("Chave desconhecida:
+    // ..."), not the English "unrecognized" a message-regex would look for.
+    const result = pagamentoSchema.strict().safeParse({ valor: 100, someUnknownField: 'whatever' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]).toMatchObject({
+      code: 'unrecognized_keys',
+      keys: ['someUnknownField'],
+    });
   });
 });
 
