@@ -21,8 +21,13 @@ import { PedidoConflictError } from './usecases';
  * re-derives it. `pedidoResolver` (`apps/web/.../PedidoForm.tsx`) recomputes
  * exactly the six `derivePedidoTotals` caches; everything else in
  * `defaultValues` flows verbatim through `{ ...rest }` → `pedidoSchema.parse`
- * (which is `.passthrough()`) → `createPedidoWithNumero`'s
- * `tx.set({ ...values, numero })`. Whatever the seed leaves in, gets written.
+ * → `createPedidoWithNumero`'s `tx.set({ ...values, numero })`. Whatever the
+ * seed leaves in AND still models, gets written — `pedidoSchema` has no
+ * `.passthrough()` (#462), so a genuinely unmodeled key on the origin (in
+ * practice, one of the five money caches #796 removed from the schema) is
+ * silently dropped by the re-parse rather than carried into the duplicate,
+ * same as any other unmodeled key would be. That is a feature here, not a
+ * gap: none of those fields describes the new pedido either.
  *
  * Beyond the legacy Flutter list, this strips:
  *

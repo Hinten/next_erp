@@ -25,6 +25,15 @@ const passthrough = z
   })
   .passthrough();
 
+/**
+ * A strip-policy schema with a NESTED strip-policy array, like
+ * `pedidoSchema.itens: z.record(z.string(), z.array(itemDoPedidoSchema))`.
+ */
+const withNestedArray = z.object({
+  nome: z.string(),
+  itens: z.array(z.object({ sku: z.string() })).default([]),
+});
+
 describe('parseForWrite', () => {
   it('accepts a document with only modelled keys', () => {
     expect(parseForWrite(strip, { nome: 'Ana' })).toMatchObject({ nome: 'Ana', email: null });
@@ -51,6 +60,19 @@ describe('parseForWrite', () => {
     // `Object.hasOwn`, not `in` — otherwise `toString` would look "kept" and the
     // strict re-check would never fire for a payload carrying it.
     expect(() => parseForWrite(strip, { nome: 'Ana', toString: 'x' })).toThrow(/nrecognized/);
+  });
+
+  // ⚠️ The dropped-key diff above is TOP-LEVEL ONLY, and Zod's `.strict()` does
+  // not recurse into a nested schema — so the "writes THROW" half of the
+  // asymmetry this file documents does not hold for a key inside a nested
+  // array/record item (e.g. `pedidoSchema.itens[*]`). Found in review on #1246
+  // (a doc comment claimed the item level threw too).
+  it('does NOT throw for an unmodelled key on a NESTED item — it is silently stripped', () => {
+    const out = parseForWrite(withNestedArray, {
+      nome: 'Ana',
+      itens: [{ sku: 'A1', bogusItemKey: 'x' }],
+    });
+    expect(out.itens[0]).not.toHaveProperty('bogusItemKey');
   });
 });
 

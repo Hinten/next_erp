@@ -15,7 +15,9 @@ import { useHover } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconArrowForward, IconCopy, IconDots, IconFileText } from '@tabler/icons-react';
 import type { Mensagem } from '@delfrance/schemas';
-import { TIPO_MENSAGEM } from '@delfrance/schemas';
+import { ESTADO_ENVIO, TIPO_MENSAGEM } from '@delfrance/schemas';
+import type { OrigemConversa } from '@delfrance/schemas';
+import { mensagemEhNossa } from '@/lib/chat/direcao';
 import { formatMensagemTime } from '@/lib/chat/mensagemTime';
 import { HighlightedText } from '@/lib/chat/highlight';
 import { type AnyMensagem, isOptimistic, mensagemKey } from '../../_hooks/useMensagensWindow';
@@ -32,6 +34,8 @@ export interface MensagemBubbleProps {
   myUid: string | null | undefined;
   /** The conversa's customer usuario id (from `usarioOuterRef`), for alignment. */
   customerUid: string | null;
+  /** The conversa's origem — decides direction for an authorless message. */
+  origem: OrigemConversa;
   /** Whether this origem renders HTML bodies (ORIGEM_RULES[origem].isHtml). */
   isHtml: boolean;
   searchRegex: RegExp | null;
@@ -55,6 +59,7 @@ export function MensagemBubble(props: MensagemBubbleProps) {
     mensagem,
     myUid,
     customerUid,
+    origem,
     isHtml,
     searchRegex,
     searchActive,
@@ -98,13 +103,27 @@ export function MensagemBubble(props: MensagemBubbleProps) {
     );
   }
 
-  const mine = isOptimistic(mensagem) || (!!mensagem.user_id && mensagem.user_id === myUid);
+  // The side is `mensagemEhNossa` — see it for why an author outranks the send
+  // state and why the origem outranks both for an authorless doc. Keying on
+  // `user_id === myUid` alone made `mine` unreachable for every marketplace
+  // message, so our own replies rendered as the buyer's, grey and tickless.
+  const mine = isOptimistic(mensagem) || mensagemEhNossa(mensagem, { myUid, origem });
   const isCustomer =
-    !mine && (mensagem.estadoEnvio === 7 || (!!customerUid && mensagem.user_id === customerUid));
+    !mine &&
+    (mensagem.estadoEnvio === ESTADO_ENVIO.recebido ||
+      (!!customerUid && mensagem.user_id === customerUid));
   const isOtherAgent = !mine && !isCustomer && !!mensagem.user_id;
 
   return (
-    <Group ref={rootRef} justify={mine ? 'flex-end' : 'flex-start'} align="flex-end" gap={4}>
+    <Group
+      ref={rootRef}
+      // The side is a CSS custom property once Mantine renders it, so nothing
+      // could assert alignment — which is why this bug had no failing test.
+      data-side={mine ? 'saida' : 'entrada'}
+      justify={mine ? 'flex-end' : 'flex-start'}
+      align="flex-end"
+      gap={4}
+    >
       <BubbleBody
         mensagem={mensagem}
         variant={mine ? 'mine' : isCustomer ? 'customer' : isOtherAgent ? 'agent' : 'customer'}
