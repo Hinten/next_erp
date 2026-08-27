@@ -125,10 +125,14 @@ export async function POST(req: Request): Promise<NextResponse> {
   // shape was checked when nothing checked it.
   const leitura = meWebhookBodySchema.safeParse(parsed);
   if (!leitura.success) {
-    // A body that is not even an object. 400 rather than a 200 ack: unlike a
-    // malformed-JSON retry this is worth ME seeing, and there is nothing here
-    // to act on either way.
-    return NextResponse.json({ error: 'Body em formato inesperado.' }, { status: 400 });
+    // ⚠️ ACK, not a 400 — the same disposition as the `!labelId || !target`
+    // branch below, and for the same reason it states there. `z.object` STRIPS
+    // unknown keys rather than rejecting, so the only bodies that reach here
+    // are non-objects: a JSON scalar, an array, `null`. There is nothing to act
+    // on and no retry can make one actionable, so a 4xx would only make ME
+    // redeliver it. Before this route validated at all these reached the ack
+    // anyway (`('x').data` is `undefined`, so `labelId` came out null).
+    return NextResponse.json({ ok: true, applied: false });
   }
   const body = leitura.data;
 

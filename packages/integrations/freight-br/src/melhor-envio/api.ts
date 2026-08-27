@@ -11,6 +11,8 @@
  * decide on.
  */
 import { ensureCartAgency } from './agency';
+import { camposInvalidos } from '@delfrance/core/wire';
+
 import {
   MelhorEnvioError,
   MelhorEnvioHttpError,
@@ -137,7 +139,12 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
       if (!result.success) {
         // `parsed` is deliberately NOT attached: a response body can carry
         // account data, and this message reaches the browser. Field PATHS only.
-        const campos = [...new Set(result.error.issues.map((i) => i.path.join('.') || '(raiz)'))];
+        // `camposInvalidos`, not a local `new Set(...)`: this de-duplicates
+        // AFTER collapsing array indices and caps the list. `calculate` and
+        // `listAgencies` return ARRAYS, so one bad column across 20 quote
+        // options otherwise reads `0.name, 1.name, … 19.name` instead of
+        // `[].name` — in a message `melhorEnvioErrorResponse` sends onward.
+        const campos = camposInvalidos(result.error.issues);
         throw new MelhorEnvioSchemaError(
           `Resposta do Melhor Envio em formato inesperado. Campos inválidos: ${campos.join(', ')}.`,
           result.error.issues,

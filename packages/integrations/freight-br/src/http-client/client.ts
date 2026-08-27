@@ -129,10 +129,17 @@ function normalizeBase(baseUrl: string): string {
   return baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
 }
 
+/**
+ * The operator-facing message for a non-2xx body.
+ *
+ * ⚠️ Goes through `envelopeDeErro` rather than `String(body.error)`. The old
+ * form stringified whatever `error` happened to be, so a non-string one
+ * rendered as `[object Object]` in a message a human reads; the shared reader
+ * drops a field of the wrong type instead. It is also the reason that import
+ * exists — it was added in this PR and then never used.
+ */
 function messageOf(body: unknown, fallback: string): string {
-  return body !== null && typeof body === 'object' && 'error' in body
-    ? String((body as { error: unknown }).error)
-    : fallback;
+  return envelopeDeErro(body)?.error ?? fallback;
 }
 
 function errorFromResponse(status: number, body: unknown): FreightHttpError {
