@@ -42,6 +42,22 @@ export {
 const KEY_SEP = '\u0000';
 
 /**
+ * Mirrors `SERVER_SYNC_LISTEN_OPTIONS` in `packages/data/src/hooks/useSnapshot.ts`
+ * (module-private there), and here it is **load-bearing, not a formality**.
+ *
+ * With the IndexedDB persistent cache, `onSnapshot` emits a `fromCache: true`
+ * snapshot FIRST, and for a document the cache has never seen, that snapshot
+ * says the document does not exist. Advancing on it would release the rung and
+ * permanently pick a LOWER-quality photo for a derivative that IS present on
+ * the server — a choice this hook cannot walk back, because the rung is already
+ * released. Without these options the SDK also drops the cache→server
+ * transition whenever the data is unchanged, so `fromCache` would never flip
+ * and the mistake would be undetectable. Enforced repo-wide by
+ * `packages/config-eslint/rules/snapshot-metadata-changes.test.js`.
+ */
+const SERVER_SYNC_LISTEN_OPTIONS = { includeMetadataChanges: true } as const;
+
+/**
  * The first of `ids` whose `arquivos` document exists AND carries a `url`, read
  * live — walking the ladder with **exactly one `onSnapshot` open at a time**.
  * The winning rung stays subscribed, so a later edit to that document still
@@ -95,16 +111,29 @@ export function useFirstExistingArquivoUrl(
       }
       unsub = onSnapshot(
         arquivoCollection.docRef(db, {}, lista[i]!),
+        SERVER_SYNC_LISTEN_OPTIONS,
         (snap) => {
           if (cancelado) return;
           // A missing doc AND a doc whose `url` is still null (the transient
           // state of a create-first upload) both fall through to the next rung.
           const url = snap.data()?.url ?? null;
           if (url === null) {
+            // ⚠️ Only SERVER truth may advance. A `fromCache` snapshot reports
+            // a never-cached document as absent, and advancing on that would
+            // release this rung for good and settle on a lower-quality photo
+            // that the server could have answered better. Holding costs a
+            // skeleton for one round trip; advancing costs the right photo.
+            if (snap.metadata.fromCache) return;
             queueMicrotask(() => percorrer(i + 1));
             return;
           }
-          setState({ url, resolved: true, key });
+          // `includeMetadataChanges` means re-emissions carrying identical data;
+          // returning the previous object lets React bail out of the re-render.
+          setState((anterior) =>
+            anterior.key === key && anterior.url === url && anterior.resolved
+              ? anterior
+              : { url, resolved: true, key },
+          );
         },
         // A denied/failed read is a resolved absence for this rung, not a stall.
         () => queueMicrotask(() => percorrer(i + 1)),

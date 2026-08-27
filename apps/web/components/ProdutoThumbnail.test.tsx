@@ -17,19 +17,34 @@ type Snap = SnapshotState<{ id: string; data: { url: string | null } } | null>;
  * exist. Snapshots are delivered synchronously at subscribe time — the hook
  * defers each advance a microtask precisely so that is safe.
  */
-const { subs, docs } = vi.hoisted(() => ({
+const { subs, docs, cacheFirst } = vi.hoisted(() => ({
   subs: { current: [] as { id: string; open: boolean }[] },
   docs: { current: {} as Record<string, { url: string | null } | undefined> },
+  /** Emit a `fromCache: true` snapshot before the server one, like the real SDK. */
+  cacheFirst: { current: false },
 }));
 
 vi.mock('firebase/firestore', async () => {
   const actual = await vi.importActual<typeof import('firebase/firestore')>('firebase/firestore');
   return {
     ...actual,
-    onSnapshot: (ref: { id: string }, onNext: (s: { data: () => unknown }) => void) => {
+    // Signature is `onSnapshot(ref, options, onNext, onError)` — the hook must
+    // pass `SnapshotListenOptions`, so `options` is asserted, not ignored.
+    onSnapshot: (
+      ref: { id: string },
+      options: { includeMetadataChanges?: boolean },
+      onNext: (s: { data: () => unknown; metadata: { fromCache: boolean } }) => void,
+    ) => {
+      if (options?.includeMetadataChanges !== true) {
+        throw new Error('onSnapshot must opt into metadata changes — see fotoCapa.ts');
+      }
       const entry = { id: ref.id, open: true };
       subs.current.push(entry);
-      onNext({ data: () => docs.current[ref.id] });
+      const emitir = (fromCache: boolean) =>
+        onNext({ data: () => docs.current[ref.id], metadata: { fromCache } });
+      // The real SDK emits the cached view first, then the server's.
+      if (cacheFirst.current) emitir(true);
+      emitir(false);
       return () => {
         entry.open = false;
       };
@@ -109,6 +124,7 @@ async function renderThumb(node: React.ReactNode) {
 afterEach(() => {
   subs.current = [];
   docs.current = {};
+  cacheFirst.current = false;
   snapById.current = {};
   vi.clearAllMocks();
 });
@@ -165,6 +181,20 @@ describe('ProdutoThumbnail', () => {
     await renderThumb(<ProdutoThumbnail db={db} produto={produtoWithFoto()} zoomable={false} />);
     expect(allSubs()).toEqual(['deriv1', 'orig1']);
     expect(openSubs()).toEqual(['orig1']); // `deriv1` was released on advance
+  });
+
+  it('never advances on a cache-only miss — the derivative wins once the server answers', async () => {
+    // The hazard `includeMetadataChanges` exists for. A never-cached document
+    // reports as ABSENT in the first (`fromCache: true`) snapshot; advancing on
+    // that would release the rung and settle on the original for good, even
+    // though the 400px derivative is right there on the server.
+    cacheFirst.current = true;
+    setDocs({ deriv1: { url: 'https://cdn/deriv1.jpg' }, orig1: { url: 'https://cdn/orig1.jpg' } });
+    await renderThumb(<ProdutoThumbnail db={db} produto={produtoWithFoto()} zoomable={false} />);
+    expect(screen.getByRole('img', { name: 'Camiseta' }).getAttribute('src')).toBe(
+      'https://cdn/deriv1.jpg',
+    );
+    expect(allSubs()).toEqual(['deriv1']); // never fell through to the original
   });
 
   it('treats a doc that exists with a null url as an empty rung', async () => {
