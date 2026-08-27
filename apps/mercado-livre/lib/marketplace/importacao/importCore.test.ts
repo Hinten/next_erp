@@ -5,11 +5,14 @@ import type { TaxonomiaResolution } from './taxonomiaCore';
 import {
   DEFAULT_IMPORT_OPTIONS,
   type ImportAssembleArgs,
+  type FilhoMedidas,
   type VariationChildAssembleArgs,
   MercadoLivreImportError,
   assembleImportPlan,
   assembleVariationChildPlan,
+  medidasEfetivas,
   resolveVariationCombo,
+  rollupDimensoesDosFilhos,
 } from './importCore';
 
 function mapped(over: Partial<MappedMlItem> = {}): MappedMlItem {
@@ -105,8 +108,8 @@ describe('assembleImportPlan — create', () => {
     expect(plan.produto?.data.precos).toEqual({ tabNormal: { valor: 79.9 } });
   });
 
-  it('writes extraData condicao + descricao', () => {
-    expect(plan.extra).toMatchObject({ condicao: 1, descricao: 'Uma camiseta' });
+  it('writes extraData condicao + descricao + marca', () => {
+    expect(plan.extra).toMatchObject({ condicao: 1, descricao: 'Uma camiseta', marca: 'Acme' });
   });
 
   it('creates stock at the depósito (est-<produto>-<deposito>)', () => {
@@ -1232,5 +1235,341 @@ describe('assembleVariationChildPlan — ML moderations (#1087)', () => {
       }),
     );
     expect(existing.link.moderacoes).toEqual([MODERACAO]);
+  });
+});
+
+/* --------------------------- marca (#1087 / #1293) ------------------------- */
+
+/** The plan's extraData patch for one set of overrides. */
+const extraDe = (over: Partial<ImportAssembleArgs> = {}) => assembleImportPlan(args(over)).extra;
+
+/** An update onto an existing produto, which is where the overwrite rule bites. */
+const updateArgs = (over: Partial<ImportAssembleArgs> = {}): Partial<ImportAssembleArgs> => ({
+  isCreate: false,
+  existingProduto: { nome: 'Camiseta' },
+  ...over,
+});
+
+describe('assembleImportPlan — extraData.marca', () => {
+  it('fills the produto Marca from the listing BRAND on create', () => {
+    expect(extraDe()).toMatchObject({ marca: 'Acme' });
+  });
+
+  it('fills a BLANK Marca on re-import', () => {
+    expect(extraDe(updateArgs({ existingExtra: { marca: null } }))).toMatchObject({
+      marca: 'Acme',
+    });
+  });
+
+  it('treats a whitespace-only stored Marca as blank', () => {
+    expect(extraDe(updateArgs({ existingExtra: { marca: '   ' } }))).toMatchObject({
+      marca: 'Acme',
+    });
+  });
+
+  // The whole point of the default: a re-import must not replace typed work.
+  // ⚠️ The two values are deliberately DIFFERENT strings — with the fixture's
+  // 'Acme' on both sides this assertion would pass against a clobbering writer.
+  it('does NOT overwrite a Marca the operator already typed', () => {
+    expect(extraDe(updateArgs({ existingExtra: { marca: 'Hering' } }))?.marca).toBeUndefined();
+  });
+
+  // The overwrite is a STRONGER form of "update the produto", so it cannot
+  // outlive that permission being withdrawn. The mass dialog renders the
+  // checkbox `disabled={!atualizarProdutoPai}`, and Mantine keeps a disabled
+  // checkbox CHECKED — so tick-then-untick still sends the flag.
+  it('does not overwrite the Marca while atualizarProdutoPai is off', () => {
+    expect(
+      extraDe(
+        updateArgs({
+          existingExtra: { marca: 'Hering' },
+          options: {
+            ...DEFAULT_IMPORT_OPTIONS,
+            atualizarProdutoPai: false,
+            sobrescreverDadosProduto: true,
+          },
+        }),
+      )?.marca,
+    ).toBeUndefined();
+  });
+
+  // ...but the FILL half stays ungated, exactly as `descricao` already is. A
+  // blank Marca is not the operator's typed work, so there is nothing to protect.
+  it('still fills a BLANK Marca while atualizarProdutoPai is off', () => {
+    expect(
+      extraDe(
+        updateArgs({
+          existingExtra: { marca: null },
+          options: { ...DEFAULT_IMPORT_OPTIONS, atualizarProdutoPai: false },
+        }),
+      ),
+    ).toMatchObject({ marca: 'Acme' });
+  });
+
+  it('overwrites it under sobrescreverDadosProduto', () => {
+    expect(
+      extraDe(
+        updateArgs({
+          existingExtra: { marca: 'Hering' },
+          options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverDadosProduto: true },
+        }),
+      ),
+    ).toMatchObject({ marca: 'Acme' });
+  });
+
+  // An import that simply lost the attribute must not erase the value the whole
+  // publish path now derives from — absence is never persisted.
+  it('writes nothing when the listing carries no BRAND', () => {
+    const extra = extraDe(
+      updateArgs({
+        mapped: mapped({ attributes: [{ id: 'MODEL', value_name: 'X' }] }),
+        existingExtra: { marca: 'Hering' },
+      }),
+    );
+    expect(extra?.marca).toBeUndefined();
+  });
+
+  // ML's "does not apply" marker is an ANSWER, not a brand — and its value_name
+  // is the literal string 'N/A', which is what a hand-rolled reader would store.
+  it('does not store the ML N/A sentinel as a brand named N/A', () => {
+    const extra = extraDe({
+      mapped: mapped({ attributes: [{ id: 'BRAND', value_id: '-1', value_name: 'N/A' }] }),
+    });
+    expect(extra?.marca).toBeUndefined();
+  });
+
+  it('trims and caps at the schema limit (255)', () => {
+    const longa = 'M'.repeat(300);
+    const extra = extraDe({
+      mapped: mapped({ attributes: [{ id: 'BRAND', value_name: '  ' + longa + '  ' }] }),
+    });
+    expect(extra?.marca).toBe('M'.repeat(255));
+  });
+
+  it('leaves a whitespace-only BRAND alone rather than blanking the produto', () => {
+    const extra = extraDe({
+      mapped: mapped({ attributes: [{ id: 'BRAND', value_name: '   ' }] }),
+    });
+    expect(extra?.marca).toBeUndefined();
+  });
+});
+
+/* ------------------- sobrescreverDadosProduto — produto fields ------------- */
+
+describe('assembleImportPlan — sobrescreverDadosProduto', () => {
+  // Stored values differ from the mapped ones on every field, so a no-op
+  // implementation cannot pass either direction of this pair.
+  const stored = {
+    nome: 'Camiseta',
+    sku: 'ANTIGO',
+    // Present so the unrelated `publicado` fill-null does not fire and muddy the
+    // exact-equality assertions below.
+    publicado: true,
+    pesoLiquidoKg: 9,
+    pesoBrutoKg: 9,
+    alturaCm: 99,
+    larguraCm: 99,
+    profundidadeCm: 99,
+  };
+
+  it('leaves filled produto fields alone by default', () => {
+    const plan = assembleImportPlan(args({ isCreate: false, existingProduto: stored }));
+    expect(plan.produto?.data).toEqual({ ultimaModificacao: 1_700_000_000_000 });
+  });
+
+  it('replaces them when the operator asks', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: stored,
+        options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverDadosProduto: true },
+      }),
+    );
+    expect(plan.produto?.data).toMatchObject({
+      sku: 'SKU1',
+      pesoLiquidoKg: 0.5,
+      pesoBrutoKg: 0.6,
+      alturaCm: 5,
+      larguraCm: 30,
+      profundidadeCm: 20,
+    });
+  });
+
+  // The carve-outs are the reason the flag is narrow rather than "overwrite".
+  it('never touches descricao, publicado or the categoria', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: { ...stored, publicado: false, categoriaProdutoOuterRef: 'documents/c/1' },
+        existingExtra: { descricao: 'texto do operador' },
+        categoriaOuterRef: 'documents/c/2',
+        options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverDadosProduto: true },
+      }),
+    );
+    expect(plan.produto?.data.publicado).toBeUndefined();
+    expect(plan.produto?.data.categoriaProdutoOuterRef).toBeUndefined();
+    expect(plan.extra?.descricao).toBeUndefined();
+  });
+
+  it('is inert while atualizarProdutoPai is off', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: stored,
+        options: {
+          ...DEFAULT_IMPORT_OPTIONS,
+          atualizarProdutoPai: false,
+          sobrescreverDadosProduto: true,
+        },
+      }),
+    );
+    expect(plan.produto?.data).toEqual({ ultimaModificacao: 1_700_000_000_000 });
+  });
+
+  // Absence is not an instruction to erase: ML omitting a field must never null
+  // out the ERP's copy, whatever the flag says.
+  it('never writes a null over a stored value', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: stored,
+        mapped: mapped({ alturaCm: null, pesoBrutoKg: null }),
+        options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverDadosProduto: true },
+      }),
+    );
+    expect(plan.produto?.data.alturaCm).toBeUndefined();
+    expect(plan.produto?.data.pesoBrutoKg).toBeUndefined();
+  });
+});
+
+/* ------------------------ dimension rollup (#1087) ------------------------- */
+
+const medidas = (over: Partial<FilhoMedidas> = {}): FilhoMedidas => ({
+  produtoId: 'filho1',
+  pesoLiquidoKg: 0.5,
+  pesoBrutoKg: 0.6,
+  alturaCm: 5,
+  larguraCm: 30,
+  profundidadeCm: 20,
+  ...over,
+});
+
+const PAI_VAZIO = {
+  pesoLiquidoKg: null,
+  pesoBrutoKg: null,
+  alturaCm: null,
+  larguraCm: null,
+  profundidadeCm: null,
+};
+
+describe('rollupDimensoesDosFilhos', () => {
+  it('fills a blank parent from its only child', () => {
+    expect(rollupDimensoesDosFilhos(PAI_VAZIO, [medidas()])).toEqual({
+      pesoLiquidoKg: 0.5,
+      pesoBrutoKg: 0.6,
+      alturaCm: 5,
+      larguraCm: 30,
+      profundidadeCm: 20,
+    });
+  });
+
+  it('does nothing when the parent already has everything', () => {
+    expect(rollupDimensoesDosFilhos(medidas(), [medidas({ alturaCm: 77 })])).toBeNull();
+  });
+
+  // Fill-BLANK-only: a measurement the operator typed on the parent stands, even
+  // beside a child that disagrees.
+  it('fills only the blanks and never replaces a parent value', () => {
+    const patch = rollupDimensoesDosFilhos({ ...PAI_VAZIO, alturaCm: 77 }, [
+      medidas({ alturaCm: 5 }),
+    ]);
+    expect(patch).toEqual({
+      pesoLiquidoKg: 0.5,
+      pesoBrutoKg: 0.6,
+      larguraCm: 30,
+      profundidadeCm: 20,
+    });
+  });
+
+  it('ignores a child with an incomplete or zero set', () => {
+    expect(rollupDimensoesDosFilhos(PAI_VAZIO, [medidas({ larguraCm: null })])).toBeNull();
+    expect(rollupDimensoesDosFilhos(PAI_VAZIO, [medidas({ profundidadeCm: 0 })])).toBeNull();
+    expect(rollupDimensoesDosFilhos(PAI_VAZIO, [])).toBeNull();
+  });
+
+  // A child carrying only a NET weight is exactly what `dimensoesDoPacote` falls
+  // back on, so requiring pesoBrutoKg would reject the children this exists for.
+  it('accepts a donor with no gross weight', () => {
+    expect(rollupDimensoesDosFilhos(PAI_VAZIO, [medidas({ pesoBrutoKg: null })])).toEqual({
+      pesoLiquidoKg: 0.5,
+      alturaCm: 5,
+      larguraCm: 30,
+      profundidadeCm: 20,
+    });
+  });
+
+  // ⚠️ The donor is chosen by produtoId ORDER, not by array position, so the
+  // parent's box cannot flip between re-imports when ML returns the variations
+  // in a different order. Both arrays hold the same children; only the order
+  // differs, and the numbers differ per child so a position-based pick shows up.
+  it('picks the same donor whatever order the caller collected the children in', () => {
+    const a = medidas({ produtoId: 'aaa', alturaCm: 5, larguraCm: 30, profundidadeCm: 20 });
+    const b = medidas({ produtoId: 'bbb', alturaCm: 8, larguraCm: 88, profundidadeCm: 88 });
+    const esperado = {
+      pesoLiquidoKg: 0.5,
+      pesoBrutoKg: 0.6,
+      alturaCm: 5,
+      larguraCm: 30,
+      profundidadeCm: 20,
+    };
+    expect(rollupDimensoesDosFilhos(PAI_VAZIO, [a, b])).toEqual(esperado);
+    expect(rollupDimensoesDosFilhos(PAI_VAZIO, [b, a])).toEqual(esperado);
+  });
+
+  it('does not mutate the array it was handed', () => {
+    const filhos = [medidas({ produtoId: 'zzz' }), medidas({ produtoId: 'aaa' })];
+    rollupDimensoesDosFilhos(PAI_VAZIO, filhos);
+    expect(filhos.map((f) => f.produtoId)).toEqual(['zzz', 'aaa']);
+  });
+
+  // ⚠️ Every axis from ONE child. Mixing them would invent a box no variation
+  // has, and ML rejects a partial/unrealistic package outright.
+  it('takes every axis from the FIRST usable child, never mixing donors', () => {
+    const patch = rollupDimensoesDosFilhos(PAI_VAZIO, [
+      medidas({ produtoId: 'incompleto', alturaCm: null, larguraCm: 111 }),
+      medidas({ produtoId: 'a', alturaCm: 5, larguraCm: 30, profundidadeCm: 20 }),
+      medidas({ produtoId: 'b', alturaCm: 8, larguraCm: 88, profundidadeCm: 88 }),
+    ]);
+    expect(patch).toEqual({
+      pesoLiquidoKg: 0.5,
+      pesoBrutoKg: 0.6,
+      alturaCm: 5,
+      larguraCm: 30,
+      profundidadeCm: 20,
+    });
+  });
+});
+
+describe('medidasEfetivas', () => {
+  it('lays the plan patch over the stored doc', () => {
+    expect(medidasEfetivas({ alturaCm: 1, larguraCm: 2 }, { alturaCm: 9 })).toEqual({
+      pesoLiquidoKg: null,
+      pesoBrutoKg: null,
+      alturaCm: 9,
+      larguraCm: 2,
+      profundidadeCm: null,
+    });
+  });
+
+  // ⚠️ A `??` fold here would report the STALE stored value for a field the plan
+  // just wrote null to — which is exactly what the parent create path writes
+  // when ML reported no package.
+  it('honours an explicit null in the patch instead of falling back', () => {
+    expect(medidasEfetivas({ alturaCm: 1 }, { alturaCm: null }).alturaCm).toBeNull();
+  });
+
+  it('ignores non-numeric junk on either side', () => {
+    expect(medidasEfetivas({ alturaCm: '5' }, null).alturaCm).toBeNull();
+    expect(medidasEfetivas(null, null)).toEqual(PAI_VAZIO);
   });
 });

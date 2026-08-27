@@ -157,6 +157,7 @@ const MIGRATION_IMPORT_OPTIONS: ImportOptions = {
   importarPreco: false,
   sobrescreverPreco: false,
   atualizarProdutoPai: false,
+  sobrescreverDadosProduto: false,
   importarFotos: false,
   importarCategorias: false,
 };

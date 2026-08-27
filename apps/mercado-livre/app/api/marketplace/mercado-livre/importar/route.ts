@@ -95,6 +95,12 @@ function sanitizeOptions(v: unknown): Record<string, boolean> | undefined {
     'sobrescreverEstoque',
     'importarPreco',
     'sobrescreverPreco',
+    // ⚠️ `atualizarProdutoPai` was missing here while the MASS route accepted it
+    // (#1087), so unchecking it in the mass dialog gave a genuinely different
+    // produto-field behaviour than any single import could produce. Both routes
+    // now feed the same `ImportOptions`.
+    'atualizarProdutoPai',
+    'sobrescreverDadosProduto',
     'importarFotos',
     'importarCategorias',
   ];
