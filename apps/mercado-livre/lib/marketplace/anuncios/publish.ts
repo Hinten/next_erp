@@ -544,7 +544,39 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     const fotos = fotosForVariacao(child.data.fotos, produto.fotos, child.data.variacoesUid);
     const resolved = await resolvePictures(deps, fotos, null, pictureMemo);
     if (resolved.pictures.length === 0) continue; // mapper inherits the parent set
-    variations[i]!.pictureIds = resolved.pictures.map((p) => p.id);
+    const ids = resolved.pictures.map((p) => p.id);
+    // ⚠️ #1087: under User Products the MEMBER is the listing — the parent set
+    // is not one — so the chart photo has to ride here too. It rode only the
+    // parent set, and `member.pictureIds ?? parentPictureIds` means any produto
+    // whose photos are TAGGED PER VARIANTE gives every member a non-empty own
+    // set and loses the chart image entirely. Measured: a member published with
+    // 3 pictures and no chart, the photo uploaded and cached either way.
+    //
+    // ⚠️ Added HERE rather than by handing `tabela.foto` to the member's own
+    // `resolvePictures` call, and the reason is the CAP: that parameter carries
+    // the PARENT rule, which appends the chart photo past `MAX_PICTURES` (an
+    // 11th). A member needs the legacy VARIATION rule instead. Mutation-proven
+    // — routing it through that parameter publishes an 11-picture member.
+    //
+    // The `continue` above is left untouched: a member that resolved nothing
+    // inherits `parentPictureIds`, which already carries the chart photo. (Both
+    // placements happen to agree there today — a member resolves zero pictures
+    // only when the produto has no resolvable fotos at all, and then the parent
+    // set IS the chart photo alone — so that is a property of the current
+    // `fotosForVariacao`, not a guarantee to lean on.)
+    if (listingModel === 'user-products' && tabela.foto) {
+      const chart = await resolveOnePicture(deps, tabela.foto, pictureMemo);
+      if (chart && !ids.includes(chart.id)) {
+        // ⚠️ At the cap the LAST slot is REPLACED, never appended — the legacy
+        // VARIATION rule. Only the parent set takes the liberty of an 11th
+        // picture (ML accepts 12); a member stays within MAX_PICTURES. Dropping
+        // it or overflowing are both worse than losing the tenth photo.
+        if (ids.length >= MAX_PICTURES) ids[MAX_PICTURES - 1] = chart.id;
+        else ids.push(chart.id);
+        resolved.pictureSources.set(chart.id, chart.arquivoId);
+      }
+    }
+    variations[i]!.pictureIds = ids;
     // Feed the dead-picture self-heal: a purged child picture id must be
     // strippable from its Arquivo cache too, or every retry fails identically.
     for (const [mlId, arquivoId] of resolved.pictureSources) pictureSources.set(mlId, arquivoId);
@@ -1377,8 +1409,13 @@ async function findVariacaoLink(
  * (the old app's shape), so a re-publish reuses the cached id. When the
  * produto's tabela de medidas carries a chart photo (`tabelaFoto`), it rides
  * as one EXTRA picture APPENDED after the produto fotos — the legacy parent
- * flow appended it even at 10 produto fotos (an 11th picture; ML accepts 12
- * — only the legacy VARIATION lists replaced their last slot).
+ * flow appended it even at 10 produto fotos (an 11th picture; ML accepts 12).
+ *
+ * ⚠️ `tabelaFoto` is the PARENT-set rule only. A User-Products member gets the
+ * chart photo from the caller instead, under the legacy VARIATION rule —
+ * replace the last slot at the cap rather than reach an 11th. Passing it here
+ * for a member would also break the inherit path; see the ⚠️ at the per-member
+ * loop in {@link publishProduto} (#1087).
  */
 async function resolvePictures(
   deps: PublishDeps,
