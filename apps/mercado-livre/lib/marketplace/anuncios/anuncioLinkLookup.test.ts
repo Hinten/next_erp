@@ -18,6 +18,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  atributosParaDiff,
   resolverLinkDoAnuncio,
   type AnuncioLinkPort,
   type LinkPaiCandidato,
@@ -200,5 +201,63 @@ describe('resolverLinkDoAnuncio — the misses, which the message has to tell ap
       achado: true,
       produtoId: RAIZ,
     });
+  });
+});
+
+describe('atributosParaDiff — the merge that must not manufacture its own phantom', () => {
+  const attr = (id: string | null, value: string): Record<string, unknown> =>
+    id == null ? { name: 'Característica', value_name: value } : { id, value_name: value };
+
+  it('⛔ an id on BOTH links appears exactly ONCE', () => {
+    // `printAttributes` deletes from its ML map on a match, so a duplicate id
+    // sends the second copy into the unmatched branch and prints
+    // `✗ … o Mercado Livre NÃO devolveu este atributo` for an attribute ML DID
+    // return. An imported family stores the axes on both links, so this is the
+    // common shape, not a corner case.
+    const merged = atributosParaDiff(
+      { attributes: [attr('BRAND', 'Delfrance'), attr('COLOR', 'Preto')] },
+      { raw: { attributes: [attr('COLOR', 'Preto'), attr('SIZE', 'M')] } },
+    );
+
+    expect(merged.map((a) => a.id)).toEqual(['BRAND', 'COLOR', 'SIZE']);
+  });
+
+  it('the MEMBER wins by id — the precedence buildUserProductItemPayload uses', () => {
+    const merged = atributosParaDiff(
+      { attributes: [attr('COLOR', 'valor da família')] },
+      { raw: { attributes: [attr('COLOR', 'valor do membro')] } },
+    );
+
+    expect(merged).toEqual([{ id: 'COLOR', value_name: 'valor do membro' }]);
+  });
+
+  it('keeps a member-only axis — the case the merge was added for', () => {
+    // A family PUBLISHED from the ERP never puts COLOR on the parent, so without
+    // the member's list every axis reads as `+ só no Mercado Livre`.
+    const merged = atributosParaDiff(
+      { attributes: [attr('BRAND', 'Delfrance')] },
+      { raw: { attributes: [attr('COLOR', 'Preto')] } },
+    );
+
+    expect(merged.map((a) => a.id)).toEqual(['BRAND', 'COLOR']);
+  });
+
+  it('preserves id-less custom characteristics from both sides', () => {
+    const merged = atributosParaDiff(
+      { attributes: [attr(null, 'do pai')] },
+      { raw: { attributes: [attr(null, 'do membro')] } },
+    );
+
+    expect(merged.map((a) => a.value_name)).toEqual(['do pai', 'do membro']);
+  });
+
+  it('a link with no member is its own attribute list, unchanged', () => {
+    const atributos = [attr('BRAND', 'Delfrance'), attr('COLOR', 'Preto')];
+
+    expect(atributosParaDiff({ attributes: atributos }, null)).toEqual(atributos);
+  });
+
+  it('tolerates the `.nullable()` both link schemas declare', () => {
+    expect(atributosParaDiff({ attributes: null }, { raw: {} })).toEqual([]);
   });
 });

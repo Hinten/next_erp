@@ -200,3 +200,47 @@ export function anuncioLinkPortFirestore(db: Firestore, integracaoId: string): A
     familiaPorMembro: (itemId) => resolveUpFamilyByMemberItemId(db, itemId, integracaoId),
   };
 }
+
+/** Stored `attributes`, tolerating the `.nullable()` both link schemas declare. */
+function atributosDoLink(raw: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(raw.attributes) ? (raw.attributes as Record<string, unknown>[]) : [];
+}
+
+/**
+ * The stored attributes to diff against ML, for a link that may be a UP family.
+ *
+ * ⚠️ A UNION KEYED BY `id`, never a concatenation, and that is not a style
+ * preference — `printAttributes` consumes its ML map destructively
+ * (`mlById.delete(id)` on a match), so a duplicate id makes the SECOND copy fall
+ * into the unmatched branch and print `✗ … o Mercado Livre NÃO devolveu este
+ * atributo` for an attribute ML returned perfectly well. That is the same
+ * phantom class this module exists to remove, one table further down.
+ *
+ * ⚠️ Both provenances are real, which is why neither list alone is right:
+ *  - a family PUBLISHED from the ERP keeps the axes only on the member link —
+ *    `buildParentAttributes` never puts COLOR/SIZE on the parent — so the parent
+ *    alone reports every axis as `+ só no Mercado Livre`;
+ *  - a family IMPORTED from ML has them on BOTH, because `itemPayload.ts` posts a
+ *    member's identity attributes in its ordinary `attributes` array and
+ *    `importCore.ts:445` then stores that array on the PARENT link while `:834`
+ *    stores the combinations on the MEMBER link.
+ *
+ * The member wins by id — the precedence `buildUserProductItemPayload` itself
+ * uses ("Family-level attributes lose to the member's own by id"). Parent order
+ * is preserved; member-only ids append.
+ *
+ * Id-less custom characteristics pass through untouched: they never reach
+ * `mlById`, so a duplicate there is a repeated informational line, not a finding.
+ */
+export function atributosParaDiff(
+  link: Record<string, unknown>,
+  membro: { raw: Record<string, unknown> } | null,
+): Record<string, unknown>[] {
+  const porId = new Map<string, Record<string, unknown>>();
+  const semId: Record<string, unknown>[] = [];
+  for (const a of [...atributosDoLink(link), ...(membro ? atributosDoLink(membro.raw) : [])]) {
+    if (typeof a.id === 'string' && a.id.length > 0) porId.set(a.id, a);
+    else semId.push(a);
+  }
+  return [...porId.values(), ...semId];
+}

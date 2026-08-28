@@ -59,6 +59,7 @@ import { getAdminFirestore } from '../lib/firebase/admin';
 import { loadMercadoLivreContext } from '../lib/marketplace/core/mercadoLivre';
 import {
   anuncioLinkPortFirestore,
+  atributosParaDiff,
   resolverLinkDoAnuncio,
 } from '../lib/marketplace/anuncios/anuncioLinkLookup';
 
@@ -167,11 +168,6 @@ function fmt(v: unknown): string {
   if (v === null) return 'null';
   if (typeof v === 'string') return v.length > 48 ? `${v.slice(0, 45)}…` : v;
   return JSON.stringify(v);
-}
-
-/** Stored `attributes`, tolerating the `.nullable()` the link schema declares. */
-function atributosDoLink(raw: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(raw.attributes) ? (raw.attributes as Record<string, unknown>[]) : [];
 }
 
 /** Arrays do not compare with `===`; render them so `row()` can see a difference. */
@@ -384,13 +380,10 @@ async function main(): Promise<void> {
   }
 
   // ⚠️ Under User Products the variation axes (cor, tamanho) live on the MEMBER
-  // link, not the parent. Diffing only the parent's attributes reports every one
-  // of them as `+ só no Mercado Livre` — a phantom finding per axis, per member.
-  const storedAttrs = [
-    ...atributosDoLink(hit.link),
-    ...(hit.membro != null ? atributosDoLink(hit.membro.raw) : []),
-  ];
-  printAttributes(item, storedAttrs);
+  // link, not the parent. A union keyed by id — see `atributosParaDiff`, which
+  // owns the reasoning and the tests; diffing either list alone manufactures a
+  // phantom, and concatenating them manufactures a different one.
+  printAttributes(item, atributosParaDiff(hit.link, hit.membro));
 
   const variacoes = mapMlVariationsToImport(item);
   if (variacoes.length > 0) {
