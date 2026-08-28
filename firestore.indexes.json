@@ -242,7 +242,8 @@
             }
           }
         }
-      ]
+      ],
+      "density": "SPARSE_ANY"
     },
     {
       "collectionGroup": "variacaoMercadoLivre",
