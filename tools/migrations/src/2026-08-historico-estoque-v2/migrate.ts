@@ -12,11 +12,11 @@ import { planHistoricoV2 } from './transform';
  * (ADR 0014, #695). See `transform.ts` for the field mapping and, above all,
  * for why a balanço's delta is sometimes left UNKNOWN instead of guessed.
  *
- *   pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 -- \
+ *   pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 \
  *     --project <project-id> --report-only  # pre-flight: counts the stored shapes
- *   pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 -- \
+ *   pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 \
  *     --project <project-id>            # dry-run: logs every row it would touch
- *   pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 -- \
+ *   pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 \
  *     --project <project-id> --apply    # write
  *
  * Run `--report-only` FIRST: a dry-run enumerates what the transform already

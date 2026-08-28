@@ -18,7 +18,7 @@
  * So this cannot be settled by reading. It is settled by sending both forms and
  * looking at what ML STORED.
  *
- *     pnpm --filter @delfrance/mercado-livre-app probe:package-format -- \
+ *     pnpm --filter @delfrance/mercado-livre-app probe:package-format \
  *       --project <id> --integracaoId <id> --itemId MLB000000000
  *     # ...and then, once the plan looks right, actually send them:
  *       --project <id> --integracaoId <id> --itemId MLB000000000 --executar

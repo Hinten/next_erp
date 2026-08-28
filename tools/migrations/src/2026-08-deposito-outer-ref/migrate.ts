@@ -7,11 +7,11 @@ import { planDepositoOuterRef } from './transform';
  * `documents/depositos/<id>` form. See `transform.ts` for the encodings and for
  * why an unrecognized ref is reported rather than rewritten.
  *
- *   pnpm --filter @delfrance/migrations migrate:deposito-outer-ref -- \
+ *   pnpm --filter @delfrance/migrations migrate:deposito-outer-ref \
  *     --project <project-id> --report-only  # pre-flight: counts the stored forms
- *   pnpm --filter @delfrance/migrations migrate:deposito-outer-ref -- \
+ *   pnpm --filter @delfrance/migrations migrate:deposito-outer-ref \
  *     --project <project-id>            # dry-run: logs every doc it would touch
- *   pnpm --filter @delfrance/migrations migrate:deposito-outer-ref -- \
+ *   pnpm --filter @delfrance/migrations migrate:deposito-outer-ref \
  *     --project <project-id> --apply    # write
  *
  * Run `--report-only` FIRST. A dry-run enumerates documents; the number that

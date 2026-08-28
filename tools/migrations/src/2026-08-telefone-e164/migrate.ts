@@ -17,11 +17,11 @@ import { buildUpdate, planTelefone, readNested } from './transform';
  * (`5511999998888`, digits only, no `+`). Idempotent, dry-run by default.
  * Runbook + the target ordering: `tools/migrations/telefone-e164.README.md`.
  *
- *   pnpm --filter @delfrance/migrations migrate:telefone-e164 -- \
+ *   pnpm --filter @delfrance/migrations migrate:telefone-e164 \
  *     --project <staging-id>                      # dry-run, clientes only
- *   pnpm --filter @delfrance/migrations migrate:telefone-e164 -- \
+ *   pnpm --filter @delfrance/migrations migrate:telefone-e164 \
  *     --project <staging-id> --apply              # write
- *   pnpm --filter @delfrance/migrations migrate:telefone-e164 -- \
+ *   pnpm --filter @delfrance/migrations migrate:telefone-e164 \
  *     --project <id> --target clientes,cheque     # pick targets explicitly
  *
  * ⚠️ Targets are OPT-IN and the default is `clientes` alone. The endereço

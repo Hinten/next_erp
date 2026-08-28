@@ -68,9 +68,23 @@ const PATHSPECS = [
  * the separator be a flag rather than a command. `[^ ]` before the separator keeps
  * it anchored to a real argument list rather than an empty match.
  */
-const PATTERN = 'pnpm .*[^ ] -- -';
+const PATTERN = [
+  // (a) flags on the SAME line. ` +` rather than one literal space: `--   --project`
+  //     is a real spelling and hid from the single-space version of this pattern.
+  'pnpm .*[^ ] -- +-',
+  // (b) flags on the NEXT line, behind a shell continuation. `git grep` is
+  //     line-based, so ` -- \` shows no flag at all on the matched line — 24 of
+  //     these were live when only (a) existed. A trailing backslash after ` -- `
+  //     is never anything but a continuation, so matching the backslash is enough.
+  //     ⚠️ No `$` anchor: git's ERE does not treat it reliably inside this use.
+  'pnpm .*[^ ] -- +\\\\',
+];
 
-/** `git grep` is line-based, so `.` is the right wildcard — never a newline class. */
+/**
+ * `git grep` is line-based, so `.` is the right wildcard — never a newline class.
+ * An array is ORed into one `git grep` invocation, so the two spellings cost one
+ * spawn between them (see `lib/repo-scan.js` on why spawn count matters here).
+ */
 function scan(pattern, pathspecs = PATHSPECS) {
   return gitGrep({
     patterns: pattern,
@@ -94,17 +108,33 @@ describe('a documented pnpm invocation carries no `--` separator', () => {
 
   // ⚠️ The scan anchor above proves the SURFACE is read; it does not prove
   //    `PATTERN` still describes the defect, because it greps a different string.
-  //    Replacing `PATTERN` with nonsense left all three tests green until this
+  //    Replacing `PATTERN` with nonsense left every other test green until this
   //    case existed — the exact vacuity `lib/repo-scan.js` warns about, in the
-  //    guard meant to prevent it. ERE and JS agree on a pattern this simple.
-  it('the PATTERN itself still recognises the defect', () => {
-    const re = new RegExp(PATTERN);
-    expect(re.test('pnpm --filter @delfrance/migrations migrate:x -- --project <id>')).toBe(true);
+  //    guard meant to prevent it. ERE and JS agree on patterns this simple.
+  //
+  // ⚠️ EVERY spelling gets a literal here, and that is not thoroughness for its
+  //    own sake: the first version of this guard shipped with only (a), and a
+  //    one-space assumption it SHARED with the sweep that preceded it — so the
+  //    guard could not catch what the sweep had missed, and a green CI certified
+  //    a tree with 25 live offenders in it. A spelling with no literal below is a
+  //    spelling nothing is checking.
+  it('every PATTERN spelling still recognises the defect', () => {
+    const hits = (line) => PATTERN.some((p) => new RegExp(p).test(line));
+    // (a) same line, one space — the original spelling.
+    expect(hits('pnpm --filter @delfrance/migrations migrate:x -- --project <id>')).toBe(true);
     // Single-dash too: `test -- -u` is how the snapshot hints were broken, and a
     // pattern that only saw `-- --` would have missed both of them.
-    expect(re.test('pnpm --filter @delfrance/rules-gen test -- -u')).toBe(true);
-    expect(re.test('pnpm --filter @delfrance/web dev')).toBe(false);
-    expect(re.test('dotenv -e ../../.env.local -- tsx scripts/x.ts')).toBe(false);
+    expect(hits('pnpm --filter @delfrance/rules-gen test -- -u')).toBe(true);
+    // (a') MORE than one space — `LIVE-TEST.md:247` was live behind exactly this.
+    expect(hits('pnpm --filter @delfrance/mercado-livre-app probe:x --   --project <id>')).toBe(
+      true,
+    );
+    // (b) shell continuation — 24 lines were live behind this one, six of them the
+    //     sibling docblock of a README whose own copy had already been corrected.
+    expect(hits('pnpm --filter @delfrance/migrations migrate:telefone-e164 -- \\')).toBe(true);
+
+    expect(hits('pnpm --filter @delfrance/web dev')).toBe(false);
+    expect(hits('dotenv -e ../../.env.local -- tsx scripts/x.ts')).toBe(false);
   });
 
   it('⛔ no `pnpm … -- --flag` anywhere — it dies on its own separator', () => {

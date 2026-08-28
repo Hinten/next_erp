@@ -29,9 +29,9 @@ import { emptyStats, formatReport, record as recordShape, type ShapeStats } from
  * no-ops), dry-run by default. Runbook + rationale:
  * `tools/migrations/pedido-pagamento-micros.README.md`.
  *
- *   pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros -- \
+ *   pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros \
  *     --project <staging-id>            # dry-run: logs intended changes
- *   pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros -- \
+ *   pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros \
  *     --project <staging-id> --apply    # write
  */
 

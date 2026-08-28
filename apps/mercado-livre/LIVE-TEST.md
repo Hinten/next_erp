@@ -244,7 +244,7 @@ the only one that is a real ML response, say the unit belongs there. A change he
 breaks a working publish path on contradictory documentation.
 
 ```bash
-pnpm --filter @delfrance/mercado-livre-app probe:package-format --   --project <id> --integracaoId <id> --itemId MLB000000000
+pnpm --filter @delfrance/mercado-livre-app probe:package-format --project <id> --integracaoId <id> --itemId MLB000000000
 ```
 
 Dry-run by default; add `--executar` to actually send. ⚠️ `--executar` and `--forcar`

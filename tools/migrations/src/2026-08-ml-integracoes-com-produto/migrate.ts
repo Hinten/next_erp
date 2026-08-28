@@ -20,9 +20,9 @@ import {
  * Idempotent, dry-run by default. Runbook:
  * `tools/migrations/ml-integracoes-com-produto.README.md`.
  *
- *   pnpm --filter @delfrance/migrations migrate:ml-integracoes-com-produto -- \
+ *   pnpm --filter @delfrance/migrations migrate:ml-integracoes-com-produto \
  *     --project <id>            # dry-run: log every change it WOULD make
- *   pnpm --filter @delfrance/migrations migrate:ml-integracoes-com-produto -- \
+ *   pnpm --filter @delfrance/migrations migrate:ml-integracoes-com-produto \
  *     --project <id> --apply    # write
  *
  * ## Why it has to exist
