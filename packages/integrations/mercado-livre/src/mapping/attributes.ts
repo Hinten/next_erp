@@ -95,6 +95,17 @@ export function attrWeightKg(pesoKg: number): MlAttribute {
  * the two would drift with nothing able to catch it. The parameter is structural
  * rather than the imported type because this package must not depend on
  * `@delfrance/schemas`.
+ *
+ * ⚠️ **The `' cm'` / `' g'` suffixes are UNCONFIRMED, and not to be "fixed" on the
+ * strength of ML's FAQ (#1348).** *Itens — Atributos de envio e dimensões* (updated
+ * 2026-08-14) contradicts itself on one page: one answer asks for «valores
+ * numéricos **com unidades**», another for «strings numéricos **puros, sem texto de
+ * unidade**… enviar `"69"` e não `"69 cm"`». The ML error quoted above is a real
+ * response and says the unit belongs here; production agrees, because this format
+ * publishes today. So the current form stays until a measurement says otherwise:
+ * run `probe:package-format` (`LIVE-TEST.md` §4.7) and write the verdict, with the
+ * date, into this docblock — the FAQ will still contradict itself next year, and
+ * the measurement is the only thing that outranks it for the next reader.
  */
 export function attrPackageDimensions(pacote: {
   alturaCm: number;

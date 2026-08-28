@@ -221,6 +221,67 @@ Two known gaps — confirm the blast radius rather than discover it later:
 ⚠️ A failed publish latches the link to `estado: 'E'`, which **freezes the stock sender**
 until an `items` webhook or a manual **Reverificar anúncio**.
 
+### 4.7 — Settle #1348 (the `SELLER_PACKAGE_*` value format)
+
+**Three sources disagree, and ML's own FAQ contradicts itself on the same page.**
+Reading cannot settle this; one measurement can.
+
+| source                                                                                  | says                                                                               |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| FAQ _Itens — Atributos de envio e dimensões_, answer 1 (upd. 2026-08-14)                | «valores numéricos **com unidades**» — cm and g                                    |
+| the same FAQ, answer 4                                                                  | «strings numéricos **puros, sem texto de unidade**… enviar `"69"` e não `"69 cm"`» |
+| a live ML error we captured (`item.attribute.invalid.format.seller.package.dimensions`) | _"with `'cm'` as the unit for dimensions and `'g'` as the unit for weight"_        |
+| **production**                                                                          | `attrPackageDimensions` sends `"12 cm"` and publishes succeed today                |
+
+The same FAQ answer also claims `sale_terms.MANUFACTURING_TIME` must not be null or
+absent or _"a validação bloqueia a publicação"_. `grep -rn "sale_terms"` over
+`packages/integrations/mercado-livre/src` and `apps/mercado-livre/lib` returns
+**nothing** — we never send it — and publishes work. That is the same "No `sale_terms`
+at all" gap the table above already names.
+
+⚠️ **Do not change the format on the FAQ's word.** Two of the four sources, including
+the only one that is a real ML response, say the unit belongs there. A change here
+breaks a working publish path on contradictory documentation.
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app probe:package-format --   --project <id> --integracaoId <id> --itemId MLB000000000
+```
+
+Dry-run by default; add `--executar` to actually send. ⚠️ `--executar` and `--forcar`
+are flags that take **no value** — `--executar=false` and `--executar false` are both
+REFUSED rather than read as "on", so a dry-run intent can never become a live send.
+
+`--itemId` is required and the script **never creates a listing** — make one with the
+app's **Anúncio de teste** button first (§0: ten test users per account, forever). It
+runs all three variants against that ONE listing and restores the package attributes
+**and `sale_terms`** from a `finally`.
+
+⛔ **What the restore cannot undo, so pick the listing accordingly.** Re-sending is
+the only lever `PUT /items` offers, so a field the listing never had cannot be put
+back to absent. If your test listing has no `SELLER_PACKAGE_*` yet, the last
+variant's values stay on it; if it has no `sale_terms`, variant 3 leaves a
+`MANUFACTURING_TIME` — buyer-visible handling time — for you to clear by hand. The
+script prints both warnings with the item id.
+
+⚠️ **Judge by what ML STORED, never by the status code.** A 200 that silently drops
+the attribute is exactly how a produto becomes "published successfully" with no
+package on it. The script re-reads with `GET /items` after every variant for that
+reason.
+
+| #     | Variant sent                                                  | Assert                                                                                             | Result |
+| ----- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------ |
+| 4.7.1 | `atual` — `"12 cm"` / `"1539 g"` (what production sends)      | accepted, and all four ids come back **present** with the value ML kept                            |        |
+| 4.7.2 | `numerico` — `"12"` / `"1539"` (the FAQ's answer 4)           | accepted or refused? and if accepted, does ML store the unit back, drop it, or drop the attribute? |        |
+| 4.7.3 | `numerico+prazo` — same, plus `sale_terms.MANUFACTURING_TIME` | does adding it change anything at all?                                                             |        |
+
+The axes are sent **distinct** (12 / 23 / 34) so a permutation cannot hide in the
+read-back — `attrPackageDimensions` crosses them deliberately
+(`SELLER_PACKAGE_LENGTH←larguraCm`) and equal values would make that invisible.
+
+**Then write the verdict down in two places:** here, and in
+`attrPackageDimensions`' docblock with the date. The FAQ will still contradict itself
+next year; the measurement is the only thing that outranks it for the next reader.
+
 ---
 
 ## 5. Phase 4 — the round-trip (the core question)
@@ -748,14 +809,15 @@ inside this run** — the run's job is evidence.
 
 ## 11. Issues this run settles
 
-| Issue                           | Outcome                                                                                                                                                 | Result |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| #1087                           | closed by completing the run                                                                                                                            |        |
-| #831 — partial `variations` PUT | closable — §5.5                                                                                                                                         |        |
-| #758 — PDF label branch         | closable — §7.2                                                                                                                                         |        |
-| #957 — shipments `x-format-new` | **closable** — §7.3 (the code already merged; only the live call is left)                                                                               |        |
-| #706 — multiorigin contas       | closable once §2.3 lands on a `warehouse_management`-only conta AND Phase 5 sends through it; otherwise record which of the three §2.3 outcomes you got |        |
-| #898, #1083, #1072, #707        | observed only — record evidence                                                                                                                         |        |
+| Issue                             | Outcome                                                                                                                                                 | Result |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| #1087                             | closed by completing the run                                                                                                                            |        |
+| #831 — partial `variations` PUT   | closable — §5.5                                                                                                                                         |        |
+| #758 — PDF label branch           | closable — §7.2                                                                                                                                         |        |
+| #957 — shipments `x-format-new`   | **closable** — §7.3 (the code already merged; only the live call is left)                                                                               |        |
+| #706 — multiorigin contas         | closable once §2.3 lands on a `warehouse_management`-only conta AND Phase 5 sends through it; otherwise record which of the three §2.3 outcomes you got |        |
+| #1348 — `SELLER_PACKAGE_*` format | **closable** — §4.7. Run `probe:package-format`; the deliverable is a VERDICT written into `attrPackageDimensions`, not a code change                   |        |
+| #898, #1083, #1072, #707          | observed only — record evidence                                                                                                                         |        |
 
 ---
 
