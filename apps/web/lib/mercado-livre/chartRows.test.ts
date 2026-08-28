@@ -142,6 +142,39 @@ describe('seedRows', () => {
     expect(seedRows(chart, columns)[0]!.cells.EQUIV?.valueList).toEqual([{ id: '1', name: '38' }]);
   });
 
+  it('localizes a measurement stored with a dot', () => {
+    // Charts written before the AI localised its own answers hold both
+    // spellings, so the grid showed `10.5` on one row and `10,5` on the next.
+    const chart: MlSizeChart = {
+      ...storedChart,
+      rows: [
+        {
+          varianteUid: null,
+          id: 'x:1',
+          attributes: [
+            { id: 'SIZE', value_name: 'M' },
+            { id: 'CHEST_CIRCUMFERENCE_FROM', value_name: '90.5', unit_id: 'cm' },
+          ],
+        },
+      ],
+    };
+
+    expect(seedRows(chart, columns)[0]!.cells.CHEST_CIRCUMFERENCE_FROM?.value_name).toBe('90,5');
+  });
+
+  it('does NOT localize a dot in a non-numeric part', () => {
+    // ANTI-VACUITY: the rewrite is scoped to `kind === 'number'`, and the size
+    // label is free text — `'N.5'` is a name, not a measurement.
+    const chart: MlSizeChart = {
+      ...storedChart,
+      rows: [
+        { varianteUid: null, id: 'x:1', attributes: [{ id: 'SIZE', value_name: 'Tam. 1.5' }] },
+      ],
+    };
+
+    expect(seedRows(chart, columns)[0]!.cells.SIZE?.value_name).toBe('Tam. 1.5');
+  });
+
   it('is empty for a chart with no rows', () => {
     expect(seedRows(null, columns)).toEqual([]);
   });

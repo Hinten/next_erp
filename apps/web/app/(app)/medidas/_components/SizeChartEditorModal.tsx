@@ -58,6 +58,10 @@ import {
 import { SizeChartConflictError } from '@/lib/mercado-livre/chartConflict';
 import { buildChartAiGrid, chartAiGridIsFillable } from '@/lib/mercado-livre/chartAiGrid';
 import {
+  type MedidaSugestaoAjustada,
+  nudgeDuplicateMeasures,
+} from '@/lib/mercado-livre/chartDedupe';
+import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
   type MercadoLivreChartValidationError,
@@ -492,8 +496,31 @@ export function SizeChartEditorModal({
     return true;
   }
 
+  /**
+   * The answer the operator actually reviews: unapplicable cells filtered out,
+   * then Mercado Livre's duplicate rule cleared off it.
+   *
+   * ⚠️ Derived HERE rather than inside `applyAi`, so the "Sugerido" column and
+   * the cell that lands in the grid are the same string. Offsetting at apply
+   * time would show `50` in the modal and write `50,01` into the row.
+   *
+   * ⚠️ Accepted edge: the offsets are computed against the WHOLE answer, so
+   * unticking the row that held the base value leaves the other one on a
+   * needless `50,01`. Re-deriving per tick would make the numbers move while
+   * the operator is reading them, which is worse than a spare hundredth.
+   */
+  const aiRevisado = useMemo(() => {
+    if (aiResult == null) return null;
+    return {
+      ...aiResult,
+      sugestoes: nudgeDuplicateMeasures(aiResult.sugestoes.filter(aiApplicable), rows, allColumns),
+    };
+    // `aiApplicable` reads `partKindById`, which is derived from `allColumns`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiResult, rows, allColumns, partKindById]);
+
   /** Write the accepted cells in, reusing the same path a typed edit takes. */
-  function applyAi(aceitas: MercadoLivreMedidasSugestao['sugestoes']) {
+  function applyAi(aceitas: MedidaSugestaoAjustada[]) {
     const byRow = new Map<string, typeof aceitas>();
     for (const s of aceitas) {
       byRow.set(s.rowKey, [...(byRow.get(s.rowKey) ?? []), s]);
@@ -1062,11 +1089,7 @@ export function SizeChartEditorModal({
         key={aiRun}
         opened={aiOpen}
         onClose={() => setAiOpen(false)}
-        resultado={
-          aiResult == null
-            ? null
-            : { ...aiResult, sugestoes: aiResult.sugestoes.filter(aiApplicable) }
-        }
+        resultado={aiRevisado}
         rows={rows}
         columns={columns}
         mainAttributeId={effectiveMainId}

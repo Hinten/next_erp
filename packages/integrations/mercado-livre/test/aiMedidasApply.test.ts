@@ -211,15 +211,19 @@ describe('applyAiMedidas — what it drops', () => {
 });
 
 describe('applyAiMedidas — the decimal separator', () => {
-  it('rewrites a pt-BR comma decimal so measureStruct can parse it', () => {
-    // Brazilian size tables print commas, so the model reading one back verbatim
-    // is the expected case. `measureStruct` parses with a single comma→dot
-    // replace; a value it cannot parse is rejected at send time, per cell.
-    expect(apply({ P: { CHEST: '10,5' } })[0]?.value_name).toBe('10.5');
+  it('localizes a dot decimal so an AI cell looks like a typed one', () => {
+    // The grid stores measurements as strings and a pt-BR operator types
+    // `10,5`. This used to run the other way, on the false premise that
+    // `measureStruct` needed a dot — it opens with `.replace(',', '.')`.
+    expect(apply({ P: { CHEST: '10.5' } })[0]?.value_name).toBe('10,5');
   });
 
-  it('leaves a value that already uses a dot alone', () => {
-    expect(apply({ P: { CHEST: '10.5' } })[0]?.value_name).toBe('10.5');
+  it('leaves a value that already uses a comma alone', () => {
+    expect(apply({ P: { CHEST: '10,5' } })[0]?.value_name).toBe('10,5');
+  });
+
+  it('leaves a whole number alone', () => {
+    expect(apply({ P: { CHEST: '52' } })[0]?.value_name).toBe('52');
   });
 
   it('leaves an ambiguous thousands-separated string alone', () => {
@@ -228,8 +232,10 @@ describe('applyAiMedidas — the decimal separator', () => {
     expect(apply({ P: { CHEST: '1.234,5' } })[0]?.value_name).toBe('1.234,5');
   });
 
-  it('does NOT rewrite a comma in a non-numeric column', () => {
-    expect(apply({ P: { FIT: 'Justa, solta' } })[0]?.value_name).toBe('Justa, solta');
+  it('does NOT localize a dot in a non-numeric column', () => {
+    // ANTI-VACUITY: the guard is `column.kind === 'number'`, and without this
+    // case a rule applied to every column would pass every other case here.
+    expect(apply({ P: { FIT: 'Justa 1.5' } })[0]?.value_name).toBe('Justa 1.5');
   });
 });
 

@@ -11,6 +11,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
+import { localizarDecimal } from '@delfrance/core/decimal';
 
 import type { ChartCellValue, ChartRowDraft } from '@/lib/mercado-livre/chartRows';
 import { cellErrorKey } from '@/lib/mercado-livre/chartRows';
@@ -281,16 +282,23 @@ function PartInput({
         />
       );
     }
-    // `number` and `text` alike: a plain input. ML stores every measurement as
-    // a STRING and pt-BR operators type `10,5`, so a numeric widget that
-    // normalises the separator would silently rewrite what they entered.
+    // `number` and `text` alike: a plain input, NOT `DecimalInput`. ML stores
+    // every measurement as a STRING and echoes it back verbatim on the anúncio,
+    // so a widget that parses to `number | null` would erase the difference
+    // between `10,5` and `10,50`.
+    //
+    // The separator IS normalised, to the comma — on change rather than on blur,
+    // because "Enviar guia" is reachable straight from a focused field and a
+    // blur-only rule would ship the dot the operator never saw corrected. The
+    // swap is same-length, so the caret does not move while typing.
     return (
       <TextInput
         {...common}
         inputMode={part.kind === 'number' ? 'decimal' : 'text'}
         value={value?.value_name ?? ''}
         onChange={(e) => {
-          const next = e.currentTarget.value;
+          const raw = e.currentTarget.value;
+          const next = part.kind === 'number' ? localizarDecimal(raw) : raw;
           onChange({ value_id: null, value_name: next === '' ? null : next, valueList: null });
         }}
       />
