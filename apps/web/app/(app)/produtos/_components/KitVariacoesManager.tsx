@@ -111,10 +111,18 @@ export function KitVariacoesManager({
       );
       // Drop what we just persisted. A staged row's key is the child's doc id
       // (`VariationManager.stagedRowKey`) and a saved row's always was, so the
-      // written ids ARE the keys to release. Without this the entry outlives
-      // its save and every later produto save rewrites `componentesKit` — a
-      // full overwrite, so it would silently clobber whatever another writer
-      // put there in between. Unresolved entries stay staged.
+      // written ids are the keys to release — but only while the resolution is
+      // exact, i.e. `resolved[].id === key`. That is the normal case, NOT a
+      // guarantee: an empty-combo row that the `sameCombo([], [])` fallback in
+      // `resolveStagedKitVariacoes` sends to a legacy empty-combo SIBLING
+      // resolves to an id that is not its key, so its entry survives this
+      // release and re-clobbers that sibling on every later save. The root
+      // cause is that fallback, not this release.
+      //
+      // Releasing matters because without it EVERY entry outlives its save and
+      // every later produto save rewrites `componentesKit` — a full overwrite,
+      // so it silently clobbers whatever another writer put there in between.
+      // Unresolved entries stay staged.
       const flushed = new Set(resolved.map((r) => r.id));
       setStaged((s) => Object.fromEntries(Object.entries(s).filter(([key]) => !flushed.has(key))));
     };
