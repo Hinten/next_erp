@@ -14,33 +14,10 @@ import {
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { DELETE_MARK, DecimalInput } from '@delfrance/ui';
 import { FaixaTaxaFixaPesoEditor } from './FaixaTaxaFixaPesoEditor';
+import { FormulaAjuda } from './FormulaAjuda';
 import { TestarFormulaDialog } from './TestarFormulaDialog';
 import { rowFieldError, validatedIndices } from './editorErrors';
-
-/**
- * Characters the legacy formula input accepts (digits, the four arithmetic
- * operators, the decimal comma, parentheses, and the single-letter
- * variables). Mirrors the legacy `TextInputFormatter` allow-list —
- * `.old/packages/produtos/lib/src/pages/listaDePrecosCadastroView.dart:454`
- * (confirmed: no `.`, no `^` there either — legacy never let either through
- * its input formatter) — stripped on every change so an invalid character
- * never lands in the field to begin with.
- */
-const FORMULA_DISALLOWED_CHARS = /[^0-9+\-*/,CcTFLMIK()]/g;
-
-/**
- * `.` is the natural decimal separator a user types (`C*1.5`), but the
- * formula wire format — and this allow-list — only accepts the comma
- * (`evaluateFormula` itself does `replaceAll(',', '.')` before parsing). If
- * `.` were simply stripped by {@link FORMULA_DISALLOWED_CHARS} like any other
- * disallowed character, `C*1.5` would silently become `C*15`: still a
- * perfectly parseable formula, so no validation error ever surfaces — a
- * silent 10x price error. Auto-convert instead of dropping, so the user's
- * intended decimal survives (as `C*1,5`).
- */
-function normalizeFormulaInput(raw: string): string {
-  return raw.replaceAll('.', ',').replace(FORMULA_DISALLOWED_CHARS, '');
-}
+import { COEFFICIENTS, FORMULA_PADRAO, normalizeFormulaInput } from './formulaVariaveis';
 
 /**
  * One editable `FormulaCalculoPreco` row. Rows marked with `DELETE_MARK` stay
@@ -64,10 +41,16 @@ interface FormulaRow {
   [key: string]: unknown;
 }
 
-/** A blank formula — every numeric coefficient defaults to 0, faixas unset. */
+/**
+ * A new formula row: every numeric coefficient starts at 0, faixas unset, and
+ * `formula` pre-filled with {@link FORMULA_PADRAO} so the row demonstrates the
+ * syntax instead of opening empty. `limiar` deliberately stays 0 — it is the
+ * one value that has no sensible default, and the form schema's "Limiar deve
+ * ser maior que zero" is what tells the operator to supply it.
+ */
 const EMPTY_ROW: FormulaRow = {
   limiar: 0,
-  formula: '',
+  formula: FORMULA_PADRAO,
   taxaFixa: 0,
   custoFixo: 0,
   margemDeLucro: 0,
@@ -77,17 +60,6 @@ const EMPTY_ROW: FormulaRow = {
   marketing: 0,
   faixasTaxaFixaPeso: null,
 };
-
-/** The seven optional coefficients rendered in the grid (label + key). */
-const COEFFICIENTS: ReadonlyArray<{ key: keyof FormulaRow; label: string }> = [
-  { key: 'taxaFixa', label: 'Taxa fixa' },
-  { key: 'custoFixo', label: 'Custo fixo' },
-  { key: 'margemDeLucro', label: 'Margem de lucro' },
-  { key: 'comissaoMarketplace', label: 'Comissão marketplace' },
-  { key: 'imposto', label: 'Imposto' },
-  { key: 'frete', label: 'Frete' },
-  { key: 'marketing', label: 'Marketing' },
-];
 
 function toRows(value: unknown): FormulaRow[] {
   return Array.isArray(value) ? (value as FormulaRow[]) : [];
@@ -133,6 +105,9 @@ export function FormulaListEditor({
 
   const body = (
     <Stack gap="sm">
+      {/* Top level only. The category tab renders its own copy, so an editor
+          nested inside a category card must not repeat the whole legend. */}
+      {label && <FormulaAjuda />}
       {hint && (
         <Text size="xs" c="dimmed">
           {hint}
@@ -163,6 +138,7 @@ export function FormulaListEditor({
                 <TextInput
                   label="Fórmula"
                   aria-label={`Fórmula ${i + 1}${scope}`}
+                  placeholder={FORMULA_PADRAO}
                   value={row.formula ?? ''}
                   onChange={(e) =>
                     patchRow(i, {
@@ -216,13 +192,22 @@ export function FormulaListEditor({
               <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
                 {COEFFICIENTS.map((c) => (
                   <DecimalInput
-                    key={String(c.key)}
-                    label={c.label}
-                    ariaLabel={`${c.label} ${i + 1}${scope}`}
+                    key={c.key}
+                    label={`${c.label} (${c.simbolo})`}
+                    ariaLabel={`${c.label} (${c.simbolo}) ${i + 1}${scope}`}
                     value={(row[c.key] as number | undefined) ?? 0}
                     onChange={(n) => patchRow(i, { [c.key]: n ?? 0 })}
                     disabled={disabled || marked}
-                    decimalScale={2}
+                    // 4, not 2, and not 3: L/M/I/F/K are RATES, and plenty of
+                    // real ones need the fourth digit (Simples Nacional 4,65%
+                    // -> 0,0465). `/produtos/alterar-precos` already settled
+                    // this for the same five coefficients of the same
+                    // expression (`RegraForm.tsx:156-209`), so anything less
+                    // leaves two screens disagreeing about how precise a rate
+                    // may be. Harmless for the two money coefficients: with
+                    // `fixedDecimalScale` off this is a ceiling, not padding,
+                    // so R$ 1,23 still renders as "1,23".
+                    decimalScale={4}
                     allowNegative
                   />
                 ))}
