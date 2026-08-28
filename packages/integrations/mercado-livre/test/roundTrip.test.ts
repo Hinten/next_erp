@@ -31,7 +31,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { itemSchema, type MlItem } from '../src/types';
+import { itemSchema, type MlItem, type MlItemAttribute } from '../src/types';
 import { buildItemPayload, type BuildItemPayloadInput } from '../src/mapping/itemPayload';
 import { mapMlItemToImport } from '../src/mapping/importItem';
 import { mapMlVariationsToImport } from '../src/mapping/importVariations';
@@ -188,6 +188,110 @@ describe('round-trip: a simple produto survives publish → import', () => {
         expect.objectContaining({ id: 'MODEL', value_name: 'Basic' }),
       ]),
     );
+  });
+});
+
+/* ------------------ the ML echo that is NOT optimistic (#1346) -------------- */
+
+/** A measurement as the operator's editor stores it: number and unit APART. */
+const MEDIDA: MlAttribute = {
+  id: 'UNIT_VOLUME',
+  name: 'Volume da unidade',
+  value_name: '355',
+  unit_id: 'mL',
+};
+
+/**
+ * Rewrite one attribute the way a live `GET /items` actually answers it.
+ *
+ * Publish sends `value_name: '355'` + `unit_id: 'mL'`; `attributeToMercadoLivre`
+ * joins them to `'355 mL'` on the wire. ML then answers with that joined text,
+ * **drops `unit_id`**, sends **no root `value_struct`**, and states the split
+ * only under `values[0].struct`. Measured on MLB5146021467, 27/08/2026.
+ */
+function comoOMercadoLivreResponde(attr: MlItemAttribute): Record<string, unknown> {
+  const nome = attr.value_name;
+  const m = typeof nome === 'string' ? /^(-?\d+(?:\.\d+)?)\s+(\S+)$/.exec(nome) : null;
+  if (m == null) return { ...attr };
+  return {
+    ...attr,
+    value_name: nome,
+    unit_id: null,
+    value_struct: undefined,
+    values: [{ id: null, name: nome, struct: { number: Number(m[1]), unit: m[2] } }],
+  };
+}
+
+/**
+ * `mlEcho` above models the OPTIMISTIC provider — ML stores the payload verbatim
+ * — and that is deliberately the friendly case.
+ *
+ * ⚠️ It is also the reason #1346 hid here for so long: an echo that changes
+ * nothing can never produce the shape that breaks the reader. This one applies
+ * the ONE transform ML really does, so the composition below is publish → *the
+ * real response* → import.
+ */
+function mlEchoRealista(payload: Record<string, unknown>): MlItem {
+  const item = mlEcho(payload);
+  return itemSchema.parse({
+    ...item,
+    attributes: (item.attributes ?? []).map(comoOMercadoLivreResponde),
+  });
+}
+
+function publicarCom(attributes: MlAttribute[]): Record<string, unknown> {
+  return buildItemPayload(publishInput(PRODUTO, { attributes }));
+}
+
+function valorEnviado(payload: Record<string, unknown>, id: string): unknown {
+  const attrs = payload.attributes as Array<Record<string, unknown>>;
+  return attrs.find((a) => a.id === id)?.value_name;
+}
+
+describe('round-trip through the REAL ML response, not the optimistic echo (#1346)', () => {
+  const ATRIBUTOS = [...parentAttributes(PRODUTO), MEDIDA];
+  const publicado = publicarCom(ATRIBUTOS);
+  const importado = mapMlItemToImport(mlEchoRealista(publicado));
+
+  it('sends the pair joined, as it always has', () => {
+    expect(valorEnviado(publicado, 'UNIT_VOLUME')).toBe('355 mL');
+  });
+
+  it('recovers a number_unit attribute exactly as the operator entered it', () => {
+    expect(importado.attributes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'UNIT_VOLUME', value_name: '355', unit_id: 'mL' }),
+      ]),
+    );
+  });
+
+  it('⚠️ CONTROL — the produto dimensions still survive this echo', () => {
+    // The package attributes are rewritten by the same transform, so this proves
+    // the realistic echo did not simply break everything into passing.
+    expect(importado.alturaCm).toBe(PRODUTO.alturaCm);
+    expect(importado.larguraCm).toBe(PRODUTO.larguraCm);
+    expect(importado.profundidadeCm).toBe(PRODUTO.profundidadeCm);
+    expect(importado.pesoLiquidoKg).toBeCloseTo(PRODUTO.pesoLiquidoKg, 6);
+    expect(importado.pesoBrutoKg).toBeCloseTo(PRODUTO.pesoBrutoKg, 6);
+  });
+
+  /**
+   * ⛔ The regression this whole block exists for.
+   *
+   * `attributeToMercadoLivre` re-joins `value_name` + `unit_id`, so storing BOTH
+   * halves means the next publish sends `'355 mL mL'`, the one after
+   * `'355 mL mL mL'` — silently, on every republish, until ML rejects the value,
+   * by which time every republished listing carries it (#1087).
+   */
+  it('⛔ is a FIXED POINT: publish → import → publish → import never grows the unit', () => {
+    const medidaImportada = importado.attributes.filter((a) => a.id === 'UNIT_VOLUME');
+    const republicado = publicarCom([...parentAttributes(PRODUTO), ...medidaImportada]);
+
+    // The wire is where the growth would show, so assert it there FIRST.
+    expect(valorEnviado(republicado, 'UNIT_VOLUME')).toBe('355 mL');
+
+    const reimportado = mapMlItemToImport(mlEchoRealista(republicado));
+    expect(reimportado.attributes.filter((a) => a.id === 'UNIT_VOLUME')).toEqual(medidaImportada);
   });
 });
 
