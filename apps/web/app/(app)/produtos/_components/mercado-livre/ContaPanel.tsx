@@ -53,6 +53,8 @@ export interface ContaPanelProps {
   produtoMedidas: MedidasDoPacote | null;
   /** `extraData.marca` — same tier as `produtoCondicao`; null while it loads. */
   produtoMarca: string | null;
+  /** The produto's tabela de medidas; null when it names none, or while it loads. */
+  tabelaMedidas: { nome: string; chartsMap: Record<string, unknown> | null } | null;
   produtoFotoCount: number | null;
   /** The surrounding produto form holds unsaved edits. */
   produtoDirty: boolean;
@@ -106,6 +108,7 @@ export function ContaPanel({
   produtoCondicao,
   produtoMedidas,
   produtoMarca,
+  tabelaMedidas,
   produtoFotoCount,
   produtoDirty,
   carregandoGeral,
@@ -247,6 +250,7 @@ export function ContaPanel({
               produtoCondicao={produtoCondicao}
               produtoMedidas={produtoMedidas}
               produtoMarca={produtoMarca}
+              tabelaMedidas={tabelaMedidas}
               produtoFotoCount={produtoFotoCount}
               canWrite={canPublish}
               hasClient={hasClient}

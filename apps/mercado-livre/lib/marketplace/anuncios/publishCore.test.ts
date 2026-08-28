@@ -10,6 +10,7 @@ import {
   MercadoLivrePublishError,
   type PublishGrupoVariacao,
   type PublishProduto,
+  type TabelaBindingMotivo,
   assemblePublishInput,
   buildParentAttributes,
   combinationsFromVariacoes,
@@ -19,6 +20,7 @@ import {
   resolveCondition,
   resolveListingModel,
   resolvePrice,
+  sizeChartIssue,
 } from './publishCore';
 
 const produto: PublishProduto = {
@@ -910,6 +912,42 @@ describe('assemblePublishInput', () => {
     expect(sizes).toEqual([{ id: 'SIZE', value_name: 'M (38-40)' }]);
   });
 
+  it('a domain mismatch in a guia category BLOCKS the assembly, naming both domains', () => {
+    // The wiring: `sizeChartIssue`'s verdict has to reach the aggregate throw,
+    // or the pure function is correct and nothing acts on it.
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        sizeChartMotivo: {
+          codigo: 'dominio-divergente',
+          categoryId: 'MLB1398',
+          nome: 'Camiseta lisa infantil',
+          dominiosDaTabela: ['MLB-SHIRTS'],
+          dominioDaCategoria: 'MLB-T_SHIRTS',
+        },
+        categoriaUsaGuia: true,
+      }),
+    ).toThrow(/MLB-SHIRTS.*MLB-T_SHIRTS/);
+  });
+
+  it('the same mismatch in a category with NO guia assembles fine', () => {
+    // ⚠️ The control: without it, a refusal that fired unconditionally would
+    // still satisfy the test above.
+    expect(() =>
+      assemblePublishInput({
+        ...baseArgs,
+        sizeChartMotivo: {
+          codigo: 'dominio-divergente',
+          categoryId: 'MLB1398',
+          nome: 'Camiseta lisa infantil',
+          dominiosDaTabela: ['MLB-SHIRTS'],
+          dominioDaCategoria: 'MLB-T_SHIRTS',
+        },
+        categoriaUsaGuia: false,
+      }),
+    ).not.toThrow();
+  });
+
   it('no size chart → link attributes untouched (a persisted SIZE_GRID_ID survives)', () => {
     const input = assemblePublishInput({
       ...baseArgs,
@@ -1048,5 +1086,87 @@ describe('the BRAND id agrees across the two packages that cannot import each ot
   it('is a non-empty id no derived rule also claims', () => {
     expect(MARCA_ATTRIBUTE_ID.length).toBeGreaterThan(0);
     expect(ML_PRODUTO_DERIVED_ATTRIBUTE_IDS).not.toContain(MARCA_ATTRIBUTE_ID);
+  });
+});
+
+/**
+ * The local refusal for a tabela de medidas that bound no chart (#1087).
+ *
+ * ⚠️ Every case is asserted TWICE — once with `categoriaUsaGuia: true` (the
+ * refusal fires) and once with `false` (it does not). One direction alone is
+ * vacuous: a rule that always refused would satisfy the first sweep, and a rule
+ * that never refused would satisfy the second.
+ */
+describe('sizeChartIssue', () => {
+  const divergente: TabelaBindingMotivo = {
+    codigo: 'dominio-divergente',
+    categoryId: 'MLB1398',
+    nome: 'Camiseta lisa infantil',
+    dominiosDaTabela: ['MLB-SHIRTS'],
+    dominioDaCategoria: 'MLB-T_SHIRTS',
+  };
+
+  /** Every reason that must produce an issue in a category that uses a guia. */
+  const RECUSAVEIS: TabelaBindingMotivo[] = [
+    divergente,
+    { codigo: 'tabela-inexistente', tabMediId: 'tm-1' },
+    { codigo: 'tabela-sem-guias-nesta-conta', tabMediId: 'tm-1', nome: 'Camisetas' },
+    { codigo: 'categoria-sem-dominio', categoryId: 'MLB1398' },
+    {
+      codigo: 'guias-nao-enviadas',
+      categoryId: 'MLB1398',
+      dominioDaCategoria: 'MLB-T_SHIRTS',
+      nome: 'Camisetas',
+    },
+    {
+      codigo: 'sem-atributos-correspondentes',
+      categoryId: 'MLB1398',
+      dominioDaCategoria: 'MLB-T_SHIRTS',
+      nome: 'Camisetas',
+    },
+  ];
+
+  /** Reasons that are SILENT even where a guia is used, each for its own reason. */
+  const SILENCIOSOS: TabelaBindingMotivo[] = [
+    { codigo: 'vinculada', chartId: '7523235' },
+    // Not asking for a chart — shouting at every listing without one buries the
+    // message that matters.
+    { codigo: 'produto-sem-tabela' },
+    // `assemblePublishInput` already raises its own `categoria … não definida`.
+    { codigo: 'anuncio-sem-categoria', tabMediId: 'tm-1' },
+  ];
+
+  it('names BOTH domains on the live case — the sentence that is the whole fix', () => {
+    const issue = sizeChartIssue(divergente, true);
+    expect(issue).toContain('MLB-SHIRTS');
+    expect(issue).toContain('MLB-T_SHIRTS');
+    expect(issue).toContain('Camiseta lisa infantil');
+  });
+
+  it('every refusable reason produces a DISTINCT issue where the category uses a guia', () => {
+    const issues = RECUSAVEIS.map((m) => sizeChartIssue(m, true));
+    expect(issues.every((i) => i != null && i.length > 0)).toBe(true);
+    // Distinct, or two different problems would send the operator to the same
+    // place — which is the conflation this whole change exists to remove.
+    expect(new Set(issues).size).toBe(RECUSAVEIS.length);
+  });
+
+  it('refuses NOTHING where the category carries no guia — or was never asked', () => {
+    for (const motivo of [...RECUSAVEIS, ...SILENCIOSOS]) {
+      expect(sizeChartIssue(motivo, false)).toBeNull();
+      expect(sizeChartIssue(motivo, null)).toBeNull();
+      expect(sizeChartIssue(motivo, undefined)).toBeNull();
+    }
+  });
+
+  it('stays silent for the three reasons that are not this gate to report', () => {
+    for (const motivo of SILENCIOSOS) {
+      expect(sizeChartIssue(motivo, true)).toBeNull();
+    }
+  });
+
+  it('no motivo at all → nothing, whatever the category says', () => {
+    expect(sizeChartIssue(null, true)).toBeNull();
+    expect(sizeChartIssue(undefined, true)).toBeNull();
   });
 });

@@ -131,6 +131,48 @@ export interface PublishVariationChild {
   storedCombinations?: MlAttribute[];
 }
 
+/**
+ * Why the produto's tabela de medidas did — or did not — bind a chart.
+ *
+ * ⚠️ This exists because `loadTabelaBinding`'s four `{resolved: null}` exits
+ * were INDISTINGUISHABLE to every caller (#1087). Publish then omitted
+ * SIZE_GRID_ID and let ML answer `Attribute [SIZE_GRID_ID] is missing`, a
+ * message naming neither the tabela's domain nor the category's — so the one
+ * sentence that would have fixed it was never said, though the ERP held both
+ * values.
+ *
+ * ⚠️ Nine codes for four exits, because two of the exits are themselves
+ * conflations: `charts.length === 0 || !categoryId` mixes "no guia in this
+ * conta" with "the anúncio has no category", and `resolveSizeChart`'s null
+ * mixed a domain mismatch with a never-sent guia and with a scoring miss.
+ * Collapsing them would reproduce the conflation this is fixing.
+ *
+ * It lives HERE, not beside `loadTabelaBinding` in `publish.ts`, because
+ * `publish.ts` already imports this module — declaring it there would make the
+ * two files import each other.
+ */
+export type TabelaBindingMotivo =
+  | { codigo: 'vinculada'; chartId: string }
+  | { codigo: 'produto-sem-tabela' }
+  | { codigo: 'tabela-inexistente'; tabMediId: string }
+  | { codigo: 'tabela-sem-guias-nesta-conta'; tabMediId: string; nome: string }
+  | { codigo: 'anuncio-sem-categoria'; tabMediId: string }
+  | { codigo: 'categoria-sem-dominio'; categoryId: string }
+  | { codigo: 'guias-nao-enviadas'; categoryId: string; dominioDaCategoria: string; nome: string }
+  | {
+      codigo: 'dominio-divergente';
+      categoryId: string;
+      nome: string;
+      dominiosDaTabela: string[];
+      dominioDaCategoria: string;
+    }
+  | {
+      codigo: 'sem-atributos-correspondentes';
+      categoryId: string;
+      dominioDaCategoria: string;
+      nome: string;
+    };
+
 export interface AssemblePublishArgs {
   produto: PublishProduto;
   /** `extraData.condicao` (1 novo / 2 usado / 3 recondicionado) or null. */
@@ -168,6 +210,16 @@ export interface AssemblePublishArgs {
    * parity — ML itself rejects chart-required domains).
    */
   sizeChart?: ResolvedSizeChart | null;
+  /**
+   * Why {@link sizeChart} is what it is — see {@link sizeChartIssue}. Absent on
+   * a caller that does not resolve charts at all (nothing is refused then).
+   */
+  sizeChartMotivo?: TabelaBindingMotivo | null;
+  /**
+   * Does the category carry a `grid_id` attribute? `null` = never asked, which
+   * refuses nothing — a third value, deliberately distinct from `false`.
+   */
+  categoriaUsaGuia?: boolean | null;
   /**
    * The conta's `shipping.mode`, straight from the integração doc. Passed
    * through untouched and deliberately NOT validated here: whether a mode is
@@ -760,6 +812,88 @@ export function validateCombinationsAcrossChildren(
 }
 
 /**
+ * The blocking issue for a tabela de medidas that bound no chart — or `null`
+ * when there is nothing to say.
+ *
+ * ⚠️ **Gated on `categoriaUsaGuia === true`, and that gate is the whole safety
+ * argument.** A produto naming a tabela whose guias cannot bind is an operator
+ * error worth refusing, but only where a chart is meaningful: in a category
+ * with no `grid_id` attribute, ML accepts the listing without one and refusing
+ * would block a publish that works today. `null` (never asked) refuses nothing.
+ *
+ * ⚠️ `produto-sem-tabela` is silent by construction — a produto that names no
+ * tabela is not asking for a chart, and shouting at every fashion listing that
+ * has not got one would bury the message that matters. `anuncio-sem-categoria`
+ * is silent too: `assemblePublishInput` already raises its own
+ * `categoria … não definida` issue, and without a category there are no
+ * attributes to have judged `categoriaUsaGuia` from anyway.
+ *
+ * ⚠️ Every message names what the operator must GO AND CHANGE. The
+ * `dominio-divergente` one must carry BOTH domain strings: that sentence is the
+ * entire fix for the operator, and the ERP already holds both values — ML's own
+ * rejection (`Attribute [SIZE_GRID_ID] is missing`) names neither, which is why
+ * this exists at all (#1087).
+ */
+export function sizeChartIssue(
+  motivo: TabelaBindingMotivo | null | undefined,
+  categoriaUsaGuia: boolean | null | undefined,
+): string | null {
+  if (motivo == null || categoriaUsaGuia !== true) return null;
+  switch (motivo.codigo) {
+    case 'vinculada':
+    case 'produto-sem-tabela':
+    case 'anuncio-sem-categoria':
+      return null;
+    case 'tabela-inexistente':
+      return (
+        `a tabela de medidas vinculada a este produto não existe mais ` +
+        `(${motivo.tabMediId}) — vincule outra em Dados gerais do produto`
+      );
+    case 'tabela-sem-guias-nesta-conta':
+      return (
+        `a tabela de medidas "${motivo.nome}" não tem nenhuma guia nesta conta do ` +
+        `Mercado Livre — crie a guia em Medidas › Mercado Livre`
+      );
+    case 'categoria-sem-dominio':
+      return (
+        `esta categoria (${motivo.categoryId}) exige guia de tamanhos, mas o Mercado Livre ` +
+        `não informa o domínio dela — escolha outra categoria`
+      );
+    case 'guias-nao-enviadas':
+      return (
+        `a tabela de medidas "${motivo.nome}" tem guia no domínio ${motivo.dominioDaCategoria}, ` +
+        `mas ela nunca foi enviada ao Mercado Livre — envie a guia em Medidas › Mercado Livre`
+      );
+    case 'dominio-divergente': {
+      // ⚠️ The list can legitimately be EMPTY — a legacy guia may carry no
+      // `domain_id` at all (the read schema allows null). Naming a domain we do
+      // not have would be the same lie this whole change exists to stop, so that
+      // case says only what is true.
+      const daTabela = motivo.dominiosDaTabela;
+      if (daTabela.length === 0) {
+        return (
+          `a tabela de medidas "${motivo.nome}" não tem nenhuma guia no domínio ` +
+          `${motivo.dominioDaCategoria}, que é o exigido por esta categoria ` +
+          `(${motivo.categoryId}) — crie uma guia nesse domínio na tabela de medidas`
+        );
+      }
+      return (
+        `a tabela de medidas "${motivo.nome}" está no domínio ${daTabela.join(', ')}, mas esta ` +
+        `categoria (${motivo.categoryId}) exige ${motivo.dominioDaCategoria} — crie uma guia em ` +
+        `${motivo.dominioDaCategoria} na tabela de medidas, ou escolha uma categoria de ` +
+        `${daTabela[0]}`
+      );
+    }
+    case 'sem-atributos-correspondentes':
+      return (
+        `nenhuma guia da tabela de medidas "${motivo.nome}" no domínio ` +
+        `${motivo.dominioDaCategoria} corresponde aos atributos deste anúncio (marca, gênero) — ` +
+        `ajuste o atributo no anúncio ou na guia`
+      );
+  }
+}
+
+/**
  * Assemble the full `buildItemPayload` input — or throw
  * `MercadoLivrePublishError` listing every blocking issue at once.
  */
@@ -787,6 +921,11 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
     issues.push('tipo de anúncio não definido (listing_type_id)');
   }
   if (args.pictures.length === 0) issues.push('produto sem fotos');
+  // The size-chart binding's own verdict, raised BEFORE the ML call rather than
+  // waiting for `Attribute [SIZE_GRID_ID] is missing` to come back naming
+  // neither domain (#1087). Silent unless the category actually uses a guia.
+  const chartIssue = sizeChartIssue(args.sizeChartMotivo, args.categoriaUsaGuia);
+  if (chartIssue != null) issues.push(chartIssue);
 
   // Only stored attributes EVERY child can supply may be merged, or the
   // republish hands ML variations with divergent combination sets.
