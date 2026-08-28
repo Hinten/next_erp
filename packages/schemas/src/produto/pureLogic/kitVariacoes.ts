@@ -250,9 +250,18 @@ export interface RealKitChild {
  * claims the first combo-less child it meets, typically an unrelated legacy
  * sibling, and its map is written onto the WRONG document (`componentesKit` is
  * persisted as a full overwrite). Same guard, same reason, as
- * `reconcileStagedChildren` and the Mercado Livre import's sibling match. An
- * unmatched row resolves to nothing and stays staged, which is recoverable;
- * claiming a stranger is not.
+ * `reconcileStagedChildren` and the Mercado Livre import's sibling match.
+ *
+ * ⚠️ Be honest about the cost: an unmatched row is **dropped, not written** —
+ * and in `apps/web` its staged map is then lost, not parked. The only path that
+ * reaches this guard is a row whose document went somewhere else, i.e. the #117
+ * SKU id-reuse, where the flush updates the reused id and nothing ever exists
+ * under the row's key; the caller then clears the row and the entry becomes
+ * unreachable. That is still the better trade — the old fallback wrote it onto
+ * whichever combo-less child came first, which is sometimes right and never
+ * reliable — but it is a silent drop, not a recovery. Publishing the
+ * `key → reusedId` pairing the flush already computes would resolve those rows
+ * exactly and retire this fallback; until then, this is the floor, not the goal.
  *
  * Each real child is claimed at most once; rows that are delete-marked, unknown,
  * or unmatched are dropped.
