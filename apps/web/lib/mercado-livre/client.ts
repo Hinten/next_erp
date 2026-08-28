@@ -42,6 +42,7 @@ import type {
   MercadoLivreMedidasSugestao,
   MercadoLivrePriceSyncHistorico,
   MercadoLivrePriceSyncStatus,
+  MercadoLivreRelatorioEnvioPrecoPagina,
   MercadoLivrePublicarResult,
   MercadoLivreReclamacaoEstado,
   MercadoLivreRespostaChat,
@@ -191,6 +192,8 @@ export type {
   MercadoLivrePriceSyncFailure,
   MercadoLivrePriceSyncHistorico,
   MercadoLivrePriceSyncHistoricoEntry,
+  MercadoLivreRelatorioEnvioPrecoLinha,
+  MercadoLivreRelatorioEnvioPrecoPagina,
   MercadoLivrePriceSyncSkip,
   MercadoLivrePriceSyncStatus,
   MercadoLivrePublicarResult,
@@ -507,6 +510,16 @@ export interface MercadoLivreClient {
     integracaoId: string;
     limite?: number;
   }): Promise<MercadoLivrePriceSyncHistorico>;
+  /**
+   * One PAGE of a run's complete per-item report (PERM.integracao.read), for the
+   * CSV. Loop on `proximoDepois` until it is null; `depois` is the last shard id
+   * of the previous page.
+   */
+  priceSyncRelatorio(input: {
+    integracaoId: string;
+    jobId: string;
+    depois?: string | null;
+  }): Promise<MercadoLivreRelatorioEnvioPrecoPagina>;
   /**
    * One level of the ML category tree for the listing editor's cascade picker
    * (PERM.integracao.read). Omit `categoryId` for the roots.
@@ -1050,6 +1063,14 @@ export function createMercadoLivreClient(config: {
       call(
         `/api/marketplace/mercado-livre/jobs-em-andamento?integracaoIds=${encodeURIComponent(input.integracaoIds.join(','))}`,
         wire.jobsEmAndamentoSchema,
+      ),
+    priceSyncRelatorio: (input) =>
+      call(
+        `/api/marketplace/mercado-livre/atualizar-precos/relatorio?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}` +
+          (input.depois == null || input.depois === ''
+            ? ''
+            : `&depois=${encodeURIComponent(input.depois)}`),
+        wire.relatorioEnvioPrecoPaginaSchema,
       ),
     priceSyncHistorico: (input) =>
       call(
