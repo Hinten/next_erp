@@ -207,7 +207,11 @@ export function generateKitForVariacoes(
 
 /** A kit-variation row staged in the grid (saved children carry a real `id`). */
 export interface StagedKitRow {
-  /** Stable row key — a real produto id for saved rows, a temp id for new ones. */
+  /**
+   * Stable row key — a real produto id for saved rows. For a staged row it is
+   * the produto id the caller WILL write the new child under (`apps/web`
+   * pre-mints it), so it becomes a real id the moment that child exists.
+   */
   key: string;
   /** The real produto id if this variation is already saved, else `null`. */
   id: string | null;
@@ -225,9 +229,9 @@ export interface RealKitChild {
  * Resolve the grid's staged per-row kit maps (keyed by `StagedKitRow.key`) to
  * concrete `{ id, componentesKit }` writes against the REAL variation children —
  * the bridge that lets "Gerar Variações" target variations added in the Variações
- * tab but not yet saved. New children are minted with fresh ids at flush
- * (`VariationManager`), so a staged-new row is matched to its real child by an
- * unordered `variacoesUid` match (`sameCombo`); a saved row maps by id directly.
+ * tab but not yet saved. A row whose `id` is already set maps by id directly;
+ * a staged-new row still carries `id: null` until its child exists, so it is
+ * matched by an unordered `variacoesUid` match (`sameCombo`).
  * Each real child is claimed at most once; rows that are delete-marked, unknown,
  * or unmatched are dropped.
  */
