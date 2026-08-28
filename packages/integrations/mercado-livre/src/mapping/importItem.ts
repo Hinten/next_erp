@@ -189,6 +189,29 @@ const MEDIDAS_DO_PRODUTO = [
 type MedidasDoPacoteMapeado = Pick<MappedMlItem, 'alturaCm' | 'larguraCm' | 'profundidadeCm'>;
 
 /**
+ * The (number, unit) struct for a measurement, from wherever ML put it on THIS
+ * response — the ONE source order, so the readers below cannot drift apart.
+ *
+ * ⚠️ `value_struct` is the DOCUMENTED root field and a live
+ * `GET /items/{id}?include_attributes=all` does not fill it. Measured on
+ * MLB5146021467 (27/08/2026), every `number_unit` attribute came back as
+ * `value_name: '10 cm'`, `unit_id: null`, **no** root `value_struct`, and the
+ * split only under `values[0].struct`. A reader consulting the root alone fires
+ * on NONE of them — which is exactly what {@link measurementFromStruct} did
+ * until #1346, so every imported measurement stored its unit baked into the
+ * value.
+ *
+ * The root stays FIRST: it is what ML documents, and where a response that does
+ * fill it is authoritative. `values[0]` is the observed fallback, not a
+ * replacement.
+ */
+function structDaMedida(
+  attr: MlItemAttribute,
+): { number?: number | null; unit?: string | null } | null {
+  return attr.value_struct ?? attr.values?.[0]?.struct ?? null;
+}
+
+/**
  * A measurement in centimetres, from wherever ML put it on THIS response.
  *
  * Three sources, in order, because ML is not consistent about which it fills:
@@ -203,7 +226,7 @@ type MedidasDoPacoteMapeado = Pick<MappedMlItem, 'alturaCm' | 'larguraCm' | 'pro
  */
 function cmFromMeasurement(attr: MlItemAttribute | undefined): number | null {
   if (attr == null) return null;
-  const struct = attr.value_struct ?? attr.values?.[0]?.struct ?? null;
+  const struct = structDaMedida(attr);
   if (struct != null && typeof struct.number === 'number' && Number.isFinite(struct.number)) {
     const unit = typeof struct.unit === 'string' ? struct.unit.trim().toLowerCase() : '';
     // Same factors as `cmFromAttribute`, and the same rule: an unrecognised unit
@@ -255,10 +278,22 @@ export function isKitFromAttributes(attrs: readonly MlItemAttribute[] | null | u
 }
 
 /**
- * A measurement ML stated in `value_struct`, as the number and unit we store.
+ * A measurement ML stated as a struct, as the number and unit we store APART.
  *
  * `value_name` bakes the unit into the text (`'355 mL'`), so without reading the
  * struct an imported measurement lands unitless with its unit stranded in the value.
+ *
+ * ⚠️ Reads through {@link structDaMedida}, NOT `value_struct` directly. Until
+ * #1346 it consulted the root alone, and a live `GET /items` fills only
+ * `values[0].struct` — so this fired on no attribute at all and every imported
+ * measurement stored the unit baked in. That storage is stable rather than
+ * corrupt (`attributeToMercadoLivre` drops a null `unit_id`, so it republishes
+ * unchanged), which is why nothing failed loudly for so long.
+ *
+ * ⚠️ The split shape is what the EDITOR already writes: `attributesForSave` in
+ * `apps/web` stores `value_name` and `unit_id` apart, and `seedRow` splits a
+ * baked value back apart to render it. So this makes import agree with the
+ * editor rather than inventing a third shape.
  *
  * ⚠️ This is no longer the ONLY unit an item response carries — ML does sometimes
  * return `unit_id` beside a baked `value_name`, which is what
@@ -272,7 +307,7 @@ export function isKitFromAttributes(attrs: readonly MlItemAttribute[] | null | u
  * hand to match against.
  */
 function measurementFromStruct(attr: MlItemAttribute): { value: string; unit: string } | null {
-  const struct = attr.value_struct;
+  const struct = structDaMedida(attr);
   if (struct == null) return null;
   const { number, unit } = struct;
   if (typeof number !== 'number' || !Number.isFinite(number)) return null;

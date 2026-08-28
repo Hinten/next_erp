@@ -76,11 +76,14 @@ describe('attribute helpers', () => {
   });
 
   /**
-   * ⚠️ `value_struct` is the ONLY place an item response states a unit. ML
-   * answers `'355 mL'` in `value_name` with the unit baked in, and never sends
-   * `unit_id` — that is a field we SEND. Before this was read, every imported
-   * measurement stored the unit inside its own text, where the editor's
-   * digits-only filter stripped it and stamped the category default over it.
+   * ⚠️ A struct is the only place an item response STATES a unit. ML answers
+   * `'355 mL'` in `value_name` with the unit baked in, and never sends `unit_id`
+   * — that is a field we SEND. Before this was read, every imported measurement
+   * stored the unit inside its own text, where the editor's digits-only filter
+   * stripped it and stamped the category default over it.
+   *
+   * ⚠️ The struct is not always at the ROOT — see the `values[0].struct` tests
+   * below (#1346). This one pins the documented root field.
    */
   it('splits a number_unit measurement out of value_struct', () => {
     expect(
@@ -131,6 +134,119 @@ describe('attribute helpers', () => {
       { id: 'LENGTH', value_name: '55', unit_id: 'mm', value_struct: { number: 55, unit: 'cm' } },
     ]);
     expect(attr).toMatchObject({ unit_id: 'mm' });
+  });
+
+  /**
+   * **#1346 — the struct is usually NOT at the root.**
+   *
+   * A live `GET /items/{id}?include_attributes=all` (MLB5146021467, 27/08/2026)
+   * returned every `number_unit` attribute as `value_name: '10 cm'`,
+   * `unit_id: null`, **no** root `value_struct`, and the split only under
+   * `values[0].struct`. So `measurementFromStruct` — added in #1087 precisely to
+   * read a struct — fired on NONE of them, and every imported measurement stored
+   * its unit baked into the value.
+   */
+  it('splits a number_unit measurement carried in values[0].struct', () => {
+    expect(
+      attributesFromItem([
+        {
+          id: 'UNIT_VOLUME',
+          name: 'Volume da unidade',
+          value_name: '355 mL',
+          unit_id: null,
+          values: [{ struct: { number: 355, unit: 'mL' } }],
+        },
+      ]),
+    ).toEqual([
+      {
+        id: 'UNIT_VOLUME',
+        value_id: null,
+        name: 'Volume da unidade',
+        value_name: '355',
+        attribute_group_id: null,
+        attribute_group_name: null,
+        unit_id: 'mL',
+      },
+    ]);
+  });
+
+  it('⚠️ CONTROL — the documented ROOT struct still outranks values[0]', () => {
+    // Distinct numbers ON PURPOSE: with the same value on both sides, a reader
+    // that consulted the wrong one would pass this test unchanged.
+    const [attr] = attributesFromItem([
+      {
+        id: 'LENGTH',
+        value_name: '62.5 cm',
+        value_struct: { number: 62.5, unit: 'cm' },
+        values: [{ struct: { number: 999, unit: 'mm' } }],
+      },
+    ]);
+    expect(attr).toMatchObject({ value_name: '62.5', unit_id: 'cm' });
+  });
+
+  it('reads the exact attribute shape a live GET /items returned (MLB5146021467)', () => {
+    const attrs = attributesFromItem([
+      {
+        id: 'HEIGHT',
+        name: 'Altura',
+        value_name: '10 cm',
+        unit_id: null,
+        values: [{ id: null, name: '10 cm', struct: { number: 10, unit: 'cm' } }],
+      },
+      {
+        id: 'WIDTH',
+        name: 'Largura',
+        value_name: '20 cm',
+        unit_id: null,
+        values: [{ id: null, name: '20 cm', struct: { number: 20, unit: 'cm' } }],
+      },
+      {
+        id: 'LENGTH',
+        name: 'Comprimento',
+        value_name: '30 cm',
+        unit_id: null,
+        values: [{ id: null, name: '30 cm', struct: { number: 30, unit: 'cm' } }],
+      },
+    ]);
+    expect(attrs.map((a) => [a.value_name, a.unit_id])).toEqual([
+      ['10', 'cm'],
+      ['20', 'cm'],
+      ['30', 'cm'],
+    ]);
+  });
+
+  /**
+   * ⛔ The invariant that keeps a republish idempotent.
+   *
+   * `attributeToMercadoLivre` re-joins the pair on the way out
+   * (`[value_name, unit_id].filter(Boolean).join(' ')`), so a STORED value that
+   * already ends in its own unit sends `'12 cm cm'`, then `'12 cm cm cm'`, and so
+   * on — silently, on every republish, until ML rejects it (#1087). Reading a new
+   * struct source is exactly the kind of change that could reintroduce it, so the
+   * invariant is asserted over every shape rather than argued about.
+   */
+  it('⛔ never stores a value that already ends in its own unit', () => {
+    const shapes = [
+      { id: 'A', value_name: '12 cm', values: [{ struct: { number: 12, unit: 'cm' } }] },
+      {
+        id: 'B',
+        value_name: '12 cm',
+        unit_id: 'cm',
+        values: [{ struct: { number: 12, unit: 'cm' } }],
+      },
+      { id: 'C', value_name: '12 cm', value_struct: { number: 12, unit: 'cm' } },
+      { id: 'D', value_name: '12 cm', unit_id: 'cm' },
+      { id: 'E', value_name: '355 mL', values: [{ struct: { number: 355, unit: 'ML' } }] },
+    ];
+    for (const shape of shapes) {
+      const [attr] = attributesFromItem([shape]);
+      const unit = attr?.unit_id;
+      if (attr == null || unit == null) continue;
+      expect({
+        id: shape.id,
+        endsWithItsUnit: (attr.value_name ?? '').toLowerCase().endsWith(` ${unit.toLowerCase()}`),
+      }).toEqual({ id: shape.id, endsWithItsUnit: false });
+    }
   });
 
   it('does not touch a plain string attribute that happens to end in letters', () => {
