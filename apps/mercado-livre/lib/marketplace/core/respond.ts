@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import {
   MercadoLivreError,
   MercadoLivreHttpError,
+  type MlRequestEndpoint,
   MercadoLivreNetworkError,
   MercadoLivreNotConfiguredError,
   MercadoLivreReauthRequiredError,
@@ -107,7 +108,7 @@ export function mercadoLivreErrorResponse(err: KnownError): NextResponse {
 function logErrorResponse(err: KnownError, status: number): void {
   const detail =
     err instanceof MercadoLivreHttpError
-      ? ` upstream=${String(err.status)} body=${safeJson(err.body)}`
+      ? `${endpointDetail(err.endpoint)} upstream=${String(err.status)} body=${safeJson(err.body)}`
       : err instanceof MercadoLivreValidationError
         ? // ⚠️ PATHS AND CODES, never `err.issues` itself. `parseOk` puts the RAW
           // RESPONSE BODY on this error for a non-JSON response, and a Zod issue can
@@ -122,6 +123,23 @@ function logErrorResponse(err: KnownError, status: number): void {
     return;
   }
   console.warn(line);
+}
+
+/**
+ * ` req=GET /items/MLB123` — WHICH Mercado Livre call failed, ahead of the status
+ * and the body because it is the field you scan for first.
+ *
+ * ⚠️ Without it a generic ML 404 is undiagnosable. ML answers an unmatched route
+ * with the same developers-site blurb every time, so `upstream=404 body={"error":
+ * "resource not found"}` is the identical line whichever endpoint produced it —
+ * which is how three 404s on `/importar` went unattributed (#1347).
+ *
+ * Empty when the error predates the field or was constructed without a request
+ * (every direct `new MercadoLivreHttpError` in a test double). Already sanitised
+ * by the error's own constructor; see `sanitizeRequestPath`.
+ */
+function endpointDetail(endpoint: MlRequestEndpoint | null): string {
+  return endpoint == null ? '' : ` req=${endpoint.method} ${endpoint.path}`;
 }
 
 /**
