@@ -320,6 +320,22 @@ describe('resolveStagedKitVariacoes', () => {
     expect(out).toEqual([]);
   });
 
+  it('does not let a fallback row steal a child another row resolves exactly', () => {
+    // Ordering must not decide: `A` can only resolve by combo (its document was
+    // written under a reused id, so it is not among the children here) and is
+    // listed FIRST, while `B`'s child exists under `B`'s own key. A greedy
+    // per-row ladder hands `B`'s child to `A` and drops `B`'s map entirely.
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { A: mapFor('cA'), B: mapFor('cB') },
+      rows: [
+        { key: 'A', id: null, variacoesUid: [fp('gT', 'P')] },
+        { key: 'B', id: null, variacoesUid: [fp('gT', 'P')] },
+      ],
+      realChildren: [{ id: 'B', variacoesUid: [fp('gT', 'P')] }],
+    });
+    expect(out).toEqual([{ id: 'B', componentesKit: mapFor('cB') }]);
+  });
+
   it('still resolves an empty-combo row by its key — the guard is only on the fallback', () => {
     const out = resolveStagedKitVariacoes({
       stagedByKey: { K: mapFor('cA') },
