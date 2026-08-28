@@ -247,10 +247,21 @@ breaks a working publish path on contradictory documentation.
 pnpm --filter @delfrance/mercado-livre-app probe:package-format --   --project <id> --integracaoId <id> --itemId MLB000000000
 ```
 
-Dry-run by default; add `--executar` to actually send. `--itemId` is required and the
-script **never creates a listing** — make one with the app's **Anúncio de teste**
-button first (§0: ten test users per account, forever). It runs all three variants
-against that ONE listing and **restores the original attributes on the way out**.
+Dry-run by default; add `--executar` to actually send. ⚠️ `--executar` and `--forcar`
+are flags that take **no value** — `--executar=false` and `--executar false` are both
+REFUSED rather than read as "on", so a dry-run intent can never become a live send.
+
+`--itemId` is required and the script **never creates a listing** — make one with the
+app's **Anúncio de teste** button first (§0: ten test users per account, forever). It
+runs all three variants against that ONE listing and restores the package attributes
+**and `sale_terms`** from a `finally`.
+
+⛔ **What the restore cannot undo, so pick the listing accordingly.** Re-sending is
+the only lever `PUT /items` offers, so a field the listing never had cannot be put
+back to absent. If your test listing has no `SELLER_PACKAGE_*` yet, the last
+variant's values stay on it; if it has no `sale_terms`, variant 3 leaves a
+`MANUFACTURING_TIME` — buyer-visible handling time — for you to clear by hand. The
+script prints both warnings with the item id.
 
 ⚠️ **Judge by what ML STORED, never by the status code.** A 200 that silently drops
 the attribute is exactly how a produto becomes "published successfully" with no

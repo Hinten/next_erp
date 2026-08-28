@@ -36,8 +36,16 @@
  * the title/category rules ML imposes — and point this at it. Spending a listing
  * is the operator's decision, not this script's.
  *
- * ⚠️ **It restores the original attributes on the way out**, including after a
- * failure, so the listing is left as it was found.
+ * ⚠️ **It restores the package attributes AND `sale_terms` from a `finally`**,
+ * so a failure part-way — a 429 on the read-back, a socket reset, a token refresh
+ * throwing — cannot leave a variant's values live on the listing.
+ *
+ * ⛔ Two things it genuinely CANNOT undo, and it says so loudly rather than
+ * implying the listing is pristine: re-sending is the only lever this endpoint
+ * offers, so a field the listing never HAD cannot be put back to absent. If it
+ * carried no `SELLER_PACKAGE_*`, the last variant's values stay; if it carried no
+ * `sale_terms`, the `MANUFACTURING_TIME` variant 3 writes stays — buyer-visible
+ * handling time, to be removed by hand. Both are printed with the item id.
  *
  * `--project` is REQUIRED and never inferred — same discipline as
  * `tools/migrations` and `census-up-single.ts` — so a stray `FIREBASE_PROJECT_ID`
@@ -101,6 +109,26 @@ function valueOf(name: string, inline: string | undefined, next: string | undefi
   return raw;
 }
 
+/**
+ * A flag takes no value, and saying so is a SAFETY control here rather than
+ * tidiness.
+ *
+ * ⛔ `--executar=false` used to turn the send ON: the boolean arms ignored the
+ * inline value entirely. An operator reaching for the explicit-negative spelling
+ * to STAY in dry-run got a live `PUT` against a real listing — and
+ * `--forcar=false` silently disabled the test-account refusal the same way. Both
+ * now fail closed. The `--flag value` spelling is refused by the positional
+ * check in {@link parseArgs}, which is why that loop throws instead of skipping.
+ */
+function semValor(name: string, inline: string | undefined): void {
+  if (inline !== undefined) {
+    throw new ProbeArgError(
+      `--${name} é uma flag e não aceita valor (recebi "--${name}=${inline}"). ` +
+        `Para NÃO ${name === 'executar' ? 'enviar' : 'forçar'}, OMITA a flag.`,
+    );
+  }
+}
+
 function parseArgs(argv: readonly string[]): Args {
   let projectId: string | undefined;
   let integracaoId: string | undefined;
@@ -110,24 +138,33 @@ function parseArgs(argv: readonly string[]): Args {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
-    if (!arg.startsWith('--')) continue;
+    // ⛔ THROW, never skip. Skipping is what let `--executar false` read as a
+    // bare flag plus an ignored token, i.e. a live send from a dry-run intent.
+    // Every value-taking arm below advances `i` past what it consumed, so the
+    // only strings reaching here are ones nobody asked for.
+    if (!arg.startsWith('--')) throw new ProbeArgError(`Argumento inesperado: ${arg}`);
     const eq = arg.indexOf('=');
     const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
     const inline = eq === -1 ? undefined : arg.slice(eq + 1);
     switch (name) {
       case 'project':
         projectId = valueOf(name, inline, argv[i + 1]);
+        if (inline === undefined) i += 1;
         break;
       case 'integracaoId':
         integracaoId = valueOf(name, inline, argv[i + 1]);
+        if (inline === undefined) i += 1;
         break;
       case 'itemId':
         itemId = valueOf(name, inline, argv[i + 1]);
+        if (inline === undefined) i += 1;
         break;
       case 'executar':
+        semValor(name, inline);
         executar = true;
         break;
       case 'forcar':
+        semValor(name, inline);
         forcar = true;
         break;
       default:
@@ -207,6 +244,19 @@ interface Guardado {
   struct: string | null;
 }
 
+/**
+ * The listing's `sale_terms`, which `itemSchema` never types.
+ *
+ * The schema is `.passthrough()`, so the field survives the parse untyped — it
+ * just does not surface as a property. Reading it matters twice: the operator
+ * gets to SEE whether the listing already had a `MANUFACTURING_TIME` (half of
+ * what variant 3 is asking), and the restore has something to send back.
+ */
+function saleTermsDoItem(item: MlItem): unknown[] | null {
+  const bruto: unknown = (item as Record<string, unknown>).sale_terms;
+  return Array.isArray(bruto) ? (bruto as unknown[]) : null;
+}
+
 function lerPacote(item: MlItem): Guardado[] {
   const attrs: readonly MlItemAttribute[] = item.attributes ?? [];
   return IDS_PACOTE.map((id) => {
@@ -279,45 +329,98 @@ async function main(): Promise<void> {
     .filter((a) => (IDS_PACOTE as readonly string[]).includes(a.id))
     .map((a) => ({ id: a.id, value_name: a.value_name ?? null, unit_id: a.unit_id ?? null }));
 
-  log('');
-  for (const v of VARIANTES) {
-    log(`── variante "${v.nome}" ─────────────────────────────────────────`);
-    log(`   pergunta: ${v.pergunta}`);
-    const payload: Record<string, unknown> = { attributes: v.attributes };
-    if (v.saleTerms != null) payload.sale_terms = v.saleTerms;
-    log(`   PUT /items/${args.itemId}  ${JSON.stringify(payload)}`);
-    if (!args.executar) {
-      log('   (dry-run — nada foi enviado; passe --executar)');
-      log('');
-      continue;
-    }
-    try {
-      await api.updateItem(args.itemId, payload);
-      log('   ✅ PUT aceito');
-    } catch (err) {
-      // A REFUSAL is a result, not a failure of the probe: it is half of what
-      // this run exists to learn. Anything that is not an ML error still throws.
-      if (!(err instanceof MercadoLivreError)) throw err;
-      const detalhe =
-        err instanceof MercadoLivreHttpError
-          ? `ML ${String(err.status)} ${JSON.stringify(err.body)}`
-          : err.message;
-      log(`   ⛔ PUT recusado: ${detalhe}`);
-      log('');
-      continue;
-    }
-    // ⚠️ Never trust the 200. Re-read and report what SURVIVED.
-    imprimirPacote('o que o ML guardou:', lerPacote(await api.getItem(args.itemId)));
+  // ⚠️ The third variant WRITES `sale_terms`, so the original has to be captured
+  // too or the restore leaves `MANUFACTURING_TIME` on the listing forever —
+  // buyer-visible handling time, silently changed for whoever reuses the anúncio.
+  const saleTermsOriginal = saleTermsDoItem(original);
+  log(
+    `    sale_terms ORIGINAL: ${saleTermsOriginal == null ? '(nenhum)' : JSON.stringify(saleTermsOriginal)}`,
+  );
+
+  /**
+   * Put the listing back. Returns what could NOT be put back, so the caller
+   * reports it instead of the operator discovering it later.
+   */
+  async function restaurar(): Promise<void> {
     log('');
+    log('── restaurando o estado original ───────────────────────');
+    const patch: Record<string, unknown> = {};
+    if (paraRestaurar.length > 0) patch.attributes = paraRestaurar;
+    if (saleTermsOriginal != null) patch.sale_terms = saleTermsOriginal;
+
+    if (Object.keys(patch).length > 0) {
+      await api.updateItem(args.itemId, patch);
+      imprimirPacote('depois de restaurar:', lerPacote(await api.getItem(args.itemId)));
+    }
+
+    // ⚠️ Two things this endpoint cannot undo, said out loud rather than papered
+    // over. Re-sending is the only lever there is: a field the listing never had
+    // cannot be sent back to ABSENT, and guessing at a clearing semantic
+    // (`sale_terms: []`?) on a live listing would be inventing one.
+    if (paraRestaurar.length === 0) {
+      log('⚠️ O anúncio não tinha nenhum SELLER_PACKAGE_* — os valores da ÚLTIMA');
+      log('   variante ficaram no anúncio. Remova-os à mão.');
+    }
+    if (saleTermsOriginal == null) {
+      log('⚠️ O anúncio não tinha sale_terms — a variante "numerico+prazo" DEIXOU um');
+      log('   MANUFACTURING_TIME nele. É prazo de fabricação visível ao comprador:');
+      log('   remova-o à mão antes de reutilizar este anúncio.');
+    }
   }
 
-  if (args.executar && paraRestaurar.length > 0) {
-    log('── restaurando o estado original ───────────────────────────');
-    await api.updateItem(args.itemId, { attributes: paraRestaurar });
-    imprimirPacote('depois de restaurar:', lerPacote(await api.getItem(args.itemId)));
-  } else if (args.executar) {
-    log('⚠️ O anúncio não tinha nenhum SELLER_PACKAGE_* — nada a restaurar, e os');
-    log('   valores da ÚLTIMA variante ficaram no anúncio. Corrija-os à mão.');
+  log('');
+  try {
+    for (const v of VARIANTES) {
+      log(`── variante "${v.nome}" ─────────────────────────────`);
+      log(`   pergunta: ${v.pergunta}`);
+      const payload: Record<string, unknown> = { attributes: v.attributes };
+      if (v.saleTerms != null) payload.sale_terms = v.saleTerms;
+      log(`   PUT /items/${args.itemId}  ${JSON.stringify(payload)}`);
+      if (!args.executar) {
+        log('   (dry-run — nada foi enviado; passe --executar)');
+        log('');
+        continue;
+      }
+      try {
+        await api.updateItem(args.itemId, payload);
+        log('   ✅ PUT aceito');
+      } catch (err) {
+        // A REFUSAL is a result, not a failure of the probe: it is half of what
+        // this run exists to learn. Anything that is not an ML error still throws.
+        if (!(err instanceof MercadoLivreError)) throw err;
+        const detalhe =
+          err instanceof MercadoLivreHttpError
+            ? `ML ${String(err.status)} ${JSON.stringify(err.body)}`
+            : err.message;
+        log(`   ⛔ PUT recusado: ${detalhe}`);
+        log('');
+        continue;
+      }
+      // ⚠️ Never trust the 200. Re-read and report what SURVIVED.
+      imprimirPacote('o que o ML guardou:', lerPacote(await api.getItem(args.itemId)));
+      log('');
+    }
+  } finally {
+    // ⛔ `finally`, because this is the one window where the probe has MUTATED a
+    // real listing. The read-back above is an ML call like any other, so a 429 or
+    // a socket reset on it — after the PUT already landed — used to abort the run
+    // and leave the last variant's values live. So did a token refresh throwing
+    // mid-run. Only a refused PUT and the happy path were ever covered.
+    if (args.executar) {
+      try {
+        await restaurar();
+      } catch (err) {
+        // A failed restore is the one thing that must never be swallowed by the
+        // failure that triggered it: the operator has to know the listing is
+        // still dirty, and with WHAT.
+        const detalhe = err instanceof MercadoLivreError ? err.message : String(err);
+        log('');
+        log(`⛔ A RESTAURAÇÃO FALHOU: ${detalhe}`);
+        log(`   O anúncio ${args.itemId} continua com os valores da última variante.`);
+        log(`   Reenvie à mão: ${JSON.stringify({ attributes: paraRestaurar })}`);
+        process.exitCode = 1;
+      }
+    }
   }
 
   log('');
