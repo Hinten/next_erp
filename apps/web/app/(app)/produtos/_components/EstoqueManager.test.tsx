@@ -164,11 +164,15 @@ describe('EstoqueManager', () => {
     expect(linhaDaVariacao('f2')).toBeTruthy();
     expect(alerta()).toBeNull();
 
+    // The exact locator `produto-estoque.emulator.e2e.spec.ts` drives.
+    expect(screen.queryByLabelText(`Localização pai ${DEP}`)).toBeNull();
+
     const botao = toggle();
     expect(botao).toBeTruthy();
     fireEvent.click(botao!);
 
     expect(linhaDoPai()).toBeTruthy();
+    expect(screen.getByLabelText(`Localização pai ${DEP}`)).toBeTruthy();
     expect(screen.getByText('CAM - Camiseta Preta (produto pai)')).toBeTruthy();
   });
 

@@ -19,7 +19,9 @@ import { warmRoutes } from './helpers/warmup';
  *    `historicoEstoque` audit record.
  *
  * Driven on the EDIT screen (stock needs a saved produto) against a parent +
- * one variation child, so the parent and the variation rows are both exercised.
+ * one variation child. The write paths are exercised on the VARIATION row,
+ * because a parent that has variations and no stock of its own is hidden behind
+ * the "Mostrar estoque do produto pai" toggle — the first test covers that.
  */
 test.describe
   .serial('Produtos estoque e2e — Estoque por depósito (variações + movimentação)', () => {
@@ -50,27 +52,43 @@ test.describe
   async function openEstoqueTab(page: Page) {
     await page.goto(`/produtos/${parentId}/editar`);
     await page.getByRole('tab', { name: 'Estoque' }).click();
-    // The parent's depósito row mounts once depósitos + produtos load.
-    await expect(page.getByLabel(`Localização ${parentId} ${depositoNome}`)).toBeVisible({
+    // The VARIATION's depósito row mounts once depósitos + produtos load. It is
+    // the anchor rather than the parent's row, which starts hidden — see below.
+    await expect(page.getByLabel(`Localização ${childId} ${depositoNome}`)).toBeVisible({
       timeout: 30_000,
     });
   }
 
+  test('a produto with variations hides its own empty estoque behind a toggle', async ({
+    page,
+  }) => {
+    await openEstoqueTab(page);
+    // Stock belongs on the variations, so the parent's rows are out of the way
+    // rather than inviting a write no marketplace ever reads.
+    await expect(page.getByLabel(`Localização ${parentId} ${depositoNome}`)).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Mostrar estoque do produto pai' }).click();
+    await expect(page.getByLabel(`Localização ${parentId} ${depositoNome}`)).toBeVisible();
+  });
+
   test('inline localização writes only localizacao (quantidade stays 0)', async ({ page }) => {
     await openEstoqueTab(page);
-    const input = page.getByLabel(`Localização ${parentId} ${depositoNome}`);
+    const input = page.getByLabel(`Localização ${childId} ${depositoNome}`);
     await input.fill('Corredor 3, Prateleira B');
     await input.blur();
 
     await expect
-      .poll(async () => (await getProdutoEstoque(parentId, depositoId))?.localizacao, {
+      .poll(async () => (await getProdutoEstoque(childId, depositoId))?.localizacao, {
         timeout: 20_000,
       })
       .toBe('Corredor 3, Prateleira B');
-    const estoque = await getProdutoEstoque(parentId, depositoId);
-    // A fresh estoque created by the localização write keeps quantidade at 0.
+    const estoque = await getProdutoEstoque(childId, depositoId);
+    // A fresh estoque created by the localização write keeps quantidade at 0 —
+    // which is also why the parent stays hidden: a location string is not stock.
     expect(estoque).toMatchObject({
-      parentId,
+      // ⚠️ The doc's own `parentId` field is its OWNING produto (the variation),
+      // not `parentId` the fixture's parent produto.
+      parentId: childId,
       depositoOuterRef: `documents/depositos/${depositoId}`,
       localizacao: 'Corredor 3, Prateleira B',
       quantidade: 0,
