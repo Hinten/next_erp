@@ -82,23 +82,56 @@ describe('avaliarTabela', () => {
     expect(anuncioSemMarca.guias[0]!.vincula).toBe(true);
   });
 
-  it('value_id wins over value_name, in BOTH directions', () => {
-    // ⚠️ Two ML values can share a display name under different ids. Comparing
-    // names would paint a ✓ the server does not make.
+  it('id OR name — a name match is a hit even when the ids disagree', () => {
+    // ⚠️ This test used to assert `false` here, on the reasoning that "comparing
+    // names would paint a ✓ the server does not make". The server's scoring is an
+    // **OR**: a matching `value_name` IS a hit whatever the ids say. Short-
+    // circuiting on ids rendered a red ✗ on a row the very same module labelled
+    // `vincula` — two functions describing one decision, disagreeing on screen.
     const idDiverge = avaliarTabela(
       [guia({ attributes: [{ id: 'GENDER', value_id: 'OUTRO', value_name: 'Infantil' }] })],
       'MLB-T_SHIRTS',
       ANUNCIO,
     );
-    expect(idDiverge.guias[0]!.veredito.GENDER).toBe(false);
+    expect(idDiverge.guias[0]!.veredito.GENDER).toBe(true);
+    // The cell and the badge must agree — that is the whole point.
+    expect(idDiverge.guias[0]!.vincula).toBe(true);
 
-    // …and the reverse must not silently pass: same id, different label.
+    // Same id, different label: a hit on the id alone.
     const nomeDiverge = avaliarTabela(
       [guia({ attributes: [{ id: 'GENDER', value_id: '19159491', value_name: 'Criança' }] })],
       'MLB-T_SHIRTS',
       ANUNCIO,
     );
     expect(nomeDiverge.guias[0]!.veredito.GENDER).toBe(true);
+  });
+
+  it('neither id nor name matches → a real ✗, and it binds nothing', () => {
+    const out = avaliarTabela(
+      [guia({ attributes: [{ id: 'GENDER', value_id: 'OUTRO', value_name: 'Feminino' }] })],
+      'MLB-T_SHIRTS',
+      ANUNCIO,
+    );
+    expect(out.guias[0]!.veredito.GENDER).toBe(false);
+    expect(out.guias[0]!.vincula).toBe(false);
+  });
+
+  it('NO cell may contradict the badge beside it', () => {
+    // The invariant behind findings like the one above: a guia that binds cannot
+    // carry a ✗, because the ✗ claims the server rejected what it accepted.
+    const casos = [
+      guia({}),
+      guia({ attributes: [{ id: 'GENDER', value_id: 'OUTRO', value_name: 'Infantil' }] }),
+      guia({ attributes: [{ id: 'BRAND', value_id: 'B1', value_name: 'Outra marca' }] }),
+      guia({ attributes: [{ id: 'GENDER', value_id: '19159491' }] }),
+    ];
+    for (const c of casos) {
+      const { guias } = avaliarTabela([c], 'MLB-T_SHIRTS', ANUNCIO);
+      const g = guias[0]!;
+      if (!g.vincula) continue;
+      expect(Object.values(g.veredito)).not.toContain(false);
+      expect(g.dominioOk).not.toBe(false);
+    }
   });
 
   it('a guia with no ML id is NUNCA ENVIADA and can never bind', () => {

@@ -864,13 +864,26 @@ export function sizeChartIssue(
         `a tabela de medidas "${motivo.nome}" tem guia no domínio ${motivo.dominioDaCategoria}, ` +
         `mas ela nunca foi enviada ao Mercado Livre — envie a guia em Medidas › Mercado Livre`
       );
-    case 'dominio-divergente':
+    case 'dominio-divergente': {
+      // ⚠️ The list can legitimately be EMPTY — a legacy guia may carry no
+      // `domain_id` at all (the read schema allows null). Naming a domain we do
+      // not have would be the same lie this whole change exists to stop, so that
+      // case says only what is true.
+      const daTabela = motivo.dominiosDaTabela;
+      if (daTabela.length === 0) {
+        return (
+          `a tabela de medidas "${motivo.nome}" não tem nenhuma guia no domínio ` +
+          `${motivo.dominioDaCategoria}, que é o exigido por esta categoria ` +
+          `(${motivo.categoryId}) — crie uma guia nesse domínio na tabela de medidas`
+        );
+      }
       return (
-        `a tabela de medidas "${motivo.nome}" está no domínio ` +
-        `${motivo.dominiosDaTabela.join(', ')}, mas esta categoria (${motivo.categoryId}) exige ` +
-        `${motivo.dominioDaCategoria} — crie uma guia em ${motivo.dominioDaCategoria} na tabela ` +
-        `de medidas, ou escolha uma categoria de ${motivo.dominiosDaTabela[0] ?? '—'}`
+        `a tabela de medidas "${motivo.nome}" está no domínio ${daTabela.join(', ')}, mas esta ` +
+        `categoria (${motivo.categoryId}) exige ${motivo.dominioDaCategoria} — crie uma guia em ` +
+        `${motivo.dominioDaCategoria} na tabela de medidas, ou escolha uma categoria de ` +
+        `${daTabela[0]}`
       );
+    }
     case 'sem-atributos-correspondentes':
       return (
         `nenhuma guia da tabela de medidas "${motivo.nome}" no domínio ` +

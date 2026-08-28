@@ -92,14 +92,19 @@ export function TabelaMedidasResumo({
   );
 
   /**
-   * ⚠️ `null` while the attributes are in flight, never `false`. The server
-   * reads the same fact off `value_type: 'grid_id'`; here it arrives as the
-   * `tabela-de-medidas` omission, which is that same test already applied
-   * (`categoriaAtributos.ts`). Guessing `false` early would silence the warning
-   * on exactly the categories that need it.
+   * ⚠️ `null` while the attributes are in flight, never `false`. Guessing
+   * `false` early would silence the warning on exactly the categories that need
+   * it.
+   *
+   * ⚠️ Matched on the **id**, not on `motivo`. The server's
+   * `categoriaUsaGuiaDeTamanhos` tests `value_type === 'grid_id'` — the ITEM
+   * half alone — while the `tabela-de-medidas` omission covers
+   * `SIZE_CHART_VALUE_TYPES = ['grid_id', 'grid_row_id']`, so a category
+   * carrying only the VARIATION half would warn here and publish silently. The
+   * two definitions have to name the same attribute; keep them in step.
    */
   const categoriaUsaGuia: boolean | null = atributosQuery.data
-    ? atributosQuery.data.omitidos.some((o) => o.motivo === 'tabela-de-medidas')
+    ? atributosQuery.data.omitidos.some((o) => o.id === 'SIZE_GRID_ID')
     : null;
 
   const aviso = avisoDominioTabela({ nomeDaTabela, avaliacao, categoriaUsaGuia, categoryId });

@@ -90,18 +90,18 @@ describe('resolveSizeChart', () => {
     });
   });
 
-  it('dominiosDaTabela is DISTINCT, SORTED, and lists only guias that were SENT', () => {
+  it('dominiosDaTabela is DISTINCT and SORTED, over every guia the tabela has', () => {
     const mistas = [
       chart({ id: '1', domain_id: 'MLB-PANTS' }),
       chart({ id: '2', domain_id: 'MLB-PANTS' }), // duplicate domain
       chart({ id: '3', domain_id: 'MLB-DRESSES' }),
-      chart({ id: null, domain_id: 'MLB-COATS' }), // never sent — cannot bind, must not be offered
+      chart({ id: null, domain_id: 'MLB-COATS' }), // unsent — still a domain the tabela HAS
     ];
     const out = resolveSizeChart(mistas, 'MLB-SNEAKERS', null);
     expect(out).toEqual({
       chart: null,
       motivo: 'dominio-divergente',
-      dominiosDaTabela: ['MLB-DRESSES', 'MLB-PANTS'],
+      dominiosDaTabela: ['MLB-COATS', 'MLB-DRESSES', 'MLB-PANTS'],
       dominioDaCategoria: 'MLB-SNEAKERS',
     });
   });
@@ -121,11 +121,41 @@ describe('resolveSizeChart', () => {
     });
   });
 
-  it('NOTHING sent at all → guias-nao-enviadas, whatever the domains are', () => {
+  it('an unsent guia in the WRONG domain is a MISMATCH, not "never sent"', () => {
+    // ⚠️ This test used to assert the opposite — "nothing sent at all →
+    // guias-nao-enviadas, whatever the domains are" — and it was WRONG in the
+    // one direction that matters: the message then read "tem guia no domínio
+    // MLB-SNEAKERS, mas ela nunca foi enviada", naming a domain the tabela does
+    // not have. The operator sends that guia and it still binds nothing. The
+    // reason is only allowed to claim a domain the tabela actually carries.
     const nenhuma = [chart({ id: null, domain_id: 'MLB-PANTS' }), chart({ id: '' })];
     expect(resolveSizeChart(nenhuma, 'MLB-SNEAKERS', null)).toEqual({
       chart: null,
-      motivo: 'guias-nao-enviadas',
+      motivo: 'dominio-divergente',
+      dominiosDaTabela: ['MLB-PANTS'],
+      dominioDaCategoria: 'MLB-SNEAKERS',
+    });
+  });
+
+  it('dominiosDaTabela lists UNSENT domains too, since none of them is the right one', () => {
+    // Restricting it to the sent guias printed an EMPTY list for a tabela nobody
+    // has synced yet. Whether a guia went to ML only starts mattering once its
+    // domain agrees, and here none of them does.
+    const soRascunhos = [chart({ id: null, domain_id: 'MLB-DRESSES' })];
+    expect(resolveSizeChart(soRascunhos, 'MLB-SNEAKERS', null)).toEqual({
+      chart: null,
+      motivo: 'dominio-divergente',
+      dominiosDaTabela: ['MLB-DRESSES'],
+      dominioDaCategoria: 'MLB-SNEAKERS',
+    });
+  });
+
+  it('no guia declares a domain at all → an EMPTY list, never an invented one', () => {
+    // Legacy data: the read schema allows a null `domain_id`.
+    expect(resolveSizeChart([chart({ id: null, domain_id: null })], 'MLB-SNEAKERS', null)).toEqual({
+      chart: null,
+      motivo: 'dominio-divergente',
+      dominiosDaTabela: [],
       dominioDaCategoria: 'MLB-SNEAKERS',
     });
   });

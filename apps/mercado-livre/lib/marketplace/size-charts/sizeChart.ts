@@ -79,7 +79,18 @@ export type SizeChartResolution =
   | {
       chart: null;
       motivo: 'dominio-divergente';
-      /** Distinct domains of the guias that WERE sent — the only ones that could bind. */
+      /**
+       * Distinct domains the tabela's guias declare — sent or not.
+       *
+       * ⚠️ Deliberately NOT restricted to the sent ones. This branch is only
+       * reached when NO guia sits in the category's domain, so every guia here
+       * is in the wrong one and whether it went to ML is a second problem the
+       * operator only gets to once the domain agrees. Listing the sent subset
+       * would print an empty list for a tabela nobody has synced yet.
+       *
+       * May be empty when no guia declares a domain at all (legacy data — the
+       * read schema allows a null `domain_id`); the message must cope.
+       */
       dominiosDaTabela: string[];
       dominioDaCategoria: string;
     }
@@ -103,12 +114,17 @@ export function resolveSizeChart(
   if (!catalogDomain) return { chart: null, motivo: 'categoria-sem-dominio' };
   // A guia with no ML id was never sent, so it can never be bound — that is a
   // different fact from its domain, and the two are reported separately below.
-  const enviadas = tabelas.filter((t) => t.id != null && t.id !== '');
-  const candidates = enviadas.filter((t) => t.domain_id === catalogDomain);
+  const candidates = tabelas.filter(
+    (t) => t.id != null && t.id !== '' && t.domain_id === catalogDomain,
+  );
   if (candidates.length === 0) {
-    // Nothing sent at all, or the guia in this domain is exactly the un-sent
-    // one: the domain is not the problem and must not be blamed.
-    if (enviadas.length === 0 || tabelas.some((t) => t.domain_id === catalogDomain)) {
+    // ⚠️ The test is "a guia in THIS domain exists but was not sent", and it has
+    // to be exactly that. Widening it to "nothing was sent at all" reads as the
+    // same thing and is not: a tabela whose only guia is MLB-SHIRTS, unsent,
+    // would be told it "tem guia no domínio MLB-T_SHIRTS" — a domain it does not
+    // have — and sending that guia would still bind nothing. That is the mirror
+    // image of the mistake this split exists to avoid.
+    if (tabelas.some((t) => t.domain_id === catalogDomain)) {
       return { chart: null, motivo: 'guias-nao-enviadas', dominioDaCategoria: catalogDomain };
     }
     return {
@@ -116,7 +132,7 @@ export function resolveSizeChart(
       motivo: 'dominio-divergente',
       dominiosDaTabela: [
         ...new Set(
-          enviadas.map((t) => t.domain_id).filter((d): d is string => d != null && d !== ''),
+          tabelas.map((t) => t.domain_id).filter((d): d is string => d != null && d !== ''),
         ),
       ].sort(),
       dominioDaCategoria: catalogDomain,

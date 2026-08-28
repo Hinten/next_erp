@@ -82,21 +82,25 @@ function acharAtributo(
 /**
  * Does a chart attribute HIT an anúncio attribute?
  *
- * ⚠️ `value_id` first, `value_name` as the fallback — the resolver's own order.
- * Comparing names only would paint a ✓ on a pair the server does not match
- * (two "Infantil" entries under different ML value ids), which is worse than
- * showing nothing: it sends the operator looking somewhere else.
+ * ⚠️ **An OR, not an if/else-if** — the resolver's exact rule, the same one
+ * {@link pontos} mirrors below. A matching `value_name` counts as a hit *even
+ * when the `value_id`s disagree*, so short-circuiting on ids once both sides
+ * carry one renders a red ✗ on a row this same file simultaneously labels
+ * **vincula**: two functions describing one decision, disagreeing with each
+ * other. The server binds it, so the ✗ was the wrong half.
  */
 function bate(chart: AtributoValor | null, anuncio: AtributoValor | null): Verdito {
   if (chart == null || anuncio == null) return null;
-  if (anuncio.value_id != null && chart.value_id != null)
-    return chart.value_id === anuncio.value_id;
-  if (anuncio.value_name != null && chart.value_name != null) {
-    return chart.value_name === anuncio.value_name;
-  }
-  // One side carries no value at all — it cannot score, so there is no verdict
-  // to give. Reporting `false` here would blame an attribute nobody filled in.
-  return null;
+  const porId = anuncio.value_id != null && chart.value_id === anuncio.value_id;
+  const porNome = anuncio.value_name != null && chart.value_name === anuncio.value_name;
+  if (porId || porNome) return true;
+  // No verdict unless the two are actually comparable on some field: an
+  // attribute nobody filled in cannot score, and reporting `false` would blame
+  // it for a miss it had no part in.
+  const comparavel =
+    (anuncio.value_id != null && chart.value_id != null) ||
+    (anuncio.value_name != null && chart.value_name != null);
+  return comparavel ? false : null;
 }
 
 /** How many of the anúncio's VALUED attributes this chart matches — the score. */
@@ -140,10 +144,16 @@ export function avaliarTabela(
   };
 
   // The resolver's candidate set: sent, and in the category's domain.
+  //
+  // ⚠️ The domain is compared RAW, exactly as the server does
+  // (`t.domain_id === catalogDomain`). `limpar` decides only what is PRESENT and
+  // what to display — letting it trim the comparison too would make this panel
+  // more permissive than the thing it describes, which is how a ✓ appears on a
+  // pair publish then refuses.
   const dominioAlvo = anuncio.dominio;
-  const candidatos = charts.filter(
-    (c) => limpar(c.id) != null && dominioAlvo != null && limpar(c.domain_id) === dominioAlvo,
-  );
+  const mesmoDominio = (c: MlSizeChart): boolean =>
+    limpar(c.domain_id) != null && dominioAlvo != null && c.domain_id === catalogDomain;
+  const candidatos = charts.filter((c) => limpar(c.id) != null && mesmoDominio(c));
   // ⚠️ The legacy boundary: with NO valued anúncio attributes the first
   // candidate wins blindly; otherwise the best scorer wins and zero hits binds
   // nothing. Mirrored from `resolveSizeChart` — see this module's header.
@@ -177,7 +187,7 @@ export function avaliarTabela(
         BRAND: bate(acharAtributo(c.attributes, 'BRAND'), acharAtributo(attrs, 'BRAND')),
         GENDER: bate(acharAtributo(c.attributes, 'GENDER'), acharAtributo(attrs, 'GENDER')),
       },
-      dominioOk: dominio == null || dominioAlvo == null ? null : dominio === dominioAlvo,
+      dominioOk: dominio == null || dominioAlvo == null ? null : mesmoDominio(c),
       enviada: limpar(c.id) != null,
       vincula: vencedor != null && c === vencedor,
     };

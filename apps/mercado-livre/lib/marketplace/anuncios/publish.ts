@@ -1011,7 +1011,7 @@ export async function loadTabelaBinding(
       descricao: null,
       foto: null,
       motivo: { codigo: 'tabela-inexistente', tabMediId },
-      categoriaUsaGuia: null,
+      categoriaUsaGuia: await categoriaUsaGuia(api, categoryId),
     };
   }
   const tabela = tabelaDeMedidasCollection.parseRead(
@@ -1035,7 +1035,13 @@ export async function loadTabelaBinding(
         charts.length === 0
           ? { codigo: 'tabela-sem-guias-nesta-conta', tabMediId, nome }
           : { codigo: 'anuncio-sem-categoria', tabMediId },
-      categoriaUsaGuia: null,
+      // ⚠️ `charts.length === 0` wins the `||` whatever `categoryId` is, so this
+      // exit is reached WITH a category as often as without — and hard-coding
+      // `null` here made `tabela-sem-guias-nesta-conta` unable to refuse
+      // anything, leaving its message dead code that read as live. "Linked a
+      // tabela, never created the guia in this conta" is plausibly the most
+      // common form of this mistake.
+      categoriaUsaGuia: await categoriaUsaGuia(api, categoryId),
     };
   }
 
@@ -1067,18 +1073,30 @@ export async function loadTabelaBinding(
     };
   }
 
-  // Only now is the attribute list worth its round trip: it exists to gate the
-  // refusal, and there is nothing to refuse on a chart that bound.
-  const categoriaUsaGuia = categoriaUsaGuiaDeTamanhos(
-    await getCategoriaAtributosCached(api, categoryId),
-  );
   return {
     resolved: null,
     descricao,
     foto,
     motivo: motivoDaResolucao(resolucao, categoryId, nome),
-    categoriaUsaGuia,
+    categoriaUsaGuia: await categoriaUsaGuia(api, categoryId),
   };
+}
+
+/**
+ * Does this category carry a size-chart attribute? `null` = never asked.
+ *
+ * ⚠️ Called on the MISS paths only. It gates the refusal, so there is nothing to
+ * ask about once a chart has bound — and `produto-sem-tabela`, by far the most
+ * common outcome, must not pay an ML round trip to learn something it will not
+ * use. Cached (`READ_CACHE_TTL.config`), so on a warm instance every call after
+ * the first costs nothing.
+ */
+async function categoriaUsaGuia(
+  api: MercadoLivreApi,
+  categoryId: string | null,
+): Promise<boolean | null> {
+  if (categoryId == null) return null;
+  return categoriaUsaGuiaDeTamanhos(await getCategoriaAtributosCached(api, categoryId));
 }
 
 /**

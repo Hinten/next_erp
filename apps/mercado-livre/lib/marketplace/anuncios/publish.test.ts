@@ -1219,6 +1219,69 @@ describe('publishProduto — legacy wire shape', () => {
     expect(mocks.updateItem).not.toHaveBeenCalled();
   });
 
+  it('a tabela with NO guia in this conta is refused too — the reason is REACHABLE', async () => {
+    // ⚠️ Review finding: this exit hard-coded `categoriaUsaGuia: null`, so
+    // `sizeChartIssue` bailed and the carefully-worded message was dead code
+    // that read as live. Publish shipped without SIZE_GRID_ID and ML answered
+    // with the opaque rejection this PR exists to replace. "Linked a tabela,
+    // never created the guia in this conta" is plausibly the most common form
+    // of the mistake, so it must refuse like the domain mismatch does.
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Camiseta lisa infantil',
+      codigo: null,
+      descricao: null,
+      // Guias exist — on ANOTHER conta.
+      tabelasDeMedidasMercadoLivre: {
+        'outra-conta': { tabelas: [{ id: '7523235', domain_id: 'MLB-T_SHIRTS', rows: [] }] },
+      },
+    });
+    const { api, mocks } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB1398',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+      getCategoryAttributes: vi.fn(async () => [{ id: 'SIZE_GRID_ID', value_type: 'grid_id' }]),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      /não tem nenhuma guia nesta conta/,
+    );
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('…and still publishes when that category uses no guia', async () => {
+    // The control: the refusal above must come from the gate, not from the
+    // reason existing.
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Camiseta lisa infantil',
+      codigo: null,
+      descricao: null,
+      tabelasDeMedidasMercadoLivre: {
+        'outra-conta': { tabelas: [{ id: '7523235', domain_id: 'MLB-T_SHIRTS', rows: [] }] },
+      },
+    });
+    const { api, mocks } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB1398',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+    expect(mocks.createItem).toHaveBeenCalled();
+  });
+
   it('a getCategory failure during the chart binding stamps estado E (legacy MLError catch)', async () => {
     const db = new FakeDb();
     seedBase(db, {
@@ -2558,6 +2621,10 @@ describe('loadTabelaBinding — why no chart bound (#1087)', () => {
     expect(out.descricao).toBeNull();
     expect(out.foto).toBeNull();
     expect(mocks.getCategory).not.toHaveBeenCalled();
+    // ⚠️ It DOES ask whether the category uses a guia. Hard-coding `null` here
+    // left this reason unable to refuse anything — a message that read as live
+    // and was dead code.
+    expect(out.categoriaUsaGuia).toBe(false);
   });
 
   it('no guia in THIS conta → tabela-sem-guias-nesta-conta, descrição kept', async () => {
@@ -2572,6 +2639,7 @@ describe('loadTabelaBinding — why no chart bound (#1087)', () => {
     });
     expect(out.descricao).toBe('Confira as medidas.');
     expect(mocks.getCategory).not.toHaveBeenCalled();
+    expect(out.categoriaUsaGuia).toBe(false);
   });
 
   it('the anúncio has no categoria → anuncio-sem-categoria, told apart from the line above', async () => {
@@ -2583,6 +2651,9 @@ describe('loadTabelaBinding — why no chart bound (#1087)', () => {
     const out = await bind(db, api, { tabelaDeMedidasModaUid: TABELA_REF }, null);
     expect(out.motivo).toEqual({ codigo: 'anuncio-sem-categoria', tabMediId: 'tm-1' });
     expect(mocks.getCategory).not.toHaveBeenCalled();
+    // The one exit that stays `null`: with no category there is nothing to ask.
+    expect(out.categoriaUsaGuia).toBeNull();
+    expect(mocks.getCategoryAttributes).not.toHaveBeenCalled();
   });
 
   it('the category reports no catalog_domain → categoria-sem-dominio', async () => {
