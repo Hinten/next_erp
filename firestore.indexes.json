@@ -199,6 +199,38 @@
       ]
     },
     {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "searchConfig": {
+            "textSpec": {
+              "indexSpecs": [
+                {
+                  "indexType": "TOKENIZED",
+                  "matchType": "MATCH_GLOBALLY"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "fieldPath": "sku",
+          "searchConfig": {
+            "textSpec": {
+              "indexSpecs": [
+                {
+                  "indexType": "TOKENIZED",
+                  "matchType": "MATCH_GLOBALLY"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "collectionGroup": "variacaoMercadoLivre",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
