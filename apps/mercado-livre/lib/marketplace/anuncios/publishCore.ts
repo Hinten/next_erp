@@ -173,6 +173,34 @@ export type TabelaBindingMotivo =
       nome: string;
     };
 
+/**
+ * Every motivo, and whether it may BLOCK a publish.
+ *
+ * ⚠️ `Record<Union, …>` rather than `Record<string, …>` — the key type is the
+ * union itself, so a tenth `codigo` is a **compile error** here rather than a
+ * silent omission. Same structural guarantee as `FREIGHT_TIPO_CAPS`.
+ *
+ * ⚠️ It exists because a refusal message that could never fire shipped once
+ * already: the exits hard-coded `categoriaUsaGuia: null`, the gate bails on
+ * `!== true`, and the unit tests hand-built the motivo so nothing noticed. This
+ * constant is what a test can enumerate at RUNTIME to prove every reason is
+ * reachable and every refusable one actually refuses.
+ */
+export const TABELA_BINDING_RECUSA = {
+  // Nothing to report: a chart bound, or the produto never asked for one.
+  vinculada: false,
+  'produto-sem-tabela': false,
+  // `assemblePublishInput` already raises `categoria … não definida`, and with
+  // no category there are no attributes to have judged `categoriaUsaGuia` from.
+  'anuncio-sem-categoria': false,
+  'tabela-inexistente': true,
+  'tabela-sem-guias-nesta-conta': true,
+  'categoria-sem-dominio': true,
+  'guias-nao-enviadas': true,
+  'dominio-divergente': true,
+  'sem-atributos-correspondentes': true,
+} as const satisfies Record<TabelaBindingMotivo['codigo'], boolean>;
+
 export interface AssemblePublishArgs {
   produto: PublishProduto;
   /** `extraData.condicao` (1 novo / 2 usado / 3 recondicionado) or null. */

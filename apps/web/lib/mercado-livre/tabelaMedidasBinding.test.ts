@@ -166,6 +166,20 @@ describe('avaliarTabela', () => {
     expect(nenhum.vinculada).toBeNull();
   });
 
+  it('⚠️ non-empty but UNVALUED attributes bind NOTHING — the legacy boundary', () => {
+    // ⚠️ This module used to key its first-candidate fallback on the FILTERED
+    // list while the server keys on the RAW one, so an ML-imported stub
+    // (attributes present, none valued) made the panel show a green `vincula`
+    // on a pair publish refuses — the exact contradiction it exists to remove.
+    // It shipped for a week behind green tests and a confident comment.
+    const stub = [{ id: 'GENDER' }];
+    const { guias, vinculada } = avaliarTabela([guia({})], 'MLB-T_SHIRTS', stub);
+    expect(vinculada).toBeNull();
+    expect(guias[0]!.vincula).toBe(false);
+    // …while an EMPTY list still takes the fallback, which is the boundary.
+    expect(avaliarTabela([guia({})], 'MLB-T_SHIRTS', []).vinculada?.chartId).toBe('7523235');
+  });
+
   it('no category domain yet → no domain verdict at all', () => {
     const { guias, vinculada } = avaliarTabela([guia({})], null, ANUNCIO);
     expect(guias[0]!.dominioOk).toBeNull();

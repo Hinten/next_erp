@@ -28,21 +28,17 @@
 import type { MlAttributeWire, MlSizeChart } from '@delfrance/schemas';
 
 /**
- * Minimal structural slice for the attribute-hit scoring — satisfied by both
- * the plugin's `MlAttribute` (the link doc's attributes) and the schema's
- * `MlAttributeWire` (the chart's attributes).
+ * ⚠️ `resolveSizeChart` and its result types now live in `@delfrance/schemas`
+ * (#1087). They were hand-mirrored in `apps/web` and the copies drifted twice,
+ * so there is one implementation and both surfaces import it. Re-exported here
+ * so this module stays the size-chart entry point for the publish flow.
  */
-export interface ScoringAttribute {
-  /**
-   * Optional because the plugin's `MlAttribute` allows an id-less entry (ML's
-   * custom characteristic, which only ever appears in a variation's
-   * combinations). One can never score: the chart's own attributes always carry
-   * an id, so `ca.id !== pa.id` rejects it on every comparison.
-   */
-  id?: string;
-  value_id?: string | null;
-  value_name?: string | null;
-}
+export {
+  resolveSizeChart,
+  type ScoringAttribute,
+  type SizeChartMiss,
+  type SizeChartResolution,
+} from '@delfrance/schemas';
 
 export interface SizeChartRowBinding {
   /** FULL ML row id (`'<chartId>:<n>'`) — the `SIZE_GRID_ROW_ID` wire value. */
@@ -61,125 +57,6 @@ export interface ResolvedSizeChart {
 function lastSegment(path: string): string {
   const segs = path.split('/').filter(Boolean);
   return segs[segs.length - 1] ?? '';
-}
-
-/**
- * Why no chart bound — one code per structurally different cause, each carrying
- * the strings an operator needs to act on it.
- *
- * ⚠️ `guias-nao-enviadas` and `dominio-divergente` are a deliberate SPLIT of
- * what used to be one `candidates.length === 0` exit. A guia sitting in the
- * RIGHT domain with no ML id is an un-sent draft — telling that operator their
- * domain is wrong sends them to change the one field that is already correct.
- */
-export type SizeChartResolution =
-  | { chart: MlSizeChart; motivo: null }
-  | { chart: null; motivo: 'categoria-sem-dominio' }
-  | { chart: null; motivo: 'guias-nao-enviadas'; dominioDaCategoria: string }
-  | {
-      chart: null;
-      motivo: 'dominio-divergente';
-      /**
-       * Distinct domains the tabela's guias declare — sent or not.
-       *
-       * ⚠️ Deliberately NOT restricted to the sent ones. This branch is only
-       * reached when NO guia sits in the category's domain, so every guia here
-       * is in the wrong one and whether it went to ML is a second problem the
-       * operator only gets to once the domain agrees. Listing the sent subset
-       * would print an empty list for a tabela nobody has synced yet.
-       *
-       * May be empty when no guia declares a domain at all (legacy data — the
-       * read schema allows a null `domain_id`); the message must cope.
-       */
-      dominiosDaTabela: string[];
-      dominioDaCategoria: string;
-    }
-  | { chart: null; motivo: 'sem-atributos-correspondentes'; dominioDaCategoria: string };
-
-/**
- * The no-chart half of {@link SizeChartResolution}.
- *
- * ⚠️ A `motivo: null` resolution ALWAYS carries a usable chart: every return
- * path with one hands back a member of `candidates`, and `candidates` is
- * filtered on a non-blank `id`. So a caller that has excluded this type has a
- * chart id, and needs no second "but what if the id is blank" branch.
- */
-export type SizeChartMiss = Exclude<SizeChartResolution, { motivo: null }>;
-
-export function resolveSizeChart(
-  tabelas: readonly MlSizeChart[],
-  catalogDomain: string | null,
-  linkAttributes: readonly ScoringAttribute[] | null,
-): SizeChartResolution {
-  if (!catalogDomain) return { chart: null, motivo: 'categoria-sem-dominio' };
-  // A guia with no ML id was never sent, so it can never be bound — that is a
-  // different fact from its domain, and the two are reported separately below.
-  const candidates = tabelas.filter(
-    (t) => t.id != null && t.id !== '' && t.domain_id === catalogDomain,
-  );
-  if (candidates.length === 0) {
-    // ⚠️ The test is "a guia in THIS domain exists but was not sent", and it has
-    // to be exactly that. Widening it to "nothing was sent at all" reads as the
-    // same thing and is not: a tabela whose only guia is MLB-SHIRTS, unsent,
-    // would be told it "tem guia no domínio MLB-T_SHIRTS" — a domain it does not
-    // have — and sending that guia would still bind nothing. That is the mirror
-    // image of the mistake this split exists to avoid.
-    if (tabelas.some((t) => t.domain_id === catalogDomain)) {
-      return { chart: null, motivo: 'guias-nao-enviadas', dominioDaCategoria: catalogDomain };
-    }
-    return {
-      chart: null,
-      motivo: 'dominio-divergente',
-      dominiosDaTabela: [
-        ...new Set(
-          tabelas.map((t) => t.domain_id).filter((d): d is string => d != null && d !== ''),
-        ),
-      ].sort(),
-      dominioDaCategoria: catalogDomain,
-    };
-  }
-
-  // Legacy boundary (models.dart:91): the first-candidate fallback fires ONLY
-  // when the RAW attribute list is null/empty. A non-empty list whose entries
-  // are all unvalued (real stored data — ML-imported stubs, valueList-only
-  // attrs) goes through the scoring loop, hits nothing, and binds NO chart —
-  // falling back blindly there could bind the wrong gender's chart.
-  const raw = linkAttributes ?? [];
-  if (raw.length === 0) return { chart: candidates[0]!, motivo: null };
-
-  // Only VALUED produto attributes can "hit" a chart in the scoring.
-  const produtoAttrs = raw.filter((a) => a.value_id != null || a.value_name != null);
-
-  let best: MlSizeChart | null = null;
-  let bestHits = 0;
-  for (const chart of candidates) {
-    let hits = 0;
-    for (const pa of produtoAttrs) {
-      for (const ca of chart.attributes ?? []) {
-        if (ca.id !== pa.id) continue;
-        if (
-          (pa.value_id != null && ca.value_id === pa.value_id) ||
-          (pa.value_name != null && ca.value_name === pa.value_name)
-        ) {
-          hits += 1;
-        }
-      }
-    }
-    if (hits > bestHits) {
-      best = chart;
-      bestHits = hits;
-    }
-  }
-  // Zero hits everywhere ⇒ no chart (legacy: a valued-attribute produto must
-  // actually match a chart; falling back blindly could bind a wrong gender).
-  if (best == null) {
-    return {
-      chart: null,
-      motivo: 'sem-atributos-correspondentes',
-      dominioDaCategoria: catalogDomain,
-    };
-  }
-  return { chart: best, motivo: null };
 }
 
 export function findChartRow(
