@@ -31,7 +31,9 @@ import { mensagemCollection } from '@/lib/data/conversaCollection';
 import { newDocId } from '@/lib/data/newDocId';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
+import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
 import { composerGate } from '@/lib/chat/composerGate';
+import { confirmacaoEnvio } from '@/lib/chat/confirmacaoEnvio';
 import { enviaPorRota } from '@/lib/chat/transporteEnvio';
 import {
   MercadoLivreClientHttpError,
@@ -193,6 +195,18 @@ function ComposerInput({
   const [text, setText] = useState(() => getDraft(conversaId));
   const [sending, setSending] = useState(false);
   const mlClient = useMercadoLivreClient();
+  /**
+   * The awaitable confirm bridge, for the sends that cannot be taken back.
+   *
+   * It has to be promise-based rather than a state-driven modal because the gate
+   * belongs INSIDE `handleSend` — that is what makes the keyboard path (Enter /
+   * ⌘+Enter, `onKeyDown` below) go through it for free. A guard wired to the send
+   * button's `onClick` would leave the faster, more dangerous path wide open.
+   *
+   * Safe to mount here: the composer is not itself inside a `<Modal>`, so the
+   * `keepMounted` hazard that stranded a pending promise in #1096 does not apply.
+   */
+  const { confirm, element: confirmElement } = useConfirmDialog();
   /**
    * Whether this origem sends through the channel BACKEND rather than by
    * writing a mensagem for a trigger to pick up.
@@ -359,6 +373,56 @@ function ComposerInput({
           setSendError('Conta do Mercado Livre não resolvida para esta conversa.');
           return;
         }
+        // ⚠️ AFTER the guard above, deliberately: never make an operator confirm
+        // a send that cannot happen anyway. And after `setSending(true)`, which
+        // means `canSend` is already false while the dialog is open — a second
+        // Enter cannot stack a second confirmation on the same draft.
+        //
+        // Only `mlperg` is configured (see `confirmacaoEnvio.ts`): a Mercado
+        // Livre question takes exactly ONE answer, published on the anúncio with
+        // no edit and no retract, and the successful send closes the atendimento.
+        const confirmacao = confirmacaoEnvio(conversa.origem);
+        if (confirmacao) {
+          const ok = await confirm({
+            title: confirmacao.titulo,
+            // The body is shown back verbatim. It is the last moment the text is
+            // still private, and re-reading it is the whole point of stopping.
+            message: (
+              <Stack gap="xs">
+                <Text>{confirmacao.aviso}</Text>
+                <Box
+                  p="xs"
+                  style={{
+                    border: '1px solid var(--mantine-color-gray-3)',
+                    borderRadius: 'var(--mantine-radius-sm)',
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                  }}
+                >
+                  <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+                    {body}
+                  </Text>
+                </Box>
+              </Stack>
+            ),
+            confirmLabel: confirmacao.confirmar,
+            cancelLabel: 'Cancelar',
+          });
+          if (!ok) {
+            // Nothing was written and `setText('')` only runs on success, so the
+            // draft survives untouched; the outer `finally` re-enables the input.
+            //
+            // ⚠️ Focus must WAIT for that re-render. `sending` is still true on
+            // this line — `setSending(false)` lives in the `finally` below and
+            // React has not flushed it yet — so the Textarea is still
+            // `disabled`, and a disabled element cannot take focus. A bare
+            // `focus()` here silently leaves the caret on <body>, making cancel
+            // cost a click that the pre-gate Enter path never charged. Same
+            // deferral `insertAtCursor` uses above, for the same reason.
+            requestAnimationFrame(() => textareaRef.current?.focus());
+            return;
+          }
+        }
         await mlClient.responderConversa({ integracaoId, conversaId, texto: body });
       } else if (attachmentsToSend.length === 0) {
         // Text-only — the #529 outbound contract write (salva / tipo 'c' / mid null).
@@ -451,6 +515,15 @@ function ComposerInput({
         if (files.length > 0) validateAndAdd(files);
       }}
     >
+      {/*
+        ⚠️ Mounted inside the composer, so it unmounts with it. Known, benign:
+        if another operator answers the same question while this dialog is open,
+        the snapshot flips `respostaBloqueada`, `ChatComposer` takes the
+        read-only arm and this promise never settles. Nothing user-visible — the
+        thread correctly goes read-only and no send is attempted.
+      */}
+      {confirmElement}
+
       {sendError && (
         <Alert color="red" mb="xs" withCloseButton onClose={() => setSendError(null)}>
           {sendError}
