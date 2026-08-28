@@ -836,6 +836,96 @@ describe('syncSizeCharts', () => {
     expect(result.updated).toBe(false);
   });
 
+  it('a decimal separator alone does not count as a row change', async () => {
+    // The editor localises a stored `'90.5'` to `'90,5'` on load, because pt-BR
+    // is what the operator types and reads. Without the diff fold, EVERY row of
+    // EVERY legacy guia would come back "changed" and the next "Enviar" would
+    // fire one PUT per row — N calls and N fresh chances for ML to reject a row
+    // that was fine. `measureStruct` reads both spellings as the same number.
+    const stored: MlSizeChart = {
+      ...novaChart,
+      id: '1594439',
+      main_attribute_id: 'SIZE',
+      rows: [
+        {
+          varianteUid: null,
+          id: '1594439:1',
+          attributes: [
+            { id: 'SIZE', value_name: 'M' },
+            { id: 'WAIST', value_name: '90.5', unit_id: 'cm' },
+          ],
+        },
+      ],
+    };
+    const db = new FakeDb();
+    seedDoc(db, [stored]);
+    const { api, mocks } = makeApi();
+
+    const edited: MlSizeChart = {
+      ...stored,
+      rows: [
+        {
+          ...stored.rows![0]!,
+          attributes: [
+            { id: 'SIZE', value_name: 'M' },
+            { id: 'WAIST', value_name: '90,5', unit_id: 'cm' },
+          ],
+        },
+      ],
+    };
+    const result = await syncSizeCharts(
+      { db: db as unknown as Firestore, api, integracaoId: CONTA },
+      TAB,
+      [edited],
+    );
+
+    expect(mocks.updateSizeChartRow!).not.toHaveBeenCalled();
+    expect(result.updated).toBe(false);
+  });
+
+  it('a real change to a measurement DOES send the row', async () => {
+    // ANTI-VACUITY for the case above: the fold compares numbers, so a
+    // different number must still be a change. Without this, a fold that
+    // flattened every value_name to a constant would pass.
+    const stored: MlSizeChart = {
+      ...novaChart,
+      id: '1594439',
+      main_attribute_id: 'SIZE',
+      rows: [
+        {
+          varianteUid: null,
+          id: '1594439:1',
+          attributes: [
+            { id: 'SIZE', value_name: 'M' },
+            { id: 'WAIST', value_name: '90.5', unit_id: 'cm' },
+          ],
+        },
+      ],
+    };
+    const db = new FakeDb();
+    seedDoc(db, [stored]);
+    const { api, mocks } = makeApi();
+
+    const edited: MlSizeChart = {
+      ...stored,
+      rows: [
+        {
+          ...stored.rows![0]!,
+          attributes: [
+            { id: 'SIZE', value_name: 'M' },
+            // The 0,01 offset the duplicate rule forces is a REAL change.
+            { id: 'WAIST', value_name: '90,51', unit_id: 'cm' },
+          ],
+        },
+      ],
+    };
+    await syncSizeCharts({ db: db as unknown as Firestore, api, integracaoId: CONTA }, TAB, [
+      edited,
+    ]);
+
+    expect(mocks.updateSizeChartRow!).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects charts the write schema will not persist (nome, domain_id, tipo)', async () => {
     const db = new FakeDb();
     seedDoc(db, []);

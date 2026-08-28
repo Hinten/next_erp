@@ -2,9 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
-import type { MercadoLivreMedidasSugestao } from '@/lib/mercado-livre/client';
 import type { ChartColumn } from '@/lib/mercado-livre/chartSpec';
-import { SizeChartAiModal } from './SizeChartAiModal';
+import { type MedidaRevisada, SizeChartAiModal } from './SizeChartAiModal';
 
 const columns: ChartColumn[] = [
   {
@@ -20,7 +19,7 @@ const columns: ChartColumn[] = [
   },
 ];
 
-function resultado(over: Partial<MercadoLivreMedidasSugestao> = {}): MercadoLivreMedidasSugestao {
+function resultado(over: Partial<MedidaRevisada> = {}): MedidaRevisada {
   return {
     sugestoes: [],
     celulas: 20,
@@ -30,7 +29,7 @@ function resultado(over: Partial<MercadoLivreMedidasSugestao> = {}): MercadoLivr
   };
 }
 
-function show(r: MercadoLivreMedidasSugestao) {
+function show(r: MedidaRevisada) {
   render(
     // `MantineTestProvider` renders the `Modal` inline instead of through a
     // portal. The leaked transition timer is neutralised in `vitest.setup.ts`,
@@ -50,13 +49,31 @@ function show(r: MercadoLivreMedidasSugestao) {
 }
 
 describe('SizeChartAiModal — what the operator is asked to approve', () => {
-  const sugestao = (over: Partial<MercadoLivreMedidasSugestao['sugestoes'][number]> = {}) => ({
+  const sugestao = (over: Partial<MedidaRevisada['sugestoes'][number]> = {}) => ({
     rowKey: 'g/1/v/p',
     attributeId: 'CHEST',
     value_id: null,
     value_name: '52',
     valueList: null,
+    ajustadoDe: null,
     ...over,
+  });
+
+  it('discloses a value that was offset to clear the duplicate rule', () => {
+    // ⚠️ `nudgeDuplicateMeasures` moves a repeat by 0,01 so Mercado Livre
+    // accepts the guia. The number on screen is then NOT what the model read,
+    // and an undisclosed offset is us quietly editing the operator's data.
+    show(resultado({ sugestoes: [sugestao({ value_name: '52,01', ajustadoDe: '52' })] }));
+
+    expect(screen.getByTestId('ml-size-chart-ai-ajuste').textContent).toContain('ajustado de 52');
+  });
+
+  it('says nothing when the suggestion is exactly what the model read', () => {
+    // ANTI-VACUITY: the note is conditional on `ajustadoDe`, and a banner shown
+    // unconditionally would satisfy the case above.
+    show(resultado({ sugestoes: [sugestao()] }));
+
+    expect(screen.queryByTestId('ml-size-chart-ai-ajuste')).toBeNull();
   });
 
   it('shows EVERY member of a size-equivalence suggestion, not just the first', () => {

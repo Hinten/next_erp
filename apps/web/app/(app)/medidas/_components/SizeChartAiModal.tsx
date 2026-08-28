@@ -7,8 +7,16 @@ import { aiCellKey, preCheckedCells } from '@delfrance/ai';
 import type { MercadoLivreMedidasSugestao } from '@/lib/mercado-livre/client';
 import type { ChartColumn } from '@/lib/mercado-livre/chartSpec';
 import { type ChartRowDraft, isFilled } from '@/lib/mercado-livre/chartRows';
+import type { MedidaSugestaoAjustada } from '@/lib/mercado-livre/chartDedupe';
 
-type MedidaSugestao = MercadoLivreMedidasSugestao['sugestoes'][number];
+/**
+ * The answer AFTER `nudgeDuplicateMeasures` has cleared Mercado Livre's
+ * duplicate rule off it — which is the only form this modal ever sees, so that
+ * what it prints and what `onApply` writes are the same string.
+ */
+export type MedidaRevisada = Omit<MercadoLivreMedidasSugestao, 'sugestoes'> & {
+  sugestoes: MedidaSugestaoAjustada[];
+};
 
 /**
  * Review the model's proposed measurements before any of them reach the grid.
@@ -31,7 +39,7 @@ export interface SizeChartAiModalProps {
   opened: boolean;
   onClose: () => void;
   /** Null while the call is still out. */
-  resultado: MercadoLivreMedidasSugestao | null;
+  resultado: MedidaRevisada | null;
   rows: ChartRowDraft[];
   columns: ChartColumn[];
   /**
@@ -43,7 +51,7 @@ export interface SizeChartAiModalProps {
    */
   mainAttributeId: string;
   /** Applies the accepted cells. Only ever called with a non-empty list. */
-  onApply: (aceitas: MercadoLivreMedidasSugestao['sugestoes']) => void;
+  onApply: (aceitas: MedidaSugestaoAjustada[]) => void;
 }
 
 export function SizeChartAiModal({
@@ -86,7 +94,7 @@ export function SizeChartAiModal({
   );
 
   return (
-    <AiReviewModal<MedidaSugestao>
+    <AiReviewModal<MedidaSugestaoAjustada>
       opened={opened}
       onClose={onClose}
       title="Medidas sugeridas pela IA"
@@ -114,17 +122,33 @@ export function SizeChartAiModal({
         {
           label: 'Sugerido',
           render: (s) => (
-            <Text size="sm" fw={500}>
+            <Stack gap={2}>
+              <Text size="sm" fw={500}>
+                {/*
+                  A size-equivalence cell maps one row onto SEVERAL standard sizes,
+                  so the list is what the operator has to judge. `value_name`
+                  already carries the members joined, but reading them off the list
+                  keeps this row honest if that ever stops being true.
+                */}
+                {s.valueList != null && s.valueList.length > 0
+                  ? s.valueList.map((v) => v.name).join(', ')
+                  : s.value_name}
+              </Text>
               {/*
-                A size-equivalence cell maps one row onto SEVERAL standard sizes,
-                so the list is what the operator has to judge. `value_name`
-                already carries the members joined, but reading them off the list
-                keeps this row honest if that ever stops being true.
+                ⚠️ NOT optional polish. This value is no longer exactly what the
+                model read: `nudgeDuplicateMeasures` moved it by a hundredth (or
+                dropped a standard size) because Mercado Livre refuses a guia
+                with the same value on two rows. A workaround the operator
+                cannot see is indistinguishable from us quietly editing their
+                measurements.
               */}
-              {s.valueList != null && s.valueList.length > 0
-                ? s.valueList.map((v) => v.name).join(', ')
-                : s.value_name}
-            </Text>
+              {s.ajustadoDe != null && (
+                <Text size="xs" c="dimmed" data-testid="ml-size-chart-ai-ajuste">
+                  ajustado de {s.ajustadoDe} — o Mercado Livre não aceita o mesmo valor em duas
+                  linhas
+                </Text>
+              )}
+            </Stack>
           ),
         },
       ]}
@@ -144,7 +168,7 @@ export function SizeChartAiModal({
  * only time — telling that operator to "envie a foto" sends them to redo the
  * thing they just did.
  */
-function Fonte({ resultado }: { resultado: MercadoLivreMedidasSugestao }) {
+function Fonte({ resultado }: { resultado: MedidaRevisada }) {
   const { fotos, anexadas, descricao, codigo, referencia } = resultado.contexto;
 
   // Everything that reached the model, in the order it matters. Listing the

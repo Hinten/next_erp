@@ -11,8 +11,9 @@
 import type { MlSizeChart, MlSizeChartRow, Variante } from '@delfrance/schemas';
 import { varianteFakePath } from '@delfrance/schemas';
 import { normalizeLoose } from '@delfrance/ai';
+import { localizarDecimal } from '@delfrance/core/decimal';
 
-import type { ChartColumn, ChartSpecValue } from './chartSpec';
+import type { ChartCellKind, ChartColumn, ChartSpecValue } from './chartSpec';
 
 /** ML's chart-name limit, and the charset it accepts. */
 export const CHART_NAME_MAX = 60;
@@ -49,7 +50,7 @@ export function isFilled(cell: ChartCellValue | undefined): boolean {
 
 /* ------------------------------- seeding --------------------------------- */
 
-function cellFromAttribute(attr: Record<string, unknown>): ChartCellValue {
+function cellFromAttribute(attr: Record<string, unknown>, kind: ChartCellKind): ChartCellValue {
   const rawList = attr.valueList;
   const valueList = Array.isArray(rawList)
     ? rawList
@@ -60,9 +61,19 @@ function cellFromAttribute(attr: Record<string, unknown>): ChartCellValue {
         }))
         .filter((v) => v.id !== '' || v.name !== '')
     : null;
+  const name = typeof attr.value_name === 'string' ? attr.value_name : null;
   return {
     value_id: typeof attr.value_id === 'string' ? attr.value_id : null,
-    value_name: typeof attr.value_name === 'string' ? attr.value_name : null,
+    // A measurement stored with a dot renders with a comma, like every other
+    // number in this ERP and like every cell the operator types. Charts written
+    // before the AI localised its own answers hold both spellings, so the grid
+    // showed `10.5` on one row and `10,5` on the next.
+    //
+    // ⚠️ This DOES change the draft, so `rowNeedsSend` would see every legacy
+    // row as modified and re-PUT the whole guia on the next "Enviar". That is
+    // why `rowDiffShape` (apps/mercado-livre) compares numeric value names by
+    // their parsed value — a separator-only difference is not a change.
+    value_name: kind === 'number' && name != null ? localizarDecimal(name) : name,
     valueList: valueList && valueList.length > 0 ? valueList : null,
   };
 }
@@ -74,12 +85,15 @@ function cellFromAttribute(attr: Record<string, unknown>): ChartCellValue {
  * `invalid_row_attribute`.
  */
 export function seedRows(chart: MlSizeChart | null, columns: ChartColumn[]): ChartRowDraft[] {
-  const known = new Set(columns.flatMap((c) => c.parts.map((p) => p.attributeId)));
+  // The kind, not just the id: a stored `value_name` is localised only on a
+  // numeric part, so the map has to carry it.
+  const known = new Map(columns.flatMap((c) => c.parts.map((p) => [p.attributeId, p.kind])));
   return (chart?.rows ?? []).map((row, index) => {
     const cells: Record<string, ChartCellValue> = {};
     for (const attr of row.attributes ?? []) {
-      if (!known.has(attr.id)) continue;
-      cells[attr.id] = cellFromAttribute(attr as unknown as Record<string, unknown>);
+      const kind = known.get(attr.id);
+      if (kind == null) continue;
+      cells[attr.id] = cellFromAttribute(attr as unknown as Record<string, unknown>, kind);
     }
     return {
       key: row.id ?? row.varianteUid ?? `row-${String(index)}`,

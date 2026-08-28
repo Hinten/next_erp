@@ -27,6 +27,7 @@ import {
   MercadoLivreHttpError,
   type MlSizeChartApi,
 } from '@delfrance/integrations-mercado-livre';
+import { parseDecimalPtBr } from '@delfrance/core/decimal';
 import type { MlAttributeWire, MlSizeChart, MlSizeChartRow } from '@delfrance/schemas';
 import { mlSizeChartWriteSchema, mlSizeChartsForConta } from '@delfrance/schemas';
 import { z } from 'zod';
@@ -355,6 +356,37 @@ export function stripNullsDeep(value: unknown): unknown {
 }
 
 /**
+ * Every `value_name` reduced to the number it denotes, where it denotes one.
+ *
+ * ⚠️ This is a DIFF-ONLY fold — the value that goes on the wire is untouched.
+ * The editor localises a stored `'10.5'` to `'10,5'` on load (pt-BR is what the
+ * operator types and reads), which without this makes every row of every legacy
+ * guia differ from its stored copy: opening a chart and pressing "Enviar" would
+ * fire one `PUT` per row, N HTTP calls and N fresh chances for ML to reject a
+ * row that was fine. A separator is a spelling, not a change.
+ *
+ * `measureStruct` already reads both spellings as the same number, so the two
+ * rows really are equivalent to ML; the name converges to the comma the next
+ * time the row is edited for a reason.
+ */
+function canonicalMeasureNames(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalMeasureNames);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k === 'value_name' && typeof v === 'string') {
+        const n = parseDecimalPtBr(v);
+        out[k] = n == null ? v : String(n);
+        continue;
+      }
+      out[k] = canonicalMeasureNames(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
  * The row as the diff sees it. `sizeCalculado` is dropped: it is an ERP-only
  * cache written BY this sync from ML's own response, so a UI that round-trips
  * a row without it would otherwise look "changed" on every round and re-PUT
@@ -363,7 +395,7 @@ export function stripNullsDeep(value: unknown): unknown {
 function rowDiffShape(row: MlSizeChartRow): unknown {
   const copy: Record<string, unknown> = { ...row };
   delete copy.sizeCalculado;
-  return stripNullsDeep(copy);
+  return canonicalMeasureNames(stripNullsDeep(copy));
 }
 
 /** Legacy row diff: id-less rows are ALWAYS "changed" (never yet on ML). */
