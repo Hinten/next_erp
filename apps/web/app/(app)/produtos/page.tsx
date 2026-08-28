@@ -11,11 +11,12 @@ import { usePermission } from '@/lib/auth';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useListasDePrecos } from '@/lib/data/useListasDePrecos';
+import { resolveProdutoIdsPorTermo } from '@/lib/produtos/buscaProduto';
 import {
   ProdutoFotoCell,
   ProdutoIntegracoesCell,
   ProdutoPrecoCell,
-  useListaPrecoPadraoId,
 } from './_components/ProdutoListCells';
 import { IntegracoesColumnFilter } from './_components/IntegracoesColumnFilter';
 import { ImportarMercadoLivreModal } from './_components/ImportarMercadoLivreModal';
@@ -29,7 +30,8 @@ import { useEnviarPrecoAction } from './_components/useEnviarPrecoAction';
 const PREFIX_SENTINEL = '\uf8ff';
 
 /**
- * The nome search, handed to `TableView` rather than owned by this page.
+ * The search box — ONE input serving two very different lookups, handed to
+ * `TableView` rather than owned by this page.
  *
  * That is what puts the term in the URL as `?q=`, and with it in the sticky
  * list memory — a page-owned `useState` was reset every time an operator opened
@@ -58,10 +60,21 @@ const PREFIX_SENTINEL = '\uf8ff';
  * searching lets `produtoMeta.defaultQuery.orderBy` apply. Same coupling, same
  * fix as `alterar-precos/_components/ProdutoPickerModal.tsx`.
  *
- * Module-level so its identity is stable across renders.
+ * ⚠️ The second lookup is `resolveIds`, and it is what makes the box smart:
+ * a marketplace item id (`MLB1234567890`) names no field on `produtos` at all
+ * — it lives in a link SUBCOLLECTION — so it has to be resolved to produto
+ * ids by query first. `resolveIds` returning `null` is what hands the term
+ * back to the nome range above, which is the whole mechanism behind one box
+ * doing both. See `resolveProdutoIdsPorTermo`.
+ *
+ * ⚠️ Module-level, and `resolveIds` reaches for the Firestore singleton
+ * itself rather than closing over a prop. Its identity is a dependency of the
+ * resolution effect: an inline arrow would be a new function every render,
+ * re-running the effect, setting state, and re-rendering — a loop, not a
+ * slowdown.
  */
 const produtoSearch = {
-  placeholder: 'Buscar por nome…',
+  placeholder: 'Buscar por nome, SKU ou ID do anúncio…',
   toFilters: (term: string): PipelineFieldFilter[] => {
     const trimmed = term.trim();
     return trimmed === ''
@@ -73,6 +86,7 @@ const produtoSearch = {
   },
   toForcedOrderBy: (term: string) =>
     term.trim() === '' ? undefined : { field: 'nome', direction: 'asc' as const },
+  resolveIds: (term: string) => resolveProdutoIdsPorTermo(getFirebaseFirestore(), term),
 };
 
 /**
@@ -125,8 +139,10 @@ export default function ProdutosPage() {
   const [importOpen, setImportOpen] = useState(false);
 
   const db = getFirebaseFirestore();
-  // One read for the whole table, not one per row — see the hook.
-  const listaPadraoId = useListaPrecoPadraoId(db);
+  // One read for the whole table, not one per row — see the hook. It serves
+  // BOTH halves of the Preço column: the default lista's value inline and the
+  // names behind its "ver todos os preços" button.
+  const { rows: listasDePrecos, padraoId: listaPadraoId } = useListasDePrecos(db);
   // Same deal for the Canais de venda column: `integracoesComProduto` stores
   // bare integração ids, so the names and colours come from one cached read of
   // the (tiny) `integracao` collection, shared with the pickers.
@@ -154,8 +170,19 @@ export default function ProdutosPage() {
       {
         key: 'preco',
         label: 'Preço',
-        dependsOn: ['precos'],
-        renderCell: (row) => <ProdutoPrecoCell produto={row.data} listaPadraoId={listaPadraoId} />,
+        // ⚠️ `nome` and `sku` are here for the price modal's TITLE, not for the
+        // cell. They happen to be projected anyway because their own columns
+        // are visible — which is exactly why they must be declared: a column
+        // that reads a field it did not declare works right up until the
+        // column that did stops being shown, and then reads `undefined`.
+        dependsOn: ['precos', 'nome', 'sku'],
+        renderCell: (row) => (
+          <ProdutoPrecoCell
+            produto={row.data}
+            listas={listasDePrecos}
+            listaPadraoId={listaPadraoId}
+          />
+        ),
       },
       {
         // Legacy's "Canais de Venda" column, finally joined (#159 deferred it).
@@ -192,7 +219,7 @@ export default function ProdutosPage() {
         },
       },
     ],
-    [db, listaPadraoId, integracoes, integracoesById, integracoesStatus],
+    [db, listasDePrecos, listaPadraoId, integracoes, integracoesById, integracoesStatus],
   );
 
   return (
@@ -210,6 +237,12 @@ export default function ProdutosPage() {
         // query, its projection and its Firestore index stay in lockstep.
         meta={produtoMeta}
         search={produtoSearch}
+        // The column set is FIXED here (`produtoMeta.defaultQuery.columns`),
+        // so there is no ⚙ to open. That also takes the per-browser column
+        // memory out of play, which is the point rather than a side effect:
+        // this screen's read cost is its column set, and a saved set nobody
+        // can see or edit would decide it. See the prop's jsdoc.
+        showColumnPicker={false}
         virtualColumns={virtualColumns}
         fields={{
           // The schema field is REPLACED by the `nomeLink` virtual column, not

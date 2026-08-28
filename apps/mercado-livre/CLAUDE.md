@@ -440,7 +440,7 @@ matters:
 | `orders_v2`, `orders` | `handled` | order → pedido import (Step 9) |
 | `payments` | `handled` | payment sync onto the pedido's embedded pagamento (Step 9); since #1087 it also BOOTSTRAPS a missing pedido |
 | `shipments` | `handled` | shipment/`freteInicial` sync (Step 9) |
-| `claims` | `handled` | incidente ALWAYS; conversa/mensagens only while answerable (Step 14 / #768) |
+| `post_purchase`, `claims` | `handled` | incidente ALWAYS; conversa/mensagens only while answerable (Step 14 / #768). **Two keys, one handler** (#1322) — see the ⚠️ below |
 | `questions` | `handled` | pre-sale question → chat conversa/mensagem import (#532) |
 | `messages` | `handled` | post-sale pack thread → chat conversa/mensagem import (#532) |
 | `items_prices` | `ack` | **permanent no-op** (#803) — persists nothing |
@@ -822,6 +822,35 @@ sweep manual sales. The gate is `lastMarketplaceUpdate` (sole writer
 `discoverPedidoMercadoLivre`) plus an `orderML` mirror, `hasUserInteraction`, and a
 refusal while any pagamento is `aprovado` — a human reaches
 `aguardandoConfirmacaoDePagamento` legitimately through a PARTIAL payment.
+
+⚠️ **Post-sale arrives under TWO topic names, and claims reached NOTHING for
+months under one of them (#1322).** ML migrated to the subtopic model —
+`topic: "post_purchase"` with the kind in `actions` (`["claims"]` /
+`["claims_actions"]`) — while `TOPIC_DISPOSITION` still keyed on `claims`. Every
+delivery routed to `unknown-topic` and PARKED, so claims, mediations and
+post-sale messages were not ingested at all while the pedido stayed a
+healthy-looking `pago`. `claimImport.ts` was written and reachable the whole
+time; nothing routed to it. Both keys now sit in the table for the same reason
+`stock-location`/`stock-locations` both do (#1129): ML migrates per-account and
+its published reference is not a reliable guide to what a given application
+receives on a given day.
+⚠️ **The resource parser is `parseClaimResourceId`, NOT `parseOrderResourceId`.**
+A claim's SUB-RESOURCES arrive as their own deliveries — the live run recorded
+`/post-purchase/v1/claims/<id>/actions-history`, whose last segment is not
+numeric — so the order parser rejects them and a topic-only fix merely trades
+`unknown-topic` for `malformed-resource`. It anchors on the `claims/<digits>`
+segment, so whatever sub-resource ML invents next resolves to the same claim.
+⚠️ An **unrecognised** `post_purchase` action PARKS. A subtopic we do not know is
+data-bearing by construction (ML files returns, changes and cancellations under
+this entity), and acking one is the silent drop #813 exists to prevent — which
+is also how #1322 became visible at all.
+⚠️ **An open claim now BLOCKS work on the pedido**, via the overlay the importer
+feeds: `claimImport` writes `claimStatus`/`claimStage`/`entregue` on the
+incidente, and the `onIncidenteBloqueioSync` trigger (apps/functions) folds those
+into `pedido.disputaAbertaEm` / `devolucaoAbertaEm`, which refuse despacho, NF-e
+emission and the advance to `finalizado`. The claims path still writes NO pedido
+`estado` and no `status_pagamento` — `pago` is still the last rung this channel
+may reach.
 
 ⚠️ `items_prices` is not "pending" — it is closed by decision #803: the ERP owns
 both price tables, so a price notification has nothing to do. It stays in the

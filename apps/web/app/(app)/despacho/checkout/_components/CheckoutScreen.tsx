@@ -246,6 +246,10 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
             estado: freshData.estado,
             numero: freshData.numero,
             freteInicial: freshData.freteInicial,
+            // The marketplace dispute overlay (#1322) — server-owned, written
+            // by the `onIncidenteBloqueioSync` trigger.
+            disputaAbertaEm: freshData.disputaAbertaEm,
+            bloqueiosLiberados: freshData.bloqueiosLiberados,
           }
         : null;
       const freshItens = freshData ? flattenPedidoItens(freshData.itens) : [];

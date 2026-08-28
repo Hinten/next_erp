@@ -56,12 +56,15 @@ service cloud.firestore {
     // diff().affectedKeys() on update — legacy docs stay updatable).
     function v_pedidos(d, c) {
       return (!c.hasAny(['bloquearEmissaoNFe']) || (d.get('bloquearEmissaoNFe', null) == null || d.get('bloquearEmissaoNFe', null) is bool))
+        && (!c.hasAny(['bloqueiosLiberados']) || (d.get('bloqueiosLiberados', null) == null || d.get('bloqueiosLiberados', null) is list))
         && (!c.hasAny(['chNFeReferenciadas']) || (d.get('chNFeReferenciadas', null) == null || d.get('chNFeReferenciadas', null) is list))
         && (!c.hasAny(['clientePedidoOuterRef']) || (d.get('clientePedidoOuterRef', null) == null || d.get('clientePedidoOuterRef', null) is string))
         && (!c.hasAny(['dataFinalExpedicao']) || (d.get('dataFinalExpedicao', null) == null || d.get('dataFinalExpedicao', null) is int))
         && (!c.hasAny(['dataIndisponivelEstoque']) || (d.get('dataIndisponivelEstoque', null) == null || d.get('dataIndisponivelEstoque', null) is int))
         && (!c.hasAny(['dataRemocaoEstoque']) || (d.get('dataRemocaoEstoque', null) == null || d.get('dataRemocaoEstoque', null) is int))
         && (!c.hasAny(['descontoTotal']) || d.get('descontoTotal', null) is number)
+        && (!c.hasAny(['devolucaoAbertaEm']) || (d.get('devolucaoAbertaEm', null) == null || d.get('devolucaoAbertaEm', null) is int))
+        && (!c.hasAny(['disputaAbertaEm']) || (d.get('disputaAbertaEm', null) == null || d.get('disputaAbertaEm', null) is int))
         && (!c.hasAny(['dtImpressao']) || (d.get('dtImpressao', null) == null || d.get('dtImpressao', null) is int))
         && (!c.hasAny(['ehSaida']) || d.get('ehSaida', null) is bool)
         && (!c.hasAny(['enderecoFiscalOuterRef']) || (d.get('enderecoFiscalOuterRef', null) == null || d.get('enderecoFiscalOuterRef', null) is string))
@@ -360,8 +363,8 @@ service cloud.firestore {
 
     match /pedidos/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
-      allow create: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['dataIndisponivelEstoque']) || request.resource.data.get('dataIndisponivelEstoque', null) == null) && (!request.resource.data.keys().hasAny(['dataRemocaoEstoque']) || request.resource.data.get('dataRemocaoEstoque', null) == null) && (!request.resource.data.keys().hasAny(['estoqueAplicado']) || request.resource.data.get('estoqueAplicado', null) == null);
-      allow update: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['dataIndisponivelEstoque', 'dataRemocaoEstoque', 'estoqueAplicado']);
+      allow create: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['bloqueiosLiberados']) || request.resource.data.get('bloqueiosLiberados', null) == null) && (!request.resource.data.keys().hasAny(['dataIndisponivelEstoque']) || request.resource.data.get('dataIndisponivelEstoque', null) == null) && (!request.resource.data.keys().hasAny(['dataRemocaoEstoque']) || request.resource.data.get('dataRemocaoEstoque', null) == null) && (!request.resource.data.keys().hasAny(['devolucaoAbertaEm']) || request.resource.data.get('devolucaoAbertaEm', null) == null) && (!request.resource.data.keys().hasAny(['disputaAbertaEm']) || request.resource.data.get('disputaAbertaEm', null) == null) && (!request.resource.data.keys().hasAny(['estoqueAplicado']) || request.resource.data.get('estoqueAplicado', null) == null);
+      allow update: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['bloqueiosLiberados', 'dataIndisponivelEstoque', 'dataRemocaoEstoque', 'devolucaoAbertaEm', 'disputaAbertaEm', 'estoqueAplicado']);
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
@@ -391,7 +394,8 @@ service cloud.firestore {
 
     match /pedidos/{pedidoId}/incidentes/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
-      allow create, update: if isSuperUser() || p('d_pedido', 2);
+      allow create: if (isSuperUser() || p('d_pedido', 2)) && (!request.resource.data.keys().hasAny(['overrideBloqueio']) || request.resource.data.get('overrideBloqueio', null) == null);
+      allow update: if (isSuperUser() || p('d_pedido', 2)) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['overrideBloqueio']);
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 

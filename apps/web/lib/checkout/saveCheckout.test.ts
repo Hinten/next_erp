@@ -55,7 +55,13 @@ const expItem = (over: Partial<ExpectedItem> = {}): ExpectedItem => ({
 // All-gates-pass baseline; each test overrides one field to trip one gate.
 const base = (): EvaluatePreSaveInput => ({
   loaded: { estado: ESTADO_PEDIDO.pago, itens: [], freteInicial: frete('despachoAutorizado') },
-  fresh: { estado: ESTADO_PEDIDO.pago, numero: '100', freteInicial: frete('despachoAutorizado') },
+  fresh: {
+    estado: ESTADO_PEDIDO.pago,
+    numero: '100',
+    freteInicial: frete('despachoAutorizado'),
+    disputaAbertaEm: null,
+    bloqueiosLiberados: null,
+  },
   freshItens: [],
   expected: [],
   log: [],
@@ -90,7 +96,12 @@ describe('evaluatePreSave — gates in order', () => {
   it('4. asks to confirm when frete changed; proceeds once confirmed', () => {
     const changed: EvaluatePreSaveInput = {
       ...base(),
-      fresh: { ...base().fresh!, freteInicial: frete('emSeparacao') },
+      fresh: {
+        ...base().fresh!,
+        freteInicial: frete('emSeparacao'),
+        disputaAbertaEm: null,
+        bloqueiosLiberados: null,
+      },
     };
     expect(evaluatePreSave(changed)).toMatchObject({ decision: 'confirm', kind: 'frete-changed' });
     expect(evaluatePreSave({ ...changed, confirmed: new Set(['frete-changed']) })).toMatchObject({
@@ -110,7 +121,13 @@ describe('evaluatePreSave — gates in order', () => {
     const r = evaluatePreSave({
       ...base(),
       loaded: { estado: ESTADO_PEDIDO.pago, itens: [], freteInicial: null },
-      fresh: { estado: ESTADO_PEDIDO.pago, numero: '100', freteInicial: null },
+      fresh: {
+        estado: ESTADO_PEDIDO.pago,
+        numero: '100',
+        freteInicial: null,
+        disputaAbertaEm: null,
+        bloqueiosLiberados: null,
+      },
     });
     expect(r).toMatchObject({ decision: 'block', kind: 'frete-null' });
   });
@@ -143,7 +160,13 @@ describe('evaluatePreSave — gates in order', () => {
     const r = evaluatePreSave({
       ...base(),
       loaded: { estado: ESTADO_PEDIDO.pago, itens: [], freteInicial: rev },
-      fresh: { estado: ESTADO_PEDIDO.pago, numero: '77', freteInicial: rev },
+      fresh: {
+        estado: ESTADO_PEDIDO.pago,
+        numero: '77',
+        freteInicial: rev,
+        disputaAbertaEm: null,
+        bloqueiosLiberados: null,
+      },
     });
     expect(r).toMatchObject({ decision: 'block', kind: 'reverso' });
   });
@@ -162,7 +185,13 @@ describe('evaluatePreSave — gates in order', () => {
     const input: EvaluatePreSaveInput = {
       ...base(),
       loaded: { estado: ESTADO_PEDIDO.pago, itens: [], freteInicial: cf },
-      fresh: { estado: ESTADO_PEDIDO.pago, numero: '100', freteInicial: cf },
+      fresh: {
+        estado: ESTADO_PEDIDO.pago,
+        numero: '100',
+        freteInicial: cf,
+        disputaAbertaEm: null,
+        bloqueiosLiberados: null,
+      },
     };
     expect(evaluatePreSave(input)).toMatchObject({ decision: 'confirm', kind: 'frete-estado' });
     expect(evaluatePreSave({ ...input, confirmed: new Set(['frete-estado']) })).toEqual({
@@ -183,6 +212,8 @@ describe('evaluatePreSave — gates in order', () => {
         estado: ESTADO_PEDIDO.iniciado,
         numero: '100',
         freteInicial: frete('despachoAutorizado'),
+        disputaAbertaEm: null,
+        bloqueiosLiberados: null,
       },
     });
     expect(r).toMatchObject({ decision: 'block', kind: 'nao-pago' });

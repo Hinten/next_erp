@@ -7,6 +7,7 @@ import {
   seedGruposDeVariacao,
 } from './_helpers/seed-data';
 import { clickSave, fillField } from './helpers/object-view';
+import { searchTableView } from './helpers/table-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -128,7 +129,7 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     // The parent's id isn't carried across tests — find it again through the
     // produtos list search (exact-name link, so children don't match).
     await page.goto('/produtos');
-    await page.getByPlaceholder('Buscar por nome…').fill(nome);
+    await searchTableView(page, nome);
     await page.getByRole('link', { name: nome, exact: true }).click();
     await page.waitForURL(/\/produtos\/[^/]+(\/editar)?$/, { timeout: 15_000 });
     const id = new URL(page.url()).pathname.split('/')[2]!;

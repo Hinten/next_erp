@@ -13,6 +13,7 @@ export type {
 export {
   buildPedidoPatch,
   savePedido,
+  isIgnoredForConcurrency,
   remotelyChangedFields,
   buildIncidenteOp,
   saveIncidente,

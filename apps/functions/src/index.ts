@@ -36,10 +36,12 @@ export { onPedidoChanged } from './pedidos/registrarHistoricoPedido';
 // write per event).
 export { onPagamentoChanged } from './pedidos/onPagamentoChanged';
 export { onIncidenteChanged } from './pedidos/onIncidenteChanged';
+export { onIncidenteBloqueioSync } from './pedidos/sincronizarBloqueioIncidente';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
 export {
   onPedidoEstoqueSync,
   resincronizarEstoquePedido,
 } from './estoques/sincronizarEstoquePedido';
 export { reconciliarPagamentoPedido } from './pedidos/reconciliarPagamentoPedido';
+export { liberarBloqueioIncidente } from './pedidos/liberarBloqueioIncidente';
 export { finalizarBalanco, processarBalanco } from './estoques/aplicarBalanco';

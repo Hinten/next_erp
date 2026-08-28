@@ -22,6 +22,7 @@ export {
   FreightNetworkError,
   FreightNotFoundError,
   FreightReauthRequiredError,
+  FreightSchemaError,
   FreightServerError,
   FreightValidationError,
 } from './errors';

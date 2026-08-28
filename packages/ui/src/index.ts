@@ -28,6 +28,12 @@ export { ColumnPicker, type ColumnPickerItem, type ColumnPickerProps } from './t
 export { ActionBar, type ActionBarProps } from './table/ActionBar';
 export { useCollectionMonitor, type CollectionMonitorResult } from './table/useCollectionMonitor';
 export { SearchBar, type SearchBarProps } from './table/SearchBar';
+export {
+  useSearchIdResolution,
+  type SearchIdResolution,
+  type SearchIdResolver,
+  type SearchIdResolutionState,
+} from './table/useSearchIdResolution';
 export { ActiveFilters, type ActiveFiltersProps } from './table/ActiveFilters';
 export {
   SEARCH_CHIP_KEY,

@@ -37,6 +37,7 @@ import {
   type MlModeration,
   type MlOrder,
   type MlOrderSearch,
+  type MlFreeShippingOptions,
   type MlPack,
   type MlPayment,
   type MlPictureUpload,
@@ -84,6 +85,7 @@ import {
   mlQuestionSchema,
   mlClaimSearchSchema,
   mlMissedFeedsSchema,
+  mlFreeShippingOptionsSchema,
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
   mlShipmentCostsSchema,
@@ -304,6 +306,20 @@ export interface MercadoLivreApi {
     sellerId: number | string,
     logisticType: string,
   ): Promise<MlSellerShippingSchedule>;
+  /**
+   * `GET /users/{sellerId}/shipping_options/free` — ML's shipping-cost estimate
+   * for one item, and the weight it BILLS for
+   * (`coverage.all_country.billable_weight`, in grams).
+   *
+   * The importer's only use is that weight, as the last resort for a listing ML
+   * carries no `WEIGHT`/`SELLER_PACKAGE_WEIGHT` on. ML documents this as working
+   * only for items live on the marketplace, so a paused/closed listing answering
+   * 4xx is EXPECTED — callers degrade, they do not fail.
+   */
+  getFreeShippingOptions(
+    sellerId: number | string,
+    params: { itemId: string; freeShipping?: boolean },
+  ): Promise<MlFreeShippingOptions>;
   /**
    * `GET /orders/{orderId}/billing_info` — buyer fiscal data for NF-e
    * emission. Sent with header `x-version: 2` (order import, Step 9).
@@ -1120,6 +1136,19 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
         `/users/${sellerId}/shipping/schedule/${logisticType}`,
         mlSellerShippingScheduleSchema,
       ),
+    getFreeShippingOptions: (sellerId, params) =>
+      request('GET', `/users/${sellerId}/shipping_options/free`, mlFreeShippingOptionsSchema, {
+        query: {
+          item_id: params.itemId,
+          // `verbose` is what makes ML report the discount breakdown; it costs
+          // nothing and keeps the body self-describing when a human reads a log.
+          verbose: 'true',
+          // ML's own note says to send this explicitly, because the cost differs
+          // by who pays. It does not move `billable_weight` — the only field the
+          // importer reads — but omitting it makes the COST half meaningless.
+          free_shipping: params.freeShipping === false ? 'false' : 'true',
+        },
+      }),
     getOrderBillingInfo: (orderId) =>
       request('GET', `/orders/${orderId}/billing_info`, mlBillingInfoSchema, {
         headers: { 'x-version': '2' },

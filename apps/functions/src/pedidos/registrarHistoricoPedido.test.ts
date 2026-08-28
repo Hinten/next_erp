@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CAMPOS_ESTOQUE_SYNC } from '@delfrance/data/pedido';
+import { CAMPOS_ESTOQUE_SYNC, isIgnoredForConcurrency } from '@delfrance/data/pedido';
 import { ESTADO_FRETE, ESTADO_PEDIDO } from '@delfrance/schemas';
 
 import { resolveUsuarioOuterRef as sharedResolveUsuarioOuterRef } from '../lib/authContext';
@@ -30,14 +30,34 @@ describe('resolveUsuarioOuterRef re-export', () => {
 describe('PEDIDO_HISTORY_IGNORE_FIELDS', () => {
   it('is exactly the stamps, the ML watermark, the itens projection and the sync write-back', () => {
     expect([...PEDIDO_HISTORY_IGNORE_FIELDS].sort()).toEqual([
+      'bloqueiosLiberados',
       'dataIndisponivelEstoque',
       'dataRemocaoEstoque',
+      'devolucaoAbertaEm',
+      'disputaAbertaEm',
       'estoqueAplicado',
       'itensIds',
       'lastMarketplaceUpdate',
       'timestamp',
       'ultimaModificacao',
     ]);
+  });
+
+  it('⚠️ stays in step with CONCURRENCY_IGNORE — the two are a PAIR (#972/#1322)', () => {
+    // Same fields, two different symptoms: a phantom "Sistema" audit row here,
+    // a phantom "Pedido alterado" conflict there. #1322 extended one and not
+    // the other on its first pass, which is precisely the drift this catches.
+    //
+    // Not a full set-equality: `itensIds` is history-only (a projection worth
+    // ignoring in the feed but never written by a trigger), and the removed
+    // derived caches are conflict-only. What MUST hold is that every field a
+    // server trigger writes behind the operator's back is in BOTH.
+    for (const campo of ['disputaAbertaEm', 'devolucaoAbertaEm', 'bloqueiosLiberados']) {
+      expect(PEDIDO_HISTORY_IGNORE_FIELDS, `${campo} missing from the history list`).toContain(
+        campo,
+      );
+      expect(isIgnoredForConcurrency(campo), `${campo} missing from CONCURRENCY_IGNORE`).toBe(true);
+    }
   });
 
   it('contains every CAMPOS_ESTOQUE_SYNC field — the phantom-row guard', () => {

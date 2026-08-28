@@ -87,6 +87,20 @@ export const PEDIDO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
   'timestamp',
   'ultimaModificacao',
   ...CAMPOS_ESTOQUE_SYNC,
+  // The marketplace dispute overlay (#1322) — the SAME failure as
+  // `CAMPOS_ESTOQUE_SYNC` above, one trigger later, and the half the first pass
+  // missed. `onIncidenteBloqueioSync` writes these three whenever a claim opens,
+  // closes or is released; without them every one of those events leaves an
+  // extra `historicoDeModificacoes` row attributed to "Sistema", naming a field
+  // the operator can neither see nor edit.
+  //
+  // ⚠️ This list and `CONCURRENCY_IGNORE` (`packages/data/src/pedido/usecases.ts`)
+  // are a PAIR — same fields, two different symptoms (a phantom audit row here,
+  // a phantom "Pedido alterado" conflict there). Extending one without the other
+  // fixes half the bug, which is exactly what happened on the first pass.
+  'disputaAbertaEm',
+  'devolucaoAbertaEm',
+  'bloqueiosLiberados',
 ];
 
 /**

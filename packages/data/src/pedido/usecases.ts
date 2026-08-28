@@ -116,6 +116,13 @@ export class PedidoConflictError extends Error {
  *    the two markers are read-only in the Estoque tab, so `buildPedidoPatch` can
  *    never carry any of them — excluding them removes a false conflict without
  *    opening an overwrite.
+ *  - The marketplace dispute overlay (#1322) — the same failure a second
+ *    trigger later. `onIncidenteBloqueioSync` writes these three whenever a
+ *    claim opens, closes or is released, which is entirely outside the
+ *    operator's session, and it deliberately does NOT stamp
+ *    `ultimaModificacao` (for exactly this reason). All three are in
+ *    `pedidoMeta.serverOwnedFields`, so the rules deny the client writing them
+ *    and `buildPedidoPatch` can never carry one.
  *
  * ⚠️ What keeps this honest: `CAMPOS_OBSERVADOS ∩ CAMPOS_ESTOQUE_SYNC = ∅` in
  * the sync (pinned by its own test), so the operator-visible CAUSE of a stock
@@ -127,6 +134,9 @@ const CONCURRENCY_IGNORE = new Set<string>([
   'timestamp',
   'lastMarketplaceUpdate',
   ...CAMPOS_ESTOQUE_SYNC,
+  'disputaAbertaEm',
+  'devolucaoAbertaEm',
+  'bloqueiosLiberados',
   // Removed derived caches (#796). `baseline`/`current` are NOT raw
   // `snap.data()` — `PedidoDocData`'s contract (`port.ts`) requires the
   // parsed wire shape, and the client adapter gets that "for free by reading

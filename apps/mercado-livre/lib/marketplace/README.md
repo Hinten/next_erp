@@ -25,6 +25,7 @@ cross-theme edges this layout exists to expose. Same convention as
 | [`categorias/`](categorias/)     | Category tree and catalog metadata reads.                                                                  |
 | [`nfe/`](nfe/)                   | Uploading an approved NF-e to ML.                                                                          |
 | [`frete/`](frete/)               | `int_frete` ⇆ ML conta sync.                                                                               |
+| [`fixtures/`](fixtures/)         | #1342 — capturing raw ML response bodies as fixtures. A diagnostic: imports no theme, imported by none.    |
 
 ## Reading order for a newcomer
 

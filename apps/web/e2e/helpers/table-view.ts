@@ -17,6 +17,25 @@ export async function expectRowHidden(page: Page, text: string): Promise<void> {
   });
 }
 
+/**
+ * The TableView search box (the opt-in `search` prop's input).
+ *
+ * ⚠️ Located by its stable `aria-label`, never by its placeholder. The
+ * placeholder is presentational and tracks what the search can DO — /produtos'
+ * went from "Buscar por nome…" to naming SKU and marketplace ids the day it
+ * learned to resolve them — which silently breaks every `getByPlaceholder`
+ * call site at once, across specs that have nothing to do with the change.
+ * `exact` because other screens carry `Buscar por …` labels of their own.
+ */
+export function tableViewSearchBox(page: Page) {
+  return page.getByLabel('Buscar', { exact: true });
+}
+
+/** Type a term into the TableView search box. */
+export async function searchTableView(page: Page, term: string): Promise<void> {
+  await tableViewSearchBox(page).fill(term);
+}
+
 /** Assert the TableView's "no results" empty state is shown. */
 export async function expectEmptyState(page: Page): Promise<void> {
   await expect(page.getByText('Nenhum resultado.')).toBeVisible({ timeout: 10_000 });

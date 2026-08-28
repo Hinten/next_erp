@@ -384,13 +384,28 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Eleven custom lint rules in `packages/config-eslint/rules/`:
+- Twelve custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding`,
   `no-optional-without-nullable`, `no-client-estado-history-write`,
-  `no-env-secrets-access`, `no-hardcoded-gcp-region` and
+  `no-env-secrets-access`, `no-hardcoded-gcp-region`,
+  `no-unvalidated-response` and
   `prefer-schema-enum` (error), `no-inline-admin-collection`,
   `no-lossy-date-parse`, `no-ambient-timezone` and
-  `no-error-as-sole-instanceof` (warn). `no-ambient-timezone` bans reading the
+  `no-error-as-sole-instanceof` (warn). `no-unvalidated-response` bans asserting
+  a type onto an HTTP response body — `return parsed as T`, `(await res.json())
+  as Foo`. Six near-identical clients ended that way, so on any 2xx the caller
+  got whatever arrived wearing a type nobody verified, and all three failure
+  modes were SILENT: a wrong shape came back cast, an empty body came back as
+  `null as T`, and a proxy's HTML came back as `{error: '<html>…'}` — a TRUTHY
+  object that sailed through `if (conta)`. That is what reported a mint as
+  successful while it had reused two accounts and wiped a credential
+  (#1295 → #1302). ⚠️ Both of its shapes additionally require a TRANSPORT call
+  (`fetch`/`doFetch`/`fetchImpl`) in an enclosing function, and that qualifier
+  is the rule: without it the same checks flag ~120 sites — service-account
+  files, fixtures, `sessionStorage`, and every test reading back its own
+  `NextResponse` — while `snap.data() as T` on a Firestore snapshot is
+  character-for-character the banned shape and perfectly correct. Validate with
+  `lerRespostaJson` (`@delfrance/core/wire`), or say `as unknown` and narrow. `no-ambient-timezone` bans reading the
   ambient process timezone on a SERVER surface: `apps/nfe` runs
   `TZ=America/Sao_Paulo` while every other backend is UTC, so the same code
   answers three hours apart depending on which service ran it — and the test

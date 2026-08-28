@@ -11,7 +11,14 @@
  * decide on.
  */
 import { ensureCartAgency } from './agency';
-import { MelhorEnvioError, MelhorEnvioHttpError, MelhorEnvioValidationError } from './errors';
+import { camposInvalidos } from '@delfrance/core/wire';
+
+import {
+  MelhorEnvioError,
+  MelhorEnvioHttpError,
+  MelhorEnvioSchemaError,
+  MelhorEnvioValidationError,
+} from './errors';
 import {
   type Agency,
   type Balance,
@@ -123,7 +130,27 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
     }
 
     if (res.ok) {
-      return schema.parse(parsed);
+      // ⚠️ `safeParse`, not `parse`. A raw `ZodError` is not a `MelhorEnvioError`,
+      // so it escaped every `isMelhorEnvioError(err)` route guard and turned a
+      // malformed 200 into an unhandled 500 — the caller got a generic server
+      // error naming nothing. `oauth.ts` already fixed exactly this and left a
+      // comment saying why; the API client never got the same treatment.
+      const result = schema.safeParse(parsed);
+      if (!result.success) {
+        // `parsed` is deliberately NOT attached: a response body can carry
+        // account data, and this message reaches the browser. Field PATHS only.
+        // `camposInvalidos`, not a local `new Set(...)`: this de-duplicates
+        // AFTER collapsing array indices and caps the list. `calculate` and
+        // `listAgencies` return ARRAYS, so one bad column across 20 quote
+        // options otherwise reads `0.name, 1.name, … 19.name` instead of
+        // `[].name` — in a message `melhorEnvioErrorResponse` sends onward.
+        const campos = camposInvalidos(result.error.issues);
+        throw new MelhorEnvioSchemaError(
+          `Resposta do Melhor Envio em formato inesperado. Campos inválidos: ${campos.join(', ')}.`,
+          result.error.issues,
+        );
+      }
+      return result.data;
     }
 
     if (res.status === 422) {

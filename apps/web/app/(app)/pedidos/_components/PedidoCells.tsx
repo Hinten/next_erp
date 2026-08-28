@@ -27,6 +27,8 @@ import {
   type Pedido,
   TIPO_CLIENTE_LABELS,
   type TipoCliente,
+  bloqueioDespachoAtivo,
+  bloqueioFinalizarAtivo,
   freightCapsFor,
   pedidoTotal,
 } from '@delfrance/schemas';
@@ -45,7 +47,14 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconBan, IconCheck, IconFileDownload, IconFileText } from '@tabler/icons-react';
+import {
+  IconAlertTriangle,
+  IconArrowBackUp,
+  IconBan,
+  IconCheck,
+  IconFileDownload,
+  IconFileText,
+} from '@tabler/icons-react';
 
 import { CopyIconButton } from '@/components/CopyIconButton';
 import { clienteCollection } from '@/lib/data/clienteCollection';
@@ -524,6 +533,53 @@ export function ImpCell({ pedido }: { pedido: Pedido }) {
   return (
     <Tooltip label={formatMicros(pedido.dtImpressao)} withinPortal>
       <IconCheck size={18} color="var(--mantine-color-teal-6)" aria-label="Impresso" />
+    </Tooltip>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                DisputaCell                                 */
+/*                                                                            */
+/*  Marketplace dispute / devolução marker (#1322).                           */
+/*                                                                            */
+/*  ⚠️ This column exists because every OTHER cell in the row looks healthy.  */
+/*  ML keeps the order `paid` for the whole mediation, so "Pagamento" reads    */
+/*  Pago, the cliente resolves, the frete is fine — and an operator picking    */
+/*  orders to ship from this list has no signal at all that the money is       */
+/*  about to be refunded. Reads two scalars already on the pedido doc: no      */
+/*  extra read, no index.                                                     */
+/* -------------------------------------------------------------------------- */
+
+export function DisputaCell({ pedido }: { pedido: Pedido }) {
+  const { disputaAbertaEm, devolucaoAbertaEm } = pedido;
+  if (disputaAbertaEm == null && devolucaoAbertaEm == null) return null;
+
+  // Both open → the dispute wins the icon, since it is the one that blocks
+  // dispatch, which is the decision being made on this screen.
+  const devolucaoApenas = disputaAbertaEm == null;
+  const desde = formatMicros(disputaAbertaEm ?? devolucaoAbertaEm);
+  const label = devolucaoApenas
+    ? `Devolução em andamento desde ${desde}`
+    : `Reclamação aberta desde ${desde}`;
+  // A released block is still worth showing — the claim is open, an operator
+  // just decided to proceed — but it must not read as "stop", so it goes grey.
+  const liberado = !bloqueioDespachoAtivo(pedido) && !bloqueioFinalizarAtivo(pedido);
+
+  return (
+    <Tooltip label={liberado ? `${label} (bloqueios liberados)` : label} withinPortal>
+      {devolucaoApenas ? (
+        <IconArrowBackUp
+          size={18}
+          color={liberado ? 'var(--mantine-color-gray-5)' : 'var(--mantine-color-orange-6)'}
+          aria-label={label}
+        />
+      ) : (
+        <IconAlertTriangle
+          size={18}
+          color={liberado ? 'var(--mantine-color-gray-5)' : 'var(--mantine-color-orange-6)'}
+          aria-label={label}
+        />
+      )}
     </Tooltip>
   );
 }

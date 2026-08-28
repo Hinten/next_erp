@@ -6,6 +6,7 @@ import {
   isKitFromAttributes,
   itemStockLivesOnChildren,
   mapMlItemToImport,
+  pesoBrutoDeclaradoKg,
   skuFromAttributes,
   skuGuessFromVariations,
   weightKgFromAttribute,
@@ -274,5 +275,307 @@ describe('mapMlItemToImport — userProductId (#706)', () => {
 
   it('is null when ML omits it', () => {
     expect(mapMlItemToImport(itemSchema.parse({ id: 'MLB1' })).userProductId).toBeNull();
+  });
+});
+
+/**
+ * The package fallbacks — a listing where ML declares no `SELLER_PACKAGE_*` and
+ * no `WEIGHT` at all, which is the normal shape for an ME2 listing (ML stipulates
+ * the package itself). Measured live on `MLB5146021467`, 27/08/2026.
+ *
+ * ⚠️ Every fixture below uses THREE DISTINCT axis values on purpose. The real
+ * listing is 10×10×10 cm, so a test built from it alone cannot tell a straight
+ * mapping from the crossed one — and the two genuinely differ here (tier 1 is
+ * crossed for legacy publish parity, tier 2 is straight because ML names the spec
+ * attributes in Portuguese). Equal fixtures also pass against a clobbering
+ * writer, the shape that got two bugs past this suite in #1142.
+ */
+describe('mapMlItemToImport — package fallbacks', () => {
+  /** ML's shape for a `number_unit` on a live item: the split ONLY in `values[]`. */
+  const medida = (id: string, n: number) => ({
+    id,
+    value_id: null,
+    value_name: `${n} cm`,
+    values: [{ id: null, name: `${n} cm`, struct: { number: n, unit: 'cm' } }],
+  });
+
+  /** A listing with no package of its own — tier 1 empty by construction. */
+  const semPacote = (attrs: unknown[]) =>
+    simpleItem({ attributes: [{ id: 'BRAND', value_name: 'Genérica' }, ...attrs] });
+
+  it('falls back to the product-spec trio, mapped STRAIGHT (Altura/Largura/Comprimento)', () => {
+    const m = mapMlItemToImport(
+      semPacote([medida('HEIGHT', 11), medida('WIDTH', 22), medida('LENGTH', 33)]),
+    );
+    expect(m.alturaCm).toBe(11); // HEIGHT = Altura
+    expect(m.larguraCm).toBe(22); // WIDTH  = Largura
+    expect(m.profundidadeCm).toBe(33); // LENGTH = Comprimento
+  });
+
+  it('reads the spec trio from a baked value_name when ML sends no struct at all', () => {
+    const m = mapMlItemToImport(
+      semPacote([
+        { id: 'HEIGHT', value_name: '11 cm' },
+        { id: 'WIDTH', value_name: '22 cm' },
+        { id: 'LENGTH', value_name: '33 cm' },
+      ]),
+    );
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([11, 22, 33]);
+  });
+
+  it('converts the struct unit (mm/m), and DROPS an unrecognised one', () => {
+    const mm = mapMlItemToImport(
+      semPacote([
+        { id: 'HEIGHT', values: [{ struct: { number: 110, unit: 'mm' } }] },
+        { id: 'WIDTH', values: [{ struct: { number: 22, unit: 'cm' } }] },
+        { id: 'LENGTH', values: [{ struct: { number: 0.33, unit: 'm' } }] },
+      ]),
+    );
+    expect([mm.alturaCm, mm.larguraCm, mm.profundidadeCm]).toEqual([11, 22, 33]);
+
+    // An inch is a real ML unit we have no factor for. Guessing would be a box
+    // off by 2.54×, so the whole trio is refused rather than partly filled.
+    const inch = mapMlItemToImport(
+      semPacote([
+        { id: 'HEIGHT', values: [{ struct: { number: 11, unit: 'in' } }] },
+        { id: 'WIDTH', values: [{ struct: { number: 22, unit: 'cm' } }] },
+        { id: 'LENGTH', values: [{ struct: { number: 33, unit: 'cm' } }] },
+      ]),
+    );
+    expect([inch.alturaCm, inch.larguraCm, inch.profundidadeCm]).toEqual([null, null, null]);
+  });
+
+  it('⚠️ CONTROL — a declared SELLER_PACKAGE_* set wins, and takes NO axis from the spec trio', () => {
+    const m = mapMlItemToImport(
+      simpleItem({
+        attributes: [
+          { id: 'SELLER_PACKAGE_HEIGHT', value_name: '5 cm' },
+          { id: 'SELLER_PACKAGE_LENGTH', value_name: '30 cm' },
+          { id: 'SELLER_PACKAGE_WIDTH', value_name: '20 cm' },
+          medida('HEIGHT', 11),
+          medida('WIDTH', 22),
+          medida('LENGTH', 33),
+        ],
+      }),
+    );
+    // Crossed, and none of 11/22/33 anywhere in sight.
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([5, 30, 20]);
+  });
+
+  it('⚠️ CONTROL — the spec trio is ALL-OR-NOTHING: one axis alone writes nothing', () => {
+    const m = mapMlItemToImport(semPacote([medida('HEIGHT', 11)]));
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([null, null, null]);
+  });
+
+  it('⚠️ CONTROL — a partial SELLER_PACKAGE_* set stays partial, never topped up', () => {
+    // Two sources describing two different boxes must not be merged into a third
+    // that neither one states — the rule `rollupDimensoesDosFilhos` follows.
+    const m = mapMlItemToImport(
+      simpleItem({
+        attributes: [
+          { id: 'SELLER_PACKAGE_HEIGHT', value_name: '5 cm' },
+          medida('WIDTH', 22),
+          medida('LENGTH', 33),
+        ],
+      }),
+    );
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([5, null, null]);
+  });
+
+  it('⚠️ CONTROL — a zero axis is not a package', () => {
+    const m = mapMlItemToImport(
+      semPacote([medida('HEIGHT', 0), medida('WIDTH', 22), medida('LENGTH', 33)]),
+    );
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([null, null, null]);
+  });
+
+  it('billableWeightG lands on pesoBrutoKg and NEVER on pesoLiquidoKg', () => {
+    const m = mapMlItemToImport(semPacote([]), { billableWeightG: 1539 });
+    expect(m.pesoBrutoKg).toBe(1.539);
+    // `pesoLiquidoKg` publishes as ML's WEIGHT attribute — the product's mass. A
+    // billable figure there would invent data on every republish.
+    expect(m.pesoLiquidoKg).toBeNull();
+  });
+
+  it('⚠️ CONTROL — a declared SELLER_PACKAGE_WEIGHT outranks the billable one', () => {
+    const m = mapMlItemToImport(simpleItem(), { billableWeightG: 1539 });
+    expect(m.pesoBrutoKg).toBe(0.6); // SELLER_PACKAGE_WEIGHT 600 g
+  });
+
+  it('⚠️ CONTROL — no attributes and no billable weight still yields five nulls', () => {
+    const m = mapMlItemToImport(semPacote([]), { billableWeightG: null });
+    expect([m.pesoLiquidoKg, m.pesoBrutoKg, m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it('the real MLB5146021467 body: 10x10x10 cm from the spec trio, 1.539 kg from ML', () => {
+    // Verbatim from `GET /items/MLB5146021467?include_attributes=all`, 27/08/2026 —
+    // the listing that made this fallback necessary. No SELLER_PACKAGE_*, no
+    // WEIGHT, `shipping.dimensions` null.
+    const item = itemSchema.parse({
+      id: 'MLB5146021467',
+      title: 'Bandeja De Madeira Enfeitada Gatinho Marrom',
+      family_name: 'Bandeja De Madeira Enfeitada Gatinho',
+      family_id: 3132311435776912,
+      user_product_id: 'MLBU4961776613',
+      category_id: 'MLB457167',
+      price: 97.97,
+      base_price: 97.97,
+      available_quantity: 5,
+      condition: 'new',
+      status: 'active',
+      listing_type_id: 'gold_pro',
+      seller_id: 3616169770,
+      shipping: {
+        mode: 'me2',
+        tags: ['mandatory_free_shipping'],
+        dimensions: null,
+        free_shipping: true,
+        logistic_type: 'xd_drop_off',
+      },
+      attributes: [
+        { id: 'BRAND', value_id: '276243', name: 'Marca', value_name: 'Genérica' },
+        { id: 'COLOR', value_id: '52005', name: 'Cor', value_name: 'Marrom' },
+        {
+          id: 'HEIGHT',
+          name: 'Altura',
+          value_id: null,
+          value_name: '10 cm',
+          values: [{ id: null, name: '10 cm', struct: { number: 10, unit: 'cm' } }],
+        },
+        {
+          id: 'LENGTH',
+          name: 'Comprimento',
+          value_id: null,
+          value_name: '10 cm',
+          values: [{ id: null, name: '10 cm', struct: { number: 10, unit: 'cm' } }],
+        },
+        {
+          id: 'WIDTH',
+          name: 'Largura',
+          value_id: null,
+          value_name: '10 cm',
+          values: [{ id: null, name: '10 cm', struct: { number: 10, unit: 'cm' } }],
+        },
+        { id: 'SELLER_SKU', value_id: null, name: 'SKU', value_name: 'bandGato123' },
+      ],
+    });
+
+    // Before this change every one of these was null, on two consecutive imports.
+    const m = mapMlItemToImport(item, { billableWeightG: 1539 });
+    expect(m.alturaCm).toBe(10);
+    expect(m.larguraCm).toBe(10);
+    expect(m.profundidadeCm).toBe(10);
+    expect(m.pesoBrutoKg).toBe(1.539);
+    // ML publishes no net weight for this listing and nothing may invent one —
+    // the produto screen still asks the operator for it.
+    expect(m.pesoLiquidoKg).toBeNull();
+    expect(m.sku).toBe('bandGato123');
+    expect(m.isUserProductModel).toBe(true);
+  });
+});
+
+describe('pesoBrutoDeclaradoKg — the spend-or-not gate the IO layer reads', () => {
+  it('answers the declared weight, so a listing that has one costs no ML call', () => {
+    expect(pesoBrutoDeclaradoKg(simpleItem())).toBe(0.6);
+  });
+
+  it('null when ML declares none — the case that earns the lookup', () => {
+    expect(pesoBrutoDeclaradoKg(simpleItem({ attributes: [] }))).toBeNull();
+  });
+});
+
+/**
+ * ⚠️ `values[]` must never be able to fail an item parse.
+ *
+ * It used to be an unknown key surviving on `.passthrough()` — inert, incapable
+ * of throwing. Typing it for `values[0].struct` briefly made every element of
+ * every attribute of every item a validation surface, and `itemSchema` carries no
+ * outer `.catch()`: one odd entry killed `GET /items` for that listing, taking the
+ * import, the publish, `itemsStatusSync` and the notification handlers with it.
+ *
+ * These are the exact five shapes that failed before the narrow + `.catch`.
+ */
+describe('itemAttributeSchema.values — drift must degrade, never throw', () => {
+  const comAtributo = (attr: unknown) =>
+    itemSchema.safeParse({
+      id: 'MLB1',
+      attributes: [{ id: 'BRAND', value_name: 'Acme' }, attr],
+    });
+
+  const derivas: Array<[string, unknown]> = [
+    // ML has form for numeric ids — `itemVariationSchema.id` is a union for that
+    // very reason. This one alone used to fail at `attributes.1.values.0.id`.
+    ['numeric id', { id: 'HEIGHT', values: [{ id: 123, name: '10 cm' }] }],
+    ['object name', { id: 'HEIGHT', values: [{ id: null, name: { x: 1 } }] }],
+    ['struct.number non-numeric', { id: 'HEIGHT', values: [{ struct: { number: 'abc' } }] }],
+    ['struct.unit numeric', { id: 'HEIGHT', values: [{ struct: { number: 10, unit: 5 } }] }],
+    ['values as an object', { id: 'HEIGHT', values: { struct: { number: 10, unit: 'cm' } } }],
+  ];
+
+  for (const [label, attr] of derivas) {
+    it(`parses through: ${label}`, () => {
+      const r = comAtributo(attr);
+      // Asserted as a string so a regression names the failing PATH, not just `false`.
+      expect(r.success ? 'parses' : `FAILS at ${r.error.issues[0]?.path.join('.')}`).toBe('parses');
+    });
+  }
+
+  it('⚠️ CONTROL — drift degrades to no dimensions, it does not invent them', () => {
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [
+        { id: 'HEIGHT', values: [{ struct: { number: 'abc' } }] },
+        { id: 'WIDTH', values: [{ struct: { number: 22, unit: 'cm' } }] },
+        { id: 'LENGTH', values: [{ struct: { number: 33, unit: 'cm' } }] },
+      ],
+    });
+    const m = mapMlItemToImport(item);
+    // The trio is all-or-nothing, so one unreadable axis yields none.
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([null, null, null]);
+  });
+
+  it('⚠️ CONTROL — a well-formed struct still reads, so the narrow did not gut it', () => {
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [
+        { id: 'HEIGHT', values: [{ id: 'x', name: '11 cm', struct: { number: 11, unit: 'cm' } }] },
+        { id: 'WIDTH', values: [{ struct: { number: 22, unit: 'cm' } }] },
+        { id: 'LENGTH', values: [{ struct: { number: 33, unit: 'cm' } }] },
+      ],
+    });
+    const m = mapMlItemToImport(item);
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([11, 22, 33]);
+  });
+
+  it('⚠️ the NARROW earns its keep: an odd id must not cost the struct beside it', () => {
+    // `.catch(undefined)` alone already stops the throw — but it discards the WHOLE
+    // `values` array to do it, taking the struct with it and losing the dimension.
+    // Only NOT typing `id`/`name` keeps the readable half readable. Without this
+    // case, re-typing `id` is invisible: every other test here still passes,
+    // because the catch quietly absorbs it. (Found by a surviving mutation.)
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [
+        { id: 'HEIGHT', values: [{ id: 123, name: '11 cm', struct: { number: 11, unit: 'cm' } }] },
+        { id: 'WIDTH', values: [{ id: 456, struct: { number: 22, unit: 'cm' } }] },
+        { id: 'LENGTH', values: [{ id: 789, struct: { number: 33, unit: 'cm' } }] },
+      ],
+    });
+    const m = mapMlItemToImport(item);
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([11, 22, 33]);
+  });
+
+  it('a drifting values[] still round-trips onto the link, as it did untyped', () => {
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [{ id: 'BRAND', name: 'Marca', value_name: 'Acme', values: [{ id: 9 }] }],
+    });
+    expect(mapMlItemToImport(item).attributes.map((a) => a.id)).toEqual(['BRAND']);
   });
 });

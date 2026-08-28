@@ -425,13 +425,6 @@ export const categoriaAtributosSchema = z.object({
 });
 export type MercadoLivreCategoriaAtributos = z.infer<typeof categoriaAtributosSchema>;
 
-/** The listing types available for a leaf category (`GET tipos-anuncio`). */
-export const tiposAnuncioSchema = z.object({
-  leaf: z.boolean(),
-  tipos: z.array(categoriaNoSchema),
-});
-export type MercadoLivreTiposAnuncio = z.infer<typeof tiposAnuncioSchema>;
-
 /** One party's stated expectation on a claim. */
 export const expectativaReclamacaoSchema = z.object({
   playerRole: z.string().nullable(),
@@ -592,6 +585,12 @@ export const usuarioTesteSchema = z.object({
    * rendering a blank chip (#1302). Refusing the read instead would destroy more
    * than it protects: these stored passwords are the only copy that exists.
    * An empty string means the same thing as absent, so it lands on `null` too.
+   *
+   * ⚠️ **This transform is the ONLY normaliser, and it has to stay one.** The
+   * client used to carry a `comDocId()` that did exactly this, and once the
+   * schema landed that function could no longer change any value it was handed —
+   * a no-op whose doc block still claimed to be the thing degrading on a stale
+   * backend. It is deleted; the degrade-rather-than-refuse decision lives here.
    */
   docId: z
     .string()

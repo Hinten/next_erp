@@ -12,6 +12,7 @@
  * call from ME, not a browser request.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { EstadoFrete } from '@delfrance/schemas';
 import { pedidoCollection } from '@delfrance/data/admin/collections';
@@ -67,10 +68,28 @@ const TERMINAL_ESTADOS: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
   ESTADO_FRETE.cancelado,
 ]);
 
-interface MeWebhookBody {
-  event?: unknown;
-  data?: { id?: unknown; status?: unknown; tracking?: unknown };
-}
+/**
+ * ME's push payload, as much of it as this route reads.
+ *
+ * ⚠️ Everything is `.unknown()` and every key is optional ON PURPOSE. This is a
+ * TYPE gate, not a trust boundary — the trust boundary is the HMAC above, which
+ * has already passed by the time we get here. A strict schema would reject a
+ * payload ME extended and stop tracking updates for a shape change that costs
+ * us nothing, and the reads below narrow each field anyway.
+ *
+ * ⚠️ `z.unknown()` accepts any VALUE but does not make its key optional in
+ * Zod 4 — hence the explicit `.optional()` on each one.
+ */
+const meWebhookBodySchema = z.object({
+  event: z.unknown().optional(),
+  data: z
+    .object({
+      id: z.unknown().optional(),
+      status: z.unknown().optional(),
+      tracking: z.unknown().optional(),
+    })
+    .optional(),
+});
 
 export async function POST(req: Request): Promise<NextResponse> {
   const secret = process.env.MELHOR_ENVIO_CLIENT_SECRET;
@@ -90,15 +109,32 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'Assinatura inválida.' }, { status: 401 });
   }
 
-  let body: MeWebhookBody;
+  let parsed: unknown;
   try {
-    body = JSON.parse(raw) as MeWebhookBody;
+    parsed = JSON.parse(raw);
   } catch (err) {
     if (err instanceof SyntaxError) {
       return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
     }
     throw err;
   }
+
+  // The last of the four channel receivers to stop casting its body. The other
+  // three went through Zod from #810; this one narrowed each field by hand,
+  // which worked but left a `JSON.parse(raw) as MeWebhookBody` that says the
+  // shape was checked when nothing checked it.
+  const leitura = meWebhookBodySchema.safeParse(parsed);
+  if (!leitura.success) {
+    // ⚠️ ACK, not a 400 — the same disposition as the `!labelId || !target`
+    // branch below, and for the same reason it states there. `z.object` STRIPS
+    // unknown keys rather than rejecting, so the only bodies that reach here
+    // are non-objects: a JSON scalar, an array, `null`. There is nothing to act
+    // on and no retry can make one actionable, so a 4xx would only make ME
+    // redeliver it. Before this route validated at all these reached the ack
+    // anyway (`('x').data` is `undefined`, so `labelId` came out null).
+    return NextResponse.json({ ok: true, applied: false });
+  }
+  const body = leitura.data;
 
   const data = body.data ?? {};
   // ME's `data.id` is the **label** id — what we persisted as
