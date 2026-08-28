@@ -1653,6 +1653,47 @@ describe('sanitizeRequestPath (#1347)', () => {
     expect(path).not.toContain('authcode');
   });
 
+  /**
+   * ⛔ **Log injection.** `searchParams.get()` DECODES, so a `%0A` in an
+   * allowlisted id used to come back out as a real newline — and this string is
+   * concatenated straight into the Cloud Logging line `endpointDetail` writes.
+   * One entry became two, the second one entirely attacker-shaped:
+   *
+   *     /users/1/shipping_options/free?item_id=MLB1
+   *     [mercado-livre/api] FORGED
+   *
+   * The values are ML item ids off link docs rather than raw request bodies, so
+   * reachability is modest — but this function's whole contract is "the part that
+   * is safe to log", and the pathname half already held it while the query half
+   * did not.
+   */
+  it('⛔ keeps a percent-encoded newline ENCODED, so a log line cannot be forged', () => {
+    const path = sanitizeRequestPath(
+      `${BASE}/users/1/shipping_options/free?item_id=MLB1%0A%5Bmercado-livre%2Fapi%5D+FORGED`,
+    );
+    expect(path).not.toBeNull();
+    expect(/[ -]/.test(path!)).toBe(false);
+    expect(path).toContain('%0A');
+  });
+
+  it('⚠️ CONTROL — an ids multiget stays READABLE, which is why it is allowlisted', () => {
+    // Guards the fix's shape as much as its effect: `encodeURIComponent` would
+    // also close the injection, but it turns `MLB1,MLB2` into `MLB1%2CMLB2`.
+    expect(sanitizeRequestPath(`${BASE}/items?ids=MLB1,MLB2,MLB3`)).toBe(
+      '/items?ids=MLB1,MLB2,MLB3',
+    );
+  });
+
+  it('⚠️ CONTROL — a LITERAL control character never reaches us: `URL` strips it', () => {
+    // Asserted rather than defended against, so a runtime that stops stripping
+    // fails here instead of silently reopening the hole above.
+    expect(
+      sanitizeRequestPath(`${BASE}/items/MLB1
+FORGED?item_id=A
+B`),
+    ).toBe('/items/MLB1FORGED?item_id=AB');
+  });
+
   it('returns null for an unparseable URL rather than falling back to the raw string', () => {
     expect(sanitizeRequestPath('not a url')).toBeNull();
     expect(sanitizeRequestPath('')).toBeNull();

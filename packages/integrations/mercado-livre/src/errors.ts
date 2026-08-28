@@ -49,10 +49,41 @@ const SAFE_QUERY_KEYS = ['item_id', 'ids', 'shipment_ids'] as const;
 const MAX_PATH_LENGTH = 200;
 
 /**
+ * The RAW, still-percent-encoded value of `key`, read out of the query STRING
+ * rather than through `searchParams`.
+ *
+ * ⛔ `searchParams.get()` **decodes**, and this string is concatenated into a
+ * Cloud Logging line. So a `%0A` inside an allowlisted id came back out as a real
+ * newline and split one log entry into two, the second one fully attacker-shaped.
+ * `parsed.pathname` never had that problem — `URL` does not decode it — so
+ * reading raw here is what makes both halves of {@link sanitizeRequestPath} obey
+ * ONE rule instead of two.
+ *
+ * ⚠️ Deliberately NOT `encodeURIComponent(searchParams.get(key))`. That also
+ * re-encodes the commas in an `ids` multiget (`MLB1,MLB2` → `MLB1%2CMLB2`), and a
+ * readable id list is the entire reason `ids` is allowlisted at all.
+ */
+function rawQueryValue(search: string, key: string): string | null {
+  for (const pair of search.replace(/^\?/, '').split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq === -1 ? pair !== key : pair.slice(0, eq) !== key) continue;
+    return eq === -1 ? '' : pair.slice(eq + 1);
+  }
+  return null;
+}
+
+/**
  * A URL reduced to the part that is safe to log: pathname + allowlisted query.
  *
  * Returns null for anything unparseable rather than falling back to the raw
  * string — an input this cannot classify is exactly the input not to log.
+ *
+ * ⛔ **Nothing here is ever decoded**, so the result cannot carry a control
+ * character and cannot forge a second log entry. Two things hold that together:
+ * `URL` does not decode `pathname`, and {@link rawQueryValue} does not decode
+ * the query. A LITERAL control character cannot arrive either — the WHATWG
+ * parser strips tabs and newlines out of the input — which the tests ASSERT
+ * rather than this defending against, so a runtime that stops doing it tells us.
  */
 export function sanitizeRequestPath(url: string): string | null {
   let parsed: URL;
@@ -66,7 +97,7 @@ export function sanitizeRequestPath(url: string): string | null {
   }
   const kept: string[] = [];
   for (const key of SAFE_QUERY_KEYS) {
-    const value = parsed.searchParams.get(key);
+    const value = rawQueryValue(parsed.search, key);
     if (value !== null && value !== '') kept.push(`${key}=${value}`);
   }
   const path = kept.length > 0 ? `${parsed.pathname}?${kept.join('&')}` : parsed.pathname;
