@@ -5,10 +5,10 @@ the key**, so none is hidden by the `/produtos` default sort.
 
 ```bash
 # dry-run (default) — logs every doc it WOULD touch, writes nothing
-pnpm --filter @delfrance/migrations migrate:produto-ultima-modificacao -- --project <project-id>
+pnpm --filter @delfrance/migrations migrate:produto-ultima-modificacao --project <project-id>
 
 # write
-pnpm --filter @delfrance/migrations migrate:produto-ultima-modificacao -- --project <project-id> --apply
+pnpm --filter @delfrance/migrations migrate:produto-ultima-modificacao --project <project-id> --apply
 ```
 
 ## Why it is needed

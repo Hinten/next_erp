@@ -17,9 +17,9 @@ import { planUltimaModificacao } from './transform';
  * hidden by the `/produtos` default sort. Idempotent, dry-run by default.
  * Runbook: `tools/migrations/produto-ultima-modificacao.README.md`.
  *
- *   pnpm --filter @delfrance/migrations migrate:produto-ultima-modificacao -- \
+ *   pnpm --filter @delfrance/migrations migrate:produto-ultima-modificacao \
  *     --project <id>                    # dry-run: count + log what would change
- *   pnpm --filter @delfrance/migrations migrate:produto-ultima-modificacao -- \
+ *   pnpm --filter @delfrance/migrations migrate:produto-ultima-modificacao \
  *     --project <id> --apply            # write
  *
  * ⚠️ This is a FULL collection walk, not a query. Firestore cannot express

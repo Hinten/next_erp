@@ -9,7 +9,7 @@
  * to authorize an NF-e).
  *
  * Usage:
- *   pnpm --filter @delfrance/integrations-nfe gen:test-cert -- \
+ *   pnpm --filter @delfrance/integrations-nfe gen:test-cert \
  *     --cnpj=99999999000191 --senha=teste123 --out=./cert-teste.pfx --validade=365
  *
  * Flags (all optional):

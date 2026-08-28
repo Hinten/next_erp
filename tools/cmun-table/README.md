@@ -30,7 +30,7 @@ dataset that currently lives in exactly one place, and (b) seed _other_ projects
 ## 1. Export (human step — needs prod credentials)
 
 ```bash
-pnpm --filter @delfrance/cmun-table dump -- --project <prod-project-id>
+pnpm --filter @delfrance/cmun-table dump --project <prod-project-id>
 ```
 
 Read-only. Service account only, `--project` required and never inferred, and
@@ -41,8 +41,8 @@ diffs line-wise instead of as one opaque blob.
 ## 2. Import into a target project
 
 ```bash
-pnpm --filter @delfrance/cmun-table import -- --project <id>          # dry-run
-pnpm --filter @delfrance/cmun-table import -- --project <id> --apply  # write
+pnpm --filter @delfrance/cmun-table import --project <id>          # dry-run
+pnpm --filter @delfrance/cmun-table import --project <id> --apply  # write
 ```
 
 Validates first, prints the gap report, then writes in batches of 400.

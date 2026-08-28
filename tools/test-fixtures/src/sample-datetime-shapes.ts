@@ -14,7 +14,7 @@
  *
  * Usage (staging, from repo root):
  *   pnpm --filter @delfrance/test-fixtures sample:datetime
- *   pnpm --filter @delfrance/test-fixtures sample:datetime -- --limit 10 --json
+ *   pnpm --filter @delfrance/test-fixtures sample:datetime --limit 10 --json
  *
  * Requires the same staging credentials as the seed scripts
  * (FIREBASE_SERVICE_ACCOUNT[_PATH] + FIREBASE_PROJECT_ID from ../../.env.local).

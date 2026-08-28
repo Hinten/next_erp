@@ -5,13 +5,13 @@ Backfills `chat/{id}.clienteOuterRef` from `usarioOuterRef`, so the inbox's
 
 ```bash
 # pre-flight — counts every verdict, logs no per-doc lines, writes nothing
-pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref -- --project <project-id> --report-only
+pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref --project <project-id> --report-only
 
 # dry-run (default) — logs every doc it WOULD touch, writes nothing
-pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref -- --project <project-id>
+pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref --project <project-id>
 
 # write
-pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref -- --project <project-id> --apply
+pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref --project <project-id> --apply
 ```
 
 `--report-only` is the pass to run **first**. A dry-run enumerates documents; the
@@ -72,7 +72,7 @@ no JSONL and prints at most 20 (labelled `amostra`), so it cannot list the
 twenty-first. The dry-run logs every one:
 
 ```bash
-pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref -- --project <project-id>
+pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref --project <project-id>
 grep '"kind":"skip"' tools/migrations/out/*-conversa-cliente-outer-ref-*-dryrun.jsonl
 ```
 

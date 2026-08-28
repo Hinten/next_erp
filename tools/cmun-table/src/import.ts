@@ -7,8 +7,8 @@ import { type CmunDumpRow, formatGapReport, validateDump } from './validate';
 /**
  * Import a `CMUN` dump into a target project's `CMUN` collection.
  *
- *   pnpm --filter @delfrance/cmun-table import -- --project <id>          # dry-run
- *   pnpm --filter @delfrance/cmun-table import -- --project <id> --apply  # write
+ *   pnpm --filter @delfrance/cmun-table import --project <id>          # dry-run
+ *   pnpm --filter @delfrance/cmun-table import --project <id> --apply  # write
  *
  * **Production almost certainly does not need this.** The legacy Flutter app
  * already writes `CMUN` there, and this port deliberately reuses that exact
@@ -65,7 +65,7 @@ function newestDump(): string {
   if (!newest) {
     throw new Error(
       `Nenhum dump encontrado em ${dir}. Rode primeiro: ` +
-        'pnpm --filter @delfrance/cmun-table dump -- --project <prod-project-id>',
+        'pnpm --filter @delfrance/cmun-table dump --project <prod-project-id>',
     );
   }
   return resolve(dir, newest);

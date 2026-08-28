@@ -509,13 +509,13 @@ gcloud eventarc triggers list --project <project-id>
 trigger's skip-if-unchanged means a no-op touch will not create one. Dry-run first:
 
 ```bash
-pnpm --filter @delfrance/mercado-livre-app backfill:int-frete -- --project <project-id>
+pnpm --filter @delfrance/mercado-livre-app backfill:int-frete --project <project-id>
 ```
 
 then apply:
 
 ```bash
-pnpm --filter @delfrance/mercado-livre-app backfill:int-frete -- --project <project-id> --apply
+pnpm --filter @delfrance/mercado-livre-app backfill:int-frete --project <project-id> --apply
 ```
 
 It drives the trigger's own `sincronizarIntFreteDaConta`, so the two can never

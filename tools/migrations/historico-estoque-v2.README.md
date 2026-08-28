@@ -4,13 +4,13 @@ Reshapes every `historicoEstoque` row from v1 to v2 (ADR 0014, #695).
 
 ```bash
 # pre-flight — counts the stored shapes, logs no per-row lines, writes nothing
-pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 -- --project <project-id> --report-only
+pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 --project <project-id> --report-only
 
 # dry-run (default) — logs every row it WOULD touch, writes nothing
-pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 -- --project <project-id>
+pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 --project <project-id>
 
 # write
-pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 -- --project <project-id> --apply
+pnpm --filter @delfrance/migrations migrate:historico-estoque-v2 --project <project-id> --apply
 ```
 
 `--report-only` is the pass to run **first**. It answers the question a dry-run

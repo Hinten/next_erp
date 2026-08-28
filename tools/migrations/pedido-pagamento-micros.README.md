@@ -156,12 +156,12 @@ This is implemented by the `@delfrance/migrations` package:
 
 ```bash
 # 1. Dry-run (no writes) — logs every intended `path · field · old → new`:
-pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros -- \
+pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros \
   --project <staging-project-id>
 
 # 2. Inspect the log under tools/migrations/out/<timestamp>-…-dryrun.jsonl
 # 3. Apply (writes), once the core is ready and the dry-run looks right:
-pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros -- \
+pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros \
   --project <staging-project-id> --apply
 ```
 
