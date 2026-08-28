@@ -270,6 +270,33 @@ describe('VariationManager — staged rows vs the optimistic snapshot echo', () 
     expect(rowCount()).toBe(2);
   });
 
+  it('keeps the staged rows when a no-op flush races a batch that is then rejected', async () => {
+    const { flushRef } = renderManager();
+    fireEvent.click(screen.getByText('Gerar variações'));
+
+    const { pending } = await startFlush(flushRef.current!);
+    await echoWrites();
+
+    // A second flush in the window resolves to nothing: the echo already hid
+    // the staged rows from `rows`, so this flush never saw — and never wrote —
+    // them. It must not clear them either.
+    await act(async () => {
+      await expect(flushRef.current!('p1')).resolves.toBeUndefined();
+    });
+
+    // Now the only batch that ever carried those `set`s fails. Firestore rolls
+    // the local writes back, so the echo disappears; the operator's staged work
+    // is all that is left and it has to still be there.
+    await act(async () => {
+      h.commits.shift()!.reject(new Error('permission-denied'));
+      h.setChildren([]);
+      await pending.catch(() => undefined);
+    });
+
+    expect(rowCount()).toBe(2);
+    expect(skuInputs().map((i) => i.value)).toEqual(['CAMP', 'CAMG']);
+  });
+
   it('hands the row over to the server doc, so a later edit updates instead of re-creating', async () => {
     const { flushRef } = renderManager();
     fireEvent.click(screen.getByText('Gerar variações'));

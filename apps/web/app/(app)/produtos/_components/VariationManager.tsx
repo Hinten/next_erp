@@ -318,10 +318,26 @@ export function VariationManager({
     [rows],
   );
 
-  /** Drop every staged mutation — the live snapshot takes back over. */
-  function clearStagedState() {
-    setPatches({});
-    setNewRows([]);
+  /**
+   * Drop the staged mutations THIS flush resolved, identified by the row keys it
+   * actually saw — never the whole staging.
+   *
+   * A blind clear loses work no batch ever wrote. Two ways in: a row staged
+   * while the commit was in flight, and — since the identity filter in `rows`
+   * hides a staged row the moment its echo lands — a concurrent flush that
+   * therefore computes `writes === 0`. Clearing there would drop rows whose only
+   * `set` is still parked in the other flush's `commit()`, and if THAT batch is
+   * rejected Firestore rolls the local writes back, leaving neither the document
+   * nor the staged row.
+   */
+  function clearStagedState(
+    handledStaged: ReadonlySet<string>,
+    handledPatches: ReadonlySet<string>,
+  ) {
+    setPatches((prev) =>
+      Object.fromEntries(Object.entries(prev).filter(([id]) => !handledPatches.has(id))),
+    );
+    setNewRows((prev) => prev.filter((r) => !handledStaged.has(r.key)));
     setLocalOrder(null);
   }
 
@@ -372,6 +388,13 @@ export function VariationManager({
     const absorbed = new Set(
       reconciled.filter((r) => r.id !== null && stagedKeys.has(r.key)).map((r) => r.key),
     );
+
+    // Exactly what this flush is answerable for — the rows its closure captured,
+    // split by which staging bucket they came from. `key` alone cannot tell the
+    // two apart: a staged row's key IS its future doc id, so it collides with
+    // the server row's key by design. Anything staged since, or hidden from
+    // `rows` by another flush's echo, is in neither set and is not ours to clear.
+    const handledPatchIds = new Set(rows.filter((r) => r.id !== null).map((r) => r.id!));
 
     // The parent's just-saved precos for children CREATED here: the live form
     // value when available (null = all prices cleared — deliberate, must NOT
@@ -464,10 +487,10 @@ export function VariationManager({
       ordem += 1;
     }
     if (writes === 0) {
-      // Nothing to write, but the staging DID resolve — e.g. a row added and
-      // then delete-marked before saving. Clearing here too stops that ghost
-      // row from surviving the save.
-      clearStagedState();
+      // Nothing to write, but the staging this flush saw DID resolve — e.g. a
+      // row added and then delete-marked before saving. Clearing those keys
+      // stops that ghost row from surviving the save.
+      clearStagedState(stagedKeys, handledPatchIds);
       return;
     }
     setAbsorbedKeys(absorbed.size > 0 ? absorbed : EMPTY_KEYS);
@@ -478,7 +501,7 @@ export function VariationManager({
       // staged rows have to come back carrying the operator's work.
       setAbsorbedKeys(EMPTY_KEYS);
     }
-    clearStagedState();
+    clearStagedState(stagedKeys, handledPatchIds);
     notifications.show({
       color: 'green',
       message:
