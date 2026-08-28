@@ -78,20 +78,20 @@ change and every non-empty skip is written to a timestamped JSONL file under
 `tools/migrations/out/`.
 
 ```bash
-pnpm --filter @delfrance/migrations migrate:telefone-e164 -- --project <staging-id>
+pnpm --filter @delfrance/migrations migrate:telefone-e164 --project <staging-id>
 ```
 
 Then read the log, confirm the change/skip counts, and only then:
 
 ```bash
-pnpm --filter @delfrance/migrations migrate:telefone-e164 -- --project <staging-id> --apply
+pnpm --filter @delfrance/migrations migrate:telefone-e164 --project <staging-id> --apply
 ```
 
 Re-run the dry form afterwards — a clean second pass (all `already-normalized`)
 is the idempotence check.
 
 ```bash
-pnpm --filter @delfrance/migrations migrate:telefone-e164 -- --project <id> --target clientes,cheque
+pnpm --filter @delfrance/migrations migrate:telefone-e164 --project <id> --target clientes,cheque
 ```
 
 ## Order of operations

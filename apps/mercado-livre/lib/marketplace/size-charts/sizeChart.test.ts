@@ -27,36 +27,147 @@ describe('resolveSizeChart', () => {
   ];
 
   it('filters by catalog domain and requires an ML id', () => {
-    expect(resolveSizeChart(tabelas, 'MLB-SNEAKERS', null)?.id).toBe('300');
-    expect(resolveSizeChart(tabelas, 'MLB-DRESSES', null)).toBeNull();
-    expect(resolveSizeChart(tabelas, null, null)).toBeNull();
+    expect(resolveSizeChart(tabelas, 'MLB-SNEAKERS', null).chart?.id).toBe('300');
+    expect(resolveSizeChart(tabelas, 'MLB-DRESSES', null).chart).toBeNull();
+    expect(resolveSizeChart(tabelas, null, null).chart).toBeNull();
   });
 
   it('null/EMPTY link attributes → first domain candidate (legacy boundary)', () => {
-    expect(resolveSizeChart(tabelas, 'MLB-PANTS', null)?.id).toBe('100');
-    expect(resolveSizeChart(tabelas, 'MLB-PANTS', [])?.id).toBe('100');
+    expect(resolveSizeChart(tabelas, 'MLB-PANTS', null).chart?.id).toBe('100');
+    expect(resolveSizeChart(tabelas, 'MLB-PANTS', []).chart?.id).toBe('100');
   });
 
   it('NON-EMPTY but all-unvalued attributes → scoring → zero hits → NO chart (legacy)', () => {
     // ML-imported stub attributes carry neither value_id nor value_name; the
     // legacy scorer returns null here — falling back would bind a blind chart
     // (possibly the wrong gender) that legacy never bound.
-    expect(resolveSizeChart(tabelas, 'MLB-PANTS', [{ id: 'GENDER' }])).toBeNull();
+    expect(resolveSizeChart(tabelas, 'MLB-PANTS', [{ id: 'GENDER' }]).chart).toBeNull();
   });
 
   it('attribute-hit scoring picks the best match (value_id or value_name)', () => {
     const byId = resolveSizeChart(tabelas, 'MLB-PANTS', [{ id: 'GENDER', value_id: '339666' }]);
-    expect(byId?.id).toBe('200');
+    expect(byId.chart?.id).toBe('200');
     const byName = resolveSizeChart(tabelas, 'MLB-PANTS', [
       { id: 'GENDER', value_name: 'Feminino' },
     ]);
-    expect(byName?.id).toBe('100');
+    expect(byName.chart?.id).toBe('100');
   });
 
   it('valued attributes with ZERO hits → null (legacy: never bind blind)', () => {
     expect(
-      resolveSizeChart(tabelas, 'MLB-PANTS', [{ id: 'GENDER', value_id: 'no-such' }]),
+      resolveSizeChart(tabelas, 'MLB-PANTS', [{ id: 'GENDER', value_id: 'no-such' }]).chart,
     ).toBeNull();
+  });
+
+  // ---- WHY nothing bound (#1087) -----------------------------------------
+  //
+  // Each miss carries its own reason and its own payload. A test asserting only
+  // `chart === null` cannot tell a domain mismatch from a guia nobody sent, and
+  // that conflation is exactly what let `Attribute [SIZE_GRID_ID] is missing`
+  // reach an operator with no way to act on it.
+
+  it('a bound chart reports NO reason', () => {
+    expect(resolveSizeChart(tabelas, 'MLB-SNEAKERS', null).motivo).toBeNull();
+  });
+
+  it('no catalog_domain on the category → categoria-sem-dominio', () => {
+    expect(resolveSizeChart(tabelas, null, null)).toEqual({
+      chart: null,
+      motivo: 'categoria-sem-dominio',
+    });
+  });
+
+  it('the live case: guias in another domain → dominio-divergente, naming BOTH', () => {
+    // The reproduced bug (#1087): the tabela's guia is MLB-SHIRTS, the produto's
+    // category MLB1398 reports MLB-T_SHIRTS. Both strings must come out — that
+    // sentence is the entire fix for the operator.
+    const shirts = [chart({ id: '7523235', domain_id: 'MLB-SHIRTS' })];
+    expect(resolveSizeChart(shirts, 'MLB-T_SHIRTS', null)).toEqual({
+      chart: null,
+      motivo: 'dominio-divergente',
+      dominiosDaTabela: ['MLB-SHIRTS'],
+      dominioDaCategoria: 'MLB-T_SHIRTS',
+    });
+  });
+
+  it('dominiosDaTabela is DISTINCT and SORTED, over every guia the tabela has', () => {
+    const mistas = [
+      chart({ id: '1', domain_id: 'MLB-PANTS' }),
+      chart({ id: '2', domain_id: 'MLB-PANTS' }), // duplicate domain
+      chart({ id: '3', domain_id: 'MLB-DRESSES' }),
+      chart({ id: null, domain_id: 'MLB-COATS' }), // unsent — still a domain the tabela HAS
+    ];
+    const out = resolveSizeChart(mistas, 'MLB-SNEAKERS', null);
+    expect(out).toEqual({
+      chart: null,
+      motivo: 'dominio-divergente',
+      dominiosDaTabela: ['MLB-COATS', 'MLB-DRESSES', 'MLB-PANTS'],
+      dominioDaCategoria: 'MLB-SNEAKERS',
+    });
+  });
+
+  it('a guia in the RIGHT domain that was never sent → guias-nao-enviadas, NOT a mismatch', () => {
+    // ⚠️ The split that matters: telling this operator their domain is wrong
+    // sends them to change the one field that is already correct. What they
+    // have to do is press Enviar.
+    const rascunho = [
+      chart({ id: null, domain_id: 'MLB-T_SHIRTS' }),
+      chart({ id: '900', domain_id: 'MLB-PANTS' }),
+    ];
+    expect(resolveSizeChart(rascunho, 'MLB-T_SHIRTS', null)).toEqual({
+      chart: null,
+      motivo: 'guias-nao-enviadas',
+      dominioDaCategoria: 'MLB-T_SHIRTS',
+    });
+  });
+
+  it('an unsent guia in the WRONG domain is a MISMATCH, not "never sent"', () => {
+    // ⚠️ This test used to assert the opposite — "nothing sent at all →
+    // guias-nao-enviadas, whatever the domains are" — and it was WRONG in the
+    // one direction that matters: the message then read "tem guia no domínio
+    // MLB-SNEAKERS, mas ela nunca foi enviada", naming a domain the tabela does
+    // not have. The operator sends that guia and it still binds nothing. The
+    // reason is only allowed to claim a domain the tabela actually carries.
+    const nenhuma = [chart({ id: null, domain_id: 'MLB-PANTS' }), chart({ id: '' })];
+    expect(resolveSizeChart(nenhuma, 'MLB-SNEAKERS', null)).toEqual({
+      chart: null,
+      motivo: 'dominio-divergente',
+      dominiosDaTabela: ['MLB-PANTS'],
+      dominioDaCategoria: 'MLB-SNEAKERS',
+    });
+  });
+
+  it('dominiosDaTabela lists UNSENT domains too, since none of them is the right one', () => {
+    // Restricting it to the sent guias printed an EMPTY list for a tabela nobody
+    // has synced yet. Whether a guia went to ML only starts mattering once its
+    // domain agrees, and here none of them does.
+    const soRascunhos = [chart({ id: null, domain_id: 'MLB-DRESSES' })];
+    expect(resolveSizeChart(soRascunhos, 'MLB-SNEAKERS', null)).toEqual({
+      chart: null,
+      motivo: 'dominio-divergente',
+      dominiosDaTabela: ['MLB-DRESSES'],
+      dominioDaCategoria: 'MLB-SNEAKERS',
+    });
+  });
+
+  it('no guia declares a domain at all → an EMPTY list, never an invented one', () => {
+    // Legacy data: the read schema allows a null `domain_id`.
+    expect(resolveSizeChart([chart({ id: null, domain_id: null })], 'MLB-SNEAKERS', null)).toEqual({
+      chart: null,
+      motivo: 'dominio-divergente',
+      dominiosDaTabela: [],
+      dominioDaCategoria: 'MLB-SNEAKERS',
+    });
+  });
+
+  it('right domain, wrong gênero → sem-atributos-correspondentes', () => {
+    expect(resolveSizeChart(tabelas, 'MLB-PANTS', [{ id: 'GENDER', value_id: 'no-such' }])).toEqual(
+      {
+        chart: null,
+        motivo: 'sem-atributos-correspondentes',
+        dominioDaCategoria: 'MLB-PANTS',
+      },
+    );
   });
 });
 

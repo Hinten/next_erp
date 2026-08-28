@@ -3,7 +3,7 @@ import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
-import { type PublishDeps, publishProduto } from './publish';
+import { type PublishDeps, loadTabelaBinding, publishProduto } from './publish';
 import { MercadoLivrePublishError } from './publishCore';
 
 /**
@@ -252,6 +252,12 @@ function makeApi(overrides: Partial<Record<keyof MercadoLivreApi, unknown>> = {}
     updateItem: vi.fn(async () => ITEM_RESPONSE),
     suggestCategories: vi.fn(async () => [{ category_id: 'MLB31447' }]),
     getCategory: vi.fn(async () => ({ id: 'MLB31447', settings: null })),
+    // #1087: the size-chart binding asks whether the category carries a
+    // `grid_id` attribute before refusing a publish. `[]` = it does not, which
+    // is the CURRENT behaviour for every fixture here — a chart that fails to
+    // bind is omitted silently, exactly as before. Only a test that opts into a
+    // grid category reaches the refusal.
+    getCategoryAttributes: vi.fn(async () => []),
     uploadPicture: vi.fn(async () => ({ id: 'PIC-NEW' })),
     setItemDescription: vi.fn(async () => ({ plain_text: 'ok' })),
     // #798: a FIRST publish probes `GET /users/me` for the `user_product_seller`
@@ -1099,6 +1105,10 @@ describe('publishProduto — legacy wire shape', () => {
     await publishProduto(makeDeps(db, api), PROD);
 
     expect(mocks.getCategory).toHaveBeenCalledWith('MLB31447');
+    // ⚠️ The KNOWN-GOOD control for the #1087 refusal: a matching domain must
+    // still bind and still reach ML. A refusal that fires here would be caught
+    // by this line rather than by a live publish.
+    expect(mocks.createItem).toHaveBeenCalled();
     const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
     const attrs = payload.attributes as Array<Record<string, unknown>>;
     expect(attrs).toContainEqual({ id: 'SIZE_GRID_ID', value_name: '1594439' });
@@ -1122,7 +1132,7 @@ describe('publishProduto — legacy wire shape', () => {
     );
   });
 
-  it('domain mismatch → no SIZE_GRID_* attributes, but descrição/foto still apply', async () => {
+  it('domain mismatch in a category with NO guia → publishes without SIZE_GRID_*, as before', async () => {
     const db = new FakeDb();
     seedBase(db, {
       externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
@@ -1152,6 +1162,11 @@ describe('publishProduto — legacy wire shape', () => {
 
     await publishProduto(makeDeps(db, api), PROD);
 
+    // ⚠️ The CONTROL FOR THE CONTROL (#1087). `getCategoryAttributes` answers
+    // `[]`, so this category carries no `grid_id` attribute and ML would accept
+    // the listing without a chart — refusing here would break a publish that
+    // works today. Without this test the refusal could be universal and every
+    // other assertion in this file would still pass.
     const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
     const attrs = payload.attributes as Array<Record<string, unknown>>;
     expect(attrs.find((a) => a.id === 'SIZE_GRID_ID')).toBeUndefined();
@@ -1161,6 +1176,110 @@ describe('publishProduto — legacy wire shape', () => {
       'Confira as medidas na tabela.',
       { replace: false },
     );
+  });
+
+  it('domain mismatch in a category that USES a guia → refused locally, naming BOTH domains', async () => {
+    // ⚠️ The KNOWN-BAD control: the live #1087 case. Chart 7523235 is
+    // MLB-SHIRTS, category MLB1398 reports MLB-T_SHIRTS. Before this, publish
+    // omitted SIZE_GRID_ID and ML answered `Attribute [SIZE_GRID_ID] is
+    // missing` — naming neither domain, though the ERP held both.
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Camiseta lisa infantil',
+      codigo: null,
+      descricao: null,
+      tabelasDeMedidasMercadoLivre: {
+        [CONTA]: { tabelas: [{ id: '7523235', domain_id: 'MLB-SHIRTS', rows: [] }] },
+      },
+    });
+    const { api, mocks } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB1398',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+      // A fashion category: ML lists SIZE_GRID_ID with value_type `grid_id`.
+      getCategoryAttributes: vi.fn(async () => [
+        { id: 'BRAND', value_type: 'string' },
+        { id: 'SIZE_GRID_ID', value_type: 'grid_id' },
+      ]),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(MercadoLivrePublishError);
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      /MLB-SHIRTS.*MLB-T_SHIRTS/,
+    );
+
+    // …and it never reached Mercado Livre. This half is the point: the operator
+    // gets the answer without spending a round trip on a rejection.
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('a tabela with NO guia in this conta is refused too — the reason is REACHABLE', async () => {
+    // ⚠️ Review finding: this exit hard-coded `categoriaUsaGuia: null`, so
+    // `sizeChartIssue` bailed and the carefully-worded message was dead code
+    // that read as live. Publish shipped without SIZE_GRID_ID and ML answered
+    // with the opaque rejection this PR exists to replace. "Linked a tabela,
+    // never created the guia in this conta" is plausibly the most common form
+    // of the mistake, so it must refuse like the domain mismatch does.
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Camiseta lisa infantil',
+      codigo: null,
+      descricao: null,
+      // Guias exist — on ANOTHER conta.
+      tabelasDeMedidasMercadoLivre: {
+        'outra-conta': { tabelas: [{ id: '7523235', domain_id: 'MLB-T_SHIRTS', rows: [] }] },
+      },
+    });
+    const { api, mocks } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB1398',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+      getCategoryAttributes: vi.fn(async () => [{ id: 'SIZE_GRID_ID', value_type: 'grid_id' }]),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(
+      /não tem nenhuma guia nesta conta/,
+    );
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('…and still publishes when that category uses no guia', async () => {
+    // The control: the refusal above must come from the gate, not from the
+    // reason existing.
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Camiseta lisa infantil',
+      codigo: null,
+      descricao: null,
+      tabelasDeMedidasMercadoLivre: {
+        'outra-conta': { tabelas: [{ id: '7523235', domain_id: 'MLB-T_SHIRTS', rows: [] }] },
+      },
+    });
+    const { api, mocks } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB1398',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+    expect(mocks.createItem).toHaveBeenCalled();
   });
 
   it('a getCategory failure during the chart binding stamps estado E (legacy MLError catch)', async () => {
@@ -2442,5 +2561,199 @@ describe('publishProduto — the User-Products sole member (#1087)', () => {
     await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow(MercadoLivrePublishError);
     expect(mocks.createItem).not.toHaveBeenCalled();
     expect(mocks.updateItem).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WHY no chart bound — one assertion per structurally different cause (#1087).
+ *
+ * ⚠️ This block exists because the four `{resolved: null}` exits used to be
+ * INDISTINGUISHABLE. A test asserting only "publish refused" cannot tell a
+ * domain mismatch from a missing tabela doc, which is the very conflation the
+ * change is fixing — so each reason is pinned with `toEqual` on the whole
+ * object, payload included.
+ */
+describe('loadTabelaBinding — why no chart bound (#1087)', () => {
+  const TABELA_REF = 'documents/tabMedi/tm-1';
+
+  /** The conta's guias, wrapped in the nested map the tabMedi doc stores. */
+  function seedTabela(db: FakeDb, tabelas: unknown[], over: Record<string, unknown> = {}): void {
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Camiseta lisa infantil',
+      codigo: null,
+      descricao: 'Confira as medidas.',
+      tabelasDeMedidasMercadoLivre: { [CONTA]: { tabelas } },
+      ...over,
+    });
+  }
+
+  const camisetas = [{ id: '7523235', domain_id: 'MLB-SHIRTS', rows: [] }];
+
+  /** A fashion category — ML lists SIZE_GRID_ID with value_type `grid_id`. */
+  const COM_GUIA = [{ id: 'SIZE_GRID_ID', value_type: 'grid_id' }];
+
+  function bind(
+    db: FakeDb,
+    api: MercadoLivreApi,
+    produto: { tabelaDeMedidasModaUid?: string | null },
+    categoryId: string | null = 'MLB1398',
+  ) {
+    return loadTabelaBinding(makeDeps(db, api), produto, null, categoryId, []);
+  }
+
+  it('produto names no tabela → produto-sem-tabela, and no ML call at all', async () => {
+    const { api, mocks } = makeApi();
+    const out = await bind(new FakeDb(), api, {});
+    expect(out.motivo).toEqual({ codigo: 'produto-sem-tabela' });
+    expect(out.resolved).toBeNull();
+    // Never asked — a third value, distinct from `false`, and it refuses nothing.
+    expect(out.categoriaUsaGuia).toBeNull();
+    expect(mocks.getCategory).not.toHaveBeenCalled();
+    expect(mocks.getCategoryAttributes).not.toHaveBeenCalled();
+  });
+
+  it('the tabela doc is gone → tabela-inexistente (a dangling ref, NOT a mismatch)', async () => {
+    const { api, mocks } = makeApi();
+    const out = await bind(new FakeDb(), api, { tabelaDeMedidasModaUid: TABELA_REF });
+    expect(out.motivo).toEqual({ codigo: 'tabela-inexistente', tabMediId: 'tm-1' });
+    // Paths 1 and 2 also drop the descrição and the photo — there is no doc to
+    // read them from. Paths 3 and 4 keep both.
+    expect(out.descricao).toBeNull();
+    expect(out.foto).toBeNull();
+    expect(mocks.getCategory).not.toHaveBeenCalled();
+    // ⚠️ It DOES ask whether the category uses a guia. Hard-coding `null` here
+    // left this reason unable to refuse anything — a message that read as live
+    // and was dead code.
+    expect(out.categoriaUsaGuia).toBe(false);
+  });
+
+  it('no guia in THIS conta → tabela-sem-guias-nesta-conta, descrição kept', async () => {
+    const db = new FakeDb();
+    seedTabela(db, [], { tabelasDeMedidasMercadoLivre: { 'outra-conta': { tabelas: camisetas } } });
+    const { api, mocks } = makeApi();
+    const out = await bind(db, api, { tabelaDeMedidasModaUid: TABELA_REF });
+    expect(out.motivo).toEqual({
+      codigo: 'tabela-sem-guias-nesta-conta',
+      tabMediId: 'tm-1',
+      nome: 'Camiseta lisa infantil',
+    });
+    expect(out.descricao).toBe('Confira as medidas.');
+    expect(mocks.getCategory).not.toHaveBeenCalled();
+    expect(out.categoriaUsaGuia).toBe(false);
+  });
+
+  it('the anúncio has no categoria → anuncio-sem-categoria, told apart from the line above', async () => {
+    // ⚠️ These two share ONE exit in the source (`charts.length === 0 ||
+    // !categoryId`). Same branch, different fact, different fix.
+    const db = new FakeDb();
+    seedTabela(db, camisetas);
+    const { api, mocks } = makeApi();
+    const out = await bind(db, api, { tabelaDeMedidasModaUid: TABELA_REF }, null);
+    expect(out.motivo).toEqual({ codigo: 'anuncio-sem-categoria', tabMediId: 'tm-1' });
+    expect(mocks.getCategory).not.toHaveBeenCalled();
+    // The one exit that stays `null`: with no category there is nothing to ask.
+    expect(out.categoriaUsaGuia).toBeNull();
+    expect(mocks.getCategoryAttributes).not.toHaveBeenCalled();
+  });
+
+  it('the category reports no catalog_domain → categoria-sem-dominio', async () => {
+    const db = new FakeDb();
+    seedTabela(db, camisetas);
+    const { api } = makeApi({
+      getCategory: vi.fn(async () => ({ id: 'MLB1398', settings: null })),
+      getCategoryAttributes: vi.fn(async () => COM_GUIA),
+    });
+    const out = await bind(db, api, { tabelaDeMedidasModaUid: TABELA_REF });
+    expect(out.motivo).toEqual({ codigo: 'categoria-sem-dominio', categoryId: 'MLB1398' });
+    expect(out.categoriaUsaGuia).toBe(true);
+  });
+
+  it('the live case → dominio-divergente carrying BOTH domain strings', async () => {
+    const db = new FakeDb();
+    seedTabela(db, camisetas);
+    const { api } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB1398',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+      getCategoryAttributes: vi.fn(async () => COM_GUIA),
+    });
+    const out = await bind(db, api, { tabelaDeMedidasModaUid: TABELA_REF });
+    expect(out.motivo).toEqual({
+      codigo: 'dominio-divergente',
+      categoryId: 'MLB1398',
+      nome: 'Camiseta lisa infantil',
+      dominiosDaTabela: ['MLB-SHIRTS'],
+      dominioDaCategoria: 'MLB-T_SHIRTS',
+    });
+    expect(out.categoriaUsaGuia).toBe(true);
+  });
+
+  it('the guia in the RIGHT domain was never sent → guias-nao-enviadas', async () => {
+    const db = new FakeDb();
+    seedTabela(db, [{ id: null, domain_id: 'MLB-T_SHIRTS', rows: [] }]);
+    const { api } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB1398',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+      getCategoryAttributes: vi.fn(async () => COM_GUIA),
+    });
+    const out = await bind(db, api, { tabelaDeMedidasModaUid: TABELA_REF });
+    expect(out.motivo).toEqual({
+      codigo: 'guias-nao-enviadas',
+      categoryId: 'MLB1398',
+      dominioDaCategoria: 'MLB-T_SHIRTS',
+      nome: 'Camiseta lisa infantil',
+    });
+  });
+
+  it('right domain, wrong gênero → sem-atributos-correspondentes', async () => {
+    const db = new FakeDb();
+    seedTabela(db, [
+      {
+        id: '7523235',
+        domain_id: 'MLB-T_SHIRTS',
+        attributes: [{ id: 'GENDER', value_id: '339665', value_name: 'Feminino' }],
+        rows: [],
+      },
+    ]);
+    const { api } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB1398',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+      getCategoryAttributes: vi.fn(async () => COM_GUIA),
+    });
+    const out = await loadTabelaBinding(
+      makeDeps(db, api),
+      { tabelaDeMedidasModaUid: TABELA_REF },
+      { docId: 'ML-DOC-1', id: null, attributes: [{ id: 'GENDER', value_id: '19159491' }] },
+      'MLB1398',
+      [],
+    );
+    expect(out.motivo).toEqual({
+      codigo: 'sem-atributos-correspondentes',
+      categoryId: 'MLB1398',
+      dominioDaCategoria: 'MLB-T_SHIRTS',
+      nome: 'Camiseta lisa infantil',
+    });
+  });
+
+  it('a bound chart reports vinculada, and pays for NO attributes call', async () => {
+    // The happy path must not gain an ML round trip: the attribute list exists
+    // only to gate a refusal, and there is nothing to refuse here.
+    const db = new FakeDb();
+    seedTabela(db, [{ id: '7523235', domain_id: 'MLB-T_SHIRTS', rows: [] }]);
+    const { api, mocks } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB1398',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+    });
+    const out = await bind(db, api, { tabelaDeMedidasModaUid: TABELA_REF });
+    expect(out.motivo).toEqual({ codigo: 'vinculada', chartId: '7523235' });
+    expect(out.resolved).toEqual({ chartId: '7523235', rowByChildId: {} });
+    expect(mocks.getCategoryAttributes).not.toHaveBeenCalled();
   });
 });

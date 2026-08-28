@@ -117,6 +117,13 @@ vi.mock('@/lib/data/produtoExtraDataCollection', () => ({
 vi.mock('@/lib/data/produtoMercadoLivreLinkCollection', () => ({
   produtoMercadoLivreLinkCollection: { ref: () => ({ __col: 'produtoMercadoLivre' }) },
 }));
+// The editor reads the produto's tabela de medidas so `TabelaMedidasResumo` can
+// compare its guias against the anúncio's category (#1087). Stubbed like its
+// siblings so the real module's `defineCollection` call never runs against the
+// `@delfrance/data` mock above.
+vi.mock('@/lib/data/tabelaDeMedidasCollection', () => ({
+  tabelaDeMedidasCollection: { docRef: () => ({ __col: 'tabMedi' }) },
+}));
 vi.mock('@/lib/mercado-livre/listingDraft', () => ({
   createListingDraft: h.createListingDraft,
   removeListingDraft: h.removeListingDraft,

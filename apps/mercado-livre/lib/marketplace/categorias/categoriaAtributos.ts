@@ -61,6 +61,31 @@ export const ML_BLOCKED_ATTRIBUTE_IDS: readonly string[] = [
  */
 const SIZE_CHART_VALUE_TYPES: readonly string[] = ['grid_id', 'grid_row_id'];
 
+/**
+ * The ITEM-scope half of the pair above — `SIZE_GRID_ID`. `grid_row_id` is the
+ * VARIATION half (`SIZE_GRID_ROW_ID`), which rides a variation's attributes and
+ * says nothing about whether the item needs a chart.
+ */
+export const SIZE_GRID_VALUE_TYPE = 'grid_id';
+
+/**
+ * Does this category carry a size-chart attribute at all?
+ *
+ * The gate for publish's local refusal (#1087): a produto that names a tabela
+ * whose guias cannot bind here is an operator error worth refusing — but only
+ * where a chart is meaningful. A category with no `grid_id` attribute publishes
+ * exactly as it always did.
+ *
+ * ⚠️ Deliberately NOT gated on {@link isAttributeRequired}. ML spells "you must
+ * fill this" four different ways depending on the category's vintage and does
+ * not set any of them reliably on `SIZE_GRID_ID`, so requiring a tag would let
+ * the very category this was reported against (MLB1398) slip through and reach
+ * ML anyway. Presence of the attribute is the robust test.
+ */
+export function categoriaUsaGuiaDeTamanhos(attrs: readonly MlCategoryAttribute[]): boolean {
+  return attrs.some((a) => a.value_type === SIZE_GRID_VALUE_TYPE);
+}
+
 export type MlAttributeScope = 'item' | 'variacao';
 
 /**

@@ -17,11 +17,11 @@ import {
  * Cliente filter can be a single equality on one field. See `transform.ts` for
  * the mapping and for why an unmapped conversa is reported rather than guessed.
  *
- *   pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref -- \
+ *   pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref \
  *     --project <project-id> --report-only  # pre-flight: counts every verdict
- *   pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref -- \
+ *   pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref \
  *     --project <project-id>            # dry-run: logs every doc it would touch
- *   pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref -- \
+ *   pnpm --filter @delfrance/migrations migrate:conversa-cliente-outer-ref \
  *     --project <project-id> --apply    # write
  *
  * Run `--report-only` FIRST. A dry-run enumerates documents; the numbers that

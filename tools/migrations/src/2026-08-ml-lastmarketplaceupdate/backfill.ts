@@ -16,8 +16,8 @@ import {
  * Backfill `pedido.lastMarketplaceUpdate` with the TRUE Mercado Livre order
  * clock, seeded from the pedido's `orderML` mirror children.
  *
- *   pnpm --filter @delfrance/migrations migrate:ml-lastmarketplaceupdate -- --project <id>
- *   pnpm --filter @delfrance/migrations migrate:ml-lastmarketplaceupdate -- --project <id> --apply
+ *   pnpm --filter @delfrance/migrations migrate:ml-lastmarketplaceupdate --project <id>
+ *   pnpm --filter @delfrance/migrations migrate:ml-lastmarketplaceupdate --project <id> --apply
  *
  * ## Why this is MANDATORY, not optional
  *

@@ -68,13 +68,13 @@ removing a live one is a silent outage.
 Dry-run is the default and writes nothing:
 
 ```bash
-pnpm --filter @delfrance/migrations migrate:ml-integracoes-com-produto -- --project <project-id>
+pnpm --filter @delfrance/migrations migrate:ml-integracoes-com-produto --project <project-id>
 ```
 
 Then, to write:
 
 ```bash
-pnpm --filter @delfrance/migrations migrate:ml-integracoes-com-produto -- --project <project-id> --apply
+pnpm --filter @delfrance/migrations migrate:ml-integracoes-com-produto --project <project-id> --apply
 ```
 
 Both write a JSONL log to `tools/migrations/out/`, one line per change and per

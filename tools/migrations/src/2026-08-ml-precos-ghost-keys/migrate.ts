@@ -18,9 +18,9 @@ import { ghostFieldPath, planGhostKeys } from './transform';
  * Flutter ML price handler accumulated in `produto.precos` (#803). Idempotent
  * (a second run finds nothing), dry-run by default.
  *
- *   pnpm --filter @delfrance/migrations migrate:ml-precos-ghost-keys -- \
+ *   pnpm --filter @delfrance/migrations migrate:ml-precos-ghost-keys \
  *     --project <staging-id>            # dry-run: logs what it would remove
- *   pnpm --filter @delfrance/migrations migrate:ml-precos-ghost-keys -- \
+ *   pnpm --filter @delfrance/migrations migrate:ml-precos-ghost-keys \
  *     --project <staging-id> --apply    # write
  *
  * ---- Cost: this walks every produto, and Firestore Enterprise bills DATA

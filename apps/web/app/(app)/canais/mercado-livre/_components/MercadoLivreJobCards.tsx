@@ -457,8 +457,13 @@ export function PriceSyncJobCard({
  * Compact dimmed-monospace list of a price-sync job's skip/failure sample.
  * `total` is the exact counter (`pulados`/`falhas`) — the entries themselves
  * are a server-capped sample, so the "+N mais" tail counts against it.
+ *
+ * Exported so the Histórico modal renders a FINISHED run through exactly this
+ * component: the history endpoint returns the same entry shape as the running
+ * one, and a second renderer would be free to drift from the "+N mais" maths
+ * that keeps the sample honest about the exact counters.
  */
-function PriceSyncEntryList({
+export function PriceSyncEntryList({
   label,
   entries,
   total,

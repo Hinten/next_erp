@@ -6,6 +6,7 @@ import type { MedidasDoPacote, ProdutoMercadoLivreLink } from '@delfrance/schema
 
 import type { StockPushRow } from '@/lib/marketplace/estoque/types';
 import { ListingDetails } from './ListingDetails';
+import { TabelaMedidasResumo } from './TabelaMedidasResumo';
 import { ListingForm } from './ListingForm';
 import type { ListingSaveFn } from './ListingForm';
 import { ListingStatusStrip, type MotivoReverificacao } from './ListingStatusStrip';
@@ -41,6 +42,12 @@ export interface AnuncioBlockProps {
   produtoMedidas: MedidasDoPacote | null;
   /** `extraData.marca` — same tier as `produtoCondicao`; null while it loads. */
   produtoMarca: string | null;
+  /**
+   * The produto's tabela de medidas — `null` when it names none, or while the
+   * doc loads. Drives {@link TabelaMedidasResumo}, which is the only place on
+   * this tab that says whether the tabela can bind here at all (#1087).
+   */
+  tabelaMedidas: { nome: string; chartsMap: Record<string, unknown> | null } | null;
   /** `null` while the produto doc is still loading — NOT 0. */
   produtoFotoCount: number | null;
   canWrite: boolean;
@@ -100,6 +107,7 @@ export function AnuncioBlock({
   produtoCondicao,
   produtoMedidas,
   produtoMarca,
+  tabelaMedidas,
   produtoFotoCount,
   canWrite,
   hasClient,
@@ -173,6 +181,18 @@ export function AnuncioBlock({
           what did ML reject?), and they were previously buried under a long
           form. */}
       <ListingDetails link={link} produtoFotoCount={produtoFotoCount} />
+      {/* Beside the read-only facts and ABOVE the form: it explains a publish
+          that has not happened yet, so it belongs with what the operator
+          checks rather than with what they edit. */}
+      {tabelaMedidas != null && (
+        <TabelaMedidasResumo
+          integracaoId={integracaoId}
+          categoryId={link.category_id ?? null}
+          nomeDaTabela={tabelaMedidas.nome}
+          chartsMap={tabelaMedidas.chartsMap}
+          linkAttributes={link.attributes ?? []}
+        />
+      )}
       <ListingForm
         produtoId={produtoId}
         linkDocId={linkDocId}

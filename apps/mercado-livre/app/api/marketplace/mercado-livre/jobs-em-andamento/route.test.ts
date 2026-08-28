@@ -73,6 +73,7 @@ const PRICE_JOB = {
   planejados: 9,
   enviados: 3,
   pulados: 1,
+  naoEnumerados: 1,
   falhas: 0,
   pausas: 0,
   skips: [],
@@ -114,7 +115,39 @@ describe('GET /api/marketplace/mercado-livre/jobs-em-andamento', () => {
           erro: null,
         },
       ],
-      enviosPreco: [{ jobId: 'env-1', ...PRICE_JOB }],
+      // Written out for the same reason as the block above, and this half is
+      // why it matters: it used to be `{ jobId: 'env-1', ...PRICE_JOB }`, which
+      // compares the projection against a fixture carrying the SAME omission.
+      // `naoEnumerados` was missing from both, so the assertion passed while
+      // apps/web could not parse the response at all (#1361).
+      //
+      // Written out, `toEqual` pins the key set exactly — it fails on a missing
+      // key AND on an extra one — so this is the whole guard on the projection;
+      // do not weaken it back to a spread. What it CANNOT catch is a field added
+      // to `priceSyncStatusSchema` in apps/web and not to this projection, which
+      // is the drift that caused #1361: that list lives in the workspace that
+      // owns the schema, and is not reachable from here. The apps/web half of
+      // the contract is asserted in `wire.test.ts` instead.
+      enviosPreco: [
+        {
+          jobId: 'env-1',
+          integracaoId: 'int-2',
+          status: 'running',
+          baixarPreco: false,
+          planejados: 9,
+          enviados: 3,
+          pulados: 1,
+          naoEnumerados: 1,
+          falhas: 0,
+          pausas: 0,
+          skips: [],
+          failures: [],
+          startedAt: 1000,
+          updatedAt: 2000,
+          finishedAt: null,
+          erro: null,
+        },
+      ],
     });
   });
 

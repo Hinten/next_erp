@@ -141,6 +141,12 @@ async function runningPriceSyncs(db: Firestore, integracaoIds: readonly string[]
         planejados: job.planejados,
         enviados: job.enviados,
         pulados: job.pulados,
+        // Exact and uncapped, unlike the `skips` sample (#1072) — and NOT
+        // optional here: `jobsEmAndamentoSchema` extends `priceSyncStatusSchema`,
+        // where this field is required, so omitting it failed validation in
+        // apps/web and took the WHOLE rail lookup down — the mass-import cards
+        // included — the moment any conta had a running price-sync job.
+        naoEnumerados: job.naoEnumerados,
         falhas: job.falhas,
         pausas: job.pausas,
         skips: job.skips,

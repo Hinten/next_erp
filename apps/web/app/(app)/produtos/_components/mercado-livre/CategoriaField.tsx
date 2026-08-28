@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Button, Group, Stack, Text } from '@mantine/core';
 
-import { formatCategoriaPath } from '@/lib/mercado-livre/categoriaTree';
+import { catalogDomainOf, formatCategoriaPath } from '@/lib/mercado-livre/categoriaTree';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
 import { mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { CategoriaPickerModal } from './CategoriaPickerModal';
@@ -56,6 +56,11 @@ export function CategoriaField({
     retry: mercadoLivreQueryRetry,
   });
   const path = formatCategoriaPath(pathQuery.data?.node ?? null);
+  // ⚠️ Same response as the path above — `settings` rides every one of these
+  // replies and nothing read it until #1087. It is the field the produto's
+  // tabela de medidas has to agree with, so an operator who cannot see it
+  // cannot tell a mismatch from anything else.
+  const catalogDomain = catalogDomainOf(pathQuery.data?.node ?? null);
 
   return (
     <Stack gap={2}>
@@ -73,6 +78,11 @@ export function CategoriaField({
             {path != null && (
               <Text size="xs" c="dimmed">
                 {value}
+              </Text>
+            )}
+            {catalogDomain != null && (
+              <Text size="xs" c="dimmed" data-testid="ml-categoria-dominio">
+                Domínio: {catalogDomain}
               </Text>
             )}
           </Stack>

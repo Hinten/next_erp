@@ -23,7 +23,7 @@
  *    shows up.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Badge, Button, Group, Stack, Text } from '@mantine/core';
+import { Anchor, Badge, Button, Group, Stack, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 
 import {
@@ -34,6 +34,7 @@ import {
 } from '@/lib/mercado-livre/client';
 import { mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { ContaJobErrorCard, MassImportJobCard, PriceSyncJobCard } from './MercadoLivreJobCards';
+import { PriceSyncHistoricoModal } from './PriceSyncHistoricoModal';
 import type { ContaJobOutcome, ContaRef } from './startJobsForContas';
 
 /** Survives a reload; scoped to the tab, like the jobs the operator is watching. */
@@ -164,12 +165,33 @@ export function MercadoLivreJobsPanel({
     [massImport, priceSync],
   );
 
-  if (cards.length === 0) {
-    // A lookup that cannot reach the backend is reported quietly: it says
-    // nothing about the jobs themselves, and an Alert here would shout on
-    // every page load whenever apps/mercado-livre is down.
-    if (!collapsed && lookup.error != null) {
-      return (
+  // The collapsed rail is an icon strip: only the count badge fits, and only
+  // when there is something to count.
+  if (collapsed) {
+    if (cards.length === 0) return null;
+    return (
+      <Badge size="sm" circle variant="filled" aria-label={`${cards.length} job(s) em andamento`}>
+        {cards.length}
+      </Badge>
+    );
+  }
+
+  const lookupFalhou = lookup.error != null;
+
+  // ⚠️ This used to `return null` whenever there were no cards — which is
+  // exactly the state an operator returning to the page is in, since the lookup
+  // is running-only and a finished run produces no card. The Histórico entry
+  // point has to survive that branch or it can never be found when it is most
+  // needed. Nothing else renders when there is neither a card, a selection, nor
+  // an error, so the rail stays empty in the genuinely empty case.
+  if (cards.length === 0 && selecionadas.length === 0 && !lookupFalhou) return null;
+
+  return (
+    <Stack gap="xs" role="region" aria-label="Jobs em andamento">
+      {lookupFalhou && (
+        // A lookup that cannot reach the backend is reported quietly: it says
+        // nothing about the jobs themselves, and an Alert here would shout on
+        // every page load whenever apps/mercado-livre is down.
         <Group gap="xs" wrap="nowrap">
           <Text size="xs" c="dimmed">
             Não foi possível consultar os jobs em andamento.
@@ -187,21 +209,7 @@ export function MercadoLivreJobsPanel({
             Tentar novamente
           </Button>
         </Group>
-      );
-    }
-    return null;
-  }
-
-  if (collapsed) {
-    return (
-      <Badge size="sm" circle variant="filled" aria-label={`${cards.length} job(s) em andamento`}>
-        {cards.length}
-      </Badge>
-    );
-  }
-
-  return (
-    <Stack gap="xs" role="region" aria-label="Jobs em andamento">
+      )}
       {cards.map((card) =>
         card.kind === 'error' ? (
           <ContaJobErrorCard
@@ -230,7 +238,35 @@ export function MercadoLivreJobsPanel({
           />
         ),
       )}
+      {selecionadas.map((conta) => (
+        <HistoricoLink key={`historico-${conta.id}`} conta={conta} />
+      ))}
     </Stack>
+  );
+}
+
+/**
+ * Entry point to a conta's PAST price-sync runs. Keyed off the SELECTION rather
+ * than off the cards on purpose: the case it exists for is "the run finished
+ * while I was away", which by definition has no card, and the operator's way
+ * back to it is the same row they would click to start another one.
+ *
+ * The modal owns the fetch and only runs it while open, so an unopened link
+ * costs nothing.
+ */
+function HistoricoLink({ conta }: { conta: ContaRef }) {
+  const [aberto, setAberto] = useState(false);
+  return (
+    <>
+      {/* ⚠️ The conta is part of the LABEL, not just the modal title. One link is
+          rendered per selected conta, so without it N links stack in a ~300px
+          column with byte-identical text — and identical accessible names — and
+          the only way to tell them apart is to open one. */}
+      <Anchor component="button" type="button" size="xs" onClick={() => setAberto(true)}>
+        Histórico de envios de preços — {conta.nome}
+      </Anchor>
+      <PriceSyncHistoricoModal conta={conta} opened={aberto} onClose={() => setAberto(false)} />
+    </>
   );
 }
 

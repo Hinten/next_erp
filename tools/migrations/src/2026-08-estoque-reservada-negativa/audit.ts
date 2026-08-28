@@ -17,7 +17,7 @@ import { auditarReservaNegativa, type HistoricoResumo, type ReservaNegativaRow }
  * AUDIT (read-only): estoque documents holding a NEGATIVE
  * `quantidadeReservada` — #931.
  *
- *   pnpm --filter @delfrance/migrations audit:estoque-reservada-negativa -- --project <id>
+ *   pnpm --filter @delfrance/migrations audit:estoque-reservada-negativa --project <id>
  *
  * ## Why
  *

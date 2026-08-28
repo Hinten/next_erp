@@ -16,7 +16,7 @@ one by one, what each one should be.
 ## Run it
 
 ```bash
-pnpm --filter @delfrance/migrations audit:ml-pedido-pago -- --project <project-id>
+pnpm --filter @delfrance/migrations audit:ml-pedido-pago --project <project-id>
 ```
 
 Output: `tools/migrations/out/<timestamp>-ml-pedido-pago-audit-dryrun.jsonl`,

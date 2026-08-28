@@ -27,7 +27,7 @@
  *    reads `produtoMercadoLivre` UNDER the anchor. The stock stack anchors the
  *    same way. So a class-3 row is a request to repair the DATA (the link
  *    belongs on the family parent), not a button to press — the pt-BR wording
- *    in `precoManual.MENSAGEM_POR_MOTIVO` says exactly that.
+ *    in `precoMotivos.MENSAGEM_POR_MOTIVO` says exactly that.
  *
  * Building drafts for class 3 instead was considered and deliberately deferred:
  * `draft.produtoId` is both the price source and the writeback's subcollection
