@@ -162,8 +162,16 @@ test.describe.serial('Canais Mercado Livre e2e — TableView / ObjectView', () =
     // failed-start alert) depends on whether the backend answered, so only its
     // identity is asserted. Scoped to the region because the nome also appears
     // in its table row.
+    //
+    // ⚠️ `exact: true` is load-bearing, not tidiness. The region also holds a
+    // "Histórico de envios de preços — <nome>" link per SELECTED conta, which is
+    // rendered whether or not a job exists. A substring match therefore (a) hit
+    // two elements and failed on strict mode, and (b) would have gone on passing
+    // off that link alone if the card never appeared — a green assertion for the
+    // one thing this test exists to check. Both card kinds render the nome as
+    // its own `<Text>` via `JobCardShell`, so an exact match hits the card only.
     const jobs = page.getByRole('region', { name: 'Jobs em andamento' });
-    await expect(jobs.getByText(row(1))).toBeVisible({ timeout: 15_000 });
+    await expect(jobs.getByText(row(1), { exact: true })).toBeVisible({ timeout: 15_000 });
   });
 
   test('deletes a conta through the typed-confirm modal', async ({ page }) => {
