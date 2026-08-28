@@ -174,8 +174,9 @@ test.describe.serial('Listas de preços e2e — TableView / ObjectView', () => {
     await page.goto('/listas-de-precos/novo');
     await fillField(page, 'Nome', `${prefix}-invalida`);
     await page.getByRole('tab', { name: 'Fórmulas de cálculo' }).click();
-    // A freshly added row starts at limiar 0 with an empty formula — both
-    // fail their own F1 row-level rule independently of one another.
+    // A freshly added row now arrives with FORMULA_PADRAO pre-filled, which
+    // parses — so the formula rule is already satisfied and `limiar`, which
+    // still starts at 0 and has no sensible default, is what blocks the save.
     await page.getByRole('button', { name: 'Adicionar fórmula', exact: true }).click();
     await clickSave(page, 'Criar');
 

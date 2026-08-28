@@ -11,6 +11,7 @@ import { DELETE_MARK } from '@delfrance/ui';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { FormulaAjuda } from './FormulaAjuda';
 import { FormulaListEditor } from './FormulaListEditor';
 import { stripFormulasCalculoPreco } from './formulaStrip';
 
@@ -146,6 +147,9 @@ export function FormulasPorCategoriaEditor({
   return (
     <Fieldset legend={label}>
       <Stack gap="md">
+        {/* The nested editors below are passed no label, so none of them
+            renders its own legend — this is the single copy for this tab. */}
+        <FormulaAjuda />
         {hint && (
           <Text size="xs" c="dimmed">
             {hint}
