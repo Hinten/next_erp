@@ -49,6 +49,10 @@ export function FaixaTaxaFixaPesoEditor({
       <Text size="xs" fw={500} c="dimmed">
         Faixas de taxa fixa por peso
       </Text>
+      <Text size="xs" c="dimmed">
+        O peso do produto é arredondado para cima em 2 casas antes de procurar a faixa — um produto
+        de 0,252 kg conta como 0,26 kg.
+      </Text>
       {rows.length === 0 && (
         <Text size="xs" c="dimmed">
           Nenhuma faixa de peso.
@@ -58,6 +62,20 @@ export function FaixaTaxaFixaPesoEditor({
         const marked = row[DELETE_MARK] === true;
         return (
           <Group key={i} align="flex-end" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
+            {/*
+              2 decimals, not 3, deliberately. `taxaFixaPorPeso` compares these
+              bounds against a weight first rounded UP to 2 decimals
+              (`Math.ceil(pesoKg * 100) / 100`), so the comparison only ever
+              lands on a 0,01 grid: a third decimal in a bound is inert
+              (`0,499` behaves exactly as `0,49`), and a band with no multiple
+              of 0,01 inside it (`0,251`-`0,259`) can never match at all — it
+              falls back to the formula's default `taxaFixa` with nothing on
+              screen to say so. Offering a digit the engine discards is what
+              made that invisible. Pinned by `faixaTaxaFixaPeso.test.ts`.
+
+              The rounding itself is NOT changed: it is faithful to the legacy
+              `getTaxaFixaPorPeso` and matches how carriers bill weight.
+            */}
             <DecimalInput
               label="Peso mín. (kg)"
               ariaLabel={`Peso mínimo ${i + 1}${scope}`}
@@ -65,7 +83,7 @@ export function FaixaTaxaFixaPesoEditor({
               onChange={(n) => patchRow(i, { pesoMinKg: n ?? 0 })}
               disabled={disabled || marked}
               min={0}
-              decimalScale={3}
+              decimalScale={2}
               w={130}
             />
             <DecimalInput
@@ -75,7 +93,7 @@ export function FaixaTaxaFixaPesoEditor({
               onChange={(n) => patchRow(i, { pesoMaxKg: n ?? 0 })}
               disabled={disabled || marked}
               min={0}
-              decimalScale={3}
+              decimalScale={2}
               w={130}
             />
             <DecimalInput

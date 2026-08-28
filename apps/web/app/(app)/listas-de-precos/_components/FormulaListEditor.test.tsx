@@ -93,6 +93,22 @@ describe('FormulaListEditor — coefficient precision (4 decimals)', () => {
   });
 });
 
+describe('FormulaListEditor — weight-band bounds cap at 2 decimals', () => {
+  // The engine rounds the product weight UP to 2 decimals before matching a
+  // band (`taxaFixaPorPeso`), so a third digit here is inert and can make a
+  // band unreachable. `faixaTaxaFixaPeso.test.ts` pins that reasoning against
+  // the engine; this pins the input that follows from it. Fails at
+  // decimalScale={3}, which keeps '0,499'.
+  it('truncates a third decimal typed into Peso máx.', () => {
+    renderEditor();
+    addFormula();
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar faixa de peso' }));
+    const pesoMax = input('Peso máximo 1 da fórmula 1');
+    fireEvent.change(pesoMax, { target: { value: '0,499' } });
+    expect(pesoMax.value).toBe('0,49');
+  });
+});
+
 describe('FormulaListEditor — the variable legend', () => {
   it('renders once for a top-level editor', () => {
     renderEditor();
