@@ -1,8 +1,19 @@
 'use client';
 
 import { type FocusEvent, useMemo, useState } from 'react';
-import { ActionIcon, Box, Divider, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
-import { IconPencil } from '@tabler/icons-react';
+import {
+  ActionIcon,
+  Alert,
+  Anchor,
+  Box,
+  Divider,
+  Group,
+  Stack,
+  Text,
+  TextInput,
+  Tooltip,
+} from '@mantine/core';
+import { IconAlertTriangle, IconPencil } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
@@ -51,6 +62,72 @@ function matchesFilter(p: ProdutoRow, term: string): boolean {
   return (p.nome ?? '').toLowerCase().includes(t) || (p.sku ?? '').startsWith(term);
 }
 
+/**
+ * Whether a parent produto still holds stock of its own, and how much.
+ *
+ * ⚠️ Deliberately NOT `estoqueDisponivel`: a doc with `quantidade 3 /
+ * quantidadeReservada 3` has `disponivel 0` and is still a residual — that is
+ * exactly the shape the ML UP sole-member migration leaves behind on purpose
+ * (`upSoleMember.ts:246-262` moves only the AVAILABLE units and expects a human
+ * to find the reserved ones). A non-finite stored value counts as a residual
+ * too: failing toward *visible* is the safe direction, since the alternative is
+ * hiding units that nothing else in this app surfaces.
+ */
+export function residualEstoquePai(
+  estoques: Iterable<Pick<EstoqueProduto, 'quantidade' | 'quantidadeReservada'>>,
+): { temResidual: boolean; quantidade: number; reservada: number } {
+  let temResidual = false;
+  let quantidade = 0;
+  let reservada = 0;
+  for (const e of estoques) {
+    const q = e.quantidade;
+    const r = e.quantidadeReservada;
+    if (!Number.isFinite(q) || !Number.isFinite(r)) {
+      temResidual = true;
+      continue;
+    }
+    if (q !== 0 || r !== 0) temResidual = true;
+    quantidade += q;
+    reservada += r;
+  }
+  return { temResidual, quantidade, reservada };
+}
+
+/** Human wording for the residual — both halves matter, and either can be zero. */
+function descreverResidual(quantidade: number, reservada: number): string {
+  const partes: string[] = [];
+  if (quantidade !== 0) partes.push(`${fmt(quantidade)} em estoque`);
+  if (reservada !== 0) partes.push(`${fmt(reservada)} reservada(s)`);
+  return partes.length === 0
+    ? 'Há estoque lançado no produto pai.'
+    : `Há ${partes.join(' e ')} no produto pai.`;
+}
+
+/**
+ * One produto's `estoques`. Limit-only full fetch — no predicate/sort, so no
+ * Firestore index applies; bounded by the number of depósitos (#407 audit).
+ *
+ * Lifted out of the section so the manager can read the PARENT's numbers to
+ * decide the layout while keeping exactly ONE listener on them: the parent
+ * section is handed the result instead of subscribing again.
+ */
+function useEstoquesDoProduto(db: Firestore, produtoId: string | null) {
+  const query = useMemo(
+    () =>
+      produtoId
+        ? buildQuery(estoqueProdutoCollection.ref(db, { produtoId }), [limit(ESTOQUE_LIMIT)])
+        : null,
+    [db, produtoId],
+  );
+  const snap = useSnapshot(query);
+  const byId = useMemo(() => {
+    const map = new Map<string, EstoqueProduto>();
+    for (const d of snap.data ?? []) map.set(d.id, d.data);
+    return map;
+  }, [snap.data]);
+  return { byId, loaded: snap.data !== undefined, error: snap.error };
+}
+
 export interface EstoqueManagerProps {
   /** `null` in create mode — the produto must be saved before editing stock. */
   produtoId: string | null;
@@ -67,6 +144,17 @@ export interface EstoqueManagerProps {
  *
  * Self-contained — stock editing is decoupled from the parent form save (it spans
  * many produto docs), so this ignores the ObjectView field value/onChange.
+ *
+ * ⚠️ When the produto HAS variations, stock belongs on the children, so the
+ * parent's own section is hidden behind a discreet toggle — but only once its
+ * estoques are known to be EMPTY. The parent doc is not inert: Mercado Livre
+ * never *sends* its quantity for a produto with variations
+ * (`itemPayload.ts:243-247`, `bulkEstoquePlan.ts:1994-2013`), yet
+ * `sincronizarEstoquePedido` still reserves against it, the Balanço still counts
+ * it, and the UP sole-member migration deliberately strands reserved units there.
+ * A residual is therefore surfaced as a warning and stays fully EDITABLE —
+ * disabling it would make those units unmovable from the UI, which is worse than
+ * showing them.
  */
 export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps) {
   // Active depósitos (bounded, name-ordered; `ativo` filtered client-side).
@@ -124,7 +212,11 @@ export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps)
     return [parent, ...children];
   }, [produtoId, parentSnap.data, childrenSnap.data]);
 
+  const paiEstoques = useEstoquesDoProduto(db, produtoId);
+  const residual = useMemo(() => residualEstoquePai(paiEstoques.byId.values()), [paiEstoques.byId]);
+
   const [filter, setFilter] = useState('');
+  const [mostrarPai, setMostrarPai] = useState(false);
 
   if (!produtoId) {
     return (
@@ -147,7 +239,8 @@ export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps)
       </Text>
     );
   }
-  if (produtos.length === 0) {
+  const [parent, ...children] = produtos;
+  if (!parent) {
     return (
       <Text c="dimmed" size="sm">
         Carregando…
@@ -158,6 +251,36 @@ export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps)
   const term = filter.trim();
   const filtering = term !== '';
 
+  const temVariacoes = children.length > 0;
+  // Hidden while the parent's estoques are still UNKNOWN too, so the section is
+  // never shown and then yanked away. A read error degrades to the old
+  // always-visible behaviour rather than hiding on a guess.
+  const paiEscondido =
+    temVariacoes && !paiEstoques.error && !(paiEstoques.loaded && residual.temResidual);
+  const mostrarToggle = paiEscondido && paiEstoques.loaded;
+  const mostrarAlerta =
+    temVariacoes && !paiEstoques.error && paiEstoques.loaded && residual.temResidual;
+
+  // Zebra runs over the RENDERED order, not `produtos` — otherwise dropping the
+  // parent flips every stripe.
+  const renderSection = (p: ProdutoRow, index: number, ehPai: boolean) => {
+    const highlight = filtering && matchesFilter(p, term);
+    return (
+      <EstoqueProdutoSection
+        key={p.id}
+        db={db}
+        produto={p}
+        depositos={depositos}
+        disabled={disabled}
+        zebra={index % 2 === 1}
+        highlight={highlight}
+        dimmed={filtering && !highlight}
+        estoquesById={ehPai ? paiEstoques.byId : undefined}
+        paiComVariacoes={ehPai && temVariacoes}
+      />
+    );
+  };
+
   return (
     <Stack gap="xs">
       <TextInput
@@ -166,21 +289,32 @@ export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps)
         value={filter}
         onChange={(e) => setFilter(e.currentTarget.value)}
       />
-      {produtos.map((p, index) => {
-        const highlight = filtering && matchesFilter(p, term);
-        return (
-          <EstoqueProdutoSection
-            key={p.id}
-            db={db}
-            produto={p}
-            depositos={depositos}
-            disabled={disabled}
-            zebra={index % 2 === 1}
-            highlight={highlight}
-            dimmed={filtering && !highlight}
-          />
-        );
-      })}
+      {mostrarAlerta && (
+        <Alert
+          color="yellow"
+          icon={<IconAlertTriangle size={16} />}
+          title="Estoque lançado no produto pai"
+        >
+          Este produto tem variações — o estoque deve ficar nas variações.{' '}
+          {descreverResidual(residual.quantidade, residual.reservada)} Mova as unidades para a
+          variação correspondente.
+        </Alert>
+      )}
+      {!paiEscondido && renderSection(parent, 0, true)}
+      {children.map((c, i) => renderSection(c, paiEscondido ? i : i + 1, false))}
+      {mostrarToggle && (
+        <Anchor
+          component="button"
+          type="button"
+          c="dimmed"
+          size="sm"
+          ta="left"
+          onClick={() => setMostrarPai((v) => !v)}
+        >
+          {mostrarPai ? 'Ocultar estoque do produto pai' : 'Mostrar estoque do produto pai'}
+        </Anchor>
+      )}
+      {mostrarToggle && mostrarPai && renderSection(parent, children.length, true)}
     </Stack>
   );
 }
@@ -193,6 +327,10 @@ interface SectionProps {
   zebra: boolean;
   highlight: boolean;
   dimmed: boolean;
+  /** Pre-loaded estoques (the parent's, already read once by the manager). */
+  estoquesById?: ReadonlyMap<string, EstoqueProduto>;
+  /** Suffixes the header with `(produto pai)` so a revealed parent reads as one. */
+  paiComVariacoes?: boolean;
 }
 
 /** One produto (parent or variation) — its `<sku> - <nome>` header + depósito rows. */
@@ -204,22 +342,28 @@ function EstoqueProdutoSection({
   zebra,
   highlight,
   dimmed,
+  estoquesById,
+  paiComVariacoes,
 }: SectionProps) {
-  // Limit-only full fetch of one produto's estoques — no predicate/sort, so no
-  // Firestore index applies; bounded by the number of depósitos (#407 audit).
+  // Skipped entirely when the caller already holds this produto's estoques —
+  // `useEstoquesDoProduto` above is the same query, and one listener is enough.
+  const externo = estoquesById !== undefined;
   const estoquesQuery = useMemo(
     () =>
-      buildQuery(estoqueProdutoCollection.ref(db, { produtoId: produto.id }), [
-        limit(ESTOQUE_LIMIT),
-      ]),
-    [db, produto.id],
+      externo
+        ? null
+        : buildQuery(estoqueProdutoCollection.ref(db, { produtoId: produto.id }), [
+            limit(ESTOQUE_LIMIT),
+          ]),
+    [db, produto.id, externo],
   );
   const estoquesSnap = useSnapshot(estoquesQuery);
-  const byId = useMemo(() => {
+  const ownById = useMemo(() => {
     const map = new Map<string, EstoqueProduto>();
     for (const d of estoquesSnap.data ?? []) map.set(d.id, d.data);
     return map;
   }, [estoquesSnap.data]);
+  const byId = estoquesById ?? ownById;
 
   // Kit sections also read each `limitarEstoque` component's estoques so the
   // Disponível cell can append the computed kit availability (Flutter
@@ -276,7 +420,7 @@ function EstoqueProdutoSection({
       }
     : null;
 
-  const label = produtoLabel(produto);
+  const label = paiComVariacoes ? `${produtoLabel(produto)} (produto pai)` : produtoLabel(produto);
 
   return (
     <Box
