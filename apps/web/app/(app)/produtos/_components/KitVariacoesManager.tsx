@@ -49,8 +49,9 @@ export interface KitVariacoesManagerProps {
  * "Gerar Variações" runs the pure matcher (`generateKitForVariacoes`) and
  * **merges** the result into each variation's components (old `addChildrenMap`
  * semantics). The maps are flushed onto each child produto doc in `onAfterSave`
- * (after the variation-children flush) — staged-new variations are matched to
- * their freshly-minted child by `variacoesUid` via `resolveStagedKitVariacoes`.
+ * (after the variation-children flush) — a variation still carrying `id: null`
+ * at that point is matched to its child by `variacoesUid` via
+ * `resolveStagedKitVariacoes`.
  */
 export function KitVariacoesManager({
   produtoId,
@@ -84,7 +85,8 @@ export function KitVariacoesManager({
     [produtoId, rows],
   );
 
-  // Staged per-variation maps, keyed by `VariationRow.key` (stable across save).
+  // Staged per-variation maps, keyed by `VariationRow.key` — a doc id on both
+  // sides of the save, so the flush below releases an entry by the id it wrote.
   const [staged, setStaged] = useState<Record<string, ComponentesKit | null>>({});
   const [gerando, setGerando] = useState(false);
 
@@ -107,6 +109,14 @@ export function KitVariacoesManager({
           componentesKit: stripKitForSave(r.componentesKit ?? {}),
         })),
       );
+      // Drop what we just persisted. A staged row's key is the child's doc id
+      // (`VariationManager.stagedRowKey`) and a saved row's always was, so the
+      // written ids ARE the keys to release. Without this the entry outlives
+      // its save and every later produto save rewrites `componentesKit` — a
+      // full overwrite, so it would silently clobber whatever another writer
+      // put there in between. Unresolved entries stay staged.
+      const flushed = new Set(resolved.map((r) => r.id));
+      setStaged((s) => Object.fromEntries(Object.entries(s).filter(([key]) => !flushed.has(key))));
     };
     return () => {
       flushRef.current = null;

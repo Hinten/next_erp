@@ -78,7 +78,12 @@ import {
  * `onAfterSave`), per the app-wide staged-mutation convention.
  */
 interface ChildRow {
-  /** Stable list key — the doc id for persisted rows, a local uuid for new ones. */
+  /**
+   * Stable list key — ALWAYS a doc id: the persisted one for a server row, the
+   * pre-minted one a staged row will be written under ({@link stagedRowKey}).
+   * `id`, never `key`, is what tells the two apart, so it stays `null` until the
+   * document actually exists.
+   */
   key: string;
   id: string | null;
   nome: string;
@@ -94,8 +99,10 @@ interface ChildRow {
 /**
  * The current variation set (saved + staged) published to the page so the Kit
  * tab's "Gerar Variações" grid can target variations that aren't saved yet. New
- * rows carry `id: null` (a fresh doc id is minted at flush); they're matched to
- * their real child by `variacoesUid` afterward.
+ * rows carry `id: null` until their document exists, but their `key` is already
+ * the doc id the flush writes under, so `resolveStagedKitVariacoes` resolves
+ * them by id as soon as the snapshot echoes the new child — it only falls back
+ * to matching by `variacoesUid` in the window before that.
  */
 export interface VariationRow {
   key: string;
@@ -140,9 +147,22 @@ export interface VariationManagerProps {
   disabled?: boolean;
 }
 
-function localKey(): string {
-  return `new-${crypto.randomUUID()}`;
+/**
+ * Mint the key of a staged row — a real Firestore doc id, minted HERE rather
+ * than at write time (`newDocId` is pure, no network). That makes a staged row
+ * and its future document ONE identity, which buys two things: the optimistic
+ * snapshot echo of a just-created child REPLACES its staged twin in `rows`
+ * instead of doubling it, and re-running the flush before the ack overwrites
+ * that same doc instead of creating a second one — root `CLAUDE.md` Critical
+ * rule 7 tier 0. Same idiom as the chat composer's pre-minted mensagem ids
+ * (#529, `useMensagensWindow`).
+ */
+function stagedRowKey(): string {
+  return newDocId();
 }
+
+/** Stable empty set, so releasing `absorbedKeys` can't schedule a re-render. */
+const EMPTY_KEYS: ReadonlySet<string> = new Set();
 
 /**
  * A flush-abort error. ObjectView only renders `ZodError`/`FirebaseError`
@@ -221,6 +241,11 @@ export function VariationManager({
   // flush clears it and the live snapshot takes back over.
   const [patches, setPatches] = useState<Record<string, ChildPatch>>({});
   const [newRows, setNewRows] = useState<ChildRow[]>([]);
+  // Staged creates the #117 id reuse redirected onto an EXISTING doc id: the
+  // batch updates that doc instead of creating one under the row's own key, so
+  // the identity filter in `rows` can't see them. Held only for the commit
+  // window, released on both exits.
+  const [absorbedKeys, setAbsorbedKeys] = useState<ReadonlySet<string>>(EMPTY_KEYS);
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const [groupsTouched, setGroupsTouched] = useState<string[] | null>(null);
   const [actionError, setActionError] = useState<string[] | null>(null);
@@ -246,11 +271,23 @@ export function VariationManager({
             patch.nome !== undefined || patch.sku !== undefined || patch.variacoesUid !== undefined,
         };
       });
-    const all = [...server, ...newRows];
+    // A staged row's key IS the doc id it will be written to, so a server row
+    // carrying that id is not a sibling — it IS this row, echoed back. Firestore
+    // applies a batch to the local cache and fires `onSnapshot` before the
+    // server ack (`useSnapshot` listens with `includeMetadataChanges: true`), so
+    // without this the whole commit window holds every new child TWICE:
+    // `findDuplicateSkus` reports a collision that exists only in our own echo,
+    // the flush gate then refuses the next save, and `onRowsChange` publishes
+    // the doubled list to the Kit tab. Filtering here — inside the memo, atomic
+    // with the merge — also keeps React and dnd-kit from ever seeing two rows
+    // that share a key.
+    const persisted = new Set(server.map((r) => r.id));
+    const staged = newRows.filter((r) => !persisted.has(r.key) && !absorbedKeys.has(r.key));
+    const all = [...server, ...staged];
     if (!localOrder) return all;
     const pos = new Map(localOrder.map((k, i) => [k, i]));
     return all.sort((a, b) => (pos.get(a.key) ?? Infinity) - (pos.get(b.key) ?? Infinity));
-  }, [childrenSnap.data, patches, newRows, localOrder]);
+  }, [childrenSnap.data, patches, newRows, absorbedKeys, localOrder]);
 
   // Publish the variation rows to the page (for the Kit "Gerar Variações" grid),
   // only when the relevant fields actually change — so the setter can't loop.
@@ -280,6 +317,13 @@ export function VariationManager({
     () => new Set([...findDuplicateSkus(rows).values()].flat()),
     [rows],
   );
+
+  /** Drop every staged mutation — the live snapshot takes back over. */
+  function clearStagedState() {
+    setPatches({});
+    setNewRows([]);
+    setLocalOrder(null);
+  }
 
   /**
    * Commit every staged child mutation in ONE batch: deletes, creates (full
@@ -317,6 +361,17 @@ export function VariationManager({
     }
 
     const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows);
+
+    // Staged creates the reuse absorbed onto an existing doc: the batch issues
+    // an UPDATE on that doc, never a `set` under the row's own key, so `rows`
+    // cannot recognise the echo by identity. Undoing the paired deletion
+    // mid-flight — the rows stay enabled while the form submits — would
+    // otherwise show the server row and its staged twin as two live siblings
+    // sharing one SKU.
+    const stagedKeys = new Set(rows.filter((r) => r.id === null).map((r) => r.key));
+    const absorbed = new Set(
+      reconciled.filter((r) => r.id !== null && stagedKeys.has(r.key)).map((r) => r.key),
+    );
 
     // The parent's just-saved precos for children CREATED here: the live form
     // value when available (null = all prices cleared — deliberate, must NOT
@@ -383,8 +438,11 @@ export function VariationManager({
           }
           throw err;
         }
-        const childId = newDocId();
-        batch.set(produtoCollection.docRef(db, {}, childId), docData);
+        // `row.key` IS this child's doc id — minted when the row was staged, so
+        // re-running the flush before the ack overwrites the same document
+        // rather than orphaning it under a fresh id. A row the reuse absorbed
+        // never reaches here: it carries an `id` and takes the update branch.
+        batch.set(produtoCollection.docRef(db, {}, row.key), docData);
         writes += 1;
         // A newly created child's initial `precos` gets NO history entry: the
         // `onProdutoChanged` trigger's `produtoExtraIgnores` drops `precos`
@@ -405,11 +463,22 @@ export function VariationManager({
       }
       ordem += 1;
     }
-    if (writes === 0) return;
-    await batch.commit();
-    setPatches({});
-    setNewRows([]);
-    setLocalOrder(null);
+    if (writes === 0) {
+      // Nothing to write, but the staging DID resolve — e.g. a row added and
+      // then delete-marked before saving. Clearing here too stops that ghost
+      // row from surviving the save.
+      clearStagedState();
+      return;
+    }
+    setAbsorbedKeys(absorbed.size > 0 ? absorbed : EMPTY_KEYS);
+    try {
+      await batch.commit();
+    } finally {
+      // Released on BOTH exits: a rejected batch is rolled back locally, so the
+      // staged rows have to come back carrying the operator's work.
+      setAbsorbedKeys(EMPTY_KEYS);
+    }
+    clearStagedState();
     notifications.show({
       color: 'green',
       message:
@@ -483,7 +552,7 @@ export function VariationManager({
         ...prev,
         ...fresh.map(
           (c): ChildRow => ({
-            key: localKey(),
+            key: stagedRowKey(),
             id: null,
             nome: c.nome,
             sku: c.sku,
@@ -564,7 +633,7 @@ export function VariationManager({
     setNewRows((prev) => [
       ...prev,
       {
-        key: localKey(),
+        key: stagedRowKey(),
         id: null,
         nome: '',
         sku: '',
