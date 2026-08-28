@@ -74,13 +74,40 @@ async function descobrirAmostra() {
   // A name with at least two words is what makes Q2 meaningful: we need a term
   // that is genuinely NOT a prefix of the name it should match.
   const multi = linhas.find((r) => r.nome.trim().split(/\s+/).length >= 2);
-  const comSku = linhas.find((r) => typeof r.sku === 'string' && r.sku.trim() !== '');
   // Same for Q3: a name whose first word looks pluralised in Portuguese, so a
   // singular term only matches if the analyzer stems it.
   const plural = linhas.find((r) => /^[\p{L}]+s\b/u.test(r.nome.trim()));
   const acentuado = linhas.find((r) => /[áàâãéêíóôõúüç]/i.test(r.nome));
 
-  return { total: linhas.length, primeiro: linhas[0], multi, comSku, plural, acentuado };
+  // ⚠️ Q2b needs a VARIATION CHILD's sku, not a parent's. The query it models
+  // matches children on purpose, so probing with a parent's SKU exercises the
+  // one shape where including or excluding `paiId` makes no difference — a
+  // probe that cannot fail the way the real thing would.
+  //
+  // Found by asking sampled parents for their children rather than by an
+  // inequality on `paiId`: `where paiId == <id>` rides the existing
+  // `produtos(paiId ASC, nome ASC)` composite by index-prefix equality, whereas
+  // `paiId != null` has no index at all and this edition full-scans silently.
+  let filhoComSku = null;
+  for (const pai of linhas.slice(0, 10)) {
+    const filhos = await db.collection('produtos').where('paiId', '==', pai.id).limit(5).get();
+    const achado = filhos.docs
+      .map((d) => ({ id: d.id, nome: d.get('nome'), sku: d.get('sku') }))
+      .find((r) => typeof r.sku === 'string' && r.sku.trim() !== '');
+    if (achado) {
+      filhoComSku = achado;
+      break;
+    }
+  }
+
+  return {
+    total: linhas.length,
+    primeiro: linhas[0],
+    multi,
+    filhoComSku,
+    plural,
+    acentuado,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +189,24 @@ function buscaTexto(termo) {
   );
 }
 
+/**
+ * The SKU probe's pipeline — deliberately WITHOUT the `paiId == null` filter.
+ *
+ * ⚠️ Not an oversight, and not interchangeable with {@link buscaTexto}. The
+ * query this probe stands in for (`buscaProduto.ts`, SKU lookup #1) omits that
+ * filter ON PURPOSE: a variation CHILD carries its own SKU and is what an
+ * operator scans off a label. Applying the filter here — and then sampling only
+ * parents — is how the first version of this probe passed while testing the one
+ * case where the difference cannot show up.
+ */
+function buscaTextoSku(termo) {
+  return db
+    .pipeline()
+    .collection('produtos')
+    .search({ query: pipelines.documentMatches(termo) })
+    .limit(50);
+}
+
 function prefixoNome(termo) {
   return db
     .collection('produtos')
@@ -207,14 +252,46 @@ async function main() {
     console.log('\nQ2 skipped: no multi-word produto nome in the sample.');
   }
 
-  // === Q2b — can text search subsume the SKU lookups? =====================
-  if (amostra.comSku) {
-    console.log(
-      `\n${'='.repeat(70)}\nQ2b SKU — term "${amostra.comSku.sku}" (an exact SKU)\n${'='.repeat(70)}`,
+  // === Q2b — can text search replace SKU lookup #1 ONLY? ==================
+  //
+  // ⚠️ Scope, because the earlier wording of this probe over-claimed by 3x.
+  // The smart box fires THREE always-on SKU queries (`buscaProduto.ts`), and
+  // they read THREE DIFFERENT collections:
+  //
+  //   #1 produtos                               <- the only one this index covers
+  //   #2 collectionGroup('produtoMercadoLivre')
+  //   #3 collectionGroup('variacaoMercadoLivre')
+  //
+  // The index declared in this PR is `produtos` / queryScope COLLECTION, so NO
+  // outcome here can retire #2 or #3 — and they are not duplicates of #1: the
+  // ML link SKU is whatever was sent as `seller_custom_field` and routinely
+  // differs from the ERP's, which is the entire reason those queries exist.
+  // Retiring them would need their own text indexes on those collection groups;
+  // this spike deliberately does not declare those, because their cost is only
+  // worth paying if Q1/Q2 first show the mechanism is worth adopting at all.
+  console.log(`\n${'='.repeat(70)}\nQ2b SKU — covers lookup #1 (produtos) ONLY\n${'='.repeat(70)}`);
+  console.log('  #2 and #3 read produtoMercadoLivre / variacaoMercadoLivre as');
+  console.log('  COLLECTION GROUPS. This produtos-scoped index cannot serve them,');
+  console.log('  whatever the result below says. Their SKUs differ from the ERP.');
+
+  if (amostra.filhoComSku) {
+    // ⚠️ A VARIATION CHILD's sku, probed WITHOUT the paiId filter — because
+    // that is exactly what lookup #1 does. A parent SKU cannot tell the two
+    // shapes apart, so testing with one proves nothing about the real query.
+    console.log(`\n  child SKU "${amostra.filhoComSku.sku}" (paiId != null, no filter applied)`);
+    const n = await explicarPipeline(
+      `search(documentMatches) [no paiId filter]`,
+      buscaTextoSku(amostra.filhoComSku.sku.trim()),
     );
-    console.log('  The smart box fires THREE always-on SKU queries per search.');
-    console.log('  If this matches, one text index could replace them.');
-    await explicarPipeline(`search(documentMatches)`, buscaTexto(amostra.comSku.sku.trim()));
+    if (n === 0) {
+      console.warn('  ⚠️  a variation child SKU did NOT match — text search cannot');
+      console.warn('     replace lookup #1 either, since #1 exists to find children.');
+    }
+  } else {
+    console.log('\n  ⚠️  SKIPPED: no variation child with a sku in the sample.');
+    console.log('     Probing a PARENT sku instead would exercise the one shape');
+    console.log('     where the paiId filter makes no difference — it would pass');
+    console.log('     without testing what this question is actually about.');
   }
 
   // === Q3 — is the default analyzer good enough for Portuguese? ===========
