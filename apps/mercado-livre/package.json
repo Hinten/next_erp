@@ -16,6 +16,7 @@
     "check:deposito-source": "dotenv -e ../../.env.local -- tsx scripts/check-deposito-source.ts",
     "census:up-single": "dotenv -e ../../.env.local -- tsx scripts/census-up-single.ts",
     "inspect:anuncio": "dotenv -e ../../.env.local -- tsx scripts/inspect-anuncio.ts",
+    "probe:package-format": "dotenv -e ../../.env.local -- tsx scripts/probe-package-format.ts",
     "inspect:pedido": "dotenv -e ../../.env.local -- tsx scripts/inspect-pedido.ts",
     "dump:notificacoes": "dotenv -e ../../.env.local -- tsx scripts/dump-notificacoes.ts",
     "snapshot:produto": "dotenv -e ../../.env.local -- tsx scripts/snapshot-produto.ts",
