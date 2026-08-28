@@ -112,9 +112,17 @@ async function descobrirAmostra() {
     .limit(50)
     .get();
 
-  const linhas = snap.docs
+  const todas = snap.docs
     .map((d) => ({ id: d.id, nome: d.get('nome'), sku: d.get('sku') }))
     .filter((r) => typeof r.nome === 'string' && r.nome.trim() !== '');
+
+  // ⚠️ Sort REAL catalogue rows ahead of e2e fixtures. Discovery orders by
+  // `ultimaModificacao desc` and the e2e lanes write constantly, so the newest
+  // rows are almost all `e2e-<runId>-…` — synthetic, all-hyphen names that are
+  // the pathological case for the search DSL and representative of nothing.
+  // Measuring Q1's cost on one of those answers the wrong question.
+  const ehE2e = (r) => /^e2e[-_]/i.test(r.nome.trim());
+  const linhas = [...todas.filter((r) => !ehE2e(r)), ...todas.filter(ehE2e)];
 
   // A name with at least two words is what makes Q2 meaningful: we need a term
   // that is genuinely NOT a prefix of the name it should match.
@@ -133,12 +141,17 @@ async function descobrirAmostra() {
   // anywhere in the nome" and then probing the FIRST word made the probe
   // silently produce no output whenever the accent sat in a later word
   // ("Camiseta Polo Básica").
+  // ⚠️ The word must be accented AND free of DSL operator characters. The first
+  // version probed "Porta-lapis", which varies TWO things at once — a dropped
+  // accent and a hyphen, which the DSL reads as negation — so its zero could
+  // not distinguish "no accent folding" from "the term never parsed".
+  const semOperadorDsl = (w) => !/["()+:~^*?\-]/.test(w);
   let palavraAcentuada = null;
   for (const r of linhas) {
     const achada = r.nome
       .trim()
       .split(/\s+/)
-      .find((w) => semAcentos(w) !== w);
+      .find((w) => semAcentos(w) !== w && semOperadorDsl(w) && w.length >= 4);
     if (achada) {
       palavraAcentuada = { palavra: achada, nome: r.nome };
       break;
@@ -466,13 +479,34 @@ async function main() {
   if (amostra.palavraAcentuada) {
     const { palavra, nome: nomeAcentuado } = amostra.palavraAcentuada;
     const semAcento = semAcentos(palavra);
-    console.log(`\n  accents: searching "${semAcento}" should find "${nomeAcentuado}"`);
-    const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto);
-    if (n === 0) {
-      console.warn(`  ⚠️  "${semAcento}" did NOT match "${palavra}" — no accent folding.`);
+
+    // ⚠️⚠️ CONTROL FIRST. A zero on the unaccented form only means "no accent
+    // folding" if the index can find that document by its accented word at all.
+    // Without this the probe cannot tell folding from a term that never matched
+    // for some unrelated reason — a checker needs a known-GOOD case as well as
+    // a known-BAD one.
+    console.log(
+      `\n  control: "${palavra}" must match "${nomeAcentuado}" for the next probe to mean anything`,
+    );
+    const controle = await probarTermo(`control search("${palavra}")`, palavra, buscaTexto);
+
+    if (controle === 0) {
+      console.warn('  ⚠️  CONTROL FAILED: the accented word does not match its own');
+      console.warn('     document, so the accent probe below is INCONCLUSIVE — the');
+      console.warn('     miss would not be evidence about folding.');
+    } else {
+      console.log(`\n  accents: searching "${semAcento}" should find "${nomeAcentuado}"`);
+      const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto);
+      if (n === 0) {
+        console.warn(`  ⚠️  "${semAcento}" did NOT match "${palavra}" while the control DID.`);
+        console.warn('     That IS evidence: the default analyzer does not fold accents.');
+      } else {
+        console.log(`  ✅ "${semAcento}" matched "${palavra}" — the analyzer folds accents.`);
+      }
     }
   } else {
-    console.log('\n  accent probe skipped: no accented WORD in any sampled nome.');
+    console.log('\n  accent probe skipped: no accented word free of DSL operator');
+    console.log('  characters in any sampled nome (a hyphen would confound it).');
   }
 
   console.log(`\n${'='.repeat(70)}`);
