@@ -73,4 +73,7 @@ export { enderecoCollection } from './enderecoCollection';
 export { backfillPedidosMercadoLivreCollection } from './backfillPedidosMercadoLivreCollection';
 export { missedFeedsMercadoLivreCollection } from './missedFeedsMercadoLivreCollection';
 export { estoqueMercadoLivreSyncCollection } from './estoqueMercadoLivreSyncCollection';
-export { envioPrecoMercadoLivreCollection } from './envioPrecoMercadoLivreCollection';
+export {
+  envioPrecoMercadoLivreCollection,
+  relatorioEnvioPrecoMercadoLivreCollection,
+} from './envioPrecoMercadoLivreCollection';
