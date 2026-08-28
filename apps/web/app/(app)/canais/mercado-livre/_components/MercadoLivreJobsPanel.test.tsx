@@ -44,6 +44,7 @@ function setClient(jobs: Partial<MercadoLivreJobsEmAndamento> = {}) {
     })),
     massImportStatus: vi.fn(async () => RUNNING_IMPORT),
     priceSyncStatus: vi.fn(),
+    priceSyncHistorico: vi.fn(async () => ({ envios: [] })),
   };
 }
 
@@ -80,14 +81,55 @@ beforeEach(() => {
 });
 
 describe('MercadoLivreJobsPanel', () => {
-  it('renders nothing for selected contas that have no job', async () => {
+  it('renders no job card for selected contas that have no job, but keeps the Histórico entry point', async () => {
     renderPanel({ selecionadas: [CONTA_A, CONTA_B] });
     await waitFor(() => {
       expect(h.clientRef.current!.jobsEmAndamento).toHaveBeenCalledWith({
         integracaoIds: ['a', 'b'],
       });
     });
-    expect(screen.queryByRole('region', { name: 'Jobs em andamento' })).toBeNull();
+
+    // No CARD — that half is unchanged: the lookup found no running job.
+    expect(screen.queryByText('Envio de preços')).toBeNull();
+    expect(screen.queryByText('Importação em massa')).toBeNull();
+
+    // ⚠️ But the panel must NOT disappear. "No card" is exactly the state an
+    // operator is in after a run finished while they were on another page —
+    // the lookup is running-only — so this is when the history is most needed
+    // and it used to be the branch that returned null.
+    expect(screen.getByRole('region', { name: 'Jobs em andamento' })).not.toBeNull();
+    // ⚠️ Named per conta, and asserted that way. Two links with the same
+    // accessible name would be indistinguishable to a screen reader AND in the
+    // rail; `getAllByRole` with a shared name would have passed either way.
+    expect(
+      screen.getByRole('button', { name: 'Histórico de envios de preços — Conta A' }),
+    ).not.toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Histórico de envios de preços — Conta B' }),
+    ).not.toBeNull();
+  });
+
+  it('renders nothing at all with no selection, no card and no error', async () => {
+    // The control for the case above: the panel is not simply always-on. With
+    // nothing selected there is no conta to show a history for, so the rail
+    // stays empty rather than growing a dangling link.
+    renderPanel({ selecionadas: [] });
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: 'Jobs em andamento' })).toBeNull();
+    });
+    expect(h.clientRef.current!.jobsEmAndamento).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch the histórico until the link is opened', async () => {
+    // The link is rendered per selected conta, so an unopened one must cost
+    // nothing — otherwise selecting a row would fire a query per conta.
+    renderPanel({ selecionadas: [CONTA_A] });
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: 'Histórico de envios de preços — Conta A' }),
+      ).not.toBeNull();
+    });
+    expect(h.clientRef.current!.priceSyncHistorico).not.toHaveBeenCalled();
   });
 
   it('renders one entry per conta, mixing a started job with a failed start', async () => {
