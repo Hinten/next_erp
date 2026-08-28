@@ -15,9 +15,9 @@
  *   3. how big is the quantity change going to be.
  *
  *   # the enumeration + health check (cheap; always run this)
- *   pnpm --filter @delfrance/mercado-livre-app check:deposito-source -- --project <id>
+ *   pnpm --filter @delfrance/mercado-livre-app check:deposito-source --project <id>
  *   # ...plus a sampled estimate of the quantity delta at the flip
- *   pnpm --filter @delfrance/mercado-livre-app check:deposito-source -- --project <id> --delta
+ *   pnpm --filter @delfrance/mercado-livre-app check:deposito-source --project <id> --delta
  *
  * It NEVER writes. `--project` is REQUIRED and never inferred — the same
  * discipline as `tools/migrations` and `backfill-int-frete.ts` — so a stray
