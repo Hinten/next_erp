@@ -40,6 +40,7 @@ import type {
   MercadoLivreJobsEmAndamento,
   MercadoLivreMassImportStatus,
   MercadoLivreMedidasSugestao,
+  MercadoLivrePriceSyncHistorico,
   MercadoLivrePriceSyncStatus,
   MercadoLivrePublicarResult,
   MercadoLivreReclamacaoEstado,
@@ -188,6 +189,8 @@ export type {
   MercadoLivreOfertaParcial,
   MercadoLivrePrazoAcao,
   MercadoLivrePriceSyncFailure,
+  MercadoLivrePriceSyncHistorico,
+  MercadoLivrePriceSyncHistoricoEntry,
   MercadoLivrePriceSyncSkip,
   MercadoLivrePriceSyncStatus,
   MercadoLivrePublicarResult,
@@ -492,6 +495,18 @@ export interface MercadoLivreClient {
    * The caller must name the contas (400 otherwise); at most 300 per call.
    */
   jobsEmAndamento(input: { integracaoIds: string[] }): Promise<MercadoLivreJobsEmAndamento>;
+  /**
+   * One conta's PAST price-sync runs, newest first (PERM.integracao.read) — the
+   * counterpart to `jobsEmAndamento`, which is running-only and so can never
+   * surface a run that finished while the page was closed.
+   *
+   * `limite` defaults to 20 and is REFUSED above 50 rather than clamped: a
+   * silently shortened page reads as "that is all the history there is".
+   */
+  priceSyncHistorico(input: {
+    integracaoId: string;
+    limite?: number;
+  }): Promise<MercadoLivrePriceSyncHistorico>;
   /**
    * One level of the ML category tree for the listing editor's cascade picker
    * (PERM.integracao.read). Omit `categoryId` for the roots.
@@ -1035,6 +1050,12 @@ export function createMercadoLivreClient(config: {
       call(
         `/api/marketplace/mercado-livre/jobs-em-andamento?integracaoIds=${encodeURIComponent(input.integracaoIds.join(','))}`,
         wire.jobsEmAndamentoSchema,
+      ),
+    priceSyncHistorico: (input) =>
+      call(
+        `/api/marketplace/mercado-livre/atualizar-precos/historico?integracaoId=${encodeURIComponent(input.integracaoId)}` +
+          (input.limite === undefined ? '' : `&limite=${encodeURIComponent(String(input.limite))}`),
+        wire.priceSyncHistoricoSchema,
       ),
     categorias: (input) =>
       call(

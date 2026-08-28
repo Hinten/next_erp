@@ -334,6 +334,28 @@ export const jobsEmAndamentoSchema = z.object({
 });
 export type MercadoLivreJobsEmAndamento = z.infer<typeof jobsEmAndamentoSchema>;
 
+/**
+ * One past price-sync run (`GET atualizar-precos/historico`) — the SAME entry
+ * shape `jobs-em-andamento` returns for a running one, deliberately, so the
+ * card, the detail list and the counters render a finished run through exactly
+ * the code that renders a live one.
+ *
+ * The difference is which runs are reachable: this endpoint is ordered by
+ * `startedAt DESC` with no `status` filter, so it returns terminal jobs — the
+ * ones `jobs-em-andamento` is documented as never resurfacing.
+ */
+export const priceSyncHistoricoEntrySchema = priceSyncStatusSchema.extend({
+  jobId: z.string(),
+  integracaoId: z.string(),
+});
+export type MercadoLivrePriceSyncHistoricoEntry = z.infer<typeof priceSyncHistoricoEntrySchema>;
+
+/** The history page for one conta, newest first. */
+export const priceSyncHistoricoSchema = z.object({
+  envios: z.array(priceSyncHistoricoEntrySchema),
+});
+export type MercadoLivrePriceSyncHistorico = z.infer<typeof priceSyncHistoricoSchema>;
+
 /** A node of the ML category tree (`GET categorias`). */
 export const categoriaNoSchema = z.object({
   id: z.string(),
