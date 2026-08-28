@@ -96,6 +96,52 @@ describe('the log line', () => {
     expect(line).toContain('invalid_category_id');
   });
 
+  /**
+   * #1347. ML answers every unmatched route with the SAME generic body, so
+   * `upstream=404 body={"error":"resource not found"}` is byte-identical
+   * whichever endpoint produced it. Three such 404s on `/importar` reached
+   * Cloud Logging over three days and none could be attributed to a call site.
+   */
+  it('names the failed Mercado Livre call, ahead of the status', () => {
+    mercadoLivreErrorResponse(
+      new MercadoLivreHttpError('nao encontrado', 404, { error: 'resource not found' }, null, {
+        method: 'GET',
+        url: 'https://api.mercadolibre.com/items/MLB5146021467?include_attributes=all',
+      }),
+    );
+    const [line] = error.mock.calls[0] as [string];
+    expect(line).toContain('req=GET /items/MLB5146021467');
+    // Ahead of the status, because it is the field you scan for first.
+    expect(line.indexOf('req=')).toBeLessThan(line.indexOf('upstream='));
+  });
+
+  it('⚠️ CONTROL — logs the SANITISED path, never the raw URL', () => {
+    // No call in this package puts a credential in the query — the Bearer header
+    // carries the token — and this asserts it at the boundary that actually
+    // writes to Cloud Logging. #1015 is the worked example of a token reaching
+    // the log stream through an error field.
+    mercadoLivreErrorResponse(
+      new MercadoLivreHttpError('nope', 404, {}, null, {
+        method: 'GET',
+        url: 'https://api.mercadolibre.com/items/MLB1?access_token=APP_USR-secret&item_id=MLB1',
+      }),
+    );
+    const [line] = error.mock.calls[0] as [string];
+    expect(line).toContain('req=GET /items/MLB1?item_id=MLB1');
+    expect(line).not.toContain('APP_USR-secret');
+    expect(line).not.toContain('access_token');
+  });
+
+  it('⚠️ CONTROL — omits req= entirely when the error carries no endpoint', () => {
+    // Every direct `new MercadoLivreHttpError` in a test double lands here, as
+    // does any error raised before the request was identified. The line must
+    // stay clean rather than growing a `req=null`.
+    mercadoLivreErrorResponse(new MercadoLivreHttpError('recusado', 400, { message: 'x' }));
+    const [line] = error.mock.calls[0] as [string];
+    expect(line).not.toContain('req=');
+    expect(line).toContain('upstream=400');
+  });
+
   it('includes the validation issues, which name the field that changed', () => {
     mercadoLivreErrorResponse(
       new MercadoLivreValidationError('shape', [{ path: ['path_from_root'] }]),

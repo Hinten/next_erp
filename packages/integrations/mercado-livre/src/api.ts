@@ -799,7 +799,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
     if (res.ok)
       return { data: await parseOk(res, schema), status: res.status, headers: res.headers };
-    throw await toHttpError(res);
+    throw await toHttpError(res, { method, url });
   }
 
   /** `requestWithStatus` for the (overwhelming) majority of callers, which only
@@ -853,8 +853,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     ) as ArrayBuffer;
     form.append('file', new Blob([bytes], { type: file.contentType }), file.filename);
 
+    const url = buildUrl(path);
     const res = await fetchWithNetworkRetry(
-      buildUrl(path),
+      url,
       {
         method: 'POST',
         headers: {
@@ -868,7 +869,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       mensagemDeRede,
     );
     if (res.ok) return parseOk(res, schema);
-    throw await toHttpError(res);
+    throw await toHttpError(res, { method: 'POST', url });
   }
 
   function uploadPicture(file: PictureFile): Promise<MlPictureUpload> {
@@ -890,8 +891,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     xml: string,
   ): Promise<MlShipmentInvoice> {
     const token = await config.getAccessToken();
+    const url = buildUrl(`/shipments/${shipmentId}/invoice_data`, { siteId: 'MLB' });
     const res = await fetchWithNetworkRetry(
-      buildUrl(`/shipments/${shipmentId}/invoice_data`, { siteId: 'MLB' }),
+      url,
       {
         method: 'POST',
         headers: {
@@ -905,7 +907,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       'Falha de rede ao enviar a NF-e ao Mercado Livre',
     );
     if (res.ok) return parseOk(res, mlShipmentInvoiceSchema);
-    throw await toHttpError(res);
+    throw await toHttpError(res, { method: 'POST', url });
   }
 
   /**
@@ -919,8 +921,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     format: 'pdf' | 'zpl2',
   ): Promise<MlShipmentLabelResult> {
     const token = await config.getAccessToken();
+    const url = buildUrl('/shipment_labels', { shipment_ids: shipmentId, response_type: format });
     const res = await fetchWithNetworkRetry(
-      buildUrl('/shipment_labels', { shipment_ids: shipmentId, response_type: format }),
+      url,
       {
         method: 'GET',
         headers: {
@@ -940,9 +943,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
             mlMessage,
           );
         }
-        throw httpErrorFromBody(res, text);
+        throw httpErrorFromBody(res, text, { method: 'GET', url });
       }
-      throw await toHttpError(res);
+      throw await toHttpError(res, { method: 'GET', url });
     }
     const bytes = new Uint8Array(await res.arrayBuffer());
     // Legacy guard: ML has returned 2xx with an empty body — that is a failed
@@ -985,10 +988,19 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       },
       'Falha de rede ao baixar o anexo do Mercado Livre',
     );
-    if (!res.ok) throw await toHttpError(res);
+    if (!res.ok) throw await toHttpError(res, { method: 'GET', url });
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes.length === 0) {
-      throw new MercadoLivreHttpError('O Mercado Livre retornou um anexo vazio.', res.status, null);
+      throw new MercadoLivreHttpError(
+        'O Mercado Livre retornou um anexo vazio.',
+        res.status,
+        null,
+        null,
+        {
+          method: 'GET',
+          url,
+        },
+      );
     }
     return { bytes, contentType: res.headers.get('content-type') };
   }
@@ -1030,8 +1042,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       // Same auth + network-retry policy as `request`, but the success branch
       // never reaches `parseOk`: see `parseTestUser` below.
       const token = await config.getAccessToken();
+      const url = buildUrl('/users/test_user');
       const res = await fetchWithNetworkRetry(
-        buildUrl('/users/test_user'),
+        url,
         {
           method: 'POST',
           headers: {
@@ -1046,7 +1059,7 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       );
       // A FAILED mint carries no password, so the shared error mapping is safe
       // here — it is only the 2xx body that must never be echoed.
-      if (!res.ok) throw await toHttpError(res);
+      if (!res.ok) throw await toHttpError(res, { method: 'POST', url });
       return parseTestUser(await res.text());
     },
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
@@ -1461,12 +1474,28 @@ async function parseOk<T>(res: Response, schema: z.ZodType<T>): Promise<T> {
   return result.data;
 }
 
-async function toHttpError(res: Response): Promise<Error> {
-  return httpErrorFromBody(res, await res.text());
+/**
+ * Map a non-2xx response onto the typed error hierarchy.
+ *
+ * ⚠️ `request` is REQUIRED, and that is the point. `Response` carries neither
+ * the method nor — under a mocked `fetch` — a usable `url`, so the endpoint has
+ * to be threaded from the call site. Making it required means the compiler, not
+ * a reviewer, is what stops a future call site from dropping the one field that
+ * makes a generic ML 404 diagnosable (#1347).
+ */
+async function toHttpError(
+  res: Response,
+  request: { method: string; url: string },
+): Promise<Error> {
+  return httpErrorFromBody(res, await res.text(), request);
 }
 
 /** `toHttpError` for a body that was already consumed (the label 400 branch). */
-function httpErrorFromBody(res: Response, text: string): Error {
+function httpErrorFromBody(
+  res: Response,
+  text: string,
+  request: { method: string; url: string },
+): Error {
   let body: unknown = text.length > 0 ? text : null;
   if (text.length > 0) {
     try {
@@ -1493,6 +1522,7 @@ function httpErrorFromBody(res: Response, text: string): Error {
     res.status,
     body,
     parseRetryAfterSec(res.headers.get('retry-after')),
+    request,
   );
 }
 

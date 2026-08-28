@@ -25,6 +25,12 @@
  * round-trip loss whether or not anyone ever presses Importar, because it is
  * exactly what the mass import and the UPtin takeover would write.
  *
+ * ⚠️ `--itemId` takes EITHER a listing's own id, a User-Products family id, or
+ * one member's item id — `resolverLinkDoAnuncio` runs both stages, so a family
+ * member resolves to its family instead of reporting as unknown to the ERP
+ * (#1342). When it resolves that way the report says so and adds the member's
+ * own row, because the parent link it diffs against is the FAMILY's.
+ *
  * ⚠️ **Read-only, with one honest exception.** It issues no write to Mercado
  * Livre and no write to any business collection. It CAN cause one write:
  * resolving the channel context refreshes an expired OAuth token, and ML's
@@ -37,7 +43,6 @@
  * `tools/migrations` and `check-deposito-source.ts`, so a stray
  * `FIREBASE_PROJECT_ID` cannot point it at production by accident.
  */
-import type { Firestore } from 'firebase-admin/firestore';
 import {
   createMercadoLivreApi,
   mapMlItemToImport,
@@ -48,14 +53,15 @@ import {
   type MappedMlItem,
   type MlItem,
 } from '@delfrance/integrations-mercado-livre';
-import {
-  produtoCollection,
-  produtoMercadoLivreLinkCollection,
-} from '@delfrance/data/admin/collections';
+import { produtoCollection } from '@delfrance/data/admin/collections';
 
 import { getAdminFirestore } from '../lib/firebase/admin';
 import { loadMercadoLivreContext } from '../lib/marketplace/core/mercadoLivre';
-import { refMatchesIntegracao } from '../lib/marketplace/core/linkRefs';
+import {
+  anuncioLinkPortFirestore,
+  atributosParaDiff,
+  resolverLinkDoAnuncio,
+} from '../lib/marketplace/anuncios/anuncioLinkLookup';
 
 function log(message: string): void {
   // eslint-disable-next-line no-console -- CLI output
@@ -164,6 +170,11 @@ function fmt(v: unknown): string {
   return JSON.stringify(v);
 }
 
+/** Arrays do not compare with `===`; render them so `row()` can see a difference. */
+function jsonOuNulo(v: unknown): string | null {
+  return v == null ? null : JSON.stringify(v);
+}
+
 function printTable(titulo: string, rows: readonly Row[]): void {
   log('');
   log(`## ${titulo}`);
@@ -217,39 +228,6 @@ function printAttributes(item: MlItem, linkAttrs: readonly Record<string, unknow
   }
 }
 
-/* ---------------------------------- lookup --------------------------------- */
-
-interface LinkHit {
-  produtoId: string;
-  linkDocId: string;
-  link: Record<string, unknown>;
-}
-
-/**
- * Find the link doc for this ML item, on THIS conta. `id` is the ML item id (or
- * a User-Products family id), and the collection-group query is the same one the
- * items webhook uses — with the conta filter applied in code, because a listing
- * id can legitimately appear under two integrações.
- */
-async function findLink(
-  db: Firestore,
-  integracaoId: string,
-  itemId: string,
-): Promise<LinkHit | null> {
-  const snap = await produtoMercadoLivreLinkCollection
-    .groupQuery(db)
-    .where('id', '==', itemId)
-    .get();
-  for (const d of snap.docs) {
-    const link = d.data() as Record<string, unknown>;
-    if (!refMatchesIntegracao(link.contaOuterRef, integracaoId)) continue;
-    const produtoId = d.ref.parent.parent?.id;
-    if (produtoId == null) continue;
-    return { produtoId, linkDocId: d.id, link };
-  }
-  return null;
-}
-
 /* ----------------------------------- main ---------------------------------- */
 
 async function main(): Promise<void> {
@@ -286,11 +264,53 @@ async function main(): Promise<void> {
     log(JSON.stringify(item, null, 2));
   }
 
-  const hit = await findLink(db, integracaoId, itemId);
-  if (hit == null) {
+  const hit = await resolverLinkDoAnuncio(
+    anuncioLinkPortFirestore(db, integracaoId),
+    itemId,
+    integracaoId,
+  );
+  if (!hit.achado) {
+    // ⚠️ Say what was SEARCHED, and never call the miss a finding by itself.
+    // The previous wording asserted it was one, and a User-Products member — an
+    // id that matches no parent link by construction — hit that arm on every
+    // run, so the diagnostic's own blind spot read as a defect in the ERP
+    // (#1342). What a miss means depends entirely on the two counts below.
     log('');
-    log(`❌ Nenhum link produtoMercadoLivre com id=${itemId} nesta integração.`);
-    log('   O anúncio existe no ML mas o ERP não o conhece — isso já é um achado.');
+    log(`❌ item id=${itemId} não resolveu para nenhum link nesta integração.`);
+    log('   Procurei em: produtoMercadoLivre.id  (anúncio simples, ou família User Products)');
+    log('                variacaoMercadoLivre.itemId  (membro de uma família User Products)');
+    log(
+      `   integração=${integracaoId}  links com esse id=${hit.candidatos}` +
+        `  (não casaram o contaOuterRef=${hit.naoCasaramConta}, sem produto dono=${hit.semProduto})`,
+    );
+    // ⚠️ The arms are keyed on `candidatos`, not on a reason count, so the two
+    // lines can never contradict each other — an orphaned ref used to print
+    // "links com esse id=1" directly above "nada no ERP carrega esse id".
+    if (hit.candidatos === 0) {
+      log('   ⓘ Nada no ERP carrega esse id em nenhum dos dois campos. AGORA sim vale investigar:');
+      log('     ou o link nunca foi escrito, ou foi escrito com outro id.');
+    } else {
+      log(`   ⓘ O id EXISTE no ERP (${hit.candidatos} link[s]), mas nenhum é utilizável aqui.`);
+      if (hit.naoCasaramConta > 0) {
+        // ⚠️ NOT "está em outra conta". `refMatchesIntegracao` also rejects a
+        // non-string ref and any shape other than `integracao/<id>`, so a link on
+        // THIS conta with a legacy or malformed `contaOuterRef` fails the same
+        // check — and telling the operator to fix `--integracaoId` would send
+        // them to verify something already correct while the real defect stays
+        // invisible. Name the field and let both readings stand.
+        log(
+          `     ${hit.naoCasaramConta} não casaram o contaOuterRef desta integração:` +
+            ' outra conta, OU um ref fora do formato (legado/malformado).',
+        );
+        log('     Confira o --integracaoId; se ele estiver certo, o ref do link é que está torto.');
+      }
+      if (hit.semProduto > 0) {
+        log(
+          `     ${hit.semProduto} sem produto dono — ref órfã na collection group,` +
+            ' o link ficou sem o produto que o continha.',
+        );
+      }
+    }
     process.exitCode = 1;
     return;
   }
@@ -298,6 +318,13 @@ async function main(): Promise<void> {
   const produtoSnap = await produtoCollection.docRef(db, {}, hit.produtoId).get();
   const produto = (produtoSnap.data() ?? {}) as Record<string, unknown>;
   log(`  produto=${hit.produtoId} link=${hit.linkDocId} nome=${fmt(produto.nome)}`);
+  if (hit.membro != null) {
+    log(
+      `  ⓘ ${itemId} é MEMBRO de uma família User Products (resolvido via ${hit.membro.via}).` +
+        `\n     família: produto=${hit.produtoId} link=${hit.linkDocId}` +
+        `  |  membro: produto=${hit.membro.produtoId} doc=${hit.membro.docId}`,
+    );
+  }
 
   // ⚠️ The importer asks ML for a billable weight whenever the listing declares
   // none, so this script has to ask too — it claims to print what a re-import
@@ -353,10 +380,31 @@ async function main(): Promise<void> {
     row('precoPublicado', hit.link.precoPublicado, reimport.precoNormal),
   ]);
 
-  const storedAttrs = Array.isArray(hit.link.attributes)
-    ? (hit.link.attributes as Record<string, unknown>[])
-    : [];
-  printAttributes(item, storedAttrs);
+  if (hit.membro != null) {
+    // ⚠️ Fixing the LOOKUP without saying this just moves the false finding one
+    // table down. The stored side above is the FAMILY parent link; the ML side is
+    // ONE member's item. Under User Products `estado`/`status` on the parent is
+    // the family fold (`upFamilyStatus.ts`) and `precoPublicado` is the family's,
+    // so a ≠ on those three is the model, not a round-trip loss.
+    log('');
+    log('  ⚠️ A tabela acima compara o link da FAMÍLIA com o item de UM membro.');
+    log('     ≠ em estado / status / precoPublicado aí é a dobra da família, não perda.');
+    log('     A linha do próprio membro está logo abaixo.');
+
+    const membroRaw = hit.membro.raw;
+    printTable('Membro da família — link do membro × Mercado Livre', [
+      row('itemId', membroRaw.itemId, item.id),
+      row('sku', membroRaw.sku, item.seller_custom_field ?? null),
+      row('status', membroRaw.status, item.status ?? null),
+      row('sub_status', jsonOuNulo(membroRaw.sub_status), jsonOuNulo(item.sub_status ?? null)),
+    ]);
+  }
+
+  // ⚠️ Under User Products the variation axes (cor, tamanho) live on the MEMBER
+  // link, not the parent. A union keyed by id — see `atributosParaDiff`, which
+  // owns the reasoning and the tests; diffing either list alone manufactures a
+  // phantom, and concatenating them manufactures a different one.
+  printAttributes(item, atributosParaDiff(hit.link, hit.membro));
 
   const variacoes = mapMlVariationsToImport(item);
   if (variacoes.length > 0) {

@@ -13,8 +13,112 @@ export class MercadoLivreError extends Error {
   }
 }
 
+/** Which request failed — as much of it as is safe to keep. */
+export interface MlRequestEndpoint {
+  /** `'GET'`, `'POST'`, … */
+  readonly method: string;
+  /**
+   * The URL's pathname, plus any {@link SAFE_QUERY_KEYS} it carried. Produced by
+   * {@link sanitizeRequestPath} — never a raw URL.
+   */
+  readonly path: string;
+}
+
+/**
+ * The only query keys whose VALUE may be kept, because on those endpoints the
+ * pathname alone does not say which resource was asked for.
+ *
+ *  - `item_id` — `GET /users/{id}/shipping_options/free`
+ *  - `ids` — the `GET /items` multiget
+ *  - `shipment_ids` — `GET /shipment_labels`
+ *
+ * ⚠️ An ALLOWLIST, deliberately, and it is the whole security argument of this
+ * field. The access token rides the `Authorization` header on every call in this
+ * package — `api.ts` says so at each binary download: *"NEVER the legacy
+ * `access_token` query param"* — so no URL here carries a secret today. This
+ * list exists so that stays true if one ever does: a key nobody added is a key
+ * nobody logs. #1015 is the worked example of a token reaching Cloud Logging
+ * through an error field, and this field must not become the second one.
+ *
+ * A constant is not diagnostic, so `site_id` is deliberately absent: it is
+ * always `'MLB'`.
+ */
+const SAFE_QUERY_KEYS = ['item_id', 'ids', 'shipment_ids'] as const;
+
+/** A multiget `ids` can carry 20 MLB ids; a log line is not unbounded. */
+const MAX_PATH_LENGTH = 200;
+
+/**
+ * The RAW, still-percent-encoded value of `key`, read out of the query STRING
+ * rather than through `searchParams`.
+ *
+ * ⛔ `searchParams.get()` **decodes**, and this string is concatenated into a
+ * Cloud Logging line. So a `%0A` inside an allowlisted id came back out as a real
+ * newline and split one log entry into two, the second one fully attacker-shaped.
+ * `parsed.pathname` never had that problem — `URL` does not decode it — so
+ * reading raw here is what makes both halves of {@link sanitizeRequestPath} obey
+ * ONE rule instead of two.
+ *
+ * ⚠️ Deliberately NOT `encodeURIComponent(searchParams.get(key))`. That also
+ * re-encodes the commas in an `ids` multiget (`MLB1,MLB2` → `MLB1%2CMLB2`), and a
+ * readable id list is the entire reason `ids` is allowlisted at all.
+ */
+function rawQueryValue(search: string, key: string): string | null {
+  for (const pair of search.replace(/^\?/, '').split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq === -1 ? pair !== key : pair.slice(0, eq) !== key) continue;
+    return eq === -1 ? '' : pair.slice(eq + 1);
+  }
+  return null;
+}
+
+/**
+ * A URL reduced to the part that is safe to log: pathname + allowlisted query.
+ *
+ * Returns null for anything unparseable rather than falling back to the raw
+ * string — an input this cannot classify is exactly the input not to log.
+ *
+ * ⛔ **Nothing here is ever decoded**, so the result cannot carry a control
+ * character and cannot forge a second log entry. Two things hold that together:
+ * `URL` does not decode `pathname`, and {@link rawQueryValue} does not decode
+ * the query. A LITERAL control character cannot arrive either — the WHATWG
+ * parser strips tabs and newlines out of the input — which the tests ASSERT
+ * rather than this defending against, so a runtime that stops doing it tells us.
+ */
+export function sanitizeRequestPath(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch (err) {
+    // `new URL` has one failure mode, and it is a TypeError. Anything else is
+    // not ours to swallow (repo rule 6).
+    if (err instanceof TypeError) return null;
+    throw err;
+  }
+  const kept: string[] = [];
+  for (const key of SAFE_QUERY_KEYS) {
+    const value = rawQueryValue(parsed.search, key);
+    if (value !== null && value !== '') kept.push(`${key}=${value}`);
+  }
+  const path = kept.length > 0 ? `${parsed.pathname}?${kept.join('&')}` : parsed.pathname;
+  return path.length > MAX_PATH_LENGTH ? `${path.slice(0, MAX_PATH_LENGTH)}…` : path;
+}
+
 /** A non-2xx response from a Mercado Livre REST endpoint. */
 export class MercadoLivreHttpError extends MercadoLivreError {
+  /**
+   * WHICH Mercado Livre call failed — null when the caller did not say.
+   *
+   * ⚠️ Without this, a generic ML 404 body (*"resource not found"*, the same
+   * developers-site blurb for every unmatched route) is undiagnosable: the log
+   * carries the status and the body and still cannot name the endpoint. Three
+   * such 404s on `/importar` went unattributed for exactly that reason (#1347).
+   *
+   * Sanitised in the CONSTRUCTOR rather than by the caller, so no call site can
+   * put a raw URL here by mistake.
+   */
+  readonly endpoint: MlRequestEndpoint | null;
+
   constructor(
     message: string,
     readonly status: number,
@@ -26,9 +130,16 @@ export class MercadoLivreHttpError extends MercadoLivreError {
      * scheduling a pause instead of a fixed default.
      */
     readonly retryAfterSec: number | null = null,
+    /**
+     * The request as the caller issued it, RAW — `{ method, url }`. It is
+     * reduced to {@link endpoint} here; the raw URL is never stored.
+     */
+    request: { method: string; url: string } | null = null,
   ) {
     super(message);
     this.name = 'MercadoLivreHttpError';
+    const path = request == null ? null : sanitizeRequestPath(request.url);
+    this.endpoint = request != null && path != null ? { method: request.method, path } : null;
   }
 }
 

@@ -141,7 +141,7 @@ export const itemAttributeSchema = z
       .nullable()
       .optional(),
     /**
-     * ML's `values[]` — read for ONE thing: `values[0].struct`.
+     * ML's `values[]` — read for ONE thing: the measurement in `values[0].struct`.
      *
      * ⚠️ **The struct is not always at the attribute root.** A live
      * `GET /items/{id}?include_attributes=all` (MLB5146021467, 27/08/2026) returned
@@ -166,8 +166,20 @@ export const itemAttributeSchema = z
      *
      * The `.catch(undefined)` covers the shapes narrowing cannot: a non-array
      * `values`, or a `struct` whose `number`/`unit` drift. Drift degrades to "no
-     * struct" — `cmFromMeasurement` then falls through to `value_name` — rather
-     * than throwing.
+     * struct" — the readers then fall through to `value_name` — rather than
+     * throwing.
+     *
+     * ⚠️ Reached through ONE accessor, `structsDaMedida` in `importItem.ts`,
+     * which owns the source order (`value_struct` first, this second). Both readers
+     * go through it, because two readers of the same wire field that disagree is
+     * exactly how #1346 happened: `cmFromMeasurement` was taught this fallback and
+     * `measurementFromStruct` was not.
+     *
+     * ⚠️ It hands back CANDIDATES, not one struct: both inner fields are nullable,
+     * so a hollow root (`{}`) is a shape this schema accepts, and picking the first
+     * PRESENT struct let it shadow a `values[0].struct` that stated the measurement.
+     * Each reader takes the first candidate it can actually use — and "usable"
+     * genuinely differs between them, which is why it is not decided in there.
      */
     values: z
       .array(

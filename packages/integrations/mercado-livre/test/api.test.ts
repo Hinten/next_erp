@@ -7,6 +7,7 @@ import {
   MercadoLivreReauthRequiredError,
   MercadoLivreValidationError,
   isVersionConflict,
+  sanitizeRequestPath,
 } from '../src/errors';
 import { type MercadoLivreApiConfig, createMercadoLivreApi } from '../src/api';
 import { ML_MULTIGET_MAX_IDS, orderSchema } from '../src/types';
@@ -1574,6 +1575,145 @@ describe('createMercadoLivreApi — retries + errors', () => {
     );
     const api = createMercadoLivreApi(cfg(fetchMock));
     await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreValidationError);
+  });
+});
+
+/**
+ * **#1347 — the failed request has to identify itself.**
+ *
+ * Mercado Livre answers every unmatched route with the same generic body
+ * (`{"error":"resource not found"}` + the developers-site blurb), so
+ * `upstream=404 body=…` is byte-identical whichever endpoint produced it. Three
+ * such 404s on `/importar` reached Cloud Logging over three days and none of
+ * them could be attributed to a call site.
+ *
+ * ⚠️ The endpoint is threaded from the CALL SITE, never read off `res.url`.
+ * `jsonResponse` above builds a bare `new Response(…)`, whose `url` is the empty
+ * string — so a `res.url` implementation would record null in every test here
+ * while working in production, which is the worst of both worlds.
+ */
+describe('MercadoLivreHttpError — the failed request identifies itself (#1347)', () => {
+  const fail404 = () =>
+    vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ error: 'resource not found' }, 404),
+    );
+
+  it('carries the method and the pathname of the call that failed', async () => {
+    const api = createMercadoLivreApi(cfg(fail404()));
+    await expect(api.getItem('MLB5146021467')).rejects.toMatchObject({
+      endpoint: { method: 'GET', path: '/items/MLB5146021467' },
+    });
+  });
+
+  it('keeps an allowlisted query key, where the pathname alone names no resource', async () => {
+    const api = createMercadoLivreApi(cfg(fail404()));
+    // `/users/{id}/shipping_options/free` says nothing about WHICH listing.
+    await expect(
+      api.getFreeShippingOptions(3616169770, { itemId: 'MLB5146021467' }),
+    ).rejects.toMatchObject({
+      endpoint: {
+        method: 'GET',
+        path: '/users/3616169770/shipping_options/free?item_id=MLB5146021467',
+      },
+    });
+  });
+
+  it('⚠️ CONTROL — drops every query key that is not allowlisted', async () => {
+    const api = createMercadoLivreApi(cfg(fail404()));
+    // `getItem` always sends `?include_attributes=all`; it is not on the list.
+    await expect(api.getItem('MLB1')).rejects.toMatchObject({
+      endpoint: { path: '/items/MLB1' },
+    });
+  });
+
+  it('carries the endpoint on a binary download too, not just the JSON path', async () => {
+    const api = createMercadoLivreApi(cfg(fail404()));
+    await expect(api.getShipmentLabels('555', 'pdf')).rejects.toMatchObject({
+      endpoint: { method: 'GET', path: '/shipment_labels?shipment_ids=555' },
+    });
+  });
+
+  it('⚠️ CONTROL — is null when constructed without a request, so every test double still builds', () => {
+    expect(new MercadoLivreHttpError('boom', 500, {}).endpoint).toBeNull();
+    expect(new MercadoLivreHttpError('boom', 500, {}, 17).retryAfterSec).toBe(17);
+  });
+});
+
+describe('sanitizeRequestPath (#1347)', () => {
+  const BASE = 'https://api.mercadolibre.com';
+
+  it('⚠️ CONTROL — never lets a credential through, whatever it is called', () => {
+    // No call in this package puts a token in the query — the Bearer header
+    // carries it — and this is what keeps that true if one ever does.
+    const path = sanitizeRequestPath(
+      `${BASE}/items/MLB1?access_token=APP_USR-secret&code=authcode&item_id=MLB1`,
+    );
+    expect(path).toBe('/items/MLB1?item_id=MLB1');
+    expect(path).not.toContain('secret');
+    expect(path).not.toContain('authcode');
+  });
+
+  /**
+   * ⛔ **Log injection.** `searchParams.get()` DECODES, so a `%0A` in an
+   * allowlisted id used to come back out as a real newline — and this string is
+   * concatenated straight into the Cloud Logging line `endpointDetail` writes.
+   * One entry became two, the second one entirely attacker-shaped:
+   *
+   *     /users/1/shipping_options/free?item_id=MLB1
+   *     [mercado-livre/api] FORGED
+   *
+   * The values are ML item ids off link docs rather than raw request bodies, so
+   * reachability is modest — but this function's whole contract is "the part that
+   * is safe to log", and the pathname half already held it while the query half
+   * did not.
+   */
+  it('⛔ keeps a percent-encoded newline ENCODED, so a log line cannot be forged', () => {
+    const path = sanitizeRequestPath(
+      `${BASE}/users/1/shipping_options/free?item_id=MLB1%0A%5Bmercado-livre%2Fapi%5D+FORGED`,
+    );
+    expect(path).not.toBeNull();
+    expect(/[ -]/.test(path!)).toBe(false);
+    expect(path).toContain('%0A');
+  });
+
+  it('⚠️ CONTROL — an ids multiget stays READABLE, which is why it is allowlisted', () => {
+    // Guards the fix's shape as much as its effect: `encodeURIComponent` would
+    // also close the injection, but it turns `MLB1,MLB2` into `MLB1%2CMLB2`.
+    expect(sanitizeRequestPath(`${BASE}/items?ids=MLB1,MLB2,MLB3`)).toBe(
+      '/items?ids=MLB1,MLB2,MLB3',
+    );
+  });
+
+  it('⚠️ CONTROL — a LITERAL control character never reaches us: `URL` strips it', () => {
+    // Asserted rather than defended against, so a runtime that stops stripping
+    // fails here instead of silently reopening the hole above.
+    expect(
+      sanitizeRequestPath(`${BASE}/items/MLB1
+FORGED?item_id=A
+B`),
+    ).toBe('/items/MLB1FORGED?item_id=AB');
+  });
+
+  it('returns null for an unparseable URL rather than falling back to the raw string', () => {
+    expect(sanitizeRequestPath('not a url')).toBeNull();
+    expect(sanitizeRequestPath('')).toBeNull();
+  });
+
+  it('keeps every allowlisted key that is present, in list order', () => {
+    expect(sanitizeRequestPath(`${BASE}/items?ids=MLB1,MLB2&item_id=MLB9&attributes=id`)).toBe(
+      '/items?item_id=MLB9&ids=MLB1,MLB2',
+    );
+  });
+
+  it('truncates a path past the cap, so a 20-id multiget cannot flood the log', () => {
+    const path = sanitizeRequestPath(`${BASE}/items?ids=${'MLB1234567890,'.repeat(40)}`);
+    expect(path).not.toBeNull();
+    expect(path!.length).toBe(201); // 200 + the ellipsis
+    expect(path!.endsWith('…')).toBe(true);
+  });
+
+  it('drops an allowlisted key that is present but empty', () => {
+    expect(sanitizeRequestPath(`${BASE}/items/MLB1?item_id=`)).toBe('/items/MLB1');
   });
 });
 
