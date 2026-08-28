@@ -10,9 +10,12 @@ import { makeEstoqueUid, type EstoqueProduto } from '@delfrance/schemas';
 const h = vi.hoisted(() => ({
   state: {
     current: {
-      depositos: [] as { id: string; nome: string }[],
+      depositos: [] as { id: string; nome: string; ativo?: boolean }[],
       parent: null as { nome: string; sku: string } | null,
       children: [] as { id: string; nome: string; sku: string; ordem: number }[],
+      /** `true` while the `paiId` query has not resolved (its own listener). */
+      childrenLoading: false,
+      childrenError: undefined as FirestoreError | undefined,
       /** produtoId → estoque docs, or `undefined` for "still loading". */
       estoques: {} as Record<string, { id: string; data: Partial<EstoqueProduto> }[] | undefined>,
       estoquesError: undefined as FirestoreError | undefined,
@@ -38,12 +41,17 @@ vi.mock('@delfrance/data/hooks', () => ({
     const s = h.state.current;
     if (q.base.kind === 'depositos') {
       return {
-        data: s.depositos.map((d) => ({ id: d.id, data: { nome: d.nome, ativo: true } })),
+        data: s.depositos.map((d) => ({
+          id: d.id,
+          data: { nome: d.nome, ativo: d.ativo ?? true },
+        })),
         loading: false,
         error: undefined,
       };
     }
     if (q.base.kind === 'produtos') {
+      if (s.childrenError) return { data: undefined, loading: false, error: s.childrenError };
+      if (s.childrenLoading) return { data: undefined, loading: true, error: undefined };
       return {
         data: s.children.map((c) => ({
           id: c.id,
@@ -96,28 +104,37 @@ import { EstoqueManager, residualEstoquePai } from './EstoqueManager';
 const db = {} as unknown as Firestore;
 const DEP = 'Depósito 1';
 
-function est(
+function estEm(
   produtoId: string,
+  depositoId: string,
   quantidade: number,
   quantidadeReservada = 0,
 ): { id: string; data: Partial<EstoqueProduto> } {
   return {
-    id: makeEstoqueUid(produtoId, 'd1'),
+    id: makeEstoqueUid(produtoId, depositoId),
     data: { quantidade, quantidadeReservada, localizacao: null },
   };
 }
 
+const est = (produtoId: string, quantidade: number, quantidadeReservada = 0) =>
+  estEm(produtoId, 'd1', quantidade, quantidadeReservada);
+
 interface SetupOptions {
+  depositos?: { id: string; nome: string; ativo?: boolean }[];
   children?: { id: string; nome: string; sku: string; ordem: number }[];
+  childrenLoading?: boolean;
+  childrenError?: FirestoreError;
   estoques?: Record<string, { id: string; data: Partial<EstoqueProduto> }[] | undefined>;
   estoquesError?: FirestoreError;
 }
 
 function setup(opts: SetupOptions = {}) {
   h.state.current = {
-    depositos: [{ id: 'd1', nome: DEP }],
+    depositos: opts.depositos ?? [{ id: 'd1', nome: DEP }],
     parent: { nome: 'Camiseta Preta', sku: 'CAM' },
     children: opts.children ?? [],
+    childrenLoading: opts.childrenLoading ?? false,
+    childrenError: opts.childrenError,
     estoques: opts.estoques ?? { pai: [] },
     estoquesError: opts.estoquesError,
   };
@@ -212,6 +229,68 @@ describe('EstoqueManager', () => {
     expect(screen.getByText(/3,00 em estoque e 3,00 reservada\(s\) no produto pai/)).toBeTruthy();
     expect(linhaDoPai()).toBeTruthy();
     expect(toggle()).toBeNull();
+  });
+
+  // The variations query is its own listener and resolves independently of the
+  // parent doc's. Treating its unresolved state as "no variations" renders the
+  // parent, then rips it away when the children land — the same flash the
+  // estoques gate prevents, reached through the other listener.
+  it('does not render the parent while the variations query is still loading', () => {
+    setup({ children: FILHOS, childrenLoading: true, estoques: { pai: [] } });
+
+    expect(linhaDoPai()).toBeNull();
+    expect(screen.queryByLabelText(`Localização pai ${DEP}`)).toBeNull();
+    expect(toggle()).toBeNull();
+  });
+
+  // Waiting on the variations query must not become a permanent "Carregando…"
+  // when that query can never answer.
+  it('renders rather than hanging when the variations query fails', () => {
+    setup({
+      childrenError: { code: 'permission-denied', message: 'nope' } as FirestoreError,
+      estoques: { pai: [est('pai', 7)] },
+    });
+
+    expect(screen.queryByText('Carregando…')).toBeNull();
+    expect(linhaDoPai()).toBeTruthy();
+  });
+
+  // The rows come from ACTIVE depósitos only, so stock in a deactivated one has
+  // no row to move it from. Staying silent would hide real units; the alert must
+  // stay, but it must not order a move the screen cannot perform.
+  it('names an inactive depósito instead of ordering an impossible move', () => {
+    setup({
+      depositos: [
+        { id: 'd1', nome: DEP },
+        { id: 'd2', nome: 'Depósito Velho', ativo: false },
+      ],
+      children: FILHOS,
+      estoques: { pai: [est('pai', 0, 0), estEm('pai', 'd2', 3)], f1: [], f2: [] },
+    });
+
+    expect(alerta()).toBeTruthy();
+    expect(screen.getByText(/depósito\(s\) inativo\(s\)/i)).toBeTruthy();
+    // Case-insensitive on purpose: a case-sensitive matcher would pass here for
+    // the wrong reason the moment the wording changes case.
+    expect(screen.queryByText(/mova as unidades para a variação/i)).toBeNull();
+    // The section still renders, so the produto is not silently collapsed.
+    expect(linhaDoPai()).toBeTruthy();
+  });
+
+  it('reports both buckets when the parent holds movable and unreachable stock', () => {
+    setup({
+      depositos: [
+        { id: 'd1', nome: DEP },
+        { id: 'd2', nome: 'Depósito Velho', ativo: false },
+      ],
+      children: FILHOS,
+      estoques: { pai: [est('pai', 2), estEm('pai', 'd2', 3)], f1: [], f2: [] },
+    });
+
+    expect(screen.getByText(/2,00 em estoque no produto pai — mova as unidades/)).toBeTruthy();
+    expect(
+      screen.getByText(/3,00 em estoque no produto pai em depósito\(s\) inativo\(s\)/),
+    ).toBeTruthy();
   });
 
   it('shows neither the alert nor the toggle while the parent estoques load', () => {

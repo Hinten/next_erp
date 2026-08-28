@@ -73,9 +73,15 @@ function matchesFilter(p: ProdutoRow, term: string): boolean {
  * too: failing toward *visible* is the safe direction, since the alternative is
  * hiding units that nothing else in this app surfaces.
  */
+export interface ResidualEstoque {
+  temResidual: boolean;
+  quantidade: number;
+  reservada: number;
+}
+
 export function residualEstoquePai(
   estoques: Iterable<Pick<EstoqueProduto, 'quantidade' | 'quantidadeReservada'>>,
-): { temResidual: boolean; quantidade: number; reservada: number } {
+): ResidualEstoque {
   let temResidual = false;
   let quantidade = 0;
   let reservada = 0;
@@ -93,14 +99,34 @@ export function residualEstoquePai(
   return { temResidual, quantidade, reservada };
 }
 
-/** Human wording for the residual — both halves matter, and either can be zero. */
-function descreverResidual(quantidade: number, reservada: number): string {
+/** Just the amounts — both halves matter, and either can be zero. */
+function descreverQuantidades(r: ResidualEstoque): string {
   const partes: string[] = [];
-  if (quantidade !== 0) partes.push(`${fmt(quantidade)} em estoque`);
-  if (reservada !== 0) partes.push(`${fmt(reservada)} reservada(s)`);
-  return partes.length === 0
-    ? 'Há estoque lançado no produto pai.'
-    : `Há ${partes.join(' e ')} no produto pai.`;
+  if (r.quantidade !== 0) partes.push(`${fmt(r.quantidade)} em estoque`);
+  if (r.reservada !== 0) partes.push(`${fmt(r.reservada)} reservada(s)`);
+  // Non-finite quantities land here: real stock, no number worth printing.
+  return partes.length === 0 ? 'estoque lançado' : partes.join(' e ');
+}
+
+/**
+ * The alert's sentence(s). Units in a depósito the tab does not render — one
+ * deactivated since the stock landed — get their own sentence: they are real
+ * and must stay visible, but there is no row to move them from, so telling the
+ * operator to move them would be an instruction the screen cannot honour.
+ */
+function descreverResidual(movivel: ResidualEstoque, inacessivel: ResidualEstoque): string {
+  const frases: string[] = [];
+  if (movivel.temResidual) {
+    frases.push(
+      `Há ${descreverQuantidades(movivel)} no produto pai — mova as unidades para a variação correspondente.`,
+    );
+  }
+  if (inacessivel.temResidual) {
+    frases.push(
+      `Há ${descreverQuantidades(inacessivel)} no produto pai em depósito(s) inativo(s) — reative o depósito para poder movimentá-las.`,
+    );
+  }
+  return frases.join(' ');
 }
 
 /**
@@ -213,7 +239,22 @@ export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps)
   }, [produtoId, parentSnap.data, childrenSnap.data]);
 
   const paiEstoques = useEstoquesDoProduto(db, produtoId);
-  const residual = useMemo(() => residualEstoquePai(paiEstoques.byId.values()), [paiEstoques.byId]);
+  // Split by whether the tab actually renders a row for that depósito: only the
+  // ACTIVE ones are listed, so stock in a deactivated depósito is real but has
+  // nowhere on this screen to be moved from.
+  const residual = useMemo(() => {
+    const renderizados = new Set(depositos.map((d) => makeEstoqueUid(produtoId ?? '', d.id)));
+    const movivel: EstoqueProduto[] = [];
+    const inacessivel: EstoqueProduto[] = [];
+    for (const [id, e] of paiEstoques.byId) {
+      (renderizados.has(id) ? movivel : inacessivel).push(e);
+    }
+    return {
+      movivel: residualEstoquePai(movivel),
+      inacessivel: residualEstoquePai(inacessivel),
+    };
+  }, [paiEstoques.byId, depositos, produtoId]);
+  const temResidual = residual.movivel.temResidual || residual.inacessivel.temResidual;
 
   const [filter, setFilter] = useState('');
   const [mostrarPai, setMostrarPai] = useState(false);
@@ -240,7 +281,12 @@ export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps)
     );
   }
   const [parent, ...children] = produtos;
-  if (!parent) {
+  // BOTH listeners must have answered before the layout is decided. The
+  // variations query resolves independently of the parent doc's, and reading its
+  // unresolved state as "no variations" renders the parent only to rip it away
+  // when the children land — the same flash `paiEstoques.loaded` prevents below,
+  // reached through the other listener. A query ERROR degrades to visible.
+  if (!parent || (childrenSnap.data === undefined && !childrenSnap.error)) {
     return (
       <Text c="dimmed" size="sm">
         Carregando…
@@ -255,11 +301,9 @@ export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps)
   // Hidden while the parent's estoques are still UNKNOWN too, so the section is
   // never shown and then yanked away. A read error degrades to the old
   // always-visible behaviour rather than hiding on a guess.
-  const paiEscondido =
-    temVariacoes && !paiEstoques.error && !(paiEstoques.loaded && residual.temResidual);
+  const paiEscondido = temVariacoes && !paiEstoques.error && !(paiEstoques.loaded && temResidual);
   const mostrarToggle = paiEscondido && paiEstoques.loaded;
-  const mostrarAlerta =
-    temVariacoes && !paiEstoques.error && paiEstoques.loaded && residual.temResidual;
+  const mostrarAlerta = temVariacoes && !paiEstoques.error && paiEstoques.loaded && temResidual;
 
   // Zebra runs over the RENDERED order, not `produtos` — otherwise dropping the
   // parent flips every stripe.
@@ -296,8 +340,7 @@ export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps)
           title="Estoque lançado no produto pai"
         >
           Este produto tem variações — o estoque deve ficar nas variações.{' '}
-          {descreverResidual(residual.quantidade, residual.reservada)} Mova as unidades para a
-          variação correspondente.
+          {descreverResidual(residual.movivel, residual.inacessivel)}
         </Alert>
       )}
       {!paiEscondido && renderSection(parent, 0, true)}
