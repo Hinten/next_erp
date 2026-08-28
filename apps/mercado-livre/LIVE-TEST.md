@@ -649,15 +649,69 @@ is pinned verbatim in `packages/integrations/mercado-livre/test/api.test.ts`.
 ## 9. Phase 8 — capture fixtures, clean up, decide on CI
 
 **The most durable output of this run is real ML response bodies.** Every offline test in
-this repo currently runs on hand-written fixtures.
+this repo currently runs on hand-written fixtures, and `payments[]` / `discounts[]` are
+read through `as unknown as` passthrough casts, so Zod never validates them and a shape
+change from ML is silent.
 
-| Capture                                                                         | Where it helps                                               | Result |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------ |
-| Item — simple and with variations                                               | the round-trip test                                          |        |
-| Order (+ the `pedidos/{id}/orderML/{orderId}` mirror the import already stores) | the money map                                                |        |
-| Payment                                                                         | `orderPaymentMapping`                                        |        |
-| **Shipment with `x-format-new: true`**                                          | **#957** — the assertions are in §7.3; capture the body here |        |
-| Claim                                                                           | `claimImport`                                                |        |
+`capture:fixtures` (#1342) is the script that produces them. One raw body per file under
+`out/fixtures/` (gitignored), taken with a plain `fetch` — **never** through the typed API
+methods; see the ⚠️ under the table for why that distinction is the whole point.
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app capture:fixtures \
+  --project <id> --integracaoId 1WXplQLpUO8hcL3xQ4D0 \
+  --orderId 2000018143664980 \
+  --orderId 2000014733850447 --orderId 2000018144681452 --orderId 2000018144679512 \
+  --shipmentId 47868202073 --shipmentId 47868991350 \
+  --paymentId 174911485053 --paymentId 174920100019 --paymentId 175866174436 \
+  --itemId MLB5095421681 --itemId MLB5140167173
+```
+
+Every id flag is repeatable. `--orderId` fans out to `/orders/{id}`,
+`/orders/{id}/billing_info` and `/packs/{id}` — a pack id and an order id are
+indistinguishable from the outside, and the one that does not apply answers 404, which is
+recorded rather than fatal. The claims search always runs; it is how claim ids are found
+on an account that may have none.
+
+| Capture                                | Where it helps                                                                | Result                                                            |
+| -------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Item — simple                          | the round-trip test                                                           |                                                                   |
+| Item — with variations                 | the round-trip test                                                           | **deferred — no legacy-variations listing exists on this seller** |
+| Order — live `GET /orders/{id}`        | the money map                                                                 |                                                                   |
+| Billing info (`x-version: 2`)          | NF-e emission                                                                 |                                                                   |
+| Payment                                | `orderPaymentMapping`                                                         |                                                                   |
+| **Shipment with `x-format-new: true`** | **#957** — the assertions are in §7.3; capture the body here                  |                                                                   |
+| Shipment costs / payments / orders     | §7.3.1, the frete conference                                                  |                                                                   |
+| **Shipment SLA — NO `x-format-new`**   | **#957** — deliberately a _different_ request; a distinct fixture, not a copy |                                                                   |
+| Claim + messages                       | `claimImport`                                                                 |                                                                   |
+
+⚠️ **Do not capture through `createMercadoLivreApi`.** Every typed method runs its
+response through `parseOk(res, schema)` — Zod, `packages/integrations/mercado-livre/src/api.ts:784`.
+So `api.getShipment()` returns a _parsed_ object, and every field declared
+`.nullable().default(null)` comes back materialised as an explicit `null` whether or not
+ML sent the key. A fixture built that way cannot distinguish "ML sent null" from "ML
+omitted it" — the one distinction a wire fixture exists to preserve.
+
+⚠️ **The `pedidos/{id}/orderML/{orderId}` mirror is NOT a capture of ML's response, and
+this table used to offer it as one.** `buildOrderMLWire`
+(`lib/marketplace/pedidos/orderMLWire.ts:342`) builds an **explicit curated object** for
+legacy parity — its own comment cites legacy's `writeNotNull` — so the stored document
+carries 19 keys and drops `mediations`, `fulfilled`, `cancel_detail`, `feedback`, `taxes`,
+`seller` and `context`. The `.passthrough()` on `orderMLSchema` only tolerates unknown
+keys on the READ; it never sees the ones the builder already dropped. Two more fidelity
+losses: the five top-level order dates are stored as **millis** while the nested
+`payments[]` dates stay **ISO strings** (`orderMLWire.ts:263`), and `orderMLWire.ts:267`
+hardcodes `date_last_updated: null` on every payment because ML sends the field as
+`date_last_modified` — so the mirror asserts "ML did not send this" about a field ML
+**does** send. It is a fine fixture for `orderMLWire` round-trips and useless as one for
+the money map's wire tolerance. **A real order fixture only comes from a live
+`GET /orders/{id}`.**
+
+ⓘ **"Item — with variations" is deferred, not skipped.** All 13 User-Products links on
+this seller were examined and every captured item carries `variations: []` — the account
+has no legacy `variations[]` listing at all, so the corpus cannot produce this fixture.
+The UP family shape is covered instead, which is what this integration actually publishes.
+A blank row would read as "not attempted"; this was attempted.
 
 ### Cleanup
 

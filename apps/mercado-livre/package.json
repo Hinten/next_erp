@@ -15,6 +15,7 @@
     "backfill:int-frete": "dotenv -e ../../.env.local -- tsx scripts/backfill-int-frete.ts",
     "check:deposito-source": "dotenv -e ../../.env.local -- tsx scripts/check-deposito-source.ts",
     "census:up-single": "dotenv -e ../../.env.local -- tsx scripts/census-up-single.ts",
+    "capture:fixtures": "dotenv -e ../../.env.local -- tsx scripts/capture-fixtures.ts",
     "inspect:anuncio": "dotenv -e ../../.env.local -- tsx scripts/inspect-anuncio.ts",
     "inspect:pedido": "dotenv -e ../../.env.local -- tsx scripts/inspect-pedido.ts",
     "dump:notificacoes": "dotenv -e ../../.env.local -- tsx scripts/dump-notificacoes.ts",
