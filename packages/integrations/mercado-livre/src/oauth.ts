@@ -150,6 +150,8 @@ async function requestToken(
       `ML /oauth/token: ${description ?? code ?? `HTTP ${res.status}`}`,
       res.status,
       parsed,
+      null,
+      { method: 'POST', url },
     );
   }
 
