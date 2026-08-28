@@ -229,9 +229,25 @@ export interface RealKitChild {
  * Resolve the grid's staged per-row kit maps (keyed by `StagedKitRow.key`) to
  * concrete `{ id, componentesKit }` writes against the REAL variation children —
  * the bridge that lets "Gerar Variações" target variations added in the Variações
- * tab but not yet saved. A row whose `id` is already set maps by id directly;
- * a staged-new row still carries `id: null` until its child exists, so it is
- * matched by an unordered `variacoesUid` match (`sameCombo`).
+ * tab but not yet saved.
+ *
+ * Resolution is tried in order, exact first:
+ *  1. `row.id`, when it names a live unclaimed child (an already-saved row);
+ *  2. the row's own `key`, for the same reason — it IS the doc id the caller
+ *     pre-minted for this child, so once that child exists the key resolves it
+ *     exactly, with no guessing (see {@link StagedKitRow.key});
+ *  3. only then, an unordered `variacoesUid` match (`sameCombo`), for a row
+ *     whose document the caller wrote under some other id.
+ *
+ * ⚠️ Step 3 requires BOTH combos to be non-empty. `sameCombo([], [])` is `true`,
+ * so without that an empty-combo row — what a manually added variation carries —
+ * claims the first combo-less child it meets, typically an unrelated legacy
+ * sibling, and its map is written onto the WRONG document (`componentesKit` is
+ * persisted as a full overwrite). Same guard, same reason, as
+ * `reconcileStagedChildren` and the Mercado Livre import's sibling match. An
+ * unmatched row resolves to nothing and stays staged, which is recoverable;
+ * claiming a stranger is not.
+ *
  * Each real child is claimed at most once; rows that are delete-marked, unknown,
  * or unmatched are dropped.
  */
@@ -252,9 +268,16 @@ export function resolveStagedKitVariacoes(input: {
     let targetId: string | null = null;
     if (row.id && realById.has(row.id) && !claimed.has(row.id)) {
       targetId = row.id;
-    } else {
+    } else if (realById.has(key) && !claimed.has(key)) {
+      // The key is the doc id the caller pre-minted for this row, so a child
+      // carrying it IS this row's child — exact, no combo guessing.
+      targetId = key;
+    } else if (row.variacoesUid.length > 0) {
       const match = input.realChildren.find(
-        (c) => !claimed.has(c.id) && sameCombo(c.variacoesUid, row.variacoesUid),
+        (c) =>
+          !claimed.has(c.id) &&
+          c.variacoesUid.length > 0 &&
+          sameCombo(c.variacoesUid, row.variacoesUid),
       );
       targetId = match ? match.id : null;
     }
