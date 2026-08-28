@@ -8,6 +8,7 @@ import {
 import {
   ML_BLOCKED_ATTRIBUTE_IDS,
   attributeOmission,
+  categoriaUsaGuiaDeTamanhos,
   isAttributeRequired,
   isLeafCategory,
   projectCategoriaAtributos,
@@ -300,5 +301,48 @@ describe('isLeafCategory', () => {
     expect(isLeafCategory(null)).toBe(true);
     expect(isLeafCategory([])).toBe(true);
     expect(isLeafCategory([{ id: 'MLB1' }])).toBe(false);
+  });
+});
+
+/**
+ * The gate for publish's local size-chart refusal (#1087).
+ *
+ * ⚠️ Both controls matter here: a category that DOES use a guia must answer
+ * true, and one that does not must answer false. A predicate stuck on either
+ * value would break exactly one of them — the false direction lets the live bug
+ * through, the true direction blocks publishes that work today.
+ */
+describe('categoriaUsaGuiaDeTamanhos', () => {
+  it('true for a fashion category — ML lists SIZE_GRID_ID as value_type grid_id', () => {
+    expect(
+      categoriaUsaGuiaDeTamanhos([
+        attr({ id: 'BRAND' }),
+        attr({ id: 'SIZE_GRID_ID', value_type: 'grid_id' }),
+      ]),
+    ).toBe(true);
+  });
+
+  it('false for a category with no size-chart attribute at all', () => {
+    expect(categoriaUsaGuiaDeTamanhos([attr({ id: 'BRAND' }), attr({ id: 'MODEL' })])).toBe(false);
+    expect(categoriaUsaGuiaDeTamanhos([])).toBe(false);
+  });
+
+  it('the VARIATION half alone does not count', () => {
+    // `grid_row_id` is SIZE_GRID_ROW_ID, which rides a variation's attributes.
+    // It says nothing about whether the ITEM needs a chart, so reusing the
+    // two-element SIZE_CHART_VALUE_TYPES here would over-refuse.
+    expect(
+      categoriaUsaGuiaDeTamanhos([attr({ id: 'SIZE_GRID_ROW_ID', value_type: 'grid_row_id' })]),
+    ).toBe(false);
+  });
+
+  it('does NOT depend on ML calling the attribute required', () => {
+    // ⚠️ The deliberate looseness. ML spells "required" four ways and sets none
+    // of them reliably on SIZE_GRID_ID — MLB1398, the category this was
+    // reported against, is the case that would slip through a required-only
+    // gate and reach ML anyway.
+    const semTag = attr({ id: 'SIZE_GRID_ID', value_type: 'grid_id', tags: {} });
+    expect(isAttributeRequired(semTag)).toBe(false);
+    expect(categoriaUsaGuiaDeTamanhos([semTag])).toBe(true);
   });
 });

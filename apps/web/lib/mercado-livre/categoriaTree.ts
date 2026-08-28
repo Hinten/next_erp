@@ -52,6 +52,28 @@ export function formatCategoriaPath(node: CategoriaNode | null): string | null {
 export const PATH_SEPARATOR = ' › ';
 
 /**
+ * The category's ML **catalog domain** (`'MLB-T_SHIRTS'`), or `null`.
+ *
+ * ⚠️ This value arrives in the SAME response as the category's name and path —
+ * `settings` has been on the wire since the route was written — and until #1087
+ * nothing read it. Meanwhile the domain is the single field that decides
+ * whether a produto's tabela de medidas binds, so a mismatch published a
+ * listing with no `SIZE_GRID_ID` and ML answered
+ * `Attribute [SIZE_GRID_ID] is missing`, naming neither domain. Showing it
+ * costs one line and no request.
+ *
+ * `settings` is an untyped passthrough record, so this narrows the way the
+ * publish side does (`publish.ts`'s `typeof … === 'string'`); anything else is
+ * `null` and the caller renders nothing rather than a placeholder.
+ */
+export function catalogDomainOf(node: CategoriaNode | null): string | null {
+  const raw = node?.settings?.catalog_domain;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
  * A suggestion's full path, split into the trail and the leaf so the caller can
  * emphasise the leaf without re-parsing a joined string.
  *

@@ -256,3 +256,58 @@ describe('CategoriaField', () => {
     expect(onChange).toHaveBeenCalledWith('MLB31447');
   });
 });
+
+/**
+ * The category's catalog domain, shown beside its id (#1087).
+ *
+ * ⚠️ The point of these three assertions is that the value was ALREADY on the
+ * wire — `settings` has ridden every one of these replies since the route was
+ * written and nothing read it — while the domain is the single field that
+ * decides whether the produto's tabela de medidas binds. So the third one, the
+ * call count, is not incidental: it is the claim that showing it costs nothing.
+ */
+describe('CategoriaField — catalog domain', () => {
+  const COM_DOMINIO: MercadoLivreCategorias = {
+    roots: null,
+    node: { ...CAMISETAS.node!, settings: { catalog_domain: 'MLB-T_SHIRTS' } },
+  };
+
+  it('renders the domain from the SAME response as the path', async () => {
+    h.categorias.mockResolvedValue(COM_DOMINIO);
+    renderField('MLB31447');
+
+    expect(await screen.findByText('Roupas › Camisetas')).toBeDefined();
+    expect(screen.getByTestId('ml-categoria-dominio').textContent).toContain('MLB-T_SHIRTS');
+  });
+
+  it('costs NO extra request — one call serves the path and the domain', async () => {
+    h.categorias.mockResolvedValue(COM_DOMINIO);
+    renderField('MLB31447');
+
+    await screen.findByTestId('ml-categoria-dominio');
+    expect(h.categorias).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders no domain line at all when the category has none', async () => {
+    // `settings: null` is the ordinary case for most of ML's tree. A dash or a
+    // placeholder here would read as "the domain is empty", which is a claim.
+    h.categorias.mockResolvedValue(CAMISETAS);
+    renderField('MLB31447');
+
+    expect(await screen.findByText('Roupas › Camisetas')).toBeDefined();
+    expect(screen.queryByTestId('ml-categoria-dominio')).toBeNull();
+  });
+
+  it('ignores a non-string settings value rather than printing it', async () => {
+    // `settings` is an untyped passthrough record — ML can put anything there,
+    // and `[object Object]` on the screen is worse than nothing.
+    h.categorias.mockResolvedValue({
+      roots: null,
+      node: { ...CAMISETAS.node!, settings: { catalog_domain: { id: 'MLB-T_SHIRTS' } } },
+    });
+    renderField('MLB31447');
+
+    expect(await screen.findByText('Roupas › Camisetas')).toBeDefined();
+    expect(screen.queryByTestId('ml-categoria-dominio')).toBeNull();
+  });
+});

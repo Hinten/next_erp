@@ -13,6 +13,7 @@ import {
   PRODUTO_EXTRA_DATA_DOC_ID,
   type MedidasDoPacote,
   type ProdutoMercadoLivreLink,
+  idFromRef,
 } from '@delfrance/schemas';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
@@ -22,6 +23,7 @@ import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 import { produtoMercadoLivreLinkCollection } from '@/lib/data/produtoMercadoLivreLinkCollection';
+import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
@@ -209,6 +211,41 @@ export function MercadoLivreEditor({
     extraDataSnap.loading || extraDataSnap.error != null
       ? null
       : (extraDataSnap.data?.data.marca ?? '');
+
+  // ⚠️ The produto's tabela de medidas — the third saved-doc input publish uses,
+  // and the one that had NO surface on this tab at all (#1087). Without it a
+  // domain mismatch between the tabela's guia and the anúncio's category was
+  // invisible here and only spoke as ML's `Attribute [SIZE_GRID_ID] is missing`,
+  // which names neither domain. Memoized ref for the same reason as
+  // `produtoDocRef` above: a fresh object re-subscribes on every render.
+  const tabelaDeMedidasId = produtoSnap.data?.data.tabelaDeMedidasModaUid
+    ? idFromRef(produtoSnap.data.data.tabelaDeMedidasModaUid)
+    : null;
+  const tabelaDocRef = useMemo(
+    () =>
+      tabelaDeMedidasId == null
+        ? null
+        : tabelaDeMedidasCollection.docRef(db, {}, tabelaDeMedidasId),
+    [db, tabelaDeMedidasId],
+  );
+  const tabelaSnap = useDocSnapshot(tabelaDocRef);
+  /**
+   * `null` = this produto names no tabela, or the doc has not landed yet — the
+   * panel is not rendered either way. A produto that names one but whose doc is
+   * MISSING is the same `null` here on purpose: publish reports that dangling
+   * ref itself, with the doc id, and inventing a second half-informed message
+   * for it on screen would only disagree with the first.
+   */
+  const tabelaMedidas = useMemo(
+    () =>
+      tabelaSnap.data == null
+        ? null
+        : {
+            nome: tabelaSnap.data.data.nome,
+            chartsMap: tabelaSnap.data.data.tabelasDeMedidasMercadoLivre ?? null,
+          },
+    [tabelaSnap.data],
+  );
 
   /**
    * The publish in flight, if any.
@@ -900,6 +937,7 @@ export function MercadoLivreEditor({
                   produtoCondicao={produtoCondicao}
                   produtoMedidas={produtoMedidas}
                   produtoMarca={produtoMarca}
+                  tabelaMedidas={tabelaMedidas}
                   produtoFotoCount={produtoFotoCount}
                   produtoDirty={produtoDirty}
                   carregandoGeral={carregandoGeral}

@@ -67,6 +67,7 @@ import {
   type PublishLink,
   type PublishProduto,
   type PublishVariationChild,
+  type TabelaBindingMotivo,
   assemblePublishInput,
   classificarMembroUnico,
   linkAttributesAfterPublish,
@@ -79,10 +80,13 @@ import { quantidadeParaEnvio } from '../estoque/bulkEstoquePlan';
 import { readListaDePrecos } from './listaDePrecosCache';
 import {
   type ResolvedSizeChart,
+  type SizeChartMiss,
   type SizeChartRowBinding,
   findChartRow,
   resolveSizeChart,
 } from '../size-charts/sizeChart';
+import { categoriaUsaGuiaDeTamanhos } from '../categorias/categoriaAtributos';
+import { getCategoriaAtributosCached, getCategoriaCached } from '../categorias/mlMetadataCache';
 
 /** ML caps listings at 10 pictures (the old app enforced the same). */
 const MAX_PICTURES = 10;
@@ -574,6 +578,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
     isUserProductSeller: listingModel === 'user-products',
     sizeChart: tabela.resolved,
+    sizeChartMotivo: tabela.motivo,
+    categoriaUsaGuia: tabela.categoriaUsaGuia,
     shippingMode: deps.shippingMode ?? null,
   });
 
@@ -953,13 +959,20 @@ function trimToNull(s: unknown): string | null {
 }
 
 /** What the produto's tabela de medidas contributes to this publish. */
-interface TabelaBinding {
+export interface TabelaBinding {
   /** Chart + per-child row ids for SIZE_GRID_* injection (null = no chart). */
   resolved: ResolvedSizeChart | null;
   /** Tabela text appended to the listing description. */
   descricao: string | null;
   /** The chart photo, appended as an extra listing picture. */
   foto: Foto | null;
+  /** Why {@link resolved} is what it is — the diagnostic publish refuses on. */
+  motivo: TabelaBindingMotivo;
+  /**
+   * Does the category carry a `grid_id` attribute? `null` = never asked, on the
+   * exits that make no ML call at all — a third value, distinct from `false`.
+   */
+  categoriaUsaGuia: boolean | null;
 }
 
 /**
@@ -971,7 +984,7 @@ interface TabelaBinding {
  * The tabela `descricao` and photo apply even when no chart resolves (legacy
  * appended both regardless of the chart match).
  */
-async function loadTabelaBinding(
+export async function loadTabelaBinding(
   deps: PublishDeps,
   produto: { tabelaDeMedidasModaUid?: string | null },
   link: PublishLink | null,
@@ -979,37 +992,132 @@ async function loadTabelaBinding(
   variations: readonly PublishVariationChild[],
 ): Promise<TabelaBinding> {
   const { db, api, integracaoId } = deps;
-  const none: TabelaBinding = { resolved: null, descricao: null, foto: null };
 
   const ref = produto.tabelaDeMedidasModaUid;
-  if (!ref) return none;
+  if (!ref) {
+    return {
+      resolved: null,
+      descricao: null,
+      foto: null,
+      motivo: { codigo: 'produto-sem-tabela' },
+      categoriaUsaGuia: null,
+    };
+  }
   const tabMediId = idFromRef(ref);
   const snap = await tabelaDeMedidasCollection.docRef(db, {}, tabMediId).get();
-  if (!snap.exists) return none;
+  if (!snap.exists) {
+    return {
+      resolved: null,
+      descricao: null,
+      foto: null,
+      motivo: { codigo: 'tabela-inexistente', tabMediId },
+      categoriaUsaGuia: null,
+    };
+  }
   const tabela = tabelaDeMedidasCollection.parseRead(
     snap.data(),
     tabelaDeMedidasCollection.docPath({}, tabMediId),
   );
   const descricao = tabela.descricao ?? null;
   const foto = tabela.fotos?.[0] ?? null;
+  const nome = tabela.nome;
 
   const charts = mlSizeChartsForConta(tabela.tabelasDeMedidasMercadoLivre ?? null, integracaoId);
-  if (charts.length === 0 || !categoryId) return { resolved: null, descricao, foto };
+  // ⚠️ The two conditions keep their original order — `charts.length === 0`
+  // before `!categoryId` — so only the REPORTING changes here, never which
+  // branch a given produto takes.
+  if (charts.length === 0 || !categoryId) {
+    return {
+      resolved: null,
+      descricao,
+      foto,
+      motivo:
+        charts.length === 0
+          ? { codigo: 'tabela-sem-guias-nesta-conta', tabMediId, nome }
+          : { codigo: 'anuncio-sem-categoria', tabMediId },
+      categoriaUsaGuia: null,
+    };
+  }
 
   // The chart's domain_id is the FULL form ('MLB-PANTS') — matched against
-  // the category's catalog domain, same source as the legacy flow.
-  const category = await api.getCategory(categoryId);
+  // the category's catalog domain, same source as the legacy flow. Cached: this
+  // was the only uncached `getCategory` caller, and the miss paths below now ask
+  // for the category's attributes too.
+  const category = await getCategoriaCached(api, categoryId);
   const catalogDomain =
     typeof category.settings?.catalog_domain === 'string' ? category.settings.catalog_domain : null;
-  const chart = resolveSizeChart(charts, catalogDomain, link?.attributes ?? null);
-  if (!chart?.id) return { resolved: null, descricao, foto };
+  const resolucao = resolveSizeChart(charts, catalogDomain, link?.attributes ?? null);
 
-  const rowByChildId: Record<string, SizeChartRowBinding> = {};
-  for (const v of variations) {
-    const row = findChartRow(chart, v.variacoesUid);
-    if (row) rowByChildId[v.produto.id] = row;
+  if (resolucao.motivo === null) {
+    const chart = resolucao.chart;
+    // Total, not optimistic: `resolveSizeChart` only ever hands back a member of
+    // its `candidates`, which is filtered on a non-blank `id`. See SizeChartMiss.
+    const chartId = chart.id as string;
+    const rowByChildId: Record<string, SizeChartRowBinding> = {};
+    for (const v of variations) {
+      const row = findChartRow(chart, v.variacoesUid);
+      if (row) rowByChildId[v.produto.id] = row;
+    }
+    return {
+      resolved: { chartId, rowByChildId },
+      descricao,
+      foto,
+      motivo: { codigo: 'vinculada', chartId },
+      categoriaUsaGuia: null,
+    };
   }
-  return { resolved: { chartId: chart.id, rowByChildId }, descricao, foto };
+
+  // Only now is the attribute list worth its round trip: it exists to gate the
+  // refusal, and there is nothing to refuse on a chart that bound.
+  const categoriaUsaGuia = categoriaUsaGuiaDeTamanhos(
+    await getCategoriaAtributosCached(api, categoryId),
+  );
+  return {
+    resolved: null,
+    descricao,
+    foto,
+    motivo: motivoDaResolucao(resolucao, categoryId, nome),
+    categoriaUsaGuia,
+  };
+}
+
+/**
+ * Lift a {@link SizeChartMiss} into the binding's own vocabulary, adding the
+ * two things the resolver has no way to know: which category asked, and what
+ * the tabela is called. `categoria-sem-dominio` is the one miss with no domain
+ * to name — ML itself did not report one.
+ */
+function motivoDaResolucao(
+  resolucao: SizeChartMiss,
+  categoryId: string,
+  nome: string,
+): TabelaBindingMotivo {
+  switch (resolucao.motivo) {
+    case 'categoria-sem-dominio':
+      return { codigo: 'categoria-sem-dominio', categoryId };
+    case 'guias-nao-enviadas':
+      return {
+        codigo: 'guias-nao-enviadas',
+        categoryId,
+        dominioDaCategoria: resolucao.dominioDaCategoria,
+        nome,
+      };
+    case 'dominio-divergente':
+      return {
+        codigo: 'dominio-divergente',
+        categoryId,
+        nome,
+        dominiosDaTabela: resolucao.dominiosDaTabela,
+        dominioDaCategoria: resolucao.dominioDaCategoria,
+      };
+    case 'sem-atributos-correspondentes':
+      return {
+        codigo: 'sem-atributos-correspondentes',
+        categoryId,
+        dominioDaCategoria: resolucao.dominioDaCategoria,
+        nome,
+      };
+  }
 }
 
 /**

@@ -51,6 +51,17 @@ interface KeywordRule {
  * Mirrors the strings raised in `publishCore.ts` / `publish.ts`.
  */
 const KEYWORD_RULES: KeywordRule[] = [
+  // #1087 — every size-chart refusal `publishCore.ts`'s `sizeChartIssue` raises.
+  // ⚠️ FIRST, and anchored on "tabela de medidas" in full: the rule below it
+  // matches "tabela" in a PRICE message ("sem preço na tabela …"), so a looser
+  // anchor here would send a domain mismatch to the Preço e custo tab.
+  //
+  // The fix lives on **Dados gerais**, where `tabelaDeMedidasModaUid` is — with
+  // one exception the message itself names: a domain mismatch is also fixable by
+  // changing the anúncio's categoria, and the produto's Mercado Livre tab now
+  // shows both domains side by side. Scoped to the produto because that is where
+  // the LINK is chosen; the tab's own panel covers the other half.
+  { match: /tabela de medidas/i, scope: 'produto', produtoSection: 'Dados gerais' },
   { match: /sem preço na tabela/i, scope: 'produto', produtoSection: 'Preço e custo' },
   { match: /sem tabela de preços/i, scope: 'integracao' },
   { match: /sem atributos de combinação/i, scope: 'variacao' },
