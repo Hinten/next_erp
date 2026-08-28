@@ -27,7 +27,7 @@ import {
   MercadoLivreHttpError,
   type MlSizeChartApi,
 } from '@delfrance/integrations-mercado-livre';
-import { parseDecimalPtBr } from '@delfrance/core/decimal';
+import { localizarDecimal } from '@delfrance/core/decimal';
 import type { MlAttributeWire, MlSizeChart, MlSizeChartRow } from '@delfrance/schemas';
 import { mlSizeChartWriteSchema, mlSizeChartsForConta } from '@delfrance/schemas';
 import { z } from 'zod';
@@ -356,7 +356,7 @@ export function stripNullsDeep(value: unknown): unknown {
 }
 
 /**
- * Every `value_name` reduced to the number it denotes, where it denotes one.
+ * Every `value_name` put through the SAME separator fold `seedRows` applies.
  *
  * ⚠️ This is a DIFF-ONLY fold — the value that goes on the wire is untouched.
  * The editor localises a stored `'10.5'` to `'10,5'` on load (pt-BR is what the
@@ -365,7 +365,18 @@ export function stripNullsDeep(value: unknown): unknown {
  * fire one `PUT` per row, N HTTP calls and N fresh chances for ML to reject a
  * row that was fine. A separator is a spelling, not a change.
  *
- * `measureStruct` already reads both spellings as the same number, so the two
+ * ⚠️ **`localizarDecimal`, NOT a parse to a number.** Folding to `Number` would
+ * neutralise every spelling difference a number has, not just the separator —
+ * equating `'90,5'` with `'90,50'` and `'01'` with `'1'`. ML echoes a
+ * measurement back **verbatim** on the anúncio, which is precisely why the grid
+ * keeps plain `TextInput`s instead of `DecimalInput`; a numeric fold here
+ * reintroduces that erasure one layer down. And the loss is worse than "not
+ * sent to ML": `persistProgress` opens with `if (!updated) return`, so when the
+ * folded row is the only change the edit reaches neither ML **nor** Firestore,
+ * behind a 200. Using the editor's own transform makes this fold neutralise
+ * exactly what `seedRows` did and nothing else.
+ *
+ * `measureStruct` already reads both separators as the same number, so the two
  * rows really are equivalent to ML; the name converges to the comma the next
  * time the row is edited for a reason.
  */
@@ -375,8 +386,7 @@ function canonicalMeasureNames(value: unknown): unknown {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       if (k === 'value_name' && typeof v === 'string') {
-        const n = parseDecimalPtBr(v);
-        out[k] = n == null ? v : String(n);
+        out[k] = localizarDecimal(v);
         continue;
       }
       out[k] = canonicalMeasureNames(v);

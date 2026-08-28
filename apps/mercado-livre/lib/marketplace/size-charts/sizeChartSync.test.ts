@@ -926,6 +926,84 @@ describe('syncSizeCharts', () => {
     expect(mocks.updateSizeChartRow!).toHaveBeenCalledTimes(1);
   });
 
+  it('a TRAILING-ZERO edit is a real change and must still be sent', async () => {
+    // ⚠️ The fold must neutralise the SEPARATOR, never the value. ML echoes a
+    // measurement back verbatim on the anúncio, which is the whole reason the
+    // grid keeps plain `TextInput`s instead of `DecimalInput` — folding to a
+    // NUMBER would reintroduce that erasure one layer down.
+    // Worse than "not sent": `persistProgress` opens with `if (!updated) return`,
+    // so the edit would reach neither ML nor Firestore, behind a 200.
+    const stored: MlSizeChart = {
+      ...novaChart,
+      id: '1594439',
+      main_attribute_id: 'SIZE',
+      rows: [
+        {
+          varianteUid: null,
+          id: '1594439:1',
+          attributes: [
+            { id: 'SIZE', value_name: 'M' },
+            { id: 'WAIST', value_name: '90,5', unit_id: 'cm' },
+          ],
+        },
+      ],
+    };
+    const db = new FakeDb();
+    seedDoc(db, [stored]);
+    const { api, mocks } = makeApi();
+
+    const edited: MlSizeChart = {
+      ...stored,
+      rows: [
+        {
+          ...stored.rows![0]!,
+          attributes: [
+            { id: 'SIZE', value_name: 'M' },
+            { id: 'WAIST', value_name: '90,50', unit_id: 'cm' },
+          ],
+        },
+      ],
+    };
+    const result = await syncSizeCharts(
+      { db: db as unknown as Firestore, api, integracaoId: CONTA },
+      TAB,
+      [edited],
+    );
+
+    expect(mocks.updateSizeChartRow!).toHaveBeenCalledTimes(1);
+    expect(result.updated).toBe(true);
+  });
+
+  it('a LABEL edit that only drops a leading zero is a real change too', async () => {
+    // ⚠️ `seedRows` localises `kind === 'number'` parts ONLY, so folding a text
+    // value buys nothing and can only lose an edit. `'01'` and `'1'` are the
+    // same NUMBER and different LABELS, and ML stores the label.
+    const stored: MlSizeChart = {
+      ...novaChart,
+      id: '1594439',
+      main_attribute_id: 'SIZE',
+      rows: [
+        { varianteUid: null, id: '1594439:1', attributes: [{ id: 'SIZE', value_name: '01' }] },
+      ],
+    };
+    const db = new FakeDb();
+    seedDoc(db, [stored]);
+    const { api, mocks } = makeApi();
+
+    const edited: MlSizeChart = {
+      ...stored,
+      rows: [{ varianteUid: null, id: '1594439:1', attributes: [{ id: 'SIZE', value_name: '1' }] }],
+    };
+    const result = await syncSizeCharts(
+      { db: db as unknown as Firestore, api, integracaoId: CONTA },
+      TAB,
+      [edited],
+    );
+
+    expect(mocks.updateSizeChartRow!).toHaveBeenCalledTimes(1);
+    expect(result.updated).toBe(true);
+  });
+
   it('rejects charts the write schema will not persist (nome, domain_id, tipo)', async () => {
     const db = new FakeDb();
     seedDoc(db, []);
