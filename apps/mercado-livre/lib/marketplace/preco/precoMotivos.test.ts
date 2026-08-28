@@ -5,8 +5,8 @@
  * move newly makes assertable: that the table is COMPLETE against the codes the
  * price stack actually emits.
  */
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -53,36 +53,84 @@ describe('the table covers the codes the price stack emits', () => {
    * non-motivo literals this shape picks up are the `MERCADO_LIVRE_*` env names.
    */
   function codigosEmitidos(arquivo: string): string[] {
-    const src = readFileSync(resolve(HERE, arquivo), 'utf8')
+    const src = readFileSync(arquivo, 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*/g, '');
-    return [...src.matchAll(/'([A-Z][A-Z0-9_]{3,})'/g)]
-      .map((m) => m[1]!)
-      .filter((c) => !c.startsWith('MERCADO_LIVRE_'));
+    return (
+      [...src.matchAll(/'([A-Z][A-Z0-9_]{3,})'/g)]
+        .map((m) => m[1]!)
+        // Three prefixes are never motivos, measured across every file below:
+        // `MERCADO_LIVRE_*` env names, `ML_*` route-level error codes
+        // (`ML_CONTA_SEM_TABELA_NORMAL` is a 4xx code, not a skip reason), and
+        // `STATUS_<x>`, which `mensagemDe`'s prefix arm serves without an entry.
+        // With those three out, the scan below yields motivos and nothing else.
+        .filter(
+          (c) =>
+            !c.startsWith('MERCADO_LIVRE_') && !c.startsWith('ML_') && !c.startsWith('STATUS_'),
+        )
+    );
   }
 
-  /** Emitter file → the minimum number of codes it is known to emit. */
-  const emissores: ReadonlyArray<readonly [string, number]> = [
-    ['precoPlan.ts', 7],
-    ['precoDraftSend.ts', 7],
-    ['precoReconciliacao.ts', 4],
-    ['precoSync.ts', 1],
+  /**
+   * ⚠️ ROOTS, walked recursively — NOT a list of files.
+   *
+   * Two rounds of this check under-covered because the file list was
+   * hand-maintained. First `precoReconciliacao.ts` and `precoSync.ts` yielded
+   * zero because the regex only matched `code:`/`motivo:` properties. Then
+   * `precoManual.ts` — which owns EIGHT of the table's entries — was simply
+   * absent from the list, so deleting `ERRO_CANAL` left both suites green.
+   * Enumerating files is the defect; a new emitter must be picked up without
+   * anyone remembering to add it.
+   *
+   * The route directory is here because `atualizar-precos/route.ts` emits
+   * `SEM_TABELA_NORMAL`, which no file under `preco/` does.
+   */
+  const RAIZES = [
+    resolve(HERE),
+    resolve(HERE, '../../../app/api/marketplace/mercado-livre/atualizar-precos'),
   ];
 
-  // ⚠️ A FLOOR per file, not one total. The first version of this suite asserted
-  // only that the extractor found codes overall, and `precoReconciliacao.ts`
-  // contributed zero while its own case reported "nothing missing" — a green
-  // check over an empty set. A per-file minimum is what makes each case mean
-  // something.
-  it.each(emissores)('%s still yields at least %i codes for the check below', (arquivo, minimo) => {
-    expect(codigosEmitidos(arquivo).length).toBeGreaterThanOrEqual(minimo);
+  function arquivosEmissores(): string[] {
+    const out: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entrada of readdirSync(dir, { withFileTypes: true })) {
+        const p = resolve(dir, entrada.name);
+        if (entrada.isDirectory()) walk(p);
+        else if (
+          entrada.name.endsWith('.ts') &&
+          !entrada.name.endsWith('.test.ts') &&
+          entrada.name !== 'precoMotivos.ts'
+        ) {
+          out.push(p);
+        }
+      }
+    };
+    for (const raiz of RAIZES) walk(raiz);
+    return out;
+  }
+
+  const porArquivo = arquivosEmissores()
+    .map((f) => ({ arquivo: basename(f), codigos: [...new Set(codigosEmitidos(f))] }))
+    .filter((e) => e.codigos.length > 0);
+
+  // Two floors, because a scan that silently finds nothing reports "nothing
+  // missing". They are on the DISCOVERY, not on any one file — the per-file
+  // floors this replaces were themselves only as good as the list they ran over.
+  it('the scan still discovers emitter files', () => {
+    expect(porArquivo.length).toBeGreaterThanOrEqual(5);
   });
 
-  it.each(emissores)('every UPPER_SNAKE code emitted by %s has a message', (arquivo) => {
-    const semMensagem = [...new Set(codigosEmitidos(arquivo))]
-      // `STATUS_<x>` is served by the prefix arm, not by an entry.
-      .filter((c) => !c.startsWith('STATUS_'))
-      .filter((c) => MENSAGEM_POR_MOTIVO[c] === undefined);
+  it('the scan still discovers codes', () => {
+    const todos = new Set(porArquivo.flatMap((e) => e.codigos));
+    expect(todos.size).toBeGreaterThanOrEqual(20);
+  });
+
+  it('every code emitted anywhere in the price stack has a message', () => {
+    const semMensagem = porArquivo.flatMap((e) =>
+      e.codigos
+        .filter((c) => MENSAGEM_POR_MOTIVO[c] === undefined)
+        .map((c) => `${c} (${e.arquivo})`),
+    );
 
     expect(semMensagem).toEqual([]);
   });
