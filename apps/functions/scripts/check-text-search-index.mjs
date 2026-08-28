@@ -5,7 +5,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 
 // SPIKE — is a Firestore Enterprise TEXT INDEX worth adopting for the /produtos
 // search box? Sibling of check-estoque-indexes.mjs, but a MEASUREMENT, not a
-// gate: it answers three questions with numbers instead of assumptions, and
+// gate: it answers its questions with numbers instead of assumptions, and
 // deliberately exits 0 whatever it finds.
 //
 //   Q1 COST — the premise to disprove. The current nome search is a prefix
@@ -16,6 +16,7 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //   Q2 CAPABILITY — the reason to adopt anyway. A prefix range structurally
 //      cannot match a word in the MIDDLE of a name ("preta" in "Camiseta Polo
 //      Preta"). Q2 runs exactly that term through both paths.
+//   Q2b SKU — can it replace SKU lookup #1 (produtos) only? See the block.
 //   Q3 LANGUAGE — the open design question. The analyzer language lives in
 //      Index.searchIndexOptions.textLanguage, which the Firebase CLI cannot
 //      express (0 references repo-wide in firebase-tools 15.28.2), so the
@@ -23,6 +24,17 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //      Portuguese, a singular term matches a plural name and an unaccented term
 //      matches an accented one. Q3 probes both; a miss is the evidence for
 //      spending a console-managed setting on `pt`.
+//
+// ⚠️⚠️ THE INDEX THIS SCRIPT MEASURES IS PROVISIONAL, AND NOT STAGING-SCOPED.
+// `firestore.indexes.json` is the `indexes` path in BOTH firebase.json
+// (production) and firebase.staging.json, so there is no way to declare a text
+// index for staging alone. The next production index deploy — migration-window
+// work, root CLAUDE.md rule 8 — replays this file exactly as it stands, and a
+// TOKENIZED index over produtos.nome AND produtos.sku is then built and
+// maintained on every produto write with nothing in apps/web reading it.
+// EXIT CONDITION: if Q1/Q2 below do not justify adopting text search, the
+// index entry is REVERTED, not left behind. An index nobody remembers ordering
+// is exactly the drift this repo keeps writing lint backstops against.
 //
 // ⚠️ REQUIREMENTS, both easy to get wrong:
 //   * firebase-tools >= 15.17.0 to DEPLOY the index at all. `searchConfig`
@@ -40,8 +52,9 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //   FIREBASE_PROJECT_ID=<project-id> \
 //   node apps/functions/scripts/check-text-search-index.mjs
 //
-// `analyze` EXECUTES every probe (billed as normal reads). Targets the named
-// `default` database (deploy gotcha #8), overridable via FIREBASE_DATABASE_ID.
+// `analyze` EXECUTES every probe (billed as normal reads), and every term is
+// probed TWICE — see comoFrase. Targets the named `default` database (deploy
+// gotcha #8), overridable via FIREBASE_DATABASE_ID.
 
 const projectId = process.env.FIREBASE_PROJECT_ID ?? 'veste-france-debug';
 const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
@@ -51,6 +64,38 @@ const db = getFirestore(app, databaseId);
 
 /** U+F8FF — the sentinel /produtos appends to bound a nome prefix range. */
 const PREFIX_SENTINEL = '\uf8ff';
+
+/** Strip diacritics, for the accent probe and the -s stoplist below. */
+function semAcentos(palavra) {
+  return palavra.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+/**
+ * Portuguese SINGULARS that already end in `s`.
+ *
+ * ⚠️ Without this, the stemming probe manufactures a nonword and then reports a
+ * definitive negative about it: `Lápis 2B` becomes the term `Lápi`, which no
+ * analyzer in any language should match, and the old code printed that as "no
+ * Portuguese stemming" — a verdict on the one design question this script
+ * exists to settle. Compared accent-folded and lowercased.
+ */
+const SINGULARES_EM_S = new Set([
+  'lapis',
+  'onibus',
+  'pais',
+  'iris',
+  'atlas',
+  'virus',
+  'gas',
+  'mes',
+  'cais',
+  'pires',
+  'ananas',
+  'bonus',
+  'campus',
+  'lotus',
+  'status',
+]);
 
 // ---------------------------------------------------------------------------
 // Probe discovery. Every measurement below is worthless against zero rows, and
@@ -74,10 +119,31 @@ async function descobrirAmostra() {
   // A name with at least two words is what makes Q2 meaningful: we need a term
   // that is genuinely NOT a prefix of the name it should match.
   const multi = linhas.find((r) => r.nome.trim().split(/\s+/).length >= 2);
-  // Same for Q3: a name whose first word looks pluralised in Portuguese, so a
-  // singular term only matches if the analyzer stems it.
-  const plural = linhas.find((r) => /^[\p{L}]+s\b/u.test(r.nome.trim()));
-  const acentuado = linhas.find((r) => /[áàâãéêíóôõúüç]/i.test(r.nome));
+
+  // Q3 stemming: a first word that plausibly IS a plural. The stoplist and the
+  // length floor are what keep this from inventing a term — see SINGULARES_EM_S.
+  const plural = linhas.find((r) => {
+    const w = r.nome.trim().split(/\s+/)[0];
+    if (!/^[\p{L}]+s$/u.test(w)) return false;
+    const stem = w.slice(0, -1);
+    return stem.length >= 3 && !SINGULARES_EM_S.has(semAcentos(w).toLowerCase());
+  });
+
+  // Q3 accents: keep the WORD, not just the row. Selecting on "an accent
+  // anywhere in the nome" and then probing the FIRST word made the probe
+  // silently produce no output whenever the accent sat in a later word
+  // ("Camiseta Polo Básica").
+  let palavraAcentuada = null;
+  for (const r of linhas) {
+    const achada = r.nome
+      .trim()
+      .split(/\s+/)
+      .find((w) => semAcentos(w) !== w);
+    if (achada) {
+      palavraAcentuada = { palavra: achada, nome: r.nome };
+      break;
+    }
+  }
 
   // ⚠️ Q2b needs a VARIATION CHILD's sku, not a parent's. The query it models
   // matches children on purpose, so probing with a parent's SKU exercises the
@@ -106,12 +172,12 @@ async function descobrirAmostra() {
     multi,
     filhoComSku,
     plural,
-    acentuado,
+    palavraAcentuada,
   };
 }
 
 // ---------------------------------------------------------------------------
-// The two measurement primitives.
+// The measurement primitives.
 // ---------------------------------------------------------------------------
 async function explicarClassica(rotulo, query) {
   const { metrics } = await query.explain({ analyze: true });
@@ -176,14 +242,55 @@ async function explicarPipeline(rotulo, pipeline) {
   return n;
 }
 
-function buscaTexto(termo) {
+/**
+ * Quote a term as a DSL phrase.
+ *
+ * ⚠️⚠️ `documentMatches(rquery)` takes a search DOMAIN-SPECIFIC LANGUAGE string,
+ * not a literal term — the installed typings say so outright and give
+ * `documentMatches('waffles OR pancakes')` as the example. So the argument is
+ * PARSED: `OR` is an operator, and a leading `-` negates.
+ *
+ * That is not academic here. SKUs in this repo are overwhelmingly hyphenated
+ * (`DEV-FRETE-01`), so feeding one in raw asks the engine for "DEV, but NOT
+ * FRETE, but NOT 01" — and the empty result set that follows is a parse
+ * artifact INDISTINGUISHABLE from "text search cannot match SKUs". A nome
+ * containing `-`, `"`, `(`, `:` or `+` has the same exposure, and every term
+ * here comes straight off production-shaped data.
+ *
+ * Hence {@link probarTermo}: run BOTH forms and print the exact DSL sent. A
+ * disagreement between them is not noise — it is a finding about the DSL, and
+ * the quoted form is the one to trust.
+ */
+function comoFrase(termo) {
+  return `"${termo.replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Probe one term twice — as typed, and quoted as a phrase — and report both.
+ * Returns the QUOTED form's count, which is the one that measures capability
+ * rather than DSL parsing.
+ */
+async function probarTermo(rotulo, termo, fabrica) {
+  const bruto = termo;
+  const frase = comoFrase(termo);
+  const nBruto = await explicarPipeline(`${rotulo} — DSL as typed: ${bruto}`, fabrica(bruto));
+  const nFrase = await explicarPipeline(`${rotulo} — DSL quoted: ${frase}`, fabrica(frase));
+  if (nBruto !== nFrase) {
+    console.warn(`  ⚠️  the two DSL forms DISAGREE (raw ${nBruto} vs quoted ${nFrase}).`);
+    console.warn('     The raw term contains a DSL operator character, so its result');
+    console.warn('     is a PARSE effect, not a capability result. Trust the quoted one.');
+  }
+  return nFrase;
+}
+
+function buscaTexto(dsl) {
   return (
     db
       .pipeline()
       .collection('produtos')
       // ⚠️ `search` MUST be the first stage — every other constraint (the
       // parents-only filter, the page limit) has to come after it.
-      .search({ query: pipelines.documentMatches(termo) })
+      .search({ query: pipelines.documentMatches(dsl) })
       .where(pipelines.field('paiId').equal(null))
       .limit(50)
   );
@@ -199,11 +306,11 @@ function buscaTexto(termo) {
  * parents — is how the first version of this probe passed while testing the one
  * case where the difference cannot show up.
  */
-function buscaTextoSku(termo) {
+function buscaTextoSku(dsl) {
   return db
     .pipeline()
     .collection('produtos')
-    .search({ query: pipelines.documentMatches(termo) })
+    .search({ query: pipelines.documentMatches(dsl) })
     .limit(50);
 }
 
@@ -234,7 +341,7 @@ async function main() {
     `\n${'='.repeat(70)}\nQ1 COST — term "${primeiraPalavra}" (a real prefix)\n${'='.repeat(70)}`,
   );
   await explicarClassica(`prefix range on nome`, prefixoNome(primeiraPalavra));
-  await explicarPipeline(`search(documentMatches)`, buscaTexto(primeiraPalavra));
+  await probarTermo(`search(documentMatches)`, primeiraPalavra, buscaTexto);
 
   // === Q2 — capability, a NON-prefix word =================================
   if (amostra.multi) {
@@ -247,7 +354,7 @@ async function main() {
     console.log('  Expect: the prefix range returns 0 (it cannot match mid-name);');
     console.log('          text search returns >= 1. That gap IS the feature.');
     await explicarClassica(`prefix range on nome`, prefixoNome(meio));
-    await explicarPipeline(`search(documentMatches)`, buscaTexto(meio));
+    await probarTermo(`search(documentMatches)`, meio, buscaTexto);
   } else {
     console.log('\nQ2 skipped: no multi-word produto nome in the sample.');
   }
@@ -278,14 +385,16 @@ async function main() {
     // ⚠️ A VARIATION CHILD's sku, probed WITHOUT the paiId filter — because
     // that is exactly what lookup #1 does. A parent SKU cannot tell the two
     // shapes apart, so testing with one proves nothing about the real query.
-    console.log(`\n  child SKU "${amostra.filhoComSku.sku}" (paiId != null, no filter applied)`);
-    const n = await explicarPipeline(
-      `search(documentMatches) [no paiId filter]`,
-      buscaTextoSku(amostra.filhoComSku.sku.trim()),
-    );
+    //
+    // ⚠️ And probed BOTH ways: a hyphenated SKU is where the DSL hazard bites
+    // hardest, so the raw form's result here is the least trustworthy number
+    // this script produces. See comoFrase.
+    const sku = amostra.filhoComSku.sku.trim();
+    console.log(`\n  child SKU "${sku}" (paiId != null, no filter applied)`);
+    const n = await probarTermo(`search(documentMatches) [no paiId filter]`, sku, buscaTextoSku);
     if (n === 0) {
-      console.warn('  ⚠️  a variation child SKU did NOT match — text search cannot');
-      console.warn('     replace lookup #1 either, since #1 exists to find children.');
+      console.warn('  ⚠️  a variation child SKU did NOT match even QUOTED — text search');
+      console.warn('     cannot replace lookup #1 either, since #1 exists to find children.');
     }
   } else {
     console.log('\n  ⚠️  SKIPPED: no variation child with a sku in the sample.');
@@ -304,33 +413,43 @@ async function main() {
 
   if (amostra.plural) {
     const pluralWord = amostra.plural.nome.trim().split(/\s+/)[0];
-    const singular = pluralWord.replace(/s$/i, '');
+    const singular = pluralWord.slice(0, -1);
     console.log(`\n  stemming: searching "${singular}" should find "${amostra.plural.nome}"`);
-    const n = await explicarPipeline(`search("${singular}")`, buscaTexto(singular));
+    const n = await probarTermo(`search("${singular}")`, singular, buscaTexto);
     if (n === 0) {
-      console.warn('  ⚠️  singular did NOT match the plural — no Portuguese stemming.');
+      // ⚠️ Deliberately NOT phrased as "no Portuguese stemming". The pair is a
+      // HEURISTIC — "${pluralWord}" was guessed to be a plural by its final -s,
+      // and a wrong guess produces a nonword no analyzer could match. Name the
+      // pair and let the reader judge, rather than issuing a verdict on the
+      // one design question this script exists to inform.
+      console.warn(`  ⚠️  "${singular}" did not match "${pluralWord}".`);
+      console.warn('     INCONCLUSIVE unless that pair really is singular/plural —');
+      console.warn('     check it by eye before reading this as "no pt stemming".');
     }
   } else {
-    console.log('\n  stemming probe skipped: no plural-looking nome in the sample.');
+    console.log('\n  stemming probe skipped: no plural-looking nome in the sample');
+    console.log('  (a first word ending in -s, at least 4 letters, not a known');
+    console.log('  singular such as lápis / ônibus / país).');
   }
 
-  if (amostra.acentuado) {
-    const comAcento = amostra.acentuado.nome.trim().split(/\s+/)[0];
-    const semAcento = comAcento.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    if (semAcento !== comAcento) {
-      console.log(`\n  accents: searching "${semAcento}" should find "${amostra.acentuado.nome}"`);
-      const n = await explicarPipeline(`search("${semAcento}")`, buscaTexto(semAcento));
-      if (n === 0) {
-        console.warn('  ⚠️  unaccented term did NOT match — no accent folding.');
-      }
+  if (amostra.palavraAcentuada) {
+    const { palavra, nome: nomeAcentuado } = amostra.palavraAcentuada;
+    const semAcento = semAcentos(palavra);
+    console.log(`\n  accents: searching "${semAcento}" should find "${nomeAcentuado}"`);
+    const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto);
+    if (n === 0) {
+      console.warn(`  ⚠️  "${semAcento}" did NOT match "${palavra}" — no accent folding.`);
     }
   } else {
-    console.log('\n  accent probe skipped: no accented nome in the sample.');
+    console.log('\n  accent probe skipped: no accented WORD in any sampled nome.');
   }
 
   console.log(`\n${'='.repeat(70)}`);
   console.log('Read Q1 for cost, Q2/Q2b for what the prefix range cannot do,');
   console.log('and Q3 for whether the default analyzer speaks Portuguese.');
+  console.log('⚠️ If Q1/Q2 do not justify adopting text search, REVERT the index');
+  console.log('   entry — it is not staging-scoped and would otherwise be built');
+  console.log('   and maintained in production with no reader.');
   console.log('This script is a measurement, not a gate — it always exits 0.');
 }
 
