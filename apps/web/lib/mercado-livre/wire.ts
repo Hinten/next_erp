@@ -180,8 +180,17 @@ export const priceSyncStatusSchema = z.object({
    * list stops at 200 and can be exhausted by the plan phase alone, so on a
    * drifted catalogue the count is the only honest number. Zero is what makes
    * `completed` mean what it says.
+   *
+   * ⚠️ `.default(0)` per rule 2, and it is not defensive padding — it repairs a
+   * live outage. `jobsEmAndamentoSchema` extends this object, and
+   * `GET /jobs-em-andamento` never sent this key (it was added to the status
+   * route with #1072 and to this schema, but never to that projection). So
+   * every rail lookup made while ANY conta had a `running` price-sync job threw
+   * `MercadoLivreClientRespostaInvalidaError`, and the operator lost the
+   * mass-import cards too. The route now sends it; the default is what keeps a
+   * browser newer than the deployed backend working until it ships.
    */
-  naoEnumerados: z.number(),
+  naoEnumerados: z.number().default(0),
   falhas: z.number(),
   pausas: z.number(),
   /** The first skips, for display — capped server-side; `pulados` stays exact. */
