@@ -108,16 +108,32 @@ const SINGULARES_EM_S = new Set([
 // So discover real terms from real documents first, and say so when we can't.
 // ---------------------------------------------------------------------------
 async function descobrirAmostra() {
+  // ⚠️ Ordered by NOME, not by `ultimaModificacao desc`, and that is the whole
+  // point. Recency ordering looks like the obvious choice and is useless here:
+  // the e2e lanes write constantly, so the most-recently-touched rows are ALL
+  // `e2e-<runId>-…` fixtures — measured, 50 of 50 — and merely sorting them
+  // last (below) has nothing left to promote. Alphabetical ordering spreads the
+  // sample across the real catalogue instead, and the fixtures cluster harmlessly
+  // under `e`. Rides the deployed produtos(paiId ASC, nome ASC) composite, so it
+  // is a seek either way.
   const snap = await db
     .collection('produtos')
     .where('paiId', '==', null)
-    .orderBy('ultimaModificacao', 'desc')
+    .orderBy('nome', 'asc')
     .limit(50)
     .get();
 
-  const linhas = snap.docs
+  const todas = snap.docs
     .map((d) => ({ id: d.id, nome: d.get('nome'), sku: d.get('sku') }))
     .filter((r) => typeof r.nome === 'string' && r.nome.trim() !== '');
+
+  // ⚠️ Sort REAL catalogue rows ahead of e2e fixtures. Discovery orders by
+  // `ultimaModificacao desc` and the e2e lanes write constantly, so the newest
+  // rows are almost all `e2e-<runId>-…` — synthetic, all-hyphen names that are
+  // the pathological case for the search DSL and representative of nothing.
+  // Measuring Q1's cost on one of those answers the wrong question.
+  const ehE2e = (r) => /^e2e[-_]/i.test(r.nome.trim());
+  const linhas = [...todas.filter((r) => !ehE2e(r)), ...todas.filter(ehE2e)];
 
   // A name with at least two words is what makes Q2 meaningful: we need a term
   // that is genuinely NOT a prefix of the name it should match.
@@ -136,12 +152,17 @@ async function descobrirAmostra() {
   // anywhere in the nome" and then probing the FIRST word made the probe
   // silently produce no output whenever the accent sat in a later word
   // ("Camiseta Polo Básica").
+  // ⚠️ The word must be accented AND free of DSL operator characters. The first
+  // version probed "Porta-lapis", which varies TWO things at once — a dropped
+  // accent and a hyphen, which the DSL reads as negation — so its zero could
+  // not distinguish "no accent folding" from "the term never parsed".
+  const semOperadorDsl = (w) => !/["()+:~^*?\-]/.test(w);
   let palavraAcentuada = null;
   for (const r of linhas) {
     const achada = r.nome
       .trim()
       .split(/\s+/)
-      .find((w) => semAcentos(w) !== w);
+      .find((w) => semAcentos(w) !== w && semOperadorDsl(w) && w.length >= 4);
     if (achada) {
       palavraAcentuada = { palavra: achada, nome: r.nome };
       break;
@@ -415,10 +436,11 @@ async function main() {
   console.log('  COLLECTION GROUPS. This produtos-scoped index cannot serve them,');
   console.log('  whatever the result below says. Their SKUs differ from the ERP.');
   console.log('');
-  console.log('  ⚠️  AND `sku` is no longer in the text index — it covers `nome` ONLY.');
-  console.log('     So a miss below is EXPECTED and says nothing about what text');
-  console.log('     search can do; it says the field is not indexed. Re-add sku to');
-  console.log('     the index first if you want this question answered.');
+  console.log('  ⚠️  AND firestore.indexes.json now DECLARES `nome` ONLY — sku was');
+  console.log('     dropped. Until the index is recreated from that declaration the');
+  console.log('     LIVE index may still carry sku, so this probe can pass today and');
+  console.log('     start missing later. Either way a miss is about FIELD COVERAGE,');
+  console.log('     not about what text search can do.');
 
   if (amostra.filhoComSku) {
     // ⚠️ A VARIATION CHILD's sku, probed WITHOUT the paiId filter — because
@@ -432,8 +454,8 @@ async function main() {
     console.log(`\n  child SKU "${sku}" (paiId != null, no filter applied)`);
     const n = await probarTermo(`search(documentMatches) [no paiId filter]`, sku, buscaTextoSku);
     if (n === 0) {
-      console.warn('  ⚠️  no match — EXPECTED while `sku` sits outside the text index.');
-      console.warn('     Not a capability result. See the note above.');
+      console.warn('  ⚠️  no match — expected once the index is rebuilt without sku.');
+      console.warn('     A field-coverage result, not a capability one. See above.');
     }
   } else {
     console.log('\n  ⚠️  SKIPPED: no variation child with a sku in the sample.');
@@ -474,13 +496,34 @@ async function main() {
   if (amostra.palavraAcentuada) {
     const { palavra, nome: nomeAcentuado } = amostra.palavraAcentuada;
     const semAcento = semAcentos(palavra);
-    console.log(`\n  accents: searching "${semAcento}" should find "${nomeAcentuado}"`);
-    const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto);
-    if (n === 0) {
-      console.warn(`  ⚠️  "${semAcento}" did NOT match "${palavra}" — no accent folding.`);
+
+    // ⚠️⚠️ CONTROL FIRST. A zero on the unaccented form only means "no accent
+    // folding" if the index can find that document by its accented word at all.
+    // Without this the probe cannot tell folding from a term that never matched
+    // for some unrelated reason — a checker needs a known-GOOD case as well as
+    // a known-BAD one.
+    console.log(
+      `\n  control: "${palavra}" must match "${nomeAcentuado}" for the next probe to mean anything`,
+    );
+    const controle = await probarTermo(`control search("${palavra}")`, palavra, buscaTexto);
+
+    if (controle === 0) {
+      console.warn('  ⚠️  CONTROL FAILED: the accented word does not match its own');
+      console.warn('     document, so the accent probe below is INCONCLUSIVE — the');
+      console.warn('     miss would not be evidence about folding.');
+    } else {
+      console.log(`\n  accents: searching "${semAcento}" should find "${nomeAcentuado}"`);
+      const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto);
+      if (n === 0) {
+        console.warn(`  ⚠️  "${semAcento}" did NOT match "${palavra}" while the control DID.`);
+        console.warn('     That IS evidence: the default analyzer does not fold accents.');
+      } else {
+        console.log(`  ✅ "${semAcento}" matched "${palavra}" — the analyzer folds accents.`);
+      }
     }
   } else {
-    console.log('\n  accent probe skipped: no accented WORD in any sampled nome.');
+    console.log('\n  accent probe skipped: no accented word free of DSL operator');
+    console.log('  characters in any sampled nome (a hyphen would confound it).');
   }
 
   console.log(`\n${'='.repeat(70)}`);
