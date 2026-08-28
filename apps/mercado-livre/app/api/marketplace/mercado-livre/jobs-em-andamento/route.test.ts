@@ -73,6 +73,7 @@ const PRICE_JOB = {
   planejados: 9,
   enviados: 3,
   pulados: 1,
+  naoEnumerados: 1,
   falhas: 0,
   pausas: 0,
   skips: [],
@@ -114,8 +115,62 @@ describe('GET /api/marketplace/mercado-livre/jobs-em-andamento', () => {
           erro: null,
         },
       ],
-      enviosPreco: [{ jobId: 'env-1', ...PRICE_JOB }],
+      // Written out for the same reason as the block above, and this half is
+      // why it matters: it used to be `{ jobId: 'env-1', ...PRICE_JOB }`, which
+      // compares the projection against a fixture carrying the SAME omission.
+      // `naoEnumerados` was missing from both, so the assertion passed while
+      // apps/web could not parse the response at all.
+      enviosPreco: [
+        {
+          jobId: 'env-1',
+          integracaoId: 'int-2',
+          status: 'running',
+          baixarPreco: false,
+          planejados: 9,
+          enviados: 3,
+          pulados: 1,
+          naoEnumerados: 1,
+          falhas: 0,
+          pausas: 0,
+          skips: [],
+          failures: [],
+          startedAt: 1000,
+          updatedAt: 2000,
+          finishedAt: null,
+          erro: null,
+        },
+      ],
     });
+  });
+
+  // The projection and `priceSyncStatusSchema` in apps/web are two halves of one
+  // contract, and only this half can be asserted here (a spec about apps/web
+  // runs nowhere on a web-only PR — see apps/mercado-livre/CLAUDE.md). So pin
+  // the key set: a field dropped from the projection reds this, whether or not
+  // the web schema tolerates it.
+  it('sends every key the apps/web price-sync schema requires', async () => {
+    const res = await GET(req('?integracaoIds=int-2'));
+    const body = (await res.json()) as { enviosPreco: Array<Record<string, unknown>> };
+    expect(Object.keys(body.enviosPreco[0]!).sort()).toEqual(
+      [
+        'baixarPreco',
+        'enviados',
+        'erro',
+        'falhas',
+        'failures',
+        'finishedAt',
+        'integracaoId',
+        'jobId',
+        'naoEnumerados',
+        'pausas',
+        'planejados',
+        'pulados',
+        'skips',
+        'startedAt',
+        'status',
+        'updatedAt',
+      ].sort(),
+    );
   });
 
   it('filters on exactly the contas the caller named, and only running jobs', async () => {

@@ -5,6 +5,7 @@ import {
   reclamacaoEstadoSchema,
   categoriasSchema,
   contaSchema,
+  jobsEmAndamentoSchema,
   massImportStatusSchema,
   medidaSugestaoSchema,
   publicarResultSchema,
@@ -55,6 +56,26 @@ const USUARIO = {
   codigosVerificacaoEmail: { quatro: '0002', seis: '000002' },
 };
 
+/** One `enviosPreco` entry exactly as `GET /jobs-em-andamento` now projects it. */
+const PRICE_SYNC_ENTRY = {
+  jobId: 'env-1',
+  integracaoId: 'int-2',
+  status: 'running',
+  baixarPreco: false,
+  planejados: 9,
+  enviados: 3,
+  pulados: 1,
+  naoEnumerados: 1,
+  falhas: 0,
+  pausas: 0,
+  skips: [],
+  failures: [],
+  startedAt: 1000,
+  updatedAt: 2000,
+  finishedAt: null,
+  erro: null,
+};
+
 describe('a field the deployed backend may not send yet', () => {
   it('⭐ accepts a publish result with no itemIds — a revision predating #798', () => {
     // `listingLinks.ts` reads `result.itemIds?.length ?? 1` and must still
@@ -97,6 +118,35 @@ describe('a field the deployed backend may not send yet', () => {
         value_name: '52',
       }).valueList,
     ).toBeNull();
+  });
+
+  it('⭐ fills an absent naoEnumerados with 0 instead of killing the WHOLE rail lookup', () => {
+    // This one was not hypothetical. `GET /jobs-em-andamento` never sent
+    // `naoEnumerados` — it arrived with #1072 on the `status` route and on this
+    // schema, and the projection was missed — so a required field meant `call()`
+    // threw `MercadoLivreClientRespostaInvalidaError` for EVERY lookup made
+    // while any conta had a running price-sync job. The rail then rendered
+    // "Não foi possível consultar os jobs em andamento" and the operator lost
+    // the mass-import cards too. The route sends it now; this keeps a browser
+    // running ahead of that deploy working.
+    const { naoEnumerados: _drop, ...semNaoEnumerados } = PRICE_SYNC_ENTRY;
+
+    const r = jobsEmAndamentoSchema.parse({
+      importacoes: [],
+      enviosPreco: [semNaoEnumerados],
+    });
+
+    expect(r.enviosPreco[0]!.naoEnumerados).toBe(0);
+  });
+
+  it('⚠️ still rejects a price entry missing a counter that has no default', () => {
+    // The control for the case above: without it, `naoEnumerados: z.any()`
+    // would pass that test just as happily.
+    const { pulados: _drop, ...semPulados } = PRICE_SYNC_ENTRY;
+
+    expect(() =>
+      jobsEmAndamentoSchema.parse({ importacoes: [], enviosPreco: [semPulados] }),
+    ).toThrow();
   });
 });
 
