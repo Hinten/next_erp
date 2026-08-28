@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { produtoSchema } from '@delfrance/schemas';
 import {
@@ -6,8 +9,10 @@ import {
   PRODUTO_SECTIONS_BASE,
   PRODUTO_SECTIONS_EDITAR,
   PRODUTO_TRANSIENT_FIELDS,
+  SECTION_KIT,
   SECTION_MERCADO_LIVRE,
   SECTION_MODIFICACOES,
+  SECTION_VARIACOES,
   produtoObjectViewSchema,
 } from './produtoFields';
 
@@ -63,6 +68,28 @@ describe('produto section (tab) order', () => {
       expect(PRODUTO_SECTIONS).toContain(section);
       expect(PRODUTO_SECTIONS_EDITAR).toContain(section);
     }
+  });
+
+  it('persists every tab that registers a flush the edit page calls (#1374)', () => {
+    // A non-persistent tab loses its effects to `<Activity mode="hidden">`, and
+    // the flush registration goes with them: the Kit tab's ref was nulled and
+    // `flushKitVariacoesRef.current?.(id)` silently skipped the writes, while
+    // Variações kept a closure over an already-unsubscribed snapshot.
+    expect([...PRODUTO_PERSISTENT_SECTIONS].sort()).toEqual(
+      [SECTION_MERCADO_LIVRE, SECTION_KIT, SECTION_VARIACOES].sort(),
+    );
+  });
+
+  it('has no flush registration beyond those three sections (#1374)', () => {
+    // A tripwire, not a proof: it cannot tell WHICH section renders a given
+    // `flushRef`, only that a fourth registration appeared. That is the moment
+    // to decide whether its tab must be persistent too — the failure mode is
+    // silent, so it has to fail here instead.
+    // `path.join`, not `new URL` — the route segments `(app)` and `[id]` do not
+    // survive URL resolution intact.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const page = readFileSync(join(here, '..', '[id]', 'editar', 'page.tsx'), 'utf8');
+    expect(page.match(/flushRef=\{/g) ?? []).toHaveLength(3);
   });
 });
 

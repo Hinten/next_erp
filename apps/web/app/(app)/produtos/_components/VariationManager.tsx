@@ -513,8 +513,18 @@ export function VariationManager({
 
   // Hand the page the current flush closure (it captures this render's rows).
   // Assigned in an effect — mutating a ref during render is forbidden.
+  //
+  // The cleanup matters: on unmount this closure is stale by definition, and its
+  // `childrenSnap` listener is gone with it, so calling it would rewrite the
+  // children from frozen data. It is safe to null only because 'Variações' is in
+  // `PRODUTO_PERSISTENT_SECTIONS` — without that, `<Activity>` would tear the
+  // effect down on every tab switch and the page's `flushChildrenRef.current?.()`
+  // would silently skip the child writes instead.
   useEffect(() => {
     flushRef.current = produtoId ? flushStagedChildren : null;
+    return () => {
+      flushRef.current = null;
+    };
   });
 
   if (!produtoId) {
