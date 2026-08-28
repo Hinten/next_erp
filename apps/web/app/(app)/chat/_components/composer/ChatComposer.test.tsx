@@ -621,6 +621,15 @@ describe('ChatComposer — answering a pergunta is confirmed first', () => {
     // ...and the composer is usable again, not stuck disabled by the `sending`
     // flag the aborted send set on its way in.
     expect(screen.getByLabelText('Enviar')).not.toHaveProperty('disabled', true);
+    // ⚠️ And the caret is back IN it. "Free" has to mean the operator keeps
+    // typing, not that they have to click their way back in — otherwise
+    // cancelling costs more than the pre-gate Enter path, where focus never
+    // left. This regressed once already: `sending` is still true when the
+    // dialog closes, so the Textarea is still `disabled` and a bare `focus()`
+    // silently lands on <body>.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByPlaceholderText(/Digite uma mensagem/)),
+    );
   });
 
   it('gates the KEYBOARD send too, not just the button', async () => {

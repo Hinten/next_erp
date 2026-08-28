@@ -411,8 +411,15 @@ function ComposerInput({
           if (!ok) {
             // Nothing was written and `setText('')` only runs on success, so the
             // draft survives untouched; the outer `finally` re-enables the input.
-            // Focus goes back where the operator left it — the modal took it.
-            textareaRef.current?.focus();
+            //
+            // ⚠️ Focus must WAIT for that re-render. `sending` is still true on
+            // this line — `setSending(false)` lives in the `finally` below and
+            // React has not flushed it yet — so the Textarea is still
+            // `disabled`, and a disabled element cannot take focus. A bare
+            // `focus()` here silently leaves the caret on <body>, making cancel
+            // cost a click that the pre-gate Enter path never charged. Same
+            // deferral `insertAtCursor` uses above, for the same reason.
+            requestAnimationFrame(() => textareaRef.current?.focus());
             return;
           }
         }
