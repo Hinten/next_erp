@@ -38,6 +38,32 @@ describe('applyAiAttributes', () => {
     ]);
   });
 
+  it('picks the option that matches, not a sibling differing by one letter', () => {
+    // ⭐ THE NEAR-MISS for `normalizeLoose`. The test above proves the fold
+    // APPLIES (case + diacritics collapse); it cannot prove the fold stops
+    // there. `normalizeLoose` must NOT reach past case and accents — two real
+    // ML options one letter apart have to stay two options, or a model answer
+    // silently resolves onto the wrong `value_id` and ships to a live listing.
+    // #1372 is the same bug class one fold over.
+    const cores: AiAttributeSpec[] = [
+      spec({
+        id: 'COLOR',
+        valueType: 'list',
+        values: [
+          { id: 'C1', name: 'Preto' },
+          { id: 'C2', name: 'Preta' },
+        ],
+      }),
+    ];
+
+    expect(applyAiAttributes(cores, { COLOR: 'preta' })).toEqual([
+      { id: 'COLOR', value_id: 'C2', value_name: 'Preta', unit_id: null },
+    ]);
+    expect(applyAiAttributes(cores, { COLOR: 'PRETO' })).toEqual([
+      { id: 'COLOR', value_id: 'C1', value_name: 'Preto', unit_id: null },
+    ]);
+  });
+
   it('attaches the unit to a bare number', () => {
     // ML wants the unit alongside the number; the legacy shipped "55" for a
     // length in centimetres.
