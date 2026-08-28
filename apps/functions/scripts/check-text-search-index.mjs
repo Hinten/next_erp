@@ -179,20 +179,6 @@ async function descobrirAmostra() {
 // ---------------------------------------------------------------------------
 // The measurement primitives.
 // ---------------------------------------------------------------------------
-async function explicarClassica(rotulo, query) {
-  const { metrics } = await query.explain({ analyze: true });
-  const indexesUsed = metrics.planSummary?.indexesUsed ?? [];
-  const stats = metrics.executionStats ?? {};
-  console.log(`\n--- [classic] ${rotulo}`);
-  console.log('  indexesUsed     :', JSON.stringify(indexesUsed));
-  console.log('  resultsReturned :', stats.resultsReturned);
-  console.log('  readOperations  :', stats.readOperations);
-  console.log('  duration        :', stats.executionDuration);
-  if (indexesUsed.length === 0) {
-    console.warn('  ⚠️  no index reported — this query is SCANNING');
-  }
-  return Number(stats.resultsReturned ?? 0);
-}
 
 /**
  * Read a message off an unknown throw WITHOUT pretending to narrow it.
@@ -208,6 +194,13 @@ function mensagemDoErro(err) {
     return String(err.message);
   }
   return String(err);
+}
+
+/** `executionTime` is a Timestamp-like object; String() on it prints [object Object]. */
+function formatarInstante(v) {
+  if (v == null) return '(none)';
+  if (typeof v.toDate === 'function') return v.toDate().toISOString();
+  return JSON.stringify(v);
 }
 
 async function explicarPipeline(rotulo, pipeline) {
@@ -230,12 +223,16 @@ async function explicarPipeline(rotulo, pipeline) {
   const n = snap.results.length;
   console.log(`\n--- [pipeline] ${rotulo}`);
   console.log('  resultsReturned :', n);
-  console.log('  executionTime   :', String(snap.executionTime ?? '(none)'));
+  console.log('  executionTime   :', formatarInstante(snap.executionTime));
   if (n === 0) {
-    // ⚠️ Not a plan we can read. Say so explicitly: a silent "no stats" here
-    // would otherwise be mistaken for "the index was not used".
-    console.warn('  ⚠️  ZERO results ⇒ NO explainStats is emitted at all.');
-    console.warn('     Cannot conclude anything about the index from this probe.');
+    // ⚠️ Two DIFFERENT claims, and the first version of this warning blurred
+    // them: a zero-result execution emits no explainStats, so there is no COST
+    // or INDEX data — but "nothing matched" is still a perfectly good MATCH
+    // result, and Q3's verdicts rest on exactly that. Saying "cannot conclude
+    // anything" and then printing a verdict two lines later is a contradiction
+    // the reader has to resolve for us.
+    console.warn('  ⚠️  ZERO results ⇒ no explainStats, so no cost/index data here.');
+    console.warn('     The MATCH result (nothing matched) is still meaningful.');
   } else {
     console.log('  explainStats    :\n', snap.explainStats?.text ?? '(none)');
   }
@@ -314,13 +311,35 @@ function buscaTextoSku(dsl) {
     .limit(50);
 }
 
-function prefixoNome(termo) {
+/**
+ * The CURRENT nome search, expressed as a PIPELINE rather than a classic query.
+ *
+ * ⚠️⚠️ Not a stylistic choice. Firestore Enterprise REFUSES explain on the
+ * classic path outright:
+ *
+ *   3 INVALID_ARGUMENT: Explain options are not supported in RunQuery API for
+ *   Enterprise edition. Please use the ExecutePipeline API instead.
+ *
+ * so `query.explain({ analyze: true })` — the shape every sibling check-*.mjs
+ * script uses, and the one this file used first — cannot measure anything here.
+ * It is also the RIGHT comparison: TableView runs the Pipelines path in
+ * production and only falls back to a classic Query when the SDK lacks
+ * pipelines, so measuring the prefix range as a pipeline is closer to what
+ * /produtos actually issues, and puts both sides of Q1 on the same API with
+ * the same explainStats.
+ */
+function prefixoNomePipeline(termo) {
   return db
+    .pipeline()
     .collection('produtos')
-    .where('paiId', '==', null)
-    .where('nome', '>=', termo)
-    .where('nome', '<=', `${termo}${PREFIX_SENTINEL}`)
-    .orderBy('nome', 'asc')
+    .where(
+      pipelines.and(
+        pipelines.field('paiId').equal(null),
+        pipelines.field('nome').greaterThanOrEqual(termo),
+        pipelines.field('nome').lessThanOrEqual(`${termo}${PREFIX_SENTINEL}`),
+      ),
+    )
+    .sort(pipelines.ascending(pipelines.field('nome')))
     .limit(50);
 }
 
@@ -334,13 +353,25 @@ async function main() {
   }
   console.log(`discovered ${amostra.total} produto(s) to build probes from.`);
 
+  // ⚠️⚠️ The precondition that decides how to read everything below. Without the
+  // text index deployed AND built, `search(documentMatches)` still RETURNS rows
+  // — it just scans to get them (measured: 165 read units vs the prefix range's
+  // 25 for the same 2 rows, and `index row scanned` equal to the collection
+  // size). So the COST numbers describe the UNINDEXED path and must be re-read
+  // after a deploy; the CAPABILITY result (a mid-name word matching) is
+  // structural and holds either way.
+  console.log('');
+  console.log('⚠️  If the text index is not yet deployed AND finished building,');
+  console.log('    every text-search number below is the UNINDEXED path. Compare');
+  console.log('    `index row scanned` against the collection size to tell.');
+
   // === Q1 — cost, same term through both paths ============================
   const nome = amostra.primeiro.nome.trim();
   const primeiraPalavra = nome.split(/\s+/)[0];
   console.log(
     `\n${'='.repeat(70)}\nQ1 COST — term "${primeiraPalavra}" (a real prefix)\n${'='.repeat(70)}`,
   );
-  await explicarClassica(`prefix range on nome`, prefixoNome(primeiraPalavra));
+  await explicarPipeline(`prefix range on nome`, prefixoNomePipeline(primeiraPalavra));
   await probarTermo(`search(documentMatches)`, primeiraPalavra, buscaTexto);
 
   // === Q2 — capability, a NON-prefix word =================================
@@ -353,7 +384,7 @@ async function main() {
     );
     console.log('  Expect: the prefix range returns 0 (it cannot match mid-name);');
     console.log('          text search returns >= 1. That gap IS the feature.');
-    await explicarClassica(`prefix range on nome`, prefixoNome(meio));
+    await explicarPipeline(`prefix range on nome`, prefixoNomePipeline(meio));
     await probarTermo(`search(documentMatches)`, meio, buscaTexto);
   } else {
     console.log('\nQ2 skipped: no multi-word produto nome in the sample.');
@@ -453,4 +484,14 @@ async function main() {
   console.log('This script is a measurement, not a gate — it always exits 0.');
 }
 
-await main();
+// A measurement, not a gate: a probe that throws must still print WHY and let
+// the process end cleanly, rather than dying as an uncaught exception and
+// taking the remaining questions with it. That is exactly how the Enterprise
+// "explain not supported in RunQuery" refusal first surfaced.
+try {
+  await main();
+  // eslint-disable-next-line no-restricted-syntax -- top-level diagnostic boundary; see above
+} catch (err) {
+  console.error('\n❌ the run stopped early:', mensagemDoErro(err));
+  console.error('   Everything printed above still stands.');
+}
