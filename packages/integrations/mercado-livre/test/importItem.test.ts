@@ -184,6 +184,89 @@ describe('attribute helpers', () => {
     expect(attr).toMatchObject({ value_name: '62.5', unit_id: 'cm' });
   });
 
+  /**
+   * ⛔ **Present is not usable.** `value_struct` is `.passthrough()` with BOTH
+   * inner fields nullable, so a hollow root (`{}`, or `{number:null,unit:null}`)
+   * is a shape the schema accepts. Picking the first struct that merely EXISTS
+   * let that hollow root shadow a `values[0].struct` that stated the
+   * measurement — reproducing the #1346 symptom (unit baked into the value) in a
+   * narrower shape.
+   */
+  it('⛔ a HOLLOW root does not shadow a values[0].struct that states the measurement', () => {
+    for (const raiz of [{}, { number: null, unit: null }, { unit: 'mL' }]) {
+      const [attr] = attributesFromItem([
+        {
+          id: 'UNIT_VOLUME',
+          value_name: '355 mL',
+          value_struct: raiz,
+          values: [{ struct: { number: 355, unit: 'mL' } }],
+        },
+      ]);
+      expect({ raiz, v: attr?.value_name, u: attr?.unit_id }).toEqual({
+        raiz,
+        v: '355',
+        u: 'mL',
+      });
+    }
+  });
+
+  it('⛔ a root with a NUMBER but no UNIT does not shadow a COMPLETE values[0].struct', () => {
+    // The narrowest case, and the one a "first struct with a number wins" rule
+    // would still get wrong: splitting a value whose unit is unknown is exactly
+    // what `measurementFromStruct` exists to avoid, so a numberless-unit root
+    // states no PAIR and the next candidate gets its turn.
+    const [attr] = attributesFromItem([
+      {
+        id: 'UNIT_VOLUME',
+        value_name: '355 mL',
+        value_struct: { number: 355 },
+        values: [{ struct: { number: 355, unit: 'mL' } }],
+      },
+    ]);
+    expect(attr).toMatchObject({ value_name: '355', unit_id: 'mL' });
+  });
+
+  it('⚠️ CONTROL — for a DIMENSION a unitless root is usable, and still decides', () => {
+    // The two readers disagree about "usable" on purpose: an absent unit means
+    // centimetres here, while `measurementFromStruct` above must not split
+    // without one. This pins that difference, so unifying them fails loudly.
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [
+        {
+          id: 'HEIGHT',
+          value_struct: { number: 10 },
+          values: [{ struct: { number: 999, unit: 'cm' } }],
+        },
+        {
+          id: 'WIDTH',
+          value_struct: { number: 20 },
+          values: [{ struct: { number: 999, unit: 'cm' } }],
+        },
+        {
+          id: 'LENGTH',
+          value_struct: { number: 30 },
+          values: [{ struct: { number: 999, unit: 'cm' } }],
+        },
+      ],
+    });
+    const m = mapMlItemToImport(item);
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([10, 20, 30]);
+  });
+
+  it('⚠️ CONTROL — a hollow root still lets the DIMENSION reach values[0]', () => {
+    const item = itemSchema.parse({
+      id: 'MLB1',
+      attributes: [
+        { id: 'HEIGHT', value_struct: {}, values: [{ struct: { number: 11, unit: 'cm' } }] },
+        { id: 'WIDTH', value_struct: {}, values: [{ struct: { number: 22, unit: 'cm' } }] },
+        { id: 'LENGTH', value_struct: {}, values: [{ struct: { number: 33, unit: 'cm' } }] },
+      ],
+    });
+    const m = mapMlItemToImport(item);
+    expect([m.alturaCm, m.larguraCm, m.profundidadeCm]).toEqual([11, 22, 33]);
+  });
+
   it('reads the exact attribute shape a live GET /items returned (MLB5146021467)', () => {
     const attrs = attributesFromItem([
       {

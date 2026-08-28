@@ -188,9 +188,12 @@ const MEDIDAS_DO_PRODUTO = [
 /** The produto dimension fields this module resolves, in centimetres. */
 type MedidasDoPacoteMapeado = Pick<MappedMlItem, 'alturaCm' | 'larguraCm' | 'profundidadeCm'>;
 
+/** A (number, unit) pair as ML states it — both halves independently nullable. */
+type MedidaStruct = { number?: number | null; unit?: string | null };
+
 /**
- * The (number, unit) struct for a measurement, from wherever ML put it on THIS
- * response — the ONE source order, so the readers below cannot drift apart.
+ * The (number, unit) structs for a measurement, from wherever ML put them on
+ * THIS response — the ONE source order, so the readers below cannot drift apart.
  *
  * ⚠️ `value_struct` is the DOCUMENTED root field and a live
  * `GET /items/{id}?include_attributes=all` does not fill it. Measured on
@@ -204,11 +207,26 @@ type MedidasDoPacoteMapeado = Pick<MappedMlItem, 'alturaCm' | 'larguraCm' | 'pro
  * The root stays FIRST: it is what ML documents, and where a response that does
  * fill it is authoritative. `values[0]` is the observed fallback, not a
  * replacement.
+ *
+ * ⛔ **Candidates, not one struct — because "present" is not "usable".** Both
+ * inner fields are nullable and the object is `.passthrough()`, so a HOLLOW root
+ * (`{}`, or `{ number: null, unit: null }`) is a shape the schema accepts. A `??`
+ * here returned that hollow root and shadowed a `values[0].struct` that stated
+ * the measurement — reproducing the very #1346 symptom in a narrower shape.
+ *
+ * ⚠️ And "usable" is NOT the same question for the two readers, which is why
+ * the decision cannot live in here: {@link cmFromMeasurement} accepts a struct
+ * with no unit (an absent unit means centimetres), while
+ * {@link measurementFromStruct} needs the unit — splitting a value without one
+ * is what it exists to avoid. So this owns the SOURCE ORDER, its actual job, and
+ * each reader takes the first candidate it can really use.
  */
-function structDaMedida(
-  attr: MlItemAttribute,
-): { number?: number | null; unit?: string | null } | null {
-  return attr.value_struct ?? attr.values?.[0]?.struct ?? null;
+function structsDaMedida(attr: MlItemAttribute): MedidaStruct[] {
+  const out: MedidaStruct[] = [];
+  if (attr.value_struct != null) out.push(attr.value_struct);
+  const doValues = attr.values?.[0]?.struct;
+  if (doValues != null) out.push(doValues);
+  return out;
 }
 
 /**
@@ -226,8 +244,12 @@ function structDaMedida(
  */
 function cmFromMeasurement(attr: MlItemAttribute | undefined): number | null {
   if (attr == null) return null;
-  const struct = structDaMedida(attr);
-  if (struct != null && typeof struct.number === 'number' && Number.isFinite(struct.number)) {
+  for (const struct of structsDaMedida(attr)) {
+    // A struct with no usable NUMBER states nothing, so it is skipped rather
+    // than allowed to shadow the next candidate. Anything past this line is a
+    // struct that really does carry a measurement, and it DECIDES — including
+    // by refusing, below.
+    if (typeof struct.number !== 'number' || !Number.isFinite(struct.number)) continue;
     const unit = typeof struct.unit === 'string' ? struct.unit.trim().toLowerCase() : '';
     // Same factors as `cmFromAttribute`, and the same rule: an unrecognised unit
     // is DROPPED rather than assumed. A silent wrong unit is a box off by 10×.
@@ -283,7 +305,7 @@ export function isKitFromAttributes(attrs: readonly MlItemAttribute[] | null | u
  * `value_name` bakes the unit into the text (`'355 mL'`), so without reading the
  * struct an imported measurement lands unitless with its unit stranded in the value.
  *
- * ⚠️ Reads through {@link structDaMedida}, NOT `value_struct` directly. Until
+ * ⚠️ Reads through {@link structsDaMedida}, NOT `value_struct` directly. Until
  * #1346 it consulted the root alone, and a live `GET /items` fills only
  * `values[0].struct` — so this fired on no attribute at all and every imported
  * measurement stored the unit baked in. That storage is stable rather than
@@ -307,12 +329,14 @@ export function isKitFromAttributes(attrs: readonly MlItemAttribute[] | null | u
  * hand to match against.
  */
 function measurementFromStruct(attr: MlItemAttribute): { value: string; unit: string } | null {
-  const struct = structDaMedida(attr);
-  if (struct == null) return null;
-  const { number, unit } = struct;
-  if (typeof number !== 'number' || !Number.isFinite(number)) return null;
-  if (typeof unit !== 'string' || unit.trim() === '') return null;
-  return { value: String(number), unit: unit.trim() };
+  for (const { number, unit } of structsDaMedida(attr)) {
+    // Both halves, or this candidate states no PAIR and the next one might.
+    // A number without a unit is exactly the split this function must not make.
+    if (typeof number !== 'number' || !Number.isFinite(number)) continue;
+    if (typeof unit !== 'string' || unit.trim() === '') continue;
+    return { value: String(number), unit: unit.trim() };
+  }
+  return null;
 }
 
 /**
