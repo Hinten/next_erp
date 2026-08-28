@@ -17,21 +17,24 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //      cannot match a word in the MIDDLE of a name ("preta" in "Camiseta Polo
 //      Preta"). Q2 runs exactly that term through both paths.
 //   Q2b SKU — can it replace SKU lookup #1 (produtos) only? See the block.
-//   Q3 LANGUAGE — the open design question. The analyzer language lives in
-//      Index.searchIndexOptions.textLanguage, which the Firebase CLI cannot
-//      express (0 references repo-wide in firebase-tools 15.28.2), so the
-//      deployed index gets the BACKEND DEFAULT. If that default stems
-//      Portuguese, a singular term matches a plural name and an unaccented term
-//      matches an accented one. Q3 probes both; a miss is the evidence for
-//      spending a console-managed setting on `pt`.
+//   Q3 LANGUAGE — is the deployed index actually speaking pt-BR?
+//      `firestore.indexes.json` now DECLARES searchIndexOptions.textLanguage
+//      'pt-BR', but ⚠️ `firebase deploy` does NOT send it: firebase-tools builds
+//      the create body from a whitelist (fields, queryScope, apiScope, density,
+//      multikey, unique) and drops everything else with NO error. So the
+//      declaration is INTENT; the live index has whatever it was created with —
+//      autodetect, unless the language was set via gcloud/console. Q3 tells the
+//      two apart empirically. Measured under AUTODETECT: case folding YES, pt
+//      plural stemming YES, diacritic folding NO — so a miss on the accent probe
+//      means pt-BR never reached the index (or does not fix diacritics).
 //
 // ⚠️⚠️ THE INDEX THIS SCRIPT MEASURES IS PROVISIONAL, AND NOT STAGING-SCOPED.
 // `firestore.indexes.json` is the `indexes` path in BOTH firebase.json
 // (production) and firebase.staging.json, so there is no way to declare a text
 // index for staging alone. The next production index deploy — migration-window
 // work, root CLAUDE.md rule 8 — replays this file exactly as it stands, and a
-// TOKENIZED index over produtos.nome AND produtos.sku is then built and
-// maintained on every produto write with nothing in apps/web reading it.
+// TOKENIZED index over produtos.nome is then built and maintained on every
+// produto write with nothing in apps/web reading it.
 // EXIT CONDITION: if Q1/Q2 below do not justify adopting text search, the
 // index entry is REVERTED, not left behind. An index nobody remembers ordering
 // is exactly the drift this repo keeps writing lint backstops against.
@@ -411,6 +414,11 @@ async function main() {
   console.log('  #2 and #3 read produtoMercadoLivre / variacaoMercadoLivre as');
   console.log('  COLLECTION GROUPS. This produtos-scoped index cannot serve them,');
   console.log('  whatever the result below says. Their SKUs differ from the ERP.');
+  console.log('');
+  console.log('  ⚠️  AND `sku` is no longer in the text index — it covers `nome` ONLY.');
+  console.log('     So a miss below is EXPECTED and says nothing about what text');
+  console.log('     search can do; it says the field is not indexed. Re-add sku to');
+  console.log('     the index first if you want this question answered.');
 
   if (amostra.filhoComSku) {
     // ⚠️ A VARIATION CHILD's sku, probed WITHOUT the paiId filter — because
@@ -424,8 +432,8 @@ async function main() {
     console.log(`\n  child SKU "${sku}" (paiId != null, no filter applied)`);
     const n = await probarTermo(`search(documentMatches) [no paiId filter]`, sku, buscaTextoSku);
     if (n === 0) {
-      console.warn('  ⚠️  a variation child SKU did NOT match even QUOTED — text search');
-      console.warn('     cannot replace lookup #1 either, since #1 exists to find children.');
+      console.warn('  ⚠️  no match — EXPECTED while `sku` sits outside the text index.');
+      console.warn('     Not a capability result. See the note above.');
     }
   } else {
     console.log('\n  ⚠️  SKIPPED: no variation child with a sku in the sample.');
@@ -440,7 +448,7 @@ async function main() {
   );
   console.log('  The CLI cannot declare textLanguage, so this index gets the');
   console.log('  backend default. These probes are the evidence for whether');
-  console.log('  that is acceptable or worth a console-managed `pt` setting.');
+  console.log('  the declared pt-BR actually reached the deployed index.');
 
   if (amostra.plural) {
     const pluralWord = amostra.plural.nome.trim().split(/\s+/)[0];
