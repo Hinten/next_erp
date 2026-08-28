@@ -126,10 +126,17 @@ export const produtoObjectViewSchema = produtoPageBaseSchema.extend({
  *    `variacoesUid`/`ordem` from frozen data and a second save re-issued the
  *    whole batch.
  *
- * ⚠️ Costs nothing extra for these two: the edit page already holds the same
- * `paiId ==` children query and produto doc open for the whole session, so
- * neither adds a query shape. That is NOT true of Estoque/Vídeos/Anexos, which
- * is why the tabset as a whole is deliberately not persistent.
+ * ⚠️ Persisting a section is NOT free, and the listener argument only covers
+ * half of it. The snapshot side is genuinely free here — the edit page already
+ * holds the same `paiId ==` children query and produto doc open for the whole
+ * session, so neither adds a query shape (Estoque/Vídeos/Anexos would, which is
+ * why the tabset as a whole is still not persistent). What is NOT free is
+ * anything a persisted subtree does EAGERLY: the Kit panel also mounts
+ * `KitManager`, whose `getDocFromServer` fan-out and `shouldDirty` form sync
+ * would then run on every kit produto's edit-page load and arm the
+ * unsaved-changes guard before the operator touched anything. That work stays
+ * behind a `useSectionActive()` latch inside `KitManager`. Persist a section for
+ * the registration; keep its expensive work gated on first open.
  *
  * ⚠️ Lives here, beside the section constants, because nothing in the type
  * system enforces the pairing: a page that renders a flush-registering tab in a

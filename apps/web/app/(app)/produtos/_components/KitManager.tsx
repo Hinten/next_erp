@@ -17,6 +17,7 @@ import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { type DocumentReference, type Firestore, getDocFromServer } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
+import { useSectionActive } from '@delfrance/ui';
 import {
   CAMPOS_DIMENSOES_KIT,
   custoDoKit,
@@ -211,6 +212,31 @@ export function KitManager({
   // Parent kit: gate on the form's `ehKit`. Variation child: caller forces it.
   const ehKit = ehKitProp ?? form?.watch('ehKit') === true;
 
+  /**
+   * One-way "this tab has been opened" latch, same shape as `MercadoLivreTab`.
+   *
+   * The Kit section is persistent — `KitVariacoesManager` owns a flush the edit
+   * page calls in `onAfterSave`, and `<Activity mode="hidden">` would tear that
+   * registration down — so this component now MOUNTS at page load instead of on
+   * first open. Its eager work must not follow it there: the component reads
+   * below are `getDocFromServer` (one per component, one per component parent,
+   * and once more per nested per-variation `KitManager`), and the two form-sync
+   * effects write with `shouldDirty: true`, which arms the unsaved-changes guard
+   * before the operator has touched anything. Both were previously gated behind
+   * "the operator opened the Kit tab"; the latch keeps them there.
+   *
+   * `undefined` means no `SectionTabs` ancestor — a standalone render or a unit
+   * test, always visible — so it counts as opened.
+   */
+  const sectionActive = useSectionActive();
+  const [sectionOpened, setSectionOpened] = useState(false);
+  useEffect(() => {
+    // `react-hooks/set-state-in-effect` is right in general and wrong here: the
+    // set IS the latch, and `sectionActive` is a context value.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (sectionActive !== false) setSectionOpened(true);
+  }, [sectionActive]);
+
   // The produto itself + its variations can't be its own components (Flutter
   // `optionsFilter`). `produtoId` is always excluded; the caller adds variations.
   const pickerExcludeIds = useMemo(
@@ -247,7 +273,7 @@ export function KitManager({
   // no-ops; a transient failure surfaces a notification and self-heals when the
   // components change or the tab remounts.
   useEffect(() => {
-    if (!ehKit) return;
+    if (!ehKit || !sectionOpened) return;
     const missing = activeIds.filter((id) => !(id in custoCache));
     if (missing.length === 0) return;
     let cancelled = false;
@@ -308,7 +334,7 @@ export function KitManager({
     return () => {
       cancelled = true;
     };
-  }, [ehKit, activeIds, custoCache, db]);
+  }, [ehKit, sectionOpened, activeIds, custoCache, db]);
 
   // Kit cost is DYNAMIC (Flutter `getCusto`): Σ(component custo × quantidade).
   // Derived (not state) — `null` until every active component's custo is cached;
@@ -332,16 +358,18 @@ export function KitManager({
   // Push the computed cost into the read-only `custo` form field (writing to the
   // form = an external system, the legitimate use of an effect).
   useEffect(() => {
-    if (!syncCustoToForm || !ehKit || !custoResult || custoResult.custo === null) return;
+    if (!syncCustoToForm || !ehKit || !sectionOpened || !custoResult || custoResult.custo === null)
+      return;
     if (form?.getValues('custo') !== custoResult.custo) {
       form?.setValue('custo', custoResult.custo, { shouldDirty: true });
     }
-  }, [syncCustoToForm, ehKit, custoResult, form]);
+  }, [syncCustoToForm, ehKit, sectionOpened, custoResult, form]);
 
   // Push the computed weights and box into the "Dimensões e peso" fields. Only
   // when they actually differ, so loading an already-consistent kit doesn't mark
   // the form dirty.
   useEffect(() => {
+    if (!sectionOpened) return;
     const patches = kitDimensoesFormPatches(syncPesoToForm, ehKit, dimensoesResult, {
       pesoBrutoKg: form?.getValues('pesoBrutoKg'),
       pesoLiquidoKg: form?.getValues('pesoLiquidoKg'),
@@ -352,7 +380,7 @@ export function KitManager({
     for (const { field, value } of patches) {
       form?.setValue(field, value, { shouldDirty: true });
     }
-  }, [syncPesoToForm, ehKit, dimensoesResult, form]);
+  }, [syncPesoToForm, ehKit, sectionOpened, dimensoesResult, form]);
 
   const setComponent = (id: string, patch: Partial<KitDraft>) => {
     onChange({ ...components, [id]: { ...components[id], ...patch } as KitDraft });

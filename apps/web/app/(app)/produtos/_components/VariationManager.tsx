@@ -368,6 +368,16 @@ export function VariationManager({
    * therefore this manager's live children snapshot — was never opened.
    */
   const flushStagedChildren = async (parentId: string): Promise<void> => {
+    // Nothing staged ⇒ nothing to write, and that guard is load-bearing now that
+    // the section is persistent: this closure runs on EVERY produto save, not
+    // only after the tab was opened. Without it the `ordem` renumbering below
+    // rewrites nome/sku/variacoesUid/ordem on every child whose stored `ordem`
+    // is not already its index — the legacy 1-based (or null) shape, rule 8 —
+    // on a save that never touched variations. Renumbering an untouched family
+    // may be worth doing, but it should be a deliberate action, not a side
+    // effect of the tab having mounted.
+    if (Object.keys(patches).length === 0 && newRows.length === 0 && localOrder === null) return;
+
     const duplicates = findDuplicateSkus(rows);
     if (duplicates.size > 0) {
       throw flushAbort(
