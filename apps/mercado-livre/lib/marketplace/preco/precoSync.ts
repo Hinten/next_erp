@@ -470,8 +470,15 @@ export async function processPriceSyncJob(
      *
      * ⚠️ A batch is NOT a transaction — nothing here is read-modify-write, since
      * the shard index is derived from `relatorioLinhas`, a counter that only
-     * advances on a committed checkpoint. Adding `runTransaction` would buy
-     * nothing and cost an OCC retry loop inside a 540s worker.
+     * advances on a committed checkpoint. Promoting this to a Firestore
+     * transaction would buy nothing and cost an OCC retry loop inside a 540s
+     * worker.
+     *
+     * ⚠️ The phrase above deliberately avoids the bare API name:
+     * `firestore-transaction-inventory.test.js` greps the literal token across
+     * the repo and cannot tell a CALL from a mention in a comment, so naming it
+     * here would demand an inventory entry for a file that runs no transaction —
+     * i.e. a false entry in the ledger that exists to be trusted.
      */
     const checkpoint = async (): Promise<void> => {
       // Assign each pending row its shard from the PERSISTED counter, so a
