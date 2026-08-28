@@ -44,11 +44,24 @@ interface IndexField {
  * the sort, which is precisely the change that invalidates the index.
  */
 export function derivarCamposDoIndice(src: string): IndexField[] | null {
-  const where = /\.where\(\s*'([A-Za-z0-9_.]+)'\s*,\s*'=='/.exec(src);
+  // ⚠️ `matchAll`, not `exec`. `exec` returns the FIRST match only, so a second
+  // equality filter added later — `.where('status', '==', …)` beside the
+  // existing one — would leave this deriving the two-field shape while the real
+  // requirement became `(integracaoId, status, startedAt DESC)`. The guard would
+  // stay green and the query would full-scan with no runtime signal, which is
+  // exactly the failure this file exists to catch.
+  const igualdades = [...src.matchAll(/\.where\(\s*'([A-Za-z0-9_.]+)'\s*,\s*'=='/g)].map(
+    (m) => m[1]!,
+  );
   const order = /\.orderBy\(\s*'([A-Za-z0-9_.]+)'\s*,\s*'(asc|desc)'\s*\)/.exec(src);
-  if (!where || !order) return null;
+  if (igualdades.length === 0 || !order) return null;
   return [
-    { fieldPath: where[1]!, order: 'ASCENDING' },
+    // Sorted only for determinism: Firestore treats the equality PREFIX as
+    // order-insensitive, so the sort cannot make a satisfying index look wrong.
+    ...[...new Set(igualdades)].sort().map<IndexField>((f) => ({
+      fieldPath: f,
+      order: 'ASCENDING',
+    })),
     { fieldPath: order[1]!, order: order[2] === 'desc' ? 'DESCENDING' : 'ASCENDING' },
   ];
 }
@@ -133,6 +146,31 @@ describe('the historico route has its composite index', () => {
     it('returns null when there is no query to derive from', () => {
       expect(derivarCamposDoIndice(`const x = 1;`)).toBeNull();
       expect(derivarCamposDoIndice(`.where('a', '==', x)`)).toBeNull();
+    });
+
+    it('⭐ picks up a SECOND equality filter, which `exec` would have missed', () => {
+      // The whole point of the guard: adding `.where('status','==',…)` changes
+      // the required index to a three-field one. Deriving only the first
+      // equality would keep asserting the two-field shape — green, while the
+      // query full-scans with no runtime signal.
+      expect(
+        derivarCamposDoIndice(
+          `.where('integracaoId', '==', id).where('status', '==', s).orderBy('startedAt', 'desc')`,
+        ),
+      ).toEqual([
+        { fieldPath: 'integracaoId', order: 'ASCENDING' },
+        { fieldPath: 'status', order: 'ASCENDING' },
+        { fieldPath: 'startedAt', order: 'DESCENDING' },
+      ]);
+    });
+
+    it('does not double-count a repeated equality field', () => {
+      expect(
+        derivarCamposDoIndice(`.where('a', '==', x).where('a', '==', y).orderBy('b', 'desc')`),
+      ).toEqual([
+        { fieldPath: 'a', order: 'ASCENDING' },
+        { fieldPath: 'b', order: 'DESCENDING' },
+      ]);
     });
   });
 });

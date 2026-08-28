@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   where: vi.fn(),
   orderBy: vi.fn(),
   limit: vi.fn(),
+  select: vi.fn(),
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
@@ -30,6 +31,10 @@ vi.mock('@delfrance/data/admin/collections', () => {
     },
     limit: (...args: unknown[]) => {
       h.limit(args);
+      return ref;
+    },
+    select: (...args: unknown[]) => {
+      h.select(args);
       return ref;
     },
     get: h.get,
@@ -127,6 +132,20 @@ describe('GET /api/marketplace/mercado-livre/atualizar-precos/historico', () => 
 
     expect(h.where.mock.calls.map(([a]) => a)).toEqual([['integracaoId', '==', 'int-1']]);
     expect(h.orderBy.mock.calls.map(([a]) => a)).toEqual([['startedAt', 'desc']]);
+  });
+
+  it('projects server-side, so `fila` never leaves Firestore', async () => {
+    // Dropping `fila` from the response body alone still pulls up to 50
+    // documents each carrying up to PLAN_PAGE_DRAFTS_CAP drafts across the wire.
+    await GET(req('?integracaoId=int-1'));
+
+    const campos = h.select.mock.calls[0]![0] as string[];
+    expect(campos).not.toContain('fila');
+    expect(campos).toContain('naoEnumerados');
+    // The four the schema has no default for — omitting any would throw on parse.
+    expect(campos).toEqual(
+      expect.arrayContaining(['integracaoId', 'status', 'startedAt', 'updatedAt']),
+    );
   });
 
   it('does not filter on status — a FINISHED run is the whole point', async () => {

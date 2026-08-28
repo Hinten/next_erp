@@ -41,6 +41,31 @@ const LIMITE_PADRAO = 20;
  */
 const LIMITE_MAXIMO = 50;
 
+/**
+ * The document fields this route reads — the response projection, applied at the
+ * QUERY so the unread ones never leave Firestore. Exported so its own test can
+ * assert the set round-trips through `envioPrecoMercadoLivreSchema`: a field
+ * dropped from here that has no schema default would fail every parse, and one
+ * added to the response but not here would silently read as its default.
+ */
+export const CAMPOS_PROJETADOS = [
+  'integracaoId',
+  'status',
+  'baixarPreco',
+  'planejados',
+  'enviados',
+  'pulados',
+  'naoEnumerados',
+  'falhas',
+  'pausas',
+  'skips',
+  'failures',
+  'startedAt',
+  'updatedAt',
+  'finishedAt',
+  'erro',
+] as const;
+
 export async function GET(req: Request): Promise<NextResponse> {
   const auth = await verifyCaller(req, PERM.integracao.read);
   if ('error' in auth) return auth.error;
@@ -64,6 +89,19 @@ export async function GET(req: Request): Promise<NextResponse> {
     .ref(db, {})
     .where('integracaoId', '==', integracaoId)
     .orderBy('startedAt', 'desc')
+    // ⚠️ Projected SERVER-side, not just dropped from the response body. Without
+    // this the whole document crosses the wire — up to 50 of them, each carrying
+    // a `fila` of up to `PLAN_PAGE_DRAFTS_CAP` (2000) drafts — to be discarded
+    // here. It does NOT reduce Enterprise's data-scanned bill (the documents are
+    // still read); what it cuts is payload and deserialisation, which for these
+    // documents is the dominant cost.
+    //
+    // ⚠️ Every field with no schema default must be listed or `parseRead` fails:
+    // `integracaoId`, `status`, `startedAt`, `updatedAt`. The unprojected ones
+    // (`fila`, `afterAnchorId`, `afterLinkPath`, `startedBy`, both `*Concluido`
+    // flags, `linksReconciliados`, `reconciliacaoPaginas`) all default, so the
+    // parse stays on its success path. `projecao.test.ts` pins that.
+    .select(...CAMPOS_PROJETADOS)
     .limit(limite)
     .get();
 

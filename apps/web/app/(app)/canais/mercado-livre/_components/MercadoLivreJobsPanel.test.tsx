@@ -98,9 +98,15 @@ describe('MercadoLivreJobsPanel', () => {
     // the lookup is running-only — so this is when the history is most needed
     // and it used to be the branch that returned null.
     expect(screen.getByRole('region', { name: 'Jobs em andamento' })).not.toBeNull();
-    expect(screen.getAllByRole('button', { name: 'Histórico de envios de preços' })).toHaveLength(
-      2,
-    );
+    // ⚠️ Named per conta, and asserted that way. Two links with the same
+    // accessible name would be indistinguishable to a screen reader AND in the
+    // rail; `getAllByRole` with a shared name would have passed either way.
+    expect(
+      screen.getByRole('button', { name: 'Histórico de envios de preços — Conta A' }),
+    ).not.toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Histórico de envios de preços — Conta B' }),
+    ).not.toBeNull();
   });
 
   it('renders nothing at all with no selection, no card and no error', async () => {
@@ -119,7 +125,9 @@ describe('MercadoLivreJobsPanel', () => {
     // nothing — otherwise selecting a row would fire a query per conta.
     renderPanel({ selecionadas: [CONTA_A] });
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Histórico de envios de preços' })).not.toBeNull();
+      expect(
+        screen.getByRole('button', { name: 'Histórico de envios de preços — Conta A' }),
+      ).not.toBeNull();
     });
     expect(h.clientRef.current!.priceSyncHistorico).not.toHaveBeenCalled();
   });

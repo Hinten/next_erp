@@ -258,8 +258,12 @@ function HistoricoLink({ conta }: { conta: ContaRef }) {
   const [aberto, setAberto] = useState(false);
   return (
     <>
+      {/* ⚠️ The conta is part of the LABEL, not just the modal title. One link is
+          rendered per selected conta, so without it N links stack in a ~300px
+          column with byte-identical text — and identical accessible names — and
+          the only way to tell them apart is to open one. */}
       <Anchor component="button" type="button" size="xs" onClick={() => setAberto(true)}>
-        Histórico de envios de preços
+        Histórico de envios de preços — {conta.nome}
       </Anchor>
       <PriceSyncHistoricoModal conta={conta} opened={aberto} onClose={() => setAberto(false)} />
     </>
