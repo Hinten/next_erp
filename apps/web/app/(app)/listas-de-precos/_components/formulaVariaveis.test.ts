@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { calcularPreco, type FormulaCalculoPreco } from '@delfrance/schemas';
 import { listaDePrecosFormSchema } from './listaDePrecosFormSchema';
 import {
   COEFFICIENTS,
   FORMULA_PADRAO,
   FORMULA_REGRAS,
   FORMULA_VARIAVEIS,
+  LIMIAR_AJUDA,
   normalizeFormulaInput,
 } from './formulaVariaveis';
 
@@ -128,5 +130,47 @@ describe('the variable legend', () => {
   it('does not advertise an operator the input strips', () => {
     expect(normalizeFormulaInput('2^3')).toBe('23');
     expect(FORMULA_REGRAS.join(' ')).not.toContain('^');
+  });
+});
+
+/**
+ * LIMIAR_AJUDA tells the operator how the engine picks a formula. Prose cannot
+ * be asserted, but the two claims it makes can be — against `calcularPreco`
+ * itself, so the sentence cannot quietly drift away from the behaviour.
+ */
+describe('LIMIAR_AJUDA matches what calcularPreco does', () => {
+  function formula(limiar: number, expr: string): FormulaCalculoPreco {
+    return {
+      limiar,
+      formula: expr,
+      taxaFixa: 0,
+      custoFixo: 0,
+      margemDeLucro: 0,
+      comissaoMarketplace: 0,
+      imposto: 0,
+      frete: 0,
+      marketing: 0,
+      faixasTaxaFixaPeso: null,
+    };
+  }
+  const lista = (formulasCalculoPreco: FormulaCalculoPreco[]) => ({
+    formulasCalculoPreco,
+    formulasPorCategoria: null,
+  });
+
+  // Rows are given in DESCENDING limiar order, so "the next row in the list"
+  // and "the next lowest limiar" name different winners. Both rows qualify on
+  // their own (100 <= 1000 and 20 <= 50); only the ordering decides.
+  it('evaluates in ascending limiar order, not in row order', () => {
+    const preco = calcularPreco(lista([formula(1000, 'C*10'), formula(50, 'C*2')]), 10);
+    expect(preco?.valor).toBe(20);
+    expect(LIMIAR_AJUDA).toContain('do menor para o maior limiar');
+  });
+
+  // The claim that matters most: exceeding every limiar is not a fallback to
+  // another row, it is no price at all.
+  it('yields no price when nothing fits, rather than falling back', () => {
+    expect(calcularPreco(lista([formula(5, 'C*10')]), 10)).toBeNull();
+    expect(LIMIAR_AJUDA).toContain('sem preço');
   });
 });

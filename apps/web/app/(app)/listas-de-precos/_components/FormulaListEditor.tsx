@@ -198,7 +198,16 @@ export function FormulaListEditor({
                     value={(row[c.key] as number | undefined) ?? 0}
                     onChange={(n) => patchRow(i, { [c.key]: n ?? 0 })}
                     disabled={disabled || marked}
-                    decimalScale={3}
+                    // 4, not 2, and not 3: L/M/I/F/K are RATES, and plenty of
+                    // real ones need the fourth digit (Simples Nacional 4,65%
+                    // -> 0,0465). `/produtos/alterar-precos` already settled
+                    // this for the same five coefficients of the same
+                    // expression (`RegraForm.tsx:156-209`), so anything less
+                    // leaves two screens disagreeing about how precise a rate
+                    // may be. Harmless for the two money coefficients: with
+                    // `fixedDecimalScale` off this is a ceiling, not padding,
+                    // so R$ 1,23 still renders as "1,23".
+                    decimalScale={4}
                     allowNegative
                   />
                 ))}

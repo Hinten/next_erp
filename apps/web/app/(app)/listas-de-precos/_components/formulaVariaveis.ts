@@ -153,6 +153,7 @@ export const FORMULA_REGRAS: readonly string[] = [
   'Decimais com vírgula (1,03). Um ponto digitado vira vírgula automaticamente.',
   'Não use ponto para separar milhares, nem espaços: são removidos ao digitar.',
   'Maiúsculas e minúsculas importam — C é o custo do produto, c é o custo fixo.',
+  'Números fixos multiplicam o resultado: o *(1,03) da fórmula sugerida acrescenta 3% ao preço. Altere ou remova se não quiser esse acréscimo.',
 ];
 
 /**
@@ -161,6 +162,12 @@ export const FORMULA_REGRAS: readonly string[] = [
  * Lives here rather than as a `description` on the input itself because that
  * input shares a `flex-end` row with the formula field and the Testar button,
  * which a description would push out of alignment.
+ *
+ * The selection rules stated here are `calcularPreco`'s, not the editor's, and
+ * pinned against it by `formulaVariaveis.test.ts`. Both halves are easy to get
+ * wrong from reading the screen alone: candidates run in ascending `limiar`
+ * order rather than in the order the rows were added, and when none qualifies
+ * the result is `null` -- no price at all, not a fallback to another row.
  */
 export const LIMIAR_AJUDA =
-  'Limiar: preço máximo que a fórmula pode gerar. Se o resultado passar dele, a próxima fórmula da lista é usada.';
+  'Limiar: preço máximo que a fórmula pode gerar. As fórmulas são avaliadas do menor para o maior limiar, e vale a primeira cujo resultado não ultrapasse o próprio limiar. Se nenhuma couber, o produto fica sem preço.';

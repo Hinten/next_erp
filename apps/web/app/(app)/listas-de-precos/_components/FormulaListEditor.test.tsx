@@ -53,17 +53,27 @@ describe('FormulaListEditor — a new row is pre-filled', () => {
   });
 });
 
-describe('FormulaListEditor — coefficient precision (3 decimals)', () => {
-  // The regression test for the reported bug. Every coefficient in
-  // `(1-(M+I+F+K))` is a RATE, so a 16,5% marketplace commission is 0,165 —
-  // untypeable while decimalScale was 2, which truncated the third digit as
-  // you typed. This assertion fails at decimalScale={2} (yielding '0,16').
+describe('FormulaListEditor — coefficient precision (4 decimals)', () => {
+  // The regression test for the reported bug: a 16,5% marketplace commission
+  // is 0,165, untypeable while decimalScale was 2. Fails at {2} with '0,16'.
   it('keeps the third decimal on a rate coefficient', () => {
     renderEditor();
     addFormula();
     const comissao = input('Comissão marketplace (M) 1');
     fireEvent.change(comissao, { target: { value: '0,165' } });
     expect(comissao.value).toBe('0,165');
+  });
+
+  // Real rates need a fourth digit too — Simples Nacional at 4,65% is 0,0465.
+  // `/produtos/alterar-precos` renders these same coefficients at
+  // decimalScale={4} (`RegraForm.tsx:156-209`); this keeps the two screens
+  // from disagreeing about how precise a rate may be. Fails at {3} ('0,046').
+  it('keeps the fourth decimal, matching the alterar-precos screen', () => {
+    renderEditor();
+    addFormula();
+    const imposto = input('Imposto (I) 1');
+    fireEvent.change(imposto, { target: { value: '0,0465' } });
+    expect(imposto.value).toBe('0,0465');
   });
 
   it('labels each coefficient with the letter it stands for in the formula', () => {
