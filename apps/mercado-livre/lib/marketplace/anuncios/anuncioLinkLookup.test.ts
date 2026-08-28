@@ -159,7 +159,8 @@ describe('resolverLinkDoAnuncio — the misses, which the message has to tell ap
     expect(await resolverLinkDoAnuncio(p, ITEM, CONTA)).toEqual({
       achado: false,
       candidatos: 0,
-      deOutraConta: 0,
+      naoCasaramConta: 0,
+      semProduto: 0,
     });
   });
 
@@ -175,7 +176,8 @@ describe('resolverLinkDoAnuncio — the misses, which the message has to tell ap
     expect(await resolverLinkDoAnuncio(p, ITEM, CONTA)).toEqual({
       achado: false,
       candidatos: 2,
-      deOutraConta: 2,
+      naoCasaramConta: 2,
+      semProduto: 0,
     });
   });
 
@@ -184,10 +186,31 @@ describe('resolverLinkDoAnuncio — the misses, which the message has to tell ap
     // would hand the caller a produto id of `null` to read.
     const p = porta([candidato({ produtoId: null })]);
 
-    expect(await resolverLinkDoAnuncio(p, ITEM, CONTA)).toMatchObject({
+    expect(await resolverLinkDoAnuncio(p, ITEM, CONTA)).toEqual({
       achado: false,
       candidatos: 1,
-      deOutraConta: 0,
+      naoCasaramConta: 0,
+      // ⛔ Counted in its OWN bucket. Left uncounted, the report printed
+      // "links com esse id=1" one line above "nada no ERP carrega esse id".
+      semProduto: 1,
+    });
+  });
+
+  it('⛔ counts a MALFORMED contaOuterRef as a conta-check failure, not a hit', async () => {
+    // `refMatchesIntegracao` rejects a non-string ref and any shape other than
+    // `integracao/<id>`, so a link on THIS conta with a legacy-shaped ref lands
+    // in the same bucket as a genuinely foreign one. The message must not read
+    // that bucket as "wrong conta" — see the field docblock.
+    const p = porta([
+      candidato({ link: { id: ITEM, contaOuterRef: 42 } }),
+      candidato({ link: { id: ITEM, contaOuterRef: `integracoes/${CONTA}` } }),
+    ]);
+
+    expect(await resolverLinkDoAnuncio(p, ITEM, CONTA)).toEqual({
+      achado: false,
+      candidatos: 2,
+      naoCasaramConta: 2,
+      semProduto: 0,
     });
   });
 

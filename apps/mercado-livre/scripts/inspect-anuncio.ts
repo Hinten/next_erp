@@ -280,16 +280,37 @@ async function main(): Promise<void> {
     log('   Procurei em: produtoMercadoLivre.id  (anúncio simples, ou família User Products)');
     log('                variacaoMercadoLivre.itemId  (membro de uma família User Products)');
     log(
-      `   integração=${integracaoId}  candidatos com esse id=${hit.candidatos}` +
-        `  em outra conta=${hit.deOutraConta}`,
+      `   integração=${integracaoId}  links com esse id=${hit.candidatos}` +
+        `  (não casaram o contaOuterRef=${hit.naoCasaramConta}, sem produto dono=${hit.semProduto})`,
     );
-    log(
-      hit.deOutraConta > 0
-        ? '   ⓘ O id EXISTE no ERP, mas sob outra integração — o anúncio não é desconhecido,\n' +
-            '     a conta é que está errada. Confira o --integracaoId antes de abrir qualquer bug.'
-        : '   ⓘ Nada no ERP carrega esse id em nenhum dos dois campos. AGORA sim vale investigar:\n' +
-            '     ou o link nunca foi escrito, ou foi escrito com outro id.',
-    );
+    // ⚠️ The arms are keyed on `candidatos`, not on a reason count, so the two
+    // lines can never contradict each other — an orphaned ref used to print
+    // "links com esse id=1" directly above "nada no ERP carrega esse id".
+    if (hit.candidatos === 0) {
+      log('   ⓘ Nada no ERP carrega esse id em nenhum dos dois campos. AGORA sim vale investigar:');
+      log('     ou o link nunca foi escrito, ou foi escrito com outro id.');
+    } else {
+      log(`   ⓘ O id EXISTE no ERP (${hit.candidatos} link[s]), mas nenhum é utilizável aqui.`);
+      if (hit.naoCasaramConta > 0) {
+        // ⚠️ NOT "está em outra conta". `refMatchesIntegracao` also rejects a
+        // non-string ref and any shape other than `integracao/<id>`, so a link on
+        // THIS conta with a legacy or malformed `contaOuterRef` fails the same
+        // check — and telling the operator to fix `--integracaoId` would send
+        // them to verify something already correct while the real defect stays
+        // invisible. Name the field and let both readings stand.
+        log(
+          `     ${hit.naoCasaramConta} não casaram o contaOuterRef desta integração:` +
+            ' outra conta, OU um ref fora do formato (legado/malformado).',
+        );
+        log('     Confira o --integracaoId; se ele estiver certo, o ref do link é que está torto.');
+      }
+      if (hit.semProduto > 0) {
+        log(
+          `     ${hit.semProduto} sem produto dono — ref órfã na collection group,` +
+            ' o link ficou sem o produto que o continha.',
+        );
+      }
+    }
     process.exitCode = 1;
     return;
   }

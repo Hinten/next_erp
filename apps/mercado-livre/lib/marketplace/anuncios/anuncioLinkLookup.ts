@@ -86,10 +86,22 @@ export type AnuncioLinkLookup =
     }
   | {
       achado: false;
-      /** `produtoMercadoLivre` docs carrying this id, before the conta filter. */
+      /** `produtoMercadoLivre` docs carrying this id, before any filter. */
       candidatos: number;
-      /** How many of those belonged to a DIFFERENT integração. */
-      deOutraConta: number;
+      /**
+       * How many of those FAILED THE CONTA CHECK — which is not the same as
+       * "belong to another conta". `refMatchesIntegracao` also answers false for
+       * a non-string ref and for any shape other than `integracao/<id>` /
+       * `…/integracao/<id>`, so a link on THIS conta whose `contaOuterRef` is
+       * malformed or legacy-shaped lands here too. The corpus this reads is the
+       * migrated one, so that is a live possibility rather than a hypothetical —
+       * `resolveLink` says the same ("a mis-scoped or legacy-shaped ref").
+       * A caller that reports this as "wrong conta" sends the operator to check
+       * an `--integracaoId` that is already right.
+       */
+      naoCasaramConta: number;
+      /** How many passed the conta check but had no owning produto (orphan ref). */
+      semProduto: number;
     };
 
 /**
@@ -111,9 +123,10 @@ export type AnuncioLinkLookup =
  * listing has no member link and answers no; a legacy `variations[]` member has
  * `itemId: null` and cannot match either.
  *
- * The miss carries two counts rather than a bare null, because "never linked
- * here" and "linked, but under another conta" are different problems with the
- * same symptom — and the caller has to say which one it found.
+ * The miss carries the candidate count and the two reasons a candidate was
+ * skipped rather than a bare null, because "never linked here" and "linked, but
+ * unusable from this integração" are different problems with the same symptom —
+ * and the caller has to say which one it found, without overstating which.
  */
 export async function resolverLinkDoAnuncio(
   port: AnuncioLinkPort,
@@ -121,15 +134,22 @@ export async function resolverLinkDoAnuncio(
   integracaoId: string,
 ): Promise<AnuncioLinkLookup> {
   const candidatos = await port.linksPorId(itemId);
-  let deOutraConta = 0;
+  let naoCasaramConta = 0;
+  let semProduto = 0;
 
   for (const c of candidatos) {
     if (!refMatchesIntegracao(c.link.contaOuterRef, integracaoId)) {
-      deOutraConta += 1;
+      naoCasaramConta += 1;
       continue;
     }
     const { produtoId, linkDocId, link } = c;
-    if (produtoId == null) continue;
+    // Counted, not silently dropped: a candidate that exists and is skipped has
+    // to be explainable, or the miss message ends up asserting "nothing carries
+    // this id" one line under a non-zero candidate count.
+    if (produtoId == null) {
+      semProduto += 1;
+      continue;
+    }
     if (link.isUserProductModel !== true) {
       return { achado: true, produtoId, linkDocId, link, membro: null };
     }
@@ -162,7 +182,7 @@ export async function resolverLinkDoAnuncio(
     };
   }
 
-  return { achado: false, candidatos: candidatos.length, deOutraConta };
+  return { achado: false, candidatos: candidatos.length, naoCasaramConta, semProduto };
 }
 
 function paraMembro(m: UpMemberResolution, via: MembroDoLink['via']): MembroDoLink {
