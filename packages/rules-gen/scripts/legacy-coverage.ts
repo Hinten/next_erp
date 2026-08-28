@@ -2,7 +2,7 @@
  * Render the legacy-vs-generated ruleset coverage report (issue #783).
  *
  *   pnpm --filter @delfrance/rules-gen report:legacy-coverage
- *   pnpm --filter @delfrance/rules-gen report:legacy-coverage -- --check
+ *   pnpm --filter @delfrance/rules-gen report:legacy-coverage --check
  *
  * ⚠️ Requires the legacy Flutter checkout at `.old/`, which is **gitignored** —
  * it exists only in a full local clone, never in CI and never in a worktree. Run

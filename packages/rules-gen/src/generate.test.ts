@@ -15,7 +15,7 @@ describe('generateRulesSource', () => {
 
   it('matches the committed full-output snapshot (the review artifact)', async () => {
     // A schema/PERM PR shows its exact rules impact as this snapshot's diff.
-    // Refresh with: pnpm --filter @delfrance/rules-gen test -- -u
+    // Refresh with: pnpm --filter @delfrance/rules-gen test -u
     await expect(generateRulesSource()).toMatchFileSnapshot('__snapshots__/firestore.rules.snap');
   });
 
@@ -67,7 +67,7 @@ describe('generateRulesSource({ e2e: true })', () => {
   });
 
   it('matches the committed e2e full-output snapshot', async () => {
-    // Refresh with: pnpm --filter @delfrance/rules-gen test -- -u
+    // Refresh with: pnpm --filter @delfrance/rules-gen test -u
     await expect(generateRulesSource({ e2e: true })).toMatchFileSnapshot(
       '__snapshots__/firestore.e2e.rules.snap',
     );

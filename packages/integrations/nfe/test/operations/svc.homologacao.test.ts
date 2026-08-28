@@ -99,7 +99,7 @@ const describeOrSkip = !hasFullCreds && !process.env.CI ? describe.skip : descri
 
 const TEST_CERT = hasFullCreds ? loadCertificateFromEnv() : null;
 
-/** Read a vendored SVC TLS chain (created by `pnpm fetch:sefaz-ca -- --uf=SVC-AN|SVC-RS`). */
+/** Read a vendored SVC TLS chain (created by `pnpm fetch:sefaz-ca --uf=SVC-AN|SVC-RS`). */
 function readVendoredCA(chainPath: string): string | undefined {
   return existsSync(chainPath) ? readFileSync(chainPath, 'utf8') : undefined;
 }

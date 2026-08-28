@@ -27,7 +27,7 @@ This report finds them and attributes each one to a writer.
 ## Run it
 
 ```bash
-pnpm --filter @delfrance/migrations audit:estoque-reservada-negativa -- --project <project-id>
+pnpm --filter @delfrance/migrations audit:estoque-reservada-negativa --project <project-id>
 ```
 
 Output: `tools/migrations/out/<timestamp>-estoque-reservada-negativa-dryrun.jsonl`,
@@ -90,7 +90,7 @@ nothing beyond the native key ordering on a plain collection. The flag exists so
 the fallback is a runtime choice rather than a code edit mid-run.
 
 ```bash
-pnpm --filter @delfrance/migrations audit:estoque-reservada-negativa -- --project <id> --target produtos
+pnpm --filter @delfrance/migrations audit:estoque-reservada-negativa --project <id> --target produtos
 ```
 
 ## Correcting the rows is NOT part of this

@@ -22,7 +22,7 @@ import { auditPedidoPago, type PagamentoResumo, type PagoAuditRow } from './pred
  * Run it BEFORE the fix ships, to get a baseline, and again after, to prove
  * `never-covered` did not grow.
  *
- *   pnpm --filter @delfrance/migrations audit:ml-pedido-pago -- --project <id>
+ *   pnpm --filter @delfrance/migrations audit:ml-pedido-pago --project <id>
  *
  * ## No `--apply`, by construction
  *

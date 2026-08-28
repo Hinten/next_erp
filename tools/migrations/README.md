@@ -45,8 +45,8 @@ project-bound Firestore handle. Copy the shape of
 the runbook as `<name>.README.md` here.
 
 ```bash
-pnpm --filter @delfrance/migrations migrate:<name> -- --project <staging-id>
-pnpm --filter @delfrance/migrations migrate:<name> -- --project <staging-id> --apply
+pnpm --filter @delfrance/migrations migrate:<name> --project <staging-id>
+pnpm --filter @delfrance/migrations migrate:<name> --project <staging-id> --apply
 ```
 
 ⚠️ **Agents never run these against production.** Staging is a rehearsal —

@@ -5,13 +5,13 @@ Normalizes every stored `depositoOuterRef` to the canonical
 
 ```bash
 # pre-flight — counts the stored forms per collection, logs no per-doc lines, writes nothing
-pnpm --filter @delfrance/migrations migrate:deposito-outer-ref -- --project <project-id> --report-only
+pnpm --filter @delfrance/migrations migrate:deposito-outer-ref --project <project-id> --report-only
 
 # dry-run (default) — logs every doc it WOULD touch, writes nothing
-pnpm --filter @delfrance/migrations migrate:deposito-outer-ref -- --project <project-id>
+pnpm --filter @delfrance/migrations migrate:deposito-outer-ref --project <project-id>
 
 # write
-pnpm --filter @delfrance/migrations migrate:deposito-outer-ref -- --project <project-id> --apply
+pnpm --filter @delfrance/migrations migrate:deposito-outer-ref --project <project-id> --apply
 ```
 
 `--report-only` is the pass to run **first**. A dry-run enumerates documents; the

@@ -13,7 +13,7 @@ import type { CmunDumpRow } from './validate';
  * read a CSV that was never committed. Lose this collection and the dataset is
  * gone.
  *
- *   pnpm --filter @delfrance/cmun-table dump -- --project <prod-project-id>
+ *   pnpm --filter @delfrance/cmun-table dump --project <prod-project-id>
  *
  * Credentials follow the migrations contract (`tools/migrations/src/admin.ts`):
  * service account only, `--project` is REQUIRED and never inferred, and the
