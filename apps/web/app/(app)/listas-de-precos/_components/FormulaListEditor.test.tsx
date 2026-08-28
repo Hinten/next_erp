@@ -93,6 +93,62 @@ describe('FormulaListEditor — coefficient precision (4 decimals)', () => {
   });
 });
 
+describe('FormulaListEditor — weight-band bounds cap at 2 decimals', () => {
+  // The engine rounds the product weight UP to 2 decimals before matching a
+  // band (`taxaFixaPorPeso`), so a third digit here is inert and can make a
+  // band unreachable. `faixaTaxaFixaPeso.test.ts` pins that reasoning against
+  // the engine; this pins the input that follows from it. Fails at
+  // decimalScale={3}, which keeps '0,499'.
+  it('truncates a third decimal typed into Peso máx.', () => {
+    renderEditor();
+    addFormula();
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar faixa de peso' }));
+    const pesoMax = input('Peso máximo 1 da fórmula 1');
+    fireEvent.change(pesoMax, { target: { value: '0,499' } });
+    expect(pesoMax.value).toBe('0,49');
+  });
+});
+
+describe('FormulaListEditor — a stored 3-decimal bound shows its effective value', () => {
+  /** Renders one formula row carrying a saved faixa, as a legacy doc would. */
+  function renderComFaixa(faixa: Record<string, number>) {
+    function HostComFaixa() {
+      const [rows, setRows] = useState<unknown[]>([
+        { limiar: 100, formula: 'C+T', faixasTaxaFixaPeso: [faixa] },
+      ]);
+      return (
+        <MantineTestProvider>
+          <FormulaListEditor label="Fórmulas de cálculo" value={rows} onChange={setRows} />
+        </MantineTestProvider>
+      );
+    }
+    render(<HostComFaixa />);
+  }
+
+  // Rendering 0.499 raw through decimalScale={2} ROUNDS it to "0,50" — a band
+  // end a 0,50 kg product does not fall into. The snap shows 0,49, which is
+  // what the engine actually compares against.
+  it('floors the max bound instead of rounding it up', () => {
+    renderComFaixa({ pesoMinKg: 0, pesoMaxKg: 0.499, taxaFixa: 5 });
+    expect(input('Peso máximo 1 da fórmula 1').value).toBe('0,49');
+  });
+
+  // The min bound ceils, because the weight is rounded up: 0,251 admits
+  // exactly what 0,26 admits, and showing 0,25 would overstate the band.
+  it('ceils the min bound instead of truncating it', () => {
+    renderComFaixa({ pesoMinKg: 0.251, pesoMaxKg: 2, taxaFixa: 5 });
+    expect(input('Peso mínimo 1 da fórmula 1').value).toBe('0,26');
+  });
+
+  // Guards the float hazard in the snap: 1.15 * 100 is 114.99999999999999, so
+  // a bare Math.floor would display 1,14 and shrink the band by a cent.
+  it('does not shift a bound that is already on the grid', () => {
+    renderComFaixa({ pesoMinKg: 0.29, pesoMaxKg: 1.15, taxaFixa: 5 });
+    expect(input('Peso mínimo 1 da fórmula 1').value).toBe('0,29');
+    expect(input('Peso máximo 1 da fórmula 1').value).toBe('1,15');
+  });
+});
+
 describe('FormulaListEditor — the variable legend', () => {
   it('renders once for a top-level editor', () => {
     renderEditor();
