@@ -1,4 +1,4 @@
-import { envioPrecoMercadoLivreSchema } from '@delfrance/schemas';
+import { envioPrecoMercadoLivreSchema, relatorioEnvioPrecoSchema } from '@delfrance/schemas';
 import { defineAdminCollection } from '../defineAdminCollection';
 
 /**
@@ -14,4 +14,21 @@ import { defineAdminCollection } from '../defineAdminCollection';
 export const envioPrecoMercadoLivreCollection = defineAdminCollection({
   path: 'enviosPrecoMercadoLivre',
   schema: envioPrecoMercadoLivreSchema,
+});
+
+/**
+ * Admin handle for the sharded per-item REPORT under one price-sync job —
+ * `enviosPrecoMercadoLivre/{envioId}/relatorios/{0000|0001|…}`. Written by the
+ * job's checkpoint (in the SAME `db.batch()` as the job doc, so a row and the
+ * `fila` consumption that produced it commit together) and read by the download
+ * route, which pages it by `__name__` — the shard ids are zero-padded, so
+ * lexical order is shard order and no index is involved.
+ *
+ * Same admin-only / default-deny posture as the parent, and for the same reason:
+ * the schema is not in `ALL_DOMAINS` and exports no `…Meta`, so rules-gen emits
+ * nothing and Firestore default-denies every client read.
+ */
+export const relatorioEnvioPrecoMercadoLivreCollection = defineAdminCollection({
+  path: 'enviosPrecoMercadoLivre/{envioId}/relatorios',
+  schema: relatorioEnvioPrecoSchema,
 });
