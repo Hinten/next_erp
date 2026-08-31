@@ -1,4 +1,4 @@
-import { type Page, errors, expect } from '@playwright/test';
+import { type Locator, type Page, errors, expect } from '@playwright/test';
 
 /**
  * Helpers for driving the generic `ObjectView` (`@delfrance/ui`): field
@@ -7,13 +7,33 @@ import { type Page, errors, expect } from '@playwright/test';
  */
 
 /**
+ * The input a user can actually SEE for this label.
+ *
+ * ⚠️ Not cosmetic. `ObjectView` keeps every tab panel MOUNTED — `SectionTabs`
+ * hides the inactive ones with `display: none` so their state survives a switch
+ * — and several produto tabs render their own `Nome`/`SKU` inputs, one per
+ * variation row. So a bare `getByLabel('Nome')` resolves to two or more
+ * elements as soon as the produto has variations, and Playwright fails the
+ * whole step on strict mode. It surfaced as a FLAKE rather than a hard failure
+ * because those rows only exist once the children snapshot has resolved, so
+ * whether the step passes depends on a race with a Firestore read.
+ *
+ * Filtering to visible costs nothing: `fill`, `click` and the assertions below
+ * all wait for visibility anyway, so this only stops elements the operator
+ * cannot see from being COUNTED against strict mode.
+ */
+function visibleField(page: Page, label: string): Locator {
+  return page.getByLabel(label, { exact: true }).filter({ visible: true });
+}
+
+/**
  * Fill a `<TextInput>` rendered by `ObjectView` for the given accessible
  * label. The renderer wires `label` to the input's `<label for>` so
  * `getByLabel` matches without guessing CSS classes. Use `selectField` for
  * enum (`Select`) fields.
  */
 export async function fillField(page: Page, label: string, value: string): Promise<void> {
-  const input = page.getByLabel(label, { exact: true });
+  const input = visibleField(page, label);
   await input.fill(value);
   // Blur to trigger RHF's onBlur validation step.
   await input.blur();
@@ -124,7 +144,7 @@ export async function clickSaveAndContinue(page: Page): Promise<void> {
  * Clear a nullable string field via the ✕ rightSection button.
  */
 export async function clearNullableField(page: Page, label: string): Promise<void> {
-  const input = page.getByLabel(label, { exact: true });
+  const input = visibleField(page, label);
   const wrapper = input.locator(
     'xpath=ancestor::div[contains(@class, "mantine-TextInput-root")][1]',
   );
@@ -149,7 +169,7 @@ export async function confirmDelete(page: Page): Promise<void> {
  * `aria-invalid="true"` onto an input whose `error` prop is set.
  */
 export async function expectFieldError(page: Page, label: string): Promise<void> {
-  await expect(page.getByLabel(label, { exact: true })).toHaveAttribute('aria-invalid', 'true', {
+  await expect(visibleField(page, label)).toHaveAttribute('aria-invalid', 'true', {
     timeout: 5_000,
   });
 }
@@ -270,6 +290,10 @@ export async function waitForServerSnapshot(page: Page): Promise<{ reloaded: boo
  * nothing.
  */
 async function expectSurvivedReload(page: Page, label: string): Promise<void> {
+  // Deliberately NOT `visibleField`: this asks whether the field is on the page
+  // at all, and a `count()` cannot trip strict mode. Filtering to visible here
+  // would turn "present but in a tab the reload closed" into the throw below,
+  // which is the very state the message is trying to describe.
   if (await page.getByLabel(label, { exact: true }).count()) return;
   throw new Error(
     `"${label}" is not on the page after the server-snapshot reload.\n` +
@@ -299,7 +323,7 @@ export async function expectFieldAfterReload(
 ): Promise<void> {
   const { reloaded } = await waitForServerSnapshot(page);
   if (reloaded) await expectSurvivedReload(page, label);
-  await expect(page.getByLabel(label, { exact: true })).toHaveValue(value);
+  await expect(visibleField(page, label)).toHaveValue(value);
 }
 
 /** `expectFieldAfterReload` for a Mantine `Switch` / checkbox. */
@@ -310,5 +334,5 @@ export async function expectSwitchAfterReload(
 ): Promise<void> {
   const { reloaded } = await waitForServerSnapshot(page);
   if (reloaded) await expectSurvivedReload(page, label);
-  await expect(page.getByLabel(label, { exact: true })).toBeChecked({ checked });
+  await expect(visibleField(page, label)).toBeChecked({ checked });
 }
