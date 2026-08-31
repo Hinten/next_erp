@@ -461,6 +461,26 @@ export interface BuildPrecoDraftsResult {
  * `MAX_DRAFTS_PER_FAMILY` drafts builds NOTHING: `console.error` + ONE
  * `FAMILIA_MUITO_GRANDE` skip (see the constant's doc).
  */
+/**
+ * One plan-time skip. `precoAnterior` is structurally null here — the plan never
+ * calls ML, so no listing price has been read — and `linkDocId` names WHICH link
+ * produced it.
+ *
+ * ⚠️ That last part is not bookkeeping. These skips are pushed from inside
+ * `for (const link of row.links)`, so a child that skips `SEM_LINK` under parent
+ * link A and again under parent link B produces two rows whose `(produtoId,
+ * code)` pair is identical. Without the link they collapse — in the report's
+ * keyed map, silently into one.
+ */
+function skipPlano(entrada: {
+  itemId: string | null;
+  produtoId: string;
+  code: string;
+  linkDocId: string | null;
+}): EnvioPrecoSkip {
+  return { ...entrada, precoAnterior: null };
+}
+
 export function buildPrecoDrafts(
   row: PrecoFamilyRow,
   opts: BuildPrecoDraftsOpts,
@@ -469,7 +489,12 @@ export function buildPrecoDrafts(
   const propagate = row.propagatePriceToChildren !== false;
 
   if (row.links.length === 0) {
-    return { drafts: [], skips: [{ itemId: null, produtoId: row.produtoId, code: 'SEM_LINK' }] };
+    return {
+      drafts: [],
+      skips: [
+        skipPlano({ itemId: null, produtoId: row.produtoId, code: 'SEM_LINK', linkDocId: null }),
+      ],
+    };
   }
 
   const drafts: EnvioPrecoFilaItem[] = [];
@@ -479,11 +504,25 @@ export function buildPrecoDrafts(
   for (const link of row.links) {
     const itemId = link.id;
     if (itemId == null) {
-      skips.push({ itemId: null, produtoId: row.produtoId, code: 'SEM_ITEM_ID' });
+      skips.push(
+        skipPlano({
+          itemId: null,
+          produtoId: row.produtoId,
+          code: 'SEM_ITEM_ID',
+          linkDocId: link.linkDocId,
+        }),
+      );
       continue;
     }
     if (link.estado === 'am') {
-      skips.push({ itemId, produtoId: row.produtoId, code: 'AGUARDANDO_MIGRACAO' });
+      skips.push(
+        skipPlano({
+          itemId,
+          produtoId: row.produtoId,
+          code: 'AGUARDANDO_MIGRACAO',
+          linkDocId: link.linkDocId,
+        }),
+      );
       continue;
     }
 
@@ -492,7 +531,14 @@ export function buildPrecoDrafts(
       // accepts there); a childless UP listing degenerates to the same draft.
       if (emittedItemIds.has(itemId)) continue; // cross-listing dedup — silent
       if (anchorPreco == null) {
-        skips.push({ itemId, produtoId: row.produtoId, code: 'PRECO_NAO_ENCONTRADO' });
+        skips.push(
+          skipPlano({
+            itemId,
+            produtoId: row.produtoId,
+            code: 'PRECO_NAO_ENCONTRADO',
+            linkDocId: link.linkDocId,
+          }),
+        );
         continue;
       }
       emittedItemIds.add(itemId);
@@ -518,22 +564,39 @@ export function buildPrecoDrafts(
         (v) => v.produtoMercadoLivreOuterRef === parentLinkOuterRef,
       );
       if (matched.length === 0) {
-        skips.push({ itemId: null, produtoId: child.produtoId, code: 'SEM_LINK' });
+        skips.push(
+          skipPlano({
+            itemId: null,
+            produtoId: child.produtoId,
+            code: 'SEM_LINK',
+            linkDocId: link.linkDocId,
+          }),
+        );
         continue;
       }
       const preco = propagate ? anchorPreco : precoPositivo(child.precos, opts.tabelaNormalId);
       for (const varLink of matched) {
         if (varLink.itemId == null) {
-          skips.push({ itemId: null, produtoId: child.produtoId, code: 'SEM_ITEM_ID' });
+          skips.push(
+            skipPlano({
+              itemId: null,
+              produtoId: child.produtoId,
+              code: 'SEM_ITEM_ID',
+              linkDocId: link.linkDocId,
+            }),
+          );
           continue;
         }
         if (emittedItemIds.has(varLink.itemId)) continue; // cross-listing dedup — silent
         if (preco == null) {
-          skips.push({
-            itemId: varLink.itemId,
-            produtoId: child.produtoId,
-            code: 'PRECO_NAO_ENCONTRADO',
-          });
+          skips.push(
+            skipPlano({
+              itemId: varLink.itemId,
+              produtoId: child.produtoId,
+              code: 'PRECO_NAO_ENCONTRADO',
+              linkDocId: link.linkDocId,
+            }),
+          );
           continue;
         }
         emittedItemIds.add(varLink.itemId);
@@ -558,7 +621,14 @@ export function buildPrecoDrafts(
     });
     return {
       drafts: [],
-      skips: [{ itemId: null, produtoId: row.produtoId, code: 'FAMILIA_MUITO_GRANDE' }],
+      skips: [
+        skipPlano({
+          itemId: null,
+          produtoId: row.produtoId,
+          code: 'FAMILIA_MUITO_GRANDE',
+          linkDocId: null,
+        }),
+      ],
     };
   }
 

@@ -356,6 +356,61 @@ export const priceSyncHistoricoSchema = z.object({
 });
 export type MercadoLivrePriceSyncHistorico = z.infer<typeof priceSyncHistoricoSchema>;
 
+/**
+ * One row of a run's COMPLETE per-item report (`GET atualizar-precos/relatorio`).
+ *
+ * `produtoNome`/`sku` are JOINED by the route rather than stored on the row, and
+ * `mensagem` is RENDERED there from the `motivo` code — so all three are nullable
+ * on the wire even though the stored row always has a `produtoId`.
+ */
+export const relatorioEnvioPrecoLinhaSchema = z.object({
+  produtoId: z.string(),
+  produtoNome: z.string().nullable().default(null),
+  sku: z.string().nullable().default(null),
+  variacaoProdutoId: z.string().nullable(),
+  anuncioId: z.string().nullable(),
+  linkDocId: z.string().nullable(),
+  resultado: z.enum(['enviado', 'pulado', 'falha', 'nao-tentado']),
+  fase: z.enum(['plano', 'envio', 'reconciliacao']),
+  motivo: z.string().nullable(),
+  mensagem: z.string().nullable().default(null),
+  erro: z.string().nullable(),
+  // Money computed by our own backend (reais, `roundReais`'d at plan time), so
+  // strict per rule 3 — a string here would be our bug, not ML's inconsistency.
+  preco: z.number().nullable(),
+  precoAnterior: z.number().nullable(),
+  variacoes: z.number().nullable(),
+});
+export type MercadoLivreRelatorioEnvioPrecoLinha = z.infer<typeof relatorioEnvioPrecoLinhaSchema>;
+
+/**
+ * One PAGE of that report, plus the job-level facts the CSV's completeness
+ * trailer needs.
+ *
+ * ⚠️ `relatorioShards === 0` is ambiguous on its own and the pair with
+ * `relatorioCompleto` is what disambiguates it: `false` means the run predates
+ * the report entirely (no report exists), `true` means the run genuinely planned
+ * nothing. Conflating them hands the operator a blank CSV and the conclusion
+ * that the catalogue is clean.
+ */
+export const relatorioEnvioPrecoPaginaSchema = z.object({
+  linhas: z.array(relatorioEnvioPrecoLinhaSchema),
+  /** `null` on the last page — the caller loops until it sees this. */
+  proximoDepois: z.string().nullable(),
+  status: z.enum(['running', 'completed', 'failed']),
+  relatorioLinhas: z.number().default(0),
+  relatorioShards: z.number().default(0),
+  relatorioCompleto: z.boolean().default(false),
+  filaRestante: z.number().default(0),
+  planejados: z.number(),
+  enviados: z.number(),
+  pulados: z.number(),
+  falhas: z.number(),
+  startedAt: z.number(),
+  finishedAt: z.number().nullable(),
+});
+export type MercadoLivreRelatorioEnvioPrecoPagina = z.infer<typeof relatorioEnvioPrecoPaginaSchema>;
+
 /** A node of the ML category tree (`GET categorias`). */
 export const categoriaNoSchema = z.object({
   id: z.string(),

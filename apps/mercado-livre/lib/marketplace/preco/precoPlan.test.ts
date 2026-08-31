@@ -380,7 +380,15 @@ describe('buildPrecoDrafts — price source + skip ladder', () => {
     ] as Array<PrecoFamilyRow['precos']>) {
       expect(buildPrecoDrafts(familyRow({ precos }), OPTS), JSON.stringify(precos)).toEqual({
         drafts: [],
-        skips: [{ itemId: 'MLB111', produtoId: 'PROD', code: 'PRECO_NAO_ENCONTRADO' }],
+        skips: [
+          {
+            itemId: 'MLB111',
+            produtoId: 'PROD',
+            code: 'PRECO_NAO_ENCONTRADO',
+            linkDocId: 'link1',
+            precoAnterior: null,
+          },
+        ],
       });
     }
   });
@@ -388,13 +396,21 @@ describe('buildPrecoDrafts — price source + skip ladder', () => {
   it('conta with no links at all → single SEM_LINK skip (denorm drift)', () => {
     expect(buildPrecoDrafts(familyRow({ links: [] }), OPTS)).toEqual({
       drafts: [],
-      skips: [{ itemId: null, produtoId: 'PROD', code: 'SEM_LINK' }],
+      skips: [
+        { itemId: null, produtoId: 'PROD', code: 'SEM_LINK', linkDocId: null, precoAnterior: null },
+      ],
     });
   });
 
   it('link never published (id null) → SEM_ITEM_ID with itemId null', () => {
     expect(buildPrecoDrafts(familyRow({ links: [linkRow({ id: null })] }), OPTS).skips).toEqual([
-      { itemId: null, produtoId: 'PROD', code: 'SEM_ITEM_ID' },
+      {
+        itemId: null,
+        produtoId: 'PROD',
+        code: 'SEM_ITEM_ID',
+        linkDocId: 'link1',
+        precoAnterior: null,
+      },
     ]);
   });
 
@@ -406,7 +422,13 @@ describe('buildPrecoDrafts — price source + skip ladder', () => {
       OPTS,
     );
     expect(res.skips).toEqual([
-      { itemId: 'MLB111', produtoId: 'PROD', code: 'AGUARDANDO_MIGRACAO' },
+      {
+        itemId: 'MLB111',
+        produtoId: 'PROD',
+        code: 'AGUARDANDO_MIGRACAO',
+        linkDocId: 'link1',
+        precoAnterior: null,
+      },
     ]);
     expect(res.drafts).toEqual([
       {
@@ -481,7 +503,13 @@ describe('buildPrecoDrafts — price source + skip ladder', () => {
       },
     ]);
     expect(res.skips).toEqual([
-      { itemId: 'MLB-CH2', produtoId: 'CH2', code: 'PRECO_NAO_ENCONTRADO' },
+      {
+        itemId: 'MLB-CH2',
+        produtoId: 'CH2',
+        code: 'PRECO_NAO_ENCONTRADO',
+        linkDocId: 'link1',
+        precoAnterior: null,
+      },
     ]);
   });
 
@@ -523,8 +551,14 @@ describe('buildPrecoDrafts — price source + skip ladder', () => {
     expect(res.drafts).toHaveLength(1);
     expect(res.drafts[0]!.itemId).toBe('MLB-CH1');
     expect(res.skips).toEqual([
-      { itemId: null, produtoId: 'CH2', code: 'SEM_LINK' },
-      { itemId: null, produtoId: 'CH3', code: 'SEM_ITEM_ID' },
+      { itemId: null, produtoId: 'CH2', code: 'SEM_LINK', linkDocId: 'link1', precoAnterior: null },
+      {
+        itemId: null,
+        produtoId: 'CH3',
+        code: 'SEM_ITEM_ID',
+        linkDocId: 'link1',
+        precoAnterior: null,
+      },
     ]);
   });
 
@@ -591,7 +625,15 @@ describe('buildPrecoDrafts — price source + skip ladder', () => {
     );
     expect(res).toEqual({
       drafts: [],
-      skips: [{ itemId: null, produtoId: 'PROD', code: 'FAMILIA_MUITO_GRANDE' }],
+      skips: [
+        {
+          itemId: null,
+          produtoId: 'PROD',
+          code: 'FAMILIA_MUITO_GRANDE',
+          linkDocId: null,
+          precoAnterior: null,
+        },
+      ],
     });
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining('drafts'),

@@ -229,9 +229,40 @@ export interface RealKitChild {
  * Resolve the grid's staged per-row kit maps (keyed by `StagedKitRow.key`) to
  * concrete `{ id, componentesKit }` writes against the REAL variation children —
  * the bridge that lets "Gerar Variações" target variations added in the Variações
- * tab but not yet saved. A row whose `id` is already set maps by id directly;
- * a staged-new row still carries `id: null` until its child exists, so it is
- * matched by an unordered `variacoesUid` match (`sameCombo`).
+ * tab but not yet saved.
+ *
+ * Resolution runs in two passes over ALL rows, exact before guess:
+ *  1. every exact match — `row.id` when it names a live child (an already-saved
+ *     row), else the row's own `key`, which IS the doc id the caller pre-minted
+ *     for this child (see {@link StagedKitRow.key});
+ *  2. only then, an unordered `variacoesUid` match (`sameCombo`), for a row
+ *     whose document the caller wrote under some other id.
+ *
+ * ⚠️ Two passes, not one ladder per row. Both claim greedily, so resolving each
+ * row completely before moving on would let a row that can only match by combo
+ * consume the child a later row resolves EXACTLY — its map onto the wrong
+ * document and the rightful row's map dropped — decided by nothing but the key
+ * order of `stagedByKey`. Output stays in that order regardless of which pass
+ * resolved each row.
+ *
+ * ⚠️ Step 3 requires BOTH combos to be non-empty. `sameCombo([], [])` is `true`,
+ * so without that an empty-combo row — what a manually added variation carries —
+ * claims the first combo-less child it meets, typically an unrelated legacy
+ * sibling, and its map is written onto the WRONG document (`componentesKit` is
+ * persisted as a full overwrite). Same guard, same reason, as
+ * `reconcileStagedChildren` and the Mercado Livre import's sibling match.
+ *
+ * ⚠️ Be honest about the cost: an unmatched row is **dropped, not written** —
+ * and in `apps/web` its staged map is then lost, not parked. The only path that
+ * reaches this guard is a row whose document went somewhere else, i.e. the #117
+ * SKU id-reuse, where the flush updates the reused id and nothing ever exists
+ * under the row's key; the caller then clears the row and the entry becomes
+ * unreachable. That is still the better trade — the old fallback wrote it onto
+ * whichever combo-less child came first, which is sometimes right and never
+ * reliable — but it is a silent drop, not a recovery. Publishing the
+ * `key → reusedId` pairing the flush already computes would resolve those rows
+ * exactly and retire this fallback; until then, this is the floor, not the goal.
+ *
  * Each real child is claimed at most once; rows that are delete-marked, unknown,
  * or unmatched are dropped.
  */
@@ -243,24 +274,43 @@ export function resolveStagedKitVariacoes(input: {
   const rowByKey = new Map(input.rows.map((r) => [r.key, r]));
   const realById = new Map(input.realChildren.map((c) => [c.id, c]));
   const claimed = new Set<string>();
-  const out: Array<{ id: string; componentesKit: ComponentesKit | null }> = [];
+  const targetByKey = new Map<string, string>();
 
-  for (const [key, map] of Object.entries(input.stagedByKey)) {
+  const staged = Object.entries(input.stagedByKey).flatMap(([key, map]) => {
     const row = rowByKey.get(key);
-    if (!row || row.deleteMark) continue;
+    return row && !row.deleteMark ? [{ key, map, row }] : [];
+  });
 
-    let targetId: string | null = null;
-    if (row.id && realById.has(row.id) && !claimed.has(row.id)) {
-      targetId = row.id;
-    } else {
-      const match = input.realChildren.find(
-        (c) => !claimed.has(c.id) && sameCombo(c.variacoesUid, row.variacoesUid),
-      );
-      targetId = match ? match.id : null;
-    }
-    if (!targetId) continue;
-    claimed.add(targetId);
-    out.push({ id: targetId, componentesKit: map });
+  // Pass 1 — every exact resolution, across ALL rows, before any guess runs.
+  // Both passes claim greedily, so doing this per row would let a row that can
+  // only match by combo consume the child a later row resolves exactly, purely
+  // because it came first in `stagedByKey`.
+  for (const { key, row } of staged) {
+    const exact = [row.id, key].find(
+      (id): id is string => id !== null && realById.has(id) && !claimed.has(id),
+    );
+    if (exact === undefined) continue;
+    claimed.add(exact);
+    targetByKey.set(key, exact);
   }
-  return out;
+
+  // Pass 2 — the combo fallback, over whatever is still unclaimed.
+  for (const { key, row } of staged) {
+    if (targetByKey.has(key) || row.variacoesUid.length === 0) continue;
+    const match = input.realChildren.find(
+      (c) =>
+        !claimed.has(c.id) &&
+        c.variacoesUid.length > 0 &&
+        sameCombo(c.variacoesUid, row.variacoesUid),
+    );
+    if (!match) continue;
+    claimed.add(match.id);
+    targetByKey.set(key, match.id);
+  }
+
+  // Emitted in `stagedByKey` order, independent of which pass resolved each row.
+  return staged.flatMap(({ key, map }) => {
+    const id = targetByKey.get(key);
+    return id === undefined ? [] : [{ id, componentesKit: map }];
+  });
 }

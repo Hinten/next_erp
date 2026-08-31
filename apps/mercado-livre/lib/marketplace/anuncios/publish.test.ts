@@ -2764,6 +2764,227 @@ describe('loadTabelaBinding — why no chart bound (#1087)', () => {
 });
 
 /**
+ * The tabela's chart photo on a User-Products FAMILY (#1087).
+ *
+ * ⚠️ Under User Products the parent is NOT a listing — every published item is a
+ * family MEMBER, and a member's own `pictures` come from its `pictureIds`
+ * (`itemPayload.ts`: `member.pictureIds ?? parentPictureIds`). The chart photo
+ * rode only the parent set, so any produto whose photos are TAGGED PER VARIANTE
+ * gave every member a non-empty own set and lost the chart image entirely —
+ * measured on produto LYXqJKB96YJzhA3qaVkn, whose member came back from ML with
+ * 3 pictures and no chart. The photo was uploaded and cached either way, so the
+ * cost was paid and the result discarded.
+ *
+ * ⚠️ The fixture is the configuration that DROPS it: children with no fotos of
+ * their own, parent photos tagged per variante. A child with its own fotos
+ * takes the same branch and would mask nothing — but a child with NO tagged
+ * parent photo either falls to the parent set, which already carries the chart.
+ */
+describe('publishProduto — the chart photo on a User-Products family (#1087)', () => {
+  /** `fotosForVariacao` rung 2: a parent foto tagged for this child's variante. */
+  const TAGGED = 'documents/grupoDeVariacoes/g-tam/variacoes/v-m';
+
+  function seedChartFamily(db: FakeDb, extraParentFotos: DocData[] = []): void {
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    // ⚠️ TAGGED, so the child resolves pictures OF ITS OWN and never falls
+    // through to the parent set. That fall-through is the only path that
+    // carried the chart photo before this fix.
+    db.docs('produtos').get(PROD)!.fotos = [
+      { arquivoOuterRef: 'arquivos/arq-1', variantePath: TAGGED },
+      ...extraParentFotos,
+    ];
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Camiseta lisa infantil',
+      codigo: null,
+      descricao: null,
+      fotos: [{ arquivoOuterRef: 'arquivos/arq-chart' }],
+    });
+    db.seed('arquivos', 'arq-chart', {
+      filename: 'chart.jpg',
+      contentType: 'image/jpeg',
+      url: 'https://storage/chart.jpg',
+      externalIds: [{ externalId: 'PIC-CHART', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    // The child carries NO fotos of its own — rung 2 is what feeds it.
+    db.seed('produtos', 'child-1', {
+      nome: 'Camiseta M',
+      sku: 'SKU-1-M',
+      paiId: PROD,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: [TAGGED],
+    });
+    db.seed('produtos/child-1/estoques', 'est-c', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 4,
+      quantidadeReservada: 0,
+    });
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M' }],
+    });
+  }
+
+  function upChartApi(overrides: Record<string, unknown> = {}) {
+    let n = 0;
+    return makeApi({
+      getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        id: `MLB90${++n}`,
+        family_id: 4260899048783356,
+      })),
+      getUserProductFamily: vi.fn(async () => ({ user_products_ids: ['MLBU1'] })),
+      searchItemsByUserProduct: vi.fn(async () => ({ results: ['MLB901'] })),
+      getItemsByIds: vi.fn(async (ids: readonly string[]) =>
+        ids.map((id) => ({ code: 200, body: { id, user_product_id: 'MLBU1' } })),
+      ),
+      ...overrides,
+    });
+  }
+
+  /** The pictures the MEMBER item was POSTed with. */
+  function memberPictures(mocks: Record<string, ReturnType<typeof vi.fn>>): string[] {
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    return ((payload.pictures ?? []) as Array<{ id: string }>).map((p) => p.id);
+  }
+
+  it('sends the chart photo on the MEMBER — the listing the buyer actually opens', async () => {
+    const db = new FakeDb();
+    seedChartFamily(db);
+    const { api, mocks } = upChartApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(memberPictures(mocks)).toEqual(['PIC-CACHED', 'PIC-CHART']);
+  });
+
+  it('pays for NO extra upload — the chart photo is cached on its Arquivo', async () => {
+    // It was already being uploaded before this fix and then discarded; adding
+    // it to the member must reuse the same memoised id, not fetch it again.
+    const db = new FakeDb();
+    seedChartFamily(db);
+    const { api, mocks } = upChartApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.uploadPicture).not.toHaveBeenCalled();
+  });
+
+  it('a member with NO pictures of its own still inherits the PARENT set', async () => {
+    // `publish.ts` skips a member that resolved nothing so the mapper falls back
+    // to `parentPictureIds`, which already carries the chart photo.
+    //
+    // ⚠️ This does NOT discriminate the two placements: a member resolves zero
+    // pictures only when the produto has no resolvable fotos at all, and then
+    // the parent set is the chart photo alone, so both answer `['PIC-CHART']`.
+    // Measured, not assumed — the cap test below is the one that separates them.
+    const db = new FakeDb();
+    seedChartFamily(db);
+    // Untagged parent foto + a child whose variante matches nothing ⇒ rung 3
+    // returns the whole parent gallery, so this child still has pictures. To
+    // reach the EMPTY case the produto must have no resolvable fotos at all.
+    db.docs('produtos').get(PROD)!.fotos = [];
+    const { api, mocks } = upChartApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    // The parent set is the chart photo alone here, and the member inherits it
+    // rather than being handed a second, differently-built copy.
+    expect(memberPictures(mocks)).toEqual(['PIC-CHART']);
+  });
+
+  it('⚠️ an INHERITING member publishes the parent set — 11 pictures, not MAX_PICTURES', async () => {
+    // ⚠️ The bound above is about the list this branch builds, NOT about every
+    // member. A member that resolves nothing inherits `parentPictureIds`, which
+    // is built by the PARENT rule and legitimately reaches 11. Harmless — ML
+    // accepts 12 — but the comment first read as a universal invariant and was
+    // not one. Pinned so the claim is checkable rather than asserted.
+    const db = new FakeDb();
+    const extras = Array.from({ length: 9 }, (_, i) => ({
+      arquivoOuterRef: `arquivos/arq-x${String(i)}`,
+    }));
+    seedChartFamily(db, extras);
+    // Untagged parent fotos ⇒ 10 in the parent set, + the chart photo = 11.
+    db.docs('produtos').get(PROD)!.fotos = [{ arquivoOuterRef: 'arquivos/arq-1' }, ...extras];
+    for (let i = 0; i < 9; i++) {
+      db.seed('arquivos', `arq-x${String(i)}`, {
+        filename: `x${String(i)}.jpg`,
+        contentType: 'image/jpeg',
+        url: `https://storage/x${String(i)}.jpg`,
+        externalIds: [
+          { externalId: `PIC-X${String(i)}`, integracaoPath: `documents/integracao/${CONTA}` },
+        ],
+      });
+    }
+    // ⚠️ rung 1 wins on a NON-EMPTY own list even when every entry is
+    // unresolvable, so this child resolves ZERO pictures and takes the
+    // `continue` — the only way to reach the inherit path with a full parent.
+    db.docs('produtos').get('child-1')!.fotos = [{ arquivoOuterRef: 'arquivos/sumiu' }];
+    const { api, mocks } = upChartApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const pics = memberPictures(mocks);
+    expect(pics).toHaveLength(11);
+    expect(pics[10]).toBe('PIC-CHART');
+  });
+
+  it('⚠️ at the cap it REPLACES the last picture, never overflows and never drops', async () => {
+    // The legacy VARIATION lists' rule. `resolvePictures` slices a member to
+    // MAX_PICTURES (10); the chart photo takes the last slot rather than
+    // becoming an 11th, which is a liberty only the parent set takes.
+    const db = new FakeDb();
+    const extras = Array.from({ length: 11 }, (_, i) => ({
+      arquivoOuterRef: `arquivos/arq-x${String(i)}`,
+      variantePath: TAGGED,
+    }));
+    seedChartFamily(db, extras);
+    for (let i = 0; i < 11; i++) {
+      db.seed('arquivos', `arq-x${String(i)}`, {
+        filename: `x${String(i)}.jpg`,
+        contentType: 'image/jpeg',
+        url: `https://storage/x${String(i)}.jpg`,
+        externalIds: [
+          { externalId: `PIC-X${String(i)}`, integracaoPath: `documents/integracao/${CONTA}` },
+        ],
+      });
+    }
+    const { api, mocks } = upChartApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const pics = memberPictures(mocks);
+    expect(pics).toHaveLength(10);
+    expect(pics[9]).toBe('PIC-CHART');
+    // …and it replaced a picture rather than being dropped or appended.
+    expect(pics).not.toContain('PIC-X8');
+  });
+
+  it('⚠️ the LEGACY path is untouched — the chart photo stays at ITEM level', async () => {
+    // ⚠️ The control. Legacy sends ONE item whose top-level `pictures` carries
+    // the chart photo, with per-variation `picture_ids` beside it — correct
+    // before this change. Without this assertion the fix could silently move
+    // the chart photo into every variation's list and every other test here
+    // would still pass.
+    const db = new FakeDb();
+    seedChartFamily(db);
+    const { api, mocks } = makeApi(); // untagged account ⇒ legacy model
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    const itemPics = ((payload.pictures ?? []) as Array<{ id: string }>).map((p) => p.id);
+    expect(itemPics).toEqual(['PIC-CACHED', 'PIC-CHART']);
+    const variation = (payload.variations as Array<Record<string, unknown>>)[0]!;
+    expect(variation.picture_ids).toEqual(['PIC-CACHED']);
+  });
+});
+
+/**
  * Every refusal reason is REACHABLE, and refuses (#1087).
  *
  * ⚠️ This exists because a carefully-worded refusal message shipped as dead

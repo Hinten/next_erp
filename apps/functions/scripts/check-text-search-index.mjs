@@ -17,21 +17,24 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //      cannot match a word in the MIDDLE of a name ("preta" in "Camiseta Polo
 //      Preta"). Q2 runs exactly that term through both paths.
 //   Q2b SKU — can it replace SKU lookup #1 (produtos) only? See the block.
-//   Q3 LANGUAGE — the open design question. The analyzer language lives in
-//      Index.searchIndexOptions.textLanguage, which the Firebase CLI cannot
-//      express (0 references repo-wide in firebase-tools 15.28.2), so the
-//      deployed index gets the BACKEND DEFAULT. If that default stems
-//      Portuguese, a singular term matches a plural name and an unaccented term
-//      matches an accented one. Q3 probes both; a miss is the evidence for
-//      spending a console-managed setting on `pt`.
+//   Q3 LANGUAGE — is the deployed index actually speaking pt-BR?
+//      `firestore.indexes.json` now DECLARES searchIndexOptions.textLanguage
+//      'pt-BR', but ⚠️ `firebase deploy` does NOT send it: firebase-tools builds
+//      the create body from a whitelist (fields, queryScope, apiScope, density,
+//      multikey, unique) and drops everything else with NO error. So the
+//      declaration is INTENT; the live index has whatever it was created with —
+//      autodetect, unless the language was set via gcloud/console. Q3 tells the
+//      two apart empirically. Measured under AUTODETECT: case folding YES, pt
+//      plural stemming YES, diacritic folding NO — so a miss on the accent probe
+//      means pt-BR never reached the index (or does not fix diacritics).
 //
 // ⚠️⚠️ THE INDEX THIS SCRIPT MEASURES IS PROVISIONAL, AND NOT STAGING-SCOPED.
 // `firestore.indexes.json` is the `indexes` path in BOTH firebase.json
 // (production) and firebase.staging.json, so there is no way to declare a text
 // index for staging alone. The next production index deploy — migration-window
 // work, root CLAUDE.md rule 8 — replays this file exactly as it stands, and a
-// TOKENIZED index over produtos.nome AND produtos.sku is then built and
-// maintained on every produto write with nothing in apps/web reading it.
+// TOKENIZED index over produtos.nome is then built and maintained on every
+// produto write with nothing in apps/web reading it.
 // EXIT CONDITION: if Q1/Q2 below do not justify adopting text search, the
 // index entry is REVERTED, not left behind. An index nobody remembers ordering
 // is exactly the drift this repo keeps writing lint backstops against.
@@ -105,16 +108,34 @@ const SINGULARES_EM_S = new Set([
 // So discover real terms from real documents first, and say so when we can't.
 // ---------------------------------------------------------------------------
 async function descobrirAmostra() {
+  // ⚠️ Ordered by NOME, not by `ultimaModificacao desc`, and that is the whole
+  // point. Recency ordering looks like the obvious choice and is useless here:
+  // the e2e lanes write constantly, so the most-recently-touched rows are ALL
+  // `e2e-<runId>-…` fixtures — measured, 50 of 50 — and merely sorting them
+  // last (below) has nothing left to promote. Alphabetical ordering spreads the
+  // sample across the real catalogue instead, and the fixtures cluster harmlessly
+  // under `e`. Rides the deployed produtos(paiId ASC, nome ASC) composite, so it
+  // is a seek either way.
   const snap = await db
     .collection('produtos')
     .where('paiId', '==', null)
-    .orderBy('ultimaModificacao', 'desc')
+    .orderBy('nome', 'asc')
     .limit(50)
     .get();
 
-  const linhas = snap.docs
+  const todas = snap.docs
     .map((d) => ({ id: d.id, nome: d.get('nome'), sku: d.get('sku') }))
     .filter((r) => typeof r.nome === 'string' && r.nome.trim() !== '');
+
+  // Belt-and-braces on top of the `nome` ordering above: sort any e2e fixture
+  // that still made the window behind the real rows. `e2e-<runId>-…` names are
+  // synthetic and all-hyphen — the pathological case for the search DSL, and
+  // representative of nothing — so measuring Q1 cost on one answers the wrong
+  // question. ⚠️ This sort alone is NOT sufficient, which is why the query above
+  // stopped ordering by recency: once the recent window is saturated with
+  // fixtures (measured: 50 of 50) there is nothing left to promote.
+  const ehE2e = (r) => /^e2e[-_]/i.test(r.nome.trim());
+  const linhas = [...todas.filter((r) => !ehE2e(r)), ...todas.filter(ehE2e)];
 
   // A name with at least two words is what makes Q2 meaningful: we need a term
   // that is genuinely NOT a prefix of the name it should match.
@@ -133,12 +154,17 @@ async function descobrirAmostra() {
   // anywhere in the nome" and then probing the FIRST word made the probe
   // silently produce no output whenever the accent sat in a later word
   // ("Camiseta Polo Básica").
+  // ⚠️ The word must be accented AND free of DSL operator characters. The first
+  // version probed "Porta-lapis", which varies TWO things at once — a dropped
+  // accent and a hyphen, which the DSL reads as negation — so its zero could
+  // not distinguish "no accent folding" from "the term never parsed".
+  const semOperadorDsl = (w) => !/["()+:~^*?\-]/.test(w);
   let palavraAcentuada = null;
   for (const r of linhas) {
     const achada = r.nome
       .trim()
       .split(/\s+/)
-      .find((w) => semAcentos(w) !== w);
+      .find((w) => semAcentos(w) !== w && semOperadorDsl(w) && w.length >= 4);
     if (achada) {
       palavraAcentuada = { palavra: achada, nome: r.nome };
       break;
@@ -411,6 +437,12 @@ async function main() {
   console.log('  #2 and #3 read produtoMercadoLivre / variacaoMercadoLivre as');
   console.log('  COLLECTION GROUPS. This produtos-scoped index cannot serve them,');
   console.log('  whatever the result below says. Their SKUs differ from the ERP.');
+  console.log('');
+  console.log('  ⚠️  AND firestore.indexes.json now DECLARES `nome` ONLY — sku was');
+  console.log('     dropped. Until the index is recreated from that declaration the');
+  console.log('     LIVE index may still carry sku, so this probe can pass today and');
+  console.log('     start missing later. Either way a miss is about FIELD COVERAGE,');
+  console.log('     not about what text search can do.');
 
   if (amostra.filhoComSku) {
     // ⚠️ A VARIATION CHILD's sku, probed WITHOUT the paiId filter — because
@@ -424,8 +456,8 @@ async function main() {
     console.log(`\n  child SKU "${sku}" (paiId != null, no filter applied)`);
     const n = await probarTermo(`search(documentMatches) [no paiId filter]`, sku, buscaTextoSku);
     if (n === 0) {
-      console.warn('  ⚠️  a variation child SKU did NOT match even QUOTED — text search');
-      console.warn('     cannot replace lookup #1 either, since #1 exists to find children.');
+      console.warn('  ⚠️  no match — expected once the index is rebuilt without sku.');
+      console.warn('     A field-coverage result, not a capability one. See above.');
     }
   } else {
     console.log('\n  ⚠️  SKIPPED: no variation child with a sku in the sample.');
@@ -438,9 +470,10 @@ async function main() {
   console.log(
     `\n${'='.repeat(70)}\nQ3 LANGUAGE — does the default analyzer stem pt-BR?\n${'='.repeat(70)}`,
   );
-  console.log('  The CLI cannot declare textLanguage, so this index gets the');
-  console.log('  backend default. These probes are the evidence for whether');
-  console.log('  that is acceptable or worth a console-managed `pt` setting.');
+  console.log('  firestore.indexes.json DECLARES pt-BR, but `firebase deploy`');
+  console.log('  silently DROPS searchIndexOptions — so the live index may still');
+  console.log('  be on autodetect. These probes are the evidence for whether the');
+  console.log('  declared pt-BR actually reached the deployed index.');
 
   if (amostra.plural) {
     const pluralWord = amostra.plural.nome.trim().split(/\s+/)[0];
@@ -466,13 +499,46 @@ async function main() {
   if (amostra.palavraAcentuada) {
     const { palavra, nome: nomeAcentuado } = amostra.palavraAcentuada;
     const semAcento = semAcentos(palavra);
-    console.log(`\n  accents: searching "${semAcento}" should find "${nomeAcentuado}"`);
-    const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto);
-    if (n === 0) {
-      console.warn(`  ⚠️  "${semAcento}" did NOT match "${palavra}" — no accent folding.`);
+
+    // ⚠️⚠️ CONTROL FIRST. A zero on the unaccented form only means "no accent
+    // folding" if the index can find that document by its accented word at all.
+    // Without this the probe cannot tell folding from a term that never matched
+    // for some unrelated reason — a checker needs a known-GOOD case as well as
+    // a known-BAD one.
+    console.log(
+      `\n  control: "${palavra}" must match "${nomeAcentuado}" for the next probe to mean anything`,
+    );
+    const controle = await probarTermo(`control search("${palavra}")`, palavra, buscaTexto);
+
+    // ⚠️⚠️ THREE outcomes, not two. `probarTermo` returns null when the
+    // pipeline EXECUTION failed — a missing or still-building text index, which
+    // this script calls its most informative result. `null === 0` is false, so
+    // testing only for 0 let that failure fall through to the `else` and print
+    // the green verdict: the one run that proves nothing announcing the exact
+    // positive answer this PR exists to obtain. Check null FIRST, everywhere.
+    if (controle === null) {
+      console.warn('  ⚠️  CONTROL DID NOT RUN: the pipeline execution failed (missing');
+      console.warn('     or still-building index?). Skipping the accent probe — it');
+      console.warn('     could not tell folding from a query that never ran.');
+    } else if (controle === 0) {
+      console.warn('  ⚠️  CONTROL FAILED: the accented word does not match its own');
+      console.warn('     document, so the accent probe below is INCONCLUSIVE — the');
+      console.warn('     miss would not be evidence about folding.');
+    } else {
+      console.log(`\n  accents: searching "${semAcento}" should find "${nomeAcentuado}"`);
+      const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto);
+      if (n === null) {
+        console.warn('  ⚠️  the accent probe did not run (pipeline failed) — NO verdict.');
+      } else if (n === 0) {
+        console.warn(`  ⚠️  "${semAcento}" did NOT match "${palavra}" while the control DID.`);
+        console.warn('     That IS evidence: the default analyzer does not fold accents.');
+      } else {
+        console.log(`  ✅ "${semAcento}" matched "${palavra}" — the analyzer folds accents.`);
+      }
     }
   } else {
-    console.log('\n  accent probe skipped: no accented WORD in any sampled nome.');
+    console.log('\n  accent probe skipped: no accented word free of DSL operator');
+    console.log('  characters in any sampled nome (a hyphen would confound it).');
   }
 
   console.log(`\n${'='.repeat(70)}`);

@@ -453,6 +453,26 @@ export {
 } from './envioPrecoMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS, and deliberately exports no
+  // `…Meta`) — the COMPLETE per-item report of one price-sync run, sharded under
+  // the job doc. Same rationale as its parent above.
+  envioPrecoResultadoSchema,
+  ENVIO_PRECO_RESULTADO,
+  envioPrecoFaseSchema,
+  ENVIO_PRECO_FASE,
+  linhaRelatorioEnvioPrecoSchema,
+  relatorioEnvioPrecoSchema,
+  relatorioEnvioPrecoShardId,
+  relatorioEnvioPrecoRowKey,
+  RELATORIO_ENVIO_PRECO_SHARD_SIZE,
+  RELATORIO_ENVIO_PRECO_ERRO_MAX,
+  type EnvioPrecoResultado,
+  type EnvioPrecoFase,
+  type LinhaRelatorioEnvioPreco,
+  type RelatorioEnvioPreco,
+} from './relatorioEnvioPrecoMercadoLivre';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
   // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of

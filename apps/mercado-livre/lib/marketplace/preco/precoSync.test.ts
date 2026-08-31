@@ -5,7 +5,11 @@ import {
   MercadoLivreReauthRequiredError,
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
-import type { EnvioPrecoFilaItem } from '@delfrance/schemas';
+import {
+  type EnvioPrecoFilaItem,
+  type EnvioPrecoSkip,
+  RELATORIO_ENVIO_PRECO_SHARD_SIZE,
+} from '@delfrance/schemas';
 
 import {
   type PrecoFamilyRow,
@@ -50,6 +54,30 @@ vi.mock('./precoPlan', () => ({
 // job checkpoints + link writebacks) and `add` (startPriceSyncJob's auto-id).
 
 type DocData = Record<string, unknown>;
+
+/** A plain `{}` — not an array, not a Date/Timestamp, not null. */
+function isPlainObject(v: unknown): v is DocData {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && v.constructor === Object;
+}
+
+/**
+ * ⚠️ Firestore's `{merge: true}` DEEP-merges map fields — a nested `{linhas: {k: row}}`
+ * adds the key and keeps the ones already stored. A shallow spread (what this
+ * fake did) would REPLACE `linhas` on every shard write, so each checkpoint
+ * would drop every row before it and the specs would happily encode that.
+ *
+ * ⚠️ This models the behaviour; it does not prove it. `precoRelatorio.firestore.test.ts`
+ * is what asserts the real thing against a real Firestore, because a fake can
+ * only ever agree with whoever wrote it. Arrays REPLACE (Firestore does too).
+ */
+function mergeDeep(base: DocData, patch: DocData): DocData {
+  const out: DocData = { ...base };
+  for (const [k, v] of Object.entries(patch)) {
+    const atual = out[k];
+    out[k] = isPlainObject(v) && isPlainObject(atual) ? mergeDeep(atual, v) : v;
+  }
+  return out;
+}
 
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
@@ -100,7 +128,7 @@ class FakeDb {
           id: docId,
           get: async () => ({ exists: col.has(docId), id: docId, data: () => col.get(docId) }),
           set: async (data: DocData, opts?: { merge?: boolean }) => {
-            col.set(docId, opts?.merge ? { ...(col.get(docId) ?? {}), ...data } : { ...data });
+            col.set(docId, opts?.merge ? mergeDeep(col.get(docId) ?? {}, data) : { ...data });
           },
           // Backs `mergeIfExists` on the link writebacks. The missing-doc
           // failure MUST carry gRPC code 5 — that is what `isNotFound` narrows
@@ -123,9 +151,57 @@ class FakeDb {
       limit: (n: number) => query().limit(n),
     };
   }
+
+  /**
+   * Enough of `WriteBatch` for the checkpoint, which now commits the job doc and
+   * the report shards together.
+   *
+   * ⚠️ Ops are BUFFERED and applied only on `commit()`. That is what lets a spec
+   * model a crash mid-dispatch — drop the batch without committing and neither
+   * the rows nor the counter advanced, which is the property the whole
+   * idempotency argument rests on.
+   */
+  batch() {
+    const ops: Array<() => Promise<void>> = [];
+    const b = {
+      set(
+        ref: { set: (d: DocData, o?: { merge?: boolean }) => Promise<void> },
+        data: DocData,
+        opts?: { merge?: boolean },
+      ) {
+        ops.push(() => ref.set(data, opts));
+        return b;
+      },
+      async commit() {
+        for (const op of ops) await op();
+      },
+    };
+    return b;
+  }
 }
 
 const asDb = (db: FakeDb) => db as unknown as Firestore;
+
+/**
+ * A skip in the shape the job now records it. `linkDocId` names WHICH link
+ * produced it (two links can yield the same produto+code) and `precoAnterior` is
+ * null wherever no ML call was made — every plan-time and reconciliation skip.
+ */
+function skipFixture(e: {
+  produtoId: string;
+  code: string;
+  itemId?: string | null;
+  linkDocId?: string | null;
+  precoAnterior?: number | null;
+}): EnvioPrecoSkip {
+  return {
+    itemId: e.itemId ?? null,
+    produtoId: e.produtoId,
+    code: e.code,
+    linkDocId: e.linkDocId ?? null,
+    precoAnterior: e.precoAnterior ?? null,
+  };
+}
 
 /* --------------------------------- fixtures ------------------------------- */
 
@@ -374,7 +450,7 @@ describe('processPriceSyncJob — plan phase', () => {
         ? { drafts: [draft('MLB1')], skips: [] }
         : {
             drafts: [],
-            skips: [{ itemId: null, produtoId: 'prod-X', code: 'PRECO_NAO_ENCONTRADO' }],
+            skips: [skipFixture({ produtoId: 'prod-X', code: 'PRECO_NAO_ENCONTRADO' })],
           },
     );
     const api = makeApi({ MLB1: mlItem('MLB1') });
@@ -405,7 +481,7 @@ describe('processPriceSyncJob — plan phase', () => {
       afterAnchorId: 'anchor-2',
       planejamentoConcluido: false,
       fila: [],
-      skips: [{ itemId: null, produtoId: 'prod-X', code: 'PRECO_NAO_ENCONTRADO' }],
+      skips: [skipFixture({ produtoId: 'prod-X', code: 'PRECO_NAO_ENCONTRADO' })],
     });
     expect(db.docs(linkPath('prod-MLB1')).get('lnk-MLB1')).toMatchObject({
       precoPublicado: 50,
@@ -460,7 +536,7 @@ describe('processPriceSyncJob — plan phase', () => {
     vi.mocked(buildPrecoDrafts).mockImplementation((row) =>
       row === rowA
         ? { drafts: draftsA, skips: [] }
-        : { drafts: draftsB, skips: [{ itemId: null, produtoId: 'anchor-B', code: 'SEM_LINK' }] },
+        : { drafts: draftsB, skips: [skipFixture({ produtoId: 'anchor-B', code: 'SEM_LINK' })] },
     );
     vi.mocked(precoItemsPerDispatch).mockReturnValue(1);
     // Every GET already sees the target price → the drain is one cheap skip.
@@ -479,7 +555,17 @@ describe('processPriceSyncJob — plan phase', () => {
     expect(job.planejados).toBe(1500);
     expect(job.afterAnchorId).toBe('anchor-A');
     expect(job.planejamentoConcluido).toBe(false);
-    expect(job.skips).toEqual([{ itemId: 'A0', produtoId: 'prod-A0', code: 'PRECO_ANTIGO_IGUAL' }]);
+    // A SEND-time skip, so unlike a plan-time one it carries what the gate read
+    // off the listing — the value the job used to compute and throw away.
+    expect(job.skips).toEqual([
+      skipFixture({
+        itemId: 'A0',
+        produtoId: 'prod-A0',
+        code: 'PRECO_ANTIGO_IGUAL',
+        linkDocId: 'lnk-A0',
+        precoAnterior: 50,
+      }),
+    ]);
     const fila = job.fila as Array<{ itemId: string }>;
     expect(fila.length).toBe(1499); // 1500 planned − the 1 drained, none from B
     expect(fila.every((d) => d.itemId.startsWith('A'))).toBe(true);
@@ -1316,8 +1402,8 @@ describe('reconciliation phase (#1072)', () => {
     // They ride the shared skip list too, so the operator can read the rows.
     expect(job.pulados).toBe(2);
     expect(job.skips).toEqual([
-      { itemId: 'MLB1', produtoId: 'P1', code: 'NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO' },
-      { itemId: 'MLB2', produtoId: 'C1', code: 'NAO_ENUMERADO_LINK_EM_VARIACAO' },
+      skipFixture({ itemId: 'MLB1', produtoId: 'P1', code: 'NAO_ENUMERADO_CONTA_FORA_DO_PRODUTO' }),
+      skipFixture({ itemId: 'MLB2', produtoId: 'C1', code: 'NAO_ENUMERADO_LINK_EM_VARIACAO' }),
     ]);
   });
 
@@ -1382,7 +1468,7 @@ describe('reconciliation phase (#1072)', () => {
     const job = db.docs(JOBS_PATH).get('r7')!;
     expect(job.reconciliacaoConcluida).toBe(true);
     expect(job.skips).toEqual([
-      { itemId: null, produtoId: CONTA, code: 'RECONCILIACAO_INCOMPLETA' },
+      skipFixture({ produtoId: CONTA, code: 'RECONCILIACAO_INCOMPLETA' }),
     ]);
   });
 
@@ -1399,5 +1485,269 @@ describe('reconciliation phase (#1072)', () => {
 
     expect(fetchReconPage).toHaveBeenCalledTimes(1);
     expect(outcome).toBe('done');
+  });
+});
+
+/* --------------------------- the durable per-item report -------------------------- */
+
+describe('processPriceSyncJob — the durable per-item report', () => {
+  const relPath = (jobId: string) => `${JOBS_PATH}/${jobId}/relatorios`;
+
+  /** Every row across every shard of one job, keyed as stored. */
+  function linhasDe(db: FakeDb, jobId: string): Record<string, Record<string, unknown>> {
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const [, shard] of db.docs(relPath(jobId))) {
+      Object.assign(out, (shard as { linhas?: Record<string, Record<string, unknown>> }).linhas);
+    }
+    return out;
+  }
+
+  it('⭐ records a SUCCESS with de → para, which the job never recorded at all', async () => {
+    // Before this the success branch was a bare `enviados += 1`: a completed run
+    // could say twelve prices moved and name none of them.
+    const db = new FakeDb();
+    seedJob(db, 'rel1', { fila: [draft('MLB1')], planejamentoConcluido: true });
+    seedLink(db, 'MLB1');
+    const api = makeApi({ MLB1: mlItem('MLB1') }); // priced 40, draft sends 50
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'rel1', integracaoId: CONTA }, 0);
+
+    const linhas = Object.values(linhasDe(db, 'rel1'));
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]).toMatchObject({
+      produtoId: 'prod-MLB1',
+      anuncioId: 'MLB1',
+      linkDocId: 'lnk-MLB1',
+      resultado: 'enviado',
+      fase: 'envio',
+      motivo: null,
+      preco: 50,
+      precoAnterior: 40,
+    });
+  });
+
+  it('records a send-time SKIP with the price the gate read', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'rel2', { fila: [draft('MLB1')], planejamentoConcluido: true });
+    seedLink(db, 'MLB1');
+    // Already at the target price → gate 2 skips PRECO_ANTIGO_IGUAL.
+    const api = makeApi({ MLB1: mlItem('MLB1', { price: 50, base_price: 50 }) });
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'rel2', integracaoId: CONTA }, 0);
+
+    expect(Object.values(linhasDe(db, 'rel2'))[0]).toMatchObject({
+      resultado: 'pulado',
+      fase: 'envio',
+      motivo: 'PRECO_ANTIGO_IGUAL',
+      precoAnterior: 50,
+    });
+  });
+
+  it('records plan-time skips under the `plano` phase, with no price read', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'rel4');
+    const row = { anchorId: 'A' } as unknown as PrecoFamilyRow;
+    vi.mocked(buildPrecoDrafts).mockReturnValue({
+      drafts: [],
+      skips: [skipFixture({ produtoId: 'prod-X', code: 'SEM_LINK', linkDocId: 'lnk-1' })],
+    });
+    const deps = runDeps(db, makeApi(), {
+      fetchPage: vi.fn(async () => ({ rows: [row], nextAfterAnchorId: null })),
+    });
+
+    await processPriceSyncJob(deps, { jobId: 'rel4', integracaoId: CONTA }, 0);
+
+    expect(Object.values(linhasDe(db, 'rel4'))[0]).toMatchObject({
+      produtoId: 'prod-X',
+      resultado: 'pulado',
+      fase: 'plano',
+      motivo: 'SEM_LINK',
+      linkDocId: 'lnk-1',
+      precoAnterior: null,
+    });
+  });
+
+  it('⭐ a retried dispatch OVERWRITES its row instead of duplicating it', async () => {
+    // The whole idempotency argument. The key is the row's IDENTITY, so a replay
+    // — which gate 2 turns into PRECO_ANTIGO_IGUAL — lands on the same key. With
+    // the outcome in the key this would be two rows disagreeing about one item.
+    const db = new FakeDb();
+    seedJob(db, 'rel5', { fila: [draft('MLB1')], planejamentoConcluido: true });
+    seedLink(db, 'MLB1');
+    await processPriceSyncJob(
+      runDeps(db, makeApi({ MLB1: mlItem('MLB1') })),
+      { jobId: 'rel5', integracaoId: CONTA },
+      0,
+    );
+    const apos1 = linhasDe(db, 'rel5');
+    expect(Object.keys(apos1)).toHaveLength(1);
+
+    // Re-queue the SAME draft, as a retry of the in-flight item would.
+    const job = db.docs(JOBS_PATH).get('rel5') as DocData;
+    db.docs(JOBS_PATH).set('rel5', { ...job, fila: [draft('MLB1')], status: 'running' });
+    await processPriceSyncJob(
+      runDeps(db, makeApi({ MLB1: mlItem('MLB1', { price: 50, base_price: 50 }) })),
+      { jobId: 'rel5', integracaoId: CONTA },
+      0,
+    );
+
+    const apos2 = linhasDe(db, 'rel5');
+    expect(Object.keys(apos2)).toEqual(Object.keys(apos1));
+    // The replay's verdict wins — matching what `enviados`/`pulados` already do,
+    // so the report and the counters cannot disagree.
+    expect(Object.values(apos2)[0]).toMatchObject({ resultado: 'pulado' });
+  });
+
+  it('⚠️ a checkpoint whose commit throws writes NOTHING and leaves the counter put', async () => {
+    // The control for the case above, and the reason the row and the `fila`
+    // consumption share ONE batch: row-then-consume duplicates on retry,
+    // consume-then-row loses the row entirely.
+    const db = new FakeDb();
+    seedJob(db, 'rel6', { fila: [draft('MLB1')], planejamentoConcluido: true });
+    seedLink(db, 'MLB1');
+    db.batch = () =>
+      ({
+        set() {
+          return this;
+        },
+        commit: async () => {
+          throw new Error('commit falhou');
+        },
+      }) as unknown as ReturnType<FakeDb['batch']>;
+
+    await expect(
+      processPriceSyncJob(
+        runDeps(db, makeApi({ MLB1: mlItem('MLB1') })),
+        { jobId: 'rel6', integracaoId: CONTA },
+        0,
+      ),
+    ).rejects.toThrow('commit falhou');
+
+    expect(db.docs(relPath('rel6')).size).toBe(0);
+    expect((db.docs(JOBS_PATH).get('rel6') as DocData).relatorioLinhas ?? 0).toBe(0);
+  });
+
+  it('⭐ marks the report complete ONLY on a run that finished', async () => {
+    const db = new FakeDb();
+    seedJob(db, 'rel7', { planejamentoConcluido: true, reconciliacaoConcluida: true });
+
+    const outcome = await processPriceSyncJob(
+      runDeps(db, makeApi()),
+      { jobId: 'rel7', integracaoId: CONTA },
+      0,
+    );
+
+    expect(outcome).toBe('done');
+    expect((db.docs(JOBS_PATH).get('rel7') as DocData).relatorioCompleto).toBe(true);
+  });
+
+  it('⚠️ a FAILED run leaves it false and says how much was never attempted', async () => {
+    // The control: without this, "complete" is indistinguishable from "stopped
+    // early", and a truncated CSV reads as a clean one.
+    const db = new FakeDb();
+    seedJob(db, 'rel8', { fila: [draft('MLB1'), draft('MLB2')], planejamentoConcluido: true });
+    const api = makeApi();
+    api.getItem.mockRejectedValue(
+      new MercadoLivreReauthRequiredError('refresh_failed', 'grant morto'),
+    );
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'rel8', integracaoId: CONTA }, 0);
+
+    const job = db.docs(JOBS_PATH).get('rel8') as DocData;
+    expect(job.status).toBe('failed');
+    expect(job.relatorioCompleto).toBe(false);
+    expect(job.filaRestante).toBe(2);
+    // ONE synthetic row, not one per queued draft.
+    const linhas = Object.values(linhasDe(db, 'rel8'));
+    expect(linhas.filter((l) => l.motivo === 'JOB_INTERROMPIDO')).toHaveLength(1);
+  });
+
+  it('rolls over to a second shard at the size boundary', async () => {
+    const db = new FakeDb();
+    // Start one row short of the boundary so the next two rows straddle it.
+    seedJob(db, 'rel9', {
+      fila: [draft('MLB1'), draft('MLB2')],
+      planejamentoConcluido: true,
+      relatorioLinhas: RELATORIO_ENVIO_PRECO_SHARD_SIZE - 1,
+      relatorioShards: 1,
+    });
+    seedLink(db, 'MLB1');
+    seedLink(db, 'MLB2');
+    const api = makeApi({ MLB1: mlItem('MLB1'), MLB2: mlItem('MLB2') });
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'rel9', integracaoId: CONTA }, 0);
+
+    // Zero-padded ids, so lexical order IS shard order — what lets the download
+    // page by `__name__` with no index.
+    expect([...db.docs(relPath('rel9')).keys()].sort()).toEqual(['0000', '0001']);
+    expect((db.docs(JOBS_PATH).get('rel9') as DocData).relatorioShards).toBe(2);
+  });
+
+  it('⭐ the FINAL-ATTEMPT catch reports the same way `failJob` does', async () => {
+    // A persistent ML 5xx (getItem rethrows), a batch.commit() failure and an
+    // enqueue failure all land in the catch, not on the `fatal` path. It used to
+    // write only status/erro, so `filaRestante` stayed at its schema default 0
+    // and no row named the cause — the CSV would then render a run that
+    // abandoned two queued drafts as "0 itens não foram tentados".
+    const db = new FakeDb();
+    seedJob(db, 'term1', {
+      fila: [draft('MLB1'), draft('MLB2')],
+      planejamentoConcluido: true,
+    });
+    const api = makeApi();
+    api.getItem.mockRejectedValue(new Error('ML 500 persistente'));
+
+    const outcome = await processPriceSyncJob(
+      runDeps(db, api),
+      { jobId: 'term1', integracaoId: CONTA },
+      PRICE_SYNC_MAX_ATTEMPTS - 1,
+    );
+
+    expect(outcome).toBe('failed');
+    const job = db.docs(JOBS_PATH).get('term1') as DocData;
+    expect(job.status).toBe('failed');
+    expect(job.relatorioCompleto).toBe(false);
+    expect(job.filaRestante).toBe(2);
+
+    const linhas = Object.values(linhasDe(db, 'term1'));
+    expect(linhas.filter((l) => l.motivo === 'JOB_INTERROMPIDO')).toHaveLength(1);
+  });
+
+  it('⚠️ a NON-final attempt rethrows and stamps nothing', async () => {
+    // The control. Without it the case above would pass just as well if the
+    // catch stamped on every attempt, which would end the job on the first blip
+    // instead of letting Cloud Tasks retry it.
+    const db = new FakeDb();
+    seedJob(db, 'term2', { fila: [draft('MLB1')], planejamentoConcluido: true });
+    const api = makeApi();
+    api.getItem.mockRejectedValue(new Error('blip'));
+
+    await expect(
+      processPriceSyncJob(runDeps(db, api), { jobId: 'term2', integracaoId: CONTA }, 0),
+    ).rejects.toThrow('blip');
+
+    const job = db.docs(JOBS_PATH).get('term2') as DocData;
+    expect(job.status).toBe('running');
+    expect(db.docs(`${JOBS_PATH}/term2/relatorios`).size).toBe(0);
+  });
+
+  it('records the INTENDED price on a refused send, which is not the same as sent', async () => {
+    // `preco` is the price the plan wanted; only `resultado: 'enviado'` means it
+    // landed. Pinned here because a reader pairing precoAnterior → preco
+    // unconditionally would claim a listing moved when it did not.
+    const db = new FakeDb();
+    seedJob(db, 'term3', { fila: [draft('MLB1')], planejamentoConcluido: true });
+    seedLink(db, 'MLB1');
+    // Listing at 90, draft wants 50, baixarPreco off ⇒ gate 4 refuses.
+    const api = makeApi({ MLB1: mlItem('MLB1', { price: 90, base_price: 90 }) });
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'term3', integracaoId: CONTA }, 0);
+
+    expect(Object.values(linhasDe(db, 'term3'))[0]).toMatchObject({
+      resultado: 'pulado',
+      motivo: 'PRECO_ANTIGO_MAIOR',
+      preco: 50, // intended
+      precoAnterior: 90, // still what the listing carries
+    });
   });
 });

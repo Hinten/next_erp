@@ -40,6 +40,7 @@ import { describeMercadoLivreFailure } from '@/lib/mercado-livre/errors';
 import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { describeMassImportCancelError } from './mercadoLivreJobErrors';
+import { useBaixarRelatorioPreco } from './useBaixarRelatorioPreco';
 import type { ContaRef } from './startJobsForContas';
 
 /** Poll cadence while a job is `running` (unchanged from the conta panel). */
@@ -352,6 +353,7 @@ export function PriceSyncJobCard({
   onDismiss: () => void;
 }) {
   const client = useMercadoLivreClient();
+  const relatorio = useBaixarRelatorioPreco();
   const [detalhesOpened, setDetalhesOpened] = useState(false);
   const query = useQuery({
     queryKey: ['ml-price-sync', conta.id, jobId],
@@ -375,6 +377,14 @@ export function PriceSyncJobCard({
           unknown: 'Não foi possível consultar o envio de preços.',
         });
   const temAmostras = (data?.skips.length ?? 0) > 0 || (data?.failures.length ?? 0) > 0;
+  /**
+   * ⚠️ The CSV is gated on the run being OVER, not on it having samples.
+   * `temAmostras` is right for the skip/failure lists — there is nothing to show
+   * without them — but it would be exactly wrong here: a run with zero skips and
+   * zero failures is a run where every price moved, which is the report an
+   * operator most wants. Gating the export on it would hide the best case.
+   */
+  const podeBaixar = data != null && data.status !== 'running';
 
   return (
     <JobCardShell
@@ -447,9 +457,53 @@ export function PriceSyncJobCard({
               </Modal>
             </>
           )}
+          {podeBaixar && (
+            <BaixarRelatorioButton
+              jobId={jobId}
+              contaId={conta.id}
+              contaNome={conta.nome}
+              baixar={relatorio.baixar}
+              baixando={relatorio.baixando === jobId}
+              pagina={relatorio.pagina}
+            />
+          )}
         </>
       )}
     </JobCardShell>
+  );
+}
+
+/**
+ * "Baixar CSV" for one finished run. Shared by the live card and the Histórico
+ * modal, so the two cannot drift on what a download means.
+ *
+ * The page counter is not decoration: a large report is several sequential round
+ * trips, and a button that looks stuck for ten seconds gets clicked again.
+ */
+export function BaixarRelatorioButton({
+  jobId,
+  contaId,
+  contaNome,
+  baixar,
+  baixando,
+  pagina,
+}: {
+  jobId: string;
+  contaId: string;
+  contaNome: string;
+  baixar: (alvo: { jobId: string; contaId: string; contaNome: string }) => Promise<void>;
+  baixando: boolean;
+  pagina: number;
+}) {
+  return (
+    <Button
+      size="compact-xs"
+      variant="light"
+      loading={baixando}
+      onClick={() => void baixar({ jobId, contaId, contaNome })}
+    >
+      {baixando && pagina > 0 ? `Baixando… página ${String(pagina)}` : 'Baixar CSV'}
+    </Button>
   );
 }
 
