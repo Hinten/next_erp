@@ -21,6 +21,7 @@ import {
   resolveListingModel,
   resolvePrice,
   sizeChartIssue,
+  TABELA_BINDING_RECUSA,
 } from './publishCore';
 
 const produto: PublishProduto = {
@@ -1135,6 +1136,46 @@ describe('sizeChartIssue', () => {
     // `assemblePublishInput` already raises its own `categoria … não definida`.
     { codigo: 'anuncio-sem-categoria', tabMediId: 'tm-1' },
   ];
+
+  /**
+   * ⚠️ The two lists are PARTITIONS of `TABELA_BINDING_RECUSA`, checked against
+   * it below rather than hand-maintained beside it. They were a second, unchecked
+   * copy of the same rule — the very thing that constant exists to end.
+   */
+  it('the two lists reconstitute TABELA_BINDING_RECUSA exactly', () => {
+    const declarados = Object.entries(TABELA_BINDING_RECUSA);
+    expect(RECUSAVEIS.map((m) => m.codigo).sort()).toEqual(
+      declarados
+        .filter(([, recusa]) => recusa)
+        .map(([c]) => c)
+        .sort(),
+    );
+    expect(SILENCIOSOS.map((m) => m.codigo).sort()).toEqual(
+      declarados
+        .filter(([, recusa]) => !recusa)
+        .map(([c]) => c)
+        .sort(),
+    );
+  });
+
+  it('⚠️ no guia declares a domain at all → names only the CATEGORY domain', () => {
+    // ⚠️ Legacy data allows a null `domain_id`, so `dominiosDaTabela` is EMPTY
+    // and the ordinary sentence would read "está no domínio , mas…". Shipped
+    // untested on both copies of this message; it is reachable, so it is pinned.
+    const issue = sizeChartIssue(
+      {
+        codigo: 'dominio-divergente',
+        categoryId: 'MLB1398',
+        nome: 'Camisetas',
+        dominiosDaTabela: [],
+        dominioDaCategoria: 'MLB-T_SHIRTS',
+      },
+      true,
+    )!;
+    expect(issue).toContain('não tem nenhuma guia no domínio MLB-T_SHIRTS');
+    expect(issue).not.toContain('está no domínio ,');
+    expect(issue).not.toContain('categoria de —');
+  });
 
   it('names BOTH domains on the live case — the sentence that is the whole fix', () => {
     const issue = sizeChartIssue(divergente, true);

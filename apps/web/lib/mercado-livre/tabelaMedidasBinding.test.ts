@@ -203,6 +203,20 @@ describe('avisoDominioTabela', () => {
     expect(aviso).toContain('MLB1398');
   });
 
+  it('⚠️ no guia declares a domain at all → names only the CATEGORY domain', () => {
+    // ⚠️ Legacy data: the read schema allows a null `domain_id`, so
+    // `dominiosDaTabela` comes back EMPTY and the ordinary sentence would read
+    // "está no domínio , mas…". This branch was shipped untested on both
+    // copies of the message; it is reachable, so it is asserted.
+    const avaliacao = avaliarTabela([guia({ domain_id: null })], 'MLB-T_SHIRTS', ANUNCIO);
+    expect(avaliacao.resolucao.motivo).toBe('dominio-divergente');
+    const aviso = avisoDominioTabela({ ...base, avaliacao })!;
+    expect(aviso).toContain('não tem nenhuma guia no domínio MLB-T_SHIRTS');
+    // …and it must never print an empty or dangling domain list.
+    expect(aviso).not.toContain('está no domínio ');
+    expect(aviso).not.toContain('categoria de .');
+  });
+
   it('is SILENT while any input is still loading', () => {
     // ⚠️ The never-flash-an-accusation rule this tab already follows for
     // `produtoFotoCount` and `produtoMarca`: `null` is "not arrived", and a

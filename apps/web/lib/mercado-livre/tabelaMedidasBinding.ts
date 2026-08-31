@@ -10,7 +10,7 @@
  * though the ERP held both. The operator had nothing to compare.
  *
  * ⚠️ **Showing the three values is not enough on its own; each is shown AGAINST
- * the anúncio's**, because that comparison is the whole of what the server's
+ * the anúncio's**, because that comparison is the whole of what
  * `resolveSizeChart` does:
  *
  *  1. `domain_id === catalog_domain` is a hard filter — a miss binds nothing;
@@ -18,11 +18,20 @@
  *     against the link doc's own attributes, so a guia in the RIGHT domain whose
  *     gênero disagrees still binds nothing, and that failure is just as silent.
  *
- * ⚠️ **The server is the authority.** This module explains; it never decides.
- * Publish refuses the mismatch itself, before any ML call
- * (`publishCore.ts`'s `sizeChartIssue`), so a drift here shows a wrong ✓ — it
- * cannot let a bad payload out. The rules below are deliberately a
- * line-for-line mirror of `apps/mercado-livre/lib/marketplace/size-charts/sizeChart.ts`.
+ * ⚠️ **The DECISION is imported, not re-implemented.** `resolveSizeChart` comes
+ * from `@delfrance/schemas` and publish calls that same function, so the
+ * `vincula` badge and the warning are literally the answer publish will reach.
+ * What lives here is only the per-attribute DISPLAY layer over it — which guia
+ * cell earns a ✓ — because the server has no reason to compute that.
+ *
+ * ⚠️ This module used to hold a hand-written copy and call itself a
+ * "line-for-line mirror" of the server's, which is the exact phrase the root
+ * `CLAUDE.md` names as the smell. It had drifted twice by the time anyone
+ * checked: `bate()` short-circuited on `value_id` where the resolver ORs (a red
+ * ✗ on a row this same module labelled *vincula*), and the first-candidate
+ * fallback keyed on the FILTERED attribute list where the resolver keys on the
+ * RAW one (a green *vincula* on a pair publish refuses). Do not reintroduce a
+ * local copy of any of it.
  */
 import { type MlSizeChart, type SizeChartResolution, resolveSizeChart } from '@delfrance/schemas';
 
@@ -91,12 +100,17 @@ function acharAtributo(
 /**
  * Does a chart attribute HIT an anúncio attribute?
  *
- * ⚠️ **An OR, not an if/else-if** — the resolver's exact rule, the same one
- * {@link pontos} mirrors below. A matching `value_name` counts as a hit *even
- * when the `value_id`s disagree*, so short-circuiting on ids once both sides
- * carry one renders a red ✗ on a row this same file simultaneously labels
- * **vincula**: two functions describing one decision, disagreeing with each
- * other. The server binds it, so the ✗ was the wrong half.
+ * ⚠️ **An OR, not an if/else-if** — the scoring rule inside `resolveSizeChart`,
+ * which decides the badge. A matching `value_name` counts as a hit *even when
+ * the `value_id`s disagree*, so short-circuiting on ids once both sides carry
+ * one renders a red ✗ on a row this same file simultaneously labels
+ * **vincula**: the cell and the badge describing one decision and disagreeing.
+ * The resolver binds it, so the ✗ was the wrong half.
+ *
+ * ⚠️ This is the ONE place the rule is restated, and only because a per-cell
+ * verdict is a different question from "which guia wins" — the resolver answers
+ * the second and never the first. `NO cell may contradict the badge beside it`
+ * in the test file is what keeps the restatement honest.
  */
 function bate(chart: AtributoValor | null, anuncio: AtributoValor | null): Verdito {
   if (chart == null || anuncio == null) return null;
