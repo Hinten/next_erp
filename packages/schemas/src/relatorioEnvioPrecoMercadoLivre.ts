@@ -110,7 +110,19 @@ export const linhaRelatorioEnvioPrecoSchema = z
      * the job on every retry — the same reasoning as `MAX_DRAFTS_PER_FAMILY`.
      */
     erro: z.string().max(RELATORIO_ENVIO_PRECO_ERRO_MAX).nullable().default(null),
-    /** Reais, as `fila` stores it. The price actually sent; null when nothing was. */
+    /**
+     * Reais, as `fila` stores it — **the price the plan INTENDED to send**, which
+     * was actually sent only when `resultado === 'enviado'`.
+     *
+     * ⚠️ A `pulado`/`falha` row carries it too, on purpose: "we wanted 50 and ML
+     * refused" is the useful half of a `PRECO_ANTIGO_MAIOR` or an
+     * `UPDATE_PRECO_ERROR`. But that makes the field a TRAP for any reader that
+     * treats non-null as "this landed" — a CSV pairing `precoAnterior → preco`
+     * unconditionally would print "de R$ 90,00 para R$ 50,00" for a listing still
+     * sitting at 90 and never touched, which is the exact false claim this report
+     * exists to prevent. **Key the "para" column off `resultado`, never off this
+     * being non-null.**
+     */
     preco: z.number().nullable().default(null),
     /** What the listing carried BEFORE — the half the job used to discard. */
     precoAnterior: z.number().nullable().default(null),

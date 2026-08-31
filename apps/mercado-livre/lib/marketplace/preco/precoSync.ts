@@ -274,6 +274,77 @@ async function readJob(db: Firestore, jobId: string): Promise<EnvioPrecoMercadoL
   );
 }
 
+/**
+ * Stamp a job `failed` from OUTSIDE the dispatch closure — the final-attempt
+ * catch, which cannot reach `fila`/`pendentes`/`checkpoint` because those are
+ * scoped to the try it is attached to.
+ *
+ * It produces the same OUTCOME as `failJob`: one `JOB_INTERROMPIDO` row naming
+ * the cause, plus `filaRestante` so the CSV can say how much was never
+ * attempted. Those two are the whole point — without them a run that abandoned N
+ * queued drafts reads as "0 itens não foram tentados" with no row explaining
+ * anything, which is exactly what `relatorioCompleto: false` alone cannot convey.
+ *
+ * Re-reading is correct rather than merely convenient: whatever the dying
+ * dispatch held in memory is gone, so the last committed checkpoint IS the run's
+ * final state, and its `relatorioLinhas` is the shard cursor the row belongs at.
+ * One batch, so the row and the terminal stamp cannot half-land.
+ */
+async function stampFalhaTerminal(
+  db: Firestore,
+  jobId: string,
+  erro: string,
+  nowMs: number,
+): Promise<void> {
+  const job = await readJob(db, jobId);
+  if (!job) return; // nothing to stamp; the caller still logs the original error
+
+  const linha: LinhaRelatorioEnvioPreco = {
+    produtoId: job.integracaoId,
+    variacaoProdutoId: null,
+    anuncioId: null,
+    linkDocId: null,
+    resultado: ENVIO_PRECO_RESULTADO.naoTentado,
+    fase: ENVIO_PRECO_FASE.envio,
+    motivo: 'JOB_INTERROMPIDO',
+    erro: erro.slice(0, RELATORIO_ENVIO_PRECO_ERRO_MAX),
+    preco: null,
+    precoAnterior: null,
+    variacoes: null,
+  };
+  const total = job.relatorioLinhas + 1;
+  const indice = Math.floor(job.relatorioLinhas / RELATORIO_ENVIO_PRECO_SHARD_SIZE);
+
+  const batch = db.batch();
+  batch.set(
+    relatorioEnvioPrecoMercadoLivreCollection.docRef(
+      db,
+      { envioId: jobId },
+      relatorioEnvioPrecoShardId(indice),
+    ),
+    relatorioEnvioPrecoMercadoLivreCollection.parseMerge({
+      linhas: { [relatorioEnvioPrecoRowKey(linha)]: linha },
+      timestamp: nowMs,
+    }) as DocumentData,
+    { merge: true },
+  );
+  batch.set(
+    envioPrecoMercadoLivreCollection.docRef(db, {}, jobId),
+    envioPrecoMercadoLivreCollection.parseMerge({
+      status: 'failed',
+      erro,
+      filaRestante: job.fila.length,
+      relatorioLinhas: total,
+      relatorioShards: Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1,
+      relatorioCompleto: false,
+      finishedAt: nowMs,
+      updatedAt: nowMs,
+    }) as DocumentData,
+    { merge: true },
+  );
+  await batch.commit();
+}
+
 /** Deterministic outcome of one dispatch — see the module doc for each branch. */
 export type PriceSyncDispatchOutcome = 'done' | 'continued' | 'noop' | 'failed';
 
@@ -819,16 +890,19 @@ export async function processPriceSyncJob(
     // log) a secondary failure while stamping it, never masking the original
     // error.
     try {
-      await envioPrecoMercadoLivreCollection.merge(db, {}, payload.jobId, {
-        status: 'failed',
-        erro: err.message,
-        // Whatever rows this dispatch had queued died with the throw, so the
-        // report stops wherever the last committed checkpoint left it — which is
-        // precisely what `relatorioCompleto: false` tells the CSV.
-        relatorioCompleto: false,
-        finishedAt: nowMs,
-        updatedAt: nowMs,
-      });
+      // ⚠️ The SAME outcome `failJob` produces, and it has to be: a persistent ML
+      // 5xx, a `batch.commit()` failure and a `scheduler.enqueue()` failure all
+      // land here, and this used to write only `status`/`erro` — so `filaRestante`
+      // stayed at its schema default `0` and no `JOB_INTERROMPIDO` row existed.
+      // The CSV would then have rendered a run that abandoned N queued drafts as
+      // "0 itens não foram tentados", with nothing in the report naming the cause.
+      //
+      // It re-reads rather than sharing `failJob`'s state because `fila`,
+      // `pendentes` and `checkpoint` are all scoped to the try this catch is
+      // attached to. The persisted doc is the right source anyway: whatever this
+      // dispatch had queued in memory died with the throw, so the last committed
+      // checkpoint IS the run's final state.
+      await stampFalhaTerminal(db, payload.jobId, err.message, nowMs);
     } catch (persistErr) {
       if (!(persistErr instanceof Error)) throw persistErr;
       console.error(
