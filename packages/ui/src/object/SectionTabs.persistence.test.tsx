@@ -84,6 +84,67 @@ describe('SectionTabs persistence', () => {
     expect(count(log, 'A:unmount')).toBe(2);
   });
 
+  /**
+   * The consequence that costs data, pinned separately from the effect log: a
+   * panel that registers a save-time callback into a parent-owned ref loses that
+   * registration the moment its tab is hidden. The parent then calls
+   * `ref.current?.()` on `null` and skips the writes with no error — which is
+   * what happened to the produto Kit tab (#1374) and, before it, to Mercado
+   * Livre (`728cb9cc`).
+   */
+  function FlushProbe({ flushRef }: { flushRef: { current: (() => void) | null } }) {
+    useEffect(() => {
+      flushRef.current = () => undefined;
+      return () => {
+        flushRef.current = null;
+      };
+    }, [flushRef]);
+    return <div data-testid="flush-probe" />;
+  }
+
+  function FlushHarness({
+    flushRef,
+    persistent,
+  }: {
+    flushRef: { current: (() => void) | null };
+    persistent: boolean;
+  }) {
+    const [value, setValue] = useState<string | null>('B');
+    return (
+      <MantineProvider>
+        <SectionTabs
+          sections={['A', 'B']}
+          contents={{ A: <div />, B: <FlushProbe flushRef={flushRef} /> }}
+          value={value}
+          onChange={setValue}
+          persistentSections={persistent ? ['B'] : undefined}
+        />
+      </MantineProvider>
+    );
+  }
+
+  it('drops a non-persistent section’s flush registration when its tab is hidden', () => {
+    const flushRef: { current: (() => void) | null } = { current: null };
+    render(<FlushHarness flushRef={flushRef} persistent={false} />);
+    expect(flushRef.current).not.toBeNull();
+
+    switchTo('A');
+
+    // The known-BAD control: this is the silent skip, reproduced.
+    expect(flushRef.current).toBeNull();
+  });
+
+  it('keeps a persistent section’s flush registration across a tab switch', () => {
+    const flushRef: { current: (() => void) | null } = { current: null };
+    render(<FlushHarness flushRef={flushRef} persistent />);
+    expect(flushRef.current).not.toBeNull();
+
+    switchTo('A');
+
+    // The fix: a save issued from another tab still finds the callback.
+    expect(flushRef.current).not.toBeNull();
+  });
+
   it('reports the active section to the subtree', () => {
     const log: string[] = [];
     render(<Harness log={log} persistent />);

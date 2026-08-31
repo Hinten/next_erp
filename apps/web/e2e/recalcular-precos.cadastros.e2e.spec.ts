@@ -209,18 +209,28 @@ test.describe.serial('Recalcular preços e2e (#544)', () => {
     await page.getByRole('button', { name: 'Confirmar', exact: true }).click();
     await expect(page.getByText('Recálculo concluído')).toBeVisible({ timeout: 90_000 });
 
+    // ⚠️ `toMatchObject`, not `toEqual`: this spec applies a CATALOGUE-WIDE
+    // recálculo, so a concurrent cadastros run doing the same thing adds ITS
+    // lista id to the same produtos' `precos` map. Exact equality made the spec
+    // fail whenever two runs overlapped — two stacked PRs is enough — while
+    // asserting nothing extra about correctness: what matters is that THIS run's
+    // lista landed with the computed value. apps/web/CLAUDE.md rule 8: a staging
+    // spec must tolerate rows written by whichever concurrent spec touched the
+    // same doc.
     await expect
       .poll(async () => (await getProdutoData(simplesId))?.precos, { timeout: 15_000 })
-      .toEqual({ [varejoId]: { valor: 25 } });
+      .toMatchObject({ [varejoId]: { valor: 25 } });
     await expect
       .poll(async () => (await getProdutoData(parentId))?.precos, { timeout: 15_000 })
-      .toEqual({ [varejoId]: { valor: 25 } });
+      .toMatchObject({ [varejoId]: { valor: 25 } });
     await expect
       .poll(async () => (await getProdutoData(kitId))?.precos, { timeout: 15_000 })
-      .toEqual({ [varejoId]: { valor: 25 } });
+      .toMatchObject({ [varejoId]: { valor: 25 } });
     // Gated out: already priced ABOVE the computed value — "Aumentar" leaves
     // it untouched.
-    expect((await getProdutoData(aumentoId))?.precos).toEqual({ [varejoId]: { valor: 30 } });
+    expect((await getProdutoData(aumentoId))?.precos).toMatchObject({
+      [varejoId]: { valor: 30 },
+    });
     // Never entered the apply set at all (erro !== null upstream, filtered
     // before the write step ever sees it).
     expect((await getProdutoData(semCustoId))?.precos).toBeUndefined();

@@ -52,6 +52,57 @@ const EQUIV: MedidaColumnSpec = {
 const apply = (answer: unknown) => applyAiMedidas(ROWS, COLUMNS, answer);
 const applyEquiv = (answer: unknown) => applyAiMedidas(ROWS, [...COLUMNS, EQUIV], answer);
 
+/**
+ * Two options ONE LETTER apart. The shared `COLUMNS` fixture has `Justa`/`Solta`,
+ * which no plausible widening confuses; a near-miss needs neighbours.
+ */
+const FIT_PAIR: MedidaColumnSpec[] = [
+  {
+    attributeId: 'FIT',
+    label: 'Modelagem',
+    kind: 'select',
+    unitId: null,
+    required: false,
+    values: [
+      { id: 'F1', name: 'Justa' },
+      { id: 'F2', name: 'Justo' },
+    ],
+  },
+];
+
+describe('applyAiMedidas — where the closed-list fold STOPS', () => {
+  it('picks the option that matches, not the sibling one letter away', () => {
+    // `normalizeLoose` folds case and accents and NOTHING else. Two real ML
+    // options a letter apart have to stay two options, or a model answer lands
+    // on the wrong `value_id` and ships to a live listing.
+    expect(applyAiMedidas(ROWS, FIT_PAIR, { P: { FIT: 'justo' } })).toEqual([
+      {
+        rowKey: 'g/1/v/p',
+        attributeId: 'FIT',
+        value_id: 'F2',
+        value_name: 'Justo',
+        valueList: null,
+      },
+    ]);
+  });
+
+  it('refuses a bare PREFIX of an option, keeping it as free text', () => {
+    // ⭐ The half a same-length pair cannot cover. `Justa`/`Justo` kill a
+    // TRUNCATING fold; only a strict prefix kills a `.startsWith` one. On a
+    // `select` an unmatched answer degrades to free text, so the tell is
+    // `value_id: null` — ML then says what is wrong instead of us inventing an id.
+    expect(applyAiMedidas(ROWS, FIT_PAIR, { P: { FIT: 'Just' } })).toEqual([
+      {
+        rowKey: 'g/1/v/p',
+        attributeId: 'FIT',
+        value_id: null,
+        value_name: 'Just',
+        valueList: null,
+      },
+    ]);
+  });
+});
+
 describe('applyAiMedidas — the size-equivalence column', () => {
   it('resolves an ARRAY answer to every matching option', () => {
     // The whole point of the column: ML's own docs map one row ("Small") onto
@@ -85,6 +136,18 @@ describe('applyAiMedidas — the size-equivalence column', () => {
       { id: '3259450', name: '38' },
       { id: '3259451', name: '40' },
     ]);
+  });
+
+  it('never matches a PREFIX of a standard size', () => {
+    // ⭐ THE NEAR-MISS for the ARRAY path's `normalizeLoose` fold. The cases
+    // around it are FAR-misses — `'XG'` is nothing like `'38'` — so they prove
+    // the fold APPLIES without pinning where it STOPS. `'3'` is one edit from
+    // three real options; a fold that reached past exact equality would resolve
+    // it to `34` and ship a size filter the guia never claimed.
+    // Same failure `chartRows.test.ts` names for the same helper: `4` claiming
+    // `40`. Mutation: `===` → `.startsWith(...)` at medidasApply.ts must red this.
+    expect(applyEquiv({ P: { FILTRABLE_SIZE: ['3'] } })).toEqual([]);
+    expect(applyEquiv({ P: { FILTRABLE_SIZE: ['4'] } })).toEqual([]);
   });
 
   it('drops members outside the closed list, keeping the rest', () => {
@@ -211,15 +274,19 @@ describe('applyAiMedidas — what it drops', () => {
 });
 
 describe('applyAiMedidas — the decimal separator', () => {
-  it('rewrites a pt-BR comma decimal so measureStruct can parse it', () => {
-    // Brazilian size tables print commas, so the model reading one back verbatim
-    // is the expected case. `measureStruct` parses with a single comma→dot
-    // replace; a value it cannot parse is rejected at send time, per cell.
-    expect(apply({ P: { CHEST: '10,5' } })[0]?.value_name).toBe('10.5');
+  it('localizes a dot decimal so an AI cell looks like a typed one', () => {
+    // The grid stores measurements as strings and a pt-BR operator types
+    // `10,5`. This used to run the other way, on the false premise that
+    // `measureStruct` needed a dot — it opens with `.replace(',', '.')`.
+    expect(apply({ P: { CHEST: '10.5' } })[0]?.value_name).toBe('10,5');
   });
 
-  it('leaves a value that already uses a dot alone', () => {
-    expect(apply({ P: { CHEST: '10.5' } })[0]?.value_name).toBe('10.5');
+  it('leaves a value that already uses a comma alone', () => {
+    expect(apply({ P: { CHEST: '10,5' } })[0]?.value_name).toBe('10,5');
+  });
+
+  it('leaves a whole number alone', () => {
+    expect(apply({ P: { CHEST: '52' } })[0]?.value_name).toBe('52');
   });
 
   it('leaves an ambiguous thousands-separated string alone', () => {
@@ -228,8 +295,10 @@ describe('applyAiMedidas — the decimal separator', () => {
     expect(apply({ P: { CHEST: '1.234,5' } })[0]?.value_name).toBe('1.234,5');
   });
 
-  it('does NOT rewrite a comma in a non-numeric column', () => {
-    expect(apply({ P: { FIT: 'Justa, solta' } })[0]?.value_name).toBe('Justa, solta');
+  it('does NOT localize a dot in a non-numeric column', () => {
+    // ANTI-VACUITY: the guard is `column.kind === 'number'`, and without this
+    // case a rule applied to every column would pass every other case here.
+    expect(apply({ P: { FIT: 'Justa 1.5' } })[0]?.value_name).toBe('Justa 1.5');
   });
 });
 

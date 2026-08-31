@@ -282,6 +282,33 @@ describe('buildMedidasSchema — caps and collisions are reported, never silent'
     expect(built.truncated).toBe(true);
   });
 
+  it('keeps two size labels that differ by more than case and accents', () => {
+    // ⭐ THE NEAR-MISS. The two tests above prove the dedupe key FOLDS; neither
+    // proves it stops folding. A key that reached further — stripping spaces,
+    // punctuation or leading zeros — would silently DROP a real row and pin the
+    // blame on `truncated`, and the operator would get a guia missing a size.
+    // `P`/`PP` and `01`/`1` are the shapes a wider fold collapses first.
+    const distintos: MedidaRowSpec[] = [
+      { key: 'g/1/v/a', size: 'P' },
+      { key: 'g/1/v/b', size: 'PP' },
+      { key: 'g/1/v/c', size: '01' },
+      { key: 'g/1/v/d', size: '1' },
+    ];
+    const built = buildMedidasSchema(distintos, COLUMNS);
+
+    expect(built.rows).toHaveLength(4);
+    // ⚠️ The SET, not the order. `Object.keys` emits integer-like keys first in
+    // ascending numeric order, so a numeric size label does not sit where its
+    // row does (`'1'` leads, while `'01'` is not an array index and keeps
+    // insertion order). That is incidental to this fold — `applyAiMedidas`
+    // resolves by NAME — and asserting the order would pin a JS detail instead
+    // of the property under test.
+    expect([...Object.keys(built.schema.properties ?? {})].sort()).toEqual(
+      ['P', 'PP', '01', '1'].sort(),
+    );
+    expect(built.truncated).toBe(false);
+  });
+
   it('drops a blank size label', () => {
     const built = buildMedidasSchema([{ key: 'g/1/v/a', size: '  ' }], COLUMNS);
     expect(built.rows).toHaveLength(0);

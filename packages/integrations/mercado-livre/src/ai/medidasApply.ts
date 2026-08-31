@@ -8,6 +8,16 @@
  * a review modal and applied cell by cell by the operator; nothing here writes.
  */
 import { aiCellKey, coerceText, normalizeLoose, preCheckedCells } from '@delfrance/ai';
+/**
+ * ⚠️ This used to run the OTHER way — a private `normalizeDecimal` rewrote
+ * `'10,5'` to `'10.5'`, claiming `measureStruct` needed a dot. It does not:
+ * `measureStruct` (`apps/mercado-livre/lib/marketplace/size-charts/sizeChartSync.ts`)
+ * opens with `String(value).trim().replace(',', '.')`, and its own docblock says
+ * values arrive "como o operador digitou, que em pt-BR significa `'10,5'`". So
+ * the conversion bought nothing and cost the localization: every AI-filled cell
+ * showed a dot in a grid where every typed cell shows a comma.
+ */
+import { localizarDecimal } from '@delfrance/core/decimal';
 
 import { NA_VALUE_ID } from './attributeApply';
 import type { MedidaColumnSpec, MedidaRowSpec } from './medidasSchema';
@@ -130,7 +140,10 @@ export function applyAiMedidas(
         rowKey,
         attributeId,
         value_id: null,
-        value_name: column.kind === 'number' ? normalizeDecimal(text) : text,
+        // ⚠️ Localised, not normalised. See the note above `localizarDecimal`'s
+        // import: the grid stores what the operator typed, and in pt-BR that is
+        // `10,5`. An AI cell has to be indistinguishable from a typed one.
+        value_name: column.kind === 'number' ? localizarDecimal(text) : text,
         valueList: null,
       });
     }
@@ -163,25 +176,6 @@ function matchList(raw: unknown[], column: MedidaColumnSpec): Array<{ id: string
     out.push({ id: match.id, name: match.name });
   }
   return out;
-}
-
-/**
- * `"10,5"` → `"10.5"`.
- *
- * ⚠️ Not cosmetic. `measureStruct` in the sync path parses this with `Number()`
- * after a single comma→dot replace to build ML's `struct: {number, unit}`, and a
- * value ML cannot parse is rejected at send time with a per-cell error the
- * operator then has to fix by hand. Brazilian size tables print commas, so the
- * model reading one back verbatim is the *expected* case, not the odd one.
- *
- * A thousands separator (`1.234,5`) is left alone deliberately: no garment
- * measurement reaches four digits, so a string shaped like that is not a
- * measurement and guessing at it would invent data.
- */
-function normalizeDecimal(text: string): string {
-  const commas = (text.match(/,/g) ?? []).length;
-  if (commas !== 1 || text.includes('.')) return text;
-  return text.replace(',', '.');
 }
 
 /**

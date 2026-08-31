@@ -23,7 +23,8 @@ import {
 import { describeMercadoLivreFailure, mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
-import { PriceSyncEntryList } from './MercadoLivreJobCards';
+import { BaixarRelatorioButton, PriceSyncEntryList } from './MercadoLivreJobCards';
+import { useBaixarRelatorioPreco } from './useBaixarRelatorioPreco';
 import type { ContaRef } from './startJobsForContas';
 
 /** Runs fetched per open. Matches the route's own default. */
@@ -48,6 +49,9 @@ export function PriceSyncHistoricoModal({
   onClose: () => void;
 }) {
   const client = useMercadoLivreClient();
+  // ONE hook for the whole list: the button is shared with the live card, so the
+  // two surfaces cannot drift on what a download means.
+  const relatorio = useBaixarRelatorioPreco();
   const query = useQuery({
     queryKey: ['ml-price-sync-historico', conta.id],
     queryFn: () => {
@@ -104,7 +108,7 @@ export function PriceSyncHistoricoModal({
       ) : (
         <Stack gap="md">
           {data.envios.map((envio) => (
-            <EnvioRow key={envio.jobId} envio={envio} />
+            <EnvioRow key={envio.jobId} envio={envio} conta={conta} relatorio={relatorio} />
           ))}
           {data.envios.length === HISTORICO_LIMITE && (
             // The page is capped, and a list that just stops reads as complete.
@@ -118,7 +122,15 @@ export function PriceSyncHistoricoModal({
   );
 }
 
-function EnvioRow({ envio }: { envio: MercadoLivrePriceSyncHistoricoEntry }) {
+function EnvioRow({
+  envio,
+  conta,
+  relatorio,
+}: {
+  envio: MercadoLivrePriceSyncHistoricoEntry;
+  conta: ContaRef;
+  relatorio: ReturnType<typeof useBaixarRelatorioPreco>;
+}) {
   const [detalhesAbertos, setDetalhesAbertos] = useState(false);
   const rotulo = STATUS_LABEL[envio.status];
   const temAmostras = envio.skips.length > 0 || envio.failures.length > 0;
@@ -158,6 +170,17 @@ function EnvioRow({ envio }: { envio: MercadoLivrePriceSyncHistoricoEntry }) {
         <Text size="xs" c="red.7">
           {envio.erro ? `Erro: ${envio.erro}` : 'O envio terminou em falha.'}
         </Text>
+      )}
+
+      {envio.status !== 'running' && (
+        <BaixarRelatorioButton
+          jobId={envio.jobId}
+          contaId={conta.id}
+          contaNome={conta.nome}
+          baixar={relatorio.baixar}
+          baixando={relatorio.baixando === envio.jobId}
+          pagina={relatorio.pagina}
+        />
       )}
 
       {temAmostras && (

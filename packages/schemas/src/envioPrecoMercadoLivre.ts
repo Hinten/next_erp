@@ -82,6 +82,20 @@ export const envioPrecoSkipSchema = z
     itemId: z.string().nullable().default(null),
     produtoId: z.string().min(1),
     code: z.string().min(1),
+    /**
+     * Which link produced the skip. ⚠️ Without it a produto that skips `SEM_LINK`
+     * under parent link A and under parent link B collapses to ONE row: the
+     * plan-time skips are pushed from inside `for (const link of row.links)`,
+     * so the pair `(produtoId, code)` is not unique. It is also part of the
+     * report's row key, where the same collision would silently merge two rows.
+     */
+    linkDocId: z.string().nullable().default(null),
+    /**
+     * The listing's price BEFORE, when a gate got far enough to read it — null
+     * for every plan-time skip, which never calls ML. Carried so the existing
+     * "Ver detalhes" sample can show "de X para Y" like the manual push does.
+     */
+    precoAnterior: z.number().nullable().default(null),
   })
   .passthrough();
 export type EnvioPrecoSkip = z.infer<typeof envioPrecoSkipSchema>;
@@ -171,6 +185,39 @@ export const envioPrecoMercadoLivreSchema = z.object({
   skips: z.array(envioPrecoSkipSchema).default([]),
   /** The first `PRICE_SYNC_FAILURES_CAP` failures, for the UI (same cap rule). */
   failures: z.array(envioPrecoFailureSchema).default([]),
+  /**
+   * Rows written to the `relatorios` subcollection so far. Doubles as the shard
+   * CURSOR: `floor(relatorioLinhas / RELATORIO_ENVIO_PRECO_SHARD_SIZE)` is the
+   * shard a new row lands in, so it is a pure function of a value that only ever
+   * advances on a committed checkpoint — which is what makes a retry recompute
+   * the SAME shard index rather than drifting.
+   *
+   * ⚠️ An upper bound on distinct rows, not an exact count: a replay overwrites
+   * an existing key while still incrementing this, so shards end up slightly
+   * under {@link RELATORIO_ENVIO_PRECO_SHARD_SIZE}. Harmless — the exact count is
+   * `Σ Object.keys(linhas).length`, computed at download.
+   */
+  relatorioLinhas: z.number().int().default(0),
+  /** How many shard documents exist — what the download pages over. */
+  relatorioShards: z.number().int().default(0),
+  /**
+   * The report covers the WHOLE run. Written true only on the `completed` flip,
+   * i.e. fila drained AND `planejamentoConcluido` AND `reconciliacaoConcluida`.
+   *
+   * ⚠️ This is the CSV's completeness marker, and it is why a partial report
+   * cannot read as a clean one — the same discipline as the NF-e report's totals
+   * trailer and as `RECONCILIACAO_INCOMPLETA`. It also distinguishes "no report"
+   * (a job written before this shipped: 0 shards, flag false) from "nothing was
+   * planned" (0 shards, flag TRUE) — conflating those hands the operator a blank
+   * file and the conclusion that the catalogue is clean.
+   */
+  relatorioCompleto: z.boolean().default(false),
+  /**
+   * Drafts still queued when the job died. Written by the terminal failure stamp
+   * so the CSV can say how much was never attempted, without flushing up to
+   * `PLAN_PAGE_DRAFTS_CAP` `nao-tentado` rows to say it.
+   */
+  filaRestante: z.number().int().default(0),
   /** The authed uid that clicked "Atualizar preços" (`null` when unknown). */
   startedBy: z.string().nullable().default(null),
   startedAt: millisSinceEpoch(),

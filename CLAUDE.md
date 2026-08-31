@@ -344,6 +344,24 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   **rehearsal** (dry-run counts, then a clean second pass as the idempotence
   check), never a data-preservation goal. ⚠️ **The script is not done until its
   issue exists** — a merged script nobody runs is a no-op.
+- **Writing something that decides whether two values are "the same"? Test the
+  fold's SCOPE, not just that it applies.** A *fold* is any transform whose
+  output drives an equality, a `Set`/`Map` key or a diff — `normalizeLoose`, the
+  `@delfrance/core/decimal` helpers, `deepEqual`/`stripNullsDeep`. ⚠️ A test that
+  the fold APPLIES cannot show where it STOPS, and the gap is silent: #1372's row
+  diff folded `value_name` to a NUMBER, so `'90,5'` ≡ `'90,50'` and `'01'` ≡
+  `'1'` — real edits read as "no change", and since `persistProgress` opens with
+  `if (!updated) return;` they reached neither Mercado Livre **nor** Firestore,
+  behind a 200. **Eight mutation tests passed**; every one asked "does it fold?",
+  none asked "does it fold too much?". So write **both**: a pair that must come
+  out equal, and a **near-miss** that must stay distinct. Backstopped by
+  `packages/config-eslint/rules/equivalence-fold-inventory.test.js` — using one
+  of those helpers in a new file reds CI until you say what the fold treats as
+  equal, what must stay distinct, and which test pins it. ⚠️ It matches the
+  shared helpers only; a hand-rolled
+  `a.trim().toLowerCase() === b.trim().toLowerCase()` is invisible to it (the
+  wider pattern was measured at ~47 mostly-irrelevant files and rejected), so
+  route comparisons through the shared readers.
 - **New e2e test** → the **filename suffix picks the lane**, nothing else to
   wire: `.cadastros.e2e.spec.ts` (master data), `.vendas.e2e.spec.ts`
   (sales/fiscal/config), `.emulator.e2e.spec.ts` (offline), `.smoke.spec.ts`.

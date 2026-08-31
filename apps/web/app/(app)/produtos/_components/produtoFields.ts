@@ -26,6 +26,15 @@ import { dimensaoRenderInput, pesoRenderInput } from './PesoField';
 export const SECTION_MERCADO_LIVRE = 'Mercado Livre';
 
 /**
+ * The two other tabs that register a flush closure the edit page calls in
+ * `onAfterSave` — named once for the same reason as `SECTION_MERCADO_LIVRE`:
+ * each has to appear in the section list, in a field's `section:` and in
+ * `PRODUTO_PERSISTENT_SECTIONS`, and a typo in any one of them is silent.
+ */
+export const SECTION_VARIACOES = 'Variações';
+export const SECTION_KIT = 'Kit';
+
+/**
  * Tab order shared by every Produto screen, WITHOUT the Mercado Livre tab —
  * Variações before the media tabs.
  *
@@ -42,11 +51,11 @@ export const PRODUTO_SECTIONS_BASE: string[] = [
   'Descrição',
   'Dimensões e peso',
   'Configurações',
-  'Kit',
+  SECTION_KIT,
   'Preço e custo',
   'Estoque',
   'Impostos',
-  'Variações',
+  SECTION_VARIACOES,
   'Fotos',
   'Vídeos',
   'Anexos',
@@ -102,19 +111,44 @@ export const produtoObjectViewSchema = produtoPageBaseSchema.extend({
 
 /**
  * Sections whose content must survive a tab switch fully mounted — passed to
- * `ObjectView.persistentSections`. Mercado Livre is the one: its listing forms
- * hold unsaved edits, in-flight requests and the flush closure the edit page
- * calls in `onAfterSave`, all of which the default `<Activity mode="hidden">`
- * suspension tears down and re-runs (see the docblock on `MercadoLivreTab`).
+ * `ObjectView.persistentSections`. **Every tab that registers a flush closure
+ * the edit page calls in `onAfterSave` belongs here**, because the default
+ * `<Activity mode="hidden">` suspension tears down that subtree's effects (see
+ * the docblock on `SectionTabs`) and takes the registration with them:
  *
- * ⚠️ Lives here, beside `SECTION_MERCADO_LIVRE`, because nothing enforces the
- * pairing: a page that renders `MercadoLivreTab` in a tabset WITHOUT this still
- * looks right — the lazy gate keeps working through `useSectionActive()` —
- * while silently restoring all three bugs (discarded edits, a "Salvar
- * alterações" from another tab that skips the listing writes, and a leave-guard
- * that reports nothing pending). One import beats one omission.
+ *  - **Mercado Livre** — its listing forms also hold unsaved edits and in-flight
+ *    requests (see the docblock on `MercadoLivreTab`).
+ *  - **Kit** — `KitVariacoesManager` nulls its ref on teardown, so a save from
+ *    another tab hit `flushKitVariacoesRef.current?.(id)` on `null` and the
+ *    staged `componentesKit` maps were silently never written.
+ *  - **Variações** — `VariationManager` kept a closure over a snapshot whose
+ *    listener had already been unsubscribed, so the flush rewrote `nome`/`sku`/
+ *    `variacoesUid`/`ordem` from frozen data and a second save re-issued the
+ *    whole batch.
+ *
+ * ⚠️ Persisting a section is NOT free, and the listener argument only covers
+ * half of it. The snapshot side is genuinely free here — the edit page already
+ * holds the same `paiId ==` children query and produto doc open for the whole
+ * session, so neither adds a query shape (Estoque/Vídeos/Anexos would, which is
+ * why the tabset as a whole is still not persistent). What is NOT free is
+ * anything a persisted subtree does EAGERLY: the Kit panel also mounts
+ * `KitManager`, whose `getDocFromServer` fan-out and `shouldDirty` form sync
+ * would then run on every kit produto's edit-page load and arm the
+ * unsaved-changes guard before the operator touched anything. That work stays
+ * behind a `useSectionActive()` latch inside `KitManager`. Persist a section for
+ * the registration; keep its expensive work gated on first open.
+ *
+ * ⚠️ Lives here, beside the section constants, because nothing in the type
+ * system enforces the pairing: a page that renders a flush-registering tab in a
+ * tabset WITHOUT listing it here still looks right, while silently restoring
+ * the bugs above. `produtoFields.test.ts` is the backstop; one import beats one
+ * omission.
  */
-export const PRODUTO_PERSISTENT_SECTIONS: string[] = [SECTION_MERCADO_LIVRE];
+export const PRODUTO_PERSISTENT_SECTIONS: string[] = [
+  SECTION_MERCADO_LIVRE,
+  SECTION_KIT,
+  SECTION_VARIACOES,
+];
 
 /**
  * Per-field labels + section (tab) assignment. Fields not listed here fall to

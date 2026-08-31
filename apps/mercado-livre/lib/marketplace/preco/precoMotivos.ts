@@ -70,6 +70,12 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
     'O anúncio aponta para um produto que não existe mais. Refaça o vínculo ou remova o anúncio.',
   RECONCILIACAO_INCOMPLETA:
     'A conferência de anúncios não enumerados foi interrompida — o relatório está incompleto.',
+  // The account-wide job's terminal failure. ONE synthetic row stands for the
+  // whole remainder — the count rides `filaRestante` — so this message has to
+  // say that the rest was never attempted, not merely that something failed.
+  JOB_INTERROMPIDO:
+    'O envio foi interrompido antes do fim. Os itens que ainda estavam na fila não foram ' +
+    'enviados — rode o envio de preços de novo para concluí-los.',
 };
 
 /**

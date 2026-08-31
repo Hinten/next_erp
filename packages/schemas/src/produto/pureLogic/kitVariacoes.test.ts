@@ -247,7 +247,9 @@ describe('resolveStagedKitVariacoes', () => {
   });
 
   it('matches a new (unsaved) row to its real child by variacoesUid (sameCombo)', () => {
-    // Staged under a temp key; the real child was minted with a fresh id at flush.
+    // The fallback: `tmp1` is NOT among the real children, so neither exact
+    // branch can fire and the combo match has to carry it. That happens when
+    // the child was written under some id other than the row's own key.
     const out = resolveStagedKitVariacoes({
       stagedByKey: { tmp1: mapFor('cA-P') },
       rows: [{ key: 'tmp1', id: null, variacoesUid: [fp('gT', 'P')] }],
@@ -275,5 +277,74 @@ describe('resolveStagedKitVariacoes', () => {
       realChildren: [{ id: 'real-P', variacoesUid: [fp('gT', 'P')] }],
     });
     expect(out).toEqual([{ id: 'real-P', componentesKit: mapFor('cA-P') }]);
+  });
+
+  it('resolves a staged row by its pre-minted key once that child exists', () => {
+    // `apps/web` mints the child's doc id when the row is staged, so the key IS
+    // the id — no combo guessing needed the moment the document lands.
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { minted1: mapFor('cA-P') },
+      rows: [{ key: 'minted1', id: null, variacoesUid: [fp('gT', 'P')] }],
+      realChildren: [{ id: 'minted1', variacoesUid: [fp('gT', 'P')] }],
+    });
+    expect(out).toEqual([{ id: 'minted1', componentesKit: mapFor('cA-P') }]);
+  });
+
+  it('prefers the pre-minted key over a sibling that merely shares the combo', () => {
+    // Both children match by combo, and the combo-only sibling comes FIRST — so
+    // this fails if the key branch is missing or ordered after the fallback.
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { minted1: mapFor('cA-P') },
+      rows: [{ key: 'minted1', id: null, variacoesUid: [fp('gT', 'P')] }],
+      realChildren: [
+        { id: 'other-P', variacoesUid: [fp('gT', 'P')] },
+        { id: 'minted1', variacoesUid: [fp('gT', 'P')] },
+      ],
+    });
+    expect(out).toEqual([{ id: 'minted1', componentesKit: mapFor('cA-P') }]);
+  });
+
+  it('never lets an empty-combo row claim a combo-less child', () => {
+    // `sameCombo([], [])` is true, so without the guard the manually added row
+    // `K` claims the legacy child `L` and its map is written onto the wrong
+    // document. `K`'s own child does not exist here, so no exact branch fires:
+    // the row must resolve to NOTHING and stay staged.
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { K: mapFor('cA') },
+      rows: [
+        { key: 'K', id: null, variacoesUid: [] },
+        { key: 'L', id: 'L', variacoesUid: [] },
+      ],
+      realChildren: [{ id: 'L', variacoesUid: [] }],
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('does not let a fallback row steal a child another row resolves exactly', () => {
+    // Ordering must not decide: `A` can only resolve by combo (its document was
+    // written under a reused id, so it is not among the children here) and is
+    // listed FIRST, while `B`'s child exists under `B`'s own key. A greedy
+    // per-row ladder hands `B`'s child to `A` and drops `B`'s map entirely.
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { A: mapFor('cA'), B: mapFor('cB') },
+      rows: [
+        { key: 'A', id: null, variacoesUid: [fp('gT', 'P')] },
+        { key: 'B', id: null, variacoesUid: [fp('gT', 'P')] },
+      ],
+      realChildren: [{ id: 'B', variacoesUid: [fp('gT', 'P')] }],
+    });
+    expect(out).toEqual([{ id: 'B', componentesKit: mapFor('cB') }]);
+  });
+
+  it('still resolves an empty-combo row by its key — the guard is only on the fallback', () => {
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { K: mapFor('cA') },
+      rows: [{ key: 'K', id: null, variacoesUid: [] }],
+      realChildren: [
+        { id: 'L', variacoesUid: [] },
+        { id: 'K', variacoesUid: [] },
+      ],
+    });
+    expect(out).toEqual([{ id: 'K', componentesKit: mapFor('cA') }]);
   });
 });

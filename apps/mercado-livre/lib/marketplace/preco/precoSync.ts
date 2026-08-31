@@ -54,18 +54,29 @@
  * WITHOUT consuming the draft, a `fatal` stamps the job `failed`, and
  * `pulado`/`falha` feed the capped detail lists behind uncapped counters.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import {
+  ENVIO_PRECO_FASE,
   ENVIO_PRECO_MERCADO_LIVRE_STATUS,
+  ENVIO_PRECO_RESULTADO,
+  type EnvioPrecoFase,
   type EnvioPrecoMercadoLivre,
+  type LinhaRelatorioEnvioPreco,
+  RELATORIO_ENVIO_PRECO_ERRO_MAX,
+  RELATORIO_ENVIO_PRECO_SHARD_SIZE,
   idFromRef,
+  relatorioEnvioPrecoRowKey,
+  relatorioEnvioPrecoShardId,
 } from '@delfrance/schemas';
 import {
   MercadoLivreHttpError,
   createMercadoLivreApi,
 } from '@delfrance/integrations-mercado-livre';
-import { envioPrecoMercadoLivreCollection } from '@delfrance/data/admin/collections';
+import {
+  envioPrecoMercadoLivreCollection,
+  relatorioEnvioPrecoMercadoLivreCollection,
+} from '@delfrance/data/admin/collections';
 
 import {
   PLAN_PAGE_DRAFTS_CAP,
@@ -263,6 +274,77 @@ async function readJob(db: Firestore, jobId: string): Promise<EnvioPrecoMercadoL
   );
 }
 
+/**
+ * Stamp a job `failed` from OUTSIDE the dispatch closure — the final-attempt
+ * catch, which cannot reach `fila`/`pendentes`/`checkpoint` because those are
+ * scoped to the try it is attached to.
+ *
+ * It produces the same OUTCOME as `failJob`: one `JOB_INTERROMPIDO` row naming
+ * the cause, plus `filaRestante` so the CSV can say how much was never
+ * attempted. Those two are the whole point — without them a run that abandoned N
+ * queued drafts reads as "0 itens não foram tentados" with no row explaining
+ * anything, which is exactly what `relatorioCompleto: false` alone cannot convey.
+ *
+ * Re-reading is correct rather than merely convenient: whatever the dying
+ * dispatch held in memory is gone, so the last committed checkpoint IS the run's
+ * final state, and its `relatorioLinhas` is the shard cursor the row belongs at.
+ * One batch, so the row and the terminal stamp cannot half-land.
+ */
+async function stampFalhaTerminal(
+  db: Firestore,
+  jobId: string,
+  erro: string,
+  nowMs: number,
+): Promise<void> {
+  const job = await readJob(db, jobId);
+  if (!job) return; // nothing to stamp; the caller still logs the original error
+
+  const linha: LinhaRelatorioEnvioPreco = {
+    produtoId: job.integracaoId,
+    variacaoProdutoId: null,
+    anuncioId: null,
+    linkDocId: null,
+    resultado: ENVIO_PRECO_RESULTADO.naoTentado,
+    fase: ENVIO_PRECO_FASE.envio,
+    motivo: 'JOB_INTERROMPIDO',
+    erro: erro.slice(0, RELATORIO_ENVIO_PRECO_ERRO_MAX),
+    preco: null,
+    precoAnterior: null,
+    variacoes: null,
+  };
+  const total = job.relatorioLinhas + 1;
+  const indice = Math.floor(job.relatorioLinhas / RELATORIO_ENVIO_PRECO_SHARD_SIZE);
+
+  const batch = db.batch();
+  batch.set(
+    relatorioEnvioPrecoMercadoLivreCollection.docRef(
+      db,
+      { envioId: jobId },
+      relatorioEnvioPrecoShardId(indice),
+    ),
+    relatorioEnvioPrecoMercadoLivreCollection.parseMerge({
+      linhas: { [relatorioEnvioPrecoRowKey(linha)]: linha },
+      timestamp: nowMs,
+    }) as DocumentData,
+    { merge: true },
+  );
+  batch.set(
+    envioPrecoMercadoLivreCollection.docRef(db, {}, jobId),
+    envioPrecoMercadoLivreCollection.parseMerge({
+      status: 'failed',
+      erro,
+      filaRestante: job.fila.length,
+      relatorioLinhas: total,
+      relatorioShards: Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1,
+      relatorioCompleto: false,
+      finishedAt: nowMs,
+      updatedAt: nowMs,
+    }) as DocumentData,
+    { merge: true },
+  );
+  await batch.commit();
+}
+
 /** Deterministic outcome of one dispatch — see the module doc for each branch. */
 export type PriceSyncDispatchOutcome = 'done' | 'continued' | 'noop' | 'failed';
 
@@ -314,51 +396,232 @@ export async function processPriceSyncJob(
     let pausas = job.pausas;
     let skips = [...job.skips];
     let failures = [...job.failures];
+    let relatorioLinhas = job.relatorioLinhas;
+    let relatorioShards = job.relatorioShards;
+
+    /**
+     * Report rows produced since the last COMMITTED checkpoint. In memory only —
+     * it never touches the job doc, so the 1 MiB bound is untouched — and it is
+     * cleared by `checkpoint()` after the batch commits, never before. A commit
+     * that throws therefore leaves the rows queued and `relatorioLinhas`
+     * unadvanced, so the retry re-produces exactly the same rows under exactly
+     * the same keys.
+     */
+    let pendentes: LinhaRelatorioEnvioPreco[] = [];
+
+    /** Queue one report row. Deduped by KEY at flush time, never by outcome. */
+    const registrarLinha = (linha: LinhaRelatorioEnvioPreco): void => {
+      pendentes.push(linha);
+    };
 
     /** Skips bookkeeping — the count is UNCAPPED; the UI detail list stops at the cap. */
-    const registerSkip = (itemId: string | null, produtoId: string, code: string): void => {
+    const registerSkip = (entrada: {
+      itemId: string | null;
+      produtoId: string;
+      code: string;
+      fase: EnvioPrecoFase;
+      linkDocId?: string | null;
+      variacaoProdutoId?: string | null;
+      precoAnterior?: number | null;
+      preco?: number | null;
+    }): void => {
       pulados += 1;
+      const linkDocId = entrada.linkDocId ?? null;
+      const precoAnterior = entrada.precoAnterior ?? null;
       if (skips.length < PRICE_SYNC_SKIPS_CAP) {
-        skips = [...skips, { itemId, produtoId, code }];
+        skips = [
+          ...skips,
+          {
+            itemId: entrada.itemId,
+            produtoId: entrada.produtoId,
+            code: entrada.code,
+            linkDocId,
+            precoAnterior,
+          },
+        ];
       }
-    };
-    /** Failures bookkeeping — same cap discipline as the skips. */
-    const registerFailure = (
-      itemId: string,
-      produtoId: string,
-      code: string,
-      error: string,
-    ): void => {
-      falhas += 1;
-      if (failures.length < PRICE_SYNC_FAILURES_CAP) {
-        failures = [...failures, { itemId, produtoId, code, error }];
-      }
+      registrarLinha({
+        produtoId: entrada.produtoId,
+        variacaoProdutoId: entrada.variacaoProdutoId ?? null,
+        anuncioId: entrada.itemId,
+        linkDocId,
+        resultado: ENVIO_PRECO_RESULTADO.pulado,
+        fase: entrada.fase,
+        motivo: entrada.code,
+        erro: null,
+        preco: entrada.preco ?? null,
+        precoAnterior,
+        variacoes: null,
+      });
     };
 
-    const checkpoint = async (): Promise<void> => {
-      // ⚠️ Every mutable above must appear here. `envioPrecoMercadoLivreSchema`
-      // is a bare `z.object`, so `parseMerge` STRIPS anything it does not
-      // model: a field missing from this merge (or from the schema) is silently
-      // never persisted, every dispatch re-reads its default, and a phase gated
-      // on it re-enqueues forever.
-      await envioPrecoMercadoLivreCollection.merge(db, {}, payload.jobId, {
-        fila,
-        afterAnchorId,
-        planejamentoConcluido,
-        afterLinkPath,
-        reconciliacaoConcluida,
-        reconciliacaoPaginas,
-        naoEnumerados,
-        linksReconciliados,
-        planejados,
-        enviados,
-        pulados,
-        falhas,
-        pausas,
-        skips,
-        failures,
-        updatedAt: nowMs,
+    /** Failures bookkeeping — same cap discipline as the skips. */
+    const registerFailure = (entrada: {
+      itemId: string;
+      produtoId: string;
+      code: string;
+      error: string;
+      linkDocId: string | null;
+      variacaoProdutoId: string | null;
+      precoAnterior: number | null;
+      preco: number | null;
+    }): void => {
+      falhas += 1;
+      if (failures.length < PRICE_SYNC_FAILURES_CAP) {
+        failures = [
+          ...failures,
+          {
+            itemId: entrada.itemId,
+            produtoId: entrada.produtoId,
+            code: entrada.code,
+            error: entrada.error,
+            linkDocId: entrada.linkDocId,
+            precoAnterior: entrada.precoAnterior,
+          },
+        ];
+      }
+      registrarLinha({
+        produtoId: entrada.produtoId,
+        variacaoProdutoId: entrada.variacaoProdutoId,
+        anuncioId: entrada.itemId,
+        linkDocId: entrada.linkDocId,
+        resultado: ENVIO_PRECO_RESULTADO.falha,
+        fase: ENVIO_PRECO_FASE.envio,
+        motivo: entrada.code,
+        erro: entrada.error.slice(0, RELATORIO_ENVIO_PRECO_ERRO_MAX),
+        preco: entrada.preco,
+        precoAnterior: entrada.precoAnterior,
+        variacoes: null,
       });
+    };
+
+    /**
+     * The success branch, which the job previously recorded as nothing but
+     * `enviados += 1` — so a completed run could say twelve prices moved and
+     * name none of them. This is the row the CSV is actually FOR.
+     */
+    const registerEnviado = (entrada: {
+      itemId: string;
+      produtoId: string;
+      linkDocId: string | null;
+      variacaoProdutoId: string | null;
+      preco: number;
+      precoAnterior: number | null;
+      variacoes: number | null;
+    }): void => {
+      enviados += 1;
+      registrarLinha({
+        produtoId: entrada.produtoId,
+        variacaoProdutoId: entrada.variacaoProdutoId,
+        anuncioId: entrada.itemId,
+        linkDocId: entrada.linkDocId,
+        resultado: ENVIO_PRECO_RESULTADO.enviado,
+        fase: ENVIO_PRECO_FASE.envio,
+        motivo: null,
+        erro: null,
+        preco: entrada.preco,
+        precoAnterior: entrada.precoAnterior,
+        variacoes: entrada.variacoes,
+      });
+    };
+
+    /**
+     * ⚠️ Every mutable above must appear in the job patch. A field missing from
+     * it is silently never persisted: nothing throws, the value resets to its
+     * schema default on the next dispatch, and a phase gated on it re-enqueues
+     * forever. (A field in the patch but NOT in the schema is the loud failure —
+     * `parseMerge` re-parses `.strict()` and throws.)
+     *
+     * ⚠️ The job patch and the report rows commit in ONE `db.batch()`, and that
+     * is what makes a Cloud Tasks retry safe. Written separately there are two
+     * windows and both lose: row-then-consume duplicates the item on a retry,
+     * consume-then-row drops its row entirely. Batched, a crash before the
+     * commit re-processes the item and re-reports it exactly once, and a crash
+     * after does neither.
+     *
+     * ⚠️ A batch is NOT a transaction — nothing here is read-modify-write, since
+     * the shard index is derived from `relatorioLinhas`, a counter that only
+     * advances on a committed checkpoint. Promoting this to a Firestore
+     * transaction would buy nothing and cost an OCC retry loop inside a 540s
+     * worker.
+     *
+     * ⚠️ The phrase above deliberately avoids the bare API name:
+     * `firestore-transaction-inventory.test.js` greps the literal token across
+     * the repo and cannot tell a CALL from a mention in a comment, so naming it
+     * here would demand an inventory entry for a file that runs no transaction —
+     * i.e. a false entry in the ledger that exists to be trusted.
+     */
+    const checkpoint = async (): Promise<void> => {
+      // Assign each pending row its shard from the PERSISTED counter, so a
+      // retried dispatch recomputes the same index rather than drifting.
+      const porShard = new Map<number, Record<string, LinhaRelatorioEnvioPreco>>();
+      let total = relatorioLinhas;
+      for (const linha of pendentes) {
+        const indice = Math.floor(total / RELATORIO_ENVIO_PRECO_SHARD_SIZE);
+        let bucket = porShard.get(indice);
+        if (!bucket) porShard.set(indice, (bucket = {}));
+        bucket[relatorioEnvioPrecoRowKey(linha)] = linha;
+        total += 1;
+      }
+      const shards =
+        total === 0 ? 0 : Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1;
+
+      const batch = db.batch();
+      batch.set(
+        envioPrecoMercadoLivreCollection.docRef(db, {}, payload.jobId),
+        envioPrecoMercadoLivreCollection.parseMerge({
+          fila,
+          afterAnchorId,
+          planejamentoConcluido,
+          afterLinkPath,
+          reconciliacaoConcluida,
+          reconciliacaoPaginas,
+          naoEnumerados,
+          linksReconciliados,
+          planejados,
+          enviados,
+          pulados,
+          falhas,
+          pausas,
+          skips,
+          failures,
+          relatorioLinhas: total,
+          relatorioShards: shards,
+          updatedAt: nowMs,
+        }) as DocumentData,
+        { merge: true },
+      );
+      for (const [indice, linhas] of porShard) {
+        batch.set(
+          relatorioEnvioPrecoMercadoLivreCollection.docRef(
+            db,
+            { envioId: payload.jobId },
+            relatorioEnvioPrecoShardId(indice),
+          ),
+          relatorioEnvioPrecoMercadoLivreCollection.parseMerge({
+            // ⚠️ A nested-map merge, which Firestore DEEP-merges under
+            // `{merge:true}` — the shard keeps the rows already in it. The
+            // offline FakeDb models that; `precoRelatorio.firestore.test.ts` is
+            // what proves it against a real Firestore.
+            linhas,
+            timestamp: nowMs,
+          }) as DocumentData,
+          { merge: true },
+        );
+      }
+      await batch.commit();
+
+      // After the commit, though the ordering is DEFENSIVE rather than
+      // load-bearing, and the comment here used to claim otherwise: a throwing
+      // commit aborts the whole dispatch, so this local state is discarded
+      // either way and the retry re-reads `relatorioLinhas` from the job doc.
+      // (Proven, not assumed — moving these above `commit()` fails no spec.)
+      // What IS load-bearing is that the counter lives on the DOCUMENT and is
+      // written in the same batch as the rows it indexes; that is what makes a
+      // retry recompute the same shard instead of drifting.
+      relatorioLinhas = total;
+      relatorioShards = shards;
+      pendentes = [];
     };
 
     /** Terminal job failure — deterministic, never retried (`extra` rides along). */
@@ -366,10 +629,34 @@ export async function processPriceSyncJob(
       erro: string,
       extra: Record<string, unknown> = {},
     ): Promise<'failed'> => {
+      // ⚠️ ONE synthetic row, not `fila.length` `nao-tentado` ones. Flushing the
+      // queue would write up to `PLAN_PAGE_DRAFTS_CAP` rows to say "we stopped",
+      // so the count rides `filaRestante` and the report carries a single row
+      // naming the cause. The CSV reads both.
+      registrarLinha({
+        produtoId: payload.integracaoId,
+        variacaoProdutoId: null,
+        anuncioId: null,
+        linkDocId: null,
+        resultado: ENVIO_PRECO_RESULTADO.naoTentado,
+        fase: ENVIO_PRECO_FASE.envio,
+        motivo: 'JOB_INTERROMPIDO',
+        erro: erro.slice(0, RELATORIO_ENVIO_PRECO_ERRO_MAX),
+        preco: null,
+        precoAnterior: null,
+        variacoes: null,
+      });
+      // Flush the row (and every counter) through the batch, THEN stamp the
+      // terminal state. Two writes, deliberately: `relatorioCompleto` must stay
+      // false here, and a failure stamp that also carried the rows would have to
+      // duplicate the whole shard-assignment path.
+      await checkpoint();
       await envioPrecoMercadoLivreCollection.merge(db, {}, payload.jobId, {
         ...extra,
         status: 'failed',
         erro,
+        filaRestante: fila.length,
+        relatorioCompleto: false,
         finishedAt: nowMs,
         updatedAt: nowMs,
       });
@@ -435,7 +722,15 @@ export async function processPriceSyncJob(
         }
         fila = [...fila, ...plan.drafts];
         planejados += plan.drafts.length;
-        for (const s of plan.skips) registerSkip(s.itemId, s.produtoId, s.code);
+        for (const s of plan.skips) {
+          registerSkip({
+            itemId: s.itemId,
+            produtoId: s.produtoId,
+            code: s.code,
+            linkDocId: s.linkDocId,
+            fase: ENVIO_PRECO_FASE.plano,
+          });
+        }
         lastConsumedAnchorId = row.produtoId;
       }
       if (pageFullyConsumed) {
@@ -477,12 +772,41 @@ export async function processPriceSyncJob(
       // that landed before the 429 replays as PRECO_ANTIGO_IGUAL via gate 2).
       if (outcome.kind === 'pausa') return pausePath(outcome.err);
 
+      // The three terminal branches, each now recording what it did rather than
+      // only that it happened. `outcome.precoAtual` rides every one of them —
+      // this is where the job used to drop it.
       if (outcome.kind === 'pulado') {
-        registerSkip(draft.itemId, draft.produtoId, outcome.code);
+        registerSkip({
+          itemId: draft.itemId,
+          produtoId: draft.produtoId,
+          code: outcome.code,
+          fase: ENVIO_PRECO_FASE.envio,
+          linkDocId: draft.linkDocId,
+          variacaoProdutoId: draft.variacaoProdutoId,
+          precoAnterior: outcome.precoAtual,
+          preco: draft.preco,
+        });
       } else if (outcome.kind === 'falha') {
-        registerFailure(draft.itemId, draft.produtoId, outcome.code, outcome.error);
+        registerFailure({
+          itemId: draft.itemId,
+          produtoId: draft.produtoId,
+          code: outcome.code,
+          error: outcome.error,
+          linkDocId: draft.linkDocId,
+          variacaoProdutoId: draft.variacaoProdutoId,
+          precoAnterior: outcome.precoAtual,
+          preco: draft.preco,
+        });
       } else {
-        enviados += 1;
+        registerEnviado({
+          itemId: draft.itemId,
+          produtoId: draft.produtoId,
+          linkDocId: draft.linkDocId,
+          variacaoProdutoId: draft.variacaoProdutoId,
+          preco: outcome.preco,
+          precoAnterior: outcome.precoAtual,
+          variacoes: outcome.variacoes,
+        });
       }
       await consume();
     }
@@ -506,7 +830,12 @@ export async function processPriceSyncJob(
         // A cursor that stops advancing returns the same page forever. Refuse
         // loudly rather than chain tasks until something else kills the job —
         // and say so in the report, so a truncated one is never read as clean.
-        registerSkip(null, payload.integracaoId, 'RECONCILIACAO_INCOMPLETA');
+        registerSkip({
+          itemId: null,
+          produtoId: payload.integracaoId,
+          code: 'RECONCILIACAO_INCOMPLETA',
+          fase: ENVIO_PRECO_FASE.reconciliacao,
+        });
         reconciliacaoConcluida = true;
       } else {
         const fetchRecon = deps.fetchReconPage ?? fetchPrecoReconPage;
@@ -517,7 +846,12 @@ export async function processPriceSyncJob(
         });
         for (const orfao of page.naoEnumerados) {
           naoEnumerados += 1;
-          registerSkip(orfao.itemId, orfao.produtoId, orfao.code);
+          registerSkip({
+            itemId: orfao.itemId,
+            produtoId: orfao.produtoId,
+            code: orfao.code,
+            fase: ENVIO_PRECO_FASE.reconciliacao,
+          });
         }
         linksReconciliados += page.inspecionados;
         afterLinkPath = page.nextAfterLinkPath;
@@ -538,6 +872,11 @@ export async function processPriceSyncJob(
 
     await envioPrecoMercadoLivreCollection.merge(db, {}, payload.jobId, {
       status: 'completed',
+      // ⚠️ The ONLY place this is written true. Reaching here means the fila is
+      // drained AND `planejamentoConcluido` AND the reconciliation is done, so
+      // it is exactly the claim "the report covers the whole run" — which is
+      // what stops a partial CSV from reading like a clean one.
+      relatorioCompleto: true,
       finishedAt: nowMs,
       updatedAt: nowMs,
     });
@@ -551,12 +890,19 @@ export async function processPriceSyncJob(
     // log) a secondary failure while stamping it, never masking the original
     // error.
     try {
-      await envioPrecoMercadoLivreCollection.merge(db, {}, payload.jobId, {
-        status: 'failed',
-        erro: err.message,
-        finishedAt: nowMs,
-        updatedAt: nowMs,
-      });
+      // ⚠️ The SAME outcome `failJob` produces, and it has to be: a persistent ML
+      // 5xx, a `batch.commit()` failure and a `scheduler.enqueue()` failure all
+      // land here, and this used to write only `status`/`erro` — so `filaRestante`
+      // stayed at its schema default `0` and no `JOB_INTERROMPIDO` row existed.
+      // The CSV would then have rendered a run that abandoned N queued drafts as
+      // "0 itens não foram tentados", with nothing in the report naming the cause.
+      //
+      // It re-reads rather than sharing `failJob`'s state because `fila`,
+      // `pendentes` and `checkpoint` are all scoped to the try this catch is
+      // attached to. The persisted doc is the right source anyway: whatever this
+      // dispatch had queued in memory died with the throw, so the last committed
+      // checkpoint IS the run's final state.
+      await stampFalhaTerminal(db, payload.jobId, err.message, nowMs);
     } catch (persistErr) {
       if (!(persistErr instanceof Error)) throw persistErr;
       console.error(
