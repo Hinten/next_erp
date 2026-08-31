@@ -320,6 +320,28 @@ describe('resolveStagedKitVariacoes', () => {
     });
     expect(out.writes).toEqual([]);
     expect(out.unresolved).toEqual(['live']);
+    // Deliberate drops must come back so the caller RELEASES them. Leaving a
+    // delete-marked variation's map staged is what lets the #117 reuse resurrect
+    // its doc id and have the stale map overwrite the new variation's.
+    expect(out.dropped.sort()).toEqual(['ghost', 'gone']);
+  });
+
+  it('puts every staged key in exactly one bucket', () => {
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { written: mapFor('a'), deleted: mapFor('b'), lost: mapFor('c') },
+      rows: [
+        { key: 'written', id: 'written', variacoesUid: [] },
+        { key: 'deleted', id: 'deleted', variacoesUid: [], deleteMark: true },
+        { key: 'lost', id: null, variacoesUid: [] },
+      ],
+      realChildren: [{ id: 'written', variacoesUid: [] }],
+      resolvedByKey: NO_PAIRING,
+    });
+    expect([...out.writes.map((w) => w.key), ...out.dropped, ...out.unresolved].sort()).toEqual([
+      'deleted',
+      'lost',
+      'written',
+    ]);
   });
 
   it('claims each real child at most once', () => {

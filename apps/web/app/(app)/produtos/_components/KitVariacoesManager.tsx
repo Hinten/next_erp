@@ -106,7 +106,7 @@ export function KitVariacoesManager({
       // Children now exist (created in the variation flush) — re-read to learn
       // which ids are live; `reusedByKey` covers the rows written under another id.
       const byParent = await getVariationChildrenByParent(db, [parentId]);
-      const { writes, unresolved } = resolveStagedKitVariacoes({
+      const { writes, unresolved, dropped } = resolveStagedKitVariacoes({
         stagedByKey: staged,
         rows,
         realChildren: byParent[parentId] ?? [],
@@ -123,11 +123,11 @@ export function KitVariacoesManager({
       }
       // Release by the SOURCE key, not the written id — the two differ exactly
       // when the pairing redirected a row, and releasing by id would then strand
-      // the entry. Anything unresolved deliberately STAYS staged so the operator
-      // can retry it. Releasing at all matters because an entry that outlives its
-      // save is rewritten on every later produto save — `componentesKit` is a
-      // full overwrite, so it would clobber whatever another writer put there.
-      const flushedKeys = new Set(writes.map((w) => w.key));
+      // the entry. `dropped` must go too: a map whose variation was deleted is
+      // not just useless, it is dangerous, because the #117 reuse can put that
+      // doc id BACK under a different variation and the stale entry would then
+      // overwrite it. Only `unresolved` STAYS staged, so the operator can retry.
+      const flushedKeys = new Set([...writes.map((w) => w.key), ...dropped]);
       setStaged((s) =>
         Object.fromEntries(Object.entries(s).filter(([key]) => !flushedKeys.has(key))),
       );

@@ -238,10 +238,22 @@ export interface ResolvedKitVariacoes {
    * Staged keys that named a live variation but resolved to no document. The
    * caller MUST surface these: the map is not written, and silently dropping an
    * operator's work behind a success toast is what this return value exists to
-   * prevent (root `CLAUDE.md` rule 7, tier 3). Deliberate drops — a delete-marked
-   * row, or one the operator removed — are NOT listed.
+   * prevent (root `CLAUDE.md` rule 7, tier 3). Deliberate drops are NOT listed —
+   * they are in {@link dropped}.
    */
   unresolved: string[];
+  /**
+   * Staged keys whose variation is deliberately gone — the row is delete-marked,
+   * or no longer in `rows` at all. Nothing is written for them, and the caller
+   * must RELEASE them rather than leave them staged.
+   *
+   * ⚠️ Not cosmetic. A staged map that outlives its variation is a live hazard
+   * precisely because of the #117 reuse this resolver serves: the reuse puts the
+   * deleted doc id BACK, now carrying a different variation, so the stale entry
+   * resolves by `row.id` on the next save and overwrites that variation's
+   * components — `componentesKit` is a full overwrite.
+   */
+  dropped: string[];
 }
 
 /**
@@ -272,8 +284,10 @@ export interface ResolvedKitVariacoes {
  * Anything that still fails to resolve is reported through `unresolved` rather
  * than aimed at whichever child happens to look similar.
  *
- * Each real child is claimed at most once; rows that are delete-marked, unknown,
- * or unmatched are dropped.
+ * Each real child is claimed at most once. Every staged key comes back in
+ * exactly one bucket — `writes`, `dropped` or `unresolved` — so the caller can
+ * release what it wrote AND what it deliberately skipped, and keep only what
+ * genuinely failed.
  */
 export function resolveStagedKitVariacoes(input: {
   stagedByKey: Record<string, ComponentesKit | null>;
@@ -290,15 +304,20 @@ export function resolveStagedKitVariacoes(input: {
   const claimed = new Set<string>();
   const writes: ResolvedKitVariacoes['writes'] = [];
   const unresolved: string[] = [];
+  const dropped: string[] = [];
 
   for (const [key, componentesKit] of Object.entries(input.stagedByKey)) {
     const paired = input.resolvedByKey[key];
     const row = rowByKey.get(key);
 
     // A row the operator deleted, or one that never belonged to this grid, is a
-    // deliberate drop — not something to report at them. But a PAIRED key stays
-    // in play even with no row: its document exists, the row just went away.
-    if (paired === undefined && (row === undefined || row.deleteMark === true)) continue;
+    // deliberate drop — nothing to report at them, but the caller must still
+    // release it (see `dropped`). A PAIRED key stays in play even with no row:
+    // its document exists, the row just went away.
+    if (paired === undefined && (row === undefined || row.deleteMark === true)) {
+      dropped.push(key);
+      continue;
+    }
 
     const target = [paired, row?.id ?? undefined, key].find(
       (id): id is string => id !== undefined && realById.has(id) && !claimed.has(id),
@@ -311,5 +330,5 @@ export function resolveStagedKitVariacoes(input: {
     writes.push({ key, id: target, componentesKit });
   }
 
-  return { writes, unresolved };
+  return { writes, unresolved, dropped };
 }

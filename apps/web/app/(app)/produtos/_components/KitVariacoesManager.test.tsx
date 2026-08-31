@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   saves: [] as Array<Array<{ id: string; componentesKit: unknown }>>,
   children: [] as Array<{ id: string; data: Record<string, unknown> }>,
   toasts: [] as string[],
+  rows: [] as unknown[],
 }));
 
 vi.mock('@delfrance/data', () => ({
@@ -73,18 +74,20 @@ const { KitVariacoesManager } = await import('./KitVariacoesManager');
 const db = {} as unknown as Firestore;
 
 function rows(): VariationRow[] {
-  return [
-    {
-      // Since the doc id is pre-minted at stage time, a row's key IS its doc id
-      // on both sides of the save.
-      key: 'c1',
-      id: 'c1',
-      nome: 'Camiseta P',
-      sku: 'CAMP',
-      variacoesUid: [varianteFakePath('gT', 'P')],
-      deleteMark: false,
-    },
-  ];
+  return h.rows.length > 0
+    ? (h.rows as VariationRow[])
+    : [
+        {
+          // Since the doc id is pre-minted at stage time, a row's key IS its doc id
+          // on both sides of the save.
+          key: 'c1',
+          id: 'c1',
+          nome: 'Camiseta P',
+          sku: 'CAMP',
+          variacoesUid: [varianteFakePath('gT', 'P')],
+          deleteMark: false,
+        },
+      ];
 }
 
 function renderManager() {
@@ -97,18 +100,25 @@ function renderManager() {
       </FormProvider>
     );
   }
-  render(
+  const utils = render(
     <MantineTestProvider>
       <Host />
     </MantineTestProvider>,
   );
-  return { flushRef };
+  const rerender = () =>
+    utils.rerender(
+      <MantineTestProvider>
+        <Host />
+      </MantineTestProvider>,
+    );
+  return { flushRef, rerender };
 }
 
 beforeEach(() => {
   h.saves.length = 0;
   h.toasts.length = 0;
   h.children = [{ id: 'c1', data: { componentesKit: null } }];
+  h.rows.length = 0;
 });
 
 afterEach(() => {
@@ -158,6 +168,45 @@ describe('KitVariacoesManager', () => {
     // later produto save.
     await act(async () => {
       await flushRef.current!('p1', { c1: 'reused-1' });
+    });
+    expect(h.saves).toHaveLength(1);
+  });
+
+  it('does not let a delete-marked variation kit outlive the id that gets reused (#1390)', async () => {
+    // The operator stages components for variation X while it is still live,
+    // THEN delete-marks it and adds `tmp1` with the same SKU — the #117 flow.
+    // Save 1 absorbs `tmp1` onto X and writes its map there. X's own entry is a
+    // deliberate drop, so it is not written — but if it is not RELEASED either,
+    // save 2 resolves it by `row.id` and overwrites the map the operator just
+    // generated, behind a green toast.
+    h.rows = [
+      { key: 'X', id: 'X', nome: 'Antiga', sku: 'ANTIGA', variacoesUid: [], deleteMark: false },
+    ];
+    h.children = [{ id: 'X', data: { componentesKit: null } }];
+    const { flushRef, rerender } = renderManager();
+    fireEvent.click(screen.getByTestId('stage-kit')); // staged['X']
+
+    // Now X is delete-marked and the replacement row appears.
+    h.rows = [
+      { key: 'X', id: 'X', nome: 'Antiga', sku: 'ANTIGA', variacoesUid: [], deleteMark: true },
+      { key: 'tmp1', id: null, nome: 'Nova', sku: 'ANTIGA', variacoesUid: [], deleteMark: false },
+    ];
+    await act(async () => rerender());
+    fireEvent.click(screen.getByTestId('stage-kit')); // staged['tmp1']
+
+    await act(async () => {
+      await flushRef.current!('p1', { tmp1: 'X' });
+    });
+    expect(h.saves).toHaveLength(1);
+    expect(h.saves[0]!.map((w) => w.id)).toEqual(['X']);
+
+    // Save 2: X lives again, carrying the NEW variation. Nothing may be rewritten.
+    h.rows = [
+      { key: 'X', id: 'X', nome: 'Nova', sku: 'ANTIGA', variacoesUid: [], deleteMark: false },
+    ];
+    await act(async () => rerender());
+    await act(async () => {
+      await flushRef.current!('p1', {});
     });
     expect(h.saves).toHaveLength(1);
   });
