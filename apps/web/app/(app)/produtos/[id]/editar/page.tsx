@@ -56,8 +56,10 @@ import {
   PRODUTO_PERSISTENT_SECTIONS,
   PRODUTO_SECTIONS_EDITAR,
   PRODUTO_TRANSIENT_FIELDS,
+  SECTION_KIT,
   SECTION_MERCADO_LIVRE,
   SECTION_MODIFICACOES,
+  SECTION_VARIACOES,
   produtoFieldOverrides,
   produtoObjectViewSchema,
 } from '../../_components/produtoFields';
@@ -329,7 +331,7 @@ export default function EditarProdutoPage() {
       },
       variacoesUid: {
         label: 'Variações',
-        section: 'Variações',
+        section: SECTION_VARIACOES,
         renderInput: (p) => (
           <VariationManager
             produtoId={params.id}
@@ -446,7 +448,7 @@ export default function EditarProdutoPage() {
       },
       componentesKit: {
         label: 'Componentes do kit',
-        section: 'Kit',
+        section: SECTION_KIT,
         prepareForSave: stripKitForSave,
         renderInput: (p) => (
           <Stack gap="md">

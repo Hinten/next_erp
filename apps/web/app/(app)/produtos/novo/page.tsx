@@ -40,7 +40,9 @@ import {
   PRODUTO_PERSISTENT_SECTIONS,
   PRODUTO_SECTIONS,
   PRODUTO_TRANSIENT_FIELDS,
+  SECTION_KIT,
   SECTION_MERCADO_LIVRE,
+  SECTION_VARIACOES,
   produtoFieldOverrides,
   produtoObjectViewSchema,
 } from '../_components/produtoFields';
@@ -112,7 +114,7 @@ export default function NovoProdutoPage() {
       },
       variacoesUid: {
         label: 'Variações',
-        section: 'Variações',
+        section: SECTION_VARIACOES,
         // produtoId null → "save first" guard; children need a saved parent.
         renderInput: (p) => (
           <VariationManager
@@ -196,7 +198,7 @@ export default function NovoProdutoPage() {
       },
       componentesKit: {
         label: 'Componentes do kit',
-        section: 'Kit',
+        section: SECTION_KIT,
         prepareForSave: stripKitForSave,
         renderInput: (p) => (
           <KitManager

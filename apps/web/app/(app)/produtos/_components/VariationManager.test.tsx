@@ -374,6 +374,27 @@ describe('VariationManager — staged rows vs the optimistic snapshot echo', () 
     await settleCommit(pending);
   });
 
+  it('writes nothing when the operator never touched the tab (#1374)', async () => {
+    // Legacy children store a 1-based `ordem` (root CLAUDE.md rule 8). The flush
+    // renumbers from a 0-based loop index, so `ordem !== serverOrdem` for every
+    // one of them — and now that the section is persistent this runs on EVERY
+    // produto save, not only after the tab was opened. An untouched tab must not
+    // rewrite nome/sku/variacoesUid/ordem on documents the save never touched.
+    h.setChildren([
+      child('c1', 'Camiseta P', 'CAMP', [uidP], 1),
+      child('c2', 'Camiseta G', 'CAMG', [uidG], 2),
+    ]);
+    const { flushRef } = renderManager();
+    expect(rowCount()).toBe(2);
+
+    await act(async () => {
+      await expect(flushRef.current!('p1')).resolves.toBeUndefined();
+    });
+
+    expect(h.ops).toEqual([]);
+    expect(h.commits).toHaveLength(0);
+  });
+
   it('clears a staged row that resolved to no write at all', async () => {
     const { flushRef } = renderManager();
 
