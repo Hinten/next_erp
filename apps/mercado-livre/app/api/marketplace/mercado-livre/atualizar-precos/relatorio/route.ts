@@ -27,10 +27,7 @@
 import { FieldPath } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 import type { Firestore } from 'firebase-admin/firestore';
-import {
-  type LinhaRelatorioEnvioPreco,
-  RELATORIO_ENVIO_PRECO_SHARD_SIZE,
-} from '@delfrance/schemas';
+import type { LinhaRelatorioEnvioPreco } from '@delfrance/schemas';
 import {
   envioPrecoMercadoLivreCollection,
   produtoCollection,
@@ -53,6 +50,39 @@ const LIMITE_MAXIMO = 8;
 /** Firestore's `getAll` is unbounded but the request has a size limit; chunk the join. */
 const PRODUTOS_POR_LOTE = 300;
 
+/**
+ * The job-doc fields this route reads, applied as a `fieldMask` so the rest never
+ * leaves Firestore.
+ *
+ * ⚠️ `fila` is the reason this exists, exactly as on the sibling `historico`
+ * route. It holds up to `PLAN_PAGE_DRAFTS_CAP` (2000) drafts — ~344 KB at the
+ * schema's own 176 B/draft — and it is NOT empty on the jobs this download is
+ * for: `failJob` stamps `filaRestante` without clearing `fila`, so a run that
+ * died with a full queue keeps every draft. An unprojected read pulled all of it
+ * on EVERY page of the loop, up to `MAX_PAGINAS` (100) times per download, for
+ * job facts that cannot change between pages of a finished run.
+ *
+ * ⚠️ `updatedAt` is masked in although the response never returns it: the schema
+ * has no default for it, so `parseRead` would throw without it. The other three
+ * in that class — `integracaoId`, `status`, `startedAt` — are returned anyway.
+ * `projecao.test.ts` pins the whole set against the schema.
+ */
+export const CAMPOS_JOB = [
+  'integracaoId',
+  'status',
+  'updatedAt',
+  'relatorioLinhas',
+  'relatorioShards',
+  'relatorioCompleto',
+  'filaRestante',
+  'planejados',
+  'enviados',
+  'pulados',
+  'falhas',
+  'startedAt',
+  'finishedAt',
+] as const;
+
 export async function GET(req: Request): Promise<NextResponse> {
   const auth = await verifyCaller(req, PERM.integracao.read);
   if ('error' in auth) return auth.error;
@@ -72,13 +102,23 @@ export async function GET(req: Request): Promise<NextResponse> {
     );
   }
   const depois = searchParams.get('depois');
+  if (depois != null && depois !== '' && !SHARD_ID.test(depois)) {
+    // ⚠️ Validated for the same reason `limite` is refused rather than clamped,
+    // and for one more: the admin SDK throws SYNCHRONOUSLY on a `__name__`
+    // cursor containing a slash ("must be a plain document ID"), so an unchecked
+    // `?depois=a/b` handed an authed caller a 500 with a stack where every other
+    // bad param here gets a 400.
+    return NextResponse.json({ error: 'depois deve ser um id de shard válido.' }, { status: 400 });
+  }
 
   const db = getAdminFirestore();
 
   // Same 404 ladder as the status route: a jobId belonging to another conta is
-  // indistinguishable from one that does not exist.
-  const jobSnap = await envioPrecoMercadoLivreCollection.docRef(db, {}, jobId).get();
-  if (!jobSnap.exists) {
+  // indistinguishable from one that does not exist. Projected — see CAMPOS_JOB.
+  const [jobSnap] = await db.getAll(envioPrecoMercadoLivreCollection.docRef(db, {}, jobId), {
+    fieldMask: [...CAMPOS_JOB],
+  });
+  if (!jobSnap?.exists) {
     return NextResponse.json({ error: 'Envio de preços não encontrado.' }, { status: 404 });
   }
   const job = envioPrecoMercadoLivreCollection.parseRead(
@@ -174,5 +214,5 @@ function parseLimite(raw: string | null): number | null {
   return n >= 1 && n <= LIMITE_MAXIMO ? n : null;
 }
 
-/** Rows one page can carry at most — used by the client's loop bound. */
-export const RELATORIO_LINHAS_POR_PAGINA = LIMITE_MAXIMO * RELATORIO_ENVIO_PRECO_SHARD_SIZE;
+/** A shard id as `relatorioEnvioPrecoShardId` mints them — `String(i).padStart(4, '0')`. */
+const SHARD_ID = /^\d{4,}$/;

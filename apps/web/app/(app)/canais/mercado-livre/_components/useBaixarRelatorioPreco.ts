@@ -8,7 +8,7 @@
  * in-flight request; the loop is therefore the client's job, and it reports
  * progress because a large report is several sequential round trips.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { notifications } from '@mantine/notifications';
 
 import {
@@ -37,10 +37,28 @@ export function useBaixarRelatorioPreco() {
   const client = useMercadoLivreClient();
   const [baixando, setBaixando] = useState<string | null>(null);
   const [pagina, setPagina] = useState(0);
+  /**
+   * ⚠️ A REF, not the `baixando` state, and the guard is not defensive padding.
+   *
+   * `PriceSyncHistoricoModal` calls this hook ONCE and hands the same object to
+   * every row, so `baixando`/`pagina` are shared across N buttons — and Mantine
+   * disables only the button that is loading, leaving every other row clickable.
+   * A second click therefore started a second paging loop, and whichever loop
+   * finished first cleared the shared state while the other was still fetching:
+   * the operator saw the spinner vanish and clicked again, stacking a third.
+   * That runs against a backend with ~6 MiB of heap per in-flight request, which
+   * is the very budget the route's own docblock pages to respect.
+   *
+   * It has to be a ref because `baixando` read inside this `useCallback` is the
+   * value captured when the callback was created — always stale for the click
+   * that matters.
+   */
+  const emVoo = useRef(false);
 
   const baixar = useCallback(
     async (alvo: BaixarRelatorioAlvo) => {
-      if (!client) return;
+      if (!client || emVoo.current) return;
+      emVoo.current = true;
       setBaixando(alvo.jobId);
       setPagina(0);
       try {
@@ -114,6 +132,7 @@ export function useBaixarRelatorioPreco() {
         });
         notifications.show({ color: 'red', title: 'Relatório', message: falha.message });
       } finally {
+        emVoo.current = false;
         setBaixando(null);
         setPagina(0);
       }
