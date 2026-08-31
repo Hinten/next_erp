@@ -11,9 +11,32 @@ import { type Page, errors, expect } from '@playwright/test';
  * label. The renderer wires `label` to the input's `<label for>` so
  * `getByLabel` matches without guessing CSS classes. Use `selectField` for
  * enum (`Select`) fields.
+ *
+ * ⚠️ Scoped to the field the operator can SEE, and that is not cosmetic. A
+ * section listed in `SectionTabs`' `persistentSections` renders its content
+ * directly from page load instead of through `<Activity mode="hidden">`
+ * (`packages/ui/src/object/SectionTabs.tsx`), so once Variações became
+ * persistent (#1378) `VariationManager` had a row in the DOM on every produto
+ * edit page — and it labels each row's inputs **`Nome`** and **`SKU`**, exactly
+ * what `produtoFields` labels the produto's own. A page-wide `getByLabel`
+ * therefore resolved to 2 and `.fill()` died on `strict mode violation`, which
+ * is how the emulator lane went red on `produto-revert.emulator.e2e.spec.ts`.
+ *
+ * Mantine puts `display: none` on every inactive `Tabs.Panel` whatever the
+ * keepMounted mode, so exactly one match is visible: the one on the open tab.
+ * Filtering to it is also what a helper standing in for a user should always
+ * have done — it cannot type into a control nobody can see.
+ *
+ * ⚠️ The sibling helpers below (`clearNullableField`, `expectFieldError`,
+ * `expectFieldAfterReload`, `expectSwitchAfterReload`) still locate page-wide
+ * and carry the same latent clash. They are left alone deliberately: none is
+ * called with a clashing label on the produto edit page today, and switching
+ * all of them blind would change how 27 spec files locate their fields to fix
+ * a failure none of them has. If one of them goes red with `resolved to 2
+ * elements`, this is the fix.
  */
 export async function fillField(page: Page, label: string, value: string): Promise<void> {
-  const input = page.getByLabel(label, { exact: true });
+  const input = page.getByLabel(label, { exact: true }).filter({ visible: true });
   await input.fill(value);
   // Blur to trigger RHF's onBlur validation step.
   await input.blur();
