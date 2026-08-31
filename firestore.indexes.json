@@ -215,6 +215,7 @@
     {
       "collectionGroup": "produtos",
       "queryScope": "COLLECTION",
+      "apiScope": "ANY_API",
       "fields": [
         {
           "fieldPath": "nome",
@@ -228,22 +229,11 @@
               ]
             }
           }
-        },
-        {
-          "fieldPath": "sku",
-          "searchConfig": {
-            "textSpec": {
-              "indexSpecs": [
-                {
-                  "indexType": "TOKENIZED",
-                  "matchType": "MATCH_GLOBALLY"
-                }
-              ]
-            }
-          }
         }
       ],
-      "density": "SPARSE_ANY"
+      "searchIndexOptions": {
+        "textLanguage": "pt-BR"
+      }
     },
     {
       "collectionGroup": "variacaoMercadoLivre",
