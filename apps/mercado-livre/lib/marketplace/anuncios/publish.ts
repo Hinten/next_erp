@@ -568,9 +568,14 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       const chart = await resolveOnePicture(deps, tabela.foto, pictureMemo);
       if (chart && !ids.includes(chart.id)) {
         // ⚠️ At the cap the LAST slot is REPLACED, never appended — the legacy
-        // VARIATION rule. Only the parent set takes the liberty of an 11th
-        // picture (ML accepts 12); a member stays within MAX_PICTURES. Dropping
-        // it or overflowing are both worse than losing the tenth photo.
+        // VARIATION rule. Dropping the chart photo or overflowing are both worse
+        // than losing the tenth product photo.
+        //
+        // ⚠️ That bounds THIS list at MAX_PICTURES; it is not a claim about
+        // every member. A member that resolved nothing took the `continue`
+        // above and inherits `parentPictureIds`, which is built by the PARENT
+        // rule and legitimately reaches 11 (ML accepts 12) — so an inheriting
+        // member publishes 11 pictures. Harmless, but the invariant stops here.
         if (ids.length >= MAX_PICTURES) ids[MAX_PICTURES - 1] = chart.id;
         else ids.push(chart.id);
         resolved.pictureSources.set(chart.id, chart.arquivoId);

@@ -2892,6 +2892,42 @@ describe('publishProduto — the chart photo on a User-Products family (#1087)',
     expect(memberPictures(mocks)).toEqual(['PIC-CHART']);
   });
 
+  it('⚠️ an INHERITING member publishes the parent set — 11 pictures, not MAX_PICTURES', async () => {
+    // ⚠️ The bound above is about the list this branch builds, NOT about every
+    // member. A member that resolves nothing inherits `parentPictureIds`, which
+    // is built by the PARENT rule and legitimately reaches 11. Harmless — ML
+    // accepts 12 — but the comment first read as a universal invariant and was
+    // not one. Pinned so the claim is checkable rather than asserted.
+    const db = new FakeDb();
+    const extras = Array.from({ length: 9 }, (_, i) => ({
+      arquivoOuterRef: `arquivos/arq-x${String(i)}`,
+    }));
+    seedChartFamily(db, extras);
+    // Untagged parent fotos ⇒ 10 in the parent set, + the chart photo = 11.
+    db.docs('produtos').get(PROD)!.fotos = [{ arquivoOuterRef: 'arquivos/arq-1' }, ...extras];
+    for (let i = 0; i < 9; i++) {
+      db.seed('arquivos', `arq-x${String(i)}`, {
+        filename: `x${String(i)}.jpg`,
+        contentType: 'image/jpeg',
+        url: `https://storage/x${String(i)}.jpg`,
+        externalIds: [
+          { externalId: `PIC-X${String(i)}`, integracaoPath: `documents/integracao/${CONTA}` },
+        ],
+      });
+    }
+    // ⚠️ rung 1 wins on a NON-EMPTY own list even when every entry is
+    // unresolvable, so this child resolves ZERO pictures and takes the
+    // `continue` — the only way to reach the inherit path with a full parent.
+    db.docs('produtos').get('child-1')!.fotos = [{ arquivoOuterRef: 'arquivos/sumiu' }];
+    const { api, mocks } = upChartApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const pics = memberPictures(mocks);
+    expect(pics).toHaveLength(11);
+    expect(pics[10]).toBe('PIC-CHART');
+  });
+
   it('⚠️ at the cap it REPLACES the last picture, never overflows and never drops', async () => {
     // The legacy VARIATION lists' rule. `resolvePictures` slices a member to
     // MAX_PICTURES (10); the chart photo takes the last slot rather than
