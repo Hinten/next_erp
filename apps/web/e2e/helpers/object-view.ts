@@ -27,13 +27,24 @@ import { type Page, errors, expect } from '@playwright/test';
  * Filtering to it is also what a helper standing in for a user should always
  * have done — it cannot type into a control nobody can see.
  *
- * ⚠️ The sibling helpers below (`clearNullableField`, `expectFieldError`,
- * `expectFieldAfterReload`, `expectSwitchAfterReload`) still locate page-wide
- * and carry the same latent clash. They are left alone deliberately: none is
- * called with a clashing label on the produto edit page today, and switching
- * all of them blind would change how 27 spec files locate their fields to fix
- * a failure none of them has. If one of them goes red with `resolved to 2
- * elements`, this is the fix.
+ * ⚠️ **Every other helper in this file still locates page-wide** and carries
+ * the same latent clash — by label: `clearNullableField` (`:150`),
+ * `expectFieldError` (`:175`), `expectSurvivedReload` (`:296`),
+ * `expectFieldAfterReload` (`:325`), `expectSwitchAfterReload` (`:336`); by
+ * role: `typeMoney`, `selectField`, `selectFieldWithSearch`, `clickSave`,
+ * `confirmDelete`. They are left alone deliberately: none is called with a
+ * clashing name on the produto edit page today, and switching all of them
+ * blind would change how 27 spec files locate their fields to fix a failure
+ * none of them has. If one goes red with `resolved to 2 elements`, this is the
+ * fix.
+ *
+ * ⚠️ `expectSurvivedReload` is the one to reach for FIRST, because it does not
+ * merely carry the clash — it **swallows** it. Its guard is
+ * `if (await page.getByLabel(label).count()) return`, so a clashing label
+ * counts 2, the guard reads that as "the field survived", and control falls
+ * through to `:325`/`:336`, which then throw the bare strict-mode violation
+ * that guard exists to replace with a diagnosable message. It sits on the
+ * stall path, already the hardest one here to debug.
  */
 export async function fillField(page: Page, label: string, value: string): Promise<void> {
   const input = page.getByLabel(label, { exact: true }).filter({ visible: true });
