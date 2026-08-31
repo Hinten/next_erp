@@ -1682,4 +1682,72 @@ describe('processPriceSyncJob — the durable per-item report', () => {
     expect([...db.docs(relPath('rel9')).keys()].sort()).toEqual(['0000', '0001']);
     expect((db.docs(JOBS_PATH).get('rel9') as DocData).relatorioShards).toBe(2);
   });
+
+  it('⭐ the FINAL-ATTEMPT catch reports the same way `failJob` does', async () => {
+    // A persistent ML 5xx (getItem rethrows), a batch.commit() failure and an
+    // enqueue failure all land in the catch, not on the `fatal` path. It used to
+    // write only status/erro, so `filaRestante` stayed at its schema default 0
+    // and no row named the cause — the CSV would then render a run that
+    // abandoned two queued drafts as "0 itens não foram tentados".
+    const db = new FakeDb();
+    seedJob(db, 'term1', {
+      fila: [draft('MLB1'), draft('MLB2')],
+      planejamentoConcluido: true,
+    });
+    const api = makeApi();
+    api.getItem.mockRejectedValue(new Error('ML 500 persistente'));
+
+    const outcome = await processPriceSyncJob(
+      runDeps(db, api),
+      { jobId: 'term1', integracaoId: CONTA },
+      PRICE_SYNC_MAX_ATTEMPTS - 1,
+    );
+
+    expect(outcome).toBe('failed');
+    const job = db.docs(JOBS_PATH).get('term1') as DocData;
+    expect(job.status).toBe('failed');
+    expect(job.relatorioCompleto).toBe(false);
+    expect(job.filaRestante).toBe(2);
+
+    const linhas = Object.values(linhasDe(db, 'term1'));
+    expect(linhas.filter((l) => l.motivo === 'JOB_INTERROMPIDO')).toHaveLength(1);
+  });
+
+  it('⚠️ a NON-final attempt rethrows and stamps nothing', async () => {
+    // The control. Without it the case above would pass just as well if the
+    // catch stamped on every attempt, which would end the job on the first blip
+    // instead of letting Cloud Tasks retry it.
+    const db = new FakeDb();
+    seedJob(db, 'term2', { fila: [draft('MLB1')], planejamentoConcluido: true });
+    const api = makeApi();
+    api.getItem.mockRejectedValue(new Error('blip'));
+
+    await expect(
+      processPriceSyncJob(runDeps(db, api), { jobId: 'term2', integracaoId: CONTA }, 0),
+    ).rejects.toThrow('blip');
+
+    const job = db.docs(JOBS_PATH).get('term2') as DocData;
+    expect(job.status).toBe('running');
+    expect(db.docs(`${JOBS_PATH}/term2/relatorios`).size).toBe(0);
+  });
+
+  it('records the INTENDED price on a refused send, which is not the same as sent', async () => {
+    // `preco` is the price the plan wanted; only `resultado: 'enviado'` means it
+    // landed. Pinned here because a reader pairing precoAnterior → preco
+    // unconditionally would claim a listing moved when it did not.
+    const db = new FakeDb();
+    seedJob(db, 'term3', { fila: [draft('MLB1')], planejamentoConcluido: true });
+    seedLink(db, 'MLB1');
+    // Listing at 90, draft wants 50, baixarPreco off ⇒ gate 4 refuses.
+    const api = makeApi({ MLB1: mlItem('MLB1', { price: 90, base_price: 90 }) });
+
+    await processPriceSyncJob(runDeps(db, api), { jobId: 'term3', integracaoId: CONTA }, 0);
+
+    expect(Object.values(linhasDe(db, 'term3'))[0]).toMatchObject({
+      resultado: 'pulado',
+      motivo: 'PRECO_ANTIGO_MAIOR',
+      preco: 50, // intended
+      precoAnterior: 90, // still what the listing carries
+    });
+  });
 });
