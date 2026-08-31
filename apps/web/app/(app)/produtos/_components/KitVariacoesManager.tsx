@@ -20,8 +20,17 @@ import { createClientProdutoPort, getVariationChildrenByParent } from '@/lib/pro
 import { KitManager, stripKitForSave } from './KitManager';
 import type { VariationRow } from './VariationManager';
 
-/** Persists the staged per-variation kit maps; called by the page after children flush. */
-export type KitVariacoesFlush = (parentId: string) => Promise<void>;
+/**
+ * Persists the staged per-variation kit maps; called by the page right after the
+ * children flush, which hands over its `reusedByKey` pairing (`ChildrenFlushResult`)
+ * — the only exact record of where a row absorbed by the #117 SKU id reuse was
+ * written. It cannot travel through React state: the page awaits both flushes in
+ * one microtask, so no render happens between them.
+ */
+export type KitVariacoesFlush = (
+  parentId: string,
+  reusedByKey: Record<string, string>,
+) => Promise<void>;
 
 export interface KitVariacoesManagerProps {
   /** Edit mode only — variation children exist only after the parent is saved. */
@@ -92,37 +101,53 @@ export function KitVariacoesManager({
 
   // Register the flush; re-registers when staged/rows change so the closure is fresh.
   useEffect(() => {
-    flushRef.current = async (parentId) => {
+    flushRef.current = async (parentId, reusedByKey) => {
       if (Object.keys(staged).length === 0) return;
-      // Children now exist (created in the variation flush) — re-read to resolve
-      // each staged row's key to the real child id (new rows match by combo).
+      // Children now exist (created in the variation flush) — re-read to learn
+      // which ids are live; `reusedByKey` covers the rows written under another id.
       const byParent = await getVariationChildrenByParent(db, [parentId]);
-      const resolved = resolveStagedKitVariacoes({
+      const { writes, unresolved } = resolveStagedKitVariacoes({
         stagedByKey: staged,
         rows,
         realChildren: byParent[parentId] ?? [],
+        resolvedByKey: reusedByKey,
       });
-      await saveChildrenComponentesKit(
-        createClientProdutoPort(db),
-        resolved.map((r) => ({
-          id: r.id,
-          componentesKit: stripKitForSave(r.componentesKit ?? {}),
-        })),
+      if (writes.length > 0) {
+        await saveChildrenComponentesKit(
+          createClientProdutoPort(db),
+          writes.map((w) => ({
+            id: w.id,
+            componentesKit: stripKitForSave(w.componentesKit ?? {}),
+          })),
+        );
+      }
+      // Release by the SOURCE key, not the written id — the two differ exactly
+      // when the pairing redirected a row, and releasing by id would then strand
+      // the entry. Anything unresolved deliberately STAYS staged so the operator
+      // can retry it. Releasing at all matters because an entry that outlives its
+      // save is rewritten on every later produto save — `componentesKit` is a
+      // full overwrite, so it would clobber whatever another writer put there.
+      const flushedKeys = new Set(writes.map((w) => w.key));
+      setStaged((s) =>
+        Object.fromEntries(Object.entries(s).filter(([key]) => !flushedKeys.has(key))),
       );
-      // Drop what we just persisted. A staged row's key is the child's doc id
-      // (`VariationManager.stagedRowKey`) and a saved row's always was, so
-      // `resolveStagedKitVariacoes` resolves both by that id exactly and the
-      // written ids ARE the keys to release. The one case where they still
-      // diverge is its `sameCombo` fallback, which only fires for a row whose
-      // document was written under some other id — and that entry then stays
-      // staged rather than being released, which is the safe direction.
-      //
-      // Releasing matters because without it EVERY entry outlives its save and
-      // every later produto save rewrites `componentesKit` — a full overwrite,
-      // so it silently clobbers whatever another writer put there in between.
-      // Unresolved entries stay staged.
-      const flushed = new Set(resolved.map((r) => r.id));
-      setStaged((s) => Object.fromEntries(Object.entries(s).filter(([key]) => !flushed.has(key))));
+      if (unresolved.length > 0) {
+        // Never silent: the save reports success, so without this the operator
+        // is told their components were written when they were not.
+        const rotulo = (key: string) => {
+          const row = rows.find((r) => r.key === key);
+          return row ? row.sku || row.nome || key : key;
+        };
+        notifications.show({
+          color: 'yellow',
+          title: 'Componentes por variação',
+          autoClose: 10_000,
+          message:
+            `Não foi possível salvar os componentes de: ${unresolved.map(rotulo).join(', ')}. ` +
+            'A variação correspondente não foi encontrada — os componentes seguem pendentes, ' +
+            'confira a aba Variações e salve de novo.',
+        });
+      }
     };
     return () => {
       flushRef.current = null;

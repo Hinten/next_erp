@@ -1,5 +1,5 @@
 import type { ComponentesKit } from '../collection/embedded/kit';
-import { type GrupoComId, parseFakePath, sameCombo } from './variacoes';
+import { type GrupoComId, parseFakePath } from './variacoes';
 
 /**
  * "Gerar Variações" for a kit — pure port of the Flutter
@@ -215,6 +215,10 @@ export interface StagedKitRow {
   key: string;
   /** The real produto id if this variation is already saved, else `null`. */
   id: string | null;
+  /**
+   * Carried for `generateKitForVariacoes`, which matches on it.
+   * {@link resolveStagedKitVariacoes} does NOT read it — resolution is by id.
+   */
   variacoesUid: string[];
   deleteMark?: boolean;
 }
@@ -222,7 +226,22 @@ export interface StagedKitRow {
 /** A persisted variation child (after the parent + children flush). */
 export interface RealKitChild {
   id: string;
+  /** Same as {@link StagedKitRow.variacoesUid}: for the matcher, not the resolver. */
   variacoesUid: string[];
+}
+
+/** What {@link resolveStagedKitVariacoes} resolved, and what it could not. */
+export interface ResolvedKitVariacoes {
+  /** One write per resolved entry. `key` is the staged entry it came from. */
+  writes: Array<{ key: string; id: string; componentesKit: ComponentesKit | null }>;
+  /**
+   * Staged keys that named a live variation but resolved to no document. The
+   * caller MUST surface these: the map is not written, and silently dropping an
+   * operator's work behind a success toast is what this return value exists to
+   * prevent (root `CLAUDE.md` rule 7, tier 3). Deliberate drops — a delete-marked
+   * row, or one the operator removed — are NOT listed.
+   */
+  unresolved: string[];
 }
 
 /**
@@ -231,37 +250,27 @@ export interface RealKitChild {
  * the bridge that lets "Gerar Variações" target variations added in the Variações
  * tab but not yet saved.
  *
- * Resolution runs in two passes over ALL rows, exact before guess:
- *  1. every exact match — `row.id` when it names a live child (an already-saved
- *     row), else the row's own `key`, which IS the doc id the caller pre-minted
- *     for this child (see {@link StagedKitRow.key});
- *  2. only then, an unordered `variacoesUid` match (`sameCombo`), for a row
- *     whose document the caller wrote under some other id.
+ * Resolution is EXACT — every rung names a document id, none guesses:
+ *  1. `resolvedByKey[key]`, the caller's `stagedKey → doc id` pairing, for a row
+ *     whose document it wrote under a DIFFERENT id (the #117 SKU id reuse);
+ *  2. `row.id`, when it names a live child (an already-saved row);
+ *  3. the row's own `key`, which IS the doc id the caller pre-minted for this
+ *     child (see {@link StagedKitRow.key}).
  *
- * ⚠️ Two passes, not one ladder per row. Both claim greedily, so resolving each
- * row completely before moving on would let a row that can only match by combo
- * consume the child a later row resolves EXACTLY — its map onto the wrong
- * document and the rightful row's map dropped — decided by nothing but the key
- * order of `stagedByKey`. Output stays in that order regardless of which pass
- * resolved each row.
+ * ⚠️ Rung 1 is consulted BEFORE the row lookup and does not require the row to
+ * still be there. That is the whole point of it: by the time this runs, the
+ * children flush has normally already cleared the absorbed row from `rows`, so
+ * demanding a row would drop the entry before any rung could fire — which is
+ * exactly how the `sameCombo` fallback this replaced managed to be unreliable
+ * even for the one case it existed to serve. No conflict is possible either,
+ * because the flush never writes a document under an absorbed row's own key.
  *
- * ⚠️ Step 3 requires BOTH combos to be non-empty. `sameCombo([], [])` is `true`,
- * so without that an empty-combo row — what a manually added variation carries —
- * claims the first combo-less child it meets, typically an unrelated legacy
- * sibling, and its map is written onto the WRONG document (`componentesKit` is
- * persisted as a full overwrite). Same guard, same reason, as
- * `reconcileStagedChildren` and the Mercado Livre import's sibling match.
- *
- * ⚠️ Be honest about the cost: an unmatched row is **dropped, not written** —
- * and in `apps/web` its staged map is then lost, not parked. The only path that
- * reaches this guard is a row whose document went somewhere else, i.e. the #117
- * SKU id-reuse, where the flush updates the reused id and nothing ever exists
- * under the row's key; the caller then clears the row and the entry becomes
- * unreachable. That is still the better trade — the old fallback wrote it onto
- * whichever combo-less child came first, which is sometimes right and never
- * reliable — but it is a silent drop, not a recovery. Publishing the
- * `key → reusedId` pairing the flush already computes would resolve those rows
- * exactly and retire this fallback; until then, this is the floor, not the goal.
+ * ⚠️ There is deliberately NO combo fallback. Matching an unordered
+ * `variacoesUid` set is a guess, and `componentesKit` is persisted as a FULL
+ * overwrite, so a wrong guess silently replaces a sibling's kit. Its only
+ * reachable case was the id reuse above, which rung 1 now answers exactly.
+ * Anything that still fails to resolve is reported through `unresolved` rather
+ * than aimed at whichever child happens to look similar.
  *
  * Each real child is claimed at most once; rows that are delete-marked, unknown,
  * or unmatched are dropped.
@@ -270,47 +279,37 @@ export function resolveStagedKitVariacoes(input: {
   stagedByKey: Record<string, ComponentesKit | null>;
   rows: StagedKitRow[];
   realChildren: RealKitChild[];
-}): Array<{ id: string; componentesKit: ComponentesKit | null }> {
+  /**
+   * `stagedKey → doc id` for rows the caller wrote under a different id than the
+   * row's own key. `VariationManager`'s children flush returns exactly this.
+   */
+  resolvedByKey: Record<string, string>;
+}): ResolvedKitVariacoes {
   const rowByKey = new Map(input.rows.map((r) => [r.key, r]));
-  const realById = new Map(input.realChildren.map((c) => [c.id, c]));
+  const realById = new Set(input.realChildren.map((c) => c.id));
   const claimed = new Set<string>();
-  const targetByKey = new Map<string, string>();
+  const writes: ResolvedKitVariacoes['writes'] = [];
+  const unresolved: string[] = [];
 
-  const staged = Object.entries(input.stagedByKey).flatMap(([key, map]) => {
+  for (const [key, componentesKit] of Object.entries(input.stagedByKey)) {
+    const paired = input.resolvedByKey[key];
     const row = rowByKey.get(key);
-    return row && !row.deleteMark ? [{ key, map, row }] : [];
-  });
 
-  // Pass 1 — every exact resolution, across ALL rows, before any guess runs.
-  // Both passes claim greedily, so doing this per row would let a row that can
-  // only match by combo consume the child a later row resolves exactly, purely
-  // because it came first in `stagedByKey`.
-  for (const { key, row } of staged) {
-    const exact = [row.id, key].find(
-      (id): id is string => id !== null && realById.has(id) && !claimed.has(id),
+    // A row the operator deleted, or one that never belonged to this grid, is a
+    // deliberate drop — not something to report at them. But a PAIRED key stays
+    // in play even with no row: its document exists, the row just went away.
+    if (paired === undefined && (row === undefined || row.deleteMark === true)) continue;
+
+    const target = [paired, row?.id ?? undefined, key].find(
+      (id): id is string => id !== undefined && realById.has(id) && !claimed.has(id),
     );
-    if (exact === undefined) continue;
-    claimed.add(exact);
-    targetByKey.set(key, exact);
+    if (target === undefined) {
+      unresolved.push(key);
+      continue;
+    }
+    claimed.add(target);
+    writes.push({ key, id: target, componentesKit });
   }
 
-  // Pass 2 — the combo fallback, over whatever is still unclaimed.
-  for (const { key, row } of staged) {
-    if (targetByKey.has(key) || row.variacoesUid.length === 0) continue;
-    const match = input.realChildren.find(
-      (c) =>
-        !claimed.has(c.id) &&
-        c.variacoesUid.length > 0 &&
-        sameCombo(c.variacoesUid, row.variacoesUid),
-    );
-    if (!match) continue;
-    claimed.add(match.id);
-    targetByKey.set(key, match.id);
-  }
-
-  // Emitted in `stagedByKey` order, independent of which pass resolved each row.
-  return staged.flatMap(({ key, map }) => {
-    const id = targetByKey.get(key);
-    return id === undefined ? [] : [{ id, componentesKit: map }];
-  });
+  return { writes, unresolved };
 }

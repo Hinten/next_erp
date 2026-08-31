@@ -236,115 +236,121 @@ describe('resolveStagedKitVariacoes', () => {
   const mapFor = (componentId: string) => ({
     [componentId]: { quantidade: 1, limitarEstoque: true, timestamp: null },
   });
+  /** No id reuse happened — the common case. */
+  const NO_PAIRING: Record<string, string> = {};
 
   it('maps a saved row directly by its real id', () => {
     const out = resolveStagedKitVariacoes({
       stagedByKey: { childP: mapFor('cA-P') },
       rows: [{ key: 'childP', id: 'childP', variacoesUid: [fp('gT', 'P')] }],
       realChildren: [{ id: 'childP', variacoesUid: [fp('gT', 'P')] }],
+      resolvedByKey: NO_PAIRING,
     });
-    expect(out).toEqual([{ id: 'childP', componentesKit: mapFor('cA-P') }]);
-  });
-
-  it('matches a new (unsaved) row to its real child by variacoesUid (sameCombo)', () => {
-    // The fallback: `tmp1` is NOT among the real children, so neither exact
-    // branch can fire and the combo match has to carry it. That happens when
-    // the child was written under some id other than the row's own key.
-    const out = resolveStagedKitVariacoes({
-      stagedByKey: { tmp1: mapFor('cA-P') },
-      rows: [{ key: 'tmp1', id: null, variacoesUid: [fp('gT', 'P')] }],
-      realChildren: [
-        { id: 'real-M', variacoesUid: [fp('gT', 'M')] },
-        { id: 'real-P', variacoesUid: [fp('gT', 'P')] },
-      ],
-    });
-    expect(out).toEqual([{ id: 'real-P', componentesKit: mapFor('cA-P') }]);
-  });
-
-  it('drops delete-marked, unknown and unmatched rows, and claims each child once', () => {
-    const out = resolveStagedKitVariacoes({
-      stagedByKey: {
-        gone: mapFor('x'), // delete-marked
-        ghost: mapFor('y'), // no matching row
-        tmpP: mapFor('cA-P'),
-        tmpP2: mapFor('cB-P'), // same combo as tmpP, but the only P child is already claimed
-      },
-      rows: [
-        { key: 'gone', id: 'g', variacoesUid: [fp('gT', 'G')], deleteMark: true },
-        { key: 'tmpP', id: null, variacoesUid: [fp('gT', 'P')] },
-        { key: 'tmpP2', id: null, variacoesUid: [fp('gT', 'P')] },
-      ],
-      realChildren: [{ id: 'real-P', variacoesUid: [fp('gT', 'P')] }],
-    });
-    expect(out).toEqual([{ id: 'real-P', componentesKit: mapFor('cA-P') }]);
+    expect(out.writes).toEqual([{ key: 'childP', id: 'childP', componentesKit: mapFor('cA-P') }]);
+    expect(out.unresolved).toEqual([]);
   });
 
   it('resolves a staged row by its pre-minted key once that child exists', () => {
     // `apps/web` mints the child's doc id when the row is staged, so the key IS
-    // the id — no combo guessing needed the moment the document lands.
+    // the id the moment the document lands.
     const out = resolveStagedKitVariacoes({
       stagedByKey: { minted1: mapFor('cA-P') },
       rows: [{ key: 'minted1', id: null, variacoesUid: [fp('gT', 'P')] }],
       realChildren: [{ id: 'minted1', variacoesUid: [fp('gT', 'P')] }],
+      resolvedByKey: NO_PAIRING,
     });
-    expect(out).toEqual([{ id: 'minted1', componentesKit: mapFor('cA-P') }]);
+    expect(out.writes).toEqual([{ key: 'minted1', id: 'minted1', componentesKit: mapFor('cA-P') }]);
   });
 
-  it('prefers the pre-minted key over a sibling that merely shares the combo', () => {
-    // Both children match by combo, and the combo-only sibling comes FIRST — so
-    // this fails if the key branch is missing or ordered after the fallback.
+  it('resolves an absorbed row by the pairing even though its row is GONE', () => {
+    // The #117 SKU id reuse: the flush UPDATED `real-P` and never wrote a
+    // document under `tmp1`, then cleared the staged row — so by now `rows` does
+    // not contain it. The pairing has to carry the entry on its own; requiring a
+    // row here drops the operator's map, which is what the old combo fallback did.
     const out = resolveStagedKitVariacoes({
-      stagedByKey: { minted1: mapFor('cA-P') },
-      rows: [{ key: 'minted1', id: null, variacoesUid: [fp('gT', 'P')] }],
+      stagedByKey: { tmp1: mapFor('cA-P') },
+      rows: [],
+      realChildren: [{ id: 'real-P', variacoesUid: [fp('gT', 'P')] }],
+      resolvedByKey: { tmp1: 'real-P' },
+    });
+    expect(out.writes).toEqual([{ key: 'tmp1', id: 'real-P', componentesKit: mapFor('cA-P') }]);
+    expect(out.unresolved).toEqual([]);
+  });
+
+  it('prefers the pairing over the pre-minted key', () => {
+    // Both ids exist; only the pairing knows which document the flush wrote.
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { tmp1: mapFor('cA-P') },
+      rows: [{ key: 'tmp1', id: null, variacoesUid: [fp('gT', 'P')] }],
       realChildren: [
-        { id: 'other-P', variacoesUid: [fp('gT', 'P')] },
-        { id: 'minted1', variacoesUid: [fp('gT', 'P')] },
+        { id: 'tmp1', variacoesUid: [fp('gT', 'P')] },
+        { id: 'real-P', variacoesUid: [fp('gT', 'P')] },
       ],
+      resolvedByKey: { tmp1: 'real-P' },
     });
-    expect(out).toEqual([{ id: 'minted1', componentesKit: mapFor('cA-P') }]);
+    expect(out.writes.map((w) => w.id)).toEqual(['real-P']);
   });
 
-  it('never lets an empty-combo row claim a combo-less child', () => {
-    // `sameCombo([], [])` is true, so without the guard the manually added row
-    // `K` claims the legacy child `L` and its map is written onto the wrong
-    // document. `K`'s own child does not exist here, so no exact branch fires:
-    // the row must resolve to NOTHING and stay staged.
+  it('never targets a sibling that merely shares the combo', () => {
+    // The retired fallback resolved exactly this to `real-P` — a guess onto
+    // another variation's document, and `componentesKit` is a full overwrite.
     const out = resolveStagedKitVariacoes({
-      stagedByKey: { K: mapFor('cA') },
+      stagedByKey: { tmp1: mapFor('cA-P') },
+      rows: [{ key: 'tmp1', id: null, variacoesUid: [fp('gT', 'P')] }],
+      realChildren: [{ id: 'real-P', variacoesUid: [fp('gT', 'P')] }],
+      resolvedByKey: NO_PAIRING,
+    });
+    expect(out.writes).toEqual([]);
+    expect(out.unresolved).toEqual(['tmp1']);
+  });
+
+  it('reports a live row that resolved to nothing, and stays silent on deliberate drops', () => {
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: {
+        gone: mapFor('x'), // delete-marked — the operator removed it
+        ghost: mapFor('y'), // no matching row at all
+        live: mapFor('z'), // a real row whose document is missing
+      },
       rows: [
-        { key: 'K', id: null, variacoesUid: [] },
-        { key: 'L', id: 'L', variacoesUid: [] },
+        { key: 'gone', id: 'g', variacoesUid: [fp('gT', 'G')], deleteMark: true },
+        { key: 'live', id: null, variacoesUid: [fp('gT', 'P')] },
       ],
-      realChildren: [{ id: 'L', variacoesUid: [] }],
+      realChildren: [],
+      resolvedByKey: NO_PAIRING,
     });
-    expect(out).toEqual([]);
+    expect(out.writes).toEqual([]);
+    expect(out.unresolved).toEqual(['live']);
   });
 
-  it('does not let a fallback row steal a child another row resolves exactly', () => {
-    // Ordering must not decide: `A` can only resolve by combo (its document was
-    // written under a reused id, so it is not among the children here) and is
-    // listed FIRST, while `B`'s child exists under `B`'s own key. A greedy
-    // per-row ladder hands `B`'s child to `A` and drops `B`'s map entirely.
+  it('claims each real child at most once', () => {
     const out = resolveStagedKitVariacoes({
-      stagedByKey: { A: mapFor('cA'), B: mapFor('cB') },
+      stagedByKey: { a: mapFor('cA'), b: mapFor('cB') },
       rows: [
-        { key: 'A', id: null, variacoesUid: [fp('gT', 'P')] },
-        { key: 'B', id: null, variacoesUid: [fp('gT', 'P')] },
+        { key: 'a', id: null, variacoesUid: [fp('gT', 'P')] },
+        { key: 'b', id: null, variacoesUid: [fp('gT', 'P')] },
       ],
-      realChildren: [{ id: 'B', variacoesUid: [fp('gT', 'P')] }],
+      realChildren: [{ id: 'real-P', variacoesUid: [fp('gT', 'P')] }],
+      // Both paired onto the same document — only the first may write, and the
+      // loser is reported rather than silently dropped.
+      resolvedByKey: { a: 'real-P', b: 'real-P' },
     });
-    expect(out).toEqual([{ id: 'B', componentesKit: mapFor('cB') }]);
+    expect(out.writes).toEqual([{ key: 'a', id: 'real-P', componentesKit: mapFor('cA') }]);
+    expect(out.unresolved).toEqual(['b']);
   });
 
-  it('still resolves an empty-combo row by its key — the guard is only on the fallback', () => {
+  it('emits writes in stagedByKey order', () => {
     const out = resolveStagedKitVariacoes({
-      stagedByKey: { K: mapFor('cA') },
-      rows: [{ key: 'K', id: null, variacoesUid: [] }],
+      stagedByKey: { second: mapFor('c2'), first: mapFor('c1') },
+      rows: [
+        { key: 'first', id: 'first', variacoesUid: [] },
+        { key: 'second', id: 'second', variacoesUid: [] },
+      ],
       realChildren: [
-        { id: 'L', variacoesUid: [] },
-        { id: 'K', variacoesUid: [] },
+        { id: 'first', variacoesUid: [] },
+        { id: 'second', variacoesUid: [] },
       ],
+      resolvedByKey: NO_PAIRING,
     });
-    expect(out).toEqual([{ id: 'K', componentesKit: mapFor('cA') }]);
+    expect(out.writes.map((w) => w.key)).toEqual(['second', 'first']);
   });
 });
