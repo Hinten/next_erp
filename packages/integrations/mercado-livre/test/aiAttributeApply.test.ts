@@ -62,6 +62,15 @@ describe('applyAiAttributes', () => {
     expect(applyAiAttributes(cores, { COLOR: 'PRETO' })).toEqual([
       { id: 'COLOR', value_id: 'C1', value_name: 'Preto', unit_id: null },
     ]);
+
+    // ⚠️ `Preto`/`Preta` are the SAME LENGTH, so the pair above kills a
+    // truncating fold and NOT a prefix one. A strict prefix is the other half:
+    // under `.startsWith` this would resolve to `Preto` and emit a `value_id`
+    // the model never claimed. Unmatched must stay free text — ML says what is
+    // wrong, which beats inventing an id.
+    expect(applyAiAttributes(cores, { COLOR: 'Pret' })).toEqual([
+      { id: 'COLOR', value_id: null, value_name: 'Pret', unit_id: null },
+    ]);
   });
 
   it('attaches the unit to a bare number', () => {

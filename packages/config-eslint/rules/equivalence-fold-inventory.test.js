@@ -92,9 +92,9 @@ const INVENTARIO = {
   'apps/web/lib/mercado-livre/chartRows.ts':
     'TWO folds. (1) `prefillSizeEquivalence` matches a size label by `normalizeLoose` — equal: case + diacritics; distinct: EXACT only, never a prefix, or `4` would claim `40`. Near-miss: "never matches a PREFIX or a near-miss". (2) `seedRows` applies `localizarDecimal` as a display transform on `kind === "number"` parts only — near-miss: "does NOT localize a dot in a non-numeric part".',
   'packages/integrations/mercado-livre/src/ai/medidasApply.ts':
-    '`normalizeLoose` resolves a model answer onto a grid row and onto a closed-list option; `localizarDecimal` localises a numeric answer. Equal: case + diacritics. Distinct: two different options must never resolve to one another. Near-miss: "does NOT localize a dot in a non-numeric column" + the option-matching cases.',
+    '`normalizeLoose` resolves a model answer onto a grid row and onto a closed-list option (BOTH the scalar and the array path); `localizarDecimal` localises a numeric answer. Equal: case + diacritics, nothing else. Distinct: a sibling one letter away, and a bare PREFIX of an option. Near-miss: "picks the option that matches, not the sibling one letter away" + "refuses a bare PREFIX of an option, keeping it as free text" + "never matches a PREFIX of a standard size" + "does NOT localize a dot in a non-numeric column".',
   'packages/integrations/mercado-livre/src/ai/attributeApply.ts':
-    '`normalizeLoose` resolves a model answer onto ML’s option list. Equal: case + diacritics. Distinct: two options differing by more than that must not be confused. Near-miss: "picks the option that matches, not a sibling differing by one letter".',
+    '`normalizeLoose` resolves a model answer onto ML’s option list. Equal: case + diacritics. Distinct: a sibling one letter away, and a bare PREFIX — a same-length pair alone kills a TRUNCATING fold but not a `.startsWith` one, so the test carries both. Near-miss: "picks the option that matches, not a sibling differing by one letter".',
   'packages/integrations/mercado-livre/src/ai/medidasSchema.ts':
     '`normalizeLoose` is the DEDUPE key for row labels — a collision drops a row and sets `truncated`, so it must fold exactly what `applyAiMedidas` resolves with and no more. Near-miss: "keeps two size labels that differ by more than case and accents".',
 
