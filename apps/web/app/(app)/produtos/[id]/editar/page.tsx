@@ -50,7 +50,11 @@ import { KitVariacoesManager, type KitVariacoesFlush } from '../../_components/K
 import { ModificacoesManager } from '../../_components/ModificacoesManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
-import { VariationManager, type VariationRow } from '../../_components/VariationManager';
+import {
+  VariationManager,
+  type ChildrenFlush,
+  type VariationRow,
+} from '../../_components/VariationManager';
 import {
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_PERSISTENT_SECTIONS,
@@ -115,7 +119,7 @@ export default function EditarProdutoPage() {
   // Lifted from the VariationManager: the user's group selection (null until
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
-  const flushChildrenRef = useRef<((parentId: string) => Promise<void>) | null>(null);
+  const flushChildrenRef = useRef<ChildrenFlush | null>(null);
   // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
   // the variation-children flush so the child docs exist.
   const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
@@ -643,11 +647,13 @@ export default function EditarProdutoPage() {
         // The children flush runs before the kit-variation flush: it creates
         // any new children already carrying the parent's precos (plus their
         // initial history records).
-        await flushChildrenRef.current?.(id);
+        const children = await flushChildrenRef.current?.(id);
 
         // Then persist each kit-variation child's generated `componentesKit`
-        // (from "Gerar Variações") — the child docs exist by now.
-        await flushKitVariacoesRef.current?.(id);
+        // (from "Gerar Variações") — the child docs exist by now. The pairing is
+        // handed over directly because it CANNOT travel through React state:
+        // both awaits run in one microtask, so nothing re-renders in between.
+        await flushKitVariacoesRef.current?.(id, children?.reusedByKey ?? {});
 
         // Mercado Livre last: its link docs have six writers, so a save here
         // can lose a race and raise `AfterSaveBlockedError` (tier 3). Running

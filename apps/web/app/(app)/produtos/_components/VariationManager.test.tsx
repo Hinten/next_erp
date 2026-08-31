@@ -127,6 +127,7 @@ vi.mock('firebase/firestore', async (importOriginal) => {
 });
 
 const { VariationManager } = await import('./VariationManager');
+type ChildrenFlush = import('./VariationManager').ChildrenFlush;
 
 /* --------------------------------- fixtures -------------------------------- */
 
@@ -165,9 +166,7 @@ function child(
 }
 
 function renderManager(value: string[] = [uidP, uidG]) {
-  const flushRef: React.MutableRefObject<((parentId: string) => Promise<void>) | null> = {
-    current: null,
-  };
+  const flushRef: React.MutableRefObject<ChildrenFlush | null> = { current: null };
   const utils = render(
     <MantineTestProvider>
       <VariationManager
@@ -197,9 +196,7 @@ function rowCount(): number {
  * Start the flush and let it run up to the parked `commit()`. The promise is
  * created OUTSIDE `act` on purpose.
  */
-async function startFlush(
-  flush: (id: string) => Promise<void>,
-): Promise<{ pending: Promise<void> }> {
+async function startFlush(flush: ChildrenFlush): Promise<{ pending: Promise<unknown> }> {
   const pending = flush('p1');
   pending.catch(() => undefined);
   await act(async () => {
@@ -214,7 +211,7 @@ async function startFlush(
 }
 
 /** Resolve the OLDEST parked commit and let the flush finish. */
-async function settleCommit(pending: Promise<void>) {
+async function settleCommit(pending: Promise<unknown>) {
   const parked = h.commits.shift();
   await act(async () => {
     parked!.resolve();
@@ -262,7 +259,7 @@ describe('VariationManager — staged rows vs the optimistic snapshot echo', () 
 
     // The blocking half: a save issued in this window must not be refused.
     await act(async () => {
-      await expect(flushRef.current!('p1')).resolves.toBeUndefined();
+      await expect(flushRef.current!('p1')).resolves.toEqual({ reusedByKey: {} });
     });
 
     await settleCommit(pending);
@@ -281,7 +278,7 @@ describe('VariationManager — staged rows vs the optimistic snapshot echo', () 
     // the staged rows from `rows`, so this flush never saw — and never wrote —
     // them. It must not clear them either.
     await act(async () => {
-      await expect(flushRef.current!('p1')).resolves.toBeUndefined();
+      await expect(flushRef.current!('p1')).resolves.toEqual({ reusedByKey: {} });
     });
 
     // Now the only batch that ever carried those `set`s fails. Firestore rolls
@@ -388,11 +385,37 @@ describe('VariationManager — staged rows vs the optimistic snapshot echo', () 
     expect(rowCount()).toBe(2);
 
     await act(async () => {
-      await expect(flushRef.current!('p1')).resolves.toBeUndefined();
+      await expect(flushRef.current!('p1')).resolves.toEqual({ reusedByKey: {} });
     });
 
     expect(h.ops).toEqual([]);
     expect(h.commits).toHaveLength(0);
+  });
+
+  it('returns the key to reused-id pairing for a row the #117 reuse absorbed (#1388)', async () => {
+    // Delete a child, then regenerate its combo so the staged create carries the
+    // SAME SKU: `reconcileStagedChildren` absorbs it onto `c1` and the batch
+    // UPDATES that doc, writing nothing under the staged row's own key. The
+    // pairing is the only record of where the row went, and the flush clears the
+    // row right after — so if it is not returned here it cannot be recovered.
+    h.setChildren([child('c1', 'Camiseta P', 'CAMP', [uidP], 0)]);
+    // Only the P variant is selected, so Gerar produces exactly one combo — a
+    // second one would be a genuine create and mask the absorption below.
+    const { flushRef } = renderManager([uidP]);
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByLabelText('Remover variação')[0]!);
+    });
+    fireEvent.click(screen.getByText('Gerar variações'));
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    const result = (await pending) as { reusedByKey: Record<string, string> };
+    expect(Object.values(result.reusedByKey)).toEqual(['c1']);
+    // The batch UPDATED the reused doc; it never created one under the row key.
+    expect(h.ops.some((o) => o.kind === 'set')).toBe(false);
+    expect(h.ops.some((o) => o.kind === 'update' && o.id === 'c1')).toBe(true);
   });
 
   it('clears a staged row that resolved to no write at all', async () => {
@@ -405,7 +428,7 @@ describe('VariationManager — staged rows vs the optimistic snapshot echo', () 
     expect(rowCount()).toBe(1);
 
     await act(async () => {
-      await expect(flushRef.current!('p1')).resolves.toBeUndefined();
+      await expect(flushRef.current!('p1')).resolves.toEqual({ reusedByKey: {} });
     });
 
     expect(h.commits).toHaveLength(0);

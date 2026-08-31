@@ -113,6 +113,21 @@ export interface VariationRow {
   deleteMark: boolean;
 }
 
+/** What the children flush tells the page, for the kit-variation flush that follows. */
+export interface ChildrenFlushResult {
+  /**
+   * Staged row key → the doc id its create was absorbed onto by the #117 SKU id
+   * reuse. Those rows are written as an UPDATE on the reused id and never as a
+   * document under their own key, so this pairing is the ONLY exact record of
+   * where they went — and the flush then clears the row, so it cannot be
+   * recovered afterwards. `resolveStagedKitVariacoes` consumes it.
+   */
+  reusedByKey: Record<string, string>;
+}
+
+/** The children flush the page invokes in `onAfterSave`. */
+export type ChildrenFlush = (parentId: string) => Promise<ChildrenFlushResult>;
+
 /** Local staged patch over a persisted child (keyed by doc id). */
 interface ChildPatch {
   nome?: string;
@@ -143,7 +158,7 @@ export interface VariationManagerProps {
    * Receives the flush function so the page can wire it into the ObjectView's
    * `onAfterSave` (children are written only when the parent saves).
    */
-  flushRef: React.MutableRefObject<((parentId: string) => Promise<void>) | null>;
+  flushRef: React.MutableRefObject<ChildrenFlush | null>;
   disabled?: boolean;
 }
 
@@ -160,6 +175,9 @@ export interface VariationManagerProps {
 function stagedRowKey(): string {
   return newDocId();
 }
+
+/** No id reuse happened — the common case, shared so the exits stay cheap. */
+const NOTHING_REUSED: ChildrenFlushResult = { reusedByKey: {} };
 
 /** Stable empty set, so releasing `absorbedKeys` can't schedule a re-render. */
 const EMPTY_KEYS: ReadonlySet<string> = new Set();
@@ -367,7 +385,7 @@ export function VariationManager({
    * produto write, so it propagates even when the Variações tab — and
    * therefore this manager's live children snapshot — was never opened.
    */
-  const flushStagedChildren = async (parentId: string): Promise<void> => {
+  const flushStagedChildren = async (parentId: string): Promise<ChildrenFlushResult> => {
     // Nothing staged ⇒ nothing to write, and that guard is load-bearing now that
     // the section is persistent: this closure runs on EVERY produto save, not
     // only after the tab was opened. Without it the `ordem` renumbering below
@@ -376,7 +394,8 @@ export function VariationManager({
     // on a save that never touched variations. Renumbering an untouched family
     // may be worth doing, but it should be a deliberate action, not a side
     // effect of the tab having mounted.
-    if (Object.keys(patches).length === 0 && newRows.length === 0 && localOrder === null) return;
+    if (Object.keys(patches).length === 0 && newRows.length === 0 && localOrder === null)
+      return NOTHING_REUSED;
 
     const duplicates = findDuplicateSkus(rows);
     if (duplicates.size > 0) {
@@ -395,9 +414,15 @@ export function VariationManager({
     // otherwise show the server row and its staged twin as two live siblings
     // sharing one SKU.
     const stagedKeys = new Set(rows.filter((r) => r.id === null).map((r) => r.key));
-    const absorbed = new Set(
-      reconciled.filter((r) => r.id !== null && stagedKeys.has(r.key)).map((r) => r.key),
+    // ONE derivation, two consumers: the keys suppress the staged twin in `rows`
+    // (above), and the pairing goes to the page so the kit flush can address
+    // those rows exactly — nothing else records where they were written.
+    const reusedByKey = Object.fromEntries(
+      reconciled
+        .filter((r) => r.id !== null && stagedKeys.has(r.key))
+        .map((r) => [r.key, r.id!] as const),
     );
+    const absorbed = new Set(Object.keys(reusedByKey));
 
     // Exactly what this flush is answerable for — the rows its closure captured,
     // split by which staging bucket they came from. `key` alone cannot tell the
@@ -501,7 +526,7 @@ export function VariationManager({
       // row added and then delete-marked before saving. Clearing those keys
       // stops that ghost row from surviving the save.
       clearStagedState(stagedKeys, handledPatchIds);
-      return;
+      return NOTHING_REUSED;
     }
     setAbsorbedKeys(absorbed.size > 0 ? absorbed : EMPTY_KEYS);
     try {
@@ -519,6 +544,7 @@ export function VariationManager({
           ? `${writes} variação(ões) gravada(s) — ${reusedIds.length} id(s) reaproveitado(s) por SKU.`
           : `${writes} variação(ões) gravada(s).`,
     });
+    return { reusedByKey };
   };
 
   // Hand the page the current flush closure (it captures this render's rows).
