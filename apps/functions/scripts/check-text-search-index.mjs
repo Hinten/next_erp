@@ -127,11 +127,13 @@ async function descobrirAmostra() {
     .map((d) => ({ id: d.id, nome: d.get('nome'), sku: d.get('sku') }))
     .filter((r) => typeof r.nome === 'string' && r.nome.trim() !== '');
 
-  // ⚠️ Sort REAL catalogue rows ahead of e2e fixtures. Discovery orders by
-  // `ultimaModificacao desc` and the e2e lanes write constantly, so the newest
-  // rows are almost all `e2e-<runId>-…` — synthetic, all-hyphen names that are
-  // the pathological case for the search DSL and representative of nothing.
-  // Measuring Q1's cost on one of those answers the wrong question.
+  // Belt-and-braces on top of the `nome` ordering above: sort any e2e fixture
+  // that still made the window behind the real rows. `e2e-<runId>-…` names are
+  // synthetic and all-hyphen — the pathological case for the search DSL, and
+  // representative of nothing — so measuring Q1 cost on one answers the wrong
+  // question. ⚠️ This sort alone is NOT sufficient, which is why the query above
+  // stopped ordering by recency: once the recent window is saturated with
+  // fixtures (measured: 50 of 50) there is nothing left to promote.
   const ehE2e = (r) => /^e2e[-_]/i.test(r.nome.trim());
   const linhas = [...todas.filter((r) => !ehE2e(r)), ...todas.filter(ehE2e)];
 
@@ -468,9 +470,10 @@ async function main() {
   console.log(
     `\n${'='.repeat(70)}\nQ3 LANGUAGE — does the default analyzer stem pt-BR?\n${'='.repeat(70)}`,
   );
-  console.log('  The CLI cannot declare textLanguage, so this index gets the');
-  console.log('  backend default. These probes are the evidence for whether');
-  console.log('  the declared pt-BR actually reached the deployed index.');
+  console.log('  firestore.indexes.json DECLARES pt-BR, but `firebase deploy`');
+  console.log('  silently DROPS searchIndexOptions — so the live index may still');
+  console.log('  be on autodetect. These probes are the evidence for whether the');
+  console.log('  declared pt-BR actually reached the deployed index.');
 
   if (amostra.plural) {
     const pluralWord = amostra.plural.nome.trim().split(/\s+/)[0];
@@ -507,14 +510,26 @@ async function main() {
     );
     const controle = await probarTermo(`control search("${palavra}")`, palavra, buscaTexto);
 
-    if (controle === 0) {
+    // ⚠️⚠️ THREE outcomes, not two. `probarTermo` returns null when the
+    // pipeline EXECUTION failed — a missing or still-building text index, which
+    // this script calls its most informative result. `null === 0` is false, so
+    // testing only for 0 let that failure fall through to the `else` and print
+    // the green verdict: the one run that proves nothing announcing the exact
+    // positive answer this PR exists to obtain. Check null FIRST, everywhere.
+    if (controle === null) {
+      console.warn('  ⚠️  CONTROL DID NOT RUN: the pipeline execution failed (missing');
+      console.warn('     or still-building index?). Skipping the accent probe — it');
+      console.warn('     could not tell folding from a query that never ran.');
+    } else if (controle === 0) {
       console.warn('  ⚠️  CONTROL FAILED: the accented word does not match its own');
       console.warn('     document, so the accent probe below is INCONCLUSIVE — the');
       console.warn('     miss would not be evidence about folding.');
     } else {
       console.log(`\n  accents: searching "${semAcento}" should find "${nomeAcentuado}"`);
       const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto);
-      if (n === 0) {
+      if (n === null) {
+        console.warn('  ⚠️  the accent probe did not run (pipeline failed) — NO verdict.');
+      } else if (n === 0) {
         console.warn(`  ⚠️  "${semAcento}" did NOT match "${palavra}" while the control DID.`);
         console.warn('     That IS evidence: the default analyzer does not fold accents.');
       } else {
