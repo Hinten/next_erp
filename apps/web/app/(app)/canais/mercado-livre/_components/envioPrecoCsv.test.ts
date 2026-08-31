@@ -74,6 +74,38 @@ describe('buildEnvioPrecoCsv', () => {
     expect(dados[9]).toBe(''); // Diferença
   });
 
+  it('⭐ shows NO difference for a refused send, however complete the prices look', () => {
+    // The trap the schema docblock warns about: `preco` is the price the plan
+    // INTENDED, and a refused send carries both ends — listing at 90, wanted 50.
+    // Keying the difference off non-null would print a -40,00 movement for a
+    // listing that never moved.
+    const csv = buildEnvioPrecoCsv(
+      [linha({ resultado: 'pulado', motivo: 'PRECO_ANTIGO_MAIOR', preco: 50, precoAnterior: 90 })],
+      RESUMO,
+    );
+    const dados = csv.split('\r\n')[1]!.split(';');
+
+    expect(dados[7]).toBe('90,00'); // Preço anterior — what the listing carries
+    expect(dados[8]).toBe('50,00'); // Preço CALCULADO — what we wanted, not what landed
+    expect(dados[9]).toBe(''); // Diferença — nothing moved
+    expect(csv).not.toContain('-40,00');
+  });
+
+  it('⚠️ but DOES show it for a send that landed', () => {
+    // The control: the column is not simply always blank.
+    const csv = buildEnvioPrecoCsv(
+      [linha({ resultado: 'enviado', preco: 50, precoAnterior: 90 })],
+      RESUMO,
+    );
+
+    expect(csv.split('\r\n')[1]!.split(';')[9]).toBe('-40,00');
+  });
+
+  it('names the column "Preço calculado", not "enviado"', () => {
+    expect(ENVIO_PRECO_CSV_HEADER).toContain('Preço calculado');
+    expect(ENVIO_PRECO_CSV_HEADER).not.toContain('Preço enviado');
+  });
+
   it('⭐ ends with a totals trailer, which is how a truncated file is detectable', () => {
     const csv = buildEnvioPrecoCsv([linha()], {
       ...RESUMO,

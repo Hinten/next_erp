@@ -54,7 +54,7 @@ export const ENVIO_PRECO_CSV_HEADER = [
   'Variação',
   'Anúncio',
   'Preço anterior',
-  'Preço enviado',
+  'Preço calculado',
   'Diferença',
   'Motivo',
   'Detalhe',
@@ -108,9 +108,17 @@ export function buildEnvioPrecoCsv(
       l.variacaoProdutoId ?? '',
       l.anuncioId ?? '',
       brMoney(l.precoAnterior),
+      // ⚠️ 'calculado', not 'enviado': `preco` is the price the plan INTENDED, and a
+      // `pulado`/`falha` row carries it too ("we wanted 50 and ML refused"). Naming
+      // the column 'enviado' would assert it landed.
       brMoney(l.preco),
-      // Only meaningful when both ends are known — a blank beats a fabricated 0.
-      l.preco !== null && l.precoAnterior !== null ? brMoney(l.preco - l.precoAnterior) : '',
+      // ⚠️ Keyed off `resultado`, never off both prices being non-null. A refused
+      // send has both — listing at 90, intended 50 — so the unconditional version
+      // printed a -40,00 movement for a listing that never moved, which is the
+      // exact false claim this report exists to prevent.
+      l.resultado === 'enviado' && l.preco !== null && l.precoAnterior !== null
+        ? brMoney(l.preco - l.precoAnterior)
+        : '',
       l.motivo ?? '',
       l.mensagem ?? '',
       l.erro ?? '',
