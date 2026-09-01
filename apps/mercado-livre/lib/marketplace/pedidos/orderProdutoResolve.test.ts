@@ -722,9 +722,13 @@ describe('resolveOrderLineProduto — sku-root binds the sellable child', () => 
     expect(out).toEqual({ produtoId: 'filho-1', via: 'sku-child' });
   });
 
-  // The drift guard on the ML path too: a root that somehow carries a paiId is
-  // not a wrapper, whatever its pointer says.
-  it('does not follow a pointer on a produto that carries a paiId', async () => {
+  // ⚠️ Named for what it actually pins. It does NOT reach `unidadeVendavel`'s
+  // drift guard: the seeded produto has a `paiId`, so `sku-root` cannot match it
+  // and the UNSCOPED rung answers — and that rung binds what it matched without
+  // resolving. The guard is unreachable from this entry point by construction
+  // (`sku-root` filters `paiId == null`), which is why the projection was
+  // dropped rather than left as coverage-shaped decoration.
+  it('leaves the unscoped rung binding exactly what it matched', async () => {
     const db = new FakeDb();
     // `paiId` is non-null, so `sku-root` cannot match it; the unscoped rung does.
     db.seed('produtos', 'estranho', {
