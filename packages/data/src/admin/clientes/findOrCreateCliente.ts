@@ -119,15 +119,33 @@ export interface FindOrCreateClienteResult {
   /** Fields dropped as unstorable (a masked or invalid telefone). */
   readonly dropped: readonly string[];
   /**
-   * The id of another cliente that already owns the incoming `idMercadoLivre`,
-   * when that is why the stamp was refused. `null` on every other outcome.
-   *
-   * Only the ML id is dropped — the rest of the patch still applies — so the
-   * caller sees a match that was enriched in every way EXCEPT the identity key,
-   * which is a split worth a log line rather than a duplicate to explain later.
-   * Mirrors `VincularClienteResult.clienteConflitante` on the claim path.
+   * Another cliente carrying the incoming `idMercadoLivre`, or `null` when the
+   * id has at most one owner. Mirrors `VincularClienteResult.clienteConflitante`
+   * on the claim path.
    */
-  readonly idMercadoLivreConflito: string | null;
+  readonly idMercadoLivreConflito: ClienteIdMercadoLivreConflito | null;
+}
+
+/**
+ * Two clientes, one ML account — reported rather than resolved. Merging them
+ * moves pedidos, conversas and endereços; that is a migration, not an import's
+ * job.
+ */
+export interface ClienteIdMercadoLivreConflito {
+  /** The OTHER cliente carrying this ML id. */
+  readonly outroCliente: string;
+  /**
+   * `true` — this run WANTED to stamp the id and was refused, so only that key
+   * was dropped and the rest of the patch still applied. `false` — nothing was
+   * going to be written; the duplicate already existed and is merely being
+   * surfaced.
+   *
+   * The distinction exists so a caller's log can be true. Both are worth
+   * seeing, but only one of them is something this run declined to do, and a
+   * message saying "não carimbado" about a pre-existing duplicate sends an
+   * operator looking for a write that was never attempted.
+   */
+  readonly carimboRecusado: boolean;
 }
 
 interface ClienteCandidate {
@@ -340,6 +358,30 @@ export async function findOrCreateCliente(
       // was always null and every order fell through to telefone/email. Live on
       // 2026-09-01 that matched a real buyer onto an e2e seed fixture whose
       // placeholder phone they happened to share. True as of that fix.
+      //
+      // ⚠️ **Supplying it also makes it a REJECTION key on the legs ABOVE, and
+      // that is a deliberate trade — see the test named for it.** `isSameCliente`
+      // gates every leg on all three strong keys, so a `cpf_cnpj` hit whose
+      // stored ML id CONTRADICTS the incoming one is now refused, and a SECOND
+      // cliente carrying the same cpf_cnpj is created. One CPF ordering from two
+      // ML accounts is the trigger (a replacement account, a household or company
+      // login) — uncommon, and permanent once it happens.
+      //
+      // Kept, for three reasons. The fork is SELF-CONSISTENT going forward: this
+      // very gate makes each account resolve to its own row deterministically,
+      // rather than to whichever the page returns first. Both rows carry the
+      // SAME correct cpf_cnpj, so the NF-e is fiscally right against either —
+      // what splits is the pedido history, which an operator can merge. And the
+      // alternative is worse: letting the cpf hit win would put two marketplace
+      // accounts on one cliente, which is exactly what CLIENTE_STRONG_KEYS
+      // exists to prevent, and the second id would never be stored anyway
+      // (fill-only-when-absent), so the two would not converge either.
+      // Consistent with this module's own bias — "a duplicate is recoverable,
+      // an overwritten cpf_cnpj is not".
+      //
+      // It is also ANNOUNCED, not silent: the refused candidate lands in
+      // `rejected` carrying `candidateIdMercadoLivre`, which
+      // `applyClienteStep` already logs.
       value: identityValue(fields.idMercadoLivre),
     },
     // The legacy `userPath` dedup step is intentionally skipped — see
@@ -415,19 +457,31 @@ export async function findOrCreateCliente(
     // still correct, so the cliente is enriched and the split is reported.
     // Merging the two docs moves pedidos, conversas and endereços — a
     // migration, never an import's job.
-    let idMercadoLivreConflito: string | null = null;
     const idMlPatch = patch.idMercadoLivre;
-    if (typeof idMlPatch === 'string') {
-      idMercadoLivreConflito =
+    const vaiCarimbar = typeof idMlPatch === 'string';
+    let outroDono: string | null = null;
+    if (vaiCarimbar) {
+      outroDono =
         mlLegOwners != null
           ? // Case B, free: no row the leg returned can BE `alvo` — an accepted
             // row ends the cascade at that leg, and `isSameCliente` is
             // deterministic, so a rejected one cannot be accepted lower down.
             (mlLegOwners.find((id) => id !== alvo.id) ?? null)
           : // Case A: the leg never ran, so nobody has asked yet.
-            await otherOwnerOfMlId(db, idMlPatch, alvo.id);
-      if (idMercadoLivreConflito != null) delete patch.idMercadoLivre;
+            await otherOwnerOfMlId(db, idMlPatch as string, alvo.id);
+    } else if (mlLegOwners != null) {
+      // Nothing to stamp — but the leg's page is already in hand, so a
+      // PRE-EXISTING duplicate costs nothing to notice and is otherwise
+      // invisible: the cascade takes the first compatible row and the second
+      // owner is never mentioned anywhere. That silence is what makes the
+      // ambiguity survive, since every later delivery makes the same silent
+      // pick. Reported, never repaired.
+      outroDono = mlLegOwners.find((id) => id !== alvo.id) ?? null;
     }
+
+    const idMercadoLivreConflito =
+      outroDono == null ? null : { outroCliente: outroDono, carimboRecusado: vaiCarimbar };
+    if (outroDono != null && vaiCarimbar) delete patch.idMercadoLivre;
 
     if (Object.keys(patch).length > 0) {
       await clienteCollection.merge(db, {}, alvo.id, {
@@ -459,7 +513,9 @@ export async function findOrCreateCliente(
   //
   // Free, like case B above: no query, just the page the leg already fetched.
   const idMlNovo = identityValue(fields.idMercadoLivre);
-  const conflitoNoCreate = idMlNovo == null ? null : (mlLegOwners?.[0] ?? null);
+  const outroDonoNoCreate = idMlNovo == null ? null : (mlLegOwners?.[0] ?? null);
+  const conflitoNoCreate =
+    outroDonoNoCreate == null ? null : { outroCliente: outroDonoNoCreate, carimboRecusado: true };
 
   const ref = await clienteCollection.add(db, {}, {
     tipo: fields.tipo,
@@ -475,7 +531,7 @@ export async function findOrCreateCliente(
     // `undefined` — the field is optional on `ClienteResolveFields` — and a
     // blank string to `null`, which is what the Firebase SDK requires, since it
     // rejects `undefined` in addDoc/setDoc.
-    idMercadoLivre: conflitoNoCreate == null ? idMlNovo : null,
+    idMercadoLivre: outroDonoNoCreate == null ? idMlNovo : null,
     ie: fields.ie,
     // `sanitizeTelefone`, not `normalizeTelefone`: a masked value (`11*****8888`)
     // would otherwise be stripped to 6 digits and throw a ZodError inside

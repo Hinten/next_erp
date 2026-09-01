@@ -1092,7 +1092,7 @@ describe('importPedidoMercadoLivre — cliente', () => {
       matchedBy: 'cpf_cnpj',
       rejected: [],
       dropped: [],
-      idMercadoLivreConflito: 'cli-da-pergunta',
+      idMercadoLivreConflito: { outroCliente: 'cli-da-pergunta', carimboRecusado: true },
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 

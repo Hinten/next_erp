@@ -264,6 +264,41 @@ describe('importQuestionMercadoLivre — the actionability gate', () => {
 });
 
 describe('importQuestionMercadoLivre — identity and skips', () => {
+  it('reports an ML id already carried by TWO clientes', async () => {
+    // ⚠️ The reachability here is narrower than it looks, and an earlier
+    // comment on this warn got it backwards. The REFUSAL half cannot fire on
+    // this path: every field but the ML id is null, so `isSameCliente` has no
+    // strong key to contradict on and the leg's `==` query satisfies the third
+    // — every ML-leg candidate is accepted, so nothing is ever stamped and
+    // nothing is ever refused. What DOES reach here is the duplicate half,
+    // which the cascade would otherwise swallow by silently taking the first
+    // row. This is the only surface that reports it on the question path.
+    findOrCreateClienteMock.mockReset();
+    findOrCreateClienteMock.mockResolvedValue({
+      clienteId: 'cli1',
+      created: false,
+      matchedBy: 'idMercadoLivre',
+      rejected: [],
+      dropped: [],
+      idMercadoLivreConflito: { outroCliente: 'cli-duplicado', carimboRecusado: false },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const db = new FakeDb();
+
+    await importQuestionMercadoLivre(deps(db), QUESTION_ID);
+
+    expect(warn).toHaveBeenCalledWith(
+      // Not "já pertence a outro cliente" — nothing was declined here, and a
+      // message saying so sends an operator hunting a write never attempted.
+      '[mercado-livre] pergunta: idMercadoLivre duplicado entre dois clientes',
+      expect.objectContaining({
+        clienteDaPergunta: 'cli1',
+        clienteExistente: 'cli-duplicado',
+        idMercadoLivre: '56801932',
+      }),
+    );
+  });
+
   it('resolves the contact by ML buyer id and creates NO usuario', async () => {
     resetCliente();
     const db = new FakeDb();

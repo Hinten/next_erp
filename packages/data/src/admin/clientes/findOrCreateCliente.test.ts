@@ -945,7 +945,7 @@ describe('findOrCreateCliente — ML order import (#1087)', () => {
     expect(res).toMatchObject({
       clienteId: 'cli-pedido',
       matchedBy: 'cpf_cnpj',
-      idMercadoLivreConflito: 'cli-ml',
+      idMercadoLivreConflito: { outroCliente: 'cli-ml', carimboRecusado: true },
     });
     // Only the identity key was withheld — the unrelated enrichment still lands.
     expect(fake.storedDoc(CLIENTES, 'cli-pedido')).toMatchObject({
@@ -979,7 +979,7 @@ describe('findOrCreateCliente — ML order import (#1087)', () => {
 
     const res = await findOrCreateCliente(db(fake), { fields: pedidoFields(), nowMs: NOW_MS });
 
-    expect(res.idMercadoLivreConflito).toBe('cli-ml');
+    expect(res.idMercadoLivreConflito).toEqual({ outroCliente: 'cli-ml', carimboRecusado: true });
     expect(fake.storedDoc(CLIENTES, 'cli-pedido')).toEqual(jaIgual);
   });
 
@@ -997,7 +997,10 @@ describe('findOrCreateCliente — ML order import (#1087)', () => {
 
     const res = await findOrCreateCliente(db(fake), { fields: pedidoFields(), nowMs: NOW_MS });
 
-    expect(res).toMatchObject({ created: true, idMercadoLivreConflito: 'cli-outro' });
+    expect(res).toMatchObject({
+      created: true,
+      idMercadoLivreConflito: { outroCliente: 'cli-outro', carimboRecusado: true },
+    });
     expect(fake.storedDoc(CLIENTES, res.clienteId)).toMatchObject({
       cpf_cnpj: CPF_A,
       idMercadoLivre: null,
@@ -1022,7 +1025,10 @@ describe('findOrCreateCliente — ML order import (#1087)', () => {
       nowMs: NOW_MS,
     });
 
-    expect(res).toMatchObject({ clienteId: 'cli-fixture', idMercadoLivreConflito: 'cli-outro' });
+    expect(res).toMatchObject({
+      clienteId: 'cli-fixture',
+      idMercadoLivreConflito: { outroCliente: 'cli-outro', carimboRecusado: true },
+    });
     expect(fake.queryCount).toBe(3);
     expect(fake.storedDoc(CLIENTES, 'cli-fixture')).not.toHaveProperty('idMercadoLivre');
   });
@@ -1040,6 +1046,97 @@ describe('findOrCreateCliente — ML order import (#1087)', () => {
     semId.seed(CLIENTES, 'cli-pedido', { nome: 'Ana Maria Souza', cpf_cnpj: CPF_A });
     await findOrCreateCliente(db(semId), { fields: fields(), nowMs: NOW_MS });
     expect(semId.queryCount).toBe(1);
+  });
+
+  it('INTENDED: a cpf_cnpj hit with a contradicting ML id forks, rather than merging two accounts', async () => {
+    // Supplying the id makes it a REJECTION key on the legs ABOVE it, which is
+    // a behaviour change this PR introduces and a decision rather than a side
+    // effect. One CPF ordering from two ML accounts (a replacement account, a
+    // household login) now yields TWO clientes carrying that same cpf_cnpj.
+    //
+    // Kept, and this test is what makes it a decision: see the leg's comment.
+    // The short version — the fork is self-consistent (each account resolves to
+    // its own row deterministically, asserted below), both rows carry the SAME
+    // correct cpf_cnpj so the NF-e is right against either, and the alternative
+    // would put two marketplace accounts on one cliente, which is what
+    // CLIENTE_STRONG_KEYS exists to prevent.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-conta-999', {
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: CPF_A,
+      idMercadoLivre: ML_BUYER_B,
+    });
+
+    const res = await findOrCreateCliente(db(fake), { fields: pedidoFields(), nowMs: NOW_MS });
+
+    expect(res.created).toBe(true);
+    expect(res.clienteId).not.toBe('cli-conta-999');
+    // The split is ANNOUNCED, not silent — `applyClienteStep` logs this.
+    expect(res.rejected).toEqual([
+      {
+        id: 'cli-conta-999',
+        matchedBy: 'cpf_cnpj',
+        candidateCpfCnpj: CPF_A,
+        candidateIdEstrangeiro: null,
+        candidateIdMercadoLivre: ML_BUYER_B,
+      },
+    ]);
+    // Two rows, one CPF. The original is untouched.
+    expect(fake.storedDoc(CLIENTES, 'cli-conta-999')).toEqual({
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: CPF_A,
+      idMercadoLivre: ML_BUYER_B,
+    });
+    expect(fake.storedDoc(CLIENTES, res.clienteId)).toMatchObject({
+      cpf_cnpj: CPF_A,
+      idMercadoLivre: ML_BUYER_A,
+    });
+
+    // ⭐ The half that makes the fork tolerable: it does NOT compound. Each
+    // account now resolves to its OWN row every time — the same gate that
+    // caused the split is what disambiguates the duplicated CPF afterwards, so
+    // no third row appears and neither account drifts onto the other's.
+    const voltaA = await findOrCreateCliente(db(fake), {
+      fields: pedidoFields(),
+      nowMs: NOW_MS,
+    });
+    expect(voltaA).toMatchObject({ clienteId: res.clienteId, matchedBy: 'cpf_cnpj' });
+    const voltaB = await findOrCreateCliente(db(fake), {
+      fields: pedidoFields({ idMercadoLivre: ML_BUYER_B }),
+      nowMs: NOW_MS,
+    });
+    expect(voltaB).toMatchObject({ clienteId: 'cli-conta-999', matchedBy: 'cpf_cnpj' });
+    expect(fake.docCount(CLIENTES)).toBe(2);
+  });
+
+  it('surfaces an ML id ALREADY owned by two clientes, which nothing else reports', async () => {
+    // Pre-existing corruption, not something this run could cause: the cascade
+    // takes the first compatible row and the second owner is mentioned nowhere,
+    // so every later delivery repeats the same silent pick. Free to notice —
+    // the leg's page is already in hand — and `carimboRecusado: false` says
+    // plainly that no write was declined, because there was none to make.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-a', { nome: 'Ana', idMercadoLivre: ML_BUYER_A });
+    fake.seed(CLIENTES, 'cli-b', { nome: 'Ana de novo', idMercadoLivre: ML_BUYER_A });
+
+    const res = await findOrCreateCliente(db(fake), {
+      fields: perguntaFields(),
+      nowMs: NOW_MS,
+    });
+
+    expect(res).toMatchObject({ clienteId: 'cli-a', matchedBy: 'idMercadoLivre', created: false });
+    expect(res.idMercadoLivreConflito).toEqual({
+      outroCliente: 'cli-b',
+      carimboRecusado: false,
+    });
+    // Reported, never repaired — merging moves pedidos, conversas and endereços.
+    expect(fake.docCount(CLIENTES)).toBe(2);
+    expect(fake.storedDoc(CLIENTES, 'cli-b')).toEqual({
+      nome: 'Ana de novo',
+      idMercadoLivre: ML_BUYER_A,
+    });
+    // And it costs no extra query: one leg ran, and its own page is the answer.
+    expect(fake.queryCount).toBe(1);
   });
 
   it('a placeholder-phone row stops absorbing buyers once it carries an ML id', async () => {

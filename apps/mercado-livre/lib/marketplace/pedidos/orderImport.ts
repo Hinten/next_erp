@@ -786,16 +786,25 @@ async function applyClienteStep(args: {
   }
   if (idMercadoLivreConflito != null) {
     // Two clientes for one ML account — routinely a pre-sale question's cliente
-    // beside this order's. The pedido still links, and the cliente is still
-    // enriched; only the identity key was withheld, because a second owner is
-    // what makes the match leg ambiguous. Merging them moves pedidos, conversas
-    // and endereços: a human's call.
-    console.warn('[mercado-livre] idMercadoLivre já pertence a outro cliente — não carimbado', {
-      orderId,
-      clienteDoPedido: clienteId,
-      clienteExistente: idMercadoLivreConflito,
-      idMercadoLivre: String(buyerUserId),
-    });
+    // beside this order's. The pedido still links and the cliente is still
+    // enriched; merging them moves pedidos, conversas and endereços, so it is a
+    // human's call.
+    //
+    // The two halves say DIFFERENT things and must not share a message: one is
+    // a write this run declined, the other a duplicate that was already there.
+    // "não carimbado" about the second sends an operator hunting for a write
+    // that was never attempted.
+    console.warn(
+      idMercadoLivreConflito.carimboRecusado
+        ? '[mercado-livre] idMercadoLivre já pertence a outro cliente — não carimbado'
+        : '[mercado-livre] idMercadoLivre duplicado entre dois clientes — nada a carimbar',
+      {
+        orderId,
+        clienteDoPedido: clienteId,
+        clienteExistente: idMercadoLivreConflito.outroCliente,
+        idMercadoLivre: String(buyerUserId),
+      },
+    );
   }
   const clienteOuterRef = toOuterRef(clienteCollection.docPath({}, clienteId));
 

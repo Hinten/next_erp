@@ -186,16 +186,31 @@ async function resolveClienteDaPergunta(
     });
   }
   if (res.idMercadoLivreConflito != null) {
-    // Reachable only when the ML leg found this buyer's cliente and
-    // `isSameCliente` refused it — a stored strong key contradicting. The
-    // asker still gets a cliente; it just does not claim an id someone else
-    // owns. A human decides whether the two rows are one person.
-    console.warn('[mercado-livre] pergunta: idMercadoLivre já pertence a outro cliente', {
-      questionId: question.id,
-      clienteDaPergunta: res.clienteId,
-      clienteExistente: res.idMercadoLivreConflito,
-      idMercadoLivre: String(buyerId),
-    });
+    // ⚠️ On THIS path the refusal half is unreachable, and an earlier version of
+    // this comment claimed the opposite — the mistake this repo keeps making, so
+    // it is worth stating why rather than deleting the block. The fields above
+    // are all null except the ML id, so `isSameCliente` has no strong key to
+    // contradict on (`idCompatible` reads a null incoming side as no evidence)
+    // and the leg's own `==` query guarantees the third. Every ML-leg candidate
+    // is therefore ACCEPTED: the cascade never falls through, so nothing is ever
+    // stamped and nothing is ever refused.
+    //
+    // What DOES reach here is the other half — the id already carried by two
+    // clientes. The cascade silently takes the first and the second is
+    // mentioned nowhere, which is precisely how that ambiguity survives every
+    // later delivery. This is the only surface that reports it on the question
+    // path.
+    console.warn(
+      res.idMercadoLivreConflito.carimboRecusado
+        ? '[mercado-livre] pergunta: idMercadoLivre já pertence a outro cliente'
+        : '[mercado-livre] pergunta: idMercadoLivre duplicado entre dois clientes',
+      {
+        questionId: question.id,
+        clienteDaPergunta: res.clienteId,
+        clienteExistente: res.idMercadoLivreConflito.outroCliente,
+        idMercadoLivre: String(buyerId),
+      },
+    );
   }
   return res.clienteId;
 }
