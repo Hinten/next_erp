@@ -247,3 +247,65 @@ describe('buildStockResolver — a family of one reads its child', () => {
     expect(resolver('p1')).toEqual({ disponivel: null, localizacao: '' });
   });
 });
+
+/**
+ * ⚠️ `filhoUnicoId` records that the family has exactly ONE child. It says
+ * nothing about where the units sit — `upSoleMember` moves them, but that is the
+ * Mercado Livre publish path. A produto whose stock was lançado on the parent
+ * and never moved still has the number there, and resolving past it printed `-`
+ * for units that are on the shelf.
+ */
+describe('buildStockResolver — the sole member has no row at this depósito', () => {
+  afterEach(() => {
+    reads.current = [];
+    docs.current = {};
+  });
+
+  it('falls back to the produto’s OWN row', async () => {
+    docs.current = {
+      'est-p1-dep1': { quantidade: 12, quantidadeReservada: 0, localizacao: 'C-3' },
+    };
+    const resolver = await buildStockResolver(
+      db,
+      new Map([['p1', prodFamilia({ filhoUnicoId: 'c1' })]]),
+      'dep1',
+    );
+    expect(resolver('p1')).toEqual({ disponivel: 12, localizacao: 'C-3' });
+    // The child is tried first; the parent's row is the second, anomalous read.
+    expect(reads.current).toEqual(['est-c1-dep1', 'est-p1-dep1']);
+  });
+
+  // ⚠️ The fallback fires on ABSENCE, not on zero. When both rows exist the sole
+  // member answers — the same thing the ERP does for any parent/child split, and
+  // the parent's remainder is `residualEstoquePai`'s job.
+  it('does NOT fall back when the sole member has a row, even a zero one', async () => {
+    docs.current = {
+      'est-c1-dep1': { quantidade: 0, quantidadeReservada: 0, localizacao: '' },
+      'est-p1-dep1': { quantidade: 12, quantidadeReservada: 0, localizacao: 'C-3' },
+    };
+    const resolver = await buildStockResolver(
+      db,
+      new Map([['p1', prodFamilia({ filhoUnicoId: 'c1' })]]),
+      'dep1',
+    );
+    expect(resolver('p1').disponivel).toBe(0);
+    expect(reads.current).toEqual(['est-c1-dep1']);
+  });
+
+  it('costs no extra read when neither row exists', async () => {
+    const resolver = await buildStockResolver(
+      db,
+      new Map([['p1', prodFamilia({ filhoUnicoId: 'c1' })]]),
+      'dep1',
+    );
+    expect(resolver('p1')).toEqual({ disponivel: null, localizacao: '' });
+    // Two reads: the target, then the one fallback. Never more.
+    expect(reads.current).toEqual(['est-c1-dep1', 'est-p1-dep1']);
+  });
+
+  it('does not fall back for a produto that resolved to itself', async () => {
+    const resolver = await buildStockResolver(db, new Map([['p1', prodFamilia()]]), 'dep1');
+    expect(resolver('p1').disponivel).toBeNull();
+    expect(reads.current).toEqual(['est-p1-dep1']);
+  });
+});

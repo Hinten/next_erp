@@ -438,36 +438,63 @@ export async function buildStockResolver(
   const byProduto = new Map<string, StockInfo>();
 
   // ⚠️ Read the produto that owns the AVAILABLE stock, which for a family of one
-  // is the child (#1398) — the parent is a wrapper and its row would print a
-  // truthful, useless `0` on a picking list someone walks the warehouse with.
+  // is the child (#1398) — the parent is a wrapper, and after the units have
+  // moved its row prints a truthful, useless `0` on a picking list someone walks
+  // the warehouse with.
   //
-  // The resolution is FREE here: every produto on this sheet, line items AND kit
-  // components alike, is already in `produtos`, so no document is read twice and
-  // none is read that was not read before. The keys stay the ids the pedido and
-  // the kit map name — only the estoque doc that answers for them moves.
+  // The RESOLUTION is free: every produto on this sheet, line items AND kit
+  // components alike, is already in `produtos`, so it costs no produto read. The
+  // estoque READ COUNT is unchanged too — `alvos` is never larger than
+  // `produtos` — though the documents differ: a sole member's row is one this
+  // sheet did not read before. The keys stay the ids the pedido and the kit map
+  // name; only the estoque doc that answers for them moves.
   const alvoDe = new Map<string, string>();
   for (const [id, p] of produtos) alvoDe.set(id, unidadeVendavel({ id, ...p }));
 
   if (depositoId) {
+    const ler = async (pid: string): Promise<StockInfo | null> => {
+      const estId = makeEstoqueUid(pid, depositoId);
+      const snap = await getDoc(estoqueProdutoCollection.docRef(db, { produtoId: pid }, estId));
+      if (!snap.exists()) return null;
+      const e: EstoqueProduto = snap.data();
+      return { disponivel: estoqueDisponivel(e), localizacao: e.localizacao ?? '' };
+    };
+
     // Distinct targets: a produto and its sole member never collide, but two
     // kit entries pointing at one produto would read the same doc twice.
-    const alvos = [...new Set(alvoDe.values())];
     const porAlvo = new Map<string, StockInfo>();
     await Promise.all(
-      alvos.map(async (pid) => {
-        const estId = makeEstoqueUid(pid, depositoId);
-        const snap = await getDoc(estoqueProdutoCollection.docRef(db, { produtoId: pid }, estId));
-        if (snap.exists()) {
-          const e: EstoqueProduto = snap.data();
-          porAlvo.set(pid, {
-            disponivel: estoqueDisponivel(e),
-            localizacao: e.localizacao ?? '',
-          });
-        }
+      [...new Set(alvoDe.values())].map(async (pid) => {
+        const info = await ler(pid);
+        if (info) porAlvo.set(pid, info);
       }),
     );
+
+    // ⚠️ A produto whose sole member has NO row at this depósito keeps its OWN.
+    // `filhoUnicoId` records that the family has exactly one child; it says
+    // NOTHING about where the units sit. `upSoleMember` moves them, but that is
+    // the Mercado Livre publish path — a produto whose stock was lançado on the
+    // parent and never moved still has the number there, and resolving past it
+    // would print `-` for units that are on the shelf.
+    //
+    // One extra read, and only in that anomalous case. ⚠️ When BOTH rows hold
+    // units the sole member's answers, matching what the ERP does for any
+    // parent/child split; the parent's remainder is `residualEstoquePai`'s job.
+    const semLinha = [
+      ...new Set(
+        [...alvoDe].filter(([id, alvo]) => alvo !== id && !porAlvo.has(alvo)).map(([id]) => id),
+      ),
+    ];
+    const porProprio = new Map<string, StockInfo>();
+    await Promise.all(
+      semLinha.map(async (pid) => {
+        const info = await ler(pid);
+        if (info) porProprio.set(pid, info);
+      }),
+    );
+
     for (const [id, alvo] of alvoDe) {
-      const info = porAlvo.get(alvo);
+      const info = porAlvo.get(alvo) ?? porProprio.get(id);
       if (info) byProduto.set(id, info);
     }
   }
