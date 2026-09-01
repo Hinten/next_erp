@@ -9,6 +9,7 @@ import {
   variacaoMercadoLivreLinkSchema,
   estadoPublicacaoMlSchema,
   precisaConsultarModeracao,
+  acaoStatusAnuncio,
 } from './mercadoLivreLink';
 
 describe('produtoMercadoLivreLinkSchema', () => {
@@ -349,5 +350,53 @@ describe('precisaConsultarModeracao', () => {
 
   it('fires when a moderation sub_status sits alongside ordinary ones', () => {
     expect(precisaConsultarModeracao('paused', ['out_of_stock', 'moderation_penalty'])).toBe(true);
+  });
+});
+
+/* --------------------------- acaoStatusAnuncio ---------------------------- */
+
+describe('acaoStatusAnuncio', () => {
+  const PUBLICADO = { id: 'MLB1', estado: 'p', status: 'active' };
+
+  it('offers Pausar on a live listing and Reativar on a paused one', () => {
+    expect(acaoStatusAnuncio(PUBLICADO)).toBe('pausar');
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'pa', status: 'paused' })).toBe('reativar');
+  });
+
+  it('offers nothing on a listing that was never published', () => {
+    expect(acaoStatusAnuncio({ id: null, estado: 'r', status: null })).toBeNull();
+    // `''` is the migrated-corpus shape the backend also treats as unpublished.
+    expect(acaoStatusAnuncio({ id: '', estado: 'r', status: null })).toBeNull();
+    expect(acaoStatusAnuncio(null)).toBeNull();
+    expect(acaoStatusAnuncio(undefined)).toBeNull();
+  });
+
+  it('offers nothing once the listing is cancelled — closed is terminal on ML', () => {
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'c', status: 'closed' })).toBeNull();
+    // `estado` lagging behind the raw status must not reopen the control either.
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'p', status: 'closed' })).toBeNull();
+    // ⚠️ The case that makes the `estado` rung load-bearing rather than
+    // redundant with the raw-status one: a LEGACY cancelled row carries `estado
+    // 'c'` and NO `status`, so without it the absent-status fallback below would
+    // offer to pause a listing ML closed long ago. Deleting that rung passes
+    // every other assertion in this block.
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'c' })).toBeNull();
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'c', status: null })).toBeNull();
+  });
+
+  it('offers nothing while ML is mid-decision', () => {
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'v', status: 'under_review' })).toBeNull();
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'a', status: 'payment_required' })).toBeNull();
+  });
+
+  it('treats a published link with NO status as live — the legacy corpus (#780)', () => {
+    // The near-miss that keeps this rung honest: absent status reads as live,
+    // but an absent status with `estado 'pa'` must still read as PAUSED, or the
+    // button would offer to pause something already paused.
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'p' })).toBe('pausar');
+    expect(acaoStatusAnuncio({ id: 'MLB1' })).toBe('pausar');
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'pa' })).toBe('reativar');
+    // ...and an empty-string status is "absent", not an unknown ML value.
+    expect(acaoStatusAnuncio({ id: 'MLB1', estado: 'pa', status: '' })).toBe('reativar');
   });
 });
