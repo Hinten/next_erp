@@ -55,7 +55,12 @@ class FakeDb {
    * lazily-guarded read was NOT issued — #801's sibling scan must stay unpaid when
    * every variation already resolves by link.
    */
-  readonly queryLog: Array<{ path: string; field: string }> = [];
+  // ⚠️ `limit` is part of the entry since #1398: the importer now issues TWO
+  // different `produtos where paiId ==` queries — the per-child sibling scan
+  // (#801, unlimited) and the sole-member pointer read (`limit(2)`, once per
+  // import) — and `{path, field}` alone cannot tell them apart. A read-count
+  // assertion that cannot name WHICH read it forbids stops being one.
+  readonly queryLog: Array<{ path: string; field: string; limit: number | null }> = [];
   /**
    * Fires after every doc `get()`. The seam for injecting a concurrent writer
    * into the exact window a `lastUpdateTime` guard protects: between the read a
@@ -95,7 +100,11 @@ class FakeDb {
     return this.col(path);
   }
 
-  private query(entries: Array<[string, DocData, string]>) {
+  private query(
+    entries: Array<[string, DocData, string]>,
+    /** The `queryLog` entry this query came from, so `limit()` can record itself. */
+    entrada?: { limit: number | null },
+  ) {
     // entries: [docId, data, collectionPath]
     const clauses: Array<[string, unknown]> = [];
     let lim: number | null = null;
@@ -107,6 +116,7 @@ class FakeDb {
       },
       limit(n: number) {
         lim = n;
+        if (entrada) entrada.limit = n;
         return q;
       },
       async get() {
@@ -178,9 +188,13 @@ class FakeDb {
         };
       },
       where: (field: string, op: string, value: unknown) => {
-        self.queryLog.push({ path, field });
+        const entrada = { path, field, limit: null as number | null };
+        self.queryLog.push(entrada);
         return self
-          .query([...col.entries()].map(([id, d]) => [id, d, path]))
+          .query(
+            [...col.entries()].map(([id, d]) => [id, d, path]),
+            entrada,
+          )
           .where(field, op, value);
       },
       limit: (n: number) => self.query([...col.entries()].map(([id, d]) => [id, d, path])).limit(n),
@@ -1237,7 +1251,17 @@ describe('importProduto — ERP-first variation children (#801)', () => {
     const second = await importProduto(deps(db, makeApi(ITEM)), 'MLB999');
 
     expect(second.variations).toEqual({ total: 2, created: 0 });
-    expect(db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'paiId')).toEqual([]);
+    // ⚠️ The SIBLING SCAN specifically, not every `paiId` query: the sole-member
+    // pointer read (#1398) is also `produtos where paiId ==`, but it is issued
+    // once per import with `limit(2)`, while the scan this forbids is per CHILD
+    // and unbounded.
+    const varreduras = (log: typeof db.queryLog) =>
+      log.filter((q) => q.path === 'produtos' && q.field === 'paiId' && q.limit === null);
+    expect(varreduras(db.queryLog)).toEqual([]);
+    // ...and the pointer read DID happen, so this is not passing by accident.
+    expect(
+      db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'paiId' && q.limit === 2),
+    ).toHaveLength(1);
   });
 
   /**
@@ -1375,7 +1399,9 @@ describe('importProduto — ERP-first variation children (#801)', () => {
       expect(res.variations).toEqual({ total: 2, created: 0 });
       // `limit(2)` costs one extra DOCUMENT, never an extra QUERY: rule 2 answered
       // both variations, so rule 3's lazy `paiId ==` scan must stay unpaid.
-      expect(db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'paiId')).toEqual([]);
+      expect(
+        db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'paiId' && q.limit === null),
+      ).toEqual([]);
       expect(db.queryLog.filter((q) => q.path === 'produtos' && q.field === 'sku')).toHaveLength(2);
     });
 
@@ -1508,6 +1534,65 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       getFreeShippingOptions: vi.fn(async () => ({ coverage: { all_country: {} } })),
     } as unknown as MercadoLivreApi;
   }
+
+  /**
+   * The sole-member pointer (#1398).
+   *
+   * ⚠️ A produto imported from ML is ALWAYS a family, and the stock lands on the
+   * CHILD. With `filhoUnicoId` unset, `unidadeVendavel` resolves such a produto to
+   * the PARENT — which owns no estoque rows — so its badge, its pedido line and
+   * its print all read zero. That is the original #1398 bug reached through the
+   * importer instead of through publish.
+   */
+  describe('the sole-member pointer', () => {
+    it('points the family parent at its ONE member', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+
+      expect(db.docs('produtos').get(expectedParentId)).toMatchObject({
+        filhoUnicoId: expectedChildId(MEMBER_A_ID),
+      });
+    });
+
+    // ⛔ The near-miss, and plan risk 1. A User-Products import fetches ONE member
+    // per call and fans out to the siblings in separate calls, so "the children
+    // this call wrote" is 1 for every member of a three-member family. Deriving
+    // the pointer from that would name member A as the sole member of a family of
+    // three and send every stock reader to one arbitrary variation.
+    it('leaves the pointer NULL on a family of three, however many calls wrote it', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: { [MEMBER_A_ID]: MEMBER_A, [MEMBER_B_ID]: MEMBER_B, [MEMBER_C_ID]: MEMBER_C },
+        family: { user_products_ids: ['UP-A', 'UP-B', 'UP-C'] },
+        search: { results: [MEMBER_A_ID, MEMBER_B_ID, MEMBER_C_ID] },
+      });
+      const res = await importProduto(deps(db, api), MEMBER_A_ID);
+
+      // The fan-out really landed the siblings — otherwise the null below would
+      // be asserting nothing about a family of three.
+      expect(res.family?.imported).toBe(2);
+      expect(db.docs('produtos').get(expectedParentId)!.filhoUnicoId).toBeNull();
+    });
+
+    // The pointer is not free — it is one query per import that owns children —
+    // so an import that changes nothing must not also cost a WRITE. This runs on
+    // every re-import of every produto in the catalogue.
+    it('writes nothing on a re-import that leaves the family unchanged', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+
+      db.updates.length = 0;
+      await importProduto(deps(db, api), MEMBER_A_ID);
+
+      expect(
+        db.updates.filter(
+          (u) => u.path === `produtos/${expectedParentId}` && 'filhoUnicoId' in u.patch,
+        ),
+      ).toEqual([]);
+    });
+  });
 
   it('imports the family parent + the called member as a child — literal parity ids, denorm, skip-stock', async () => {
     const db = new FakeDb();

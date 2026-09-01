@@ -61,6 +61,7 @@ import {
 import {
   type MlModeracao,
   PRODUTO_EXTRA_DATA_DOC_ID,
+  derivarFilhoUnico,
   precisaConsultarModeracao,
   toOuterRef,
 } from '@delfrance/schemas';
@@ -598,6 +599,13 @@ export async function importProduto(
     await aplicarRollupDimensoes(db, produtoId, variationsResult.medidas, now);
   }
 
+  // The sole-member pointer (#1398). AFTER the rollup, which also writes the
+  // parent: running before it would invalidate the rollup's precondition and
+  // cost the dimension repair a retry on every single import.
+  if (ownsChildren) {
+    await aplicarPonteiroMembroUnico(db, produtoId, now);
+  }
+
   // Photos (#439) — additive, high-quality, best-effort. After the produto exists;
   // skips already-imported pictures; per-picture failures are logged, not fatal.
   // Requires a Storage bucket (omitted in tests that don't exercise photos). Runs
@@ -1069,6 +1077,71 @@ async function aplicarRollupDimensoes(
     // ours by construction, so the blank is either already filled or will be
     // repaired by the next import.
     console.warn('[mercado-livre] import: rollup de dimensoes ignorado (produto alterado)', {
+      produtoId,
+    });
+  }
+}
+
+/**
+ * Point the parent at its sole member — or clear the pointer when the family has
+ * more than one (#1398).
+ *
+ * ## Why the importer has to do this at all
+ *
+ * A produto imported from Mercado Livre is ALWAYS a family: a simple listing
+ * comes back as a parent plus one child, and the stock lands on the CHILD. With
+ * `filhoUnicoId` unset, `unidadeVendavel` resolves such a produto to the parent —
+ * which owns no estoque rows — so its badge, its pedido line and its print all
+ * read **zero**. That is the original #1398 bug, reached through the importer
+ * instead of through publish.
+ *
+ * ## ⚠️ The child set is QUERIED, never inferred from this call
+ *
+ * A User-Products import fetches ONE member per call and fans out to the siblings
+ * in separate calls, so "the children this call wrote" is 1 for every member of a
+ * three-member family. Deriving the pointer from that would name member 1 as the
+ * sole member of a family of three — plan risk 1, and it would send every stock
+ * reader to one arbitrary variation.
+ *
+ * `limit(2)` is exactly what the question needs: `derivarFilhoUnico` only has to
+ * tell "one" from "more than one", so two documents answer it and Enterprise
+ * bills two documents scanned. The query rides the existing
+ * `produtos(paiId ASC, nome ASC)` index on its prefix.
+ *
+ * ## ⚠️ Read order IS the concurrency guard (rule 7)
+ *
+ * The parent snapshot is taken BEFORE the children query, and the write carries
+ * that snapshot's `lastUpdateTime` (tier 1). Two sibling imports racing then
+ * cannot land a stale pointer: whichever queries later necessarily sees the other
+ * member — its child write precedes its parent write — and whichever wrote the
+ * parent first invalidates the other's precondition. Reading the parent AFTER the
+ * query would break exactly that, so do not "tidy" the order.
+ *
+ * A lost race SKIPS, like the rollup above: the winner holds a newer view by
+ * construction, and the pointer self-heals on the next import or produto save.
+ */
+async function aplicarPonteiroMembroUnico(
+  db: Firestore,
+  produtoId: string,
+  now: number,
+): Promise<void> {
+  const ref = produtoCollection.docRef(db, {}, produtoId);
+  const snap = await ref.get();
+  if (!snap.exists) return;
+
+  const filhos = await produtoCollection.ref(db, {}).where('paiId', '==', produtoId).limit(2).get();
+  const filhoUnicoId = derivarFilhoUnico(filhos.docs.map((d) => ({ id: d.id })));
+  // Nothing to say: an unchanged pointer must not cost a write, because this runs
+  // on every import of every produto that owns children.
+  if (((snap.data() ?? {}).filhoUnicoId ?? null) === filhoUnicoId) return;
+
+  const lastUpdateTime = snap.updateTime;
+  try {
+    const patch = { filhoUnicoId, ultimaModificacao: now };
+    await (lastUpdateTime ? ref.update(patch, { lastUpdateTime }) : ref.update(patch));
+  } catch (err) {
+    if (!isFailedPrecondition(err)) throw err;
+    console.warn('[mercado-livre] import: ponteiro do membro unico ignorado (produto alterado)', {
       produtoId,
     });
   }
