@@ -38,6 +38,23 @@ export interface EnviarPrecoRunResult {
   cancelado: boolean;
 }
 
+/**
+ * The operator's per-run ticks, passed as an OBJECT rather than as positional
+ * booleans.
+ *
+ * ⚠️ Deliberate: two adjacent `boolean` parameters at a call site are
+ * transposable in silence — the compiler cannot tell them apart and both
+ * mistakes ship a working-looking run that did the wrong thing (a price
+ * lowered that should not have been, or a hidden produto skipped that should
+ * not have been). Naming them at every call site is the cheapest fix.
+ */
+export interface EnviarPrecoOpcoes {
+  /** Allow the send to LOWER a listing's price. */
+  baixarPreco: boolean;
+  /** Send even when the produto is oculto (não publicado) in the ERP. */
+  incluirNaoPublicados: boolean;
+}
+
 /** A row the ORCHESTRATOR invented: it knows the produto and the conta, never a price. */
 const completarLinha = (base: PushRowBase): PricePushRow => ({
   ...base,
@@ -52,7 +69,7 @@ const completarLinha = (base: PushRowBase): PricePushRow => ({
  */
 export function enviarPrecoParaMarketplaces(
   alvos: readonly EnviarPrecoAlvo[],
-  baixarPreco: boolean,
+  opcoes: EnviarPrecoOpcoes,
   runDeps: EnviarPrecoRunDeps,
   onProgress: (rows: PricePushRow[]) => void,
 ): Promise<EnviarPrecoRunResult> {
@@ -66,7 +83,8 @@ export function enviarPrecoParaMarketplaces(
           integracao: args.integracao,
           produtoIds: args.produtoIds,
           nomePorProdutoId: args.nomePorProdutoId,
-          baixarPreco,
+          baixarPreco: opcoes.baixarPreco,
+          incluirNaoPublicados: opcoes.incluirNaoPublicados,
           deps: runDeps.deps,
           signal: args.signal,
         }),

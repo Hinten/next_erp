@@ -495,12 +495,20 @@ describe('Republicar e atualizar preços', () => {
 
     await waitFor(() => expect(enviarPrecos).toHaveBeenCalled());
     expect(publicar).toHaveBeenCalledOnce();
-    // `baixarPreco: true` matches the rail's own default for a hand-picked
-    // selection — naming the produto IS the explicit intent.
+    // Both flags `true` match the rail's own defaults for a hand-picked
+    // selection — naming the produto IS the explicit intent. There is no dialog
+    // on this surface, so neither is togglable here; `incluirNaoPublicados`
+    // especially, since this is the screen where a silent `NAO_PUBLICADO` skip
+    // would report "nenhum anúncio elegível" about a live, selling listing.
+    //
+    // ⚠️ Deliberately an EXACT object, not `objectContaining`: this asserts the
+    // whole request the produto tab sends, so a field silently appearing or
+    // vanishing on the way to the backend fails here.
     expect(enviarPrecos).toHaveBeenCalledWith({
       integracaoId: 'conta-1',
       produtoIds: ['prod-1'],
       baixarPreco: true,
+      incluirNaoPublicados: true,
     });
   });
 

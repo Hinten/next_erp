@@ -484,11 +484,20 @@ export interface MercadoLivreClient {
    * table defaults it ON, unlike the account-wide job: hand-picking produtos IS
    * the explicit intent, and it is what the legacy per-produto action did
    * unconditionally. Unticked, a decrease skips `PRECO_ANTIGO_MAIOR`.
+   *
+   * `incluirNaoPublicados` sends even when the produto is oculto (não
+   * publicado) in the ERP. ⚠️ It defaults **TRUE** — the inverse of
+   * `baixarPreco` — because `publicado` is an ERP catalogue flag with nothing
+   * to say about whether the anúncio is live, and refusing on it left ML
+   * advertising a stale price on a selling listing (the same conclusion the
+   * account-wide job reached in #1072 and the stock side in #1087). Unticked,
+   * those produtos come back as `NAO_PUBLICADO` skip rows.
    */
   enviarPrecos(input: {
     integracaoId: string;
     produtoIds: string[];
     baixarPreco?: boolean;
+    incluirNaoPublicados?: boolean;
     signal?: AbortSignal;
   }): Promise<MercadoLivreEnvioPrecoResult>;
   /**
@@ -1051,6 +1060,10 @@ export function createMercadoLivreClient(config: {
           integracaoId: input.integracaoId,
           produtoIds: input.produtoIds,
           baixarPreco: input.baixarPreco ?? false,
+          // ⚠️ `?? true`, not `?? false` — see the interface docblock. The
+          // route defaults the same way, so the two agree when the field is
+          // omitted entirely.
+          incluirNaoPublicados: input.incluirNaoPublicados ?? true,
         },
         input.signal,
       ),

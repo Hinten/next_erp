@@ -173,8 +173,12 @@ export interface PrecoFamilyRow {
    * #1072, which dropped `publicado == true` from `fetchPrecoPage`'s anchor
    * terms. The bulk job no longer consults it at all (an unpublished produto
    * with a live anúncio is planned like any other; the send-time status gate
-   * decides), while `precoManual` still rungs out at `NAO_PUBLICADO` — a
-   * deliberate asymmetry, documented there.
+   * decides).
+   *
+   * `precoManual` no longer refuses on it either: it is now the operator's
+   * per-run choice (`incluirNaoPublicados`, DEFAULTED ON), and on the default
+   * path the field only decorates the `enviado` row. Unticked, it still rungs
+   * out at `NAO_PUBLICADO` — so this must keep riding both fieldMasks.
    */
   publicado: boolean;
   /**
@@ -255,9 +259,12 @@ export const fetchPrecoPage: FetchPrecoPage = async (db, args) => {
     .where('integracoesComProduto', 'array-contains', args.integracaoId)
     // `paiId` is constrained by the query; `publicado` no longer is, and BOTH
     // still ride the mask — `readFamilia` coerces them onto the row and
-    // `precoManual` reads `publicado` for its own rung, so a page row and a
-    // by-ids row stay the SAME shape. Dropping it here would make a page row
-    // silently read `publicado: false` off a field the mask omitted.
+    // `precoManual` reads `publicado` for its opt-out rung AND for the oculto
+    // note on a sent row, so a page row and a by-ids row stay the SAME shape.
+    // ⚠️ Dropping it here makes a page row silently read `publicado: false` off
+    // a field the mask omitted — which since the rung became opt-out no longer
+    // shows up as a spurious skip but as the AVISO stamped on EVERY sent row,
+    // with nothing red. Same trapdoor as `bulkEstoquePlan`'s S6 projection.
     .select('precos', 'propagatePriceToChildren', 'publicado', 'paiId')
     .orderBy(FieldPath.documentId())
     .limit(pageLimit);

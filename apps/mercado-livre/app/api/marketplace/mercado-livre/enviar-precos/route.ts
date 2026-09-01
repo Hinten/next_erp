@@ -1,7 +1,8 @@
 /**
  * `POST /api/marketplace/mercado-livre/enviar-precos` — push the CURRENT price
  * of a hand-picked set of produtos to their Mercado Livre listings, right now
- * (#804 S6). Body: `{ integracaoId, produtoIds[1..50], baixarPreco? }`.
+ * (#804 S6). Body:
+ * `{ integracaoId, produtoIds[1..50], baixarPreco?, incluirNaoPublicados? }`.
  * Requires `PERM.integracao.write` — the same bit as `atualizar-precos` and
  * `enviar-estoque`.
  *
@@ -107,6 +108,16 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
   const baixarPreco = body.baixarPreco === true;
 
+  if (body.incluirNaoPublicados !== undefined && typeof body.incluirNaoPublicados !== 'boolean') {
+    return NextResponse.json({ error: 'incluirNaoPublicados deve ser booleano.' }, { status: 400 });
+  }
+  // ⚠️ `!== false`, the INVERSE of `baixarPreco` one line above. Absent means
+  // SEND — see `EnviarPrecoManualArgs.incluirNaoPublicados`. A caller that does
+  // not know the field (an older web bundle in a stale tab) therefore behaves
+  // like every other price/stock surface in the repo rather than keeping a gate
+  // this route is the last holder of.
+  const incluirNaoPublicados = body.incluirNaoPublicados !== false;
+
   const db = getAdminFirestore();
   const nowMs = Date.now();
 
@@ -117,7 +128,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     const resposta = await enviarPrecoManual(
       db,
-      { integracaoId, produtoIds, baixarPreco },
+      { integracaoId, produtoIds, baixarPreco, incluirNaoPublicados },
       {
         nowMs,
         conta: ctx.conta,
