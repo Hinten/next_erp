@@ -7,12 +7,17 @@ trigger. Those all buy "survive indefinitely without a cutover", and there **is*
 a cutover (root `CLAUDE.md` rule 8 / ADR 0013), so they pay for something already
 bought and leave permanent compat code nobody deletes.
 
-Ten dated subfolders live under `src/` today — eight that write
-(`migrate.ts`, or `backfill.ts`) and two read-only audits (`audit.ts`). Most
+Twelve dated subfolders live under `src/` today — nine that write
+(`migrate.ts`, or `backfill.ts`) and three read-only audits (`audit.ts`). Most
 carry a runbook beside this file — `telefone-e164.README.md`,
 `historico-estoque-v2.README.md`, and so on — with the reasoning, the target
 ordering and the verification for that one job. This file is only the contract
 they share.
+
+⚠️ Two do not, and neither satisfies point 5 below as written:
+`2026-08-ml-lastmarketplaceupdate` has no runbook, no pure module and no test,
+and `2026-08-ml-precos-ghost-keys` has no runbook. They are the exceptions, not
+the pattern.
 
 ## The contract
 
