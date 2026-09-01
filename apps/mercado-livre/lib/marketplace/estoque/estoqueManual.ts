@@ -220,7 +220,8 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
     'para reverificar e tentar de novo.',
   'status-nao-enviavel': 'O Mercado Livre não aceita envio de estoque para este anúncio agora.',
   'kit-virtual': 'Kit virtual: o Mercado Livre monta a quantidade a partir dos componentes.',
-  'nao-publicado': 'O produto está oculto (não publicado) no ERP.',
+  // ⚠️ No `'nao-publicado'` (#1087): an oculto produto whose anúncio is live is
+  // SENT now, and says so through `AVISO_OCULTO_NO_ERP` on the `enviado` row.
   'conta-fora-do-produto': 'O produto não está vinculado a esta conta.',
   'variacoes-excede-limite': 'A família tem variações demais para um único envio.',
   'produto-nao-encontrado': 'Produto não encontrado.',
@@ -262,7 +263,6 @@ const MOTIVO_POR_SKIP: Record<string, string> = {
   'anuncio-em-erro': 'anuncio-em-erro',
   'status-nao-enviavel': 'status-nao-enviavel',
   'kit-virtual': 'kit-virtual',
-  'nao-publicado': 'nao-publicado',
   'conta-fora-do-produto': 'conta-fora-do-produto',
   'variations-excede-limite': 'variacoes-excede-limite',
   // #706: already channel-neutral enough to pass through — the message above
@@ -273,6 +273,23 @@ const MOTIVO_POR_SKIP: Record<string, string> = {
 function mensagemDe(motivo: string, fallback = 'Não enviado.'): string {
   return MENSAGEM_POR_MOTIVO[motivo] ?? fallback;
 }
+
+/**
+ * Appended to a SENT row when the family anchor is `publicado: false` (#1087).
+ *
+ * Until then this state was a `'nao-publicado'` SKIP — the ERP catalogue flag
+ * refusing a push to an anúncio that was live and selling, which left ML
+ * advertising a stale quantity and oversold. The refusal is gone; the
+ * INFORMATION it carried is not, because the operator hand-picked this produto
+ * and "oculto no ERP, mas com anúncio ativo" is usually a data defect worth
+ * seeing. So the row reports `enviado` and says why it went anyway.
+ *
+ * ⚠️ Non-blocking by construction — it only widens `mensagem`. Do not promote it
+ * back into a `motivo`: the whole point is that `publicado` no longer decides.
+ */
+const AVISO_OCULTO_NO_ERP =
+  ' Atenção: o produto está oculto (não publicado) no ERP — o estoque foi enviado mesmo assim, ' +
+  'porque o anúncio está ativo no Mercado Livre.';
 
 /**
  * Map one `StockSendResult` onto the channel-neutral envelope. Exported and pure
@@ -680,7 +697,9 @@ export async function enviarEstoqueManual(
   let abortado = false;
 
   const executar = async (item: { task: StockSendTaskDraft; row: StockFamilyRow }) => {
-    const { task } = item;
+    const { task, row } = item;
+    // #1087: carried for the note only — `publicado` gates nothing any more.
+    const ocultoNoErp = !row.anchor.publicado;
     const base = {
       produtoId: task.produtoId,
       produtoNome: nomeDe(task.produtoId),
@@ -707,7 +726,8 @@ export async function enviarEstoqueManual(
         motivo,
         mensagem:
           outcome === 'enviado'
-            ? `Estoque ${String(task.quantidade ?? task.variations?.length ?? '')} enviado.`
+            ? `Estoque ${String(task.quantidade ?? task.variations?.length ?? '')} enviado.` +
+              (ocultoNoErp ? AVISO_OCULTO_NO_ERP : '')
             : mensagemDe(motivo ?? 'erro-canal'),
         quantidade: outcome === 'enviado' ? task.quantidade : null,
       });
