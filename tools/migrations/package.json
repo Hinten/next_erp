@@ -8,6 +8,7 @@
   "scripts": {
     "audit:estoque-reservada-negativa": "dotenv -e ../../.env.local -- tsx src/2026-08-estoque-reservada-negativa/audit.ts",
     "audit:ml-pedido-pago": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-pedido-pago-audit/audit.ts",
+    "audit:produto-sem-variacoes": "dotenv -e ../../.env.local -- tsx src/2026-09-produto-sem-variacoes/audit.ts",
     "clean": "rm -rf dist .turbo out *.tsbuildinfo",
     "lint": "eslint .",
     "migrate:conversa-cliente-outer-ref": "dotenv -e ../../.env.local -- tsx src/2026-08-conversa-cliente-outer-ref/migrate.ts",
