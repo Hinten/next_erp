@@ -16,7 +16,7 @@ import { createElement, type ReactNode } from 'react';
  * fixture says it is; the ref is the thing that would silently keep pointing at
  * the wrong produto.
  */
-const { docRefs, docRefMock, estoqueReads, produtoBatches, produtos } = vi.hoisted(() => ({
+const { docRefs, docRefMock, estoqueReads, produtoBatches, produtos, linhas } = vi.hoisted(() => ({
   docRefs: { current: [] as Array<{ produtoId: string; estoqueId: string }> },
   docRefMock: vi.fn(),
   /** Every estoque document actually fetched, by id. */
@@ -24,6 +24,8 @@ const { docRefs, docRefMock, estoqueReads, produtoBatches, produtos } = vi.hoist
   /** Every `getDocsByIds` call's id list — one entry per CHUNKED QUERY. */
   produtoBatches: { current: [] as string[][] },
   produtos: { current: {} as Record<string, Record<string, unknown>> },
+  /** Seeded estoque rows for the BADGE's own/fallback subscriptions, by doc id. */
+  linhas: { current: {} as Record<string, { quantidade: number; quantidadeReservada: number }> },
 }));
 
 vi.mock('@/lib/data/estoqueProdutoCollection', () => ({
@@ -38,12 +40,21 @@ vi.mock('@/lib/data/estoqueProdutoCollection', () => ({
 }));
 
 /**
- * The produto's OWN estoque row is deliberately absent-but-LOADED: these tests
- * are about which document is read, and about the kit path, so the own row
- * resolves to `0` rather than pinning the hook at "loading" forever.
+ * `useDocSnapshot` answers from `linhas`, keyed by the estoque doc id the hook
+ * asked for — so a test can seed the CHILD's row, the PARENT's row or neither
+ * and observe which one the badge ends up using. Always LOADED, so the hook
+ * settles instead of pinning at "loading".
  */
 vi.mock('@delfrance/data/hooks', () => ({
-  useDocSnapshot: () => ({ data: undefined, loading: false, error: null }),
+  useDocSnapshot: (ref: { __ref?: string } | null) => {
+    const estoqueId = ref?.__ref?.split('/')[1] ?? '';
+    const linha = linhas.current[estoqueId];
+    return {
+      data: linha ? { id: estoqueId, data: linha } : undefined,
+      loading: false,
+      error: null,
+    };
+  },
   useSnapshot: () => ({ data: [], loading: false, error: null }),
 }));
 
@@ -99,6 +110,7 @@ beforeEach(() => {
   produtoBatches.current = [];
   produtos.current = {};
   estoques.current = {};
+  linhas.current = {};
 });
 
 describe('useEstoqueDisponivel — which produto the badge reads', () => {
@@ -111,12 +123,28 @@ describe('useEstoqueDisponivel — which produto the badge reads', () => {
       filhoUnicoId: 'c1',
     });
     expect(docRefs.current).toContainEqual({ produtoId: 'c1', estoqueId: 'est-c1-dep1' });
-    expect(docRefs.current.some((r) => r.produtoId === 'p1')).toBe(false);
+  });
+
+  // ⚠️ The parent's row is subscribed as a FALLBACK, not ignored. `filhoUnicoId`
+  // records that the family has one child; it says NOTHING about where the units
+  // sit, and a produto whose stock was lançado on the parent and never moved
+  // would otherwise render a confident red "0 em estoque".
+  it('also subscribes to the parent row, as the fallback', () => {
+    render({
+      id: 'p1',
+      ehKit: false,
+      componentesKit: null,
+      paiId: null,
+      filhoUnicoId: 'c1',
+    });
+    expect(docRefs.current).toContainEqual({ produtoId: 'p1', estoqueId: 'est-p1-dep1' });
   });
 
   it('subscribes to the produto itself when it is not a family of one', () => {
     render({ id: 'p1', ehKit: false, componentesKit: null, paiId: null, filhoUnicoId: null });
     expect(docRefs.current).toContainEqual({ produtoId: 'p1', estoqueId: 'est-p1-dep1' });
+    // ONE subscription — no fallback exists when nothing was resolved past.
+    expect(docRefs.current).toHaveLength(1);
   });
 
   // ⚠️ The produto doc has not landed yet, so the family fields are absent. That
@@ -227,6 +255,36 @@ describe('useEstoqueDisponivel — kit components resolve through the sole membe
     await waitFor(() => expect(result.current).toBe(3));
   });
 
+  // ⚠️ Same finding as the badge's own row, from the other side: a component
+  // whose sole member has NO row keeps its own, or the whole kit reads 0 — the
+  // harm #1398 was opened on, reintroduced by the fix for it.
+  it('falls back to the COMPONENT’s own row when its sole member has none', async () => {
+    produtos.current = { comp: { paiId: null, filhoUnicoId: 'comp-child' } };
+    estoques.current = { 'est-comp-dep1': { quantidade: 9, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ comp: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    // The sole member is tried first; the component's own row is the second read.
+    expect(estoqueReads.current).toEqual(['comp-child/est-comp-child-dep1', 'comp/est-comp-dep1']);
+    await waitFor(() => expect(result.current).toBe(9));
+  });
+
+  // ABSENCE, not zero — the sole member answers whenever it has a row at all.
+  it('does not fall back when the sole member has a zero row', async () => {
+    produtos.current = { comp: { paiId: null, filhoUnicoId: 'comp-child' } };
+    estoques.current = {
+      'est-comp-child-dep1': { quantidade: 0, quantidadeReservada: 0 },
+      'est-comp-dep1': { quantidade: 9, quantidadeReservada: 0 },
+    };
+
+    const { result } = render(kitProduto({ comp: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    expect(estoqueReads.current).toEqual(['comp-child/est-comp-child-dep1']);
+    await waitFor(() => expect(result.current).toBe(0));
+  });
+
   // The `paiId` drift guard, on the component path too.
   it('does not follow a stale filhoUnicoId on a component that is a child', async () => {
     produtos.current = { comp: { paiId: 'algum-pai', filhoUnicoId: 'nao-seguir' } };
@@ -236,5 +294,52 @@ describe('useEstoqueDisponivel — kit components resolve through the sole membe
     await waitFor(() => expect(result.current).not.toBeNull());
 
     expect(estoqueReads.current).toEqual(['comp/est-comp-dep1']);
+  });
+});
+
+/**
+ * ⚠️ `filhoUnicoId` says the family has one child; it says NOTHING about where
+ * the units sit. A produto whose stock was lançado on the parent and never moved
+ * would otherwise render a confident red "0 em estoque" — on the screen where
+ * the operator picks quantities, which is worse than hiding the badge.
+ */
+describe('useEstoqueDisponivel — the sole member has no row', () => {
+  const pai = { id: 'p1', ehKit: false, componentesKit: null, paiId: null, filhoUnicoId: 'c1' };
+
+  it('uses the PARENT row when the child has none', () => {
+    linhas.current = { 'est-p1-dep1': { quantidade: 12, quantidadeReservada: 0 } };
+    expect(render(pai).result.current).toBe(12);
+  });
+
+  // ⚠️ Absence, not zero. When both rows exist the sole member answers — the
+  // same thing the ERP does for any parent/child split, and the parent's
+  // remainder is `residualEstoquePai`'s job.
+  it('prefers the child row even when it reads zero', () => {
+    linhas.current = {
+      'est-c1-dep1': { quantidade: 0, quantidadeReservada: 0 },
+      'est-p1-dep1': { quantidade: 12, quantidadeReservada: 0 },
+    };
+    expect(render(pai).result.current).toBe(0);
+  });
+
+  it('uses the child row when it has units', () => {
+    linhas.current = { 'est-c1-dep1': { quantidade: 20, quantidadeReservada: 0 } };
+    expect(render(pai).result.current).toBe(20);
+  });
+
+  it('reports 0 when neither row exists', () => {
+    expect(render(pai).result.current).toBe(0);
+  });
+
+  it('leaves an ordinary produto reading its own row', () => {
+    linhas.current = { 'est-p1-dep1': { quantidade: 7, quantidadeReservada: 0 } };
+    const produto = {
+      id: 'p1',
+      ehKit: false,
+      componentesKit: null,
+      paiId: null,
+      filhoUnicoId: null,
+    };
+    expect(render(produto).result.current).toBe(7);
   });
 });
