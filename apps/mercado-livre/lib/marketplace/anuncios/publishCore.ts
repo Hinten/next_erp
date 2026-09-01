@@ -91,8 +91,6 @@ export interface PublishLink {
   listing_type_id?: string | null;
   category_id?: string | null;
   isUserProductModel?: boolean | null;
-  /** #1400 — do this família's ML items already carry the parent-sku characteristic? */
-  skuPaiAtributo?: boolean | null;
   attributes?: MlAttribute[] | null;
   video_id?: string | null;
   /** `estadoPublicacaoMl` wire code — only `'am'` (mid-UPtin) is read here. */
@@ -579,17 +577,17 @@ export function linkAttributesAfterPublish(
  */
 export const SKU_PAI_ATRIBUTO_FLAG_ENV = 'MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED';
 
-/** What {@link resolveSkuPaiAtributo} decided. */
-export interface SkuPaiAtributoDecisao {
-  /** The value to send, or null to send nothing. */
-  skuPai: string | null;
-  /** What `link.skuPaiAtributo` must say after this publish. */
-  carrega: boolean;
+/** One prospective família member, as {@link resolveSkuPaiAtributo} judges it. */
+export interface MembroSkuPai {
+  /** Its existing ML item id; non-null means ML already has this member. */
+  itemId: string | null;
+  /** Its `variacaoMercadoLivre.skuPaiAtributo` — does its ML item carry the characteristic? */
+  skuPaiAtributo: boolean;
 }
 
 /**
- * Does THIS publish send the família parent's sku as a custom characteristic,
- * and what does the link record afterwards? (#1400)
+ * Does THIS publish send the família parent's sku as a custom characteristic?
+ * (#1400)
  *
  * The whole difficulty is that ML derives a família from `family_name`,
  * `domain_id`, `user_id` and the attributes, and a custom attribute contributes
@@ -597,38 +595,45 @@ export interface SkuPaiAtributoDecisao {
  * UNIFORM across a família, which makes this a per-família fact rather than a
  * per-publish choice:
  *
- *  - a família that already carries it keeps carrying it, flag or no flag —
- *    dropping the attribute would re-hash every member;
- *  - ⛔ a família that does NOT carry it never gains it, because a member
- *    created WITH the attribute beside siblings WITHOUT it hashes into a
- *    família of its own and silently splits a live listing. That is the case
- *    "add one more variation to an existing produto" walks into, which is why
- *    the test is every member's `itemId`, not the parent link's `id` alone.
+ *  - if ANY member's item already carries it, every member must — dropping it
+ *    would re-hash the ones that have it, and creating a sibling without it
+ *    would hash that sibling into a família of its own;
+ *  - ⛔ a família whose members all lack it never gains it, for the mirror
+ *    reason. That is the case "add one more variation to an existing produto"
+ *    walks into, which is why the test is every member's `itemId` and not the
+ *    parent link's `id` alone.
  *
- * `carrega` is therefore MONOTONIC: once true it stays true, including on a
- * publish where the produto's sku went blank and nothing was sent — the ML
- * items still hold the attribute, and the link must keep saying so.
+ * ⚠️ **The evidence is the MEMBERS, never a parent-link flag**, and that is what
+ * makes a partially-failed fan-out recoverable. `publishUserProductMembers`
+ * persists each member the instant ML confirms it, while the parent link is
+ * written once at the end — so a run that created member 1 and then died on
+ * member 2 leaves member 1's item carrying the characteristic. Asking the
+ * members means the retry sees it and finishes the família uniformly; asking a
+ * parent flag that the failure path never wrote would create members 2 and 3
+ * WITHOUT it, splitting the família beyond repair.
+ *
+ * ⚠️ Reading the members also removes the read-modify-write a parent flag would
+ * need (root `CLAUDE.md` rule 7): each member's value is decided by what this
+ * call just sent for that member, so a concurrent publish has nothing to
+ * clobber — tier 0, not a guard.
  */
 export function resolveSkuPaiAtributo(args: {
   isUserProductSeller: boolean;
-  /** `link.skuPaiAtributo` as stored. */
-  jaCarrega: boolean;
   /** `link.id` — null means this família has never been published. */
   linkId: string | null;
-  /** Every prospective member's existing ML item id; a non-null one means ML already has this família. */
-  membrosItemIds: ReadonlyArray<string | null>;
+  membros: ReadonlyArray<MembroSkuPai>;
   produtoSku: string | null;
   flagLigada: boolean;
-}): SkuPaiAtributoDecisao {
+}): { skuPai: string | null } {
   // The legacy `variations[]` model has a real parent item carrying a real
   // `SELLER_SKU`, so it needs none of this.
-  if (!args.isUserProductSeller) return { skuPai: null, carrega: false };
+  if (!args.isUserProductSeller) return { skuPai: null };
 
-  const familiaNova = args.linkId == null && args.membrosItemIds.every((id) => id == null);
-  const deveEnviar = args.jaCarrega || (familiaNova && args.flagLigada);
+  const algumCarrega = args.membros.some((m) => m.skuPaiAtributo);
+  const familiaNova = args.linkId == null && args.membros.every((m) => m.itemId == null);
+  const deveEnviar = algumCarrega || (familiaNova && args.flagLigada);
   const sku = args.produtoSku?.trim();
-  const skuPai = deveEnviar && sku ? sku : null;
-  return { skuPai, carrega: args.jaCarrega || skuPai != null };
+  return { skuPai: deveEnviar && sku ? sku : null };
 }
 
 export function buildParentAttributes(

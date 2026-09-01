@@ -243,7 +243,6 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         listing_type_id: linkDoc.data.listing_type_id ?? null,
         category_id: linkDoc.data.category_id ?? null,
         isUserProductModel: linkDoc.data.isUserProductModel ?? false,
-        skuPaiAtributo: linkDoc.data.skuPaiAtributo ?? false,
         attributes: linkDoc.data.attributes ?? null,
         video_id: linkDoc.data.video_id ?? null,
         estado: linkDoc.data.estado ?? null,
@@ -466,6 +465,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       itemId: typeof existingVar?.raw.itemId === 'string' ? existingVar.raw.itemId : null,
       raw: existingVar?.raw ?? {},
       sku: typeof existingVar?.raw.sku === 'string' ? existingVar.raw.sku : null,
+      // #1400 — does THIS member's ML item already carry the parent-sku
+      // characteristic? The família-wide answer is the OR of these, and asking
+      // the members is what survives a fan-out that died half-way.
+      skuPaiAtributo: existingVar?.raw.skuPaiAtributo === true,
     });
     variations.push({
       produto: toPublishProduto(child.id, child.data),
@@ -602,9 +605,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // and every member of this publish must agree on it.
   const skuPaiDecisao = resolveSkuPaiAtributo({
     isUserProductSeller: listingModel === 'user-products',
-    jaCarrega: link?.skuPaiAtributo === true,
     linkId: link?.id ?? null,
-    membrosItemIds: upMembers.map((m) => m.itemId),
+    membros: upMembers,
     produtoSku: produto.sku ?? null,
     flagLigada: process.env[SKU_PAI_ATRIBUTO_FLAG_ENV] === '1',
   });
@@ -732,10 +734,6 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     precoPublicado: family ? null : (item.price ?? null),
     freteGratis: item.shipping?.free_shipping ?? false,
     isUserProductModel: input.isUserProductSeller,
-    // #1400 — MONOTONIC: once a família's items carry the characteristic they
-    // keep it (nothing can strip it without re-hashing the família), so this
-    // only ever goes false→true. See `resolveSkuPaiAtributo`.
-    skuPaiAtributo: skuPaiDecisao.carrega,
     // #799 bug 7: the attributes we just sent, minus the ids publish does not
     // own. Without this a produto the legacy app never published keeps
     // `attributes: null` forever and the editor has nothing to load.

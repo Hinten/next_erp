@@ -88,8 +88,9 @@ runConfig:
 #                                ⚠️ CREATE-time only: a custom attribute's name feeds
 #                                ML's family-id hash, so this cannot be added to an
 #                                existing família (it would move its members) nor
-#                                stripped from one that has it. The per-família fact
-#                                lives on the link doc's `skuPaiAtributo`.
+#                                stripped from one that has it. Which famílias carry
+#                                it is recorded per MEMBER, on
+#                                `variacaoMercadoLivre.skuPaiAtributo`.
 #                                ⚠️ PUBLIC — it renders in the anúncio's ficha técnica,
 #                                so buyers see the internal sku. Check one live listing
 #                                before enabling widely. This backend is the only

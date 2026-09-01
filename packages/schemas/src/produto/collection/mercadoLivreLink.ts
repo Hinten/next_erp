@@ -392,27 +392,6 @@ export const produtoMercadoLivreLinkSchema = z
     comissao: z.number().nullable().default(null),
 
     isUserProductModel: z.boolean().default(false),
-
-    /**
-     * Do this User-Products família's ML items carry the parent-sku custom
-     * characteristic (`ML_ATTR_SKU_PAI_NOME`)? #1400.
-     *
-     * ⚠️ It records a fact about ML, not a preference. A custom attribute's
-     * NAME is an input to ML's family hash, so its presence must be UNIFORM
-     * across a família: adding it to one that lacks it moves members into a
-     * different família, and creating a new member WITH it beside siblings
-     * WITHOUT it hashes that member into a família of its own — silently
-     * splitting the listing. The flag is therefore stamped once, on the write
-     * that follows a família's FIRST create, and read by every later publish so
-     * a variation added months later matches its siblings.
-     *
-     * ⚠️ Consequently the env flag that enables the feature can only affect a
-     * família at CREATE time. Turning it on does not retrofit existing famílias,
-     * and turning it off does not strip it from famílias that already carry it —
-     * both would be the family-move above. False on every legacy
-     * `variations[]` listing, which has a real parent item and no família.
-     */
-    skuPaiAtributo: z.boolean().default(false),
     video_id: z.string().nullable().default(null),
     attributes: z.array(mlAttributeWireSchema).nullable().default(null),
 
@@ -526,6 +505,35 @@ export const variacaoMercadoLivreLinkSchema = z
      * never as "send zero".
      */
     userProductId: z.string().nullable().default(null),
+    /**
+     * Does THIS member's ML item carry the parent-sku custom characteristic
+     * (`ML_ATTR_SKU_PAI_NOME`)? #1400.
+     *
+     * ⚠️ It records a fact about ONE ML item, not a preference, and it lives on
+     * the MEMBER rather than on the família's parent link for two reasons that
+     * are really the same reason — the parent link is written once, at the end,
+     * from a value read at the beginning:
+     *
+     *  - a fan-out that fails on member 2 has already created member 1 WITH the
+     *    characteristic. `writeMemberLink` persists each member the moment ML
+     *    confirms it, so the fact survives the failure and the retry sends the
+     *    characteristic to the remaining members instead of creating them
+     *    without it beside a sibling that has it — a família SPLIT that no later
+     *    publish could repair;
+     *  - a parent-level flag would be a read-modify-write across every ML round
+     *    trip, so a concurrent publish that read `false` first could store it
+     *    over a `true` (root `CLAUDE.md` rule 7). Here the value is decided by
+     *    what THIS call just sent for THIS member, so there is nothing to lose a
+     *    race with — tier 0, not a guard.
+     *
+     * ⚠️ Written `true` only; never `false` on an update. The characteristic's
+     * NAME feeds ML's family-id hash, so its presence must be uniform across a
+     * família and nothing can strip it from an item that has it — the key is
+     * OMITTED when this publish did not send it, leaving whatever is stored
+     * standing, the same three-valued discipline `moderacoes` uses. A member
+     * created without it takes the schema default here.
+     */
+    skuPaiAtributo: z.boolean().default(false),
     /**
      * Canonical `documents/integracao/<id>` path to the owning integracao —
      * the same denorm the PARENT link has carried all along (#920).

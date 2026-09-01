@@ -763,12 +763,32 @@ into a different família — and creating ONE new member with it beside sibling
 without it hashes that member into a família of its own, silently splitting a
 live listing. That is what "add one more variation to an existing produto" walks
 into, which is why `resolveSkuPaiAtributo` tests **every member's `itemId`**, not
-the parent link's `id` alone. The answer is recorded per família on the link
-(`skuPaiAtributo`) and is **monotonic** — nothing can strip the attribute from ML,
-so the flag only ever goes false→true. `MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED`
-therefore decides a família only at CREATE time; it retrofits nothing and
-un-sets nothing. Reading it back is unconditional (no flag), so a família
-published while it was on is always understood.
+the parent link's `id` alone. `MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED` therefore
+decides a família only at CREATE time; it retrofits nothing and un-sets nothing.
+Reading it back is unconditional (no flag), so a família published while it was
+on is always understood.
+
+⚠️ **The evidence lives on the MEMBER links (`variacaoMercadoLivre.skuPaiAtributo`),
+never on the família's parent link**, and the two reasons are really one — the
+parent link is written ONCE, at the end, from a value read at the beginning:
+
+ - the fan-out is sequential and `writeMemberLink` persists each member the
+   instant ML confirms it, precisely so everything before a failure is recorded.
+   A run that created member 1 and then died on member 2 leaves member 1's ITEM
+   carrying the characteristic while `stampErrorLinkDoc` records none of it — so
+   a parent flag would make the retry see "not recorded" plus "a member already
+   has an itemId", conclude the família is not new, and create members 2..n
+   WITHOUT it. That is a split no later publish repairs. Asking the members
+   finishes the família uniformly instead;
+ - a parent flag would also be a read-modify-write spanning every ML round trip,
+   so a concurrent publish that read `false` first could store it over a `true`
+   (root `CLAUDE.md` rule 7). A member's value is decided by what THAT call just
+   sent for THAT member, so there is nothing to lose a race with — tier 0.
+
+The família-wide answer is the **OR** of the members. It is written `true` only:
+a publish that did not send the characteristic OMITS the key rather than storing
+`false`, because nothing here can strip the attribute from an item that has it —
+the same three-valued discipline `moderacoes` uses.
 ⚠️ It is also **publicly visible** — a custom characteristic renders in the
 anúncio's ficha técnica — and how ML echoes an id-less attribute on `GET /items`
 is **unverified** (no sandbox, no lane may hold real credentials), which is
