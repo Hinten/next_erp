@@ -54,7 +54,9 @@ import {
   compareSortKeys,
   findDuplicateSkus,
   normalizeVariacoesUid,
+  montarMembroUnico,
   parseFakePath,
+  planejarMembroSobrevivente,
   produtoSchema,
   derivarFilhoUnico,
   reconcileStagedChildren,
@@ -414,7 +416,41 @@ export function VariationManager({
       );
     }
 
-    const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows, membroUnicoId);
+    const { rows: reconciliadas, reusedIds } = reconcileStagedChildren(rows, membroUnicoId);
+
+    // ⚠️ A family never loses its last child (#1398). The sellable unit IS a
+    // child — it owns the estoque rows, a pedido line binds it, the ML family
+    // publishes it — so a parent left alone is not "a simple produto", it is a
+    // produto NOTHING CAN SELL, with every stock reader resolving to a document
+    // that no longer exists. `toggleDeleteAll` reaches that in one click, and
+    // after #1424 every produto carries a member row here, so "delete the only
+    // variation" is the ordinary way in.
+    //
+    // Planned on the RECONCILED rows: a delete a staged create already absorbed
+    // is not a delete, and must not push this into the `criar` arm.
+    const sobrevivente = planejarMembroSobrevivente(reconciliadas);
+    // `renomear` un-marks the delete and turns it into an in-place rename onto
+    // the parent's nome/sku. The doc id survives, and with it the estoque rows
+    // and their ledger, kit entries, marketplace links, pedido lines and NF-e
+    // history — the same reason `reconcileStagedChildren` reuses ids (#117),
+    // applied where the "create" is implicit. It also takes the row OUT of
+    // `deleteTargets` below, so an inbound reference no longer aborts a save
+    // that deletes nothing.
+    const reconciled =
+      sobrevivente.tipo === 'renomear'
+        ? reconciliadas.map((r) =>
+            r.id === sobrevivente.id
+              ? {
+                  ...r,
+                  deleteMark: false,
+                  dirty: true,
+                  nome: liveParent('nome') ?? r.nome,
+                  sku: liveParent('sku') ?? '',
+                  variacoesUid: [],
+                }
+              : r,
+          )
+        : reconciliadas;
 
     // Staged creates the reuse absorbed onto an existing doc: the batch issues
     // an UPDATE on that doc, never a `set` under the row's own key, so `rows`
@@ -531,12 +567,48 @@ export function VariationManager({
       ordem += 1;
     }
 
+    // ⚠️ The `criar` arm: two or more children deleted at once. Merging their
+    // stock into one is a decision nobody authorised and picking a survivor
+    // would be arbitrary, so the replacement starts EMPTY — their estoque
+    // subtrees are swept by `onProdutoDeleted` either way, so nothing extra is
+    // lost. What this stops is the produto being left unsellable.
+    const membroCriadoId = sobrevivente.tipo === 'criar' ? newDocId() : null;
+    if (membroCriadoId !== null) {
+      batch.set(
+        produtoCollection.docRef(db, {}, membroCriadoId),
+        produtoSchema.parse(
+          montarMembroUnico(parentId, {
+            nome: liveParent('nome'),
+            sku: liveParent('sku'),
+            codPai: liveParent('codPai'),
+            gtin: liveParent('gtin'),
+            publicado: liveParent('publicado'),
+            ehKit: liveParent('ehKit'),
+            ehKitVirtual: liveParent('ehKitVirtual'),
+            ehUsado: liveParent('ehUsado'),
+            componentesKit: liveParent('componentesKit'),
+            precos: parentPrecos,
+            categoriaProdutoOuterRef: liveParent('categoriaProdutoOuterRef'),
+            pesoLiquidoKg: liveParent('pesoLiquidoKg'),
+            pesoBrutoKg: liveParent('pesoBrutoKg'),
+            alturaCm: liveParent('alturaCm'),
+            larguraCm: liveParent('larguraCm'),
+            profundidadeCm: liveParent('profundidadeCm'),
+          }),
+        ) as never,
+      );
+      writes += 1;
+    }
+
     // ⚠️ The pointer is re-derived from the child set this flush leaves behind,
     // in the SAME batch that changes it. An absorbed sole member keeps its doc
     // id, so `filhoUnicoId` would still name a real child — while the family now
     // has several — and every stock reader would resolve to one arbitrary
     // variation. `derivarFilhoUnico` is the one producer of the value.
-    const filhosVivos = reconciled.filter((r) => !r.deleteMark).map((r) => ({ id: r.id ?? r.key }));
+    const filhosVivos = [
+      ...reconciled.filter((r) => !r.deleteMark).map((r) => ({ id: r.id ?? r.key })),
+      ...(membroCriadoId === null ? [] : [{ id: membroCriadoId }]),
+    ];
     const filhoUnico = derivarFilhoUnico(filhosVivos);
     if (filhoUnico !== membroUnicoId) {
       batch.update(produtoCollection.docRef(db, {}, parentId), {

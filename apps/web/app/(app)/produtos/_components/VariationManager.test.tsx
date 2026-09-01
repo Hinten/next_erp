@@ -435,3 +435,128 @@ describe('VariationManager — staged rows vs the optimistic snapshot echo', () 
     expect(rowCount()).toBe(0);
   });
 });
+
+/**
+ * A family never loses its last child (#1398, PR 8).
+ *
+ * ⚠️ These assert WHICH outcome, not that there is one. `renomear` keeps the doc
+ * id — and with it the estoque rows and their ledger, kit entries, marketplace
+ * links, pedido lines — while `criar` starts empty. Getting that backwards is a
+ * silent stock loss on the most ordinary edit there is, and both look identical
+ * on screen afterwards: one row, named after the produto.
+ */
+describe('VariationManager — the family keeps a member', () => {
+  /** Mark every rendered row for deletion. */
+  async function removerTodas() {
+    const botoes = screen.getAllByRole('button', { name: 'Remover variação' });
+    for (const b of botoes) {
+      await act(async () => {
+        fireEvent.click(b);
+        await Promise.resolve();
+      });
+    }
+  }
+
+  // ⚠️ The child carries a REAL combo. An earlier version of this test used a
+  // child with `variacoesUid: null`, so "the taxonomy is cleared" was already
+  // true before the code ran — the mutation that stopped clearing it survived.
+  it('renames the only child in place instead of deleting it', async () => {
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0)]);
+    const { flushRef } = renderManager();
+    await removerTodas();
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    // ⛔ No delete at all — the id is the anchor for this produto's stock.
+    expect(h.ops.filter((o) => o.kind === 'delete')).toEqual([]);
+    const renomeada = h.ops.find((o) => o.id === 'c1' && o.kind === 'update');
+    // It takes the PARENT's identity: this is the produto's own sellable unit
+    // now, not a variation of it.
+    expect(renomeada?.data).toMatchObject({ nome: 'Camiseta', sku: 'CAM' });
+    // ...and stops being a variation, or the row keeps claiming a combo the
+    // produto no longer has.
+    expect(renomeada?.data?.variacoesUid).toBeNull();
+  });
+
+  it('points filhoUnicoId at the renamed survivor, not at nothing', async () => {
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0)]);
+    const { flushRef } = renderManager();
+    await removerTodas();
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops).toContainEqual(
+      expect.objectContaining({ kind: 'update', id: 'p1', data: { filhoUnicoId: 'c1' } }),
+    );
+  });
+
+  // ⚠️ Two children's stock cannot merge and choosing a survivor would be
+  // arbitrary, so this one starts empty — their estoque subtrees are swept by
+  // `onProdutoDeleted` either way. What it stops is the produto being left with
+  // no sellable unit at all.
+  it('mints a fresh member when every child of a real family is deleted', async () => {
+    h.setChildren([
+      child('c1', 'Camiseta P', 'CAM-P', [uidP], 0),
+      child('c2', 'Camiseta G', 'CAM-G', [uidG], 1),
+    ]);
+    const { flushRef } = renderManager([]);
+    await removerTodas();
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(
+      h.ops
+        .filter((o) => o.kind === 'delete')
+        .map((o) => o.id)
+        .sort(),
+    ).toEqual(['c1', 'c2']);
+    const criada = h.ops.find((o) => o.kind === 'set');
+    expect(criada?.data).toMatchObject({ paiId: 'p1', nome: 'Camiseta', variacoesUid: null });
+    expect(h.ops).toContainEqual(
+      expect.objectContaining({ kind: 'update', id: 'p1', data: { filhoUnicoId: criada!.id } }),
+    );
+  });
+
+  // ⛔ The hazard the guard exists for. A produto from before #1398 has no
+  // children AND holds its own stock; read-tolerance resolves it to itself.
+  // Minting an empty member without MOVING the units — a migration's job — points
+  // every stock reader at an empty document, and the produto reads 0.
+  it('mints nothing for a produto that never had a child', async () => {
+    h.setChildren([]);
+    const { flushRef } = renderManager([]);
+
+    // Stage a row and take it back: the flush runs with work to do and no
+    // persisted delete, which is exactly the shape that must NOT mint.
+    fireEvent.click(screen.getByRole('button', { name: 'Nova variante' }));
+    await removerTodas();
+
+    const { pending } = await startFlush(flushRef.current!);
+    if (h.commits.length > 0) await settleCommit(pending);
+    else await act(async () => void (await pending));
+
+    expect(h.ops.filter((o) => o.kind === 'set')).toEqual([]);
+  });
+
+  // Deleting one of two leaves a live child, so the invariant never engages —
+  // the ordinary delete must stay an ordinary delete.
+  it('still deletes outright while another child survives', async () => {
+    h.setChildren([
+      child('c1', 'Camiseta P', 'CAM-P', [uidP], 0),
+      child('c2', 'Camiseta G', 'CAM-G', [uidG], 1),
+    ]);
+    const { flushRef } = renderManager([]);
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Remover variação' })[0]!);
+      await Promise.resolve();
+    });
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops.filter((o) => o.kind === 'delete').map((o) => o.id)).toEqual(['c1']);
+    expect(h.ops.filter((o) => o.kind === 'set')).toEqual([]);
+  });
+});
