@@ -19,6 +19,7 @@ import {
   itemSubtotal,
   makeEstoqueUid,
   parseFakePath,
+  unidadeVendavel,
   type Cliente,
   type Endereco,
   type EstoqueProduto,
@@ -216,7 +217,7 @@ export async function buildPrintModel(
   const [fotoUrlOf, variacoesTextOf, stockOf] = await Promise.all([
     buildFotoResolver(db, allProdutos),
     buildVariacaoResolver(db, allProdutos),
-    buildStockResolver(db, [...allProdutos.keys()], depositoId),
+    buildStockResolver(db, allProdutos, depositoId),
   ]);
 
   // 5. Item rows ------------------------------------------------------------
@@ -429,27 +430,46 @@ type StockResolver = (produtoId: string | null) => StockInfo;
 const NO_STOCK: StockInfo = { disponivel: null, localizacao: '' };
 
 /** produtoId → {disponivel, localizacao} for the integração's depósito. */
-async function buildStockResolver(
+export async function buildStockResolver(
   db: Firestore,
-  produtoIds: readonly string[],
+  produtos: ReadonlyMap<string, Produto>,
   depositoId: string | null,
 ): Promise<StockResolver> {
   const byProduto = new Map<string, StockInfo>();
 
+  // ⚠️ Read the produto that owns the AVAILABLE stock, which for a family of one
+  // is the child (#1398) — the parent is a wrapper and its row would print a
+  // truthful, useless `0` on a picking list someone walks the warehouse with.
+  //
+  // The resolution is FREE here: every produto on this sheet, line items AND kit
+  // components alike, is already in `produtos`, so no document is read twice and
+  // none is read that was not read before. The keys stay the ids the pedido and
+  // the kit map name — only the estoque doc that answers for them moves.
+  const alvoDe = new Map<string, string>();
+  for (const [id, p] of produtos) alvoDe.set(id, unidadeVendavel({ id, ...p }));
+
   if (depositoId) {
+    // Distinct targets: a produto and its sole member never collide, but two
+    // kit entries pointing at one produto would read the same doc twice.
+    const alvos = [...new Set(alvoDe.values())];
+    const porAlvo = new Map<string, StockInfo>();
     await Promise.all(
-      produtoIds.map(async (pid) => {
+      alvos.map(async (pid) => {
         const estId = makeEstoqueUid(pid, depositoId);
         const snap = await getDoc(estoqueProdutoCollection.docRef(db, { produtoId: pid }, estId));
         if (snap.exists()) {
           const e: EstoqueProduto = snap.data();
-          byProduto.set(pid, {
+          porAlvo.set(pid, {
             disponivel: estoqueDisponivel(e),
             localizacao: e.localizacao ?? '',
           });
         }
       }),
     );
+    for (const [id, alvo] of alvoDe) {
+      const info = porAlvo.get(alvo);
+      if (info) byProduto.set(id, info);
+    }
   }
 
   return (produtoId) => (produtoId ? (byProduto.get(produtoId) ?? NO_STOCK) : NO_STOCK);

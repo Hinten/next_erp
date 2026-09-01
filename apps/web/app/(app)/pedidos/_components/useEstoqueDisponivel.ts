@@ -10,6 +10,7 @@ import {
   estoqueDisponivel,
   estoqueDisponivelComKit,
   makeEstoqueUid,
+  unidadeVendavel,
   type ComponentesKit,
   type EstoqueProduto,
 } from '@delfrance/schemas';
@@ -20,6 +21,18 @@ export interface ProdutoParaEstoqueBadge {
   id: string;
   ehKit: boolean;
   componentesKit: ComponentesKit | null;
+  /**
+   * Family fields, so the badge reads the produto that actually owns the stock
+   * (#1398). A parent of a family of one is a wrapper holding nothing, and the
+   * line naming it would otherwise read a truthful, useless `0`.
+   *
+   * ⚠️ Both optional, and the caller supplies them from the produto doc it is
+   * already subscribed to — no extra read. Absent (the doc has not landed yet)
+   * means "not known to be a family of one", which is exactly the previous
+   * behaviour: the badge reads the produto the line names.
+   */
+  paiId?: string | null;
+  filhoUnicoId?: string | null;
 }
 
 type OwnRow = { id: string; data: Pick<EstoqueProduto, 'quantidade' | 'quantidadeReservada'> };
@@ -85,7 +98,11 @@ export function useEstoqueDisponivel(
   produto: ProdutoParaEstoqueBadge | null,
   depositoId: string | null,
 ): number | null {
-  const produtoId = produto?.id ?? null;
+  // ⚠️ The produto that owns the AVAILABLE stock, which for a family of one is
+  // the child. A parent may still hold a RESERVED remainder — a reservation is
+  // keyed on the produto the pedido LINE names — but this badge answers
+  // availability, and the reserved half is the Estoque tab's residual panel.
+  const produtoId = produto ? unidadeVendavel(produto) : null;
   const ehKit = produto?.ehKit ?? false;
   const componentesKit = produto?.componentesKit ?? null;
 
