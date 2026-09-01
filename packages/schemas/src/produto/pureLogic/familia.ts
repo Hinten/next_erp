@@ -91,3 +91,85 @@ export function colapsarPaiEFilhoUnico<T extends CandidatoDeFamilia>(
 
   return paiDe(a, b) ?? paiDe(b, a);
 }
+
+/* -------------------------------------------------------------------------- */
+/*                    filhoUnicoId — deriving it, and reading it              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The value `produto.filhoUnicoId` must hold, given the produto's FULL child
+ * set: the single child's id when there is exactly one, `null` otherwise.
+ *
+ * ⚠️ **Every writer that changes a produto's child set calls this, in the SAME
+ * batch as the change.** `filhoUnicoId` is a denormalisation, and a family of
+ * three still naming child #1 sends every reader to the wrong produto — it
+ * would attribute the parent's stock to one arbitrary variation. There is no
+ * trigger keeping it honest on purpose (root `CLAUDE.md` rejects
+ * derived-state-kept-by-trigger; #869 worked that trade), so the discipline is
+ * that this function is the only producer of the value.
+ *
+ * ⚠️ It takes the FULL set, never a delta. Passing "the children I just added"
+ * yields a confident wrong answer instead of a visible error.
+ */
+export function derivarFilhoUnico(filhos: readonly { id: string }[]): string | null {
+  if (filhos.length !== 1) return null;
+  const id = filhos[0]!.id;
+  return id === '' ? null : id;
+}
+
+/** What {@link unidadeVendavel} and {@link ehFamiliaDeUm} read off a produto. */
+export interface ProdutoDeFamilia {
+  id: string;
+  /**
+   * Optional, and the reason it is read is drift.
+   *
+   * `filhoUnicoId` is a denormalisation with no trigger keeping it honest;
+   * `paiId` is authoritative by construction, because a child always carries
+   * one. So consulting it turns the drift case "a child that wrongly kept a
+   * stale `filhoUnicoId`" from *resolves to some other produto* into *resolves
+   * to itself*, which is the safe answer for a stock read.
+   *
+   * A caller that does not project it gets `undefined == null` → exactly the
+   * behaviour it would have had; only callers that DO project it gain the guard.
+   */
+  paiId?: string | null;
+  filhoUnicoId?: string | null;
+}
+
+/**
+ * Whether this produto is the PARENT of a family of one — i.e. a wrapper whose
+ * sellable unit is somewhere else.
+ *
+ * False for a child, for a childless produto, and for a family of many. Note
+ * the last two are false for opposite reasons and both are correct: a childless
+ * legacy produto still owns its own stock, and a family of many has no single
+ * unit to point at.
+ */
+export function ehFamiliaDeUm(produto: ProdutoDeFamilia): boolean {
+  // ⚠️ A child is never the parent of a family of one, whatever it stores. This
+  // reads the authoritative field to guard the denormalised one — see `paiId`
+  // on {@link ProdutoDeFamilia}. `== null` covers a stored null and an absent
+  // key alike, so a caller that does not project `paiId` is unaffected.
+  if (produto.paiId != null) return false;
+  return produto.filhoUnicoId != null && produto.filhoUnicoId !== '';
+}
+
+/**
+ * The produto id that owns this produto's **available** stock.
+ *
+ * Tolerates BOTH shapes, which is what lets every read surface adopt it before
+ * a single writer changes: a parent of a family of one resolves to its child;
+ * everything else — a child, a childless legacy produto, a family of many —
+ * resolves to ITSELF, exactly as today.
+ *
+ * ⚠️ **Available, not total.** A parent of a family of one can still hold a
+ * RESERVED remainder: a reservation is keyed on the produto the pedido *line*
+ * names, so the release has to find that row where it left it
+ * (`upSoleMember.ts:243-257`). A surface showing what is on hand, or letting an
+ * operator move stranded units, must therefore still look at the parent — see
+ * `EstoqueManager`'s `residualEstoquePai`. This answers the availability
+ * question only.
+ */
+export function unidadeVendavel(produto: ProdutoDeFamilia): string {
+  return ehFamiliaDeUm(produto) ? produto.filhoUnicoId! : produto.id;
+}

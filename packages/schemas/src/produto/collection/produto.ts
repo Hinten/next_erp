@@ -46,6 +46,34 @@ export const produtoSchema = z.object({
   sku: z.string().max(255).nullable().default(null),
   codPai: z.string().max(255).nullable().default(null),
   paiId: z.string().nullable().default(null),
+  /**
+   * The doc id of this produto's SOLE variation child, when it has exactly one
+   * (#1398). Null on a child, on a childless produto, and on a family with more
+   * than one member.
+   *
+   * ⚠️ It is the pointer AND the family-of-one flag, deliberately one field:
+   * a surface holding a parent asks "where is the sellable unit" and "is this a
+   * family of one" as the same question, and two fields could disagree.
+   *
+   * ⚠️ **Why this is stored and not derived.** `variacoesUid == null` looks like
+   * it identifies a sole member, and does not: `reconstructFromSkuSuffix`
+   * (`pureLogic/variacoes.ts:241`) exists precisely because legacy children
+   * legally carry an EMPTY `variacoesUid`, and `findDuplicateSkus` records that
+   * a child SKU equal to the parent's is also legacy-legal. Any derived rule
+   * therefore mislabels legacy variation children, and the mislabel is silent —
+   * it would attribute the parent's stock to a real variation.
+   *
+   * ⚠️ It is a DENORMALISATION and can drift: a family of three still naming
+   * child #1 sends every reader to the wrong produto. Every writer that changes
+   * a produto's child set must recompute it with `derivarFilhoUnico` in the SAME
+   * batch (`pureLogic/familia.ts`). It is deliberately not trigger-maintained —
+   * root `CLAUDE.md` rejects derived-state-kept-by-trigger, and #869 worked that
+   * exact trade.
+   *
+   * Not queried, so it needs no index; the reverse direction is `paiId`, already
+   * covered by `produtos(paiId ASC, nome ASC)`.
+   */
+  filhoUnicoId: z.string().nullable().default(null),
   ordem: z.number().int().nullable().default(null),
   gtin: z.string().max(255).nullable().default(null),
   codFornecedor: z.string().max(255).nullable().default(null),

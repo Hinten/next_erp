@@ -72,6 +72,11 @@ export const CAMPOS_VOLATEIS: ReadonlySet<string> = new Set([
   'dataCadastro',
   'fotosArquivosIds',
   'paiId',
+  // Same reason as `paiId`: it holds a produto DOC ID, and a delete → re-import
+  // mints a new one for the sole member (the two sides derive it from different
+  // parent-link ids — `upSoleMember.ts:160` vs `importVariations.ts:154`), so a
+  // faithful round trip legitimately changes this value.
+  'filhoUnicoId',
   'variacoesUid',
   'grupoDeVariacoesUid',
   'componentesKitKeys',

@@ -11,7 +11,7 @@ import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
  * produto doc itself, `'extraData'` / `'imposto'` = the matching
  * subcollection). Deliberately excludes anything server-owned/denormalized
  * (`componentesKitKeys`, `fotosArquivosIds`, …), identity/reference fields
- * that drive cascades (`paiId`, `variacoesUid`, `grupoDeVariacoesUid`), and
+ * that drive cascades (`paiId`, `filhoUnicoId`, `variacoesUid`, `grupoDeVariacoesUid`), and
  * media (`fotos`/`videos`/`anexos` — those have their own staged-delete UX).
  */
 export interface RevertScopeFields {

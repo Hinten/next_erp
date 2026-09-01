@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { colapsarPaiEFilhoUnico } from './familia';
+import {
+  colapsarPaiEFilhoUnico,
+  derivarFilhoUnico,
+  ehFamiliaDeUm,
+  unidadeVendavel,
+} from './familia';
 
 /**
  * Both halves of the fold, deliberately.
@@ -90,5 +95,84 @@ describe('colapsarPaiEFilhoUnico — what must stay DISTINCT', () => {
         { id: 'c1', paiId: '' },
       ]),
     ).toBeNull();
+  });
+});
+
+describe('derivarFilhoUnico', () => {
+  it('names the child when there is exactly one', () => {
+    expect(derivarFilhoUnico([{ id: 'c1' }])).toBe('c1');
+  });
+
+  // Both non-one cases, for opposite reasons: nothing to point at, and no
+  // SINGLE thing to point at.
+  it('is null for a childless produto and for a family of many', () => {
+    expect(derivarFilhoUnico([])).toBeNull();
+    expect(derivarFilhoUnico([{ id: 'c1' }, { id: 'c2' }])).toBeNull();
+    expect(derivarFilhoUnico([{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }])).toBeNull();
+  });
+
+  // An empty id would be written as a pointer that resolves to nothing, and
+  // `ehFamiliaDeUm` would then report a family of one with no member.
+  it('refuses an empty id rather than storing it as a pointer', () => {
+    expect(derivarFilhoUnico([{ id: '' }])).toBeNull();
+  });
+});
+
+describe('ehFamiliaDeUm / unidadeVendavel — both shapes tolerated', () => {
+  it('a parent of a family of one resolves to its child', () => {
+    const p = { id: 'p1', paiId: null, filhoUnicoId: 'c1' };
+    expect(ehFamiliaDeUm(p)).toBe(true);
+    expect(unidadeVendavel(p)).toBe('c1');
+  });
+
+  // ⚠️ The read-tolerance the whole rollout rests on: until a writer stamps the
+  // field, every produto in the corpus takes this branch and behaves exactly as
+  // it does today.
+  it('a childless legacy produto resolves to ITSELF', () => {
+    const p = { id: 'p1', paiId: null, filhoUnicoId: null };
+    expect(ehFamiliaDeUm(p)).toBe(false);
+    expect(unidadeVendavel(p)).toBe('p1');
+  });
+
+  it('a produto whose filhoUnicoId key is absent resolves to itself', () => {
+    expect(unidadeVendavel({ id: 'p1' })).toBe('p1');
+  });
+
+  it('a variation child resolves to itself', () => {
+    const c = { id: 'c1', paiId: 'p1', filhoUnicoId: null };
+    expect(ehFamiliaDeUm(c)).toBe(false);
+    expect(unidadeVendavel(c)).toBe('c1');
+  });
+
+  // ⚠️ A family of MANY must NOT resolve to a child: each variation sells
+  // separately and the parent's stock is genuinely not their sum. That is the
+  // scoping problem #1398 flagged, and `filhoUnicoId: null` is what settles it.
+  it('a parent of MANY resolves to itself, never to one of its children', () => {
+    const p = { id: 'p1', paiId: null, filhoUnicoId: null };
+    expect(unidadeVendavel(p)).toBe('p1');
+  });
+
+  // ⚠️ The drift case the `paiId` guard exists for. `filhoUnicoId` has no trigger
+  // keeping it honest, so a child could end up carrying a stale one; `paiId` is
+  // authoritative by construction. Without the guard this child would resolve to
+  // some OTHER produto and a stock read would land on the wrong document.
+  it('a CHILD carrying a stale filhoUnicoId resolves to itself, not to the pointer', () => {
+    const drift = { id: 'c1', paiId: 'p1', filhoUnicoId: 'algum-outro' };
+    expect(ehFamiliaDeUm(drift)).toBe(false);
+    expect(unidadeVendavel(drift)).toBe('c1');
+  });
+
+  // The guard must not change anything for a caller that does not project it.
+  it('is unaffected when the caller does not project paiId', () => {
+    expect(ehFamiliaDeUm({ id: 'p1', filhoUnicoId: 'c1' })).toBe(true);
+    expect(unidadeVendavel({ id: 'p1', filhoUnicoId: 'c1' })).toBe('c1');
+  });
+
+  // A stored empty string is not a pointer. Treating it as one sends readers to
+  // `produtos/` — a collection, not a document.
+  it('treats a stored empty filhoUnicoId as absent', () => {
+    const p = { id: 'p1', paiId: null, filhoUnicoId: '' };
+    expect(ehFamiliaDeUm(p)).toBe(false);
+    expect(unidadeVendavel(p)).toBe('p1');
   });
 });
