@@ -24,6 +24,7 @@ import { join, resolve } from 'node:path';
 
 import { formatFindings, scanForPii } from '../lib/marketplace/fixtures/piiScan';
 import { type WireValue, redactWireBody } from '../lib/marketplace/fixtures/redact';
+import { SHAPES_FILE, renderShapesDocument } from '../lib/marketplace/fixtures/wireShapes';
 
 function log(message: string): void {
   // eslint-disable-next-line no-console -- CLI output
@@ -125,10 +126,14 @@ function main(): void {
 
   mkdirSync(WIRE_DIR, { recursive: true });
   for (const [file, texto] of saida) writeFileSync(join(WIRE_DIR, file), texto, 'utf8');
+  const parsedBodies = new Map<string, WireValue>(
+    [...saida].map(([file, texto]) => [file, JSON.parse(texto) as WireValue]),
+  );
+  writeFileSync(join(WIRE_DIR, SHAPES_FILE), renderShapesDocument(parsedBodies), 'utf8');
 
   log(`\n✅ ${saida.size} fixture(s) promovidas para ${WIRE_DIR}\n`);
   for (const p of promocoes) log(`  ${p.file}`);
-  log('\nRode `pnpm --filter @delfrance/mercado-livre-app test` para regenerar os digests.\n');
+  log(`\n📐 ${SHAPES_FILE} regenerado — revise o diff DELE, não o dos JSONs.\n`);
 }
 
 main();

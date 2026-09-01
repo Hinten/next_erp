@@ -3,7 +3,11 @@
     "id": 2000018143664980,
     "contaMercadoLivreOuterRef": "documents/integracao/1WXplQLpUO8hcL3xQ4D0",
     "status": "paid",
-    "tags": ["paid", "not_delivered", "test_order"],
+    "tags": [
+      "paid",
+      "not_delivered",
+      "test_order"
+    ],
     "date_created": 1787836468000,
     "date_closed": 1787836470000,
     "last_updated": 1787836560000,

@@ -90,7 +90,9 @@
       "activation_uri": null,
       "operation_type": "regular_payment",
       "payment_type": "credit_card",
-      "available_actions": ["refund"],
+      "available_actions": [
+        "refund"
+      ],
       "status": "approved",
       "status_code": null,
       "status_detail": "accredited",
@@ -117,8 +119,14 @@
   },
   "status": "paid",
   "status_detail": null,
-  "tags": ["paid", "not_delivered", "test_order"],
-  "static_tags": ["test_order"],
+  "tags": [
+    "paid",
+    "not_delivered",
+    "test_order"
+  ],
+  "static_tags": [
+    "test_order"
+  ],
   "feedback": {
     "seller": null,
     "buyer": null

@@ -95,7 +95,9 @@
       },
       "longitude": 0,
       "address_line": "Rua Redacted, 0",
-      "types": ["default_buying_address"],
+      "types": [
+        "default_buying_address"
+      ],
       "scoring": null,
       "agency": {
         "carrier_id": null,
@@ -195,10 +197,14 @@
   "id": 47868202073,
   "tracking_method": "MEL Distribution",
   "last_updated": "2026-08-27T09:15:07.548-04:00",
-  "items_types": ["new"],
+  "items_types": [
+    "new"
+  ],
   "substatus": "invoice_pending",
   "date_created": "2026-08-27T09:14:28.591-04:00",
-  "tags": ["test_shipment"],
+  "tags": [
+    "test_shipment"
+  ],
   "declared_value": 49.97,
   "logistic": {
     "mode": "me2",

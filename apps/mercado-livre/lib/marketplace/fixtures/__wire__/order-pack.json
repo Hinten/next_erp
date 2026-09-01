@@ -3,7 +3,13 @@
     "id": 2000018144681452,
     "contaMercadoLivreOuterRef": "documents/integracao/1WXplQLpUO8hcL3xQ4D0",
     "status": "cancelled",
-    "tags": ["no_shipping", "not_delivered", "not_paid", "test_order", "pack_order"],
+    "tags": [
+      "no_shipping",
+      "not_delivered",
+      "not_paid",
+      "test_order",
+      "pack_order"
+    ],
     "date_created": 1787840291000,
     "date_closed": 1787840294000,
     "last_updated": 1787841744000,
@@ -134,7 +140,13 @@
     "id": 2000018144679512,
     "contaMercadoLivreOuterRef": "documents/integracao/1WXplQLpUO8hcL3xQ4D0",
     "status": "cancelled",
-    "tags": ["no_shipping", "not_delivered", "not_paid", "pack_order", "test_order"],
+    "tags": [
+      "no_shipping",
+      "not_delivered",
+      "not_paid",
+      "pack_order",
+      "test_order"
+    ],
     "date_created": 1787840291000,
     "date_closed": 1787840295000,
     "last_updated": 1787841744000,
