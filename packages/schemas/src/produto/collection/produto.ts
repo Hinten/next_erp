@@ -93,20 +93,29 @@ export const produtoSchema = z.object({
    * stamp a sale writes (ADR 0014) — because the channels that DO support
    * this upload shape consume that signal.
    *
-   * Mercado Livre has no usable form of it, which is why the ML **sweep**
-   * declines to send a quantity for a virtual kit (`quantidadeParaEnvio` →
-   * null). ML's own Virtual Kits do compute stock from the components, but
-   * they are User-Products-only (`POST /items/kits`, `bundle.components[]` of
-   * `user_product_id`s), immutable once published, and — because a component
-   * is already variation-level — cannot represent a produto that has
-   * variations, so this port never creates one.
+   * Mercado Livre has no usable form of it. ML's own Virtual Kits do compute
+   * stock from the components, but they are User-Products-only
+   * (`POST /items/kits`, `bundle.components[]` of `user_product_id`s),
+   * immutable once published, and — because a component is already
+   * variation-level — cannot represent a produto that has variations, so this
+   * port never creates one.
    *
-   * ⚠️ ML **publish** therefore does the opposite of the sweep: it sends the
-   * component-min like any other kit (`quantidadeParaPublicar`). `POST /items`
-   * requires `available_quantity`, so omitting it there does not make ML
-   * derive anything — it makes the produto unpublishable.
+   * ⚠️ So on the ML wire a virtual kit is just an ordinary kit, and **both** ML
+   * paths treat it as one: publish sends the component-min
+   * (`quantidadeParaPublicar` — `POST /items` requires `available_quantity`, so
+   * omitting it makes the produto unpublishable rather than making ML derive
+   * anything), and since **#1087** the stock **sweep** does too.
    *
-   * That is a per-channel limitation, **not** a property of virtual kits, and
+   * ⚠️ The sweep used to REFUSE (`quantidadeParaEnvio` → null), which read as a
+   * property of virtual kits and was not one: it was legacy parity
+   * (`functions.dart:286-289`) whose premise — that ML keeps the quantity
+   * current from the components — never held here, because there is no ML kit.
+   * The anúncio simply advertised its publish-time quantity for ever, which
+   * oversells. The refusal survives only behind
+   * `MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED`, an escape hatch that ships
+   * OFF.
+   *
+   * That was a per-channel limitation, **not** a property of virtual kits, and
    * it must not be generalized into one.
    */
   ehKitVirtual: z.boolean().default(false),

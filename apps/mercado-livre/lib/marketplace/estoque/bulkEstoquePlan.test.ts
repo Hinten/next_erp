@@ -146,6 +146,7 @@ import {
   MERCADO_LIVRE_STOCK_SEND_QUEUE,
   PAUSE_REENQUEUE_JITTER_MAX_S,
   type RawVarLinkRow,
+  STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV,
   STOCK_MULTIORIGEM_FLAG_ENV,
   STOCK_SYNC_FLAG_ENV,
   TAG_MULTIWAREHOUSE,
@@ -172,6 +173,7 @@ import {
   maxPauseReenqueues,
   maxTasksPerSweep,
   podeEnviarEstoque,
+  pularKitVirtual,
   quantidadeDoMembro,
   quantidadeParaEnvio,
   quantidadesDaFamilia,
@@ -240,6 +242,7 @@ const TOUCHED_ENV = [
   'ESTOQUE_PLAN_TEST_INT',
   'ESTOQUE_PLAN_TEST_FLAG',
   STOCK_MULTIORIGEM_FLAG_ENV,
+  STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV,
 ];
 
 const PARENT_LINK_REF = 'documents/produtos/PROD/produtoMercadoLivre/link1';
@@ -543,6 +546,10 @@ describe('constants', () => {
     expect(MAX_VARIATIONS_PER_TASK).toBe(2000);
     expect(MERCADO_LIVRE_STOCK_SEND_QUEUE).toBe('sendMercadoLivreStock');
     expect(STOCK_SYNC_FLAG_ENV).toBe('MERCADO_LIVRE_STOCK_SYNC_ENABLED');
+    // #1087: the escape hatch is named for the SKIP, so `envFlag`'s "OFF unless
+    // '1'" convention keeps OFF meaning the CORRECTED behaviour. A `SEND_…`
+    // spelling would silently invert the default.
+    expect(STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV).toBe('MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED');
   });
 });
 
@@ -694,17 +701,69 @@ describe('quantidadeParaEnvio — kit math + clamps', () => {
     disponivelByProdutoId: {},
   };
 
-  it('kit virtual → null, regardless of any available stock', () => {
+  // ---- #1087: a virtual kit is an ORDINARY kit on this wire ------------------
+  //
+  // ⚠️ TWO CONTROLS, and the known-BAD one is the whole point. Asserting only
+  // that the escape hatch still refuses proves nothing — that path already
+  // worked. The default path is the one that was broken: the sweep refused to
+  // send, so a virtual kit advertised its publish-time quantity for ever and
+  // oversold. It must produce a NUMBER here, and specifically the component-min.
+  const KIT_VIRTUAL = {
+    ...base,
+    ehKit: true,
+    ehKitVirtual: true,
+    componentesKit: {
+      A: { quantidade: 1, limitarEstoque: true, timestamp: null },
+      B: { quantidade: 1, limitarEstoque: true, timestamp: null },
+    },
+    ownDisponivel: 50,
+    disponivelByProdutoId: { A: 5, B: 3 },
+  };
+
+  it('#1087 default (hatch OFF): a virtual kit takes the ORDINARY kit branch', () => {
+    // known-BAD before #1087: this returned null and nothing was ever sent.
+    // min(5/1, 3/1) = 3 — the component-min, NOT the produto's own 50.
+    expect(quantidadeParaEnvio(KIT_VIRTUAL)).toBe(3);
+    expect(quantidadeParaEnvio(KIT_VIRTUAL)).not.toBe(50);
+    expect(quantidadeParaEnvio({ ...KIT_VIRTUAL, pularKitVirtual: false })).toBe(3);
+  });
+
+  it('#1087 escape hatch ON: the legacy refusal comes back, explicitly or via env', () => {
+    // known-GOOD: turning the hatch on must restore the OLD answer exactly.
+    expect(quantidadeParaEnvio({ ...KIT_VIRTUAL, pularKitVirtual: true })).toBeNull();
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    expect(pularKitVirtual()).toBe(true);
+    expect(quantidadeParaEnvio(KIT_VIRTUAL)).toBeNull();
+    // …and the explicit argument still wins over the env, like its sibling hook.
+    expect(quantidadeParaEnvio({ ...KIT_VIRTUAL, pularKitVirtual: false })).toBe(3);
+  });
+
+  it('#1087 the hatch reads only the literal `1`, lazily', () => {
+    expect(pularKitVirtual()).toBe(false); // unset ⇒ SEND, the corrected default
+    for (const nope of ['', '0', 'true', 'yes', '11']) {
+      process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = nope;
+      expect(pularKitVirtual(), `value=${nope}`).toBe(false);
+    }
+  });
+
+  // ⚠️ THE NEAR-MISS. Removing the `return null` is only half the fix: the kit
+  // branch keys on `ehKit || ehKitVirtual`, and keying it on `ehKit` alone
+  // computes NO min and silently falls back to `ownDisponivel`. That produces a
+  // WRONG NUMBER rather than a refusal, and nothing anywhere reports it — the
+  // failure mode that is strictly worse than the bug being fixed. Publish has
+  // always used the OR (`quantidadeParaPublicar`), so this is also the line that
+  // keeps the two sides equal.
+  it('#1087 near-miss: `ehKitVirtual` alone still constrains, without `ehKit`', () => {
+    const semEhKit = { ...KIT_VIRTUAL, ehKit: false };
+    expect(quantidadeParaEnvio(semEhKit)).toBe(3);
+    expect(quantidadeParaEnvio(semEhKit)).not.toBe(50); // own stock — the silent wrong answer
+  });
+
+  it('#1087 a virtual kit with no constraining component falls back to own stock', () => {
+    // Same rule as any other kit: a null min means nothing constrains it.
     expect(
-      quantidadeParaEnvio({
-        ...base,
-        ehKit: true,
-        ehKitVirtual: true,
-        componentesKit: { A: { quantidade: 1, limitarEstoque: true, timestamp: null } },
-        ownDisponivel: 50,
-        disponivelByProdutoId: { A: 50 },
-      }),
-    ).toBeNull();
+      quantidadeParaEnvio({ ...KIT_VIRTUAL, componentesKit: null, disponivelByProdutoId: {} }),
+    ).toBe(50);
   });
 
   it('non-kit: own disponivel floored', () => {
@@ -1222,12 +1281,29 @@ describe('sweep-time quantities — pure reducers', () => {
     expect(quantidadeDoMembro(member('P1'))).toBe(0);
   });
 
-  it('quantidadeDoMembro: ehKitVirtual → null (never send)', () => {
-    expect(
-      quantidadeDoMembro(
-        member('V1', { ehKit: true, ehKitVirtual: true, estoque: { quantidade: 50 } }),
-      ),
-    ).toBeNull();
+  /** A virtual kit constrained to 3 by two components at 5 and 3 (#1087). */
+  const membroKitVirtual = () =>
+    member('V1', {
+      ehKit: true,
+      ehKitVirtual: true,
+      componentesKit: {
+        A: { quantidade: 1, limitarEstoque: true, timestamp: null },
+        B: { quantidade: 1, limitarEstoque: true, timestamp: null },
+      },
+      estoque: { quantidade: 50, quantidadeReservada: 0 },
+      componentEstoques: [
+        { parentId: 'A', quantidade: 5, quantidadeReservada: 0 },
+        { parentId: 'B', quantidade: 3, quantidadeReservada: 0 },
+      ],
+    });
+
+  it('quantidadeDoMembro: #1087 default — a virtual kit yields its component-min', () => {
+    expect(quantidadeDoMembro(membroKitVirtual())).toBe(3);
+  });
+
+  it('quantidadeDoMembro: #1087 escape hatch ON → null (the legacy never-send)', () => {
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    expect(quantidadeDoMembro(membroKitVirtual())).toBeNull();
   });
 
   it('quantidadeDoMembro: kit min over the joined component rows; missing component = 0', () => {
@@ -1254,7 +1330,27 @@ describe('sweep-time quantities — pure reducers', () => {
     ).toBe(0);
   });
 
-  it('quantidadesDaFamilia: anchor + children keyed by produto id, virtuals omitted', () => {
+  it('quantidadesDaFamilia: anchor + children keyed by produto id, virtuals INCLUDED', () => {
+    // #1087: a virtual child is an ordinary member of the map now. With no
+    // constraining component it falls back to its own stock, like any kit.
+    const row = familyRow({
+      anchor: { estoque: { quantidade: 7, quantidadeReservada: 0 } },
+      children: [
+        child('CH1', [], { estoque: { quantidade: 4, quantidadeReservada: 1 } }),
+        child('CHV', [], { ehKit: true, ehKitVirtual: true, estoque: { quantidade: 9 } }),
+      ],
+    });
+    expect(quantidadesDaFamilia(row)).toEqual(
+      new Map([
+        ['PROD', 7],
+        ['CH1', 3],
+        ['CHV', 9],
+      ]),
+    );
+  });
+
+  it('quantidadesDaFamilia: #1087 escape hatch ON → the virtual child is omitted again', () => {
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
     const row = familyRow({
       anchor: { estoque: { quantidade: 7, quantidadeReservada: 0 } },
       children: [
@@ -1328,6 +1424,40 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
     // ADR 0014 says this design cannot tolerate.
     expect(anteriores.get('PROD')).toBe(7);
     expect(deveEnviarFamilia(quantidadesDaFamilia(simples()), anteriores, true)).toBe(true);
+  });
+
+  it('#1087 a virtual kit lands the SAME way in `anteriores` under either hatch state', () => {
+    // ⚠️ `kitNaoVerificavel` is consumed HERE as well as by the alarm, and
+    // widening `componentesNaoResolvidos` to `ehKit || ehKitVirtual` made it
+    // reachable for a virtual kit for the first time — so this is the second
+    // path the escape hatch's "restores pre-#1087 byte-for-byte" claim rests on.
+    // It was reasoned through in review; this RUNS it.
+    //
+    // The two routes to absence differ and the outcome must not: with the hatch
+    // ON the member now exits early via `kitNaoVerificavel`, where before it
+    // fell through and was dropped by `quantidadeDoMembro` returning null. Both
+    // leave the key ABSENT, which `deveEnviarFamilia` reads as unknown ⇒ send.
+    const virtualNaoVerificavel = () =>
+      familyRow({
+        children: [
+          child('CHV', [], {
+            ehKit: true,
+            ehKitVirtual: true,
+            componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+            estoque: { quantidade: 9, quantidadeReservada: 0 },
+            componentEstoques: [],
+          }),
+        ],
+      });
+
+    const semHatch = quantidadesAnteriores(virtualNaoVerificavel(), DEP, new Map());
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    const comHatch = quantidadesAnteriores(virtualNaoVerificavel(), DEP, new Map());
+
+    // Absent in BOTH — the anchor is all that reconstructs either way.
+    expect(comHatch.has('CHV')).toBe(false);
+    expect(semHatch.has('CHV')).toBe(false);
+    expect([...comHatch]).toEqual([...semHatch]);
   });
 
   it('OMITS a member whose own movement is unknown, so the policy fails OPEN', () => {
@@ -1812,10 +1942,177 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     ]);
   });
 
-  it('ehKitVirtual anchor → kit-virtual', () => {
-    expect(run(familyRow({ anchor: { ehKitVirtual: true } })).skips).toEqual([
-      { produtoId: 'PROD', reason: 'kit-virtual' },
+  // ---- #1087: a virtual kit SENDS by default -------------------------------
+  //
+  // ⚠️ TWO CONTROLS, and the known-BAD one is the point. A test that only
+  // covered the new default could not show the escape hatch does anything, and
+  // a test that only covered the hatch would be the pre-#1087 suite unchanged.
+  //
+  // The anchor: a virtual kit constrained to 3 by components at 5 and 3, whose
+  // own stock is 50 — so a fallback to own stock is visible as 50, not as a
+  // near-miss. The quantity map comes from `quantidadesDaFamilia`, never a
+  // hand-written Map: the assertion is that the WHOLE chain agrees, not that
+  // `buildSendTasks` copies whatever it is handed.
+  const ANCHOR_KIT_VIRTUAL: Partial<FamilyMember> = {
+    ehKit: true,
+    ehKitVirtual: true,
+    componentesKit: {
+      A: { quantidade: 1, limitarEstoque: true, timestamp: null },
+      B: { quantidade: 1, limitarEstoque: true, timestamp: null },
+    },
+    estoque: { quantidade: 50, quantidadeReservada: 0 },
+    componentEstoques: [
+      { parentId: 'A', quantidade: 5, quantidadeReservada: 0 },
+      { parentId: 'B', quantidade: 3, quantidadeReservada: 0 },
+    ],
+  };
+
+  it('#1087 default: an ehKitVirtual anchor SENDS, carrying the component-min', () => {
+    // known-BAD before #1087: this emitted NO task and one bare `kit-virtual`
+    // skip, so the anúncio kept advertising its publish-time quantity for ever.
+    const row = familyRow({ anchor: ANCHOR_KIT_VIRTUAL });
+    expect(buildSendTasks(row, quantidadesDaFamilia(row), OPTS)).toEqual({
+      tasks: [
+        {
+          ...BASE_TASK,
+          kind: 'item',
+          itemId: 'MLB111',
+          variacaoProdutoId: null,
+          userProductId: null,
+          varLinkDocId: null,
+          quantidade: 3,
+          variations: null,
+        },
+      ],
+      skips: [],
+    });
+  });
+
+  it('#1087 escape hatch ON: an ehKitVirtual anchor skips EXACTLY as before', () => {
+    // known-GOOD: byte-identical to pre-#1087 production — one bare skip row,
+    // no itemId, no linkDocId, no task. That identity is what makes the flag a
+    // revert rather than a third behaviour.
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    const row = familyRow({ anchor: ANCHOR_KIT_VIRTUAL });
+    expect(buildSendTasks(row, quantidadesDaFamilia(row), OPTS)).toEqual({
+      tasks: [],
+      skips: [{ produtoId: 'PROD', reason: 'kit-virtual' }],
+    });
+  });
+
+  it('#1087 blast radius: a virtual anchor no longer silences its SIBLINGS', () => {
+    // The rung was a `return`, not a `continue`, so ONE produto-level flag
+    // aborted the entire family — every listing this conta holds AND every
+    // variation child — behind a single bare skip row. Both listings must send.
+    const row = familyRow({
+      anchor: ANCHOR_KIT_VIRTUAL,
+      links: [
+        { id: 'MLB111', linkDocId: 'link1' },
+        { id: 'MLB222', linkDocId: 'link2' },
+      ],
+    });
+    const { tasks, skips } = buildSendTasks(row, quantidadesDaFamilia(row), OPTS);
+    expect(skips).toEqual([]);
+    expect(tasks.map((t) => [t.itemId, t.linkDocId, t.quantidade])).toEqual([
+      ['MLB111', 'link1', 3],
+      ['MLB222', 'link2', 3],
     ]);
+  });
+
+  it('#1087 the hatch does NOT log "publicando 0" about a member it refuses to send', () => {
+    // ⚠️ Found in review, and REPRODUCED before being believed. Widening
+    // `componentesNaoResolvidos` to `ehKit || ehKitVirtual` made
+    // `kitNaoVerificavel` reachable for a virtual kit for the first time. Under
+    // the escape hatch that is a member the very next stage skips as
+    // `'kit-virtual'` — so the alarm fired saying "publicando 0" about a produto
+    // for which nothing at all is published. A false log line, not merely a
+    // spurious one, aimed at whoever reached for the hatch mid-incident.
+    //
+    // The anchor rung cannot catch it: it tests `row.anchor.ehKitVirtual`, and
+    // this member is a virtual CHILD under a NON-virtual anchor.
+    const errorSpy = vi.spyOn(console, 'error').mockClear();
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    const row = familyRow({
+      children: [
+        child('CHV', [{ id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+          ehKit: true,
+          ehKitVirtual: true,
+          // A constraining component the join did NOT return — the stale-denorm
+          // shape `kitNaoVerificavel` exists to name.
+          componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+          estoque: { quantidade: 9, quantidadeReservada: 0 },
+          componentEstoques: [],
+        }),
+      ],
+    });
+
+    const res = buildSendTasks(row, quantidadesDaFamilia(row), OPTS);
+
+    expect(res.skips).toEqual([
+      { produtoId: 'CHV', reason: 'kit-virtual', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('#1087 …but the SAME kit still alarms once the hatch is off and it IS sent', () => {
+    // The control that keeps the guard above from being a blanket mute: with the
+    // hatch off the member is sent, the 0 is real, and the stale denorm must
+    // still be named. Suppressing this would trade a false log for a missing one.
+    const errorSpy = vi.spyOn(console, 'error').mockClear();
+    const row = familyRow({
+      children: [
+        child('CHV', [{ id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+          ehKit: true,
+          ehKitVirtual: true,
+          componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+          estoque: { quantidade: 9, quantidadeReservada: 0 },
+          componentEstoques: [],
+        }),
+      ],
+    });
+
+    const res = buildSendTasks(row, quantidadesDaFamilia(row), OPTS);
+
+    expect(res.skips).toEqual([]);
+    expect(res.tasks[0]!.variations).toEqual([{ id: 102, available_quantity: 0 }]);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[1]).toMatchObject({ produtoId: 'CHV', componentes: ['COMP'] });
+  });
+
+  it('#1087 member level: a virtual CHILD rides the bulk payload, or skips under the hatch', () => {
+    const row = () =>
+      familyRow({
+        children: [
+          child('CH1', [{ id: 101, produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+            estoque: { quantidade: 4, quantidadeReservada: 0 },
+          }),
+          child('CHV', [{ id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+            ehKit: true,
+            ehKitVirtual: true,
+            estoque: { quantidade: 9, quantidadeReservada: 0 },
+          }),
+        ],
+      });
+
+    // Default: both children are in `variations`. This also closes one of the
+    // three exclusion classes LIVE-TEST.md §5.5 flags against #831 — an omitted
+    // variation is a silent data-loss risk if ML deletes it.
+    const r1 = row();
+    const aberto = buildSendTasks(r1, quantidadesDaFamilia(r1), OPTS);
+    expect(aberto.skips).toEqual([]);
+    expect(aberto.tasks[0]!.variations).toEqual([
+      { id: 101, available_quantity: 4 },
+      { id: 102, available_quantity: 9 },
+    ]);
+
+    // Hatch ON: the virtual child alone drops out, and its SIBLING still sends.
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    const r2 = row();
+    const fechado = buildSendTasks(r2, quantidadesDaFamilia(r2), OPTS);
+    expect(fechado.skips).toEqual([
+      { produtoId: 'CHV', reason: 'kit-virtual', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
+    expect(fechado.tasks[0]!.variations).toEqual([{ id: 101, available_quantity: 4 }]);
   });
 
   // ---- #1087: `publicado` is not part of the decision any more --------------
@@ -1896,6 +2193,12 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     // skip, never one per listing. ⚠️ `publicado: false` is carried here on
     // purpose and is NOT a rung any more (#1087): it must not change the
     // verdict, and it must not add a second skip row.
+    //
+    // ⚠️ The kit-virtual rung is now reachable ONLY under the escape hatch
+    // (#1087), so the ordering it takes part in has to be asserted with the
+    // hatch explicitly ON. Leaving this test to the ambient default would have
+    // quietly turned it into an assertion about `aguardando-migracao`.
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
     expect(
       run(
         familyRow({
@@ -1913,6 +2216,20 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         }),
       ).skips,
     ).toEqual([{ produtoId: 'PROD', reason: 'kit-virtual' }]);
+
+    // With the hatch OFF — the DEFAULT — the anchor rung is not reached at all,
+    // so the per-listing rungs decide and the family is no longer aborted.
+    delete process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV];
+    expect(
+      run(
+        familyRow({
+          anchor: { ehKitVirtual: true, publicado: false },
+          links: [{ estado: 'am', status: 'weird' }],
+        }),
+      ).skips,
+    ).toEqual([
+      { produtoId: 'PROD', reason: 'aguardando-migracao', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
 
     // Inside the loop the per-listing rungs keep their order: estado 'am'
     // wins over an unknown status.

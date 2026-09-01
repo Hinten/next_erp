@@ -202,14 +202,15 @@ domains, so ML's "publish in Outros" guidance cannot cover them:
 The **Preencher dados de teste** button in the produto's Mercado Livre tab fills the
 mandated title, description and category.
 
-| #   | Step                                   | Surface                     | Assert                                                                                                                            | Result |
-| --- | -------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| 3.1 | Create the size chart                  | `size-charts/sync`          | chart id returned; visible on ML                                                                                                  |        |
-| 3.2 | Publish a simple produto → **L1**      | Produto → ML tab → Publicar | `POST /items`; link doc written; listing live                                                                                     |        |
-| 3.3 | Edit and republish                     | ML tab → Salvar             | `PUT /items/{id}`; description replaced                                                                                           |        |
-| 3.4 | Publish **L2** with variations + chart | ML tab                      | `attribute_combinations` correct; chart associated; `SIZE_GRID_ROW_ID` per child                                                  |        |
-| 3.5 | Reverificar anúncio                    | ML tab                      | real `status`/`sub_status` written; `errors` cleared                                                                              |        |
-| 3.6 | A **kit** produto                      | ML tab                      | publishes with the component-min quantity (`quantidadeParaPublicar` deliberately diverges from the sweep's `quantidadeParaEnvio`) |        |
+| #   | Step                                   | Surface                     | Assert                                                                                                                                                                                      | Result |
+| --- | -------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| 3.1 | Create the size chart                  | `size-charts/sync`          | chart id returned; visible on ML                                                                                                                                                            |        |
+| 3.2 | Publish a simple produto → **L1**      | Produto → ML tab → Publicar | `POST /items`; link doc written; listing live                                                                                                                                               |        |
+| 3.3 | Edit and republish                     | ML tab → Salvar             | `PUT /items/{id}`; description replaced                                                                                                                                                     |        |
+| 3.4 | Publish **L2** with variations + chart | ML tab                      | `attribute_combinations` correct; chart associated; `SIZE_GRID_ROW_ID` per child                                                                                                            |        |
+| 3.5 | Reverificar anúncio                    | ML tab                      | real `status`/`sub_status` written; `errors` cleared                                                                                                                                        |        |
+| 3.6 | A **kit** produto                      | ML tab                      | publishes the component-min. ⚠️ Then run 5.1 on the SAME produto: publish and the sweep must send the SAME number (#1087 — one function, `quantidadeParaPublicar` is `quantidadeParaEnvio`) |        |
+| 3.7 | A **virtual** kit (`ehKitVirtual`)     | ML tab                      | #1087 — publishes the component-min like any other kit, and 5.1 on it must send that same number rather than skipping it                                                                    |        |
 
 Two known gaps — confirm the blast radius rather than discover it later:
 
@@ -344,9 +345,17 @@ an `available_quantity`, then `GET` the item back.
 | Did the omitted variation survive? |        |
 
 If ML **deletes** it, every routine stock sync can silently destroy variations on a live
-listing, because `buildSendTasks` deliberately excludes unmatched / id-less / kit-virtual
-children. That would outrank #781 and must be fixed before any stock sweep is enabled in
+listing, because `buildSendTasks` deliberately excludes unmatched / id-less children.
+That would outrank #781 and must be fixed before any stock sweep is enabled in
 production.
+
+⚠️ **#1087 removed one of the three exclusion classes**: a `kit-virtual` child is no
+longer omitted by default — virtual kits send at their component-min like any other
+kit — so the exposure here is narrower than when this step was written. It is not
+closed: the other two classes remain, and turning the
+`MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED` escape hatch on brings the third back.
+Run the step regardless; the answer is what decides whether the remaining exclusions
+are safe.
 
 ---
 

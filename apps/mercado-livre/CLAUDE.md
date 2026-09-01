@@ -750,16 +750,45 @@ these before "fixing" what looks wrong in `publishCore.ts`:
   **same** attributes; both are checked once across the children by
   `validateCombinationsAcrossChildren`, never per child. The old port uppercased
   the group name into an invented id (`'Sabor'` → `{id:'SABOR'}`).
-- **This port never creates an ML virtual kit, so publish must still send a
-  quantity.** ML's Virtual Kits are User-Products-only (`POST /items/kits`,
+- **This port never creates an ML virtual kit, so BOTH paths send a quantity
+  (#1087).** ML's Virtual Kits are User-Products-only (`POST /items/kits`,
   `bundle.components[]` of `user_product_id`s), immutable once published, and
   derive their stock from the components; because a component is already
   variation-level, a produto **with variations cannot be an ML kit at all**.
-  ⚠️ The sweep's `quantidadeParaEnvio` returns `null` for `ehKitVirtual` meaning
-  *"do not push a stock update"* — on the publish path that would omit a field
-  `POST /items` **requires**, making the produto unpublishable. `publish.ts`'s
-  `quantidadeParaPublicar` is the deliberate divergence: a virtual kit publishes
-  the component-min like any other kit.
+  On this wire a virtual kit is therefore just an ordinary kit, and publish has
+  always treated it as one — `quantidadeParaPublicar` sends the component-min,
+  because omitting the field `POST /items` **requires** would make the produto
+  unpublishable rather than make ML derive anything.
+  ⚠️ **The stock SWEEP used to disagree, and that was the bug.**
+  `quantidadeParaEnvio` returned `null` for `ehKitVirtual` — legacy parity
+  (`functions.dart:286-289`) resting on the premise publish had already refuted
+  *in this repo*: it assumed ML keeps the quantity current from the components,
+  which it does only for a kit we never create. So a virtual kit published a
+  real number and then **never updated again**, advertising it for ever, which
+  oversells. Both sides now run ONE function — `quantidadeParaPublicar` is
+  `quantidadeParaEnvio` with the escape hatch pinned off — so they cannot drift
+  apart again by comment. ⚠️ The `ehKit || ehKitVirtual` OR inside it is
+  load-bearing independently of the `null`: keying the kit branch on `ehKit`
+  alone computes no min and falls back to the produto's OWN stock, a wrong
+  number rather than a refusal, and nothing reports it.
+  ⚠️ The refusal survives only behind `MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED`
+  (default OFF), an **escape hatch** for reverting a misbehaving live sweep —
+  not a rollout gate. ON restores pre-#1087 behaviour exactly, including that
+  rung's family-wide `return`: one virtual anchor silences every listing and
+  variation child of its família.
+  ⚠️ **That "exactly" is MAINTAINED, not free**, and the thing that threatens it
+  is `kitNaoVerificavel` — widening `componentesNaoResolvidos` made it reachable
+  for a virtual kit for the first time, so both of its consumers had to be
+  checked under the hatch. `quantidadesAnteriores` was already equivalent (the
+  member ends up absent either way, by a different route). The **alarm** was
+  not: it fired `publicando 0` about a virtual CHILD under a NON-virtual anchor
+  — which the anchor rung cannot catch — for a produto the next stage skips and
+  publishes nothing for, so the line was FALSE, aimed at whoever reached for the
+  hatch mid-incident. It is now gated on `quantidades.has(member.produtoId)`:
+  the alarm may only speak about a member this call actually sends. Both paths
+  have tests; keep them if you touch that predicate again. It must be set on **both** surfaces (the
+  functions codebase for the sweeps, `apphosting.yaml`/console for the manual
+  push) or the two disagree about the same produto.
 
 ⚠️ **A `payments` notification can now CREATE a pedido — indirectly (#1087).**
 ML fires `orders_v2` only for *"vendas confirmadas"*, and the seller-scoped
