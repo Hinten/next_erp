@@ -56,21 +56,56 @@ function listRawFixtures(): string[] {
 }
 
 /**
- * ⚠️ Re-parsing the serialised output and comparing is not belt-and-braces — it
- * is the only thing standing between a pretty-printed fixture and silent
- * numeric corruption. An ML id past `Number.MAX_SAFE_INTEGER` survives the raw
- * bytes but not a `JSON.parse` → `JSON.stringify` round trip, and the damage
- * would show up as a fixture that disagrees with production by one digit.
+ * Every integer literal in the RAW text whose `Number()` round trip does not
+ * reproduce it — i.e. a value already destroyed by `JSON.parse`.
+ *
+ * ⚠️ **This has to read `bruto`, not the parsed value.** The previous version
+ * compared `JSON.parse(JSON.stringify(value))` against `value` and called itself
+ * "the only thing standing between a pretty-printed fixture and silent numeric
+ * corruption". It could never fire: by then every number is already a double,
+ * and `JSON.stringify` emits the shortest round-trippable representation of a
+ * double, so re-parsing returns the identical double. The comparison is an
+ * identity for anything that came out of `JSON.parse`.
+ *
+ * ```
+ * raw bytes    : {"id": 2000018143664980123}
+ * reserialised : {"id":2000018143664980200}
+ * old guard    : clean ✗
+ * ```
+ *
+ * ⚠️ Latent rather than active today — the largest ML id in the corpus is
+ * `2000018143664980`, comfortably under `MAX_SAFE_INTEGER` (`9007199254740991`).
+ * It is kept because the post-migration capture points at real orders, and a
+ * fixture that disagrees with production by one digit is worse than no fixture.
  */
-function serialise(value: WireValue, file: string): string {
-  const texto = `${JSON.stringify(value, null, 2)}\n`;
-  const roundTrip = JSON.parse(texto) as WireValue;
-  if (JSON.stringify(roundTrip) !== JSON.stringify(value)) {
+export function unsafeIntegerLiterals(bruto: string): string[] {
+  const achados: string[] = [];
+  // ⚠️ VALUE POSITION only — anchored on the `:` `[` or `,` before and the `,`
+  // `]` or `}` after. A looser `(?<![\w.])\d{16,}` also matches digits INSIDE a
+  // JSON string, because the character before them is a quote, and ML sends
+  // several 18-digit ids as strings (`billing_info.id: "880802100988250668"`).
+  // Those are not numbers, `JSON.parse` never touches them, and flagging them
+  // would refuse the whole corpus for values that are perfectly intact.
+  //
+  // Integers only: a fractional double is lossy by nature, so comparing its text
+  // would flag every ordinary price.
+  for (const match of bruto.matchAll(/[:[,]\s*(-?\d{16,})\s*(?=[,\]}])/g)) {
+    const literal = match[1];
+    if (literal !== undefined && String(Number(literal)) !== literal) achados.push(literal);
+  }
+  return achados;
+}
+
+function serialise(value: WireValue, bruto: string, file: string): string {
+  const perdidos = unsafeIntegerLiterals(bruto);
+  const exemplo = perdidos[0];
+  if (exemplo !== undefined) {
     throw new Error(
-      `${file}: o round trip JSON alterou o valor — provável perda de precisão numérica. Fixture NÃO promovida.`,
+      `${file}: ${perdidos.length} inteiro(s) além de Number.MAX_SAFE_INTEGER — ` +
+        `JSON.parse já alterou o valor (ex.: ${exemplo} → ${Number(exemplo)}). Fixture NÃO promovida.`,
     );
   }
-  return texto;
+  return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 function main(): void {
@@ -99,7 +134,7 @@ function main(): void {
     const findings = scanForPii(redigido);
     if (findings.length > 0) problemas.push(formatFindings(file, findings));
 
-    saida.set(file, serialise(redigido, file));
+    saida.set(file, serialise(redigido, bruto, file));
     promocoes.push({ file, bytes: bruto.length, findings: findings.length });
   }
 
