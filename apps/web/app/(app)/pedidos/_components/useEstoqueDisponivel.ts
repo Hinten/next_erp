@@ -15,6 +15,8 @@ import {
   type EstoqueProduto,
 } from '@delfrance/schemas';
 import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
+import { produtoCollection } from '@/lib/data/produtoCollection';
+import { getDocsByIds } from '@/lib/data/getDocsByIds';
 
 /** The produto fields the badge needs — id always, kit fields for kits. */
 export interface ProdutoParaEstoqueBadge {
@@ -158,20 +160,61 @@ export function useEstoqueDisponivel(
     queryFn: async () => {
       const dep = depositoId;
       if (!dep) return {};
-      const disponivel: Record<string, number> = {};
+
+      // ⚠️ A kit component can itself be the PARENT of a family of one, and then
+      // its own estoque row holds nothing — the stock is on its child (#1398).
+      // That is the case #1398 was opened on: a kit reading 0 while both its
+      // components had stock.
+      //
+      // ⚠️ ONE chunked query for the whole component set, not one read per
+      // component. `getDocsByIds` splits at the SDK's 30-id `in` cap and runs the
+      // chunks concurrently, so a kit of any realistic size costs ONE extra
+      // query — not N extra reads on a form the operator is typing into.
+      // `source: 'server'` matches the estoque reads below: this query is already
+      // server-only, and a cached produto could carry a stale pointer.
+      const produtos = await getDocsByIds(
+        db,
+        produtoCollection,
+        countableIds,
+        {},
+        {
+          source: 'server',
+        },
+      );
+      const alvoDe = new Map(
+        countableIds.map((id) => {
+          const p = produtos.get(id);
+          // A component we could not read resolves to ITSELF — today's behaviour,
+          // and the safe direction: it counts as 0 rather than as some other
+          // produto's stock.
+          return [id, p ? unidadeVendavel({ id, ...p }) : id] as const;
+        }),
+      );
+
+      const porAlvo = new Map<string, number>();
       await Promise.all(
-        countableIds.map(async (compId) => {
+        // Distinct targets: two components can resolve to one produto, and a
+        // component that IS another's sole member collapses onto it.
+        [...new Set(alvoDe.values())].map(async (alvo) => {
           // One deterministic doc, not a subcollection scan (a target beyond a
           // page limit would wrongly read as missing).
           const snap = await getDocFromServer(
-            estoqueProdutoCollection.docRef(db, { produtoId: compId }, makeEstoqueUid(compId, dep)),
+            estoqueProdutoCollection.docRef(db, { produtoId: alvo }, makeEstoqueUid(alvo, dep)),
           );
           const disp = snap.exists() ? estoqueDisponivel(snap.data()) : NaN;
           // Non-finite (missing doc / soft-parsed junk) → leave absent so the
           // pure helper counts the component as 0 (#238).
-          if (Number.isFinite(disp)) disponivel[compId] = disp;
+          if (Number.isFinite(disp)) porAlvo.set(alvo, disp);
         }),
       );
+
+      // Keyed by the id the KIT names, whatever answered for it — `componentesKit`
+      // is not rewritten by any of this.
+      const disponivel: Record<string, number> = {};
+      for (const [id, alvo] of alvoDe) {
+        const disp = porAlvo.get(alvo);
+        if (disp !== undefined) disponivel[id] = disp;
+      }
       return disponivel;
     },
   });
