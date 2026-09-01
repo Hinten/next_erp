@@ -70,3 +70,26 @@ when `__wire__/` landed: the offline suite now reads this corpus through
 protected was never "nothing may import this" — it was "this must not become
 channel runtime", and that still holds. A `lib/marketplace/*` module importing
 from here would be the violation; a `*.test.ts` doing so is the design.
+
+## Checking the corpus against the live API
+
+```bash
+pnpm --filter @delfrance/mercado-livre-app verify:wire --project <id> --integracaoId <id>
+```
+
+Re-fetches exactly the endpoints the corpus was captured from — the ids come
+from the filenames (`corpusIds.ts`), so the comparison is apples-to-apples by
+construction — digests each live body and diffs the **shape** against the
+committed one. GETs only.
+
+A removal or a type change exits non-zero; an addition is reported as
+information. ⚠️ The live body is redacted before digesting, which is why
+`redact.ts` has to be type-preserving: comparing a raw body against the redacted
+corpus would report every personal field as a difference and bury the real one.
+
+⚠️ **Deliberately not in any CI lane.** It needs the seller credential, and the
+#1087 run measured why an automated live lane fails: two of three buyer test
+users were blocked by ML unprompted (slots capped at 10 forever), the credential
+rotates on every invocation, and ML acts on its own clock. Run it when the
+weekly watch (`.github/workflows/ml-integration-watch.yml`) opens an issue, or
+before trusting a fixture that has sat still for months.
