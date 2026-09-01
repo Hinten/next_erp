@@ -392,6 +392,27 @@ export const produtoMercadoLivreLinkSchema = z
     comissao: z.number().nullable().default(null),
 
     isUserProductModel: z.boolean().default(false),
+
+    /**
+     * Do this User-Products família's ML items carry the parent-sku custom
+     * characteristic (`ML_ATTR_SKU_PAI_NOME`)? #1400.
+     *
+     * ⚠️ It records a fact about ML, not a preference. A custom attribute's
+     * NAME is an input to ML's family hash, so its presence must be UNIFORM
+     * across a família: adding it to one that lacks it moves members into a
+     * different família, and creating a new member WITH it beside siblings
+     * WITHOUT it hashes that member into a família of its own — silently
+     * splitting the listing. The flag is therefore stamped once, on the write
+     * that follows a família's FIRST create, and read by every later publish so
+     * a variation added months later matches its siblings.
+     *
+     * ⚠️ Consequently the env flag that enables the feature can only affect a
+     * família at CREATE time. Turning it on does not retrofit existing famílias,
+     * and turning it off does not strip it from famílias that already carry it —
+     * both would be the family-move above. False on every legacy
+     * `variations[]` listing, which has a real parent item and no família.
+     */
+    skuPaiAtributo: z.boolean().default(false),
     video_id: z.string().nullable().default(null),
     attributes: z.array(mlAttributeWireSchema).nullable().default(null),
 

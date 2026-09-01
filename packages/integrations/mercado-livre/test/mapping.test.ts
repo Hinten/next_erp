@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ML_ATTR_SKU_PAI_NOME,
   ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
   ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
   attrBrand,
@@ -10,6 +11,7 @@ import {
   attrSizeGridId,
   attrSizeGridRowId,
   attrSku,
+  attrSkuPai,
   attrWeightKg,
   attributeToMercadoLivre,
 } from '../src/mapping/attributes';
@@ -437,6 +439,34 @@ describe('buildUserProductItemPayload', () => {
     });
     const attrs = data.attributes as Array<{ id: string; value_name: string }>;
     expect(attrs.find((a) => a.id === 'SELLER_SKU')?.value_name).toBe('SKU-PAI');
+  });
+
+  it('carries the parent-sku characteristic to the member, id-less (#1400)', () => {
+    // The family attribute list is what `assemblePublishInput` produces, so an
+    // id-less entry there is exactly how the parent sku reaches a member.
+    const attributes = [...(base.attributes ?? []), attrSkuPai('SKU-PAI')];
+    for (const isUpdate of [false, true]) {
+      const data = buildUserProductItemPayload({ ...base, attributes, isUpdate });
+      const attrs = data.attributes as Array<Record<string, unknown>>;
+      const skuPai = attrs.filter((a) => a.name === ML_ATTR_SKU_PAI_NOME);
+      // Present on the UPDATE too: its VALUE is not in ML's family hash, so an
+      // edited parent sku must be able to propagate.
+      expect(skuPai).toHaveLength(1);
+      expect(skuPai[0]).toEqual({ name: ML_ATTR_SKU_PAI_NOME, value_name: 'SKU-PAI' });
+      // ⚠️ It must NOT carry an id — `SELLER_SKU` is the member's and ML allows
+      // one per item. And it must not displace that one.
+      expect(skuPai[0]!.id).toBeUndefined();
+      expect(attrs.find((a) => a.id === 'SELLER_SKU')?.value_name).toBe('SKU-M');
+    }
+  });
+
+  it('sends NO parent-sku characteristic when the caller passes none', () => {
+    // The default, and the only state that can never split a live família.
+    for (const isUpdate of [false, true]) {
+      const data = buildUserProductItemPayload({ ...base, isUpdate });
+      const attrs = data.attributes as Array<Record<string, unknown>>;
+      expect(attrs.some((a) => a.name === ML_ATTR_SKU_PAI_NOME)).toBe(false);
+    }
   });
 
   it('inherits the family gallery only when the member has no pictures', () => {

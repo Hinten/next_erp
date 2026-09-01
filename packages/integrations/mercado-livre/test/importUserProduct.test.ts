@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { itemSchema } from '../src/types';
+import { ML_ATTR_SKU_PAI_NOME } from '../src/mapping/attributes';
 import { mapUpMemberToImport } from '../src/mapping/importUserProduct';
 
 /** A realistic User-Products member item (family_name != null), parsed through the schema. */
@@ -89,5 +90,53 @@ describe('mapUpMemberToImport', () => {
       }),
     );
     expect(mapped.member.nome).toBe('Camiseta G');
+  });
+
+  describe('skuPai (#1400)', () => {
+    it('is null when the item carries no parent-sku characteristic', () => {
+      // Every família published before #1400, and every conta with the sender off.
+      expect(mapUpMemberToImport(upMemberItem()).skuPai).toBeNull();
+    });
+
+    it('reads the characteristic, and keeps it DISTINCT from the member sku', () => {
+      const mapped = mapUpMemberToImport(
+        upMemberItem({
+          attributes: [
+            { id: 'SELLER_SKU', value_name: 'SKU-CAM-P-AZUL' },
+            { name: ML_ATTR_SKU_PAI_NOME, value_name: 'SKU-CAM' },
+          ],
+        }),
+      );
+      // The whole point: two different skus on ONE item.
+      expect(mapped.skuPai).toBe('SKU-CAM');
+      expect(mapped.member.sku).toBe('SKU-CAM-P-AZUL');
+      expect(mapped.skuPai).not.toBe(mapped.member.sku);
+    });
+
+    it('matches by NAME even when ML echoes an id back on it', () => {
+      // Unverifiable against the live API (no sandbox), so both shapes must work.
+      const mapped = mapUpMemberToImport(
+        upMemberItem({
+          attributes: [
+            { id: 'SELLER_SKU', value_name: 'SKU-CAM-P-AZUL' },
+            { id: 'CUSTOM-9', name: ML_ATTR_SKU_PAI_NOME, value_name: 'SKU-CAM' },
+          ],
+        }),
+      );
+      expect(mapped.skuPai).toBe('SKU-CAM');
+    });
+
+    it('never mistakes another characteristic for it', () => {
+      const mapped = mapUpMemberToImport(
+        upMemberItem({
+          attributes: [
+            { id: 'SELLER_SKU', value_name: 'SKU-CAM-P-AZUL' },
+            { name: 'SKU do fornecedor', value_name: 'FORN-9' },
+            { name: 'SKU', value_name: 'X' },
+          ],
+        }),
+      );
+      expect(mapped.skuPai).toBeNull();
+    });
   });
 });

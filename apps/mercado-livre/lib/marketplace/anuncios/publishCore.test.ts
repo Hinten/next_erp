@@ -20,6 +20,7 @@ import {
   resolveCondition,
   resolveListingModel,
   resolvePrice,
+  resolveSkuPaiAtributo,
   sizeChartIssue,
   TABELA_BINDING_RECUSA,
 } from './publishCore';
@@ -232,6 +233,96 @@ describe('resolveCondition', () => {
   it('defaults to new with no signal anywhere', () => {
     expect(resolveCondition(null, produto, 1)).toBe('new');
     expect(resolveCondition(null, produto, null)).toBe('new');
+  });
+});
+
+describe('resolveSkuPaiAtributo (#1400)', () => {
+  const base = {
+    isUserProductSeller: true,
+    jaCarrega: false,
+    linkId: null as string | null,
+    membrosItemIds: [] as Array<string | null>,
+    produtoSku: 'SKU-PAI',
+    flagLigada: true,
+  };
+
+  it('sends on a brand-new família while the flag is on, and records it', () => {
+    expect(resolveSkuPaiAtributo({ ...base, membrosItemIds: [null, null] })).toEqual({
+      skuPai: 'SKU-PAI',
+      carrega: true,
+    });
+  });
+
+  it('sends nothing while the flag is off, and records nothing', () => {
+    expect(resolveSkuPaiAtributo({ ...base, membrosItemIds: [null], flagLigada: false })).toEqual({
+      skuPai: null,
+      carrega: false,
+    });
+  });
+
+  it('⛔ never adds it to a família ML already has — the listing-splitting case', () => {
+    // The dangerous one. A published família whose members lack the attribute
+    // must not gain it: a custom attribute's NAME is in ML's family hash, so a
+    // member re-hashes and leaves the família.
+    expect(resolveSkuPaiAtributo({ ...base, linkId: 'FAM1', membrosItemIds: [null] })).toEqual({
+      skuPai: null,
+      carrega: false,
+    });
+    // ⛔ And the case a `linkId`-only test would MISS: adding one more variation
+    // to an existing família. `link.id` can be null on a família whose members
+    // are live (a link written before the id landed), so the member item ids are
+    // the load-bearing half of the test.
+    expect(
+      resolveSkuPaiAtributo({ ...base, linkId: null, membrosItemIds: [null, 'MLB222'] }),
+    ).toEqual({ skuPai: null, carrega: false });
+  });
+
+  it('keeps sending to a família that already carries it, flag or no flag', () => {
+    // Dropping the attribute would re-hash every member, so `jaCarrega` outranks
+    // both the flag and the "is it new" test.
+    for (const flagLigada of [true, false]) {
+      expect(
+        resolveSkuPaiAtributo({
+          ...base,
+          jaCarrega: true,
+          linkId: 'FAM1',
+          membrosItemIds: ['MLB222'],
+          flagLigada,
+        }),
+      ).toEqual({ skuPai: 'SKU-PAI', carrega: true });
+    }
+  });
+
+  it('`carrega` is MONOTONIC — a blank produto sku never un-records it', () => {
+    // Nothing is sent this run, but ML's items still hold the attribute.
+    expect(
+      resolveSkuPaiAtributo({
+        ...base,
+        jaCarrega: true,
+        linkId: 'FAM1',
+        membrosItemIds: ['MLB222'],
+        produtoSku: null,
+      }),
+    ).toEqual({ skuPai: null, carrega: true });
+  });
+
+  it('a blank-ish produto sku sends nothing rather than an empty characteristic', () => {
+    for (const produtoSku of [null, '', '   ']) {
+      expect(resolveSkuPaiAtributo({ ...base, membrosItemIds: [null], produtoSku })).toEqual({
+        skuPai: null,
+        carrega: false,
+      });
+    }
+    // …but a padded one is trimmed, not refused.
+    expect(
+      resolveSkuPaiAtributo({ ...base, membrosItemIds: [null], produtoSku: '  SKU-PAI  ' }).skuPai,
+    ).toBe('SKU-PAI');
+  });
+
+  it('never applies to the legacy variations[] model, which has a real parent item', () => {
+    expect(resolveSkuPaiAtributo({ ...base, isUserProductSeller: false, jaCarrega: true })).toEqual(
+      { skuPai: null, carrega: false },
+    );
   });
 });
 

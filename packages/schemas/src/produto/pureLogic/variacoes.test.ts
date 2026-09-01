@@ -12,6 +12,7 @@ import {
   reconstructFromVariacoesUid,
   remakeFakePath,
   sameCombo,
+  skuPaiPorSufixo,
   sortGrupoUids,
   splitFotoSections,
   varianteFakePath,
@@ -262,6 +263,100 @@ describe('reconstructFromSkuSuffix (mode B — legacy children)', () => {
     if (!a.ok || !b.ok) throw new Error('expected ok');
     // P+Verde [0,1] sorts before M+Azul [1,0].
     expect(compareSortKeys(a.sortKey, b.sortKey)).toBeLessThan(0);
+  });
+});
+
+describe('skuPaiPorSufixo (#1400 — recover a parent sku from a child)', () => {
+  /** TAM (ordem 1) then CORES (ordem 2) — the order `cartesianVariations` appends in. */
+  const tamThenCor = [
+    { ordem: 1, codigo: 'P' },
+    { ordem: 2, codigo: 'AZ' },
+  ];
+
+  it('peels the códigos back off, exactly inverting cartesianVariations', () => {
+    // Build a child the real way, then recover the parent from it — the pair
+    // that must come out EQUAL.
+    const combos = cartesianVariations({
+      parentNome: 'Camiseta',
+      parentSku: 'CAM',
+      grupos: fixtures(),
+      selectedUids: [varianteFakePath('TAM', 'p'), varianteFakePath('CORES', 'az')],
+    });
+    const filho = combos[0]!;
+    expect(filho.sku).toBe('CAMPAZ');
+    expect(skuPaiPorSufixo(filho.sku, tamThenCor)).toBe('CAM');
+  });
+
+  it('peels in reverse `ordem`, not in argument order', () => {
+    // Same two entries handed over backwards must still answer 'CAM' — the
+    // suffix is 'P' then 'AZ' because CORES has the HIGHER ordem.
+    expect(skuPaiPorSufixo('CAMPAZ', [...tamThenCor].reverse())).toBe('CAM');
+    // …and swapping the ORDENS really does change the answer, so the sort is
+    // load-bearing rather than decorative.
+    expect(
+      skuPaiPorSufixo('CAMPAZ', [
+        { ordem: 2, codigo: 'P' },
+        { ordem: 1, codigo: 'AZ' },
+      ]),
+    ).toBeNull();
+  });
+
+  it('refuses when any variante has no código — the FRESH-IMPORT case', () => {
+    // `planTaxonomia` creates variantes with `codigo: null`, so this is what a
+    // first-ever ML import looks like. Returning the child's own sku here would
+    // give the parent a sku that belongs to one of its children.
+    expect(skuPaiPorSufixo('CAMPAZ', [{ ordem: 1, codigo: null }])).toBeNull();
+    expect(skuPaiPorSufixo('CAMPAZ', [{ ordem: 1, codigo: undefined }])).toBeNull();
+    expect(skuPaiPorSufixo('CAMPAZ', [{ ordem: 1, codigo: '' }])).toBeNull();
+    // Partially known is still unknown — never peel the half we can.
+    expect(
+      skuPaiPorSufixo('CAMPAZ', [
+        { ordem: 1, codigo: 'P' },
+        { ordem: 2, codigo: null },
+      ]),
+    ).toBeNull();
+  });
+
+  it('refuses when a código is not actually at the end', () => {
+    // The seller does not follow the concatenation convention.
+    expect(skuPaiPorSufixo('CAM-AZUL-P', tamThenCor)).toBeNull();
+    // Right códigos, wrong order on the wire.
+    expect(skuPaiPorSufixo('CAMAZP', tamThenCor)).toBeNull();
+  });
+
+  it('refuses rather than returning an empty parent', () => {
+    expect(skuPaiPorSufixo('PAZ', tamThenCor)).toBeNull();
+    expect(skuPaiPorSufixo('', tamThenCor)).toBeNull();
+    expect(skuPaiPorSufixo(null, tamThenCor)).toBeNull();
+    // No grupos ⇒ nothing was proven, so it must NOT echo the sku back.
+    expect(skuPaiPorSufixo('CAMPAZ', [])).toBeNull();
+  });
+
+  it('NEAR-MISSES stay distinct — the fold does not widen', () => {
+    // Byte-exact: none of these may peel, and none may collapse onto another.
+    // Case differs.
+    expect(skuPaiPorSufixo('CAMPaz', tamThenCor)).toBeNull();
+    // A LONGER código that merely ends with the real one.
+    expect(skuPaiPorSufixo('CAM-01', [{ ordem: 1, codigo: '1' }])).toBe('CAM-0');
+    expect(skuPaiPorSufixo('CAM-1', [{ ordem: 1, codigo: '1' }])).toBe('CAM-');
+    // …so two children one character apart yield two DIFFERENT parents, never one.
+    expect(skuPaiPorSufixo('CAM-01', [{ ordem: 1, codigo: '1' }])).not.toBe(
+      skuPaiPorSufixo('CAM-1', [{ ordem: 1, codigo: '1' }]),
+    );
+    // Whitespace inside the sku is significant; only the ends are trimmed.
+    expect(skuPaiPorSufixo('  CAMPAZ  ', tamThenCor)).toBe('CAM');
+    expect(skuPaiPorSufixo('CAM PAZ', tamThenCor)).toBe('CAM ');
+  });
+
+  it('treats a null `ordem` as last, matching sortGruposByOrdem', () => {
+    // `sortGruposByOrdem` sends a null ordem to the END (Infinity), so its
+    // código is the OUTERMOST suffix and peels first.
+    expect(
+      skuPaiPorSufixo('CAMPAZ', [
+        { ordem: 1, codigo: 'P' },
+        { ordem: null, codigo: 'AZ' },
+      ]),
+    ).toBe('CAM');
   });
 });
 

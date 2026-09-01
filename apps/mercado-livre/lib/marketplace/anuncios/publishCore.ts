@@ -34,6 +34,7 @@ import {
   attrSizeGridId,
   attrSizeGridRowId,
   attrSku,
+  attrSkuPai,
   attrWeightKg,
 } from '@delfrance/integrations-mercado-livre';
 import {
@@ -90,6 +91,8 @@ export interface PublishLink {
   listing_type_id?: string | null;
   category_id?: string | null;
   isUserProductModel?: boolean | null;
+  /** #1400 — do this família's ML items already carry the parent-sku characteristic? */
+  skuPaiAtributo?: boolean | null;
   attributes?: MlAttribute[] | null;
   video_id?: string | null;
   /** `estadoPublicacaoMl` wire code — only `'am'` (mid-UPtin) is read here. */
@@ -233,6 +236,22 @@ export interface AssemblePublishArgs {
   categoryId: string | null;
   listingTypeId: string | null;
   isUserProductSeller: boolean;
+  /**
+   * The família parent's sku, to ride every member as a custom characteristic
+   * (#1400) — or null to send nothing.
+   *
+   * ⚠️ Decided by {@link resolveSkuPaiAtributo} in the IO layer, never here:
+   * the answer depends on whether ML's família already carries the attribute,
+   * which is a stored fact about the listing rather than anything derivable
+   * from this produto. Passing a value for a família that lacks it splits it.
+   *
+   * ⚠️ OPTIONAL, unlike the neighbouring `marca`, and the polarity is the whole
+   * reason: forgetting `marca` publishes a stale brand, while forgetting this
+   * one sends nothing — which is the outcome that can never split a live
+   * família. The dangerous direction is supplying it, so it must be supplied
+   * deliberately rather than be impossible to omit.
+   */
+  skuPai?: string | null;
   /**
    * Resolved size-chart binding (null = no chart; SIZE_GRID_* omitted, legacy
    * parity — ML itself rejects chart-required domains).
@@ -547,6 +566,71 @@ export function linkAttributesAfterPublish(
  * would ship a payload with NO SKU anywhere. The caller must mirror the
  * mapper's own test, not the child count.
  */
+/**
+ * Escape-hatch-shaped flag for the parent-sku characteristic (#1400). Ships OFF.
+ *
+ * ⚠️ It gates SENDING only — reading it back on import is unconditional, so a
+ * família published while it was on is always understood afterwards.
+ *
+ * ⚠️ And it can only decide a família at CREATE time, because a custom
+ * attribute's name feeds ML's family hash: turning it on does not retrofit
+ * existing famílias, and turning it off does not strip it from famílias that
+ * already carry it. See {@link resolveSkuPaiAtributo}.
+ */
+export const SKU_PAI_ATRIBUTO_FLAG_ENV = 'MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED';
+
+/** What {@link resolveSkuPaiAtributo} decided. */
+export interface SkuPaiAtributoDecisao {
+  /** The value to send, or null to send nothing. */
+  skuPai: string | null;
+  /** What `link.skuPaiAtributo` must say after this publish. */
+  carrega: boolean;
+}
+
+/**
+ * Does THIS publish send the família parent's sku as a custom characteristic,
+ * and what does the link record afterwards? (#1400)
+ *
+ * The whole difficulty is that ML derives a família from `family_name`,
+ * `domain_id`, `user_id` and the attributes, and a custom attribute contributes
+ * its NAME to that hash while its VALUE is free to vary. So presence must be
+ * UNIFORM across a família, which makes this a per-família fact rather than a
+ * per-publish choice:
+ *
+ *  - a família that already carries it keeps carrying it, flag or no flag —
+ *    dropping the attribute would re-hash every member;
+ *  - ⛔ a família that does NOT carry it never gains it, because a member
+ *    created WITH the attribute beside siblings WITHOUT it hashes into a
+ *    família of its own and silently splits a live listing. That is the case
+ *    "add one more variation to an existing produto" walks into, which is why
+ *    the test is every member's `itemId`, not the parent link's `id` alone.
+ *
+ * `carrega` is therefore MONOTONIC: once true it stays true, including on a
+ * publish where the produto's sku went blank and nothing was sent — the ML
+ * items still hold the attribute, and the link must keep saying so.
+ */
+export function resolveSkuPaiAtributo(args: {
+  isUserProductSeller: boolean;
+  /** `link.skuPaiAtributo` as stored. */
+  jaCarrega: boolean;
+  /** `link.id` — null means this família has never been published. */
+  linkId: string | null;
+  /** Every prospective member's existing ML item id; a non-null one means ML already has this família. */
+  membrosItemIds: ReadonlyArray<string | null>;
+  produtoSku: string | null;
+  flagLigada: boolean;
+}): SkuPaiAtributoDecisao {
+  // The legacy `variations[]` model has a real parent item carrying a real
+  // `SELLER_SKU`, so it needs none of this.
+  if (!args.isUserProductSeller) return { skuPai: null, carrega: false };
+
+  const familiaNova = args.linkId == null && args.membrosItemIds.every((id) => id == null);
+  const deveEnviar = args.jaCarrega || (familiaNova && args.flagLigada);
+  const sku = args.produtoSku?.trim();
+  const skuPai = deveEnviar && sku ? sku : null;
+  return { skuPai, carrega: args.jaCarrega || skuPai != null };
+}
+
 export function buildParentAttributes(
   produto: PublishProduto,
   link: PublishLink | null,
@@ -555,7 +639,7 @@ export function buildParentAttributes(
   // forgets the produto's Marca fails to compile instead of quietly publishing
   // the stale stored brand. Every other produto-derived value here arrives
   // through `produto`; this is the one input that could go missing unnoticed.
-  options: { includeSku?: boolean; marca: string | null },
+  options: { includeSku?: boolean; skuPai?: string | null; marca: string | null },
 ): MlAttribute[] {
   // ⚠️ `BRAND` is HERDADO, not derived, so it takes the OPPOSITE default to every
   // id above: the stored entry is dropped only when the produto actually decided
@@ -625,6 +709,12 @@ export function buildParentAttributes(
   if (marcaDoProduto != null) attrs.push(attrBrand(marcaDoProduto));
   if (sizeChartId != null) attrs.push(attrSizeGridId(sizeChartId));
   if (produto.sku && (options.includeSku ?? true)) attrs.push(attrSku(produto.sku));
+  // #1400 — the FAMILY parent's own sku, as an id-less custom characteristic.
+  // ⚠️ The caller decides, and only `publishUserProduct.ts` ever passes a value:
+  // presence is part of ML's family hash, so it is a per-família fact recorded on
+  // the link (`skuPaiAtributo`), never a per-publish choice. Passing it from a new
+  // call site can split a live família — see `attrSkuPai`.
+  if (options.skuPai) attrs.push(attrSkuPai(options.skuPai));
   if (produto.pesoLiquidoKg != null) attrs.push(attrWeightKg(produto.pesoLiquidoKg));
   // ⚠️ `dimensoesDoPacote` is the ONE implementation of "which fields, all four
   // or nothing, rounded how" — shared with the produto's Mercado Livre tab,
@@ -1053,6 +1143,7 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       // `!isUserProductSeller && variations.length > 0` — a UP seller emits no
       // variations array, so its parent SKU is the only one there is.
       includeSku: args.isUserProductSeller || variations.length === 0,
+      skuPai: args.skuPai ?? null,
     }),
     variations,
     shippingMode: args.shippingMode ?? null,

@@ -237,6 +237,62 @@ export function reconstructFromVariacoesUid(input: {
   };
 }
 
+/** One grupo's contribution to a child SKU's suffix, for {@link skuPaiPorSufixo}. */
+export interface SufixoVariacao {
+  /** The grupo's `ordem` — the suffix is built in ascending order, so it peels in reverse. */
+  ordem: number | null;
+  /** The variante's `codigo`. Absent/empty makes the whole peel refuse. */
+  codigo: string | null | undefined;
+}
+
+/**
+ * Recover a PARENT sku from one child's, by peeling the variant códigos off the
+ * end — the inverse of {@link cartesianVariations}, which builds a child as
+ * `parentSku + variante.codigo` per grupo in ascending `ordem`.
+ *
+ * Written for the Mercado Livre User-Products import (#1400), where a família's
+ * members are separate ML items and the parent's own sku has no slot on the
+ * wire: when the ERP already knows the taxonomy, the child's sku is the only
+ * remaining witness of it.
+ *
+ * ⚠️ **Every uncertainty returns `null`, never a partial guess.** A sku is an
+ * identity — the ERP resolves produtos by it — so a wrong one is worse than an
+ * absent one. Specifically it refuses when: there are no grupos; ANY grupo's
+ * variante has no `codigo` (the fresh-import case, where `planTaxonomia` creates
+ * variantes with `codigo: null`, so there is nothing to peel and the answer
+ * would be the child's own sku wearing the parent's name); a código does not
+ * actually sit at the end; or peeling consumes the whole string.
+ *
+ * ⚠️ Distinct from the legacy `gessSkuFromMercadoLivre`, which stripped a FIXED
+ * six characters and could not say when it was wrong. This peels the códigos
+ * that are really there, or declines.
+ *
+ * The comparison is byte-exact on purpose. Folding case or accents would make
+ * `'CAM-p'` peel a `'-P'` código, and the recovered parent would then differ
+ * from the one that produced it — the near-misses `'CAM-01'` vs `'CAM-1'` and
+ * `'CAM-P'` vs `'CAM-PP'` must all stay distinct.
+ */
+export function skuPaiPorSufixo(
+  childSku: string | null | undefined,
+  variacoes: ReadonlyArray<SufixoVariacao>,
+): string | null {
+  const sku = typeof childSku === 'string' ? childSku.trim() : '';
+  if (sku === '' || variacoes.length === 0) return null;
+
+  // Ascending `ordem` is the order `cartesianVariations` APPENDS in, so the last
+  // grupo's código is the outermost suffix — peel from the end backwards.
+  const desc = [...variacoes].sort((a, b) => (b.ordem ?? Infinity) - (a.ordem ?? Infinity));
+
+  let restante = sku;
+  for (const v of desc) {
+    const codigo = typeof v.codigo === 'string' ? v.codigo : '';
+    if (codigo === '') return null;
+    if (!restante.endsWith(codigo)) return null;
+    restante = restante.slice(0, restante.length - codigo.length);
+  }
+  return restante === '' ? null : restante;
+}
+
 /**
  * Reconstruct a legacy child (empty `variacoesUid`) by peeling variant códigos
  * off the END of its SKU, walking the groups in reverse `ordem` order — port

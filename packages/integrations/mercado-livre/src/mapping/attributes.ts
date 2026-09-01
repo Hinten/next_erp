@@ -36,6 +36,39 @@ export function attrSku(sku: string): MlAttribute {
 }
 
 /**
+ * The custom-characteristic NAME carrying the FAMILY parent's sku (#1400).
+ *
+ * ⚠️ **Frozen once any família has been published with it.** ML computes a
+ * family from `family_name`, `domain_id`, `user_id` and the attributes, and a
+ * custom attribute contributes its *name* to that hash ("os customizados apenas
+ * contribuem com seu id e nome para o cálculo") — so renaming this string moves
+ * every member of every família that carries it into a DIFFERENT família.
+ * Its *value* is explicitly free to vary, which is what lets an edited parent
+ * sku republish safely; see {@link attrSkuPai}.
+ */
+export const ML_ATTR_SKU_PAI_NOME = 'SKU do produto pai';
+
+/**
+ * The FAMILY parent produto's sku, as an id-less custom characteristic (#1400).
+ *
+ * Under User Products there is no parent ML item — a família is N items sharing
+ * a `family_name`, and each one's `SELLER_SKU` is the MEMBER's. So the parent's
+ * own sku has no native slot, and an import of a família this ERP never saw
+ * before has nothing to recover it from. This is that slot.
+ *
+ * ⚠️ Id-less on purpose: `SELLER_SKU` is taken by the member and ML permits one
+ * per item, so this cannot be an id-bearing attribute. {@link attributeToMercadoLivre}
+ * emits `name` for exactly this shape.
+ *
+ * ⚠️ Its PRESENCE must be uniform across a família (it is in the family hash),
+ * while its VALUE may differ per member. `publishUserProduct.ts` owns that rule;
+ * do not send this from anywhere else.
+ */
+export function attrSkuPai(sku: string): MlAttribute {
+  return { name: ML_ATTR_SKU_PAI_NOME, value_name: sku };
+}
+
+/**
  * Brand — the produto's `extraData.marca`, once `resolveMarcaAnuncio` has said
  * the produto is the one deciding.
  *

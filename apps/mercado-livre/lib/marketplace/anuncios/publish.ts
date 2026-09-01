@@ -68,12 +68,14 @@ import {
   type PublishProduto,
   type PublishVariationChild,
   type TabelaBindingMotivo,
+  SKU_PAI_ATRIBUTO_FLAG_ENV,
   assemblePublishInput,
   classificarMembroUnico,
   linkAttributesAfterPublish,
   publishModeIssues,
   resolveCondition,
   resolveListingModel,
+  resolveSkuPaiAtributo,
 } from './publishCore';
 import { garantirMembroUnico } from './upSoleMemberWrite';
 import { quantidadeParaEnvio } from '../estoque/bulkEstoquePlan';
@@ -241,6 +243,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         listing_type_id: linkDoc.data.listing_type_id ?? null,
         category_id: linkDoc.data.category_id ?? null,
         isUserProductModel: linkDoc.data.isUserProductModel ?? false,
+        skuPaiAtributo: linkDoc.data.skuPaiAtributo ?? false,
         attributes: linkDoc.data.attributes ?? null,
         video_id: linkDoc.data.video_id ?? null,
         estado: linkDoc.data.estado ?? null,
@@ -594,6 +597,18 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // below. Cached (listaDePrecosCache.ts): tabelaNormalOuterRef is a property
   // of the INTEGRAÇÃO, so this id is identical for every produto published
   // under this conta.
+  // #1400 — the família parent's sku as a custom characteristic. Decided ONCE,
+  // here, because it is a fact about ML's família (see `resolveSkuPaiAtributo`)
+  // and every member of this publish must agree on it.
+  const skuPaiDecisao = resolveSkuPaiAtributo({
+    isUserProductSeller: listingModel === 'user-products',
+    jaCarrega: link?.skuPaiAtributo === true,
+    linkId: link?.id ?? null,
+    membrosItemIds: upMembers.map((m) => m.itemId),
+    produtoSku: produto.sku ?? null,
+    flagLigada: process.env[SKU_PAI_ATRIBUTO_FLAG_ENV] === '1',
+  });
+
   const priceListId = deps.tabelaNormalOuterRef ? idFromRef(deps.tabelaNormalOuterRef) : null;
   const priceListNome = priceListId
     ? ((await readListaDePrecos(db, priceListId))?.nome ?? null)
@@ -614,6 +629,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     categoryId,
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
     isUserProductSeller: listingModel === 'user-products',
+    skuPai: skuPaiDecisao.skuPai,
     sizeChart: tabela.resolved,
     sizeChartMotivo: tabela.motivo,
     categoriaUsaGuia: tabela.categoriaUsaGuia,
@@ -716,6 +732,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     precoPublicado: family ? null : (item.price ?? null),
     freteGratis: item.shipping?.free_shipping ?? false,
     isUserProductModel: input.isUserProductSeller,
+    // #1400 — MONOTONIC: once a família's items carry the characteristic they
+    // keep it (nothing can strip it without re-hashing the família), so this
+    // only ever goes false→true. See `resolveSkuPaiAtributo`.
+    skuPaiAtributo: skuPaiDecisao.carrega,
     // #799 bug 7: the attributes we just sent, minus the ids publish does not
     // own. Without this a produto the legacy app never published keeps
     // `attributes: null` forever and the editor has nothing to load.

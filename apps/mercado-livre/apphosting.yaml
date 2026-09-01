@@ -80,6 +80,20 @@ runConfig:
 #                                MANUAL push; the SWEEPS read the same var from the
 #                                nested functions codebase's `.env.deploy`, so flip both
 #                                or the two surfaces disagree about the same produto.
+#   MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED
+#                                OPTIONAL — `1` makes publish send the FAMÍLIA parent's
+#                                sku as an id-less custom characteristic, so an import
+#                                can recover it (#1400). Unset sends nothing; the import
+#                                reads it either way, so no flag is needed there.
+#                                ⚠️ CREATE-time only: a custom attribute's name feeds
+#                                ML's family-id hash, so this cannot be added to an
+#                                existing família (it would move its members) nor
+#                                stripped from one that has it. The per-família fact
+#                                lives on the link doc's `skuPaiAtributo`.
+#                                ⚠️ PUBLIC — it renders in the anúncio's ficha técnica,
+#                                so buyers see the internal sku. Check one live listing
+#                                before enabling widely. This backend is the only
+#                                sender; the sweeps never touch it.
 #   MERCADO_LIVRE_PKCE_ENABLED   OPTIONAL — `1` drives the OAuth connect flow with
 #                                PKCE (#821). ⚠️ Must match the PKCE toggle on the
 #                                registered application: once ML's toggle is on the
