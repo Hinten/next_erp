@@ -400,9 +400,12 @@ function ItemRow({
             id: produtoUid,
             ehKit: produto?.ehKit ?? false,
             componentesKit: produto?.componentesKit ?? null,
+            // From the doc this component already subscribes to — no extra read.
+            paiId: produto?.paiId ?? null,
+            filhoUnicoId: produto?.filhoUnicoId ?? null,
           }
         : null,
-    [produtoUid, produto?.ehKit, produto?.componentesKit],
+    [produtoUid, produto?.ehKit, produto?.componentesKit, produto?.paiId, produto?.filhoUnicoId],
   );
   const estoque = useEstoqueDisponivel(db, produtoParaEstoque, depositoId);
 
