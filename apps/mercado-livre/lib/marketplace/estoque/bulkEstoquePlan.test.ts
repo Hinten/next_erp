@@ -1426,6 +1426,40 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
     expect(deveEnviarFamilia(quantidadesDaFamilia(simples()), anteriores, true)).toBe(true);
   });
 
+  it('#1087 a virtual kit lands the SAME way in `anteriores` under either hatch state', () => {
+    // ⚠️ `kitNaoVerificavel` is consumed HERE as well as by the alarm, and
+    // widening `componentesNaoResolvidos` to `ehKit || ehKitVirtual` made it
+    // reachable for a virtual kit for the first time — so this is the second
+    // path the escape hatch's "restores pre-#1087 byte-for-byte" claim rests on.
+    // It was reasoned through in review; this RUNS it.
+    //
+    // The two routes to absence differ and the outcome must not: with the hatch
+    // ON the member now exits early via `kitNaoVerificavel`, where before it
+    // fell through and was dropped by `quantidadeDoMembro` returning null. Both
+    // leave the key ABSENT, which `deveEnviarFamilia` reads as unknown ⇒ send.
+    const virtualNaoVerificavel = () =>
+      familyRow({
+        children: [
+          child('CHV', [], {
+            ehKit: true,
+            ehKitVirtual: true,
+            componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+            estoque: { quantidade: 9, quantidadeReservada: 0 },
+            componentEstoques: [],
+          }),
+        ],
+      });
+
+    const semHatch = quantidadesAnteriores(virtualNaoVerificavel(), DEP, new Map());
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    const comHatch = quantidadesAnteriores(virtualNaoVerificavel(), DEP, new Map());
+
+    // Absent in BOTH — the anchor is all that reconstructs either way.
+    expect(comHatch.has('CHV')).toBe(false);
+    expect(semHatch.has('CHV')).toBe(false);
+    expect([...comHatch]).toEqual([...semHatch]);
+  });
+
   it('OMITS a member whose own movement is unknown, so the policy fails OPEN', () => {
     // A Flutter v1 row landed in this window: the sums cannot account for it,
     // so there is no honest `anterior`. Leaving the member out is what makes
@@ -1983,6 +2017,66 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       ['MLB111', 'link1', 3],
       ['MLB222', 'link2', 3],
     ]);
+  });
+
+  it('#1087 the hatch does NOT log "publicando 0" about a member it refuses to send', () => {
+    // ⚠️ Found in review, and REPRODUCED before being believed. Widening
+    // `componentesNaoResolvidos` to `ehKit || ehKitVirtual` made
+    // `kitNaoVerificavel` reachable for a virtual kit for the first time. Under
+    // the escape hatch that is a member the very next stage skips as
+    // `'kit-virtual'` — so the alarm fired saying "publicando 0" about a produto
+    // for which nothing at all is published. A false log line, not merely a
+    // spurious one, aimed at whoever reached for the hatch mid-incident.
+    //
+    // The anchor rung cannot catch it: it tests `row.anchor.ehKitVirtual`, and
+    // this member is a virtual CHILD under a NON-virtual anchor.
+    const errorSpy = vi.spyOn(console, 'error').mockClear();
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    const row = familyRow({
+      children: [
+        child('CHV', [{ id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+          ehKit: true,
+          ehKitVirtual: true,
+          // A constraining component the join did NOT return — the stale-denorm
+          // shape `kitNaoVerificavel` exists to name.
+          componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+          estoque: { quantidade: 9, quantidadeReservada: 0 },
+          componentEstoques: [],
+        }),
+      ],
+    });
+
+    const res = buildSendTasks(row, quantidadesDaFamilia(row), OPTS);
+
+    expect(res.skips).toEqual([
+      { produtoId: 'CHV', reason: 'kit-virtual', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('#1087 …but the SAME kit still alarms once the hatch is off and it IS sent', () => {
+    // The control that keeps the guard above from being a blanket mute: with the
+    // hatch off the member is sent, the 0 is real, and the stale denorm must
+    // still be named. Suppressing this would trade a false log for a missing one.
+    const errorSpy = vi.spyOn(console, 'error').mockClear();
+    const row = familyRow({
+      children: [
+        child('CHV', [{ id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+          ehKit: true,
+          ehKitVirtual: true,
+          componentesKit: { COMP: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+          estoque: { quantidade: 9, quantidadeReservada: 0 },
+          componentEstoques: [],
+        }),
+      ],
+    });
+
+    const res = buildSendTasks(row, quantidadesDaFamilia(row), OPTS);
+
+    expect(res.skips).toEqual([]);
+    expect(res.tasks[0]!.variations).toEqual([{ id: 102, available_quantity: 0 }]);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[1]).toMatchObject({ produtoId: 'CHV', componentes: ['COMP'] });
   });
 
   it('#1087 member level: a virtual CHILD rides the bulk payload, or skips under the hatch', () => {

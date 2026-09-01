@@ -1914,6 +1914,21 @@ export function buildSendTasks(
   // state usually means a stale `componentesKitKeys` denorm, which is a data
   // defect nothing else surfaces. Naming the components makes it findable.
   for (const member of [row.anchor, ...row.children]) {
+    // ⚠️ The message below asserts "publicando 0", so it may only be emitted
+    // about a member this call actually SENDS. A member absent from
+    // `quantidades` is not being sent at all — today that is exactly a virtual
+    // kit under the #1087 escape hatch, which the next stage skips as
+    // `'kit-virtual'`. Logging it would make the line FALSE about that produto
+    // (nothing is published for it, least of all 0) and would send whoever
+    // reached for the hatch mid-incident hunting a `componentesKitKeys` denorm
+    // that is not the problem in front of them.
+    //
+    // ⚠️ This case only became reachable when `componentesNaoResolvidos` widened
+    // to `ehKit || ehKitVirtual` — before that it returned `[]` for a virtual
+    // kit, so `kitNaoVerificavel` was permanently false and nothing was logged.
+    // A virtual ANCHOR still returns at the rung above; the member that gets
+    // here is a virtual CHILD under a NON-virtual anchor.
+    if (!quantidades.has(member.produtoId)) continue;
     if (!kitNaoVerificavel(member)) continue;
     console.error(
       '[mercado-livre] stock-sync: kit sem componentes resolvíveis — publicando 0 ' +

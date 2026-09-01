@@ -775,7 +775,18 @@ these before "fixing" what looks wrong in `publishCore.ts`:
   (default OFF), an **escape hatch** for reverting a misbehaving live sweep —
   not a rollout gate. ON restores pre-#1087 behaviour exactly, including that
   rung's family-wide `return`: one virtual anchor silences every listing and
-  variation child of its família. It must be set on **both** surfaces (the
+  variation child of its família.
+  ⚠️ **That "exactly" is MAINTAINED, not free**, and the thing that threatens it
+  is `kitNaoVerificavel` — widening `componentesNaoResolvidos` made it reachable
+  for a virtual kit for the first time, so both of its consumers had to be
+  checked under the hatch. `quantidadesAnteriores` was already equivalent (the
+  member ends up absent either way, by a different route). The **alarm** was
+  not: it fired `publicando 0` about a virtual CHILD under a NON-virtual anchor
+  — which the anchor rung cannot catch — for a produto the next stage skips and
+  publishes nothing for, so the line was FALSE, aimed at whoever reached for the
+  hatch mid-incident. It is now gated on `quantidades.has(member.produtoId)`:
+  the alarm may only speak about a member this call actually sends. Both paths
+  have tests; keep them if you touch that predicate again. It must be set on **both** surfaces (the
   functions codebase for the sweeps, `apphosting.yaml`/console for the manual
   push) or the two disagree about the same produto.
 
