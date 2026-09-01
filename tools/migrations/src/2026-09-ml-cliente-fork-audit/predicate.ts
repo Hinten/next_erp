@@ -95,8 +95,15 @@ export type ForkAuditKind =
   | 'cliente-com-outro-id'
   /**
    * Nobody owns the id and this pedido's cliente carries none. The COMMON
-   * pre-#1407 shape, and the benign one: the next import of this buyer stamps
-   * it, so these self-heal once the ML backend deploys.
+   * pre-#1407 shape, and the benign one.
+   *
+   * ⚠️ It self-heals on that buyer's next NEW ORDER, **not** by re-importing
+   * THIS pedido: `applyClienteStep` opens with
+   * `if (pedido.clientePedidoOuterRef != null) return pedido`
+   * (`orderImport.ts:744`), so a pedido that already names a cliente never
+   * reaches `findOrCreateCliente` again. A buyer who never orders again keeps
+   * an unstamped cliente forever — benign, but not self-correcting on demand,
+   * and re-running the import to "fix" these does nothing.
    */
   | 'nao-carimbado'
   /** The pedido's cliente owns exactly this buyer id. Nothing to do. */
@@ -106,7 +113,8 @@ export type ForkAuditKind =
  * Kinds that are findings. The four NOT here are the quiet ones: `ok`,
  * `sem-buyer-id`, `pedido-ausente` (debris from a deleted pedido — not a cliente
  * problem at all) and — deliberately — `nao-carimbado`, the big benign
- * background population that self-heals on the next import once #1407 deploys.
+ * background population (see its own note for the narrow sense in which it
+ * "self-heals").
  * Counting those would drown the forks this audit exists to surface; the
  * per-kind tally still reports every one of them.
  */

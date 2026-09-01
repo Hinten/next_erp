@@ -68,18 +68,50 @@ the harness and the JSONL shape.
 One line per ML pedido. `change` lines are findings, `skip` lines are clean, and
 `changes + skips` reconciles with the ML pedido count printed during the run.
 
-| kind                                     | meaning                                                                                                                                                                                                                                                                                                                  |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ok`                                     | the pedido's cliente owns exactly this buyer id — nothing to do                                                                                                                                                                                                                                                          |
-| `sem-buyer-id`                           | the `orderML` mirror carries no buyer id; nothing to assess                                                                                                                                                                                                                                                              |
-| `nao-carimbado`                          | nobody owns the id and the cliente carries none. **The common pre-#1407 shape, and benign** — the next import stamps it, so these self-heal once the ML backend deploys                                                                                                                                                  |
-| `fork`                                   | exactly one cliente owns the id and it is **not** this pedido's. The population this audit exists to count                                                                                                                                                                                                               |
-| `dono-duplicado`                         | **two or more** clientes carry the id. The worst kind: the match leg takes the first row of a page, so every later delivery repeats the same arbitrary pick. #1407's guard refuses to create this state but cannot undo one already there                                                                                |
-| `cliente-com-outro-id`                   | nobody owns the id and this pedido's cliente carries a **different** one. ⚠️ **Predictive:** under #1407 the next order from this buyer is refused at the `cpf_cnpj` leg and forks into a second cliente carrying the same CPF. That is the documented intended trade — these rows are where it will land                |
-| `buyer-id-inseguro`                      | the id is past 2^53, so `JSON.parse` already rounded it. The runtime **refuses** to stamp these (`safeMlUserId`), so unlike `nao-carimbado` they never self-heal                                                                                                                                                         |
-| `buyers-divergentes`                     | a pack whose child orders name different buyers. Not expected — surfaced rather than resolved by picking one                                                                                                                                                                                                             |
-| `pedido-ausente`                         | the mirror is **orphan debris**: its pedido was deleted. ⚠️ `pedidoMeta` declares a cascade over `orderML` and states it is NOT enforced — there is no `onPedidoDeleted` trigger — so deleted pedidos leave their mirrors on disk and the import carries them across the window. Not a cliente problem, so not a finding |
-| `pedido-sem-cliente` / `cliente-ausente` | the import never linked a cliente, or the link points at a document that is gone                                                                                                                                                                                                                                         |
+| kind                                     | meaning                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ok`                                     | the pedido's cliente owns exactly this buyer id — nothing to do                                                                                                                                                                                                                                                                    |
+| `sem-buyer-id`                           | the `orderML` mirror carries no buyer id; nothing to assess                                                                                                                                                                                                                                                                        |
+| `nao-carimbado`                          | nobody owns the id and the cliente carries none. **The common pre-#1407 shape, and benign.** ⚠️ It heals on that buyer's next NEW ORDER, not by re-importing this pedido — `applyClienteStep` returns early when `clientePedidoOuterRef` is already set (`orderImport.ts:744`), so re-running the import to fix these does nothing |
+| `fork`                                   | exactly one cliente owns the id and it is **not** this pedido's. The population this audit exists to count                                                                                                                                                                                                                         |
+| `dono-duplicado`                         | **two or more** clientes carry the id. The worst kind: the match leg takes the first row of a page, so every later delivery repeats the same arbitrary pick. #1407's guard refuses to create this state but cannot undo one already there                                                                                          |
+| `cliente-com-outro-id`                   | nobody owns the id and this pedido's cliente carries a **different** one. ⚠️ **Predictive:** under #1407 the next order from this buyer is refused at the `cpf_cnpj` leg and forks into a second cliente carrying the same CPF. That is the documented intended trade — these rows are where it will land                          |
+| `buyer-id-inseguro`                      | the id is past 2^53, so `JSON.parse` already rounded it. The runtime **refuses** to stamp these (`safeMlUserId`), so unlike `nao-carimbado` they never self-heal                                                                                                                                                                   |
+| `buyers-divergentes`                     | a pack whose child orders name different buyers. Not expected — surfaced rather than resolved by picking one                                                                                                                                                                                                                       |
+| `pedido-ausente`                         | the mirror is **orphan debris**: its pedido was deleted. ⚠️ `pedidoMeta` declares a cascade over `orderML` and states it is NOT enforced — there is no `onPedidoDeleted` trigger — so deleted pedidos leave their mirrors on disk and the import carries them across the window. Not a cliente problem, so not a finding           |
+| `pedido-sem-cliente` / `cliente-ausente` | the import never linked a cliente, or the link points at a document that is gone                                                                                                                                                                                                                                                   |
+
+## Worked example — the staging rehearsal, 2026-09-01
+
+```
+clientes=24 com idMercadoLivre=2 ids com MAIS DE UM dono=0
+orderML lidos=10 pedidos ML=6
+por kind: fork=1, ok=4, cliente-com-outro-id=1
+done: scanned 6 docs, 2 with changes (2 field changes, 4 skipped, 0 writes)
+```
+
+It reconciles: `1 + 4 + 1 = 6 = pedidos ML`, findings `2 = docsChanged`, skips
+`4`. Ten mirror docs over six pedidos, so packs are being folded per pedido
+rather than counted per order.
+
+⚠️ **All six pedidos point at ONE cliente**, `ci-mqbdw6rn-cliente` — the e2e seed
+fixture whose placeholder telefone `11999990000` started #1087. It carries
+`idMercadoLivre: 3615281810`, and the two findings are two OTHER ML buyers whose
+orders landed on it anyway:
+
+| pedido  | buyer        | verdict                | why                                                                                 |
+| ------- | ------------ | ---------------------- | ----------------------------------------------------------------------------------- |
+| `1729…` | `3646520554` | `fork`                 | owned by cliente `I6N5XVCTXj1rjHt76HSH` — a question-created row beside the order's |
+| `ddcf…` | `3644236740` | `cliente-com-outro-id` | nobody owns it; the fixture already carries a different id                          |
+
+So three distinct ML accounts resolved to one cliente. That is the absorption
+#1407 exists to stop, visible as data rather than as an argument — and the split
+this audit was written to count showed up on the first run.
+
+⚠️ **Staging numbers are not evidence about production.** This corpus is seed
+fixtures sharing one placeholder phone, which is precisely the shape that
+absorbs. The run proves the predicate, the reconciliation and the JSONL; the
+count means nothing until the authoritative run inside the window.
 
 ## How to verify it worked
 
