@@ -3,7 +3,14 @@ import { logger } from 'firebase-functions';
 import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
 import { produtoCollection } from '@delfrance/data/admin/collections';
 import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
-import { produtoMeta, samePrecos, type PrecosMap } from '@delfrance/schemas';
+import {
+  camposEspelhadosQueMudaram,
+  planejarSincronizacaoDoMembroUnico,
+  produtoMeta,
+  samePrecos,
+  type PrecosMap,
+} from '@delfrance/schemas';
+import { isFailedPrecondition } from '@delfrance/data/admin';
 
 import { getDb } from '../lib/admin';
 import { resolveUsuarioOuterRef } from '../lib/authContext';
@@ -125,6 +132,97 @@ async function findChildrenToPropagate(
     }
   }
   return writes;
+}
+
+/**
+ * Keep a family-of-one's SOLE MEMBER in step with its parent (#1398).
+ *
+ * After #1398 a produto with no variations is a parent plus one child, and the
+ * CHILD is the sellable unit: it owns the stock rows, it is what a pedido line
+ * binds, and it is what the Mercado Livre family publishes. Its `nome`, `sku`,
+ * kit composition, dimensions and categoria are a MIRROR of the parent's, copied
+ * once at creation (`montarMembroUnico`). Nothing refreshed that copy — so
+ * renaming a produto, changing its SKU, or editing the components of a kit left
+ * the sellable half holding the old values, invisibly: the member has no screen
+ * of its own, so the two could disagree indefinitely with nothing to look at.
+ *
+ * ⚠️ `componentesKit` is the one that costs money rather than confusion. A kit's
+ * availability is `min` over its components (ADR 0014), computed from the produto
+ * the surface reads — the member. An edited kit whose member kept the old map
+ * advertises stock it cannot assemble, and the ML sweep sends that number.
+ *
+ * ## Three properties, in the order they matter
+ *
+ * 1. **Zero extra reads on the common path.** `camposEspelhadosQueMudaram` is
+ *    pure, so a save that moved nothing mirrored — a stock edit, a photo, a
+ *    price — never touches the member. Same trade `planejarRollupKit` makes
+ *    above.
+ * 2. **A three-way merge, never a copy.** The member is an ordinary produto and
+ *    appears as a row in the Variações tab, so an operator can diverge it. A
+ *    field moves only when the member still holds the parent's PREVIOUS value.
+ *    It also makes two out-of-order trigger runs safe: the older one finds a
+ *    member that no longer holds its `before` and declines instead of reverting
+ *    the newer state (root `CLAUDE.md` rule 7, tier 0).
+ * 3. **A `lastUpdateTime` precondition** closes the remaining window — a write
+ *    landing between this read and this update. That is rule 7 tier 1, and it is
+ *    the reason this can stay a plain read + update rather than a transaction.
+ *    A losing write is CORRECT to lose: whoever won wrote either a newer parent
+ *    state or an operator's own edit, and both outrank this one, so it is logged
+ *    and dropped rather than retried.
+ *
+ * ⚠️ `precos` is deliberately NOT in the mirror — it has its own propagation
+ * above, with an operator opt-out (`propagatePriceToChildren`) that folding it in
+ * here would silently defeat. See `espelhoDoMembroUnico`.
+ *
+ * Exported for the tests: the emulator suite drives the three write outcomes,
+ * and the unit suite drives the two error branches with a stub `db` — a losing
+ * precondition needs a write to land BETWEEN this read and this update, which no
+ * emulator test can interleave.
+ *
+ * @returns the member id when it was written, else `null`.
+ */
+export async function sincronizarMembroUnico(
+  db: Firestore,
+  parentId: string,
+  before: DocumentData | undefined,
+  after: DocumentData,
+): Promise<string | null> {
+  if (after.paiId != null) return null; // a child never has a sole member
+  const membroId = after.filhoUnicoId;
+  if (typeof membroId !== 'string' || membroId === '') return null;
+  // ⚠️ Pure, and it runs BEFORE any read: this is what keeps an ordinary produto
+  // save at zero extra reads.
+  if (camposEspelhadosQueMudaram(before, after).length === 0) return null;
+
+  const ref = produtoCollection.ref(db, {}).doc(membroId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    // A pointer naming a document that is gone. Loud, because every stock reader
+    // resolves through it — but not thrown: this trigger does not retry, and the
+    // parent's own write is already durable.
+    logger.error(
+      `onProdutoChanged: ${parentId}.filhoUnicoId aponta para ${membroId}, que não existe — ` +
+        `o espelho do membro único não foi atualizado`,
+    );
+    return null;
+  }
+
+  const patch = planejarSincronizacaoDoMembroUnico(before, after, snap.data() ?? {});
+  if (patch === null) return null;
+
+  try {
+    await ref.update(patch, { lastUpdateTime: snap.updateTime });
+  } catch (err: unknown) {
+    if (isFailedPrecondition(err)) {
+      // Someone wrote the member between the read and the write. They hold a
+      // newer state by definition, so losing is the right outcome — retrying
+      // with the same stale precondition could only fail again.
+      logger.info(`onProdutoChanged: espelho de ${membroId} ignorado — escrita concorrente venceu`);
+      return null;
+    }
+    throw err;
+  }
+  return membroId;
 }
 
 /**
@@ -251,6 +349,18 @@ export async function recordProdutoModificationAndPropagate(
       `onProdutoChanged: ${produtoId} → entry ${entry.eventId} (${entry.campos.join(', ')}), ` +
         `${childWrites.length} filho(s) propagado(s)`,
     );
+  }
+
+  // ⚠️ OUTSIDE the `entry !== null` block, and BELOW the precos propagation.
+  // Outside, because the mirror is decided from the raw before/after exactly as
+  // the rollup is — an ignore-list edit that hides a field from the history must
+  // not stop the sellable half of the produto from following it. Below, because
+  // both can write the same member and this one carries a `lastUpdateTime`
+  // precondition: running it after the precos write means it reads that write
+  // rather than losing to it.
+  const membroSincronizado = await sincronizarMembroUnico(db, produtoId, before, after);
+  if (membroSincronizado !== null) {
+    logger.info(`onProdutoChanged: ${produtoId} → espelho do membro único ${membroSincronizado}`);
   }
 
   // LAST on purpose — a failed enqueue must not cost the history row above.

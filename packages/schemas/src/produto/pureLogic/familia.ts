@@ -230,6 +230,33 @@ export function montarMembroUnico(
   parentId: string,
   parent: ParentParaMembroUnico,
 ): Record<string, unknown> {
+  return {
+    ...espelhoDoMembroUnico(parent),
+    paiId: parentId,
+    // ⚠️ `precos` rides the CREATE only. Keeping an existing member's prices in
+    // step is the `onProdutoChanged` trigger's job and has been since 2026-07-21,
+    // because it is the one mirrored field with an operator OPT-OUT
+    // (`propagatePriceToChildren`). See {@link espelhoDoMembroUnico}.
+    precos: parent.precos ?? null,
+    grupoDeVariacoesUid: null,
+    variacoesUid: null,
+  };
+}
+
+/**
+ * The fields a sole member MIRRORS from its parent — the create-time copy and
+ * the ongoing sync are the same list, deliberately, so the two cannot drift into
+ * disagreeing about what "a mirror" contains.
+ *
+ * ⚠️ **`precos` is NOT here.** Every other mirrored field is unconditional, but
+ * prices already have a propagation path with an operator-facing opt-out
+ * (`propagatePriceToChildren`, honoured by `onProdutoChanged`). Folding them in
+ * here would silently defeat that checkbox — the parent's map would arrive at
+ * the child through the mirror on the very save where the operator asked it not
+ * to. `montarMembroUnico` still copies it once, at creation, where there is no
+ * previous value to preserve and no propagation to race.
+ */
+export function espelhoDoMembroUnico(parent: ParentParaMembroUnico): Record<string, unknown> {
   const ehKit = parent.ehKit === true;
   // Same rule the create page's `deriveOnSave` applies to the parent: a non-kit
   // carries no map, so the denorm can never outlive the flag.
@@ -239,7 +266,6 @@ export function montarMembroUnico(
   return {
     nome: (parent.nome ?? '').slice(0, PRODUTO_NOME_MAX),
     sku: parent.sku ?? null,
-    paiId: parentId,
     codPai: parent.codPai ?? null,
     gtin: parent.gtin ?? null,
     publicado: parent.publicado === true,
@@ -250,14 +276,155 @@ export function montarMembroUnico(
     // Sorted, order-stable: the keys feed an `array-contains` query and
     // Firestore arrays are order-sensitive.
     componentesKitKeys: temComponentes ? Object.keys(componentesKit).sort() : null,
-    precos: parent.precos ?? null,
     categoriaProdutoOuterRef: parent.categoriaProdutoOuterRef ?? null,
     pesoLiquidoKg: parent.pesoLiquidoKg ?? null,
     pesoBrutoKg: parent.pesoBrutoKg ?? null,
     alturaCm: parent.alturaCm ?? null,
     larguraCm: parent.larguraCm ?? null,
     profundidadeCm: parent.profundidadeCm ?? null,
-    grupoDeVariacoesUid: null,
-    variacoesUid: null,
   };
+}
+
+/**
+ * Are two `componentesKit` maps the same kit?
+ *
+ * ⚠️ **`timestamp` is deliberately outside the fold, and every other field is
+ * inside it.** A `Kit` entry carries `quantidade`, `limitarEstoque` and an
+ * ms-epoch `timestamp` that the editor restamps on save (`kit.ts`), so a
+ * timestamp-sensitive comparison would report a difference on a save that
+ * changed no component at all — and in {@link planejarSincronizacaoDoMembroUnico}
+ * that reads as "the operator diverged this child", which SILENCES the mirror
+ * for good. The stamp records when the entry was edited; it is not part of what
+ * the kit *is*.
+ *
+ * What must stay distinct: a different `quantidade`, a flipped `limitarEstoque`,
+ * a component added or removed. All three change what the kit assembles from and
+ * therefore what `kitEstoqueDisponivel` computes.
+ *
+ * ⚠️ `.passthrough()` means the migrated corpus can carry fields neither side
+ * models. Those are NOT compared — folding on an unmodelled field would make the
+ * mirror chase legacy noise — and they are preserved on whichever document is
+ * not rewritten, never merged.
+ */
+function mesmoComponentesKit(a: unknown, b: unknown): boolean {
+  const ma = (a ?? {}) as Record<string, Record<string, unknown>>;
+  const mb = (b ?? {}) as Record<string, Record<string, unknown>>;
+  const ka = Object.keys(ma);
+  if (ka.length !== Object.keys(mb).length) return false;
+  return ka.every((k) => {
+    const ea = ma[k];
+    const eb = mb[k];
+    if (ea == null || eb == null) return false;
+    return ea.quantidade === eb.quantidade && ea.limitarEstoque === eb.limitarEstoque;
+  });
+}
+
+/** Order-sensitive, because `componentesKitKeys` feeds an `array-contains`. */
+function mesmaListaDeChaves(a: unknown, b: unknown): boolean {
+  const la = (a ?? []) as unknown[];
+  const lb = (b ?? []) as unknown[];
+  return la.length === lb.length && la.every((v, i) => v === lb[i]);
+}
+
+/**
+ * One comparator per mirrored field that is NOT a primitive.
+ *
+ * ⚠️ Everything unnamed falls back to `===`, which for an object-valued field
+ * means **identity** — two structurally identical maps read as different, so the
+ * merge would see "the operator diverged this" on every single save and the
+ * field would never propagate again. Silent, and permanent.
+ *
+ * That is not a hypothetical: it is what a mutation test found here. Adding
+ * `precos` back to {@link espelhoDoMembroUnico} left the whole suite green,
+ * because the fixture's two literals were different objects and the merge
+ * declined for the wrong reason. So the field list and this map are pinned
+ * TOGETHER by `familia.test.ts` — a new object-valued mirrored field with no
+ * comparator fails a test instead of quietly never syncing.
+ */
+const COMPARADORES: Record<string, (a: unknown, b: unknown) => boolean> = {
+  componentesKit: mesmoComponentesKit,
+  componentesKitKeys: mesmaListaDeChaves,
+};
+
+/** The mirrored fields compared by something other than `===`. */
+export const CAMPOS_ESPELHADOS_COM_COMPARADOR: readonly string[] = Object.keys(COMPARADORES);
+
+const mesmoCampo = (campo: string, a: unknown, b: unknown): boolean =>
+  (COMPARADORES[campo] ?? ((x, y) => x === y))(a, b);
+
+/**
+ * The patch that brings a sole member back in step with its parent — or `null`
+ * when it is already there.
+ *
+ * ## Why a THREE-WAY merge and not a copy
+ *
+ * The sole member is an ordinary produto document and it shows up as a row in
+ * the Variações tab, so an operator can rename it, give it its own SKU, or clear
+ * a dimension. A straight copy would silently undo that on the parent's next
+ * save — a second writer that always wins, which is the shape root `CLAUDE.md`
+ * rule 7 tier 3 exists to refuse.
+ *
+ * So each field moves only when BOTH hold: the parent actually changed it, and
+ * the child still carries the parent's PREVIOUS value. A field the operator
+ * diverged is left alone **individually** — divergence on `nome` does not freeze
+ * `sku`.
+ *
+ * ## ⚠️ The merge is also the concurrency guard, and that is deliberate
+ *
+ * Two rapid parent edits produce two trigger runs with no ordering guarantee
+ * (rule 7). If the NEWER one lands first, the older run then reads a child that
+ * no longer holds its `before` value — so it declines rather than reverting the
+ * newer state. The race is made impossible by the comparison instead of being
+ * detected after the fact (tier 0). The remaining window — a write landing
+ * between the caller's read and its update — is closed by the caller with a
+ * `lastUpdateTime` precondition (tier 1), which Admin-side callers have and
+ * which is the only reason this can stay a plain read + update.
+ *
+ * @param paiAntes the parent BEFORE the write, or `null`/`undefined` on a
+ *   create — where there is nothing to propagate, because whatever created the
+ *   parent created the member from the same values.
+ * @param filho the member's stored document, raw. It is normalised through
+ *   {@link espelhoDoMembroUnico} before comparison so a legacy document missing
+ *   a key is not mistaken for a deliberate divergence.
+ */
+export function planejarSincronizacaoDoMembroUnico(
+  paiAntes: ParentParaMembroUnico | null | undefined,
+  paiDepois: ParentParaMembroUnico,
+  filho: ParentParaMembroUnico,
+): Record<string, unknown> | null {
+  const movidos = camposEspelhadosQueMudaram(paiAntes, paiDepois);
+  if (movidos.length === 0) return null;
+
+  const antes = espelhoDoMembroUnico(paiAntes!);
+  const depois = espelhoDoMembroUnico(paiDepois);
+  const atual = espelhoDoMembroUnico(filho);
+
+  const patch: Record<string, unknown> = {};
+  for (const campo of movidos) {
+    if (!mesmoCampo(campo, atual[campo], antes[campo])) continue; // the operator diverged it
+    patch[campo] = depois[campo];
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+/**
+ * Which mirrored fields this parent write actually moved — pure, and the reason
+ * an ordinary produto save costs **zero extra reads**.
+ *
+ * A caller asks this first and only then fetches the member: without it every
+ * save of every family-of-one produto would read a document just to discover
+ * there was nothing to write, on the most-written collection in the ERP.
+ *
+ * A CREATE (`paiAntes == null`) moves nothing: whatever created the parent
+ * created the member from the same values, so there is no propagation to do and
+ * no previous value to merge against.
+ */
+export function camposEspelhadosQueMudaram(
+  paiAntes: ParentParaMembroUnico | null | undefined,
+  paiDepois: ParentParaMembroUnico,
+): string[] {
+  if (paiAntes == null) return [];
+  const antes = espelhoDoMembroUnico(paiAntes);
+  const depois = espelhoDoMembroUnico(paiDepois);
+  return Object.keys(depois).filter((campo) => !mesmoCampo(campo, antes[campo], depois[campo]));
 }
