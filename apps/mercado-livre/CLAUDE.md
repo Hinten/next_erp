@@ -823,10 +823,25 @@ into a different família — and creating ONE new member with it beside sibling
 without it hashes that member into a família of its own, silently splitting a
 live listing. That is what "add one more variation to an existing produto" walks
 into, which is why `resolveSkuPaiAtributo` tests **every member's `itemId`**, not
-the parent link's `id` alone. `MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED` therefore
-decides a família only at CREATE time; it retrofits nothing and un-sets nothing.
-Reading it back is unconditional (no flag), so a família published while it was
-on is always understood.
+the parent link's `id` alone.
+
+⚠️ **There is no env flag — the characteristic is sent for every família this app
+CREATES**, and `familiaNova` is what remains. It is NOT a leftover rollout gate,
+so do not "simplify" it away: ML names both failures it prevents —
+`user_products.miss_match_attribute` (*"é obrigatório enviá-la para todos os
+membros"*) and `family_id.collision`. Famílias already live never gain it; the
+only supported retrofit is `POST /user-products-families/{family_id}/tasks`,
+which rewrites EVERY member at once and is a feature of its own.
+
+⚠️ The name (`Código de referência`) is **public** — a custom characteristic
+renders in the anúncio's ficha técnica — and **frozen** at first publish, since
+it feeds the family hash. ML offers no seller-settable alternative: the `hidden`
+tag is metadata ML *returns* for attributes IT defines and rides no request body,
+and `PUT /user-products-families/{id}` takes only PARENT_PK/ITEM_CONDITION
+(*"Não são permitidos atributos custom"*). Nor is there a parent slot for a
+`SELLER_SKU`: a User Product IS the variation, so a sku there is the member's.
+⚠️ It must also stay distinct from every ML attribute's display name —
+`skuPaiFromAttributes` matches id-less attributes by NAME.
 
 ⚠️ **The evidence lives on the MEMBER links (`variacaoMercadoLivre.skuPaiAtributo`),
 never on the família's parent link**, and the two reasons are really one — the

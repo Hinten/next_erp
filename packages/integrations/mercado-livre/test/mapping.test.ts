@@ -67,6 +67,46 @@ describe('attributeToMercadoLivre', () => {
   });
 });
 
+describe('ML_ATTR_SKU_PAI_NOME (#1400)', () => {
+  it('is PINNED to the exact published string', () => {
+    // ⚠️ This is the only assertion in the suite that would notice a rename.
+    // Every other test — and all production code — goes through the constant, so
+    // changing its value is invisible everywhere else.
+    //
+    // It must not change, because a custom attribute contributes its NAME to
+    // ML's family-id hash: renaming it moves every member of every família that
+    // carries it into a DIFFERENT família, which ML reports as
+    // `family_id.collision` and which no later publish repairs. Since #1414 the
+    // characteristic is sent for every new família with no flag, so this value
+    // is live on real listings.
+    //
+    // It is also PUBLIC — it renders in the anúncio's ficha técnica — which is
+    // why it reads as ordinary Brazilian retail phrasing rather than naming the
+    // internal field it carries.
+    expect(ML_ATTR_SKU_PAI_NOME).toBe('Código de referência');
+  });
+
+  it('does not collide with an ML attribute display name', () => {
+    // `skuPaiFromAttributes` matches id-less attributes by NAME, trimmed and
+    // case-insensitively, so a collision would make the importer read a foreign
+    // characteristic as the parent sku. These are the near misses in ML's own
+    // attribute reference.
+    const folded = ML_ATTR_SKU_PAI_NOME.trim().toLowerCase();
+    for (const mlName of [
+      'Modelo',
+      'Modelo Alfanumérico',
+      'Código universal de produto',
+      'SKU',
+      'GTIN',
+      'Marca',
+      'Cor',
+      'Tamanho',
+    ]) {
+      expect(folded).not.toBe(mlName.trim().toLowerCase());
+    }
+  });
+});
+
 describe('ML_PRODUTO_DERIVED_ATTRIBUTE_IDS', () => {
   // The anti-drift anchor. The editor withholds exactly these ids, publish
   // strips exactly these from the write-back and import strips them off the

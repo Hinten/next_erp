@@ -137,10 +137,12 @@ export function skuFromAttributes(
  *
  * ⚠️ The name comparison is deliberately trimmed + case-insensitive, because it
  * is matching a label ML round-trips rather than a value: the fold's scope is
- * `' sku do PRODUTO pai '` ≡ `'SKU do produto pai'`, and nothing else — the
+ * `' código DE Referência '` ≡ `'Código de referência'`, and nothing else — the
  * VALUE is returned verbatim and never folded, so `'CAM-01'` and `'CAM-1'` stay
- * distinct sku. Nothing in the corpus names a second attribute this closely, so
- * a looser match here cannot collide with a real characteristic.
+ * distinct sku. ⚠️ The fold being this loose is exactly why
+ * {@link ML_ATTR_SKU_PAI_NOME} must not collide with an ML attribute's display
+ * name; the near misses (`Modelo`, GTIN's `Código universal de produto`) are
+ * checked there.
  *
  * Never authoritative on its own: `import.ts` places it first in an ordered
  * chain precisely because it is absent from every família published before this

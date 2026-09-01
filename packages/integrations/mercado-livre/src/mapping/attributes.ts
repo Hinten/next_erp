@@ -45,8 +45,24 @@ export function attrSku(sku: string): MlAttribute {
  * every member of every família that carries it into a DIFFERENT família.
  * Its *value* is explicitly free to vary, which is what lets an edited parent
  * sku republish safely; see {@link attrSkuPai}.
+ * Pinned by a test asserting the literal, because every other reference goes
+ * through this constant and a rename would otherwise be invisible to the suite.
+ *
+ * ⚠️ **It is PUBLIC** — a custom characteristic renders in the anúncio's ficha
+ * técnica, so this string is read by buyers. Hence ordinary Brazilian retail
+ * phrasing rather than the internal name for the value it carries. ML offers no
+ * seller-settable alternative: its `hidden` tag is metadata ML *returns* for
+ * attributes IT defines and appears in no request body, and the família resource
+ * (`PUT /user-products-families/{id}`) takes only PARENT_PK/ITEM_CONDITION —
+ * *"Não são permitidos atributos custom."*
+ *
+ * ⚠️ It must stay DISTINCT from every ML attribute's display name, because
+ * `skuPaiFromAttributes` matches id-less attributes by NAME (trimmed,
+ * case-insensitive) — a collision would make the importer read a foreign value
+ * as the parent sku. The near misses are `Modelo` and GTIN's
+ * `Código universal de produto`; neither collides.
  */
-export const ML_ATTR_SKU_PAI_NOME = 'SKU do produto pai';
+export const ML_ATTR_SKU_PAI_NOME = 'Código de referência';
 
 /**
  * The FAMILY parent produto's sku, as an id-less custom characteristic (#1400).

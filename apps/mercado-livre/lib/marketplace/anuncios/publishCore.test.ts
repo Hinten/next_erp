@@ -249,18 +249,11 @@ describe('resolveSkuPaiAtributo (#1400)', () => {
     linkId: null as string | null,
     membros: [] as Array<{ itemId: string | null; skuPaiAtributo: boolean }>,
     produtoSku: 'SKU-PAI',
-    flagLigada: true,
   };
 
-  it('sends on a brand-new família while the flag is on', () => {
+  it('sends on a brand-new família, with no configuration', () => {
     expect(resolveSkuPaiAtributo({ ...base, membros: [novo, novo] })).toEqual({
       skuPai: 'SKU-PAI',
-    });
-  });
-
-  it('sends nothing while the flag is off', () => {
-    expect(resolveSkuPaiAtributo({ ...base, membros: [novo], flagLigada: false })).toEqual({
-      skuPai: null,
     });
   });
 
@@ -289,24 +282,13 @@ describe('resolveSkuPaiAtributo (#1400)', () => {
     expect(
       resolveSkuPaiAtributo({ ...base, linkId: null, membros: [vivoCom, novo, novo] }),
     ).toEqual({ skuPai: 'SKU-PAI' });
-    // …and it holds with the flag OFF, because uniformity is not a preference.
-    expect(
-      resolveSkuPaiAtributo({
-        ...base,
-        linkId: null,
-        membros: [vivoCom, novo],
-        flagLigada: false,
-      }),
-    ).toEqual({ skuPai: 'SKU-PAI' });
   });
 
-  it('keeps sending to a família that already carries it, flag or no flag', () => {
+  it('keeps sending to a família that already carries it', () => {
     // Dropping the attribute would re-hash every member that has it.
-    for (const flagLigada of [true, false]) {
-      expect(
-        resolveSkuPaiAtributo({ ...base, linkId: 'FAM1', membros: [vivoCom], flagLigada }),
-      ).toEqual({ skuPai: 'SKU-PAI' });
-    }
+    expect(resolveSkuPaiAtributo({ ...base, linkId: 'FAM1', membros: [vivoCom] })).toEqual({
+      skuPai: 'SKU-PAI',
+    });
   });
 
   it('one member carrying it is enough — the answer is an OR, never a majority', () => {

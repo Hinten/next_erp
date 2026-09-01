@@ -68,7 +68,6 @@ import {
   type PublishProduto,
   type PublishVariationChild,
   type TabelaBindingMotivo,
-  SKU_PAI_ATRIBUTO_FLAG_ENV,
   assemblePublishInput,
   classificarMembroUnico,
   linkAttributesAfterPublish,
@@ -608,7 +607,6 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     linkId: link?.id ?? null,
     membros: upMembers,
     produtoSku: produto.sku ?? null,
-    flagLigada: process.env[SKU_PAI_ATRIBUTO_FLAG_ENV] === '1',
   });
 
   const priceListId = deps.tabelaNormalOuterRef ? idFromRef(deps.tabelaNormalOuterRef) : null;
