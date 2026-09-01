@@ -339,6 +339,8 @@ export default function EditarProdutoPage() {
         renderInput: (p) => (
           <VariationManager
             produtoId={params.id}
+            // The parent's sole member, so a real variation absorbs it (#1398).
+            membroUnicoId={produtoSnap.data?.data.filhoUnicoId ?? null}
             db={db}
             grupos={grupos}
             gruposError={gruposSnap.error?.message}

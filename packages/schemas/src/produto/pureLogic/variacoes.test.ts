@@ -415,3 +415,106 @@ describe('reconcileStagedChildren', () => {
     expect(out.rows).toHaveLength(2);
   });
 });
+
+/**
+ * Rule 3 — the sole member is absorbed by the first real variation (#1398).
+ *
+ * A produto born as a family of one owns a child that mirrors it: its stock,
+ * its estoque history, the pedido lines and kit entries that name it. When real
+ * variations arrive that child stops being a sole member, and leaving it beside
+ * them is wrong twice — a phantom row in the tab, and a `filhoUnicoId` still
+ * naming it while the family has several members.
+ */
+describe('reconcileStagedChildren — the sole member (rule 3)', () => {
+  const linha = (over: Partial<ReconcilableRow> & { key?: string } = {}) => ({
+    id: null as string | null,
+    sku: '',
+    variacoesUid: [] as string[],
+    deleteMark: false,
+    ...over,
+  });
+
+  it('gives the first staged create the sole member’s id', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1' }),
+      linha({ key: 'novo-P', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+      linha({ key: 'novo-M', sku: 'BAN-1M', variacoesUid: ['g/M'] }),
+    ];
+    const { rows: out, reusedIds } = reconcileStagedChildren(rows, 'membro');
+
+    // The member row is absorbed; the first create takes its doc id.
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ id: 'membro', sku: 'BAN-1P' });
+    expect(out[1]).toMatchObject({ id: null, sku: 'BAN-1M' });
+    expect(reusedIds).toEqual(['membro']);
+  });
+
+  // ⚠️ Rules 1-2 win. The operator who deleted a variation and recreated it
+  // means THAT doc; the sole member is only the fallback anchor.
+  it('lets an explicit delete/create SKU pair win over the sole member', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1' }),
+      linha({ id: 'antigo', sku: 'BAN-1P', variacoesUid: ['g/P'], deleteMark: true }),
+      linha({ key: 'novo-P', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+    ];
+    const { rows: out } = reconcileStagedChildren(rows, 'membro');
+    // The recreated P keeps the DELETED doc's id, not the member's.
+    expect(out.find((r) => r.sku === 'BAN-1P')).toMatchObject({ id: 'antigo' });
+    // Nothing claimed the member, so it survives as an ordinary row.
+    expect(out.some((r) => r.id === 'membro')).toBe(true);
+  });
+
+  it('absorbs at most ONE create', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1' }),
+      linha({ key: 'a', sku: 'A', variacoesUid: ['g/A'] }),
+      linha({ key: 'b', sku: 'B', variacoesUid: ['g/B'] }),
+      linha({ key: 'c', sku: 'C', variacoesUid: ['g/C'] }),
+    ];
+    const { reusedIds } = reconcileStagedChildren(rows, 'membro');
+    expect(reusedIds).toEqual(['membro']);
+  });
+
+  // ⚠️ A child that already carries a combo is a real variation whatever the
+  // parent points at — rules 1-2 own it, and absorbing it would rewrite a
+  // variation the operator did not touch.
+  it('refuses a "sole member" that already has a variacoesUid', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1', variacoesUid: ['g/X'] }),
+      linha({ key: 'novo', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+    ];
+    const { rows: out, reusedIds } = reconcileStagedChildren(rows, 'membro');
+    expect(reusedIds).toEqual([]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('does nothing when the operator marked the sole member for deletion', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1', deleteMark: true }),
+      linha({ key: 'novo', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+    ];
+    expect(reconcileStagedChildren(rows, 'membro').reusedIds).toEqual([]);
+  });
+
+  it('does nothing when there is no staged create', () => {
+    const rows = [linha({ id: 'membro', sku: 'BAN-1' })];
+    expect(reconcileStagedChildren(rows, 'membro').reusedIds).toEqual([]);
+  });
+
+  // ⚠️ Inert without the pointer, which is what makes this safe to ship ahead of
+  // the produtos that have one: a produto with real variations passes null and
+  // the function behaves exactly as it did before #1398.
+  it('is inert when the parent has no sole member', () => {
+    const rows = [
+      linha({ id: 'c1', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+      linha({ key: 'novo', sku: 'BAN-1M', variacoesUid: ['g/M'] }),
+    ];
+    expect(reconcileStagedChildren(rows, null).reusedIds).toEqual([]);
+    expect(reconcileStagedChildren(rows).reusedIds).toEqual([]);
+  });
+
+  it('ignores a pointer naming a produto that is not in the rows', () => {
+    const rows = [linha({ key: 'novo', sku: 'BAN-1P', variacoesUid: ['g/P'] })];
+    expect(reconcileStagedChildren(rows, 'sumiu').reusedIds).toEqual([]);
+  });
+});

@@ -344,9 +344,38 @@ export interface ReconcilableRow {
  * (nome/sku/variacoesUid/ordem) — never dims/pesos or other doc fields, which
  * is the point of preserving the doc. Unpaired deletes stay in the output for
  * the real-deletion path (reference guard + delete).
+ *
+ * ## Rule 3 — the SOLE MEMBER is absorbed by the first real variation (#1398)
+ *
+ * A produto is born as a family of one, so a produto that has never had
+ * variations still owns one child: a mirror of itself, carrying its stock, its
+ * estoque history, and whatever pedido lines and kit entries name it.
+ *
+ * The moment the operator generates real variations that child stops being a
+ * sole member — and leaving it beside them is wrong twice over. It shows as a
+ * phantom extra row in the Variações tab (so "the first variation" is not the
+ * one the operator sees first), and the parent's `filhoUnicoId` keeps naming
+ * it while the family now has several members, which sends every stock reader
+ * to one arbitrary variation.
+ *
+ * So an UNMARKED sole member absorbs the FIRST staged create, exactly as a
+ * staged delete would: same id reuse, same reason — the id anchors everything.
+ * Deleting it instead would drop the produto's stock and orphan every reference
+ * to it, and that is the one outcome worse than either.
+ *
+ * ⚠️ It absorbs at most ONE create, and only when it is not itself the create.
+ * ⚠️ It applies only to a sole member with an EMPTY combo — a child that already
+ * carries a `variacoesUid` is a real variation whatever the parent points at,
+ * and rules 1-2 own it.
  */
 export function reconcileStagedChildren<R extends ReconcilableRow>(
   rows: R[],
+  /**
+   * The parent's `filhoUnicoId`: the doc id of its sole member, when it has one.
+   * Absent/null on a produto that already has real variations — rule 3 is then
+   * inert and this behaves exactly as it did before #1398.
+   */
+  membroUnicoId?: string | null,
 ): { rows: R[]; reusedIds: string[] } {
   const deletes = rows.filter((r) => r.deleteMark && r.id);
   const paired = new Set<R>();
@@ -376,6 +405,22 @@ export function reconcileStagedChildren<R extends ReconcilableRow>(
     if (!match) continue;
     paired.add(match);
     reusedBy.set(row, match.id!);
+  }
+
+  // Rule 3. Runs AFTER rules 1-2 so an explicit delete/create pair always wins:
+  // the operator who deleted a variation and recreated it means that doc, and
+  // the sole member is only the fallback anchor for a create nothing else claimed.
+  if (membroUnicoId != null && membroUnicoId !== '') {
+    const membro = rows.find(
+      (r) => r.id === membroUnicoId && !r.deleteMark && r.variacoesUid.length === 0,
+    );
+    const primeiroCriado = rows.find(
+      (r) => !r.deleteMark && !r.id && !paired.has(r) && reusedBy.get(r) === undefined,
+    );
+    if (membro && primeiroCriado && !paired.has(membro)) {
+      paired.add(membro);
+      reusedBy.set(primeiroCriado, membroUnicoId);
+    }
   }
 
   return {

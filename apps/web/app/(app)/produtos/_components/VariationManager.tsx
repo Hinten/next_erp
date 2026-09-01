@@ -56,6 +56,7 @@ import {
   normalizeVariacoesUid,
   parseFakePath,
   produtoSchema,
+  derivarFilhoUnico,
   reconcileStagedChildren,
   reconstructFromSkuSuffix,
   reconstructFromVariacoesUid,
@@ -139,6 +140,13 @@ interface ChildPatch {
 export interface VariationManagerProps {
   /** `null` in create mode — children need a saved parent to point at. */
   produtoId: string | null;
+  /**
+   * The parent's `filhoUnicoId` — its SOLE MEMBER's doc id, when it has one
+   * (#1398). A produto born as a family of one owns a child that mirrors it, and
+   * the moment real variations arrive that child must become the first of them
+   * rather than sit beside them: see rule 3 of `reconcileStagedChildren`.
+   */
+  membroUnicoId?: string | null;
   db: Firestore;
   /** All variation groups (live), supplied by the page. */
   grupos: GrupoComId[];
@@ -209,6 +217,7 @@ function impliedGroupIds(parent: Produto | undefined, uids: string[]): string[] 
  */
 export function VariationManager({
   produtoId,
+  membroUnicoId = null,
   db,
   grupos,
   gruposError,
@@ -405,7 +414,7 @@ export function VariationManager({
       );
     }
 
-    const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows);
+    const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows, membroUnicoId);
 
     // Staged creates the reuse absorbed onto an existing doc: the batch issues
     // an UPDATE on that doc, never a `set` under the row's own key, so `rows`
@@ -521,6 +530,21 @@ export function VariationManager({
       }
       ordem += 1;
     }
+
+    // ⚠️ The pointer is re-derived from the child set this flush leaves behind,
+    // in the SAME batch that changes it. An absorbed sole member keeps its doc
+    // id, so `filhoUnicoId` would still name a real child — while the family now
+    // has several — and every stock reader would resolve to one arbitrary
+    // variation. `derivarFilhoUnico` is the one producer of the value.
+    const filhosVivos = reconciled.filter((r) => !r.deleteMark).map((r) => ({ id: r.id ?? r.key }));
+    const filhoUnico = derivarFilhoUnico(filhosVivos);
+    if (filhoUnico !== membroUnicoId) {
+      batch.update(produtoCollection.docRef(db, {}, parentId), {
+        filhoUnicoId: filhoUnico,
+      } as never);
+      writes += 1;
+    }
+
     if (writes === 0) {
       // Nothing to write, but the staging this flush saw DID resolve — e.g. a
       // row added and then delete-marked before saving. Clearing those keys
