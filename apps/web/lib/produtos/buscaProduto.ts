@@ -365,16 +365,24 @@ export async function resolveProdutoIdsPorTermo(
     //    name searches the three SKU queries would still have answered.
     //    It hides nothing real: task 1 reads the same `produtos` collection
     //    uncaught, so a genuine permission failure still surfaces there.
+    //    ⚠️ That last argument rests on the RULESET shape, which `rules-gen`
+    //    regenerates: `produtos` grants `allow read` — `get` AND `list` — under
+    //    ONE predicate (`isSuperUser() || p('d_produto', 1)`). Split them and a
+    //    denied point read beside a permitted `list` becomes a silent swallow.
     ...(docIdTerm
       ? [
           getDoc(produtoCollection.docRef(db, {}, docIdTerm.id))
+            // ⚠️ The catch sits on the READ, not on the chain. Chained after the
+            // `.then` it would also swallow anything the anchor hop throws —
+            // wider than the rejection it exists for, and a bug in there would
+            // then read as "produto not found" instead of surfacing.
+            .catch(() => null)
             .then((snap) =>
               // The anchor hop, exactly as in lookup 1: the list filters
               // `paiId == null`, so a pasted VARIATION CHILD id has to come back
               // as its parent or the row is dropped without a word.
-              snap.exists() ? [snap.data().paiId ?? snap.id] : [],
-            )
-            .catch(() => []),
+              snap?.exists() ? [snap.data().paiId ?? snap.id] : [],
+            ),
         ]
       : []),
 
