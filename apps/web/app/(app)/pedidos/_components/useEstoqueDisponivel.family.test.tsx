@@ -228,6 +228,52 @@ describe('useEstoqueDisponivel — kit components resolve through the sole membe
     await waitFor(() => expect(result.current).toBe(5));
   });
 
+  // ⚠️ The dedup is right about the READ and was silent about the arithmetic.
+  // Two components drawing on one produto share ONE pool; giving both aliases
+  // the full stock says a kit needing 1+1 of a 4-unit produto can be built four
+  // times. It can be built twice — and overstating availability is the direction
+  // ADR 0014 goes out of its way to avoid on the kit path.
+  it('divides a SHARED target between the components that alias onto it', async () => {
+    produtos.current = {
+      a: { paiId: null, filhoUnicoId: 'alvo' },
+      alvo: { paiId: null, filhoUnicoId: null },
+    };
+    estoques.current = { 'est-alvo-dep1': { quantidade: 4, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ a: { quantidade: 1 }, alvo: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    // 4 units, 2 consumed per kit ⇒ 2 kits, not 4.
+    await waitFor(() => expect(result.current).toBe(2));
+  });
+
+  it('honours each alias’s own quantidade when dividing', async () => {
+    produtos.current = {
+      a: { paiId: null, filhoUnicoId: 'alvo' },
+      alvo: { paiId: null, filhoUnicoId: null },
+    };
+    estoques.current = { 'est-alvo-dep1': { quantidade: 9, quantidadeReservada: 0 } };
+
+    // 1 + 2 = 3 units per kit ⇒ floor(9 / 3) = 3 kits.
+    const { result } = render(kitProduto({ a: { quantidade: 1 }, alvo: { quantidade: 2 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+    await waitFor(() => expect(result.current).toBe(3));
+  });
+
+  // ⚠️ The ordinary case must be untouched: one component per target divides by
+  // its own demand, which the helper then divides again — so the value handed
+  // over has to stay the raw stock.
+  it('does not divide when nothing aliases', async () => {
+    produtos.current = { comp: { paiId: null, filhoUnicoId: 'comp-child' } };
+    estoques.current = { 'est-comp-child-dep1': { quantidade: 9, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ comp: { quantidade: 2 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+    // 9 / 2 = 4.5 — the helper's own division, applied once and NOT rounded.
+    // Pinning the fraction is the point: it proves nothing divided twice.
+    await waitFor(() => expect(result.current).toBe(4.5));
+  });
+
   it('reads one estoque doc per DISTINCT target', async () => {
     // Two components resolving to the same produto must not read it twice.
     produtos.current = {
@@ -283,6 +329,26 @@ describe('useEstoqueDisponivel — kit components resolve through the sole membe
 
     expect(estoqueReads.current).toEqual(['comp-child/est-comp-child-dep1']);
     await waitFor(() => expect(result.current).toBe(0));
+  });
+
+  // ⚠️ The spread puts the DOC id last, so a stray `id` on the document cannot
+  // win. `produtoSchema` is strip-policy, so a SUCCESSFUL parse never carries
+  // one — but `parseSoftRead` returns the RAW document when the schema rejects
+  // it, and read-tolerance for unmodelled legacy shapes is mandatory (rule 8).
+  // A legacy doc that both fails to parse and carries an `id` would otherwise
+  // redirect the read to a produto the kit never names.
+  it('uses the DOC id, not an id field the document happens to carry', async () => {
+    produtos.current = { comp: { id: 'outro-produto', paiId: null, filhoUnicoId: null } };
+    estoques.current = {
+      'est-comp-dep1': { quantidade: 5, quantidadeReservada: 0 },
+      'est-outro-produto-dep1': { quantidade: 99, quantidadeReservada: 0 },
+    };
+
+    const { result } = render(kitProduto({ comp: { quantidade: 1 } }));
+    await waitFor(() => expect(result.current).not.toBeNull());
+
+    expect(estoqueReads.current).toEqual(['comp/est-comp-dep1']);
+    await waitFor(() => expect(result.current).toBe(5));
   });
 
   // The `paiId` drift guard, on the component path too.
