@@ -322,8 +322,16 @@ if (!integracaoId || !depositoId) {
   // ⚠️ No `publicado` term (#1087): S1 no longer carries one, so an unpublished
   // anchor is a perfectly valid probe — and the composite that used to serve
   // `paiId + publicado` is deleted, so filtering on it here would full-scan
-  // (`limit(25)` caps OUTPUT rows, not data scanned). Bare `paiId` rides
-  // `produtos(paiId ASC, nome ASC)` as a prefix.
+  // (`limit(25)` caps OUTPUT rows, not data scanned).
+  // ⚠️ NOT verified: whether the bare `paiId` equality SEEKS. It plausibly rides
+  // `produtos(paiId ASC, nome ASC)` as a prefix, but that entry orders by `nome`
+  // while this query carries no `orderBy` and so implicitly wants `__name__` —
+  // and Enterprise omits the implicit trailing `__name__` from an index, so the
+  // prefix argument does not obviously hold. Treat it as possibly scanning.
+  // What IS known: staging-only, output-bounded, and strictly cheaper than the
+  // `paiId + publicado` version it replaces, whose index no longer exists. If
+  // this ever needs to be a seek, declare the entry rather than reasoning about
+  // it — the explain output above is the only thing that can settle it.
   const anchors = await db.collection('produtos').where('paiId', '==', null).limit(25).get();
   for (const doc of anchors.docs) {
     const integracoes = Array.isArray(doc.data().integracoesComProduto)
