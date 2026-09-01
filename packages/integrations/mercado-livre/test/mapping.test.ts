@@ -22,6 +22,7 @@ import {
   estadoFromMlStatus,
   userProductMemberInputs,
 } from '../src/mapping/itemPayload';
+import { attributesFromItem, skuPaiFromAttributes } from '../src/mapping/importItem';
 
 describe('attributeToMercadoLivre', () => {
   it('emits value_name with the unit appended and keeps unit_id', () => {
@@ -87,10 +88,19 @@ describe('ML_ATTR_SKU_PAI_NOME (#1400)', () => {
   });
 
   it('does not collide with an ML attribute display name', () => {
-    // `skuPaiFromAttributes` matches id-less attributes by NAME, trimmed and
-    // case-insensitively, so a collision would make the importer read a foreign
-    // characteristic as the parent sku. These are the near misses in ML's own
-    // attribute reference.
+    // ⚠️ The match is id-AGNOSTIC: `skuPaiFromAttributes` folds `name` and never
+    // reads `id`, so these ML-DEFINED attributes — which all HAVE ids — can
+    // collide. (An id-less-only reading would make this test vacuous; it is
+    // not.) `skuPaiHijack` below pins the consequence.
+    //
+    // ⚠️ Eight literals cannot establish ABSENCE across ML's whole taxonomy, and
+    // the constant moved from a bespoke phrase to generic retail wording, so the
+    // population of plausible collisions grew. Checked 2026-09-01 against ML's
+    // `atributos` reference and a docs search — no documented attribute uses
+    // this name — but the authoritative check is a live authenticated sweep of
+    // `GET /categories/{id}/attributes` over the categories this seller lists
+    // in, which no lane may run (no ML credentials). Do it before the first
+    // deploy: the name freezes then.
     const folded = ML_ATTR_SKU_PAI_NOME.trim().toLowerCase();
     for (const mlName of [
       'Modelo',
@@ -104,6 +114,21 @@ describe('ML_ATTR_SKU_PAI_NOME (#1400)', () => {
     ]) {
       expect(folded).not.toBe(mlName.trim().toLowerCase());
     }
+  });
+
+  it('a name collision would hijack rung 1 AND silence the real attribute', () => {
+    // Pins what a collision actually costs, so the guard above is sized against
+    // observed behaviour rather than against the docblock's description of it.
+    const foreign = {
+      id: 'REFERENCE_CODE',
+      name: ML_ATTR_SKU_PAI_NOME,
+      value_name: 'XYZ-123',
+    };
+    // 1. Read as the parent sku, despite carrying an id that is not ours.
+    expect(skuPaiFromAttributes([foreign])).toBe('XYZ-123');
+    // 2. …and excluded from the link doc, so it stops being republished — which
+    //    reaches SIMPLE items too, though they never send this characteristic.
+    expect(attributesFromItem([foreign])).toEqual([]);
   });
 });
 

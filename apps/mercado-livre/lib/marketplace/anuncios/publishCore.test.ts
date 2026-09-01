@@ -284,6 +284,22 @@ describe('resolveSkuPaiAtributo (#1400)', () => {
     ).toEqual({ skuPai: 'SKU-PAI' });
   });
 
+  it('a SINGLE-product UP listing also gets it — deliberate, not incidental', () => {
+    // ⚠️ `publish.ts` materialises the sole member before this runs, so a
+    // childless UP produto arrives as ONE member with no itemId. The import
+    // chain does not need the characteristic there (rung 3 reads the member's
+    // own SELLER_SKU, since a família of one has no combos), so this is a
+    // public characteristic bought for one narrow case: variations added on ML
+    // instead of in the ERP, where rung 2 has no códigos to peel.
+    //
+    // Pinned so that switching to `membros.length > 1` — a legitimate choice
+    // that is uniform in both directions — is a conscious edit rather than a
+    // silent change to what buyers see.
+    expect(resolveSkuPaiAtributo({ ...base, membros: [novo] })).toEqual({
+      skuPai: 'SKU-PAI',
+    });
+  });
+
   it('keeps sending to a família that already carries it', () => {
     // Dropping the attribute would re-hash every member that has it.
     expect(resolveSkuPaiAtributo({ ...base, linkId: 'FAM1', membros: [vivoCom] })).toEqual({

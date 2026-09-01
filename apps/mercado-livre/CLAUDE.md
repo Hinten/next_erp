@@ -840,8 +840,13 @@ tag is metadata ML *returns* for attributes IT defines and rides no request body
 and `PUT /user-products-families/{id}` takes only PARENT_PK/ITEM_CONDITION
 (*"Não são permitidos atributos custom"*). Nor is there a parent slot for a
 `SELLER_SKU`: a User Product IS the variation, so a sku there is the member's.
-⚠️ It must also stay distinct from every ML attribute's display name —
-`skuPaiFromAttributes` matches id-less attributes by NAME.
+⚠️ It must also stay distinct from every ML attribute's display name, and the
+match is **id-AGNOSTIC** — `skuPaiFromAttributes` folds `name` and never reads
+`id`, so an ML-DEFINED attribute collides too. The cost is twofold: rung 1 reads
+that attribute's value as the parent sku, AND `attributesFromItem` drops it from
+`link.attributes`, so it stops being republished — on simple items as well.
+Only a live sweep of `GET /categories/{id}/attributes` can prove absence; run it
+before the first deploy, since the name freezes then.
 
 ⚠️ **The evidence lives on the MEMBER links (`variacaoMercadoLivre.skuPaiAtributo`),
 never on the família's parent link**, and the two reasons are really one — the
