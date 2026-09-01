@@ -624,3 +624,124 @@ describe('resolveOrderLineProduto — SKU ambiguity guard', () => {
     expect(produtosQueries(db)).toHaveLength(0);
   });
 });
+
+/**
+ * The `sku-root` rung filters `paiId == null`, so it can only ever match a ROOT
+ * — and after #1398 a root with no variations is a WRAPPER whose stock lives on
+ * its sole member.
+ *
+ * ⚠️ This is a WRONG BIND, not an ambiguity, which is why it is fixed here and
+ * not in the SKU-duplicate PR: `calcularAlteracoesEstoque` moves stock on the
+ * produto the line names, and `aplicarPlano` creates a row at `0 + delta` for a
+ * produto that owns none — negative, from nothing, on a live Mercado Livre order.
+ */
+describe('resolveOrderLineProduto — sku-root binds the sellable child', () => {
+  const produtosQueries = (db: FakeDb) => db.queries.filter((q) => q.source === 'produtos');
+
+  it('binds the CHILD when the SKU names a family-of-one parent', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'pai-1', {
+      nome: 'Bandeja',
+      sku: 'BAN-1',
+      paiId: null,
+      filhoUnicoId: 'membro-unico',
+    });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'BAN-1',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'membro-unico', via: 'sku-membro-unico' });
+    // ⚠️ No extra read: the family fields ride along on the probe the rung
+    // already ran. sku-child is skipped (no parent link), so this is the ONE query.
+    expect(produtosQueries(db)).toHaveLength(1);
+    expect(produtosQueries(db)[0]!.clauses).toEqual([
+      ['sku', 'BAN-1'],
+      ['paiId', null],
+    ]);
+  });
+
+  it('still reports sku-root for an ordinary root produto', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'raiz', { nome: 'Solto', sku: 'UNI', paiId: null, filhoUnicoId: null });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'UNI',
+      integracaoId: CONTA,
+    });
+
+    // The `via` must stay `sku-root` when nothing was re-pointed — it is
+    // persisted diagnostic and a reader distinguishes the two cases by it.
+    expect(out).toEqual({ produtoId: 'raiz', via: 'sku-root' });
+  });
+
+  // A stored empty pointer is not a pointer.
+  it('treats an empty filhoUnicoId as absent', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'raiz', { nome: 'Solto', sku: 'UNI', paiId: null, filhoUnicoId: '' });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'UNI',
+      integracaoId: CONTA,
+    });
+    expect(out).toEqual({ produtoId: 'raiz', via: 'sku-root' });
+  });
+
+  // ⚠️ The narrower rungs must be untouched. `sku-child` is already scoped to
+  // children of a known parent, so it can never match a wrapper — and its verdict
+  // must keep saying `sku-child`.
+  it('leaves the sku-child rung reporting sku-child', async () => {
+    const db = new FakeDb();
+    const parentLinkRef = seedParentListing(db, {
+      produtoId: 'pai-1',
+      linkId: 'L1',
+      mlItemId: 'MLB1',
+    });
+    seedVariationChild(db, {
+      childId: 'filho-1',
+      parentProdutoId: 'pai-1',
+      parentLinkOuterRef: parentLinkRef,
+      variationId: 999, // not the sold variation — the link rung misses
+      sku: 'DUP',
+    });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB1',
+      variationId: '456',
+      sku: 'DUP',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'filho-1', via: 'sku-child' });
+  });
+
+  // The drift guard on the ML path too: a root that somehow carries a paiId is
+  // not a wrapper, whatever its pointer says.
+  it('does not follow a pointer on a produto that carries a paiId', async () => {
+    const db = new FakeDb();
+    // `paiId` is non-null, so `sku-root` cannot match it; the unscoped rung does.
+    db.seed('produtos', 'estranho', {
+      nome: 'X',
+      sku: 'ODD',
+      paiId: 'algum-pai',
+      filhoUnicoId: 'nao-seguir',
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: '456',
+      sku: 'ODD',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'estranho', via: 'sku-any' });
+  });
+});

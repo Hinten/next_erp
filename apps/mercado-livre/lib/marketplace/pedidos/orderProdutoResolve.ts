@@ -38,7 +38,7 @@
  * predicate silently full-scans and is billed by data scanned.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { toOuterRef } from '@delfrance/schemas';
+import { toOuterRef, unidadeVendavel, type ProdutoDeFamilia } from '@delfrance/schemas';
 import {
   produtoCollection,
   produtoMercadoLivreLinkCollection,
@@ -59,7 +59,14 @@ export type OrderLineMatchKind =
   | 'up-member-link'
   | 'sku-child'
   | 'sku-root'
-  | 'sku-any';
+  | 'sku-any'
+  /**
+   * A SKU rung matched a produto that turned out to be the PARENT of a family
+   * of one, and the line was bound to its sole member instead — the produto
+   * that owns the stock (#1398). Distinct from the rung that found it, because
+   * "the SKU named a wrapper" is a different fact from "the SKU named this".
+   */
+  | 'sku-membro-unico';
 
 /** Why nothing bound. `ambiguous-sku` = the SKU named more than one produto. */
 export type OrderLineMissKind = 'ambiguous-sku' | 'unresolved';
@@ -189,7 +196,20 @@ export async function resolveOrderLineProduto(
       produtoCollection.ref(db, {}).where('sku', '==', sku).where('paiId', '==', null),
     );
     if (rootBySku.kind === 'many') return ambiguo('sku-root', rootBySku.ids);
-    if (rootBySku.kind === 'one') return { produtoId: rootBySku.produtoId, via: 'sku-root' };
+    if (rootBySku.kind === 'one') {
+      // ⚠️ This rung filters `paiId == null`, so it can only ever match a ROOT —
+      // and after #1398 a root with no variations is a WRAPPER whose stock lives
+      // on its sole member. Binding the wrapper is not an ambiguity, it is a
+      // wrong bind: `calcularAlteracoesEstoque` then moves stock on a produto
+      // that owns no estoque rows, and `aplicarPlano` creates one at
+      // `0 + delta` — negative, from nothing, on a live ML order.
+      //
+      // The family fields ride along on the probe, so this costs no extra read.
+      const alvo = unidadeVendavel(rootBySku.familia);
+      return alvo === rootBySku.produtoId
+        ? { produtoId: alvo, via: 'sku-root' }
+        : { produtoId: alvo, via: 'sku-membro-unico' };
+    }
 
     // Unscoped — legacy parity (`sku__isEqualTo(sku).first()` had no `paiId`
     // filter) and the only rung that can match a variation child of a DIFFERENT
@@ -263,7 +283,7 @@ async function resolveUpMemberChild(
  * rather than guess. `many` carries the ids: the only place they ever surface.
  */
 type SkuProbe =
-  | { kind: 'one'; produtoId: string }
+  | { kind: 'one'; produtoId: string; familia: ProdutoDeFamilia }
   | { kind: 'none' }
   | { kind: 'many'; ids: string[] };
 
@@ -284,7 +304,22 @@ type SkuProbe =
 async function probeSkuUnico(query: FirebaseFirestore.Query): Promise<SkuProbe> {
   const snap = await query.limit(2).get();
   if (snap.docs.length === 0) return { kind: 'none' };
-  if (snap.docs.length === 1) return { kind: 'one', produtoId: snap.docs[0]!.id };
+  if (snap.docs.length === 1) {
+    const doc = snap.docs[0]!;
+    const raw = doc.data() as Record<string, unknown>;
+    // Carried, not resolved here: only the `sku-root` rung can match a
+    // family-of-one PARENT, and folding the hop into this helper would read as a
+    // rule the other two rungs obey when it is one they cannot reach.
+    return {
+      kind: 'one',
+      produtoId: doc.id,
+      familia: {
+        id: doc.id,
+        paiId: raw.paiId as string | null | undefined,
+        filhoUnicoId: raw.filhoUnicoId as string | null | undefined,
+      },
+    };
+  }
   return { kind: 'many', ids: snap.docs.map((d) => d.id) };
 }
 
