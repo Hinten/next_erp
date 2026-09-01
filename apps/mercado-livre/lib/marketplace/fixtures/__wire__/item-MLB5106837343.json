@@ -1,0 +1,291 @@
+{
+  "id": "MLB5106837343",
+  "title": "Item De Teste  Por Favor, Não Ofertar!",
+  "family_name": "Item De Teste  Por Favor, Não Ofertar!",
+  "family_id": 7629139612824912,
+  "user_product_id": "MLBU4895793472",
+  "category_id": "MLB3530",
+  "price": 90.91,
+  "base_price": 90.91,
+  "available_quantity": 22,
+  "condition": "new",
+  "status": "under_review",
+  "sub_status": ["forbidden"],
+  "listing_type_id": "free",
+  "seller_id": 3616169770,
+  "seller_custom_field": "1WXplQLpUO8hcL3xQ4D0",
+  "permalink": "https://produto.mercadolivre.com.br/MLB-5106837343-item-de-teste-por-favor-no-ofertar-_JM",
+  "date_created": "2026-08-21T14:39:24.101Z",
+  "video_id": null,
+  "tags": ["user_product_listing", "test_item", "good_quality_thumbnail", "immediate_payment"],
+  "shipping": {
+    "free_shipping": false,
+    "mode": "not_specified",
+    "methods": [],
+    "tags": ["adoption_required"],
+    "dimensions": null,
+    "local_pick_up": false,
+    "logistic_type": "not_specified",
+    "store_pick_up": false
+  },
+  "attributes": [
+    {
+      "id": "ITEM_CONDITION",
+      "name": "Condição do item",
+      "value_id": "2230284",
+      "value_name": "Novo",
+      "values": [
+        {
+          "id": "2230284",
+          "name": "Novo",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "WEIGHT",
+      "name": "Peso",
+      "value_id": null,
+      "value_name": "0.9 kg",
+      "values": [
+        {
+          "id": null,
+          "name": "0.9 kg",
+          "struct": {
+            "number": 0.9,
+            "unit": "kg"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "BRAND",
+      "name": "Marca",
+      "value_id": null,
+      "value_name": "teste 2108",
+      "values": [
+        {
+          "id": null,
+          "name": "teste 2108",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "MODEL",
+      "name": "Modelo",
+      "value_id": null,
+      "value_name": "teste 2108",
+      "values": [
+        {
+          "id": null,
+          "name": "teste 2108",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "SELLER_PACKAGE_HEIGHT",
+      "name": "Altura da embalagem do vendor",
+      "value_id": null,
+      "value_name": "5 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "5 cm",
+          "struct": {
+            "number": 5,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_PACKAGE_LENGTH",
+      "name": "Comprimento da embalagem do vendor",
+      "value_id": null,
+      "value_name": "10 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "10 cm",
+          "struct": {
+            "number": 10,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_PACKAGE_WEIGHT",
+      "name": "Peso da embalagem do vendor",
+      "value_id": null,
+      "value_name": "1000 g",
+      "values": [
+        {
+          "id": null,
+          "name": "1000 g",
+          "struct": {
+            "number": 1000,
+            "unit": "g"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_PACKAGE_WIDTH",
+      "name": "Largura da embalagem do vendor",
+      "value_id": null,
+      "value_name": "10 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "10 cm",
+          "struct": {
+            "number": 10,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_SKU",
+      "name": "SKU",
+      "value_id": null,
+      "value_name": "a21082026",
+      "values": [
+        {
+          "id": null,
+          "name": "a21082026",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    }
+  ],
+  "pictures": [
+    {
+      "id": "927070-MLB115144944100_082026",
+      "url": "http://http2.mlstatic.com/D_927070-MLB115144944100_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_927070-MLB115144944100_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    },
+    {
+      "id": "683670-MLB115145057352_082026",
+      "url": "http://http2.mlstatic.com/D_683670-MLB115145057352_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_683670-MLB115145057352_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    },
+    {
+      "id": "923115-MLB116540753835_082026",
+      "url": "http://http2.mlstatic.com/D_923115-MLB116540753835_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_923115-MLB116540753835_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    }
+  ],
+  "variations": [],
+  "site_id": "MLB",
+  "official_store_id": null,
+  "original_price": null,
+  "inventory_id": null,
+  "currency_id": "BRL",
+  "initial_quantity": 22,
+  "sold_quantity": 0,
+  "sale_terms": [
+    {
+      "id": "PURCHASE_MAX_QUANTITY",
+      "name": "Quantidade máxima de compra",
+      "value_id": "PURCHASE_MAX_QUANTITY",
+      "value_name": "1",
+      "value_struct": null,
+      "values": [
+        {
+          "id": "PURCHASE_MAX_QUANTITY",
+          "name": "1",
+          "struct": null
+        }
+      ],
+      "value_type": "number"
+    }
+  ],
+  "buying_mode": "buy_it_now",
+  "start_time": "2026-08-21T14:39:23.866Z",
+  "stop_time": "2026-10-20T04:00:00.000Z",
+  "end_time": "2026-10-20T04:00:00.000Z",
+  "expiration_time": null,
+  "thumbnail_id": "927070-MLB115144944100_082026",
+  "thumbnail": "http://http2.mlstatic.com/D_927070-MLB115144944100_082026-I.webp",
+  "descriptions": [],
+  "accepts_mercadopago": true,
+  "non_mercado_pago_payment_methods": [],
+  "international_delivery_mode": "none",
+  "seller_address": {
+    "comment": "REDACTED",
+    "address_line": "Rua Redacted, 0",
+    "zip_code": "00000000",
+    "city": {
+      "id": "BR-SP-27",
+      "name": "REDACTED"
+    },
+    "state": {
+      "id": "BR-SP",
+      "name": "São Paulo"
+    },
+    "country": {
+      "id": "BR",
+      "name": "Brasil"
+    },
+    "search_location": {
+      "neighborhood": {
+        "id": "TVhYQ2VudHJvVFZoWVU4T2pieUJLYjNQRHFTQ2",
+        "name": "REDACTED"
+      },
+      "city": {
+        "id": "TVhYU8OjbyBKb3PDqSBkb3MgQ2FtcG9zVFV4Q",
+        "name": "REDACTED"
+      },
+      "state": {
+        "id": "TUxCUFNBT085N2E4",
+        "name": "São Paulo"
+      }
+    },
+    "latitude": 0,
+    "longitude": 0,
+    "id": 1661311810
+  },
+  "seller_contact": null,
+  "location": {},
+  "geolocation": {
+    "latitude": 0,
+    "longitude": 0
+  },
+  "coverage_areas": [],
+  "warnings": [],
+  "listing_source": "",
+  "warranty": null,
+  "catalog_product_id": null,
+  "domain_id": "MLB-UNCLASSIFIED_PRODUCTS",
+  "parent_item_id": null,
+  "differential_pricing": null,
+  "deal_ids": [],
+  "automatic_relist": false,
+  "last_updated": "2026-08-26T13:51:08.514Z",
+  "health": null,
+  "catalog_listing": false,
+  "item_relations": [],
+  "channels": ["marketplace"]
+}

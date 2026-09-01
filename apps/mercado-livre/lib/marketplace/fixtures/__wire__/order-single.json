@@ -1,0 +1,133 @@
+[
+  {
+    "id": 2000018143664980,
+    "contaMercadoLivreOuterRef": "documents/integracao/1WXplQLpUO8hcL3xQ4D0",
+    "status": "paid",
+    "tags": ["paid", "not_delivered", "test_order"],
+    "date_created": 1787836468000,
+    "date_closed": 1787836470000,
+    "last_updated": 1787836560000,
+    "expiration_date": null,
+    "manufacturing_ending_date": null,
+    "order_items": [
+      {
+        "item": {
+          "id": "MLB5140167173",
+          "title": "Estátua Leão Madeira Amadeirado",
+          "category_id": "MLB186814",
+          "variation_id": null,
+          "seller_custom_field": null,
+          "variation_attributes": [
+            {
+              "id": "COLOR",
+              "value_id": "3890144",
+              "name": "Cor",
+              "value_name": "Amadeirado"
+            }
+          ],
+          "warranty": "Sem garantia",
+          "condition": "new",
+          "seller_sku": "leao123",
+          "global_price": null,
+          "net_weight": null
+        },
+        "quantity": 1,
+        "requested_quantity": {
+          "value": 1,
+          "measure": "unit"
+        },
+        "picked_quantity": null,
+        "unit_price": 49.97,
+        "currency_id": "BRL",
+        "manufacturing_days": null,
+        "sale_fee": 8.25,
+        "listing_type_id": "gold_pro"
+      }
+    ],
+    "payments": [
+      {
+        "id": 174911485053,
+        "site_id": "MLB",
+        "date_created": "2026-08-27T09:14:29.000-04:00",
+        "date_approved": "2026-08-27T09:14:30.000-04:00",
+        "date_last_updated": null,
+        "date_of_expiration": null,
+        "money_release_date": null,
+        "money_release_status": null,
+        "notification_url": null,
+        "last_modified": null,
+        "reason": "Estátua Leão Madeira Amadeirado",
+        "card_id": 9867593438,
+        "currency_id": "BRL",
+        "transaction_amount": 49.97,
+        "total_paid_amount": 62.96,
+        "shipping_cost": 12.99,
+        "coupon_amount": 0,
+        "coupon_id": null,
+        "status": "approved",
+        "status_detail": "accredited",
+        "installments": 1,
+        "installment_amount": 62.96,
+        "payment_type": "credit_card",
+        "payment_type_id": null,
+        "payment_method_id": "master",
+        "marketplace": null,
+        "operation_type": "regular_payment",
+        "deduction_schema": null,
+        "description": null,
+        "differential_pricing_id": null,
+        "amount_refunded": null,
+        "api_version": null,
+        "concept_id": null,
+        "concept_amount": null,
+        "sponsor_id": null,
+        "overpaid_amount": 0,
+        "external_reference": null,
+        "order_id": "2000018143664980",
+        "merchant_order_id": null,
+        "tags": null,
+        "refunds": null,
+        "deferred_period": null,
+        "status_code": null,
+        "account_money_amount": null,
+        "transaction_order_id": null,
+        "additional_info": null,
+        "issuer_id": "12749",
+        "live_mode": null,
+        "net_received_amount": null,
+        "mercadopago_fee": null,
+        "marketplace_fee": 0,
+        "discount_fee": null,
+        "coupon_fee": null,
+        "finance_fee": null,
+        "released": null,
+        "collector_id": null,
+        "payer": null,
+        "authorization_code": "301299",
+        "binary_mode": null,
+        "captured": null,
+        "card": null,
+        "charge_details": null,
+        "charges_details": null,
+        "fee_details": null,
+        "transaction_details": null
+      }
+    ],
+    "buyer": {
+      "id": 3644236740,
+      "nickname": "REDACTED",
+      "first_name": "REDACTED",
+      "last_name": "REDACTED"
+    },
+    "pack_id": null,
+    "pickup_id": null,
+    "buying_mode": "buy_equals_pay",
+    "shipping_cost": null,
+    "total_amount": 49.97,
+    "paid_amount": 62.96,
+    "coupon": null,
+    "shipping": {
+      "id": 47868202073
+    }
+  }
+]

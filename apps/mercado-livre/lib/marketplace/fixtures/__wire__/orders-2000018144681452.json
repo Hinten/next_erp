@@ -1,0 +1,166 @@
+{
+  "id": 2000018144681452,
+  "date_created": "2026-08-27T10:18:11.000-04:00",
+  "last_updated": "2026-08-27T10:42:24.000-04:00",
+  "date_closed": "2026-08-27T10:18:14.000-04:00",
+  "pack_id": 2000014733850447,
+  "fulfilled": false,
+  "buying_mode": "buy_equals_pay",
+  "shipping_cost": null,
+  "mediations": [
+    {
+      "id": 5567065796
+    }
+  ],
+  "total_amount": 99.94,
+  "paid_amount": 0,
+  "order_items": [
+    {
+      "item": {
+        "id": "MLB5140167173",
+        "title": "Estátua Leão Madeira Amadeirado",
+        "category_id": "MLB186814",
+        "variation_id": null,
+        "seller_custom_field": null,
+        "variation_attributes": [
+          {
+            "name": "Cor",
+            "id": "COLOR",
+            "value_id": "3890144",
+            "value_name": "Amadeirado"
+          }
+        ],
+        "warranty": "Sem garantia",
+        "condition": "new",
+        "seller_sku": "leao123",
+        "global_price": null,
+        "net_weight": null,
+        "user_product_id": "MLBU4974343322",
+        "release_date": null,
+        "attributes": [
+          {
+            "id": "ITEM_CONDITION",
+            "values": [
+              {
+                "id": "2230284"
+              }
+            ]
+          }
+        ]
+      },
+      "quantity": 2,
+      "requested_quantity": {
+        "measure": "unit",
+        "value": 2
+      },
+      "picked_quantity": null,
+      "unit_price": 49.97,
+      "currency_id": "BRL",
+      "manufacturing_days": null,
+      "sale_fee": 16,
+      "listing_type_id": "gold_pro",
+      "base_exchange_rate": null,
+      "base_currency_id": null,
+      "element_id": null,
+      "discounts": null,
+      "bundle": null,
+      "compat_id": null,
+      "stock": null,
+      "kit_instance_id": null,
+      "gross_price": 99.94
+    }
+  ],
+  "currency_id": "BRL",
+  "payments": [
+    {
+      "id": 174920100019,
+      "order_id": 2000018144681452,
+      "payer_id": 3646520554,
+      "collector": {
+        "id": 3616169770
+      },
+      "card_id": null,
+      "reason": "Estátua Leão Madeira Amadeirado",
+      "site_id": "MLB",
+      "payment_method_id": "account_money",
+      "currency_id": "BRL",
+      "installments": 1,
+      "issuer_id": "2007",
+      "atm_transfer_reference": {
+        "transaction_id": null,
+        "company_id": null
+      },
+      "coupon_id": null,
+      "activation_uri": null,
+      "operation_type": "regular_payment",
+      "payment_type": "account_money",
+      "available_actions": [""],
+      "status": "refunded",
+      "status_code": null,
+      "status_detail": "bpp_refunded",
+      "transaction_amount": 99.94,
+      "transaction_amount_refunded": 99.94,
+      "taxes_amount": 0,
+      "shipping_cost": 0,
+      "coupon_amount": 0,
+      "overpaid_amount": 0,
+      "total_paid_amount": 99.94,
+      "installment_amount": null,
+      "deferred_period": null,
+      "date_approved": "2026-08-27T10:18:14.000-04:00",
+      "transaction_order_id": null,
+      "date_created": "2026-08-27T10:18:13.000-04:00",
+      "date_last_modified": "2026-08-27T10:42:23.000-04:00",
+      "marketplace_fee": 0,
+      "reference_id": null,
+      "authorization_code": null
+    }
+  ],
+  "shipping": {
+    "id": 47868991350
+  },
+  "status": "cancelled",
+  "status_detail": null,
+  "tags": ["no_shipping", "not_delivered", "not_paid", "test_order", "pack_order"],
+  "static_tags": ["test_order", "pack_order"],
+  "feedback": {
+    "seller": null,
+    "buyer": null
+  },
+  "context": {
+    "channel": "marketplace",
+    "site": "MLB",
+    "flows": []
+  },
+  "seller": {
+    "id": 3616169770
+  },
+  "buyer": {
+    "id": 3646520554,
+    "nickname": "REDACTED",
+    "first_name": "REDACTED",
+    "last_name": "REDACTED",
+    "billing_info": {
+      "id": "880817108822849353"
+    }
+  },
+  "taxes": {
+    "amount": null,
+    "currency_id": null,
+    "id": null
+  },
+  "cancel_detail": {
+    "group": "buyer",
+    "code": "buyer_cancel_express",
+    "description": "There is a mediation with status cancel_purchase",
+    "requested_by": "buyer",
+    "date": "2026-08-27T10:42:24.000-04:00",
+    "application_id": "2945779824588159"
+  },
+  "manufacturing_ending_date": null,
+  "order_request": {
+    "change": null,
+    "return": null
+  },
+  "related_orders": null
+}
