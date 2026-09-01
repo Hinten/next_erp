@@ -539,6 +539,23 @@ describe('resolveProdutoIdsPorTermo', () => {
     });
   });
 
+  // ⚠️⚠️ Pins the catch's SCOPE, not just that it applies. The catch sits on
+  // the READ; chained after the `.then` it would swallow the anchor hop too, so
+  // a bug in there would read as "produto not found" rather than surfacing.
+  // Inert today — `parseSoftRead` logs instead of throwing — which is exactly
+  // why only a test can keep the code and its comment from drifting apart.
+  it('does NOT swallow an error thrown by the anchor hop — only the read is caught', async () => {
+    routeDocs({});
+    getDocMock.mockResolvedValue({
+      exists: () => true,
+      id: 'algum',
+      data: () => {
+        throw new Error('converter blew up');
+      },
+    });
+    await expect(resolveProdutoIdsPorTermo(db, 'algum')).rejects.toThrow('converter blew up');
+  });
+
   // ⚠️ The probe is task 0 so that `limitarIds`, which slices in INSERTION
   // order, cannot drop the most precise answer the box has. Reorder it and the
   // exact id is the hit that falls off the end.
