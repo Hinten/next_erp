@@ -22,6 +22,45 @@ import type { ApplicationSnapshot, ConsumptionSnapshot, Notice } from './watchSi
 export const TOLERANCIA_PONTOS_PERCENTUAIS = 1;
 
 /**
+ * Relative move that counts as news regardless of how small the share is.
+ *
+ * ⚠️ **The absolute threshold alone muted signal B for exactly the statuses it
+ * exists to watch.** `fmtPct` renders four decimals precisely because "the
+ * interesting ones are tiny — a 502 at 0.0000029%", and a share that small can
+ * never move a full percentage point. So after the first run the only
+ * consumption change reportable was a brand-new status code: once a 403 or a 502
+ * had appeared even once, its rate was free to grow by orders of magnitude in
+ * silence — in the one signal this file's header calls "the load-bearing one".
+ *
+ * | status | before | after | absolute | relative | reported now |
+ * | --- | --- | --- | --- | --- | --- |
+ * | 403 | 0.0500 % | 0.9000 % | 0.85 pp ✗ | 18× | ✅ |
+ * | 502 | 0.0000029 % | 0.0029 % | 0.003 pp ✗ | 1000× | ✅ |
+ * | 200 | 96.0 % | 94.5 % | 1.5 pp ✅ | 1.02× | ✅ |
+ */
+export const TOLERANCIA_RELATIVA = 0.5;
+
+/**
+ * Absolute floor under which a relative move is ignored as noise.
+ *
+ * ⚠️ Without it the relative arm fires on rounding: a share of `0.00000001`
+ * doubling is a 2× change and utterly meaningless. Set well below the 502 case
+ * above (0.0029 pp) so that one still reports.
+ */
+export const PISO_DE_RUIDO_PP = 0.0001;
+
+/** Whether a status's share moved enough to be worth a human's attention. */
+export function desvioRelevante(anterior: number, atual: number): boolean {
+  const delta = Math.abs(atual - anterior);
+  if (delta >= TOLERANCIA_PONTOS_PERCENTUAIS) return true;
+  if (delta < PISO_DE_RUIDO_PP) return false;
+  // A share that was exactly zero and is now non-trivial is a change of
+  // unbounded ratio; the noise floor above already qualified it.
+  if (anterior === 0) return true;
+  return delta / anterior >= TOLERANCIA_RELATIVA;
+}
+
+/**
  * Percentage shares, to four decimals.
  *
  * ⚠️ NOT two. ML reports shares to seven decimal places and the interesting ones
@@ -103,8 +142,7 @@ export function diffWatch(baseline: WatchBaseline, signals: WatchSignals): Watch
       novosStatus.push(status);
       continue;
     }
-    const delta = Math.abs(percentage - anterior);
-    if (delta >= TOLERANCIA_PONTOS_PERCENTUAIS) {
+    if (desvioRelevante(anterior, percentage)) {
       desviosStatus.push(
         `HTTP ${status}: ${fmtPct(anterior)}% → ${fmtPct(percentage)}% (${percentage - anterior >= 0 ? '+' : ''}${fmtPct(percentage - anterior)} p.p.)`,
       );

@@ -156,6 +156,54 @@ describe('diffWatch — consumption', () => {
     expect(temNovidade(f)).toBe(false);
   });
 
+  it('⭐ reports a TINY share that grew by orders of magnitude', () => {
+    // The absolute threshold alone could never see these: a 502 at 0.0000029%
+    // cannot move a full percentage point, so after its first appearance its
+    // rate was free to grow 1000× in silence — in the signal this module calls
+    // load-bearing.
+    const base: WatchBaseline = {
+      ...BASELINE,
+      consumption: { '200': 96, '403': 0.05, '502': 0.0000029 },
+    };
+    const f = diffWatch(
+      base,
+      signals({
+        consumption: {
+          totalRequests: 1_000_000,
+          byStatus: [
+            { status: 200, percentage: 96 },
+            { status: 403, percentage: 0.9 },
+            { status: 502, percentage: 0.0029 },
+          ],
+        },
+      }),
+    );
+    const texto = f.desviosStatus.join(' ');
+    expect(texto).toContain('HTTP 403');
+    expect(texto).toContain('HTTP 502');
+    expect(temNovidade(f)).toBe(true);
+  });
+
+  it('CONTROL — a tiny share doubling under the noise floor is NOT news', () => {
+    // The counterpart: without a floor the relative arm fires on rounding, and
+    // a 2x move on 0.00000001% is meaningless.
+    const base: WatchBaseline = { ...BASELINE, consumption: { '200': 96, '502': 0.00000001 } };
+    const f = diffWatch(
+      base,
+      signals({
+        consumption: {
+          totalRequests: 1_000_000,
+          byStatus: [
+            { status: 200, percentage: 96 },
+            { status: 502, percentage: 0.00000002 },
+          ],
+        },
+      }),
+    );
+    expect(f.desviosStatus).toEqual([]);
+    expect(temNovidade(f)).toBe(false);
+  });
+
   it('says nothing about consumption on a FIRST run', () => {
     const f = diffWatch(BASELINE_VAZIA, signals());
     expect(f.novosStatus).toEqual([]);
