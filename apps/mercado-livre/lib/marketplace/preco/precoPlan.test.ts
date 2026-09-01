@@ -41,6 +41,20 @@ class FakeDb {
    */
   readonly queries: Array<{ path: string; clauses: Array<{ field: string; op: string }> }> = [];
 
+  /**
+   * Every projection the module asked for — a query's `select(...)` and
+   * `getAll`'s `fieldMask` option.
+   *
+   * Same reasoning as `queries` above, one layer down: the fake used to serve
+   * full documents and throw both projections away ("a bandwidth detail"), so
+   * a field silently leaving a mask was UNOBSERVABLE here. It is not a
+   * bandwidth detail — a masked-out field reads as ABSENT, and `readFamilia`
+   * coerces an absent `publicado` to `false`, so dropping it hands every row a
+   * confident wrong value rather than an error. Recorded at build time, not at
+   * `get()`, so a projection is pinned even on a path that never executes.
+   */
+  readonly projections: Array<{ kind: 'select' | 'fieldMask'; fields: string[] }> = [];
+
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
     if (!c) this.cols.set(path, (c = new Map()));
@@ -62,8 +76,11 @@ class FakeDb {
         clauses.push({ field, op, value });
         return q;
       },
-      // Field masks are a bandwidth detail — the fake serves full docs.
-      select(..._fields: string[]) {
+      // The fake still SERVES full docs — modelling the mask would make every
+      // fixture in this file declare its own projection — but it now RECORDS
+      // what was asked for, so the mask itself is assertable. See `projections`.
+      select(...fields: string[]) {
+        self.projections.push({ kind: 'select', fields });
         return q;
       },
       // Only FieldPath.documentId() ordering is used in this module.
@@ -111,6 +128,13 @@ class FakeDb {
       (a): a is { __col: string; __id: string } =>
         a != null && typeof a === 'object' && '__id' in a,
     );
+    // The trailing options object — the only place the by-ids read declares its
+    // projection. Recorded, not applied, for the reason `select` gives above.
+    const opts = args.find(
+      (a): a is { fieldMask: string[] } =>
+        a != null && typeof a === 'object' && 'fieldMask' in a && Array.isArray(a.fieldMask),
+    );
+    if (opts != null) this.projections.push({ kind: 'fieldMask', fields: [...opts.fieldMask] });
     return Promise.resolve(
       refs.map((ref) => {
         const data = this.col(ref.__col).get(ref.__id);
@@ -982,5 +1006,47 @@ describe('fetchPrecoFamiliasByIds — the manual push target set', () => {
       anchorIds: ['A1'],
     });
     expect(rows[0]!.links).toHaveLength(1);
+  });
+
+  /**
+   * The trapdoor guard — the price twin of `bulkEstoquePlan.test.ts`'s
+   * "`publicado` still rides BOTH fetchers' S6 projection" (#1087).
+   *
+   * ⚠️ The load-bearing half is the **by-ids** mask, and that is NOT where the
+   * intuition points. `publicado` is no longer a query term on either path, so
+   * it looks like pure bandwidth — but `readFamilia` coerces an ABSENT field to
+   * `false`, and a masked-out field IS absent. `precoManual` is the only reader
+   * (`:357` the opt-out rung, `:388` the oculto note) and it is fed ONLY by
+   * `fetchPrecoFamiliasByIds`, so dropping `publicado` there would, in
+   * production, stamp `AVISO_OCULTO_NO_ERP` on EVERY sent row and — with
+   * `incluirNaoPublicados: false` — skip the ENTIRE selection as
+   * `NAO_PUBLICADO`. Confident, uniform, wrong, and nothing red.
+   *
+   * ⚠️ No behaviour test can stand in for this one. Every `precoManual` spec
+   * injects `fetchFamilias`, so it never executes the real mask; and every
+   * fetcher spec here is served full documents by the fake. This asserts the
+   * PROJECTION itself, which is the only observable that moves.
+   */
+  it('#1087: `publicado` still rides BOTH fetchers’ projection', async () => {
+    const pageDb = new FakeDb();
+    seedAnchor(pageDb, 'A1');
+    await fetchPrecoPage(asDb(pageDb), { integracaoId: CONTA, pageLimit: 10 });
+
+    const byIdsDb = new FakeDb();
+    seedAnchor(byIdsDb, 'A1');
+    await fetchPrecoFamiliasByIds(asDb(byIdsDb), { integracaoId: CONTA, anchorIds: ['A1'] });
+
+    const anchorProjection = (db: FakeDb, kind: 'select' | 'fieldMask') => {
+      const p = db.projections.find((x) => x.kind === kind);
+      expect(p, `no ${kind} projection recorded`).toBeDefined();
+      return p!.fields;
+    };
+
+    const byIds = anchorProjection(byIdsDb, 'fieldMask');
+    expect(byIds).toContain('publicado');
+    // …and the two are the SAME list, which is what keeps a manual row and a
+    // sweep row byte-identical — the property `fetchPrecoFamiliasByIds`'
+    // "same shape" assertion above relies on and cannot itself prove.
+    expect(anchorProjection(pageDb, 'select')).toEqual(byIds);
   });
 });
