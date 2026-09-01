@@ -62,6 +62,7 @@ import {
   type MlModeracao,
   PRODUTO_EXTRA_DATA_DOC_ID,
   precisaConsultarModeracao,
+  skuPaiPorSufixo,
   toOuterRef,
 } from '@delfrance/schemas';
 import {
@@ -274,15 +275,23 @@ export async function importProduto(
   // carries its own stock/estoque read below — it lives on the children — and
   // always resolves/creates the shared grupoDeVariacoes/Variante taxonomy.
   const ownsChildren = hasVariations || isUserProduct;
-  // The parent-level mapped shape for a User-Products family: `mlItemId`/`sku`
-  // are stamped with the FAMILY id (parity — `link.id`/`denormItemId` become the
-  // family id, and the parent produto's sku falls back to it), everything else
-  // (nome from family_name, dims, price, isUserProductModel, …) is unchanged
-  // from the plain item mapping above. Simple/variations[] keep using `mapped`
-  // itself — this branch is additive, never touched by those paths.
-  const planMapped = isUserProduct
-    ? { ...mapped, mlItemId: up!.canonicalId, sku: up!.familyId ?? mapped.sku }
-    : mapped;
+  // The parent-level mapped shape for a User-Products family: `mlItemId` is
+  // stamped with the FAMILY id (parity — `link.id`/`denormItemId` become the
+  // family id), everything else (nome from family_name, dims, price,
+  // isUserProductModel, …) is unchanged from the plain item mapping above.
+  // Simple/variations[] keep using `mapped` itself — this branch is additive,
+  // never touched by those paths.
+  //
+  // ⚠️ `sku` used to be stamped with the family id too, and that was the bug
+  // #1400 fixes. It is a 16-digit ML key, not a seller sku: it showed up in the
+  // produto's SKU column, polluted sku search, and is what an operator saw
+  // instead of their own code. It was pure legacy parity (`models.dart:1226`
+  // puts `familyId` AHEAD of the real SELLER_SKU in the same `??` chain) and
+  // load-bearing for nothing — família identity is `link.id`, the deterministic
+  // produtoId below, and `resolveExistingUpParent`'s family-id step, which is
+  // passed `mapped.sku` (the REAL sku) rather than this value. The parent sku is
+  // resolved further down instead, once the taxonomy is known.
+  const planMapped = isUserProduct ? { ...mapped, mlItemId: up!.canonicalId } : mapped;
 
   // Best-effort description (a missing/failed description never blocks import).
   let descricao: string | null = null;
@@ -320,6 +329,40 @@ export async function importProduto(
   const parentVariacoesUid = ownsChildren
     ? uniqueFirstSeen(taxonomia.map((t) => t.varianteFake))
     : null;
+
+  // ---- The User-Products FAMILY parent's own sku (#1400) -----------------
+  // Under User Products there is no parent ML item: a família is N items sharing
+  // a `family_name`, and each one's `SELLER_SKU` is the MEMBER's. So the parent's
+  // sku has to be recovered, and the rungs are ordered by how much they PROVE.
+  // Anything unproven yields null — a blank sku is honest, a wrong one is an
+  // identity the resolver above matches produtos by.
+  const skuPaiFamilia = isUserProduct
+    ? // 1. What publish wrote for exactly this purpose. Absent on every família
+      //    published before #1400 shipped, and on any conta with the sender off.
+      (up!.skuPai ??
+      // 2. Remove the variant códigos from THIS member's sku — the inverse of
+      //    `cartesianVariations`' `parentSku + variante.codigo`. Refuses unless
+      //    every combo's variante already carries a código, which is precisely
+      //    what a first-ever import does NOT have: `planTaxonomia` creates
+      //    variantes with `codigo: null`, so this rung is the ROUND-TRIP case
+      //    (the ERP knew this taxonomy already) and rung 1 is the fresh one.
+      //    ⚠️ Order-independent by design — this array comes from ML's
+      //    `attribute_combinations` while the child sku was built from the
+      //    produto form's grupo order, and the two need not agree. See
+      //    `skuPaiPorSufixo`.
+      skuPaiPorSufixo(
+        mapped.sku,
+        taxonomia.map((t) => t.varianteCodigo),
+      ) ??
+      // 3. A família of ONE (#1087) — no variation attributes at all, so the
+      //    member IS the produto and its `SELLER_SKU` is the parent's too.
+      //    ⚠️ Gated on the member having no combos, never on the child count:
+      //    the children are imported below, so no count exists yet here.
+      (up!.member.combos.length === 0 ? mapped.sku : null) ??
+      // 4. Unknown. Deliberately NOT the family id.
+      null)
+    : null;
+  const planMappedComSku = isUserProduct ? { ...planMapped, sku: skuPaiFamilia } : planMapped;
 
   // ---- Resolve the ERP produto (link → sku → deterministic id) ----------
   // User-Products resolves the FAMILY parent via its own 3-step cascade
@@ -375,7 +418,7 @@ export async function importProduto(
 
   // ---- Assemble + execute ----------------------------------------------
   const plan = assembleImportPlan({
-    mapped: planMapped,
+    mapped: planMappedComSku,
     options,
     produtoId,
     isCreate,

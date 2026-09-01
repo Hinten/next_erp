@@ -299,13 +299,29 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     // Prices are NOT in this patch (see precosOps) so the legacy precos map is
     // never re-validated. Every field here fills only a currently-null value.
     const patch: Record<string, unknown> = { ultimaModificacao: now };
+    // #1400 self-heal: a User-Products parent imported before that fix carries
+    // the ML FAMILY id in `sku` (the old `sku: up.familyId ?? …` override), so
+    // the fill-blank rule below would see a "filled" field and preserve a
+    // 16-digit number for ever unless the operator ticked "Sobrescrever dados do
+    // produto". Treat exactly that value as blank instead.
+    //
+    // ⚠️ An EXACT match against the id this same import is stamping — never a
+    // shape test. `isFamilyId` is `/^\d+$/` and a real sku can legitimately be
+    // all digits, so matching on shape would clobber good data; and `mlItemId`
+    // is `familyId ?? item.id`, which covers the família whose `family_id` ML
+    // omitted (its stale sku is the MLB id) by the same equality.
+    const skuHerdadoDaFamilia = (key: string): boolean =>
+      key === 'sku' &&
+      mapped.isUserProductModel &&
+      typeof existingProduto?.sku === 'string' &&
+      existingProduto.sku === mapped.mlItemId;
     if (options.atualizarProdutoPai) {
       // Fill a blank field always; replace a filled one only under
       // `sobrescreverDadosProduto` (see its doc for what it deliberately omits).
       // A null `value` never lands either way — ML not reporting a field is not
       // an instruction to erase the ERP's copy of it.
       const fill = (key: keyof MappedMlItem & string, value: unknown) => {
-        const vazio = (existingProduto?.[key] ?? null) == null;
+        const vazio = (existingProduto?.[key] ?? null) == null || skuHerdadoDaFamilia(key);
         if ((vazio || sobrescrever) && value != null) patch[key] = value;
       };
       fill('sku', mapped.sku);

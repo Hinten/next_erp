@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import {
+  ML_ATTR_SKU_PAI_NOME,
+  MercadoLivreHttpError,
+  type MercadoLivreApi,
+} from '@delfrance/integrations-mercado-livre';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import type { ComponentesKit } from '@delfrance/schemas';
@@ -18,6 +22,7 @@ import {
 } from '../estoque/bulkEstoquePlan';
 import {
   MercadoLivrePublishError,
+  SKU_PAI_ATRIBUTO_FLAG_ENV,
   TABELA_BINDING_RECUSA,
   type TabelaBindingMotivo,
   sizeChartIssue,
@@ -1675,6 +1680,83 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
       });
     });
   }
+
+  describe('the parent-sku characteristic survives a half-failed fan-out (#1400)', () => {
+    const carregaSkuPai = (payload: unknown): boolean =>
+      ((payload as { attributes?: Array<{ name?: string }> }).attributes ?? []).some(
+        (a) => a.name === ML_ATTR_SKU_PAI_NOME,
+      );
+
+    beforeEach(() => {
+      process.env[SKU_PAI_ATRIBUTO_FLAG_ENV] = '1';
+    });
+    afterEach(() => {
+      delete process.env[SKU_PAI_ATRIBUTO_FLAG_ENV];
+    });
+
+    it('⛔ member 1 created, member 2 rejected → the RETRY finishes the família uniformly', async () => {
+      // ⚠️ The split-beyond-repair case. The fan-out is sequential and persists
+      // each member as ML confirms it, while the parent link is written once at
+      // the end and the failure path (`stampErrorLinkDoc`) never wrote this
+      // fact at all. A decision that consulted the PARENT would see "nothing
+      // recorded" plus "a member already has an itemId", conclude the família is
+      // not new, and create members 2..n WITHOUT the characteristic — beside a
+      // sibling that has it, which is a família split no later publish repairs.
+      const db = new FakeDb();
+      seedFamilyOfTwo(db);
+
+      let n = 0;
+      const { api } = upApi({
+        createItem: vi.fn(async () => {
+          n += 1;
+          if (n === 2) throw new MercadoLivreHttpError('ML 400: BODY_INVALID_FIELDS', 400, {});
+          return { ...ITEM_RESPONSE, id: 'MLB901', family_id: 4260899048783356 };
+        }),
+      });
+      await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow();
+
+      // Member 1's item WAS created with the characteristic, and its link — the
+      // ONLY witness, since the parent link's failure path records none — says so.
+      const linkDeChild1 = [...db.docs('produtos/child-1/variacaoMercadoLivre').values()][0];
+      expect(linkDeChild1?.itemId).toBe('MLB901');
+      expect(linkDeChild1?.skuPaiAtributo).toBe(true);
+
+      // FakeDb artifact, not product behaviour: the failed run stamped the
+      // picture cache with a `FieldValue.arrayUnion` sentinel the fake stores
+      // verbatim. Clear it so the republish takes the ordinary upload path.
+      db.docs('arquivos').get('arq-1')!.externalIds = null;
+
+      // Now the operator fixes the produto and republishes. Every remaining
+      // create MUST carry the characteristic.
+      const { api: api2, mocks: mocks2 } = upApi();
+      await publishProduto(makeDeps(db, api2), PROD);
+      expect(mocks2.createItem).toHaveBeenCalled();
+      for (const call of mocks2.createItem!.mock.calls) {
+        expect(carregaSkuPai(call[0])).toBe(true);
+      }
+      // …and the member that already existed is UPDATED, never re-created.
+      for (const call of mocks2.updateItem!.mock.calls) {
+        expect(carregaSkuPai(call[1])).toBe(true);
+      }
+    });
+
+    it('a família whose members all lack it never gains one — even with the flag on', async () => {
+      // The mirror control. Without it the test above would pass on an
+      // implementation that simply always sends the characteristic.
+      const db = new FakeDb();
+      seedFamilyOfTwo(db);
+      seedPublishedFamily(db, ['child-1', 'child-2']);
+
+      const { api, mocks } = upApi();
+      await publishProduto(makeDeps(db, api), PROD);
+
+      expect(mocks.createItem).not.toHaveBeenCalled();
+      expect(mocks.updateItem!.mock.calls.length).toBeGreaterThan(0);
+      for (const call of mocks.updateItem!.mock.calls) {
+        expect(carregaSkuPai(call[1])).toBe(false);
+      }
+    });
+  });
 
   it('publishes ONE ML item per variation, sharing a family_name', async () => {
     const db = new FakeDb();

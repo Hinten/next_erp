@@ -726,6 +726,75 @@ parent's available quantity is now 0 for anything in the ERP that still names th
 parent (a manual pedido line, a future entrada), with no message saying the shape
 changed. Moving it below the cheap validations is the open follow-up.
 
+⚠️ **The FAMÍLIA parent's own sku has no native slot on ML, and the family id is
+not a substitute (#1400).** Each member item carries exactly one `SELLER_SKU` —
+the MEMBER's (`buildUserProductItemPayload` lets member attributes override
+family ones by id), so the parent's sku reaches ML only as a fallback on a member
+that has none. The import used to paper over that with
+`sku: up.familyId ?? mapped.sku`, which put a 16-digit ML key in the produto's
+sku column, polluted sku search and showed an operator a number instead of their
+own code. It was legacy parity (`models.dart:1226` orders the same `??` chain the
+same wrong way) and load-bearing for nothing: família identity is `link.id`, the
+deterministic produtoId, and `resolveExistingUpParent`'s family-id step — which
+is passed the REAL sku, not that value. The parent sku is now an ordered chain,
+and every rung that cannot PROVE an answer yields `null`, because a blank sku is
+honest while a wrong one is an identity the resolver matches produtos by:
+
+1. the parent-sku **custom characteristic** (below);
+2. **peel the variant códigos** off the member's `SELLER_SKU` (`skuPaiPorSufixo`
+   in `@delfrance/schemas` — the inverse of `cartesianVariations`);
+3. the member's own `SELLER_SKU`, but **only for a família of one** (no combos at
+   all, so the member IS the produto);
+4. `null`.
+
+⚠️ **Rung 2 cannot serve a first-ever import, and that is not a bug.**
+`planTaxonomia` creates variantes with `codigo: null`, so there is nothing to
+peel — the ERP does not yet know where the parent sku ends and the variant code
+begins. Rung 2 is the ROUND-TRIP case; rung 1 is the fresh one. Do not "fix" it
+by falling back to the value_name or to the member's sku: both hand the parent
+one of its children's identities.
+
+⛔ **The custom characteristic's PRESENCE must be uniform across a família; its
+VALUE is free.** ML computes a família from `family_name`, `domain_id`, `user_id`
+and the attributes, and a custom attribute contributes its **name** to that hash
+while values may vary between members. So an edited parent sku republishes
+safely, but *adding* the attribute to a família that lacks it moves its members
+into a different família — and creating ONE new member with it beside siblings
+without it hashes that member into a família of its own, silently splitting a
+live listing. That is what "add one more variation to an existing produto" walks
+into, which is why `resolveSkuPaiAtributo` tests **every member's `itemId`**, not
+the parent link's `id` alone. `MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED` therefore
+decides a família only at CREATE time; it retrofits nothing and un-sets nothing.
+Reading it back is unconditional (no flag), so a família published while it was
+on is always understood.
+
+⚠️ **The evidence lives on the MEMBER links (`variacaoMercadoLivre.skuPaiAtributo`),
+never on the família's parent link**, and the two reasons are really one — the
+parent link is written ONCE, at the end, from a value read at the beginning:
+
+ - the fan-out is sequential and `writeMemberLink` persists each member the
+   instant ML confirms it, precisely so everything before a failure is recorded.
+   A run that created member 1 and then died on member 2 leaves member 1's ITEM
+   carrying the characteristic while `stampErrorLinkDoc` records none of it — so
+   a parent flag would make the retry see "not recorded" plus "a member already
+   has an itemId", conclude the família is not new, and create members 2..n
+   WITHOUT it. That is a split no later publish repairs. Asking the members
+   finishes the família uniformly instead;
+ - a parent flag would also be a read-modify-write spanning every ML round trip,
+   so a concurrent publish that read `false` first could store it over a `true`
+   (root `CLAUDE.md` rule 7). A member's value is decided by what THAT call just
+   sent for THAT member, so there is nothing to lose a race with — tier 0.
+
+The família-wide answer is the **OR** of the members. It is written `true` only:
+a publish that did not send the characteristic OMITS the key rather than storing
+`false`, because nothing here can strip the attribute from an item that has it —
+the same three-valued discipline `moderacoes` uses.
+⚠️ It is also **publicly visible** — a custom characteristic renders in the
+anúncio's ficha técnica — and how ML echoes an id-less attribute on `GET /items`
+is **unverified** (no sandbox, no lane may hold real credentials), which is
+exactly why it is an addition to the chain above and never its replacement.
+`skuPaiFromAttributes` matches by NAME and ignores any id ML may attach.
+
 Four facts from the ML docs that the payload builder now encodes (#797) — check
 these before "fixing" what looks wrong in `publishCore.ts`:
 

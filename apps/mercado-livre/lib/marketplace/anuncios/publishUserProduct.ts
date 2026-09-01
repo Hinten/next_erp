@@ -33,6 +33,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   type BuildItemPayloadInput,
+  ML_ATTR_SKU_PAI_NOME,
   ML_MULTIGET_MAX_IDS,
   type MercadoLivreApi,
   MercadoLivreError,
@@ -63,6 +64,13 @@ export interface UserProductMember {
    */
   raw: Record<string, unknown>;
   sku: string | null;
+  /**
+   * #1400 — does this member's ML item already carry the parent-sku custom
+   * characteristic? Read by `resolveSkuPaiAtributo`, which ORs it across the
+   * família: the members are the only witness that survives a fan-out failing
+   * half-way, since the parent link is written once, at the end.
+   */
+  skuPaiAtributo: boolean;
 }
 
 export interface PublishUserProductDeps {
@@ -132,6 +140,9 @@ export async function publishUserProductMembers(
     const isUpdate = existingItemId != null;
 
     const payload = buildUserProductItemPayload({ ...memberInput, isUpdate });
+    // #1400 — read off the payload rather than off the caller's intent, so what
+    // is recorded below is what ML was actually told about THIS member.
+    const enviouSkuPai = payloadCarregaSkuPai(payload);
     const item = isUpdate
       ? await api.updateItem(existingItemId, payload)
       : await api.createItem(payload);
@@ -148,6 +159,17 @@ export async function publishUserProductMembers(
       itemId: item.id,
       state,
       sku: memberSku(memberInput.member.attributes) ?? state?.sku ?? null,
+      // #1400. Three-valued like `moderacoes` below: `true` = this call sent the
+      // characteristic to THIS member, `false` = it did not, and the writer
+      // OMITS the key in that case rather than storing `false` — nothing can
+      // strip the attribute from an item that already has it, so a publish that
+      // did not send it has no authority to say the item lacks it.
+      //
+      // ⚠️ Written HERE, inside the loop, which is the whole point: the fan-out
+      // is sequential precisely so everything before a failure is recorded, and
+      // this is the fact a retry needs to finish the família uniformly rather
+      // than create the remaining members without the characteristic.
+      skuPaiAtributo: enviouSkuPai,
       // ML just told us this member's lifecycle state; recording it here is what
       // lets the family's `estado` be a FOLD of its members instead of whichever
       // one happened to be sent first (#1142). Without it a freshly published
@@ -418,6 +440,13 @@ async function writeMemberLink(
      * the same three-valued value on the `items` path.
      */
     moderacoes: MlModeracao[] | null;
+    /**
+     * #1400 — `true` when this call sent the parent-sku characteristic to this
+     * member. `false` OMITS the key, so a member that already carries the
+     * attribute keeps saying so: presence is part of ML's family hash and
+     * nothing here can remove it, so only a publish that SENT it may speak.
+     */
+    skuPaiAtributo: boolean;
     userProductId: string | null;
   },
 ): Promise<void> {
@@ -446,6 +475,8 @@ async function writeMemberLink(
     // spread into `parse`, which fills the schema's own `null` default, so a
     // genuine first publish lands the same value either way.
     ...(args.moderacoes != null ? { moderacoes: args.moderacoes } : {}),
+    // #1400 — see the arg's docblock: `true` only, never `false`.
+    ...(args.skuPaiAtributo ? { skuPaiAtributo: true } : {}),
     // #706 multiorigem: this member's own `user_product_id`, straight off the
     // create/update response. It is the STOCK identity on a
     // `warehouse_management` conta, where `PUT /items` moves nothing. Recorded
@@ -477,6 +508,22 @@ async function writeMemberLink(
         toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${parentLinkDocId}`),
       ...patch,
     }),
+  );
+}
+
+/**
+ * Did the payload we are about to send carry the parent-sku characteristic
+ * (#1400)? Matched on `name`, because it goes out id-less — `attributeToMercadoLivre`
+ * emits `name` for exactly that shape.
+ */
+function payloadCarregaSkuPai(payload: Record<string, unknown>): boolean {
+  const attrs = payload.attributes;
+  if (!Array.isArray(attrs)) return false;
+  return attrs.some(
+    (a) =>
+      typeof a === 'object' &&
+      a !== null &&
+      (a as { name?: unknown }).name === ML_ATTR_SKU_PAI_NOME,
   );
 }
 
