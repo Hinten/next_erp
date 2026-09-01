@@ -88,6 +88,7 @@ function run(
     docs?: Record<string, Record<string, unknown> | null>;
     produtoIds?: string[];
     baixarPreco?: boolean;
+    incluirNaoPublicados?: boolean;
     rows?: PrecoFamilyRow[];
     conta?: Record<string, unknown>;
     sendDraft?: NonNullable<Parameters<typeof enviarPrecoManual>[2]['sendDraft']>;
@@ -100,6 +101,9 @@ function run(
       integracaoId: CONTA,
       produtoIds: over.produtoIds ?? ['PROD'],
       baixarPreco: over.baixarPreco,
+      // Passed through UNDEFINED unless a test says otherwise, so the default
+      // path exercised here is the same one a caller omitting the field gets.
+      incluirNaoPublicados: over.incluirNaoPublicados,
     },
     {
       nowMs: 1_700_000_000_000,
@@ -135,8 +139,48 @@ describe('conta guards', () => {
 });
 
 describe('#804 S6/S7 — the classes the account-wide query drops silently', () => {
-  it('an UNPUBLISHED produto with a live link produces a row, not silence', async () => {
+  /**
+   * ⚠️ This used to assert a `NAO_PUBLICADO` SKIP unconditionally. That was the
+   * wrong verdict for the same reason #1087 gave on the stock side: `publicado`
+   * is an ERP CATALOGUE flag and says nothing about whether the anúncio is
+   * live, so refusing on it left ML advertising a stale price on a selling
+   * listing. The skip survives as an OPT-OUT; the default is to send.
+   *
+   * Both directions are pinned below, and they must stay that way: a test that
+   * only proves the produto is now sent cannot show the opt-out still refuses,
+   * and one that only proves the refusal cannot show the default changed.
+   */
+  it('an UNPUBLISHED produto with a live link is SENT by default, and says why', async () => {
     const res = await run({ rows: [familyRow({ publicado: false })] });
+
+    expect(res.listings).toHaveLength(1);
+    expect(res.listings[0]).toMatchObject({
+      produtoId: 'PROD',
+      outcome: 'enviado',
+      // ⚠️ Stays null. The note is appended to `mensagem` only — an `enviado`
+      // row carrying a motivo reads as a skip to every consumer of the envelope.
+      motivo: null,
+    });
+    expect(res.listings[0]!.mensagem).toContain('Preço atualizado de 40 para 50.');
+    expect(res.listings[0]!.mensagem).toContain('oculto (não publicado) no ERP');
+    expect(res.resumo).toMatchObject({ enviados: 1, pulados: 0 });
+  });
+
+  it('a PUBLISHED produto is sent without the oculto note', async () => {
+    // The near-miss control: without it the assertion above passes against a
+    // note appended to every row unconditionally, which is exactly what a
+    // dropped `publicado` fieldMask entry would produce (see `precoPlan.ts`).
+    const res = await run({ rows: [familyRow({ publicado: true })] });
+
+    expect(res.listings[0]).toMatchObject({ outcome: 'enviado', motivo: null });
+    expect(res.listings[0]!.mensagem).not.toContain('oculto');
+  });
+
+  it('incluirNaoPublicados: false restores the skip, with its reason', async () => {
+    const res = await run({
+      rows: [familyRow({ publicado: false })],
+      incluirNaoPublicados: false,
+    });
 
     expect(res.listings).toHaveLength(1);
     expect(res.listings[0]).toMatchObject({
@@ -146,6 +190,13 @@ describe('#804 S6/S7 — the classes the account-wide query drops silently', () 
       mensagem: 'O produto está oculto (não publicado) no ERP.',
     });
     expect(res.resumo).toMatchObject({ enviados: 0, pulados: 1 });
+  });
+
+  it('incluirNaoPublicados: false leaves a PUBLISHED produto alone', async () => {
+    // The opt-out must gate on `publicado`, not simply refuse everything.
+    const res = await run({ rows: [familyRow({ publicado: true })], incluirNaoPublicados: false });
+
+    expect(res.listings[0]).toMatchObject({ outcome: 'enviado', motivo: null });
   });
 
   it('a produto whose link is missing for this conta reports SEM_LINK rather than vanishing', async () => {

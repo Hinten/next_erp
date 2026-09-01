@@ -60,7 +60,9 @@ test.describe.serial('Produtos — bulk price push to the marketplaces', () => {
     await expect(acao).toBeEnabled();
   });
 
-  test('asks before sending, with decreases allowed by default', async ({ page }) => {
+  test('asks before sending, with decreases and hidden produtos allowed by default', async ({
+    page,
+  }) => {
     await page.goto('/produtos');
     await searchTableView(page, prefix);
     await expect(page.getByRole('link', { name: produtoNome, exact: true })).toBeVisible({
@@ -74,6 +76,12 @@ test.describe.serial('Produtos — bulk price push to the marketplaces', () => {
     // own opt-in: hand-picking produtos IS the explicit intent to move THOSE
     // prices, including downwards (legacy `produtoTableView.dart:607`).
     await expect(page.getByLabel('Permitir baixar preços')).toBeChecked();
+    // Also ON: `publicado` is an ERP catalogue flag, not a statement about the
+    // anúncio, so refusing on it left ML advertising a stale price on a live
+    // listing. Unticking it is what restores the `NAO_PUBLICADO` skip.
+    // ⚠️ `getByLabel` matches by SUBSTRING — these two labels must stay
+    // substring-disjoint or each locator starts matching both checkboxes.
+    await expect(page.getByLabel('Incluir produtos ocultos')).toBeChecked();
   });
 
   test('reports a push it could not deliver, per row', async ({ page }) => {

@@ -624,6 +624,15 @@ MERCADO_LIVRE_ORDER_BACKFILL_ENABLED=1
 MERCADO_LIVRE_MISSED_FEEDS_ENABLED=1
 # The high-stock skip on the incremental tier (ADR 0014). Default 100.
 MERCADO_LIVRE_STOCK_LIMIAR_ALTO=100
+# ESCAPE HATCH (#1087) — leave it COMMENTED OUT: the default (absent) is the
+# CORRECTED behaviour, in which a virtual kit's stock IS sent, at its
+# component-min, matching what publish has always sent. Uncomment only to revert
+# a misbehaving live sweep to the pre-#1087 refusal. ⚠️ It also restores that
+# rung's family-wide blast radius — one virtual anchor silences every listing
+# and variation child of its família — and the manual push reads the same var
+# from `apphosting.yaml` / the console, so flip BOTH or the two surfaces
+# disagree about the same produto.
+# MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED=1
 # How old a `payments` notification may be and still BOOTSTRAP a pedido (#1087).
 # Default 72h — ML holds a boleto up to ~3 business days and a pending boleto is
 # a real sale, while the hot sweep re-drives hour-old payloads and `missed_feeds`

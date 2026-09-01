@@ -35,6 +35,7 @@
  * donor, and that exception is written down at the use site.
  */
 import {
+  ML_ATTR_SKU_PAI_NOME,
   ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
   type MlAttribute,
   attributesWithValue,
@@ -124,6 +125,36 @@ export function skuFromAttributes(
 ): string | null {
   const v = attrById(attrs, 'SELLER_SKU')?.value_name;
   return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * The FAMILY parent's sku, off the custom characteristic publish writes (#1400).
+ *
+ * ⚠️ Matched by **name**, never by id: it is sent id-less (`attrSkuPai`), and
+ * whether ML echoes one back is unverified — ML has no sandbox, so no lane can
+ * hold real credentials and no test here proves what the API returns. Ignoring
+ * `id` entirely is what makes both answers work.
+ *
+ * ⚠️ The name comparison is deliberately trimmed + case-insensitive, because it
+ * is matching a label ML round-trips rather than a value: the fold's scope is
+ * `' sku do PRODUTO pai '` ≡ `'SKU do produto pai'`, and nothing else — the
+ * VALUE is returned verbatim and never folded, so `'CAM-01'` and `'CAM-1'` stay
+ * distinct sku. Nothing in the corpus names a second attribute this closely, so
+ * a looser match here cannot collide with a real characteristic.
+ *
+ * Never authoritative on its own: `import.ts` places it first in an ordered
+ * chain precisely because it is absent from every família published before this
+ * shipped.
+ */
+export function skuPaiFromAttributes(
+  attrs: readonly MlItemAttribute[] | null | undefined,
+): string | null {
+  const alvo = ML_ATTR_SKU_PAI_NOME.trim().toLowerCase();
+  const entry = (attrs ?? []).find(
+    (a) => typeof a.name === 'string' && a.name.trim().toLowerCase() === alvo,
+  );
+  const v = entry?.value_name;
+  return typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
 }
 
 /**
@@ -415,7 +446,18 @@ export function attributesFromItem(
   attrs: readonly MlItemAttribute[] | null | undefined,
 ): MlAttribute[] {
   const mapped: MlAttribute[] = (attrs ?? [])
-    .filter((a) => typeof a.id === 'string' && a.id.length > 0 && !DERIVED_ATTRIBUTE_IDS.has(a.id))
+    .filter(
+      (a) =>
+        typeof a.id === 'string' &&
+        a.id.length > 0 &&
+        !DERIVED_ATTRIBUTE_IDS.has(a.id) &&
+        // #1400 — publish RE-DERIVES the parent-sku characteristic from the
+        // produto, exactly like `SELLER_SKU`, so storing it would ship it twice.
+        // ⚠️ Excluded by NAME rather than by id because it is sent id-less and
+        // whether ML assigns one on the way back is unverified: the id filter
+        // above already drops the id-less case, and this covers the other.
+        skuPaiFromAttributes([a]) == null,
+    )
     .map((a) => {
       const measurement = measurementFromStruct(a) ?? measurementFromBakedValueName(a);
       const valueName = measurement?.value ?? a.value_name ?? null;

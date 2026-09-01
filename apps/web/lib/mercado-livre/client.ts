@@ -22,6 +22,7 @@ import { useAuth } from '@/lib/auth/useAuth';
 
 import * as wire from './wire';
 import type {
+  MercadoLivreAnuncioStatusResult,
   MercadoLivreAnuncioTeste,
   MercadoLivreAtributoSugestao,
   MercadoLivreAtributosSugestao,
@@ -360,6 +361,25 @@ export interface MercadoLivreClient {
     linkDocId: string;
   }): Promise<MercadoLivreReverificarResult>;
   /**
+   * PAUSE or REACTIVATE listings on Mercado Livre (PERM.integracao.write).
+   *
+   * ⚠️ Two callers, one method, and the difference is `linkDocId`: the produto
+   * tab names ONE listing (and then `produtoIds` must hold exactly that
+   * produto), while the produtos table omits it and the run covers every
+   * listing the selection holds on that conta.
+   *
+   * Per-listing failure is DATA — a valid request answers 200 with `outcome`
+   * rows, never an HTTP error. `statusFinal` on each row is what ML REPORTS
+   * after the write, not the status that was asked for.
+   */
+  definirStatusAnuncios(input: {
+    integracaoId: string;
+    produtoIds: string[];
+    acao: 'pausar' | 'reativar';
+    linkDocId?: string;
+    signal?: AbortSignal;
+  }): Promise<MercadoLivreAnuncioStatusResult>;
+  /**
    * Where ONE listing lives on Mercado Livre (PERM.integracao.read).
    *
    * Only a **User-Products** listing needs this: its link doc holds a FAMILY id,
@@ -484,11 +504,20 @@ export interface MercadoLivreClient {
    * table defaults it ON, unlike the account-wide job: hand-picking produtos IS
    * the explicit intent, and it is what the legacy per-produto action did
    * unconditionally. Unticked, a decrease skips `PRECO_ANTIGO_MAIOR`.
+   *
+   * `incluirNaoPublicados` sends even when the produto is oculto (não
+   * publicado) in the ERP. ⚠️ It defaults **TRUE** — the inverse of
+   * `baixarPreco` — because `publicado` is an ERP catalogue flag with nothing
+   * to say about whether the anúncio is live, and refusing on it left ML
+   * advertising a stale price on a selling listing (the same conclusion the
+   * account-wide job reached in #1072 and the stock side in #1087). Unticked,
+   * those produtos come back as `NAO_PUBLICADO` skip rows.
    */
   enviarPrecos(input: {
     integracaoId: string;
     produtoIds: string[];
     baixarPreco?: boolean;
+    incluirNaoPublicados?: boolean;
     signal?: AbortSignal;
   }): Promise<MercadoLivreEnvioPrecoResult>;
   /**
@@ -1008,6 +1037,13 @@ export function createMercadoLivreClient(config: {
         wire.reverificarResultSchema,
         input,
       ),
+    definirStatusAnuncios: ({ signal, ...input }) =>
+      call(
+        '/api/marketplace/mercado-livre/anuncio-status',
+        wire.anuncioStatusResultSchema,
+        input,
+        signal,
+      ),
     linkAnuncio: (input) =>
       call('/api/marketplace/mercado-livre/link-anuncio', wire.urlSchema, input),
     importar: (input) =>
@@ -1051,6 +1087,10 @@ export function createMercadoLivreClient(config: {
           integracaoId: input.integracaoId,
           produtoIds: input.produtoIds,
           baixarPreco: input.baixarPreco ?? false,
+          // ⚠️ `?? true`, not `?? false` — see the interface docblock. The
+          // route defaults the same way, so the two agree when the field is
+          // omitted entirely.
+          incluirNaoPublicados: input.incluirNaoPublicados ?? true,
         },
         input.signal,
       ),

@@ -58,6 +58,16 @@ export interface PricePushInput {
    * (`produtoTableView.dart:607`).
    */
   baixarPreco: boolean;
+  /**
+   * Send even when the produto is `publicado: false` (oculto) in the ERP.
+   *
+   * ⚠️ Defaults ON in the dialog, and the backend treats an ABSENT value as
+   * true — the inverse of `baixarPreco`. `publicado` is an ERP catalogue flag,
+   * not a statement about the anúncio, and refusing on it left ML advertising a
+   * stale price on a live listing. Unticked, those produtos come back as
+   * `NAO_PUBLICADO` skip rows.
+   */
+  incluirNaoPublicados: boolean;
   deps: PricePushDeps;
   /** Aborted when the operator cancels; providers forward it to `fetch`. */
   signal?: AbortSignal;

@@ -1,11 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import {
+  ML_ATTR_SKU_PAI_NOME,
+  MercadoLivreHttpError,
+  type MercadoLivreApi,
+} from '@delfrance/integrations-mercado-livre';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
-import { type PublishDeps, loadTabelaBinding, publishProduto } from './publish';
+import type { ComponentesKit } from '@delfrance/schemas';
+
+import {
+  type PublishDeps,
+  loadTabelaBinding,
+  publishProduto,
+  quantidadeParaPublicar,
+} from './publish';
+import {
+  STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV,
+  quantidadeDoMembro,
+  quantidadeParaEnvio,
+} from '../estoque/bulkEstoquePlan';
 import {
   MercadoLivrePublishError,
+  SKU_PAI_ATRIBUTO_FLAG_ENV,
   TABELA_BINDING_RECUSA,
   type TabelaBindingMotivo,
   sizeChartIssue,
@@ -1664,6 +1681,83 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     });
   }
 
+  describe('the parent-sku characteristic survives a half-failed fan-out (#1400)', () => {
+    const carregaSkuPai = (payload: unknown): boolean =>
+      ((payload as { attributes?: Array<{ name?: string }> }).attributes ?? []).some(
+        (a) => a.name === ML_ATTR_SKU_PAI_NOME,
+      );
+
+    beforeEach(() => {
+      process.env[SKU_PAI_ATRIBUTO_FLAG_ENV] = '1';
+    });
+    afterEach(() => {
+      delete process.env[SKU_PAI_ATRIBUTO_FLAG_ENV];
+    });
+
+    it('⛔ member 1 created, member 2 rejected → the RETRY finishes the família uniformly', async () => {
+      // ⚠️ The split-beyond-repair case. The fan-out is sequential and persists
+      // each member as ML confirms it, while the parent link is written once at
+      // the end and the failure path (`stampErrorLinkDoc`) never wrote this
+      // fact at all. A decision that consulted the PARENT would see "nothing
+      // recorded" plus "a member already has an itemId", conclude the família is
+      // not new, and create members 2..n WITHOUT the characteristic — beside a
+      // sibling that has it, which is a família split no later publish repairs.
+      const db = new FakeDb();
+      seedFamilyOfTwo(db);
+
+      let n = 0;
+      const { api } = upApi({
+        createItem: vi.fn(async () => {
+          n += 1;
+          if (n === 2) throw new MercadoLivreHttpError('ML 400: BODY_INVALID_FIELDS', 400, {});
+          return { ...ITEM_RESPONSE, id: 'MLB901', family_id: 4260899048783356 };
+        }),
+      });
+      await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow();
+
+      // Member 1's item WAS created with the characteristic, and its link — the
+      // ONLY witness, since the parent link's failure path records none — says so.
+      const linkDeChild1 = [...db.docs('produtos/child-1/variacaoMercadoLivre').values()][0];
+      expect(linkDeChild1?.itemId).toBe('MLB901');
+      expect(linkDeChild1?.skuPaiAtributo).toBe(true);
+
+      // FakeDb artifact, not product behaviour: the failed run stamped the
+      // picture cache with a `FieldValue.arrayUnion` sentinel the fake stores
+      // verbatim. Clear it so the republish takes the ordinary upload path.
+      db.docs('arquivos').get('arq-1')!.externalIds = null;
+
+      // Now the operator fixes the produto and republishes. Every remaining
+      // create MUST carry the characteristic.
+      const { api: api2, mocks: mocks2 } = upApi();
+      await publishProduto(makeDeps(db, api2), PROD);
+      expect(mocks2.createItem).toHaveBeenCalled();
+      for (const call of mocks2.createItem!.mock.calls) {
+        expect(carregaSkuPai(call[0])).toBe(true);
+      }
+      // …and the member that already existed is UPDATED, never re-created.
+      for (const call of mocks2.updateItem!.mock.calls) {
+        expect(carregaSkuPai(call[1])).toBe(true);
+      }
+    });
+
+    it('a família whose members all lack it never gains one — even with the flag on', async () => {
+      // The mirror control. Without it the test above would pass on an
+      // implementation that simply always sends the characteristic.
+      const db = new FakeDb();
+      seedFamilyOfTwo(db);
+      seedPublishedFamily(db, ['child-1', 'child-2']);
+
+      const { api, mocks } = upApi();
+      await publishProduto(makeDeps(db, api), PROD);
+
+      expect(mocks.createItem).not.toHaveBeenCalled();
+      expect(mocks.updateItem!.mock.calls.length).toBeGreaterThan(0);
+      for (const call of mocks.updateItem!.mock.calls) {
+        expect(carregaSkuPai(call[1])).toBe(false);
+      }
+    });
+  });
+
   it('publishes ONE ML item per variation, sharing a family_name', async () => {
     const db = new FakeDb();
     seedFamilyOfTwo(db);
@@ -3185,6 +3279,175 @@ describe('every tabela-binding reason is reachable and refuses as declared (#108
               'answering `categoriaUsaGuia: null`?'
           : `'${codigo}' is declared silent but produced: ${String(issue)}`,
       ).toBe(deveRecusar);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe('#1087 — the sweep and publish must compute the SAME quantity', () => {
+  /**
+   * ⚠️ **The acceptance criterion of #1087, and the reason it is asserted as an
+   * EQUALITY rather than against hand-written numbers.**
+   *
+   * Before #1087 the two sides disagreed by design: publish sent a virtual
+   * kit's component-min (`POST /items` requires `available_quantity`) while the
+   * sweep refused to send at all, so the listing froze at its publish-time
+   * quantity for ever and oversold. Making the sweep send is only half a fix —
+   * if it now sends a DIFFERENT number, the first sweep after a publish
+   * silently changes the advertised quantity, which is a new bug wearing the
+   * fix's clothes.
+   *
+   * A number written into this file could not catch that: it would pin one side
+   * and let the other drift toward it. Comparing the two functions to each
+   * other is what makes the disagreement impossible to introduce. It holds
+   * today because `quantidadeParaPublicar` IS `quantidadeParaEnvio` with the
+   * escape hatch pinned off — the test's job is to notice if that ever stops
+   * being true.
+   */
+  const CASOS: Array<{
+    nome: string;
+    produto: { ehKit: boolean; ehKitVirtual: boolean; componentesKit: ComponentesKit | null };
+    own: number;
+    componentes: Record<string, number>;
+  }> = [
+    {
+      nome: 'virtual kit constrained by two components (min, not own stock)',
+      produto: {
+        ehKit: true,
+        ehKitVirtual: true,
+        componentesKit: {
+          A: { quantidade: 1, limitarEstoque: true, timestamp: null },
+          B: { quantidade: 1, limitarEstoque: true, timestamp: null },
+        },
+      },
+      own: 50,
+      componentes: { A: 5, B: 3 },
+    },
+    {
+      nome: 'virtual kit whose components divide (floored min)',
+      produto: {
+        ehKit: true,
+        ehKitVirtual: true,
+        componentesKit: {
+          A: { quantidade: 2, limitarEstoque: true, timestamp: null },
+          B: { quantidade: 3, limitarEstoque: true, timestamp: null },
+        },
+      },
+      own: 100,
+      componentes: { A: 10, B: 9 },
+    },
+    {
+      nome: 'virtual kit with NO constraining component → own stock',
+      produto: { ehKit: true, ehKitVirtual: true, componentesKit: null },
+      own: 12,
+      componentes: {},
+    },
+    {
+      nome: 'virtual kit whose component has no estoque → 0, never unconstrained (#238)',
+      produto: {
+        ehKit: true,
+        ehKitVirtual: true,
+        componentesKit: { A: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+      },
+      own: 40,
+      componentes: {},
+    },
+    {
+      // ⚠️ The near-miss. `ehKitVirtual` without `ehKit` must STILL take the kit
+      // branch on both sides; keying it on `ehKit` alone answers `own` — a wrong
+      // number rather than a refusal, and nothing reports it.
+      nome: 'ehKitVirtual WITHOUT ehKit still takes the kit branch',
+      produto: {
+        ehKit: false,
+        ehKitVirtual: true,
+        componentesKit: { A: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+      },
+      own: 50,
+      componentes: { A: 4 },
+    },
+    {
+      nome: 'an ORDINARY kit, the control that was never in dispute',
+      produto: {
+        ehKit: true,
+        ehKitVirtual: false,
+        componentesKit: { A: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+      },
+      own: 99,
+      componentes: { A: 7 },
+    },
+  ];
+
+  it.each(CASOS)('agrees on: $nome', ({ produto, own, componentes }) => {
+    const doSweep = quantidadeDoMembro({
+      produtoId: 'P',
+      ehKit: produto.ehKit,
+      ehKitVirtual: produto.ehKitVirtual,
+      publicado: true,
+      componentesKit: produto.componentesKit,
+      timestampMs: null,
+      estoque: { quantidade: own, quantidadeReservada: 0 },
+      componentEstoques: Object.entries(componentes).map(([parentId, quantidade]) => ({
+        parentId,
+        quantidade,
+        quantidadeReservada: 0,
+      })),
+    });
+    const doPublish = quantidadeParaPublicar(produto, own, componentes);
+
+    // Not `toBe(<a number>)`: the EQUALITY is the assertion. A null on the sweep
+    // side would mean the refusal came back with the hatch off, which is also a
+    // disagreement — `toBe` catches it, since publish can never return null.
+    expect(doSweep).toBe(doPublish);
+  });
+
+  /**
+   * ⚠️ **Agreement is necessary and NOT sufficient, and this pins the gap.**
+   *
+   * The equality above is symmetric: both sides now call one function, so a
+   * defect INSIDE that function moves both answers together and the comparison
+   * stays green. Measured, not assumed — reverting the kit branch to
+   * `if (args.ehKit)` alone leaves every case above passing, because publish and
+   * the sweep then agree on the produto's own stock instead of the component-min.
+   *
+   * So the near-miss needs a second, one-sided assertion: for a produto flagged
+   * `ehKitVirtual` WITHOUT `ehKit`, the published quantity must NOT be the
+   * produto's own stock. `bulkEstoquePlan.test.ts` pins the sweep's half.
+   */
+  it('near-miss: `ehKitVirtual` without `ehKit` must NOT publish the own stock', () => {
+    const produto = {
+      ehKit: false,
+      ehKitVirtual: true,
+      componentesKit: { A: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+    };
+    expect(quantidadeParaPublicar(produto, 50, { A: 4 })).toBe(4); // the component-min
+    expect(quantidadeParaPublicar(produto, 50, { A: 4 })).not.toBe(50); // own stock
+  });
+
+  it('the escape hatch moves the SWEEP only — publish can never skip', () => {
+    // `POST /items` requires `available_quantity`, so `quantidadeParaPublicar`
+    // pins `pularKitVirtual: false`. Turning the hatch on must therefore break
+    // the agreement in exactly ONE direction, and never make publish emit null.
+    const produto = {
+      ehKit: true,
+      ehKitVirtual: true,
+      componentesKit: { A: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+    };
+    const componentes = { A: 3 };
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    try {
+      expect(quantidadeParaPublicar(produto, 50, componentes)).toBe(3);
+      expect(
+        quantidadeParaEnvio({
+          ehKit: produto.ehKit,
+          ehKitVirtual: produto.ehKitVirtual,
+          componentesKit: produto.componentesKit,
+          ownDisponivel: 50,
+          disponivelByProdutoId: componentes,
+        }),
+      ).toBeNull();
+    } finally {
+      delete process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV];
     }
   });
 });

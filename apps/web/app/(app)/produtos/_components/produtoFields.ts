@@ -286,6 +286,10 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'integracoesComProduto',
   'fotosArquivosIds',
   'paiId',
+  // The pointer to a family-of-one's sole member (#1398). Server-derived from
+  // the child set by `derivarFilhoUnico`, never typed by an operator — and a
+  // wrong value silently sends every stock reader to the wrong produto.
+  'filhoUnicoId',
   'ordem',
   // System stamps — written by `saveRecord` / ObjectView, never form inputs.
   'timestamp',

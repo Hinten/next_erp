@@ -68,12 +68,14 @@ import {
   type PublishProduto,
   type PublishVariationChild,
   type TabelaBindingMotivo,
+  SKU_PAI_ATRIBUTO_FLAG_ENV,
   assemblePublishInput,
   classificarMembroUnico,
   linkAttributesAfterPublish,
   publishModeIssues,
   resolveCondition,
   resolveListingModel,
+  resolveSkuPaiAtributo,
 } from './publishCore';
 import { garantirMembroUnico } from './upSoleMemberWrite';
 import { quantidadeParaEnvio } from '../estoque/bulkEstoquePlan';
@@ -463,6 +465,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       itemId: typeof existingVar?.raw.itemId === 'string' ? existingVar.raw.itemId : null,
       raw: existingVar?.raw ?? {},
       sku: typeof existingVar?.raw.sku === 'string' ? existingVar.raw.sku : null,
+      // #1400 — does THIS member's ML item already carry the parent-sku
+      // characteristic? The família-wide answer is the OR of these, and asking
+      // the members is what survives a fan-out that died half-way.
+      skuPaiAtributo: existingVar?.raw.skuPaiAtributo === true,
     });
     variations.push({
       produto: toPublishProduto(child.id, child.data),
@@ -594,6 +600,17 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // below. Cached (listaDePrecosCache.ts): tabelaNormalOuterRef is a property
   // of the INTEGRAÇÃO, so this id is identical for every produto published
   // under this conta.
+  // #1400 — the família parent's sku as a custom characteristic. Decided ONCE,
+  // here, because it is a fact about ML's família (see `resolveSkuPaiAtributo`)
+  // and every member of this publish must agree on it.
+  const skuPaiDecisao = resolveSkuPaiAtributo({
+    isUserProductSeller: listingModel === 'user-products',
+    linkId: link?.id ?? null,
+    membros: upMembers,
+    produtoSku: produto.sku ?? null,
+    flagLigada: process.env[SKU_PAI_ATRIBUTO_FLAG_ENV] === '1',
+  });
+
   const priceListId = deps.tabelaNormalOuterRef ? idFromRef(deps.tabelaNormalOuterRef) : null;
   const priceListNome = priceListId
     ? ((await readListaDePrecos(db, priceListId))?.nome ?? null)
@@ -614,6 +631,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     categoryId,
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
     isUserProductSeller: listingModel === 'user-products',
+    skuPai: skuPaiDecisao.skuPai,
     sizeChart: tabela.resolved,
     sizeChartMotivo: tabela.motivo,
     categoriaUsaGuia: tabela.categoriaUsaGuia,
@@ -1314,32 +1332,39 @@ function storedCombinationsOf(raw: Record<string, unknown> | undefined): MlAttri
 }
 
 /**
- * The `available_quantity` to publish for one produto.
+ * The `available_quantity` to publish for one produto: the component-min for a
+ * kit — virtual or not — falling back to its own stock when nothing constrains
+ * it.
  *
- * ⚠️ This is deliberately NOT `quantidadeParaEnvio`'s `null` contract. In the
- * stock SWEEP, `null` means "do not push a stock update for this produto" — a
- * virtual kit's quantity is not ours to sync, because its components are what
- * move. On the PUBLISH path there is no such option: `POST /items` requires
- * `available_quantity` on an item without variations, so omitting it does not
- * make ML derive anything — it makes the produto unpublishable. ML's own Virtual
- * Kits, which really do derive their stock, are a User-Products feature
- * (`POST /items/kits`) this port never creates.
+ * ⚠️ **The one place publish and the stock sweep MUST agree**, which since
+ * #1087 they do structurally rather than by comment: this is `quantidadeParaEnvio`
+ * with the escape hatch pinned off, so there is one implementation and the
+ * compiler keeps them equal. If they ever diverged again the first sweep after a
+ * publish would silently change the advertised number. `publish.test.ts` pins
+ * the equality against `quantidadeDoMembro`.
  *
- * So a virtual kit is published as the ordinary kit it looks like on this wire:
- * the component-min, falling back to its own stock when nothing constrains it.
+ * ⚠️ `pularKitVirtual: false` is not a preference, it is the only legal value
+ * here. `POST /items` REQUIRES `available_quantity` on an item without
+ * variations, so a `null` would not make ML derive anything — it would make the
+ * produto unpublishable. ML's own Virtual Kits, which really do derive their
+ * stock, are a User-Products feature (`POST /items/kits`) this port never
+ * creates, which is the same fact that made the sweep's old refusal wrong.
+ *
+ * Exported for that equality test only — publish is its sole caller.
  */
-function quantidadeParaPublicar(
+export function quantidadeParaPublicar(
   produto: { ehKit: boolean; ehKitVirtual: boolean; componentesKit: ComponentesKit | null },
   ownDisponivel: number,
   disponivelByProdutoId: Record<string, number>,
 ): number {
   return (
     quantidadeParaEnvio({
-      ehKit: produto.ehKit || produto.ehKitVirtual,
-      ehKitVirtual: false, // see the ⚠️ above — the sweep's "never send" is not ours
+      ehKit: produto.ehKit,
+      ehKitVirtual: produto.ehKitVirtual,
       componentesKit: produto.componentesKit,
       ownDisponivel,
       disponivelByProdutoId,
+      pularKitVirtual: false, // see the ⚠️ above — never optional on this path
     }) ?? ownDisponivel
   );
 }

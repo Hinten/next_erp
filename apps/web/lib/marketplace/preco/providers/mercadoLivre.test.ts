@@ -18,6 +18,7 @@ function input(
     produtoIds: ['p1'],
     nomePorProdutoId: new Map([['p1', 'Camiseta']]),
     baixarPreco: false,
+    incluirNaoPublicados: true,
     deps: {
       mercadoLivre:
         enviarPrecos == null ? null : ({ enviarPrecos } as unknown as MercadoLivreClient),
@@ -116,6 +117,27 @@ describe('mercadoLivrePriceProvider', () => {
         baixarPreco: true,
         signal,
       }),
+    );
+  });
+
+  /**
+   * BOTH directions, and with `baixarPreco` pinned to the opposite value each
+   * time: this layer forwards the two flags side by side in one object literal,
+   * so the failure worth catching is not "the field is missing" (a typecheck
+   * catches that) but the field carrying its NEIGHBOUR's value. Asserting only
+   * `true` would also pass against a hardcoded `true`, which is exactly the
+   * default the route already applies — the bug would be invisible until an
+   * operator unticked the box.
+   */
+  it.each([true, false])('forwards incluirNaoPublicados=%s verbatim', async (incluir) => {
+    const enviarPrecos = vi.fn().mockResolvedValue(envelope());
+
+    await mercadoLivrePriceProvider.enviarPreco(
+      input(enviarPrecos as never, { incluirNaoPublicados: incluir, baixarPreco: !incluir }),
+    );
+
+    expect(enviarPrecos).toHaveBeenCalledWith(
+      expect.objectContaining({ incluirNaoPublicados: incluir, baixarPreco: !incluir }),
     );
   });
 

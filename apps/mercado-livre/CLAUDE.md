@@ -638,6 +638,66 @@ construction, so it is left to the three surfaces that already write one: the
 `membroPodeEnviar`'s optimistic arm converges only through those three, which is
 the safe direction since it sends.
 
+⚠️ **A legacy `variations[]` PUT is NOT a patch — it DELETES every variation the
+array omits (#831).** ML's own *Guia para produtos → Variações* says so three
+times: §Modificar preço — *"No caso de não enviar todos os IDs das variações,
+serão apagadas aquelas que não tenham sido enviadas"*; §Remover variações —
+omission **is** the documented removal mechanism (*"listando somente os Ids das
+variações que quer manter"*); and §Modificar estoque's own example PUTs one entry
+against an item the same page shows holding two, and prints a response containing
+only the one it sent. ⚠️ That section's PROSE reads as if partial were fine — it
+is contradicted by its own example, so do not reopen this from the prose. The
+verification this issue asked for is **answered by the docs**; it never needed the
+legacy test listing the #1087 seller could not create.
+⚠️ **`buildSendTasks` emits a partial array routinely**, and two of its four drop
+reasons are ordinary configuration rather than errors: `kit-virtual` (a normal
+produto shape — and since #1399 the sweep SENDS virtual kits) and
+`status-nao-enviavel` firing on a member **ML itself** paused. So `estoqueSend`
+reads the listing before any bulk PUT and completes the array with the live ids
+and quantities of the variations it is not changing
+(`estoque/variacoesReconciliacao.ts`); the payload's own numbers still ride
+verbatim, so the sweep stays the sole authority on what the stock IS. Only this
+one `kind` pays the extra `GET /items`.
+⚠️ **A planner-side completeness check could NOT have covered this, and that is
+what decided where the fix lives.** A variation existing on ML with no local
+`variacaoMercadoLivre` link produces no child row at all — nothing is skipped,
+`variations.length === row.children.length`, and every local measure reads green
+while the PUT deletes it. Only ML's live array sees it.
+⚠️ **There is no fallback and there must not be one.** A body that cannot be
+proven complete is not sent (`skipped`, never a latch — nothing was attempted).
+Degrading to the partial array on a failed read reinstates the destructive path
+in the branch least likely to be exercised.
+⚠️ The 409 arm now covers this path too: `PUT /items` answers 409 *"item
+optimistic locking error"*, the send already retried once against a **fresh**
+read (re-deriving the whole body — resending the captured one deletes a variation
+ADDED in the window), and ML's remedy for a second is to wait, which is the
+queue's backoff. Letting it fall to the generic 4xx ladder would latch a healthy
+listing `estado 'E'`.
+⚠️ **The #707 prune below gained a SECOND, evidence-led trigger, and it had to.**
+Completing the array filters a stale id out of the body, so ML can no longer
+answer `item.variations.invalid` about it and the rejection that used to drive
+the prune is never earned — completing the array would otherwise have traded a
+self-heal for a log line. The completion therefore prunes directly, from the item
+it just read: it SEES the stale id instead of inferring it from a refusal. The
+cause check consequently moved OUT of `podarVariacoesFantasma` to its two
+callers; only the terminal-4xx one has a rejection to inspect.
+⚠️ **`planejarPoda` is idempotent, which makes the latch arm a trap.** A member
+the completion just marked `closed` is skipped by the terminal prune, so that
+branch's "did we repair the payload?" test reads ZERO and would latch
+`estado 'E'` on a listing we had already fixed — the self-heal-that-does-not-heal
+its own comment warns about. The completion's count therefore rides into
+`registrarRejeicaoFinal` as `podadasAntes` and is ADDED, never re-derived.
+⚠️ **A send that dropped part of its intent must not report a heal.** ML accepts
+the completed body happily, so a stale id used to ride out as `sent` while
+`clearFalha()` erased #781's diagnosis on the same write — and in the limit where
+EVERY payload id is stale the body is ML's own values echoed back, a write that
+changes nothing and reports success. So: `clearFalha()` is suppressed while any
+id was dropped (temporary — the prune has just fixed the payload, and the next
+sweep's clean send clears), and an all-stale payload is refused before the PUT
+(`skipped`/`todas-variacoes-fantasma`) rather than spending a no-op write.
+⚠️ Do not read the #707 specs as evidence about how often the prune fires from a
+REJECTION — every one of them throws unconditionally from a mock.
+
 ⚠️ **`item.variations.invalid` self-heals; it is LEGACY-MODEL ONLY (#707).** When a
 bulk `PUT /items/{id}` is refused with that cause, the terminal branch diffs the
 family's `variacaoMercadoLivre` links against the live `variations[].id` from the
@@ -726,6 +786,75 @@ parent's available quantity is now 0 for anything in the ERP that still names th
 parent (a manual pedido line, a future entrada), with no message saying the shape
 changed. Moving it below the cheap validations is the open follow-up.
 
+⚠️ **The FAMÍLIA parent's own sku has no native slot on ML, and the family id is
+not a substitute (#1400).** Each member item carries exactly one `SELLER_SKU` —
+the MEMBER's (`buildUserProductItemPayload` lets member attributes override
+family ones by id), so the parent's sku reaches ML only as a fallback on a member
+that has none. The import used to paper over that with
+`sku: up.familyId ?? mapped.sku`, which put a 16-digit ML key in the produto's
+sku column, polluted sku search and showed an operator a number instead of their
+own code. It was legacy parity (`models.dart:1226` orders the same `??` chain the
+same wrong way) and load-bearing for nothing: família identity is `link.id`, the
+deterministic produtoId, and `resolveExistingUpParent`'s family-id step — which
+is passed the REAL sku, not that value. The parent sku is now an ordered chain,
+and every rung that cannot PROVE an answer yields `null`, because a blank sku is
+honest while a wrong one is an identity the resolver matches produtos by:
+
+1. the parent-sku **custom characteristic** (below);
+2. **peel the variant códigos** off the member's `SELLER_SKU` (`skuPaiPorSufixo`
+   in `@delfrance/schemas` — the inverse of `cartesianVariations`);
+3. the member's own `SELLER_SKU`, but **only for a família of one** (no combos at
+   all, so the member IS the produto);
+4. `null`.
+
+⚠️ **Rung 2 cannot serve a first-ever import, and that is not a bug.**
+`planTaxonomia` creates variantes with `codigo: null`, so there is nothing to
+peel — the ERP does not yet know where the parent sku ends and the variant code
+begins. Rung 2 is the ROUND-TRIP case; rung 1 is the fresh one. Do not "fix" it
+by falling back to the value_name or to the member's sku: both hand the parent
+one of its children's identities.
+
+⛔ **The custom characteristic's PRESENCE must be uniform across a família; its
+VALUE is free.** ML computes a família from `family_name`, `domain_id`, `user_id`
+and the attributes, and a custom attribute contributes its **name** to that hash
+while values may vary between members. So an edited parent sku republishes
+safely, but *adding* the attribute to a família that lacks it moves its members
+into a different família — and creating ONE new member with it beside siblings
+without it hashes that member into a família of its own, silently splitting a
+live listing. That is what "add one more variation to an existing produto" walks
+into, which is why `resolveSkuPaiAtributo` tests **every member's `itemId`**, not
+the parent link's `id` alone. `MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED` therefore
+decides a família only at CREATE time; it retrofits nothing and un-sets nothing.
+Reading it back is unconditional (no flag), so a família published while it was
+on is always understood.
+
+⚠️ **The evidence lives on the MEMBER links (`variacaoMercadoLivre.skuPaiAtributo`),
+never on the família's parent link**, and the two reasons are really one — the
+parent link is written ONCE, at the end, from a value read at the beginning:
+
+ - the fan-out is sequential and `writeMemberLink` persists each member the
+   instant ML confirms it, precisely so everything before a failure is recorded.
+   A run that created member 1 and then died on member 2 leaves member 1's ITEM
+   carrying the characteristic while `stampErrorLinkDoc` records none of it — so
+   a parent flag would make the retry see "not recorded" plus "a member already
+   has an itemId", conclude the família is not new, and create members 2..n
+   WITHOUT it. That is a split no later publish repairs. Asking the members
+   finishes the família uniformly instead;
+ - a parent flag would also be a read-modify-write spanning every ML round trip,
+   so a concurrent publish that read `false` first could store it over a `true`
+   (root `CLAUDE.md` rule 7). A member's value is decided by what THAT call just
+   sent for THAT member, so there is nothing to lose a race with — tier 0.
+
+The família-wide answer is the **OR** of the members. It is written `true` only:
+a publish that did not send the characteristic OMITS the key rather than storing
+`false`, because nothing here can strip the attribute from an item that has it —
+the same three-valued discipline `moderacoes` uses.
+⚠️ It is also **publicly visible** — a custom characteristic renders in the
+anúncio's ficha técnica — and how ML echoes an id-less attribute on `GET /items`
+is **unverified** (no sandbox, no lane may hold real credentials), which is
+exactly why it is an addition to the chain above and never its replacement.
+`skuPaiFromAttributes` matches by NAME and ignores any id ML may attach.
+
 Four facts from the ML docs that the payload builder now encodes (#797) — check
 these before "fixing" what looks wrong in `publishCore.ts`:
 
@@ -750,16 +879,45 @@ these before "fixing" what looks wrong in `publishCore.ts`:
   **same** attributes; both are checked once across the children by
   `validateCombinationsAcrossChildren`, never per child. The old port uppercased
   the group name into an invented id (`'Sabor'` → `{id:'SABOR'}`).
-- **This port never creates an ML virtual kit, so publish must still send a
-  quantity.** ML's Virtual Kits are User-Products-only (`POST /items/kits`,
+- **This port never creates an ML virtual kit, so BOTH paths send a quantity
+  (#1087).** ML's Virtual Kits are User-Products-only (`POST /items/kits`,
   `bundle.components[]` of `user_product_id`s), immutable once published, and
   derive their stock from the components; because a component is already
   variation-level, a produto **with variations cannot be an ML kit at all**.
-  ⚠️ The sweep's `quantidadeParaEnvio` returns `null` for `ehKitVirtual` meaning
-  *"do not push a stock update"* — on the publish path that would omit a field
-  `POST /items` **requires**, making the produto unpublishable. `publish.ts`'s
-  `quantidadeParaPublicar` is the deliberate divergence: a virtual kit publishes
-  the component-min like any other kit.
+  On this wire a virtual kit is therefore just an ordinary kit, and publish has
+  always treated it as one — `quantidadeParaPublicar` sends the component-min,
+  because omitting the field `POST /items` **requires** would make the produto
+  unpublishable rather than make ML derive anything.
+  ⚠️ **The stock SWEEP used to disagree, and that was the bug.**
+  `quantidadeParaEnvio` returned `null` for `ehKitVirtual` — legacy parity
+  (`functions.dart:286-289`) resting on the premise publish had already refuted
+  *in this repo*: it assumed ML keeps the quantity current from the components,
+  which it does only for a kit we never create. So a virtual kit published a
+  real number and then **never updated again**, advertising it for ever, which
+  oversells. Both sides now run ONE function — `quantidadeParaPublicar` is
+  `quantidadeParaEnvio` with the escape hatch pinned off — so they cannot drift
+  apart again by comment. ⚠️ The `ehKit || ehKitVirtual` OR inside it is
+  load-bearing independently of the `null`: keying the kit branch on `ehKit`
+  alone computes no min and falls back to the produto's OWN stock, a wrong
+  number rather than a refusal, and nothing reports it.
+  ⚠️ The refusal survives only behind `MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED`
+  (default OFF), an **escape hatch** for reverting a misbehaving live sweep —
+  not a rollout gate. ON restores pre-#1087 behaviour exactly, including that
+  rung's family-wide `return`: one virtual anchor silences every listing and
+  variation child of its família.
+  ⚠️ **That "exactly" is MAINTAINED, not free**, and the thing that threatens it
+  is `kitNaoVerificavel` — widening `componentesNaoResolvidos` made it reachable
+  for a virtual kit for the first time, so both of its consumers had to be
+  checked under the hatch. `quantidadesAnteriores` was already equivalent (the
+  member ends up absent either way, by a different route). The **alarm** was
+  not: it fired `publicando 0` about a virtual CHILD under a NON-virtual anchor
+  — which the anchor rung cannot catch — for a produto the next stage skips and
+  publishes nothing for, so the line was FALSE, aimed at whoever reached for the
+  hatch mid-incident. It is now gated on `quantidades.has(member.produtoId)`:
+  the alarm may only speak about a member this call actually sends. Both paths
+  have tests; keep them if you touch that predicate again. It must be set on **both** surfaces (the
+  functions codebase for the sweeps, `apphosting.yaml`/console for the manual
+  push) or the two disagree about the same produto.
 
 ⚠️ **A `payments` notification can now CREATE a pedido — indirectly (#1087).**
 ML fires `orders_v2` only for *"vendas confirmadas"*, and the seller-scoped

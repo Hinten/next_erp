@@ -140,6 +140,10 @@ const INVENTARIO = {
     'The #931 audit’s classifier. Reads the stored value RAW on purpose — it is the evidence — and only uses `estoqueDisponivel` to report what the row would have invented.',
   'tools/migrations/src/2026-08-estoque-reservada-negativa/audit.ts':
     'The audit’s walk. Filters `< 0` in memory and reads each hit’s ledger; writes nothing (`--apply` is rejected).',
+  'tools/migrations/src/2026-09-produto-sem-variacoes/predicate.ts':
+    'The #1402 census’s classifier. Uses the reservation TWICE, both read-only: `temEstoque` keys on the RAW counter (a row with 5 in stock and 5 reserved is holding units even though its available reads zero), while `moveria`/`ficaNoPai` split through `reservaEfetiva`, so a stored negative can never increase what the conversion would move. Flags a negative as `reservada-negativa` rather than laundering it — the #931 evidence stays intact.',
+  'tools/migrations/src/2026-09-produto-sem-variacoes/audit.ts':
+    'The census’s walk. Reads each candidate’s estoque rows and hands them to the classifier verbatim; writes nothing (`--apply` is rejected). No arithmetic of its own beyond summing the classifier’s per-row totals.',
 };
 
 /** Files matching the pattern, over the index + untracked-but-not-ignored. */

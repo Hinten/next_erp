@@ -173,8 +173,12 @@ export interface PrecoFamilyRow {
    * #1072, which dropped `publicado == true` from `fetchPrecoPage`'s anchor
    * terms. The bulk job no longer consults it at all (an unpublished produto
    * with a live anúncio is planned like any other; the send-time status gate
-   * decides), while `precoManual` still rungs out at `NAO_PUBLICADO` — a
-   * deliberate asymmetry, documented there.
+   * decides).
+   *
+   * `precoManual` no longer refuses on it either: it is now the operator's
+   * per-run choice (`incluirNaoPublicados`, DEFAULTED ON), and on the default
+   * path the field only decorates the `enviado` row. Unticked, it still rungs
+   * out at `NAO_PUBLICADO` — so this must keep riding both fieldMasks.
    */
   publicado: boolean;
   /**
@@ -254,10 +258,14 @@ export const fetchPrecoPage: FetchPrecoPage = async (db, args) => {
     .where('paiId', '==', null)
     .where('integracoesComProduto', 'array-contains', args.integracaoId)
     // `paiId` is constrained by the query; `publicado` no longer is, and BOTH
-    // still ride the mask — `readFamilia` coerces them onto the row and
-    // `precoManual` reads `publicado` for its own rung, so a page row and a
-    // by-ids row stay the SAME shape. Dropping it here would make a page row
-    // silently read `publicado: false` off a field the mask omitted.
+    // still ride the mask so that a page row and a by-ids row stay the SAME
+    // shape. ⚠️ On THIS path that is shape parity only — no consumer of
+    // `fetchPrecoPage` (`precoSync`, `precoReconciliacao`) reads `publicado`,
+    // so dropping it here changes no behaviour today. The field's one reader is
+    // `precoManual`, which is fed exclusively by `fetchPrecoFamiliasByIds`;
+    // the live trapdoor is on THAT mask, and the ⚠️ that matters sits there.
+    // Both are pinned by the "#1087: `publicado` still rides BOTH fetchers’
+    // projection" guard, which also asserts these two lists stay EQUAL.
     .select('precos', 'propagatePriceToChildren', 'publicado', 'paiId')
     .orderBy(FieldPath.documentId())
     .limit(pageLimit);
@@ -323,6 +331,16 @@ export const fetchPrecoFamiliasByIds: FetchPrecoFamiliasByIds = async (db, args)
   const contaRefForms = contaRefFormsDe(args.integracaoId);
 
   const snaps = await db.getAll(...anchorIds.map((id) => produtoCollection.docRef(db, {}, id)), {
+    // ⚠️ `publicado` is NOT bandwidth here — this is the mask that feeds
+    // `precoManual`, its only reader. A masked-out field arrives ABSENT and
+    // `readFamilia` coerces that to `false`, so removing it does not fail: it
+    // tells the manual push that EVERY produto is hidden. Default path ⇒
+    // `AVISO_OCULTO_NO_ERP` on every `enviado` row; `incluirNaoPublicados:
+    // false` ⇒ the whole selection skipped `NAO_PUBLICADO`. Uniform, confident
+    // and wrong, with nothing red — every `precoManual` spec injects
+    // `fetchFamilias` and so never executes this mask at all.
+    // Pinned by the "#1087: `publicado` still rides BOTH fetchers’ projection"
+    // guard in `precoPlan.test.ts`. Same trapdoor as `bulkEstoquePlan`'s S6.
     fieldMask: ['precos', 'propagatePriceToChildren', 'publicado', 'paiId'],
   });
 
