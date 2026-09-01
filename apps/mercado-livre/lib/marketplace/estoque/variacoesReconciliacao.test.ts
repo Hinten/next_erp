@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MlItem } from '@delfrance/integrations-mercado-livre';
 
+import { idDaVariacao, idsDasVariacoesVivas, planejarPoda } from '../anuncios/variacoesFantasma';
 import { reconciliarVariations } from './variacoesReconciliacao';
 
 /** A legacy-model listing: `family_name` absent, `variations[]` present. */
@@ -167,6 +168,51 @@ describe('reconciliarVariations — the id fold, and where it STOPS', () => {
     );
     expect(r.variations).toEqual([{ id: 1, available_quantity: 7 }]);
     expect(r.fantasmas).toEqual(['404']);
+  });
+});
+
+describe('the id fold is SHARED with the prune — one implementation, both sides', () => {
+  // The two modules answer the same question about the same wire values from
+  // opposite sides: which live ids exist, versus which stored ids are phantoms.
+  // A divergence makes the completion carry a variation the prune calls dead, or
+  // prune one the send just updated — so the agreement is pinned here rather
+  // than asserted in a comment.
+  it('the completion and idsDasVariacoesVivas fold the same values identically', () => {
+    const ids = [15092589430, '15092589430', '01', 1, '123', '1230'] as const;
+    const vivas = ids.map((id) => ({ id, available_quantity: 1 }));
+
+    // Live side, via the prune's helper.
+    const doPrune = idsDasVariacoesVivas(item(vivas as unknown[]));
+    // Completion side: every live id it emitted, folded the same way.
+    const daCompletacao = new Set(
+      ok(reconciliarVariations([], item(vivas as unknown[]))).variations.map((v) =>
+        idDaVariacao(v.id),
+      ),
+    );
+
+    expect(daCompletacao).toEqual(doPrune);
+  });
+
+  it('a NON-FINITE id is unnameable on BOTH sides — the disagreement that existed', () => {
+    // `idsDasVariacoesVivas` used to fold NaN to the string 'NaN' while the
+    // stored-side helper answered null, so one half of the same diff saw a live
+    // id the other could never match.
+    expect(idDaVariacao(Number.NaN)).toBeNull();
+    expect(idsDasVariacoesVivas(item([{ id: Number.NaN, available_quantity: 1 }]))).toEqual(
+      new Set(),
+    );
+    // The completion takes the safe direction from the same answer: it refuses
+    // to send rather than omit a variation it cannot name.
+    expect(
+      reconciliarVariations(
+        [{ id: 1, available_quantity: 7 }],
+        item([{ id: Number.NaN, available_quantity: 1 }]),
+      ),
+    ).toEqual({ ok: false, reason: 'variacao-viva-sem-id' });
+    // And the prune agrees the stored side is unnameable, so it marks nothing.
+    expect(
+      planejarPoda([{ docId: 'v1', produtoId: 'C1', raw: { id: Number.NaN } }], new Set()),
+    ).toEqual([]);
   });
 });
 

@@ -40,13 +40,22 @@
  *
  * ---- The fold, and where it stops
  *
- * Ids are matched **as strings** — the same fold `idsDasVariacoesVivas`
- * (`../anuncios/variacoesFantasma`) already applies — because ML has sent
- * variation ids as numbers and (rarely) strings over time (`itemVariationSchema`)
- * while our payload declares `z.number().int()`. `15092589430` and
- * `'15092589430'` are therefore the SAME variation; `'123'` and `'1230'` are
- * NOT, and neither are `'01'` and `'1'` — the fold is `String(x)`, never
- * `Number(x)`, so no leading zero or decimal spelling is collapsed.
+ * Ids are matched through **`idDaVariacao`** (`../anuncios/variacoesFantasma`),
+ * the one implementation the prune uses too. ML has sent variation ids as
+ * numbers and (rarely) strings over time (`itemVariationSchema`) while our
+ * payload declares `z.number().int()`, so `15092589430` and `'15092589430'` are
+ * the SAME variation; `'123'` and `'1230'` are NOT, and neither are `'01'` and
+ * `'1'` — the fold is `String(x)`, never `Number(x)`.
+ *
+ * ⚠️ **This module used to carry its own copy of that fold, under a comment
+ * asserting the two agreed.** They already did not: the live-side helper folded
+ * a non-finite number to `'NaN'` where the stored-side one answered `null`. Root
+ * `CLAUDE.md` names the shape exactly — *a comment asserting what the OTHER copy
+ * does is the smell* — and the drift is silent here in a specific way, because
+ * the copies answer the SAME question from opposite sides: which live ids exist,
+ * versus which stored ids are phantoms. A divergence makes this module carry a
+ * variation the prune calls dead, or prune one the send just updated. Import the
+ * helper; never re-derive it.
  *
  * A carried-over entry echoes ML's id **verbatim, in ML's own type**, rather
  * than coercing it to a number: the value is an identifier, and re-typing one is
@@ -62,6 +71,8 @@
  * partial array: a body that cannot be proven complete is a body that deletes.
  */
 import type { MlItem } from '@delfrance/integrations-mercado-livre';
+
+import { idDaVariacao } from '../anuncios/variacoesFantasma';
 
 /**
  * One reconciled `variations` entry, ready for the wire.
@@ -113,13 +124,6 @@ export type ReconciliacaoResultado =
     }
   | { ok: false; reason: ReconciliacaoRecusa };
 
-/** The stringified id of a live variation, or null when it names none. */
-function idVivo(id: number | string | null | undefined): string | null {
-  if (id == null) return null;
-  const s = String(id);
-  return s.length > 0 ? s : null;
-}
-
 /**
  * Fold a sweep-computed `variations` patch onto the listing's live array.
  *
@@ -135,12 +139,15 @@ export function reconciliarVariations(
   if (vivas.length === 0) return { ok: false, reason: 'modelo-divergente' };
 
   const desejado = new Map<string, number>();
-  for (const entry of patch) desejado.set(String(entry.id), entry.available_quantity);
+  for (const entry of patch) {
+    const id = idDaVariacao(entry.id);
+    if (id != null) desejado.set(id, entry.available_quantity);
+  }
 
   const variations: VariacaoReconciliada[] = [];
   const usados = new Set<string>();
   for (const viva of vivas) {
-    const id = idVivo(viva.id);
+    const id = idDaVariacao(viva.id);
     if (id == null) return { ok: false, reason: 'variacao-viva-sem-id' };
     usados.add(id);
 
