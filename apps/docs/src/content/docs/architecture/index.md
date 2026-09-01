@@ -19,11 +19,11 @@ The ERP is behind authentication. No SEO, no public crawling. RSC's main wins (i
 
 ## Plugins
 
-Brazilian features (NFe, Mercado Pago, marketplaces) are **opt-in** behind contracts in `packages/core/plugins/`:
+Brazilian features are **opt-in**. Three contracts live in `packages/core/src/plugins/`: `TaxProvider`, `InvoiceProvider` and `PaymentGateway`. The core stays locale-agnostic.
 
-- `TaxProvider`, `InvoiceProvider`, `PaymentGateway`, `MarketplaceChannel`.
+⚠️ **Nothing in-tree composes into a registry at app boot** — that sentence used to sit here and was never true of any channel. `PluginRegistry` is the surface for *third-party* plugins published to npm; every in-tree integration resolves its account **per request** from a Firestore document (`integracao` / `int_frete` / `metodo_pgto`), which is what makes one App Hosting backend per channel possible.
 
-The core is locale-agnostic. Plugins compose into a registry at app boot.
+⚠️ **Sales channels and freight are not plugins.** `MarketplaceChannel` and `FreightProvider` both existed here and were both deleted ([ADR 0015](/adr/0015-no-marketplace-mega-contract/), #262) once a real implementation proved a registry interface cannot express work that needs Firestore, Storage and a token refresher. They are declared by capability tables instead — `MARKETPLACE_TIPO_CAPS` and `FREIGHT_TIPO_CAPS` in `@delfrance/schemas`.
 
 ## Data layer
 
