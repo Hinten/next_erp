@@ -35,6 +35,16 @@
  * reads per task: the per-conta pause state doc (plus the context loader's
  * own conta/token loads).
  *
+ * ⚠️ **#831 qualifies that in exactly one place, and the qualification is about
+ * OTHER variations, never ours.** A legacy-model `variations[]` body is not a
+ * patch — ML deletes every variation the array omits — and `buildSendTasks`
+ * routinely emits a partial array, so before such a PUT the handler reads the
+ * listing (`GET /items/{id}`) and completes the array with the live ids and
+ * quantities of the variations it is NOT changing (`reconciliarVariations`).
+ * Our own numbers still ride the payload verbatim; the sweep remains the sole
+ * authority on what the stock is. Only this one `kind` pays the extra call, and
+ * if the array cannot be proven complete nothing is sent at all.
+ *
  * ---- Retry staleness — the trade the owner chose over a monotonic guard: a
  * Cloud Tasks retry, or a task parked behind a 429 pause, sends numbers up to
  * `now − sweepComputedAtMs` old and can briefly overwrite a newer value; the
@@ -126,6 +136,11 @@ import {
   temCausaVariacoesInvalidas,
   type MembroFamilia,
 } from '../anuncios/variacoesFantasma';
+import {
+  type ReconciliacaoRecusa,
+  type ReconciliacaoResultado,
+  reconciliarVariations,
+} from './variacoesReconciliacao';
 import { loadMercadoLivreContext } from '../core/mercadoLivre';
 import { MlTasksDisabledError } from '../notificacoes/mlTasks';
 import type { MlStockTaskScheduler } from './mlStockTasks';
@@ -179,7 +194,16 @@ export const mlStockSendTaskSchema = z.object({
   linkDocId: z.string().min(1),
   /** Single-item quantity (sweep-computed) — null when `variations` carries the numbers. */
   quantidade: z.number().int().min(0).nullable().default(null),
-  /** Old-model bulk send: one entry per variation, `id` = the NUMERIC variação-link id. */
+  /**
+   * Old-model bulk send: one entry per variation, `id` = the NUMERIC
+   * variação-link id.
+   *
+   * ⚠️ **This array is a PATCH, and it is routinely PARTIAL** — `buildSendTasks`
+   * drops any child it cannot price. It is NOT what goes on the wire: ML deletes
+   * every variation a `variations[]` body omits, so the handler completes it
+   * against the live listing first (`reconciliarVariations`, #831). Nothing may
+   * pass this value to `updateItem` unreconciled.
+   */
   variations: z
     .array(z.object({ id: z.number().int(), available_quantity: z.number().int().min(0) }))
     .nullable()
@@ -196,9 +220,17 @@ export type MlStockSendTask = z.infer<typeof mlStockSendTaskSchema>;
 /* -------------------------------- dependencies ----------------------------- */
 
 /**
- * The minimal ML API surface the send needs (injectable for tests). `getItem` is
- * used ONLY by the terminal 4xx branch — never on the happy path, and never on a
- * non-final attempt — to learn the listing's real state before recording it.
+ * The minimal ML API surface the send needs (injectable for tests).
+ *
+ * `getItem` has TWO callers, and they are not interchangeable:
+ *
+ *  - the terminal 4xx branch — never on a non-final attempt — to learn the
+ *    listing's real state before recording it;
+ *  - **#831**, on the happy path, for a legacy-model bulk `variations[]` send
+ *    ONLY: that body is not a patch, so the array has to be completed against
+ *    the live listing before it is sent (`reconciliarVariations`). A
+ *    `kind: 'item'`/`'variationItem'` scalar `available_quantity` send still
+ *    costs exactly one ML call.
  */
 export interface StockSendApi {
   updateItem(id: string, payload: Record<string, unknown>): Promise<MlItem>;
@@ -307,6 +339,76 @@ export interface StockSendResult {
    * confirmed — conservative stop), `reauth`.
    */
   reason: string | null;
+}
+
+/* --------------------------- #831 variations merge ------------------------- */
+
+/**
+ * What each reconciliation refusal means, as an operator-facing line.
+ *
+ * All three are `skipped`, never `dropped` and never a latch: nothing was
+ * attempted, so there is no failure to record against the listing, and the next
+ * sweep re-covers the produto. Latching `estado 'E'` here would stop a listing
+ * over a condition ML — not our payload — created.
+ */
+const MENSAGEM_RECUSA: Record<ReconciliacaoRecusa, string> = {
+  'modelo-divergente':
+    'anúncio não é mais do modelo legado (family_name presente ou sem variations) — envio em lote ignorado',
+  'variacao-viva-sem-id': 'o ML reportou uma variação viva sem id — não há corpo completo possível',
+  'quantidade-viva-ausente':
+    'o ML reportou uma variação viva sem available_quantity utilizável — nada seguro a preservar',
+};
+
+/** Refuse the send rather than transmit an array that cannot be proven complete. */
+function recusaDeReconciliacao(
+  payload: MlStockSendTask,
+  reason: ReconciliacaoRecusa,
+): StockSendResult {
+  console.error(`[mercado-livre] stock-send: ${MENSAGEM_RECUSA[reason]}`, {
+    integracaoId: payload.integracaoId,
+    produtoId: payload.produtoId,
+    itemId: payload.itemId,
+    sweepId: payload.sweepId,
+  });
+  return { outcome: 'skipped', reason };
+}
+
+/**
+ * Log what the completion added, and — separately — what it could not send.
+ *
+ * ⚠️ The `fantasmas` line is the one that must not be dropped. Those ids are
+ * #707 phantoms, and completing the array is precisely what stops ML from
+ * answering `item.variations.invalid` about them: the id is no longer in any
+ * body, so the rejection that drives the prune can never be earned again and the
+ * stale `variacaoMercadoLivre` link would sit there forever with nothing
+ * reporting it. Until the prune is fed from here (follow-up), this line IS the
+ * signal.
+ */
+function registrarReconciliacao(
+  payload: MlStockSendTask,
+  reconciliado: Extract<ReconciliacaoResultado, { ok: true }>,
+): void {
+  const enviadas = payload.variations?.length ?? 0;
+  const preservadas = reconciliado.variations.length - (enviadas - reconciliado.fantasmas.length);
+  if (preservadas > 0) {
+    console.info('[mercado-livre] stock-send: variations completado com o anúncio vivo', {
+      integracaoId: payload.integracaoId,
+      itemId: payload.itemId,
+      sweepId: payload.sweepId,
+      noPayload: enviadas,
+      preservadas,
+      total: reconciliado.variations.length,
+    });
+  }
+  if (reconciliado.fantasmas.length > 0) {
+    console.warn('[mercado-livre] stock-send: variações do payload que o ML não reporta mais', {
+      integracaoId: payload.integracaoId,
+      produtoId: payload.produtoId,
+      itemId: payload.itemId,
+      sweepId: payload.sweepId,
+      fantasmas: reconciliado.fantasmas,
+    });
+  }
 }
 
 /* ---------------------------------- handler -------------------------------- */
@@ -448,13 +550,7 @@ export async function processStockSendTask(
         { integracaoId: payload.integracaoId, itemId: payload.itemId, sweepId: payload.sweepId },
       );
     }
-    const body: Record<string, unknown> | null =
-      payload.variations != null
-        ? { variations: payload.variations }
-        : payload.quantidade != null
-          ? { available_quantity: payload.quantidade }
-          : null;
-    if (body == null) {
+    if (payload.variations == null && payload.quantidade == null) {
       console.error(
         '[mercado-livre] stock-send: payload sem quantidade nem variations — task descartada',
         { integracaoId: payload.integracaoId, itemId: payload.itemId, sweepId: payload.sweepId },
@@ -462,8 +558,66 @@ export async function processStockSendTask(
       return { outcome: 'dropped', reason: 'payload-sem-quantidade' };
     }
 
-    // (4) The ONE ML API call this task exists for.
-    const resp = await api.updateItem(payload.itemId, body);
+    // (3b) #831 — a legacy `variations[]` body is NOT a patch. ML deletes every
+    // variation the array omits (its own docs call omission the removal
+    // mechanism; see `variacoesReconciliacao.ts` for the three quotes), and
+    // `buildSendTasks` routinely produces a partial array: two of its four drop
+    // reasons are ordinary configuration (`kit-virtual`, and
+    // `status-nao-enviavel` firing on a member ML ITSELF paused). So the array
+    // is completed against the live listing before it can be sent.
+    //
+    // ⚠️ This is the ONE place the module doc's "re-resolves NOTHING" contract
+    // is qualified, and the qualification is narrow on purpose: the read
+    // supplies the ids and quantities of variations we are NOT changing. It
+    // never re-derives OUR numbers — those still ride the payload verbatim, so
+    // the sweep stays the only authority on what the stock IS.
+    //
+    // ⚠️ No fallback. If the array cannot be proven complete, nothing is sent:
+    // a partial PUT does not fail, it silently destroys variations on a live
+    // listing, and #707's phantom self-heal would then record OUR deletion as an
+    // expected phantom — the system converging on the wrong state while its own
+    // bookkeeping says it is fine.
+    let body: Record<string, unknown>;
+    if (payload.variations != null) {
+      const reconciliado = reconciliarVariations(
+        payload.variations,
+        await api.getItem(payload.itemId),
+      );
+      if (!reconciliado.ok) return recusaDeReconciliacao(payload, reconciliado.reason);
+      registrarReconciliacao(payload, reconciliado);
+      body = { variations: reconciliado.variations };
+    } else {
+      body = { available_quantity: payload.quantidade };
+    }
+
+    // (4) The ML write. On a legacy bulk send it is the SECOND call of the task
+    // (the completion read above is the first); everything else still costs one.
+    //
+    // ⚠️ 409 on `PUT /items` is "item optimistic locking error" — the listing
+    // changed between our read and our write, so the array we just completed
+    // describes a listing that no longer exists. ONE in-process retry, and it
+    // RE-READS and RE-DERIVES the whole body rather than resending the captured
+    // one (root `CLAUDE.md` rule 7: never re-apply a value read before the
+    // `await` over the winner). Resending it here is not a shortcut — if what
+    // changed was a variation being ADDED, the stale array omits it and the
+    // retry deletes it, which is the exact defect this block exists to prevent.
+    // A second conflict rides the queue's backoff, which re-reads from scratch.
+    let resp: MlItem;
+    try {
+      resp = await api.updateItem(payload.itemId, body);
+    } catch (err) {
+      if (!isVersionConflict(err) || payload.variations == null) throw err;
+      console.warn('[mercado-livre] stock-send: conflito no PUT /items — relendo e reenviando', {
+        integracaoId: payload.integracaoId,
+        itemId: payload.itemId,
+        sweepId: payload.sweepId,
+      });
+      const novo = await api.getItem(payload.itemId);
+      const refeito = reconciliarVariations(payload.variations, novo);
+      if (!refeito.ok) return recusaDeReconciliacao(payload, refeito.reason);
+      registrarReconciliacao(payload, refeito);
+      resp = await api.updateItem(payload.itemId, { variations: refeito.variations });
+    }
 
     // (5) Writeback (itemsStatusSync discipline): merge the fresh listing
     // status onto the link doc the PAYLOAD names (`linkDocId` under the anchor
@@ -585,7 +739,17 @@ export async function processStockSendTask(
       // `enviarEstoqueUserProduct` already retried once against a fresh version;
       // reaching here means it lost twice, so hand it back to the queue's
       // backoff, which re-reads from scratch.
-      if (isVersionConflict(err) && payload.kind === 'userProductStock') {
+      //
+      // ⚠️ #831 put a read-before-write on the LEGACY path too, so it earns the
+      // same arm: a `PUT /items` 409 is "item optimistic locking error", the
+      // block above already retried once against a fresh listing, and ML's own
+      // remedy for a second one is to WAIT — which is what the queue's backoff
+      // is. Leaving it to the generic 4xx ladder would spend all three attempts
+      // on it and then latch a healthy listing with `estado 'E'`.
+      if (
+        isVersionConflict(err) &&
+        (payload.kind === 'userProductStock' || payload.variations != null)
+      ) {
         console.warn(
           '[mercado-livre] stock-send: conflito de versão persistente — nova tentativa',
           {
