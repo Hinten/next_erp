@@ -1,4 +1,13 @@
-import { ESTADO_PEDIDO, valuesEqual, type EstadoPedido, type Pedido } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  ESTADO_PEDIDO,
+  MODALIDADE_FRETE,
+  seedFreteInicial,
+  valuesEqual,
+  type EstadoPedido,
+  type FreteDoPedido,
+  type Pedido,
+} from '@delfrance/schemas';
 import { CAMPOS_ESTOQUE_SYNC } from './estoquePlan';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
@@ -452,4 +461,74 @@ export async function cancelarPedido(
     return { estado: ESTADO_PEDIDO.cancelado, ultimaModificacao: port.now() };
   });
   return changed;
+}
+
+// ---------------------------------------------------------------------------
+// Confirmar entrega (#549)
+// ---------------------------------------------------------------------------
+
+/**
+ * Estados a pedido may be confirmed-delivered FROM. Every other estado —
+ * including `cancelado`/`estornado*`/`fraude` — refuses the transition.
+ */
+const ESTADOS_CONFIRMAVEIS: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  ESTADO_PEDIDO.emProcessamento,
+  ESTADO_PEDIDO.pago,
+]);
+
+/**
+ * Outcome of {@link confirmarEntregaPedido}. Unlike `cancelarPedido`'s boolean
+ * (where "already cancelado" is an ordinary no-op), an out-of-range estado here
+ * is a distinct, reportable outcome for a bulk caller (#549's guard) — folding
+ * it into "did nothing" would hide it from the operator.
+ */
+export type ConfirmarEntregaResultado = 'confirmado' | 'bloqueado';
+
+/**
+ * Mark a pedido delivered: `freteInicial.estado → entregue` (synthesizing a
+ * fresh `semFrete`/sem-transporte block when the pedido has none) and
+ * `estado → finalizado`. Port of the legacy `ConfirmarEntrega` action
+ * (`.old/lib/pedido/pages/pedidoTableView.dart:1708-1785`).
+ *
+ * Only a pedido currently in {@link ESTADOS_CONFIRMAVEIS} may be confirmed —
+ * everything else, INCLUDING a missing doc, resolves `'bloqueado'` with no
+ * write (mirrors `cancelarPedido`'s no-op-on-missing-doc shape). The guard and
+ * the `freteInicial` merge both act on `current` — the doc AS RE-READ INSIDE
+ * `updatePedido`'s transaction, never a value read before it — so a
+ * concurrent write (another operator's save, a Melhor Envio tracking update,
+ * an ML sync) can never be silently clobbered, and Firestore retries the
+ * whole transaction on contention (root `CLAUDE.md` rule 7; same primitive
+ * `cancelarPedido`/`savePedido` use). `freteInicial` is always replaced as a
+ * WHOLE object — never a dotted patch — matching every other live writer of
+ * that field (see `buildFreteHistoryEntry` in `apps/functions`).
+ *
+ * Reaching `finalizado` also drives stock removal server-side
+ * (`sincronizarEstoquePedido`) — not duplicated here. The
+ * `historicoEstadoPedido` / `historicoFtIni` audit rows are recorded by the
+ * `onPedidoChanged` trigger observing this write, exactly like
+ * `cancelarPedido` above — never appended by hand.
+ */
+export async function confirmarEntregaPedido(
+  port: PedidoDataPort,
+  args: { pedidoId: string },
+): Promise<ConfirmarEntregaResultado> {
+  let resultado: ConfirmarEntregaResultado = 'bloqueado';
+  await port.updatePedido(args.pedidoId, (current) => {
+    // Reset per attempt: the client adapter re-runs `apply` on transaction
+    // contention, so only the final (committed) attempt must set this.
+    resultado = 'bloqueado';
+    if (current === null) return {};
+    const estado = current.estado as EstadoPedido;
+    if (!ESTADOS_CONFIRMAVEIS.has(estado)) return {};
+    resultado = 'confirmado';
+    const freteAtual =
+      (current.freteInicial as FreteDoPedido | null) ??
+      seedFreteInicial(MODALIDADE_FRETE.semTransporte, current.ehSaida as boolean);
+    return {
+      estado: ESTADO_PEDIDO.finalizado,
+      freteInicial: { ...freteAtual, estado: ESTADO_FRETE.entregue },
+      ultimaModificacao: port.now(),
+    };
+  });
+  return resultado;
 }

@@ -115,6 +115,10 @@ export async function clickAction(
 ): Promise<void> {
   await page.getByRole('button', { name: label, exact: true }).click();
   if (confirm) {
-    await page.getByRole('button', { name: 'Confirmar' }).click();
+    // `exact: true` — without it Playwright's substring match makes
+    // 'Confirmar' match both the modal's own button AND an ActionBar action
+    // whose label starts with "Confirmar" (e.g. "Confirmar entrega", #549),
+    // a strict-mode violation the moment such an action exists.
+    await page.getByRole('button', { name: 'Confirmar', exact: true }).click();
   }
 }

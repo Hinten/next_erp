@@ -1,48 +1,38 @@
 'use client';
 
 /**
- * "Confirmar entrega" row action for `/pedidos` and `/pedidos/entradas` (#549)
- * — port of the legacy `ConfirmarEntrega` action
+ * "Confirmar entrega" row action for `/pedidos` and `/pedidos/entradas`
+ * (#549) — port of the legacy `ConfirmarEntrega` action
  * (`.old/lib/pedido/pages/pedidoTableView.dart:1708-1785`).
  *
- * Only allowed while a pedido is `emProcessamento` or `pago`: marks
- * `freteInicial.estado = entregue` (synthesizing a `semFrete` block first when
- * the pedido has none) and moves the pedido `estado` to `finalizado`. Both
- * fields live on the SAME `pedidos/{id}` document, so one `merge()` per
- * pedido does it — the `historicoEstadoPedido` / `historicoFtIni` audit rows
- * are recorded automatically by the server-side `onPedidoChanged` trigger
- * (CLAUDE.md rule 6 / `no-client-estado-history-write`: this app must never
- * write those subcollections directly). Reaching `finalizado` also drives
- * stock removal server-side (`sincronizarEstoquePedido`) — not duplicated
- * here.
+ * Thin UI wrapper over `confirmarEntregaPedido` (`@delfrance/data/pedido`),
+ * which does the actual guard + write: only a pedido currently
+ * `emProcessamento`/`pago` is confirmed (`freteInicial.estado → entregue`,
+ * synthesizing a `semFrete` block when absent, `estado → finalizado`);
+ * everything else resolves `'bloqueado'` with no write. Routed through
+ * `createClientPedidoPort`'s `updatePedido` — the SAME transactional
+ * read-modify-write primitive `cancelarPedido`/`savePedido` use — so the
+ * guard and the freteInicial merge always act on the doc as it is AT WRITE
+ * TIME, never a value read before it: a concurrent write (another operator's
+ * save, a Melhor Envio tracking update, an ML sync) can't be silently
+ * clobbered (root `CLAUDE.md` rule 7). The `historicoEstadoPedido` /
+ * `historicoFtIni` audit rows are recorded by the server-side
+ * `onPedidoChanged` trigger observing that write — never appended here
+ * (CLAUDE.md rule 6 / `no-client-estado-history-write`). Reaching
+ * `finalizado` also drives stock removal server-side
+ * (`sincronizarEstoquePedido`) — not duplicated here.
  */
 import { useMemo } from 'react';
 import { notifications } from '@mantine/notifications';
 import { IconTruckDelivery } from '@tabler/icons-react';
-import {
-  ESTADO_FRETE,
-  ESTADO_PEDIDO,
-  MODALIDADE_FRETE,
-  seedFreteInicial,
-  type EstadoPedido,
-  type Pedido,
-} from '@delfrance/schemas';
+import { FirebaseError } from 'firebase/app';
+import { confirmarEntregaPedido } from '@delfrance/data/pedido';
+import type { Pedido } from '@delfrance/schemas';
 import type { ActionConfig } from '@delfrance/ui';
 
-import { getDocsByIds } from '@/lib/data/getDocsByIds';
-import { pedidoCollection } from '@/lib/data/pedidoCollection';
+import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
-
-/**
- * The only two estados a pedido may be confirmed-delivered from (#549's
- * guard). Every other estado — including `cancelado`/`estornado*`/`fraude` —
- * is refused with a clear message rather than silently no-op'd.
- */
-const ESTADOS_CONFIRMAVEIS: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  ESTADO_PEDIDO.emProcessamento,
-  ESTADO_PEDIDO.pago,
-]);
 
 export function useConfirmarEntregaAction(): { readonly action: ActionConfig<Pedido> } {
   const action = useMemo<ActionConfig<Pedido>>(
@@ -61,32 +51,36 @@ export function useConfirmarEntregaAction(): { readonly action: ActionConfig<Ped
       },
       run: async (rows) => {
         if (rows.length === 0) return;
-        const db = getFirebaseFirestore();
+        const port = createClientPedidoPort(getFirebaseFirestore());
 
-        // Re-read fresh docs rather than trusting `row.data`: TableView's
-        // Pipeline projection only guarantees the columns currently visible,
-        // and the guard + freteInicial synthesis below need the real stored
-        // estado/freteInicial, not a stale or partially-projected one
-        // (mirrors `useEnviarEstoqueAction`). `source: 'server'` because the
-        // result feeds a write — an offline/cache miss must reject, not read
-        // as "pedido not found".
-        const frescos = await getDocsByIds(
-          db,
-          pedidoCollection,
-          rows.map((r) => r.id),
-          {},
-          { source: 'server' },
+        const resultados = await Promise.allSettled(
+          rows.map((row) =>
+            confirmarEntregaPedido(port, { pedidoId: row.id }).then((resultado) => ({
+              row,
+              resultado,
+            })),
+          ),
         );
 
         const bloqueados: string[] = [];
-        const alvos: Array<{ id: string; pedido: Pedido }> = [];
-        for (const row of rows) {
-          const pedido = frescos.get(row.id);
-          if (!pedido || !ESTADOS_CONFIRMAVEIS.has(pedido.estado)) {
-            bloqueados.push(pedido?.numero ?? row.id);
-            continue;
+        let confirmados = 0;
+        for (const r of resultados) {
+          if (r.status !== 'fulfilled') continue;
+          if (r.value.resultado === 'bloqueado') {
+            bloqueados.push(r.value.row.data.numero ?? r.value.row.id);
+          } else {
+            confirmados += 1;
           }
-          alvos.push({ id: row.id, pedido });
+        }
+        // Anything that REJECTED (a genuine write failure, not the estado
+        // guard — that resolves 'bloqueado' above, per `useCancelarPedidoPrompt`'s
+        // same narrowing) — only a `FirebaseError` is a reportable failure;
+        // anything else is a bug and must surface (CLAUDE.md rule 6).
+        const falhas = resultados.filter(
+          (r): r is PromiseRejectedResult => r.status === 'rejected',
+        );
+        for (const f of falhas) {
+          if (!(f.reason instanceof FirebaseError)) throw f.reason;
         }
 
         if (bloqueados.length > 0) {
@@ -97,46 +91,23 @@ export function useConfirmarEntregaAction(): { readonly action: ActionConfig<Ped
               `Pedido(s) bloqueado(s): ${bloqueados.join(', ')}.`,
           });
         }
-        if (alvos.length === 0) return;
-
-        const resultados = await Promise.allSettled(
-          alvos.map(({ id, pedido }) => {
-            // Synthesize a `semFrete` (sem transporte) block when the pedido
-            // has none — legacy parity (#549) — otherwise preserve the
-            // existing block and only move its `estado`. Every live writer
-            // of `freteInicial` replaces the WHOLE block (never a dotted
-            // patch — see `buildFreteHistoryEntry`), so this does too.
-            const freteAtual =
-              pedido.freteInicial ??
-              seedFreteInicial(MODALIDADE_FRETE.semTransporte, pedido.ehSaida);
-            return pedidoCollection.merge(db, {}, id, {
-              estado: ESTADO_PEDIDO.finalizado,
-              freteInicial: { ...freteAtual, estado: ESTADO_FRETE.entregue },
-            });
-          }),
-        );
-
-        const falhas = resultados.filter(
-          (r): r is PromiseRejectedResult => r.status === 'rejected',
-        ).length;
-        if (falhas > 0) {
+        if (falhas.length > 0) {
           showErrorNotification({
             title: 'Confirmar entrega',
             message:
-              falhas === alvos.length
-                ? 'Não foi possível confirmar a entrega dos pedidos selecionados.'
-                : `${String(alvos.length - falhas)} pedido(s) confirmado(s); ${String(falhas)} falha(s).`,
+              confirmados > 0
+                ? `${String(confirmados)} pedido(s) confirmado(s); ${String(falhas.length)} falha(s).`
+                : 'Não foi possível confirmar a entrega dos pedidos selecionados.',
           });
-          return;
+        } else if (confirmados > 0) {
+          notifications.show({
+            color: 'green',
+            message:
+              confirmados === 1
+                ? 'Entrega confirmada.'
+                : `${String(confirmados)} pedido(s) confirmado(s) como entregue(s).`,
+          });
         }
-
-        notifications.show({
-          color: 'green',
-          message:
-            alvos.length === 1
-              ? 'Entrega confirmada.'
-              : `${String(alvos.length)} pedido(s) confirmado(s) como entregue(s).`,
-        });
       },
     }),
     [],
