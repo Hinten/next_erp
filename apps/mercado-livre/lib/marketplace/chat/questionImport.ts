@@ -185,6 +185,18 @@ async function resolveClienteDaPergunta(
       rejected: res.rejected,
     });
   }
+  if (res.idMercadoLivreConflito != null) {
+    // Reachable only when the ML leg found this buyer's cliente and
+    // `isSameCliente` refused it — a stored strong key contradicting. The
+    // asker still gets a cliente; it just does not claim an id someone else
+    // owns. A human decides whether the two rows are one person.
+    console.warn('[mercado-livre] pergunta: idMercadoLivre já pertence a outro cliente', {
+      questionId: question.id,
+      clienteDaPergunta: res.clienteId,
+      clienteExistente: res.idMercadoLivreConflito,
+      idMercadoLivre: String(buyerId),
+    });
+  }
   return res.clienteId;
 }
 

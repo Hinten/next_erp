@@ -110,6 +110,7 @@ import {
 import { isAlreadyExists } from '@delfrance/data/admin';
 
 import { readConta, readIntFreteOuterRefDaConta } from '../core/contaCache';
+import { safeMlUserId } from '../core/mlUserId';
 import { buscarIntFreteDaConta } from '../frete/intFreteSync';
 import {
   conferirItensDoEnvio,
@@ -716,17 +717,30 @@ async function recordItensSemProduto(
  * `if (pedido.cliente_id == null) { ... }` (tasks.dart:419-437) — only-if-null
  * guard, re-verified inside the tx (429). Deviation #7: `MlBillingInfoUnsupportedError`
  * skips (pt-BR log) instead of the legacy uncaught throw.
+ *
+ * ⚠️ `buyerUserId` is supplied here rather than inside
+ * `billingInfoToClienteFields` (#1087), and that placement is load-bearing in
+ * two ways. It is the STRONGEST identity this path holds — an ML account, not a
+ * recycled phone number — and until #1087 the order import passed none, so every
+ * ML order matched on telefone or e-mail; live on 2026-09-01 that linked a real
+ * buyer to an e2e seed fixture over a shared placeholder phone. And the mapper
+ * is the wrong home twice over: it receives only `MlBillingInfo`, which carries
+ * no order, and `orderImport.test.ts` MOCKS it — a stamp added in there is
+ * invisible to every test at this layer, so an assertion that the id reached
+ * `findOrCreateCliente` would be pinning the mock's return value, not the code.
  */
 async function applyClienteStep(args: {
   db: Firestore;
   pedidoId: string;
   pedido: Pedido;
   orderId: number;
+  /** `order.buyer.id`, already refused by `safeMlUserId` if unrepresentable. */
+  buyerUserId: number | null;
   nowMs: number;
   nowUs: number;
   getBillingInfo: () => Promise<MlBillingInfo>;
 }): Promise<Pedido> {
-  const { db, pedidoId, pedido, orderId, nowMs, nowUs, getBillingInfo } = args;
+  const { db, pedidoId, pedido, orderId, buyerUserId, nowMs, nowUs, getBillingInfo } = args;
   if (pedido.clientePedidoOuterRef != null) return pedido;
 
   let clienteFields;
@@ -744,8 +758,15 @@ async function applyClienteStep(args: {
     throw err;
   }
 
-  const { clienteId, rejected, dropped } = await findOrCreateCliente(db, {
-    fields: clienteFields,
+  const { clienteId, rejected, dropped, idMercadoLivreConflito } = await findOrCreateCliente(db, {
+    // Spread only when we have one: omitting the key says "no evidence", which
+    // is what `ClienteResolveFields.idMercadoLivre` being optional means. An
+    // explicit `null` would assert an absence this path is in no position to
+    // assert once ML has told us the buyer.
+    fields:
+      buyerUserId == null
+        ? clienteFields
+        : { ...clienteFields, idMercadoLivre: String(buyerUserId) },
     nowMs,
   });
   if (rejected.length > 0) {
@@ -761,6 +782,19 @@ async function applyClienteStep(args: {
     console.warn('[mercado-livre] campos do cliente descartados por valor inválido', {
       orderId,
       dropped,
+    });
+  }
+  if (idMercadoLivreConflito != null) {
+    // Two clientes for one ML account — routinely a pre-sale question's cliente
+    // beside this order's. The pedido still links, and the cliente is still
+    // enriched; only the identity key was withheld, because a second owner is
+    // what makes the match leg ambiguous. Merging them moves pedidos, conversas
+    // and endereços: a human's call.
+    console.warn('[mercado-livre] idMercadoLivre já pertence a outro cliente — não carimbado', {
+      orderId,
+      clienteDoPedido: clienteId,
+      clienteExistente: idMercadoLivreConflito,
+      idMercadoLivre: String(buyerUserId),
     });
   }
   const clienteOuterRef = toOuterRef(clienteCollection.docPath({}, clienteId));
@@ -2158,6 +2192,12 @@ export async function importPedidoMercadoLivre(
     pedidoId,
     pedido,
     orderId: initialOrder.id,
+    // From `initialOrder`, the same order whose `billing_info` feeds the fiscal
+    // half above — so the identity key and the document it is stored beside
+    // come from one payload rather than two. `safeMlUserId` degrades an
+    // unrepresentable id to `null` (the cascade then behaves as before) instead
+    // of failing the import.
+    buyerUserId: safeMlUserId(initialOrder.buyer?.id, 'pedido', { orderId: initialOrder.id }),
     nowMs,
     nowUs,
     getBillingInfo,

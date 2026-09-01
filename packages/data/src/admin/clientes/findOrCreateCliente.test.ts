@@ -26,6 +26,12 @@ class FakeDb {
   private autoN = 0;
   /** Rows examined by the last `.get()` — proves `.limit()` actually applied. */
   lastPageSize = 0;
+  /**
+   * Queries issued. The collision guard (#1087) is only affordable because it
+   * reuses the `idMercadoLivre` leg's own page instead of asking again, and a
+   * "free" claim nothing counts is a claim that quietly stops being true.
+   */
+  queryCount = 0;
   /** Iteration order handed to a query, mimicking an unspecified index order. */
   docOrder: 'insertion' | 'reverse' = 'insertion';
 
@@ -67,6 +73,7 @@ class FakeDb {
         );
         if (lim != null) rows = rows.slice(0, lim);
         self.lastPageSize = rows.length;
+        self.queryCount += 1;
         return {
           docs: rows.map(([id, d]) => ({ id, data: () => d, exists: true })),
           empty: rows.length === 0,
@@ -864,5 +871,212 @@ describe('findOrCreateCliente — Mercado Livre buyer id', () => {
 
     expect(res).toMatchObject({ clienteId: 'cli-a', created: false, matchedBy: 'cpf_cnpj' });
     expect(fake.storedDoc(CLIENTES, 'cli-a')).not.toHaveProperty('idMercadoLivre');
+  });
+});
+
+/* ------------------- ML order import: the id, and its cost ------------------ */
+
+/**
+ * #1087. The ML ORDER import supplied no `idMercadoLivre` until now, so its
+ * third leg was always null and every order fell through to telefone/e-mail.
+ * Live on 2026-09-01 that linked a real buyer to an e2e seed fixture over a
+ * shared placeholder phone.
+ *
+ * Supplying the key is most of the fix. The rest is that stamping it is no
+ * longer unconditionally safe: `buildClienteUpdatePatch` is pure, so it can only
+ * ask whether THIS doc holds an id — never whether another doc already owns the
+ * incoming one. Writing it anyway leaves two strong owners of one identity, and
+ * the leg above would then return either of them.
+ */
+describe('findOrCreateCliente — ML order import (#1087)', () => {
+  /** The shape an ML ORDER now resolves to: fiscal identity AND the buyer id. */
+  function pedidoFields(overrides: Partial<ClienteResolveFields> = {}): ClienteResolveFields {
+    return fields({ idMercadoLivre: ML_BUYER_A, ...overrides });
+  }
+
+  it('prefers the ML id over a compatible telefone hit — the staging shape', async () => {
+    // Both candidates PASS `isSameCliente`: the fixture carries no strong key at
+    // all, so it contradicts nothing and the #786 gate waves it through. Only
+    // the cascade ORDER separates them, which is why supplying the key is the
+    // whole fix — with `idMercadoLivre` absent the telefone leg wins and the
+    // buyer lands on `ci-mqbdw6rn-cliente`.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-ml', { nome: 'comprador_ml', idMercadoLivre: ML_BUYER_A });
+    fake.seed(CLIENTES, 'cli-fixture', { nome: 'APRO APRO', telefone: TELEFONE_NORMALIZED });
+
+    const res = await findOrCreateCliente(db(fake), {
+      fields: pedidoFields({ cpf_cnpj: null, telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+
+    expect(res).toMatchObject({ clienteId: 'cli-ml', matchedBy: 'idMercadoLivre', created: false });
+    // The placeholder row is not touched, and does not acquire this buyer.
+    expect(fake.storedDoc(CLIENTES, 'cli-fixture')).toEqual({
+      nome: 'APRO APRO',
+      telefone: TELEFONE_NORMALIZED,
+    });
+  });
+
+  it('known-good: a buyer with no prior cliente still creates one, now carrying the id', async () => {
+    const fake = new FakeDb();
+
+    const res = await findOrCreateCliente(db(fake), { fields: pedidoFields(), nowMs: NOW_MS });
+
+    expect(res).toMatchObject({ created: true, idMercadoLivreConflito: null });
+    expect(fake.storedDoc(CLIENTES, res.clienteId)).toMatchObject({
+      cpf_cnpj: CPF_A,
+      idMercadoLivre: ML_BUYER_A,
+    });
+  });
+
+  it('refuses to stamp an id another cliente owns, and drops ONLY that key', async () => {
+    // Window A: `cpf_cnpj` matches first, so the ML leg never runs and nothing
+    // has asked whether the id is free. It is not — a pre-sale question already
+    // created `cli-ml` for this buyer.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-ml', { nome: 'comprador_ml', idMercadoLivre: ML_BUYER_A });
+    fake.seed(CLIENTES, 'cli-pedido', { nome: 'Ana Maria Souza', cpf_cnpj: CPF_A });
+
+    const res = await findOrCreateCliente(db(fake), {
+      fields: pedidoFields({ telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+
+    expect(res).toMatchObject({
+      clienteId: 'cli-pedido',
+      matchedBy: 'cpf_cnpj',
+      idMercadoLivreConflito: 'cli-ml',
+    });
+    // Only the identity key was withheld — the unrelated enrichment still lands.
+    expect(fake.storedDoc(CLIENTES, 'cli-pedido')).toMatchObject({
+      telefone: TELEFONE_NORMALIZED,
+      ultimaModificacao: NOW_MS,
+    });
+    expect(fake.storedDoc(CLIENTES, 'cli-pedido')).not.toHaveProperty('idMercadoLivre');
+    // The other owner is byte-identical: no write, no stamp bump.
+    expect(fake.storedDoc(CLIENTES, 'cli-ml')).toEqual({
+      nome: 'comprador_ml',
+      idMercadoLivre: ML_BUYER_A,
+    });
+  });
+
+  it('writes NOTHING when the refused stamp was the only change', async () => {
+    // The patch is emptied by the refusal, so the merge is skipped entirely —
+    // `ultimaModificacao` must not move. On Enterprise a needless bump is
+    // re-sorted, re-read and BILLED against two index-mandatory queries.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-ml', { nome: 'comprador_ml', idMercadoLivre: ML_BUYER_A });
+    // Seeded already agreeing on every OTHER field — `tipo` included, or the
+    // patch would carry that instead and the test would pass for the wrong
+    // reason. The refused id has to be the only candidate write.
+    const jaIgual = {
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Ana Maria Souza',
+      cpf_cnpj: CPF_A,
+      ultimaModificacao: 1,
+    };
+    fake.seed(CLIENTES, 'cli-pedido', { ...jaIgual });
+
+    const res = await findOrCreateCliente(db(fake), { fields: pedidoFields(), nowMs: NOW_MS });
+
+    expect(res.idMercadoLivreConflito).toBe('cli-ml');
+    expect(fake.storedDoc(CLIENTES, 'cli-pedido')).toEqual(jaIgual);
+  });
+
+  it('refuses on the CREATE path too, rather than minting a second owner', async () => {
+    // The sharper half. The ML leg runs, finds the id's owner, and
+    // `isSameCliente` rejects it because the documents contradict. Nothing else
+    // matches, so a cliente IS created — the pedido needs one — but stamping the
+    // id onto it would mint the second owner outright.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-outro', {
+      nome: 'Bruno Lima',
+      cpf_cnpj: CPF_B,
+      idMercadoLivre: ML_BUYER_A,
+    });
+
+    const res = await findOrCreateCliente(db(fake), { fields: pedidoFields(), nowMs: NOW_MS });
+
+    expect(res).toMatchObject({ created: true, idMercadoLivreConflito: 'cli-outro' });
+    expect(fake.storedDoc(CLIENTES, res.clienteId)).toMatchObject({
+      cpf_cnpj: CPF_A,
+      idMercadoLivre: null,
+    });
+    expect(fake.storedDoc(CLIENTES, 'cli-outro')).toEqual({
+      nome: 'Bruno Lima',
+      cpf_cnpj: CPF_B,
+      idMercadoLivre: ML_BUYER_A,
+    });
+  });
+
+  it('costs no extra query when the ML leg already ran (window B)', async () => {
+    // The leg is an `==` query on the exact value about to be stamped, so its
+    // page IS the owner list. Three legs run — cpf_cnpj, idMercadoLivre,
+    // telefone — and the guard adds none.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-outro', { cpf_cnpj: CPF_B, idMercadoLivre: ML_BUYER_A });
+    fake.seed(CLIENTES, 'cli-fixture', { nome: 'APRO APRO', telefone: TELEFONE_NORMALIZED });
+
+    const res = await findOrCreateCliente(db(fake), {
+      fields: pedidoFields({ telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+
+    expect(res).toMatchObject({ clienteId: 'cli-fixture', idMercadoLivreConflito: 'cli-outro' });
+    expect(fake.queryCount).toBe(3);
+    expect(fake.storedDoc(CLIENTES, 'cli-fixture')).not.toHaveProperty('idMercadoLivre');
+  });
+
+  it('pays exactly one extra query in window A, and none when there is no id', async () => {
+    // Honest costing, both directions. With an id and a higher-leg match the
+    // guard has to ask (2 = the cpf leg + the probe); with no id there is
+    // nothing to stamp and nothing to check (1 = the cpf leg alone).
+    const comId = new FakeDb();
+    comId.seed(CLIENTES, 'cli-pedido', { nome: 'Ana Maria Souza', cpf_cnpj: CPF_A });
+    await findOrCreateCliente(db(comId), { fields: pedidoFields(), nowMs: NOW_MS });
+    expect(comId.queryCount).toBe(2);
+
+    const semId = new FakeDb();
+    semId.seed(CLIENTES, 'cli-pedido', { nome: 'Ana Maria Souza', cpf_cnpj: CPF_A });
+    await findOrCreateCliente(db(semId), { fields: fields(), nowMs: NOW_MS });
+    expect(semId.queryCount).toBe(1);
+  });
+
+  it('a placeholder-phone row stops absorbing buyers once it carries an ML id', async () => {
+    // #786's gate is a CONTRADICTION test, not an evidence test: a candidate
+    // with no strong key at all contradicts nothing and is accepted silently.
+    // This change does not close that hole — but it narrows it, and the two
+    // halves have to be shown together or the claim is just a comment.
+    const fake = new FakeDb();
+    fake.seed(CLIENTES, 'cli-fixture', { nome: 'APRO APRO', telefone: TELEFONE_NORMALIZED });
+
+    // Known-good: with no strong key on file the row absorbs buyer A, exactly
+    // as it absorbed the live buyer on 2026-09-01.
+    const primeiro = await findOrCreateCliente(db(fake), {
+      fields: perguntaFields({ telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+    expect(primeiro).toMatchObject({ clienteId: 'cli-fixture', matchedBy: 'telefone' });
+    expect(fake.storedDoc(CLIENTES, 'cli-fixture')).toMatchObject({
+      idMercadoLivre: ML_BUYER_A,
+    });
+
+    // The narrowing: buyer B shares the placeholder phone and nothing else. The
+    // stamp buyer A left behind is now the strong key that refuses them.
+    const segundo = await findOrCreateCliente(db(fake), {
+      fields: perguntaFields({ idMercadoLivre: ML_BUYER_B, telefone: TELEFONE_RAW }),
+      nowMs: NOW_MS,
+    });
+    expect(segundo.created).toBe(true);
+    expect(segundo.clienteId).not.toBe('cli-fixture');
+    expect(segundo.rejected).toEqual([
+      {
+        id: 'cli-fixture',
+        matchedBy: 'telefone',
+        candidateCpfCnpj: null,
+        candidateIdEstrangeiro: null,
+        candidateIdMercadoLivre: ML_BUYER_A,
+      },
+    ]);
   });
 });

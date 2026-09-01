@@ -435,6 +435,7 @@ beforeEach(() => {
     matchedBy: null,
     rejected: [],
     dropped: [],
+    idMercadoLivreConflito: null,
   });
   // `mockClear` (above) doesn't reset a mock's implementation — restore the
   // module factory's "no endereço" default explicitly so a test overriding it
@@ -913,6 +914,7 @@ describe('importPedidoMercadoLivre — cliente', () => {
       matchedBy: null,
       rejected: [],
       dropped: [],
+      idMercadoLivreConflito: null,
     });
 
     await importPedidoMercadoLivre(deps(db, api), 1);
@@ -959,6 +961,7 @@ describe('importPedidoMercadoLivre — cliente', () => {
       matchedBy: null,
       rejected: [],
       dropped: [],
+      idMercadoLivreConflito: null,
     });
 
     await importPedidoMercadoLivre(deps(db, api), 1);
@@ -989,6 +992,125 @@ describe('importPedidoMercadoLivre — cliente', () => {
     expect(db.docs('pedidos').get('pedido-1')).toMatchObject({ clientePedidoOuterRef: null });
     expect(warn).toHaveBeenCalled();
   });
+
+  it("supplies the buyer's idMercadoLivre — the strongest key this path holds (#1087)", async () => {
+    // Until #1087 this call carried no ML id at all, so `findOrCreateCliente`'s
+    // third leg was always null on the order path and every ML order matched on
+    // telefone or e-mail. Live on 2026-09-01 that linked a real buyer to an e2e
+    // seed fixture over a shared placeholder phone.
+    //
+    // ⚠️ NOT vacuous: `billingInfoToClienteFields` is MOCKED in this suite and
+    // its return value below has no `idMercadoLivre`. The key can only be here
+    // because `applyClienteStep` put it here — which is exactly why the stamp
+    // does not live inside that mapper.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const order = makeOrder({ id: 1 }); // buyer.id === 900
+    const api = makeApi({ getOrder: vi.fn(async () => order) });
+
+    vi.mocked(billingInfoToClienteFields).mockReturnValue({
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Fulano',
+      cpf_cnpj: '11122233344',
+      idEstrangeiro: null,
+      ie: null,
+      telefone: null,
+      email: null,
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(findOrCreateCliente).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        // A STRING: ML ids outgrew Int32 and `cliente.idMercadoLivre` is a
+        // string precisely so the 53-bit question never arises.
+        fields: expect.objectContaining({ idMercadoLivre: '900', cpf_cnpj: '11122233344' }),
+      }),
+    );
+  });
+
+  it('refuses a buyer id JSON.parse could not represent, and imports anyway', async () => {
+    // `JSON.parse` silently ROUNDS past 2^53, so an id beyond the safe range
+    // arrives already damaged and two buyers can land on one number. Stamping it
+    // would MERGE TWO PEOPLE — the single failure this key exists to prevent —
+    // so the id is dropped, not guessed. Degrade, never crash: the import still
+    // completes on the old cascade.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const order = makeOrder({ id: 1 });
+    (order as { buyer: { id: number } }).buyer.id = Number.MAX_SAFE_INTEGER + 2;
+    const api = makeApi({ getOrder: vi.fn(async () => order) });
+
+    vi.mocked(billingInfoToClienteFields).mockReturnValue({
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Fulano',
+      cpf_cnpj: '11122233344',
+      idEstrangeiro: null,
+      ie: null,
+      telefone: null,
+      email: null,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(result).toMatchObject({ pedidoId: 'pedido-1', skipped: null });
+    const [, arg] = vi.mocked(findOrCreateCliente).mock.calls[0]!;
+    expect(arg.fields).not.toHaveProperty('idMercadoLivre');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('id de comprador fora do alcance seguro'),
+      expect.anything(),
+    );
+  });
+
+  it('logs the split when the ML id already belongs to another cliente', async () => {
+    // The pedido still links and the cliente is still enriched; only the
+    // identity key was withheld, because a second owner is what makes the match
+    // leg ambiguous. Merging the two rows moves pedidos, conversas and
+    // endereços — a human's call, so the split has to be visible.
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', { estado: 'iniciado', clientePedidoOuterRef: null, itens: {} });
+    const order = makeOrder({ id: 1 });
+    const api = makeApi({ getOrder: vi.fn(async () => order) });
+
+    vi.mocked(billingInfoToClienteFields).mockReturnValue({
+      tipo: TIPO_CLIENTE.pessoaFisica,
+      nome: 'Fulano',
+      cpf_cnpj: '11122233344',
+      idEstrangeiro: null,
+      ie: null,
+      telefone: null,
+      email: null,
+    });
+    vi.mocked(findOrCreateCliente).mockResolvedValue({
+      clienteId: 'cli-pedido',
+      created: false,
+      matchedBy: 'cpf_cnpj',
+      rejected: [],
+      dropped: [],
+      idMercadoLivreConflito: 'cli-da-pergunta',
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('idMercadoLivre já pertence a outro cliente'),
+      expect.objectContaining({
+        clienteDoPedido: 'cli-pedido',
+        clienteExistente: 'cli-da-pergunta',
+        idMercadoLivre: '900',
+      }),
+    );
+    // The pedido is still linked — the refusal withholds a key, not the cliente.
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({
+      clientePedidoOuterRef: 'documents/clientes/cli-pedido',
+    });
+  });
 });
 
 describe('importPedidoMercadoLivre — endereço', () => {
@@ -1005,6 +1127,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
       matchedBy: null,
       rejected: [],
       dropped: [],
+      idMercadoLivreConflito: null,
     });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'ok', fields: ENDERECO_SP });
     vi.mocked(ensureEndereco).mockResolvedValue('end-99');
@@ -1031,6 +1154,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
       matchedBy: null,
       rejected: [],
       dropped: [],
+      idMercadoLivreConflito: null,
     });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '123' });
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -1068,6 +1192,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
       matchedBy: null,
       rejected: [],
       dropped: [],
+      idMercadoLivreConflito: null,
     });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '123' });
     vi.mocked(shipmentToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: '456' });
@@ -1104,6 +1229,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
       matchedBy: null,
       rejected: [],
       dropped: [],
+      idMercadoLivreConflito: null,
     });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue(compartilhado);
     vi.mocked(shipmentToEnderecoFields).mockReturnValue(compartilhado);
@@ -1134,6 +1260,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
       matchedBy: null,
       rejected: [],
       dropped: [],
+      idMercadoLivreConflito: null,
     });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({ kind: 'sem-cep', cepRaw: null });
     vi.mocked(shipmentToEnderecoFields).mockReturnValue({ kind: 'ok', fields: ENDERECO_SP });
@@ -1162,6 +1289,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
       matchedBy: null,
       rejected: [],
       dropped: [],
+      idMercadoLivreConflito: null,
     });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
       kind: 'uf-desconhecida',
@@ -1198,6 +1326,7 @@ describe('importPedidoMercadoLivre — endereço', () => {
       matchedBy: null,
       rejected: [],
       dropped: [],
+      idMercadoLivreConflito: null,
     });
     vi.mocked(billingInfoToEnderecoFields).mockReturnValue({
       kind: 'uf-desconhecida',
