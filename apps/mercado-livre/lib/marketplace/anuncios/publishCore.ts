@@ -345,11 +345,28 @@ export function publishModeIssues(args: {
   // ⚠️ Evaluated against the ORIGINAL `childrenCount`, before any sole-member
   // materialisation runs. Materialise first and `childrenCount` is 1, so this
   // guard silently stops firing — which is exactly the destructive case.
-  if (classificarMembroUnico(args) === 'recusar') {
+  const membroUnico = classificarMembroUnico(args);
+  if (membroUnico === 'recusar-familia') {
     issues.push(
       'este anúncio é uma família User Products (o vínculo aponta para a família, não para um ' +
         'anúncio) e o produto não tem mais variações — recadastre as variações ou encerre os ' +
         'anúncios da família no Mercado Livre',
+    );
+  }
+
+  // ⚠️ #1398: publish no longer INVENTS the missing member. It used to mint one
+  // here — above every later throw site — so a publish the operator saw FAIL had
+  // still reshaped the produto and moved its stock onto a child, with no message
+  // saying so. Every produto created since #1424 is born as a family and #1434
+  // stops it losing its last child, so what reaches this arm is a legacy produto
+  // the conversion has not touched yet: refusing it is a repair the operator can
+  // make in ten seconds, and it doubles as the sensor that says the conversion
+  // missed one.
+  if (membroUnico === 'recusar-sem-membro') {
+    issues.push(
+      'produto sem item vendável: o Mercado Livre publica sempre uma família, então o produto ' +
+        'precisa de ao menos uma variação. Abra a aba "Variações", adicione uma variante e ' +
+        'salve antes de publicar',
     );
   }
 
@@ -369,27 +386,48 @@ export function publishModeIssues(args: {
  * ⚠️ The three cases are told apart by the SHAPE of `link.id`, never by
  * `childrenCount` alone — all three have zero children:
  *
- *  - `'nenhum'`  – not a childless UP produto; nothing to do.
- *  - `'criar'`   – never published (`linkId == null`). Mint the sole member, POST it.
- *  - `'adotar'`  – published under the OLD convention, so `link.id` is a real item
- *                id (`MLB…`). Mint the sole member **carrying that item id** so the
- *                fan-out PUTs the existing listing. ⛔ Minting it WITHOUT the id
- *                makes the fan-out POST a second item, after which
+ *  - `'nenhum'`             – not a childless UP produto; nothing to do.
+ *  - `'recusar-sem-membro'` – never published (`linkId == null`). ⚠️ This USED to be
+ *                `'criar'`, and publish minted the member here. See below.
+ *  - `'adotar'`             – published under the OLD convention, so `link.id` is a
+ *                real item id (`MLB…`). Mint the sole member **carrying that item
+ *                id** so the fan-out PUTs the existing listing. ⛔ Minting it
+ *                WITHOUT the id makes the fan-out POST a second item, after which
  *                `sweepRemovedMembers` confirms the original as an orphan and
  *                pauses-then-closes it — a live listing, its sales history and its
  *                ranking, gone.
- *  - `'recusar'` – `link.id` is a FAMILY id (all digits), so the ERP's variations
- *                were deleted out from under a family that may still have live
- *                members. Not repairable from here.
+ *  - `'recusar-familia'`    – `link.id` is a FAMILY id (all digits), so the ERP's
+ *                variations were deleted out from under a family that may still
+ *                have live members. Not repairable from here.
+ *
+ * ## ⚠️ Why `'criar'` became a refusal, and `'adotar'` did NOT (#1398)
+ *
+ * The materialisation sits ABOVE every later throw site — the assembly's issue
+ * list, the picture uploads, every ML 4xx — so a publish the operator saw **fail**
+ * had still converted the produto into a family of one and moved its stock onto
+ * the child, with nothing on screen saying the shape had changed.
+ *
+ * For `'criar'` that repair now costs more than it buys: every produto created
+ * since #1424 is born a family and #1434 stops one losing its last child, so the
+ * only produtos left in this state are legacy ones the conversion has not reached.
+ * Refusing them is a ten-second fix for the operator, and a sensor for the
+ * conversion.
+ *
+ * ⛔ `'adotar'` is the opposite trade and is deliberately KEPT. There is a live,
+ * selling listing behind it, and the member link must be seeded with that item id
+ * or the fan-out POSTs a duplicate and the sweep closes the original. Refusing
+ * would not leave the operator where they started — it would leave them able to
+ * create a member BY HAND, without the item id, which is exactly the destructive
+ * path. It goes away when the conversion script owns it, not before.
  */
 export function classificarMembroUnico(args: {
   model: ListingModel;
   linkId: string | null;
   childrenCount: number;
-}): 'nenhum' | 'criar' | 'adotar' | 'recusar' {
+}): 'nenhum' | 'adotar' | 'recusar-familia' | 'recusar-sem-membro' {
   if (args.model !== 'user-products' || args.childrenCount > 0) return 'nenhum';
-  if (args.linkId == null || args.linkId === '') return 'criar';
-  return isFamilyId(args.linkId) ? 'recusar' : 'adotar';
+  if (args.linkId == null || args.linkId === '') return 'recusar-sem-membro';
+  return isFamilyId(args.linkId) ? 'recusar-familia' : 'adotar';
 }
 
 /**

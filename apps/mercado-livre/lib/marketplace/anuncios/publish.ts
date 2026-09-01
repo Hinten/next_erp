@@ -394,10 +394,17 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     linkId: link?.id ?? null,
     childrenCount: children.length,
   });
-  // Enumerated rather than `!== 'nenhum'`: 'recusar' already threw through
-  // `publishModeIssues` above, and naming the two repairable cases explicitly is
+  // Enumerated rather than `!== 'nenhum'`: both refusals already threw through
+  // `publishModeIssues` above, and naming the ONE repairable case explicitly is
   // what keeps that true if the guard above is ever moved or relaxed.
-  if (acaoMembroUnico === 'criar' || acaoMembroUnico === 'adotar') {
+  //
+  // ⚠️ #1398 narrowed this to `adotar`. Publish no longer invents a member for a
+  // produto that was never published — that repair sat above every later throw
+  // site, so a FAILED publish still reshaped the produto and moved its stock.
+  // `adotar` stays because there is a live listing behind it whose item id must
+  // reach the member link, or the fan-out POSTs a duplicate and the sweep closes
+  // the original.
+  if (acaoMembroUnico === 'adotar') {
     children.push(
       await garantirMembroUnico(
         { db, integracaoId },

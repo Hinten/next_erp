@@ -89,6 +89,15 @@ export interface GarantirMembroUnicoArgs {
  * adoption asked for with no anúncio to adopt — so the route's existing 422 mapping
  * carries the reason to the operator unchanged. ⚠️ A reserved depósito is NOT a
  * refusal: it splits the move (see `planejarMembroUnico`).
+ *
+ * ⚠️ **Publish only ever passes `'adotar'` since #1398.** The `'criar'` arm is not
+ * dead — `membroUnicoChildId` and `planejarMembroUnico` still answer for it, and
+ * the conversion script is its second consumer — but nothing in the publish path
+ * reaches it any more: `classificarMembroUnico` now returns `'recusar-sem-membro'`
+ * for a produto that was never published, and `publishModeIssues` refuses it above
+ * this call. Inventing a produto shape on a publish that then FAILS is the harm
+ * that motivated the change; adopting a live listing is not the same trade, which
+ * is why exactly one of the two survives here.
  */
 export async function garantirMembroUnico(
   deps: GarantirMembroUnicoDeps,
