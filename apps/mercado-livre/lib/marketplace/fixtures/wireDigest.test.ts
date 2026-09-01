@@ -68,8 +68,17 @@ describe('wireDigest', () => {
         corpo: { ...CORPO, paid_amount: '49.90' },
       },
       {
+        // ⚠️ Really DELETE the key. `{ ...CORPO, status: undefined }` does not:
+        // `Object.keys` still yields `status`, and `walk` falls through to
+        // `typeof undefined` — so the digest GAINS a `status: undefined` line (a
+        // type outside the WireTypeName union) instead of LOSING the status line.
+        // The control passed, but on a JSON-impossible input: it proved the
+        // digest reacts to a value ML can never send, not to the drop it names —
+        // and a dropped key is the one drift class this list exists to cover.
         nome: 'ML drops a key entirely',
-        corpo: { ...CORPO, status: undefined as unknown as WireValue },
+        corpo: Object.fromEntries(
+          Object.entries(CORPO as Record<string, WireValue>).filter(([k]) => k !== 'status'),
+        ) as WireValue,
       },
       {
         nome: 'ML sends null where it used to send a value',
@@ -88,6 +97,18 @@ describe('wireDigest', () => {
     for (const { nome, corpo } of mutacoes) {
       expect(wireDigest(corpo), `mutation invisible to the digest: ${nome}`).not.toBe(base);
     }
+  });
+
+  it('CONTROL for the control — a dropped key REMOVES its line, it does not retype it', () => {
+    // Pins the distinction the mutation list got wrong once: `undefined` leaves
+    // the key present with a bogus type, a real delete removes the line. Without
+    // this, the drop case above can silently regress to the weaker form again.
+    const semStatus = wireDigest({ a: 1 });
+    const comUndefined = wireDigest({ a: 1, status: undefined as unknown as WireValue });
+
+    expect(semStatus).toBe('a: number');
+    expect(comUndefined).toContain('status: undefined');
+    expect(comUndefined).not.toBe(semStatus);
   });
 
   it('treats null as its OWN type, never folded into the value type', () => {

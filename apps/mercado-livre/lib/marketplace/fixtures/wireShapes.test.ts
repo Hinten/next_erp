@@ -52,6 +52,22 @@ describe('SHAPES.txt', () => {
   it('is deterministic — regenerating twice yields identical bytes', () => {
     expect(renderShapesFromCorpus()).toBe(renderShapesFromCorpus());
   });
+
+  it('⚠️ renders one section per COMMITTED fixture, not per freshly-promoted one', () => {
+    // The truncation guard. `promote:fixtures` used to render from the bodies it
+    // had just processed, so promoting ONE newly captured order — the normal
+    // workflow, since `capture:fixtures` takes per-id flags — overwrote this
+    // document with a single section. The test above caught it, but its stated
+    // remedy ("regenerate with promote:fixtures") reproduced the truncation, so
+    // the loop never closed.
+    //
+    // Rendering from disk is what makes the script and this file share one
+    // source of truth; this asserts that property directly rather than through
+    // the committed bytes, so it holds even on a corpus that has grown.
+    const seccoes = (renderShapesFromCorpus().match(/^## /gm) ?? []).length;
+    expect(seccoes).toBe(listWireFixtures().length);
+    expect(seccoes).toBeGreaterThan(1);
+  });
 });
 
 describe('renderShapesDocument', () => {
