@@ -3,7 +3,19 @@ import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
-import { type PublishDeps, loadTabelaBinding, publishProduto } from './publish';
+import type { ComponentesKit } from '@delfrance/schemas';
+
+import {
+  type PublishDeps,
+  loadTabelaBinding,
+  publishProduto,
+  quantidadeParaPublicar,
+} from './publish';
+import {
+  STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV,
+  quantidadeDoMembro,
+  quantidadeParaEnvio,
+} from '../estoque/bulkEstoquePlan';
 import {
   MercadoLivrePublishError,
   TABELA_BINDING_RECUSA,
@@ -3185,6 +3197,175 @@ describe('every tabela-binding reason is reachable and refuses as declared (#108
               'answering `categoriaUsaGuia: null`?'
           : `'${codigo}' is declared silent but produced: ${String(issue)}`,
       ).toBe(deveRecusar);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe('#1087 — the sweep and publish must compute the SAME quantity', () => {
+  /**
+   * ⚠️ **The acceptance criterion of #1087, and the reason it is asserted as an
+   * EQUALITY rather than against hand-written numbers.**
+   *
+   * Before #1087 the two sides disagreed by design: publish sent a virtual
+   * kit's component-min (`POST /items` requires `available_quantity`) while the
+   * sweep refused to send at all, so the listing froze at its publish-time
+   * quantity for ever and oversold. Making the sweep send is only half a fix —
+   * if it now sends a DIFFERENT number, the first sweep after a publish
+   * silently changes the advertised quantity, which is a new bug wearing the
+   * fix's clothes.
+   *
+   * A number written into this file could not catch that: it would pin one side
+   * and let the other drift toward it. Comparing the two functions to each
+   * other is what makes the disagreement impossible to introduce. It holds
+   * today because `quantidadeParaPublicar` IS `quantidadeParaEnvio` with the
+   * escape hatch pinned off — the test's job is to notice if that ever stops
+   * being true.
+   */
+  const CASOS: Array<{
+    nome: string;
+    produto: { ehKit: boolean; ehKitVirtual: boolean; componentesKit: ComponentesKit | null };
+    own: number;
+    componentes: Record<string, number>;
+  }> = [
+    {
+      nome: 'virtual kit constrained by two components (min, not own stock)',
+      produto: {
+        ehKit: true,
+        ehKitVirtual: true,
+        componentesKit: {
+          A: { quantidade: 1, limitarEstoque: true, timestamp: null },
+          B: { quantidade: 1, limitarEstoque: true, timestamp: null },
+        },
+      },
+      own: 50,
+      componentes: { A: 5, B: 3 },
+    },
+    {
+      nome: 'virtual kit whose components divide (floored min)',
+      produto: {
+        ehKit: true,
+        ehKitVirtual: true,
+        componentesKit: {
+          A: { quantidade: 2, limitarEstoque: true, timestamp: null },
+          B: { quantidade: 3, limitarEstoque: true, timestamp: null },
+        },
+      },
+      own: 100,
+      componentes: { A: 10, B: 9 },
+    },
+    {
+      nome: 'virtual kit with NO constraining component → own stock',
+      produto: { ehKit: true, ehKitVirtual: true, componentesKit: null },
+      own: 12,
+      componentes: {},
+    },
+    {
+      nome: 'virtual kit whose component has no estoque → 0, never unconstrained (#238)',
+      produto: {
+        ehKit: true,
+        ehKitVirtual: true,
+        componentesKit: { A: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+      },
+      own: 40,
+      componentes: {},
+    },
+    {
+      // ⚠️ The near-miss. `ehKitVirtual` without `ehKit` must STILL take the kit
+      // branch on both sides; keying it on `ehKit` alone answers `own` — a wrong
+      // number rather than a refusal, and nothing reports it.
+      nome: 'ehKitVirtual WITHOUT ehKit still takes the kit branch',
+      produto: {
+        ehKit: false,
+        ehKitVirtual: true,
+        componentesKit: { A: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+      },
+      own: 50,
+      componentes: { A: 4 },
+    },
+    {
+      nome: 'an ORDINARY kit, the control that was never in dispute',
+      produto: {
+        ehKit: true,
+        ehKitVirtual: false,
+        componentesKit: { A: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+      },
+      own: 99,
+      componentes: { A: 7 },
+    },
+  ];
+
+  it.each(CASOS)('agrees on: $nome', ({ produto, own, componentes }) => {
+    const doSweep = quantidadeDoMembro({
+      produtoId: 'P',
+      ehKit: produto.ehKit,
+      ehKitVirtual: produto.ehKitVirtual,
+      publicado: true,
+      componentesKit: produto.componentesKit,
+      timestampMs: null,
+      estoque: { quantidade: own, quantidadeReservada: 0 },
+      componentEstoques: Object.entries(componentes).map(([parentId, quantidade]) => ({
+        parentId,
+        quantidade,
+        quantidadeReservada: 0,
+      })),
+    });
+    const doPublish = quantidadeParaPublicar(produto, own, componentes);
+
+    // Not `toBe(<a number>)`: the EQUALITY is the assertion. A null on the sweep
+    // side would mean the refusal came back with the hatch off, which is also a
+    // disagreement — `toBe` catches it, since publish can never return null.
+    expect(doSweep).toBe(doPublish);
+  });
+
+  /**
+   * ⚠️ **Agreement is necessary and NOT sufficient, and this pins the gap.**
+   *
+   * The equality above is symmetric: both sides now call one function, so a
+   * defect INSIDE that function moves both answers together and the comparison
+   * stays green. Measured, not assumed — reverting the kit branch to
+   * `if (args.ehKit)` alone leaves every case above passing, because publish and
+   * the sweep then agree on the produto's own stock instead of the component-min.
+   *
+   * So the near-miss needs a second, one-sided assertion: for a produto flagged
+   * `ehKitVirtual` WITHOUT `ehKit`, the published quantity must NOT be the
+   * produto's own stock. `bulkEstoquePlan.test.ts` pins the sweep's half.
+   */
+  it('near-miss: `ehKitVirtual` without `ehKit` must NOT publish the own stock', () => {
+    const produto = {
+      ehKit: false,
+      ehKitVirtual: true,
+      componentesKit: { A: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+    };
+    expect(quantidadeParaPublicar(produto, 50, { A: 4 })).toBe(4); // the component-min
+    expect(quantidadeParaPublicar(produto, 50, { A: 4 })).not.toBe(50); // own stock
+  });
+
+  it('the escape hatch moves the SWEEP only — publish can never skip', () => {
+    // `POST /items` requires `available_quantity`, so `quantidadeParaPublicar`
+    // pins `pularKitVirtual: false`. Turning the hatch on must therefore break
+    // the agreement in exactly ONE direction, and never make publish emit null.
+    const produto = {
+      ehKit: true,
+      ehKitVirtual: true,
+      componentesKit: { A: { quantidade: 1, limitarEstoque: true, timestamp: null } },
+    };
+    const componentes = { A: 3 };
+    process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV] = '1';
+    try {
+      expect(quantidadeParaPublicar(produto, 50, componentes)).toBe(3);
+      expect(
+        quantidadeParaEnvio({
+          ehKit: produto.ehKit,
+          ehKitVirtual: produto.ehKitVirtual,
+          componentesKit: produto.componentesKit,
+          ownDisponivel: 50,
+          disponivelByProdutoId: componentes,
+        }),
+      ).toBeNull();
+    } finally {
+      delete process.env[STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV];
     }
   });
 });

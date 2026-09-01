@@ -344,9 +344,17 @@ an `available_quantity`, then `GET` the item back.
 | Did the omitted variation survive? |        |
 
 If ML **deletes** it, every routine stock sync can silently destroy variations on a live
-listing, because `buildSendTasks` deliberately excludes unmatched / id-less / kit-virtual
-children. That would outrank #781 and must be fixed before any stock sweep is enabled in
+listing, because `buildSendTasks` deliberately excludes unmatched / id-less children.
+That would outrank #781 and must be fixed before any stock sweep is enabled in
 production.
+
+⚠️ **#1087 removed one of the three exclusion classes**: a `kit-virtual` child is no
+longer omitted by default — virtual kits send at their component-min like any other
+kit — so the exposure here is narrower than when this step was written. It is not
+closed: the other two classes remain, and turning the
+`MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED` escape hatch on brings the third back.
+Run the step regardless; the answer is what decides whether the remaining exclusions
+are safe.
 
 ---
 

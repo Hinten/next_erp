@@ -1314,32 +1314,39 @@ function storedCombinationsOf(raw: Record<string, unknown> | undefined): MlAttri
 }
 
 /**
- * The `available_quantity` to publish for one produto.
+ * The `available_quantity` to publish for one produto: the component-min for a
+ * kit — virtual or not — falling back to its own stock when nothing constrains
+ * it.
  *
- * ⚠️ This is deliberately NOT `quantidadeParaEnvio`'s `null` contract. In the
- * stock SWEEP, `null` means "do not push a stock update for this produto" — a
- * virtual kit's quantity is not ours to sync, because its components are what
- * move. On the PUBLISH path there is no such option: `POST /items` requires
- * `available_quantity` on an item without variations, so omitting it does not
- * make ML derive anything — it makes the produto unpublishable. ML's own Virtual
- * Kits, which really do derive their stock, are a User-Products feature
- * (`POST /items/kits`) this port never creates.
+ * ⚠️ **The one place publish and the stock sweep MUST agree**, which since
+ * #1087 they do structurally rather than by comment: this is `quantidadeParaEnvio`
+ * with the escape hatch pinned off, so there is one implementation and the
+ * compiler keeps them equal. If they ever diverged again the first sweep after a
+ * publish would silently change the advertised number. `publish.test.ts` pins
+ * the equality against `quantidadeDoMembro`.
  *
- * So a virtual kit is published as the ordinary kit it looks like on this wire:
- * the component-min, falling back to its own stock when nothing constrains it.
+ * ⚠️ `pularKitVirtual: false` is not a preference, it is the only legal value
+ * here. `POST /items` REQUIRES `available_quantity` on an item without
+ * variations, so a `null` would not make ML derive anything — it would make the
+ * produto unpublishable. ML's own Virtual Kits, which really do derive their
+ * stock, are a User-Products feature (`POST /items/kits`) this port never
+ * creates, which is the same fact that made the sweep's old refusal wrong.
+ *
+ * Exported for that equality test only — publish is its sole caller.
  */
-function quantidadeParaPublicar(
+export function quantidadeParaPublicar(
   produto: { ehKit: boolean; ehKitVirtual: boolean; componentesKit: ComponentesKit | null },
   ownDisponivel: number,
   disponivelByProdutoId: Record<string, number>,
 ): number {
   return (
     quantidadeParaEnvio({
-      ehKit: produto.ehKit || produto.ehKitVirtual,
-      ehKitVirtual: false, // see the ⚠️ above — the sweep's "never send" is not ours
+      ehKit: produto.ehKit,
+      ehKitVirtual: produto.ehKitVirtual,
       componentesKit: produto.componentesKit,
       ownDisponivel,
       disponivelByProdutoId,
+      pularKitVirtual: false, // see the ⚠️ above — never optional on this path
     }) ?? ownDisponivel
   );
 }

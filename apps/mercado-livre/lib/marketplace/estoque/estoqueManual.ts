@@ -219,7 +219,15 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
     'saudável, então foi o envio anterior que ele recusou. Marque "Reenviar anúncios com erro" ' +
     'para reverificar e tentar de novo.',
   'status-nao-enviavel': 'O Mercado Livre não aceita envio de estoque para este anúncio agora.',
-  'kit-virtual': 'Kit virtual: o Mercado Livre monta a quantidade a partir dos componentes.',
+  // ⚠️ This message used to say "o Mercado Livre monta a quantidade a partir dos
+  // componentes" — the premise #1087 refuted. It does not: ML derives stock only
+  // for its own Virtual Kits, which this port never creates. Virtual kits are
+  // sent by default now, so the only way to see this row is with the escape
+  // hatch on, and the wording has to say so or the operator reads a deliberate
+  // revert as a property of virtual kits.
+  'kit-virtual':
+    'Kit virtual: envio de estoque desativado por configuração ' +
+    '(MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED). Por padrão este produto é enviado.',
   // ⚠️ No `'nao-publicado'` (#1087): an oculto produto whose anúncio is live is
   // SENT now, and says so through `AVISO_OCULTO_NO_ERP` on the `enviado` row.
   'conta-fora-do-produto': 'O produto não está vinculado a esta conta.',

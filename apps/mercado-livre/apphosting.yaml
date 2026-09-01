@@ -68,6 +68,18 @@ runConfig:
 #   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS. ⚠️ REQUIRED in prod:
 #                                localhost is no longer implicitly allowed (#821/T5),
 #                                so an unset value allows NO origin at all.
+#   MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED
+#                                OPTIONAL — `1` restores the legacy refusal to send
+#                                stock for an `ehKitVirtual` produto (#1087). Unset is
+#                                the CORRECTED behaviour and needs no entry below: a
+#                                virtual kit is sent at its component-min, exactly what
+#                                publish has always sent. ⚠️ It is an ESCAPE HATCH, not a
+#                                rollout gate — set it in the console only to revert a
+#                                misbehaving live sweep, and remember it also restores
+#                                that rung's family-wide skip. This backend serves the
+#                                MANUAL push; the SWEEPS read the same var from the
+#                                nested functions codebase's `.env.deploy`, so flip both
+#                                or the two surfaces disagree about the same produto.
 #   MERCADO_LIVRE_PKCE_ENABLED   OPTIONAL — `1` drives the OAuth connect flow with
 #                                PKCE (#821). ⚠️ Must match the PKCE toggle on the
 #                                registered application: once ML's toggle is on the

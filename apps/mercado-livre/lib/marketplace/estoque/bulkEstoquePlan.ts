@@ -168,9 +168,17 @@
  *  - The `available_quantity` clamp 0..99999 was centralized in the legacy API
  *    layer (api.dart:1182-1203) → `quantidadeParaEnvio` floors then clamps
  *    `ESTOQUE_MIN..MERCADO_LIVRE_STOCK_MAX`.
- *  - `ehKitVirtual` produtos NEVER get stock sent (functions.dart:286-289) →
- *    `quantidadeParaEnvio` returns null and `buildSendTasks` skips
- *    `'kit-virtual'`.
+ *  - `ehKitVirtual` produtos used to NEVER get stock sent (functions.dart:286-289).
+ *    **Reversed in #1087**: they now send by default, taking the ordinary kit
+ *    branch (`ehKit || ehKitVirtual`), which is what `publish.ts` has always
+ *    done. The legacy rule assumed ML derives a virtual kit's quantity from its
+ *    components; ML does that only for its own Virtual Kits, a User-Products
+ *    feature (`POST /items/kits`) this port never creates — so the precondition
+ *    never held and the listing advertised its publish-time quantity for ever,
+ *    which oversells. The refusal survives only behind
+ *    `MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED` (default OFF), an escape
+ *    hatch for reverting a misbehaving live sweep — see
+ *    {@link STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV}.
  *  - vendido30dias = a LEFT JOIN against a 30d order-items aggregate ON the
  *    SOLD produto id (kit sales attribute to the KIT). **Retired** (ADR 0014):
  *    the activity heuristic it fed existed only because change detection was
@@ -261,6 +269,26 @@ export const STOCK_SYNC_FLAG_ENV = 'MERCADO_LIVRE_STOCK_SYNC_ENABLED';
  * #696, byte-for-byte.
  */
 export const STOCK_MULTIORIGEM_FLAG_ENV = 'MERCADO_LIVRE_STOCK_MULTIORIGEM_ENABLED';
+
+/**
+ * ESCAPE HATCH (#1087) restoring the legacy `ehKitVirtual` refusal — the sweep
+ * and the manual push send virtual kits by DEFAULT now, so this ships OFF and
+ * only the literal `'1'` turns the old skip back on.
+ *
+ * ⚠️ It is **not** a rollout gate, and the naming carries that: the default is
+ * the CORRECTED behaviour, and the flag exists only so a live sweep misbehaving
+ * can be reverted with one env var and no deploy of code. That is also why it is
+ * named for the SKIP rather than the send — `envFlag`'s "OFF unless `'1'`"
+ * convention would otherwise make OFF mean the legacy behaviour, backwards.
+ *
+ * What it reverts, and why it was wrong (see {@link quantidadeParaEnvio}): the
+ * refusal came from `functions.dart:286-289` and assumed ML keeps a virtual
+ * kit's quantity current from its components. ML only does that for its own
+ * Virtual Kits — a User-Products feature (`POST /items/kits`) this port never
+ * creates — so the listing simply advertised its publish-time quantity for ever,
+ * which oversells. `publish.ts` had already reasoned this through and diverged.
+ */
+export const STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV = 'MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED';
 
 /** Cloud Tasks queue name for the stock send tasks (PR B's `onTaskDispatched`). */
 export const MERCADO_LIVRE_STOCK_SEND_QUEUE = 'sendMercadoLivreStock';
@@ -406,6 +434,15 @@ export function estoqueMax(): number {
 /** Kit own-stock inclusion hook — default OFF (component-min only, per Lucas). */
 export function kitIncluiEstoqueProprio(): boolean {
   return envFlag('MERCADO_LIVRE_STOCK_KIT_INCLUI_PROPRIO');
+}
+
+/**
+ * #1087 escape hatch — should a virtual kit be REFUSED, as it was before this
+ * flag existed? Default OFF, i.e. virtual kits are sent like any other kit.
+ * See {@link STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV} for what turning it on restores.
+ */
+export function pularKitVirtual(): boolean {
+  return envFlag(STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV);
 }
 
 /** Anchor-page size of THE query — family rows are heavy, keep pages small. */
@@ -1211,22 +1248,47 @@ export interface QuantidadeParaEnvioArgs {
   disponivelByProdutoId: Record<string, number | null | undefined>;
   /** Override for the kit own-stock hook — defaults to `kitIncluiEstoqueProprio()`. */
   incluirEstoqueProprioDoKit?: boolean;
+  /**
+   * Override for the #1087 escape hatch — defaults to `pularKitVirtual()`.
+   *
+   * ⚠️ Same shape and same reason as `incluirEstoqueProprioDoKit` above: this
+   * function stays PURE for a caller that supplies the value, and the env is
+   * consulted only to fill an absent one. `publish.ts` pins it `false` — see
+   * `quantidadeParaPublicar`, where skipping is not an option ML offers.
+   */
+  pularKitVirtual?: boolean;
 }
 
 /**
- * The quantity to publish for one produto at one depósito, or `null` for
- * "never send" (`ehKitVirtual`, functions.dart:286-289). Kits wrap
+ * The quantity to publish for one produto at one depósito. Kits wrap
  * `kitEstoqueDisponivel` (component-min, estoques.dart:94-131 — unrounded,
  * missing component = 0); a `null` min (no component constrains) falls back to
  * the produto's own stock. The opt-in own-stock hook ADDS `ownDisponivel` to a
  * constrained kit min. Result is floored, then clamped
  * `ESTOQUE_MIN..estoqueMax()` (api.dart:1182-1203).
+ *
+ * ⚠️ **A VIRTUAL kit takes the ordinary kit branch (#1087)** — `ehKit ||
+ * ehKitVirtual`, byte-for-byte what `publish.ts`'s `quantidadeParaPublicar`
+ * asks for, because they are now the same call. The old `if (args.ehKitVirtual)
+ * return null` was legacy parity (`functions.dart:286-289`) resting on a
+ * premise this repo had already refuted: it assumed ML derives the quantity
+ * from the components, which ML does only for its own Virtual Kits — a
+ * User-Products feature (`POST /items/kits`) this port never creates. So the
+ * listing kept advertising its publish-time quantity for ever, and oversold.
+ *
+ * ⚠️ **The OR is load-bearing on its own**, independently of the `null`. Keying
+ * the kit branch on `args.ehKit` alone while sending virtual kits computes no
+ * min at all and falls back to `ownDisponivel` — a WRONG number rather than a
+ * refusal, and nothing reports it. Pinned by the near-miss test.
+ *
+ * `null` survives only as the escape hatch's answer ({@link pularKitVirtual}),
+ * meaning "do not push a stock update for this produto".
  */
 export function quantidadeParaEnvio(args: QuantidadeParaEnvioArgs): number | null {
-  if (args.ehKitVirtual) return null;
+  if (args.ehKitVirtual && (args.pularKitVirtual ?? pularKitVirtual())) return null;
 
   let disponivel: number;
-  if (args.ehKit) {
+  if (args.ehKit || args.ehKitVirtual) {
     const kitMin = kitEstoqueDisponivel(args.componentesKit, args.disponivelByProdutoId);
     if (kitMin == null) {
       disponivel = args.ownDisponivel; // unconstrained kit → own stock stands alone
@@ -1264,7 +1326,13 @@ export function disponivelByProdutoIdFrom(rows: RawEstoqueRow[]): Record<string,
  * One member's send quantity from its OWN joined rows — no I/O, computed at
  * sweep time (owner decision 3: the task carries this verbatim to the send
  * handler). Missing own estoque reads as 0; a missing component estoque
- * counts as 0 through the kit min (#238); `ehKitVirtual` → null (never send).
+ * counts as 0 through the kit min (#238); a virtual kit takes the ordinary kit
+ * branch and answers `null` only while the #1087 escape hatch is on.
+ *
+ * ⚠️ It deliberately passes NO `pularKitVirtual`, so the whole sweep resolves
+ * the flag through one reader ({@link quantidadeParaEnvio}). Threading an
+ * override down from here would let `quantidadesDaFamilia` and
+ * {@link buildSendTasks} disagree about the same tick.
  */
 export function quantidadeDoMembro(member: FamilyMember): number | null {
   const ownDisponivel =
@@ -1298,9 +1366,19 @@ export function quantidadeDoMembro(member: FamilyMember): number | null {
  * anything having gone wrong with its actual stock. A component that genuinely
  * has no estoque doc at this depósito lands here too, and is treated the same,
  * because from here the two are indistinguishable.
+ *
+ * ⚠️ **`ehKit || ehKitVirtual`, matching {@link quantidadeParaEnvio} (#1087).**
+ * This predicate has to admit exactly the members whose quantity that function
+ * derives from components, or the two drift and the guard stops covering the
+ * arithmetic it guards. Excluding virtual kits here — which is what it used to
+ * do — left `kitNaoVerificavel` permanently false for them, so a virtual kit
+ * with a stale denorm published 0 with no `console.error` naming the components
+ * AND, worse, was never omitted from `quantidadesAnteriores`: the
+ * reconstruction rebuilt the same 0 from the same broken component set, read
+ * "unchanged", and skipped the send that would have corrected ML.
  */
 function componentesNaoResolvidos(member: FamilyMember): string[] {
-  if (!member.ehKit || member.ehKitVirtual) return [];
+  if (!(member.ehKit || member.ehKitVirtual)) return [];
   const disponiveis = disponivelByProdutoIdFrom(member.componentEstoques);
   return componentesKitEntries(member.componentesKit)
     .filter(([, kit]) => kit.limitarEstoque !== false)
@@ -1342,8 +1420,9 @@ function kitNaoVerificavel(member: FamilyMember): boolean {
 
 /**
  * Every family member's send quantity (anchor + children), keyed by produto
- * id. Members whose quantity is `null` (`ehKitVirtual`) are OMITTED — the
- * task builder treats a missing entry as "never send".
+ * id. Members whose quantity is `null` are OMITTED — the task builder treats a
+ * missing entry as "never send". Since #1087 the only producer of a `null` is a
+ * virtual kit while the escape hatch is on, so by default nothing is omitted.
  */
 export function quantidadesDaFamilia(row: StockFamilyRow): Map<string, number> {
   const out = new Map<string, number>();
@@ -1558,6 +1637,13 @@ export type SendSkipReason =
   | 'aguardando-migracao'
   | 'anuncio-em-erro'
   | 'status-nao-enviavel'
+  /**
+   * ⚠️ **Only reachable while `MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED=1`**
+   * (#1087). By default a virtual kit is SENT, so this reason does not fire —
+   * it exists so the escape hatch reproduces the old skip exactly, reason
+   * string included. Do not read its presence here as "virtual kits are
+   * refused"; see {@link STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV}.
+   */
   | 'kit-virtual'
   /**
    * ⚠️ There is deliberately NO `'nao-publicado'` (#1087). The ERP `publicado`
@@ -1727,11 +1813,17 @@ function membroPodeEnviar(
  *
  * Anchor-level rungs run ONCE, before the loop, in order: `'sem-link'` (the
  * conta has NO listings on this family), `'kit-virtual'`
- * (functions.dart:286-289), then the defensive `'conta-fora-do-produto'`.
+ * (functions.dart:286-289, and since #1087 reached ONLY while the
+ * `MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED` escape hatch is on), then the
+ * defensive `'conta-fora-do-produto'`.
  * ⚠️ Each is a `return`, so it costs the WHOLE family — which is why the
  * `publicado` rung had to go (#1087) rather than merely stop being reached: an
  * ERP catalogue flag must not silence every listing and child of a family that
- * is live and selling on ML.
+ * is live and selling on ML. The `'kit-virtual'` rung had exactly the same
+ * shape and the same blast radius, and #1087 answered it the same way — by
+ * removing the reason to reach it, so the DEFAULT path never runs it at all.
+ * It keeps its `return` for the flagged-on path on purpose: an escape hatch has
+ * to restore the old behaviour, not a milder new one.
  *
  * Per-listing rungs (legacy `continue` semantics — the skip is pushed and the
  * OTHER listings still send): `'sem-link'` (listing without a doc id,
@@ -1772,8 +1864,9 @@ function membroPodeEnviar(
  * silently (legacy printed only a debug line — no warn spam).
  *
  * A member missing from `quantidades` means `quantidadeDoMembro` returned
- * null — only `ehKitVirtual` does that, so the skip reason is
- * `'kit-virtual'`.
+ * null — only a virtual kit under the #1087 escape hatch does that, so the skip
+ * reason is `'kit-virtual'`. With the hatch off (the default) no member is ever
+ * missing, and a virtual CHILD rides the bulk `variations` array like any other.
  */
 export function buildSendTasks(
   row: StockFamilyRow,
@@ -1783,7 +1876,13 @@ export function buildSendTasks(
   const { anchorId } = row;
 
   if (row.links.length === 0) return skipOnly(anchorId, 'sem-link');
-  if (row.anchor.ehKitVirtual) return skipOnly(anchorId, 'kit-virtual');
+  // #1087: OFF by default, so this rung is normally not reached at all and a
+  // virtual kit sends like any other kit. ⚠️ When the escape hatch IS on it
+  // stays a family-wide `return`, deliberately: the flag's whole job is to
+  // reproduce pre-#1087 production byte-for-byte, and a revert that landed on a
+  // third behaviour nobody has ever run is the worst thing to discover mid
+  // incident. The blast radius is fixed by the DEFAULT, not by softening this.
+  if (pularKitVirtual() && row.anchor.ehKitVirtual) return skipOnly(anchorId, 'kit-virtual');
   // ⚠️ NO `publicado` rung (#1087). It was the twin of the S1 term this query no
   // longer carries, and removing only the S1 term would have fetched the produto
   // and skipped it here anyway — while the manual push, which has no rung of its
@@ -2041,8 +2140,9 @@ export function buildSendTasks(
     if (row.children.length === 0) {
       if (emittedItemIds.has(itemId)) continue; // cycle-wide dedup — silent (set above)
       // Childless family (old model or UP alike) → one item task with the
-      // anchor's own quantity. A missing entry is only possible for virtuals —
-      // unreachable after the kit-virtual rung, guarded defensively.
+      // anchor's own quantity. A missing entry is only possible for a virtual
+      // kit under the #1087 escape hatch, and that state returns at the anchor
+      // rung above before reaching here — so this is defensive, either way.
       const quantidade = quantidades.get(anchorId) ?? null;
       if (quantidade == null) {
         skips.push({ produtoId: anchorId, reason: 'kit-virtual' });

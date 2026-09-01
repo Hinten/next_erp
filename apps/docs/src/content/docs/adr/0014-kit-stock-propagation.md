@@ -153,11 +153,29 @@ published and sold like any other; what differs is only the *upload shape* — t
 marketplace resolves its composition from the components we upload, instead of us
 sending one assembled quantity (the field's own doc comment in the produto schema
 is the canonical definition). The sale signal is therefore identical, and the
-channels supporting that shape consume it. Mercado Livre declining to send a
-quantity for a virtual kit (`quantidadeParaEnvio` → `null`) is a **per-channel
-limitation**, not a property of virtual kits, and must not be generalized into
-one — an earlier draft of this stamp excluded them on exactly that mistaken
-reading.
+channels supporting that shape consume it. An earlier draft of this stamp
+excluded virtual kits, on the mistaken reading that Mercado Livre declining to
+send a quantity for one (`quantidadeParaEnvio` → `null`) said something about
+virtual kits rather than about that channel.
+
+⚠️ **Update (#1087): that ML refusal is gone, and this paragraph is why it was
+wrong.** The stamp already treated a virtual kit as an ordinary kit — as did ML
+*publish* — while only the ML *sweep* refused, on legacy parity
+(`functions.dart:286-289`) whose premise never held: ML derives a kit's stock
+only for its own Virtual Kits, a User-Products feature this port never creates.
+So the listing advertised its publish-time quantity for ever, which oversells.
+The sweep now sends the component-min like publish, behind
+`MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED` (default OFF) as an escape hatch.
+
+⚠️ **This changes no cost in this ADR.** The arithmetic below turns on the
+*discovery* side, and none of it moves: the anchor predicate carries no `ehKit`
+term, the window filter is `max(maxOwn, maxChildren)` — fed by the very stamp
+this section describes, virtual kits included — and the component join is keyed
+on `componentesKitKeys` with no kit-flag predicate, so a virtual kit's components
+were already being read on every tick. What grows is the **write** side (send
+tasks, `PUT /items`, link writebacks), bounded by the virtual kits whose
+published number actually changed, under the same three tiers as every other kit.
+Nothing here restores a per-component fan-out.
 
 ### 3. The sweep runs three tiers and deliberately under-sends
 
