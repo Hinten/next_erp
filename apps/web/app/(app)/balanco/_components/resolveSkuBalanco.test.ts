@@ -45,9 +45,26 @@ import { resolverSkuBalanco } from './resolveSkuBalanco';
 
 const db = {} as Firestore;
 
-/** The shape `getDocs` returns, reduced to what the resolver reads. */
+/**
+ * The shape `getDocs` returns, reduced to what the resolver reads.
+ *
+ * ⚠️ `data()` COUNTS its calls. The real `snap.data()` is not memoized — the
+ * Firebase SDK re-runs the converter every time, and this repo's converter is a
+ * full `produtoSchema` safeParse (`defineCollection.ts:65-69`). This is the hot
+ * path of a warehouse screen driven by a wedge scanner, so "parsed once per
+ * document" is a property worth pinning rather than trusting.
+ */
 function snapshot(docs: Array<{ id: string; data: Record<string, unknown> }>) {
-  return { size: docs.length, docs: docs.map((d) => ({ id: d.id, data: () => d.data })) };
+  return {
+    size: docs.length,
+    docs: docs.map((d) => ({
+      id: d.id,
+      data: () => {
+        parses.push(d.id);
+        return d.data;
+      },
+    })),
+  };
 }
 
 const produto = (id: string, over: Record<string, unknown> = {}) => ({
@@ -55,9 +72,13 @@ const produto = (id: string, over: Record<string, unknown> = {}) => ({
   data: { nome: id, sku: 'BAN-1', paiId: null, ehKit: false, ...over },
 });
 
+/** Every `data()` call the resolver made, by doc id. */
+let parses: string[] = [];
+
 beforeEach(() => {
   getDocsMock.mockReset();
   limitMock.mockReset();
+  parses = [];
 });
 
 describe('resolverSkuBalanco — a parent and its own sole member', () => {
@@ -163,5 +184,29 @@ describe('resolverSkuBalanco — unchanged behaviour', () => {
       produtoId: 'c1',
     });
     expect(getDocsMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('resolverSkuBalanco — each document is parsed exactly once', () => {
+  it('parses each candidate once when the pair collapses', async () => {
+    getDocsMock.mockResolvedValue(
+      snapshot([produto('pai-1'), produto('membro-unico', { paiId: 'pai-1' })]),
+    );
+    await resolverSkuBalanco(db, 'BAN-1');
+    // Two documents, two parses — not four (once to read `paiId`, again to
+    // classify the winner).
+    expect(parses).toEqual(['pai-1', 'membro-unico']);
+  });
+
+  it('parses each candidate once on the duplicado path', async () => {
+    getDocsMock.mockResolvedValue(snapshot([produto('raiz-A'), produto('raiz-B')]));
+    expect(await resolverSkuBalanco(db, 'BAN-1')).toEqual({ kind: 'duplicado' });
+    expect(parses).toEqual(['raiz-A', 'raiz-B']);
+  });
+
+  it('parses the single hit once', async () => {
+    getDocsMock.mockResolvedValue(snapshot([produto('so-um')]));
+    await resolverSkuBalanco(db, 'BAN-1');
+    expect(parses).toEqual(['so-um']);
   });
 });

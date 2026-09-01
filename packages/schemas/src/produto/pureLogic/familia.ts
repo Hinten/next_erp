@@ -21,9 +21,22 @@ export interface CandidatoDeFamilia {
 }
 
 /**
- * Given the produtos a SKU probe returned, collapse **a parent and its own sole
- * member** into the single produto that actually holds the stock — the child.
- * Returns `null` when they are genuinely distinct produtos.
+ * Given the produtos a SKU probe returned, collapse **a parent and the only
+ * member sharing that SKU** into the single produto that actually holds the
+ * stock — the child. Returns `null` when they are genuinely distinct produtos.
+ *
+ * ⚠️ Read that scope literally: "the only member sharing this SKU", not "the
+ * only member". A child's SKU is derived as `parentSku + variante.codigo`
+ * (`variacoes.ts:172`), so a variant whose `codigo` is null or empty gets
+ * EXACTLY the parent's SKU. In a family of many where exactly one variant is
+ * `codigo`-less, the probe returns two documents — parent + that one child —
+ * and this collapses them even though the family has other members.
+ *
+ * That outcome is correct, which is why the code does not guard against it: the
+ * child is the only produto whose SKU is literally the scanned string, and it is
+ * where the stock lives, so binding it beats reporting a duplicate. But the
+ * function decides the narrower thing, and saying the wider one would be a
+ * comment asserting behaviour the code does not have.
  *
  * ## Why this is needed at all
  *
@@ -51,12 +64,12 @@ export interface CandidatoDeFamilia {
  * ⚠️ **A parent and some other parent's child.** The child's `paiId` names a
  * third document that is not in the pair.
  *
- * ⚠️ **A parent and one of its children when the family has MORE than one.**
- * This function cannot see that from two documents, which is why every caller
- * probes with `limit(3)` rather than `limit(2)`: three hits mean the pair is not
- * the whole story and nothing is collapsed. A `limit(2)` caller would silently
- * collapse a parent + first-of-many-children and bind stock to an arbitrary
- * sibling.
+ * ⚠️ **A parent and one of its children when MORE THAN ONE of them shares the
+ * SKU.** This function cannot see that from two documents, which is why every
+ * caller probes with `limit(3)` rather than `limit(2)`: three hits mean the pair
+ * is not the whole story and nothing is collapsed. A `limit(2)` caller would
+ * silently collapse a parent + an arbitrary one of several same-SKU children and
+ * bind stock to whichever the index happened to return.
  */
 export function colapsarPaiEFilhoUnico<T extends CandidatoDeFamilia>(
   candidatos: readonly T[],
