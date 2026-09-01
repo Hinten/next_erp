@@ -31,6 +31,24 @@ import { identityValue } from '@delfrance/schemas';
  * everyone, not just for this pedido.
  */
 export type ForkAuditKind =
+  /**
+   * The mirror is ORPHAN DEBRIS: its parent pedido was deleted.
+   *
+   * ⚠️ Checked FIRST, and it is not hypothetical. `pedidoMeta` declares a
+   * cascade over `pedidos/{id}/orderML` but that cascade is **deliberately not
+   * enforced** — there is no `onPedidoDeleted` trigger, a decision already made
+   * and rejected (`nfev4` holds fiscal records the business must retain), so
+   * `pedidoMeta` states outright that deleting a pedido ORPHANS these
+   * subcollections. `caroGenericoTriggers.ts` registers only integracao,
+   * int_frete, metodoPagamento and conversa.
+   *
+   * The collection-group walk therefore reaches every deleted ML pedido's
+   * mirror, and the Firestore import carries them across the window unchanged.
+   * Without this kind they read as `pedido-sem-cliente` — an ACTIONABLE finding
+   * about a pedido that does not exist, inflating the very count this audit
+   * exists to produce.
+   */
+  | 'pedido-ausente'
   /** The `orderML` mirror carries no buyer id — nothing to check. */
   | 'sem-buyer-id'
   /**
@@ -85,11 +103,12 @@ export type ForkAuditKind =
   | 'ok';
 
 /**
- * Kinds that are findings. The three NOT here are the quiet ones: `ok`,
- * `sem-buyer-id`, and — deliberately — `nao-carimbado`, which is the big benign
+ * Kinds that are findings. The four NOT here are the quiet ones: `ok`,
+ * `sem-buyer-id`, `pedido-ausente` (debris from a deleted pedido — not a cliente
+ * problem at all) and — deliberately — `nao-carimbado`, the big benign
  * background population that self-heals on the next import once #1407 deploys.
- * Counting it as a finding would drown the forks this audit exists to surface;
- * the per-kind tally still reports it.
+ * Counting those would drown the forks this audit exists to surface; the
+ * per-kind tally still reports every one of them.
  */
 export const KINDS_ACIONAVEIS: readonly ForkAuditKind[] = [
   'buyer-id-inseguro',
@@ -105,6 +124,11 @@ export interface ForkAuditInput {
   readonly pedidoPath: string;
   /** Distinct `buyer.id` values across the pedido's `orderML` mirror docs. */
   readonly buyerIdsBrutos: readonly unknown[];
+  /**
+   * Whether the parent pedido still exists. `false` means the mirror is orphan
+   * debris — see `pedido-ausente`.
+   */
+  readonly pedidoExiste: boolean;
   /** Resolved from `clientePedidoOuterRef`; `null` when the pedido has none. */
   readonly clienteId: string | null;
   /** Whether that cliente document exists. */
@@ -160,6 +184,9 @@ export function auditPedidoCliente(input: ForkAuditInput): ForkAuditRow {
     donos: input.donosDoBuyerId,
   };
 
+  // FIRST: a mirror whose pedido is gone says nothing about any cliente, and
+  // reading it as `pedido-sem-cliente` would file debris as a finding.
+  if (!input.pedidoExiste) return { ...base, kind: 'pedido-ausente' };
   if (distintos.length === 0) return { ...base, kind: 'sem-buyer-id' };
   if (distintos.length > 1) {
     return { ...base, kind: 'buyers-divergentes', donos: [] };

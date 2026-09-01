@@ -68,22 +68,34 @@ the harness and the JSONL shape.
 One line per ML pedido. `change` lines are findings, `skip` lines are clean, and
 `changes + skips` reconciles with the ML pedido count printed during the run.
 
-| kind                                     | meaning                                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ok`                                     | the pedido's cliente owns exactly this buyer id — nothing to do                                                                                                                                                                                                                                           |
-| `sem-buyer-id`                           | the `orderML` mirror carries no buyer id; nothing to assess                                                                                                                                                                                                                                               |
-| `nao-carimbado`                          | nobody owns the id and the cliente carries none. **The common pre-#1407 shape, and benign** — the next import stamps it, so these self-heal once the ML backend deploys                                                                                                                                   |
-| `fork`                                   | exactly one cliente owns the id and it is **not** this pedido's. The population this audit exists to count                                                                                                                                                                                                |
-| `dono-duplicado`                         | **two or more** clientes carry the id. The worst kind: the match leg takes the first row of a page, so every later delivery repeats the same arbitrary pick. #1407's guard refuses to create this state but cannot undo one already there                                                                 |
-| `cliente-com-outro-id`                   | nobody owns the id and this pedido's cliente carries a **different** one. ⚠️ **Predictive:** under #1407 the next order from this buyer is refused at the `cpf_cnpj` leg and forks into a second cliente carrying the same CPF. That is the documented intended trade — these rows are where it will land |
-| `buyer-id-inseguro`                      | the id is past 2^53, so `JSON.parse` already rounded it. The runtime **refuses** to stamp these (`safeMlUserId`), so unlike `nao-carimbado` they never self-heal                                                                                                                                          |
-| `buyers-divergentes`                     | a pack whose child orders name different buyers. Not expected — surfaced rather than resolved by picking one                                                                                                                                                                                              |
-| `pedido-sem-cliente` / `cliente-ausente` | the import never linked a cliente, or the link points at a document that is gone                                                                                                                                                                                                                          |
+| kind                                     | meaning                                                                                                                                                                                                                                                                                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ok`                                     | the pedido's cliente owns exactly this buyer id — nothing to do                                                                                                                                                                                                                                                          |
+| `sem-buyer-id`                           | the `orderML` mirror carries no buyer id; nothing to assess                                                                                                                                                                                                                                                              |
+| `nao-carimbado`                          | nobody owns the id and the cliente carries none. **The common pre-#1407 shape, and benign** — the next import stamps it, so these self-heal once the ML backend deploys                                                                                                                                                  |
+| `fork`                                   | exactly one cliente owns the id and it is **not** this pedido's. The population this audit exists to count                                                                                                                                                                                                               |
+| `dono-duplicado`                         | **two or more** clientes carry the id. The worst kind: the match leg takes the first row of a page, so every later delivery repeats the same arbitrary pick. #1407's guard refuses to create this state but cannot undo one already there                                                                                |
+| `cliente-com-outro-id`                   | nobody owns the id and this pedido's cliente carries a **different** one. ⚠️ **Predictive:** under #1407 the next order from this buyer is refused at the `cpf_cnpj` leg and forks into a second cliente carrying the same CPF. That is the documented intended trade — these rows are where it will land                |
+| `buyer-id-inseguro`                      | the id is past 2^53, so `JSON.parse` already rounded it. The runtime **refuses** to stamp these (`safeMlUserId`), so unlike `nao-carimbado` they never self-heal                                                                                                                                                         |
+| `buyers-divergentes`                     | a pack whose child orders name different buyers. Not expected — surfaced rather than resolved by picking one                                                                                                                                                                                                             |
+| `pedido-ausente`                         | the mirror is **orphan debris**: its pedido was deleted. ⚠️ `pedidoMeta` declares a cascade over `orderML` and states it is NOT enforced — there is no `onPedidoDeleted` trigger — so deleted pedidos leave their mirrors on disk and the import carries them across the window. Not a cliente problem, so not a finding |
+| `pedido-sem-cliente` / `cliente-ausente` | the import never linked a cliente, or the link points at a document that is gone                                                                                                                                                                                                                                         |
 
 ## How to verify it worked
 
 - `out/<stamp>-ml-cliente-fork-audit-dryrun.jsonl` exists and has one line per ML
-  pedido, each carrying a `kind`.
+  pedido. ⚠️ **The verdict is the `field` key, not `kind`** — `ChangeSink` spends
+  `kind` on `change`/`skip` (`src/runner.ts`), so `jq -r .kind` yields those two
+  words and none of the nine verdicts this runbook is about. Tally them with:
+
+  ```bash
+  jq -r .field out/<stamp>-ml-cliente-fork-audit-dryrun.jsonl | sort | uniq -c
+  ```
+
+  The two line shapes differ in their other keys — a `change` carries
+  `from`/`to`, a `skip` carries `value`/`reason` — but both carry `field`, so the
+  command above covers the whole file.
+
 - The run prints `clientes=… com idMercadoLivre=… ids com MAIS DE UM dono=…`,
   then `orderML lidos=… pedidos ML=…`, then the per-kind tally. The tally sums to
   the `pedidos ML` figure.

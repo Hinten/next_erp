@@ -206,6 +206,13 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
       const row = auditPedidoCliente({
         pedidoPath: snap.ref.path,
         buyerIdsBrutos,
+        // ⚠️ `getAll` returns a snapshot for a document that does not exist, and
+        // `pedidoMeta`'s cascade over `orderML` is DECLARED BUT NOT ENFORCED —
+        // there is no `onPedidoDeleted` trigger, so a deleted pedido leaves its
+        // mirror behind on purpose and the collection-group walk still finds it.
+        // Without this the orphan reads as `pedido-sem-cliente`, an actionable
+        // finding about a pedido that no longer exists.
+        pedidoExiste: snap.exists,
         clienteId,
         clienteExiste: clienteId != null && idMlPorCliente.has(clienteId),
         idMlDoCliente: clienteId == null ? null : (idMlPorCliente.get(clienteId) ?? null),

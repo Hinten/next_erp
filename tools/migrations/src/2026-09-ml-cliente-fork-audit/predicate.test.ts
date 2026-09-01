@@ -14,6 +14,7 @@ function entrada(over: Partial<ForkAuditInput> = {}): ForkAuditInput {
   return {
     pedidoPath: 'pedidos/ped-1',
     buyerIdsBrutos: [301110805],
+    pedidoExiste: true,
     clienteId: 'cli-1',
     clienteExiste: true,
     idMlDoCliente: BUYER,
@@ -130,6 +131,34 @@ describe('auditPedidoCliente', () => {
     );
     expect(row.kind).toBe('ok');
     expect(row.buyerId).toBe(BUYER);
+  });
+
+  it('pedido-ausente wins over everything — debris is not a cliente finding', () => {
+    // `pedidoMeta`'s cascade over `orderML` is declared but NOT enforced, so a
+    // deleted pedido leaves its mirror on disk. Such a row has no
+    // `clientePedidoOuterRef`, and without this rule it would classify as
+    // `pedido-sem-cliente` — an ACTIONABLE finding about a pedido that does not
+    // exist, inflating the count this audit produces.
+    const row = auditPedidoCliente(
+      entrada({ pedidoExiste: false, clienteId: null, clienteExiste: false }),
+    );
+    expect(row.kind).toBe('pedido-ausente');
+
+    // It outranks even a real-looking fork: nothing about a deleted pedido's
+    // cliente is worth acting on.
+    expect(
+      auditPedidoCliente(
+        entrada({ pedidoExiste: false, donosDoBuyerId: ['cli-outro'], idMlDoCliente: null }),
+      ).kind,
+    ).toBe('pedido-ausente');
+  });
+
+  it('a LIVE pedido with no cliente link is still pedido-sem-cliente', () => {
+    // The control for the rule above: `pedido-ausente` must not swallow the
+    // genuine "the import never linked a cliente" case, which IS actionable.
+    expect(auditPedidoCliente(entrada({ pedidoExiste: true, clienteId: null })).kind).toBe(
+      'pedido-sem-cliente',
+    );
   });
 
   it('pedido-sem-cliente and cliente-ausente are distinguished', () => {

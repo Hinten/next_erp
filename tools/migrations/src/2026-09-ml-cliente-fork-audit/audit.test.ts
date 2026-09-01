@@ -264,6 +264,36 @@ describe('ml-cliente-fork audit — the walk', () => {
     expect(linhas.every((l) => l.kind === 'ok')).toBe(true);
   });
 
+  it('an ORPHANED mirror is debris, not a finding about a pedido that is gone', async () => {
+    // `pedidoMeta` declares a cascade over `pedidos/{id}/orderML` and states
+    // outright that it is NOT enforced — there is no `onPedidoDeleted` trigger
+    // (rejected: `nfev4` holds fiscal records the business must retain), and
+    // `caroGenericoTriggers.ts` registers only integracao, int_frete,
+    // metodoPagamento and conversa. So every deleted ML pedido still has its
+    // mirror on disk, and the Firestore import carries it across the window.
+    //
+    // `getAll` returns a snapshot for a missing document, so without the
+    // `snap.exists` check this classified as `pedido-sem-cliente` — an
+    // ACTIONABLE finding, counted in `docsChanged`, about a pedido that does not
+    // exist. It would have inflated the one number this audit produces.
+    const fake = new FakeDb();
+    fake.seed('pedidos/ped-orfao/orderML/1', { buyer: { id: BUYER } });
+    // A healthy pedido alongside it, so the count below is not vacuously zero.
+    fake.seed('clientes/cli-ok', { idMercadoLivre: String(BUYER) });
+    seedPedidoMl(fake, 'ped-vivo', BUYER, 'documents/clientes/cli-ok');
+
+    const { ctx: c, linhas } = ctx(fake);
+    const resumo = await run(c);
+
+    const porPath = new Map(linhas.map((l) => [l.path, l]));
+    expect(porPath.get('pedidos/ped-orfao')?.kind).toBe('pedido-ausente');
+    expect(porPath.get('pedidos/ped-orfao')?.tipo).toBe('skip');
+    expect(porPath.get('pedidos/ped-vivo')?.kind).toBe('ok');
+    // Both were examined; neither is a finding.
+    expect(resumo.docsScanned).toBe(2);
+    expect(resumo.docsChanged).toBe(0);
+  });
+
   it('recognises an owner whose stored id is PADDED — the #1087-era hazard', async () => {
     // `buildClienteUpdatePatch` stores the id trimmed precisely because a raw
     // `'  301110805  '` made every later lookup miss. Rows written before that
