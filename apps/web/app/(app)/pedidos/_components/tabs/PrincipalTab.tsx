@@ -21,9 +21,17 @@ import { IconArrowBackUp, IconPlus, IconTrash, IconX } from '@tabler/icons-react
 import { Controller, useFieldArray, type UseFormReturn } from 'react-hook-form';
 import { getDoc, type Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
-import { type Pedido, type Produto, itemSubtotal, unidadeVendavel } from '@delfrance/schemas';
+import {
+  type Pedido,
+  type Produto,
+  estoqueDisponivel,
+  itemSubtotal,
+  makeEstoqueUid,
+  unidadeVendavel,
+} from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
 import { useDocSnapshot } from '@delfrance/data/hooks';
+import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
 import { ClientePicker } from '@/components/pickers/ClientePicker';
 import { ProdutoPicker } from '@/components/pickers/ProdutoPicker';
 import { OperacaoPicker } from '@/components/pickers/OperacaoPicker';
@@ -428,7 +436,24 @@ function ItemRow({
     // The denormalised fields below stay the MATCHED produto's on purpose: the
     // sole member copies `nome`/`sku` but not `gtin`, and NF-e needs at least
     // one of sku/gtin on the item.
-    const produtoUidDaLinha = unidadeVendavel({ ...produtoPicked, id: produtoId });
+    //
+    // ⚠️ A KIT is NEVER resolved, and that is not an optimisation. A kit holds
+    // no stock of its own — `calcularAlteracoesEstoque` expands it into its
+    // COMPONENTS and decrements those (`estoquePlan.ts:95-99`) — so the only
+    // thing the line needs from the produto it names is the composition. The
+    // parent always has it; a sole member does not always, because
+    // `planejarMembroUnico` copies `ehKit` and NOT `componentesKit`
+    // (`upSoleMember.ts:191-211`). Binding such a child gives
+    // `calcularAlteracoesEstoque` a produto with `ehKit: true` and no map, and
+    // its `if (!componentes) continue;` then decrements NOTHING: the sale ships
+    // with its components untouched and still sellable.
+    //
+    // Resolving buys a kit nothing and risks that, so it does not. The Balanço
+    // refuses kits before resolving for the same reason (`classificarProduto`),
+    // and the two paths now agree.
+    const ehKitPicked = produtoPicked.ehKit === true;
+    const alvo = ehKitPicked ? produtoId : unidadeVendavel({ ...produtoPicked, id: produtoId });
+    const produtoUidDaLinha = await alvoQueRealmenteTemEstoque(db, produtoId, alvo, depositoId);
     form.setValue(`_itensFlat.${index}.produtoUid`, produtoUidDaLinha, {
       shouldDirty: true,
       shouldValidate: true,
@@ -628,4 +653,56 @@ function ItemRow({
       </Table.Td>
     </Table.Tr>
   );
+}
+
+/**
+ * The produto a line should NAME, given the one the resolution chose.
+ *
+ * ⚠️ Every READ surface in this stack carries an explicit escape hatch for one
+ * state — `filhoUnicoId` records that the family has exactly one child and says
+ * NOTHING about where the units sit, so a produto whose stock was lançado on the
+ * parent and never moved still has the number there. `residualEstoquePai` is the
+ * channel that surfaces it, and it expects a human to clear it.
+ *
+ * The WRITE side needs the same question asked, and cannot answer it the same
+ * way. `sincronizarEstoquePedido` has no read-through: it reserves against
+ * `est-<produtoUid>-<dep>` and `aplicarPlano` CREATES that row at `0 - qty`. So
+ * a line bound to a child with no row, while the units sit on the parent, drives
+ * one document negative from nothing and leaves the real units sellable — the
+ * mirror of the failure the read fallback fixed.
+ *
+ * ⚠️ "The child has no row" is NOT sufficient on its own: a produto born as a
+ * family of one (#1398) has no rows ANYWHERE until someone books stock, and that
+ * stock goes to the child. So the parent wins only when it actually holds units
+ * the child does not — exactly the state a human is expected to clear, and until
+ * they do the line follows the stock rather than the invariant.
+ *
+ * Two reads, on a manual pick, and only when the resolution moved the id at all.
+ */
+async function alvoQueRealmenteTemEstoque(
+  db: Firestore,
+  produtoId: string,
+  alvo: string,
+  depositoId: string | null,
+): Promise<string> {
+  if (alvo === produtoId || !depositoId) return alvo;
+
+  const ler = async (id: string): Promise<number> => {
+    try {
+      const snap = await getDoc(
+        estoqueProdutoCollection.docRef(db, { produtoId: id }, makeEstoqueUid(id, depositoId)),
+      );
+      if (!snap.exists()) return 0;
+      const disp = estoqueDisponivel(snap.data());
+      return Number.isFinite(disp) ? disp : 0;
+    } catch (err) {
+      // A read failure must not silently change where the line binds: keep the
+      // resolution the invariant asks for and let the sync surface any drift.
+      if (err instanceof FirebaseError) return 0;
+      throw err;
+    }
+  };
+
+  const [doAlvo, doPai] = await Promise.all([ler(alvo), ler(produtoId)]);
+  return doAlvo <= 0 && doPai > 0 ? produtoId : alvo;
 }

@@ -315,7 +315,14 @@ async function probeSkuUnico(query: FirebaseFirestore.Query): Promise<SkuProbe> 
       produtoId: doc.id,
       familia: {
         id: doc.id,
-        paiId: raw.paiId as string | null | undefined,
+        // ⚠️ `paiId` is deliberately NOT projected. `unidadeVendavel`'s drift
+        // guard reads it, and that guard cannot fire here: the ONLY rung that
+        // consumes `familia` is `sku-root`, whose own query is
+        // `.where('paiId', '==', null)`, so the value is null by construction.
+        // Projecting it would look like coverage while being unreachable —
+        // exactly the kind of comment-shaped guarantee this repo pays for. A
+        // future rung that resolves must project it and bring a test that fails
+        // without it.
         filhoUnicoId: raw.filhoUnicoId as string | null | undefined,
       },
     };
