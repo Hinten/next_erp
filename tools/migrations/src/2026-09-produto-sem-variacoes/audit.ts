@@ -189,34 +189,105 @@ async function lerCorpus(ctx: MigrationContext): Promise<Corpus> {
 /* -------------------------------------------------------------------------- */
 
 /**
- * produto id → how many pedidos currently hold an APPLIED reservation against it.
+ * How many pedidos currently hold a reservation against each produto.
  *
- * Keyed on `estoqueAplicado.reservado` rather than on `estado`, deliberately.
- * `ESTADOS_PEDIDO_RESERVA` says which estados *should* hold one; the applied map
- * says which pedido actually *does*, and it is that map the release diffs against
- * (`estoquePlan.ts:249-274`). A pedido in a reserva estado whose sync has not run
- * yet holds nothing to strand, and one that drifted out of that set while still
- * applied is exactly the case worth counting.
+ * ## ⚠️ Two sources, because one of them is empty on the corpus that matters
+ *
+ * `estoqueAplicado` is the authoritative answer — it is the map the release
+ * diffs against (`estoquePlan.ts:249-274`), so it says which pedido actually
+ * holds a reservation rather than which estado *should* hold one.
+ *
+ * It is also **server-owned and written ONLY by `sincronizarEstoquePedido`**
+ * (`pedido.ts:154-158`), and a Firestore import fires no Cloud Functions
+ * triggers (root `CLAUDE.md` rule 8). So on the imported corpus — the one this
+ * census exists to measure — every pre-cutover pedido carries no snapshot at
+ * all, and keying on it alone would report a confident **0** for every produto:
+ * "we measured, nothing reserves against this", about a corpus whose
+ * reservations are real. That is the null-vs-zero collapse this whole report is
+ * built to avoid, reproduced one level up.
+ *
+ * So a pedido with no snapshot falls back to the LEGACY marker the same
+ * docblock names: `dataIndisponivelEstoque` set with `dataRemocaoEstoque`
+ * still null — stock made unavailable and not yet physically removed. Its
+ * reserved produtos are the `itens` map keys.
+ *
+ * ⚠️ The two sources are not equivalent and the report says which answered.
+ * The snapshot is post-kit-expansion (it names COMPONENTS); `itens` names the
+ * produto each LINE carries, so a legacy kit sale is counted against the kit
+ * rather than its components. For sizing "which produtos have reservations
+ * that will strand on a parent" that is the right granularity anyway — the
+ * pedido line is what the release decrements — but it is a different question
+ * from the one the snapshot answers, and conflating them silently would be the
+ * same mistake in a smaller place.
  */
-async function contarReservasAbertas(ctx: MigrationContext): Promise<Map<string, number>> {
+interface ReservasAbertas {
+  /** produto id → how many pedidos hold a reservation against it. */
+  porProduto: Map<string, number>;
+  pedidosLidos: number;
+  /** Pedidos answered by `estoqueAplicado.reservado`. */
+  viaSnapshot: number;
+  /** Pedidos answered by the legacy `dataIndisponivelEstoque` marker. */
+  viaLegado: number;
+}
+
+/** The legacy marker: stock made unavailable, not yet removed. */
+function reservaLegadaAberta(data: Record<string, unknown>): boolean {
+  return data.dataIndisponivelEstoque != null && data.dataRemocaoEstoque == null;
+}
+
+/** The produto ids a pedido's `itens` map names — one per LINE, kits unexpanded. */
+function produtosDosItens(data: Record<string, unknown>): string[] {
+  const itens = data.itens;
+  if (typeof itens !== 'object' || itens === null) return [];
+  return Object.keys(itens as Record<string, unknown>).filter(
+    // `'NONE'` / `''` are the schema's "no produto bound" keys (`pedido.ts:256`).
+    (k) => k !== '' && k !== 'NONE',
+  );
+}
+
+async function contarReservasAbertas(ctx: MigrationContext): Promise<ReservasAbertas> {
   const porProduto = new Map<string, number>();
+  let pedidosLidos = 0;
+  let viaSnapshot = 0;
+  let viaLegado = 0;
+
+  const contar = (produtoId: string): void => {
+    porProduto.set(produtoId, (porProduto.get(produtoId) ?? 0) + 1);
+  };
 
   for await (const docs of pagesByDocId(ctx.db.collection('pedidos'))) {
     for (const doc of docs) {
+      pedidosLidos += 1;
       const data = doc.data() as Record<string, unknown>;
-      const aplicado = data.estoqueAplicado;
-      if (typeof aplicado !== 'object' || aplicado === null) continue;
-      const reservado = (aplicado as Record<string, unknown>).reservado;
-      if (typeof reservado !== 'object' || reservado === null) continue;
 
-      for (const [produtoId, qtd] of Object.entries(reservado as Record<string, unknown>)) {
-        if (typeof qtd !== 'number' || !Number.isFinite(qtd) || qtd <= 0) continue;
-        porProduto.set(produtoId, (porProduto.get(produtoId) ?? 0) + 1);
+      const aplicado = data.estoqueAplicado;
+      const reservado =
+        typeof aplicado === 'object' && aplicado !== null
+          ? (aplicado as Record<string, unknown>).reservado
+          : null;
+
+      if (typeof reservado === 'object' && reservado !== null) {
+        const ids = Object.entries(reservado as Record<string, unknown>)
+          .filter(([, qtd]) => typeof qtd === 'number' && Number.isFinite(qtd) && qtd > 0)
+          .map(([produtoId]) => produtoId);
+        if (ids.length > 0) {
+          viaSnapshot += 1;
+          for (const id of ids) contar(id);
+        }
+        // A snapshot that exists and reserves nothing is a MEASURED zero for
+        // this pedido — the legacy fallback must not second-guess it.
+        continue;
       }
+
+      if (!reservaLegadaAberta(data)) continue;
+      const ids = produtosDosItens(data);
+      if (ids.length === 0) continue;
+      viaLegado += 1;
+      for (const id of ids) contar(id);
     }
   }
 
-  return porProduto;
+  return { porProduto, pedidosLidos, viaSnapshot, viaLegado };
 }
 
 /**
@@ -284,12 +355,25 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     );
   }
 
-  const reservasPorProduto = quer('pedidos') ? await contarReservasAbertas(ctx) : null;
-  if (reservasPorProduto) {
+  const reservas = quer('pedidos') ? await contarReservasAbertas(ctx) : null;
+  if (reservas) {
     log(
-      `[produto-sem-variacoes] ${reservasPorProduto.size} produtos com reserva aplicada em algum pedido`,
+      `[produto-sem-variacoes] ${reservas.pedidosLidos} pedido(s) lidos; ` +
+        `${reservas.viaSnapshot} via estoqueAplicado, ${reservas.viaLegado} via o marcador legado ` +
+        `(dataIndisponivelEstoque sem dataRemocaoEstoque); ` +
+        `${reservas.porProduto.size} produto(s) com reserva aberta`,
     );
+    if (reservas.viaSnapshot === 0 && reservas.pedidosLidos > 0) {
+      // Expected on a freshly imported corpus and worth saying out loud: an
+      // import fires no triggers, so nothing has written a snapshot yet.
+      log(
+        '[produto-sem-variacoes] nenhum pedido carrega estoqueAplicado — ' +
+          'corpus recém-importado; a contagem vem inteira do marcador legado.',
+      );
+    }
   }
+  // Nothing to measure at all ⇒ the column stays `null`, never 0.
+  const reservasMedidas = reservas != null && reservas.pedidosLidos > 0;
   const depositosEmBalanco = quer('balancos') ? await lerDepositosEmBalanco(ctx) : null;
   if (depositosEmBalanco) {
     log(`[produto-sem-variacoes] ${depositosEmBalanco.size} depósito(s) com balanço aberto`);
@@ -298,11 +382,14 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
 
   const porVeredito = new Map<VereditoProduto, number>();
   let docsChanged = 0;
-  let moveriaTotal = 0;
-  let ficariaNoPaiTotal = 0;
-  let comLinhaNaoCanonica = 0;
-  let comDepositoIrreconhecivel = 0;
-  let residuaisEmFamilias = 0;
+  // ⚠️ TWO sets of accumulators, deliberately. `--target residuais` reports on
+  // produtos that ALREADY have children — the conversion mints no sole child for
+  // one of those and relocates none of its units — so folding them into the
+  // conversion totals would make "how much moves" depend on which flags the
+  // operator passed. Same corpus, same conversion, two different answers is the
+  // exact failure this report exists to prevent.
+  const conversao = { moveria: 0, ficariaNoPai: 0, naoCanonica: 0, depositoRuim: 0 };
+  const residual = { produtos: 0, unidades: 0, naoCanonica: 0, depositoRuim: 0 };
 
   for (const produto of corpus.produtos) {
     const paiId = typeof produto.paiId === 'string' && produto.paiId !== '' ? produto.paiId : null;
@@ -322,18 +409,24 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     });
     porVeredito.set(veredito, (porVeredito.get(veredito) ?? 0) + 1);
 
-    if (veredito === 'ja-familia' && resumo?.temEstoque === true) residuaisEmFamilias += 1;
+    const ehResiduoDeFamilia = veredito === 'ja-familia' && resumo?.temEstoque === true;
 
-    const relatar =
-      VEREDITOS_RELATADOS.has(veredito) ||
-      (veredito === 'ja-familia' && lerResiduais && resumo?.temEstoque === true);
+    const relatar = VEREDITOS_RELATADOS.has(veredito) || (ehResiduoDeFamilia && lerResiduais);
     if (!relatar) continue;
 
     if (resumo) {
-      moveriaTotal += resumo.moveriaTotal;
-      ficariaNoPaiTotal += resumo.ficariaNoPaiTotal;
-      if (resumo.nLinhasNaoCanonicas > 0) comLinhaNaoCanonica += 1;
-      if (resumo.nDepositosIrreconheciveis > 0) comDepositoIrreconhecivel += 1;
+      const alvo = ehResiduoDeFamilia ? null : conversao;
+      if (alvo) {
+        alvo.moveria += resumo.moveriaTotal;
+        alvo.ficariaNoPai += resumo.ficariaNoPaiTotal;
+        if (resumo.nLinhasNaoCanonicas > 0) alvo.naoCanonica += 1;
+        if (resumo.nDepositosIrreconheciveis > 0) alvo.depositoRuim += 1;
+      } else {
+        residual.produtos += 1;
+        residual.unidades += resumo.quantidadeTotal;
+        if (resumo.nLinhasNaoCanonicas > 0) residual.naoCanonica += 1;
+        if (resumo.nDepositosIrreconheciveis > 0) residual.depositoRuim += 1;
+      }
     }
 
     const emBalancoAberto =
@@ -350,8 +443,9 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
         resumo,
         nKitsQueReferenciam: corpus.referenciasDeKit.get(produto.id) ?? 0,
         emBalancoAberto,
-        nPedidosAbertosQueReservam:
-          reservasPorProduto?.get(produto.id) ?? (reservasPorProduto ? 0 : null),
+        nPedidosAbertosQueReservam: reservasMedidas
+          ? (reservas!.porProduto.get(produto.id) ?? 0)
+          : null,
       }),
     );
   }
@@ -361,19 +455,23 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
       [...porVeredito.entries()].map(([k, n]) => `${k}=${n}`).join(', ') || 'nenhum'
     }`,
   );
+  // ⚠️ Every line below is scoped to the CONVERSION — roots with no children.
+  // `--target residuais` can only ADD the block after it; it never widens these.
   log(
-    `[produto-sem-variacoes] unidades que a conversão MOVERIA para o filho único: ${moveriaTotal}`,
+    `[produto-sem-variacoes] unidades que a conversão MOVERIA para o filho único: ${conversao.moveria}`,
   );
   log(
-    `[produto-sem-variacoes] unidades que FICARIAM no pai (reserva de pedido aberto): ${ficariaNoPaiTotal}`,
+    `[produto-sem-variacoes] unidades que FICARIAM no pai (reserva de pedido aberto): ${conversao.ficariaNoPai}`,
   );
   log(
-    `[produto-sem-variacoes] produtos com linha de estoque não canônica: ${comLinhaNaoCanonica}; ` +
-      `com depositoOuterRef irreconhecível: ${comDepositoIrreconhecivel}`,
+    `[produto-sem-variacoes] produtos com linha de estoque não canônica: ${conversao.naoCanonica}; ` +
+      `com depositoOuterRef irreconhecível: ${conversao.depositoRuim}`,
   );
   log(
     lerResiduais
-      ? `[produto-sem-variacoes] famílias que ainda guardam estoque no pai: ${residuaisEmFamilias}`
+      ? `[produto-sem-variacoes] RESÍDUO (fora da conversão): ${residual.produtos} família(s) já ` +
+          `existente(s) ainda guardam ${residual.unidades} unidade(s) no pai — ` +
+          `${residual.naoCanonica} com linha não canônica, ${residual.depositoRuim} com depósito irreconhecível`
       : '[produto-sem-variacoes] famílias existentes NÃO foram medidas (use --target residuais)',
   );
   // No silent caps: say what was counted but not written out.
@@ -381,7 +479,7 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     `[produto-sem-variacoes] o JSONL traz apenas ${[...VEREDITOS_RELATADOS].join(', ')}` +
       `${lerResiduais ? ' e as famílias com resíduo' : ''}; 'filho' e 'ja-familia' são só contados.`,
   );
-  if (reservasPorProduto == null) {
+  if (!reservasMedidas) {
     log('[produto-sem-variacoes] reservas de pedido NÃO foram medidas (use --target pedidos)');
   }
   if (depositosEmBalanco == null) {

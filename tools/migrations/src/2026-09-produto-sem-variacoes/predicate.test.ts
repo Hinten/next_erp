@@ -167,6 +167,27 @@ describe('resumirEstoques — what counts as "holds stock"', () => {
     expect(resumirEstoques(PRODUTO, [bruto({ quantidadeReservada: 3 })]).temEstoque).toBe(true);
   });
 
+  // ⚠️ Flutter's `criarEstoques` writes a ZERO row per depósito for EVERY
+  // produto, so counting rows would report the same number for the whole legacy
+  // catalogue. `nDepositos` counts depósitos actually holding units.
+  it('counts only depósitos actually holding units, not rows', () => {
+    const resumo = resumirEstoques(PRODUTO, [
+      bruto({ quantidade: 20 }),
+      bruto({ docId: 'est-prod-1-dep-2', depositoOuterRef: 'depositos/dep-2', quantidade: 0 }),
+      bruto({ docId: 'est-prod-1-dep-3', depositoOuterRef: 'depositos/dep-3', quantidade: 0 }),
+    ]);
+    expect(resumo.nDepositos).toBe(1);
+    expect(resumo.linhas).toHaveLength(3);
+  });
+
+  it('counts a depósito holding only a reservation', () => {
+    const resumo = resumirEstoques(PRODUTO, [
+      bruto({ quantidade: 0, quantidadeReservada: 4 }),
+      bruto({ docId: 'est-prod-1-dep-2', depositoOuterRef: 'depositos/dep-2', quantidade: 0 }),
+    ]);
+    expect(resumo.nDepositos).toBe(1);
+  });
+
   it('totals across depósitos and counts the distinct ones', () => {
     const resumo = resumirEstoques(PRODUTO, [
       bruto({ quantidade: 20, quantidadeReservada: 6 }),

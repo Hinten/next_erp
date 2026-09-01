@@ -74,13 +74,30 @@ pnpm --filter @delfrance/migrations audit:produto-sem-variacoes \
 
 | `--target`  | Adds                                                                          | Costs                                      |
 | ----------- | ----------------------------------------------------------------------------- | ------------------------------------------ |
-| `pedidos`   | how many pedidos hold an applied reservation against each produto             | a full `pedidos` scan                      |
+| `pedidos`   | how many pedidos hold an open reservation against each produto                | a full `pedidos` scan                      |
 | `balancos`  | whether a produto sits in a depósito with an **open** balanço                 | a full `balanco` scan                      |
 | `residuais` | estoque rows on produtos that **already** have children — the risk-2 residual | one subcollection read per existing family |
 
 ⚠️ Their columns read `null` — _not measured_ — when they do not run. That is
 deliberate: "no open pedido reserves against this" and "we did not look" must
 never be the same value in a report someone sizes a migration from.
+
+⚠️ **`--target pedidos` reads two sources, and it has to.** `estoqueAplicado` is
+the authoritative answer, but it is server-owned and written **only** by
+`sincronizarEstoquePedido` — and a Firestore import fires no Cloud Functions
+triggers (root `CLAUDE.md` rule 8). So on the freshly imported corpus this census
+exists to measure, **no** pedido carries a snapshot, and keying on it alone would
+report a confident `0` for every produto. A pedido with no snapshot therefore
+falls back to the legacy marker: `dataIndisponivelEstoque` set with
+`dataRemocaoEstoque` still null, whose reserved produtos are its `itens` keys.
+The run prints how many pedidos each source answered. A snapshot that exists and
+reserves nothing is a **measured** zero, and the fallback does not override it.
+
+⚠️ **`--target residuais` only ever ADDS a line.** The conversion totals —
+`MOVERIA`, `FICARIAM no pai`, the anomaly counts — are scoped to roots with no
+children, always. A produto that already has children gets no sole child from the
+conversion and relocates none of its units, so its stock is reported on its own
+`RESÍDUO (fora da conversão)` line instead of widening the headline number.
 
 ## What it reports
 
@@ -104,7 +121,11 @@ it from a row count.
 The stdout summary is the part to read first:
 
 - **`unidades que a conversão MOVERIA para o filho único`** — the total the
-  conversion relocates.
+  conversion relocates. Scoped to roots with no children, whatever `--target`
+  was passed.
+- **`RESÍDUO (fora da conversão)`** — only under `--target residuais`: units
+  still sitting on the parent of a family that ALREADY exists. Never folded into
+  the line above.
 - **`unidades que FICARIAM no pai`** — ⚠️ the residual, and the number nobody
   expects. See below.
 - **`produtos com linha de estoque não canônica`** / **`com depositoOuterRef
