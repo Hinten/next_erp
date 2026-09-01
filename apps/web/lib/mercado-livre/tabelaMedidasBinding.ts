@@ -10,7 +10,7 @@
  * though the ERP held both. The operator had nothing to compare.
  *
  * ⚠️ **Showing the three values is not enough on its own; each is shown AGAINST
- * the anúncio's**, because that comparison is the whole of what the server's
+ * the anúncio's**, because that comparison is the whole of what
  * `resolveSizeChart` does:
  *
  *  1. `domain_id === catalog_domain` is a hard filter — a miss binds nothing;
@@ -18,13 +18,22 @@
  *     against the link doc's own attributes, so a guia in the RIGHT domain whose
  *     gênero disagrees still binds nothing, and that failure is just as silent.
  *
- * ⚠️ **The server is the authority.** This module explains; it never decides.
- * Publish refuses the mismatch itself, before any ML call
- * (`publishCore.ts`'s `sizeChartIssue`), so a drift here shows a wrong ✓ — it
- * cannot let a bad payload out. The rules below are deliberately a
- * line-for-line mirror of `apps/mercado-livre/lib/marketplace/size-charts/sizeChart.ts`.
+ * ⚠️ **The DECISION is imported, not re-implemented.** `resolveSizeChart` comes
+ * from `@delfrance/schemas` and publish calls that same function, so the
+ * `vincula` badge and the warning are literally the answer publish will reach.
+ * What lives here is only the per-attribute DISPLAY layer over it — which guia
+ * cell earns a ✓ — because the server has no reason to compute that.
+ *
+ * ⚠️ This module used to hold a hand-written copy and call itself a
+ * "line-for-line mirror" of the server's, which is the exact phrase the root
+ * `CLAUDE.md` names as the smell. It had drifted twice by the time anyone
+ * checked: `bate()` short-circuited on `value_id` where the resolver ORs (a red
+ * ✗ on a row this same module labelled *vincula*), and the first-candidate
+ * fallback keyed on the FILTERED attribute list where the resolver keys on the
+ * RAW one (a green *vincula* on a pair publish refuses). Do not reintroduce a
+ * local copy of any of it.
  */
-import type { MlSizeChart } from '@delfrance/schemas';
+import { type MlSizeChart, type SizeChartResolution, resolveSizeChart } from '@delfrance/schemas';
 
 /** The attribute ids ML asks a fashion chart to carry, in display order. */
 export const GUIA_ATRIBUTOS = ['BRAND', 'GENDER'] as const;
@@ -66,6 +75,15 @@ export interface AvaliacaoTabela {
   anuncio: AnuncioLado;
   /** The guia that binds, or `null` — the same answer the server reaches. */
   vinculada: GuiaAvaliada | null;
+  /**
+   * WHY, straight from the resolver — the same discriminant publish refuses on.
+   *
+   * ⚠️ Carried out rather than re-derived. The warning below used to work out
+   * "is this a domain divergence?" from the guias, with hand-copies of two
+   * server guards; one of those copies was wrong on the server first and the
+   * copy inherited it.
+   */
+  resolucao: SizeChartResolution;
 }
 
 function limpar(value: string | null | undefined): string | null {
@@ -82,12 +100,17 @@ function acharAtributo(
 /**
  * Does a chart attribute HIT an anúncio attribute?
  *
- * ⚠️ **An OR, not an if/else-if** — the resolver's exact rule, the same one
- * {@link pontos} mirrors below. A matching `value_name` counts as a hit *even
- * when the `value_id`s disagree*, so short-circuiting on ids once both sides
- * carry one renders a red ✗ on a row this same file simultaneously labels
- * **vincula**: two functions describing one decision, disagreeing with each
- * other. The server binds it, so the ✗ was the wrong half.
+ * ⚠️ **An OR, not an if/else-if** — the scoring rule inside `resolveSizeChart`,
+ * which decides the badge. A matching `value_name` counts as a hit *even when
+ * the `value_id`s disagree*, so short-circuiting on ids once both sides carry
+ * one renders a red ✗ on a row this same file simultaneously labels
+ * **vincula**: the cell and the badge describing one decision and disagreeing.
+ * The resolver binds it, so the ✗ was the wrong half.
+ *
+ * ⚠️ This is the ONE place the rule is restated, and only because a per-cell
+ * verdict is a different question from "which guia wins" — the resolver answers
+ * the second and never the first. `NO cell may contradict the badge beside it`
+ * in the test file is what keeps the restatement honest.
  */
 function bate(chart: AtributoValor | null, anuncio: AtributoValor | null): Verdito {
   if (chart == null || anuncio == null) return null;
@@ -103,23 +126,6 @@ function bate(chart: AtributoValor | null, anuncio: AtributoValor | null): Verdi
   return comparavel ? false : null;
 }
 
-/** How many of the anúncio's VALUED attributes this chart matches — the score. */
-function pontos(chart: MlSizeChart, valorados: readonly AtributoValor[]): number {
-  let hits = 0;
-  for (const pa of valorados) {
-    for (const ca of chart.attributes ?? []) {
-      if (ca.id !== pa.id) continue;
-      if (
-        (pa.value_id != null && ca.value_id === pa.value_id) ||
-        (pa.value_name != null && ca.value_name === pa.value_name)
-      ) {
-        hits += 1;
-      }
-    }
-  }
-  return hits;
-}
-
 /**
  * Evaluate every guia of this tabela against this anúncio.
  *
@@ -133,7 +139,6 @@ export function avaliarTabela(
   linkAttributes: readonly AtributoValor[] | null,
 ): AvaliacaoTabela {
   const attrs = linkAttributes ?? [];
-  const valorados = attrs.filter((a) => a.value_id != null || a.value_name != null);
 
   const anuncio: AnuncioLado = {
     dominio: limpar(catalogDomain),
@@ -143,35 +148,16 @@ export function avaliarTabela(
     },
   };
 
-  // The resolver's candidate set: sent, and in the category's domain.
-  //
-  // ⚠️ The domain is compared RAW, exactly as the server does
-  // (`t.domain_id === catalogDomain`). `limpar` decides only what is PRESENT and
-  // what to display — letting it trim the comparison too would make this panel
-  // more permissive than the thing it describes, which is how a ✓ appears on a
-  // pair publish then refuses.
+  // ⚠️ THE decision — the server's own function, not a copy of it. Everything
+  // this module used to re-derive here (the candidate filter, the
+  // first-candidate fallback, the best-scorer loop) drifted from it; the badge
+  // is now literally the answer publish will reach.
+  const resolucao = resolveSizeChart(charts, catalogDomain, attrs);
+  const vencedor = resolucao.chart;
   const dominioAlvo = anuncio.dominio;
+  /** Same equality the resolver applies — RAW, so `limpar` only decides display. */
   const mesmoDominio = (c: MlSizeChart): boolean =>
     limpar(c.domain_id) != null && dominioAlvo != null && c.domain_id === catalogDomain;
-  const candidatos = charts.filter((c) => limpar(c.id) != null && mesmoDominio(c));
-  // ⚠️ The legacy boundary: with NO valued anúncio attributes the first
-  // candidate wins blindly; otherwise the best scorer wins and zero hits binds
-  // nothing. Mirrored from `resolveSizeChart` — see this module's header.
-  let vencedor: MlSizeChart | null = null;
-  if (candidatos.length > 0) {
-    if (valorados.length === 0) {
-      vencedor = candidatos[0]!;
-    } else {
-      let melhor = 0;
-      for (const c of candidatos) {
-        const p = pontos(c, valorados);
-        if (p > melhor) {
-          melhor = p;
-          vencedor = c;
-        }
-      }
-    }
-  }
 
   const guias = charts.map<GuiaAvaliada>((c) => {
     const dominio = limpar(c.domain_id);
@@ -193,7 +179,7 @@ export function avaliarTabela(
     };
   });
 
-  return { guias, anuncio, vinculada: guias.find((g) => g.vincula) ?? null };
+  return { guias, anuncio, vinculada: guias.find((g) => g.vincula) ?? null, resolucao };
 }
 
 /**
@@ -218,27 +204,27 @@ export function avisoDominioTabela(input: {
 }): string | null {
   const { avaliacao, categoriaUsaGuia, categoryId, nomeDaTabela } = input;
   if (avaliacao == null || categoriaUsaGuia !== true || categoryId == null) return null;
-  const dominioDaCategoria = avaliacao.anuncio.dominio;
-  if (dominioDaCategoria == null) return null;
-  // Something binds — nothing to warn about.
-  if (avaliacao.vinculada != null) return null;
+  // ⚠️ ONE test, the resolver's own. Every guard this used to re-derive —
+  // "something binds", "nothing was sent", "a guia in the right domain exists" —
+  // is already folded into that discriminant, and re-deriving them is what let a
+  // wrong copy of two of them ship.
+  const { resolucao } = avaliacao;
+  if (resolucao.motivo !== 'dominio-divergente') return null;
 
-  const enviadas = avaliacao.guias.filter((g) => g.enviada);
-  if (enviadas.length === 0) return null; // "never sent" is its own message, not a mismatch.
-  const dominios = [
-    ...new Set(enviadas.map((g) => g.dominio).filter((d): d is string => d != null)),
-  ]
-    .sort()
-    .join(', ');
-  if (dominios === '') return null;
-  // A guia in the right domain exists but scored nothing — the domain is fine,
-  // so blaming it would send the operator to change a correct field.
-  if (enviadas.some((g) => g.dominioOk === true)) return null;
-
+  const dominios = resolucao.dominiosDaTabela.join(', ');
   const nome = nomeDaTabela ?? 'do produto';
+  if (dominios === '') {
+    // A legacy guia may carry no `domain_id` at all — say only what is true.
+    return (
+      `A tabela de medidas "${nome}" não tem nenhuma guia no domínio ` +
+      `${resolucao.dominioDaCategoria}, que é o exigido por esta categoria ` +
+      `(${categoryId}). Crie uma guia nesse domínio na tabela de medidas.`
+    );
+  }
   return (
     `A tabela de medidas "${nome}" está no domínio ${dominios}, mas esta categoria ` +
-    `(${categoryId}) exige ${dominioDaCategoria}. Nenhuma guia será enviada — crie uma guia em ` +
-    `${dominioDaCategoria} na tabela de medidas, ou escolha uma categoria de ${dominios}.`
+    `(${categoryId}) exige ${resolucao.dominioDaCategoria}. Nenhuma guia será enviada — ` +
+    `crie uma guia em ${resolucao.dominioDaCategoria} na tabela de medidas, ou escolha uma ` +
+    `categoria de ${dominios}.`
   );
 }
