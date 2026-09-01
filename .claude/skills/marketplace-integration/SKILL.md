@@ -51,8 +51,7 @@ reference and record which pages you read.
 - Mercado Livre has a **docs MCP** — `search_documentation` / `get_documentation_page`
   are authoritative; do not guess and do not wait for a failing response to learn a
   contract.
-- Every other provider: fetch the official reference (WebFetch). Prefer the
-  provider's page over a blog or an SDK's README.
+- Every other provider: check if they have an docs MCP also and ask the user to install it, or else, fetch the official reference (WebFetch). Prefer the MCP if available, if not, prefer the provider's page over a blog or an SDK's README.
 
 **Output: a capability survey** answering every field of `MarketplaceCapabilities`
 with a citation per answer, and an explicit *unknown* wherever the docs do not say.
