@@ -187,7 +187,7 @@ export function useEstoqueDisponivel(
           // A component we could not read resolves to ITSELF — today's behaviour,
           // and the safe direction: it counts as 0 rather than as some other
           // produto's stock.
-          return [id, p ? unidadeVendavel({ id, ...p }) : id] as const;
+          return [id, p ? unidadeVendavel({ ...p, id }) : id] as const;
         }),
       );
 

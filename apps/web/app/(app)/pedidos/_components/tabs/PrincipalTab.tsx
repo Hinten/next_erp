@@ -21,7 +21,7 @@ import { IconArrowBackUp, IconPlus, IconTrash, IconX } from '@tabler/icons-react
 import { Controller, useFieldArray, type UseFormReturn } from 'react-hook-form';
 import { getDoc, type Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
-import { type Pedido, type Produto, itemSubtotal } from '@delfrance/schemas';
+import { type Pedido, type Produto, itemSubtotal, unidadeVendavel } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { ClientePicker } from '@/components/pickers/ClientePicker';
@@ -419,7 +419,17 @@ function ItemRow({
       });
       return;
     }
-    form.setValue(`_itensFlat.${index}.produtoUid`, produtoId, {
+    // ⚠️ The LINE names the sellable unit, which for a family of one is the
+    // child (#1398). `sincronizarEstoquePedido` reserves and removes against
+    // `item.produtoUid` with no read-through of its own, so a line naming the
+    // wrapper would move stock on a produto that owns no rows — `aplicarPlano`
+    // creates one at `0 + delta`, i.e. drives it negative from nothing.
+    //
+    // The denormalised fields below stay the MATCHED produto's on purpose: the
+    // sole member copies `nome`/`sku` but not `gtin`, and NF-e needs at least
+    // one of sku/gtin on the item.
+    const produtoUidDaLinha = unidadeVendavel({ ...produtoPicked, id: produtoId });
+    form.setValue(`_itensFlat.${index}.produtoUid`, produtoUidDaLinha, {
       shouldDirty: true,
       shouldValidate: true,
     });
