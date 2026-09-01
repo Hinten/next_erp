@@ -21,7 +21,12 @@ import {
   signState,
 } from '@delfrance/data/admin/oauth-state';
 
-import { loadMercadoLivreContext } from '@/lib/marketplace/core/mercadoLivre';
+import { buildAuthorizeUrl } from '@delfrance/integrations-mercado-livre';
+
+import {
+  loadMercadoLivreContext,
+  mercadoLivreOAuthConfig,
+} from '@/lib/marketplace/core/mercadoLivre';
 import { mercadoLivreOauthState, pkceEnabled } from '@/lib/marketplace/conta/oauthState';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/core/respond';
 
@@ -47,16 +52,28 @@ export async function GET(req: Request): Promise<NextResponse> {
 
   const db = getAdminFirestore();
   try {
-    const ctx = await loadMercadoLivreContext(db, integracaoId);
+    // Called for its GUARDS, not its value: it refuses an integração that does
+    // not exist or is not a Mercado Livre conta, before any state is minted.
+    await loadMercadoLivreContext(db, integracaoId);
+
+    const { clientId, redirectUri } = mercadoLivreOAuthConfig();
     const { state, nonce } = signState(integracaoId, secret);
     const codeVerifier = pkceEnabled() ? createCodeVerifier() : null;
     await mercadoLivreOauthState.put(db, integracaoId, { nonce, codeVerifier });
-    const authorizeUrl = ctx.channel.oauthFlow.start(
+
+    // ⚠️ This used to go through `ctx.channel.oauthFlow.start(...)` and was the
+    // ONLY production call into the `MarketplaceChannel` contract, repo-wide. The
+    // channel object added one indirection over `buildAuthorizeUrl` and nothing
+    // else, which is why #815 deleted it. Deciding whether PKCE is in play still
+    // belongs here, next to the flag and the store that holds the verifier.
+    const authorizeUrl = buildAuthorizeUrl({
+      clientId,
+      redirectUri,
       state,
-      codeVerifier
-        ? { codeChallenge: codeChallengeS256(codeVerifier), codeChallengeMethod: 'S256' }
-        : undefined,
-    );
+      ...(codeVerifier
+        ? { codeChallenge: codeChallengeS256(codeVerifier), codeChallengeMethod: 'S256' as const }
+        : {}),
+    });
     return NextResponse.json({ authorizeUrl });
   } catch (err) {
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);

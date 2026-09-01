@@ -1,23 +1,24 @@
 /**
  * Resolve an `integracao` Mercado Livre account into a ready-to-use server
- * context: the plugin `MarketplaceChannel` (from `@delfrance/integrations-
- * mercado-livre`), the durable-token store (over the admin-only `tokenDuravel`
+ * context: the durable-token store (over the admin-only `tokenDuravel`
  * subcollection — the old Flutter wire shape, which is how the migrated corpus
- * stores the credential), and a `resolveChannelContext()`
- * that builds the `ChannelContext` every contract method consumes, refreshing
- * the token (concurrency-safe) when it is near expiry. Mirrors
- * apps/melhor-envio/lib/freight/melhorEnvio.ts, adapted to the marketplace contract.
+ * stores the credential) plus a `resolveChannelContext()` that builds the
+ * `ChannelContext` every ML operation consumes, refreshing the token
+ * (concurrency-safe) when it is near expiry. Mirrors
+ * apps/melhor-envio/lib/freight/melhorEnvio.ts.
+ *
+ * ⚠️ It no longer carries a `channel` object. `createMercadoLivreChannel` was
+ * deleted in #815: three of its four required members threw, and the single
+ * member anything ever called (`oauthFlow.start`) is a wrapper around
+ * `buildAuthorizeUrl`, which the connect route now calls directly. What the
+ * channel supports is declared in `MARKETPLACE_TIPO_CAPS`
+ * (`@delfrance/schemas`), not discovered by probing an object.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import type { ChannelContext, MarketplaceChannel } from '@delfrance/core/plugins';
+import type { ChannelContext } from '@delfrance/core/marketplace';
 import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
-import {
-  type MercadoLivreConfig,
-  type MercadoLivreOAuthConfig,
-  createMercadoLivreChannel,
-  exchangeCode,
-} from '@delfrance/integrations-mercado-livre';
+import { type MercadoLivreOAuthConfig, exchangeCode } from '@delfrance/integrations-mercado-livre';
 
 import { invalidateConta, readConta } from './contaCache';
 import {
@@ -77,25 +78,16 @@ export function mercadoLivreRedirectUri(): string {
   return `${base}/api/oauth/mercado-livre/callback`;
 }
 
-/** App-wide ML application config (env / Secret Manager, never per-account). */
-export function mercadoLivreConfig(): MercadoLivreConfig {
-  const clientId = process.env.MERCADO_LIVRE_CLIENT_ID;
-  const clientSecret = process.env[CLIENT_SECRET_ENV_VAR];
-  if (!clientId || !clientSecret) {
-    throw new MercadoLivreConfigError(
-      'MERCADO_LIVRE_CLIENT_ID / MERCADO_LIVRE_CLIENT_SECRET não configurados no ambiente.',
-    );
-  }
-  return {
-    clientId,
-    clientSecretEnvVar: CLIENT_SECRET_ENV_VAR,
-    redirectUri: mercadoLivreRedirectUri(),
-  };
-}
-
 /**
- * App-wide OAuth config carrying the resolved `clientSecret`, for the token
- * exchange + refresh flow. Same env source as `mercadoLivreConfig()`.
+ * App-wide ML application config carrying the resolved `clientSecret` — one
+ * registered ML application serves every connected account, so these live in env
+ * / Secret Manager and never on the `integracao` doc. Drives the token exchange,
+ * the refresh grant, and the consent URL the connect route builds.
+ *
+ * ⚠️ There used to be a second, near-identical `mercadoLivreConfig()` returning a
+ * `MercadoLivreConfig` for the deleted channel factory. Two functions reading the
+ * same two env vars and disagreeing about whether the secret was a VALUE or a
+ * variable NAME is not a distinction worth keeping.
  */
 export function mercadoLivreOAuthConfig(): MercadoLivreOAuthConfig {
   const clientId = process.env.MERCADO_LIVRE_CLIENT_ID;
@@ -112,13 +104,11 @@ export interface MercadoLivreContext {
   readonly integracaoId: string;
   /** The parsed integração doc (tabelas/depósito refs ride through). */
   readonly conta: Readonly<Record<string, unknown>>;
-  readonly channel: MarketplaceChannel;
   readonly store: TokenDuravelStore;
   /**
-   * Build the live `ChannelContext` the contract methods consume: reads the
-   * newest valid token (or refreshes it, concurrency-safe) and packs the
-   * per-account `account` bag. Throws `MercadoLivreReauthRequiredError` when the
-   * account must reconnect via OAuth.
+   * Build the live `ChannelContext`: reads the newest valid token (or refreshes
+   * it, concurrency-safe) and packs the per-account `account` bag. Throws
+   * `MercadoLivreReauthRequiredError` when the account must reconnect via OAuth.
    */
   resolveChannelContext(now?: number): Promise<ChannelContext>;
   /**
@@ -180,7 +170,6 @@ export function buildMercadoLivreContext(
   integracaoId: string,
   conta: Integracao,
 ): MercadoLivreContext {
-  const channel = createMercadoLivreChannel(mercadoLivreConfig());
   const oauthConfig = mercadoLivreOAuthConfig();
   const store = createTokenDuravelStore(db, integracaoId);
 
@@ -192,11 +181,20 @@ export function buildMercadoLivreContext(
   return {
     integracaoId,
     conta,
-    channel,
     store,
     async resolveChannelContext(now: number = Date.now()): Promise<ChannelContext> {
       const accessToken = await getOrRefreshAccessToken(store, oauthConfig, { now });
-      return { integracaoId, accessToken, account };
+      return {
+        integracaoId,
+        accessToken,
+        // ⚠️ The thunk re-reads the clock and the store on every call; the
+        // `accessToken` beside it is a SNAPSHOT of this moment. They differ for
+        // anything long-running — a sweep page, a mass-import dispatch, a
+        // resumable job can all outlive the grant the snapshot captured. New
+        // code takes the thunk; the field stays because ~25 call sites read it.
+        getAccessToken: () => getOrRefreshAccessToken(store, oauthConfig, { now: Date.now() }),
+        account,
+      };
     },
     async exchangeAndPersist(code: string, codeVerifier?: string): Promise<void> {
       const resp = await exchangeCode(oauthConfig, code, codeVerifier);

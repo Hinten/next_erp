@@ -164,6 +164,20 @@ export {
   type Volume,
 } from './shared/frete';
 
+// Marketplace capability table — what replaced the deleted `MarketplaceChannel`
+// plugin contract (#815, ADR 0015). Same shape as FREIGHT_TIPO_CAPS above.
+export {
+  MARKETPLACE_TIPO_CAPS,
+  marketplaceCapsFor,
+  marketplaceCapsOrNull,
+  ehMarketplace,
+  type MarketplaceCapabilities,
+  type EstoqueCapabilities,
+  type EstoqueProtocolo,
+  type MarketplaceTipo,
+  type Suporte,
+} from './shared/marketplace';
+
 export {
   DIA_DA_SEMANA_LABELS,
   diaDaSemanaSchema,
@@ -262,7 +276,6 @@ export {
   integracaoTipoSchema,
   INTEGRACAO_TIPO,
   INTEGRACAO_TIPO_LABELS,
-  pluginIdForTipo,
   // Mercado Livre `shipping.mode` for this conta's publishes.
   modoEnvioMercadoLivreSchema,
   type ModoEnvioMercadoLivre,

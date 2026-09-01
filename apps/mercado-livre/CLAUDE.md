@@ -295,7 +295,12 @@ The per-surface notes below stay the authority on behaviour.
   case ML itself flags with `repeated`. The field is modelled, not used.
 - **Claim RESPOND** (#768) — `chatOutbound.ts` gained an `mlclaims` branch and
   `packages/integrations/mercado-livre/src/incidentRespond.ts` implements
-  `respondIncident`, the last unimplemented `MarketplaceChannel` member.
+  `respondIncidentMl`. ⚠️ It used to be described as "the last unimplemented
+  `MarketplaceChannel` member"; that contract was deleted in #815 (ADR 0015) and
+  `claimResolve.ts` calls the function directly. ⚠️ **`refundAmount` is REAIS**,
+  not centavos — the `/reclamacao/acao` wire still carries `valorReembolsoMinor`
+  and `claimResolve.ts` is the one place that converts. Moving that conversion
+  would change a live refund's wire format.
   ⚠️ Every action is gated on `players[role=respondent].available_actions`, read
   LIVE on each call — ML decides what a seller may do from the stage and status,
   and the list empties as the claim closes. An unavailable action is a 400, so
