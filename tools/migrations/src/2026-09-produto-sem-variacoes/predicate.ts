@@ -139,7 +139,16 @@ export interface ResumoEstoque {
   nLinhasNaoCanonicas: number;
   /** Rows whose `depositoOuterRef` resolved to nothing. */
   nDepositosIrreconheciveis: number;
-  /** Distinct depósitos this produto holds stock in. */
+  /**
+   * Distinct depósitos this produto actually holds stock in — counted over the
+   * rows that pass the same `quantidade !== 0 || quantidadeReservada !== 0`
+   * test as {@link ResumoEstoque.temEstoque}.
+   *
+   * ⚠️ NOT the row count. Flutter's `criarEstoques` writes a ZERO row per
+   * depósito for every produto on create and on update, so counting rows
+   * would report the same number for the whole legacy catalogue — the very
+   * thing this module's header warns is not a discriminator.
+   */
   nDepositos: number;
 }
 
@@ -221,11 +230,17 @@ export function resumirLinha(produtoId: string, bruto: EstoqueBruto): LinhaDepos
 
 export function resumirEstoques(produtoId: string, brutos: readonly EstoqueBruto[]): ResumoEstoque {
   const linhas = brutos.map((b) => resumirLinha(produtoId, b));
-  const depositos = new Set(linhas.map((l) => l.depositoId).filter((d): d is string => d != null));
+  const temUnidades = (l: LinhaDeposito) => l.quantidade !== 0 || l.quantidadeReservada !== 0;
+  const depositos = new Set(
+    linhas
+      .filter(temUnidades)
+      .map((l) => l.depositoId)
+      .filter((d): d is string => d != null),
+  );
 
   return {
     linhas,
-    temEstoque: linhas.some((l) => l.quantidade !== 0 || l.quantidadeReservada !== 0),
+    temEstoque: linhas.some(temUnidades),
     quantidadeTotal: linhas.reduce((acc, l) => acc + l.quantidade, 0),
     reservadaTotal: linhas.reduce((acc, l) => acc + l.quantidadeReservada, 0),
     moveriaTotal: linhas.reduce((acc, l) => acc + l.moveria, 0),

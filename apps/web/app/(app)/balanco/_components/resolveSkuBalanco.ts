@@ -24,9 +24,10 @@ import { normalizeScanCode } from '../../despacho/checkout/_components/resolveSc
  * (`upSoleMember.ts:193`), so scanning such a produto answered "SKU duplicado"
  * about a produto that has exactly one SKU. {@link colapsarPaiEFilhoUnico}
  * collapses that pair to the CHILD — where the stock is — and the third read is
- * what tells "a parent and its ONLY member" apart from "a parent, one of its
- * several members, and whatever else the index returned". With `limit(2)` the
- * collapse would fire on a family of many and count against an arbitrary sibling.
+ * what tells "a parent and the only member carrying this SKU" apart from "a
+ * parent, one of several same-SKU members, and whatever else the index
+ * returned". With `limit(2)` the collapse would fire on the second case and
+ * count against an arbitrary sibling.
  */
 export type VerdictoSku =
   | { kind: 'produto'; produtoId: string; produto: Produto }
@@ -65,15 +66,21 @@ export async function resolverSkuBalanco(db: Firestore, texto: string): Promise<
     const achados = await getDocs(
       buildQuery(produtoCollection.ref(db, {}), [whereEqual('sku', candidato), limit(3)]),
     );
-    // A parent and its own sole member are one produto wearing one SKU; anything
+    // ⚠️ `snap.data()` is NOT memoized — the Firebase SDK re-runs the converter
+    // on every call, and this repo's converter is a full `produtoSchema`
+    // safeParse (`defineCollection.ts:65-69`). This is the hot path of a
+    // warehouse screen driven by a wedge scanner, so each document is parsed
+    // exactly once and the value carried forward.
+    const candidatos = achados.docs.map((d) => ({ id: d.id, data: d.data() }));
+    // A parent and the only member sharing its SKU are one produto; anything
     // else with more than one hit is a real ambiguity the operator has to resolve.
     const membroUnico = colapsarPaiEFilhoUnico(
-      achados.docs.map((d) => ({ id: d.id, paiId: d.data().paiId, doc: d })),
+      candidatos.map((c) => ({ id: c.id, paiId: c.data.paiId, data: c.data })),
     );
-    if (membroUnico) return classificarProduto(membroUnico.id, membroUnico.doc.data());
-    if (achados.docs.length > 1) return { kind: 'duplicado' };
-    const doc = achados.docs[0];
-    if (doc) return classificarProduto(doc.id, doc.data());
+    if (membroUnico) return classificarProduto(membroUnico.id, membroUnico.data);
+    if (candidatos.length > 1) return { kind: 'duplicado' };
+    const unico = candidatos[0];
+    if (unico) return classificarProduto(unico.id, unico.data);
   }
 
   return { kind: 'nao-encontrado' };
