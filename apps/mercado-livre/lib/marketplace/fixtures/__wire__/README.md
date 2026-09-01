@@ -1,6 +1,6 @@
 # `__wire__` — response bodies Mercado Livre actually sent
 
-32 real ML responses, captured during the **#1087 live run** (2026-08-19 → 2026-09-01)
+30 real ML responses, captured during the **#1087 live run** (2026-08-19 → 2026-09-01)
 against a seller test user on `veste-france-debug`, then redacted and committed by
 `pnpm --filter @delfrance/mercado-livre-app promote:fixtures`.
 
@@ -43,12 +43,11 @@ revisit it before the first capture against real production orders.
 The capture manifest is **not** committed — it names the Firebase project and the
 `integracao` document id, neither of which has test value.
 
-| Family                        | Files | Notes                                                                                   |
-| ----------------------------- | ----- | --------------------------------------------------------------------------------------- |
-| `item-…` / `items-…`          | 5     | includes a User-Products family member (`variations: []`)                               |
-| `orders-…`                    | 8     | with `billing_info` under `x-version: 2`                                                |
-| `shipments-…`                 | 10    | `x-format-new: true`, plus `…/sla` which deliberately carries **no** such header (#957) |
-| `packs-…`                     | 2     | one 404 — a pack id and an order id are indistinguishable from outside                  |
-| `collections-…`               | 3     | payments                                                                                |
-| `post-purchase-…`             | 2     | a claim and its (empty) message list                                                    |
-| `order-single` / `order-pack` | 2     | `/orders/search` result shapes                                                          |
+| Family               | Files | Notes                                                                                   |
+| -------------------- | ----- | --------------------------------------------------------------------------------------- |
+| `item-…` / `items-…` | 5     | includes a User-Products family member (`variations: []`)                               |
+| `orders-…`           | 8     | with `billing_info` under `x-version: 2`                                                |
+| `shipments-…`        | 10    | `x-format-new: true`, plus `…/sla` which deliberately carries **no** such header (#957) |
+| `packs-…`            | 2     | one 404 — a pack id and an order id are indistinguishable from outside                  |
+| `collections-…`      | 3     | payments                                                                                |
+| `post-purchase-…`    | 2     | a claim and its (empty) message list                                                    |

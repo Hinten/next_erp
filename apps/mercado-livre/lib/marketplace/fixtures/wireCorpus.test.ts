@@ -13,11 +13,11 @@ import { WIRE_DIR, listWireFixtures, readWireFixture } from './wireCorpus';
  * ⚠️ Without it this whole file passes on an EMPTY directory: "no fixture
  * contains PII" and "every fixture parses" are both trivially true of nothing.
  * A deleted `__wire__/`, a bad glob or a `.gitignore` that swallows the folder
- * would all read as green. 32 bodies were promoted from the #1087 run; the floor
+ * would all read as green. 30 bodies were promoted from the #1087 run; the floor
  * sits just under that so removing one is deliberate and removing the set is a
  * failure.
  */
-const MINIMO_DE_FIXTURES = 30;
+const MINIMO_DE_FIXTURES = 28;
 
 describe('__wire__ corpus', () => {
   const arquivos = listWireFixtures();
@@ -83,6 +83,51 @@ describe('__wire__ corpus', () => {
     });
 
     expect(desatualizadas).toEqual([]);
+  });
+});
+
+describe('every body is really from the WIRE', () => {
+  // ⚠️ This is the corpus's ONE load-bearing claim, and it shipped broken:
+  // `order-single.json` and `order-pack.json` were `buildOrderMLWire` output —
+  // the `orderML` Firestore mirror — dumped during an earlier debugging session
+  // and promoted along with the real captures. They carried an ERP field ML
+  // never sends, ms-epoch dates where ML sends ISO strings, and all three of
+  // `buildPaymentWire`'s hardcodes. So the corpus shipped two files enshrining
+  // exactly the bug its own README cites as the reason it exists.
+  //
+  // Removing them fixed that day. These assertions are what makes it not recur.
+
+  it('carries no ERP-only field — the tell that a body came from Firestore', () => {
+    const infratores: string[] = [];
+    for (const file of listWireFixtures()) {
+      const texto = JSON.stringify(readWireFixture(file));
+      // A Firestore document path, and the outerRef convention around it.
+      if (/"[a-zA-Z]*[Oo]uterRef"|documents\/integracao\//.test(texto)) infratores.push(file);
+    }
+    expect(infratores).toEqual([]);
+  });
+
+  it('carries no `buildPaymentWire` signature — its three hardcodes together', () => {
+    // `collector_id: null` + `payer: null` + `date_last_updated` present while
+    // `date_last_modified` is absent. ML sends `collector: {id}`, a flat
+    // `payer_id`, and `date_last_modified`; only our own builder emits this trio.
+    const infratores: string[] = [];
+    for (const file of listWireFixtures()) {
+      const texto = JSON.stringify(readWireFixture(file));
+      if (texto.includes('"date_last_updated"') && !texto.includes('"date_last_modified"')) {
+        infratores.push(file);
+      }
+    }
+    expect(infratores).toEqual([]);
+  });
+
+  it('has a filename `capture:fixtures` could actually have produced', () => {
+    // `slugForPath` turns a request path into `<segment>-<segment>…`, so every
+    // real capture is named after its endpoint. `order-single` / `order-pack`
+    // match no ML path at all — the name alone said they were hand-made.
+    const familias = /^(items?|orders|packs|shipments|collections|post-purchase)-/;
+    const infratores = listWireFixtures().filter((f) => !familias.test(f));
+    expect(infratores).toEqual([]);
   });
 });
 
