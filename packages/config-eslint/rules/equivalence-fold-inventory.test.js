@@ -85,6 +85,8 @@ const PATHSPECS = [
  */
 const INVENTARIO = {
   // ---- Folds that DECIDE SAMENESS — each names its near-miss test ---------
+  'apps/mercado-livre/lib/marketplace/fixtures/piiScan.ts':
+    '`deepEqual` compares a committed wire body against its own re-redaction, so the fold decides "did redaction leave this leaf alone?". Equal: nothing beyond structural identity — same keys, same order-independent key SET, same primitive values, `null` only equal to `null`. Distinct: a redacted placeholder vs the value it replaced (that inequality IS the finding), `null` vs `"REDACTED"`, `0` vs `"0"`, and an array whose length differs. ⚠️ The dangerous direction here is folding too MUCH: a `deepEqual` that coerced types or ignored key order would report a leaked street address as "unchanged" and the corpus would ship it. Near-miss: `piiScan.test.ts` — "CONTROL A (known-bad) — an unredacted body reports every personal leaf" (must differ) paired with "CONTROL B (known-good) — the redacted body is a fixpoint, so it reports nothing" (must not).',
   'apps/mercado-livre/lib/marketplace/size-charts/sizeChartSync.ts':
     '⚠️ The #1372 site. `canonicalMeasureNames` folds every `value_name` through `localizarDecimal` for the row diff — SEPARATOR only. Equal: `90.5` ≡ `90,5`. Distinct: `90,5` ≠ `90,50`, `01` ≠ `1` — ML echoes the label verbatim on the anúncio. Near-miss: "a TRAILING-ZERO edit is a real change" + "a LABEL edit that only drops a leading zero".',
   'apps/web/lib/mercado-livre/chartDedupe.ts':
