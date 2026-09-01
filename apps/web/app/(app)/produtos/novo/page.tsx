@@ -247,7 +247,9 @@ export default function NovoProdutoPage() {
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         transientFields={PRODUTO_TRANSIENT_FIELDS}
-        transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
+        // `'criar'` also mints the sole member, so the produto is born as a
+        // family of one in this same transaction (#1398).
+        transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values, 'criar')}
         saveLabel="Criar"
         showSaveAndContinue={false}
         deriveOnSave={(values) => {

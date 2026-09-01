@@ -8,6 +8,7 @@ import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
   buildChildrenComponentesKitOps,
+  buildMembroUnicoWriteOps,
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
   buildKitStatusChildOps,
@@ -562,5 +563,43 @@ describe('deleteProdutoCascade', () => {
     });
     await expect(deleteProdutoCascade(port, 'p1')).rejects.toBeInstanceOf(ProdutoReferencedError);
     expect(committed).toEqual([]);
+  });
+});
+
+/**
+ * The two writes that turn a freshly created produto into a family of one.
+ *
+ * ⚠️ They belong to ONE atomic boundary. A parent written without its child
+ * points at nothing; a child written without the pointer is invisible to every
+ * surface that looks the family up. Both are wrong in ways nothing later
+ * repairs, which is why this is a PAIR and the caller commits it as one.
+ */
+describe('buildMembroUnicoWriteOps', () => {
+  const pai = { nome: 'Bandeja', sku: 'BAN-1' };
+
+  it('creates the child and points the parent at it, in that order', () => {
+    const ops = buildMembroUnicoWriteOps('p1', 'c1', pai);
+    expect(ops).toHaveLength(2);
+    expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/c1' });
+    expect(ops[1]).toEqual({
+      type: 'update',
+      path: 'produtos/p1',
+      data: { filhoUnicoId: 'c1' },
+    });
+  });
+
+  it('writes the child under its OWN id, pointing back at the parent', () => {
+    const [child] = buildMembroUnicoWriteOps('p1', 'c1', pai);
+    expect(child!.path).toBe('produtos/c1');
+    expect((child as { data: Record<string, unknown> }).data).toMatchObject({ paiId: 'p1' });
+  });
+
+  // ⚠️ The pointer goes through `derivarFilhoUnico`, the ONE producer of the
+  // value — not set to `childId` directly. Same answer here, but routing every
+  // writer through it is what keeps the denormalisation honest when a later
+  // writer holds a child SET rather than a single id.
+  it('refuses to point at an empty id', () => {
+    const ops = buildMembroUnicoWriteOps('p1', '', pai);
+    expect(ops[1]).toMatchObject({ data: { filhoUnicoId: null } });
   });
 });

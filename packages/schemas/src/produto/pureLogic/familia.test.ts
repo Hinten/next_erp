@@ -3,6 +3,7 @@ import {
   colapsarPaiEFilhoUnico,
   derivarFilhoUnico,
   ehFamiliaDeUm,
+  montarMembroUnico,
   unidadeVendavel,
 } from './familia';
 
@@ -174,5 +175,115 @@ describe('ehFamiliaDeUm / unidadeVendavel — both shapes tolerated', () => {
     const p = { id: 'p1', paiId: null, filhoUnicoId: '' };
     expect(ehFamiliaDeUm(p)).toBe(false);
     expect(unidadeVendavel(p)).toBe('p1');
+  });
+});
+
+/**
+ * The sole member is a MIRROR, not a stub. After #1398 it is the sellable unit,
+ * so anything a stock or pricing surface reads off "the produto" has to be on it.
+ */
+describe('montarMembroUnico', () => {
+  const pai = {
+    nome: 'Bandeja Decorativa',
+    sku: 'BAN-1',
+    codPai: 'CP',
+    gtin: '789',
+    publicado: true,
+    ehUsado: false,
+    precos: { L1: { valor: 10 } },
+    categoriaProdutoOuterRef: 'documents/categorias/c1',
+    pesoLiquidoKg: 1.5,
+    pesoBrutoKg: 2,
+    alturaCm: 10,
+    larguraCm: 20,
+    profundidadeCm: 30,
+  };
+
+  it('points at its parent and carries no variation taxonomy', () => {
+    expect(montarMembroUnico('p1', pai)).toMatchObject({
+      paiId: 'p1',
+      grupoDeVariacoesUid: null,
+      variacoesUid: null,
+    });
+  });
+
+  // Each of these is read off "the produto" by a surface that, after #1398,
+  // reads the CHILD: precos by the pedido reprice, the dimensions by freight
+  // quoting, the categoria by the NF-e tax cascade's tier 3.
+  it('mirrors the fields a sellable unit is read for', () => {
+    expect(montarMembroUnico('p1', pai)).toMatchObject({
+      nome: 'Bandeja Decorativa',
+      sku: 'BAN-1',
+      codPai: 'CP',
+      gtin: '789',
+      publicado: true,
+      precos: { L1: { valor: 10 } },
+      categoriaProdutoOuterRef: 'documents/categorias/c1',
+      pesoLiquidoKg: 1.5,
+      pesoBrutoKg: 2,
+      alturaCm: 10,
+      larguraCm: 20,
+      profundidadeCm: 30,
+    });
+  });
+
+  // `produto.nome` is capped at 100; a child built from a 100-char parent name
+  // plus anything would fail the schema on write.
+  it('truncates the name to the schema cap', () => {
+    const longo = 'x'.repeat(140);
+    expect((montarMembroUnico('p1', { nome: longo }).nome as string).length).toBe(100);
+  });
+
+  // ⚠️ A kit's availability is `min` over its components, computed from the
+  // produto a surface reads. A child with no map would report its own (empty)
+  // stock, so EVERY kit would read 0 — #1398's harm from a third direction.
+  it('copies the kit map and its sorted denorm', () => {
+    const kit = montarMembroUnico('p1', {
+      ...pai,
+      ehKit: true,
+      componentesKit: { b: { quantidade: 1 }, a: { quantidade: 2 } },
+    });
+    expect(kit).toMatchObject({ ehKit: true, componentesKitKeys: ['a', 'b'] });
+    expect(kit.componentesKit).toEqual({ b: { quantidade: 1 }, a: { quantidade: 2 } });
+  });
+
+  // Same rule the create page's `deriveOnSave` applies to the parent, so the
+  // denorm can never outlive the flag.
+  it('drops the kit map when the parent is not a kit', () => {
+    expect(
+      montarMembroUnico('p1', { ...pai, ehKit: false, componentesKit: { a: { quantidade: 1 } } }),
+    ).toMatchObject({ ehKit: false, componentesKit: null, componentesKitKeys: null });
+  });
+
+  it('nulls an EMPTY kit map rather than storing {}', () => {
+    expect(montarMembroUnico('p1', { ...pai, ehKit: true, componentesKit: {} })).toMatchObject({
+      componentesKit: null,
+      componentesKitKeys: null,
+    });
+  });
+
+  // `ehKitVirtual` only means anything on a kit.
+  it('does not carry ehKitVirtual onto a non-kit', () => {
+    expect(montarMembroUnico('p1', { ...pai, ehKit: false, ehKitVirtual: true })).toMatchObject({
+      ehKitVirtual: false,
+    });
+  });
+
+  // ⚠️ A child never points at a child. Writing one would make `ehFamiliaDeUm`
+  // report a wrapper and send readers one level too deep.
+  it('never writes filhoUnicoId onto the child', () => {
+    expect(montarMembroUnico('p1', pai)).not.toHaveProperty('filhoUnicoId');
+  });
+
+  it('degrades a parent with nothing set to schema-shaped nulls', () => {
+    expect(montarMembroUnico('p1', {})).toMatchObject({
+      nome: '',
+      sku: null,
+      paiId: 'p1',
+      publicado: false,
+      ehKit: false,
+      componentesKit: null,
+      precos: null,
+    });
   });
 });

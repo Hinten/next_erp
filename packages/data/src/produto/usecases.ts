@@ -4,6 +4,8 @@ import {
   impostoProdutoMeta,
   impostoProdutoSchema,
   makeEstoqueUid,
+  derivarFilhoUnico,
+  montarMembroUnico,
   operacaoIdFromImpostoRef,
   produtoExtraDataMeta,
   produtoExtraDataSchema,
@@ -12,6 +14,7 @@ import {
   PRODUTO_SUBCOLLECTION_NAMES,
   type ComponentesKit,
   type ImpostoProduto,
+  type ParentParaMembroUnico,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoWriteOp } from './port';
@@ -652,4 +655,41 @@ export async function deleteProdutoCascade(
 
   // Delete only the parent; `onProdutoDeleted` cascades children + subcollections.
   await port.commit([{ type: 'delete', path: produtoDocPath(produtoId) }]);
+}
+
+// ---------------------------------------------------------------------------
+// The sole member a produto is born with (#1398)
+// ---------------------------------------------------------------------------
+
+/**
+ * The two writes that turn a freshly created produto into a FAMILY OF ONE: the
+ * sole member's document, and the parent's pointer at it.
+ *
+ * ⚠️ They belong to ONE atomic boundary and the caller must keep them there.
+ * The pointer is what every reader resolves through; a parent written without
+ * its child points at nothing, and a child written without the pointer is
+ * invisible to every surface that looks the family up. Both halves are wrong in
+ * ways nothing later repairs, which is why this returns a pair rather than two
+ * callables — `saveRecord`'s `siblingWrites` commit with the produto doc or not
+ * at all.
+ *
+ * ⚠️ `filhoUnicoId` goes through {@link derivarFilhoUnico} rather than being set
+ * to `childId` directly. It is the same value here — there is exactly one child
+ * — but routing every writer through the one producer is what keeps the
+ * denormalisation honest when a later writer has a child SET rather than a
+ * single id.
+ */
+export function buildMembroUnicoWriteOps(
+  parentId: string,
+  childId: string,
+  parent: ParentParaMembroUnico,
+): ProdutoWriteOp[] {
+  return [
+    { type: 'set', path: produtoDocPath(childId), data: montarMembroUnico(parentId, parent) },
+    {
+      type: 'update',
+      path: produtoDocPath(parentId),
+      data: { filhoUnicoId: derivarFilhoUnico([{ id: childId }]) },
+    },
+  ];
 }
