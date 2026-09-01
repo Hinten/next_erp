@@ -120,6 +120,18 @@ export function derivarFilhoUnico(filhos: readonly { id: string }[]): string | n
 /** What {@link unidadeVendavel} and {@link ehFamiliaDeUm} read off a produto. */
 export interface ProdutoDeFamilia {
   id: string;
+  /**
+   * Optional, and the reason it is read is drift.
+   *
+   * `filhoUnicoId` is a denormalisation with no trigger keeping it honest;
+   * `paiId` is authoritative by construction, because a child always carries
+   * one. So consulting it turns the drift case "a child that wrongly kept a
+   * stale `filhoUnicoId`" from *resolves to some other produto* into *resolves
+   * to itself*, which is the safe answer for a stock read.
+   *
+   * A caller that does not project it gets `undefined == null` → exactly the
+   * behaviour it would have had; only callers that DO project it gain the guard.
+   */
   paiId?: string | null;
   filhoUnicoId?: string | null;
 }
@@ -134,6 +146,11 @@ export interface ProdutoDeFamilia {
  * unit to point at.
  */
 export function ehFamiliaDeUm(produto: ProdutoDeFamilia): boolean {
+  // ⚠️ A child is never the parent of a family of one, whatever it stores. This
+  // reads the authoritative field to guard the denormalised one — see `paiId`
+  // on {@link ProdutoDeFamilia}. `== null` covers a stored null and an absent
+  // key alike, so a caller that does not project `paiId` is unaffected.
+  if (produto.paiId != null) return false;
   return produto.filhoUnicoId != null && produto.filhoUnicoId !== '';
 }
 

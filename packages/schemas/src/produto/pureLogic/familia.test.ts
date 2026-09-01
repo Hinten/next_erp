@@ -152,6 +152,22 @@ describe('ehFamiliaDeUm / unidadeVendavel — both shapes tolerated', () => {
     expect(unidadeVendavel(p)).toBe('p1');
   });
 
+  // ⚠️ The drift case the `paiId` guard exists for. `filhoUnicoId` has no trigger
+  // keeping it honest, so a child could end up carrying a stale one; `paiId` is
+  // authoritative by construction. Without the guard this child would resolve to
+  // some OTHER produto and a stock read would land on the wrong document.
+  it('a CHILD carrying a stale filhoUnicoId resolves to itself, not to the pointer', () => {
+    const drift = { id: 'c1', paiId: 'p1', filhoUnicoId: 'algum-outro' };
+    expect(ehFamiliaDeUm(drift)).toBe(false);
+    expect(unidadeVendavel(drift)).toBe('c1');
+  });
+
+  // The guard must not change anything for a caller that does not project it.
+  it('is unaffected when the caller does not project paiId', () => {
+    expect(ehFamiliaDeUm({ id: 'p1', filhoUnicoId: 'c1' })).toBe(true);
+    expect(unidadeVendavel({ id: 'p1', filhoUnicoId: 'c1' })).toBe('c1');
+  });
+
   // A stored empty string is not a pointer. Treating it as one sends readers to
   // `produtos/` — a collection, not a document.
   it('treats a stored empty filhoUnicoId as absent', () => {
