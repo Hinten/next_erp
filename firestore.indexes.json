@@ -1184,28 +1184,6 @@
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "publicado",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "integracoesComProduto",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "__name__",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "produtos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "paiId",
-          "order": "ASCENDING"
-        },
-        {
           "fieldPath": "integracoesComProduto",
           "order": "ASCENDING"
         },

@@ -712,9 +712,13 @@ describe('enviarEstoqueManual — nothing is dropped silently', () => {
     ]);
   });
 
-  it('an unpublished produto with a live listing produces a SKIP ROW (#804)', async () => {
-    // The by-ids fetcher drops the sweep's `publicado` pre-filter precisely so
-    // this rung fires instead of the produto vanishing from the result.
+  it('an unpublished produto with a live listing is SENT, and the row says why (#1087)', async () => {
+    // ⚠️ This used to assert a `'nao-publicado'` SKIP. It was the wrong verdict:
+    // `publicado` is ERP catalogue visibility, and refusing on it left a live,
+    // selling anúncio advertising a stale quantity — which oversells. The rung
+    // is gone, and since this push has no rung of its own (it delegates entirely
+    // to `buildSendTasks`, unlike `precoManual`) removing it there is what makes
+    // this send. The information it carried survives as a note on the sent row.
     const row = familyRow();
     row.anchor.publicado = false;
     const deps = baseDeps({ fetchFamilies: vi.fn().mockResolvedValue([row]) });
@@ -723,6 +727,21 @@ describe('enviarEstoqueManual — nothing is dropped silently', () => {
       { integracaoId: CONTA, produtoIds: ['PROD'] },
       deps as never,
     );
-    expect(res.listings[0]).toMatchObject({ outcome: 'pulado', motivo: 'nao-publicado' });
+    expect(res.listings[0]).toMatchObject({ outcome: 'enviado', motivo: null });
+    expect(res.listings[0]!.mensagem).toContain('oculto (não publicado) no ERP');
+    expect(res.resumo).toMatchObject({ enviados: 1, pulados: 0 });
+  });
+
+  it('a PUBLISHED produto is sent WITHOUT the oculto note (#1087 known-good control)', async () => {
+    // The near-miss half: proving the note appears says nothing about whether it
+    // appears when it must not. `publicado: true` is the default on `familyRow`.
+    const deps = baseDeps({ fetchFamilies: vi.fn().mockResolvedValue([familyRow()]) });
+    const res = await enviarEstoqueManual(
+      fakeDb({ PROD: { paiId: null } }),
+      { integracaoId: CONTA, produtoIds: ['PROD'] },
+      deps as never,
+    );
+    expect(res.listings[0]).toMatchObject({ outcome: 'enviado', motivo: null });
+    expect(res.listings[0]!.mensagem).not.toContain('oculto');
   });
 });

@@ -279,10 +279,14 @@ async function estimarDelta(
   legacyDepositoId: string,
   sample: number,
 ): Promise<DeltaResumo> {
+  // ⚠️ No `publicado == true` (#1087) — this samples the SWEEP's anchor set and
+  // the sweep no longer filters on it, so keeping the term here would estimate
+  // the delta over a strictly smaller population than the one that ships. It
+  // also rides the same `produtos(paiId, integracoesComProduto, …)` prefix now;
+  // the four-field `publicado` composite is deleted.
   const anchors = await produtoCollection
     .ref(db, {})
     .where('paiId', '==', null)
-    .where('publicado', '==', true)
     .where('integracoesComProduto', 'array-contains', integracaoId)
     .limit(sample)
     .get();

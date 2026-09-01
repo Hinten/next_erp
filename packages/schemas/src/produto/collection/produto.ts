@@ -110,6 +110,34 @@ export const produtoSchema = z.object({
    * it must not be generalized into one.
    */
   ehKitVirtual: z.boolean().default(false),
+  /**
+   * ⚠️ **DEMONSTRATIVE ONLY — an ERP catalogue-visibility flag.** It says
+   * whether the operator wants this produto shown in the ERP's own catalogue,
+   * and **nothing else**. It is not a marketplace state, not a lifecycle, and
+   * not a permission.
+   *
+   * ⛔ **A channel integration must never gate on it.** Whether a listing is
+   * live, sellable or updatable is decided by the MARKETPLACE's own internal
+   * publication state, which this repo already models per conta:
+   *
+   * - `integracoesComProduto` — the produto-side denorm of "has a live anúncio
+   *   on this conta", derived from `linkHasLiveListing` (an item id, and
+   *   `estado !== 'c'`) and moved in real time by the channel's status sync;
+   * - the per-conta link's `estado` / `status` / `sub_status` (`ESTADO_PUBLICACAO_ML`
+   *   in `mercadoLivreLink.ts`) — the marketplace's own answer;
+   * - the send-time whitelist each channel applies to that status
+   *   (ML stock: `podeEnviarEstoque`).
+   *
+   * The two questions come apart constantly, and the direction that hurts is
+   * `publicado: false` + a live, SELLING anúncio: gating on this flag then drops
+   * the produto SERVER-SIDE, so the sync produces no skip row and no log line —
+   * unobservable, not merely silent — and the marketplace goes on advertising a
+   * stale quantity, which **oversells** (#804 class 1; fixed on the ML price
+   * sweep by #1072 and on the ML stock sweep by #1087).
+   *
+   * Hiding a produto in the ERP is not a request to stop syncing a live
+   * listing; close or pause the listing on the channel for that.
+   */
   publicado: z.boolean().default(false),
   ofereceFreteGratis: z.boolean().default(false),
   /**
