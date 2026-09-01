@@ -7,7 +7,17 @@ import type { WireValue } from './redact';
 import { WIRE_DIR, listWireFixtures } from './wireCorpus';
 import { SHAPES_FILE, renderShapesDocument, renderShapesFromCorpus } from './wireShapes';
 
-const committed = (): string => readFileSync(join(WIRE_DIR, SHAPES_FILE), 'utf8');
+/**
+ * ⚠️ Line endings are normalised before comparing, and that is not laziness.
+ * The primary fix is the `text eol=lf` pin in `.gitattributes` — without it,
+ * `core.autocrlf=true` smudges this generated file to CRLF on checkout, the
+ * byte comparison fails on Windows and passes on the Linux runner, and the red
+ * looks like someone else's broken file. This is the second line of defence for
+ * a working tree that predates that attribute. Nothing about the shape document
+ * is carried by its line endings.
+ */
+const committed = (): string =>
+  readFileSync(join(WIRE_DIR, SHAPES_FILE), 'utf8').replace(/\r\n/g, '\n');
 
 describe('SHAPES.txt', () => {
   it('matches the committed corpus exactly', () => {

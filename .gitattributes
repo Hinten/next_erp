@@ -37,3 +37,15 @@
 .claude/hooks/*.mjs text eol=lf
 .github/scripts/*.mjs text eol=lf
 packages/integrations/nfe/scripts/*.mjs text eol=lf
+
+# Fourth instance of the CRLF hazard, and the quietest yet. The captured Mercado
+# Livre wire corpus is GENERATED: `promote:fixtures` writes it with LF, and
+# `wireShapes.test.ts` compares the regenerated document byte-for-byte against
+# the committed one. Under `core.autocrlf=true` the checkout smudges these to
+# CRLF, so the comparison fails on Windows and passes on the Linux runner — a
+# local red that looks like someone else's broken file, and a re-promote that
+# reports every fixture as changed.
+#
+# Scoped to the generated corpus only; this path is new, so no existing working
+# tree gets re-flagged.
+apps/mercado-livre/lib/marketplace/fixtures/__wire__/** text eol=lf
