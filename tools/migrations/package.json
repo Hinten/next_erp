@@ -7,6 +7,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "audit:estoque-reservada-negativa": "dotenv -e ../../.env.local -- tsx src/2026-08-estoque-reservada-negativa/audit.ts",
+    "audit:ml-cliente-fork": "dotenv -e ../../.env.local -- tsx src/2026-09-ml-cliente-fork-audit/audit.ts",
     "audit:ml-pedido-pago": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-pedido-pago-audit/audit.ts",
     "clean": "rm -rf dist .turbo out *.tsbuildinfo",
     "lint": "eslint .",
