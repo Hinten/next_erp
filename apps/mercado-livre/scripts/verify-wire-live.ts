@@ -42,7 +42,11 @@ import {
 } from '../lib/marketplace/fixtures/fixtureCapture';
 import { type WireValue, redactWireBody } from '../lib/marketplace/fixtures/redact';
 import { diffShapes, ehQuebra, renderShapeDiff } from '../lib/marketplace/fixtures/shapeDiff';
-import { listWireFixtures, readWireFixture } from '../lib/marketplace/fixtures/wireCorpus';
+import {
+  findFixtureForSlug,
+  readWireFixture,
+  statusOfFixture,
+} from '../lib/marketplace/fixtures/wireCorpus';
 import { wireShape } from '../lib/marketplace/fixtures/wireDigest';
 import { loadMercadoLivreContext } from '../lib/marketplace/core/mercadoLivre';
 
@@ -71,12 +75,17 @@ function required(name: string): string {
   return value;
 }
 
-/** The committed body for a slug, whatever status it was filed under. */
+/**
+ * The committed body for a slug, whatever status it was filed under.
+ *
+ * ⚠️ The matching lives in `wireCorpus.findFixtureForSlug`, NOT here. An
+ * anchored-wrong local copy resolved 15 of 33 plan slugs to a different
+ * resource — every `items-MLB…` to an order — and the test that was supposed to
+ * back it had re-implemented the same predicate, so it stayed green.
+ */
 function baselineFor(slug: string): { file: string; body: WireValue } | null {
-  const file = listWireFixtures().find(
-    (f) => f === `${slug}.json` || /^\d{3}\.json$/.test(f.slice(slug.length + 1)),
-  );
-  return file === undefined ? null : { file, body: readWireFixture(file) };
+  const file = findFixtureForSlug(slug);
+  return file === null ? null : { file, body: readWireFixture(file) };
 }
 
 async function main(): Promise<void> {
@@ -128,7 +137,9 @@ async function main(): Promise<void> {
       const esperado = fixtureFileName({ target: r.target, status: r.status });
       if (esperado !== baseline.file) {
         statusMudou += 1;
-        log(`⚠️ ${baseline.file} — ML respondeu ${r.status} agora (era ${baseline.file})`);
+        log(
+          `⚠️ ${baseline.file} — ML respondeu ${r.status} agora (era ${statusOfFixture(baseline.file)})`,
+        );
       }
 
       if (deltas.length === 0) {

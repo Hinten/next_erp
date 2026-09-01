@@ -83,7 +83,24 @@ construction — digests each live body and diffs the **shape** against the
 committed one. GETs only.
 
 A removal or a type change exits non-zero; an addition is reported as
-information. ⚠️ The live body is redacted before digesting, which is why
+information.
+
+⚠️ **"Breakage" here means the SHAPE moved, which is not the same as a contract
+change — expect the first run to exit 1 on document lifecycle, not on drift.**
+`wireShape` is leaf-only and unions types, which is right for a census across
+many bodies and value-sensitive for a 1:1 re-fetch of the same document months
+later. All three of these are ⛔ today and none is ML changing its API:
+
+| corpus              | live now  | reported                                 |
+| ------------------- | --------- | ---------------------------------------- |
+| `date_closed: null` | populated | ⛔ `tipo-mudou` `null → string`          |
+| `resolution: null`  | an object | ⛔ `removido` + several ⓘ `resolution.*` |
+| `variations: []`    | populated | ⛔ `removido` on the container           |
+
+Claim `5567065796`, its messages and the two shipments are the ids most likely
+to have moved on since the #1087 capture, so this is the common case rather than
+a corner. A human reads the output; the encoding is deliberate. But do not read
+an exit 1 as "ML broke the contract" without checking which of the two it is. ⚠️ The live body is redacted before digesting, which is why
 `redact.ts` has to be type-preserving: comparing a raw body against the redacted
 corpus would report every personal field as a difference and bury the real one.
 

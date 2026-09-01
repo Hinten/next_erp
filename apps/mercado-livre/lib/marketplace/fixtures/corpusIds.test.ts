@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { countIds, idsFromCorpus } from './corpusIds';
-import { listWireFixtures } from './wireCorpus';
+import { findFixtureForSlug, listWireFixtures } from './wireCorpus';
 
 describe('idsFromCorpus', () => {
   it('recovers every id family from the REAL committed corpus', () => {
@@ -22,6 +22,10 @@ describe('idsFromCorpus', () => {
     ]);
     expect(ids.itemIds).toContain('MLB5095421681');
     expect(ids.itemIds).toContain('MLB7542354578');
+    // ⚠️ The corpus is now uniformly `items-` — the four legacy `item-` files
+    // were renamed to the slug `fixtureFileName` actually produces, so the
+    // matcher needs no special case and none of them goes unverified.
+    expect(listWireFixtures().filter((f) => /^item-/.test(f))).toEqual([]);
     expect(ids.shipmentIds).toEqual(['47868202073', '47868991350']);
     expect(ids.paymentIds).toEqual(['174911485053', '174920100019', '175866174436']);
     expect(ids.claimIds).toEqual(['5567065796']);
@@ -76,21 +80,36 @@ describe('idsFromCorpus', () => {
     // The property that keeps the live verify apples-to-apples: nothing is
     // fetched that the corpus cannot be compared against.
     //
-    // ⚠️ Matched on the STEM, not on `<prefix>-<id>.json`. A capture that 404'd
-    // is filed as `<slug>.404.json` and has no bare `.json` sibling, so the
-    // stricter form fails on `2000014733850447` — an id the corpus really does
-    // hold, whose 404 is the recorded fact about it.
-    const files = listWireFixtures();
-    const temStem = (stem: string): boolean =>
-      files.some((f) => f === `${stem}.json` || /^\d{3}\.json$/.test(f.slice(stem.length + 1)));
-
+    // ⚠️ Uses the PRODUCTION matcher, `findFixtureForSlug`. This test used to
+    // hand-copy its predicate — including the anchoring bug — so it was green
+    // while `baselineFor` resolved 15 of 33 plan slugs to a different resource.
+    // Two copies of a matcher drift toward plausible (root `CLAUDE.md`); sharing
+    // one makes this a real backstop for the script instead of a parallel
+    // implementation of the same mistake.
     const ids = idsFromCorpus();
-    for (const id of ids.orderIds) expect(temStem(`orders-${id}`), `orders-${id}`).toBe(true);
+    for (const id of ids.orderIds) {
+      expect(findFixtureForSlug(`orders-${id}`), `orders-${id}`).not.toBeNull();
+    }
     for (const id of ids.shipmentIds) {
-      expect(temStem(`shipments-${id}`), `shipments-${id}`).toBe(true);
+      expect(findFixtureForSlug(`shipments-${id}`), `shipments-${id}`).not.toBeNull();
     }
     for (const id of ids.paymentIds) {
-      expect(temStem(`collections-${id}`), `collections-${id}`).toBe(true);
+      expect(findFixtureForSlug(`collections-${id}`), `collections-${id}`).not.toBeNull();
     }
+    // ⚠️ The family that genuinely did NOT round-trip, and was simply not
+    // asserted here before: the corpus held `item-MLB…` while the capture plan
+    // emits `items-MLB…`, so 4 of the 5 item ids were fetched and never compared.
+    for (const id of ids.itemIds) {
+      expect(findFixtureForSlug(`items-${id}`), `items-${id}`).not.toBeNull();
+    }
+  });
+
+  it('CONTROL — the matcher does not resolve a slug to a DIFFERENT resource', () => {
+    // The exact failure the old predicate had: an unanchored tail comparison
+    // matched any name of the same length ending in `.NNN.json`, and any 200
+    // file whose stem ended in three digits.
+    expect(findFixtureForSlug('orders-2000018143664980')).toBe('orders-2000018143664980.json');
+    expect(findFixtureForSlug('items-MLB5095421681')).toBe('items-MLB5095421681.json');
+    expect(findFixtureForSlug('orders-9999999999999999')).toBeNull();
   });
 });
