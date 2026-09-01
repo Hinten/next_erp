@@ -803,11 +803,15 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
     expect(h.updateItem).not.toHaveBeenCalled();
   });
 
-  it('a payload id ML no longer reports is omitted AND logged (the #707 signal)', async () => {
+  it('a payload id ML no longer reports is omitted, logged, AND pruned', async () => {
     // Completing the array is exactly what stops ML from ever answering
-    // `item.variations.invalid` about this id again, so the prune can no longer
-    // be driven by a rejection — this log line is the only remaining signal.
+    // `item.variations.invalid` about this id, so the prune cannot be driven by
+    // a rejection any more — it runs from the completion read instead, which
+    // holds stronger evidence: it SEES the stale id rather than inferring it.
     const h = makeHarness({ getItem: async () => vivo([101]) });
+    seedLink(h.db);
+    seedMembro(h.db, 'C1', 'v1', { id: 101 });
+    seedMembro(h.db, 'C2', 'v2', { id: 404 });
 
     await run(
       h,
@@ -826,6 +830,94 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
     expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
       expect.stringContaining('que o ML não reporta mais'),
       expect.objectContaining({ itemId: 'MLB111', fantasmas: ['404'] }),
+    );
+    // The self-heal, now evidence-led: the stale member is marked, so
+    // `membroPodeEnviar` drops it and the NEXT sweep builds a clean payload.
+    expect(h.db.docs(varPath('C2')).get('v2')).toMatchObject({
+      status: 'closed',
+      sub_status: ['deleted'],
+    });
+    expect(h.db.docs(varPath('C1')).get('v1')).not.toHaveProperty('status');
+  });
+
+  it('a send that DROPPED part of its intent does not clear the #781 diagnosis', async () => {
+    // ML accepted a body carrying less than we meant to send, so this is not the
+    // healed listing #781 is about. Clearing here would erase the diagnosis on
+    // the very write that failed to apply.
+    const h = makeHarness({ getItem: async () => vivo([101]) });
+    seedLink(h.db, {
+      errors: ['diagnóstico anterior'],
+      causas: [{ code: 'item.variations.invalid', mensagem: 'x' }],
+    });
+    seedMembro(h.db, 'C2', 'v2', { id: 404 });
+
+    const res = await run(
+      h,
+      payload({
+        quantidade: null,
+        variations: [
+          { id: 101, available_quantity: 5 },
+          { id: 404, available_quantity: 1 },
+        ],
+      }),
+    );
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ errors: ['diagnóstico anterior'] });
+  });
+
+  it('NEAR-MISS CONTROL: with NO fantasma the same send DOES clear it', async () => {
+    // Without this pair the spec above would pass just as well against a build
+    // that never clears at all.
+    const h = makeHarness({ getItem: async () => vivo([101]) });
+    seedLink(h.db, {
+      errors: ['diagnóstico anterior'],
+      causas: [{ code: 'item.variations.invalid', mensagem: 'x' }],
+    });
+
+    await run(h, payload({ quantidade: null, variations: [{ id: 101, available_quantity: 5 }] }));
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ errors: [], causas: [] });
+  });
+
+  it('EVERY payload id stale → no PUT at all, and the diagnosis survives', async () => {
+    // The limit case. The completed array would be ML's own values handed
+    // straight back: a write that changes nothing, reports `sent`, and — before
+    // this was fixed — cleared the failure diagnosis on the way out.
+    const h = makeHarness({ getItem: async () => vivo([900]) });
+    seedLink(h.db, { errors: ['diagnóstico anterior'], causas: [] });
+    seedMembro(h.db, 'C1', 'v1', { id: 101 });
+    seedMembro(h.db, 'C2', 'v2', { id: 102 });
+
+    const res = await run(
+      h,
+      payload({
+        quantidade: null,
+        variations: [
+          { id: 101, available_quantity: 5 },
+          { id: 102, available_quantity: 7 },
+        ],
+      }),
+    );
+
+    expect(res).toEqual({ outcome: 'skipped', reason: 'todas-variacoes-fantasma' });
+    expect(h.updateItem).not.toHaveBeenCalled();
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ errors: ['diagnóstico anterior'] });
+    // Both stale members pruned, so the next sweep stops re-sending ids ML does
+    // not have — and the listing's silence becomes visible instead of looking
+    // like a healthy sync.
+    for (const [child, doc] of [
+      ['C1', 'v1'],
+      ['C2', 'v2'],
+    ] as const) {
+      expect(h.db.docs(varPath(child)).get(doc)).toMatchObject({
+        status: 'closed',
+        sub_status: ['deleted'],
+      });
+    }
+    expect(vi.mocked(console.error)).toHaveBeenCalledWith(
+      expect.stringContaining('nenhuma das variações do payload existe no ML'),
+      expect.objectContaining({ itemId: 'MLB111' }),
     );
   });
 
@@ -1414,8 +1506,17 @@ function seedMembro(db: FakeDb, childId: string, docId: string, raw: DocData = {
  * longer earn `item.variations.invalid`. The prune logic is still correct and
  * still worth pinning — a listing can grow a phantom between the read and the
  * write, and ML can refuse for other variation reasons — but the everyday signal
- * for a stale link is now the `fantasmas` warn in the request-bodies block, NOT
- * a rejection. Do not read a green suite here as "the prune still runs as often".
+ * for a stale link is now the COMPLETION READ, which prunes directly because it
+ * can see the id — see `a payload id ML no longer reports is omitted, logged,
+ * AND pruned` in the request-bodies block. Do not read a green suite here as
+ * "the prune still runs from a rejection as often".
+ *
+ * ⚠️ That second trigger is why `podadasAntes` exists. `planejarPoda` is
+ * idempotent, so a member the completion already marked `closed` is skipped
+ * here — this branch's own count reads ZERO for a payload that WAS repaired, and
+ * the latch arm would stamp `estado 'E'` on a listing already fixed. The counts
+ * are added, never re-derived; `marks the phantom member closed…` below is the
+ * spec that fails if they are not.
  */
 describe('processStockSendTask — terminal 4xx, item.variations.invalid (#707)', () => {
   /** A bulk send that ML refuses with `item.variations.invalid`. */

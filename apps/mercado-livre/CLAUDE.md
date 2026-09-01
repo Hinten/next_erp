@@ -673,13 +673,30 @@ read (re-deriving the whole body — resending the captured one deletes a variat
 ADDED in the window), and ML's remedy for a second is to wait, which is the
 queue's backoff. Letting it fall to the generic 4xx ladder would latch a healthy
 listing `estado 'E'`.
-⚠️ **Consequence for #707 below: the prune's trigger is now RARE.** A stale
-variation id is filtered out of the body, so ML can no longer answer
-`item.variations.invalid` about it and the rejection that drives the prune is
-never earned. The everyday signal for a stale link is the `fantasmas` warn the
-send emits; feeding the prune from there is the open follow-up. Do not read the
-#707 specs as evidence that the prune still fires as often — every one of them
-throws unconditionally from a mock.
+⚠️ **The #707 prune below gained a SECOND, evidence-led trigger, and it had to.**
+Completing the array filters a stale id out of the body, so ML can no longer
+answer `item.variations.invalid` about it and the rejection that used to drive
+the prune is never earned — completing the array would otherwise have traded a
+self-heal for a log line. The completion therefore prunes directly, from the item
+it just read: it SEES the stale id instead of inferring it from a refusal. The
+cause check consequently moved OUT of `podarVariacoesFantasma` to its two
+callers; only the terminal-4xx one has a rejection to inspect.
+⚠️ **`planejarPoda` is idempotent, which makes the latch arm a trap.** A member
+the completion just marked `closed` is skipped by the terminal prune, so that
+branch's "did we repair the payload?" test reads ZERO and would latch
+`estado 'E'` on a listing we had already fixed — the self-heal-that-does-not-heal
+its own comment warns about. The completion's count therefore rides into
+`registrarRejeicaoFinal` as `podadasAntes` and is ADDED, never re-derived.
+⚠️ **A send that dropped part of its intent must not report a heal.** ML accepts
+the completed body happily, so a stale id used to ride out as `sent` while
+`clearFalha()` erased #781's diagnosis on the same write — and in the limit where
+EVERY payload id is stale the body is ML's own values echoed back, a write that
+changes nothing and reports success. So: `clearFalha()` is suppressed while any
+id was dropped (temporary — the prune has just fixed the payload, and the next
+sweep's clean send clears), and an all-stale payload is refused before the PUT
+(`skipped`/`todas-variacoes-fantasma`) rather than spending a no-op write.
+⚠️ Do not read the #707 specs as evidence about how often the prune fires from a
+REJECTION — every one of them throws unconditionally from a mock.
 
 ⚠️ **`item.variations.invalid` self-heals; it is LEGACY-MODEL ONLY (#707).** When a
 bulk `PUT /items/{id}` is refused with that cause, the terminal branch diffs the
