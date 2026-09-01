@@ -261,7 +261,7 @@ export function useEstoqueDisponivel(
           // A component we could not read resolves to ITSELF — today's behaviour,
           // and the safe direction: it counts as 0 rather than as some other
           // produto's stock.
-          return [id, p ? unidadeVendavel({ id, ...p }) : id] as const;
+          return [id, p ? unidadeVendavel({ ...p, id }) : id] as const;
         }),
       );
 
@@ -310,12 +310,48 @@ export function useEstoqueDisponivel(
         }),
       );
 
+      // ⚠️ Two components can resolve to the SAME produto — a kit listing both a
+      // family-of-one parent and its own sole member — and they then draw from
+      // ONE pool, not two. `kitEstoqueDisponivel` takes `min` over each entry
+      // independently, so handing both aliases the full stock says a kit needing
+      // 1+1 of a 4-unit produto can be built 4 times. It can be built twice.
+      //
+      // Overstating availability is the direction ADR 0014 goes out of its way
+      // to avoid on the kit path — an unresolvable component counts as 0
+      // precisely so a kit is never advertised with stock it cannot build — and
+      // this lands on the screen where the operator picks quantities.
+      //
+      // So the pool is divided ONCE per target: each alias is given
+      // `(stock / totalDemand) * ownDemand`, which makes every alias yield the
+      // same `stock / totalDemand` under the helper's per-entry division.
+      //
+      // ⚠️ No flooring — `kitEstoqueDisponivel` does not floor either (it returns
+      // 4.5 for 9 units at 2 per kit), and rounding only the aliased case would
+      // make two arithmetics disagree about the same kit. With one component per
+      // target the value handed over is the raw stock, so the ordinary case is
+      // byte-identical to before.
+      const demandaPorAlvo = new Map<string, number>();
+      for (const [id, alvo] of alvoDe) {
+        const qtd = componentesKitEntries(componentesKit).find(([cid]) => cid === id)?.[1]
+          ?.quantidade;
+        const passo = typeof qtd === 'number' && qtd > 0 ? qtd : 1;
+        demandaPorAlvo.set(alvo, (demandaPorAlvo.get(alvo) ?? 0) + passo);
+      }
+
       // Keyed by the id the KIT names, whatever answered for it — `componentesKit`
       // is not rewritten by any of this.
       const disponivel: Record<string, number> = {};
       for (const [id, alvo] of alvoDe) {
-        const disp = porAlvo.get(alvo) ?? porProprio.get(id);
-        if (disp !== undefined) disponivel[id] = disp;
+        const doAlvo = porAlvo.get(alvo);
+        const disp = doAlvo ?? porProprio.get(id);
+        if (disp === undefined) continue;
+        const qtd = componentesKitEntries(componentesKit).find(([cid]) => cid === id)?.[1]
+          ?.quantidade;
+        const passo = typeof qtd === 'number' && qtd > 0 ? qtd : 1;
+        const demanda = demandaPorAlvo.get(alvo) ?? passo;
+        // Only a SHARED target is divided; a component answering from its own
+        // row (the fallback) never aliases with anything.
+        disponivel[id] = doAlvo !== undefined && demanda > passo ? (disp / demanda) * passo : disp;
       }
       return disponivel;
     },
