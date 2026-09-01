@@ -153,9 +153,11 @@ export interface IncidentActionResult {
 /**
  * ⚠️ **Nothing produces these types today, and that is stated rather than
  * hidden.** They are the TARGET shape for a shared, ERP-side order importer that
- * does not exist yet — the piece that would let a second marketplace inherit
- * order→pedido upsert instead of writing its own, the way #786 promoted
- * `findOrCreateCliente` out of `apps/mercado-livre` once a second channel needed it.
+ * does not exist yet — **tracked in #1428**, which is what keeps this module from
+ * reading as dead code somebody should delete. It is the piece that would let a
+ * second marketplace inherit order→pedido upsert instead of writing its own, the
+ * way #786 promoted `findOrCreateCliente` out of `apps/mercado-livre` once a
+ * second channel needed it.
  *
  * Mercado Livre maps its own wire type straight to `PedidoCoreFields`
  * (`apps/mercado-livre/lib/marketplace/pedidos/orderMapping.ts`) and never passes

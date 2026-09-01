@@ -126,10 +126,15 @@ does not exist yet: the same unreached surface, one round later.
   which the old contract made impossible, and which is why the `/canais` screen was
   showing a plugin-package name in place of a status.
 - The ERP-side sharing that a second marketplace genuinely needs (order → pedido
-  upsert, the stock plan) is **not** solved here. It is deferred deliberately: the
-  precedent is `findOrCreateCliente`, promoted out of `apps/mercado-livre` once a
-  second caller existed and its cascade defect was understood. Extracting before
-  that point is how this ADR's subject was created.
+  upsert, the stock plan) is **not** solved here — it is #1428. Deferred
+  deliberately: the precedent is `findOrCreateCliente`, promoted out of
+  `apps/mercado-livre` once a second caller existed and its cascade defect was
+  understood. Extracting before that point is how this ADR's subject was created.
+- The other deferrals from this decision are #1429 (the payment contract has the
+  identical disease), #1430 (wire the caps table into the `apps/web` provider
+  registries), #1431 (the four `verifyCaller`/`hmac` copies), #1432 (generalizing
+  the listing editor — blocked on a second channel, for this ADR's own reason) and
+  #1433 (four unaligned channel enums).
 - The invariant is enforced by
   `packages/config-eslint/rules/marketplace-contract-removed.test.js`, because every
   part of it is silent when violated: re-adding the interface typechecks, lints,
