@@ -8,10 +8,14 @@ docs.
 
 `produtos.integracoesComProduto` is the pre-filter both ML sweeps open with —
 `bulkEstoquePlan.fetchStockFamilies` S1 and `precoPlan.fetchPrecoPage` each start
-with `paiId == null AND publicado == true AND integracoesComProduto
-array-contains <conta>`. A conta id in it means _"this account's sweep visits
-this produto every run"_, so the array's accuracy **is** stock and price
-coverage.
+with `paiId == null AND integracoesComProduto array-contains <conta>`. A conta id
+in it means _"this account's sweep visits this produto every run"_, so the
+array's accuracy **is** stock and price coverage.
+
+> ⚠️ Neither sweep carries `publicado == true` any more — price since #1072,
+> stock since #1087 — so this array is now the **only** server-side term between
+> a live anúncio and the sweep, and its accuracy matters more than when this
+> script was written, not less.
 
 Since #920 two Cloud Function triggers own it. But a trigger only fires on a
 link **write**, which leaves two populations it can never reach on its own:
@@ -99,8 +103,10 @@ window, after the import — nothing recomputes on arrival.
    agree. Staging data itself never needs to migrate; if it is easier to
    re-seed from `tools/test-fixtures` than to fix, re-seed it.
 2. **After the production run**, re-run `check-stock-indexes.mjs` and confirm the
-   sweep still rides
-   `produtos(paiId, publicado, integracoesComProduto, __name__)`.
+   sweep still rides `produtos(paiId, integracoesComProduto, __name__)`.
+   ⚠️ This step used to name the four-field `publicado` composite, whose
+   declaration was deleted with #1087 — checking against that name would report
+   a healthy sweep as broken.
 3. A dry-run reporting zero changes a day after the triggers went live is the
    proof that the two agree; once that holds, the transitional fallback hop in
    `onVariacaoMercadoLivreLinkChanged` can be deleted.
