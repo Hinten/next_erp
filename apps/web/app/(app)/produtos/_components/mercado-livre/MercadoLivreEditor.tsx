@@ -423,6 +423,13 @@ export function MercadoLivreEditor({
    * `baixarPreco: true` matches that rail's own default for a hand-picked
    * selection: naming the produto IS the explicit intent, and it is what the
    * legacy per-produto action did unconditionally.
+   *
+   * `incluirNaoPublicados: true` likewise. There is no dialog here — just a
+   * button and a toast — so there is nowhere to put the tick, and this is the
+   * surface where a silent `NAO_PUBLICADO` skip is worst: the operator is
+   * looking at THIS produto's ML tab and would be told "nenhum anúncio elegível"
+   * about a listing that is live and selling. Passed explicitly even though the
+   * route already defaults it on, so the intent survives a change of default.
    */
   async function pushPrices(integracaoId: string) {
     if (!client) return;
@@ -431,6 +438,7 @@ export function MercadoLivreEditor({
         integracaoId,
         produtoIds: [produtoId],
         baixarPreco: true,
+        incluirNaoPublicados: true,
       });
       // ⚠️ Per-listing failure is DATA on this rail, not an HTTP error: a 200 can
       // carry nothing but failures, so the toast has to read the envelope rather

@@ -63,6 +63,7 @@ export const mercadoLivrePriceProvider: PricePushProvider = {
         integracaoId: integracao.id,
         produtoIds: [...produtoIds],
         baixarPreco: input.baixarPreco,
+        incluirNaoPublicados: input.incluirNaoPublicados,
         signal: input.signal,
       });
 

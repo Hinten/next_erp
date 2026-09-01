@@ -23,7 +23,8 @@
  *    drift.
  *  - **No anchor pre-filters.** `fetchPrecoFamiliasByIds` reads the anchors by
  *    KEY, so the three classes the bulk job's query silently excludes
- *    (#804 S7) reach the report here as explicit rows: `NAO_PUBLICADO`,
+ *    (#804 S7) reach the report here as explicit rows: `NAO_PUBLICADO` (only
+ *    when the operator asked for it — see {@link EnviarPrecoManualArgs}),
  *    `SEM_LINK` for a drifted `integracoesComProduto`, and a variation child
  *    resolved up to its anchor instead of dropped.
  *
@@ -151,6 +152,24 @@ export interface PushPrecoResponse {
  * it would break that for no gain. New route, `ML_CONTA_*` prefix, matching
  * `enviar-estoque`'s ladder.
  */
+/**
+ * Appended to a SENT row when the family anchor is `publicado: false`.
+ *
+ * The twin of `estoqueManual.ts`'s constant of the same name (#1087), and it
+ * exists for the same reason: the skip this replaces carried INFORMATION worth
+ * keeping even though the refusal was wrong. The operator hand-picked this
+ * produto, and "oculto no ERP but with a live anúncio" is usually a data defect
+ * — so the row reports `enviado` and says why it went anyway.
+ *
+ * ⚠️ Non-blocking by construction — it only widens `mensagem`. Do not promote it
+ * back into a `motivo`: an `enviado` row whose motivo is non-null would read as
+ * a skip to every consumer of the envelope, and the whole point is that
+ * `publicado` no longer decides unless the operator says so.
+ */
+const AVISO_OCULTO_NO_ERP =
+  ' Atenção: o produto está oculto (não publicado) no ERP — o preço foi enviado mesmo assim, ' +
+  'porque o anúncio está ativo no Mercado Livre.';
+
 export class ManualPrecoGuardError extends Error {
   constructor(
     readonly code: 'ML_CONTA_SEM_TABELA_NORMAL',
@@ -176,6 +195,21 @@ export interface EnviarPrecoManualArgs {
    * keeps the opposite default, where one tick moves every listing at once.
    */
   baixarPreco?: boolean;
+  /**
+   * Send even when the family anchor is `publicado: false` — an ERP CATALOGUE
+   * flag, not a statement about the anúncio (see the `produto.publicado`
+   * docblock in `packages/schemas`).
+   *
+   * ⚠️ **Defaults TRUE**, the inverse of `baixarPreco` above, and the asymmetry
+   * is deliberate. `baixarPreco` opts INTO an irreversible price move, so
+   * absent means "don't". This one opts into the behaviour every other surface
+   * already has — the account-wide price job dropped its `publicado` term in
+   * #1072 and the stock sweep + manual stock push dropped theirs in #1087 —
+   * so absent means "send", and only an explicit `false` restores the skip.
+   * Sending was never the risky direction: refusing was, because ML kept
+   * advertising a stale price on a live, selling anúncio.
+   */
+  incluirNaoPublicados?: boolean;
 }
 
 export interface EnviarPrecoManualDeps {
@@ -199,6 +233,9 @@ export async function enviarPrecoManual(
   const fetchFamilias = deps.fetchFamilias ?? fetchPrecoFamiliasByIds;
   const sendDraft = deps.sendDraft ?? enviarPrecoDraft;
   const baixarPreco = args.baixarPreco === true;
+  // `!== false`, not `=== true`: this flag defaults ON. See the field's docblock
+  // for why the two neighbouring booleans read opposite ways.
+  const incluirNaoPublicados = args.incluirNaoPublicados !== false;
 
   // (1) Price-source guard — without a tabela normal there is no price to read,
   // and every listing would skip PRECO_NAO_ENCONTRADO for a reason that is a
@@ -301,19 +338,23 @@ export async function enviarPrecoManual(
       });
       continue;
     }
-    // ⚠️ A DELIBERATE divergence from the bulk job since #1072, not an
-    // oversight — do not "align" them without asking.
+    // ⚠️ Once an UNCONDITIONAL divergence from the bulk job (#1072); now the
+    // operator's per-run choice, defaulted to SEND. The old comment here said
+    // "do not align them without asking" — this is the answer to that ask.
     //
-    // The bulk job dropped this family server-side with no trace (#804 class
-    // 1); it now enumerates it and SENDS, because for an account-wide "sync
-    // every price" the live ML anúncio is the scope and `publicado` is an ERP
-    // catalogue flag that has nothing to say about it.
+    // What was right about it: a hand-pick and an account-wide sync are
+    // different gestures, so an oculto produto is worth REPORTING rather than
+    // silently pushing a price nobody aimed at. What was wrong: it made that
+    // report a REFUSAL, which is the same failure the stock side had to undo in
+    // #1087 — ML keeps advertising a stale price on an anúncio that is live and
+    // selling, and `publicado` is an ERP catalogue flag with nothing to say
+    // about it. Refusing was the risky direction, not sending.
     //
-    // Here the operator hand-picked ONE produto, and the two gestures mean
-    // different things: a hand-pick is worth confirming, so an oculto produto
-    // reports rather than silently pushing a price the operator may not have
-    // intended to touch.
-    if (!row.publicado) {
+    // So the information survives and the refusal does not: unticked, this
+    // still reports `NAO_PUBLICADO`; ticked (the default), the produto is sent
+    // and the `enviado` row carries {@link AVISO_OCULTO_NO_ERP}. Mirrors
+    // `estoqueManual.ts` exactly, minus the choice — stock always sends.
+    if (!row.publicado && !incluirNaoPublicados) {
       listings.push(linhaSimples(row, 'NAO_PUBLICADO'));
       continue;
     }
@@ -341,6 +382,10 @@ export async function enviarPrecoManual(
 
   const executar = async (item: { draft: EnvioPrecoFilaItem; row: PrecoFamilyRow }) => {
     const { draft } = item;
+    // Only reachable while `incluirNaoPublicados` — the rung above returns
+    // otherwise — so this is always "sent despite being hidden", never "hidden
+    // and skipped". Carried for the note only; `publicado` gates nothing here.
+    const ocultoNoErp = !item.row.publicado;
     const base = {
       produtoId: draft.produtoId,
       produtoNome: nomeDe(draft.produtoId),
@@ -372,9 +417,9 @@ export async function enviarPrecoManual(
             outcome: 'enviado',
             motivo: null,
             mensagem:
-              result.precoAtual != null
+              (result.precoAtual != null
                 ? `Preço atualizado de ${result.precoAtual} para ${result.preco}.`
-                : `Preço ${result.preco} enviado.`,
+                : `Preço ${result.preco} enviado.`) + (ocultoNoErp ? AVISO_OCULTO_NO_ERP : ''),
             preco: result.preco,
             precoAnterior: result.precoAtual,
             variacoes: result.variacoes,
