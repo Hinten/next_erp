@@ -3,11 +3,21 @@
  *
  * That array is the ANCHOR PRE-FILTER both ML sweeps start from —
  * `bulkEstoquePlan.fetchStockFamilies` S1 and `precoPlan.fetchPrecoPage` each open
- * with `paiId == null AND publicado == true AND integracoesComProduto
- * array-contains <conta>`, riding the declared
- * `produtos(paiId, publicado, integracoesComProduto, __name__)` composite. A
+ * with `paiId == null AND integracoesComProduto array-contains <conta>`, riding
+ * the declared `produtos(paiId, integracoesComProduto, __name__)` composite. A
  * conta id in the array means "this account's sweep visits this produto every
  * run", so the array's accuracy IS stock + price coverage.
+ *
+ * ⚠️ Neither sweep carries `publicado == true` any more — price since #1072,
+ * stock since #1087 — and the four-field composite that used to serve them is
+ * deleted. THIS array is the produto-side denorm of MERCADO LIVRE publication
+ * status (derived here from `linkHasLiveListing`: an item id, and
+ * `estado !== 'c'`); `publicado` is an ERP CATALOGUE flag answering a different
+ * question, and gating on it dropped every unpublished produto with a live
+ * listing — server-side, with no skip row (#804's class 1). That makes the
+ * accuracy of this array even more load-bearing than the paragraph below says:
+ * it is now the ONLY server-side term standing between a live anúncio and the
+ * sweep, and the per-listing gates decide the rest.
  *
  * It used to be maintained by hand at six scattered call sites, and only ever
  * REMOVED by deriving it from the sibling `marketplace` array

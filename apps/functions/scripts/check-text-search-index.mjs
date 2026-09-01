@@ -24,9 +24,15 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //      multikey, unique) and drops everything else with NO error. So the
 //      declaration is INTENT; the live index has whatever it was created with —
 //      autodetect, unless the language was set via gcloud/console. Q3 tells the
-//      two apart empirically. Measured under AUTODETECT: case folding YES, pt
-//      plural stemming YES, diacritic folding NO — so a miss on the accent probe
-//      means pt-BR never reached the index (or does not fix diacritics).
+//      two apart empirically. Measured under AUTODETECT (`und`): case folding
+//      YES, pt plural stemming YES, diacritic folding NO.
+//      ⚠️ Measured again under pt-BR (set via set-text-index-language.mjs, since
+//      `firebase deploy` drops the option): stemming YES — "cerâmicas" matches
+//      "Cerâmica" though no document contains the plural — and diacritic folding
+//      INCONSISTENT: "Estatua"→Estátua and "Leao"→Leão match, "Ceramica",
+//      "Luminaria" and "lapis" do not. 2 of the catalogue's 4 accented words, one
+//      index, one run. So pt-BR did reach the index and did change behaviour; it
+//      did NOT make accent-insensitive search reliable.
 //
 // ⚠️⚠️ THE INDEX THIS SCRIPT MEASURES IS PROVISIONAL, AND NOT STAGING-SCOPED.
 // `firestore.indexes.json` is the `indexes` path in BOTH firebase.json
@@ -72,6 +78,18 @@ const PREFIX_SENTINEL = '\uf8ff';
 function semAcentos(palavra) {
   return palavra.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
+
+/**
+ * Is this term free of characters the search DSL would read as OPERATORS?
+ *
+ * ⚠️ Module scope on purpose. This used to be a local const inside discovery,
+ * so {@link probarTermo} could not consult it — and its disagreement branch
+ * ASSERTED "the raw term contains a DSL operator character" without ever
+ * testing the claim. That assertion is FALSE exactly where it matters most:
+ * Q3 picks its accent word THROUGH this predicate, so that word never carries
+ * an operator, and the branch still blamed one.
+ */
+const semOperadorDsl = (w) => !/["()+:~^*?\-]/.test(w);
 
 /**
  * Portuguese SINGULARS that already end in `s`.
@@ -158,7 +176,6 @@ async function descobrirAmostra() {
   // version probed "Porta-lapis", which varies TWO things at once — a dropped
   // accent and a hyphen, which the DSL reads as negation — so its zero could
   // not distinguish "no accent folding" from "the term never parsed".
-  const semOperadorDsl = (w) => !/["()+:~^*?\-]/.test(w);
   let palavraAcentuada = null;
   for (const r of linhas) {
     const achada = r.nome
@@ -290,20 +307,51 @@ function comoFrase(termo) {
 
 /**
  * Probe one term twice — as typed, and quoted as a phrase — and report both.
- * Returns the QUOTED form's count, which is the one that measures capability
- * rather than DSL parsing.
+ *
+ * ⚠️⚠️ WHICH COUNT IS AUTHORITATIVE DEPENDS ON THE QUESTION, so the caller says.
+ * This used to always return the QUOTED count, on the reasoning that quoting
+ * neutralises DSL operators. True, but it neutralises more than that: MEASURED
+ * live on staging, quoting also suppresses the ANALYZER.
+ *
+ *   term          unquoted  quoted
+ *   artesanal            4       4   ← known-GOOD control: quoting is not broken
+ *   cerâmicas            3       0   ← plural NO document contains; stemming only
+ *   estátuas             2       0   ← same
+ *   Estatua              2       0   ← unaccented form of "Estátua"
+ *
+ * A quoted phrase is matched LITERALLY. So for Q3 — whose entire subject is
+ * what the analyzer does — the quoted count measures the one path that has no
+ * analyzer in it, and reading a verdict off it reports the opposite of the
+ * truth. It did: Q3 printed "the default analyzer does not fold accents" for a
+ * word whose unaccented form matched 2 documents.
+ *
+ * So: 'literal' for terms carrying DSL operators (SKUs, hyphens), where parsing
+ * is the confound worth removing; 'analisado' for the language questions, which
+ * is also what an operator actually types into the search box.
  */
-async function probarTermo(rotulo, termo, fabrica) {
+async function probarTermo(rotulo, termo, fabrica, preferir = 'literal') {
   const bruto = termo;
   const frase = comoFrase(termo);
   const nBruto = await explicarPipeline(`${rotulo} — DSL as typed: ${bruto}`, fabrica(bruto));
   const nFrase = await explicarPipeline(`${rotulo} — DSL quoted: ${frase}`, fabrica(frase));
+
   if (nBruto !== nFrase) {
     console.warn(`  ⚠️  the two DSL forms DISAGREE (raw ${nBruto} vs quoted ${nFrase}).`);
-    console.warn('     The raw term contains a DSL operator character, so its result');
-    console.warn('     is a PARSE effect, not a capability result. Trust the quoted one.');
+    // ⚠️ TEST the explanation, never assert it. The old code stated flatly that
+    // the raw term "contains a DSL operator character" — a claim it never
+    // checked, and one that is false for every Q3 term by construction.
+    if (!semOperadorDsl(bruto)) {
+      console.warn(`     "${bruto}" DOES carry a DSL operator character, so the raw`);
+      console.warn('     result is a PARSE effect. The quoted form is the honest one.');
+    } else {
+      console.warn(`     "${bruto}" carries NO DSL operator, so parsing does not`);
+      console.warn('     explain this. The difference is the ANALYZER: an unquoted');
+      console.warn('     term is stemmed and folded, a quoted phrase is matched');
+      console.warn('     literally. For a language question the UNQUOTED count is');
+      console.warn('     the meaningful one — and it is what an operator types.');
+    }
   }
-  return nFrase;
+  return preferir === 'analisado' ? nBruto : nFrase;
 }
 
 function buscaTexto(dsl) {
@@ -479,7 +527,9 @@ async function main() {
     const pluralWord = amostra.plural.nome.trim().split(/\s+/)[0];
     const singular = pluralWord.slice(0, -1);
     console.log(`\n  stemming: searching "${singular}" should find "${amostra.plural.nome}"`);
-    const n = await probarTermo(`search("${singular}")`, singular, buscaTexto);
+    // Stemming is an analyzer property, so read the ANALYZED form — a quoted
+    // phrase is literal and would report "no stemming" for every word.
+    const n = await probarTermo(`search("${singular}")`, singular, buscaTexto, 'analisado');
     if (n === 0) {
       // ⚠️ Deliberately NOT phrased as "no Portuguese stemming". The pair is a
       // HEURISTIC — "${pluralWord}" was guessed to be a plural by its final -s,
@@ -508,7 +558,12 @@ async function main() {
     console.log(
       `\n  control: "${palavra}" must match "${nomeAcentuado}" for the next probe to mean anything`,
     );
-    const controle = await probarTermo(`control search("${palavra}")`, palavra, buscaTexto);
+    const controle = await probarTermo(
+      `control search("${palavra}")`,
+      palavra,
+      buscaTexto,
+      'analisado',
+    );
 
     // ⚠️⚠️ THREE outcomes, not two. `probarTermo` returns null when the
     // pipeline EXECUTION failed — a missing or still-building text index, which
@@ -526,15 +581,25 @@ async function main() {
       console.warn('     miss would not be evidence about folding.');
     } else {
       console.log(`\n  accents: searching "${semAcento}" should find "${nomeAcentuado}"`);
-      const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto);
+      const n = await probarTermo(`search("${semAcento}")`, semAcento, buscaTexto, 'analisado');
       if (n === null) {
         console.warn('  ⚠️  the accent probe did not run (pipeline failed) — NO verdict.');
       } else if (n === 0) {
         console.warn(`  ⚠️  "${semAcento}" did NOT match "${palavra}" while the control DID.`);
-        console.warn('     That IS evidence: the default analyzer does not fold accents.');
+        console.warn('     Evidence that this WORD does not fold — see the caveat below.');
       } else {
-        console.log(`  ✅ "${semAcento}" matched "${palavra}" — the analyzer folds accents.`);
+        console.log(`  ✅ "${semAcento}" matched "${palavra}" — this word folds.`);
       }
+      // ⚠️⚠️ ONE WORD IS NOT THE ANALYZER. Measured on staging, folding under
+      // pt-BR is INCONSISTENT across words: "Estatua"→Estátua and "Leao"→Leão
+      // both matched, while "Ceramica"→Cerâmica, "Luminaria"→Luminária and
+      // "lapis"→lápis all missed — same index, same run, 2 of 4 accented words
+      // in the catalogue. So this probe reports the word it happened to sample
+      // and nothing more; which word discovery picks decides the verdict, and
+      // a single ✅ here must not be read as "accent search works".
+      console.log('  ⚠️  ONE word. Folding measured INCONSISTENT across words under');
+      console.log('     pt-BR (2 of 4 in the staging catalogue), so do not read this');
+      console.log('     line as a property of the analyzer — sample more words first.');
     }
   } else {
     console.log('\n  accent probe skipped: no accented word free of DSL operator');

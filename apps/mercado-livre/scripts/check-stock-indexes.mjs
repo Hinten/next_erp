@@ -99,7 +99,8 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     analyze execution. Purely INFORMATIONAL: it never fails the gate.
 //     ⚠️ That one execution can be the expensive one — B's index range is
 //     EVERY published parent, which is precisely the number being measured.
-//     Set CHECK_ANCHOR_AB=0 to skip it.
+//     ⚠️ OPT-IN since #1087 (CHECK_ANCHOR_AB=1): the composite B and the ratio
+//     counts rode is deleted, so both now full-scan. See the RESULT block.
 //
 //     ---- RESULT (staging run 2026-08-07, owner decision: KEEP shape A) ----
 //     | metric              | A (shipped) | B (post-filter) |
@@ -142,6 +143,17 @@ import * as pipelines from '@google-cloud/firestore/pipelines';
 //     kept as the RECORD of why shape A is permanent — re-run it if the
 //     published-parents : conta-linked ratio ever shifts by an order of
 //     magnitude, but do not treat the array as removable debt.
+//
+//     ⚠️ #1087 UPDATE — re-running it is no longer free. S1 dropped
+//     `publicado == true` (an ERP catalogue flag was silencing live, selling
+//     anúncios), which left `produtos(paiId, publicado, integracoesComProduto,
+//     __name__)` serving no query at all, so its DECLARATION was deleted. Shape
+//     B's `paiId + publicado` range and the ratio's two counts therefore have no
+//     index behind them and full-scan — the same trap the note above records for
+//     the #779-deleted `produtos(paiId, publicado, __key__)`, which is the only
+//     reason B ever looked healthy. The spike is opt-in for exactly that reason:
+//     re-declare an index before believing any number it prints. The RECORD
+//     stands on its own; nothing about the 2026-08-07 measurement changed.
 //  4. A daily-mode PAGE-2 call with the SHIPPED daily predicate
 //     (`changedSinceMs = now − dailyWindowHours − overlap`, `afterAnchorId`
 //     keyset) and prints its plan — the keyset-over-computed-filter cost
@@ -246,9 +258,13 @@ const projectId = process.env.FIREBASE_PROJECT_ID ?? 'veste-france-debug';
 const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
 const pageLimitRaw = Number(process.env.CHECK_PAGE_LIMIT ?? '5');
 const pageLimit = Number.isInteger(pageLimitRaw) && pageLimitRaw > 0 ? pageLimitRaw : 5;
-// The A/B spike (header 5.) runs by default; '0' opts out of its one extra
-// analyze execution — the one whose cost IS the measurement.
-const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '1') !== '0';
+// The A/B spike (header 5.) is OPT-IN since #1087: the composite its ratio
+// counts rode (`produtos(paiId, publicado, integracoesComProduto, __name__)`)
+// has been DELETED, so both the counts and shape B's own `paiId + publicado`
+// range are now unserved and would full-scan — on Enterprise, billed. The
+// question it answered is closed (shape A is permanent), so it stays only as a
+// record. `CHECK_ANCHOR_AB=1` still runs it; re-declare an index first.
+const runAnchorAb = (process.env.CHECK_ANCHOR_AB ?? '0') !== '0';
 
 // Mirrors the shipped daily window: `dailyWindowHours()` (24) minus
 // `windowOverlapSec()` (20) — bulkEstoquePlan.ts defaults, janelaDoSweep('daily').
@@ -303,12 +319,12 @@ if (!integracaoId || !depositoId) {
   const ativaIds = new Set(ativas.docs.map((d) => d.id));
   // Bounded sample of real anchors: find one whose integracoesComProduto hits
   // an active ML conta — that pair guarantees the S1 predicate matches rows.
-  const anchors = await db
-    .collection('produtos')
-    .where('paiId', '==', null)
-    .where('publicado', '==', true)
-    .limit(25)
-    .get();
+  // ⚠️ No `publicado` term (#1087): S1 no longer carries one, so an unpublished
+  // anchor is a perfectly valid probe — and the composite that used to serve
+  // `paiId + publicado` is deleted, so filtering on it here would full-scan
+  // (`limit(25)` caps OUTPUT rows, not data scanned). Bare `paiId` rides
+  // `produtos(paiId ASC, nome ASC)` as a prefix.
+  const anchors = await db.collection('produtos').where('paiId', '==', null).limit(25).get();
   for (const doc of anchors.docs) {
     const integracoes = Array.isArray(doc.data().integracoesComProduto)
       ? doc.data().integracoesComProduto
@@ -634,13 +650,13 @@ const childrenJoin = () =>
     .toArrayExpression();
 
 function anchorPredicate(afterAnchorId) {
+  // ⚠️ No `publicado == true` (#1087) — mirrors `fetchStockFamilies`. It now
+  // rides `produtos(paiId ASC, integracoesComProduto ASC, __name__ ASC)`.
   const paiTerm = pipelines.equal(pipelines.field('paiId'), null);
-  const publicadoTerm = pipelines.equal(pipelines.field('publicado'), true);
   const contaTerm = pipelines.field('integracoesComProduto').arrayContains(integracaoId);
-  if (afterAnchorId == null) return pipelines.and(paiTerm, publicadoTerm, contaTerm);
+  if (afterAnchorId == null) return pipelines.and(paiTerm, contaTerm);
   return pipelines.and(
     paiTerm,
-    publicadoTerm,
     contaTerm,
     pipelines.greaterThan(
       pipelines.field('__name__'),
@@ -1099,8 +1115,11 @@ try {
    * a reintroduced CONTAINS index is visible in the gate log.
    */
   function reportIntegracoesIndexForm(nodes) {
+    // #1087: the anchors node now rides `/produtos (paiId ASC,
+    // integracoesComProduto …)` — the four-field `publicado` composite is gone.
     const anchor = nodes.find(
-      (n) => n.identifier != null && /^\/produtos \(paiId ASC, publicado/.test(n.identifier),
+      (n) =>
+        n.identifier != null && /^\/produtos \(paiId ASC, integracoesComProduto/.test(n.identifier),
     );
     if (anchor == null) {
       console.log('spike (b): anchors access node not found — form UNKNOWN (read the plan)');
@@ -1174,20 +1193,24 @@ try {
     failIdentifierlessScans('page-1 plan', nodes);
 
     checkTarget({
-      label: 'anchors scan (produtos paiId + publicado)',
+      label: 'anchors scan (produtos paiId + integracoesComProduto)',
       nodes,
       plan,
-      // Require `publicado` in the identifier: the children-join seeks ride
-      // `/produtos (paiId ASC, nome ASC)` and would only add noise here.
-      indexRe: /^\/produtos \(paiId ASC, publicado/,
-      predicateRe: /\$paiId|\$publicado/,
-      boundOf: (n) => {
-        const hasNull = n.boundedLines.some((l) => l.includes('[null]'));
-        const hasTrue = n.boundedLines.some((l) => l.includes('[true]'));
-        return hasNull && hasTrue
-          ? `paiId [null] + publicado [true] bounds on ${n.identifier}`
-          : null;
-      },
+      // ⚠️ #1087: S1 dropped `publicado == true`, so this rides the #1072
+      // three-field entry. Requiring `integracoesComProduto` in the identifier
+      // is what keeps the children-join seeks — which ride `/produtos (paiId
+      // ASC, nome ASC)` — from adding noise here.
+      indexRe: /^\/produtos \(paiId ASC, integracoesComProduto/,
+      predicateRe: /\$paiId|\$integracoesComProduto/,
+      // The conta term is an `arrayContains`, which the planner may push down
+      // as a `filter:` line rather than a constraint VALUE — so the bound this
+      // asserts is `paiId [null]`, and spike (b) below reports the form the
+      // array term actually rode.
+      boundOf: (n) =>
+        n.boundedLines.some((l) => l.includes('[null]'))
+          ? `paiId [null] bound on ${n.identifier}`
+          : null,
+      pendingDeploy: pendingDeployHint('produtos(paiId, integracoesComProduto, __name__)'),
     });
 
     checkTarget({
@@ -1262,9 +1285,13 @@ try {
     console.log('\n=== SPIKE: anchor predicate A/B (#431) — explain analyze ===');
 
     /* -- (i) the ratio. THIS is the multiplier B pays, and it is the whole
-       cost question in one number. Both counts ride the existing
+       cost question in one number. ⚠️ Both counts USED to ride the
        produtos(paiId, publicado, integracoesComProduto, __name__) composite —
-       the second as the full prefix, the first as its leading two fields. -- */
+       the second as the full prefix, the first as its leading two fields. That
+       entry was DELETED by #1087 (nothing filters `publicado` any more), so
+       these two aggregates are UNSERVED and scan the collection. That is why
+       the whole spike is opt-in now; re-declare the index before trusting a
+       number out of it. -- */
     let publishedParents = null;
     let contaAnchors = null;
     try {

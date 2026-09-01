@@ -19,10 +19,12 @@
  * silently full-scans, billed by data scanned):
  *  - anchors: `produtos(paiId ASC, integracoesComProduto ASC, __name__ ASC)`
  *    — ⚠️ a #1072 ENTRY, not the stock-sync composite. Dropping `publicado`
- *    from the anchor terms (below) means the deployed
- *    `produtos(paiId, publicado, integracoesComProduto, __name__)` can no
+ *    from the anchor terms (below) meant the four-field
+ *    `produtos(paiId, publicado, integracoesComProduto, __name__)` could no
  *    longer serve this query: a Firestore prefix must be CONTIGUOUS, so
- *    removing the middle field breaks it. `array-contains` rides ASC rather
+ *    removing the middle field breaks it. ⚠️ That composite is now DELETED —
+ *    #1087 took `publicado` out of the STOCK sweep too, leaving it with no
+ *    reader at all, and this entry serves both sweeps. `array-contains` rides ASC rather
  *    than CONTAINS (spike (b) / #705); the `orderBy(FieldPath.documentId())`
  *    keyset binds the `__name__` suffix;
  *  - children: the `paiId` equality rides the existing `produtos(paiId, nome)`

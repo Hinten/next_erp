@@ -60,20 +60,39 @@
  * read there — it is absent by construction, and an unkeyable row reads as
  * *unchanged*, which is a silent skip rather than a fail-open send.
  *
+ * ---- Discovery scope (#1087, mirroring #1072 on the price side): the anchor
+ * terms are `paiId == null` plus `integracoesComProduto array-contains <conta>`
+ * — and deliberately NOT `publicado == true`. That array IS the produto-side
+ * denorm of the MERCADO LIVRE publication status: `onProdutoMercadoLivreLinkChanged`
+ * derives it from `linkHasLiveListing` (an item id, and `estado !== 'c'`), and
+ * `itemsStatusSync` — driven by the `items` webhook — is what moves `estado`. So
+ * the `array-contains` term already asks the question that matters, in real
+ * time: *does this produto have a live anúncio on this conta?* `publicado` is an
+ * ERP CATALOGUE flag and answers a different one; gating on it dropped every
+ * unpublished produto with a live listing, server-side and with no skip row
+ * (#804's class 1), leaving the anúncio advertising a stale quantity for ever —
+ * which oversells. The per-listing whitelist below (`podeEnviarEstoque`) is what
+ * actually decides.
+ * ⚠️ The failure was not merely silent, it was UNOBSERVABLE: the produto never
+ * reached `buildSendTasks`, so there was no skip row and no log line, and the
+ * sweep persists only `skips.length` anyway.
+ *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
  * — an unindexed predicate silently full-scans, billed by data scanned):
- *  - anchors (S1): the single array-term composite the staging gate (spike
- *    (b), #705) proved `arrayContains` rides —
- *    `produtos(paiId ASC, publicado ASC, integracoesComProduto ASC,
- *    __name__ ASC)`. A CONTAINS twin was declared alongside it only so the
- *    gate could adjudicate which form the planner seeks; ASC won, CONTAINS
- *    was dropped (#705). The bare `produtos(paiId ASC, publicado ASC,
- *    __name__ ASC)` prefix that used to sit alongside them was dropped by the
- *    #779 audit: every S1 call site also filters `integracoesComProduto`, so
- *    it was dead weight — the surviving composite's leading two fields
- *    already serve it as a prefix.
- *    ⚠️ That surviving composite is PERMANENT — do not let a future index
- *    audit read it as legacy-migration debt. The A/B spike (#890, staging
+ *  - anchors (S1): `produtos(paiId ASC, integracoesComProduto ASC,
+ *    __name__ ASC)` — the #1072 entry, which the price sweep already rides.
+ *    ⚠️ NOT the four-field `produtos(paiId, publicado, integracoesComProduto,
+ *    __name__)` composite this query used to ride: a Firestore prefix must be
+ *    CONTIGUOUS, so dropping the MIDDLE field breaks it. That four-field entry
+ *    is DELETED — with the price side off it since #1072 and this one off it
+ *    now, no production query filters `publicado` at all, and an index nothing
+ *    reads is pure write amplification on every produto write. (The deployed
+ *    index still has to be deleted by hand — declaring is not deploying.)
+ *    The staging gate (spike (b), #705) proved `arrayContains` rides an ASC
+ *    field; a CONTAINS twin was declared alongside it only so the gate could
+ *    adjudicate which form the planner seeks; ASC won, CONTAINS was dropped.
+ *    ⚠️ The `integracoesComProduto` TERM is PERMANENT — do not let a future
+ *    index audit read it as legacy-migration debt. The A/B spike (#890, staging
  *    2026-08-07) measured the alternative: dropping the array and gating the
  *    conta with a link post-filter reads ×7.5 the data (48.27 KiB vs 6.41), and
  *    on Enterprise a post-filter cannot reduce data scanned at all. Shape A
@@ -740,6 +759,13 @@ function stockFamilyProjection(b: ReturnType<typeof stockJoinBuilders>) {
     pipelines.variable('anchorId').as('anchorId'),
     'ehKit',
     'ehKitVirtual',
+    // ⚠️ `publicado` is no longer a QUERY term (#1087) and no longer gates
+    // anything — it rides here for SHAPE PARITY and observability only. Both
+    // fetchers share this projection, and `coerceMember` reads an ABSENT field
+    // as `false`, so dropping it would make every row silently claim the
+    // produto is oculto — which is exactly what `estoqueManual` annotates its
+    // sent rows with. Carried, never consulted as a gate. (The price side keeps
+    // it for the same reason: `precoPlan.ts:254-258`.)
     'publicado',
     'componentesKit',
     'integracoesComProduto',
@@ -759,10 +785,11 @@ function stockFamilyProjection(b: ReturnType<typeof stockJoinBuilders>) {
  * pages (feeding `nextAfterAnchorId` back as `afterAnchorId`), enqueues per
  * page, bounds pages per tick and advances its durable cursor per the
  * `orderBackfill` pattern. Stages, in order:
- *  - S1 anchor predicate (server-side): `paiId == null`, `publicado == true`,
- *    `integracoesComProduto` arrayContains the conta; a resumed page adds
- *    `__name__ > <afterAnchorId ref>` (the ref is rebuilt via
- *    `produtoCollection.docRef` — `select` drops refs).
+ *  - S1 anchor predicate (server-side): `paiId == null` plus
+ *    `integracoesComProduto` arrayContains the conta — and deliberately NOT
+ *    `publicado == true` (#1087; see the module docblock's "Discovery scope").
+ *    A resumed page adds `__name__ > <afterAnchorId ref>` (the ref is rebuilt
+ *    via `produtoCollection.docRef` — `select` drops refs).
  *  - S2 define: `anchorId` + `anchorKitKeys` (`coalesce(componentesKitKeys,
  *    [])` — NOT ifNull, an ABSENT field passes through ifNull) — PLAIN
  *    expressions only; `define` is documented for those.
@@ -800,16 +827,17 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
   const builders = stockJoinBuilders(db, args.integracaoId, args.depositoId);
   const { ownEstoqueMax, kitKeysDefine, maxChildren } = builders;
 
+  // ⚠️ No `publicado == true`: see the module docblock's "Discovery scope".
+  // `integracoesComProduto` already carries the live-listing question, in real
+  // time; `publicado` is a catalogue flag, and gating on it was #804's class 1.
   const paiTerm = pipelines.equal(pipelines.field('paiId'), null);
-  const publicadoTerm = pipelines.equal(pipelines.field('publicado'), true);
   const contaTerm = pipelines.field('integracoesComProduto').arrayContains(args.integracaoId);
   const afterAnchorId = args.afterAnchorId ?? null;
   const anchorPredicate =
     afterAnchorId == null
-      ? pipelines.and(paiTerm, publicadoTerm, contaTerm)
+      ? pipelines.and(paiTerm, contaTerm)
       : pipelines.and(
           paiTerm,
-          publicadoTerm,
           contaTerm,
           // constant() accepts a DocumentReference — the keyset cursor.
           pipelines.greaterThan(
@@ -895,12 +923,15 @@ export type FetchStockFamiliesByIds = (
  *     `fetchMovimentosDaJanela`, no `quantidadesAnteriores`, no
  *     `deveEnviarFamilia`. That is the answer to "why doesn't this call
  *     deveEnviarFamilia".
- *  3. **No `paiId` / `publicado` / `integracoesComProduto` anchor terms.** Those
- *     exist to bound the SWEEP's scan and buy nothing against ≤50 point reads.
- *     Dropping them is what makes `buildSendTasks`' `'nao-publicado'` and
- *     `'conta-fora-do-produto'` rungs actually fire, turning #804's "three
- *     classes silently drop out, none produces a skip row" into an explicit,
- *     operator-visible row.
+ *  3. **No `paiId` / `integracoesComProduto` anchor terms.** Those exist to
+ *     bound the SWEEP's scan and buy nothing against ≤50 point reads. Dropping
+ *     them is what makes `buildSendTasks`' `'conta-fora-do-produto'` rung
+ *     actually fire, turning #804's "the classes silently drop out, none
+ *     produces a skip row" into an explicit, operator-visible row.
+ *     ⚠️ `publicado` is no longer one of them on EITHER path (#1087): the sweep
+ *     stopped filtering on it, so there is nothing left here to un-filter, and
+ *     the matching `'nao-publicado'` rung is gone. An oculto produto with a
+ *     live anúncio is now SENT and the row says so — see `estoqueManual`.
  *
  * ⚠️ `documents()` requires a NON-EMPTY, DUPLICATE-FREE list and **silently
  * omits a missing document**. The caller therefore dedupes and short-circuits
@@ -1528,7 +1559,14 @@ export type SendSkipReason =
   | 'anuncio-em-erro'
   | 'status-nao-enviavel'
   | 'kit-virtual'
-  | 'nao-publicado'
+  /**
+   * ⚠️ There is deliberately NO `'nao-publicado'` (#1087). The ERP `publicado`
+   * flag is catalogue visibility and says nothing about the anúncio's
+   * lifecycle, so neither the sweep nor the manual push refuses on it any more
+   * — an oculto produto with a live listing is SENT, and `estoqueManual`
+   * annotates the sent row instead. Do not re-add it: gating on it is #804's
+   * class 1, and here it also aborted the whole family (see `buildSendTasks`).
+   */
   | 'conta-fora-do-produto'
   | 'variations-excede-limite';
 
@@ -1689,8 +1727,11 @@ function membroPodeEnviar(
  *
  * Anchor-level rungs run ONCE, before the loop, in order: `'sem-link'` (the
  * conta has NO listings on this family), `'kit-virtual'`
- * (functions.dart:286-289), then the defensive `'nao-publicado'` /
- * `'conta-fora-do-produto'`.
+ * (functions.dart:286-289), then the defensive `'conta-fora-do-produto'`.
+ * ⚠️ Each is a `return`, so it costs the WHOLE family — which is why the
+ * `publicado` rung had to go (#1087) rather than merely stop being reached: an
+ * ERP catalogue flag must not silence every listing and child of a family that
+ * is live and selling on ML.
  *
  * Per-listing rungs (legacy `continue` semantics — the skip is pushed and the
  * OTHER listings still send): `'sem-link'` (listing without a doc id,
@@ -1743,8 +1784,14 @@ export function buildSendTasks(
 
   if (row.links.length === 0) return skipOnly(anchorId, 'sem-link');
   if (row.anchor.ehKitVirtual) return skipOnly(anchorId, 'kit-virtual');
-  // DEFENSIVE-ONLY rung: S1 already filters `publicado` server-side (keep the S1 term).
-  if (!row.anchor.publicado) return skipOnly(anchorId, 'nao-publicado');
+  // ⚠️ NO `publicado` rung (#1087). It was the twin of the S1 term this query no
+  // longer carries, and removing only the S1 term would have fetched the produto
+  // and skipped it here anyway — while the manual push, which has no rung of its
+  // own and delegates entirely to this function, would have kept refusing.
+  // It was also the worst-shaped rung in the prologue: a `return`, so ONE
+  // catalogue flag aborted the entire family — every listing this conta holds
+  // and every variation child — behind a single bare skip row carrying no
+  // itemId and no linkDocId. `podeEnviarEstoque` decides per LISTING now.
   // DEFENSIVE-ONLY rung: S1 already filters the conta server-side (keep the S1
   // term). Since #920 it earns its keep twice over — the array is maintained by
   // an EVENTUALLY-consistent trigger, so this is the rung that catches a stale

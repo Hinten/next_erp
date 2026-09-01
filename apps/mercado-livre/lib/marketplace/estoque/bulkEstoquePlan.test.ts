@@ -53,6 +53,15 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
     collectionGroup(id: string): this {
       return this.push('collectionGroup', [id]);
     }
+    /**
+     * The by-ids SOURCE stage (`fetchStockFamiliesByIds`) — a batch KEY read.
+     * Refs are recorded by PATH: an admin `DocumentReference` carries a live
+     * Firestore handle, so a structural `toEqual` on the raw object would
+     * compare the client rather than the query.
+     */
+    documents(refs: ReadonlyArray<{ path?: string; id?: string }>): this {
+      return this.push('documents', [refs.map((r) => r.path ?? r.id ?? String(r))]);
+    }
     where(condition: unknown): this {
       return this.push('where', [condition]);
     }
@@ -155,6 +164,7 @@ import {
   estoqueMax,
   fetchMovimentosDaJanela,
   fetchStockFamilies,
+  fetchStockFamiliesByIds,
   incrementalWindowMin,
   isStockSyncEnabled,
   kitIncluiEstoqueProprio,
@@ -395,12 +405,21 @@ const childrenSub = () => ({
   ],
 });
 
-/** THE query's S1 base terms (page 1 of a fresh sweep). */
-const s1Terms = () => [
-  eq(f('paiId'), null),
-  eq(f('publicado'), true),
-  contains(f('integracoesComProduto'), CONTA),
-];
+/**
+ * THE query's S1 base terms (page 1 of a fresh sweep).
+ *
+ * ⚠️ EXACTLY two terms since #1087 — no `eq(f('publicado'), true)`. This list is
+ * the ONLY thing standing between a re-added term and a silent regression on
+ * BOTH axes: the row assertions elsewhere in this file stay green with the term
+ * back in place (they seed published anchors), and Firestore Enterprise does not
+ * throw on a missing index — it full-scans and bills the bytes, and the
+ * four-field `produtos(paiId, publicado, integracoesComProduto, __name__)`
+ * composite that used to serve it has been DELETED (a prefix must be
+ * contiguous). Re-adding the term therefore costs money and coverage at once,
+ * with nothing red. Same guard as `precoPlan.test.ts`'s "EXACTLY the two terms
+ * its index declares".
+ */
+const s1Terms = () => [eq(f('paiId'), null), contains(f('integracoesComProduto'), CONTA)];
 const s1Page1 = () => AND(...s1Terms());
 const s1After = (anchorId: string) =>
   AND(
@@ -819,6 +838,38 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
     expect(db.pipelineExecutions).toHaveLength(1);
     expect(db.pipelineExecutions[0]).toEqual(expectedStages(s1Page1(), 10));
     expect(page.nextAfterAnchorId).toBeNull(); // short page → drained
+  });
+
+  // #1087 — the trapdoor guard. `publicado` stopped being a QUERY term and
+  // stopped gating anything, but it must keep riding BOTH projections:
+  // `coerceMember` reads an ABSENT field as `false`, and the manual push
+  // annotates a sent row from it. Dropping it from `stockFamilyProjection`
+  // would make every row silently claim the produto is oculto — with nothing
+  // red, because no rung consults it any more. `fetchStockFamiliesByIds` had no
+  // shape assertion at all before this.
+  it('#1087: `publicado` still rides BOTH fetchers’ S6 projection', async () => {
+    const sweepDb = new FakeDb();
+    sweepDb.queuePipelinePage([{ anchorId: 'PROD' }]);
+    await fetchStockFamilies(asDb(sweepDb), { ...FS_ARGS, pageLimit: 10 });
+
+    const byIdsDb = new FakeDb();
+    byIdsDb.queuePipelinePage([{ anchorId: 'PROD' }]);
+    await fetchStockFamiliesByIds(asDb(byIdsDb), {
+      integracaoId: CONTA,
+      depositoId: DEPOSITO_ID,
+      anchorIds: ['PROD'],
+    });
+
+    const selectOf = (db: FakeDb) => {
+      const select = db.pipelineExecutions[0]!.find((s) => s.stage === 'select');
+      expect(select, 'no select stage recorded').toBeDefined();
+      return select!.args;
+    };
+
+    expect(selectOf(sweepDb)).toContain('publicado');
+    // …and the two projections are the SAME list, which is what keeps a manual
+    // row and a sweep row byte-identical.
+    expect(selectOf(byIdsDb)).toEqual(selectOf(sweepDb));
   });
 
   it('changedSinceMs -1 (force-all): the S4 where is gt(coalesce(...), -1)', async () => {
@@ -1767,10 +1818,68 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     ]);
   });
 
-  it('unpublished anchor → nao-publicado', () => {
-    // DEFENSIVE-ONLY rung: S1 already filters `publicado` server-side.
-    expect(run(familyRow({ anchor: { publicado: false } })).skips).toEqual([
-      { produtoId: 'PROD', reason: 'nao-publicado' },
+  // ---- #1087: `publicado` is not part of the decision any more --------------
+  //
+  // ⚠️ TWO controls, and the KNOWN-BAD one is the point. Asserting only the
+  // published case proves nothing — that path already worked. The unpublished
+  // case is the one observed live on 2026-08-31 (veste-france-debug): an ERP
+  // catalogue flag was silencing an `active`, selling anúncio, which left ML
+  // advertising a stale quantity and oversold. It must FAIL before the fix.
+  it('#1087: a HIDDEN produto with a live anúncio sends exactly like a published one', () => {
+    const esperado = {
+      ...BASE_TASK,
+      kind: 'item',
+      itemId: 'MLB111',
+      variacaoProdutoId: null,
+      userProductId: null,
+      varLinkDocId: null,
+      quantidade: 7,
+      variations: null,
+    };
+
+    // known-GOOD: published + live listing is still selected and sent.
+    expect(run(familyRow({ anchor: { publicado: true } }))).toEqual({
+      tasks: [esperado],
+      skips: [],
+    });
+
+    // known-BAD: the ERP flag is off and the anúncio is `active`. BYTE-IDENTICAL
+    // outcome — that identity is the assertion, not merely "a task exists".
+    expect(run(familyRow({ anchor: { publicado: false } }))).toEqual({
+      tasks: [esperado],
+      skips: [],
+    });
+  });
+
+  it('#1087: a hidden anchor no longer silences its SIBLING listings', () => {
+    // The old rung was a `return`, not a `continue`, so one produto-level flag
+    // aborted the ENTIRE family — every listing this conta holds — behind a
+    // single bare skip row carrying no itemId and no linkDocId. Both live
+    // listings must now send, each with its own writeback target.
+    const { tasks, skips } = run(
+      familyRow({
+        anchor: { publicado: false },
+        links: [
+          { id: 'MLB111', linkDocId: 'link1' },
+          { id: 'MLB222', linkDocId: 'link2' },
+        ],
+      }),
+    );
+    expect(skips).toEqual([]);
+    expect(tasks.map((t) => [t.itemId, t.linkDocId])).toEqual([
+      ['MLB111', 'link1'],
+      ['MLB222', 'link2'],
+    ]);
+  });
+
+  it('#1087: dropping the flag did NOT open the per-listing status gate', () => {
+    // `podeEnviarEstoque` is what decides now. A hidden produto whose listing ML
+    // will not accept still skips — per LISTING, naming the itemId, instead of
+    // vanishing server-side with no row at all (#804's class 1).
+    expect(
+      run(familyRow({ anchor: { publicado: false }, links: [{ status: 'closed' }] })).skips,
+    ).toEqual([
+      { produtoId: 'PROD', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
     ]);
   });
 
@@ -1782,9 +1891,11 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
   });
 
   it('skip reasons follow the documented evaluation order', () => {
-    // Anchor-level rungs run ONCE before the per-listing loop: kit-virtual
-    // wins over nao-publicado AND over every per-listing reason (estado 'am',
-    // unknown status) — ONE family skip, never one per listing.
+    // Anchor-level rungs run ONCE before the per-listing loop: kit-virtual wins
+    // over every per-listing reason (estado 'am', unknown status) — ONE family
+    // skip, never one per listing. ⚠️ `publicado: false` is carried here on
+    // purpose and is NOT a rung any more (#1087): it must not change the
+    // verdict, and it must not add a second skip row.
     expect(
       run(
         familyRow({

@@ -67,6 +67,15 @@ const PREFIX_SENTINEL = '\uf8ff';
  * back to the nome range above, which is the whole mechanism behind one box
  * doing both. See `resolveProdutoIdsPorTermo`.
  *
+ * ⚠️ It also resolves the produto's own DOCUMENT id, and the URL carrying it —
+ * `/produtos/<id>/editar` is what every row here links to, so that id is in
+ * the address bar of every produto an operator has open. The id is read from
+ * the segment after `produtos`, never the last one, or the term resolves to
+ * `editar`. A PATH-shaped miss is reported as handled rather than handed back:
+ * a URL is an operator naming ONE produto, so its miss is an answer, while a
+ * BARE id stays ambiguous — the legacy import wrote seller SKUs in as produto
+ * ids, so a bare token can be either.
+ *
  * ⚠️ Module-level, and `resolveIds` reaches for the Firestore singleton
  * itself rather than closing over a prop. Its identity is a dependency of the
  * resolution effect: an inline arrow would be a new function every render,
@@ -74,7 +83,7 @@ const PREFIX_SENTINEL = '\uf8ff';
  * slowdown.
  */
 const produtoSearch = {
-  placeholder: 'Buscar por nome, SKU ou ID do anúncio…',
+  placeholder: 'Buscar por nome, SKU, ID do produto ou do anúncio…',
   toFilters: (term: string): PipelineFieldFilter[] => {
     const trimmed = term.trim();
     return trimmed === ''

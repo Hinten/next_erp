@@ -8,14 +8,16 @@
  * is deliberately NOT mocked — the anchor hop is half of what this module does,
  * and a stubbed parser would make every variation case vacuous.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { getDocsMock, getDocsByIdsMock } = vi.hoisted(() => ({
+const { getDocMock, getDocsMock, getDocsByIdsMock } = vi.hoisted(() => ({
+  getDocMock: vi.fn(),
   getDocsMock: vi.fn(),
   getDocsByIdsMock: vi.fn(),
 }));
 
 vi.mock('firebase/firestore', () => ({
+  getDoc: getDocMock,
   getDocs: getDocsMock,
 }));
 
@@ -28,7 +30,11 @@ vi.mock('@delfrance/data', () => ({
 }));
 
 vi.mock('@/lib/data/produtoCollection', () => ({
-  produtoCollection: { converter: {}, ref: () => ({ kind: 'produtos' }) },
+  produtoCollection: {
+    converter: {},
+    ref: () => ({ kind: 'produtos' }),
+    docRef: (_db: unknown, _ctx: unknown, id: string) => ({ kind: 'produtoDoc', id }),
+  },
 }));
 vi.mock('@/lib/data/produtoMercadoLivreLinkCollection', () => ({
   produtoMercadoLivreLinkCollection: { converter: {} },
@@ -41,6 +47,7 @@ vi.mock('@/lib/data/getDocsByIds', () => ({ getDocsByIds: getDocsByIdsMock }));
 import type { Firestore } from 'firebase/firestore';
 import {
   MAX_PRODUTOS_BUSCA,
+  parseDocumentIdTerm,
   parseMarketplaceIdTerm,
   resolveProdutoIdsPorTermo,
 } from './buscaProduto';
@@ -92,7 +99,31 @@ function alvosConsultados(): Alvo[] {
 
 const outerRef = (anchorId: string) => `documents/produtos/${anchorId}/produtoMercadoLivre/link-1`;
 
+/**
+ * Route the document-id point read.
+ *
+ * ⚠️ A `beforeEach` default, not a per-test opt-in. EVERY whitespace-free term
+ * now probes the document id, so a bare `mockReset` would leave `getDoc`
+ * returning `undefined` and `.then` on it would crash tests that have nothing
+ * to do with this branch.
+ */
+function routeDoc(doc?: FakeDoc) {
+  getDocMock.mockResolvedValue(
+    doc ? { exists: () => true, id: doc.id, data: doc.data } : { exists: () => false },
+  );
+}
+
+/** The doc ref the probe was built from, or undefined if it never ran. */
+function idProbado(): string | undefined {
+  return (getDocMock.mock.calls[0]?.[0] as { id: string } | undefined)?.id;
+}
+
+beforeEach(() => {
+  routeDoc();
+});
+
 afterEach(() => {
+  getDocMock.mockReset();
   getDocsMock.mockReset();
   getDocsByIdsMock.mockReset();
 });
@@ -167,6 +198,94 @@ describe('parseMarketplaceIdTerm', () => {
     ['MLB'], // prefix with no digits
   ])('rejects %j', (term) => {
     expect(parseMarketplaceIdTerm(term)).toBeNull();
+  });
+});
+
+/**
+ * The four id shapes this catalog actually carries. Not decoration — a tidy
+ * `^[A-Za-z0-9]{20}$` guard passes the first and silently refuses the other
+ * three, which are the IMPORTED produtos an operator is most likely chasing.
+ */
+const AUTO_ID = '7u13Z9TlQGgsg8N9Jfk2';
+const HEX_ID = '3f9731b6f257482a1956a11ffc028fbc288b7d05dc736174f90fcb9951dba8d6';
+const ML_ID = 'XMLB0000000000000001000000000000000003921756196207441vMLBMLB5125183715';
+const FIXTURE_ID = 'dev-camiseta-pai';
+
+describe('parseDocumentIdTerm', () => {
+  it.each([AUTO_ID, HEX_ID, ML_ID, FIXTURE_ID])('reads %s as a bare document id', (id) => {
+    expect(parseDocumentIdTerm(id)).toEqual({ id, fromPath: false });
+  });
+
+  it.each([
+    [`/produtos/${AUTO_ID}`, AUTO_ID],
+    [`/produtos/${AUTO_ID}/`, AUTO_ID],
+    [`produtos/${HEX_ID}`, HEX_ID],
+    [`documents/produtos/${ML_ID}`, ML_ID],
+    [`https://erp.example.com/produtos/${AUTO_ID}`, AUTO_ID],
+    [`https://erp.example.com/produtos/${AUTO_ID}/editar?aba=precos#topo`, AUTO_ID],
+  ])('reads the id out of the path %s', (termo, esperado) => {
+    expect(parseDocumentIdTerm(termo)).toEqual({ id: esperado, fromPath: true });
+  });
+
+  // ⚠️ The near-miss that a "last segment" rule gets wrong, and it is the URL
+  // every row on this screen links to. `idFromRef`/`parseRef` both return
+  // `editar` here — a term that parses cleanly and matches nothing, which
+  // reads exactly like "that produto does not exist".
+  it('takes the segment AFTER produtos, never the last one — the last is the route', () => {
+    expect(parseDocumentIdTerm(`/produtos/${AUTO_ID}/editar`)?.id).toBe(AUTO_ID);
+    expect(parseDocumentIdTerm(`/produtos/${AUTO_ID}/editar`)?.id).not.toBe('editar');
+  });
+
+  it.each(['camiseta preta', '  duas palavras  ', 'a	b'])(
+    'refuses %j — whitespace, so a multi-word name search pays for no read',
+    (termo) => {
+      expect(parseDocumentIdTerm(termo)).toBeNull();
+    },
+  );
+
+  it.each([
+    'clientes/abc',
+    'documents/pedidos/p1',
+    '/produtos',
+    '/produtos/',
+    'https://erp.example.com/',
+    'https://www.mercadolivre.com.br/p/MLB123',
+  ])('refuses %j — a path naming no produtos document', (termo) => {
+    expect(parseDocumentIdTerm(termo)).toBeNull();
+  });
+
+  // ⚠️ None of these makes `doc()` throw — verified against the installed
+  // client SDK, which only counts path segments. The BACKEND refuses them, so
+  // without this the read itself rejects and the search box shows an error.
+  it.each(['.', '..', '__proto__', '__name__'])(
+    'refuses %j — an id the Firestore backend rejects, so the read never does',
+    (termo) => {
+      expect(parseDocumentIdTerm(termo)).toBeNull();
+    },
+  );
+
+  it('refuses a term past the 1500-character id limit rather than paying for a rejected read', () => {
+    expect(parseDocumentIdTerm('x'.repeat(1500))).not.toBeNull();
+    expect(parseDocumentIdTerm('x'.repeat(1501))).toBeNull();
+  });
+
+  it('refuses an empty term', () => {
+    expect(parseDocumentIdTerm('')).toBeNull();
+    expect(parseDocumentIdTerm('   ')).toBeNull();
+  });
+
+  // ⚠️ Unlike the marketplace branch, which upper-cases the site prefix.
+  // Document ids are case-sensitive, so folding one here would look up a
+  // document that does not exist.
+  it('keeps the id exactly as typed — document ids are case-sensitive', () => {
+    expect(parseDocumentIdTerm('Dev-Camiseta-PAI')?.id).toBe('Dev-Camiseta-PAI');
+  });
+
+  // ⚠️ A route deny-list was considered and rejected: it drifts as routes are
+  // added, and it would refuse a produto whose id genuinely IS `novo`. The cost
+  // of allowing it is one point read that misses.
+  it('accepts /produtos/novo, because a produto whose id is "novo" must stay findable', () => {
+    expect(parseDocumentIdTerm('/produtos/novo')).toEqual({ id: 'novo', fromPath: true });
   });
 });
 
@@ -301,5 +420,150 @@ describe('resolveProdutoIdsPorTermo', () => {
     routeDocs({});
     await expect(resolveProdutoIdsPorTermo(db, '   ')).resolves.toBeNull();
     expect(getDocsMock).not.toHaveBeenCalled();
+    expect(getDocMock).not.toHaveBeenCalled();
+  });
+
+  it('resolves a produto by its own document id, so a pasted id finds its row', async () => {
+    routeDocs({});
+    routeDoc(produtoDoc(AUTO_ID));
+    await expect(resolveProdutoIdsPorTermo(db, AUTO_ID)).resolves.toEqual({
+      ids: [AUTO_ID],
+      truncated: false,
+    });
+  });
+
+  // ⚠️ The list filters `paiId == null`. Returning the CHILD id hands it an id
+  // it silently drops — indistinguishable, on screen, from "does not exist".
+  it("maps a variation child's document id to its family ANCHOR, so the row is not dropped", async () => {
+    routeDocs({});
+    routeDoc(produtoDoc('filho-1', { paiId: 'pai-1' }));
+    await expect(resolveProdutoIdsPorTermo(db, 'filho-1')).resolves.toEqual({
+      ids: ['pai-1'],
+      truncated: false,
+    });
+  });
+
+  it('reads the id out of a pasted /produtos/<id>/editar URL, the one every row links to', async () => {
+    routeDocs({});
+    routeDoc(produtoDoc(AUTO_ID));
+    await expect(
+      resolveProdutoIdsPorTermo(db, `https://erp.example.com/produtos/${AUTO_ID}/editar?aba=fotos`),
+    ).resolves.toEqual({ ids: [AUTO_ID], truncated: false });
+    expect(idProbado()).toBe(AUTO_ID);
+  });
+
+  it('reports a PATH-shaped miss as HANDLED, so a pasted URL never falls through to the nome search', async () => {
+    routeDocs({});
+    await expect(resolveProdutoIdsPorTermo(db, `/produtos/${AUTO_ID}`)).resolves.toEqual({
+      ids: [],
+      truncated: false,
+    });
+  });
+
+  // ⚠️ The legacy Flutter import wrote the seller's `seller_custom_field`
+  // straight in as the produto document id, constrained only to
+  // `^[a-zA-Z0-9]+$` — so in production a produto id can BE an SKU. A bare term
+  // is never the operator unambiguously naming a document.
+  it('declines a BARE-id miss, so a term that is equally a plausible SKU still reaches the nome search', async () => {
+    routeDocs({});
+    await expect(resolveProdutoIdsPorTermo(db, FIXTURE_ID)).resolves.toBeNull();
+  });
+
+  // ⚠️⚠️ THE regression guard for this branch. Every whitespace-free term now
+  // parses as a candidate document id, so writing the final condition as
+  // `!idTerm && !docIdTerm` would make EVERY one-word miss final and silently
+  // kill the nome search for terms like this one.
+  it('still declines a one-word name term, now that every whitespace-free term is probed', async () => {
+    routeDocs({});
+    await expect(resolveProdutoIdsPorTermo(db, 'camiseta')).resolves.toBeNull();
+    expect(getDocMock).toHaveBeenCalled();
+  });
+
+  it('skips the document-id read entirely for a multi-word term, which can never be an id', async () => {
+    routeDocs({});
+    await expect(resolveProdutoIdsPorTermo(db, 'camiseta polo preta')).resolves.toBeNull();
+    expect(getDocMock).not.toHaveBeenCalled();
+  });
+
+  // ⚠️ `doc(db, 'produtos', 'a/b')` THROWS synchronously — and `'a/b/c'` does
+  // not, silently resolving to a document two levels down. Refusing the
+  // separator covers both, and the SKU lookups must still answer.
+  it('never builds a doc ref from a slash term, and still runs the SKU lookups', async () => {
+    routeDocs({});
+    await expect(resolveProdutoIdsPorTermo(db, 'clientes/abc')).resolves.toBeNull();
+    expect(getDocMock).not.toHaveBeenCalled();
+    expect(alvosConsultados().sort()).toEqual(['pmlSku', 'produtoSku', 'varSku']);
+  });
+
+  it('unions a document-id hit with an SKU hit instead of choosing between them', async () => {
+    routeDocs({ produtoSku: [produtoDoc('por-sku')] });
+    routeDoc(produtoDoc('por-id'));
+    const res = await resolveProdutoIdsPorTermo(db, 'ambiguo');
+    expect([...(res?.ids ?? [])].sort()).toEqual(['por-id', 'por-sku']);
+  });
+
+  it('dedupes a produto found by BOTH its document id and its SKU', async () => {
+    routeDocs({ produtoSku: [produtoDoc('mesmo')] });
+    routeDoc(produtoDoc('mesmo'));
+    await expect(resolveProdutoIdsPorTermo(db, 'mesmo')).resolves.toEqual({
+      ids: ['mesmo'],
+      truncated: false,
+    });
+  });
+
+  // ⚠️ The Mercado Livre import mints produto ids like
+  // `XMLB000…vMLBMLB5125183715`, so a marketplace-shaped term CAN be a document
+  // id. Gating the probe on "not a marketplace term" would hide exactly those.
+  it('probes the document id even for a marketplace-shaped term', async () => {
+    routeDocs({});
+    routeDoc(produtoDoc('MLB1234567890'));
+    await expect(resolveProdutoIdsPorTermo(db, 'MLB1234567890')).resolves.toEqual({
+      ids: ['MLB1234567890'],
+      truncated: false,
+    });
+  });
+
+  // ⚠️ `getDoc` REJECTS where `getDocs` degrades: verified in the installed
+  // SDK, a point read of a MISSING document while offline hits
+  // `if (!exists && snap.fromCache)` and rejects UNAVAILABLE. Uncaught, one
+  // offline probe would fail the whole box — including name searches the
+  // cached SKU queries would still have answered.
+  it('treats a REJECTED document read as a miss, so the SKU search still answers', async () => {
+    routeDocs({ produtoSku: [produtoDoc('achado-por-sku')] });
+    getDocMock.mockRejectedValue(
+      new Error('Failed to get document because the client is offline.'),
+    );
+    await expect(resolveProdutoIdsPorTermo(db, 'algum-termo')).resolves.toEqual({
+      ids: ['achado-por-sku'],
+      truncated: false,
+    });
+  });
+
+  // ⚠️⚠️ Pins the catch's SCOPE, not just that it applies. The catch sits on
+  // the READ; chained after the `.then` it would swallow the anchor hop too, so
+  // a bug in there would read as "produto not found" rather than surfacing.
+  // Inert today — `parseSoftRead` logs instead of throwing — which is exactly
+  // why only a test can keep the code and its comment from drifting apart.
+  it('does NOT swallow an error thrown by the anchor hop — only the read is caught', async () => {
+    routeDocs({});
+    getDocMock.mockResolvedValue({
+      exists: () => true,
+      id: 'algum',
+      data: () => {
+        throw new Error('converter blew up');
+      },
+    });
+    await expect(resolveProdutoIdsPorTermo(db, 'algum')).rejects.toThrow('converter blew up');
+  });
+
+  // ⚠️ The probe is task 0 so that `limitarIds`, which slices in INSERTION
+  // order, cannot drop the most precise answer the box has. Reorder it and the
+  // exact id is the hit that falls off the end.
+  it('keeps the document-id hit when the SKU results alone already fill the cap', async () => {
+    routeDocs({ produtoSku: [produtoDoc('sku-1'), produtoDoc('sku-2')] });
+    routeDoc(produtoDoc('exato'));
+    const res = await resolveProdutoIdsPorTermo(db, 'exato', 2);
+    expect(res?.ids).toContain('exato');
+    expect(res?.truncated).toBe(true);
   });
 });

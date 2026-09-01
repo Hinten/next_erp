@@ -584,8 +584,12 @@ export {
   mlSizeChartWriteSchema,
   mlSizeChartsForContaSchema,
   mlSizeChartsForConta,
+  resolveSizeChart,
   type MlSizeChart,
   type MlSizeChartRow,
+  type ScoringAttribute,
+  type SizeChartMiss,
+  type SizeChartResolution,
 } from './tabelaDeMedidasMercadoLivre';
 
 export {

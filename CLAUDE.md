@@ -321,6 +321,21 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   it from the PR **and from #1208** — the one ordered cutover runbook — and say
   in the issue *why earlier is wrong*. Shape: the closed-but-readable #899–#908
   for a deploy, #869 for a backfill. Rule 8 / ADR 0013.
+- **Re-implementing a rule that already runs on another surface? Extract it to
+  `packages/schemas` instead.** `apps/web` has no dependency edge to any `apps/*`
+  and none is possible, so a browser surface that needs a server rule has exactly
+  two options: share it, or write it twice. **Pure and total — no clock, no
+  network, no Firestore — is the test for whether it can move**, and it is what
+  `precisaConsultarModeracao` (#1239), `clienteIdentity.ts` (#786) and
+  `conversa.ts`'s `ehEstadoDeSaida` all did. ⚠️ **A comment asserting what the
+  OTHER copy does is the smell**, and the copies drift *toward plausible*, so
+  they read correct while disagreeing: #1369 shipped a size-chart panel whose
+  header called itself a "line-for-line mirror" and which had already drifted in
+  two places — a `value_id` short-circuit where the resolver ORs, and a fallback
+  keyed on the filtered attribute list where the resolver keys on the raw one.
+  Both were green, both were commented, and one painted a ✗ on a row the same
+  module labelled *vincula*. Reviewers cannot diff two files by eye; the compiler
+  can, once there is only one.
 - **Changing the shape of data that already exists? Write a one-time migration
   script — do not migrate gradually.** A one-time `tools/migrations` script beats
   every incremental alternative here: dual-shape reads, a compat/fallback branch,

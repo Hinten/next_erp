@@ -4,7 +4,12 @@ import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrat
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 
 import { type PublishDeps, loadTabelaBinding, publishProduto } from './publish';
-import { MercadoLivrePublishError } from './publishCore';
+import {
+  MercadoLivrePublishError,
+  TABELA_BINDING_RECUSA,
+  type TabelaBindingMotivo,
+  sizeChartIssue,
+} from './publishCore';
 
 /**
  * Regression tests for the LEGACY-WIRE contract of the publish orchestrator. The
@@ -2976,5 +2981,210 @@ describe('publishProduto — the chart photo on a User-Products family (#1087)',
     expect(itemPics).toEqual(['PIC-CACHED', 'PIC-CHART']);
     const variation = (payload.variations as Array<Record<string, unknown>>)[0]!;
     expect(variation.picture_ids).toEqual(['PIC-CACHED']);
+  });
+});
+
+/**
+ * Every refusal reason is REACHABLE, and refuses (#1087).
+ *
+ * ⚠️ This exists because a carefully-worded refusal message shipped as dead
+ * code. The exits hard-coded `categoriaUsaGuia: null`, `sizeChartIssue` bails
+ * on `!== true`, and `publishCore.test.ts` hand-builds the motivo and passes
+ * `categoriaUsaGuia: true` directly — so the unit tests could never notice. The
+ * guard below closes that by driving the REAL `loadTabelaBinding` and feeding
+ * `sizeChartIssue` the values it actually produced.
+ *
+ * ⚠️ Both directions, like the repo's other inventories: an UNREACHABLE codigo
+ * fails, and a codigo missing from the fixture table fails. Without the second,
+ * adding a tenth reason and forgetting to cover it passes silently.
+ */
+describe('every tabela-binding reason is reachable and refuses as declared (#1087)', () => {
+  const TABELA_REF = 'documents/tabMedi/tm-1';
+  const COM_GUIA = [{ id: 'SIZE_GRID_ID', value_type: 'grid_id' }];
+
+  function seed(db: FakeDb, tabelas: unknown[], over: Record<string, unknown> = {}): void {
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Camiseta lisa infantil',
+      codigo: null,
+      descricao: null,
+      tabelasDeMedidasMercadoLivre: { [CONTA]: { tabelas } },
+      ...over,
+    });
+  }
+
+  const categoria = (catalogDomain: string | null) =>
+    vi.fn(async () => ({
+      id: 'MLB1398',
+      settings: catalogDomain == null ? null : { catalog_domain: catalogDomain },
+    }));
+
+  /**
+   * One fixture per codigo, each driving the real `loadTabelaBinding`.
+   *
+   * ⚠️ `categoriaUsaGuia` is never set by hand — it comes back from the binding,
+   * which is the whole point: that field being `null` is exactly how two of
+   * these reasons became unable to refuse.
+   */
+  const FIXTURES: Record<
+    keyof typeof TABELA_BINDING_RECUSA,
+    () => Promise<{ motivo: TabelaBindingMotivo; categoriaUsaGuia: boolean | null }>
+  > = {
+    vinculada: async () => {
+      const db = new FakeDb();
+      seed(db, [{ id: '7523235', domain_id: 'MLB-T_SHIRTS', rows: [] }]);
+      const { api } = makeApi({ getCategory: categoria('MLB-T_SHIRTS') });
+      return loadTabelaBinding(
+        makeDeps(db, api),
+        { tabelaDeMedidasModaUid: TABELA_REF },
+        null,
+        'MLB1398',
+        [],
+      );
+    },
+    'produto-sem-tabela': async () => {
+      const { api } = makeApi();
+      return loadTabelaBinding(makeDeps(new FakeDb(), api), {}, null, 'MLB1398', []);
+    },
+    'tabela-inexistente': async () => {
+      const { api } = makeApi({ getCategoryAttributes: vi.fn(async () => COM_GUIA) });
+      return loadTabelaBinding(
+        makeDeps(new FakeDb(), api),
+        { tabelaDeMedidasModaUid: TABELA_REF },
+        null,
+        'MLB1398',
+        [],
+      );
+    },
+    'tabela-sem-guias-nesta-conta': async () => {
+      const db = new FakeDb();
+      seed(db, [], {
+        tabelasDeMedidasMercadoLivre: {
+          'outra-conta': { tabelas: [{ id: '1', domain_id: 'MLB-T_SHIRTS', rows: [] }] },
+        },
+      });
+      const { api } = makeApi({ getCategoryAttributes: vi.fn(async () => COM_GUIA) });
+      return loadTabelaBinding(
+        makeDeps(db, api),
+        { tabelaDeMedidasModaUid: TABELA_REF },
+        null,
+        'MLB1398',
+        [],
+      );
+    },
+    'anuncio-sem-categoria': async () => {
+      const db = new FakeDb();
+      seed(db, [{ id: '7523235', domain_id: 'MLB-T_SHIRTS', rows: [] }]);
+      const { api } = makeApi();
+      return loadTabelaBinding(
+        makeDeps(db, api),
+        { tabelaDeMedidasModaUid: TABELA_REF },
+        null,
+        null,
+        [],
+      );
+    },
+    'categoria-sem-dominio': async () => {
+      const db = new FakeDb();
+      seed(db, [{ id: '7523235', domain_id: 'MLB-T_SHIRTS', rows: [] }]);
+      const { api } = makeApi({
+        getCategory: categoria(null),
+        getCategoryAttributes: vi.fn(async () => COM_GUIA),
+      });
+      return loadTabelaBinding(
+        makeDeps(db, api),
+        { tabelaDeMedidasModaUid: TABELA_REF },
+        null,
+        'MLB1398',
+        [],
+      );
+    },
+    'guias-nao-enviadas': async () => {
+      const db = new FakeDb();
+      seed(db, [{ id: null, domain_id: 'MLB-T_SHIRTS', rows: [] }]);
+      const { api } = makeApi({
+        getCategory: categoria('MLB-T_SHIRTS'),
+        getCategoryAttributes: vi.fn(async () => COM_GUIA),
+      });
+      return loadTabelaBinding(
+        makeDeps(db, api),
+        { tabelaDeMedidasModaUid: TABELA_REF },
+        null,
+        'MLB1398',
+        [],
+      );
+    },
+    'dominio-divergente': async () => {
+      const db = new FakeDb();
+      seed(db, [{ id: '7523235', domain_id: 'MLB-SHIRTS', rows: [] }]);
+      const { api } = makeApi({
+        getCategory: categoria('MLB-T_SHIRTS'),
+        getCategoryAttributes: vi.fn(async () => COM_GUIA),
+      });
+      return loadTabelaBinding(
+        makeDeps(db, api),
+        { tabelaDeMedidasModaUid: TABELA_REF },
+        null,
+        'MLB1398',
+        [],
+      );
+    },
+    'sem-atributos-correspondentes': async () => {
+      const db = new FakeDb();
+      seed(db, [
+        {
+          id: '7523235',
+          domain_id: 'MLB-T_SHIRTS',
+          attributes: [{ id: 'GENDER', value_id: '339665' }],
+          rows: [],
+        },
+      ]);
+      const { api } = makeApi({
+        getCategory: categoria('MLB-T_SHIRTS'),
+        getCategoryAttributes: vi.fn(async () => COM_GUIA),
+      });
+      return loadTabelaBinding(
+        makeDeps(db, api),
+        { tabelaDeMedidasModaUid: TABELA_REF },
+        { docId: 'ML-DOC-1', id: null, attributes: [{ id: 'GENDER', value_id: '19159491' }] },
+        'MLB1398',
+        [],
+      );
+    },
+  };
+
+  it('covers every declared codigo — no more, no fewer', () => {
+    // The compile error catches a NEW codigo; this catches the fixture table not
+    // being widened to match it.
+    expect(Object.keys(FIXTURES).sort()).toEqual(Object.keys(TABELA_BINDING_RECUSA).sort());
+  });
+
+  it('every codigo is REACHABLE — its fixture actually produces it', async () => {
+    for (const [codigo, fixture] of Object.entries(FIXTURES)) {
+      // ⚠️ The category read cache is process-scoped and keyed on the category
+      // id alone, so without this every fixture after the first is served the
+      // FIRST one's `settings` and resolves against the wrong domain. The
+      // suite's own beforeEach cannot help — these all run inside one `it`.
+      __resetAllReadCaches();
+      const { motivo } = await fixture();
+      expect(motivo.codigo, `fixture for '${codigo}' produced '${motivo.codigo}'`).toBe(codigo);
+    }
+  });
+
+  it('⚠️ each codigo refuses exactly as TABELA_BINDING_RECUSA declares', async () => {
+    // ⚠️ `categoriaUsaGuia` comes from the BINDING, never hand-set — a reason
+    // whose exit forgets to ask cannot refuse, and that is what shipped.
+    for (const [codigo, fixture] of Object.entries(FIXTURES)) {
+      __resetAllReadCaches(); // see the ⚠️ above
+      const { motivo, categoriaUsaGuia } = await fixture();
+      const issue = sizeChartIssue(motivo, categoriaUsaGuia);
+      const deveRecusar = TABELA_BINDING_RECUSA[codigo as keyof typeof TABELA_BINDING_RECUSA];
+      expect(
+        issue != null,
+        deveRecusar
+          ? `'${codigo}' is declared refusable but produced no issue — is its exit still ` +
+              'answering `categoriaUsaGuia: null`?'
+          : `'${codigo}' is declared silent but produced: ${String(issue)}`,
+      ).toBe(deveRecusar);
+    }
   });
 });

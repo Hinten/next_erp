@@ -30,7 +30,12 @@
  * the id scheme Flutter writes too), so both sides of the comparison are fetched
  * with a field-masked `getAll` — a pure KEY read, no index and nothing scanned.
  * Only the anchor sample is a query, and it is `limit`-bounded and served by the
- * declared `produtos(paiId, publicado, integracoesComProduto, __name__)` index.
+ * declared `produtos(paiId, integracoesComProduto, __name__)` index — the #1072
+ * entry. ⚠️ It used to name the four-field `publicado` composite; that
+ * declaration was deleted with #1087, when the last predicate on `publicado`
+ * left the sweeps. A stale index name in THIS note is exactly what rule 1
+ * warns about: the note is the reason a reader trusts the script not to
+ * full-scan, so it has to name the entry that actually serves the query.
  */
 import type { DocumentReference, DocumentSnapshot, Firestore } from 'firebase-admin/firestore';
 import {
@@ -264,10 +269,10 @@ function mediana(valores: readonly number[]): number {
  * Sample this conta's linked anchors and compare `disponivel` at the conta's
  * depósito against the legacy one — the quantity change the flip will publish.
  *
- * The anchor predicate is the sweep's S1 (`paiId == null`, `publicado == true`,
- * `integracoesComProduto` array-contains the conta), so the sample is drawn from
- * exactly the population the sweep sends. It is `limit`-bounded, and the estoque
- * reads are keyed — see the cost note in the module doc.
+ * The anchor predicate is the sweep's S1 (`paiId == null`, `integracoesComProduto`
+ * array-contains the conta — no `publicado` term since #1087), so the sample is
+ * drawn from exactly the population the sweep sends. It is `limit`-bounded, and
+ * the estoque reads are keyed — see the cost note in the module doc.
  *
  * "No estoque doc" counts as 0 deliberately: that is what the sweep itself
  * publishes for a family with no estoque at the depósito.
@@ -279,10 +284,14 @@ async function estimarDelta(
   legacyDepositoId: string,
   sample: number,
 ): Promise<DeltaResumo> {
+  // ⚠️ No `publicado == true` (#1087) — this samples the SWEEP's anchor set and
+  // the sweep no longer filters on it, so keeping the term here would estimate
+  // the delta over a strictly smaller population than the one that ships. It
+  // also rides the same `produtos(paiId, integracoesComProduto, …)` prefix now;
+  // the four-field `publicado` composite is deleted.
   const anchors = await produtoCollection
     .ref(db, {})
     .where('paiId', '==', null)
-    .where('publicado', '==', true)
     .where('integracoesComProduto', 'array-contains', integracaoId)
     .limit(sample)
     .get();
