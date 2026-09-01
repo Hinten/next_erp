@@ -297,10 +297,10 @@ The per-surface notes below stay the authority on behaviour.
   `packages/integrations/mercado-livre/src/incidentRespond.ts` implements
   `respondIncidentMl`. ⚠️ It used to be described as "the last unimplemented
   `MarketplaceChannel` member"; that contract was deleted in #815 (ADR 0015) and
-  `claimResolve.ts` calls the function directly. ⚠️ **`refundAmount` is REAIS**,
-  not centavos — the `/reclamacao/acao` wire still carries `valorReembolsoMinor`
-  and `claimResolve.ts` is the one place that converts. Moving that conversion
-  would change a live refund's wire format.
+  `claimResolve.ts` calls the function directly. ⚠️ `refundAmount` changed units
+  with it — see the partial-refund ⚠️ below, the ONE authoritative statement of
+  that in this file. Do not restate it here: a unit rule written twice is the
+  #1369 shape, and both copies read correct while disagreeing.
   ⚠️ Every action is gated on `players[role=respondent].available_actions`, read
   LIVE on each call — ML decides what a seller may do from the stage and status,
   and the list empties as the claim closes. An unavailable action is a 400, so
@@ -309,13 +309,18 @@ The per-surface notes below stay the authority on behaviour.
   routes the seller through the mediator and REFUSES a message aimed at the
   complainant, so `send_message_to_mediator` outranks
   `send_message_to_complainant` wherever both appear.
-  ⚠️ **Partial refund is a PERCENTAGE off an allow-list, never an amount.** The
-  contract carries `refundAmount` in minor units like every other channel; ML
-  accepts only the percentages `GET …/partial-refund/available-offers` returns,
-  rejects 100% on that endpoint, and — the dangerous part — **defaults a MISSING
-  percentage to 50%**. So an amount with no exact offer is refused with the list
-  of real ones rather than rounded to the nearest: a refund is not a value worth
-  approximating.
+  ⚠️ **Partial refund is a PERCENTAGE off an allow-list, never an amount — and
+  `refundAmount` is in REAIS.** (It read "minor units like every other channel"
+  until #815; there is no plugin contract, and no "every other channel", any more.
+  The `/reclamacao/acao` wire still carries centavos as `valorReembolsoMinor`, and
+  `claimResolve.ts` is the SINGLE place that converts — moving that conversion
+  outward changes a live refund's wire format, so a web deploy landing before this
+  backend would refund 100x wrong. `incidentRespond.test.ts` pins the unit with a
+  near-miss: a centavos value must be REFUSED, never matched.) ML accepts only the
+  percentages `GET …/partial-refund/available-offers` returns, rejects 100% on
+  that endpoint, and — the dangerous part — **defaults a MISSING percentage to
+  50%**. So an amount with no exact offer is refused with the list of real ones
+  rather than rounded to the nearest: a refund is not a value worth approximating.
 - **Claim RESOLUTION routes** (#364) — `app/api/marketplace/mercado-livre/reclamacao/`
   `{estado,acao}` over `lib/marketplace/claims/claimResolve.ts`: the surface that
   finally REACHES the verbs above. `respondIncidentMl` had existed since #768 with

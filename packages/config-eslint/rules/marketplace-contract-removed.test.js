@@ -40,6 +40,16 @@ const CORE_PLUGINS = 'packages/core/src/plugins/index.ts';
 const CORE_BARREL = 'packages/core/src/index.ts';
 const SDK_INDEX = 'packages/plugin-sdk/src/index.ts';
 const CAPS = 'packages/schemas/src/shared/marketplace.ts';
+/**
+ * ⚠️ The file this guard was blind to until review caught it, and the one most
+ * at risk: its own header opens with "There is deliberately **no
+ * `MarketplaceChannel` interface here**, and adding one back is the mistake this
+ * module exists to prevent." A guard that scans everywhere EXCEPT the module
+ * whose docstring states the rule is decoration — appending an interface here
+ * left this suite at 10/10 with typecheck and lint green, which is exactly the
+ * silent-when-broken condition the file was written to close.
+ */
+const MARKETPLACE_MODEL = 'packages/core/src/marketplace/index.ts';
 
 /* -------------------------------------------------------------------------- */
 /*                      The detectors, and their two controls                 */
@@ -59,6 +69,20 @@ const advertisesMarketplaceKind = (src) => /kinds\s*:\s*ReadonlyArray<[^>]*'mark
 /** A re-export of the `./marketplace` subpath from a barrel. */
 const reExportsMarketplace = (src) => /(?:export|import)[^;\n]*from\s+'\.\/marketplace'/.test(src);
 
+/**
+ * The `MarketplaceChannel` NAME crossing a module boundary in a specifier list —
+ * `export type { MarketplaceChannel } from '…'`.
+ *
+ * ⚠️ Separate from {@link declaresMarketplaceChannel}, which matches a
+ * DECLARATION only and so let a re-export through; and separate from
+ * {@link reExportsMarketplace}, which keys on the relative `./marketplace`
+ * specifier that a package-path re-export (`@delfrance/core/marketplace`) never
+ * carries. Anchored at a statement start, so the prose in every header that
+ * names the removed contract does not trip it.
+ */
+const reExportsMarketplaceChannelSymbol = (src) =>
+  /^\s*(?:export|import)\s+(?:type\s+)?\{[^}]*\bMarketplaceChannel\b/m.test(src);
+
 describe('the detectors themselves', () => {
   // ⚠️ A checker needs BOTH controls: known-bad must fail, known-good must pass.
   // Without the known-bad half, a typo in a regex makes every assertion below
@@ -73,6 +97,18 @@ describe('the detectors themselves', () => {
       advertisesMarketplaceKind("  kinds: ReadonlyArray<'tax' | 'invoice' | 'marketplace'>;"),
     ).toBe(true);
     expect(reExportsMarketplace("export * from './marketplace';")).toBe(true);
+    expect(
+      reExportsMarketplaceChannelSymbol(
+        "export type { MarketplaceChannel } from '@delfrance/core/marketplace';",
+      ),
+    ).toBe(true);
+    // A specifier list broken across lines - the shape prettier produces for a
+    // long re-export, and the one a line-anchored regex could easily miss.
+    expect(
+      reExportsMarketplaceChannelSymbol(`export type {
+  MarketplaceChannel,
+} from './x';`),
+    ).toBe(true);
   });
 
   it('does NOT flag a known-GOOD source', () => {
@@ -85,6 +121,12 @@ describe('the detectors themselves', () => {
       advertisesMarketplaceKind("  kinds: ReadonlyArray<'tax' | 'invoice' | 'payment'>;"),
     ).toBe(false);
     expect(reExportsMarketplace("export * from './money';")).toBe(false);
+    expect(reExportsMarketplaceChannelSymbol(prose)).toBe(false);
+    expect(
+      reExportsMarketplaceChannelSymbol(
+        "export type { TaxProvider, InvoiceProvider } from '@delfrance/core/plugins';",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -103,6 +145,24 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     const src = read(SDK_INDEX);
     expect(advertisesMarketplaceKind(src)).toBe(false);
     expect(declaresMarketplaceChannel(src)).toBe(false);
+    // ⚠️ The SDK can bring the name back WITHOUT declaring it: a one-line
+    // `export type { MarketplaceChannel } from '@delfrance/core/marketplace';`
+    // re-advertises the contract to every third-party plugin author.
+    expect(reExportsMarketplaceChannelSymbol(src)).toBe(false);
+  });
+
+  it('the marketplace MODEL module declares no MarketplaceChannel either', () => {
+    // The file whose own header forbids exactly this. See MARKETPLACE_MODEL above.
+    const src = read(MARKETPLACE_MODEL);
+    expect(declaresMarketplaceChannel(src)).toBe(false);
+    expect(reExportsMarketplaceChannelSymbol(src)).toBe(false);
+    expect(hasMarketplaceRegistry(src)).toBe(false);
+  });
+
+  it('is reading the model module it thinks it is', () => {
+    // Vacuity guard: `read` throws on a missing path, but a moved-and-emptied
+    // file would make the three assertions above pass for the wrong reason.
+    expect(read(MARKETPLACE_MODEL)).toMatch(/export interface ChannelContext/);
   });
 
   it('the core ROOT barrel does not re-export the ./marketplace subpath', () => {
