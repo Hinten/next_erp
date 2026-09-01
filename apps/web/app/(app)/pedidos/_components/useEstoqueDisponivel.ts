@@ -102,43 +102,117 @@ export function useEstoqueDisponivel(
   // the child. A parent may still hold a RESERVED remainder — a reservation is
   // keyed on the produto the pedido LINE names — but this badge answers
   // availability, and the reserved half is the Estoque tab's residual panel.
-  const produtoId = produto ? unidadeVendavel(produto) : null;
+  const alvoId = produto ? unidadeVendavel(produto) : null;
+  const proprioId = produto?.id ?? null;
+  /**
+   * The id the line NAMES, when it is not the one that owns the stock.
+   *
+   * ⚠️ `filhoUnicoId` records that the family has exactly one child; it says
+   * NOTHING about where the units sit. `upSoleMember` moves them, but that is
+   * the Mercado Livre publish path — a produto whose stock was lançado on the
+   * parent and never moved still has the number there. Resolving past it would
+   * render a confident red "0 em estoque" on the screen where the operator picks
+   * quantities, which is worse than hiding the badge.
+   *
+   * So the produto's own row is subscribed as a FALLBACK and used only when the
+   * sole member has no row at all. ⚠️ When BOTH hold units the sole member's
+   * answers, matching what the ERP does for any parent/child split; the parent's
+   * remainder is `residualEstoquePai`'s job.
+   */
+  const fallbackId =
+    alvoId !== null && proprioId !== null && alvoId !== proprioId ? proprioId : null;
   const ehKit = produto?.ehKit ?? false;
   const componentesKit = produto?.componentesKit ?? null;
 
   // Single-depósito own stock: the one deterministic estoque doc (real-time).
   const ownDocRef = useMemo(
     () =>
-      produtoId && depositoId
-        ? estoqueProdutoCollection.docRef(db, { produtoId }, makeEstoqueUid(produtoId, depositoId))
+      alvoId && depositoId
+        ? estoqueProdutoCollection.docRef(
+            db,
+            { produtoId: alvoId },
+            makeEstoqueUid(alvoId, depositoId),
+          )
         : null,
-    [db, produtoId, depositoId],
+    [db, alvoId, depositoId],
   );
   const ownDocSnap = useDocSnapshot(ownDocRef);
 
-  // Fallback (no depósito): subscribe to the whole subcollection for the Σ.
+  // No depósito: subscribe to the whole subcollection for the Σ.
   const ownCollQuery = useMemo(
     () =>
-      produtoId && !depositoId
-        ? buildQuery(estoqueProdutoCollection.ref(db, { produtoId }), [])
+      alvoId && !depositoId
+        ? buildQuery(estoqueProdutoCollection.ref(db, { produtoId: alvoId }), [])
         : null,
-    [db, produtoId, depositoId],
+    [db, alvoId, depositoId],
   );
   const ownCollSnap = useSnapshot(ownCollQuery);
 
+  // The same two reads against the produto the line NAMES — null, and therefore
+  // never subscribed, unless it differs from the one that owns the stock.
+  const fbDocRef = useMemo(
+    () =>
+      fallbackId && depositoId
+        ? estoqueProdutoCollection.docRef(
+            db,
+            { produtoId: fallbackId },
+            makeEstoqueUid(fallbackId, depositoId),
+          )
+        : null,
+    [db, fallbackId, depositoId],
+  );
+  const fbDocSnap = useDocSnapshot(fbDocRef);
+  const fbCollQuery = useMemo(
+    () =>
+      fallbackId && !depositoId
+        ? buildQuery(estoqueProdutoCollection.ref(db, { produtoId: fallbackId }), [])
+        : null,
+    [db, fallbackId, depositoId],
+  );
+  const fbCollSnap = useSnapshot(fbCollQuery);
+
   // Normalize both sources to the `ownRows` the pure combiner expects (a
   // 0-or-1 element list in single-depósito mode). `undefined` = still loading.
+  //
+  // ⚠️ The ANSWERING id travels with the rows. `combineEstoqueDisponivel` finds
+  // the single-depósito row by `makeEstoqueUid(produtoId, depositoId)`, so if the
+  // fallback answered, the combiner has to be told the row belongs to the
+  // produto the line names — otherwise it looks for the sole member's id, finds
+  // nothing, and reports the `0` this fallback exists to prevent.
   const ownDocData = ownDocSnap.data;
   const ownDocLoading = ownDocSnap.loading;
   const ownCollData = ownCollSnap.data;
-  const ownRows = useMemo<readonly OwnRow[] | undefined>(() => {
-    if (!produtoId) return undefined;
+  const fbDocData = fbDocSnap.data;
+  const fbDocLoading = fbDocSnap.loading;
+  const fbCollData = fbCollSnap.data;
+  const leitura = useMemo<{ rows: readonly OwnRow[] | undefined; id: string } | null>(() => {
+    if (!alvoId) return null;
     if (depositoId) {
-      if (ownDocLoading) return undefined;
-      return ownDocData ? [{ id: ownDocData.id, data: ownDocData.data }] : [];
+      if (ownDocLoading) return { rows: undefined, id: alvoId };
+      if (ownDocData) return { rows: [{ id: ownDocData.id, data: ownDocData.data }], id: alvoId };
+      if (!fallbackId) return { rows: [], id: alvoId };
+      if (fbDocLoading) return { rows: undefined, id: fallbackId };
+      return {
+        rows: fbDocData ? [{ id: fbDocData.id, data: fbDocData.data }] : [],
+        id: fallbackId,
+      };
     }
-    return ownCollData;
-  }, [produtoId, depositoId, ownDocLoading, ownDocData, ownCollData]);
+    // Σ across depósitos: the sole member answers whenever it has ANY row.
+    if (ownCollData === undefined) return { rows: undefined, id: alvoId };
+    if (ownCollData.length > 0 || !fallbackId) return { rows: ownCollData, id: alvoId };
+    return { rows: fbCollData, id: fallbackId };
+  }, [
+    alvoId,
+    fallbackId,
+    depositoId,
+    ownDocLoading,
+    ownDocData,
+    ownCollData,
+    fbDocLoading,
+    fbDocData,
+    fbCollData,
+  ]);
+  const ownRows = leitura?.rows;
 
   // Countable kit components — only meaningful once a target depósito exists.
   const countableIds = useMemo(
@@ -184,18 +258,19 @@ export function useEstoqueDisponivel(
     [countableIds.length, ehKit, depositoId, kitData],
   );
 
+  const produtoIdDasLinhas = leitura?.id ?? null;
   return useMemo(
     () =>
-      produtoId === null
+      produtoIdDasLinhas === null
         ? null
         : combineEstoqueDisponivel({
             ownRows,
             depositoId,
-            produtoId,
+            produtoId: produtoIdDasLinhas,
             ehKit,
             componentesKit,
             componentDisponivel,
           }),
-    [ownRows, depositoId, produtoId, ehKit, componentesKit, componentDisponivel],
+    [ownRows, depositoId, produtoIdDasLinhas, ehKit, componentesKit, componentDisponivel],
   );
 }
