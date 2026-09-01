@@ -10,18 +10,18 @@
  * Nothing in the suite has ever compared the field names in these interfaces
  * against the field names ML sends.
  *
- * That gap has already cost us once, and the corpus turned out to tell a sharper
- * story than the code comment did. `orderMLWire.ts:267` writes
- * `date_last_updated: null` on every payment, noting that ML sends the field as
- * `date_last_modified`. True — but the reason is not a typo: **the two order
- * endpoints use different names.** `GET /orders/search` really does send
- * `date_last_updated` (null on this corpus); `GET /orders/{id}` sends
- * `date_last_modified`, populated. The builder applies the SEARCH shape to a
- * body that comes from the DETAIL endpoint.
+ * That gap has already cost us once: `orderMLWire.ts:267` writes
+ * `date_last_updated: null` on every payment, while ML sends the field as
+ * `date_last_modified`. The corpus proves the ML half — `/orders/{id}` carries
+ * `date_last_modified: string` and no `date_last_updated`.
  *
- * Either name alone reads as correct. Only having both endpoints captured shows
- * the mismatch — which is precisely what a hand-written fixture could never have
- * shown, because whoever wrote it would have written one name.
+ * ⚠️ An earlier version of this file went further and claimed the two ORDER
+ * ENDPOINTS disagree on the name. That was wrong. It rested on
+ * `order-single.json` / `order-pack.json`, which were not captures but
+ * `buildOrderMLWire`'s Firestore mirror — so the `date_last_updated` there was
+ * our own output read back as ML's. Both files are gone (#1419) and the claim is
+ * retracted; the corpus holds no `/orders/search` capture, so that question is
+ * open rather than answered.
  *
  * ## Why this is an INVENTORY and not a pile of `toBeDefined()`
  * Most of these fields are legitimately optional. `coupon`, `pickup_id` and
@@ -181,24 +181,26 @@ describe('the payment date-field mismatch (#1087)', () => {
     expect([...typesAt(orders, 'payments[].date_approved')]).toEqual(['string']);
   });
 
-  it('⭐ the two order endpoints DISAGREE on the field name, which is why this looks like a typo and is not', () => {
-    // `GET /orders/search` sends `date_last_updated` (always null on this
-    // corpus); `GET /orders/{id}` sends `date_last_modified` (populated). Same
-    // concept, two names, two endpoints.
+  it('⚠️ RETRACTED — there is no evidence of an endpoint disagreement', () => {
+    // This slot used to assert that `/orders/search` sends `date_last_updated`
+    // while `/orders/{id}` sends `date_last_modified` — "the two endpoints
+    // disagree". That was WRONG, and the mistake is worth keeping visible.
     //
-    // ⚠️ So `orderMLWire.ts:267`'s hardcoded `date_last_updated: null` is not a
-    // mistyped key — it is the SEARCH shape, applied to a body that comes from
-    // the DETAIL endpoint. The importer reads the detail body, so the populated
-    // field ML sends is dropped and a null is stored under a name only the other
-    // endpoint uses. Either name alone reads as correct; only the pair shows the
-    // bug, which is exactly what a hand-written fixture could never have shown.
-    const search = shapeOf(/^order-(single|pack)\.json$/);
-
-    expect([...typesAt(search, '[].payments[].date_last_updated')]).toEqual(['null']);
-    expect(typesAt(search, '[].payments[].date_last_modified').size).toBe(0);
-
-    expect([...typesAt(orders, 'payments[].date_last_modified')]).toEqual(['string']);
-    expect(typesAt(orders, 'payments[].date_last_updated').size).toBe(0);
+    // The evidence was `order-single.json` / `order-pack.json`, which turned out
+    // not to be captures at all: they were `buildOrderMLWire`'s Firestore mirror,
+    // carrying an ERP-only field, ms-epoch dates, and all three of
+    // `buildPaymentWire`'s hardcodes. So `date_last_updated: null` there was OUR
+    // OWN output being read back as if it were ML's. Both files are gone (#1419).
+    //
+    // What survives is the simpler claim the code already documented, asserted
+    // just above: ML sends `date_last_modified`, our builder emits
+    // `date_last_updated: null`, and the populated field is dropped.
+    //
+    // The corpus has no `/orders/search` capture, so the question is OPEN, not
+    // answered. This assertion pins that absence so a future reader does not
+    // mistake "we removed the bad evidence" for "we checked and it agrees".
+    expect(listWireFixtures().filter((f) => /^order-(single|pack)\.json$/.test(f))).toEqual([]);
+    expect(listWireFixtures().some((f) => f.includes('search'))).toBe(false);
   });
 });
 
