@@ -638,6 +638,66 @@ construction, so it is left to the three surfaces that already write one: the
 `membroPodeEnviar`'s optimistic arm converges only through those three, which is
 the safe direction since it sends.
 
+⚠️ **A legacy `variations[]` PUT is NOT a patch — it DELETES every variation the
+array omits (#831).** ML's own *Guia para produtos → Variações* says so three
+times: §Modificar preço — *"No caso de não enviar todos os IDs das variações,
+serão apagadas aquelas que não tenham sido enviadas"*; §Remover variações —
+omission **is** the documented removal mechanism (*"listando somente os Ids das
+variações que quer manter"*); and §Modificar estoque's own example PUTs one entry
+against an item the same page shows holding two, and prints a response containing
+only the one it sent. ⚠️ That section's PROSE reads as if partial were fine — it
+is contradicted by its own example, so do not reopen this from the prose. The
+verification this issue asked for is **answered by the docs**; it never needed the
+legacy test listing the #1087 seller could not create.
+⚠️ **`buildSendTasks` emits a partial array routinely**, and two of its four drop
+reasons are ordinary configuration rather than errors: `kit-virtual` (a normal
+produto shape — and since #1399 the sweep SENDS virtual kits) and
+`status-nao-enviavel` firing on a member **ML itself** paused. So `estoqueSend`
+reads the listing before any bulk PUT and completes the array with the live ids
+and quantities of the variations it is not changing
+(`estoque/variacoesReconciliacao.ts`); the payload's own numbers still ride
+verbatim, so the sweep stays the sole authority on what the stock IS. Only this
+one `kind` pays the extra `GET /items`.
+⚠️ **A planner-side completeness check could NOT have covered this, and that is
+what decided where the fix lives.** A variation existing on ML with no local
+`variacaoMercadoLivre` link produces no child row at all — nothing is skipped,
+`variations.length === row.children.length`, and every local measure reads green
+while the PUT deletes it. Only ML's live array sees it.
+⚠️ **There is no fallback and there must not be one.** A body that cannot be
+proven complete is not sent (`skipped`, never a latch — nothing was attempted).
+Degrading to the partial array on a failed read reinstates the destructive path
+in the branch least likely to be exercised.
+⚠️ The 409 arm now covers this path too: `PUT /items` answers 409 *"item
+optimistic locking error"*, the send already retried once against a **fresh**
+read (re-deriving the whole body — resending the captured one deletes a variation
+ADDED in the window), and ML's remedy for a second is to wait, which is the
+queue's backoff. Letting it fall to the generic 4xx ladder would latch a healthy
+listing `estado 'E'`.
+⚠️ **The #707 prune below gained a SECOND, evidence-led trigger, and it had to.**
+Completing the array filters a stale id out of the body, so ML can no longer
+answer `item.variations.invalid` about it and the rejection that used to drive
+the prune is never earned — completing the array would otherwise have traded a
+self-heal for a log line. The completion therefore prunes directly, from the item
+it just read: it SEES the stale id instead of inferring it from a refusal. The
+cause check consequently moved OUT of `podarVariacoesFantasma` to its two
+callers; only the terminal-4xx one has a rejection to inspect.
+⚠️ **`planejarPoda` is idempotent, which makes the latch arm a trap.** A member
+the completion just marked `closed` is skipped by the terminal prune, so that
+branch's "did we repair the payload?" test reads ZERO and would latch
+`estado 'E'` on a listing we had already fixed — the self-heal-that-does-not-heal
+its own comment warns about. The completion's count therefore rides into
+`registrarRejeicaoFinal` as `podadasAntes` and is ADDED, never re-derived.
+⚠️ **A send that dropped part of its intent must not report a heal.** ML accepts
+the completed body happily, so a stale id used to ride out as `sent` while
+`clearFalha()` erased #781's diagnosis on the same write — and in the limit where
+EVERY payload id is stale the body is ML's own values echoed back, a write that
+changes nothing and reports success. So: `clearFalha()` is suppressed while any
+id was dropped (temporary — the prune has just fixed the payload, and the next
+sweep's clean send clears), and an all-stale payload is refused before the PUT
+(`skipped`/`todas-variacoes-fantasma`) rather than spending a no-op write.
+⚠️ Do not read the #707 specs as evidence about how often the prune fires from a
+REJECTION — every one of them throws unconditionally from a mock.
+
 ⚠️ **`item.variations.invalid` self-heals; it is LEGACY-MODEL ONLY (#707).** When a
 bulk `PUT /items/{id}` is refused with that cause, the terminal branch diffs the
 family's `variacaoMercadoLivre` links against the live `variations[].id` from the
