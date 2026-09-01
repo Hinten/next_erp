@@ -20,7 +20,12 @@
  * backend refusing what the UI presents as available.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { type AcaoStatusAnuncio, ACAO_STATUS_ANUNCIO, acaoStatusAnuncio } from '@delfrance/schemas';
+import {
+  type AcaoStatusAnuncio,
+  ACAO_STATUS_ANUNCIO,
+  ESTADO_PUBLICACAO_ML,
+  acaoStatusAnuncio,
+} from '@delfrance/schemas';
 import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
 
@@ -93,6 +98,9 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
     'Anúncio encerrado no Mercado Livre — um anúncio encerrado não pode ser pausado nem reativado.',
   'status-indefinido':
     'O Mercado Livre ainda está avaliando este anúncio. Use "Reverificar anúncio" antes de alterar o status.',
+  'anuncio-em-migracao':
+    'Anúncio em migração para o modelo User Products — o Mercado Livre recusa qualquer alteração ' +
+    'até concluir. Aguarde e tente novamente.',
   'ja-pausado': 'Este anúncio já está pausado.',
   'ja-ativo': 'Este anúncio já está ativo.',
   'familia-sem-membros':
@@ -290,9 +298,16 @@ function motivoRecusaLocal(raw: Record<string, unknown>, acao: AcaoStatusAnuncio
   if (disponivel === acao) return null;
   if (typeof raw.id !== 'string' || raw.id === '') return 'sem-id-externo';
   if (disponivel === null) {
-    return raw.status === 'closed' || raw.estado === 'c'
-      ? 'anuncio-cancelado'
-      : 'status-indefinido';
+    if (raw.status === 'closed' || raw.estado === ESTADO_PUBLICACAO_ML.cancelado) {
+      return 'anuncio-cancelado';
+    }
+    // ⚠️ Its OWN motivo, not `status-indefinido`. The two look alike and the
+    // REMEDY is opposite: a mid-decision listing is what "Reverificar anúncio"
+    // exists for, while a migrating one is not stale at all — ML is rebuilding
+    // it and re-reading changes nothing. Telling the operator to press
+    // Reverificar there sends them to a button that cannot help.
+    if (raw.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao) return 'anuncio-em-migracao';
+    return 'status-indefinido';
   }
   // The listing supports the OTHER direction — it is already where the operator
   // is trying to take it. A skip, never a failure.

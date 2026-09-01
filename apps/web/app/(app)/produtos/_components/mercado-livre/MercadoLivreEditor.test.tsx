@@ -1405,6 +1405,24 @@ describe('Pausar / Reativar anúncio', () => {
     expect(reativarBtn()).toBeNull();
   });
 
+  it('is absent while ML is mid-UPtin-migration, despite a live stored status', async () => {
+    // ⚠️ `stampAguardandoMigracao` writes `estado` ALONE, so the link carries a
+    // stale `status: 'active'` — the shape that looks most eligible. ML 404s any
+    // change to a migrating item and the backend's 404 branch records `closed`,
+    // dropping the produto out of both ML sweeps.
+    h.links = [
+      link('L1', {
+        id: 'MLB1',
+        estado: ESTADO_PUBLICACAO_ML.aguardandoMigracao,
+        status: 'active',
+      }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('listing-form-L1')).toBeDefined());
+    expect(pausarBtn()).toBeNull();
+    expect(reativarBtn()).toBeNull();
+  });
+
   it('is absent without `integracao.write` — the bit the backend route enforces', async () => {
     h.permitidos = new Set([PERM.produto.delete]);
     h.links = [

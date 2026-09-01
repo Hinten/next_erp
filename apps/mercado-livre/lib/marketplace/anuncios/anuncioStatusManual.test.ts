@@ -185,6 +185,19 @@ describe('definirStatusAnunciosManual — local eligibility gate', () => {
     expect(res.listings[0]).toMatchObject({ outcome: 'pulado', motivo: 'anuncio-cancelado' });
   });
 
+  it('skips a MIGRATING listing with its own motivo, not "status indefinido"', async () => {
+    // ⚠️ `stampAguardandoMigracao` writes `estado` alone, so the stored `status`
+    // is stale at `'active'` — the state most likely to look eligible. ML 404s
+    // any change to a migrating source item and the 404 branch records `closed`,
+    // which would drop the produto out of BOTH sweeps.
+    const { res, definir } = await corre(link({ estado: 'am', status: 'active' }));
+    expect(definir).not.toHaveBeenCalled();
+    expect(res.listings[0]).toMatchObject({ outcome: 'pulado', motivo: 'anuncio-em-migracao' });
+    // The REMEDY is the point of the separate motivo: waiting, not re-checking.
+    expect(res.listings[0]!.mensagem).toContain('Aguarde');
+    expect(res.listings[0]!.mensagem).not.toContain('Reverificar');
+  });
+
   it('skips a listing ML is still deciding on', async () => {
     const { res, definir } = await corre(link({ estado: 'v', status: 'under_review' }));
     expect(definir).not.toHaveBeenCalled();

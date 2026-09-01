@@ -59,9 +59,22 @@ persistent line `ListingStatusStrip` renders while `estado === 'pa'`.
 
 `acaoStatusAnuncio` answers which action a stored link supports. The web tab
 renders the button from it and the backend refuses by it — one function, so the
-UI can never offer what the server declines. Its rungs (never published,
-cancelled, mid-decision, and the legacy null-`status` corpus) are documented and
-tested beside the schema.
+UI can never offer what the server declines. Its rungs are documented and tested
+beside the schema: never published, cancelled, **mid-UPtin-migration**,
+mid-decision, and the migrated corpus (which carries `estado` and lacks only
+`status`).
+
+⚠️ Two of those rungs read `estado` **above** the raw status, and that ordering
+is load-bearing. `stampAguardandoMigracao` (`itemsStatusSync.ts`) writes
+`estado: 'am'` and `ultimaModificacao` **alone** — its three call sites return
+immediately — so a migrating listing keeps a stale `status: 'active'`. ML 404s
+any change to a migrating source item, and this module's 404 branch records
+`closed`, which drops the produto out of BOTH ML sweeps. Publish, the price
+planner and the stock planner all carry the same `'am'` rung.
+
+⚠️ The `estado` branch is an **allow-list** (`p` → pausar, `pa` → reativar,
+everything else → null), not a fallthrough. As a deny-list it read `'am'`,
+`'v'`, `'ep'`, `'a'`, `'E'` and `'r'` as live.
 
 ## Adding a channel
 
