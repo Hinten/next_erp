@@ -81,6 +81,22 @@ export function parseNotices(body: unknown): Notice[] {
     throw new WatchShapeError(endpoint, '`results` ausente ou não é uma lista');
   }
 
+  // ⚠️ `?limit=50` TRUNCATES, and nothing downstream would notice: `results`
+  // would simply be short, and `proximaBaseline` unions only the ids it SAW, so
+  // anything past the page boundary stays unseen next week too. That is "a green
+  // run that examined nothing", scoped to a page. Throwing keeps it visible; a
+  // human raising the limit is a one-line change, a silent gap is not.
+  const paging = root.paging;
+  if (typeof paging === 'object' && paging !== null && !Array.isArray(paging)) {
+    const total = (paging as Record<string, unknown>).total;
+    if (typeof total === 'number' && total > results.length) {
+      throw new WatchShapeError(
+        endpoint,
+        `${total} comunicados vigentes, mas só ${results.length} vieram — pagine ou aumente o limit`,
+      );
+    }
+  }
+
   return results.map((entry, i) => {
     const rec = asRecord(entry, endpoint, `results[${i}]`);
     const id = str(rec.id) ?? (typeof rec.id === 'number' ? String(rec.id) : null);

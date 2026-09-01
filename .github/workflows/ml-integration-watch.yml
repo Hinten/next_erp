@@ -102,7 +102,7 @@ jobs:
           if [[ ${#missing[@]} -gt 0 ]]; then
             echo "::error::Missing required secrets for the ML watch: ${missing[*]}"
             echo "ML_OWNER_REFRESH_TOKEN comes from a self-grant of the application to its OWNER account."
-            echo "ML_WATCH_SECRET_WRITE_TOKEN is a fine-grained PAT with secrets:write on this repo."
+            echo "ML_WATCH_SECRET_WRITE_TOKEN is a fine-grained PAT needing BOTH Secrets:write (gh secret set) AND Variables:write (gh variable set) on this repo."
             echo "Configure them at https://github.com/${{ github.repository }}/settings/secrets/actions"
             exit 1
           fi
@@ -121,64 +121,71 @@ jobs:
           ML_WATCH_BASELINE: ${{ vars.ML_WATCH_BASELINE }}
         run: |
           pnpm --filter @delfrance/mercado-livre-app watch:ml \
-            --report "$RUNNER_TEMP/ml-watch-report.md" \
-            --baseline-out "$RUNNER_TEMP/ml-watch-baseline.json" \
-            --token-out "$RUNNER_TEMP/ml-new-refresh-token.txt"
+            --report "$GITHUB_WORKSPACE/apps/mercado-livre/out/ml-watch-report.md" \
+            --baseline-out "$GITHUB_WORKSPACE/apps/mercado-livre/out/ml-watch-baseline.json" \
+            --token-out "$GITHUB_WORKSPACE/apps/mercado-livre/out/ml-new-refresh-token.txt"
 
       - name: Store the rotated refresh_token
         # ⚠️ Runs on failure too, and that is the point: ML rotated the token the
         # instant the refresh succeeded. If the fetch step died AFTER that, the
         # old secret is already dead and only this step can save the next run.
-        if: always() && hashFiles(format('{0}/ml-new-refresh-token.txt', runner.temp)) != ''
+        #
+        # ⚠️ Gated on a STEP OUTPUT, not `hashFiles()`. `hashFiles` is rooted at
+        # GITHUB_WORKSPACE and "can only include files inside" it, while
+        # `runner.temp` is a sibling directory — so the original condition could
+        # never become true and this step, the two uploads and the baseline write
+        # were all dead. The script emits `token_written` the moment the file
+        # lands, before anything else can throw.
+        if: always() && steps.watch.outputs.token_written == 'true'
         env:
           GH_TOKEN: ${{ secrets.ML_WATCH_SECRET_WRITE_TOKEN }}
         run: |
-          novo="$(cat "$RUNNER_TEMP/ml-new-refresh-token.txt")"
+          novo="$(cat "$GITHUB_WORKSPACE/apps/mercado-livre/out/ml-new-refresh-token.txt")"
           # Mask before anything can echo it, then never reference it unmasked.
           echo "::add-mask::$novo"
           if ! gh secret set ML_OWNER_REFRESH_TOKEN --body "$novo" --repo "${{ github.repository }}"; then
             echo "::error::Could not store the rotated refresh_token. The NEXT run will fail with invalid_grant and a human must re-consent the application."
-            rm -f "$RUNNER_TEMP/ml-new-refresh-token.txt"
+            rm -f "$GITHUB_WORKSPACE/apps/mercado-livre/out/ml-new-refresh-token.txt"
             exit 1
           fi
-          rm -f "$RUNNER_TEMP/ml-new-refresh-token.txt"
+          rm -f "$GITHUB_WORKSPACE/apps/mercado-livre/out/ml-new-refresh-token.txt"
           echo "Rotated refresh_token stored."
 
       - name: Upload the report
-        if: always() && hashFiles(format('{0}/ml-watch-report.md', runner.temp)) != ''
+        if: always() && steps.watch.outputs.report_path != ''
         uses: actions/upload-artifact@v4
         with:
           name: ml-watch-report
-          path: ${{ runner.temp }}/ml-watch-report.md
+          path: apps/mercado-livre/out/ml-watch-report.md
           retention-days: 30
 
       - name: Store the refreshed baseline
         # Only on a clean run: persisting a baseline built from a partial fetch
         # would mark unseen notices as seen and they would never be reported.
-        if: success() && hashFiles(format('{0}/ml-watch-baseline.json', runner.temp)) != ''
+        if: success() && steps.watch.outputs.baseline_path != ''
         env:
           GH_TOKEN: ${{ secrets.ML_WATCH_SECRET_WRITE_TOKEN }}
         run: |
-          bytes=$(wc -c < "$RUNNER_TEMP/ml-watch-baseline.json")
+          bytes=$(wc -c < "$GITHUB_WORKSPACE/apps/mercado-livre/out/ml-watch-baseline.json")
           # A repo variable caps at 48 KB. `seenNoticeIds` only grows, so warn
           # long before the ceiling rather than discovering it as a failed write.
           if [[ "$bytes" -gt 40000 ]]; then
             echo "::warning::ML_WATCH_BASELINE is ${bytes} bytes, approaching the 48 KB variable cap."
           fi
           if ! gh variable set ML_WATCH_BASELINE \
-              --body "$(cat "$RUNNER_TEMP/ml-watch-baseline.json")" \
+              --body "$(cat "$GITHUB_WORKSPACE/apps/mercado-livre/out/ml-watch-baseline.json")" \
               --repo "${{ github.repository }}"; then
             echo "::error::Could not store ML_WATCH_BASELINE. The next run re-reports everything it has already triaged (noisy, then self-healing)."
             exit 1
           fi
-          echo "Baseline stored ($(wc -c < "$RUNNER_TEMP/ml-watch-baseline.json") bytes of a 48 KB cap)."
+          echo "Baseline stored ($(wc -c < "$GITHUB_WORKSPACE/apps/mercado-livre/out/ml-watch-baseline.json") bytes of a 48 KB cap)."
 
       - name: Upload the refreshed baseline
-        if: always() && hashFiles(format('{0}/ml-watch-baseline.json', runner.temp)) != ''
+        if: always() && steps.watch.outputs.baseline_path != ''
         uses: actions/upload-artifact@v4
         with:
           name: ml-watch-baseline
-          path: ${{ runner.temp }}/ml-watch-baseline.json
+          path: apps/mercado-livre/out/ml-watch-baseline.json
           retention-days: 30
 
   analyse:
@@ -261,9 +268,14 @@ jobs:
               If one exists, add a comment instead of opening a second issue.
             - Body: what ML said, which files are at risk (with paths), what
               would break and how it would present, and what you could not
-              determine. Recommend
-              `pnpm --filter @delfrance/mercado-livre-app verify:wire --live`
-              when the change is about a response shape.
+              determine. When the change is about a response SHAPE, point at
+              `apps/mercado-livre/lib/marketplace/fixtures/__wire__/SHAPES.txt`
+              — the committed shape of every body ML actually sent — and say
+              which path in it the notice would move.
+              ⚠️ Do NOT recommend a command without checking it exists in
+              `apps/mercado-livre/package.json` first: an issue whose one
+              actionable line fails with "Command not found" is worse than an
+              issue with no command at all.
             - Label it `mercado-livre`. Add `needs-live-test` when confirming it
               requires a call against the real API.
 

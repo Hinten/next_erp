@@ -42,11 +42,12 @@ describe('SHAPES.txt', () => {
     expect(texto).toContain('variations: []');
     expect(texto).toContain('payments[].date_last_modified: string');
 
-    // ⚠️ NOT `not.toContain('date_last_updated')`. That assertion was written
-    // here first and failed, which is how the endpoint disagreement below was
-    // found: `/orders/search` really does send `date_last_updated`. A blanket
-    // absence check over the whole document conflates two endpoints.
-    expect(texto).toContain('[].payments[].date_last_updated: null');
+    // ⚠️ Now a genuine absence check. It could not be one while the corpus held
+    // `order-single.json` / `order-pack.json` — those carried
+    // `date_last_updated: null`, which I read as "/orders/search uses the other
+    // name". They were not captures at all but `buildOrderMLWire` output, so the
+    // line was our own builder's hardcode read back as ML's wire (#1419).
+    expect(texto).not.toContain('date_last_updated');
   });
 
   it('is deterministic — regenerating twice yields identical bytes', () => {

@@ -18,6 +18,14 @@ const CRU: WireValue = {
     receiver_name: 'Mariana Ferreira',
     shipping_address: { comment: 'Apto 71B', latitude: -23.5891 },
   },
+  // ⚠️ The email is load-bearing for TWO tests below and was missing.
+  // `redacted@example.invalid` is the only placeholder that matches a PATTERNS
+  // entry, so without an email leaf here "does not report the redactor OWN
+  // placeholders" passed vacuously — `PLACEHOLDER_VALUES` could have been
+  // emptied entirely and every test in the repo would have stayed green. It
+  // also gives `redactionResidue`'s CONTROL A its only exercise of the
+  // single-segment `['email']` suffix.
+  payer: { email: 'mariana.ferreira@example.com' },
 };
 
 describe('redactionResidue', () => {

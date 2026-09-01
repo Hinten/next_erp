@@ -10,7 +10,7 @@ ever hold a real ML credential.
 - `redact.ts` — path-suffix redaction, type-preserving and idempotent.
 - `piiScan.ts` — the independent two-layer check on the committed corpus.
 - `wireCorpus.ts` — the READER for `__wire__/`.
-- `__wire__/` — 32 **committed**, redacted bodies from the #1087 run.
+- `__wire__/` — 30 **committed**, redacted bodies from the #1087 run.
 
 ## The two directories, and why the redaction sits between them
 

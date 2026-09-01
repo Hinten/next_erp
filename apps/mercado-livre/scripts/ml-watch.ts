@@ -227,6 +227,13 @@ async function main(): Promise<void> {
   // next run has no valid grant and a human has to re-consent.
   if (tokenOutPath !== null) {
     write(tokenOutPath, refreshToken);
+    // ⚠️ Emitted HERE, not at the end. ML rotated the token the instant the
+    // refresh succeeded, so the storing step must run even when a later fetch
+    // throws — and a step output written before the throw survives it. The
+    // workflow gates on this rather than on `hashFiles()`, which is rooted at
+    // GITHUB_WORKSPACE and cannot see `runner.temp` at all.
+    emitOutput('token_written', 'true');
+    emitOutput('token_path', tokenOutPath);
     log('🔑 refresh_token rotacionado e gravado (o valor nunca é logado).');
   } else {
     log('⚠️ --token-out ausente: o refresh_token rotacionado NÃO foi persistido.');
@@ -265,7 +272,7 @@ async function main(): Promise<void> {
 
   emitOutput('has_new', novidade ? 'true' : 'false');
   emitOutput('report_path', reportPath);
-  emitOutput('baseline_path', baselinePath);
+  emitOutput('baseline_path', baselineOut);
 }
 
 main().catch((err: unknown) => {

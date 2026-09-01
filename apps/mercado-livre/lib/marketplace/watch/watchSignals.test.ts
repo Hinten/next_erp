@@ -115,6 +115,20 @@ describe('parseNotices', () => {
       expect(() => parseNotices(null)).toThrow(WatchShapeError);
     });
 
+    it('throws when `paging.total` exceeds what came back — the page boundary', () => {
+      // `?limit=50` truncates silently, and `proximaBaseline` unions only the ids
+      // it SAW, so anything past the boundary stays unseen next week too.
+      expect(() =>
+        parseNotices({ paging: { total: 80, offset: 0, limit: 50 }, results: [{ id: '1' }] }),
+      ).toThrow(WatchShapeError);
+    });
+
+    it('CONTROL — a complete page does NOT throw', () => {
+      expect(
+        parseNotices({ paging: { total: 1, offset: 0, limit: 50 }, results: [{ id: '1' }] }),
+      ).toHaveLength(1);
+    });
+
     it('throws on an entry with no id, because the id IS the dedup key', () => {
       // Skipping it silently would re-report that notice every week for ever.
       expect(() => parseNotices({ results: [{ label: 'sem id' }] })).toThrow(WatchShapeError);
