@@ -1567,6 +1567,45 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       expect(skuDoPai(db)).toBe('CAM');
     });
 
+    it('rung 2 — TWO grupos both at ordem 1, the shape every ML import creates', async () => {
+      // ⚠️ The case a single-grupo test cannot see. `planTaxonomia` stamps
+      // `ordem: 1` on every grupo it creates, so a produto whose Tamanho and Cor
+      // both came from an ML import ties — and a peel that mirrored
+      // `sortGruposByOrdem` refused it, silently disabling this rung for the
+      // whole population it exists to serve.
+      const db = new FakeDb();
+      db.seed('grupoDeVariacoes', 'SIZE', {
+        nome: 'Tamanho',
+        ordem: 1,
+        tipo: 1,
+        permiteFotos: false,
+        variacoesIds: ['10'],
+        variacoes: [{ id: '10', nome: 'G', codigo: '-G' }],
+      });
+      db.seed('grupoDeVariacoes', 'COLOR', {
+        nome: 'Cor',
+        ordem: 1,
+        tipo: 2,
+        permiteFotos: true,
+        variacoesIds: ['20'],
+        variacoes: [{ id: '20', nome: 'Azul', codigo: '-AZ' }],
+      });
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attributes: [{ id: 'SELLER_SKU', value_name: 'CAM-AZ-G' }],
+            attribute_combinations: [
+              { id: 'COLOR', name: 'Cor', value_id: '20', value_name: 'Azul' },
+              { id: 'SIZE', name: 'Tamanho', value_id: '10', value_name: 'G' },
+            ],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('CAM');
+    });
+
     it('rung 2 REFUSES when the ERP invented the variante — the fresh-import case', async () => {
       // No seeded grupo ⇒ `planTaxonomia` creates the variante with `codigo:
       // null` ⇒ nothing to peel. Blank, never the member's own sku.

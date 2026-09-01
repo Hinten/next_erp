@@ -340,15 +340,19 @@ export async function importProduto(
     ? // 1. What publish wrote for exactly this purpose. Absent on every família
       //    published before #1400 shipped, and on any conta with the sender off.
       (up!.skuPai ??
-      // 2. Peel the variant códigos off THIS member's sku — the inverse of
+      // 2. Remove the variant códigos from THIS member's sku — the inverse of
       //    `cartesianVariations`' `parentSku + variante.codigo`. Refuses unless
       //    every combo's variante already carries a código, which is precisely
       //    what a first-ever import does NOT have: `planTaxonomia` creates
       //    variantes with `codigo: null`, so this rung is the ROUND-TRIP case
       //    (the ERP knew this taxonomy already) and rung 1 is the fresh one.
+      //    ⚠️ Order-independent by design — this array comes from ML's
+      //    `attribute_combinations` while the child sku was built from the
+      //    produto form's grupo order, and the two need not agree. See
+      //    `skuPaiPorSufixo`.
       skuPaiPorSufixo(
         mapped.sku,
-        taxonomia.map((t) => ({ ordem: t.grupoOrdem, codigo: t.varianteCodigo })),
+        taxonomia.map((t) => t.varianteCodigo),
       ) ??
       // 3. A família of ONE (#1087) — no variation attributes at all, so the
       //    member IS the produto and its `SELLER_SKU` is the parent's too.
