@@ -298,7 +298,19 @@ async function main(): Promise<void> {
   const channelCtx = await ctx.resolveChannelContext();
   const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
-  const nickname = typeof ctx.conta.nickname === 'string' ? ctx.conta.nickname : null;
+  // ⛔ The nickname comes from `getMe()`, NOT from the conta document.
+  //
+  // `ctx.conta` is a `Readonly<Record<string, unknown>>` bag, so `conta.nickname`
+  // COMPILES, types as `unknown`, and is always absent — that field lives on the
+  // stored test-USER records (`usuarioTesteMercadoLivreSchema`), never on the
+  // integração, whose own label is `nome`. Reading it there made the guard below
+  // refuse EVERY account, so the only way to run the probe was `--forcar` — a
+  // guard you must disable to use is worse than no guard at all.
+  //
+  // `getMe()` is also the right question: it names the account this TOKEN acts
+  // as, which is whose listing is about to be rewritten. Same source as
+  // `anuncio-teste/route.ts` and `testUsers.ts`.
+  const nickname = (await api.getMe()).nickname ?? null;
   log(
     `[probe:package-format] project=${args.projectId} integracao=${args.integracaoId} ` +
       `item=${args.itemId} conta=${nickname ?? '(sem nickname)'}`,
