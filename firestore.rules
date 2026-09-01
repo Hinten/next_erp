@@ -132,6 +132,7 @@ service cloud.firestore {
         && (!c.hasAny(['ehKit']) || d.get('ehKit', null) is bool)
         && (!c.hasAny(['ehKitVirtual']) || d.get('ehKitVirtual', null) is bool)
         && (!c.hasAny(['ehUsado']) || d.get('ehUsado', null) is bool)
+        && (!c.hasAny(['filhoUnicoId']) || (d.get('filhoUnicoId', null) == null || d.get('filhoUnicoId', null) is string))
         && (!c.hasAny(['fotos']) || (d.get('fotos', null) == null || d.get('fotos', null) is list))
         && (!c.hasAny(['fotosArquivosIds']) || (d.get('fotosArquivosIds', null) == null || d.get('fotosArquivosIds', null) is list))
         && (!c.hasAny(['grupoDeVariacoesUid']) || (d.get('grupoDeVariacoesUid', null) == null || d.get('grupoDeVariacoesUid', null) is list))
