@@ -2,7 +2,11 @@
 
 import { Badge, Button, Card, Group, Stack, Text } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
-import type { MedidasDoPacote, ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import type {
+  AcaoStatusAnuncio,
+  MedidasDoPacote,
+  ProdutoMercadoLivreLink,
+} from '@delfrance/schemas';
 
 import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
 import { mergeServerErrors, splitCausas } from '@/lib/mercado-livre/listingCausas';
@@ -92,6 +96,10 @@ export interface ContaPanelProps {
   onSalvarAnuncios: (contaId: string, linkIds: readonly string[]) => void;
   onEnviarEstoque: (conta: StockPushIntegracao, temLatch: boolean) => void;
   onReverificar: (integracaoId: string, linkDocId: string, motivo: MotivoReverificacao) => void;
+  /** Undefined when there is no client or the operator lacks `PERM.integracao.write`. */
+  onDefinirStatus?: (integracaoId: string, linkDocId: string, acao: AcaoStatusAnuncio) => void;
+  /** The link doc whose status change is in flight, across every account. */
+  alterandoStatus: string | null;
   onAbrirAnuncio: (integracaoId: string, linkDocId: string) => void;
   onDirtyChange: (linkDocId: string, dirty: boolean) => void;
   onLoadingChange: (linkDocId: string, loading: boolean) => void;
@@ -133,6 +141,8 @@ export function ContaPanel({
   onSalvarAnuncios,
   onEnviarEstoque,
   onReverificar,
+  onDefinirStatus,
+  alterandoStatus,
   onAbrirAnuncio,
   onDirtyChange,
   onLoadingChange,
@@ -292,6 +302,11 @@ export function ContaPanel({
               onPublish={(withPrices) => onPublish(conta.id, l.id, withPrices)}
               onExcluir={onExcluirAnuncio ? () => onExcluirAnuncio(l.id) : undefined}
               excluindo={excluindo === l.id}
+              onDefinirStatus={
+                onDefinirStatus ? (acao) => onDefinirStatus(conta.id, l.id, acao) : undefined
+              }
+              alterandoStatus={alterandoStatus === l.id}
+              statusBusy={alterandoStatus !== null}
             />
           );
         })}

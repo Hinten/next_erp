@@ -82,6 +82,17 @@ export interface PushProgressDialogProps<Row extends PushRowBase, Opcao> {
   ) => Promise<{ rows: Row[]; cancelado: boolean }>;
   /** Extra trailing detail on a row's subtitle (e.g. the price actually sent). */
   detalheLinha?: (row: Row) => ReactNode;
+  /**
+   * Wording for the SUCCESS outcome, singular and plural — "Enviado"/"Enviados"
+   * by default.
+   *
+   * ⚠️ Only the wording is overridable, never the outcome vocabulary itself:
+   * every channel backend answers in the same four `PushOutcome` values, and the
+   * badge colours carry the same meaning whatever the operation. A pause run
+   * reading "Enviado" would be the one place this shared dialog lies about what
+   * it just did.
+   */
+  rotuloSucesso?: { singular: string; plural: string };
 }
 
 export function PushProgressDialog<Row extends PushRowBase, Opcao>({
@@ -96,7 +107,10 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
   renderOpcao,
   executar,
   detalheLinha,
+  rotuloSucesso,
 }: PushProgressDialogProps<Row, Opcao>) {
+  const rotulos: Record<PushOutcome, string> =
+    rotuloSucesso == null ? ROTULO : { ...ROTULO, enviado: rotuloSucesso.singular };
   const [fase, setFase] = useState<Fase>('confirmar');
   const [rows, setRows] = useState<Row[]>([]);
   const [cancelado, setCancelado] = useState(false);
@@ -175,14 +189,15 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
           <Group gap="sm">
             {!terminal && <Loader size="xs" />}
             <Text size="sm" fw={500}>
-              Enviados {resumo.enviados} · Pulados {resumo.pulados} · Falhas {resumo.falhas}
+              {rotuloSucesso?.plural ?? 'Enviados'} {resumo.enviados} · Pulados {resumo.pulados} ·
+              Falhas {resumo.falhas}
             </Text>
           </Group>
         )}
 
         {cancelado && (
           <Alert color="yellow" variant="light">
-            Envio cancelado — os itens já enviados foram concluídos.
+            Execução cancelada — os itens já processados foram concluídos.
           </Alert>
         )}
 
@@ -204,7 +219,7 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
                 <List.Item key={row.key} data-testid={`${testIdPrefix}${row.key}`}>
                   <Group gap="xs" align="flex-start" wrap="nowrap">
                     <Badge color={COR[row.outcome]} variant="light" miw={96}>
-                      {ROTULO[row.outcome]}
+                      {rotulos[row.outcome]}
                     </Badge>
                     <Stack gap={0}>
                       {/* Legacy: `erro ?? message ?? "Enviado com sucesso"`. */}
