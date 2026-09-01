@@ -103,9 +103,17 @@ const estoque = (produtoId: string, depositoId: string, quantidade: number): Fak
   },
 });
 
+let linhas: string[] = [];
+
 beforeEach(() => {
-  vi.spyOn(console, 'log').mockImplementation(() => {});
+  linhas = [];
+  vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    linhas.push(args.map(String).join(' '));
+  });
 });
+
+/** The one stdout line a reader sizes the conversion from. */
+const linhaQueContem = (agulha: string) => linhas.find((l) => l.includes(agulha)) ?? '';
 
 describe('produto-sem-variacoes census — the --apply promise', () => {
   it('⚠️ REJECTS --apply instead of silently ignoring it', async () => {
@@ -258,5 +266,162 @@ describe('produto-sem-variacoes census — the walk', () => {
       unknown
     >;
     expect(linha.nKitsQueReferenciam).toBe(2);
+  });
+});
+
+/**
+ * ⚠️ The headline number must not depend on which flags were passed. `--target
+ * residuais` reports on produtos that ALREADY have children — the conversion
+ * mints no sole child for one of those and relocates none of its units — so
+ * folding them in made the same corpus answer 20 or 27 depending on invocation.
+ */
+describe('produto-sem-variacoes census — the conversion total is flag-independent', () => {
+  const corpus = {
+    produtos: [produto('simples'), produto('familia'), produto('filho-1', { paiId: 'familia' })],
+    'produtos/simples/estoques': [estoque('simples', 'dep-1', 20)],
+    'produtos/familia/estoques': [estoque('familia', 'dep-1', 7)],
+  };
+
+  it('reports the same MOVERIA with and without --target residuais', async () => {
+    await run(ctx({ cols: corpus }));
+    const semAlvo = linhaQueContem('MOVERIA para o filho único');
+    expect(semAlvo).toContain(': 20');
+
+    await run(ctx({ cols: corpus, targets: ['residuais'] }));
+    const comAlvo = linhaQueContem('MOVERIA para o filho único');
+    expect(comAlvo).toContain(': 20');
+  });
+
+  it('reports the família residual on its own line, as units outside the conversion', async () => {
+    await run(ctx({ cols: corpus, targets: ['residuais'] }));
+    const residual = linhaQueContem('RESÍDUO (fora da conversão)');
+    expect(residual).toContain('1 família');
+    expect(residual).toContain('7 unidade');
+  });
+});
+
+/**
+ * ⚠️ `estoqueAplicado` is server-owned and written ONLY by
+ * `sincronizarEstoquePedido`, and a Firestore import fires no triggers — so on
+ * the imported corpus this census exists to measure, NO pedido carries one.
+ * Keying on it alone reported a confident `0` for every produto: "we measured,
+ * nothing reserves against this", about a corpus whose reservations are real.
+ */
+describe('produto-sem-variacoes census — reservations on an imported corpus', () => {
+  const corpus = {
+    produtos: [produto('simples')],
+    'produtos/simples/estoques': [estoque('simples', 'dep-1', 20)],
+  };
+
+  const linhaDoSimples = (registros: Registro[]) =>
+    registros.find((r) => r.path === 'produtos/simples')?.to as Record<string, unknown>;
+
+  it('counts a legacy pedido that carries NO estoqueAplicado snapshot', async () => {
+    const registros: Registro[] = [];
+    await run(
+      ctx({
+        cols: {
+          ...corpus,
+          pedidos: [
+            {
+              id: 'ped-legado',
+              data: {
+                // Stock made unavailable, never removed — the reservation is open.
+                dataIndisponivelEstoque: 1_700_000_000_000_000,
+                dataRemocaoEstoque: null,
+                itens: { simples: [{ quantidade: 2 }] },
+              },
+            },
+          ],
+        },
+        registros,
+        targets: ['pedidos'],
+      }),
+    );
+    expect(linhaDoSimples(registros).nPedidosAbertosQueReservam).toBe(1);
+    expect(linhaQueContem('via o marcador legado')).toContain('1 via o marcador legado');
+  });
+
+  // The other half of the marker: stock already removed is no longer reserved.
+  it('does NOT count a legacy pedido whose stock was already removed', async () => {
+    const registros: Registro[] = [];
+    await run(
+      ctx({
+        cols: {
+          ...corpus,
+          pedidos: [
+            {
+              id: 'ped-enviado',
+              data: {
+                dataIndisponivelEstoque: 1_700_000_000_000_000,
+                dataRemocaoEstoque: 1_700_000_500_000_000,
+                itens: { simples: [{ quantidade: 2 }] },
+              },
+            },
+          ],
+        },
+        registros,
+        targets: ['pedidos'],
+      }),
+    );
+    expect(linhaDoSimples(registros).nPedidosAbertosQueReservam).toBe(0);
+  });
+
+  // ⚠️ A snapshot that exists and reserves nothing is a MEASURED zero for that
+  // pedido — the legacy fallback must not second-guess it and re-add the line.
+  it('does not let the legacy marker override an existing empty snapshot', async () => {
+    const registros: Registro[] = [];
+    await run(
+      ctx({
+        cols: {
+          ...corpus,
+          pedidos: [
+            {
+              id: 'ped-sincronizado',
+              data: {
+                estoqueAplicado: { reservado: {} },
+                dataIndisponivelEstoque: 1_700_000_000_000_000,
+                dataRemocaoEstoque: null,
+                itens: { simples: [{ quantidade: 2 }] },
+              },
+            },
+          ],
+        },
+        registros,
+        targets: ['pedidos'],
+      }),
+    );
+    expect(linhaDoSimples(registros).nPedidosAbertosQueReservam).toBe(0);
+  });
+
+  // ⚠️ "we did not look" must never read as "we looked and found none".
+  it('reports null, not 0, when the pedidos collection is empty', async () => {
+    const registros: Registro[] = [];
+    await run(ctx({ cols: corpus, registros, targets: ['pedidos'] }));
+    expect(linhaDoSimples(registros).nPedidosAbertosQueReservam).toBeNull();
+  });
+
+  it('ignores the "NONE" placeholder key on a legacy pedido', async () => {
+    const registros: Registro[] = [];
+    await run(
+      ctx({
+        cols: {
+          ...corpus,
+          pedidos: [
+            {
+              id: 'ped-sem-produto',
+              data: {
+                dataIndisponivelEstoque: 1_700_000_000_000_000,
+                dataRemocaoEstoque: null,
+                itens: { NONE: [{ quantidade: 1 }], '': [{ quantidade: 1 }] },
+              },
+            },
+          ],
+        },
+        registros,
+        targets: ['pedidos'],
+      }),
+    );
+    expect(linhaDoSimples(registros).nPedidosAbertosQueReservam).toBe(0);
   });
 });
