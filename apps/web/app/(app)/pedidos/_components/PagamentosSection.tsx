@@ -23,7 +23,6 @@ import {
 import { DateTimePicker } from '@mantine/dates';
 import { notifications } from '@mantine/notifications';
 import { IconCash } from '@tabler/icons-react';
-import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
 import { getDoc } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
