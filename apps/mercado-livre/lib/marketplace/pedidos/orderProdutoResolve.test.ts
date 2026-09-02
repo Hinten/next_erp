@@ -749,3 +749,65 @@ describe('resolveOrderLineProduto — sku-root binds the sellable child', () => 
     expect(out).toEqual({ produtoId: 'estranho', via: 'sku-any' });
   });
 });
+
+/**
+ * ⛔ A KIT is never resolved to its sole member (found by adversarial review).
+ *
+ * A kit's sole member carries `ehKit: true` and NO `componentesKit` —
+ * `planejarMembroUnico` does not copy the map — so binding it hands
+ * `calcularAlteracoesEstoque` a kit with a null map. Its `if (!componentes)
+ * continue;` then moves **nothing**: the components of a real Mercado Livre sale
+ * are never reserved and never removed, and they stay fully sellable.
+ *
+ * ⚠️ Worse than the wrong-row case the redirect exists to fix, because nothing
+ * reports it. The pedido line HAS a produto, so `recordItensSemProduto` raises no
+ * incidente — the sale simply consumes no stock.
+ *
+ * The ERP pick path reached this conclusion one commit earlier
+ * (`PrincipalTab.tsx`); this is the surface with LIVE traffic and the two must not
+ * disagree.
+ */
+describe('resolveOrderLineProduto — a kit stays on the parent', () => {
+  it('binds the KIT itself, not its sole member', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'kit-1', {
+      sku: 'KIT-SKU',
+      paiId: null,
+      ehKit: true,
+      filhoUnicoId: 'membro-1',
+      componentesKit: { 'comp-a': { quantidade: 6, limitarEstoque: true } },
+    });
+    db.seed('produtos', 'membro-1', { sku: 'KIT-SKU', paiId: 'kit-1', ehKit: true });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'KIT-SKU',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'kit-1', via: 'sku-root' });
+  });
+
+  // ...and the near-miss that keeps the redirect alive: the SAME shape without
+  // `ehKit` must still resolve, or the guard has swallowed the fix it guards.
+  it('still redirects a NON-kit family-of-one parent', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'p-1', {
+      sku: 'SKU-1',
+      paiId: null,
+      ehKit: false,
+      filhoUnicoId: 'membro-1',
+    });
+    db.seed('produtos', 'membro-1', { sku: 'SKU-1', paiId: 'p-1', ehKit: false });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'SKU-1',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'membro-1', via: 'sku-membro-unico' });
+  });
+});
