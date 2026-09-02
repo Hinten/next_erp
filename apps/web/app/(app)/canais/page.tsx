@@ -9,7 +9,8 @@ import {
   INTEGRACAO_TIPO_LABELS,
   type Integracao,
   type IntegracaoTipo,
-  pluginIdForTipo,
+  type MarketplaceCapabilities,
+  marketplaceCapsOrNull,
 } from '@delfrance/schemas';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -30,13 +31,10 @@ export default function CanaisListPage() {
       />
 
       <Alert color="blue" title="OAuth + sincronização">
-        A configuração inicial (OAuth) e sincronização contínua (catálogo, pedidos, tracking) vivem
-        em
-        <Code mx={4}>apps/integrations</Code>+ Cloud Functions. Esta tela é a visão consolidada das
-        integrações já cadastradas no Firestore. Plugins de canal (
-        <Code>@delfrance/integrations-mercado-livre</Code>,
-        <Code>@delfrance/integrations-shopee</Code>, etc.) são scaffolds hoje; implementação
-        concreta entra na Fase 5.
+        Cada canal tem seu próprio backend (<Code mx={4}>apps/&lt;canal&gt;</Code>) com as rotas de
+        OAuth, o receptor de webhooks e os Cloud Functions da sincronização contínua. Esta tela é a
+        visão consolidada das integrações já cadastradas no Firestore. O que cada canal suporta está
+        declarado em <Code>MARKETPLACE_TIPO_CAPS</Code>; hoje só o Mercado Livre está implementado.
       </Alert>
 
       {error && <Alert color="red">{error.message}</Alert>}
@@ -63,9 +61,44 @@ export default function CanaisListPage() {
   );
 }
 
+/**
+ * ⚠️ This badge used to read `pluginIdForTipo(tipo)` and show
+ * `@delfrance/integrations-shopee` for a channel whose package was a 44-line
+ * `throw` with no importer anywhere. It was a capability question wearing a
+ * plugin-id costume, and it answered it wrong: "has a package" is not "works".
+ * `MARKETPLACE_TIPO_CAPS` answers the real one (#815, ADR 0015).
+ */
+function StatusCanalBadge({ caps }: { caps: MarketplaceCapabilities | null }) {
+  if (caps === null) {
+    return (
+      <Tooltip label="Não é um canal de marketplace (balcão, WhatsApp)">
+        <Badge variant="light" color="gray" size="xs">
+          não-marketplace
+        </Badge>
+      </Tooltip>
+    );
+  }
+  if (!caps.implementado) {
+    return (
+      <Tooltip label="Nenhum backend implementado para este canal ainda">
+        <Badge variant="light" color="gray" size="xs">
+          não implementado
+        </Badge>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip label={`Backend: apps/${caps.channel ?? '—'}`}>
+      <Badge variant="light" color="blue" size="xs">
+        {caps.channel}
+      </Badge>
+    </Tooltip>
+  );
+}
+
 function IntegracaoCard({ id, integracao }: { id: string; integracao: Integracao }) {
   const tipoLabel = INTEGRACAO_TIPO_LABELS[integracao.tipo as IntegracaoTipo];
-  const pluginId = pluginIdForTipo(integracao.tipo as IntegracaoTipo);
+  const caps = marketplaceCapsOrNull(integracao.tipo as IntegracaoTipo);
   return (
     <Card withBorder padding="md" w={280} shadow="xs">
       <Stack gap="xs">
@@ -90,15 +123,7 @@ function IntegracaoCard({ id, integracao }: { id: string; integracao: Integracao
           </Badge>
         )}
         <Group gap="xs">
-          <Tooltip
-            label={
-              pluginId ? `Plugin: @delfrance/integrations-${pluginId}` : 'Sem plugin associado'
-            }
-          >
-            <Badge variant="light" color={pluginId ? 'blue' : 'gray'} size="xs">
-              {pluginId ?? 'sem plugin'}
-            </Badge>
-          </Tooltip>
+          <StatusCanalBadge caps={caps} />
         </Group>
         <Text size="xs" c="dimmed">
           ID: {id}

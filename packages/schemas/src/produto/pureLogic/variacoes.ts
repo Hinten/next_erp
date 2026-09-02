@@ -238,6 +238,115 @@ export function reconstructFromVariacoesUid(input: {
 }
 
 /**
+ * Upper bound on the grupos {@link skuPaiPorSufixo} will match. The decomposition
+ * below is O(2^n · n) with the memo, so this only exists to keep a nonsense input
+ * from becoming a CPU burn; a produto with more than a handful of variation
+ * grupos does not exist in this catalogue.
+ */
+const MAX_GRUPOS_SUFIXO = 16;
+
+/**
+ * Recover a PARENT sku from one child's, by removing the variant códigos from the
+ * end — the inverse of {@link cartesianVariations}, which builds a child as
+ * `parentSku + variante.codigo`, one código per grupo.
+ *
+ * Written for the Mercado Livre User-Products import (#1400), where a família's
+ * members are separate ML items and the parent's own sku has no slot on the
+ * wire: when the ERP already knows the taxonomy, the child's sku is the only
+ * remaining witness of it.
+ *
+ * ⚠️ **Order-INDEPENDENT, and that is a correctness requirement rather than a
+ * convenience.** The obvious implementation peels in reverse `ordem`, mirroring
+ * the ascending sort `cartesianVariations` appends in. It is wrong: both sorts
+ * are STABLE, so on an `ordem` TIE the mirrored comparator preserves the input
+ * order instead of reversing it, and the peel refuses a perfectly good sku. The
+ * tie is not exotic — `planTaxonomia` stamps `ordem: 1` on every grupo it
+ * creates, so every multi-grupo taxonomy the ML importer built ties, which is
+ * exactly the population this function exists to serve. Worse, for a tie the
+ * build order is not even knowable here: it came from the produto form's grupo
+ * list, while the importer's array comes from ML's `attribute_combinations`.
+ *
+ * What rescues it is that **order ambiguity cannot become ANSWER ambiguity**.
+ * Every grupo contributes exactly one código, so the suffix length is fixed
+ * whatever the order, and the parent sku is therefore determined by arithmetic
+ * alone. Order only decides whether the suffix *decomposes* — never into what.
+ * So this takes the fixed-length prefix and then PROVES the remainder is a
+ * concatenation of all the códigos in some order.
+ *
+ * ⚠️ **Every uncertainty returns `null`, never a partial guess.** A sku is an
+ * identity — the ERP resolves produtos by it — so a wrong one is worse than an
+ * absent one. It refuses when: there are no grupos; ANY grupo's variante has no
+ * `codigo` (the fresh-import case, where `planTaxonomia` creates variantes with
+ * `codigo: null`, so there is nothing to remove and the answer would be the
+ * child's own sku wearing the parent's name); the tail is not a concatenation of
+ * the códigos; or nothing would be left of the parent.
+ *
+ * ⚠️ Distinct from the legacy `gessSkuFromMercadoLivre`, which stripped a FIXED
+ * six characters and could not say when it was wrong. This removes the códigos
+ * that are really there, or declines.
+ *
+ * The comparison is byte-exact on purpose. Folding case or accents would make
+ * `'CAM-p'` match a `'-P'` código, and the recovered parent would then differ
+ * from the one that produced it — the near-misses `'CAM-01'` vs `'CAM-1'` and
+ * `'CAM-P'` vs `'CAM-PP'` must all stay distinct.
+ */
+export function skuPaiPorSufixo(
+  childSku: string | null | undefined,
+  codigos: ReadonlyArray<string | null | undefined>,
+): string | null {
+  const sku = typeof childSku === 'string' ? childSku.trim() : '';
+  if (sku === '' || codigos.length === 0 || codigos.length > MAX_GRUPOS_SUFIXO) return null;
+
+  const partes: string[] = [];
+  for (const codigo of codigos) {
+    if (typeof codigo !== 'string' || codigo === '') return null;
+    partes.push(codigo);
+  }
+
+  const total = partes.reduce((n, c) => n + c.length, 0);
+  // `>=`, not `>`: consuming the whole sku leaves no parent, which is a refusal
+  // rather than an empty-string answer.
+  if (total >= sku.length) return null;
+
+  const corte = sku.length - total;
+  if (!sufixoEhConcatenacao(sku.slice(corte), partes)) return null;
+  return sku.slice(0, corte);
+}
+
+/**
+ * Is `sufixo` exactly the concatenation of ALL of `partes`, in some order?
+ *
+ * Consumes from the END so a matching código is found with `endsWith`, and
+ * backtracks — a greedy longest-match would reject `'PPP'` against
+ * `['P', 'PP']` by taking `'PP'` first from a tail that needed `'P'`.
+ *
+ * ⚠️ The memo is keyed on the used-mask ALONE, which is sound because the mask
+ * fixes how many characters have been consumed and therefore what `resto` is:
+ * the same mask can never be reached with a different remainder. It only records
+ * FAILURES — a success returns immediately.
+ */
+function sufixoEhConcatenacao(sufixo: string, partes: readonly string[]): boolean {
+  const completo = (1 << partes.length) - 1;
+  const semSaida = new Set<number>();
+
+  const buscar = (resto: string, usados: number): boolean => {
+    if (usados === completo) return resto === '';
+    if (semSaida.has(usados)) return false;
+    for (let i = 0; i < partes.length; i += 1) {
+      const bit = 1 << i;
+      if ((usados & bit) !== 0) continue;
+      const parte = partes[i]!;
+      if (!resto.endsWith(parte)) continue;
+      if (buscar(resto.slice(0, resto.length - parte.length), usados | bit)) return true;
+    }
+    semSaida.add(usados);
+    return false;
+  };
+
+  return buscar(sufixo, 0);
+}
+
+/**
  * Reconstruct a legacy child (empty `variacoesUid`) by peeling variant códigos
  * off the END of its SKU, walking the groups in reverse `ordem` order — port
  * of `_reconstruirVariacoesFromSku` (`produtoTableProvider.dart:903`).

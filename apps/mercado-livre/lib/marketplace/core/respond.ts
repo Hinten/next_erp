@@ -11,7 +11,6 @@ import {
   MercadoLivreHttpError,
   type MlRequestEndpoint,
   MercadoLivreNetworkError,
-  MercadoLivreNotConfiguredError,
   MercadoLivreReauthRequiredError,
   MercadoLivreValidationError,
 } from '@delfrance/integrations-mercado-livre';
@@ -23,14 +22,18 @@ import {
 } from './mercadoLivre';
 import { validationPaths } from './validationIssues';
 
-// `MercadoLivreError` is the base of every plugin error (HTTP / validation /
-// network / reauth). `MercadoLivreNotConfiguredError` is the separate scaffold
-// stub (extends `Error`, not `MercadoLivreError`), so it stays listed explicitly.
+// `MercadoLivreError` is the base of every channel-library error (HTTP /
+// validation / network / reauth).
+//
+// ⚠️ `MercadoLivreNotConfiguredError` used to be listed here too — the error the
+// four throwing `MarketplaceChannel` members raised, mapped to a 501. Both are
+// gone with the contract (#815). Nothing consumed the `ML_NOT_IMPLEMENTED` code
+// it produced; `MercadoLivreNotImplementedError` (raised by this app, not the
+// library) still uses that status for a genuinely unwired operation.
 type KnownError =
   | MercadoLivreConfigError
   | MercadoLivreContaNotConfiguredError
   | MercadoLivreNotImplementedError
-  | MercadoLivreNotConfiguredError
   | MercadoLivreError;
 
 /** An ML error body is unbounded; a log line is not. Enough to identify it. */
@@ -41,7 +44,6 @@ export function isMercadoLivreError(err: unknown): err is KnownError {
     err instanceof MercadoLivreConfigError ||
     err instanceof MercadoLivreContaNotConfiguredError ||
     err instanceof MercadoLivreNotImplementedError ||
-    err instanceof MercadoLivreNotConfiguredError ||
     err instanceof MercadoLivreError
   );
 }
@@ -187,10 +189,7 @@ function toResponse(err: KnownError): NextResponse {
   if (err instanceof MercadoLivreNetworkError) {
     return NextResponse.json({ error: err.message, code: 'ML_NETWORK_ERROR' }, { status: 503 });
   }
-  if (
-    err instanceof MercadoLivreNotImplementedError ||
-    err instanceof MercadoLivreNotConfiguredError
-  ) {
+  if (err instanceof MercadoLivreNotImplementedError) {
     // Operation not wired yet.
     return NextResponse.json({ error: err.message, code: 'ML_NOT_IMPLEMENTED' }, { status: 501 });
   }

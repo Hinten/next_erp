@@ -1847,7 +1847,14 @@ function membroPodeEnviar(
  * toOuterRef(<THIS listing's docPath>)` (exact string match is safe: both
  * apps write the canonical `documents/...` form, see importVariations.ts),
  * each entry's `id` the NUMERIC variação-link id. Unmatched / id-less /
- * quantity-less children are skip-logged and excluded; ALL children excluded
+ * quantity-less children are skip-logged and excluded, which makes the array a
+ * PARTIAL PATCH — ⚠️ **and a partial `variations[]` on the wire DELETES the
+ * variations it omits** (#831; ML's docs call omission the removal mechanism).
+ * That is why the array here is deliberately NOT the request body: `estoqueSend`
+ * completes it against the live listing (`reconciliarVariations`) before the
+ * PUT, and refuses to send at all when it cannot. So an exclusion below costs a
+ * missed stock UPDATE for that child — never the child's existence — and adding
+ * a fifth exclusion is safe in the same way. ALL children excluded
  * → NO task for that listing (skips only); a `variations` array past
  * `MAX_VARIATIONS_PER_TASK` also builds NO task (the enqueue would blow the
  * ~100 KB Cloud Tasks payload limit and the sweep would retry forever) —

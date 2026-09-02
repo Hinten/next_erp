@@ -11,6 +11,98 @@ down has to be repeated, and repeating it costs test-user slots that are capped 
 
 ---
 
+## Run record — 2026-08-19 → 2026-09-01
+
+Seller test user `3616169770` (integração `1WXplQLpUO8hcL3xQ4D0`) on `veste-france-debug`.
+Buyers `3615281810`, `3644236740`, `3646520554`.
+
+⚠️ **A deferral is a result.** Rows that could not run carry the reason, because "we tried
+and here is why it was impossible" is information a blank cell destroys — and re-deriving
+it costs test-user slots that are capped forever.
+
+| Row                                    | Verdict | Evidence                                                                                                                                                                                                                                                                |
+| -------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **0** roundTrip.test.ts                | ✅      | 25 files / 541 tests green, 2026-09-01                                                                                                                                                                                                                                  |
+| **0** allow-list still justified       | ⬜      | desk review, not done                                                                                                                                                                                                                                                   |
+| **2.1** OAuth connect                  | ✅      | token in `tokenDuravel`, `user_id` on the integração                                                                                                                                                                                                                    |
+| **2.2** replay the same `state`        | ✅      | rejected `reason=bad_state`, before the exchange                                                                                                                                                                                                                        |
+| **2.3** `/users/me` tags               | ✅      | `tags: ["user_product_seller","test_user","normal"]` — **outcome 1 of 3**: no `warehouse_management`, so `resolverModoEstoque` → `modo: 'items'` and every push took the ordinary `PUT /items`. ⛔ **#706's path is therefore unreachable on this account** — see below |
+| **2.4** `isContaDeTeste`               | ◐       | `TESTUSER…` confirmed on 4/4 real accounts; **`TETE…` never observed** — the prefix this row exists for does not occur on this application                                                                                                                              |
+| **3.1** size chart                     | ✅      | after the domain fix below                                                                                                                                                                                                                                              |
+| **3.2 / 3.3** publish + republish      | ✅      |                                                                                                                                                                                                                                                                         |
+| **3.4** L2 + variations + chart        | ✅      | family `5066110917767378`, 10 members, `SIZE_GRID_ID 7528821` + per-member `SIZE_GRID_ROW_ID`; ML groups all 10                                                                                                                                                         |
+| **3.5** reverificar anúncio            | ✅      | status refreshed, `errors` cleared — and surfaced #1339                                                                                                                                                                                                                 |
+| **3.6** kit produto                    | ✅      | published the component-min                                                                                                                                                                                                                                             |
+| **3** gap: shipping mode               | ✅      | `me2` / `xd_drop_off` / `cart_eligible`                                                                                                                                                                                                                                 |
+| **3** gap: `sale_terms`                | ✅      | **no category rejected the absence** — every publish in this run succeeded without warranty terms                                                                                                                                                                       |
+| **4.1** `GET /items` vs produto        | ✅      | via `inspect:anuncio --json`                                                                                                                                                                                                                                            |
+| **4.2** delete → re-import             | ✅      | 10/10 SKUs, dimensions, category, link id, both subcollection counts preserved. **1 finding** (member names)                                                                                                                                                            |
+| **4.3** import an ML-authored listing  | ✅      | surfaced the measurement-struct bug, fixed in #1353                                                                                                                                                                                                                     |
+| **4.4** mass import                    | ✅      | two passes: idempotent on 19 untouched listings, and recreated a deleted family of one with its ML id re-homed. **0 duplicates** both times                                                                                                                             |
+| **5.1 / 5.3** stock + price push       | ✅      | all 10 member quantities matched ML's dashboard exactly                                                                                                                                                                                                                 |
+| **5.2** bulk stock                     | ◐       | manual push ✅; **sweep never ran** — `MERCADO_LIVRE_STOCK_SYNC_ENABLED` is off                                                                                                                                                                                         |
+| **5.4** account-wide prices            | ◐       | job `completed`, 13 planejados = 2 enviados + 11 `PRECO_ANTIGO_IGUAL`, 0 falhas. **Reconciliation phase never ran** — flag-gated, so `naoEnumerados: 0` means "never looked"                                                                                            |
+| **5.5** #831 partial `variations`      | ⛔      | `needs-migration-window`                                                                                                                                                                                                                                                |
+| **6.1 / 6.2** order + pack             | ✅      | two packs (2 and 4 orders), each one pedido                                                                                                                                                                                                                             |
+| **6.3 / 6.4** coupon / promotion       | ⬜      | no coupon or promotion configurable on a test seller                                                                                                                                                                                                                    |
+| **6.5** shipment → `freteInicial`      | ✅      |                                                                                                                                                                                                                                                                         |
+| **6.6** etiqueta · **7.2** #758        | ⛔      | DC-e pending                                                                                                                                                                                                                                                            |
+| **6.7** NF-e upload                    | ⛔      | A1 certificate expired 2026-06-30                                                                                                                                                                                                                                       |
+| **6.8** claim                          | ✅      | ⭐ **#1336's first live run.** Incidente written, `disputaAbertaEm` set, `claimStatus` `opened` → `closed` off a second delivery, overlay **lifted** on close. No conversa — correct: `available_actions: []` on all three roles                                        |
+| **6.9** cancel, buyer side             | ✅      | pedido → `cancelado` once ML approved the refund                                                                                                                                                                                                                        |
+| **6.10** cancel, seller side           | ⬜      | not attempted                                                                                                                                                                                                                                                           |
+| **6.11** feedback                      | ⬜      | order cancelled before ML offered it                                                                                                                                                                                                                                    |
+| **6.12** pause / reactivate / close    | ✅      |                                                                                                                                                                                                                                                                         |
+| **7.1** money map                      | ✅      | reconciled **both** shapes: freight charged (`62,96`) and free shipping (`297,00`, seller absorbing `40,91`)                                                                                                                                                            |
+| **7.3** #957 `x-format-new`            | ✅      | recorded in §7.3                                                                                                                                                                                                                                                        |
+| **8.1** moderation → link doc          | ✅      | `INCONSISTENCY_CHECK` with `motivo` **and** `remedio`; `DOMAIN_WRONG_CATEG_V2` with `remedio: null` — both rows exactly as specified                                                                                                                                    |
+| **8.1** survival rows                  | ⬜      | ML never moderated a deliberately poor cover photo                                                                                                                                                                                                                      |
+| **8.1.1–8.1.5** notice UI              | ✅      |                                                                                                                                                                                                                                                                         |
+| **8.2** post-sale reply                | ✅      | inbound `recebido`, outbound reached `enviado`; `user_id` null on both, so the side comes from `ehEstadoDeSaida` as #1320 requires                                                                                                                                      |
+| **§8** `items_prices` parks nothing    | ✅      | zero parked, ever                                                                                                                                                                                                                                                       |
+| **§8** `stock-locations` parks nothing | ✅      | 3 parked docs, all 19–20/08 pre-#1129; **zero new** across a day of UP stock pushes                                                                                                                                                                                     |
+| **§9** fixtures                        | ✅      | 30 bodies captured — items, orders, billing_info, pack, both shipments with `costs`/`payments`/`orders`/`sla`, 3 payments, 1 claim                                                                                                                                      |
+| **§9** cleanup                         | ⬜      | listings and charts still live                                                                                                                                                                                                                                          |
+
+### The provider changed under us
+
+⚠️ **Mercado Livre no longer allows "envio a combinar" on a new listing** (2026-09-01).
+That makes `applyFreteSemEnvioStep` and the `no_shipping` tag **untestable going
+forward** — but **not dead code**: the legacy corpus arriving at the cutover may contain
+such orders, and ML may still emit the tag for other reasons. Keep the branch; record
+that it cannot be exercised.
+
+⚠️ **A too-small cover photo is a hard validation, not a moderation.** ML rejects the
+picture upload outright, so the listing never exists. `poor_quality_thumbnail` needs an
+image of adequate dimensions that is bad in some other way — and even then ML declined to
+moderate one within a day.
+
+### #706 cannot be settled from a test user
+
+`GET /users/me` on seller `3616169770` returned
+`tags: ["user_product_seller", "test_user", "normal"]`. `resolverModoEstoque` therefore
+answers `modo: 'items'` on every call, and
+**`MERCADO_LIVRE_STOCK_MULTIORIGEM_ENABLED` is never consulted** — the flag is only
+reached on a conta carrying `warehouse_management`.
+
+That is consistent with the whole run: had the tag been present with the flag off, the
+manual push would have thrown **409 `ML_CONTA_MULTIORIGEM`** at guard (2) before touching
+a single listing, and every push succeeded.
+
+So #706 needs ML to **activate multiorigem on a test user** — request-only, since there
+is no sandbox (`bulkEstoquePlan.ts`'s own note on the flag says as much). Until then the
+correct record for §2.3 is the outcome above, which is what the issue asks for as its
+fallback.
+
+ⓘ Two details from the same body worth keeping. The seller's `identification.number` is
+`11111111111` and its phone `01 1111-1111` — **ML test users ship placeholder identity**,
+which is why an order merged into an e2e fixture cliente on the `telefone` leg of
+`findOrCreateCliente`. And `status.mercadoenvios` reads `"not_accepted"` while ME2
+shipments demonstrably worked all run, so that field means something narrower than it
+appears; recorded as an observation, not a conclusion.
+
+---
+
 ## 0. The constraint that shapes everything
 
 **Mercado Livre has no sandbox.** From ML's own
@@ -805,6 +897,35 @@ If it goes ahead, the shape already exists: a `workflow_dispatch`-only lane behi
 enable flag, mirroring `nfe-live` — never on `pull_request`, and per root `CLAUDE.md`
 rule 5 its scope guard must degrade to **`run=false`**, never `true`.
 
+### What the run measured
+
+Four costs stopped being theoretical:
+
+- **Two of three buyer test users were blocked by ML** during the run, unprompted. A lane
+  that needs a buyer needs a buyer that stays alive, and slots are capped at 10 forever.
+- **The credential rotated on every script invocation.** Each `inspect:anuncio` /
+  `capture:fixtures` run refreshed and persisted a new `refresh_token`. A lane doing the
+  same races the deployed backend for the same single-use value.
+- **ML acts on its own clock, and sometimes not at all.** A cancellation took minutes to
+  reach `cancelado` (it waits on the refund); a claim opened and closed 3 minutes apart;
+  and a deliberately poor cover photo was **never moderated**, which killed the §8.1
+  survival rows outright. A lane cannot wait on any of that deterministically.
+- **ML changed behaviour mid-run** — "envio a combinar" stopped being creatable. A green
+  lane asserting the old behaviour would have gone red for a reason no PR caused.
+
+### The split that matters
+
+The rows a lane could automate are largely the ones **unit tests already cover** — publish,
+stock push, price push, the money map. The rows that actually found defects needed either a
+**human in the UI** (#1378's variation grid, #1380's chart photo, the size-chart domain) or
+**ML doing something on its own** (#1336's claim, the moderation reasons).
+
+⚠️ So the honest reading is that a live lane would re-assert what is already green and miss
+what is not. The evidence points at **capturing fixtures** rather than automating the run:
+the 30 bodies in §9 make the offline suite test real shapes, which is where the leverage is
+and it costs no test-user slots. **The decision is still Lucas's** — this section records the
+inputs, not the verdict.
+
 ---
 
 ## 10. Findings
@@ -812,21 +933,48 @@ rule 5 its scope guard must degrade to **`run=false`**, never `true`.
 One row per bug. Open an issue for each and link it from #1087. **Do not fix anything
 inside this run** — the run's job is evidence.
 
-| #   | Phase | What happened | Expected | Issue |
-| --- | ----- | ------------- | -------- | ----- |
-|     |       |               |          |       |
+**Fixed during the run and confirmed live:**
+
+| Phase | What happened                                                                                                                                                                                                            | Expected                               | Issue    |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- | -------- |
+| 3.4   | Saving a variation grid reported `SKU duplicado` on distinct SKUs, **after the write had already succeeded** — the staged rows were still present when the optimistic snapshot echo arrived, so every SKU appeared twice | the save reports nothing               | #1378 ✅ |
+| 3.4   | The size-chart photo **never reached a User-Products listing**. It is appended to the PARENT picture set, but under UP the parent is not a listing and members are built with `tabelaFoto = null`                        | the chart image ships with the listing | #1380 ✅ |
+| 4.3   | Dimensions and weight were not imported — the measurement struct was read from the wrong place                                                                                                                           | round-trip preserves them              | #1353 ✅ |
+
+**Open:**
+
+| Phase | What happened                                                                                                                                                                                                       | Expected                                    | Issue                  |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ---------------------- |
+| 3.5   | "Reverificar anúncio" clears `errors`/`causas` on evidence that does not bear on them. The listing is healthy; our rejected edit is still unsent, and nothing says so                                               | the operator learns their edit never landed | #1339                  |
+| 3.1   | A size chart whose `domain_id` does not match the category's `catalog_domain` resolves to `null` **silently**, and ML answers `SIZE_GRID_ID is missing`. The ERP held both strings and discarded them               | a local refusal naming both domains         | #1381                  |
+| §9    | The `orderML` mirror is a curated legacy-parity projection, not a capture — it drops `mediations`, `fulfilled`, `cancel_detail`, `feedback`, `taxes`, `seller`, `context`                                           | a wire-faithful fixture                     | #1342                  |
+| §9    | `capture:fixtures` aborts on **every** run: `claims/search` always answers 400, and any non-404 status is fatal                                                                                                     | a permanent 4xx is data                     | #1357                  |
+| 4.2   | Re-import collapses every UP member's `nome` to the **family name** — 10 distinct became 1. ML returns the distinguishing member title; the importer discards it                                                    | member names survive                        | ⬜ accepted, not filed |
+| 4.2   | `snapshot-produto` compares children **positionally**, which cannot be right for a UP family: `produto.ordem` does not survive migration, so order is arbitrary. Produced 10 phantom findings                       | match by SKU                                | ⬜                     |
+| 5.x   | The stock sweep gates on the ERP `publicado` flag — server-side in S1, so an unpublished produto with a **live listing** is dropped with no skip row. #804/#1072 already removed this from the PRICE plan           | stock syncs while the listing is live       | ⬜ prompt running      |
+| 5.x   | The stock sweep refuses every `ehKitVirtual` produto, so a virtual kit publishes with a quantity and then **freezes forever**. `publish.ts:1153` already reasons that this port never creates an ML kit             | a virtual kit syncs like any other          | ⬜ prompt running      |
+| 6.1   | The order import never supplies `order.buyer.id` to cliente matching, so the `idMercadoLivre` leg can never hit and every ML order matches on **telefone/email**. Observed merging a real buyer into an e2e fixture | the strongest identity is used              | ⬜ prompt running      |
+| —     | ML's claim `resolution` carries **no refund percentage**, twice out of two — the shape #364 warns defaults to **50%**                                                                                               | recorded                                    | #364                   |
+| —     | A produto with no variations exists in two shapes at once; the family-of-one's stock lives on a child every ERP surface ignores                                                                                     | one shape, addressable                      | #1398                  |
+| —     | The size-chart photo and description come wholly from the tabela, shared by every produto bound to it                                                                                                               | per-produto override                        | #1377                  |
 
 ## 11. Issues this run settles
 
-| Issue                             | Outcome                                                                                                                                                 | Result |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| #1087                             | closed by completing the run                                                                                                                            |        |
-| #831 — partial `variations` PUT   | closable — §5.5                                                                                                                                         |        |
-| #758 — PDF label branch           | closable — §7.2                                                                                                                                         |        |
-| #957 — shipments `x-format-new`   | **closable** — §7.3 (the code already merged; only the live call is left)                                                                               |        |
-| #706 — multiorigin contas         | closable once §2.3 lands on a `warehouse_management`-only conta AND Phase 5 sends through it; otherwise record which of the three §2.3 outcomes you got |        |
-| #1348 — `SELLER_PACKAGE_*` format | **closable** — §4.7. Run `probe:package-format`; the deliverable is a VERDICT written into `attrPackageDimensions`, not a code change                   |        |
-| #898, #1083, #1072, #707          | observed only — record evidence                                                                                                                         |        |
+| Issue                             | Outcome                                                                                                                                                             | Result                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| #1087                             | the run is complete on every row that could be run; the deferrals above carry their reasons                                                                         | ◐                           |
+| #831 — partial `variations` PUT   | closable — §5.5                                                                                                                                                     | ⛔ `needs-migration-window` |
+| #758 — PDF label branch           | closable — §7.2                                                                                                                                                     | ⛔ DC-e pending             |
+| #957 — shipments `x-format-new`   | **closable** — §7.3 (the code already merged; only the live call is left)                                                                                           | ✅ **closed 2026-08-27**    |
+| #706 — multiorigin contas         | closable once §2.3 lands on a `warehouse_management`-only conta AND Phase 5 sends through it; otherwise record which of the three §2.3 outcomes you got             | ⛔ no such conta available  |
+| #1348 — `SELLER_PACKAGE_*` format | **closable** — §4.7. Run `probe:package-format`; the deliverable is a VERDICT written into `attrPackageDimensions`, not a code change                               |                             |
+| #1322 / #1336 — `post_purchase`   | **settled** — a claim's open AND close both routed to the handler; incidente written, `disputaAbertaEm` set and then lifted                                         | ✅                          |
+| #1129 — `stock-locations` parks   | **settled** — zero new parked docs across a day of User-Products stock pushes                                                                                       | ✅                          |
+| #803 — `items_prices` no-op       | **settled** — zero parked, ever                                                                                                                                     | ✅                          |
+| #1252 — member send vs the family | **settled** — a member price send stamped **only** `ultimaModificacao` on the parent while two members were `paused/out_of_stock`. Non-vacuous: the values differed | ✅                          |
+| #1142 — reverificar on a family   | **settled** — the family stayed `active` while members diverged; no member spoke for the family                                                                     | ✅                          |
+| #364 — refund percentage          | **evidence added** — 2 of 2 real claims carry `applied_coverage: true` and **no percentage**, the shape that defaults to 50%                                        | ◐                           |
+| #898, #1083, #1072, #707          | observed only — record evidence                                                                                                                                     |                             |
 
 ---
 

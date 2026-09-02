@@ -65,6 +65,23 @@ export interface TaxonomiaResolution {
   grupoUid: string;
   /** `documents/grupoDeVariacoes/<grupoId>/variacoes/<varianteId>` — the `variacoesUid` wire format. */
   varianteFake: string;
+  /**
+   * The variante's `codigo`, carried out so the User-Products parent-sku
+   * recovery (#1400) can run without re-reading the grupo docs this plan already
+   * had in hand.
+   *
+   * ⚠️ `null` for every variante this pass CREATED — a freshly planned variante
+   * is written `codigo: null` below — and that is exactly the case
+   * `skuPaiPorSufixo` must refuse rather than guess through. Do not "fix" it by
+   * falling back to the value_name: the código is the seller's own sku fragment,
+   * and inventing one yields a parent sku that matches no child.
+   *
+   * ⚠️ The grupo's `ordem` is deliberately NOT carried alongside it.
+   * `skuPaiPorSufixo` is order-independent because it has to be — every grupo
+   * `planTaxonomia` creates gets `ordem: 1`, so a multi-grupo imported taxonomy
+   * ties and no ordering can be recovered from it anyway.
+   */
+  varianteCodigo: string | null;
 }
 
 export interface TaxonomiaPlan {
@@ -330,6 +347,7 @@ export function planTaxonomia(
       varianteId: variante.id,
       grupoUid: grupo.id,
       varianteFake: varianteFakePath(grupo.id, variante.id),
+      varianteCodigo: variante.codigo ?? null,
     });
   }
 

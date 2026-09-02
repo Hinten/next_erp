@@ -36,6 +36,69 @@ export function attrSku(sku: string): MlAttribute {
 }
 
 /**
+ * The custom-characteristic NAME carrying the FAMILY parent's sku (#1400).
+ *
+ * ⚠️ **Frozen once any família has been published with it.** ML computes a
+ * family from `family_name`, `domain_id`, `user_id` and the attributes, and a
+ * custom attribute contributes its *name* to that hash ("os customizados apenas
+ * contribuem com seu id e nome para o cálculo") — so renaming this string moves
+ * every member of every família that carries it into a DIFFERENT família.
+ * Its *value* is explicitly free to vary, which is what lets an edited parent
+ * sku republish safely; see {@link attrSkuPai}.
+ * Pinned by a test asserting the literal, because every other reference goes
+ * through this constant and a rename would otherwise be invisible to the suite.
+ *
+ * ⚠️ **It is PUBLIC** — a custom characteristic renders in the anúncio's ficha
+ * técnica, so this string is read by buyers. Hence ordinary Brazilian retail
+ * phrasing rather than the internal name for the value it carries. ML offers no
+ * seller-settable alternative: its `hidden` tag is metadata ML *returns* for
+ * attributes IT defines and appears in no request body, and the família resource
+ * (`PUT /user-products-families/{id}`) takes only PARENT_PK/ITEM_CONDITION —
+ * *"Não são permitidos atributos custom."*
+ *
+ * ⚠️ **It must stay DISTINCT from every ML attribute's display name**, and the
+ * match is **id-AGNOSTIC**, not id-less-only: `skuPaiFromAttributes` folds
+ * `a.name` and never looks at `a.id` (deliberately — ML may echo our custom
+ * characteristic back WITH an id). So an ML-DEFINED attribute, which always has
+ * an id, is matched too, and a collision costs TWO things:
+ *
+ *  - rung 1 of the import chain reports that foreign attribute's value as the
+ *    parent sku;
+ *  - {@link attributesFromItem} excludes it from `link.attributes`, so the real
+ *    attribute stops being republished — on SIMPLE items too, which never send
+ *    this characteristic at all.
+ *
+ * ⚠️ Checked 2026-09-01 against ML's `atributos` reference and a docs search: no
+ * documented attribute is displayed under this name (the near misses are
+ * `Modelo` / `Modelo Alfanumérico` and GTIN's `Código universal de produto`).
+ * That is NOT proof of absence — only a live authenticated sweep of
+ * `GET /categories/{id}/attributes` over the categories this seller lists in can
+ * establish that, and no lane may hold ML credentials. Since the value freezes
+ * at first publish, run that sweep BEFORE the first deploy, not after.
+ */
+export const ML_ATTR_SKU_PAI_NOME = 'Código de referência';
+
+/**
+ * The FAMILY parent produto's sku, as an id-less custom characteristic (#1400).
+ *
+ * Under User Products there is no parent ML item — a família is N items sharing
+ * a `family_name`, and each one's `SELLER_SKU` is the MEMBER's. So the parent's
+ * own sku has no native slot, and an import of a família this ERP never saw
+ * before has nothing to recover it from. This is that slot.
+ *
+ * ⚠️ Id-less on purpose: `SELLER_SKU` is taken by the member and ML permits one
+ * per item, so this cannot be an id-bearing attribute. {@link attributeToMercadoLivre}
+ * emits `name` for exactly this shape.
+ *
+ * ⚠️ Its PRESENCE must be uniform across a família (it is in the family hash),
+ * while its VALUE may differ per member. `publishUserProduct.ts` owns that rule;
+ * do not send this from anywhere else.
+ */
+export function attrSkuPai(sku: string): MlAttribute {
+  return { name: ML_ATTR_SKU_PAI_NOME, value_name: sku };
+}
+
+/**
  * Brand — the produto's `extraData.marca`, once `resolveMarcaAnuncio` has said
  * the produto is the one deciding.
  *

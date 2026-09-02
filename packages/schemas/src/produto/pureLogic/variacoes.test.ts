@@ -13,6 +13,7 @@ import {
   reconstructFromVariacoesUid,
   remakeFakePath,
   sameCombo,
+  skuPaiPorSufixo,
   sortGrupoUids,
   splitFotoSections,
   varianteFakePath,
@@ -263,6 +264,101 @@ describe('reconstructFromSkuSuffix (mode B — legacy children)', () => {
     if (!a.ok || !b.ok) throw new Error('expected ok');
     // P+Verde [0,1] sorts before M+Azul [1,0].
     expect(compareSortKeys(a.sortKey, b.sortKey)).toBeLessThan(0);
+  });
+});
+
+describe('skuPaiPorSufixo (#1400 — recover a parent sku from a child)', () => {
+  const tamECor = ['P', 'AZ'];
+
+  it('removes the códigos, exactly inverting cartesianVariations', () => {
+    // Build a child the real way, then recover the parent from it — the pair
+    // that must come out EQUAL.
+    const combos = cartesianVariations({
+      parentNome: 'Camiseta',
+      parentSku: 'CAM',
+      grupos: fixtures(),
+      selectedUids: [varianteFakePath('TAM', 'p'), varianteFakePath('CORES', 'az')],
+    });
+    const filho = combos[0]!;
+    expect(filho.sku).toBe('CAMPAZ');
+    expect(skuPaiPorSufixo(filho.sku, tamECor)).toBe('CAM');
+  });
+
+  it('is ORDER-INDEPENDENT — the tie that made the ordem version inert', () => {
+    // ⚠️ The regression this function was rewritten for. `planTaxonomia` stamps
+    // `ordem: 1` on EVERY grupo it creates, so every multi-grupo taxonomy the ML
+    // importer built ties on ordem. A peel that mirrored `sortGruposByOrdem`'s
+    // ascending comparator kept the input order on a tie instead of reversing it
+    // (both sorts are stable), and refused a perfectly good sku — silently
+    // dropping the round-trip rung for exactly the population it serves.
+    expect(skuPaiPorSufixo('CAM-AZ-P', ['-AZ', '-P'])).toBe('CAM');
+    // Every permutation of the same códigos must give the SAME answer, because
+    // order can only decide whether the tail decomposes — never into what.
+    expect(skuPaiPorSufixo('CAM-AZ-P', ['-P', '-AZ'])).toBe('CAM');
+    expect(skuPaiPorSufixo('CAMPAZ', [...tamECor].reverse())).toBe('CAM');
+    // Three grupos, every ordering.
+    for (const ordem of [
+      ['A', 'B', 'C'],
+      ['C', 'B', 'A'],
+      ['B', 'C', 'A'],
+    ]) {
+      expect(skuPaiPorSufixo('CAMABC', ordem)).toBe('CAM');
+    }
+  });
+
+  it('backtracks instead of matching greedily', () => {
+    // A greedy longest-match takes 'PP' off the end of 'CAMPPP' and then cannot
+    // place 'P' — but 'P' + 'PP' does decompose it.
+    expect(skuPaiPorSufixo('CAMPPP', ['P', 'PP'])).toBe('CAM');
+    // Two identical códigos are not ambiguous in the ANSWER, so they resolve.
+    expect(skuPaiPorSufixo('CAMPP', ['P', 'P'])).toBe('CAM');
+  });
+
+  it('refuses when any variante has no código — the FRESH-IMPORT case', () => {
+    // `planTaxonomia` creates variantes with `codigo: null`, so this is what a
+    // first-ever ML import looks like. Returning the child's own sku here would
+    // give the parent a sku that belongs to one of its children.
+    expect(skuPaiPorSufixo('CAMPAZ', [null])).toBeNull();
+    expect(skuPaiPorSufixo('CAMPAZ', [undefined])).toBeNull();
+    expect(skuPaiPorSufixo('CAMPAZ', [''])).toBeNull();
+    // Partially known is still unknown — never remove the half we can.
+    expect(skuPaiPorSufixo('CAMPAZ', ['P', null])).toBeNull();
+  });
+
+  it('refuses when the tail is not a concatenation of the códigos', () => {
+    // ⚠️ The check that stops this becoming "chop N characters off anything".
+    // The arithmetic alone would answer 'CAM-A' here.
+    expect(skuPaiPorSufixo('CAM-AZUL-P', ['-AZ', '-P'])).toBeNull();
+    // Right códigos, but the tail holds something else too.
+    expect(skuPaiPorSufixo('CAMPAZX', tamECor)).toBeNull();
+    expect(skuPaiPorSufixo('CAMPXAZ', tamECor)).toBeNull();
+  });
+
+  it('refuses rather than returning an empty parent', () => {
+    expect(skuPaiPorSufixo('PAZ', tamECor)).toBeNull();
+    expect(skuPaiPorSufixo('', tamECor)).toBeNull();
+    expect(skuPaiPorSufixo(null, tamECor)).toBeNull();
+    // No grupos ⇒ nothing was proven, so it must NOT echo the sku back.
+    expect(skuPaiPorSufixo('CAMPAZ', [])).toBeNull();
+  });
+
+  it('NEAR-MISSES stay distinct — the match does not widen', () => {
+    // Byte-exact: case differs, so nothing matches.
+    expect(skuPaiPorSufixo('CAMPaz', tamECor)).toBeNull();
+    // A LONGER código that merely ends with the real one.
+    expect(skuPaiPorSufixo('CAM-01', ['1'])).toBe('CAM-0');
+    expect(skuPaiPorSufixo('CAM-1', ['1'])).toBe('CAM-');
+    // …so two children one character apart yield two DIFFERENT parents, never one.
+    expect(skuPaiPorSufixo('CAM-01', ['1'])).not.toBe(skuPaiPorSufixo('CAM-1', ['1']));
+    // Whitespace inside the sku is significant; only the ends are trimmed.
+    expect(skuPaiPorSufixo('  CAMPAZ  ', tamECor)).toBe('CAM');
+    expect(skuPaiPorSufixo('CAM PAZ', tamECor)).toBe('CAM ');
+  });
+
+  it('refuses an absurd number of grupos rather than searching', () => {
+    expect(skuPaiPorSufixo(`CAM${'x'.repeat(17)}`, Array<string>(17).fill('x'))).toBeNull();
+    // …while the bound itself still works.
+    expect(skuPaiPorSufixo(`CAM${'x'.repeat(16)}`, Array<string>(16).fill('x'))).toBe('CAM');
   });
 });
 

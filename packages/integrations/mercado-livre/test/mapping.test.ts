@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ML_ATTR_SKU_PAI_NOME,
   ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
   ML_PRODUTO_HERDADO_ATTRIBUTE_IDS,
   attrBrand,
@@ -10,6 +11,7 @@ import {
   attrSizeGridId,
   attrSizeGridRowId,
   attrSku,
+  attrSkuPai,
   attrWeightKg,
   attributeToMercadoLivre,
 } from '../src/mapping/attributes';
@@ -20,6 +22,7 @@ import {
   estadoFromMlStatus,
   userProductMemberInputs,
 } from '../src/mapping/itemPayload';
+import { attributesFromItem, skuPaiFromAttributes } from '../src/mapping/importItem';
 
 describe('attributeToMercadoLivre', () => {
   it('emits value_name with the unit appended and keeps unit_id', () => {
@@ -62,6 +65,70 @@ describe('attributeToMercadoLivre', () => {
     });
     expect(length).toEqual({ id: 'SELLER_PACKAGE_LENGTH', value_name: '2 cm' });
     expect(width).toEqual({ id: 'SELLER_PACKAGE_WIDTH', value_name: '3 cm' });
+  });
+});
+
+describe('ML_ATTR_SKU_PAI_NOME (#1400)', () => {
+  it('is PINNED to the exact published string', () => {
+    // ⚠️ This is the only assertion in the suite that would notice a rename.
+    // Every other test — and all production code — goes through the constant, so
+    // changing its value is invisible everywhere else.
+    //
+    // It must not change, because a custom attribute contributes its NAME to
+    // ML's family-id hash: renaming it moves every member of every família that
+    // carries it into a DIFFERENT família, which ML reports as
+    // `family_id.collision` and which no later publish repairs. Since #1414 the
+    // characteristic is sent for every new família with no flag, so this value
+    // is live on real listings.
+    //
+    // It is also PUBLIC — it renders in the anúncio's ficha técnica — which is
+    // why it reads as ordinary Brazilian retail phrasing rather than naming the
+    // internal field it carries.
+    expect(ML_ATTR_SKU_PAI_NOME).toBe('Código de referência');
+  });
+
+  it('does not collide with an ML attribute display name', () => {
+    // ⚠️ The match is id-AGNOSTIC: `skuPaiFromAttributes` folds `name` and never
+    // reads `id`, so these ML-DEFINED attributes — which all HAVE ids — can
+    // collide. (An id-less-only reading would make this test vacuous; it is
+    // not.) `skuPaiHijack` below pins the consequence.
+    //
+    // ⚠️ Eight literals cannot establish ABSENCE across ML's whole taxonomy, and
+    // the constant moved from a bespoke phrase to generic retail wording, so the
+    // population of plausible collisions grew. Checked 2026-09-01 against ML's
+    // `atributos` reference and a docs search — no documented attribute uses
+    // this name — but the authoritative check is a live authenticated sweep of
+    // `GET /categories/{id}/attributes` over the categories this seller lists
+    // in, which no lane may run (no ML credentials). Do it before the first
+    // deploy: the name freezes then.
+    const folded = ML_ATTR_SKU_PAI_NOME.trim().toLowerCase();
+    for (const mlName of [
+      'Modelo',
+      'Modelo Alfanumérico',
+      'Código universal de produto',
+      'SKU',
+      'GTIN',
+      'Marca',
+      'Cor',
+      'Tamanho',
+    ]) {
+      expect(folded).not.toBe(mlName.trim().toLowerCase());
+    }
+  });
+
+  it('a name collision would hijack rung 1 AND silence the real attribute', () => {
+    // Pins what a collision actually costs, so the guard above is sized against
+    // observed behaviour rather than against the docblock's description of it.
+    const foreign = {
+      id: 'REFERENCE_CODE',
+      name: ML_ATTR_SKU_PAI_NOME,
+      value_name: 'XYZ-123',
+    };
+    // 1. Read as the parent sku, despite carrying an id that is not ours.
+    expect(skuPaiFromAttributes([foreign])).toBe('XYZ-123');
+    // 2. …and excluded from the link doc, so it stops being republished — which
+    //    reaches SIMPLE items too, though they never send this characteristic.
+    expect(attributesFromItem([foreign])).toEqual([]);
   });
 });
 
@@ -437,6 +504,34 @@ describe('buildUserProductItemPayload', () => {
     });
     const attrs = data.attributes as Array<{ id: string; value_name: string }>;
     expect(attrs.find((a) => a.id === 'SELLER_SKU')?.value_name).toBe('SKU-PAI');
+  });
+
+  it('carries the parent-sku characteristic to the member, id-less (#1400)', () => {
+    // The family attribute list is what `assemblePublishInput` produces, so an
+    // id-less entry there is exactly how the parent sku reaches a member.
+    const attributes = [...(base.attributes ?? []), attrSkuPai('SKU-PAI')];
+    for (const isUpdate of [false, true]) {
+      const data = buildUserProductItemPayload({ ...base, attributes, isUpdate });
+      const attrs = data.attributes as Array<Record<string, unknown>>;
+      const skuPai = attrs.filter((a) => a.name === ML_ATTR_SKU_PAI_NOME);
+      // Present on the UPDATE too: its VALUE is not in ML's family hash, so an
+      // edited parent sku must be able to propagate.
+      expect(skuPai).toHaveLength(1);
+      expect(skuPai[0]).toEqual({ name: ML_ATTR_SKU_PAI_NOME, value_name: 'SKU-PAI' });
+      // ⚠️ It must NOT carry an id — `SELLER_SKU` is the member's and ML allows
+      // one per item. And it must not displace that one.
+      expect(skuPai[0]!.id).toBeUndefined();
+      expect(attrs.find((a) => a.id === 'SELLER_SKU')?.value_name).toBe('SKU-M');
+    }
+  });
+
+  it('sends NO parent-sku characteristic when the caller passes none', () => {
+    // The default, and the only state that can never split a live família.
+    for (const isUpdate of [false, true]) {
+      const data = buildUserProductItemPayload({ ...base, isUpdate });
+      const attrs = data.attributes as Array<Record<string, unknown>>;
+      expect(attrs.some((a) => a.name === ML_ATTR_SKU_PAI_NOME)).toBe(false);
+    }
   });
 
   it('inherits the family gallery only when the member has no pictures', () => {

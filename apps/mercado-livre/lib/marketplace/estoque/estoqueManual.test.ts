@@ -7,7 +7,6 @@ import {
   ManualPushGuardError,
   enviarEstoqueManual,
   manualPushConcurrency,
-  resolverAnchors,
   toPushOutcome,
 } from './estoqueManual';
 import {
@@ -204,31 +203,6 @@ describe('toPushOutcome — the channel-neutral mapping', () => {
     [{ outcome: 'paused-requeued', reason: null }, 'nao-tentado', 'conta-pausada'],
   ] as const)('%o → %s', (result, outcome, motivo) => {
     expect(toPushOutcome(result as StockSendResult)).toEqual({ outcome, motivo });
-  });
-});
-
-/* ------------------------------ resolverAnchors ----------------------------- */
-
-describe('resolverAnchors', () => {
-  it('maps a variation child to its parent and dedupes with the parent', async () => {
-    const db = fakeDb({
-      PROD: { paiId: null, nome: 'Camiseta' },
-      CH1: { paiId: 'PROD', nome: 'Camiseta P' },
-    });
-    const res = await resolverAnchors(db, ['CH1', 'PROD']);
-    expect(res.anchorIds).toEqual(['PROD']);
-    expect(res.anchorPorProdutoId.get('CH1')).toBe('PROD');
-    expect(res.naoEncontrados).toEqual([]);
-  });
-
-  it('reports a missing produto instead of silently dropping it', async () => {
-    // `documents([...])` SILENTLY OMITS a missing doc, so the pipeline alone
-    // could never tell "does not exist" from "is not an anchor". This pass is
-    // the only place that distinction is available.
-    const db = fakeDb({ PROD: { paiId: null, nome: 'Camiseta' }, SUMIU: null });
-    const res = await resolverAnchors(db, ['PROD', 'SUMIU']);
-    expect(res.anchorIds).toEqual(['PROD']);
-    expect(res.naoEncontrados).toEqual(['SUMIU']);
   });
 });
 

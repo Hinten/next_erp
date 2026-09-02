@@ -60,6 +60,8 @@ import {
   resolverModoEstoque,
 } from './bulkEstoquePlan';
 import { type StockContextLoader, type StockSendResult, processStockSendTask } from './estoqueSend';
+import { resolverAnchors } from '../core/anchors';
+import { runPool } from '../core/pool';
 import type { LinkStatusTarget } from '../anuncios/itemsStatusSync';
 import { MlTasksDisabledError } from '../notificacoes/mlTasks';
 import type { MlStockTaskScheduler } from './mlStockTasks';
@@ -325,68 +327,6 @@ export function toPushOutcome(r: StockSendResult): {
     case 'erro-registrado':
       return { outcome: 'falha', motivo: r.reason ?? 'erro-canal' };
   }
-}
-
-/* ----------------------------- anchor resolution ---------------------------- */
-
-export interface AnchorsResolvidos {
-  /** Anchor ids, deduped, in first-seen request order. */
-  anchorIds: string[];
-  /** Requested produto id → the anchor it resolved to (outcome attribution). */
-  anchorPorProdutoId: Map<string, string>;
-  /** Anchor id → the best `nome` we saw for it (report labels). */
-  nomePorProdutoId: Map<string, string>;
-  /** Requested ids with no produto document. */
-  naoEncontrados: string[];
-}
-
-/**
- * Resolve each selected produto to its family ANCHOR, one masked point read each.
- *
- * Not folded into the pipeline, for a decisive reason: `documents([...])`
- * **silently omits a missing document**, so the pipeline alone cannot tell
- * "produto does not exist" from "produto exists but is not an anchor" — and the
- * per-listing report needs both. It is also emulator-runnable, so half the
- * route's tests need no pipeline mock.
- *
- * Exactly ONE hop. A 2-deep `paiId` chain is pathological; it simply comes back
- * with no family row and is reported `familia-nao-encontrada`.
- */
-export async function resolverAnchors(
-  db: Firestore,
-  produtoIds: readonly string[],
-): Promise<AnchorsResolvidos> {
-  const pedidos = [...new Set(produtoIds)];
-  const snaps = await db.getAll(...pedidos.map((id) => produtoCollection.docRef(db, {}, id)), {
-    fieldMask: ['paiId', 'nome'],
-  });
-
-  const anchorIds: string[] = [];
-  const vistos = new Set<string>();
-  const anchorPorProdutoId = new Map<string, string>();
-  const nomePorProdutoId = new Map<string, string>();
-  const naoEncontrados: string[] = [];
-
-  snaps.forEach((snap, i) => {
-    const produtoId = pedidos[i]!;
-    if (!snap.exists) {
-      naoEncontrados.push(produtoId);
-      return;
-    }
-    const data = (snap.data() ?? {}) as Record<string, unknown>;
-    if (typeof data.nome === 'string' && data.nome !== '') {
-      nomePorProdutoId.set(produtoId, data.nome);
-    }
-    const paiId = typeof data.paiId === 'string' && data.paiId !== '' ? data.paiId : null;
-    const anchorId = paiId ?? produtoId;
-    anchorPorProdutoId.set(produtoId, anchorId);
-    if (!vistos.has(anchorId)) {
-      vistos.add(anchorId);
-      anchorIds.push(anchorId);
-    }
-  });
-
-  return { anchorIds, anchorPorProdutoId, nomePorProdutoId, naoEncontrados };
 }
 
 /* ---------------------------------- the run --------------------------------- */
@@ -824,25 +764,6 @@ async function enviarComLadder(
   }
   // Unreachable: the loop either returns or throws on its last iteration.
   throw ultimoErro instanceof Error ? ultimoErro : new Error('envio manual falhou');
-}
-
-/** Fixed-size worker pool preserving no particular completion order. Exported
- * for `precoManual.ts`, which bounds its sends exactly the same way. */
-export async function runPool<T>(
-  items: readonly T[],
-  size: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  if (items.length === 0) return;
-  let next = 0;
-  const workers = Array.from({ length: Math.max(1, Math.min(size, items.length)) }, async () => {
-    for (;;) {
-      const i = next++;
-      if (i >= items.length) return;
-      await worker(items[i]!);
-    }
-  });
-  await Promise.all(workers);
 }
 
 function montarResposta(

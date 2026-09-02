@@ -21,7 +21,7 @@
  * Pure (no IO) — round-trippable against real item fixtures, same shape as the
  * other two mapping modules.
  */
-import { skuFromAttributes } from './importItem';
+import { skuFromAttributes, skuPaiFromAttributes } from './importItem';
 import type { MappedMlVariation } from './importVariations';
 import type { MlItem } from '../types';
 
@@ -35,6 +35,16 @@ export interface MappedUpMember {
   familyId: string | null;
   /** `familyId ?? item.id` — the family/parent dedup key (link `id` field + fresh parent produtoId input). */
   canonicalId: string;
+  /**
+   * The FAMILY parent's own sku, off the custom characteristic publish writes
+   * (#1400) — null on every família published before that shipped, and on any
+   * família ML answers without it.
+   *
+   * ⚠️ Parent-level, unlike `member.sku` below, which is this member's own
+   * `SELLER_SKU`. Under User Products the two are genuinely different values
+   * living on the SAME item, which is why the parent needed a slot at all.
+   */
+  skuPai: string | null;
   /** This member's own child-produto shape — reuses the variations-model shape (#520). */
   member: MappedMlVariation;
 }
@@ -53,6 +63,7 @@ export function mapUpMemberToImport(item: MlItem): MappedUpMember {
   return {
     familyId,
     canonicalId,
+    skuPai: skuPaiFromAttributes(item.attributes),
     member: {
       variationId: item.id,
       sku: skuFromAttributes(item.attributes),

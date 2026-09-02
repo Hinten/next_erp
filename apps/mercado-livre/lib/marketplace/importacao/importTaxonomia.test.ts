@@ -105,6 +105,9 @@ describe('resolveTaxonomia — create path', () => {
         varianteId: '170',
         grupoUid: 'SIZE',
         varianteFake: 'documents/grupoDeVariacoes/SIZE/variacoes/170',
+        // #1400 — a variante this pass CREATED has no código, and that null is
+        // what makes `skuPaiPorSufixo` refuse instead of inventing a parent sku.
+        varianteCodigo: null,
       },
     ]);
 
@@ -220,6 +223,7 @@ describe('resolveTaxonomia — update path (existing grupo)', () => {
         varianteId: '190',
         grupoUid: 'SIZE',
         varianteFake: 'documents/grupoDeVariacoes/SIZE/variacoes/190',
+        varianteCodigo: null,
       },
     ]);
 

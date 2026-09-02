@@ -318,6 +318,54 @@ export const envioPrecoResultSchema = z.object({
 export type MercadoLivreEnvioPrecoResult = z.infer<typeof envioPrecoResultSchema>;
 
 /**
+ * One listing's outcome from a PAUSE / REACTIVATE run (`anuncio-status`).
+ *
+ * Channel-NEUTRAL on purpose, exactly like the two push envelopes above: a
+ * second marketplace's `/api/marketplace/<canal>/anuncio-status` answers in this
+ * shape, and `lib/marketplace/anuncioStatus` dispatches without knowing which
+ * one replied.
+ *
+ * ⚠️ `statusFinal` is what ML REPORTS after the write, never the status that was
+ * requested. A reactivate ML answered `paused` + `out_of_stock` for comes back
+ * `paused` here, and the row must read that way rather than as a success.
+ */
+export const anuncioStatusListingSchema = z.object({
+  produtoId: z.string(),
+  produtoNome: z.string().nullable(),
+  anuncioId: z.string().nullable(),
+  linkDocId: z.string().nullable(),
+  outcome: z.enum(['enviado', 'pulado', 'falha', 'nao-tentado']),
+  /** Machine code; null only on an applied listing. */
+  motivo: z.string().nullable(),
+  /** Operator-facing pt-BR text — the BACKEND owns this wording. */
+  mensagem: z.string(),
+  statusFinal: z.string().nullable(),
+  /** Member tally for a User-Products family; null for a simple listing. */
+  membros: z.object({ total: z.number(), aplicados: z.number() }).nullable(),
+});
+export type MercadoLivreAnuncioStatusListing = z.infer<typeof anuncioStatusListingSchema>;
+
+export const anuncioStatusResultSchema = z.object({
+  canal: z.literal('mercado-livre'),
+  integracaoId: z.string(),
+  acao: z.enum(['pausar', 'reativar']),
+  solicitados: z.number(),
+  familias: z.number(),
+  resumo: z.object({
+    aplicados: z.number(),
+    pulados: z.number(),
+    falhas: z.number(),
+    naoTentados: z.number(),
+  }),
+  listings: z.array(anuncioStatusListingSchema),
+  /** Requested produtos that produced no listing at all, and why. */
+  produtosSemAnuncio: z.array(envioEstoqueSemEnvioSchema),
+  /** ISO-8601 — set when ML rate-limited the conta. */
+  pausadoAte: z.string().nullable(),
+});
+export type MercadoLivreAnuncioStatusResult = z.infer<typeof anuncioStatusResultSchema>;
+
+/**
  * The RUNNING jobs of both bulk flows for a set of contas
  * (`GET jobs-em-andamento`). Each entry carries the `jobId` the caller then
  * polls through the per-flow `…Status` methods, plus the `integracaoId` that

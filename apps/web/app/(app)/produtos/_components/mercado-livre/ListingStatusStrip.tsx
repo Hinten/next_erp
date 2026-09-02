@@ -2,6 +2,7 @@
 
 import { Alert, Anchor, Badge, Button, Group, List, Stack, Text } from '@mantine/core';
 import {
+  ESTADO_PUBLICACAO_ML,
   ESTADO_PUBLICACAO_ML_LABELS,
   type EstadoPublicacaoMl,
   type ProdutoMercadoLivreLink,
@@ -190,6 +191,22 @@ export function ListingStatusStrip({
         <Text size="xs" c="dimmed">
           Mercado Livre: {link.status ?? 'sem status'}
           {subStatus.length > 0 ? ` · ${subStatus.join(', ')}` : ''}
+        </Text>
+      )}
+
+      {/* ⚠️ The pause is UNDONE BY AN ORDINARY SAVE, and nothing else says so.
+          `buildItemPayload`/`buildUserProductItemPayload` send `status: 'active'`
+          on every update — legacy parity, kept deliberately — so "Salvar
+          anúncios" or "Republicar" reactivates a listing the operator paused on
+          purpose, with no message anywhere. Shipping the pause button without
+          this line would be shipping a control an unrelated action silently
+          reverses.
+
+          Gated on the DERIVED estado rather than the raw status, so it also
+          covers a legacy row that carries `estado 'pa'` and no `status`. */}
+      {estado === ESTADO_PUBLICACAO_ML.pausado && (
+        <Text size="xs" c="orange.7" data-testid="ml-aviso-pausado">
+          Anúncio pausado. Salvar ou republicar este anúncio o reativa no Mercado Livre.
         </Text>
       )}
 

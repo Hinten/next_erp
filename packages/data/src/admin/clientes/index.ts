@@ -10,3 +10,4 @@ export {
   type FindOrCreateClienteResult,
   type RejectedClienteCandidate,
 } from './findOrCreateCliente';
+export { otherOwnerOfMlId } from './otherOwnerOfMlId';

@@ -33,6 +33,8 @@ import {
   variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
+import { toOuterRef } from '@delfrance/schemas';
+
 import { parsePmlOuterRef, refMatchesIntegracao } from '../core/linkRefs';
 
 /** A member link plus the family parent link it hangs off. */
@@ -119,4 +121,59 @@ export function familyMemberQuery(db: Firestore, pmlOuterRef: string): Query {
   return variacaoMercadoLivreLinkCollection
     .groupQuery(db)
     .where('produtoMercadoLivreOuterRef', '==', pmlOuterRef);
+}
+
+/** One member link a family holds, reduced to what a per-member ML call needs. */
+export interface MembroDaFamilia {
+  itemId: string;
+  memberDocId: string;
+  memberProdutoId: string;
+  pmlOuterRef: string;
+}
+
+/**
+ * The family's member links, or `[]` when this listing has none.
+ *
+ * ⚠️ Only members carrying an `itemId` count, and that filter is what keeps a
+ * LEGACY `variations[]` listing on the single-item path where it belongs. Legacy
+ * variations are rows in one ML item, not listings — `importCore.ts` leaves
+ * their `itemId` null — so addressing them as items would ask ML about ids that
+ * do not exist. Only `publishUserProduct` and `importVariations` write `itemId`,
+ * and only under User Products.
+ *
+ * The `pmlOuterRef` is rebuilt rather than read off a member, so the fold reads
+ * by the same key regardless of which member answered. Safe as an exact `==`:
+ * every writer stores it through `variacaoMercadoLivreLinkCollection.parse()`,
+ * and `toOuterRef` normalises to the canonical `documents/…` form. Rides the
+ * declared `produtoMercadoLivreOuterRef` COLLECTION_GROUP index.
+ *
+ * ⚠️ Every ML surface that acts on a listing by its PARENT link must call this
+ * FIRST. The parent link's `id` is `familyId ?? itemIds[0]` (`publish.ts`), so
+ * under User Products it addresses either nothing (`GET`/`PUT /items/{familyId}`
+ * → 404) or exactly ONE member — and acting on member 0 while reporting the
+ * family is how #1142 silently cancelled live variations. Two callers today:
+ * `reverificarAnuncio` and `anuncioStatus`. The parameter is structural rather
+ * than `LinkStatusTarget` so this module stays free of an `itemsStatusSync`
+ * import, which imports THIS one.
+ */
+export async function membrosDaFamilia(
+  db: Firestore,
+  target: { produtoId: string; linkDocId: string },
+): Promise<MembroDaFamilia[]> {
+  const pmlOuterRef = toOuterRef(
+    `produtos/${target.produtoId}/produtoMercadoLivre/${target.linkDocId}`,
+  );
+  const snap = await familyMemberQuery(db, pmlOuterRef).get();
+  const membros: MembroDaFamilia[] = [];
+  for (const d of snap.docs) {
+    const raw = d.data() as Record<string, unknown>;
+    if (typeof raw.itemId !== 'string' || raw.itemId === '') continue;
+    membros.push({
+      itemId: raw.itemId,
+      memberDocId: d.id,
+      memberProdutoId: d.ref.parent?.parent?.id ?? '',
+      pmlOuterRef,
+    });
+  }
+  return membros;
 }

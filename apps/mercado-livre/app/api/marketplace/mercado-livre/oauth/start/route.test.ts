@@ -5,8 +5,14 @@ import { PERM } from '@delfrance/auth';
 import { verifyState } from '@delfrance/data/admin/oauth-state';
 
 // Mock the two seams: admin auth (drives verifyCaller) and the ML context loader
-// (sidesteps Firestore + the credential store + the plugin). signState /
-// verifyState stay REAL so the state the callback relies on genuinely round-trips.
+// (sidesteps Firestore + the credential store). signState / verifyState stay
+// REAL so the state the callback relies on genuinely round-trips.
+//
+// ⚠️ So does `buildAuthorizeUrl` now. Until #815 the mocked context carried a
+// `channel.oauthFlow.start` that RE-IMPLEMENTED that builder — same parameters,
+// written twice — so these assertions checked the fixture against itself and
+// could not have caught a change in the real URL shape. The route calls the
+// library function directly now, and the env below is what it reads.
 const h = vi.hoisted(() => ({
   verifyIdToken: vi.fn(),
   loadCtx: vi.fn(),
@@ -52,33 +58,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('MERCADO_LIVRE_STATE_SECRET', STATE_SECRET);
   vi.stubEnv('MERCADO_LIVRE_PKCE_ENABLED', '');
+  vi.stubEnv('MERCADO_LIVRE_CLIENT_ID', 'CID');
+  vi.stubEnv('MERCADO_LIVRE_CLIENT_SECRET', 'shh');
+  // Blank, not unset — `mercadoLivreRedirectUri()` must treat both the same and
+  // fall back to the localhost default, which is what REDIRECT_URI below is. A
+  // `??` there once let a blank value through and sent ML a RELATIVE redirect_uri.
+  vi.stubEnv('MERCADO_LIVRE_PUBLIC_URL', '');
   h.putOauthState.mockResolvedValue(undefined);
-  // The mocked context's channel echoes the state (and any PKCE parameters)
-  // into the authorize URL, the same way `buildAuthorizeUrl` does, so the test
-  // can verify what the route actually handed to the plugin.
-  h.loadCtx.mockResolvedValue({
-    integracaoId: 'int-1',
-    channel: {
-      id: 'mercado-livre',
-      oauthFlow: {
-        start: (
-          state: string,
-          pkce?: { codeChallenge: string; codeChallengeMethod?: 'S256' | 'plain' },
-        ) => {
-          const url = new URL('https://auth.mercadolivre.com.br/authorization');
-          url.searchParams.set('response_type', 'code');
-          url.searchParams.set('client_id', 'CID');
-          url.searchParams.set('redirect_uri', REDIRECT_URI);
-          url.searchParams.set('state', state);
-          if (pkce) {
-            url.searchParams.set('code_challenge', pkce.codeChallenge);
-            url.searchParams.set('code_challenge_method', pkce.codeChallengeMethod ?? 'S256');
-          }
-          return url.toString();
-        },
-      },
-    },
-  });
+  // The route calls this only for its guards (integração exists, tipo is ML), so
+  // the resolved value just has to be an object.
+  h.loadCtx.mockResolvedValue({ integracaoId: 'int-1' });
 });
 
 afterEach(() => {

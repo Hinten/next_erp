@@ -342,11 +342,29 @@ function seedLink(db: FakeDb, extra: DocData = {}): void {
   });
 }
 
+/**
+ * A legacy-model listing as `GET /items/{id}` reports it — #831's completion
+ * read. Every live variation sits at quantity 2, so a carried-over entry is
+ * distinguishable from any payload value the specs use.
+ */
+function vivo(ids: readonly (number | string)[]): MlItem {
+  return {
+    id: 'MLB111',
+    status: 'active',
+    sub_status: [],
+    variations: ids.map((id) => ({ id, available_quantity: 2 })),
+  } as MlItem;
+}
+
 interface HarnessOpts {
   /** The integração doc the context loader resolves (default: has the depósito). */
   conta?: DocData;
   updateItem?: (id: string, body: Record<string, unknown>) => Promise<MlItem>;
-  /** Only the terminal 4xx branch calls this — default: a healthy listing. */
+  /**
+   * The terminal 4xx branch AND (#831) the legacy `variations[]` completion
+   * read. Default: a healthy listing with NO `variations` — which is why every
+   * bulk-send spec must supply its own live array.
+   */
   getItem?: (id: string) => Promise<MlItem>;
   /** #706 multiorigem: the read-before-write. Default: one seller_warehouse, version '7'. */
   getUserProductStock?: (
@@ -678,8 +696,11 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
     ]);
   });
 
-  it('variations → the array passes through untouched', async () => {
-    const h = makeHarness();
+  it('variations → the array is COMPLETED against the live listing (#831)', async () => {
+    // NOT "passes through untouched", which is what this spec used to assert.
+    // ML deletes every variation a `variations[]` body omits, so the payload is
+    // a patch and the wire body has to name every live variation.
+    const h = makeHarness({ getItem: async () => vivo([101, 102]) });
     const variations = [
       { id: 101, available_quantity: 5 },
       { id: 102, available_quantity: 0 },
@@ -688,7 +709,272 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
     const res = await run(h, payload({ quantidade: null, variations }));
 
     expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.getItem).toHaveBeenCalledExactlyOnceWith('MLB111');
+    // NEAR-MISS CONTROL: the payload was already complete, so the body is
+    // byte-identical to the pre-#831 one. The completion must not disturb the
+    // ordinary path.
     expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', { variations });
+  });
+
+  it('a variation the payload OMITS rides along at ML own quantity', async () => {
+    // The routine case: `buildSendTasks` dropped child 102 as `kit-virtual` or
+    // `status-nao-enviavel`. Before #831 this body deleted it.
+    const h = makeHarness({ getItem: async () => vivo([101, 102]) });
+
+    const res = await run(
+      h,
+      payload({ quantidade: null, variations: [{ id: 101, available_quantity: 5 }] }),
+    );
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      variations: [
+        { id: 101, available_quantity: 5 },
+        { id: 102, available_quantity: 2 },
+      ],
+    });
+  });
+
+  it('a live variation we hold NO link for is preserved — no local check can see it', async () => {
+    // There is no child row for 999, so nothing is skip-logged and the array
+    // looks complete by every planner-side measure while the PUT deletes it.
+    const h = makeHarness({ getItem: async () => vivo([101, 999]) });
+
+    await run(h, payload({ quantidade: null, variations: [{ id: 101, available_quantity: 5 }] }));
+
+    expect(h.updateItem.mock.calls[0]?.[1]).toEqual({
+      variations: [
+        { id: 101, available_quantity: 5 },
+        { id: 999, available_quantity: 2 },
+      ],
+    });
+  });
+
+  it('the completion read FAILS → the partial array is never sent', async () => {
+    // No fallback. A body that cannot be proven complete is a body that deletes,
+    // so this rides the queue backoff instead.
+    const h = makeHarness({
+      getItem: async () => {
+        throw new MercadoLivreHttpError('boom', 500, {});
+      },
+    });
+
+    await expect(
+      run(h, payload({ quantidade: null, variations: [{ id: 101, available_quantity: 5 }] })),
+    ).rejects.toThrow('boom');
+    expect(h.updateItem).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a User-Products listing', { id: 'MLB111', family_name: 'Camiseta', variations: [] }],
+    ['a listing reporting no variations', { id: 'MLB111', variations: [] }],
+  ])('%s → skipped/modelo-divergente, no PUT', async (_label, item) => {
+    const h = makeHarness({ getItem: async () => item as MlItem });
+
+    const res = await run(
+      h,
+      payload({ quantidade: null, variations: [{ id: 101, available_quantity: 5 }] }),
+    );
+
+    expect(res).toEqual({ outcome: 'skipped', reason: 'modelo-divergente' });
+    expect(h.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('a live variation with no usable available_quantity → skipped, no PUT', async () => {
+    // Inventing 0 for it would PAUSE that variation (out_of_stock); omitting it
+    // would delete it. Neither is acceptable, so nothing is sent.
+    const h = makeHarness({
+      getItem: async () =>
+        ({
+          id: 'MLB111',
+          variations: [
+            { id: 101, available_quantity: 2 },
+            { id: 102, available_quantity: null },
+          ],
+        }) as MlItem,
+    });
+
+    const res = await run(
+      h,
+      payload({ quantidade: null, variations: [{ id: 101, available_quantity: 5 }] }),
+    );
+
+    expect(res).toEqual({ outcome: 'skipped', reason: 'quantidade-viva-ausente' });
+    expect(h.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('a payload id ML no longer reports is omitted, logged, AND pruned', async () => {
+    // Completing the array is exactly what stops ML from ever answering
+    // `item.variations.invalid` about this id, so the prune cannot be driven by
+    // a rejection any more — it runs from the completion read instead, which
+    // holds stronger evidence: it SEES the stale id rather than inferring it.
+    const h = makeHarness({ getItem: async () => vivo([101]) });
+    seedLink(h.db);
+    seedMembro(h.db, 'C1', 'v1', { id: 101 });
+    seedMembro(h.db, 'C2', 'v2', { id: 404 });
+
+    await run(
+      h,
+      payload({
+        quantidade: null,
+        variations: [
+          { id: 101, available_quantity: 5 },
+          { id: 404, available_quantity: 1 },
+        ],
+      }),
+    );
+
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      variations: [{ id: 101, available_quantity: 5 }],
+    });
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('que o ML não reporta mais'),
+      expect.objectContaining({ itemId: 'MLB111', fantasmas: ['404'] }),
+    );
+    // The self-heal, now evidence-led: the stale member is marked, so
+    // `membroPodeEnviar` drops it and the NEXT sweep builds a clean payload.
+    expect(h.db.docs(varPath('C2')).get('v2')).toMatchObject({
+      status: 'closed',
+      sub_status: ['deleted'],
+    });
+    expect(h.db.docs(varPath('C1')).get('v1')).not.toHaveProperty('status');
+  });
+
+  it('a send that DROPPED part of its intent does not clear the #781 diagnosis', async () => {
+    // ML accepted a body carrying less than we meant to send, so this is not the
+    // healed listing #781 is about. Clearing here would erase the diagnosis on
+    // the very write that failed to apply.
+    const h = makeHarness({ getItem: async () => vivo([101]) });
+    seedLink(h.db, {
+      errors: ['diagnóstico anterior'],
+      causas: [{ code: 'item.variations.invalid', mensagem: 'x' }],
+    });
+    seedMembro(h.db, 'C2', 'v2', { id: 404 });
+
+    const res = await run(
+      h,
+      payload({
+        quantidade: null,
+        variations: [
+          { id: 101, available_quantity: 5 },
+          { id: 404, available_quantity: 1 },
+        ],
+      }),
+    );
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ errors: ['diagnóstico anterior'] });
+  });
+
+  it('NEAR-MISS CONTROL: with NO fantasma the same send DOES clear it', async () => {
+    // Without this pair the spec above would pass just as well against a build
+    // that never clears at all.
+    const h = makeHarness({ getItem: async () => vivo([101]) });
+    seedLink(h.db, {
+      errors: ['diagnóstico anterior'],
+      causas: [{ code: 'item.variations.invalid', mensagem: 'x' }],
+    });
+
+    await run(h, payload({ quantidade: null, variations: [{ id: 101, available_quantity: 5 }] }));
+
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ errors: [], causas: [] });
+  });
+
+  it('EVERY payload id stale → no PUT at all, and the diagnosis survives', async () => {
+    // The limit case. The completed array would be ML's own values handed
+    // straight back: a write that changes nothing, reports `sent`, and — before
+    // this was fixed — cleared the failure diagnosis on the way out.
+    const h = makeHarness({ getItem: async () => vivo([900]) });
+    seedLink(h.db, { errors: ['diagnóstico anterior'], causas: [] });
+    seedMembro(h.db, 'C1', 'v1', { id: 101 });
+    seedMembro(h.db, 'C2', 'v2', { id: 102 });
+
+    const res = await run(
+      h,
+      payload({
+        quantidade: null,
+        variations: [
+          { id: 101, available_quantity: 5 },
+          { id: 102, available_quantity: 7 },
+        ],
+      }),
+    );
+
+    expect(res).toEqual({ outcome: 'skipped', reason: 'todas-variacoes-fantasma' });
+    expect(h.updateItem).not.toHaveBeenCalled();
+    expect(h.db.docs(LINK_PATH).get('link1')).toMatchObject({ errors: ['diagnóstico anterior'] });
+    // Both stale members pruned, so the next sweep stops re-sending ids ML does
+    // not have — and the listing's silence becomes visible instead of looking
+    // like a healthy sync.
+    for (const [child, doc] of [
+      ['C1', 'v1'],
+      ['C2', 'v2'],
+    ] as const) {
+      expect(h.db.docs(varPath(child)).get(doc)).toMatchObject({
+        status: 'closed',
+        sub_status: ['deleted'],
+      });
+    }
+    expect(vi.mocked(console.error)).toHaveBeenCalledWith(
+      expect.stringContaining('nenhuma das variações do payload existe no ML'),
+      expect.objectContaining({ itemId: 'MLB111' }),
+    );
+  });
+
+  it('409 on the PUT → RE-READS and re-derives; the stale body is never resent', async () => {
+    // Root `CLAUDE.md` rule 7. If what changed underneath us was a variation
+    // being ADDED, resending the captured array deletes it — the exact defect
+    // this whole block exists to prevent, reintroduced by the retry.
+    let leituras = 0;
+    const h = makeHarness({
+      getItem: async () => (++leituras === 1 ? vivo([101]) : vivo([101, 777])),
+      updateItem: vi
+        .fn()
+        .mockRejectedValueOnce(new MercadoLivreHttpError('conflict', 409, {}))
+        .mockResolvedValueOnce({ id: 'MLB111', status: 'active', sub_status: [] } as MlItem),
+    });
+
+    const res = await run(
+      h,
+      payload({ quantidade: null, variations: [{ id: 101, available_quantity: 5 }] }),
+    );
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.getItem).toHaveBeenCalledTimes(2);
+    expect(h.updateItem.mock.calls[0]?.[1]).toEqual({
+      variations: [{ id: 101, available_quantity: 5 }],
+    });
+    // The second body carries the variation that appeared between the two reads.
+    expect(h.updateItem.mock.calls[1]?.[1]).toEqual({
+      variations: [
+        { id: 101, available_quantity: 5 },
+        { id: 777, available_quantity: 2 },
+      ],
+    });
+  });
+
+  it('a PERSISTENT 409 rethrows instead of latching a healthy listing', async () => {
+    // ML's own remedy for `item optimistic locking error` is to WAIT, which is
+    // what the queue's backoff is. Falling into the terminal-4xx ladder would
+    // spend every attempt on it and then stamp `estado 'E'`.
+    const h = makeHarness({
+      getItem: async () => vivo([101]),
+      updateItem: async () => {
+        throw new MercadoLivreHttpError('conflict', 409, {});
+      },
+    });
+
+    await expect(
+      run(h, payload({ quantidade: null, variations: [{ id: 101, available_quantity: 5 }] })),
+    ).rejects.toThrow('conflict');
+  });
+
+  it('a scalar send still costs exactly ONE ML call — no completion read', async () => {
+    const h = makeHarness();
+
+    await run(h, payload({ quantidade: 7 }));
+
+    expect(h.getItem).not.toHaveBeenCalled();
   });
 
   it('quantidade AND variations both null → dropped, no ML call', async () => {
@@ -702,7 +988,7 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
   });
 
   it('quantidade AND variations both non-null → variations win, loudly', async () => {
-    const h = makeHarness();
+    const h = makeHarness({ getItem: async () => vivo([101]) });
     const variations = [{ id: 101, available_quantity: 3 }];
 
     const res = await run(h, payload({ quantidade: 9, variations }));
@@ -1212,6 +1498,26 @@ function seedMembro(db: FakeDb, childId: string, docId: string, raw: DocData = {
   });
 }
 
+/**
+ * ⚠️ **#831 narrowed how this branch is REACHED in production, and these specs
+ * do not show that.** Every `updateItem` below throws unconditionally, but the
+ * real ML no longer sees the phantom id at all: the completion read filters it
+ * out of the body, so a payload whose only fault was a stale variation id can no
+ * longer earn `item.variations.invalid`. The prune logic is still correct and
+ * still worth pinning — a listing can grow a phantom between the read and the
+ * write, and ML can refuse for other variation reasons — but the everyday signal
+ * for a stale link is now the COMPLETION READ, which prunes directly because it
+ * can see the id — see `a payload id ML no longer reports is omitted, logged,
+ * AND pruned` in the request-bodies block. Do not read a green suite here as
+ * "the prune still runs from a rejection as often".
+ *
+ * ⚠️ That second trigger is why `podadasAntes` exists. `planejarPoda` is
+ * idempotent, so a member the completion already marked `closed` is skipped
+ * here — this branch's own count reads ZERO for a payload that WAS repaired, and
+ * the latch arm would stamp `estado 'E'` on a listing already fixed. The counts
+ * are added, never re-derived; `marks the phantom member closed…` below is the
+ * spec that fails if they are not.
+ */
 describe('processStockSendTask — terminal 4xx, item.variations.invalid (#707)', () => {
   /** A bulk send that ML refuses with `item.variations.invalid`. */
   function bulkTerminal(getItem: HarnessOpts['getItem']) {
@@ -1286,10 +1592,16 @@ describe('processStockSendTask — terminal 4xx, item.variations.invalid (#707)'
     expect(h.db.docs(varPath('C2')).get('v2')).not.toHaveProperty('status');
   });
 
-  it('a User-Products family is NEVER pruned — legacy returns on family_name', async () => {
+  it('a User-Products family is NEVER pruned — now refused one rung EARLIER', async () => {
     // `.old/…/produtos.dart:454` opens with `if (consulta['family_name'] != null)
     // return;`. Under UP there is no `variations[]` at all and members are keyed
     // by `itemId`, so a legacy-shaped diff would mark live members closed.
+    //
+    // ⚠️ #831 moved WHERE that is decided, not WHETHER: the completion read runs
+    // before the PUT and refuses on the same `family_name`, so the bulk body is
+    // never sent and there is no rejection to prune from. The invariant this
+    // spec exists for is unchanged — a UP family is not pruned — and the listing
+    // is no longer latched for a payload it never received.
     const h = bulkTerminal(async () => ({
       id: 'MLB111',
       status: 'active',
@@ -1301,7 +1613,8 @@ describe('processStockSendTask — terminal 4xx, item.variations.invalid (#707)'
 
     const res = await run(h, bulkPayload());
 
-    expect(res).toEqual({ outcome: 'erro-registrado', reason: 'payload-rejeitado' });
+    expect(res).toEqual({ outcome: 'skipped', reason: 'modelo-divergente' });
+    expect(h.updateItem).not.toHaveBeenCalled();
     expect(h.db.docs(varPath('C2')).get('v2')).not.toHaveProperty('status');
   });
 
@@ -1314,7 +1627,16 @@ describe('processStockSendTask — terminal 4xx, item.variations.invalid (#707)'
           cause: [{ code: 'item.variations.not_updatable', message: 'nope' }],
         });
       },
-      getItem: async () => ({ id: 'MLB111', status: 'active', sub_status: [] }),
+      // ⚠️ Both ids the payload names must be LIVE here, or #831's completion
+      // read refuses before the PUT and this spec stops exercising the cause it
+      // is named after. The fixture used to report no `variations` at all, which
+      // was invisible while `getItem` was only the terminal branch's.
+      getItem: async () => ({
+        id: 'MLB111',
+        status: 'active',
+        sub_status: [],
+        variations: [{ id: 101 }, { id: 999 }],
+      }),
     });
     seedLink(h.db);
     seedMembro(h.db, 'C2', 'v2', { id: 999 });

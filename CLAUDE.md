@@ -236,9 +236,19 @@ truth) · `data` (`defineCollection<T>`, cascade) · `ui` (Mantine theme +
 `apps/web` reaches it transitively, so `@google/genai` and `firebase-admin` may
 be imported only behind `./admin`; enforced by
 `packages/config-eslint/rules/ai-root-entry-browser-safe.test.js`, because
-breaking it fails nothing) · `integrations/<channel>`, of which only nfe,
-mercado-livre, mercado-pago, freight-br and whatsapp-cloud-api are implemented —
-the other five throw `<Channel>NotConfiguredError`.
+breaking it fails nothing) · `integrations/<channel>` — **five packages, all
+implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api.
+⚠️ The five throw-only marketplace scaffolds (shopee, magalu, amazon-sp-api,
+facebook, loja-integrada) were **deleted** in #815: they existed only to typecheck
+against `MarketplaceChannel`, and had no importer anywhere. **That contract is
+gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
+(`packages/schemas/src/shared/marketplace.ts`, the `FREIGHT_TIPO_CAPS` shape) and
+implemented as one App Hosting backend per channel; its shared data shapes live in
+`@delfrance/core/marketplace`. `packages/core/src/plugins` keeps exactly three
+contracts (tax/invoice/payment), and nothing in-tree registers at boot. ADR 0015 +
+the `marketplace-integration` skill; guarded by
+`packages/config-eslint/rules/marketplace-contract-removed.test.js`, because
+re-adding the interface fails nothing.
 
 **tools/** — `test-fixtures` (Admin SDK seed/teardown, `create-super-user`) ·
 `migrations` · `cmun-table` (moves the legacy `CMUN` CEP-faixa → IBGE table
@@ -314,6 +324,14 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   the shared pipeline (`defineNotificationPipeline` in
   `@delfrance/data/admin/notifications`) via the `webhook-notifications` skill —
   never hand-roll the persistence/retry/sweep triad again.
+- **A whole new MARKETPLACE channel** (Shopee, Magalu, Amazon…) → the
+  `marketplace-integration` skill. Docs-first: read the provider's own reference,
+  fill its `MARKETPLACE_TIPO_CAPS` row (capability fields are three-valued —
+  `'desconhecido'` is the honest default, never a guessed `false`), generate the
+  master plan from that row, then plan each step as you reach it. ⚠️ Mercado Livre
+  is EVIDENCE, not a template: the `orderML` pedido mirror, User Products,
+  `tokenDuravel` and its unsigned webhook are ML-only, and a capability ML LACKS
+  (virtual kits) is not one the domain lacks.
 - **Does your change need something *run* against production data or infra?**
   Don't do it and don't leave a TODO — surface it, **ask whether to open the
   tracking issue**, and open it only on a yes. Then label it

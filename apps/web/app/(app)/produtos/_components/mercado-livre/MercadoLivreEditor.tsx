@@ -9,8 +9,10 @@ import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Stack, Text } from 
 import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
 import {
+  ACAO_STATUS_ANUNCIO,
   INTEGRACAO_TIPO,
   PRODUTO_EXTRA_DATA_DOC_ID,
+  type AcaoStatusAnuncio,
   type MedidasDoPacote,
   type ProdutoMercadoLivreLink,
   idFromRef,
@@ -273,6 +275,16 @@ export function MercadoLivreEditor({
   const [excluindo, setExcluindo] = useState<string | null>(null);
   /** The link doc id currently being re-checked against ML (#781), if any. */
   const [rechecking, setRechecking] = useState<string | null>(null);
+  /** The link doc whose status change is in flight, if any — single-flight. */
+  const [alterandoStatus, setAlterandoStatus] = useState<string | null>(null);
+  /**
+   * The pause the operator is being asked to confirm, if any.
+   *
+   * ⚠️ Only a PAUSE is confirmed. It stops a live sale, so it earns the extra
+   * click; reactivating puts a listing back on air, which is both the safer
+   * direction and the one an operator reaches for to undo a mistake.
+   */
+  const [pausarAlvo, setPausarAlvo] = useState<{ contaId: string; linkDocId: string } | null>(null);
   /** The link doc id whose public ML URL is being resolved, if any. */
   const [abrindoAnuncio, setAbrindoAnuncio] = useState<string | null>(null);
   /**
@@ -694,6 +706,67 @@ export function MercadoLivreEditor({
   }
 
   /**
+   * Pause or reactivate ONE listing on Mercado Livre.
+   *
+   * ⚠️ The toast reports what ML CONFIRMED, never the action requested: the
+   * backend's per-listing `mensagem` already says so (a reactivate ML answered
+   * `paused` + `out_of_stock` for comes back saying the listing is still
+   * paused), and repeating "Anúncio pausado" from the request would be a green
+   * message over a listing that did not move.
+   *
+   * The lasting feedback is the live `useSnapshot` repainting the strip — the
+   * same model `handleReverificar` relies on. This handler only says what
+   * happened and, on a pause, that an ordinary save undoes it.
+   */
+  async function handleDefinirStatus(
+    integracaoId: string,
+    linkDocId: string,
+    acao: AcaoStatusAnuncio,
+  ) {
+    if (!client) return;
+    setPausarAlvo(null);
+    setAlterandoStatus(linkDocId);
+    try {
+      const res = await client.definirStatusAnuncios({
+        integracaoId,
+        produtoIds: [produtoId],
+        acao,
+        linkDocId,
+      });
+      // One listing was addressed, so there is at most one row; a produto with
+      // no eligible link answers through `produtosSemAnuncio` instead.
+      const linha = res.listings[0] ?? res.produtosSemAnuncio[0] ?? null;
+      const ok = res.resumo.aplicados > 0;
+      notifications.show({
+        color: ok ? 'green' : res.resumo.falhas > 0 ? 'red' : 'yellow',
+        title: acao === ACAO_STATUS_ANUNCIO.pausar ? 'Pausar anúncio' : 'Reativar anúncio',
+        message:
+          (linha?.mensagem ?? 'Nenhum anúncio foi alterado.') +
+          // Only on a pause that landed: the reactivation-on-save behaviour is
+          // kept deliberately, so the operator has to be told about it.
+          (ok && acao === ACAO_STATUS_ANUNCIO.pausar
+            ? ' Salvar ou republicar este anúncio o reativa no Mercado Livre.'
+            : ''),
+      });
+    } catch (err) {
+      if (err instanceof MercadoLivreClientHttpError) {
+        notifications.show({ color: 'red', message: err.message });
+        return;
+      }
+      if (err instanceof MercadoLivreClientNetworkError) {
+        notifications.show({
+          color: 'red',
+          message: 'Não foi possível contatar o serviço do Mercado Livre.',
+        });
+        return;
+      }
+      throw err;
+    } finally {
+      setAlterandoStatus(null);
+    }
+  }
+
+  /**
    * Open this listing's public Mercado Livre page in a new tab, resolving the
    * URL from ML first — ported from the old Flutter screen's link button
    * (`cadastroProdutoMLNew.dart:134-156`).
@@ -972,6 +1045,17 @@ export function MercadoLivreEditor({
                   onSalvarAnuncios={(cId, linkIds) => void handleSalvarAnuncios(cId, linkIds)}
                   onEnviarEstoque={(alvo, temLatch) => void handleEnviarEstoque(alvo, temLatch)}
                   onReverificar={handleReverificar}
+                  // Gated on the SAME bit the backend route enforces, so a
+                  // viewer is never offered something that will 403.
+                  onDefinirStatus={
+                    client && canPublish
+                      ? (contaId, linkId, acao) =>
+                          acao === ACAO_STATUS_ANUNCIO.pausar
+                            ? setPausarAlvo({ contaId, linkDocId: linkId })
+                            : void handleDefinirStatus(contaId, linkId, acao)
+                      : undefined
+                  }
+                  alterandoStatus={alterandoStatus}
                   onAbrirAnuncio={(integracaoId, linkDocId) =>
                     void handleAbrirAnuncio(integracaoId, linkDocId)
                   }
@@ -1001,6 +1085,52 @@ export function MercadoLivreEditor({
               never through the produto form — so a delete that waited for
               "Salvar alterações" would disagree with the create beside it.
               `MacrosTab` is the in-repo precedent. */}
+          {/* A pause stops a live sale, so it is confirmed. Immediate on
+              confirm, never staged behind the produto's save — the same rule
+              the delete modal below states: this tab writes its own documents
+              directly, and here the write is not even ours, it is Mercado
+              Livre's. */}
+          <Modal
+            opened={pausarAlvo != null}
+            onClose={() => setPausarAlvo(null)}
+            title="Pausar anúncio"
+            centered
+          >
+            <Stack gap="md">
+              <Text size="sm">
+                O anúncio deixa de vender no Mercado Livre até ser reativado. As variações
+                publicadas como família são pausadas junto.
+              </Text>
+              <Text size="sm" c="dimmed">
+                Salvar ou republicar este anúncio depois o reativa no Mercado Livre.
+              </Text>
+              <Group justify="flex-end" gap="sm">
+                <Button
+                  type="button"
+                  variant="default"
+                  onClick={() => setPausarAlvo(null)}
+                  disabled={alterandoStatus != null}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  color="orange"
+                  onClick={() =>
+                    pausarAlvo &&
+                    void handleDefinirStatus(
+                      pausarAlvo.contaId,
+                      pausarAlvo.linkDocId,
+                      ACAO_STATUS_ANUNCIO.pausar,
+                    )
+                  }
+                  loading={alterandoStatus != null}
+                >
+                  Pausar
+                </Button>
+              </Group>
+            </Stack>
+          </Modal>
           <Modal
             opened={excluirAlvo != null}
             onClose={() => setExcluirAlvo(null)}

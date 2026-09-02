@@ -2,7 +2,13 @@
 
 import { Alert, Button, Divider, Group, List, Stack, Text, Tooltip } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
-import type { MedidasDoPacote, ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import {
+  type AcaoStatusAnuncio,
+  ACAO_STATUS_ANUNCIO,
+  type MedidasDoPacote,
+  type ProdutoMercadoLivreLink,
+  acaoStatusAnuncio,
+} from '@delfrance/schemas';
 
 import type { StockPushRow } from '@/lib/marketplace/estoque/types';
 import { ListingDetails } from './ListingDetails';
@@ -94,6 +100,20 @@ export interface AnuncioBlockProps {
    */
   onExcluir?: () => void;
   excluindo: boolean;
+  /**
+   * Pause or reactivate this listing on Mercado Livre. Undefined hides the
+   * control — no client, or the operator lacks `PERM.integracao.write`, the bit
+   * the backend route enforces.
+   *
+   * ⚠️ WHICH action is offered is not this component's decision: it comes from
+   * `acaoStatusAnuncio`, the same predicate the backend refuses by. A local rule
+   * here would be the drift that offers a button the server rejects.
+   */
+  onDefinirStatus?: (acao: AcaoStatusAnuncio) => void;
+  /** This listing's status change is in flight. */
+  alterandoStatus: boolean;
+  /** ANY listing's status change is in flight — the action is single-flight. */
+  statusBusy: boolean;
 }
 
 export function AnuncioBlock({
@@ -131,11 +151,17 @@ export function AnuncioBlock({
   onPublish,
   onExcluir,
   excluindo,
+  onDefinirStatus,
+  alterandoStatus,
+  statusBusy,
 }: AnuncioBlockProps) {
   // A listing ML has never accepted. `''` counts as never published, matching
   // the backend's own `link.id !== ''` test: the schema permits it and the
   // migrated corpus contains it.
   const isFirstPublish = (link.id ?? '') === '';
+  // ⚠️ Read from the LINK, so the control repaints from the live snapshot the
+  // backend just wrote — the same feedback model "Reverificar" relies on.
+  const acaoDeStatus = acaoStatusAnuncio(link as unknown as Record<string, unknown>);
   return (
     <Stack gap="sm" data-testid={`ml-anuncio-${linkDocId}`}>
       {showDivider && <Divider />}
@@ -279,11 +305,31 @@ export function AnuncioBlock({
             </Button>
           </span>
         </Tooltip>
+        {/* Pause / reactivate — the only lifecycle control this app has over a
+            LIVE listing. `acaoStatusAnuncio` decides which one is offered (and
+            whether any is), and it is the SAME predicate the backend route
+            refuses by, so the button can never promise what the server declines.
+
+            ⚠️ It is deliberately NOT rendered for a cancelled listing: `closed`
+            is terminal on ML, so both directions would only earn a 400. */}
+        {onDefinirStatus && acaoDeStatus != null && (
+          <Button
+            type="button"
+            variant="default"
+            onClick={() => onDefinirStatus(acaoDeStatus)}
+            loading={alterandoStatus}
+            disabled={Boolean(disabled) || loading || (statusBusy && !alterandoStatus)}
+          >
+            {acaoDeStatus === ACAO_STATUS_ANUNCIO.pausar ? 'Pausar anúncio' : 'Reativar anúncio'}
+          </Button>
+        )}
         {/* Only for a listing Mercado Livre has never seen. Removing a PUBLISHED
             one would orphan a live anúncio: `itemsStatusSync` would stop
             resolving it, both sweeps would stop reaching it, and its child
-            `variacaoMercadoLivre` docs would dangle. Delisting remotely first is
-            #476, and out of scope here. */}
+            `variacaoMercadoLivre` docs would dangle. Deleting a produto in the
+            ERP deliberately leaves the marketplace untouched (#476, closed by
+            decision) — the operator's way to take a live listing off the air is
+            "Pausar anúncio" above, never a delete. */}
         {isFirstPublish && onExcluir && (
           <Button
             type="button"
