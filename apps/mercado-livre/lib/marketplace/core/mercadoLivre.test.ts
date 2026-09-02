@@ -42,7 +42,6 @@ vi.mock('@delfrance/integrations-mercado-livre', async (importActual) => {
   const actual = await importActual<typeof import('@delfrance/integrations-mercado-livre')>();
   return {
     ...actual,
-    createMercadoLivreChannel: () => ({}),
     exchangeCode: (...args: unknown[]) => h.exchangeCode(...args),
   };
 });
@@ -159,11 +158,20 @@ describe('loadMercadoLivreContext', () => {
     const ctx = await loadMercadoLivreContext(db, 'int-1');
     const channelCtx = await ctx.resolveChannelContext(1_000);
 
-    expect(channelCtx).toEqual({
+    // ⚠️ Destructured so the `toEqual` below stays EXHAUSTIVE over the data half
+    // — that is what catches `shop_id` / the dropped legacy ref leaking into the
+    // bag. Comparing the whole object would need the function listed too, and
+    // `expect.any(Function)` would quietly accept a new stray field beside it.
+    const { getAccessToken, ...dados } = channelCtx;
+
+    expect(dados).toEqual({
       integracaoId: 'int-1',
       accessToken: 'AT',
       account: { user_id: 7 },
     });
+    // The thunk is the half that survives a long-running job (#815 amendment 4):
+    // `accessToken` froze at `now = 1_000`, this re-reads the store per call.
+    expect(await getAccessToken()).toBe('AT');
   });
 
   it('exchangeAndPersist denormalizes user_id onto the integração doc', async () => {

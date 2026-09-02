@@ -2,7 +2,7 @@
 
 import { getDocs, type Firestore } from 'firebase/firestore';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
-import { colapsarPaiEFilhoUnico, type Produto } from '@delfrance/schemas';
+import { colapsarPaiEFilhoUnico, unidadeVendavel, type Produto } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 
 import { normalizeScanCode } from '../../despacho/checkout/_components/resolveScan';
@@ -41,14 +41,31 @@ export const MENSAGEM_SKU: Record<Exclude<VerdictoSku['kind'], 'produto'>, strin
   duplicado: 'SKU duplicado',
 };
 
-/** Classify a produto once it has been found — the only branch shared with manual entry. */
+/**
+ * Classify a produto once it has been found — the only branch shared with manual
+ * entry, which is why the resolution below covers the scan AND the autocomplete.
+ *
+ * ⚠️ **The verdict's `produtoId` is the SELLABLE UNIT, not necessarily the
+ * produto that matched.** A family-of-one parent is a wrapper holding no stock
+ * (#1398), and `aplicarBalanco` writes the counted quantity to
+ * `est-<produtoId>-<depositoId>` at finalize — so counting against the parent
+ * would put real inventory on a document nothing reads.
+ *
+ * `produto` stays the document that MATCHED. For a family of one the two agree
+ * on everything a caller displays — the sole member copies its parent's `nome`
+ * and `sku` verbatim (`upSoleMember.ts:191-193`) — and keeping the matched doc
+ * means the operator sees what they scanned.
+ */
 export function classificarProduto(produtoId: string, produto: Produto): VerdictoSku {
   // A kit holds no stock of its own (ADR 0014): its availability is derived
   // from its components, and a counted quantity written onto it would ADD to
   // that. So a kit is refused here AND again server-side at finalize.
-  return produto.ehKit
-    ? { kind: 'kit', produtoId, produto }
-    : { kind: 'produto', produtoId, produto };
+  //
+  // ⚠️ Refused BEFORE resolving: `ehKit` is copied onto the sole member
+  // (`upSoleMember.ts:196`), so both sides of a family agree, and refusing first
+  // keeps the message about the produto the operator actually named.
+  if (produto.ehKit) return { kind: 'kit', produtoId, produto };
+  return { kind: 'produto', produtoId: unidadeVendavel({ ...produto, id: produtoId }), produto };
 }
 
 /**

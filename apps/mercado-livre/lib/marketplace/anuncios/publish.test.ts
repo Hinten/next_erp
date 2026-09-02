@@ -22,7 +22,6 @@ import {
 } from '../estoque/bulkEstoquePlan';
 import {
   MercadoLivrePublishError,
-  SKU_PAI_ATRIBUTO_FLAG_ENV,
   TABELA_BINDING_RECUSA,
   type TabelaBindingMotivo,
   sizeChartIssue,
@@ -1687,13 +1686,6 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
         (a) => a.name === ML_ATTR_SKU_PAI_NOME,
       );
 
-    beforeEach(() => {
-      process.env[SKU_PAI_ATRIBUTO_FLAG_ENV] = '1';
-    });
-    afterEach(() => {
-      delete process.env[SKU_PAI_ATRIBUTO_FLAG_ENV];
-    });
-
     it('⛔ member 1 created, member 2 rejected → the RETRY finishes the família uniformly', async () => {
       // ⚠️ The split-beyond-repair case. The fan-out is sequential and persists
       // each member as ML confirms it, while the parent link is written once at
@@ -1740,9 +1732,11 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
       }
     });
 
-    it('a família whose members all lack it never gains one — even with the flag on', async () => {
-      // The mirror control. Without it the test above would pass on an
-      // implementation that simply always sends the characteristic.
+    it('a família whose members all lack it never gains one', async () => {
+      // The mirror control, and the one that matters most now that there is no
+      // flag: without it the test above would pass on an implementation that
+      // simply always sends the characteristic — which is exactly what "send it
+      // by default" could be misread as, and what would split live listings.
       const db = new FakeDb();
       seedFamilyOfTwo(db);
       seedPublishedFamily(db, ['child-1', 'child-2']);

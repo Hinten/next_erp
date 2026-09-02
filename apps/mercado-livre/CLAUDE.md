@@ -295,7 +295,12 @@ The per-surface notes below stay the authority on behaviour.
   case ML itself flags with `repeated`. The field is modelled, not used.
 - **Claim RESPOND** (#768) — `chatOutbound.ts` gained an `mlclaims` branch and
   `packages/integrations/mercado-livre/src/incidentRespond.ts` implements
-  `respondIncident`, the last unimplemented `MarketplaceChannel` member.
+  `respondIncidentMl`. ⚠️ It used to be described as "the last unimplemented
+  `MarketplaceChannel` member"; that contract was deleted in #815 (ADR 0015) and
+  `claimResolve.ts` calls the function directly. ⚠️ `refundAmount` changed units
+  with it — see the partial-refund ⚠️ below, the ONE authoritative statement of
+  that in this file. Do not restate it here: a unit rule written twice is the
+  #1369 shape, and both copies read correct while disagreeing.
   ⚠️ Every action is gated on `players[role=respondent].available_actions`, read
   LIVE on each call — ML decides what a seller may do from the stage and status,
   and the list empties as the claim closes. An unavailable action is a 400, so
@@ -304,13 +309,18 @@ The per-surface notes below stay the authority on behaviour.
   routes the seller through the mediator and REFUSES a message aimed at the
   complainant, so `send_message_to_mediator` outranks
   `send_message_to_complainant` wherever both appear.
-  ⚠️ **Partial refund is a PERCENTAGE off an allow-list, never an amount.** The
-  contract carries `refundAmount` in minor units like every other channel; ML
-  accepts only the percentages `GET …/partial-refund/available-offers` returns,
-  rejects 100% on that endpoint, and — the dangerous part — **defaults a MISSING
-  percentage to 50%**. So an amount with no exact offer is refused with the list
-  of real ones rather than rounded to the nearest: a refund is not a value worth
-  approximating.
+  ⚠️ **Partial refund is a PERCENTAGE off an allow-list, never an amount — and
+  `refundAmount` is in REAIS.** (It read "minor units like every other channel"
+  until #815; there is no plugin contract, and no "every other channel", any more.
+  The `/reclamacao/acao` wire still carries centavos as `valorReembolsoMinor`, and
+  `claimResolve.ts` is the SINGLE place that converts — moving that conversion
+  outward changes a live refund's wire format, so a web deploy landing before this
+  backend would refund 100x wrong. `incidentRespond.test.ts` pins the unit with a
+  near-miss: a centavos value must be REFUSED, never matched.) ML accepts only the
+  percentages `GET …/partial-refund/available-offers` returns, rejects 100% on
+  that endpoint, and — the dangerous part — **defaults a MISSING percentage to
+  50%**. So an amount with no exact offer is refused with the list of real ones
+  rather than rounded to the nearest: a refund is not a value worth approximating.
 - **Claim RESOLUTION routes** (#364) — `app/api/marketplace/mercado-livre/reclamacao/`
   `{estado,acao}` over `lib/marketplace/claims/claimResolve.ts`: the surface that
   finally REACHES the verbs above. `respondIncidentMl` had existed since #768 with
@@ -823,10 +833,30 @@ into a different família — and creating ONE new member with it beside sibling
 without it hashes that member into a família of its own, silently splitting a
 live listing. That is what "add one more variation to an existing produto" walks
 into, which is why `resolveSkuPaiAtributo` tests **every member's `itemId`**, not
-the parent link's `id` alone. `MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED` therefore
-decides a família only at CREATE time; it retrofits nothing and un-sets nothing.
-Reading it back is unconditional (no flag), so a família published while it was
-on is always understood.
+the parent link's `id` alone.
+
+⚠️ **There is no env flag — the characteristic is sent for every família this app
+CREATES**, and `familiaNova` is what remains. It is NOT a leftover rollout gate,
+so do not "simplify" it away: ML names both failures it prevents —
+`user_products.miss_match_attribute` (*"é obrigatório enviá-la para todos os
+membros"*) and `family_id.collision`. Famílias already live never gain it; the
+only supported retrofit is `POST /user-products-families/{family_id}/tasks`,
+which rewrites EVERY member at once and is a feature of its own.
+
+⚠️ The name (`Código de referência`) is **public** — a custom characteristic
+renders in the anúncio's ficha técnica — and **frozen** at first publish, since
+it feeds the family hash. ML offers no seller-settable alternative: the `hidden`
+tag is metadata ML *returns* for attributes IT defines and rides no request body,
+and `PUT /user-products-families/{id}` takes only PARENT_PK/ITEM_CONDITION
+(*"Não são permitidos atributos custom"*). Nor is there a parent slot for a
+`SELLER_SKU`: a User Product IS the variation, so a sku there is the member's.
+⚠️ It must also stay distinct from every ML attribute's display name, and the
+match is **id-AGNOSTIC** — `skuPaiFromAttributes` folds `name` and never reads
+`id`, so an ML-DEFINED attribute collides too. The cost is twofold: rung 1 reads
+that attribute's value as the parent sku, AND `attributesFromItem` drops it from
+`link.attributes`, so it stops being republished — on simple items as well.
+Only a live sweep of `GET /categories/{id}/attributes` can prove absence; run it
+before the first deploy, since the name freezes then.
 
 ⚠️ **The evidence lives on the MEMBER links (`variacaoMercadoLivre.skuPaiAtributo`),
 never on the família's parent link**, and the two reasons are really one — the

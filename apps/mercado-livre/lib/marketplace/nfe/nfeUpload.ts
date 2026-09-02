@@ -7,8 +7,12 @@
  * `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` so the shipment
  * leaves `invoice_pending` and ML generates the label.
  *
- * `MarketplaceChannel.uploadInvoice` (packages/core/src/plugins/index.ts)
- * deliberately stays uncalled — Steps 9-12 call the API client directly.
+ * ⚠️ This used to note that `MarketplaceChannel.uploadInvoice` "deliberately
+ * stays uncalled". That contract is deleted (#815), and its `uploadInvoice` is
+ * a worked example of why: it was typed `(ctx, orderId, xml) => Promise<void>`,
+ * while ML posts to a SHIPMENT — not an order — and the response is the thing
+ * this flow reads back to decide whether the upload landed. A `void` return and
+ * the wrong resource meant no channel could implement it as specified.
  *
  * Persistence (owner decision, REV 2): this flow writes NOTHING to Firestore
  * on the happy path — legacy cost parity (the Dart signal wrote nothing
