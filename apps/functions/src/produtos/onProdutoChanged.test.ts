@@ -98,29 +98,46 @@ describe('produtoExtraIgnores — kit rollup fields (#1152)', () => {
  * no emulator test can interleave.
  */
 describe('sincronizarMembroUnico — losing the write', () => {
-  /** The narrowest `db` this function touches: one doc ref, get + update. */
-  function stubDb(update: () => Promise<unknown>, exists = true) {
+  /**
+   * The narrowest `db` this function touches — but keyed BY DOC ID, because it
+   * reads two different documents now: the member, and the PARENT AS IT IS NOW.
+   *
+   * ⚠️ A stub returning one document for every id hid that entirely. It made the
+   * fresh-parent read answer with the member's own data, so the tests reported a
+   * mirror that had stopped working.
+   */
+  function stubDb(
+    update: () => Promise<unknown>,
+    opts: { exists?: boolean; pai?: Record<string, unknown> } = {},
+  ) {
     const chamadas: Array<Record<string, unknown>> = [];
     // ⚠️ Reads are counted, not just writes. "Costs nothing when nothing moved"
     // is a claim about READS — the member is fetched only after a pure diff says
     // there is something to write — and a write-only assertion cannot see it.
     let leituras = 0;
-    const ref = {
+    const docs: Record<string, Record<string, unknown>> = {
+      p1: opts.pai ?? { paiId: null, filhoUnicoId: 'c1', nome: 'Bandeja Decorativa' },
+      c1: { nome: 'Bandeja', paiId: 'p1' },
+    };
+    const refDe = (id: string) => ({
       get: async () => {
-        leituras += 1;
+        // Only the MEMBER read is counted: the parent read is behind the same
+        // pure gate and paid on the same occasions, so counting both would make
+        // "reads nothing when nothing moved" pass for the wrong reason.
+        if (id !== 'p1') leituras += 1;
         return {
-          exists,
+          exists: id === 'p1' ? true : (opts.exists ?? true),
           updateTime: 'ut-1',
-          data: () => ({ nome: 'Bandeja', paiId: 'p1' }),
+          data: () => docs[id],
         };
       },
       update: async (patch: Record<string, unknown>) => {
         chamadas.push(patch);
         return update();
       },
-    };
+    });
     return {
-      db: { collection: () => ({ doc: () => ref }) } as never,
+      db: { collection: () => ({ doc: (id: string) => refDe(id) }) } as never,
       chamadas,
       leituras: () => leituras,
     };
@@ -159,7 +176,7 @@ describe('sincronizarMembroUnico — losing the write', () => {
   });
 
   it('does not write when the pointer names a document that is gone', async () => {
-    const { db, chamadas } = stubDb(() => Promise.resolve(), false);
+    const { db, chamadas } = stubDb(() => Promise.resolve(), { exists: false });
     await expect(sincronizarMembroUnico(db, 'p1', antes, depois)).resolves.toBeNull();
     expect(chamadas).toEqual([]);
   });
@@ -180,5 +197,73 @@ describe('sincronizarMembroUnico — losing the write', () => {
     const filho = { paiId: 'p1', filhoUnicoId: 'c9', nome: 'x' };
     await expect(sincronizarMembroUnico(db, 'c1', antes, filho)).resolves.toBeNull();
     expect(leituras()).toBe(0);
+  });
+});
+
+/**
+ * ⛔ The ordering guard, found overstated by adversarial review.
+ *
+ * The three-way merge decides staleness by VALUE equality, which cannot tell "the
+ * member still holds MY before" from "the member holds a NEWER value that happens
+ * to equal my before". For the four mirrored booleans the value space is two, so
+ * an A→B→A sequence of parent saves delivered out of order used to land the older
+ * run's value on the member and FREEZE it there — every later toggle then found
+ * the member diverged and declined.
+ *
+ * What makes it converge is deriving the patch from the parent AS IT IS NOW.
+ */
+describe('sincronizarMembroUnico — an out-of-order delivery converges', () => {
+  function stubComPai(pai: Record<string, unknown>, membro: Record<string, unknown>) {
+    const chamadas: Array<Record<string, unknown>> = [];
+    const docs: Record<string, Record<string, unknown>> = { p1: pai, c1: membro };
+    const refDe = (id: string) => ({
+      get: async () => ({ exists: true, updateTime: 'ut-1', data: () => docs[id] }),
+      update: async (patch: Record<string, unknown>) => {
+        chamadas.push(patch);
+        return Promise.resolve();
+      },
+    });
+    return {
+      db: { collection: () => ({ doc: (id: string) => refDe(id) }) } as never,
+      chamadas,
+    };
+  }
+
+  const PAI_FINAL = { paiId: null, filhoUnicoId: 'c1', publicado: false };
+
+  // The operator ticked Publicado and immediately unticked it. The parent's final
+  // state is `false`; the LATE delivery is the one that saw false→true.
+  it('does not resurrect a value the parent no longer holds', async () => {
+    const { db, chamadas } = stubComPai(PAI_FINAL, { paiId: 'p1', publicado: false });
+
+    await expect(
+      sincronizarMembroUnico(
+        db,
+        'p1',
+        { paiId: null, filhoUnicoId: 'c1', publicado: false },
+        // ⚠️ `after` says TRUE — this delivery's snapshot, already superseded.
+        { paiId: null, filhoUnicoId: 'c1', publicado: true },
+      ),
+    ).resolves.toBeNull();
+
+    expect(chamadas).toEqual([]);
+  });
+
+  // ...and the near-miss: a delivery whose `after` agrees with the current parent
+  // must still write, or the fix has simply disabled the mirror.
+  it('still mirrors when the parent really did move', async () => {
+    const pai = { paiId: null, filhoUnicoId: 'c1', publicado: true };
+    const { db, chamadas } = stubComPai(pai, { paiId: 'p1', publicado: false });
+
+    await expect(
+      sincronizarMembroUnico(
+        db,
+        'p1',
+        { paiId: null, filhoUnicoId: 'c1', publicado: false },
+        { paiId: null, filhoUnicoId: 'c1', publicado: true },
+      ),
+    ).resolves.toBe('c1');
+
+    expect(chamadas).toEqual([{ publicado: true }]);
   });
 });
