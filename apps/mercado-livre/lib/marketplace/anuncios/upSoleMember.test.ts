@@ -247,3 +247,48 @@ describe('planejarMembroUnico — refusals', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+/**
+ * The parent's pointer (#1398, found by adversarial review of #1436).
+ *
+ * ⛔ This materialisation MOVES the produto's available units onto the child. Without
+ * `filhoUnicoId` on the parent, `unidadeVendavel` resolves that parent to ITSELF —
+ * so the badge, the pedido line, the Balanço scan and the print all read the row
+ * this reshape just emptied, while the units the live Mercado Livre listing is
+ * advertising sit on a child no ERP surface reaches.
+ *
+ * It shipped that way: publish minted the child, moved the stock, and patched only
+ * the ML LINK document. The stack that introduced the pointer changed the readers
+ * and left the one materialisation publish still performs writing nothing.
+ */
+describe('planejarMembroUnico — the parent points at its member', () => {
+  it('stamps filhoUnicoId with the child it just created', () => {
+    expect(plano().parentProdutoPatch).toEqual({ filhoUnicoId: plano().childProdutoId });
+  });
+
+  // ⚠️ The pointer is about IDENTITY, not about units. A produto whose every
+  // depósito is fully reserved moves nothing — and still becomes a family of one,
+  // so the readers must still be told where its sellable unit is.
+  it('stamps it on the creation arm too, where no stock moves', () => {
+    const criar = { acao: 'criar' as const, link: { ...args().link, id: null } };
+    expect(plano(criar).parentProdutoPatch).toEqual({
+      filhoUnicoId: plano(criar).childProdutoId,
+    });
+  });
+
+  // ⚠️ Through `derivarFilhoUnico`, never a bare `childId`. That function is the one
+  // producer of the value, so publish, the ERP's own create path and the conversion
+  // script cannot drift into disagreeing about what "exactly one member" means.
+  it('produces a bare doc id, the shape every reader resolves', () => {
+    const { filhoUnicoId } = plano().parentProdutoPatch as { filhoUnicoId: unknown };
+    expect(typeof filhoUnicoId).toBe('string');
+    expect(filhoUnicoId).not.toContain('/');
+  });
+
+  // The link patch is a DIFFERENT document, and conflating them is how the pointer
+  // went missing in the first place: `parentLinkPatch` looks like "the parent patch"
+  // and is not.
+  it('is separate from the parent LINK patch', () => {
+    expect(plano().parentLinkPatch).toEqual({ userProductId: null });
+  });
+});
