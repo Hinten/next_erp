@@ -54,7 +54,6 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
 import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
 import { PagamentoStatusBadge } from '../../pagamentos/_components/StatusBadge';
-import { gatewayIdFromTipo, getGateway } from '@/lib/plugins/paymentRegistry';
 import {
   EMPTY_PAGAMENTO_FORM,
   buildChequeSplitPagamentos,
@@ -97,8 +96,15 @@ const INTERVALO_OPTIONS = [
  * clamps parcelas to the pick's `maxParcelas`; the Mercado Pago link stays
  * pass-through. A cheque payment being ADDED with `parcelas > 1` fans out into
  * one pagamento per installment (`buildChequeSplitPagamentos` /
- * `saveChequeSplit`) instead of a single multi-parcela doc. Refunds still
- * resolve via the PaymentGateway plugin registry.
+ * `saveChequeSplit`) instead of a single multi-parcela doc.
+ *
+ * ⚠️ There is no refund action here. One existed as a permanently DISABLED
+ * "Estornar" button wired to the `PaymentGateway` plugin registry, which was
+ * always empty — it cost a Firestore read per row to compute a lookup that was
+ * statically `null`, and it was never enabled in this repo's history. Both the
+ * button and the contract are gone (#1429); the ERP still learns about refunds
+ * the way it always has, by observing `STATUS_PAGAMENTO` on an inbound Mercado
+ * Pago webhook. Issuing a refund FROM the ERP is post-migration work.
  */
 export function PagamentosSection({
   pedidoId,
@@ -743,28 +749,6 @@ function PagamentoRow({
   onAfterChange: () => Promise<void>;
 }) {
   const [savingStatus, setSavingStatus] = useState(false);
-  const [refunding, setRefunding] = useState(false);
-  const [refundError, setRefundError] = useState<string | null>(null);
-
-  // Resolve a configured gateway for this pagamento: dereference its
-  // `metodoPagamentoOuterRef` (a `documents/metodo_pgto/<id>` doc-path string) to
-  // the integration doc and read its `tipo`. Only runs when set (most are null).
-  // Today the registry has no implementations, so the refund button stays disabled.
-  const db = getFirebaseFirestore();
-  const metodoRef = useMemo(
-    () => dereferenceOuterRef(db, pagamento.metodoPagamentoOuterRef),
-    [db, pagamento.metodoPagamentoOuterRef],
-  );
-  const { data: metodo } = useQuery({
-    queryKey: ['metodoPgto', metodoRef?.path ?? null],
-    enabled: metodoRef != null,
-    queryFn: async () => {
-      const snap = await getDoc(metodoRef!);
-      return snap.exists() ? (snap.data() as { tipo?: number }) : null;
-    },
-  });
-  const gatewayId = metodo?.tipo != null ? gatewayIdFromTipo(metodo.tipo) : null;
-  const gateway = gatewayId ? getGateway(gatewayId) : null;
 
   async function handleStatusChange(next: string | null) {
     if (next === null) return;
@@ -789,23 +773,6 @@ function PagamentoRow({
       });
     } finally {
       setSavingStatus(false);
-    }
-  }
-
-  async function handleRefund() {
-    if (!gateway || !pagamento.id) return;
-    setRefunding(true);
-    setRefundError(null);
-    try {
-      await gateway.refund(pagamento.id);
-    } catch (err) {
-      if (err instanceof FirebaseError) {
-        setRefundError(err.message);
-      } else {
-        throw err;
-      }
-    } finally {
-      setRefunding(false);
     }
   }
 
@@ -840,30 +807,9 @@ function PagamentoRow({
             <Button size="xs" variant="light" color="red" onClick={onDelete} disabled={disabled}>
               Excluir
             </Button>
-            <Tooltip
-              label={gateway ? 'Estorna via gateway' : 'Plugin de gateway não registrado (Fase 5)'}
-            >
-              <Button
-                size="xs"
-                variant="light"
-                color="orange"
-                disabled={!gateway || !pagamento.id || disabled}
-                loading={refunding}
-                onClick={handleRefund}
-              >
-                Estornar
-              </Button>
-            </Tooltip>
           </Group>
         </Table.Td>
       </Table.Tr>
-      {refundError && (
-        <Table.Tr>
-          <Table.Td colSpan={5}>
-            <Alert color="red">{refundError}</Alert>
-          </Table.Td>
-        </Table.Tr>
-      )}
     </>
   );
 }

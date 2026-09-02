@@ -244,10 +244,12 @@ against `MarketplaceChannel`, and had no importer anywhere. **That contract is
 gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
 (`packages/schemas/src/shared/marketplace.ts`, the `FREIGHT_TIPO_CAPS` shape) and
 implemented as one App Hosting backend per channel; its shared data shapes live in
-`@delfrance/core/marketplace`. `packages/core/src/plugins` keeps exactly three
-contracts (tax/invoice/payment), and nothing in-tree registers at boot. ADR 0015 +
+`@delfrance/core/marketplace`. `packages/core/src/plugins` keeps exactly two
+contracts (tax/invoice) — `PaymentGateway` went the same way in #1429, for the same
+reason plus one more: its `webhook` had ALREADY shipped outside it, on
+`defineNotificationPipeline` — and nothing in-tree registers at boot. ADR 0015 +
 the `marketplace-integration` skill; guarded by
-`packages/config-eslint/rules/marketplace-contract-removed.test.js`, because
+`packages/config-eslint/rules/removed-plugin-contracts.test.js`, because
 re-adding the interface fails nothing.
 
 **tools/** — `test-fixtures` (Admin SDK seed/teardown, `create-super-user`) ·

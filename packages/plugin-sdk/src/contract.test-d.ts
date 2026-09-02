@@ -1,19 +1,19 @@
 /**
  * Compile-time fixture (no runtime; plugin-sdk has no test runner). Enforced by
- * this package's `tsc --noEmit` gate. Proves the three plugin contracts stay
- * reachable from the public surface, and that `defineIntegration` accepts each
- * of the three manifest kinds.
+ * this package's `tsc --noEmit` gate. Proves the two plugin contracts stay
+ * reachable from the public surface, and that `defineIntegration` accepts both
+ * manifest kinds.
  *
- * ⚠️ It used to prove the same for a 25-member `MarketplaceChannel` and ~25
- * marketplace support types. Those are gone (#815) — a channel is a backend, not
- * a plugin. The one assertion worth keeping from that era is the NEGATIVE one at
- * the bottom: `'marketplace'` must not be assignable to `PluginManifest.kinds`,
+ * ⚠️ It once proved the same for a 25-member `MarketplaceChannel` (#815) and a
+ * 3-member `PaymentGateway` (#1429). Both are gone — a channel and a payment
+ * account are backends, not plugins. The assertions worth keeping from that era
+ * are the NEGATIVE ones at the bottom: neither kind may become assignable again,
  * or the SDK starts advertising a plugin kind nothing can register.
  */
 import { defineIntegration } from './index';
-import type { InvoiceProvider, PaymentGateway, PluginManifest, TaxProvider } from './index';
+import type { InvoiceProvider, PluginManifest, TaxProvider } from './index';
 
-// The three contracts are usable from the public surface.
+// The two contracts are usable from the public surface.
 const tax: TaxProvider = {
   id: 'fixture-tax',
   calculate: ({ items }) => ({
@@ -27,29 +27,24 @@ const invoice: InvoiceProvider = {
   issue: async () => ({ status: 'pending' }),
 };
 
-const gateway: PaymentGateway = {
-  id: 'fixture-gateway',
-  createCharge: async ({ orderId }) => ({ chargeId: orderId, status: 'created' }),
-  refund: async () => {},
-  webhook: async () => ({ status: 'ok' }),
-};
-
-// defineIntegration type-checks with every valid kind, including a multi-kind plugin.
+// defineIntegration type-checks with each kind, and with a multi-kind plugin.
 const integration = defineIntegration({
   manifest: { id: 'fixture', name: 'Fixture', version: '0.0.0', kinds: ['tax', 'invoice'] },
   register: () => {},
 });
 
-const payment = defineIntegration({
-  manifest: { id: 'pay', name: 'Pay', version: '0.0.0', kinds: ['payment'] },
+const invoiceOnly = defineIntegration({
+  manifest: { id: 'nfe', name: 'NFe', version: '0.0.0', kinds: ['invoice'] },
   register: () => {},
 });
 
-// ⚠️ The negative assertion. `'marketplace'` is NOT a plugin kind — a channel is
-// an App Hosting backend resolved from its `integracao` doc, never registered.
-// `@ts-expect-error` FAILS THE BUILD if the union ever regains the member, which
-// is the only way this file can notice the contract creeping back.
+// ⚠️ The negative assertions. Neither `'marketplace'` nor `'payment'` is a plugin
+// kind — both are App Hosting backends resolved from a Firestore doc, never
+// registered. `@ts-expect-error` FAILS THE BUILD if the union regains the member,
+// which is the only way this file notices a contract creeping back.
 // @ts-expect-error 'marketplace' is not a PluginManifest kind (#815, ADR 0015)
-const kinds: PluginManifest['kinds'] = ['marketplace'];
+const marketplaceKind: PluginManifest['kinds'] = ['marketplace'];
+// @ts-expect-error 'payment' is not a PluginManifest kind (#1429)
+const paymentKind: PluginManifest['kinds'] = ['payment'];
 
-void [tax, invoice, gateway, integration, payment, kinds];
+void [tax, invoice, integration, invoiceOnly, marketplaceKind, paymentKind];
