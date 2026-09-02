@@ -406,15 +406,30 @@ export function VariationManager({
     if (Object.keys(patches).length === 0 && newRows.length === 0 && localOrder === null)
       return NOTHING_REUSED;
 
-    const duplicates = findDuplicateSkus(rows);
+    const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows, membroUnicoId);
+
+    // ⚠️ The gate runs on the RECONCILED rows, and the order is load-bearing.
+    //
+    // It used to run first, and after #1424 that made a legal, modelled shape
+    // unsavable: the sole member copies the parent's SKU verbatim, and
+    // `cartesianVariations` emits `base.sku + (variante.codigo ?? '')` — so a
+    // variante with no `codigo` generates a child whose SKU IS the parent's. Rule
+    // 3 exists to absorb exactly that create onto the sole member's document, but
+    // the gate had already thrown, and the operator could not proceed without
+    // hand-editing a SKU or deleting the member.
+    //
+    // Checking after reconciliation is also the more correct question: what must
+    // be unique is what will actually be WRITTEN, and a create the reuse absorbed
+    // is no longer a second document. The #117 delete/create pairing was already
+    // relying on that — it just got it for free, because `findDuplicateSkus`
+    // skips delete-marked rows.
+    const duplicates = findDuplicateSkus(reconciled);
     if (duplicates.size > 0) {
       throw flushAbort(
         `SKU duplicado entre as variações: ${[...duplicates.keys()].join(', ')}. ` +
           'Cada variação precisa de um SKU próprio — ajuste antes de salvar.',
       );
     }
-
-    const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows, membroUnicoId);
 
     // Staged creates the reuse absorbed onto an existing doc: the batch issues
     // an UPDATE on that doc, never a `set` under the row's own key, so `rows`
