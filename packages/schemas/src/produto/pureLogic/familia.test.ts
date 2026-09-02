@@ -443,7 +443,16 @@ describe('planejarSincronizacaoDoMembroUnico', () => {
         pai({ ehKit: false, componentesKit: { 'comp-1': kit(1) } }),
         comKit({ 'comp-1': kit(1) }),
       );
-      expect(patch).toEqual({ ehKit: false, componentesKit: null, componentesKitKeys: null });
+      // ⚠️ `ehKitVirtual` rides along even though it did not move on its own.
+      // The four kit fields are ONE unit — see "the kit group is atomic" below —
+      // and writing a subset is exactly how a member ended up with a flag whose
+      // map had been declined.
+      expect(patch).toEqual({
+        ehKit: false,
+        ehKitVirtual: false,
+        componentesKit: null,
+        componentesKitKeys: null,
+      });
     });
   });
 
@@ -490,5 +499,98 @@ describe('planejarSincronizacaoDoMembroUnico', () => {
       precos: { l1: { valor: 10 } },
       paiId: 'p1',
     });
+  });
+});
+
+/**
+ * ⛔ The kit group moves as ONE unit (found by adversarial review of #1427).
+ *
+ * `componentesKitKeys` is derived from `componentesKit` and `ehKit` gates both,
+ * so deciding them independently produces states the schema forbids — and
+ * `calcularAlteracoesEstoque` reads "kit with no components" as a line that moves
+ * NOTHING. Both shapes below were reproduced against the shipped function before
+ * the fix.
+ */
+describe('planejarSincronizacaoDoMembroUnico — the kit group is atomic', () => {
+  const k = (quantidade: number) => ({ quantidade, limitarEstoque: true, timestamp: 1 });
+  const base = { nome: 'Cesta', sku: 'CES-1', paiId: null };
+
+  // ⛔ Was: `{ componentesKitKeys: ['c1'] }` — the map declined, the keys moved.
+  it('declines the KEYS too when the member diverged the map (narrowing)', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, componentesKit: { c1: k(1), c2: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(5), c2: k(1) } },
+      ),
+    ).toBeNull();
+  });
+
+  // ⛔ Was: `{ componentesKitKeys: ['c1','c2'] }` — keys widened past the map, so
+  // the member matched `componentesKitKeys array-contains` for a component it
+  // does not assemble and the rollup fanned out to it for nothing.
+  it('declines the KEYS too when the member diverged the map (widening)', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(1), c2: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(5) } },
+      ),
+    ).toBeNull();
+  });
+
+  // ⛔ Was: `{ ehKit: false, componentesKitKeys: null }` — the flag moved and the
+  // MAP survived, contradicting this file's own "a non-kit carries no map".
+  it('never moves the flag without the map it gates', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: false, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(5) } },
+      ),
+    ).toBeNull();
+  });
+
+  // ...and the near-miss that keeps the group ALIVE: an in-sync member still
+  // takes the whole group, all four fields together.
+  it('moves all four together when the member is in sync', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(1), c2: k(2) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+      ),
+    ).toEqual({
+      ehKit: true,
+      ehKitVirtual: false,
+      componentesKit: { c1: k(1), c2: k(2) },
+      componentesKitKeys: ['c1', 'c2'],
+    });
+  });
+
+  // ⚠️ Sync is required on ALL FOUR, not just on the map. A member whose
+  // `ehKitVirtual` the operator flipped owns the group: moving the map over it
+  // would take the flag with it and undo that edit. Keying the check on
+  // `componentesKit` alone passes every other test here — this is the one that
+  // tells the two rules apart.
+  it('declines when the member diverged only the VIRTUAL flag', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, ehKitVirtual: false, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, ehKitVirtual: false, componentesKit: { c1: k(2) } },
+        { ...base, ehKit: true, ehKitVirtual: true, componentesKit: { c1: k(1) } },
+      ),
+    ).toBeNull();
+  });
+
+  // A divergence in the GROUP must not freeze the fields outside it.
+  it('still moves a non-kit field when only the kit group is diverged', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, nome: 'Cesta', ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, nome: 'Cesta Grande', ehKit: true, componentesKit: { c1: k(2) } },
+        { ...base, nome: 'Cesta', ehKit: true, componentesKit: { c1: k(5) } },
+      ),
+    ).toEqual({ nome: 'Cesta Grande' });
   });
 });

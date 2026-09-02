@@ -374,20 +374,34 @@ export async function recordProdutoModificationAndPropagate(
     );
   }
 
-  // ⚠️ OUTSIDE the `entry !== null` block, and BELOW the precos propagation.
+  // Dispatched before the mirror below, and that order is the point: a failed
+  // enqueue must not cost the history row above, and the mirror must not cost the
+  // enqueue. See the mirror's own note.
+  await enfileirarRollupDeKit(kitScheduler, produtoId, rollup);
+
+  // ⚠️ LAST, and OUTSIDE the `entry !== null` block.
+  //
   // Outside, because the mirror is decided from the raw before/after exactly as
   // the rollup is — an ignore-list edit that hides a field from the history must
-  // not stop the sellable half of the produto from following it. Below, because
-  // both can write the same member and this one carries a `lastUpdateTime`
-  // precondition: running it after the precos write means it reads that write
-  // rather than losing to it.
+  // not stop the sellable half of the produto from following it.
+  //
+  // ⛔ Last, because `sincronizarMembroUnico` RETHROWS everything that is not
+  // `FAILED_PRECONDITION` (rule 6). Placed above the enqueue, a transient
+  // `UNAVAILABLE` from either read, or a `NOT_FOUND` from a member deleted between
+  // the read and the update, would propagate out of a handler that does not
+  // retry — and the kit rollup enqueue would simply be lost, leaving every kit
+  // containing this produto with a stale weight and box until someone edits
+  // another component. A wrong freight quote is exactly the harm #1152 was filed
+  // on, and `enfileirarRollupDeKit` was moved last once already for the mirror
+  // image of this reason.
+  //
+  // ⚠️ Still below the precos propagation, which is what it needs: that write is
+  // inside the `entry !== null` block above either way, so the member read here
+  // sees it rather than racing it.
   const membroSincronizado = await sincronizarMembroUnico(db, produtoId, before, after);
   if (membroSincronizado !== null) {
     logger.info(`onProdutoChanged: ${produtoId} → espelho do membro único ${membroSincronizado}`);
   }
-
-  // LAST on purpose — a failed enqueue must not cost the history row above.
-  await enfileirarRollupDeKit(kitScheduler, produtoId, rollup);
 }
 
 /* -------------------------------------------------------------------------- */
