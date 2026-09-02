@@ -30,7 +30,7 @@ vi.mock('@delfrance/data', async (importActual) => {
   };
 });
 
-import { resolverSkuBalanco } from './resolveSkuBalanco';
+import { classificarProduto, resolverSkuBalanco } from './resolveSkuBalanco';
 
 /**
  * A produto with no variations is a family of ONE, and its sole member copies
@@ -208,5 +208,90 @@ describe('resolverSkuBalanco — each document is parsed exactly once', () => {
     getDocsMock.mockResolvedValue(snapshot([produto('so-um')]));
     await resolverSkuBalanco(db, 'BAN-1');
     expect(parses).toEqual(['so-um']);
+  });
+});
+
+/**
+ * ⚠️ The verdict's `produtoId` is what the balanço COUNTS AGAINST, and
+ * `aplicarBalanco` writes the counted quantity to `est-<produtoId>-<depositoId>`
+ * at finalize. A family-of-one parent is a wrapper holding no stock (#1398), so
+ * counting against it would put real inventory on a document nothing reads.
+ *
+ * `classificarProduto` is the branch the scan AND the manual autocomplete share,
+ * so covering it covers both entry paths.
+ */
+describe('classificarProduto — the verdict names the sellable unit', () => {
+  const doc = (over: Record<string, unknown> = {}) =>
+    ({
+      nome: 'Bandeja',
+      sku: 'BAN-1',
+      ehKit: false,
+      paiId: null,
+      filhoUnicoId: null,
+      ...over,
+    }) as never;
+
+  it('resolves a family-of-one parent to its child', () => {
+    expect(classificarProduto('p1', doc({ filhoUnicoId: 'c1' }))).toMatchObject({
+      kind: 'produto',
+      produtoId: 'c1',
+    });
+  });
+
+  // The matched document is kept, so the operator sees what they scanned. For a
+  // family of one the two agree anyway — the sole member copies nome and sku.
+  it('keeps the MATCHED produto alongside the resolved id', () => {
+    const parent = doc({ filhoUnicoId: 'c1', nome: 'Bandeja Decorativa' });
+    const v = classificarProduto('p1', parent);
+    expect(v).toMatchObject({ produtoId: 'c1' });
+    expect(v.kind === 'produto' && v.produto).toBe(parent);
+  });
+
+  it('leaves an ordinary produto alone', () => {
+    expect(classificarProduto('p1', doc())).toMatchObject({ kind: 'produto', produtoId: 'p1' });
+  });
+
+  it('leaves a variation child alone', () => {
+    expect(classificarProduto('c1', doc({ paiId: 'p1' }))).toMatchObject({
+      kind: 'produto',
+      produtoId: 'c1',
+    });
+  });
+
+  // ⚠️ Refused BEFORE resolving, so the message names the produto the operator
+  // actually scanned. `ehKit` is copied onto the sole member, so both sides of a
+  // family agree and the verdict is the same either way.
+  it('still refuses a kit, and reports the id that was scanned', () => {
+    expect(classificarProduto('p1', doc({ ehKit: true, filhoUnicoId: 'c1' }))).toMatchObject({
+      kind: 'kit',
+      produtoId: 'p1',
+    });
+  });
+
+  // ⚠️ The call spreads the produto doc and puts the real doc id LAST. A
+  // Firestore document does not carry its own id today, but a stray `id` field —
+  // from a form model, a fixture, or a future schema addition — would otherwise
+  // win the spread and silently redirect the count to another produto.
+  it('uses the DOC id, not an id field that happens to be on the document', () => {
+    expect(
+      classificarProduto('p1', doc({ id: 'nao-usar', filhoUnicoId: null } as never)),
+    ).toMatchObject({ kind: 'produto', produtoId: 'p1' });
+  });
+
+  // The drift guard: a child carrying a stale pointer counts against itself.
+  it('does not follow a stale filhoUnicoId on a child', () => {
+    expect(
+      classificarProduto('c1', doc({ paiId: 'p1', filhoUnicoId: 'algum-outro' })),
+    ).toMatchObject({ kind: 'produto', produtoId: 'c1' });
+  });
+});
+
+describe('resolverSkuBalanco — a single hit that is a family-of-one parent', () => {
+  it('counts against the child', async () => {
+    getDocsMock.mockResolvedValue(snapshot([produto('pai-1', { filhoUnicoId: 'c1' })]));
+    expect(await resolverSkuBalanco(db, 'BAN-1')).toMatchObject({
+      kind: 'produto',
+      produtoId: 'c1',
+    });
   });
 });

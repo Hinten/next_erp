@@ -449,7 +449,7 @@ export async function buildStockResolver(
   // sheet did not read before. The keys stay the ids the pedido and the kit map
   // name; only the estoque doc that answers for them moves.
   const alvoDe = new Map<string, string>();
-  for (const [id, p] of produtos) alvoDe.set(id, unidadeVendavel({ id, ...p }));
+  for (const [id, p] of produtos) alvoDe.set(id, unidadeVendavel({ ...p, id }));
 
   if (depositoId) {
     const ler = async (pid: string): Promise<StockInfo | null> => {
