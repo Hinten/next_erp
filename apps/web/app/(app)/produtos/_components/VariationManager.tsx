@@ -54,7 +54,10 @@ import {
   compareSortKeys,
   findDuplicateSkus,
   normalizeVariacoesUid,
+  espelhoDoMembroUnico,
+  montarMembroUnico,
   parseFakePath,
+  planejarMembroSobrevivente,
   produtoSchema,
   derivarFilhoUnico,
   reconcileStagedChildren,
@@ -406,11 +409,81 @@ export function VariationManager({
     if (Object.keys(patches).length === 0 && newRows.length === 0 && localOrder === null)
       return NOTHING_REUSED;
 
-    const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows, membroUnicoId);
+    const { rows: reconciliadas, reusedIds } = reconcileStagedChildren(rows, membroUnicoId);
 
-    // ⚠️ The gate runs on the RECONCILED rows, and the order is load-bearing.
+    // ⚠️ A family never loses its last child (#1398). The sellable unit IS a
+    // child — it owns the estoque rows, a pedido line binds it, the ML family
+    // publishes it — so a parent left alone is not "a simple produto", it is a
+    // produto NOTHING CAN SELL, with every stock reader resolving to a document
+    // that no longer exists. `toggleDeleteAll` reaches that in one click, and
+    // after #1424 every produto carries a member row here, so "delete the only
+    // variation" is the ordinary way in.
     //
-    // It used to run first, and after #1424 that made a legal, modelled shape
+    // Planned on the RECONCILED rows: a delete a staged create already absorbed
+    // is not a delete, and must not push this into the `criar` arm.
+    const sobrevivente = planejarMembroSobrevivente(reconciliadas);
+    // `renomear` un-marks the delete and turns it into an in-place rename onto
+    // the parent's nome/sku. The doc id survives, and with it the estoque rows
+    // and their ledger, kit entries, marketplace links, pedido lines and NF-e
+    // history — the same reason `reconcileStagedChildren` reuses ids (#117),
+    // applied where the "create" is implicit. It also takes the row OUT of
+    // `deleteTargets` below, so an inbound reference no longer aborts a save
+    // that deletes nothing.
+    // ⚠️ The survivor becomes the produto's SELLABLE UNIT — `filhoUnicoId` points at
+    // it two blocks down, so `unidadeVendavel` sends every stock, kit and NF-e
+    // reader to it. Renaming it is not enough: the `criar` arm below builds its
+    // member through `montarMembroUnico`, and the two arms of one invariant must
+    // not leave two different documents.
+    //
+    // ⛔ The gap that made this concrete: a variation created by this flush's own
+    // create branch carries the schema defaults `ehKit: false`, `componentesKit:
+    // null`, `publicado: false`. Promote it on a KIT parent and the produto's
+    // sellable unit is a non-kit with no composition — which
+    // `calcularAlteracoesEstoque` reads as a line that moves NOTHING.
+    //
+    // `espelhoDoMembroUnico`, not `montarMembroUnico`: `precos` stays out because
+    // the `onProdutoChanged` trigger owns it, with the `propagatePriceToChildren`
+    // opt-out this must not defeat.
+    const espelhoDoPai =
+      sobrevivente.tipo === 'renomear'
+        ? espelhoDoMembroUnico({
+            nome: liveParent('nome'),
+            sku: liveParent('sku'),
+            codPai: liveParent('codPai'),
+            gtin: liveParent('gtin'),
+            publicado: liveParent('publicado'),
+            ehKit: liveParent('ehKit'),
+            ehKitVirtual: liveParent('ehKitVirtual'),
+            ehUsado: liveParent('ehUsado'),
+            componentesKit: liveParent('componentesKit') as Record<string, unknown> | null,
+            categoriaProdutoOuterRef: liveParent('categoriaProdutoOuterRef'),
+            pesoLiquidoKg: liveParent('pesoLiquidoKg'),
+            pesoBrutoKg: liveParent('pesoBrutoKg'),
+            alturaCm: liveParent('alturaCm'),
+            larguraCm: liveParent('larguraCm'),
+            profundidadeCm: liveParent('profundidadeCm'),
+          })
+        : null;
+    const reconciled =
+      sobrevivente.tipo === 'renomear'
+        ? reconciliadas.map((r) =>
+            r.id === sobrevivente.id
+              ? {
+                  ...r,
+                  deleteMark: false,
+                  dirty: true,
+                  nome: liveParent('nome') ?? r.nome,
+                  sku: liveParent('sku') ?? '',
+                  variacoesUid: [],
+                }
+              : r,
+          )
+        : reconciliadas;
+
+    // ⚠️ The gate runs LAST, on the rows that will actually be written, and both
+    // halves of that order are load-bearing.
+    //
+    // It used to run FIRST, and after #1424 that made a legal, modelled shape
     // unsavable: the sole member copies the parent's SKU verbatim, and
     // `cartesianVariations` emits `base.sku + (variante.codigo ?? '')` — so a
     // variante with no `codigo` generates a child whose SKU IS the parent's. Rule
@@ -418,11 +491,12 @@ export function VariationManager({
     // the gate had already thrown, and the operator could not proceed without
     // hand-editing a SKU or deleting the member.
     //
-    // Checking after reconciliation is also the more correct question: what must
-    // be unique is what will actually be WRITTEN, and a create the reuse absorbed
-    // is no longer a second document. The #117 delete/create pairing was already
-    // relying on that — it just got it for free, because `findDuplicateSkus`
-    // skips delete-marked rows.
+    // It also runs after the SURVIVOR rename, which rewrites a row's SKU to the
+    // parent's — checking before it would judge a value the flush is about to
+    // replace. What must be unique is what will actually be WRITTEN, and a create
+    // the reuse absorbed is no longer a second document. The #117 delete/create
+    // pairing was already relying on that; it just got it for free, because
+    // `findDuplicateSkus` skips delete-marked rows.
     const duplicates = findDuplicateSkus(reconciled);
     if (duplicates.size > 0) {
       throw flushAbort(
@@ -549,10 +623,52 @@ export function VariationManager({
           variacoesUid: normalized.length > 0 ? normalized : null,
           ordem,
           ...(absorbed.has(row.key) && normalized.length > 0 ? { gtin: null } : {}),
+          // ⚠️ The promoted survivor takes the parent's whole mirror. Without this
+          // the update branch writes four fields and the produto's sellable unit
+          // keeps whatever the variation happened to have — on a kit parent, a
+          // non-kit child with no composition, whose pedido line moves no stock.
+          ...(espelhoDoPai !== null &&
+          sobrevivente.tipo === 'renomear' &&
+          row.id === sobrevivente.id
+            ? espelhoDoPai
+            : {}),
         } as never);
         writes += 1;
       }
       ordem += 1;
+    }
+
+    // ⚠️ The `criar` arm: two or more children deleted at once. Merging their
+    // stock into one is a decision nobody authorised and picking a survivor
+    // would be arbitrary, so the replacement starts EMPTY — their estoque
+    // subtrees are swept by `onProdutoDeleted` either way, so nothing extra is
+    // lost. What this stops is the produto being left unsellable.
+    const membroCriadoId = sobrevivente.tipo === 'criar' ? newDocId() : null;
+    if (membroCriadoId !== null) {
+      batch.set(
+        produtoCollection.docRef(db, {}, membroCriadoId),
+        produtoSchema.parse(
+          montarMembroUnico(parentId, {
+            nome: liveParent('nome'),
+            sku: liveParent('sku'),
+            codPai: liveParent('codPai'),
+            gtin: liveParent('gtin'),
+            publicado: liveParent('publicado'),
+            ehKit: liveParent('ehKit'),
+            ehKitVirtual: liveParent('ehKitVirtual'),
+            ehUsado: liveParent('ehUsado'),
+            componentesKit: liveParent('componentesKit'),
+            precos: parentPrecos,
+            categoriaProdutoOuterRef: liveParent('categoriaProdutoOuterRef'),
+            pesoLiquidoKg: liveParent('pesoLiquidoKg'),
+            pesoBrutoKg: liveParent('pesoBrutoKg'),
+            alturaCm: liveParent('alturaCm'),
+            larguraCm: liveParent('larguraCm'),
+            profundidadeCm: liveParent('profundidadeCm'),
+          }),
+        ) as never,
+      );
+      writes += 1;
     }
 
     // ⚠️ The pointer is re-derived from the child set this flush leaves behind,
@@ -560,7 +676,10 @@ export function VariationManager({
     // id, so `filhoUnicoId` would still name a real child — while the family now
     // has several — and every stock reader would resolve to one arbitrary
     // variation. `derivarFilhoUnico` is the one producer of the value.
-    const filhosVivos = reconciled.filter((r) => !r.deleteMark).map((r) => ({ id: r.id ?? r.key }));
+    const filhosVivos = [
+      ...reconciled.filter((r) => !r.deleteMark).map((r) => ({ id: r.id ?? r.key })),
+      ...(membroCriadoId === null ? [] : [{ id: membroCriadoId }]),
+    ];
     const filhoUnico = derivarFilhoUnico(filhosVivos);
     if (filhoUnico !== membroUnicoId) {
       batch.update(produtoCollection.docRef(db, {}, parentId), {

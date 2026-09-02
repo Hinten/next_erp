@@ -611,3 +611,76 @@ export function splitFotoSections(input: {
 
   return { general, variants };
 }
+
+/**
+ * What a flush must do so the family does not end up with **zero** children.
+ *
+ * ## Why the invariant exists at all
+ *
+ * After #1398 the sellable unit is a child: it owns the estoque rows, a pedido
+ * line binds it, the Mercado Livre family publishes it. A parent alone is a
+ * wrapper holding nothing — so a produto whose last child is deleted is not
+ * "a simple produto" any more, it is a produto **nothing can sell**, and every
+ * stock reader resolves it to a document that no longer exists.
+ *
+ * The delete-all path is not exotic: `toggleDeleteAll` marks every row with one
+ * click, and after PR 7 every produto carries a member row in the Variações tab,
+ * so "delete the only variation" is the most ordinary way to reach this.
+ *
+ * ## The two outcomes, and why they differ
+ *
+ * **Exactly one child is being deleted ⇒ `renomear`.** Reuse its doc id: the
+ * flush turns the delete into an in-place rename onto the parent's nome/sku with
+ * `variacoesUid` cleared. Everything the id anchors survives — the estoque rows
+ * and their `historicoEstoque` ledger, kit entries, marketplace variation links,
+ * pedido lines, NF-e history. Same reasoning as `reconcileStagedChildren`'s
+ * id-reuse (#117), applied to the case where the "create" is implicit.
+ *
+ * ⚠️ This is the case that matters, and it is the common one. A produto with a
+ * sole member has exactly one row; deleting it means "this produto has no
+ * variations", never "throw away this produto's stock".
+ *
+ * **Two or more ⇒ `criar`.** A fresh member with no stock. Merging several
+ * children's stock into one is a data decision nobody authorised, and picking
+ * one of them to survive would be arbitrary. Deleting N variations already
+ * discards their estoque subtrees today (`onProdutoDeleted` sweeps them), so
+ * this changes nothing about what is lost — it only stops the produto from being
+ * left unsellable.
+ *
+ * ⚠️ A staged CREATE counts as a live child, so an operator replacing the whole
+ * variation set in one save reaches neither arm. `reconcileStagedChildren` runs
+ * FIRST and may already have paired a delete with a create, which is why this
+ * takes the reconciled rows: a pair that was absorbed is no longer a delete.
+ *
+ * ## ⛔ A family that never had a child gets NOTHING
+ *
+ * The trigger is "this flush deleted the last child", never "there is no child".
+ * A legacy produto from before #1398 has no children AND holds its own stock, and
+ * read-tolerance resolves it to itself. Minting an empty member for it — without
+ * moving the units, which is a migration's job (reserved remainders, non-canonical
+ * estoque doc ids) — would point every stock reader at a document with nothing in
+ * it and the produto would read **0** across the ERP.
+ *
+ * So a row set with no PERSISTED delete is `nada`, even when it is empty. That
+ * also covers a staged create the operator marked and unmarked before saving:
+ * nothing was ever written, so nothing was lost.
+ */
+export type PlanoDeMembroSobrevivente =
+  | { tipo: 'nada' }
+  | { tipo: 'renomear'; id: string }
+  | { tipo: 'criar' };
+
+export function planejarMembroSobrevivente(
+  rows: readonly ReconcilableRow[],
+): PlanoDeMembroSobrevivente {
+  const vivos = rows.filter((r) => !r.deleteMark);
+  if (vivos.length > 0) return { tipo: 'nada' };
+
+  const excluidos = rows.filter((r) => r.deleteMark && r.id != null && r.id !== '');
+  // ⛔ Nothing persisted was deleted ⇒ this flush took no child away, so there is
+  // no invariant to restore. See the "never had a child" note above: minting here
+  // is how a legacy produto's stock would silently read as 0.
+  if (excluidos.length === 0) return { tipo: 'nada' };
+  if (excluidos.length > 1) return { tipo: 'criar' };
+  return { tipo: 'renomear', id: excluidos[0]!.id! };
+}

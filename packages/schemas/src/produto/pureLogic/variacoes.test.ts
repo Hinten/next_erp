@@ -7,6 +7,7 @@ import {
   grupoOuterRef,
   normalizeVariacoesUid,
   parseFakePath,
+  planejarMembroSobrevivente,
   reconcileStagedChildren,
   reconstructFromSkuSuffix,
   reconstructFromVariacoesUid,
@@ -612,5 +613,88 @@ describe('reconcileStagedChildren — the sole member (rule 3)', () => {
   it('ignores a pointer naming a produto that is not in the rows', () => {
     const rows = [linha({ key: 'novo', sku: 'BAN-1P', variacoesUid: ['g/P'] })];
     expect(reconcileStagedChildren(rows, 'sumiu').reusedIds).toEqual([]);
+  });
+});
+
+/**
+ * A family never loses its last child (#1398, PR 8).
+ *
+ * ⚠️ The interesting half is WHICH outcome, not that there is one: `renomear`
+ * keeps the doc id — and with it the estoque rows, their ledger, kit entries,
+ * marketplace links and pedido lines — while `criar` starts empty. Getting that
+ * backwards is a silent stock loss on the most ordinary edit there is.
+ */
+describe('planejarMembroSobrevivente', () => {
+  const linha = (over: Partial<ReconcilableRow> = {}): ReconcilableRow => ({
+    id: 'c1',
+    sku: 'SKU-1',
+    variacoesUid: [],
+    deleteMark: false,
+    ...over,
+  });
+
+  it('does nothing while a child survives', () => {
+    expect(planejarMembroSobrevivente([linha(), linha({ id: 'c2', deleteMark: true })])).toEqual({
+      tipo: 'nada',
+    });
+  });
+
+  // The common case after PR 7: every produto has exactly one member row, and
+  // deleting it means "no variations", never "throw away this produto's stock".
+  it('renames in place when the ONE child being deleted is the only one', () => {
+    expect(planejarMembroSobrevivente([linha({ deleteMark: true })])).toEqual({
+      tipo: 'renomear',
+      id: 'c1',
+    });
+  });
+
+  // ⚠️ Two children's stock cannot merge into one, and choosing which survives
+  // would be arbitrary. Their estoque subtrees are already swept by
+  // `onProdutoDeleted` today, so nothing extra is lost.
+  it('creates a fresh member when several children are deleted at once', () => {
+    expect(
+      planejarMembroSobrevivente([
+        linha({ deleteMark: true }),
+        linha({ id: 'c2', sku: 'SKU-2', deleteMark: true }),
+      ]),
+    ).toEqual({ tipo: 'criar' });
+  });
+
+  // A staged create IS a live child — replacing the whole variation set in one
+  // save must not trigger the invariant at all.
+  it('does nothing when a staged create replaces every deleted child', () => {
+    expect(
+      planejarMembroSobrevivente([linha({ deleteMark: true }), linha({ id: null, sku: 'novo' })]),
+    ).toEqual({ tipo: 'nada' });
+  });
+
+  // ⛔ The hazard this guard exists for. A legacy produto from before #1398 has
+  // no children AND holds its own stock; read-tolerance resolves it to itself.
+  // Minting an empty member without MOVING the units — a migration's job, with
+  // reserved remainders and non-canonical estoque doc ids to handle — would point
+  // every stock reader at an empty document and the produto would read 0.
+  it('mints NOTHING for a produto that never had a child', () => {
+    expect(planejarMembroSobrevivente([])).toEqual({ tipo: 'nada' });
+  });
+
+  // ⚠️ A delete row with no doc id was never persisted, so this flush took no
+  // child away — and there is no anchor for `renomear` either.
+  it('does nothing when the only deleted row was never persisted', () => {
+    expect(planejarMembroSobrevivente([linha({ id: null, deleteMark: true })])).toEqual({
+      tipo: 'nada',
+    });
+  });
+
+  // ⚠️ The order dependency, stated as a test: a pair `reconcileStagedChildren`
+  // absorbed is no longer a delete, so it must not push the flush into `criar`.
+  it('runs on the RECONCILED rows, where an absorbed pair is already gone', () => {
+    const bruto = [
+      linha({ deleteMark: true }),
+      linha({ id: null, sku: 'SKU-1' }), // same SKU: rule 1 absorbs the delete
+    ];
+    const { rows } = reconcileStagedChildren(bruto);
+    expect(planejarMembroSobrevivente(rows)).toEqual({ tipo: 'nada' });
+    // ...and the survivor kept the original doc id, which is the whole point.
+    expect(rows.map((r) => r.id)).toEqual(['c1']);
   });
 });
