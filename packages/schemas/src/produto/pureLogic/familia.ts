@@ -173,3 +173,123 @@ export function ehFamiliaDeUm(produto: ProdutoDeFamilia): boolean {
 export function unidadeVendavel(produto: ProdutoDeFamilia): string {
   return ehFamiliaDeUm(produto) ? produto.filhoUnicoId! : produto.id;
 }
+
+/* -------------------------------------------------------------------------- */
+/*                       Minting the sole member's document                   */
+/* -------------------------------------------------------------------------- */
+
+/** The parent fields a sole member mirrors. Everything else is a schema default. */
+export interface ParentParaMembroUnico {
+  nome?: string | null;
+  sku?: string | null;
+  codPai?: string | null;
+  gtin?: string | null;
+  publicado?: boolean | null;
+  ehKit?: boolean | null;
+  ehKitVirtual?: boolean | null;
+  ehUsado?: boolean | null;
+  componentesKit?: Record<string, unknown> | null;
+  precos?: Record<string, unknown> | null;
+  categoriaProdutoOuterRef?: string | null;
+  pesoLiquidoKg?: number | null;
+  pesoBrutoKg?: number | null;
+  alturaCm?: number | null;
+  larguraCm?: number | null;
+  profundidadeCm?: number | null;
+}
+
+/** Flutter caps a produto name at 100 (`produto.ts:45`); a child's must fit too. */
+const PRODUTO_NOME_MAX = 100;
+
+/**
+ * The sole member's produto document, mirrored from its parent.
+ *
+ * ⚠️ It is a MIRROR, not a stub. The child is the sellable unit after #1398, so
+ * anything a stock or pricing surface reads off "the produto" has to be on it:
+ * `precos` (the pedido line reprices from the produto it names), the five
+ * dimensions (freight quoting), `categoriaProdutoOuterRef` (the NF-e tax
+ * cascade's tier 3 — a child without it falls through to the operação default),
+ * and the kit fields.
+ *
+ * ⚠️ **`componentesKit` is copied, and it has to be.** A kit's availability is
+ * `min` over its components, computed from the produto a surface reads — which
+ * for a family of one is the child. A child carrying `ehKit: false` and no map
+ * would report its own (empty) stock, so every kit would read 0: the harm #1398
+ * was opened on, from a third direction. Kit-variation children already carry
+ * their own map, written by "Gerar Variações" (`buildChildrenComponentesKitOps`),
+ * so this matches the shape the repo already has.
+ *
+ * ⚠️ `variacoesUid`/`grupoDeVariacoesUid` stay NULL — a sole member has no
+ * variation taxonomy, which is exactly what `resolveVariationCombo([], [])`
+ * yields and what both the ML publish and import paths write.
+ *
+ * ⚠️ `ordem` stays null and `filhoUnicoId` is absent: a child never points at a
+ * child, and nothing orders a family of one.
+ */
+/**
+ * The four kit fields a sole member mirrors — **one unit, never four**.
+ *
+ * ⚠️ They are not independent. `componentesKitKeys` is DERIVED from
+ * `componentesKit`, and `ehKit` gates both: `onProdutoDeleted.ts:75` states the
+ * invariant outright, that the pair is *"rewritten together (never one without
+ * the other)"*. A writer that decides them separately can leave a member whose
+ * flag says kit while its map is null, or whose keys array names a component the
+ * map does not hold — and `calcularAlteracoesEstoque` reads exactly that
+ * combination as "kit with no components", so the sale moves **nothing**.
+ *
+ * Every place that mirrors the group goes through here, so the definition of
+ * "the kit group" exists once: {@link montarMembroUnico} at birth,
+ * `espelhoDoMembroUnico` on a later edit, and `buildKitStatusChildOps` when the
+ * parent's kit flag is toggled.
+ */
+export function camposDeKitDoMembroUnico(
+  parent: Pick<ParentParaMembroUnico, 'ehKit' | 'ehKitVirtual' | 'componentesKit'>,
+): Record<string, unknown> {
+  const ehKit = parent.ehKit === true;
+  // Same rule the create page's `deriveOnSave` applies to the parent: a non-kit
+  // carries no map, so the denorm can never outlive the flag.
+  const componentesKit = ehKit ? (parent.componentesKit ?? null) : null;
+  const temComponentes = componentesKit != null && Object.keys(componentesKit).length > 0;
+
+  return {
+    ehKit,
+    ehKitVirtual: ehKit && parent.ehKitVirtual === true,
+    componentesKit: temComponentes ? componentesKit : null,
+    // Sorted, order-stable: the keys feed an `array-contains` query and
+    // Firestore arrays are order-sensitive.
+    componentesKitKeys: temComponentes ? Object.keys(componentesKit).sort() : null,
+  };
+}
+
+/** The names of the fields {@link camposDeKitDoMembroUnico} owns, as a set. */
+export const CAMPOS_DE_KIT_DO_MEMBRO: readonly string[] = [
+  'ehKit',
+  'ehKitVirtual',
+  'componentesKit',
+  'componentesKitKeys',
+];
+
+export function montarMembroUnico(
+  parentId: string,
+  parent: ParentParaMembroUnico,
+): Record<string, unknown> {
+  return {
+    nome: (parent.nome ?? '').slice(0, PRODUTO_NOME_MAX),
+    sku: parent.sku ?? null,
+    paiId: parentId,
+    codPai: parent.codPai ?? null,
+    gtin: parent.gtin ?? null,
+    publicado: parent.publicado === true,
+    ehUsado: parent.ehUsado === true,
+    ...camposDeKitDoMembroUnico(parent),
+    precos: parent.precos ?? null,
+    categoriaProdutoOuterRef: parent.categoriaProdutoOuterRef ?? null,
+    pesoLiquidoKg: parent.pesoLiquidoKg ?? null,
+    pesoBrutoKg: parent.pesoBrutoKg ?? null,
+    alturaCm: parent.alturaCm ?? null,
+    larguraCm: parent.larguraCm ?? null,
+    profundidadeCm: parent.profundidadeCm ?? null,
+    grupoDeVariacoesUid: null,
+    variacoesUid: null,
+  };
+}

@@ -135,6 +135,8 @@ const db = {} as unknown as Firestore;
 const DUP_ERROR = 'SKU duplicado entre as variações';
 const uidP = varianteFakePath('gT', 'P');
 const uidG = varianteFakePath('gT', 'G');
+/** A variante with NO `codigo` — its generated SKU is the parent's, verbatim. */
+const uidSemCodigo = varianteFakePath('gT', 'U');
 
 function grupos(): GrupoComId[] {
   return [
@@ -148,6 +150,7 @@ function grupos(): GrupoComId[] {
         variacoes: [
           { id: 'P', nome: 'P', codigo: 'P' },
           { id: 'G', nome: 'G', codigo: 'G' },
+          { id: 'U', nome: 'Único', codigo: null },
         ],
       },
     },
@@ -165,7 +168,7 @@ function child(
   return { id, data: { nome, sku, variacoesUid, ordem } };
 }
 
-function renderManager(value: string[] = [uidP, uidG]) {
+function renderManager(value: string[] = [uidP, uidG], membroUnicoId: string | null = null) {
   const flushRef: React.MutableRefObject<ChildrenFlush | null> = { current: null };
   const utils = render(
     <MantineTestProvider>
@@ -177,6 +180,7 @@ function renderManager(value: string[] = [uidP, uidG]) {
         onChange={() => undefined}
         onGroupsChange={() => undefined}
         flushRef={flushRef}
+        membroUnicoId={membroUnicoId}
       />
     </MantineTestProvider>,
   );
@@ -433,5 +437,94 @@ describe('VariationManager — staged rows vs the optimistic snapshot echo', () 
 
     expect(h.commits).toHaveLength(0);
     expect(rowCount()).toBe(0);
+  });
+});
+
+/**
+ * ⛔ A `codigo`-less variante must not block the save (found by adversarial review).
+ *
+ * The sole member copies the parent's SKU verbatim, and `cartesianVariations`
+ * emits `base.sku + (variante.codigo ?? '')` — so a variante with no `codigo`
+ * generates a child whose SKU **is** the parent's. Both shapes are modelled and
+ * legal (`findDuplicateSkus`' own docstring calls the child-SKU == parent-SKU case
+ * legacy-legal), and rule 3 exists to absorb exactly that create onto the sole
+ * member's document.
+ *
+ * The duplicate gate ran BEFORE reconciliation, so it threw first: the save was
+ * refused, both rows rendered red, and the operator could not proceed without
+ * hand-editing a SKU or deleting the member.
+ */
+describe('VariationManager — the SKU gate runs after the reuse', () => {
+  it('absorbs a codigo-less variante onto the sole member instead of refusing', async () => {
+    // The family of one, as it exists after #1424: one child carrying the
+    // parent's own SKU.
+    h.setChildren([child('membro-1', 'Camiseta', 'CAM', null, 0)]);
+    const { flushRef } = renderManager([uidSemCodigo], 'membro-1');
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+
+    // No refusal, and the generated row landed ON the member's document.
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops.filter((o) => o.kind === 'set')).toEqual([]);
+    expect(h.ops).toContainEqual(expect.objectContaining({ kind: 'update', id: 'membro-1' }));
+  });
+
+  // ...and the near-miss: a genuine collision between two DIFFERENT documents
+  // must still be refused, or moving the gate has disarmed it.
+  it('still refuses a real collision between two staged rows', async () => {
+    h.setChildren([]);
+    const { flushRef } = renderManager();
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+    await act(async () => {
+      const inputs = skuInputs();
+      fireEvent.change(inputs[0]!, { target: { value: 'MESMO' } });
+      fireEvent.change(inputs[1]!, { target: { value: 'MESMO' } });
+      await Promise.resolve();
+    });
+
+    await expect(flushRef.current!('p1')).rejects.toThrow(DUP_ERROR);
+  });
+});
+
+/**
+ * ⛔ The mirrored `gtin` does not survive becoming a real variation.
+ *
+ * `montarMembroUnico` copies the parent's barcode onto a sole member — correct,
+ * because it is the same physical article. But the moment rule 3 absorbs that
+ * document into the first staged variation, the barcode stops being true of it: a
+ * GTIN identifies ONE sellable article, so leaving it would publish variation P
+ * carrying the family's barcode while M has none.
+ */
+describe('VariationManager — the absorbed member drops the family barcode', () => {
+  it('clears gtin when a real variation absorbs the sole member', async () => {
+    h.setChildren([child('membro-1', 'Camiseta', 'CAM', null, 0)]);
+    const { flushRef } = renderManager([uidP, uidG], 'membro-1');
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    const absorvida = h.ops.find((o) => o.kind === 'update' && o.id === 'membro-1');
+    expect(absorvida?.data).toMatchObject({ gtin: null });
+  });
+
+  // ⚠️ The near-miss. A row the reuse did NOT absorb is an ordinary edit, and an
+  // ordinary edit must never wipe a barcode the operator entered.
+  it('leaves gtin alone on an ordinary variation edit', async () => {
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0)]);
+    const { flushRef } = renderManager();
+
+    await act(async () => {
+      fireEvent.change(skuInputs()[0]!, { target: { value: 'CAM-P2' } });
+      await Promise.resolve();
+    });
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    const editada = h.ops.find((o) => o.kind === 'update' && o.id === 'c1');
+    expect(editada?.data).not.toHaveProperty('gtin');
   });
 });

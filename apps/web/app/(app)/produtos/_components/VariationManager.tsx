@@ -56,6 +56,7 @@ import {
   normalizeVariacoesUid,
   parseFakePath,
   produtoSchema,
+  derivarFilhoUnico,
   reconcileStagedChildren,
   reconstructFromSkuSuffix,
   reconstructFromVariacoesUid,
@@ -139,6 +140,13 @@ interface ChildPatch {
 export interface VariationManagerProps {
   /** `null` in create mode — children need a saved parent to point at. */
   produtoId: string | null;
+  /**
+   * The parent's `filhoUnicoId` — its SOLE MEMBER's doc id, when it has one
+   * (#1398). A produto born as a family of one owns a child that mirrors it, and
+   * the moment real variations arrive that child must become the first of them
+   * rather than sit beside them: see rule 3 of `reconcileStagedChildren`.
+   */
+  membroUnicoId?: string | null;
   db: Firestore;
   /** All variation groups (live), supplied by the page. */
   grupos: GrupoComId[];
@@ -209,6 +217,7 @@ function impliedGroupIds(parent: Produto | undefined, uids: string[]): string[] 
  */
 export function VariationManager({
   produtoId,
+  membroUnicoId = null,
   db,
   grupos,
   gruposError,
@@ -397,15 +406,30 @@ export function VariationManager({
     if (Object.keys(patches).length === 0 && newRows.length === 0 && localOrder === null)
       return NOTHING_REUSED;
 
-    const duplicates = findDuplicateSkus(rows);
+    const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows, membroUnicoId);
+
+    // ⚠️ The gate runs on the RECONCILED rows, and the order is load-bearing.
+    //
+    // It used to run first, and after #1424 that made a legal, modelled shape
+    // unsavable: the sole member copies the parent's SKU verbatim, and
+    // `cartesianVariations` emits `base.sku + (variante.codigo ?? '')` — so a
+    // variante with no `codigo` generates a child whose SKU IS the parent's. Rule
+    // 3 exists to absorb exactly that create onto the sole member's document, but
+    // the gate had already thrown, and the operator could not proceed without
+    // hand-editing a SKU or deleting the member.
+    //
+    // Checking after reconciliation is also the more correct question: what must
+    // be unique is what will actually be WRITTEN, and a create the reuse absorbed
+    // is no longer a second document. The #117 delete/create pairing was already
+    // relying on that — it just got it for free, because `findDuplicateSkus`
+    // skips delete-marked rows.
+    const duplicates = findDuplicateSkus(reconciled);
     if (duplicates.size > 0) {
       throw flushAbort(
         `SKU duplicado entre as variações: ${[...duplicates.keys()].join(', ')}. ` +
           'Cada variação precisa de um SKU próprio — ajuste antes de salvar.',
       );
     }
-
-    const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows);
 
     // Staged creates the reuse absorbed onto an existing doc: the batch issues
     // an UPDATE on that doc, never a `set` under the row's own key, so `rows`
@@ -511,16 +535,40 @@ export function VariationManager({
       } else if (row.dirty || ordem !== row.serverOrdem) {
         // precos is propagated to existing children server-side (the
         // `onProdutoChanged` trigger, on the parent's produto write).
+        //
+        // ⚠️ `gtin` is cleared when the #117/rule-3 reuse ABSORBED a staged create
+        // onto this document, and only then. `montarMembroUnico` copies the
+        // parent's barcode onto a sole member — right, because it is the same
+        // physical article — but the moment that document becomes one variation
+        // among several the barcode stops being true of it: a GTIN identifies ONE
+        // sellable article, and leaving it would publish variation P carrying the
+        // family's barcode while M has none.
         batch.update(produtoCollection.docRef(db, {}, row.id), {
           nome: row.nome,
           sku: row.sku === '' ? null : row.sku,
           variacoesUid: normalized.length > 0 ? normalized : null,
           ordem,
+          ...(absorbed.has(row.key) && normalized.length > 0 ? { gtin: null } : {}),
         } as never);
         writes += 1;
       }
       ordem += 1;
     }
+
+    // ⚠️ The pointer is re-derived from the child set this flush leaves behind,
+    // in the SAME batch that changes it. An absorbed sole member keeps its doc
+    // id, so `filhoUnicoId` would still name a real child — while the family now
+    // has several — and every stock reader would resolve to one arbitrary
+    // variation. `derivarFilhoUnico` is the one producer of the value.
+    const filhosVivos = reconciled.filter((r) => !r.deleteMark).map((r) => ({ id: r.id ?? r.key }));
+    const filhoUnico = derivarFilhoUnico(filhosVivos);
+    if (filhoUnico !== membroUnicoId) {
+      batch.update(produtoCollection.docRef(db, {}, parentId), {
+        filhoUnicoId: filhoUnico,
+      } as never);
+      writes += 1;
+    }
+
     if (writes === 0) {
       // Nothing to write, but the staging this flush saw DID resolve — e.g. a
       // row added and then delete-marked before saving. Clearing those keys

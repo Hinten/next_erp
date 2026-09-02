@@ -339,6 +339,8 @@ export default function EditarProdutoPage() {
         renderInput: (p) => (
           <VariationManager
             produtoId={params.id}
+            // The parent's sole member, so a real variation absorbs it (#1398).
+            membroUnicoId={produtoSnap.data?.data.filhoUnicoId ?? null}
             db={db}
             grupos={grupos}
             gruposError={gruposSnap.error?.message}
@@ -633,6 +635,14 @@ export default function EditarProdutoPage() {
           ehKitVirtual: newEhKitVirtual,
           oldEhKit: oldKit.ehKit,
           oldEhKitVirtual: oldKit.ehKitVirtual,
+          // ⛔ Both of these or the propagation is the half-write it used to be:
+          // a sole member left `ehKit: true` with a null map makes
+          // `calcularAlteracoesEstoque` skip the line entirely, so the sale moves
+          // NO stock. The pointer scopes it — only the sole member mirrors the
+          // parent's map; a real variation authors its own.
+          componentesKit: (values as { componentesKit?: Record<string, unknown> | null })
+            .componentesKit,
+          membroUnicoId: produtoSnap.data?.data.filhoUnicoId ?? null,
         });
         lastSavedKitStatus.current = {
           ready: true,
