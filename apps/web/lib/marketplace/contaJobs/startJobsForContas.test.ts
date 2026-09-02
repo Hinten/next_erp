@@ -1,11 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  MercadoLivreClientHttpError,
-  MercadoLivreClientNetworkError,
-} from '@/lib/mercado-livre/client';
-import { describeMassImportStartError } from './mercadoLivreJobErrors';
-import { type ContaRef, startJobsForContas } from './startJobsForContas';
+import { startJobsForContas } from './startJobsForContas';
+import type { ContaRef, JobErrorDescription } from './types';
+
+/**
+ * Channel-neutral on purpose since #1430 moved this out of
+ * `canais/mercado-livre/_components/`. The fan-out's contract is about the
+ * SHAPE of `describeError` — recognised failure vs `null` — not about any one
+ * channel's error classes, and a `lib/` test reaching back into `app/` for
+ * fixtures would re-couple exactly what the move separated. Mercado Livre's own
+ * narrowing keeps its test in `mercadoLivreJobErrors.test.ts`, and the two
+ * action hooks exercise the pair end to end.
+ */
+
+/** Stands for "a failure this channel's error map recognises". */
+class ErroDeCanal extends Error {
+  constructor(
+    message: string,
+    readonly color: JobErrorDescription['color'],
+  ) {
+    super(message);
+    this.name = 'ErroDeCanal';
+  }
+}
+
+/** The port: recognised → a description, anything else → `null` (rule 6). */
+function describeError(err: unknown): JobErrorDescription | null {
+  return err instanceof ErroDeCanal ? { color: err.color, message: err.message } : null;
+}
 
 const CONTAS: ContaRef[] = [
   { id: 'a', nome: 'Conta A' },
@@ -20,7 +42,7 @@ describe('startJobsForContas', () => {
     const { outcomes, unexpected } = await startJobsForContas({
       contas: CONTAS,
       start,
-      describeError: describeMassImportStartError,
+      describeError,
     });
 
     expect(start.mock.calls.map(([id]) => id)).toEqual(['a', 'b', 'c']);
@@ -32,20 +54,18 @@ describe('startJobsForContas', () => {
     expect(unexpected).toEqual([]);
   });
 
-  it('a 409 on ONE conta does not cost the others their jobId', async () => {
+  it('a contained failure on ONE conta does not cost the others their jobId', async () => {
     // The whole point of #816's multi-select: a single toast could never say
     // WHICH of four accounts already had a job running.
     const start = vi.fn(async (id: string) => {
-      if (id === 'b') {
-        throw new MercadoLivreClientHttpError('já em andamento', 409, 'ML_MASS_IMPORT_RUNNING');
-      }
+      if (id === 'b') throw new ErroDeCanal('Já existe uma importação em andamento.', 'yellow');
       return { jobId: `job-${id}` };
     });
 
     const { outcomes, unexpected } = await startJobsForContas({
       contas: CONTAS,
       start,
-      describeError: describeMassImportStartError,
+      describeError,
     });
 
     expect(outcomes).toEqual([
@@ -63,13 +83,13 @@ describe('startJobsForContas', () => {
 
   it('resolves (never rejects) when every conta fails with a known client error', async () => {
     const start = vi.fn(async () => {
-      throw new MercadoLivreClientNetworkError('fetch failed');
+      throw new ErroDeCanal('Falha de rede ao iniciar a importação.', 'red');
     });
 
     const { outcomes, unexpected } = await startJobsForContas({
       contas: CONTAS,
       start,
-      describeError: describeMassImportStartError,
+      describeError,
     });
 
     expect(outcomes).toHaveLength(3);
@@ -89,7 +109,7 @@ describe('startJobsForContas', () => {
     const { outcomes, unexpected } = await startJobsForContas({
       contas: CONTAS,
       start,
-      describeError: describeMassImportStartError,
+      describeError,
     });
 
     expect(outcomes).toEqual([
@@ -106,30 +126,26 @@ describe('startJobsForContas', () => {
     const start = vi.fn(
       (id: string) =>
         new Promise<{ jobId: string }>((resolve) => {
-          release.push(() => resolve({ jobId: `job-${id}` }));
+          release.push(() => {
+            resolve({ jobId: `job-${id}` });
+          });
         }),
     );
 
-    const pending = startJobsForContas({
-      contas: CONTAS,
-      start,
-      describeError: describeMassImportStartError,
-    });
+    const pending = startJobsForContas({ contas: CONTAS, start, describeError });
     await Promise.resolve();
 
     expect(start).toHaveBeenCalledTimes(3);
-    release.forEach((fn) => fn());
+    release.forEach((fn) => {
+      fn();
+    });
     const { outcomes } = await pending;
     expect(outcomes).toHaveLength(3);
   });
 
   it('an empty selection is a no-op', async () => {
     const start = vi.fn();
-    const result = await startJobsForContas({
-      contas: [],
-      start,
-      describeError: describeMassImportStartError,
-    });
+    const result = await startJobsForContas({ contas: [], start, describeError });
     expect(result).toEqual({ outcomes: [], unexpected: [] });
     expect(start).not.toHaveBeenCalled();
   });

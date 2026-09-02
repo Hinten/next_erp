@@ -31,7 +31,7 @@ prerequisites — nothing downstream works without them.
 | 18 | Tabela de medidas | `tabelaDeMedidas` | HTTP | `tabMedi` | — |
 | 19 | **Kits virtuais** | `kitVirtual` | publish + stock | `produtos.ehKitVirtual` | — |
 | 20 | `int_frete` sync (marketplace-owned freight) | `etiqueta !== 'nenhuma'` | Firestore trigger | `int_frete` | `freight-integrations` |
-| 21 | `apps/web`: conta screen, row actions, inbox origin | derived | — | — | the three provider registries |
+| 21 | `apps/web`: conta screen, row actions, inbox origin | derived | — | — | the four provider registries + the caps row |
 
 ⚠️ **Step 19 is the one Mercado Livre does not have.** If it survives the caps filter
 you are writing code with no reference implementation — plan it from the provider's

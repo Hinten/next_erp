@@ -94,6 +94,13 @@ export interface MarketplaceCapabilities {
    * outright, and #1087, the oversell that came from reading it the other way.
    */
   readonly kitVirtual: Suporte;
+  /**
+   * Can a live listing be PAUSED and put back on air, as opposed to only being
+   * closed/deleted? A distinct question from {@link publicarAnuncio} — several
+   * marketplaces expose only a terminal "close", and inferring pause from
+   * publish is precisely the unverified claim #815 undid.
+   */
+  readonly pausarAnuncio: Suporte;
 
   readonly estoque: EstoqueCapabilities;
   readonly enviarPreco: Suporte;
@@ -139,6 +146,7 @@ const NAO_INVESTIGADO = {
   categoriasEAtributos: 'desconhecido',
   tabelaDeMedidas: 'desconhecido',
   kitVirtual: 'desconhecido',
+  pausarAnuncio: 'desconhecido',
   estoque: {
     suporte: 'desconhecido',
     protocolo: 'desconhecido',
@@ -191,6 +199,8 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     // immutable once published, and cannot represent a produto that HAS
     // variations — so this port never creates one. See `produto.ehKitVirtual`.
     kitVirtual: 'nao',
+    // `PUT /items/{id}` with `status: 'paused' | 'active'`, shipped in #1412.
+    pausarAnuncio: 'sim',
     estoque: {
       suporte: 'sim',
       // One `PUT /items/{id}` per listing; two calls on a multiorigin conta
@@ -282,7 +292,17 @@ export function ehMarketplace(tipo: IntegracaoTipo): tipo is MarketplaceTipo {
 /**
  * Capabilities for any `IntegracaoTipo`, or `null` for a non-marketplace one.
  * The shape `apps/web` wants, where a tipo arrives off a stored document.
+ *
+ * ⚠️ Tolerant of a value outside the enum, like `freightCapsFor` (`./frete.ts`)
+ * and for the same reason: Firestore documents reach the UI **unparsed**, and
+ * the migrated legacy corpus carries wire-format enums this union does not
+ * model. `ehMarketplace` only excludes the three known non-marketplace tipos,
+ * so a stray value passes it and then indexes the `Record` to `undefined` —
+ * which the return type would call a `MarketplaceCapabilities` and every caller
+ * would dereference. Answering `null` routes it to the same "not a marketplace"
+ * arm a caller already has to render.
  */
 export function marketplaceCapsOrNull(tipo: IntegracaoTipo): MarketplaceCapabilities | null {
-  return ehMarketplace(tipo) ? MARKETPLACE_TIPO_CAPS[tipo] : null;
+  if (!ehMarketplace(tipo)) return null;
+  return MARKETPLACE_TIPO_CAPS[tipo] ?? null;
 }

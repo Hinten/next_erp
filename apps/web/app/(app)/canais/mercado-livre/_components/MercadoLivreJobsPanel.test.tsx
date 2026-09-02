@@ -5,7 +5,7 @@ import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import type { MercadoLivreJobsEmAndamento } from '@/lib/mercado-livre/client';
-import type { ContaJobOutcome, ContaRef } from './startJobsForContas';
+import type { ContaJobOutcome, ContaRef } from '@/lib/marketplace/contaJobs/types';
 
 const h = vi.hoisted(() => ({
   clientRef: { current: null as null | Record<string, unknown> },

@@ -40,9 +40,10 @@ notice.
 
 ## Adding a channel
 
-Three things. You never touch the registry's gates, the orchestrator, the
+Four things. You never touch the registry's gates, the orchestrator, the
 progress dialog or the produtos page.
 
+0. **A row in `MARKETPLACE_TIPO_CAPS`** (`packages/schemas/src/shared/marketplace.ts`) answering `enviarPreco` — `'desconhecido'` until somebody reads the provider's documentation, never a guessed `'nao'`.
 1. **A backend route** `POST /api/marketplace/<canal>/enviar-precos` in
    `apps/<canal>`, returning the same envelope
    `{ listings[], produtosSemEnvio[], pausadoAte }` that
@@ -63,3 +64,31 @@ progress dialog or the produtos page.
 Once a channel is registered here, the produtos table's one click sends that
 produto's price to it alongside every other registered channel — which is what
 the legacy did and what #804 asks to restore.
+
+## The caps row is what decides, not the provider file (#1430)
+
+`resolvePricePushProvider` asks `MARKETPLACE_TIPO_CAPS` first — via
+`suportePrecoDoCanal`, which is also what `enviarPrecoRun.ts`'s
+`suportado` and the dialog's pre-run warning read, so the three cannot disagree.
+Only then does an exact tipo match serve the request. Everything else gets the
+placeholder **carrying the reason**, and the reasons are four different
+sentences:
+
+| Caps row says                    | Reason                   | What the operator reads                                     |
+| -------------------------------- | ------------------------ | ----------------------------------------------------------- |
+| `enviarPreco: 'nao'`             | `canal-nao-suportado`    | the provider cannot — building a backend will not change it |
+| `enviarPreco: 'desconhecido'`    | `canal-nao-pesquisado`   | nobody has read that provider's documentation yet           |
+| `'sim'` + `implementado: false`  | `canal-nao-implementado` | the provider can, we have not built the channel             |
+| caps say yes, no `PROVIDERS` row | `canal-sem-provider`     | a wiring gap in this screen                                 |
+
+⚠️ This replaced `PROVIDERS[tipo] !== undefined` — "a provider file exists"
+answering "does the channel support it". Same substitution the `/canais` badge
+already removed (#815, ADR 0015), and it gave all four situations one sentence,
+which ended _"use o aplicativo antigo para este canal"_ — false for three of
+them, and expiring at the cutover (there is no dual run, root `CLAUDE.md`
+rule 8).
+
+⚠️ `caps/registriesAlinhadas.test.ts` asserts the table and this registry agree
+for **every** tipo. If a channel legitimately lands in the middle — backend
+shipped, this screen not wired yet — say so there with a named exception; do not
+delete the assertion.
