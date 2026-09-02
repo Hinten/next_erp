@@ -409,3 +409,67 @@ describe('useEstoqueDisponivel — the sole member has no row', () => {
     expect(render(produto).result.current).toBe(7);
   });
 });
+
+/**
+ * ⛔ The alias case with the units still on the PARENT (found by adversarial review).
+ *
+ * A kit listing both a family-of-one parent and its own sole member gives two
+ * entries pointing at the CHILD. When the units were lançado on the parent and
+ * never moved, the child has no row — so the target misses, and only the parent
+ * reaches the own-row fallback (the child's `alvo === id`, so it is excluded from
+ * the fallback set by construction).
+ *
+ * Keying the fallback by component id then left the child with no value at all,
+ * and `kitEstoqueDisponivel` scores an absent entry as **0** — so the whole kit
+ * read zero. That is the harm #1398 was opened on, reintroduced by the very code
+ * written to prevent it.
+ */
+describe('useEstoqueDisponivel — an aliased kit whose units sit on the parent', () => {
+  const kitProduto = (componentes: Record<string, { quantidade: number }>) => ({
+    id: 'kit',
+    ehKit: true,
+    componentesKit: componentes as never,
+    paiId: null,
+    filhoUnicoId: null,
+  });
+
+  it('finds the parent’s units and divides them between BOTH aliases', async () => {
+    produtos.current = {
+      pai: { paiId: null, filhoUnicoId: 'filho' },
+      filho: { paiId: 'pai', filhoUnicoId: null },
+    };
+    // The units never moved: the child has no row at all.
+    estoques.current = { 'est-pai-dep1': { quantidade: 10, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ pai: { quantidade: 1 }, filho: { quantidade: 1 } }));
+
+    // 10 units, one pool, two entries needing 1 each ⇒ 5 kits. NOT 0, and not 10.
+    await waitFor(() => expect(result.current).toBe(5));
+  });
+
+  // The near-miss that keeps the division honest: the SAME two aliases when the
+  // child DOES hold the units must still read from the child, and still divide.
+  it('divides the CHILD’s units the same way when they were moved', async () => {
+    produtos.current = {
+      pai: { paiId: null, filhoUnicoId: 'filho' },
+      filho: { paiId: 'pai', filhoUnicoId: null },
+    };
+    estoques.current = { 'est-filho-dep1': { quantidade: 10, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ pai: { quantidade: 1 }, filho: { quantidade: 1 } }));
+
+    await waitFor(() => expect(result.current).toBe(5));
+    expect(estoqueReads.current).not.toContain('pai/est-pai-dep1');
+  });
+
+  // ⚠️ And the ordinary single-component fallback must stay byte-identical: one
+  // entry on a target with no row still reads the parent's raw stock, undivided.
+  it('leaves a single component’s fallback undivided', async () => {
+    produtos.current = { pai: { paiId: null, filhoUnicoId: 'filho' } };
+    estoques.current = { 'est-pai-dep1': { quantidade: 10, quantidadeReservada: 0 } };
+
+    const { result } = render(kitProduto({ pai: { quantidade: 1 } }));
+
+    await waitFor(() => expect(result.current).toBe(10));
+  });
+});
