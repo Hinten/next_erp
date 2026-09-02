@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, marketplaceCapsFor } from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
-import { CanalCapsPanel } from './CanalCapsPanel';
+import { CAMPOS_CAPS, CanalCapsPanel } from './CanalCapsPanel';
 
 function renderPanel(tipo = INTEGRACAO_TIPO.shopee) {
   return render(
@@ -25,6 +25,35 @@ describe('CanalCapsPanel', () => {
     expect(screen.getByText('Etiqueta')).toBeTruthy();
     expect(screen.getByText('Perguntas')).toBeTruthy();
     expect(screen.getByText('Pausar / reativar anúncio')).toBeTruthy();
+  });
+
+  /**
+   * ⚠️ The other half of the exhaustiveness guard.  is a total
+   * `Record`, so a NEW capability with no label is a compile error — but a
+   * field that has a label and sits in no group would compile and still never
+   * render. The expected list is derived from the live caps object, so it
+   * cannot pass by agreeing with a second copy of itself.
+   *
+   * This matters more than usual because the panel is sold as the Phase 0
+   * checklist: a cap missing from it is a question nobody is asked to answer.
+   */
+  it('renders every capability the row carries, with none left ungrouped', () => {
+    renderPanel();
+    const caps = marketplaceCapsFor(INTEGRACAO_TIPO.shopee);
+    const esperados = [
+      ...Object.keys(caps).filter(
+        (k) => k !== 'channel' && k !== 'implementado' && k !== 'estoque',
+      ),
+      ...Object.keys(caps.estoque).map((k) => `estoque.${k}`),
+    ];
+
+    for (const campo of esperados) {
+      const descritor = (CAMPOS_CAPS as Record<string, { rotulo: string } | undefined>)[campo];
+      expect(descritor, `${campo} has no label in CAMPOS_CAPS`).toBeDefined();
+      expect(screen.getByText(descritor!.rotulo), `${campo} never reaches the screen`).toBeTruthy();
+    }
+    // …and nothing is labelled that the row no longer carries.
+    expect(Object.keys(CAMPOS_CAPS).sort()).toEqual(esperados.sort());
   });
 
   /**

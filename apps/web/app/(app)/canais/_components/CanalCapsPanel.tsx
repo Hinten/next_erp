@@ -3,6 +3,7 @@
 import { Alert, Badge, Code, Group, Stack, Table, Text } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
 import {
+  type EstoqueCapabilities,
   type IntegracaoTipo,
   type MarketplaceCapabilities,
   marketplaceCapsOrNull,
@@ -26,6 +27,16 @@ import { StatusCanalBadge } from './StatusCanalBadge';
  * It doubles as the Phase 0 checklist in the `marketplace-integration` skill:
  * every yellow row is a question the provider's own documentation has to close
  * before the channel can be built.
+ *
+ * ⚠️ Which is exactly why the field list below is TOTAL rather than
+ * hand-enumerated. `CAMPOS_CAPS` is a `Record` over every renderable key of
+ * `MarketplaceCapabilities` and `EstoqueCapabilities`, so adding a capability
+ * without giving it a label is a **compile error** — the same structural
+ * guarantee that makes a missing caps row one. A cap that silently missed this
+ * table would be a question nobody is asked to answer, which is the unreached
+ * surface this whole PR exists to close. `pausarAnuncio` had to be remembered
+ * in three places by hand when it was added; this is the fourth, and the only
+ * one the compiler was not already watching.
  */
 
 export interface CanalCapsPanelProps {
@@ -36,72 +47,107 @@ export interface CanalCapsPanelProps {
 
 type ValorCap = string | number | null | readonly string[];
 
-interface GrupoCaps {
-  readonly titulo: string;
-  readonly linhas: ReadonlyArray<readonly [string, ValorCap]>;
+/**
+ * Every capability worth rendering, as a flat key.
+ *
+ * Derived from the interfaces rather than listed: `channel` and `implementado`
+ * are facts about this repo and are carried by {@link StatusCanalBadge}, and
+ * `estoque` is flattened into its own four fields. A new field on either
+ * interface widens this union, and the `Record` below then fails to compile.
+ */
+type CampoCaps =
+  | Exclude<keyof MarketplaceCapabilities, 'channel' | 'implementado' | 'estoque'>
+  | `estoque.${keyof EstoqueCapabilities & string}`;
+
+interface DescritorCampo {
+  readonly rotulo: string;
+  readonly ler: (caps: MarketplaceCapabilities) => ValorCap;
 }
 
-function grupos(c: MarketplaceCapabilities): readonly GrupoCaps[] {
-  return [
-    {
-      titulo: 'Autenticação e notificações',
-      linhas: [
-        ['Autenticação', c.auth],
-        ['PKCE', c.pkce],
-        ['Notificações', c.notificacoes],
-        ['Assina os webhooks', c.assinaWebhook],
-      ],
-    },
-    {
-      titulo: 'Anúncios',
-      linhas: [
-        ['Publicar anúncio', c.publicarAnuncio],
-        ['Importar anúncio', c.importarAnuncio],
-        ['Variações', c.variacoes],
-        ['Categorias e atributos', c.categoriasEAtributos],
-        ['Tabela de medidas', c.tabelaDeMedidas],
-        ['Kit virtual', c.kitVirtual],
-        ['Pausar / reativar anúncio', c.pausarAnuncio],
-      ],
-    },
-    {
-      titulo: 'Estoque e preço',
-      linhas: [
-        ['Enviar estoque', c.estoque.suporte],
-        ['Protocolo de estoque', c.estoque.protocolo],
-        ['SKUs por chamada', c.estoque.loteMax],
-        ['Estoque por depósito', c.estoque.multiDeposito],
-        ['Enviar preço', c.enviarPreco],
-      ],
-    },
-    {
-      titulo: 'Pedidos',
-      linhas: [
-        ['Importar pedido', c.importarPedido],
-        ['Importar pagamento', c.importarPagamento],
-        ['Consolida pacote', c.consolidaPacote],
-        ['Dados fiscais em chamada separada', c.dadosFiscaisSeparados],
-      ],
-    },
-    {
-      titulo: 'Logística e fiscal',
-      linhas: [
-        ['Etiqueta', c.etiqueta],
-        ['Rastreio', c.rastreio],
-        ['Enviar NF-e', c.enviarNfe],
-      ],
-    },
-    {
-      titulo: 'Mensagens',
-      linhas: [
-        ['Perguntas', c.perguntas],
-        ['Mensagens pós-venda', c.mensagensPosVenda],
-        ['Reclamações', c.reclamacoes],
-        ['Origens na caixa de entrada', c.origensConversa],
-      ],
-    },
-  ];
-}
+/**
+ * ⚠️ Total by annotation. Exported so `CanalCapsPanel.test.tsx` can check the
+ * other half — a field declared here but placed in no group would compile and
+ * still never render.
+ */
+export const CAMPOS_CAPS: Record<CampoCaps, DescritorCampo> = {
+  auth: { rotulo: 'Autenticação', ler: (c) => c.auth },
+  pkce: { rotulo: 'PKCE', ler: (c) => c.pkce },
+  notificacoes: { rotulo: 'Notificações', ler: (c) => c.notificacoes },
+  assinaWebhook: { rotulo: 'Assina os webhooks', ler: (c) => c.assinaWebhook },
+
+  publicarAnuncio: { rotulo: 'Publicar anúncio', ler: (c) => c.publicarAnuncio },
+  importarAnuncio: { rotulo: 'Importar anúncio', ler: (c) => c.importarAnuncio },
+  variacoes: { rotulo: 'Variações', ler: (c) => c.variacoes },
+  categoriasEAtributos: { rotulo: 'Categorias e atributos', ler: (c) => c.categoriasEAtributos },
+  tabelaDeMedidas: { rotulo: 'Tabela de medidas', ler: (c) => c.tabelaDeMedidas },
+  kitVirtual: { rotulo: 'Kit virtual', ler: (c) => c.kitVirtual },
+  pausarAnuncio: { rotulo: 'Pausar / reativar anúncio', ler: (c) => c.pausarAnuncio },
+
+  'estoque.suporte': { rotulo: 'Enviar estoque', ler: (c) => c.estoque.suporte },
+  'estoque.protocolo': { rotulo: 'Protocolo de estoque', ler: (c) => c.estoque.protocolo },
+  'estoque.loteMax': { rotulo: 'SKUs por chamada', ler: (c) => c.estoque.loteMax },
+  'estoque.multiDeposito': { rotulo: 'Estoque por depósito', ler: (c) => c.estoque.multiDeposito },
+  enviarPreco: { rotulo: 'Enviar preço', ler: (c) => c.enviarPreco },
+
+  importarPedido: { rotulo: 'Importar pedido', ler: (c) => c.importarPedido },
+  importarPagamento: { rotulo: 'Importar pagamento', ler: (c) => c.importarPagamento },
+  consolidaPacote: { rotulo: 'Consolida pacote', ler: (c) => c.consolidaPacote },
+  dadosFiscaisSeparados: {
+    rotulo: 'Dados fiscais em chamada separada',
+    ler: (c) => c.dadosFiscaisSeparados,
+  },
+
+  etiqueta: { rotulo: 'Etiqueta', ler: (c) => c.etiqueta },
+  rastreio: { rotulo: 'Rastreio', ler: (c) => c.rastreio },
+  enviarNfe: { rotulo: 'Enviar NF-e', ler: (c) => c.enviarNfe },
+
+  perguntas: { rotulo: 'Perguntas', ler: (c) => c.perguntas },
+  mensagensPosVenda: { rotulo: 'Mensagens pós-venda', ler: (c) => c.mensagensPosVenda },
+  reclamacoes: { rotulo: 'Reclamações', ler: (c) => c.reclamacoes },
+  origensConversa: { rotulo: 'Origens na caixa de entrada', ler: (c) => c.origensConversa },
+};
+
+/** Presentation only — which fields sit under which heading, in reading order. */
+const GRUPOS: ReadonlyArray<{ readonly titulo: string; readonly campos: readonly CampoCaps[] }> = [
+  {
+    titulo: 'Autenticação e notificações',
+    campos: ['auth', 'pkce', 'notificacoes', 'assinaWebhook'],
+  },
+  {
+    titulo: 'Anúncios',
+    campos: [
+      'publicarAnuncio',
+      'importarAnuncio',
+      'variacoes',
+      'categoriasEAtributos',
+      'tabelaDeMedidas',
+      'kitVirtual',
+      'pausarAnuncio',
+    ],
+  },
+  {
+    titulo: 'Estoque e preço',
+    campos: [
+      'estoque.suporte',
+      'estoque.protocolo',
+      'estoque.loteMax',
+      'estoque.multiDeposito',
+      'enviarPreco',
+    ],
+  },
+  {
+    titulo: 'Pedidos',
+    campos: ['importarPedido', 'importarPagamento', 'consolidaPacote', 'dadosFiscaisSeparados'],
+  },
+  {
+    titulo: 'Logística e fiscal',
+    campos: ['etiqueta', 'rastreio', 'enviarNfe'],
+  },
+  {
+    titulo: 'Mensagens',
+    campos: ['perguntas', 'mensagensPosVenda', 'reclamacoes', 'origensConversa'],
+  },
+];
 
 /**
  * ⚠️ `'desconhecido'` is yellow and reads **"não pesquisado"**, never "não".
@@ -200,20 +246,20 @@ export function CanalCapsPanel({ tipo, titulo, descricao }: CanalCapsPanelProps)
             </Alert>
           )}
 
-          {grupos(caps).map((grupo) => (
+          {GRUPOS.map((grupo) => (
             <Stack key={grupo.titulo} gap={4}>
               <Text fw={600} size="sm">
                 {grupo.titulo}
               </Text>
               <Table withTableBorder withColumnBorders>
                 <Table.Tbody>
-                  {grupo.linhas.map(([rotulo, valor]) => (
-                    <Table.Tr key={rotulo}>
+                  {grupo.campos.map((campo) => (
+                    <Table.Tr key={campo}>
                       <Table.Td w="60%">
-                        <Text size="sm">{rotulo}</Text>
+                        <Text size="sm">{CAMPOS_CAPS[campo].rotulo}</Text>
                       </Table.Td>
                       <Table.Td>
-                        <ValorCapBadge valor={valor} />
+                        <ValorCapBadge valor={CAMPOS_CAPS[campo].ler(caps)} />
                       </Table.Td>
                     </Table.Tr>
                   ))}
