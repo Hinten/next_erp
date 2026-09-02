@@ -7,6 +7,7 @@ import {
   idDoMembroUnico,
   movimentosDeEstoque,
   planejarConversao,
+  unidadesPresasSemDeposito,
   type EntradaConversao,
 } from './transform';
 
@@ -166,7 +167,7 @@ describe('movimentosDeEstoque — the rows it refuses to touch', () => {
   // silently DOUBLING the stock.
   it('decrements the row that exists, not the one the id formula would predict', () => {
     const resumo = resumirEstoques(PRODUTO, [linha({ docId: 'auto-id-legado' })]);
-    const [mov] = movimentosDeEstoque(PRODUTO, CHILD, resumo.linhas);
+    const [mov] = movimentosDeEstoque(CHILD, resumo.linhas);
     expect(mov!.docIdNoPai).toBe('auto-id-legado');
     // ...while the CHILD's row is canonical, because this script is creating it.
     expect(mov!.docIdNoFilho).toBe(idCanonicoEstoque(CHILD, 'dep-1'));
@@ -177,19 +178,19 @@ describe('movimentosDeEstoque — the rows it refuses to touch', () => {
   // census counts it.
   it('leaves a row whose depositoOuterRef resolves to nothing', () => {
     const resumo = resumirEstoques(PRODUTO, [linha({ depositoOuterRef: 'documents/clientes/c1' })]);
-    expect(movimentosDeEstoque(PRODUTO, CHILD, resumo.linhas)).toEqual([]);
+    expect(movimentosDeEstoque(CHILD, resumo.linhas)).toEqual([]);
   });
 
   it('leaves a zero row alone rather than writing a no-op increment', () => {
     const resumo = resumirEstoques(PRODUTO, [linha({ quantidade: 0 })]);
-    expect(movimentosDeEstoque(PRODUTO, CHILD, resumo.linhas)).toEqual([]);
+    expect(movimentosDeEstoque(CHILD, resumo.linhas)).toEqual([]);
   });
 
   // A negative available (the #931 shape) must not move a negative quantity onto
   // the child — `moveria` floors at 0 and this pins that it reaches here.
   it('never moves a negative quantity', () => {
     const resumo = resumirEstoques(PRODUTO, [linha({ quantidade: 2, quantidadeReservada: 5 })]);
-    expect(movimentosDeEstoque(PRODUTO, CHILD, resumo.linhas)).toEqual([]);
+    expect(movimentosDeEstoque(CHILD, resumo.linhas)).toEqual([]);
   });
 
   it('produces one movement per depósito that has units', () => {
@@ -201,9 +202,54 @@ describe('movimentosDeEstoque — the rows it refuses to touch', () => {
         quantidade: 3,
       }),
     ]);
-    expect(movimentosDeEstoque(PRODUTO, CHILD, resumo.linhas).map((m) => m.depositoId)).toEqual([
+    expect(movimentosDeEstoque(CHILD, resumo.linhas).map((m) => m.depositoId)).toEqual([
       'dep-1',
       'dep-2',
     ]);
+  });
+});
+
+/**
+ * ⛔ Units on an unresolvable-depósito row are counted somewhere.
+ *
+ * `moveria` is computed from the quantities alone and never consults
+ * `depositoId`, so such a row contributes to the census's `moveriaTotal` while
+ * `movimentosDeEstoque` drops it — and `ficaNoPai` only ever holds
+ * `reservaEfetiva`. Without its own accumulator the run's summary claimed "every
+ * number is either work done or work LEFT" while those units appeared in neither.
+ *
+ * ⚠️ The line count in the warning is not a substitute: one unresolvable row can
+ * hold any number of units.
+ */
+describe('unidadesPresasSemDeposito', () => {
+  it('counts the units on a row whose depósito does not resolve', () => {
+    const resumo = resumirEstoques(PRODUTO, [
+      linha({ depositoOuterRef: 'documents/clientes/c1', quantidade: 10 }),
+    ]);
+    expect(unidadesPresasSemDeposito(resumo.linhas)).toBe(10);
+    // ...and they are in NEITHER of the other two totals, which is the point.
+    expect(movimentosDeEstoque(CHILD, resumo.linhas)).toEqual([]);
+    expect(resumo.ficariaNoPaiTotal).toBe(0);
+  });
+
+  it('counts only the AVAILABLE units, matching what a movement would have moved', () => {
+    const resumo = resumirEstoques(PRODUTO, [
+      linha({ depositoOuterRef: 'documents/clientes/c1', quantidade: 10, quantidadeReservada: 4 }),
+    ]);
+    expect(unidadesPresasSemDeposito(resumo.linhas)).toBe(6);
+  });
+
+  // The near-miss: a resolvable row is NOT stranded, however many units it holds.
+  it('ignores a row whose depósito resolves', () => {
+    const resumo = resumirEstoques(PRODUTO, [linha({ quantidade: 10 })]);
+    expect(unidadesPresasSemDeposito(resumo.linhas)).toBe(0);
+  });
+
+  it('is carried on the plan, so the run can report it', () => {
+    const resumo = resumirEstoques(PRODUTO, [
+      linha({ depositoOuterRef: 'documents/clientes/c1', quantidade: 10 }),
+    ]);
+    const plano = planejarConversao(entrada({ estoque: resumo }));
+    expect(plano.tipo === 'converter' && plano.presasSemDeposito).toBe(10);
   });
 });

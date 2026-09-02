@@ -80,6 +80,12 @@ export type PlanoDeConversao =
        * artefact — see {@link MovimentoEstoque} and the note below.
        */
       ficaNoPai: number;
+      /**
+       * Units stranded on a row whose depósito does not resolve — see
+       * {@link unidadesPresasSemDeposito}. Reported separately because they are
+       * neither moved nor reserved, so no other total contains them.
+       */
+      presasSemDeposito: number;
     };
 
 export interface EntradaConversao {
@@ -138,11 +144,18 @@ export function idCanonicoEstoque(produtoId: string, depositoId: string): string
  *
  * ⚠️ A row whose `depositoOuterRef` resolves to nothing is skipped: without a
  * depósito id there is no canonical child row to move it TO, and inventing one
- * would attribute stock to a depósito that does not exist. It stays on the
- * parent, visible in the Balanço, and the census counts it.
+ * would attribute stock to a depósito that does not exist. It stays on the parent,
+ * visible in the Balanço, and {@link unidadesPresasSemDeposito} is what makes the
+ * run REPORT it — those units are neither moved nor reserved, so without their own
+ * accumulator they were counted nowhere.
+ *
+ * ⚠️ It takes only the CHILD id, deliberately. The parent's id was a parameter and
+ * was never read — the row id comes from `linha.docId` and the child's from
+ * `childId` — and in a module whose central warning is that `.old/…/tasks.dart:92`
+ * passed `makeEstoqueUid`'s arguments TRANSPOSED, an unused `produtoId` sitting
+ * immediately left of `childId` is that same mistake's shape, waiting.
  */
 export function movimentosDeEstoque(
-  produtoId: string,
   childId: string,
   linhas: readonly LinhaDeposito[],
 ): MovimentoEstoque[] {
@@ -158,6 +171,21 @@ export function movimentosDeEstoque(
     });
   }
   return movimentos;
+}
+
+/**
+ * Units the conversion can neither move nor account for as reserved: they sit on a
+ * row whose `depositoOuterRef` resolves to no depósito.
+ *
+ * ⚠️ They are counted NOWHERE otherwise, and that is the one property the run's
+ * summary promises — "every number is either work done or work LEFT". `moveria` is
+ * computed from the quantities alone and never consults `depositoId`, so such a row
+ * contributes to the census's `moveriaTotal` while `movimentosDeEstoque` drops it,
+ * and `ficaNoPai` only ever holds `reservaEfetiva`. The line count in the warning
+ * is not a substitute: one unresolvable row can hold any number of units.
+ */
+export function unidadesPresasSemDeposito(linhas: readonly LinhaDeposito[]): number {
+  return linhas.reduce((acc, l) => (l.depositoId == null ? acc + l.moveria : acc), 0);
 }
 
 /**
@@ -211,7 +239,8 @@ export function planejarConversao(entrada: EntradaConversao): PlanoDeConversao {
     // sole member carries.
     childDoc: montarMembroUnico(entrada.produtoId, entrada.produto as ParentParaMembroUnico),
     parentPatch: { filhoUnicoId: childId },
-    movimentos: movimentosDeEstoque(entrada.produtoId, childId, entrada.estoque.linhas),
+    movimentos: movimentosDeEstoque(childId, entrada.estoque.linhas),
+    presasSemDeposito: unidadesPresasSemDeposito(entrada.estoque.linhas),
     ficaNoPai: entrada.estoque.ficariaNoPaiTotal,
   };
 }

@@ -80,9 +80,44 @@ interface Raizes {
   paisComFilhos: Set<string>;
 }
 
+/**
+ * The fields pass 1 keeps — `paiId` plus everything `montarMembroUnico` mirrors.
+ *
+ * ⚠️ A `.select()` projection, not a convenience. Enterprise bills DATA SCANNED,
+ * and this is a full-collection walk: an unprojected `doc.data()` pulls the whole
+ * produto — the `nome_embedding` vector, `fotos`, the marketplace denorms — and
+ * `raizes` then RETAINS all of it for the entire duration of pass 2. That is the
+ * exact shape `kitRollup.ts:246-255` calls out by name for rule 1, and the sibling
+ * census already does the opposite on the same walk (it pushes a small
+ * `ProdutoBruto`).
+ *
+ * ⚠️ The list is closed and must stay in step with `ParentParaMembroUnico`: a field
+ * added there and not here is silently `undefined` in the mirror, which
+ * `montarMembroUnico` turns into `null`.
+ */
+const CAMPOS_DA_RAIZ = [
+  'paiId',
+  'nome',
+  'sku',
+  'codPai',
+  'gtin',
+  'publicado',
+  'ehKit',
+  'ehKitVirtual',
+  'ehUsado',
+  'componentesKit',
+  'precos',
+  'categoriaProdutoOuterRef',
+  'pesoLiquidoKg',
+  'pesoBrutoKg',
+  'alturaCm',
+  'larguraCm',
+  'profundidadeCm',
+] as const;
+
 async function lerRaizes(ctx: MigrationContext): Promise<Raizes> {
   const out: Raizes = { raizes: [], paisComFilhos: new Set() };
-  for await (const docs of pagesByDocId(ctx.db.collection('produtos'))) {
+  for await (const docs of pagesByDocId(ctx.db.collection('produtos').select(...CAMPOS_DA_RAIZ))) {
     for (const doc of docs) {
       const data = doc.data() as Record<string, unknown>;
       const paiId = data.paiId;
@@ -246,6 +281,9 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   let unidadesMovidas = 0;
   let unidadesQueFicamNoPai = 0;
   let linhasSemDeposito = 0;
+  // ⚠️ Units, not lines. One unresolvable row can hold any number of them, and
+  // they are in neither `unidadesMovidas` nor `unidadesQueFicamNoPai`.
+  let unidadesPresas = 0;
 
   for (const [produtoId, produto] of raizes) {
     const temFilhos = paisComFilhos.has(produtoId);
@@ -281,6 +319,7 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     unidadesMovidas += plano.movimentos.reduce((acc, m) => acc + m.quantidade, 0);
     unidadesQueFicamNoPai += plano.ficaNoPai;
     linhasSemDeposito += estoque.nDepositosIrreconheciveis;
+    unidadesPresas += plano.presasSemDeposito;
 
     ctx.sink.change(`produtos/${produtoId}`, 'filhoUnicoId', null, plano.childId);
     for (const mov of plano.movimentos) {
@@ -306,7 +345,9 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   if (linhasSemDeposito > 0) {
     log(
       `[produto-sem-variacoes] ⚠️ ${linhasSemDeposito} linha(s) de estoque com depositoOuterRef ` +
-        `irreconhecível ficaram no pai — sem depósito não há linha canônica de destino`,
+        `irreconhecível ficaram no pai, somando ${unidadesPresas} unidade(s) — sem depósito ` +
+        `não há linha canônica de destino, e essas unidades não entram em nenhum dos ` +
+        `totais acima`,
     );
   }
   for (const [motivo, n] of [...pulados].sort()) {
