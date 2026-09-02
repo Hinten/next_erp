@@ -279,9 +279,20 @@ parent's current row**, so after a successful run the parent's quantidade equals
 its reserve and the same computation yields 0. No delta is ever stored, so no
 delta can be applied twice.
 
-That also makes a re-run _correct_ rather than merely safe: an entrada booked on
-the parent between two runs is picked up and moved, which is where those units
-belong.
+⛔ **What that does not buy.** A second run skips an already-converted produto as
+`ja-tem-filho` **before reading any estoque row**, so units booked on the parent
+_after_ the conversion are never swept up by re-running. They stay on a parent
+whose pointer now routes every availability read to the child — so they are
+invisible, not merely misplaced.
+
+The arithmetic is idempotent; the pipeline short-circuits above it. Both are
+true, and the first version of this runbook wrote down only the first. Sweeping
+those residuals means a pass over produtos that **already** have children — the
+census's `--target residuais` mode sizes it — and that is a follow-up, not this
+script.
+
+⚠️ **So run the conversion INSIDE the window, after the source app is off.** The
+residual it cannot recover is exactly what a pre-window run accumulates.
 
 ## Verify the conversion
 

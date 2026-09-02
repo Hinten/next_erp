@@ -172,9 +172,18 @@ export function movimentosDeEstoque(
  * a second pass moves nothing. A delta applied twice is impossible because no
  * delta is ever stored.
  *
- * That also makes the script correct rather than merely safe when re-run: an
- * *entrada* booked on the parent between two runs is picked up and moved, which
- * is where those units belong.
+ * ⛔ **What that does NOT buy, though the first version of this comment claimed
+ * it did.** `migrate.ts` skips an already-converted produto as `ja-tem-filho`
+ * BEFORE it reads any estoque row, so a second run never reaches this function
+ * for that produto at all. Units booked on the parent AFTER the conversion are
+ * therefore not swept up by re-running — they stay on a parent whose pointer now
+ * routes every availability read to the child, which makes them invisible.
+ *
+ * The arithmetic below is genuinely idempotent; the PIPELINE short-circuits above
+ * it. Both are correct, and only one of them was written down. Sweeping those
+ * residuals is a separate pass over produtos that ALREADY have children — which
+ * is exactly the census's `--target residuais` mode, and is a follow-up, not this
+ * script's job.
  *
  * ## ⚠️ The reserved remainder STAYS on the parent, deliberately
  *

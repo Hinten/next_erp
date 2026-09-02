@@ -140,12 +140,20 @@ describe('planejarConversao — the conversion', () => {
     expect(plano.tipo === 'converter' && plano.ficaNoPai).toBe(4);
   });
 
-  // ...and the near-miss that proves the idempotence is not just "it stops": an
-  // entrada booked on the parent between two runs SHOULD move, because those
-  // units belong on the child.
-  it('moves units booked on the parent after a previous run', () => {
-    const depois = resumirEstoques(PRODUTO, [linha({ quantidade: 9, quantidadeReservada: 4 })]);
-    const plano = planejarConversao(entrada({ estoque: depois }));
+  // ...and the near-miss that keeps the arithmetic honest: the floor is at the
+  // RESERVE, not at zero-movement. A parent holding more than its reserve still
+  // has units to move, and the split is computed, never remembered.
+  //
+  // ⛔ This test used to be called "moves units booked on the parent after a
+  // previous run", and that name was FALSE at the pipeline level: `migrate.ts`
+  // skips an already-converted produto as `ja-tem-filho` before reading any
+  // estoque row, so this function is never reached a second time for it. The
+  // fixture (`temFilhos: false`) could not occur on a re-run — the test exercised
+  // a state the pipeline cannot produce, while its name asserted a recovery
+  // property the script does not have.
+  it('moves whatever exceeds the reserve, computed rather than remembered', () => {
+    const parcial = resumirEstoques(PRODUTO, [linha({ quantidade: 9, quantidadeReservada: 4 })]);
+    const plano = planejarConversao(entrada({ estoque: parcial }));
     expect(plano.tipo === 'converter' && plano.movimentos[0]!.quantidade).toBe(5);
   });
 });
