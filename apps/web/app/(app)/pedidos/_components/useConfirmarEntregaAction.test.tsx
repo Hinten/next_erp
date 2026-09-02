@@ -88,6 +88,48 @@ describe('useConfirmarEntregaAction', () => {
     expect(notifyMock).toHaveBeenCalledWith(expect.objectContaining({ color: 'green' }));
   });
 
+  it('reports a pedido with an open reclamação/devolução by numero, never counting it as confirmed (#1322)', async () => {
+    confirmarEntregaPedidoMock.mockResolvedValue('incidenteAberto');
+    const { result } = renderHook(() => useConfirmarEntregaAction());
+
+    await result.current.action.run([row('p1', '77')]);
+
+    expect(notifyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ color: 'yellow', message: expect.stringContaining('77') }),
+    );
+    expect(notifyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('Incidentes') }),
+    );
+    expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ color: 'green' }));
+  });
+
+  it('separates the estado guard from the incidente guard when both fire in one batch', async () => {
+    confirmarEntregaPedidoMock.mockImplementation((_port, { pedidoId }: { pedidoId: string }) => {
+      if (pedidoId === 'ok') return Promise.resolve('confirmado');
+      if (pedidoId === 'estado') return Promise.resolve('bloqueado');
+      return Promise.resolve('incidenteAberto');
+    });
+    const { result } = renderHook(() => useConfirmarEntregaAction());
+
+    await result.current.action.run([row('ok'), row('estado', '10'), row('incidente', '20')]);
+
+    expect(notifyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'yellow',
+        message: expect.stringContaining('Em processamento ou Pago'),
+      }),
+    );
+    expect(notifyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('Incidentes') }),
+    );
+    expect(notifyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'green',
+        message: expect.stringContaining('Entrega confirmada'),
+      }),
+    );
+  });
+
   it('reports a genuine write failure (FirebaseError) without crashing', async () => {
     confirmarEntregaPedidoMock.mockRejectedValue(new FirebaseError('permission-denied', 'nope'));
     const { result } = renderHook(() => useConfirmarEntregaAction());

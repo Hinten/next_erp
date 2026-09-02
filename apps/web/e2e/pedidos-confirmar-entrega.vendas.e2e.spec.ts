@@ -26,6 +26,7 @@ test.describe.serial('Pedidos e2e — Confirmar entrega', () => {
   const prefix = e2ePrefix('pedent');
   const pagoId = `${prefix}-pago`;
   const canceladoId = `${prefix}-canc`;
+  const disputaId = `${prefix}-disp`;
   let fixtures: Awaited<ReturnType<typeof seedPedidoFixtures>>;
 
   function pedidoBody(extra: Record<string, unknown>) {
@@ -59,6 +60,19 @@ test.describe.serial('Pedidos e2e — Confirmar entrega', () => {
       .collection('pedidos')
       .doc(canceladoId)
       .set(pedidoBody({ estado: 'cancelado', numero: canceladoId }));
+    // A pago pedido under an open reclamação (#1322) — ML keeps it `pago` for
+    // the whole mediation, so it sits in {emProcessamento, pago} and must be
+    // refused by bloqueioFinalizarAtivo, not the estado guard.
+    await db()
+      .collection('pedidos')
+      .doc(disputaId)
+      .set(
+        pedidoBody({
+          estado: 'pago',
+          numero: disputaId,
+          disputaAbertaEm: Date.now() * 1000,
+        }),
+      );
 
     await warmRoutes(browser, ['/pedidos']);
   });
@@ -113,5 +127,25 @@ test.describe.serial('Pedidos e2e — Confirmar entrega', () => {
 
     const snap = await db().collection('pedidos').doc(canceladoId).get();
     expect(snap.data()?.estado).toBe('cancelado');
+  });
+
+  test('blocks a pago pedido with an open reclamação, without writing (#1322)', async ({
+    page,
+  }) => {
+    await page.goto('/pedidos');
+    await expect(page.getByRole('heading', { name: 'Pedidos' })).toBeVisible();
+    await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
+
+    await applyTextFilter(page, 'Número', disputaId);
+    await expectRowVisible(page, disputaId);
+    await selectRowByText(page, disputaId);
+    await clickAction(page, 'Confirmar entrega');
+
+    await expect(page.getByText(/reclamação ou devolução em aberto/)).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const snap = await db().collection('pedidos').doc(disputaId).get();
+    expect(snap.data()?.estado).toBe('pago');
   });
 });

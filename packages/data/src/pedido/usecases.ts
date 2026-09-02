@@ -2,8 +2,10 @@ import {
   ESTADO_FRETE,
   ESTADO_PEDIDO,
   MODALIDADE_FRETE,
+  bloqueioFinalizarAtivo,
   seedFreteInicial,
   valuesEqual,
+  type BloqueioPedido,
   type EstadoPedido,
   type FreteDoPedido,
   type Pedido,
@@ -478,11 +480,14 @@ const ESTADOS_CONFIRMAVEIS: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
 
 /**
  * Outcome of {@link confirmarEntregaPedido}. Unlike `cancelarPedido`'s boolean
- * (where "already cancelado" is an ordinary no-op), an out-of-range estado here
- * is a distinct, reportable outcome for a bulk caller (#549's guard) — folding
- * it into "did nothing" would hide it from the operator.
+ * (where "already cancelado" is an ordinary no-op), an out-of-range estado —
+ * or an open incidente refusing `finalizado` — is a distinct, reportable
+ * outcome for a bulk caller (#549's guard) — folding either into "did
+ * nothing" would hide it from the operator. `'bloqueado'` is the estado
+ * guard; `'incidenteAberto'` is {@link bloqueioFinalizarAtivo} refusing an
+ * open reclamação/devolução (#1322).
  */
-export type ConfirmarEntregaResultado = 'confirmado' | 'bloqueado';
+export type ConfirmarEntregaResultado = 'confirmado' | 'bloqueado' | 'incidenteAberto';
 
 /**
  * Mark a pedido delivered: `freteInicial.estado → entregue` (synthesizing a
@@ -492,8 +497,19 @@ export type ConfirmarEntregaResultado = 'confirmado' | 'bloqueado';
  *
  * Only a pedido currently in {@link ESTADOS_CONFIRMAVEIS} may be confirmed —
  * everything else, INCLUDING a missing doc, resolves `'bloqueado'` with no
- * write (mirrors `cancelarPedido`'s no-op-on-missing-doc shape). The guard and
- * the `freteInicial` merge both act on `current` — the doc AS RE-READ INSIDE
+ * write (mirrors `cancelarPedido`'s no-op-on-missing-doc shape). On top of
+ * that, {@link bloqueioFinalizarAtivo} — the SAME guard the pedido form's
+ * Estado tab applies (`EstadoHistoricoTab.tsx`) and the `/pedidos` FreteCell
+ * etiqueta gate checks (`PedidoCells.tsx`) — refuses an open
+ * reclamação/devolução not yet released (`bloqueiosLiberados`), resolving
+ * `'incidenteAberto'` with no write (#1322): an ML order under mediation
+ * stays `pago` for the whole claim, so it would otherwise sit in
+ * {@link ESTADOS_CONFIRMAVEIS} and this action would bulk-finalize it — a
+ * money-and-stock mistake, since `finalizado` and `freteInicial.estado =
+ * entregue` are each an independent stock-removal trigger
+ * (`efeitoEstoquePedido`) and `finalizado` asserts the return window has
+ * PASSED and the money is certain, exactly what an open return/dispute
+ * denies. Both guards act on `current` — the doc AS RE-READ INSIDE
  * `updatePedido`'s transaction, never a value read before it — so a
  * concurrent write (another operator's save, a Melhor Envio tracking update,
  * an ML sync) can never be silently clobbered, and Firestore retries the
@@ -520,6 +536,13 @@ export async function confirmarEntregaPedido(
     if (current === null) return {};
     const estado = current.estado as EstadoPedido;
     if (!ESTADOS_CONFIRMAVEIS.has(estado)) return {};
+    // #1322 — an open dispute/devolução refuses `finalizado`, the same guard
+    // the pedido form's Estado tab applies. Re-derived from `current` (the
+    // tx-read doc), never from a list-row snapshot.
+    if (bloqueioFinalizarAtivo(current as BloqueioPedido)) {
+      resultado = 'incidenteAberto';
+      return {};
+    }
     resultado = 'confirmado';
     const freteAtual =
       (current.freteInicial as FreteDoPedido | null) ??

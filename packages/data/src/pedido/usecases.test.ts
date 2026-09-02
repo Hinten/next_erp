@@ -586,4 +586,43 @@ describe('confirmarEntregaPedido', () => {
     await confirmarEntregaPedido(port, { pedidoId: 'x' });
     expect(committed()).toEqual([]);
   });
+
+  // #1322 — bloqueioFinalizarAtivo: an open reclamação/devolução refuses
+  // `finalizado` even though ML keeps the pedido `pago` for the whole claim,
+  // which is exactly why it would otherwise sit in ESTADOS_CONFIRMAVEIS.
+  it('blocks a pago pedido with an open reclamação (disputaAbertaEm) — no write', async () => {
+    const { port, written, committed } = fakePort(
+      { estado: 'pago', freteInicial: null, disputaAbertaEm: 1_700_000_000_000_000 },
+      777,
+    );
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('incidenteAberto');
+    expect(written()).toEqual({});
+    expect(committed()).toEqual([]);
+  });
+
+  it('blocks a pago pedido with an open devolução (devolucaoAbertaEm) — no write', async () => {
+    const { port, written } = fakePort(
+      { estado: 'pago', freteInicial: null, devolucaoAbertaEm: 1_700_000_000_000_000 },
+      777,
+    );
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('incidenteAberto');
+    expect(written()).toEqual({});
+  });
+
+  it('still confirms once the finalizar block has been released (bloqueiosLiberados)', async () => {
+    const { port, written } = fakePort(
+      {
+        estado: 'pago',
+        freteInicial: null,
+        disputaAbertaEm: 1_700_000_000_000_000,
+        bloqueiosLiberados: ['finalizar'],
+      },
+      777,
+    );
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('confirmado');
+    expect((written() as { estado: string }).estado).toBe('finalizado');
+  });
 });

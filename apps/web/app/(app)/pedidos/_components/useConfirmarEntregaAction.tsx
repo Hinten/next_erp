@@ -9,7 +9,10 @@
  * which does the actual guard + write: only a pedido currently
  * `emProcessamento`/`pago` is confirmed (`freteInicial.estado → entregue`,
  * synthesizing a `semFrete` block when absent, `estado → finalizado`);
- * everything else resolves `'bloqueado'` with no write. Routed through
+ * an out-of-range estado resolves `'bloqueado'`, and an open
+ * reclamação/devolução not yet released resolves `'incidenteAberto'`
+ * (#1322 — `bloqueioFinalizarAtivo`, the same guard the pedido form's Estado
+ * tab applies) — both with no write. Routed through
  * `createClientPedidoPort`'s `updatePedido` — the SAME transactional
  * read-modify-write primitive `cancelarPedido`/`savePedido` use — so the
  * guard and the freteInicial merge always act on the doc as it is AT WRITE
@@ -63,11 +66,15 @@ export function useConfirmarEntregaAction(): { readonly action: ActionConfig<Ped
         );
 
         const bloqueados: string[] = [];
+        const comIncidenteAberto: string[] = [];
         let confirmados = 0;
         for (const r of resultados) {
           if (r.status !== 'fulfilled') continue;
+          const label = r.value.row.data.numero ?? r.value.row.id;
           if (r.value.resultado === 'bloqueado') {
-            bloqueados.push(r.value.row.data.numero ?? r.value.row.id);
+            bloqueados.push(label);
+          } else if (r.value.resultado === 'incidenteAberto') {
+            comIncidenteAberto.push(label);
           } else {
             confirmados += 1;
           }
@@ -89,6 +96,14 @@ export function useConfirmarEntregaAction(): { readonly action: ActionConfig<Ped
             message:
               'Só é possível confirmar a entrega de pedidos Em processamento ou Pago. ' +
               `Pedido(s) bloqueado(s): ${bloqueados.join(', ')}.`,
+          });
+        }
+        if (comIncidenteAberto.length > 0) {
+          notifications.show({
+            color: 'yellow',
+            message:
+              'Pedido(s) com reclamação ou devolução em aberto — resolva na aba Incidentes ' +
+              `antes de confirmar a entrega: ${comIncidenteAberto.join(', ')}.`,
           });
         }
         if (falhas.length > 0) {
