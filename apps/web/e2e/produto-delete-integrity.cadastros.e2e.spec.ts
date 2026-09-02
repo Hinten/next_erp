@@ -83,18 +83,37 @@ test.describe.serial('Produtos — deletion integrity (#117)', () => {
     await expect.poll(() => docExistsByName('produtos', childNome)).toBe(false);
   });
 
+  /**
+   * ⚠️ TWO new rows sharing one SKU, not one row colliding with the persisted
+   * child — and the difference is behaviour, not convenience.
+   *
+   * Since #1398 a produto with exactly one `variacoesUid`-less child is a FAMILY
+   * OF ONE, and the flush's rule 3 absorbs the first unclaimed staged create onto
+   * that sole member: adding the first real variation renames the member rather
+   * than creating a second document. So a single new row carrying the child's SKU
+   * is no longer a duplicate at all — there is one document afterwards — and the
+   * test above leaves this produto in exactly that state (its save re-derives
+   * `filhoUnicoId` onto the parent).
+   *
+   * Rule 3 claims only ONE create, so a second row sharing the SKU cannot be
+   * absorbed and the gate still has to refuse it. That is the property worth
+   * pinning: two documents may never carry the same SKU.
+   */
   test('duplicate sibling SKUs show inline errors and block the save', async ({ page }) => {
     await openVariacoes(page);
 
-    await fillNovaRow(page, `${prefix}-dup`, childSku);
+    const dupSku = `${childSku}-DUP`;
+    await fillNovaRow(page, `${prefix}-dup-a`, dupSku);
+    await fillNovaRow(page, `${prefix}-dup-b`, dupSku);
     await expect(page.getByText('SKU duplicado entre as variações').first()).toBeVisible();
 
     await clickSave(page, 'Salvar alterações');
-    // The flush gate aborts before any write; the duplicate row is never created.
+    // The flush gate aborts before any write; neither row is created.
     await expect(page.getByText(/SKU duplicado entre as variações:/)).toBeVisible({
       timeout: 15_000,
     });
-    await expect.poll(() => docExistsByName('produtos', `${prefix}-dup`)).toBe(false);
+    await expect.poll(() => docExistsByName('produtos', `${prefix}-dup-a`)).toBe(false);
+    await expect.poll(() => docExistsByName('produtos', `${prefix}-dup-b`)).toBe(false);
   });
 
   test('a child referenced by a kit cannot be stage-deleted', async ({ page }) => {
