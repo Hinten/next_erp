@@ -256,7 +256,9 @@ export function montarMembroUnico(
  * to. `montarMembroUnico` still copies it once, at creation, where there is no
  * previous value to preserve and no propagation to race.
  */
-export function espelhoDoMembroUnico(parent: ParentParaMembroUnico): Record<string, unknown> {
+export function camposDeKitDoMembroUnico(
+  parent: Pick<ParentParaMembroUnico, 'ehKit' | 'ehKitVirtual' | 'componentesKit'>,
+): Record<string, unknown> {
   const ehKit = parent.ehKit === true;
   // Same rule the create page's `deriveOnSave` applies to the parent: a non-kit
   // carries no map, so the denorm can never outlive the flag.
@@ -264,18 +266,42 @@ export function espelhoDoMembroUnico(parent: ParentParaMembroUnico): Record<stri
   const temComponentes = componentesKit != null && Object.keys(componentesKit).length > 0;
 
   return {
+    ehKit,
+    ehKitVirtual: ehKit && parent.ehKitVirtual === true,
+    componentesKit: temComponentes ? componentesKit : null,
+    // Sorted, order-stable: the keys feed an `array-contains` query and
+    // Firestore arrays are order-sensitive.
+    componentesKitKeys: temComponentes ? Object.keys(componentesKit).sort() : null,
+  };
+}
+
+/**
+ * The four kit fields the mirror moves as **one unit, never four**.
+ *
+ * ⚠️ They are not independent. `componentesKitKeys` is DERIVED from
+ * `componentesKit`, and `ehKit` gates both — `onProdutoDeleted.ts:75` states it
+ * outright, that the pair is *"rewritten together (never one without the
+ * other)"*. Deciding them separately can leave a member whose flag says kit while
+ * its map is null, or whose keys array names a component the map does not hold,
+ * and `calcularAlteracoesEstoque` reads that combination as "kit with no
+ * components": the sale moves NOTHING.
+ */
+export const CAMPOS_DE_KIT_DO_MEMBRO: readonly string[] = [
+  'ehKit',
+  'ehKitVirtual',
+  'componentesKit',
+  'componentesKitKeys',
+];
+
+export function espelhoDoMembroUnico(parent: ParentParaMembroUnico): Record<string, unknown> {
+  return {
     nome: (parent.nome ?? '').slice(0, PRODUTO_NOME_MAX),
     sku: parent.sku ?? null,
     codPai: parent.codPai ?? null,
     gtin: parent.gtin ?? null,
     publicado: parent.publicado === true,
-    ehKit,
-    ehKitVirtual: ehKit && parent.ehKitVirtual === true,
     ehUsado: parent.ehUsado === true,
-    componentesKit: temComponentes ? componentesKit : null,
-    // Sorted, order-stable: the keys feed an `array-contains` query and
-    // Firestore arrays are order-sensitive.
-    componentesKitKeys: temComponentes ? Object.keys(componentesKit).sort() : null,
+    ...camposDeKitDoMembroUnico(parent),
     categoriaProdutoOuterRef: parent.categoriaProdutoOuterRef ?? null,
     pesoLiquidoKg: parent.pesoLiquidoKg ?? null,
     pesoBrutoKg: parent.pesoBrutoKg ?? null,
@@ -399,8 +425,27 @@ export function planejarSincronizacaoDoMembroUnico(
   const depois = espelhoDoMembroUnico(paiDepois);
   const atual = espelhoDoMembroUnico(filho);
 
+  // ⛔ The kit group is decided ONCE, for all four fields together.
+  //
+  // `componentesKitKeys` is derived from `componentesKit` and `ehKit` gates both,
+  // so deciding them independently produces states the schema forbids. Two of
+  // them, both reproduced against the shipped function before this fix: a member
+  // whose map the operator diverged had its KEYS moved alone (leaving keys that
+  // disagree with the map), and a parent turning OFF `ehKit` moved the flag while
+  // its map survived — contradicting this file's own rule that "a non-kit carries
+  // no map, so the denorm can never outlive the flag".
+  //
+  // The member must match `antes` on ALL FOUR before any of them move: a
+  // divergence anywhere in the group means the operator owns the group.
+  const grupoMovido = movidos.some((c) => CAMPOS_DE_KIT_DO_MEMBRO.includes(c));
+  const grupoEmSincronia = CAMPOS_DE_KIT_DO_MEMBRO.every((c) => mesmoCampo(c, atual[c], antes[c]));
+
   const patch: Record<string, unknown> = {};
+  if (grupoMovido && grupoEmSincronia) {
+    for (const campo of CAMPOS_DE_KIT_DO_MEMBRO) patch[campo] = depois[campo];
+  }
   for (const campo of movidos) {
+    if (CAMPOS_DE_KIT_DO_MEMBRO.includes(campo)) continue; // decided above, as a unit
     if (!mesmoCampo(campo, atual[campo], antes[campo])) continue; // the operator diverged it
     patch[campo] = depois[campo];
   }
