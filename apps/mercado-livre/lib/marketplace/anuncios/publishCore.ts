@@ -564,19 +564,6 @@ export function linkAttributesAfterPublish(
  * would ship a payload with NO SKU anywhere. The caller must mirror the
  * mapper's own test, not the child count.
  */
-/**
- * Escape-hatch-shaped flag for the parent-sku characteristic (#1400). Ships OFF.
- *
- * ⚠️ It gates SENDING only — reading it back on import is unconditional, so a
- * família published while it was on is always understood afterwards.
- *
- * ⚠️ And it can only decide a família at CREATE time, because a custom
- * attribute's name feeds ML's family hash: turning it on does not retrofit
- * existing famílias, and turning it off does not strip it from famílias that
- * already carry it. See {@link resolveSkuPaiAtributo}.
- */
-export const SKU_PAI_ATRIBUTO_FLAG_ENV = 'MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED';
-
 /** One prospective família member, as {@link resolveSkuPaiAtributo} judges it. */
 export interface MembroSkuPai {
   /** Its existing ML item id; non-null means ML already has this member. */
@@ -588,6 +575,12 @@ export interface MembroSkuPai {
 /**
  * Does THIS publish send the família parent's sku as a custom characteristic?
  * (#1400)
+ *
+ * Sent for every família this app CREATES, unconditionally — there is no env
+ * flag. What remains is not a rollout gate but the uniformity rule below, and
+ * the consequence of having no switch is that backing the feature out is a code
+ * change: the characteristic is public (ficha técnica) and cannot be removed
+ * from an item that already carries it.
  *
  * The whole difficulty is that ML derives a família from `family_name`,
  * `domain_id`, `user_id` and the attributes, and a custom attribute contributes
@@ -623,7 +616,6 @@ export function resolveSkuPaiAtributo(args: {
   linkId: string | null;
   membros: ReadonlyArray<MembroSkuPai>;
   produtoSku: string | null;
-  flagLigada: boolean;
 }): { skuPai: string | null } {
   // The legacy `variations[]` model has a real parent item carrying a real
   // `SELLER_SKU`, so it needs none of this.
@@ -631,7 +623,28 @@ export function resolveSkuPaiAtributo(args: {
 
   const algumCarrega = args.membros.some((m) => m.skuPaiAtributo);
   const familiaNova = args.linkId == null && args.membros.every((m) => m.itemId == null);
-  const deveEnviar = algumCarrega || (familiaNova && args.flagLigada);
+  // ⛔ `familiaNova` is NOT the leftover of a rollout switch — do not "simplify"
+  // it away now that the env flag is gone. It is the correctness half, and ML
+  // names the two failures it prevents: adding a custom attribute to some but
+  // not all members is refused as `user_products.miss_match_attribute`
+  // ("é obrigatório enviá-la para todos os membros"), and a member whose
+  // resulting configuration matches another família is dropped as
+  // `family_id.collision`. Sending unconditionally would split live listings.
+  //
+  // ⚠️ DELIBERATE, and the "família" wording hides it: this also covers a plain
+  // SINGLE-PRODUCT UP listing. `publish.ts` materialises the sole member
+  // (`garantirMembroUnico`) BEFORE this runs, so a childless UP produto arrives
+  // as one member with no `itemId` — `familiaNova` — and ships the
+  // characteristic. On that shape the import chain does not need it: rung 3
+  // recovers the parent sku from the member's own `SELLER_SKU` precisely
+  // because a família of one has no combos. So the trade is a public
+  // characteristic on those listings for one narrow case — a single-product
+  // listing that later gains variations ON ML rather than in the ERP, where the
+  // importer invents variantes with `codigo: null`, rung 2 cannot peel and rung
+  // 3 no longer applies. Restricting this to `membros.length > 1` is uniform in
+  // both directions and would be a legitimate choice; it is not the one taken,
+  // and `publishCore.test.ts` pins the current answer so a change is conscious.
+  const deveEnviar = algumCarrega || familiaNova;
   const sku = args.produtoSku?.trim();
   return { skuPai: deveEnviar && sku ? sku : null };
 }
