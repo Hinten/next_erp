@@ -3,7 +3,10 @@ import {
   colapsarPaiEFilhoUnico,
   derivarFilhoUnico,
   ehFamiliaDeUm,
+  CAMPOS_ESPELHADOS_COM_COMPARADOR,
+  espelhoDoMembroUnico,
   montarMembroUnico,
+  planejarSincronizacaoDoMembroUnico,
   unidadeVendavel,
 } from './familia';
 
@@ -285,5 +288,309 @@ describe('montarMembroUnico', () => {
       componentesKit: null,
       precos: null,
     });
+  });
+});
+
+/**
+ * Keeping the sole member in step with its parent (#1398, PR 7b).
+ *
+ * ⚠️ Per the equivalence-fold rule, every comparison here is asserted from BOTH
+ * sides: a pair that must read as the same (so the mirror stays quiet, or does
+ * not mistake a stale value for a deliberate edit) and a near-miss that must
+ * stay distinct. A test that the fold APPLIES cannot show where it STOPS.
+ */
+describe('planejarSincronizacaoDoMembroUnico', () => {
+  const kit = (quantidade: number, limitarEstoque = true, timestamp: number | null = 1) => ({
+    quantidade,
+    limitarEstoque,
+    timestamp,
+  });
+
+  const pai = (over: Record<string, unknown> = {}) => ({
+    nome: 'Bandeja',
+    sku: 'BAN-1',
+    codPai: null,
+    gtin: null,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ehUsado: false,
+    componentesKit: null,
+    categoriaProdutoOuterRef: 'categorias/cat-1',
+    pesoLiquidoKg: 1,
+    pesoBrutoKg: 2,
+    alturaCm: 3,
+    larguraCm: 4,
+    profundidadeCm: 5,
+    ...over,
+  });
+
+  it('moves a field the parent changed while the member still held the old value', () => {
+    const patch = planejarSincronizacaoDoMembroUnico(
+      pai(),
+      pai({ nome: 'Bandeja Decorativa' }),
+      pai(),
+    );
+    expect(patch).toEqual({ nome: 'Bandeja Decorativa' });
+  });
+
+  it('is null when the parent moved nothing the member mirrors', () => {
+    expect(planejarSincronizacaoDoMembroUnico(pai(), pai(), pai())).toBeNull();
+  });
+
+  // ⚠️ The whole reason this is a three-way merge. The sole member is an
+  // ordinary produto and shows up as a row in the Variações tab, so an operator
+  // can rename it — and a straight copy would undo that on the parent's next
+  // save, silently, with the parent as a second writer that always wins.
+  it('leaves a field the operator diverged alone', () => {
+    const patch = planejarSincronizacaoDoMembroUnico(
+      pai(),
+      pai({ nome: 'Bandeja Decorativa' }),
+      pai({ nome: 'nome escolhido pelo operador' }),
+    );
+    expect(patch).toBeNull();
+  });
+
+  // Per FIELD, not per document: one diverged field must not freeze the rest.
+  it('still moves the other fields when ONE of them was diverged', () => {
+    const patch = planejarSincronizacaoDoMembroUnico(
+      pai(),
+      pai({ nome: 'Bandeja Decorativa', sku: 'BAN-2' }),
+      pai({ nome: 'nome escolhido pelo operador' }),
+    );
+    expect(patch).toEqual({ sku: 'BAN-2' });
+  });
+
+  // ⚠️ This IS the concurrency guard (rule 7 tier 0). Two rapid parent edits
+  // produce two trigger runs with no ordering guarantee; the older one must
+  // decline rather than revert the newer state, and it declines for exactly the
+  // same reason a human edit is respected — the child no longer holds `before`.
+  it('declines to revert a newer value written by a run that landed first', () => {
+    const patch = planejarSincronizacaoDoMembroUnico(
+      pai({ nome: 'A' }), // this run saw A → B
+      pai({ nome: 'B' }),
+      pai({ nome: 'C' }), // but a later edit already wrote C
+    );
+    expect(patch).toBeNull();
+  });
+
+  it('propagates nothing on a create, where the member was written by the same writer', () => {
+    expect(planejarSincronizacaoDoMembroUnico(null, pai({ nome: 'novo' }), pai())).toBeNull();
+  });
+
+  // A legacy member missing a key must not read as a deliberate divergence:
+  // both sides go through the same normalisation before they are compared.
+  it('treats an ABSENT boolean on the member as the false the mirror writes', () => {
+    const patch = planejarSincronizacaoDoMembroUnico(
+      pai({ ehUsado: false }),
+      pai({ ehUsado: true }),
+      pai({ ehUsado: undefined }),
+    );
+    expect(patch).toEqual({ ehUsado: true });
+  });
+
+  describe('componentesKit — what the fold treats as the same kit', () => {
+    const comKit = (mapa: Record<string, unknown> | null) =>
+      pai({ ehKit: true, componentesKit: mapa });
+
+    // ⚠️ EQUAL. The editor restamps `timestamp` on save, so folding it in would
+    // report a difference on a save that changed no component — and that reads
+    // as "the operator diverged this child", silencing the mirror for good.
+    it('ignores a restamped timestamp', () => {
+      const patch = planejarSincronizacaoDoMembroUnico(
+        comKit({ 'comp-1': kit(2, true, 111) }),
+        comKit({ 'comp-1': kit(2, true, 999) }),
+        comKit({ 'comp-1': kit(2, true, 111) }),
+      );
+      expect(patch).toBeNull();
+    });
+
+    // ⚠️ NEAR-MISS. Everything else about an entry changes what the kit
+    // assembles from, and therefore what `kitEstoqueDisponivel` computes.
+    it('keeps a changed quantidade distinct', () => {
+      const patch = planejarSincronizacaoDoMembroUnico(
+        comKit({ 'comp-1': kit(2) }),
+        comKit({ 'comp-1': kit(3) }),
+        comKit({ 'comp-1': kit(2) }),
+      );
+      expect(patch).toMatchObject({ componentesKit: { 'comp-1': { quantidade: 3 } } });
+    });
+
+    it('keeps a flipped limitarEstoque distinct', () => {
+      const patch = planejarSincronizacaoDoMembroUnico(
+        comKit({ 'comp-1': kit(2, true) }),
+        comKit({ 'comp-1': kit(2, false) }),
+        comKit({ 'comp-1': kit(2, true) }),
+      );
+      expect(patch).toMatchObject({ componentesKit: { 'comp-1': { limitarEstoque: false } } });
+    });
+
+    it('keeps an added component distinct', () => {
+      const patch = planejarSincronizacaoDoMembroUnico(
+        comKit({ 'comp-1': kit(1) }),
+        comKit({ 'comp-1': kit(1), 'comp-2': kit(1) }),
+        comKit({ 'comp-1': kit(1) }),
+      );
+      expect(patch).toMatchObject({ componentesKitKeys: ['comp-1', 'comp-2'] });
+    });
+
+    // ⚠️ A kit that stops being a kit must drop BOTH the map and its key array,
+    // or an `array-contains` query keeps finding the member as a component of
+    // something it no longer assembles.
+    it('clears the map AND the keys when the parent stops being a kit', () => {
+      const patch = planejarSincronizacaoDoMembroUnico(
+        comKit({ 'comp-1': kit(1) }),
+        pai({ ehKit: false, componentesKit: { 'comp-1': kit(1) } }),
+        comKit({ 'comp-1': kit(1) }),
+      );
+      // ⚠️ `ehKitVirtual` rides along even though it did not move on its own.
+      // The four kit fields are ONE unit — see "the kit group is atomic" below —
+      // and writing a subset is exactly how a member ended up with a flag whose
+      // map had been declined.
+      expect(patch).toEqual({
+        ehKit: false,
+        ehKitVirtual: false,
+        componentesKit: null,
+        componentesKitKeys: null,
+      });
+    });
+  });
+
+  // ⚠️ `precos` is the one mirrored-looking field with an operator OPT-OUT
+  // (`propagatePriceToChildren`), owned by the trigger's own propagation since
+  // 2026-07-21. Sweeping it in here would defeat that checkbox on the very save
+  // where the operator ticked it.
+  it('never carries precos, even when the parent changed them', () => {
+    // ⚠️ ONE object, shared by the `before` parent and the member. An earlier
+    // version of this test built two structurally-identical literals — and it
+    // passed with `precos` PUT BACK in the mirror, because the default
+    // comparator is `===` and two literals are never identical, so the merge
+    // declined as "the operator diverged it". The mutation survived. Sharing the
+    // reference removes that escape: with `precos` mirrored, this patch is
+    // `{ precos: { l1: { valor: 99 } } }`.
+    const precosAntigos = { l1: { valor: 10 } };
+    const patch = planejarSincronizacaoDoMembroUnico(
+      { ...pai(), precos: precosAntigos },
+      { ...pai(), precos: { l1: { valor: 99 } } },
+      { ...pai(), precos: precosAntigos },
+    );
+    expect(patch).toBeNull();
+  });
+
+  // ⚠️ The structural half of the same finding. An object-valued mirrored field
+  // with no comparator compares by IDENTITY, so it reads as diverged on every
+  // save and never propagates again — silently, and permanently. This fails the
+  // moment such a field is added, rather than the moment someone notices the
+  // sellable half of a produto has been stale for months.
+  it('has a comparator for every mirrored field that is not a primitive', () => {
+    const preenchido = espelhoDoMembroUnico({
+      ...pai({ ehKit: true, componentesKit: { 'comp-1': kit(1) } }),
+      precos: { l1: { valor: 10 } },
+    });
+    const semComparador = Object.entries(preenchido)
+      .filter(([campo]) => !CAMPOS_ESPELHADOS_COM_COMPARADOR.includes(campo))
+      .filter(([, valor]) => valor !== null && typeof valor === 'object')
+      .map(([campo]) => campo);
+    expect(semComparador).toEqual([]);
+  });
+
+  it('montarMembroUnico still carries precos, because a create has no propagation to race', () => {
+    expect(montarMembroUnico('p1', { ...pai(), precos: { l1: { valor: 10 } } })).toMatchObject({
+      precos: { l1: { valor: 10 } },
+      paiId: 'p1',
+    });
+  });
+});
+
+/**
+ * ⛔ The kit group moves as ONE unit (found by adversarial review of #1427).
+ *
+ * `componentesKitKeys` is derived from `componentesKit` and `ehKit` gates both,
+ * so deciding them independently produces states the schema forbids — and
+ * `calcularAlteracoesEstoque` reads "kit with no components" as a line that moves
+ * NOTHING. Both shapes below were reproduced against the shipped function before
+ * the fix.
+ */
+describe('planejarSincronizacaoDoMembroUnico — the kit group is atomic', () => {
+  const k = (quantidade: number) => ({ quantidade, limitarEstoque: true, timestamp: 1 });
+  const base = { nome: 'Cesta', sku: 'CES-1', paiId: null };
+
+  // ⛔ Was: `{ componentesKitKeys: ['c1'] }` — the map declined, the keys moved.
+  it('declines the KEYS too when the member diverged the map (narrowing)', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, componentesKit: { c1: k(1), c2: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(5), c2: k(1) } },
+      ),
+    ).toBeNull();
+  });
+
+  // ⛔ Was: `{ componentesKitKeys: ['c1','c2'] }` — keys widened past the map, so
+  // the member matched `componentesKitKeys array-contains` for a component it
+  // does not assemble and the rollup fanned out to it for nothing.
+  it('declines the KEYS too when the member diverged the map (widening)', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(1), c2: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(5) } },
+      ),
+    ).toBeNull();
+  });
+
+  // ⛔ Was: `{ ehKit: false, componentesKitKeys: null }` — the flag moved and the
+  // MAP survived, contradicting this file's own "a non-kit carries no map".
+  it('never moves the flag without the map it gates', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: false, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(5) } },
+      ),
+    ).toBeNull();
+  });
+
+  // ...and the near-miss that keeps the group ALIVE: an in-sync member still
+  // takes the whole group, all four fields together.
+  it('moves all four together when the member is in sync', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(1), c2: k(2) } },
+        { ...base, ehKit: true, componentesKit: { c1: k(1) } },
+      ),
+    ).toEqual({
+      ehKit: true,
+      ehKitVirtual: false,
+      componentesKit: { c1: k(1), c2: k(2) },
+      componentesKitKeys: ['c1', 'c2'],
+    });
+  });
+
+  // ⚠️ Sync is required on ALL FOUR, not just on the map. A member whose
+  // `ehKitVirtual` the operator flipped owns the group: moving the map over it
+  // would take the flag with it and undo that edit. Keying the check on
+  // `componentesKit` alone passes every other test here — this is the one that
+  // tells the two rules apart.
+  it('declines when the member diverged only the VIRTUAL flag', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, ehKit: true, ehKitVirtual: false, componentesKit: { c1: k(1) } },
+        { ...base, ehKit: true, ehKitVirtual: false, componentesKit: { c1: k(2) } },
+        { ...base, ehKit: true, ehKitVirtual: true, componentesKit: { c1: k(1) } },
+      ),
+    ).toBeNull();
+  });
+
+  // A divergence in the GROUP must not freeze the fields outside it.
+  it('still moves a non-kit field when only the kit group is diverged', () => {
+    expect(
+      planejarSincronizacaoDoMembroUnico(
+        { ...base, nome: 'Cesta', ehKit: true, componentesKit: { c1: k(1) } },
+        { ...base, nome: 'Cesta Grande', ehKit: true, componentesKit: { c1: k(2) } },
+        { ...base, nome: 'Cesta', ehKit: true, componentesKit: { c1: k(5) } },
+      ),
+    ).toEqual({ nome: 'Cesta Grande' });
   });
 });
