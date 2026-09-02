@@ -2525,6 +2525,25 @@ describe('publishProduto — the User-Products sole member (#1087)', () => {
     expect(child.grupoDeVariacoesUid).toBeNull();
   });
 
+  // ⛔ Found by adversarial review. This reshape MOVES the produto's available
+  // units onto the child, and without the pointer `unidadeVendavel` resolves the
+  // parent to ITSELF — so the badge, the pedido line, the Balanço scan and the
+  // print all read the row publish just emptied, while the units the live listing
+  // advertises sit on a child no ERP surface reaches.
+  //
+  // ⚠️ Asserted on the DOCUMENT, not on the plan. A plan-level test passes with
+  // the batch write deleted — mutation-proven — because the plan and the write are
+  // two places and only one of them was ever wrong.
+  it('⛔ stamps filhoUnicoId on the PARENT, or the moved stock is unreachable', async () => {
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(db.docs('produtos').get(PROD)).toMatchObject({ filhoUnicoId: CHILD });
+  });
+
   it('moves the AVAILABLE stock to the child and leaves the reserve on the parent', async () => {
     // 10 in the warehouse, 2 owed to an open pedido whose release decrements the
     // PARENT. The sweep prices a family off its children, so the child must own
