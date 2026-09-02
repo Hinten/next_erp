@@ -54,6 +54,7 @@ import {
   compareSortKeys,
   findDuplicateSkus,
   normalizeVariacoesUid,
+  espelhoDoMembroUnico,
   montarMembroUnico,
   parseFakePath,
   planejarMembroSobrevivente,
@@ -428,6 +429,41 @@ export function VariationManager({
     // applied where the "create" is implicit. It also takes the row OUT of
     // `deleteTargets` below, so an inbound reference no longer aborts a save
     // that deletes nothing.
+    // ⚠️ The survivor becomes the produto's SELLABLE UNIT — `filhoUnicoId` points at
+    // it two blocks down, so `unidadeVendavel` sends every stock, kit and NF-e
+    // reader to it. Renaming it is not enough: the `criar` arm below builds its
+    // member through `montarMembroUnico`, and the two arms of one invariant must
+    // not leave two different documents.
+    //
+    // ⛔ The gap that made this concrete: a variation created by this flush's own
+    // create branch carries the schema defaults `ehKit: false`, `componentesKit:
+    // null`, `publicado: false`. Promote it on a KIT parent and the produto's
+    // sellable unit is a non-kit with no composition — which
+    // `calcularAlteracoesEstoque` reads as a line that moves NOTHING.
+    //
+    // `espelhoDoMembroUnico`, not `montarMembroUnico`: `precos` stays out because
+    // the `onProdutoChanged` trigger owns it, with the `propagatePriceToChildren`
+    // opt-out this must not defeat.
+    const espelhoDoPai =
+      sobrevivente.tipo === 'renomear'
+        ? espelhoDoMembroUnico({
+            nome: liveParent('nome'),
+            sku: liveParent('sku'),
+            codPai: liveParent('codPai'),
+            gtin: liveParent('gtin'),
+            publicado: liveParent('publicado'),
+            ehKit: liveParent('ehKit'),
+            ehKitVirtual: liveParent('ehKitVirtual'),
+            ehUsado: liveParent('ehUsado'),
+            componentesKit: liveParent('componentesKit') as Record<string, unknown> | null,
+            categoriaProdutoOuterRef: liveParent('categoriaProdutoOuterRef'),
+            pesoLiquidoKg: liveParent('pesoLiquidoKg'),
+            pesoBrutoKg: liveParent('pesoBrutoKg'),
+            alturaCm: liveParent('alturaCm'),
+            larguraCm: liveParent('larguraCm'),
+            profundidadeCm: liveParent('profundidadeCm'),
+          })
+        : null;
     const reconciled =
       sobrevivente.tipo === 'renomear'
         ? reconciliadas.map((r) =>
@@ -587,6 +623,15 @@ export function VariationManager({
           variacoesUid: normalized.length > 0 ? normalized : null,
           ordem,
           ...(absorbed.has(row.key) && normalized.length > 0 ? { gtin: null } : {}),
+          // ⚠️ The promoted survivor takes the parent's whole mirror. Without this
+          // the update branch writes four fields and the produto's sellable unit
+          // keeps whatever the variation happened to have — on a kit parent, a
+          // non-kit child with no composition, whose pedido line moves no stock.
+          ...(espelhoDoPai !== null &&
+          sobrevivente.tipo === 'renomear' &&
+          row.id === sobrevivente.id
+            ? espelhoDoPai
+            : {}),
         } as never);
         writes += 1;
       }

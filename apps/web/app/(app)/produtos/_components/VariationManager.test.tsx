@@ -17,9 +17,15 @@ const h = vi.hoisted(() => {
   const snap = {
     current: { data: [] as Row[], loading: false, error: undefined },
   };
+  // ⚠️ `data` is deliberately widened: the promoted-survivor tests seed a KIT
+  // parent, and a narrow `{nome, sku}` would make the harness reject the very
+  // fields the mirror exists to carry.
   const parent = {
     current: {
-      data: { id: 'p1', data: { nome: 'Camiseta', sku: 'CAM' } },
+      data: {
+        id: 'p1',
+        data: { nome: 'Camiseta', sku: 'CAM' } as Record<string, unknown>,
+      },
       loading: false,
       error: undefined,
     },
@@ -651,5 +657,104 @@ describe('VariationManager — the absorbed member drops the family barcode', ()
 
     const editada = h.ops.find((o) => o.kind === 'update' && o.id === 'c1');
     expect(editada?.data).not.toHaveProperty('gtin');
+  });
+});
+
+/**
+ * ⛔ The promoted survivor is a MIRROR, not just a rename.
+ *
+ * `filhoUnicoId` points at it, so `unidadeVendavel` sends every stock, kit and
+ * NF-e reader to it. The `criar` arm builds its member through
+ * `montarMembroUnico`; the `renomear` arm used to write only nome/sku/variacoesUid
+ * and leave everything else at whatever the variation happened to have.
+ *
+ * On a KIT parent that is a produto whose sellable unit is a non-kit with no
+ * composition — which `calcularAlteracoesEstoque` reads as a line that moves
+ * NOTHING.
+ */
+describe('VariationManager — the renamed survivor mirrors the parent', () => {
+  it('takes the parent’s kit fields, not the variation’s defaults', async () => {
+    h.parent.current = {
+      data: {
+        id: 'p1',
+        data: {
+          nome: 'Cesta',
+          sku: 'CES',
+          ehKit: true,
+          ehKitVirtual: false,
+          componentesKit: { 'comp-a': { quantidade: 2, limitarEstoque: true } },
+          publicado: true,
+          gtin: '789',
+        },
+      },
+      loading: false,
+      error: undefined,
+    };
+    // A variation carrying the create branch's defaults: not a kit, no map.
+    h.setChildren([
+      { id: 'c1', data: { nome: 'Cesta P', sku: 'CES-P', variacoesUid: [uidP], ordem: 0 } },
+    ]);
+    const { flushRef } = renderManager();
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Remover variação' })[0]!);
+      await Promise.resolve();
+    });
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    const promovida = h.ops.find((o) => o.kind === 'update' && o.id === 'c1');
+    expect(promovida?.data).toMatchObject({
+      nome: 'Cesta',
+      ehKit: true,
+      componentesKit: { 'comp-a': { quantidade: 2, limitarEstoque: true } },
+      componentesKitKeys: ['comp-a'],
+      publicado: true,
+    });
+  });
+
+  // ⚠️ `precos` stays out: the `onProdutoChanged` trigger owns it, with the
+  // `propagatePriceToChildren` opt-out this must not defeat.
+  it('does not carry precos', async () => {
+    h.parent.current = {
+      data: { id: 'p1', data: { nome: 'Cesta', sku: 'CES', precos: { l1: { valor: 9 } } } },
+      loading: false,
+      error: undefined,
+    };
+    h.setChildren([
+      { id: 'c1', data: { nome: 'Cesta P', sku: 'CES-P', variacoesUid: [uidP], ordem: 0 } },
+    ]);
+    const { flushRef } = renderManager();
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Remover variação' })[0]!);
+      await Promise.resolve();
+    });
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops.find((o) => o.kind === 'update' && o.id === 'c1')?.data).not.toHaveProperty(
+      'precos',
+    );
+  });
+
+  // The near-miss: an ordinary variation edit must NOT gain the parent's mirror.
+  it('leaves an ordinary edited variation alone', async () => {
+    h.setChildren([
+      child('c1', 'Camiseta P', 'CAM-P', [uidP], 0),
+      child('c2', 'Camiseta G', 'CAM-G', [uidG], 1),
+    ]);
+    const { flushRef } = renderManager();
+
+    await act(async () => {
+      fireEvent.change(skuInputs()[0]!, { target: { value: 'CAM-P2' } });
+      await Promise.resolve();
+    });
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops.find((o) => o.kind === 'update' && o.id === 'c1')?.data).not.toHaveProperty(
+      'ehKit',
+    );
   });
 });
