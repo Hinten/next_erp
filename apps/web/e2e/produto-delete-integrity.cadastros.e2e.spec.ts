@@ -59,7 +59,11 @@ test.describe.serial('Produtos — deletion integrity (#117)', () => {
    */
   async function fillNovaRow(page: Page, nome: string, sku: string) {
     await page.getByRole('button', { name: 'Nova variante' }).click();
-    await expect(page.getByText('nova', { exact: true })).toBeVisible();
+    // ⚠️ `.last()` on the badge too, not just on the inputs. A caller may stage
+    // MORE THAN ONE row — the duplicate-SKU test needs two — and a bare
+    // `getByText('nova')` is a strict-mode locator that fails outright once a
+    // second badge exists. The row this call just appended is always the last.
+    await expect(page.getByText('nova', { exact: true }).last()).toBeVisible();
     await page.getByRole('textbox', { name: 'Nome' }).last().fill(nome);
     await page.getByRole('textbox', { name: 'SKU' }).last().fill(sku);
   }
