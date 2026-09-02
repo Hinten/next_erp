@@ -371,8 +371,28 @@ export async function importProduto(
   const depositoId = deps.depositoOuterRef ? lastSegment(deps.depositoOuterRef) : null;
   // A produto that owns children never carries its own stock (it lives on the
   // children) — skip the read, the plan nulls the estoque write regardless.
+  // ⛔ `ownsChildren` is derived from THIS CALL'S ML payload; whether the produto
+  // owns children is a stored fact about the ERP. They part company the moment a
+  // seller consolidates a listing on ML — the item comes back with `variations:
+  // []`, `ownsChildren` is false, and the import would write the ML quantity onto
+  // the PARENT while `filhoUnicoId` still names the surviving child. Every stock
+  // reader then resolves to that child's row, last written by the previous
+  // import: the badge, the pedido line and the print go stale, and the row the
+  // importer just wrote is invisible.
+  //
+  // ⚠️ It does not self-heal. Every later import takes the same branch, so the
+  // divergence is permanent — unlike every other race in this function, which the
+  // doc justifies as repaired on the next run.
+  //
+  // So the ERP's own child set has the last word on where stock may land. The
+  // extra read is paid ONLY on the path that was about to write to a parent, and
+  // `limit(1)` is all a boolean needs.
+  const paiJaTemFilho =
+    isCreate || !depositoId || ownsChildren ? false : await temFilhoAgora(db, produtoId);
   const existingStock =
-    isCreate || !depositoId || ownsChildren ? null : await readEstoque(db, produtoId, depositoId);
+    isCreate || !depositoId || ownsChildren || paiJaTemFilho
+      ? null
+      : await readEstoque(db, produtoId, depositoId);
 
   // ---- Assemble + execute ----------------------------------------------
   const plan = assembleImportPlan({
@@ -391,7 +411,10 @@ export async function importProduto(
     existingExtra,
     existingEstoqueQty: existingStock?.quantidade ?? null,
     existingEstoqueReservada: existingStock?.reservada ?? null,
-    hasVariations: ownsChildren,
+    // ⚠️ The ERP's child set, not just ML's payload — see `paiJaTemFilho`. A
+    // produto that owns children never carries its own stock, and the plan is
+    // what nulls the estoque write.
+    hasVariations: ownsChildren || paiJaTemFilho,
     parentGrupoUids,
     parentVariacoesUid,
     moderacoes,
@@ -602,7 +625,12 @@ export async function importProduto(
   // The sole-member pointer (#1398). AFTER the rollup, which also writes the
   // parent: running before it would invalidate the rollup's precondition and
   // cost the dimension repair a retry on every single import.
-  if (ownsChildren) {
+  //
+  // ⚠️ `paiJaTemFilho` is in the condition because `ownsChildren` alone would skip
+  // exactly the listing that lost its variations — the one whose pointer most
+  // needs re-deriving. It costs no extra read: the flag was already resolved
+  // above, on the only path that could set it.
+  if (ownsChildren || paiJaTemFilho) {
     await aplicarPonteiroMembroUnico(db, produtoId, now);
   }
 
@@ -1083,14 +1111,30 @@ async function aplicarRollupDimensoes(
 }
 
 /**
+ * Does this produto have a child RIGHT NOW?
+ *
+ * ⚠️ Read from the ERP, never inferred from the ML payload. `limit(1)` because the
+ * answer is a boolean, and it rides the existing `produtos(paiId ASC, nome ASC)`
+ * index on its prefix.
+ */
+async function temFilhoAgora(db: Firestore, produtoId: string): Promise<boolean> {
+  const snap = await produtoCollection.ref(db, {}).where('paiId', '==', produtoId).limit(1).get();
+  return !snap.empty;
+}
+
+/**
  * Point the parent at its sole member — or clear the pointer when the family has
  * more than one (#1398).
  *
  * ## Why the importer has to do this at all
  *
- * A produto imported from Mercado Livre is ALWAYS a family: a simple listing
- * comes back as a parent plus one child, and the stock lands on the CHILD. With
- * `filhoUnicoId` unset, `unidadeVendavel` resolves such a produto to the parent —
+ * A **User-Products** produto imported from Mercado Livre is always a family:
+ * ML auto-generates one for every user product, so even a single item comes back
+ * as a parent plus one child and the stock lands on the CHILD. (A listing that is
+ * neither User Products nor variation-bearing is imported flat, with stock on the
+ * produto itself — `importVariationChildren` documents that no-op, and this
+ * function is gated to match.) With `filhoUnicoId` unset, `unidadeVendavel`
+ * resolves such a produto to the parent —
  * which owns no estoque rows — so its badge, its pedido line and its print all
  * read **zero**. That is the original #1398 bug, reached through the importer
  * instead of through publish.
