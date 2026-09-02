@@ -14,6 +14,7 @@
  * must fail.
  */
 import { describe, expect, it } from 'vitest';
+import { idLocalMercadoLivre } from '@delfrance/integrations-mercado-livre';
 
 import { membroUnicoChildId, planejarMembroUnico } from './upSoleMember';
 import type { PlanejarMembroUnicoArgs } from './upSoleMember';
@@ -66,10 +67,36 @@ describe('planejarMembroUnico — adoption (the produto was already published)',
   });
 
   it('mints the child at the id the IMPORTER would have used, so a re-import converges', () => {
-    // `importVariations.ts:137-138`, verbatim — produto id and link doc id alike.
+    // The literal stays spelled out: this is a STORED KEY, and the migrated
+    // corpus is keyed on it. A test that only compared two calls of the same
+    // helper would follow the helper wherever it drifted.
     const esperado = 'XMLB000000000000000link1vMLBMLB5125183715';
     expect(plano().childProdutoId).toBe(esperado);
     expect(plano().childLinkDocId).toBe(esperado);
+  });
+
+  // ⚠️ The test that never existed (#1398). Publish's adoption id and the
+  // importer's User-Products member id are now ONE function, so this pins that
+  // publish did not keep a private copy of the format — the failure mode being
+  // that one side is 'fixed' and the other silently forks every document it
+  // writes. `importVariations.ts` calls the same helper with its own segments.
+  it('builds the adoption id through the SHARED legacy formula, not a local copy', () => {
+    expect(membroUnicoChildId('adotar', 'prod1', 'link1', 'MLB5125183715')).toBe(
+      idLocalMercadoLivre('link1', 'MLB5125183715'),
+    );
+  });
+
+  // ⚠️ And the fact the shared helper does NOT establish, said out loud so the
+  // unification is not read as more than it is: publish and the importer agree
+  // on the SHAPE, never on the inputs. Publish's `parentLinkDocId` is a random
+  // Firestore auto-id on a first publish while the importer's is deterministic,
+  // so the same live listing yields two different strings. Convergence after
+  // delete → re-import has always rested on `resolveExistingChild`'s three
+  // reuse rules — link, SKU, variation combination — never on this format.
+  it('does NOT make the two sides agree when their parent link ids differ', () => {
+    expect(membroUnicoChildId('adotar', 'prod1', 'auto-id-do-publish', 'MLB777')).not.toBe(
+      idLocalMercadoLivre('link-deterministico-do-import', 'MLB777'),
+    );
   });
 
   it('keeps the human SKU on the child — it is what ML holds as SELLER_SKU', () => {

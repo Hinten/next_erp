@@ -61,6 +61,7 @@ import {
 import {
   type MlModeracao,
   PRODUTO_EXTRA_DATA_DOC_ID,
+  derivarFilhoUnico,
   precisaConsultarModeracao,
   skuPaiPorSufixo,
   toOuterRef,
@@ -413,8 +414,28 @@ export async function importProduto(
   const depositoId = deps.depositoOuterRef ? lastSegment(deps.depositoOuterRef) : null;
   // A produto that owns children never carries its own stock (it lives on the
   // children) — skip the read, the plan nulls the estoque write regardless.
+  // ⛔ `ownsChildren` is derived from THIS CALL'S ML payload; whether the produto
+  // owns children is a stored fact about the ERP. They part company the moment a
+  // seller consolidates a listing on ML — the item comes back with `variations:
+  // []`, `ownsChildren` is false, and the import would write the ML quantity onto
+  // the PARENT while `filhoUnicoId` still names the surviving child. Every stock
+  // reader then resolves to that child's row, last written by the previous
+  // import: the badge, the pedido line and the print go stale, and the row the
+  // importer just wrote is invisible.
+  //
+  // ⚠️ It does not self-heal. Every later import takes the same branch, so the
+  // divergence is permanent — unlike every other race in this function, which the
+  // doc justifies as repaired on the next run.
+  //
+  // So the ERP's own child set has the last word on where stock may land. The
+  // extra read is paid ONLY on the path that was about to write to a parent, and
+  // `limit(1)` is all a boolean needs.
+  const paiJaTemFilho =
+    isCreate || !depositoId || ownsChildren ? false : await temFilhoAgora(db, produtoId);
   const existingStock =
-    isCreate || !depositoId || ownsChildren ? null : await readEstoque(db, produtoId, depositoId);
+    isCreate || !depositoId || ownsChildren || paiJaTemFilho
+      ? null
+      : await readEstoque(db, produtoId, depositoId);
 
   // ---- Assemble + execute ----------------------------------------------
   const plan = assembleImportPlan({
@@ -433,7 +454,10 @@ export async function importProduto(
     existingExtra,
     existingEstoqueQty: existingStock?.quantidade ?? null,
     existingEstoqueReservada: existingStock?.reservada ?? null,
-    hasVariations: ownsChildren,
+    // ⚠️ The ERP's child set, not just ML's payload — see `paiJaTemFilho`. A
+    // produto that owns children never carries its own stock, and the plan is
+    // what nulls the estoque write.
+    hasVariations: ownsChildren || paiJaTemFilho,
     parentGrupoUids,
     parentVariacoesUid,
     moderacoes,
@@ -639,6 +663,18 @@ export async function importProduto(
   // concurrent writer in the same instant is not worth a loop.
   if (ownsChildren && variationsResult.medidas.length > 0) {
     await aplicarRollupDimensoes(db, produtoId, variationsResult.medidas, now);
+  }
+
+  // The sole-member pointer (#1398). AFTER the rollup, which also writes the
+  // parent: running before it would invalidate the rollup's precondition and
+  // cost the dimension repair a retry on every single import.
+  //
+  // ⚠️ `paiJaTemFilho` is in the condition because `ownsChildren` alone would skip
+  // exactly the listing that lost its variations — the one whose pointer most
+  // needs re-deriving. It costs no extra read: the flag was already resolved
+  // above, on the only path that could set it.
+  if (ownsChildren || paiJaTemFilho) {
+    await aplicarPonteiroMembroUnico(db, produtoId, now);
   }
 
   // Photos (#439) — additive, high-quality, best-effort. After the produto exists;
@@ -1112,6 +1148,112 @@ async function aplicarRollupDimensoes(
     // ours by construction, so the blank is either already filled or will be
     // repaired by the next import.
     console.warn('[mercado-livre] import: rollup de dimensoes ignorado (produto alterado)', {
+      produtoId,
+    });
+  }
+}
+
+/**
+ * Does this produto have a child RIGHT NOW?
+ *
+ * ⚠️ Read from the ERP, never inferred from the ML payload. `limit(1)` because the
+ * answer is a boolean, and it rides the existing `produtos(paiId ASC, nome ASC)`
+ * index on its prefix.
+ */
+async function temFilhoAgora(db: Firestore, produtoId: string): Promise<boolean> {
+  const snap = await produtoCollection.ref(db, {}).where('paiId', '==', produtoId).limit(1).get();
+  return !snap.empty;
+}
+
+/**
+ * Point the parent at its sole member — or clear the pointer when the family has
+ * more than one (#1398).
+ *
+ * ## Why the importer has to do this at all
+ *
+ * A **User-Products** produto imported from Mercado Livre is always a family:
+ * ML auto-generates one for every user product, so even a single item comes back
+ * as a parent plus one child and the stock lands on the CHILD. (A listing that is
+ * neither User Products nor variation-bearing is imported flat, with stock on the
+ * produto itself — `importVariationChildren` documents that no-op, and this
+ * function is gated to match.) With `filhoUnicoId` unset, `unidadeVendavel`
+ * resolves such a produto to the parent —
+ * which owns no estoque rows — so its badge, its pedido line and its print all
+ * read **zero**. That is the original #1398 bug, reached through the importer
+ * instead of through publish.
+ *
+ * ## ⚠️ The child set is QUERIED, never inferred from this call
+ *
+ * A User-Products import fetches ONE member per call and fans out to the siblings
+ * in separate calls, so "the children this call wrote" is 1 for every member of a
+ * three-member family. Deriving the pointer from that would name member 1 as the
+ * sole member of a family of three — plan risk 1, and it would send every stock
+ * reader to one arbitrary variation.
+ *
+ * `limit(2)` is exactly what the question needs: `derivarFilhoUnico` only has to
+ * tell "one" from "more than one", so two documents answer it and Enterprise
+ * bills two documents scanned. The query rides the existing
+ * `produtos(paiId ASC, nome ASC)` index on its prefix.
+ *
+ * ## ⚠️ A lost precondition RETRIES — it must not skip (rule 7)
+ *
+ * The write carries the parent snapshot's `lastUpdateTime` (tier 1), and an
+ * earlier version of this comment claimed the read ORDER made that sufficient.
+ * It does not, and adversarial review showed why: the value written comes from a
+ * separate `where('paiId','==',produtoId)` QUERY, and no precondition covers a
+ * query. A sibling's child document appearing between that query and the update
+ * changes the correct answer without touching the parent's version — so the
+ * precondition provably cannot detect the staleness it was credited with.
+ *
+ * Worse, the run holding the FRESH view is the one whose precondition fails: two
+ * concurrent member imports could leave the parent naming one child while the
+ * family has two, which is plan risk 1 — every stock reader then sends the whole
+ * produto's stock to one arbitrary variation.
+ *
+ * So a lost precondition re-runs the whole derivation — re-query, re-read,
+ * re-write — exactly as `aplicarRollupDimensoes` above does. The retry sees the
+ * sibling that invalidated it and computes `null`, which is the right answer.
+ * Bounded at one: a second concurrent writer in the same instant is not worth a
+ * loop, and the pointer still self-heals on the next import or produto save.
+ *
+ * ⚠️ **The retry branch itself is not covered by a test**, and the same is true of
+ * `aplicarRollupDimensoes`'s directly above. Forcing a lost precondition needs a
+ * write to land BETWEEN this read and this update, which the import suite's
+ * Firestore double cannot express — it enforces preconditions faithfully but has
+ * no way to interleave. What IS covered is the property the retry restores: the
+ * pointer is derived from a live query, so a family that has gained a sibling
+ * resolves to `null`.
+ */
+async function aplicarPonteiroMembroUnico(
+  db: Firestore,
+  produtoId: string,
+  now: number,
+  tentativas = 1,
+): Promise<void> {
+  const ref = produtoCollection.docRef(db, {}, produtoId);
+  const snap = await ref.get();
+  if (!snap.exists) return;
+
+  const filhos = await produtoCollection.ref(db, {}).where('paiId', '==', produtoId).limit(2).get();
+  const filhoUnicoId = derivarFilhoUnico(filhos.docs.map((d) => ({ id: d.id })));
+  // Nothing to say: an unchanged pointer must not cost a write, because this runs
+  // on every import of every produto that owns children.
+  if (((snap.data() ?? {}).filhoUnicoId ?? null) === filhoUnicoId) return;
+
+  const lastUpdateTime = snap.updateTime;
+  try {
+    const patch = { filhoUnicoId, ultimaModificacao: now };
+    await (lastUpdateTime ? ref.update(patch, { lastUpdateTime }) : ref.update(patch));
+  } catch (err) {
+    if (!isFailedPrecondition(err)) throw err;
+    if (tentativas > 0) {
+      // ⚠️ Re-runs the DERIVATION, not just the write. The whole point is to see
+      // the sibling child that invalidated us — re-writing the same value would
+      // land exactly the stale pointer this exists to prevent.
+      await aplicarPonteiroMembroUnico(db, produtoId, now, tentativas - 1);
+      return;
+    }
+    console.warn('[mercado-livre] import: ponteiro do membro unico ignorado (produto alterado)', {
       produtoId,
     });
   }

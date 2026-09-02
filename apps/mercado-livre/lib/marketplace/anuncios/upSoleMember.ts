@@ -51,6 +51,7 @@ import {
   reservaEfetiva,
   toOuterRef,
 } from '@delfrance/schemas';
+import { idLocalMercadoLivre } from '@delfrance/integrations-mercado-livre';
 
 /** Mirrors `importCore.ts`'s own cap on the child `nome`. */
 const PRODUTO_NOME_MAX = 100;
@@ -178,7 +179,7 @@ export function membroUnicoChildId(
   itemId: string | null,
 ): string {
   if (acao === 'adotar' && itemId != null && itemId !== '') {
-    return `XMLB000000000000000${parentLinkDocId}vMLB${itemId}`;
+    return idLocalMercadoLivre(parentLinkDocId, itemId);
   }
   return createHash('sha256').update(`${produtoId}|up-sole-member`).digest('hex');
 }
