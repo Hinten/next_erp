@@ -226,9 +226,24 @@ const PRODUTO_NOME_MAX = 100;
  * ⚠️ `ordem` stays null and `filhoUnicoId` is absent: a child never points at a
  * child, and nothing orders a family of one.
  */
-export function montarMembroUnico(
-  parentId: string,
-  parent: ParentParaMembroUnico,
+/**
+ * The four kit fields a sole member mirrors — **one unit, never four**.
+ *
+ * ⚠️ They are not independent. `componentesKitKeys` is DERIVED from
+ * `componentesKit`, and `ehKit` gates both: `onProdutoDeleted.ts:75` states the
+ * invariant outright, that the pair is *"rewritten together (never one without
+ * the other)"*. A writer that decides them separately can leave a member whose
+ * flag says kit while its map is null, or whose keys array names a component the
+ * map does not hold — and `calcularAlteracoesEstoque` reads exactly that
+ * combination as "kit with no components", so the sale moves **nothing**.
+ *
+ * Every place that mirrors the group goes through here, so the definition of
+ * "the kit group" exists once: {@link montarMembroUnico} at birth,
+ * `espelhoDoMembroUnico` on a later edit, and `buildKitStatusChildOps` when the
+ * parent's kit flag is toggled.
+ */
+export function camposDeKitDoMembroUnico(
+  parent: Pick<ParentParaMembroUnico, 'ehKit' | 'ehKitVirtual' | 'componentesKit'>,
 ): Record<string, unknown> {
   const ehKit = parent.ehKit === true;
   // Same rule the create page's `deriveOnSave` applies to the parent: a non-kit
@@ -237,19 +252,36 @@ export function montarMembroUnico(
   const temComponentes = componentesKit != null && Object.keys(componentesKit).length > 0;
 
   return {
+    ehKit,
+    ehKitVirtual: ehKit && parent.ehKitVirtual === true,
+    componentesKit: temComponentes ? componentesKit : null,
+    // Sorted, order-stable: the keys feed an `array-contains` query and
+    // Firestore arrays are order-sensitive.
+    componentesKitKeys: temComponentes ? Object.keys(componentesKit).sort() : null,
+  };
+}
+
+/** The names of the fields {@link camposDeKitDoMembroUnico} owns, as a set. */
+export const CAMPOS_DE_KIT_DO_MEMBRO: readonly string[] = [
+  'ehKit',
+  'ehKitVirtual',
+  'componentesKit',
+  'componentesKitKeys',
+];
+
+export function montarMembroUnico(
+  parentId: string,
+  parent: ParentParaMembroUnico,
+): Record<string, unknown> {
+  return {
     nome: (parent.nome ?? '').slice(0, PRODUTO_NOME_MAX),
     sku: parent.sku ?? null,
     paiId: parentId,
     codPai: parent.codPai ?? null,
     gtin: parent.gtin ?? null,
     publicado: parent.publicado === true,
-    ehKit,
-    ehKitVirtual: ehKit && parent.ehKitVirtual === true,
     ehUsado: parent.ehUsado === true,
-    componentesKit: temComponentes ? componentesKit : null,
-    // Sorted, order-stable: the keys feed an `array-contains` query and
-    // Firestore arrays are order-sensitive.
-    componentesKitKeys: temComponentes ? Object.keys(componentesKit).sort() : null,
+    ...camposDeKitDoMembroUnico(parent),
     precos: parent.precos ?? null,
     categoriaProdutoOuterRef: parent.categoriaProdutoOuterRef ?? null,
     pesoLiquidoKg: parent.pesoLiquidoKg ?? null,
