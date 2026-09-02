@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-import type { ContaRef } from './startJobsForContas';
+import type { ContaRef } from '@/lib/marketplace/contaJobs/types';
 
 const h = vi.hoisted(() => ({
   clientRef: { current: null as null | Record<string, unknown> },

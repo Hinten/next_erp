@@ -24,8 +24,12 @@ import {
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 import { describeMassImportStartError } from './mercadoLivreJobErrors';
-import { type ContaJobOutcome, type ContaRef, contaRefFromRow } from './startJobsForContas';
-import { useContaJobFan } from './useContaJobFan';
+import {
+  type ContaJobOutcome,
+  type ContaRef,
+  contaRefFromRow,
+} from '@/lib/marketplace/contaJobs/types';
+import { useContaJobFan } from '@/lib/marketplace/contaJobs/useContaJobFan';
 
 export interface MassImportActionState {
   readonly opened: boolean;

@@ -78,6 +78,38 @@ everything else → null), not a fallthrough. As a deny-list it read `'am'`,
 
 ## Adding a channel
 
-One provider file, one backend route (`POST /api/marketplace/<canal>/anuncio-status`
-answering the same envelope), one row in `buildProviderMap`. You never touch
-`../push/run.ts`, the dialog, the produtos page or the other channels.
+One row in `MARKETPLACE_TIPO_CAPS` answering `pausarAnuncio`, one provider file,
+one backend route (`POST /api/marketplace/<canal>/anuncio-status` answering the
+same envelope), one row in `buildProviderMap`. You never touch `../push/run.ts`,
+the dialog, the produtos page or the other channels.
+
+⚠️ `pausarAnuncio` is its OWN capability, not an inference off
+`publicarAnuncio`: several marketplaces expose only a terminal close. Deriving
+one from the other is the unverified claim #815 undid.
+
+## The caps row is what decides, not the provider file (#1430)
+
+`resolveAnuncioStatusProvider` asks `MARKETPLACE_TIPO_CAPS` first — via
+`suporteAnuncioStatusDoCanal`, which is also what `pausarAnunciosRun.ts`'s
+`suportado` and the dialog's pre-run warning read, so the three cannot disagree.
+Only then does an exact tipo match serve the request. Everything else gets the
+placeholder **carrying the reason**, and the reasons are four different
+sentences:
+
+| Caps row says                    | Reason                   | What the operator reads                                     |
+| -------------------------------- | ------------------------ | ----------------------------------------------------------- |
+| `pausarAnuncio: 'nao'`           | `canal-nao-suportado`    | the provider cannot — building a backend will not change it |
+| `pausarAnuncio: 'desconhecido'`  | `canal-nao-pesquisado`   | nobody has read that provider's documentation yet           |
+| `'sim'` + `implementado: false`  | `canal-nao-implementado` | the provider can, we have not built the channel             |
+| caps say yes, no `PROVIDERS` row | `canal-sem-provider`     | a wiring gap in this screen                                 |
+
+⚠️ This replaced `PROVIDERS[tipo] !== undefined` — "a provider file exists"
+answering "does the channel support it". Same substitution the `/canais` badge
+already removed (#815, ADR 0015), and it gave all four situations one sentence,
+which pointed the operator at _"o site do canal"_ even for a channel that has
+no pause endpoint at all.
+
+⚠️ `caps/registriesAlinhadas.test.ts` asserts the table and this registry agree
+for **every** tipo. If a channel legitimately lands in the middle — backend
+shipped, this screen not wired yet — say so there with a named exception; do not
+delete the assertion.

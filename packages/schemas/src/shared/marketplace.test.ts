@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INTEGRACAO_TIPO } from '../integracao';
+import { INTEGRACAO_TIPO, type IntegracaoTipo } from '../integracao';
 import {
   MARKETPLACE_TIPO_CAPS,
   ehMarketplace,
@@ -30,6 +30,13 @@ describe('MARKETPLACE_TIPO_CAPS — the Mercado Livre row', () => {
     // a future channel author expect a header that never arrives.
     expect(ml.assinaWebhook).toBe('nao');
     expect(ml.notificacoes).toBe('push');
+  });
+
+  it('can pause and reactivate a listing', () => {
+    // #1412. A distinct capability from publishing: inferring it from
+    // `publicarAnuncio` is what the tri-state exists to stop.
+    expect(ml.pausarAnuncio).toBe('sim');
+    expect(ml.publicarAnuncio).toBe('sim');
   });
 
   it('records that ML has NO usable virtual kit, while size charts are live', () => {
@@ -65,6 +72,7 @@ describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
     // which nobody has checked. Only `'desconhecido'` is honest until Phase 0 runs.
     expect(amazon.tabelaDeMedidas).toBe('desconhecido');
     expect(amazon.kitVirtual).toBe('desconhecido');
+    expect(amazon.pausarAnuncio).toBe('desconhecido');
     expect(amazon.estoque.protocolo).toBe('desconhecido');
     expect(amazon.assinaWebhook).toBe('desconhecido');
   });
@@ -95,6 +103,7 @@ const CAMPOS_SUPORTE = [
   'categoriasEAtributos',
   'tabelaDeMedidas',
   'kitVirtual',
+  'pausarAnuncio',
   'enviarPreco',
   'importarPedido',
   'importarPagamento',
@@ -179,5 +188,17 @@ describe('ehMarketplace / marketplaceCapsOrNull', () => {
     expect(marketplaceCapsOrNull(INTEGRACAO_TIPO.whatsapp)).toBeNull();
     expect(marketplaceCapsOrNull(INTEGRACAO_TIPO.balcao)).toBeNull();
     expect(marketplaceCapsOrNull(INTEGRACAO_TIPO.mercadoLivre)?.channel).toBe('mercado-livre');
+  });
+
+  it('marketplaceCapsOrNull answers null for a tipo OUTSIDE the enum', () => {
+    // ⚠️ The near-miss for `ehMarketplace`, which only excludes the three known
+    // non-marketplace tipos — anything else passes it. Firestore documents reach
+    // the UI unparsed and the migrated corpus carries wire-format enums this
+    // union does not model, so a stray value used to index the Record to
+    // `undefined` while the signature promised a `MarketplaceCapabilities`.
+    // Every caller dereferences the result; `/canais` crashed on `.implementado`.
+    const fora = 9999 as IntegracaoTipo;
+    expect(ehMarketplace(fora)).toBe(true);
+    expect(marketplaceCapsOrNull(fora)).toBeNull();
   });
 });

@@ -1,12 +1,14 @@
 'use client';
 
-import { PlaceholderPage } from '@delfrance/ui';
+import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { CanalCapsPanel } from '../_components/CanalCapsPanel';
 
 export default function CanalLojaIntegradaPage() {
   return (
-    <PlaceholderPage
-      title="Loja Integrada"
-      description="Contas e configurações da integração com a Loja Integrada."
+    <CanalCapsPanel
+      tipo={INTEGRACAO_TIPO.lojaIntegrada}
+      titulo="Loja Integrada"
+      descricao="Contas e configurações da integração com a Loja Integrada."
     />
   );
 }

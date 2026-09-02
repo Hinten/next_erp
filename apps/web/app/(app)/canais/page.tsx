@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Alert, Badge, Card, Code, Group, Skeleton, Stack, Text, Tooltip } from '@mantine/core';
+import { Alert, Badge, Card, Code, Group, Skeleton, Stack, Text } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -9,11 +9,11 @@ import {
   INTEGRACAO_TIPO_LABELS,
   type Integracao,
   type IntegracaoTipo,
-  type MarketplaceCapabilities,
   marketplaceCapsOrNull,
 } from '@delfrance/schemas';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { StatusCanalBadge } from './_components/StatusCanalBadge';
 
 export default function CanaisListPage() {
   const q = useMemo(() => {
@@ -58,41 +58,6 @@ export default function CanaisListPage() {
         </Group>
       )}
     </Stack>
-  );
-}
-
-/**
- * ⚠️ This badge used to read `pluginIdForTipo(tipo)` and show
- * `@delfrance/integrations-shopee` for a channel whose package was a 44-line
- * `throw` with no importer anywhere. It was a capability question wearing a
- * plugin-id costume, and it answered it wrong: "has a package" is not "works".
- * `MARKETPLACE_TIPO_CAPS` answers the real one (#815, ADR 0015).
- */
-function StatusCanalBadge({ caps }: { caps: MarketplaceCapabilities | null }) {
-  if (caps === null) {
-    return (
-      <Tooltip label="Não é um canal de marketplace (balcão, WhatsApp)">
-        <Badge variant="light" color="gray" size="xs">
-          não-marketplace
-        </Badge>
-      </Tooltip>
-    );
-  }
-  if (!caps.implementado) {
-    return (
-      <Tooltip label="Nenhum backend implementado para este canal ainda">
-        <Badge variant="light" color="gray" size="xs">
-          não implementado
-        </Badge>
-      </Tooltip>
-    );
-  }
-  return (
-    <Tooltip label={`Backend: apps/${caps.channel ?? '—'}`}>
-      <Badge variant="light" color="blue" size="xs">
-        {caps.channel}
-      </Badge>
-    </Tooltip>
   );
 }
 

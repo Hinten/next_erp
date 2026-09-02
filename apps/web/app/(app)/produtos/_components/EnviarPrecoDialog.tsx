@@ -1,14 +1,17 @@
 'use client';
 
 import { Checkbox, Stack } from '@mantine/core';
+import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { AvisoCanaisNaoSuportados } from '@/lib/marketplace/caps/AvisoCanaisNaoSuportados';
 import { PushProgressDialog } from '@/lib/marketplace/push/PushProgressDialog';
 import {
   type EnviarPrecoAlvo,
   type EnviarPrecoOpcoes,
   enviarPrecoParaMarketplaces,
 } from '@/lib/marketplace/preco/enviarPrecoRun';
+import { suportePrecoDoCanal } from '@/lib/marketplace/preco/registry';
 import type { PricePushRow } from '@/lib/marketplace/preco/types';
 
 /**
@@ -28,6 +31,9 @@ export interface EnviarPrecoDialogProps {
 
 export function EnviarPrecoDialog({ opened, alvos, onClose }: EnviarPrecoDialogProps) {
   const mercadoLivre = useMercadoLivreClient();
+  // The same shared `['integracoes']` entry `/produtos` already holds — this
+  // resolves the selection's conta ids to a tipo at no extra read.
+  const { byId, status } = useIntegracoes(getFirebaseFirestore());
 
   return (
     <PushProgressDialog<PricePushRow, EnviarPrecoOpcoes>
@@ -37,6 +43,15 @@ export function EnviarPrecoDialog({ opened, alvos, onClose }: EnviarPrecoDialogP
       rotuloAcao="Enviar preços"
       testIdPrefix="envio-preco-row-"
       totalAlvos={alvos.length}
+      avisos={
+        <AvisoCanaisNaoSuportados
+          acao="preco"
+          alvos={alvos}
+          veredito={suportePrecoDoCanal}
+          byId={byId}
+          status={status}
+        />
+      }
       descricao={`O preço atual de ${String(alvos.length)} produto(s) será enviado para os canais em que eles estão anunciados.`}
       /**
        * BOTH default ON, for different reasons.

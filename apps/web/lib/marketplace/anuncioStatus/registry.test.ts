@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type IntegracaoTipo } from '@delfrance/schemas';
 
+import type { MotivoNaoSuportado } from '@/lib/marketplace/caps/suporteCanal';
 import { definirStatusParaIntegracao, resolveAnuncioStatusProvider } from './registry';
 import type { AnuncioStatusInput } from './types';
 
@@ -13,6 +14,28 @@ const input = (over: Partial<AnuncioStatusInput> = {}): AnuncioStatusInput => ({
   ...over,
 });
 
+/**
+ * Every tipo that is NOT Mercado Livre, with the reason the caps table gives.
+ *
+ * Written out rather than derived: a test that loops the constant it validates
+ * passes for any content. The coverage assertion below is what keeps it
+ * exhaustive, so a newly added `IntegracaoTipo` still cannot slip past — and
+ * THIS is the pair of assertions a second-channel PR edits.
+ */
+const NAO_SUPORTADOS: ReadonlyArray<readonly [IntegracaoTipo, MotivoNaoSuportado]> = [
+  [INTEGRACAO_TIPO.nenhuma, 'nao-marketplace'],
+  [INTEGRACAO_TIPO.whatsapp, 'nao-marketplace'],
+  [INTEGRACAO_TIPO.balcao, 'nao-marketplace'],
+  // ⚠️ `'canal-nao-pesquisado'`, never `'canal-nao-suportado'`: nobody has read
+  // these providers' documentation, and a `'nao'` here would be the unverified
+  // claim #815 undid.
+  [INTEGRACAO_TIPO.facebook, 'canal-nao-pesquisado'],
+  [INTEGRACAO_TIPO.lojaIntegrada, 'canal-nao-pesquisado'],
+  [INTEGRACAO_TIPO.magalu, 'canal-nao-pesquisado'],
+  [INTEGRACAO_TIPO.shopee, 'canal-nao-pesquisado'],
+  [INTEGRACAO_TIPO.amazon, 'canal-nao-pesquisado'],
+];
+
 describe('resolveAnuncioStatusProvider', () => {
   it('claims Mercado Livre', () => {
     expect(resolveAnuncioStatusProvider(INTEGRACAO_TIPO.mercadoLivre).tipos).toContain(
@@ -20,21 +43,40 @@ describe('resolveAnuncioStatusProvider', () => {
     );
   });
 
-  it('falls back for every other tipo, and the fallback claims NOTHING', () => {
-    const shopee = resolveAnuncioStatusProvider(INTEGRACAO_TIPO.shopee);
-    // Claiming no tipos is what makes registering a real channel a one-line
-    // change instead of also remembering to edit the placeholder.
-    expect(shopee.tipos).toEqual([]);
+  it('the table above covers every tipo that is not Mercado Livre', () => {
+    expect(new Set(NAO_SUPORTADOS.map(([tipo]) => tipo))).toEqual(
+      new Set(Object.values(INTEGRACAO_TIPO).filter((t) => t !== INTEGRACAO_TIPO.mercadoLivre)),
+    );
   });
 
-  it('explains itself per produto rather than failing silently', async () => {
+  it.each(NAO_SUPORTADOS)(
+    'tipo %s falls back to the placeholder, saying %s',
+    async (tipo, motivo) => {
+      const provider = resolveAnuncioStatusProvider(tipo);
+      // Claiming no tipos is what makes registering a real channel a one-line
+      // change instead of also remembering to edit the placeholder.
+      expect(provider.tipos).toEqual([]);
+      const res = await provider.definirStatus(
+        input({ integracao: { id: 'c2', nome: 'Conta', tipo, ativo: true } }),
+      );
+      expect(res.rows).toHaveLength(2);
+      expect(res.rows[0]).toMatchObject({ outcome: 'pulado', motivo });
+    },
+  );
+
+  it('explains itself per produto, naming the conta and the reason', async () => {
     const res = await resolveAnuncioStatusProvider(INTEGRACAO_TIPO.shopee).definirStatus(
       input({
         integracao: { id: 'c2', nome: 'Shopee', tipo: INTEGRACAO_TIPO.shopee, ativo: true },
       }),
     );
     expect(res.rows).toHaveLength(2);
-    expect(res.rows[0]).toMatchObject({ outcome: 'pulado', motivo: 'canal-nao-suportado' });
+    expect(res.rows[0]!.mensagem).toContain('Shopee');
+    expect(res.rows[0]!.mensagem).toContain('pausa de anúncios');
+    // ⚠️ Unresearched, NOT "the provider cannot" — `pausarAnuncio` is
+    // `'desconhecido'` for every unbuilt channel, and reading that as a refusal
+    // is the claim the tri-state exists to prevent.
+    expect(res.rows[0]!.motivo).toBe('canal-nao-pesquisado');
   });
 });
 
