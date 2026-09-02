@@ -342,8 +342,27 @@ describe.skipIf(!EMULATED)('onProdutoChanged core — the sole member mirror (em
     return { paiId, filhoId, pai };
   }
 
-  const correr = (db: Firestore, id: string, before: unknown, after: unknown) =>
-    recordProdutoModificationAndPropagate(
+  /**
+   * Drive the core the way a real trigger reaches it.
+   *
+   * ⚠️ **`after` is PERSISTED first, and that is not a formality.** A Firestore
+   * trigger fires *because* the document was written, so by the time the core runs
+   * the parent already holds `after`. The mirror derives its patch from the parent
+   * as it is NOW — that re-read is what makes two out-of-order deliveries converge
+   * instead of the older one reverting the newer — so a test that passes `after`
+   * without writing it is describing a delivery that cannot happen, and would
+   * report the mirror as broken.
+   *
+   * The parent write is a plain `set` on the emulator, which fires the REAL
+   * `onProdutoChanged` as well; that is already true of every `set` in this file
+   * and is why `coreEntries` filters on the fixed event time.
+   */
+  const correr = async (db: Firestore, id: string, before: unknown, after: unknown) => {
+    await db
+      .collection('produtos')
+      .doc(id)
+      .set(after as Record<string, unknown>);
+    return recordProdutoModificationAndPropagate(
       db,
       id,
       before as never,
@@ -351,6 +370,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core — the sole member mirror (em
       freshId('evt'),
       EVENT_TIME_MICROS,
     );
+  };
 
   it('carries a renamed parent onto the member that still held the old name', async () => {
     const db = getDb();
@@ -383,6 +403,8 @@ describe.skipIf(!EMULATED)('onProdutoChanged core — the sole member mirror (em
   it('does not touch the member when the parent moved nothing mirrored', async () => {
     const db = getDb();
     const { paiId, filhoId, pai } = await familiaDeUm(db);
+    // ⚠️ Read AFTER seeding, and the run below writes the parent, never the
+    // member — so this stamp is the one the assertion is entitled to compare.
     const antes = await db.collection('produtos').doc(filhoId).get();
 
     await correr(db, paiId, { ...pai, custo: 5 }, { ...pai, custo: 9 });
