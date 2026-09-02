@@ -1437,6 +1437,50 @@ describe('importProduto — ERP-first variation children (#801)', () => {
   });
 });
 
+/**
+ * ⛔ A listing that LOSES its variations must not strand the produto's stock.
+ *
+ * `ownsChildren` is derived from this call's ML payload; whether the produto owns
+ * children is a stored fact about the ERP. They part company the moment a seller
+ * consolidates a listing on ML — the item comes back with `variations: []`.
+ *
+ * Before the fix, import 2 took `ownsChildren === false` and wrote the ML quantity
+ * onto the PARENT while `filhoUnicoId` still named the surviving child. Every
+ * stock reader resolves through the pointer, so the badge, the pedido line and the
+ * print read the child's row — last written by import 1 — while the row the
+ * importer had just written was invisible.
+ *
+ * ⚠️ And it never self-heals: every later import takes the same branch.
+ */
+describe('importProduto — a listing that lost its variations', () => {
+  it('does not write stock onto a parent that still owns a child', async () => {
+    const db = new FakeDb();
+    const comVariacao = {
+      ...SIMPLE_ITEM,
+      variations: [{ id: 555, available_quantity: 4, attribute_combinations: [] }],
+    };
+    await importProduto(
+      deps(db, makeApi(comVariacao), { options: { sobrescreverEstoque: true } }),
+      'MLB123',
+    );
+
+    const paiId = [...db.docs('produtos').entries()].find(([, d]) => d.paiId == null)![0];
+    const filhos = [...db.docs('produtos').entries()].filter(([, d]) => d.paiId === paiId);
+    expect(filhos).toHaveLength(1);
+
+    // The seller consolidates on ML: the same item, no variations.
+    db.writeLog.length = 0;
+    await importProduto(
+      deps(db, makeApi(SIMPLE_ITEM), { options: { sobrescreverEstoque: true } }),
+      'MLB123',
+    );
+
+    // ⛔ The child is still there, so the parent must stay empty — the invariant
+    // is "a produto that owns children never carries its own stock".
+    expect([...db.docs(`produtos/${paiId}/estoques`).keys()]).toEqual([]);
+  });
+});
+
 describe('importProduto — User-Products (family_name) listing (#521)', () => {
   const FAMILY_ID = 'FAM1';
   const MEMBER_A_ID = 'MLBA1';
