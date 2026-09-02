@@ -535,11 +535,20 @@ export function VariationManager({
       } else if (row.dirty || ordem !== row.serverOrdem) {
         // precos is propagated to existing children server-side (the
         // `onProdutoChanged` trigger, on the parent's produto write).
+        //
+        // ⚠️ `gtin` is cleared when the #117/rule-3 reuse ABSORBED a staged create
+        // onto this document, and only then. `montarMembroUnico` copies the
+        // parent's barcode onto a sole member — right, because it is the same
+        // physical article — but the moment that document becomes one variation
+        // among several the barcode stops being true of it: a GTIN identifies ONE
+        // sellable article, and leaving it would publish variation P carrying the
+        // family's barcode while M has none.
         batch.update(produtoCollection.docRef(db, {}, row.id), {
           nome: row.nome,
           sku: row.sku === '' ? null : row.sku,
           variacoesUid: normalized.length > 0 ? normalized : null,
           ordem,
+          ...(absorbed.has(row.key) && normalized.length > 0 ? { gtin: null } : {}),
         } as never);
         writes += 1;
       }
