@@ -115,6 +115,37 @@ async function lerEstoques(ctx: MigrationContext, produtoId: string): Promise<Re
 }
 
 /**
+ * Does this produto have a child RIGHT NOW?
+ *
+ * ⚠️ Pass 1's `paisComFilhos` is a snapshot taken before pass 2 started, and pass 2
+ * is minutes long. A variation created in that window makes the snapshot say "no
+ * children" for a produto that has one — so the script would mint a SECOND member
+ * and stamp `filhoUnicoId` on a family of two, which is the stale-pointer harm the
+ * whole design is built to avoid (every stock reader would then resolve the parent
+ * to one arbitrary child).
+ *
+ * It self-heals on the produto's next save — `VariationManager` re-derives the
+ * pointer from the live child set — but "self-heals eventually" is not a property
+ * to rely on for a run whose whole point is to leave the corpus correct.
+ *
+ * So pass 1 stays the CHEAP pre-filter (it skips the already-families for free, and
+ * on this corpus that is most of them) and this is the fresh re-check for the few
+ * that survive it. `limit(1)` because the answer is boolean. Rides the existing
+ * `produtos(paiId ASC, nome ASC)` index on its prefix.
+ *
+ * ⚠️ It does NOT close the window entirely — a child created between this read and
+ * the commit still slips through. Firestore has no batch precondition on a QUERY,
+ * so closing it fully would mean a transaction per produto, and the run this script
+ * exists for happens on a quiet database (the legacy app is off, traffic has not cut
+ * over). This shrinks the window from minutes to milliseconds, which is the whole
+ * difference between "a staging rehearsal will hit it" and "it will not".
+ */
+async function temFilhoAgora(ctx: MigrationContext, produtoId: string): Promise<boolean> {
+  const snap = await ctx.db.collection('produtos').where('paiId', '==', produtoId).limit(1).get();
+  return !snap.empty;
+}
+
+/**
  * Does this produto sell on Mercado Livre?
  *
  * ⛔ `limit(1)` because the ANSWER is boolean and the consequence is a skip —
@@ -219,9 +250,10 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   for (const [produtoId, produto] of raizes) {
     const temFilhos = paisComFilhos.has(produtoId);
 
-    // ⚠️ The two subcollection reads are behind the CHEAP skip. A produto that
-    // already has children needs neither, and on a corpus that is mostly already
-    // families that is the difference between two reads per produto and none.
+    // ⚠️ The per-candidate reads are behind the CHEAP skip. A produto pass 1 already
+    // saw as a family needs none of them, and on a corpus that is mostly families
+    // that is the difference between three reads per produto and zero. What pass 1
+    // CANNOT do is prove the negative — see `temFilhoAgora`, which re-reads it.
     if (temFilhos) {
       pulados.set('ja-tem-filho', (pulados.get('ja-tem-filho') ?? 0) + 1);
       ctx.sink.skip(`produtos/${produtoId}`, 'filhoUnicoId', null, 'ja-tem-filho');
@@ -233,7 +265,8 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
     const plano = planejarConversao({
       produtoId,
       produto,
-      temFilhos,
+      // ⚠️ Re-read, not the pass-1 snapshot. See `temFilhoAgora`.
+      temFilhos: await temFilhoAgora(ctx, produtoId),
       temVinculoMercadoLivre: noMercadoLivre,
       estoque,
     });
