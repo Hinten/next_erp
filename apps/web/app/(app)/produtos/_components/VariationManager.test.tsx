@@ -613,3 +613,43 @@ describe('VariationManager — the SKU gate runs after the reuse', () => {
     await expect(flushRef.current!('p1')).rejects.toThrow(DUP_ERROR);
   });
 });
+
+/**
+ * ⛔ The mirrored `gtin` does not survive becoming a real variation.
+ *
+ * `montarMembroUnico` copies the parent's barcode onto a sole member — correct,
+ * because it is the same physical article. But the moment rule 3 absorbs that
+ * document into the first staged variation, the barcode stops being true of it: a
+ * GTIN identifies ONE sellable article, so leaving it would publish variation P
+ * carrying the family's barcode while M has none.
+ */
+describe('VariationManager — the absorbed member drops the family barcode', () => {
+  it('clears gtin when a real variation absorbs the sole member', async () => {
+    h.setChildren([child('membro-1', 'Camiseta', 'CAM', null, 0)]);
+    const { flushRef } = renderManager([uidP, uidG], 'membro-1');
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    const absorvida = h.ops.find((o) => o.kind === 'update' && o.id === 'membro-1');
+    expect(absorvida?.data).toMatchObject({ gtin: null });
+  });
+
+  // ⚠️ The near-miss. A row the reuse did NOT absorb is an ordinary edit, and an
+  // ordinary edit must never wipe a barcode the operator entered.
+  it('leaves gtin alone on an ordinary variation edit', async () => {
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0)]);
+    const { flushRef } = renderManager();
+
+    await act(async () => {
+      fireEvent.change(skuInputs()[0]!, { target: { value: 'CAM-P2' } });
+      await Promise.resolve();
+    });
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    const editada = h.ops.find((o) => o.kind === 'update' && o.id === 'c1');
+    expect(editada?.data).not.toHaveProperty('gtin');
+  });
+});
