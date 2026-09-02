@@ -204,8 +204,16 @@ export async function resolveOrderLineProduto(
       // that owns no estoque rows, and `aplicarPlano` creates one at
       // `0 + delta` — negative, from nothing, on a live ML order.
       //
+      // ⛔ ...unless it is a KIT. A kit's sole member has `ehKit: true` and no
+      // `componentesKit`, so binding it makes the sale move ZERO stock — worse than
+      // the wrong-row case above, because nothing anywhere reports it: the pedido
+      // has a produto, so `recordItensSemProduto` raises no incidente either. The
+      // ERP pick path reached the same conclusion one commit earlier
+      // (`PrincipalTab.tsx`); this is the surface with LIVE traffic and it must not
+      // disagree with it.
+      //
       // The family fields ride along on the probe, so this costs no extra read.
-      const alvo = unidadeVendavel(rootBySku.familia);
+      const alvo = rootBySku.ehKit ? rootBySku.produtoId : unidadeVendavel(rootBySku.familia);
       return alvo === rootBySku.produtoId
         ? { produtoId: alvo, via: 'sku-root' }
         : { produtoId: alvo, via: 'sku-membro-unico' };
@@ -283,7 +291,13 @@ async function resolveUpMemberChild(
  * rather than guess. `many` carries the ids: the only place they ever surface.
  */
 type SkuProbe =
-  | { kind: 'one'; produtoId: string; familia: ProdutoDeFamilia }
+  | {
+      kind: 'one';
+      produtoId: string;
+      familia: ProdutoDeFamilia;
+      /** ⛔ A kit is never resolved — see the projection below. */
+      ehKit: boolean;
+    }
   | { kind: 'none' }
   | { kind: 'many'; ids: string[] };
 
@@ -313,6 +327,14 @@ async function probeSkuUnico(query: FirebaseFirestore.Query): Promise<SkuProbe> 
     return {
       kind: 'one',
       produtoId: doc.id,
+      // ⛔ A KIT is never resolved. Its sole member carries `ehKit: true` and NO
+      // `componentesKit` (`planejarMembroUnico` does not copy the map), so binding
+      // it hands `calcularAlteracoesEstoque` a kit with a null map — its
+      // `if (!componentes) continue;` then moves NOTHING, and the components of a
+      // real ML sale are never reserved or removed. It costs a kit nothing to stay
+      // on the parent: the only thing the line needs from the produto it names is
+      // the composition, and the parent always has it.
+      ehKit: raw.ehKit === true,
       familia: {
         id: doc.id,
         // ⚠️ `paiId` is deliberately NOT projected. `unidadeVendavel`'s drift

@@ -42,7 +42,13 @@
  */
 import { createHash } from 'node:crypto';
 
-import { type MlModeracao, makeEstoqueUid, reservaEfetiva, toOuterRef } from '@delfrance/schemas';
+import {
+  type MlModeracao,
+  derivarFilhoUnico,
+  makeEstoqueUid,
+  reservaEfetiva,
+  toOuterRef,
+} from '@delfrance/schemas';
 import { idLocalMercadoLivre } from '@delfrance/integrations-mercado-livre';
 
 /** Mirrors `importCore.ts`'s own cap on the child `nome`. */
@@ -137,6 +143,23 @@ export interface MembroUnicoPlano {
    * sweep keys on, so a regression there silently drops the produto from a cycle.
    */
   parentLinkPatch: Record<string, unknown>;
+  /**
+   * The parent PRODUTO patch — `filhoUnicoId`, and nothing else.
+   *
+   * ⛔ Without it this materialisation moves the produto's available units onto a
+   * child that nothing can find. `unidadeVendavel` resolves a parent with a null
+   * pointer to ITSELF, so after the reshape the badge, the pedido line, the
+   * Balanço scan and the print all read the row this function just emptied — while
+   * the units the live ML listing is advertising sit on a child no ERP surface
+   * reaches. That is #1398's original harm, arriving through the one
+   * materialisation publish still performs.
+   *
+   * ⚠️ It rides the SAME batch as the child create and the parent's estoque
+   * decrement, deliberately. A pointer written separately could be the half that
+   * fails, and this reshape is entered only while the produto has NO children —
+   * so nothing would ever run again to finish the job.
+   */
+  parentProdutoPatch: Record<string, unknown>;
 }
 
 export type MembroUnicoResultado =
@@ -290,6 +313,10 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
       estoques,
       parentEstoqueSaidas,
       parentLinkPatch: { userProductId: null },
+      // `derivarFilhoUnico` is the one producer of this value — never a bare
+      // `childId` — so publish, the ERP and the conversion script cannot disagree
+      // about what "the family has exactly one member" means.
+      parentProdutoPatch: { filhoUnicoId: derivarFilhoUnico([{ id: childId }]) },
     },
   };
 }

@@ -184,6 +184,12 @@ export async function garantirMembroUnico(
     // `findVariacaoLink` reads it to decide PUT vs POST. Without it the fan-out
     // POSTs a SECOND item and `sweepRemovedMembers` closes the original.
     batch.create(memberRef, plano.link);
+    // ⛔ The pointer, in the SAME batch as the stock it makes findable. Without it
+    // `unidadeVendavel` resolves the parent to ITSELF, so every ERP surface reads
+    // the row the loop below is about to empty — while the units the live listing
+    // advertises sit on a child nothing reaches. Written even when no stock moves:
+    // the pointer is about IDENTITY, not about units.
+    batch.update(produtoCollection.docRef(db, {}, produtoId), plano.parentProdutoPatch);
     for (const s of plano.parentEstoqueSaidas) {
       // Nothing moved (a fully reserved depósito) ⇒ no write at all, rather than a
       // no-op that still bumps the row's clock.
