@@ -253,11 +253,11 @@ import fires none (ADR 0013).
 
 ## What it SKIPS, and why each skip matters
 
-| motivo                      | meaning                                          |
-| --------------------------- | ------------------------------------------------ |
-| `ja-tem-filho`              | already a family. This is also the re-run guard. |
-| `nao-e-raiz`                | carries a `paiId` — it is a child.               |
-| `tem-vinculo-mercado-livre` | ⛔ sells on ML. **Publish owns this one.**       |
+| motivo                      | meaning                                                                                                                                                                                                          |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ja-tem-filho`              | already a family. Also the re-run guard, and it is **re-read just before the write** rather than taken from the opening walk — a variation created mid-run would otherwise get a second member minted beside it. |
+| `nao-e-raiz`                | carries a `paiId` — it is a child.                                                                                                                                                                               |
+| `tem-vinculo-mercado-livre` | ⛔ sells on ML. **Publish owns this one.**                                                                                                                                                                       |
 
 ⛔ **The ML skip is not caution, it is a live listing.** Under User Products,
 publish's `'adotar'` arm is what seeds the sole member's link with the existing
