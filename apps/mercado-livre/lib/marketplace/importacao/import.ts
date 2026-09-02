@@ -1108,22 +1108,40 @@ async function aplicarRollupDimensoes(
  * bills two documents scanned. The query rides the existing
  * `produtos(paiId ASC, nome ASC)` index on its prefix.
  *
- * ## ⚠️ Read order IS the concurrency guard (rule 7)
+ * ## ⚠️ A lost precondition RETRIES — it must not skip (rule 7)
  *
- * The parent snapshot is taken BEFORE the children query, and the write carries
- * that snapshot's `lastUpdateTime` (tier 1). Two sibling imports racing then
- * cannot land a stale pointer: whichever queries later necessarily sees the other
- * member — its child write precedes its parent write — and whichever wrote the
- * parent first invalidates the other's precondition. Reading the parent AFTER the
- * query would break exactly that, so do not "tidy" the order.
+ * The write carries the parent snapshot's `lastUpdateTime` (tier 1), and an
+ * earlier version of this comment claimed the read ORDER made that sufficient.
+ * It does not, and adversarial review showed why: the value written comes from a
+ * separate `where('paiId','==',produtoId)` QUERY, and no precondition covers a
+ * query. A sibling's child document appearing between that query and the update
+ * changes the correct answer without touching the parent's version — so the
+ * precondition provably cannot detect the staleness it was credited with.
  *
- * A lost race SKIPS, like the rollup above: the winner holds a newer view by
- * construction, and the pointer self-heals on the next import or produto save.
+ * Worse, the run holding the FRESH view is the one whose precondition fails: two
+ * concurrent member imports could leave the parent naming one child while the
+ * family has two, which is plan risk 1 — every stock reader then sends the whole
+ * produto's stock to one arbitrary variation.
+ *
+ * So a lost precondition re-runs the whole derivation — re-query, re-read,
+ * re-write — exactly as `aplicarRollupDimensoes` above does. The retry sees the
+ * sibling that invalidated it and computes `null`, which is the right answer.
+ * Bounded at one: a second concurrent writer in the same instant is not worth a
+ * loop, and the pointer still self-heals on the next import or produto save.
+ *
+ * ⚠️ **The retry branch itself is not covered by a test**, and the same is true of
+ * `aplicarRollupDimensoes`'s directly above. Forcing a lost precondition needs a
+ * write to land BETWEEN this read and this update, which the import suite's
+ * Firestore double cannot express — it enforces preconditions faithfully but has
+ * no way to interleave. What IS covered is the property the retry restores: the
+ * pointer is derived from a live query, so a family that has gained a sibling
+ * resolves to `null`.
  */
 async function aplicarPonteiroMembroUnico(
   db: Firestore,
   produtoId: string,
   now: number,
+  tentativas = 1,
 ): Promise<void> {
   const ref = produtoCollection.docRef(db, {}, produtoId);
   const snap = await ref.get();
@@ -1141,6 +1159,13 @@ async function aplicarPonteiroMembroUnico(
     await (lastUpdateTime ? ref.update(patch, { lastUpdateTime }) : ref.update(patch));
   } catch (err) {
     if (!isFailedPrecondition(err)) throw err;
+    if (tentativas > 0) {
+      // ⚠️ Re-runs the DERIVATION, not just the write. The whole point is to see
+      // the sibling child that invalidated us — re-writing the same value would
+      // land exactly the stale pointer this exists to prevent.
+      await aplicarPonteiroMembroUnico(db, produtoId, now, tentativas - 1);
+      return;
+    }
     console.warn('[mercado-livre] import: ponteiro do membro unico ignorado (produto alterado)', {
       produtoId,
     });
