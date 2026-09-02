@@ -338,20 +338,48 @@ export function useEstoqueDisponivel(
         demandaPorAlvo.set(alvo, (demandaPorAlvo.get(alvo) ?? 0) + passo);
       }
 
+      // ⚠️ The pool is resolved PER TARGET, not per component id — and that is the
+      // fix for the very case the division above was written for.
+      //
+      // A kit listing both a family-of-one parent and its own sole member gives
+      // `alvoDe` two entries pointing at the CHILD: the child maps to itself, the
+      // parent maps to the child. When the units were lançado on the parent and
+      // never moved, the child has no row — so the target misses, and only the
+      // PARENT reaches the own-row fallback (the child's `alvo === id`, so it is
+      // excluded from `semLinha` by construction). Keying the fallback by
+      // component id then leaves the child with no value at all, and
+      // `kitEstoqueDisponivel` scores an absent entry as 0: the whole kit reads
+      // ZERO, which is exactly the harm #1398 was opened on.
+      //
+      // Resolving per target fixes it and keeps the arithmetic honest: whatever
+      // answered for the target is ONE pool, and both aliases divide it.
+      //
+      // ⚠️ At most one fallback can answer per target, so there is nothing to
+      // choose between: `alvoDe` maps a child to itself and a parent to its child,
+      // so the only two sources for target C are C and its parent — and if C had a
+      // row, `porAlvo` would already hold it.
+      const poolDoAlvo = new Map(porAlvo);
+      for (const [id, alvo] of alvoDe) {
+        if (poolDoAlvo.has(alvo)) continue;
+        const proprio = porProprio.get(id);
+        if (proprio !== undefined) poolDoAlvo.set(alvo, proprio);
+      }
+
       // Keyed by the id the KIT names, whatever answered for it — `componentesKit`
       // is not rewritten by any of this.
       const disponivel: Record<string, number> = {};
       for (const [id, alvo] of alvoDe) {
-        const doAlvo = porAlvo.get(alvo);
-        const disp = doAlvo ?? porProprio.get(id);
+        const disp = poolDoAlvo.get(alvo);
         if (disp === undefined) continue;
         const qtd = componentesKitEntries(componentesKit).find(([cid]) => cid === id)?.[1]
           ?.quantidade;
         const passo = typeof qtd === 'number' && qtd > 0 ? qtd : 1;
         const demanda = demandaPorAlvo.get(alvo) ?? passo;
-        // Only a SHARED target is divided; a component answering from its own
-        // row (the fallback) never aliases with anything.
-        disponivel[id] = doAlvo !== undefined && demanda > passo ? (disp / demanda) * passo : disp;
+        // ⚠️ Divided whenever the target is SHARED, whichever row answered for it.
+        // The earlier version divided only a target that answered from its own
+        // row, which quietly exempted the aliased-fallback case — the one where
+        // two entries draw on a single parent's units.
+        disponivel[id] = demanda > passo ? (disp / demanda) * passo : disp;
       }
       return disponivel;
     },
