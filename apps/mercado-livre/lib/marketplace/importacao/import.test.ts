@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
+  ML_ATTR_SKU_PAI_NOME,
   MercadoLivreError,
   MercadoLivreHttpError,
   type MercadoLivreApi,
@@ -1638,6 +1639,191 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     });
   });
 
+  describe('the family parent sku (#1400)', () => {
+    const skuDoPai = (db: FakeDb) => db.docs('produtos').get(expectedParentId)?.sku ?? null;
+
+    it('rung 1 — takes the parent-sku characteristic publish wrote', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attributes: [
+              { id: 'SELLER_SKU', value_name: 'SKU-A' },
+              { name: ML_ATTR_SKU_PAI_NOME, value_name: 'SKU-PAI' },
+            ],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+
+      expect(skuDoPai(db)).toBe('SKU-PAI');
+      // The MEMBER keeps its own — the two are different values on one item.
+      expect(db.docs('produtos').get(expectedChildId(MEMBER_A_ID))?.sku).toBe('SKU-A');
+      // And the characteristic must NOT be stored inline on the link, or the
+      // next publish would send it twice.
+      const link = db
+        .docs(`produtos/${expectedParentId}/produtoMercadoLivre`)
+        .get(expectedParentLinkId);
+      expect(
+        (link?.attributes as Array<Record<string, unknown>> | null)?.some(
+          (a) => a.name === ML_ATTR_SKU_PAI_NOME,
+        ) ?? false,
+      ).toBe(false);
+    });
+
+    it('rung 2 — peels the variant código off the member sku on a ROUND TRIP', async () => {
+      // The ERP already knows this taxonomy, so the variante carries a código
+      // and the child sku is `parentSku + codigo` by construction.
+      const db = new FakeDb();
+      db.seed('grupoDeVariacoes', 'SIZE', {
+        nome: 'Tamanho',
+        ordem: 1,
+        tipo: 1,
+        permiteFotos: false,
+        variacoesIds: ['10'],
+        variacoes: [{ id: '10', nome: 'G', codigo: '-G' }],
+      });
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attributes: [{ id: 'SELLER_SKU', value_name: 'CAM-G' }],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('CAM');
+    });
+
+    it('rung 2 — TWO grupos both at ordem 1, the shape every ML import creates', async () => {
+      // ⚠️ The case a single-grupo test cannot see. `planTaxonomia` stamps
+      // `ordem: 1` on every grupo it creates, so a produto whose Tamanho and Cor
+      // both came from an ML import ties — and a peel that mirrored
+      // `sortGruposByOrdem` refused it, silently disabling this rung for the
+      // whole population it exists to serve.
+      const db = new FakeDb();
+      db.seed('grupoDeVariacoes', 'SIZE', {
+        nome: 'Tamanho',
+        ordem: 1,
+        tipo: 1,
+        permiteFotos: false,
+        variacoesIds: ['10'],
+        variacoes: [{ id: '10', nome: 'G', codigo: '-G' }],
+      });
+      db.seed('grupoDeVariacoes', 'COLOR', {
+        nome: 'Cor',
+        ordem: 1,
+        tipo: 2,
+        permiteFotos: true,
+        variacoesIds: ['20'],
+        variacoes: [{ id: '20', nome: 'Azul', codigo: '-AZ' }],
+      });
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attributes: [{ id: 'SELLER_SKU', value_name: 'CAM-AZ-G' }],
+            attribute_combinations: [
+              { id: 'COLOR', name: 'Cor', value_id: '20', value_name: 'Azul' },
+              { id: 'SIZE', name: 'Tamanho', value_id: '10', value_name: 'G' },
+            ],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('CAM');
+    });
+
+    it('rung 2 REFUSES when the ERP invented the variante — the fresh-import case', async () => {
+      // No seeded grupo ⇒ `planTaxonomia` creates the variante with `codigo:
+      // null` ⇒ nothing to peel. Blank, never the member's own sku.
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: { ...MEMBER_A, attributes: [{ id: 'SELLER_SKU', value_name: 'CAM-G' }] },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBeNull();
+      // ⚠️ Emphatically NOT the member's sku — that would give the parent one of
+      // its children's identities, and `resolveExistingUpParent` matches on sku.
+      expect(skuDoPai(db)).not.toBe('CAM-G');
+    });
+
+    it('rung 3 — a família of ONE takes the member sku, since it IS the produto', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: { ...MEMBER_A, attribute_combinations: [] },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('SKU-A');
+    });
+
+    it('SELF-HEAL — replaces a stored family id without "sobrescrever"', async () => {
+      // A parent imported before #1400 carries the 16-digit família key. The
+      // fill-blank rule would otherwise preserve it for ever.
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, {
+        nome: 'Camiseta Família',
+        sku: FAMILY_ID,
+        paiId: null,
+      });
+      db.seed(`produtos/${expectedParentId}/produtoMercadoLivre`, expectedParentLinkId, {
+        id: FAMILY_ID,
+        contaOuterRef: 'documents/integracao/conta-A',
+        isUserProductModel: true,
+        title: 'Camiseta Família',
+      });
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attributes: [
+              { id: 'SELLER_SKU', value_name: 'SKU-A' },
+              { name: ML_ATTR_SKU_PAI_NOME, value_name: 'SKU-PAI' },
+            ],
+          },
+        },
+      });
+      // Note: no `sobrescreverDadosProduto`.
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('SKU-PAI');
+    });
+
+    it('SELF-HEAL NEAR-MISS — an all-digit sku that is NOT the family id survives', async () => {
+      // ⚠️ The control that proves the heal is an EQUALITY, not `/^\d+$/`. A
+      // real sku can be all digits, and clobbering one would be data loss.
+      const db = new FakeDb();
+      db.seed('produtos', expectedParentId, {
+        nome: 'Camiseta Família',
+        sku: '1234567890123456',
+        paiId: null,
+      });
+      db.seed(`produtos/${expectedParentId}/produtoMercadoLivre`, expectedParentLinkId, {
+        id: FAMILY_ID,
+        contaOuterRef: 'documents/integracao/conta-A',
+        isUserProductModel: true,
+        title: 'Camiseta Família',
+      });
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attributes: [
+              { id: 'SELLER_SKU', value_name: 'SKU-A' },
+              { name: ML_ATTR_SKU_PAI_NOME, value_name: 'SKU-PAI' },
+            ],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('1234567890123456');
+    });
+  });
+
   it('imports the family parent + the called member as a child — literal parity ids, denorm, skip-stock', async () => {
     const db = new FakeDb();
     const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
@@ -1651,11 +1837,16 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
     // (default familyFanOut) and reported an empty summary.
     expect(res.family).toEqual({ total: 0, imported: 0, created: 0, capped: false, failures: [] });
 
-    // parent: sku falls back to the family id (parity); never gets its own stock.
+    // parent: BLANK sku, never the family id (#1400). This member carries combos
+    // and its variantes were created by this very import (`codigo: null`), so no
+    // rung of the chain can prove a parent sku — and the family id is a 16-digit
+    // ML key, not a seller sku. It used to land here purely as legacy parity
+    // (`models.dart:1226`), which is the defect. Never gets its own stock.
     expect(db.docs('produtos').get(expectedParentId)).toMatchObject({
       nome: 'Camiseta Família',
-      sku: FAMILY_ID,
+      sku: null,
     });
+    expect(db.docs('produtos').get(expectedParentId)?.sku).not.toBe(FAMILY_ID);
     expect(db.docs(`produtos/${expectedParentId}/estoques`).size).toBe(0);
 
     // parent link: literal fixed doc id; `id` field = family id; isUserProductModel stamped.

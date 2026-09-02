@@ -1,68 +1,55 @@
 /**
  * Compile-time fixture (no runtime; plugin-sdk has no test runner). Enforced by
- * this package's `tsc --noEmit` gate. Proves the #288 marketplace contract types
- * and the `OrderItemCountMismatchError` VALUE re-export are reachable from the
- * public plugin-sdk surface — guarding against a regression that drops one or
- * turns the error's `export {` into `export type {`.
+ * this package's `tsc --noEmit` gate. Proves the three plugin contracts stay
+ * reachable from the public surface, and that `defineIntegration` accepts each
+ * of the three manifest kinds.
+ *
+ * ⚠️ It used to prove the same for a 25-member `MarketplaceChannel` and ~25
+ * marketplace support types. Those are gone (#815) — a channel is a backend, not
+ * a plugin. The one assertion worth keeping from that era is the NEGATIVE one at
+ * the bottom: `'marketplace'` must not be assignable to `PluginManifest.kinds`,
+ * or the SDK starts advertising a plugin kind nothing can register.
  */
-import { OrderItemCountMismatchError, defineIntegration } from './index';
-import type {
-  MarketplaceChannel,
-  ChannelContext,
-  ImportedOrder,
-  ImportedOrderCharges,
-  ImportedFiscalIdentity,
-  ImportedAddress,
-  ImportedTracking,
-  IncidentAction,
-  ImportedIncident,
-  PriceUpdate,
-  SyncPage,
-} from './index';
+import { defineIntegration } from './index';
+import type { InvoiceProvider, PaymentGateway, PluginManifest, TaxProvider } from './index';
 
-// Types are usable from the public surface.
-const ctx: ChannelContext = { integracaoId: 'i', accessToken: 't', account: {} };
-const charges = (o: ImportedOrder): ImportedOrderCharges | undefined => o.charges;
-const fiscal = (o: ImportedOrder): ImportedFiscalIdentity | undefined => o.buyerFiscal;
-const ship = (o: ImportedOrder): ImportedAddress | undefined => o.shippingAddress;
-const track = (o: ImportedOrder): ImportedTracking | undefined => o.tracking;
-const incidentId = (i: ImportedIncident): string => i.externalId;
-const actionType = (a: IncidentAction): string => a.type;
-const firstOrder = (p: SyncPage<ImportedOrder>): ImportedOrder | undefined => p.items[0];
-const priced: PriceUpdate = { externalId: 'x', price: 100 };
+// The three contracts are usable from the public surface.
+const tax: TaxProvider = {
+  id: 'fixture-tax',
+  calculate: ({ items }) => ({
+    breakdown: items.map((i) => ({ name: 'flat', amount: i.amount })),
+    total: items.reduce((a, i) => a + i.amount, 0),
+  }),
+};
 
-// A required-only channel satisfies the re-exported contract type.
-const channel = {
-  id: 'fixture',
-  syncProducts: async (_c: ChannelContext) => {},
-  pullOrders: async (_c: ChannelContext) => {},
-  pushTracking: async (_c: ChannelContext, _o: string, _t: string) => {},
-  oauthFlow: { start: (s: string) => s, callback: async (_c: string, _s: string) => {} },
-} satisfies MarketplaceChannel;
+const invoice: InvoiceProvider = {
+  id: 'fixture-invoice',
+  issue: async () => ({ status: 'pending' }),
+};
 
-// The error is a runtime value (constructable + instanceof), not only a type.
-const err = new OrderItemCountMismatchError('o', 2, 1);
-const isError: boolean = err instanceof Error;
+const gateway: PaymentGateway = {
+  id: 'fixture-gateway',
+  createCharge: async ({ orderId }) => ({ chargeId: orderId, status: 'created' }),
+  refund: async () => {},
+  webhook: async () => ({ status: 'ok' }),
+};
 
-// defineIntegration still type-checks with the 'marketplace' kind.
+// defineIntegration type-checks with every valid kind, including a multi-kind plugin.
 const integration = defineIntegration({
-  manifest: { id: 'fixture', name: 'Fixture', version: '0.0.0', kinds: ['marketplace'] },
+  manifest: { id: 'fixture', name: 'Fixture', version: '0.0.0', kinds: ['tax', 'invoice'] },
   register: () => {},
 });
 
-// Reference the bindings so the fixture reads as exercised (noUnusedLocals is off,
-// but this documents intent).
-void [
-  ctx,
-  charges,
-  fiscal,
-  ship,
-  track,
-  incidentId,
-  actionType,
-  firstOrder,
-  priced,
-  channel,
-  isError,
-  integration,
-];
+const payment = defineIntegration({
+  manifest: { id: 'pay', name: 'Pay', version: '0.0.0', kinds: ['payment'] },
+  register: () => {},
+});
+
+// ⚠️ The negative assertion. `'marketplace'` is NOT a plugin kind — a channel is
+// an App Hosting backend resolved from its `integracao` doc, never registered.
+// `@ts-expect-error` FAILS THE BUILD if the union ever regains the member, which
+// is the only way this file can notice the contract creeping back.
+// @ts-expect-error 'marketplace' is not a PluginManifest kind (#815, ADR 0015)
+const kinds: PluginManifest['kinds'] = ['marketplace'];
+
+void [tax, invoice, gateway, integration, payment, kinds];

@@ -295,13 +295,20 @@ export interface ClienteResolveFields {
   /**
    * The ML buyer id, when the caller knows it.
    *
-   * OPTIONAL, unlike every field above, and that is the point: most callers
-   * genuinely do not know it. `billingInfoToClienteFields` sees only ML's
-   * billing block, which carries no buyer id; the WhatsApp discovery path knows
-   * a phone number and nothing else. Omitting the key says "no evidence", which
-   * is what the cascade already does with a null leg — whereas making it
-   * required would force those callers to write `idMercadoLivre: null`, an
-   * assertion they are in no position to make.
+   * OPTIONAL, unlike every field above, and that is the point: some callers
+   * genuinely do not know it — the WhatsApp discovery path knows a phone number
+   * and nothing else. Omitting the key says "no evidence", which is what the
+   * cascade already does with a null leg — whereas making it required would
+   * force those callers to write `idMercadoLivre: null`, an assertion they are
+   * in no position to make.
+   *
+   * ⚠️ This once read "`billingInfoToClienteFields` sees only ML's billing
+   * block, which carries no buyer id", and used the ML ORDER import as the
+   * example of a caller that cannot know it. That was wrong in both halves, and
+   * the comment is why nobody looked: `orderImport.ts` holds `order.buyer.id`
+   * two lines from the call, and the billing block does carry a buyer id of its
+   * own (`cust_id`). The order path supplies it since #1087; it is not an
+   * example of ignorance.
    */
   readonly idMercadoLivre?: string | null;
 }

@@ -27,6 +27,8 @@
  * is absent or malformed is refused **before** any ML call — the money cannot
  * move on a value the operator never chose.
  */
+import { roundReais } from '@delfrance/core/money';
+
 import {
   type MercadoLivreApi,
   type MlClaim,
@@ -34,7 +36,6 @@ import {
   type MlPartialRefundOffers,
   respondIncidentMl,
 } from '@delfrance/integrations-mercado-livre';
-import type { ChannelContext } from '@delfrance/core/plugins';
 
 import { claimActionability } from './claimActionability';
 import { isMercadoLivreRequestError } from '../core/respond';
@@ -305,16 +306,11 @@ export async function resolverReclamacaoMercadoLivre(
 ): Promise<ResolverReclamacaoResult> {
   validarAcaoReclamacao(input);
 
-  // `respondIncidentMl` ignores its `ChannelContext` argument (it takes the api
-  // directly); the cast keeps that explicit rather than threading a value the
-  // callee never reads.
-  const ctx = {} as ChannelContext;
-
   switch (input.acao) {
     case 'reembolso': {
       // `refundAmount` is inert on this branch — `respondIncidentMl` never reads
       // it when `partial !== true`. Left explicit so nobody "fixes" it later.
-      const r = await respondIncidentMl(deps.api, ctx, String(input.claimId), {
+      const r = await respondIncidentMl(deps.api, String(input.claimId), {
         type: 'offer_refund',
         refundAmount: 0,
         partial: false,
@@ -322,21 +318,27 @@ export async function resolverReclamacaoMercadoLivre(
       return { ok: r.ok, status: r.status ?? null, acao: input.acao };
     }
     case 'reembolso_parcial': {
-      const r = await respondIncidentMl(deps.api, ctx, String(input.claimId), {
+      // ⚠️ THE UNIT BOUNDARY. The `/reclamacao/acao` wire carries centavos
+      // (`valorReembolsoMinor`, written by apps/web's ReembolsoParcialModal), while
+      // `IncidentAction.refundAmount` is reais since #815. The conversion belongs
+      // here and nowhere else: moving it outward would change a live refund's wire
+      // format, so a web deploy landing before this backend would send reais to a
+      // handler still dividing by 100 — a refund 100× too small, silently accepted.
+      const r = await respondIncidentMl(deps.api, String(input.claimId), {
         type: 'offer_refund',
-        refundAmount: input.valorReembolsoMinor as number,
+        refundAmount: roundReais((input.valorReembolsoMinor as number) / 100),
         partial: true,
       });
       return { ok: r.ok, status: r.status ?? null, acao: input.acao };
     }
     case 'aceitar_devolucao': {
-      const r = await respondIncidentMl(deps.api, ctx, String(input.claimId), {
+      const r = await respondIncidentMl(deps.api, String(input.claimId), {
         type: 'accept_return',
       });
       return { ok: r.ok, status: r.status ?? null, acao: input.acao };
     }
     case 'abrir_mediacao': {
-      const r = await respondIncidentMl(deps.api, ctx, String(input.claimId), {
+      const r = await respondIncidentMl(deps.api, String(input.claimId), {
         type: 'escalate_mediation',
       });
       return { ok: r.ok, status: r.status ?? null, acao: input.acao };

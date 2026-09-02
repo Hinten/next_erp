@@ -22,6 +22,7 @@ import { useAuth } from '@/lib/auth/useAuth';
 
 import * as wire from './wire';
 import type {
+  MercadoLivreAnuncioStatusResult,
   MercadoLivreAnuncioTeste,
   MercadoLivreAtributoSugestao,
   MercadoLivreAtributosSugestao,
@@ -359,6 +360,25 @@ export interface MercadoLivreClient {
     produtoId: string;
     linkDocId: string;
   }): Promise<MercadoLivreReverificarResult>;
+  /**
+   * PAUSE or REACTIVATE listings on Mercado Livre (PERM.integracao.write).
+   *
+   * ⚠️ Two callers, one method, and the difference is `linkDocId`: the produto
+   * tab names ONE listing (and then `produtoIds` must hold exactly that
+   * produto), while the produtos table omits it and the run covers every
+   * listing the selection holds on that conta.
+   *
+   * Per-listing failure is DATA — a valid request answers 200 with `outcome`
+   * rows, never an HTTP error. `statusFinal` on each row is what ML REPORTS
+   * after the write, not the status that was asked for.
+   */
+  definirStatusAnuncios(input: {
+    integracaoId: string;
+    produtoIds: string[];
+    acao: 'pausar' | 'reativar';
+    linkDocId?: string;
+    signal?: AbortSignal;
+  }): Promise<MercadoLivreAnuncioStatusResult>;
   /**
    * Where ONE listing lives on Mercado Livre (PERM.integracao.read).
    *
@@ -1016,6 +1036,13 @@ export function createMercadoLivreClient(config: {
         '/api/marketplace/mercado-livre/reverificar-anuncio',
         wire.reverificarResultSchema,
         input,
+      ),
+    definirStatusAnuncios: ({ signal, ...input }) =>
+      call(
+        '/api/marketplace/mercado-livre/anuncio-status',
+        wire.anuncioStatusResultSchema,
+        input,
+        signal,
       ),
     linkAnuncio: (input) =>
       call('/api/marketplace/mercado-livre/link-anuncio', wire.urlSchema, input),

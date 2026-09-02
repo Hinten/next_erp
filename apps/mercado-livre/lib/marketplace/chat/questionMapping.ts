@@ -11,6 +11,7 @@ import { coerceToMillis } from '@delfrance/core/datetime';
 import { ESTADO_ENVIO, ORIGEM_CONVERSA, TIPO_MENSAGEM } from '@delfrance/schemas';
 import type { Conversa, Mensagem } from '@delfrance/schemas';
 import type { MlQuestion } from '@delfrance/integrations-mercado-livre';
+import { safeMlUserId } from '../core/mlUserId';
 
 /**
  * ML's documented question vocabulary. Plain strings rather than a Zod enum —
@@ -89,26 +90,19 @@ export function questionActionability(question: MlQuestion): QuestionActionabili
   }
 }
 
-/** The asker's ML user id — the by-id endpoint spells it `buyer_id`, search `from.id`. */
+/**
+ * The asker's ML user id — the by-id endpoint spells it `buyer_id`, search
+ * `from.id`.
+ *
+ * The safe-integer refusal that used to live inline here is `safeMlUserId`
+ * (`core/mlUserId.ts`): `orderImport.ts` resolves the SAME buyer for the SAME
+ * identity key, and two copies of that rule would drift toward disagreeing
+ * about which buyers exist. The emitted warn is byte-identical to before.
+ */
 export function questionBuyerId(question: MlQuestion): number | null {
-  const bruto = question.buyer_id ?? question.from?.id ?? null;
-  if (bruto == null) return null;
-  // ⚠️ Refuse an id JSON.parse could not have represented exactly. ML warns
-  // that user ids outgrew Int32 and are now Int64, and `JSON.parse` silently
-  // ROUNDS anything past 2^53 — two distinct buyers can land on the same
-  // number, and stringifying it afterwards cannot recover the digits. That
-  // would merge two people into one cliente, which is the one failure this
-  // identity key exists to prevent. Ids today are ~1e9, six orders of
-  // magnitude clear of the limit; if that ever changes we want a loud skip
-  // and a warn, not a silent merge.
-  if (!Number.isSafeInteger(bruto)) {
-    console.warn('[mercado-livre] pergunta: id de comprador fora do alcance seguro', {
-      questionId: question.id,
-      buyerId: bruto,
-    });
-    return null;
-  }
-  return bruto;
+  return safeMlUserId(question.buyer_id ?? question.from?.id ?? null, 'pergunta', {
+    questionId: question.id,
+  });
 }
 
 /**

@@ -29,6 +29,11 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { isFailedPrecondition } from '@delfrance/data/admin';
+// `otherOwnerOfMlId` was this file's own `outroDonoDoId` until #1087. It moved
+// to `@delfrance/data` because `findOrCreateCliente`'s fill-when-absent stamp
+// needs the identical answer, and two implementations of "who else owns this?"
+// would drift toward disagreeing about which buyers exist.
+import { otherOwnerOfMlId } from '@delfrance/data/admin/clientes';
 import { clienteCollection } from '@delfrance/data/admin/collections';
 import { idFromRef } from '@delfrance/schemas';
 
@@ -43,28 +48,6 @@ export interface VincularClienteResult {
    * as well as in the log.
    */
   readonly clienteConflitante?: string;
-}
-
-/**
- * Any OTHER cliente already carrying this ML id.
- *
- * ⚠️ `limit(2)` on purpose: one hit that is the cliente we are about to stamp is
- * fine, so the query has to be able to see a second. It is index-backed by the
- * same single-field `clientes(idMercadoLivre)` index `findOrCreateCliente`'s
- * match leg needs — no new index.
- */
-async function outroDonoDoId(
-  db: Firestore,
-  idMercadoLivre: string,
-  clienteId: string,
-): Promise<string | null> {
-  const snap = await clienteCollection
-    .ref(db, {})
-    .where('idMercadoLivre', '==', idMercadoLivre)
-    .limit(2)
-    .get();
-  const outro = snap.docs.find((d) => d.id !== clienteId);
-  return outro?.id ?? null;
 }
 
 /**
@@ -110,7 +93,7 @@ export async function vincularClienteMercadoLivre(
   // ⚠️ Before creating a second owner of this identity, check whether one
   // exists. A pre-sale question resolves its asker BY this key, so the buyer's
   // question-cliente and their order-cliente are routinely different docs.
-  const conflito = await outroDonoDoId(db, desejado, clienteId);
+  const conflito = await otherOwnerOfMlId(db, desejado, clienteId);
   if (conflito != null) {
     console.warn(
       '[mercado-livre] claim: idMercadoLivre já pertence a outro cliente — não vinculado',

@@ -544,6 +544,7 @@ function taxonomiaResolution(over: Partial<TaxonomiaResolution> = {}): Taxonomia
     varianteId: 'v-azul',
     grupoUid: 'g-cor',
     varianteFake: 'documents/grupoDeVariacoes/g-cor/variacoes/v-azul',
+    varianteCodigo: null,
     ...over,
   };
 }

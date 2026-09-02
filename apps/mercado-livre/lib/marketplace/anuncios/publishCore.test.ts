@@ -20,6 +20,7 @@ import {
   resolveCondition,
   resolveListingModel,
   resolvePrice,
+  resolveSkuPaiAtributo,
   sizeChartIssue,
   TABELA_BINDING_RECUSA,
 } from './publishCore';
@@ -246,6 +247,102 @@ describe('resolveCondition', () => {
   it('defaults to new with no signal anywhere', () => {
     expect(resolveCondition(null, produto, 1)).toBe('new');
     expect(resolveCondition(null, produto, null)).toBe('new');
+  });
+});
+
+describe('resolveSkuPaiAtributo (#1400)', () => {
+  /** A member ML does not have yet. */
+  const novo = { itemId: null, skuPaiAtributo: false };
+  /** A live member whose item does NOT carry the characteristic. */
+  const vivoSem = { itemId: 'MLB222', skuPaiAtributo: false };
+  /** A live member whose item DOES carry it. */
+  const vivoCom = { itemId: 'MLB111', skuPaiAtributo: true };
+
+  const base = {
+    isUserProductSeller: true,
+    linkId: null as string | null,
+    membros: [] as Array<{ itemId: string | null; skuPaiAtributo: boolean }>,
+    produtoSku: 'SKU-PAI',
+  };
+
+  it('sends on a brand-new família, with no configuration', () => {
+    expect(resolveSkuPaiAtributo({ ...base, membros: [novo, novo] })).toEqual({
+      skuPai: 'SKU-PAI',
+    });
+  });
+
+  it('⛔ never adds it to a família ML already has — the listing-splitting case', () => {
+    // The dangerous one. A published família whose members lack the attribute
+    // must not gain it: a custom attribute's NAME is in ML's family hash, so a
+    // member re-hashes and leaves the família.
+    expect(resolveSkuPaiAtributo({ ...base, linkId: 'FAM1', membros: [novo] })).toEqual({
+      skuPai: null,
+    });
+    // ⛔ And the case a `linkId`-only test would MISS: adding one more variation
+    // to an existing família. `link.id` can be null on a família whose members
+    // are live, so the member item ids are the load-bearing half of the test.
+    expect(resolveSkuPaiAtributo({ ...base, linkId: null, membros: [novo, vivoSem] })).toEqual({
+      skuPai: null,
+    });
+  });
+
+  it('⛔ a PARTIALLY-published família finishes uniformly — the split-beyond-repair case', () => {
+    // The fan-out is sequential and persists each member as ML confirms it, so a
+    // run that created member 1 and then died on member 2 leaves member 1's item
+    // carrying the characteristic and nothing on the parent link. Asking the
+    // MEMBERS is what makes the retry send it to the rest; asking a parent flag
+    // the failure path never wrote would create members 2 and 3 WITHOUT it,
+    // beside a sibling that has it.
+    expect(
+      resolveSkuPaiAtributo({ ...base, linkId: null, membros: [vivoCom, novo, novo] }),
+    ).toEqual({ skuPai: 'SKU-PAI' });
+  });
+
+  it('a SINGLE-product UP listing also gets it — deliberate, not incidental', () => {
+    // ⚠️ `publish.ts` materialises the sole member before this runs, so a
+    // childless UP produto arrives as ONE member with no itemId. The import
+    // chain does not need the characteristic there (rung 3 reads the member's
+    // own SELLER_SKU, since a família of one has no combos), so this is a
+    // public characteristic bought for one narrow case: variations added on ML
+    // instead of in the ERP, where rung 2 has no códigos to peel.
+    //
+    // Pinned so that switching to `membros.length > 1` — a legitimate choice
+    // that is uniform in both directions — is a conscious edit rather than a
+    // silent change to what buyers see.
+    expect(resolveSkuPaiAtributo({ ...base, membros: [novo] })).toEqual({
+      skuPai: 'SKU-PAI',
+    });
+  });
+
+  it('keeps sending to a família that already carries it', () => {
+    // Dropping the attribute would re-hash every member that has it.
+    expect(resolveSkuPaiAtributo({ ...base, linkId: 'FAM1', membros: [vivoCom] })).toEqual({
+      skuPai: 'SKU-PAI',
+    });
+  });
+
+  it('one member carrying it is enough — the answer is an OR, never a majority', () => {
+    expect(
+      resolveSkuPaiAtributo({ ...base, linkId: 'FAM1', membros: [vivoSem, vivoSem, vivoCom] }),
+    ).toEqual({ skuPai: 'SKU-PAI' });
+  });
+
+  it('a blank-ish produto sku sends nothing rather than an empty characteristic', () => {
+    for (const produtoSku of [null, '', '   ']) {
+      expect(resolveSkuPaiAtributo({ ...base, membros: [novo], produtoSku })).toEqual({
+        skuPai: null,
+      });
+    }
+    // …but a padded one is trimmed, not refused.
+    expect(
+      resolveSkuPaiAtributo({ ...base, membros: [novo], produtoSku: '  SKU-PAI  ' }).skuPai,
+    ).toBe('SKU-PAI');
+  });
+
+  it('never applies to the legacy variations[] model, which has a real parent item', () => {
+    expect(
+      resolveSkuPaiAtributo({ ...base, isUserProductSeller: false, membros: [vivoCom] }),
+    ).toEqual({ skuPai: null });
   });
 });
 

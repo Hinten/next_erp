@@ -59,13 +59,22 @@ The e2e suite additionally needs the Firebase env vars in the root
 [Running tests](apps/docs/src/content/docs/getting-started/running-tests.md)
 guide for the full walkthrough.
 
-## Adding a plugin
+## Adding a plugin (tax / invoice / payment)
 
-See `apps/docs/src/content/docs/guides/plugin-authoring.md` (once published). High level:
+See `apps/docs/src/content/docs/guides/plugin-authoring.md`. High level:
 
-1. `pnpm create delfrance-plugin <name>` (after Phase 6).
-2. Implement the relevant contract from `@delfrance/plugin-sdk`.
-3. Register in your app's `delfrance.config.ts`.
+1. Implement the relevant contract from `@delfrance/plugin-sdk`.
+2. Register it through `defineIntegration`.
+
+## Adding a sales channel or a freight provider
+
+⚠️ **Neither is a plugin.** A marketplace is one App Hosting backend
+(`apps/<channel>`) declared by a row in `MARKETPLACE_TIPO_CAPS` — see ADR 0015 and
+the `marketplace-integration` skill. A freight provider is a `FREIGHT_TIPO_CAPS`
+row plus a provider module — see the `freight-integrations` skill. Both had a
+plugin contract once (`MarketplaceChannel`, `FreightProvider`); both had it
+deleted, because a registry interface in `packages/core` cannot express work that
+needs Firestore.
 
 ## Reporting security issues
 
