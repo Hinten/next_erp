@@ -1,22 +1,21 @@
 'use client';
 
 /**
- * The state machinery both Mercado Livre bulk actions share (#816): the
- * per-conta outcome ledger, the in-flight flag, and the one sequence that must
- * NOT diverge between the two flows — commit the outcomes, THEN rethrow
- * whatever `describeError` did not recognise (root `CLAUDE.md` rule 6). A
- * throw that jumps the commit would strand a job that really did start: its
- * `jobId` is the only handle the UI has on it.
+ * The state machinery a channel's bulk job actions share (#816): the per-conta
+ * outcome ledger, the in-flight flag, and the one sequence that must NOT
+ * diverge between flows — commit the outcomes, THEN rethrow whatever
+ * `describeError` did not recognise (root `CLAUDE.md` rule 6). A throw that
+ * jumps the commit would strand a job that really did start: its `jobId` is the
+ * only handle the UI has on it.
  *
- * Only the machinery is shared. The two flows keep their own hooks, dialogs
- * and cards — they differ in start call, options, copy and error map, which is
- * most of the code, and `precoSync.ts` already sets the in-repo precedent of
- * cloning the mass-import flow rather than generalising it.
+ * Only the machinery is shared. Each flow keeps its own hook, dialog and cards
+ * — they differ in start call, options, copy and error map, which is most of
+ * the code.
  */
 import { useCallback, useState } from 'react';
 
-import type { JobErrorDescription } from './mercadoLivreJobErrors';
-import { type ContaJobOutcome, type ContaRef, startJobsForContas } from './startJobsForContas';
+import { startJobsForContas } from './startJobsForContas';
+import type { ContaJobOutcome, ContaRef, JobErrorDescription } from './types';
 
 export interface ContaJobFan {
   /** One entry per conta touched this session, newest run's result per conta. */

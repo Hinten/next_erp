@@ -1,8 +1,10 @@
 import { INTEGRACAO_TIPO_LABELS, type IntegracaoTipo } from '@delfrance/schemas';
 
+import { type VereditoCanal, vereditoCanal } from '@/lib/marketplace/caps/suporteCanal';
+
 import { buildProviderMap } from '../push/types';
 import { mercadoLivreStockProvider } from './providers/mercadoLivre';
-import { unsupportedChannelStockProvider } from './providers/unsupportedChannel';
+import { criarUnsupportedChannelStockProvider } from './providers/unsupportedChannel';
 import type { StockPushChannelResult, StockPushInput, StockPushProvider } from './types';
 
 /**
@@ -19,15 +21,29 @@ export const PROVIDERS: Readonly<Partial<Record<IntegracaoTipo, StockPushProvide
   buildProviderMap([mercadoLivreStockProvider], 'Stock push');
 
 /**
- * An exact tipo match wins; ANY other tipo falls back to the
- * unsupported-channel placeholder, which IS the legacy `default:` arm.
+ * What `MARKETPLACE_TIPO_CAPS` says about sending stock to this channel, and --
+ * when it says no — which reason applies. The run and the pre-run warning both
+ * read this, so they cannot disagree with the row the operator ends up seeing.
+ */
+export function suporteEstoqueDoCanal(tipo: IntegracaoTipo): VereditoCanal {
+  return vereditoCanal('estoque', tipo, PROVIDERS);
+}
+
+/**
+ * The caps row decides; an exact tipo match then serves it. Anything else falls
+ * back to the placeholder CARRYING the reason (#1430).
  *
- * Deliberately simpler than `resolveEtiquetaProvider`, which needs a
- * `caps.marketplaceOwned` branch to keep non-marketplace carriers on the generic
- * label. Here every tipo is a sales channel or nothing.
+ * ⚠️ this used to be `PROVIDERS[tipo] ?? unsupported…` — "a provider
+ * file exists" standing in for "the channel supports it", which is the same
+ * substitution the `/canais` badge already removed (#815, ADR 0015). It also
+ * gave four different situations one sentence.
  */
 export function resolveStockPushProvider(tipo: IntegracaoTipo): StockPushProvider {
-  return PROVIDERS[tipo] ?? unsupportedChannelStockProvider;
+  const veredito = suporteEstoqueDoCanal(tipo);
+  if (!veredito.suportado) return criarUnsupportedChannelStockProvider(veredito.motivo);
+  // `vereditoCanal` answers `canal-sem-provider` when the map has no row, so a
+  // supported verdict guarantees one. The fallback keeps the type honest.
+  return PROVIDERS[tipo] ?? criarUnsupportedChannelStockProvider('canal-sem-provider');
 }
 
 /**

@@ -19,7 +19,7 @@ import { MassImportDialog } from './_components/MassImportDialog';
 import { MercadoLivreCallbackToast } from './_components/MercadoLivreCallbackToast';
 import { MercadoLivreJobsPanel } from './_components/MercadoLivreJobsPanel';
 import { PriceSyncDialog } from './_components/PriceSyncDialog';
-import { type ContaRef, contaRefFromRow } from './_components/startJobsForContas';
+import { type ContaRef, contaRefFromRow } from '@/lib/marketplace/contaJobs/types';
 import { useMassImportAction } from './_components/useMassImportAction';
 import { usePriceSyncAction } from './_components/usePriceSyncAction';
 
