@@ -151,7 +151,7 @@ async function findChildrenToPropagate(
  * the surface reads — the member. An edited kit whose member kept the old map
  * advertises stock it cannot assemble, and the ML sweep sends that number.
  *
- * ## Three properties, in the order they matter
+ * ## Four properties, in the order they matter
  *
  * 1. **Zero extra reads on the common path.** `camposEspelhadosQueMudaram` is
  *    pure, so a save that moved nothing mirrored — a stock edit, a photo, a
@@ -160,15 +160,31 @@ async function findChildrenToPropagate(
  * 2. **A three-way merge, never a copy.** The member is an ordinary produto and
  *    appears as a row in the Variações tab, so an operator can diverge it. A
  *    field moves only when the member still holds the parent's PREVIOUS value.
- *    It also makes two out-of-order trigger runs safe: the older one finds a
- *    member that no longer holds its `before` and declines instead of reverting
- *    the newer state (root `CLAUDE.md` rule 7, tier 0).
- * 3. **A `lastUpdateTime` precondition** closes the remaining window — a write
- *    landing between this read and this update. That is rule 7 tier 1, and it is
- *    the reason this can stay a plain read + update rather than a transaction.
- *    A losing write is CORRECT to lose: whoever won wrote either a newer parent
- *    state or an operator's own edit, and both outrank this one, so it is logged
- *    and dropped rather than retried.
+ *
+ *    ⚠️ **The merge alone is NOT the ordering guard**, and an earlier version of
+ *    this comment claimed it was. Value equality cannot tell "the member still
+ *    holds MY before" from "the member holds a NEWER value that happens to equal
+ *    my before" — and for the four mirrored BOOLEANS the value space is two, so
+ *    an A→B→A sequence of parent saves delivered out of order lands the older
+ *    run's value on the member and then FREEZES it there: every later toggle
+ *    finds the member diverged and declines. A produto the operator had just
+ *    hidden would stay `publicado` on the half that is actually sold.
+ * 3. **The patch is derived from the parent as it is NOW, not from `after`.**
+ *    That is what actually makes it converge. `after` is this delivery's
+ *    snapshot and may already be stale; re-reading makes every concurrent run
+ *    compute the SAME target, so a late-arriving older delivery agrees with the
+ *    newest state instead of reverting it (rule 7 tier 0 — the race is made
+ *    impossible, not detected).
+ *
+ *    ⚠️ `before` still comes from the delivery, and must: it is what says whether
+ *    THIS write moved the field, which is how an operator's own divergence is
+ *    told apart from a value the mirror itself set.
+ * 4. **A `lastUpdateTime` precondition** closes the remaining window — a write
+ *    landing between the member read and the member update. That is rule 7 tier
+ *    1, and it is the reason this can stay plain reads + an update rather than a
+ *    transaction. A losing write is CORRECT to lose: whoever won wrote either a
+ *    newer parent state or an operator's own edit, and both outrank this one, so
+ *    it is logged and dropped rather than retried.
  *
  * ⚠️ `precos` is deliberately NOT in the mirror — it has its own propagation
  * above, with an operator opt-out (`propagatePriceToChildren`) that folding it in
@@ -194,6 +210,13 @@ export async function sincronizarMembroUnico(
   // save at zero extra reads.
   if (camposEspelhadosQueMudaram(before, after).length === 0) return null;
 
+  // ⚠️ The parent as it is NOW, not `after` — see property 3. Two out-of-order
+  // deliveries have to compute the same target, or the older one reverts the
+  // newer. Read only after the pure gate above said something moved, so an
+  // ordinary produto save still costs nothing.
+  const paiSnap = await produtoCollection.ref(db, {}).doc(parentId).get();
+  const paiAgora = (paiSnap.data() ?? after) as DocumentData;
+
   const ref = produtoCollection.ref(db, {}).doc(membroId);
   const snap = await ref.get();
   if (!snap.exists) {
@@ -207,7 +230,7 @@ export async function sincronizarMembroUnico(
     return null;
   }
 
-  const patch = planejarSincronizacaoDoMembroUnico(before, after, snap.data() ?? {});
+  const patch = planejarSincronizacaoDoMembroUnico(before, paiAgora, snap.data() ?? {});
   if (patch === null) return null;
 
   try {
