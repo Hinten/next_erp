@@ -4,6 +4,11 @@
  * place so the fan-out (`startJobsForContas`) stays pure and the hooks stay
  * thin.
  *
+ * This module is Mercado Livre's implementation of the channel-neutral
+ * `JobErrorDescription` port (`lib/marketplace/contaJobs/types.ts`) — it lives
+ * here, next to the client whose error classes it narrows, while the fan-out
+ * and the hook that consume it are shared (#1430).
+ *
  * The `describe*StartError` pair returns `null` for anything that is NOT a
  * known Mercado Livre client failure — root `CLAUDE.md` rule 6: narrow, and
  * rethrow everything else. A `null` here means "not mine", and the caller
@@ -14,12 +19,7 @@ import {
   MercadoLivreClientNetworkError,
 } from '@/lib/mercado-livre/client';
 import { mercadoLivreErrorMessage } from '@/lib/mercado-livre/errors';
-
-/** How a contained per-conta failure is rendered: a colour plus its copy. */
-export interface JobErrorDescription {
-  readonly color: 'yellow' | 'red';
-  readonly message: string;
-}
+import type { JobErrorDescription } from '@/lib/marketplace/contaJobs/types';
 
 /**
  * `POST /importar-todos` failures. `ML_MASS_IMPORT_RUNNING` is yellow, not red:

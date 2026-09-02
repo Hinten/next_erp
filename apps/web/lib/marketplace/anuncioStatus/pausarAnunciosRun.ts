@@ -3,7 +3,7 @@ import type { AcaoStatusAnuncio, Integracao } from '@delfrance/schemas';
 
 import { enviarParaMarketplaces } from '../push/run';
 import type { PushAlvo, PushRowBase } from '../push/types';
-import { PROVIDERS, definirStatusParaIntegracao } from './registry';
+import { definirStatusParaIntegracao, suporteAnuncioStatusDoCanal } from './registry';
 import type { AnuncioStatusDeps, AnuncioStatusRow } from './types';
 
 /**
@@ -58,7 +58,7 @@ export function definirStatusParaMarketplaces(
     alvos,
     {
       db: runDeps.db,
-      suportado: (tipo) => PROVIDERS[tipo] !== undefined,
+      suportado: (tipo) => suporteAnuncioStatusDoCanal(tipo).suportado,
       dispatch: (args) =>
         definirStatusParaIntegracao({
           integracao: args.integracao,

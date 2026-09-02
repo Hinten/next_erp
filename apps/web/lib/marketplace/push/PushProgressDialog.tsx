@@ -68,6 +68,14 @@ export interface PushProgressDialogProps<Row extends PushRowBase, Opcao> {
   testIdPrefix: string;
   /** Sentence shown before the run starts. */
   descricao: ReactNode;
+  /**
+   * Pre-run warnings, rendered under {@link descricao} on the confirm step —
+   * today the channels in this selection that will be skipped, and why (#1430).
+   *
+   * ⚠️ A sibling rather than part of `descricao`, which is rendered inside a
+   * Mantine `<Text>` (a `<p>`): an `<Alert>` in there is invalid nesting.
+   */
+  avisos?: ReactNode;
   /** How many produtos the run covers — gates the confirm button. */
   totalAlvos: number;
   /** The per-run option's SAFE default. A remount is what re-arms it. */
@@ -102,6 +110,7 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
   rotuloAcao,
   testIdPrefix,
   descricao,
+  avisos,
   totalAlvos,
   opcaoInicial,
   renderOpcao,
@@ -181,6 +190,7 @@ export function PushProgressDialog<Row extends PushRowBase, Opcao>({
         {fase === 'confirmar' && (
           <>
             <Text size="sm">{descricao}</Text>
+            {avisos}
             {renderOpcao(opcao, setOpcao)}
           </>
         )}

@@ -268,9 +268,9 @@ channel-agnostic:
 | Surface | What a new channel adds |
 | --- | --- |
 | Conta CRUD (`/canais/<channel>`) | A route + `fieldOverrides`. `TableView`/`ObjectView` already run off `integracaoSchema` with `queryParams: { tipo }` — one meta, N screens |
-| Row / bulk actions (estoque, preço, etiqueta) | **One provider file + one `PROVIDERS` row** in `apps/web/lib/marketplace/{estoque,preco}/registry.ts` and `lib/checkout/etiqueta/registry.ts` |
+| Row / bulk actions (estoque, preço, pausar, etiqueta) | **One caps row + one provider file + one `PROVIDERS` row** in `apps/web/lib/marketplace/{estoque,preco,anuncioStatus}/registry.ts` and `lib/checkout/etiqueta/registry.ts` |
 | Chat inbox | An `OrigemConversa` value + an `ORIGEM_RULES` row (`conversaOrigem.ts`) |
-| Conta panel + job cards | Per-channel, but model on `useContaJobFan` / `startJobsForContas` |
+| Conta panel + job cards | Per-channel cards, but the fan-out is shared: `apps/web/lib/marketplace/contaJobs/` (`useContaJobFan` / `startJobsForContas`). Supply a `describe<Job>StartError` next to your client |
 | Produto listing tab | Per-channel today (18 ML components). Generalize only with a second channel in hand |
 | AI autocomplete | Per-channel schema (built from the provider's attribute metadata); the **suggest-don't-apply** contract is generic |
 
@@ -278,7 +278,11 @@ channel-agnostic:
   in the repo: UI capabilities (`confirmRisk`, `notify`, `openUrl`) and clients are
   **injected**, so a provider stays pure and testable with fakes.
 - **Gate a row action off the caps row** (`estoque.suporte`, `enviarPreco`,
-  `etiqueta`), never off "does a provider file exist".
+  `pausarAnuncio`, `etiqueta`), never off "does a provider file exist" — #1430
+  did this, and `apps/web/lib/marketplace/caps/` is where the verdict and its
+  four reasons live. ⚠️ `caps/registriesAlinhadas.test.ts` asserts the table and
+  the registries agree for every tipo, so a channel that ships a caps row without
+  a web provider reds CI instead of claiming a run that never happens.
 - ⚠️ **`apps/web` calls the DEPLOYED channel backend even in local dev**, and its
   `call<T>()` casts rather than validates. A UI that looks right against an older
   backend is a known, shipped failure (#1087's capability probe).

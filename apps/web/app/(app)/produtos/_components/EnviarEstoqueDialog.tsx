@@ -1,13 +1,16 @@
 'use client';
 
 import { Checkbox } from '@mantine/core';
+import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { AvisoCanaisNaoSuportados } from '@/lib/marketplace/caps/AvisoCanaisNaoSuportados';
 import { PushProgressDialog } from '@/lib/marketplace/push/PushProgressDialog';
 import {
   type EnviarEstoqueAlvo,
   enviarEstoqueParaMarketplaces,
 } from '@/lib/marketplace/estoque/enviarEstoqueRun';
+import { suporteEstoqueDoCanal } from '@/lib/marketplace/estoque/registry';
 import type { StockPushRow } from '@/lib/marketplace/estoque/types';
 
 /**
@@ -27,6 +30,9 @@ export interface EnviarEstoqueDialogProps {
 
 export function EnviarEstoqueDialog({ opened, alvos, onClose }: EnviarEstoqueDialogProps) {
   const mercadoLivre = useMercadoLivreClient();
+  // The same shared `['integracoes']` entry `/produtos` already holds — this
+  // resolves the selection's conta ids to a tipo at no extra read.
+  const { byId, status } = useIntegracoes(getFirebaseFirestore());
 
   return (
     <PushProgressDialog<StockPushRow, boolean>
@@ -36,6 +42,15 @@ export function EnviarEstoqueDialog({ opened, alvos, onClose }: EnviarEstoqueDia
       rotuloAcao="Enviar estoque"
       testIdPrefix="envio-estoque-row-"
       totalAlvos={alvos.length}
+      avisos={
+        <AvisoCanaisNaoSuportados
+          acao="estoque"
+          alvos={alvos}
+          veredito={suporteEstoqueDoCanal}
+          byId={byId}
+          status={status}
+        />
+      }
       descricao={`O estoque atual de ${String(alvos.length)} produto(s) será enviado para os canais em que eles estão anunciados.`}
       /**
        * RE-ARMED OFF on every open, never remembered. Re-sending to a listing
