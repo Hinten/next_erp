@@ -42,7 +42,15 @@
  */
 import { createHash } from 'node:crypto';
 
-import { type MlModeracao, makeEstoqueUid, reservaEfetiva, toOuterRef } from '@delfrance/schemas';
+import {
+  type MlModeracao,
+  type ParentParaMembroUnico,
+  derivarFilhoUnico,
+  makeEstoqueUid,
+  montarMembroUnico,
+  reservaEfetiva,
+  toOuterRef,
+} from '@delfrance/schemas';
 
 /** Mirrors `importCore.ts`'s own cap on the child `nome`. */
 const PRODUTO_NOME_MAX = 100;
@@ -72,20 +80,16 @@ export interface PlanejarMembroUnicoArgs {
   produtoId: string;
   parentLinkDocId: string;
   integracaoId: string;
-  /** Parent produto fields the child mirrors. */
-  produto: {
-    nome: string;
-    sku: string | null;
-    ehKit: boolean;
-    ehUsado: boolean;
-    precos: unknown;
-    pesoLiquidoKg: unknown;
-    pesoBrutoKg: unknown;
-    alturaCm: unknown;
-    larguraCm: unknown;
-    profundidadeCm: unknown;
-    categoriaProdutoOuterRef: unknown;
-  };
+  /**
+   * The parent produto.
+   *
+   * ⚠️ The FULL {@link ParentParaMembroUnico}, not a hand-picked subset: the child
+   * is built by `montarMembroUnico`, so a field missing from this type is a field
+   * missing from the mirror. That is exactly how the previous hand-rolled literal
+   * lost `codPai`, `gtin`, `ehKitVirtual`, `componentesKit` and
+   * `componentesKitKeys` without anything failing.
+   */
+  produto: ParentParaMembroUnico & { nome: string };
   /** The parent `produtoMercadoLivre` link, as stored. */
   link: {
     /** `null` when creating; the ML item id (`MLB…`) when adopting. */
@@ -136,6 +140,23 @@ export interface MembroUnicoPlano {
    * sweep keys on, so a regression there silently drops the produto from a cycle.
    */
   parentLinkPatch: Record<string, unknown>;
+  /**
+   * The parent PRODUTO patch — `filhoUnicoId`, and nothing else.
+   *
+   * ⛔ Without it this materialisation moves the produto's available units onto a
+   * child that nothing can find. `unidadeVendavel` resolves a parent with a null
+   * pointer to ITSELF, so after the reshape the badge, the pedido line, the
+   * Balanço scan and the print all read the row this function just emptied — while
+   * the units the live ML listing is advertising sit on a child no ERP surface
+   * reaches. That is #1398's original harm, arriving through the one
+   * materialisation publish still performs.
+   *
+   * ⚠️ It rides the SAME batch as the child create and the parent's estoque
+   * decrement, deliberately. A pointer written separately could be the half that
+   * fails, and this reshape is entered only while the produto has NO children —
+   * so nothing would ever run again to finish the job.
+   */
+  parentProdutoPatch: Record<string, unknown>;
 }
 
 export type MembroUnicoResultado =
@@ -188,22 +209,25 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
   // on ML, so the importer's `[family_name, ...valueNames].join(' ')` degenerates to
   // the family name — which is the parent's own nome. The same fact gives it no
   // variation taxonomy at all: `resolveVariationCombo([], [])` returns `{null, null}`.
+  // ⛔ Built by `montarMembroUnico`, never by a literal here. The literal was a
+  // SECOND minter and it had already drifted: it omitted `codPai`, `gtin`,
+  // `ehKitVirtual`, `componentesKit` and `componentesKitKeys`, and the last three
+  // cost a live listing on the adoption arm. An adopted KIT's member carrying
+  // `ehKit: true` with a null map sends `quantidadeParaPublicar` down the kit
+  // branch, `kitEstoqueDisponivel(null, …)` returns null, and the listing
+  // publishes the child's OWN stock — for a kit, normally zero — where it used to
+  // publish the component-min. The stock sweep then keeps sending that number.
+  //
+  // ⚠️ The mirror sync would make the omission permanent. It normalises the stored
+  // child through `espelhoDoMembroUnico`, so an absent `gtin`/`codPai`/
+  // `componentesKit` reads as null, differs from the parent's `before`, and each
+  // is treated as "the operator diverged this field" — silently, for good.
   const produto: Record<string, unknown> = {
-    nome: args.produto.nome.slice(0, PRODUTO_NOME_MAX),
-    sku: args.produto.sku,
-    paiId: args.produtoId,
+    ...montarMembroUnico(args.produtoId, args.produto),
+    // Publish's own two additions on top of the shared mirror: a member it is about
+    // to put on ML is published by construction, and both stamps come from the
+    // caller's single clock.
     publicado: true,
-    ehKit: args.produto.ehKit,
-    ehUsado: args.produto.ehUsado,
-    precos: args.produto.precos ?? null,
-    grupoDeVariacoesUid: null,
-    variacoesUid: null,
-    pesoLiquidoKg: args.produto.pesoLiquidoKg ?? null,
-    pesoBrutoKg: args.produto.pesoBrutoKg ?? null,
-    alturaCm: args.produto.alturaCm ?? null,
-    larguraCm: args.produto.larguraCm ?? null,
-    profundidadeCm: args.produto.profundidadeCm ?? null,
-    categoriaProdutoOuterRef: args.produto.categoriaProdutoOuterRef ?? null,
     timestamp: now,
     // ⚠️ Load-bearing, not decoration: `produtoMeta.defaultQuery` sorts on this, and a
     // document missing the sort key is invisible to `orderBy` (#159/#861).
@@ -289,6 +313,10 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
       estoques,
       parentEstoqueSaidas,
       parentLinkPatch: { userProductId: null },
+      // `derivarFilhoUnico` is the one producer of this value — never a bare
+      // `childId` — so publish, the ERP and the conversion script cannot disagree
+      // about what "the family has exactly one member" means.
+      parentProdutoPatch: { filhoUnicoId: derivarFilhoUnico([{ id: childId }]) },
     },
   };
 }

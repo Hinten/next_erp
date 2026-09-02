@@ -247,3 +247,118 @@ describe('planejarMembroUnico — refusals', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+/**
+ * The parent's pointer (#1398, found by adversarial review of #1436).
+ *
+ * ⛔ This materialisation MOVES the produto's available units onto the child. Without
+ * `filhoUnicoId` on the parent, `unidadeVendavel` resolves that parent to ITSELF —
+ * so the badge, the pedido line, the Balanço scan and the print all read the row
+ * this reshape just emptied, while the units the live Mercado Livre listing is
+ * advertising sit on a child no ERP surface reaches.
+ *
+ * It shipped that way: publish minted the child, moved the stock, and patched only
+ * the ML LINK document. The stack that introduced the pointer changed the readers
+ * and left the one materialisation publish still performs writing nothing.
+ */
+describe('planejarMembroUnico — the parent points at its member', () => {
+  it('stamps filhoUnicoId with the child it just created', () => {
+    expect(plano().parentProdutoPatch).toEqual({ filhoUnicoId: plano().childProdutoId });
+  });
+
+  // ⚠️ The pointer is about IDENTITY, not about units — and the fixture now says
+  // so. `args()` seeds 7 available units, so an override of `acao`/`link` alone
+  // left this asserting the ordinary creation arm with a full stock move: the
+  // title was false and deleting `parentProdutoPatch` from a zero-move plan would
+  // not have failed anything, because there was no such plan.
+  //
+  // Fully reserved ⇒ `disponivelDe` is 0, `parentEstoqueSaidas` carries
+  // `movido: 0`, the writer skips the estoque update entirely — and the produto
+  // still becomes a family of one, so its readers still have to be told where the
+  // sellable unit is.
+  it('stamps it even when every depósito is fully reserved and nothing moves', () => {
+    const semMovimento = {
+      acao: 'criar' as const,
+      link: { ...args().link, id: null },
+      estoques: [{ docId: 'est-dep1', depositoId: 'dep1', quantidade: 7, quantidadeReservada: 7 }],
+    };
+    const p = plano(semMovimento);
+
+    expect(p.parentEstoqueSaidas).toEqual([{ docId: 'est-dep1', movido: 0 }]);
+    expect(p.parentProdutoPatch).toEqual({ filhoUnicoId: p.childProdutoId });
+  });
+
+  // ⚠️ Through `derivarFilhoUnico`, never a bare `childId`. That function is the one
+  // producer of the value, so publish, the ERP's own create path and the conversion
+  // script cannot drift into disagreeing about what "exactly one member" means.
+  it('produces a bare doc id, the shape every reader resolves', () => {
+    const { filhoUnicoId } = plano().parentProdutoPatch as { filhoUnicoId: unknown };
+    expect(typeof filhoUnicoId).toBe('string');
+    expect(filhoUnicoId).not.toContain('/');
+  });
+
+  // The link patch is a DIFFERENT document, and conflating them is how the pointer
+  // went missing in the first place: `parentLinkPatch` looks like "the parent patch"
+  // and is not.
+  it('is separate from the parent LINK patch', () => {
+    expect(plano().parentLinkPatch).toEqual({ userProductId: null });
+  });
+});
+
+/**
+ * ⛔ The sole member is built by `montarMembroUnico`, not by a second literal.
+ *
+ * The hand-rolled version omitted `codPai`, `gtin`, `ehKitVirtual`,
+ * `componentesKit` and `componentesKitKeys`. The last three cost a live listing on
+ * the adoption arm: an adopted KIT's member carrying `ehKit: true` with a null map
+ * sends `quantidadeParaPublicar` down the kit branch, `kitEstoqueDisponivel(null,
+ * …)` returns null, and the listing publishes the child's OWN stock — for a kit,
+ * normally zero — where it used to publish the component-min.
+ */
+describe('planejarMembroUnico — the child is the shared mirror', () => {
+  const kitPai = {
+    ...args(),
+    produto: {
+      ...args().produto,
+      ehKit: true,
+      ehKitVirtual: false,
+      componentesKit: { 'comp-a': { quantidade: 2, limitarEstoque: true } },
+      codPai: 'COD-PAI',
+      gtin: '7891234567890',
+    },
+  };
+
+  it('carries the kit composition, so the member can price itself', () => {
+    expect(plano(kitPai).produto).toMatchObject({
+      ehKit: true,
+      ehKitVirtual: false,
+      componentesKit: { 'comp-a': { quantidade: 2, limitarEstoque: true } },
+      componentesKitKeys: ['comp-a'],
+    });
+  });
+
+  // ⚠️ The three fields the mirror sync would otherwise freeze for ever: absent on
+  // the child reads as `null`, differs from the parent's `before`, and is treated
+  // as an operator divergence.
+  it('carries codPai and gtin, which the literal dropped', () => {
+    expect(plano(kitPai).produto).toMatchObject({ codPai: 'COD-PAI', gtin: '7891234567890' });
+  });
+
+  // Publish's own two additions survive the refactor: the member it is about to
+  // put on ML is published by construction.
+  it('still marks the member published and stamps both clocks', () => {
+    const p = plano(kitPai).produto as Record<string, unknown>;
+    expect(p.publicado).toBe(true);
+    expect(p.timestamp).toBe(args().now);
+    expect(p.ultimaModificacao).toBe(args().now);
+  });
+
+  // ...and a NON-kit parent must not gain a map — the flag gates it.
+  it('gives a non-kit parent no map at all', () => {
+    expect(plano().produto).toMatchObject({
+      ehKit: false,
+      componentesKit: null,
+      componentesKitKeys: null,
+    });
+  });
+});
