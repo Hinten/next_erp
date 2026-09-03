@@ -29,6 +29,22 @@ import { type GrupoComId, parseFakePath } from './variacoes';
 const CAMPOS_HERDAVEIS = ['age_group', 'gender', 'material', 'pattern'] as const;
 type CampoHerdavel = (typeof CAMPOS_HERDAVEIS)[number];
 
+/**
+ * `''`/whitespace-only counts as empty, same as `null`/`undefined` — never as
+ * a real value. This app's own UI can't write `''` (`ExtraDataManager.tsx`
+ * normalizes every blank input to `null`), but the migrated legacy corpus can
+ * (`googleMerchantDataSchema` is `.passthrough()` over plain
+ * `z.string().nullable()`, and root `CLAUDE.md` rule 8 makes read-tolerance
+ * for legacy shapes mandatory). Without this, an empty stored `id` would
+ * survive instead of falling back to the sku, and an empty stored
+ * `material`/`pattern`/... would suppress inheritance while still going out
+ * as an empty tag — both violate this module's own "omit, never emit empty"
+ * rule.
+ */
+function naoVazio(valor: string | null | undefined): string | null {
+  return valor?.trim() ? valor : null;
+}
+
 /** Slim projection of a produto (parent, variation child, or kit component)
  * — everything the feed needs, batched up front by the caller. */
 export interface FeedProdutoInput {
@@ -99,10 +115,10 @@ function campoComHeranca(
   campo: CampoHerdavel,
   melhorComponente: FeedComponenteInfo | null,
 ): string | null {
-  const proprio = produto.googleMerchantData?.[campo] ?? null;
+  const proprio = naoVazio(produto.googleMerchantData?.[campo]);
   if (proprio !== null) return proprio;
   if (!produto.ehKit) return null;
-  return melhorComponente?.googleMerchantData?.[campo] ?? null;
+  return naoVazio(melhorComponente?.googleMerchantData?.[campo]);
 }
 
 /**
@@ -168,7 +184,7 @@ export function buildGoogleMerchantFeedItems(
     const { color, size } = resolveCorTamanho(produto.variacoesUid, options.grupos);
 
     items.push({
-      id: produto.googleMerchantData?.id ?? produto.sku,
+      id: naoVazio(produto.googleMerchantData?.id) ?? produto.sku,
       itemGroupId: produto.paiId ?? produto.id,
       ageGroup: campoComHeranca(produto, 'age_group', melhorComponente),
       gender: campoComHeranca(produto, 'gender', melhorComponente),

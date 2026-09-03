@@ -166,6 +166,16 @@ describe('buildGoogleMerchantFeedItems — id / item_group_id', () => {
     expect(item?.id).toBe('CUSTOM-ID');
   });
 
+  it('falls back to the sku when googleMerchantData.id is empty or whitespace-only — never emits an empty g:id', () => {
+    for (const id of ['', '   ']) {
+      const [item] = buildGoogleMerchantFeedItems(
+        [produto({ sku: 'SKU1', googleMerchantData: merchantData({ id }) })],
+        opts,
+      );
+      expect(item?.id).toBe('SKU1');
+    }
+  });
+
   it('uses paiId as item_group_id for a variation child', () => {
     const [item] = buildGoogleMerchantFeedItems(
       [produto({ id: 'child1', paiId: 'parent1' })],
@@ -297,6 +307,47 @@ describe('buildGoogleMerchantFeedItems — kit field inheritance', () => {
       );
       expect(item).toMatchObject({ ageGroup: null, gender: null, material: null, pattern: null });
     }
+  });
+
+  it('an empty-string or whitespace-only own value is treated as EMPTY, not present — inheritance still kicks in', () => {
+    // Near-miss pair: '' and ' ' must fold to "empty" same as null/undefined;
+    // a real value ('Liso') must stay distinct and NOT trigger inheritance.
+    for (const material of ['', '   ']) {
+      const [item] = buildGoogleMerchantFeedItems(
+        [
+          produto({
+            ehKit: true,
+            componentesKit: kit(['barato', 'caro']),
+            googleMerchantData: merchantData({ material }),
+          }),
+        ],
+        opts,
+      );
+      expect(item?.material).toBe('Poliéster'); // inherited from "caro", not kept as ''/' '
+    }
+
+    const [keptOwn] = buildGoogleMerchantFeedItems(
+      [
+        produto({
+          ehKit: true,
+          componentesKit: kit(['barato', 'caro']),
+          googleMerchantData: merchantData({ material: 'Liso' }),
+        }),
+      ],
+      opts,
+    );
+    expect(keptOwn?.material).toBe('Liso'); // a real value is never overridden by inheritance
+  });
+
+  it('an empty-string or whitespace-only component value is also treated as empty, never emitted', () => {
+    const info: Record<string, FeedComponenteInfo> = {
+      caro: { precoResolvido: 50, googleMerchantData: merchantData({ material: '  ' }) },
+    };
+    const [item] = buildGoogleMerchantFeedItems(
+      [produto({ ehKit: true, componentesKit: kit(['caro']), googleMerchantData: null })],
+      { listaId: 'LISTA', grupos: [], componenteInfoById: info },
+    );
+    expect(item?.material).toBeNull();
   });
 });
 
