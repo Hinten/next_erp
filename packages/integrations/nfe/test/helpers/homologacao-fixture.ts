@@ -21,7 +21,14 @@ import {
   aggregateTotals,
   type Imposto,
 } from '../../src/tribute';
-import { IE_SENTINELA } from '@delfrance/schemas';
+import {
+  IE_SENTINELA,
+  IND_INTERMED_OPERACAO,
+  IND_PRES_OPERACAO,
+  ORIGEM,
+  TIPO_CLIENTE,
+  UF_SIGLA,
+} from '@delfrance/schemas';
 
 import type { GeneratorInput } from '../../src/generator';
 
@@ -32,7 +39,7 @@ import type { GeneratorInput } from '../../src/generator';
  */
 export function impostoCsosn102(): Imposto {
   return {
-    origem: '0',
+    origem: ORIGEM.nacional,
     cfop: '5102',
     cfopInterestadual: '6102',
     NCM: '61099000',
@@ -166,7 +173,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
         cep: '01001000',
         codigoMunicipio: '3550308',
         cidade: 'São Paulo',
-        estado: 'SP',
+        estado: UF_SIGLA.SP,
         cPais: '1058',
         pais: 'BRASIL',
         nome: null,
@@ -176,6 +183,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
         imun: null,
         email: null,
         telefone: null,
+        timestamp: null,
       },
     },
     operacao: {
@@ -198,11 +206,11 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       movimentaIndisponivelEstoque: true,
       ehFiscal: true,
       finNFe: 1,
-      indPres: '2',
+      indPres: IND_PRES_OPERACAO.naoPresencialInternet,
       // indIntermed='1' means the sale was brokered by a marketplace.
       // Pairs with the `infIntermed` block below (CNPJ + seller's
       // store ID on the marketplace). SEFAZ NT 2020.006.
-      indIntermed: '1',
+      indIntermed: IND_INTERMED_OPERACAO.plataformaTerceiros,
       cfop: '5102',
       cfopInterestadual: '6102',
       NCM: '61099000',
@@ -211,7 +219,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       infCpl: null,
     },
     cliente: {
-      tipo: '1',
+      tipo: TIPO_CLIENTE.pessoaJuridica,
       // dest.xNome is replaced by the homologação literal — cliente.nome
       // here exists only for completeness; sanitization is exercised by
       // the address fields above.
@@ -234,6 +242,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       nome_embedding: null,
       telefone_embedding: null,
       userCliente: null,
+      idMercadoLivre: null,
     },
     enderecoDest: {
       idExterno: null,
@@ -244,7 +253,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       cep: '01001000',
       codigoMunicipio: '3550308',
       cidade: 'São Paulo',
-      estado: 'SP',
+      estado: UF_SIGLA.SP,
       cPais: '1058',
       pais: 'BRASIL',
       nome: null,
@@ -254,6 +263,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       imun: null,
       email: null,
       telefone: null,
+      timestamp: null,
     },
     itens: [item],
     totalXml: buildTotalXml(totals),

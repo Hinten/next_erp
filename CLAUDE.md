@@ -397,6 +397,28 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `a.trim().toLowerCase() === b.trim().toLowerCase()` is invisible to it (the
   wider pattern was measured at ~47 mostly-irrelevant files and rejected), so
   route comparisons through the shared readers.
+- **Adding a `test/` or `scripts/` directory to a package? Check it is in BOTH
+  the tsconfig `include` and outside the ESLint `ignores`.**
+  `packages/integrations/nfe` had `test/**` and `scripts/**` in its ESLint
+  `ignores` *and* outside its tsconfig `include` (`src/**/*.ts`), so **55
+  TypeScript files — 53 of them tests vitest runs on every ML lane — were
+  neither linted nor typechecked**, in the package where a swallowed SEFAZ error
+  costs most. Its sibling integration packages all include `test/**`. Bringing
+  them in surfaced 82 real findings, one of which was a live disagreement between
+  code and schema: `numeracao/firestore-adapter.ts` wrote
+  `timestamp: new Date().toISOString()` — a STRING — into a field
+  `nfeConfigSchema` declares as `millisSinceEpoch()`, while `apps/web`'s
+  Contingência panel wrote the same field as ms. So the document held whichever
+  shape wrote last. Nothing failed because that reader is TOLERANT and coerces
+  the string back, which is exactly why neither gate nor any test ever said so.
+  ⚠️ The fix needed no migration window, and the reasoning generalises: the
+  adapter's `set()` is a full overwrite that re-stamps the field on every
+  numbering transaction, so correcting the writer is **self-healing** — the next
+  transaction replaces any stored string, and the tolerant reader covers every
+  document until then. Reach for `tools/migrations` when a shape change would
+  otherwise leave permanent dual-read branches; a single disagreeing writer on a
+  field that is fully overwritten is not that.
+
 - **New e2e test** → the **filename suffix picks the lane**, nothing else to
   wire: `.cadastros.e2e.spec.ts` (master data), `.vendas.e2e.spec.ts`
   (sales/fiscal/config), `.emulator.e2e.spec.ts` (offline), `.smoke.spec.ts`.
