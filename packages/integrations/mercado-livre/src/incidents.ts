@@ -7,6 +7,7 @@ import type {
   SyncPage,
 } from '@delfrance/core/marketplace';
 import type { MercadoLivreApi } from './api';
+import { CLAIM_SEARCH_WINDOW_MAX } from './claimSearch';
 import { MercadoLivreHttpError } from './errors';
 import type { MlClaim, MlClaimMessage, MlClaimReason } from './types';
 
@@ -115,6 +116,22 @@ export function mapClaimToImportedIncident(
 /**
  * The incident LIST adapter — one `searchClaims` page per call.
  *
+ * ⚠️ **`sellerId` is REQUIRED, and that is the point of the parameter.** This
+ * used to send `status: 'opened'` with paging and nothing else — a shape ML's own
+ * docs now single out: *"Consultas com somente `status=opened` são tecnicamente
+ * válidas, porém altamente ineficientes"*, an unbounded scan carrying *"risco de
+ * rate limiting ou bloqueio da aplicação se o padrão persistir"*. Its stated
+ * remedy is exactly this pair, `players.user_id` + `players.role=respondent`.
+ *
+ * ⚠️ It is **not optional with a fallback**. An optional `sellerId` degrading to
+ * the old query would leave the bad-practice path alive as the silent default,
+ * reachable by every caller who simply did not pass it — the fallback-that-is-
+ * really-a-deny-list shape that has escaped review in this channel twice. A
+ * caller without a seller id has no correct query to send, so the type says so.
+ * `api.getMe().id` is the answer for one that does not already hold it, and
+ * deliberately not called here: this is a per-page read and that would be one
+ * extra round trip on every page.
+ *
  * Honest limitations (the webhook handler in `apps/mercado-livre` is the
  * authoritative ingest; this adapter is a convenience read):
  * - `status: 'opened'` only — closed claims never show up here.
@@ -122,13 +139,21 @@ export function mapClaimToImportedIncident(
  *   search endpoint has no since param), so a filtered page can come back
  *   empty while `nextCursor` still advances.
  * - Items carry NO messages/reason (no N+1) — hydrate via `getIncidentMl`.
+ * - Paging stops at ML's 10000-row window (see `nextCursor` below).
  */
 export async function importIncidentsMl(
   api: MercadoLivreApi,
+  sellerId: number,
   cursor?: SyncCursor,
 ): Promise<SyncPage<ImportedIncident>> {
   const offset = Number(cursor?.token ?? 0);
-  const page = await api.searchClaims({ status: 'opened', limit: SEARCH_PAGE_LIMIT, offset });
+  const page = await api.searchClaims({
+    'players.user_id': sellerId,
+    'players.role': 'respondent',
+    status: 'opened',
+    limit: SEARCH_PAGE_LIMIT,
+    offset,
+  });
   const pageItems = page.data;
   const consumed = offset + pageItems.length;
   const total = page.paging.total ?? null;
@@ -137,9 +162,19 @@ export async function importIncidentsMl(
   const mapped = pageItems.map((claim) => mapClaimToImportedIncident(claim));
   const items = sinceMs != null ? mapped.filter((i) => i.lastUpdatedMs > sinceMs) : mapped;
 
+  // ⚠️ ML refuses `offset + limit >= 10000`, so a cursor that would take the NEXT
+  // page past that window is not emitted at all. Without this the walk ends on a
+  // 400 — or now, since the query is checked locally, on a thrown
+  // `MercadoLivreClaimSearchParamsError` from a call the caller did nothing wrong
+  // to make. A seller with >10000 open claims is not a realistic shape; ending
+  // the walk deliberately is still better than ending it by exception.
+  const podePaginar = consumed + SEARCH_PAGE_LIMIT < CLAIM_SEARCH_WINDOW_MAX;
+
   return {
     items,
-    ...(total != null && consumed < total ? { nextCursor: { token: String(consumed) } } : {}),
+    ...(total != null && consumed < total && podePaginar
+      ? { nextCursor: { token: String(consumed) } }
+      : {}),
   };
 }
 
