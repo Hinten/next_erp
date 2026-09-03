@@ -45,9 +45,10 @@ can produce: "Integração desativada" and the unsupported-channel notice.
 
 ## Adding a channel
 
-Three things. You never touch the registry's gates, the orchestrator, the
+Four things. You never touch the registry's gates, the orchestrator, the
 progress dialog, the produtos page or the produto ML tab.
 
+0. **A row in `MARKETPLACE_TIPO_CAPS`** (`packages/schemas/src/shared/marketplace.ts`) answering `estoque.suporte` — `'desconhecido'` until somebody reads the provider's documentation, never a guessed `'nao'`. The action is gated on it, so a channel whose row still says `'desconhecido'` reports itself as unresearched no matter what code exists.
 1. **A backend route** `POST /api/marketplace/<canal>/enviar-estoque` in
    `apps/<canal>`, returning the same envelope
    `{ listings[], produtosSemEnvio[], pausadoAte }` that
@@ -66,6 +67,35 @@ progress dialog, the produtos page or the produto ML tab.
    `providers/<canal>.test.ts` with an injected fake client, and one line
    flipped in `registry.test.ts`'s exhaustive tipo table.
 
-`resolveStockPushProvider` falls back on its own — any tipo without an exact
-provider goes to `unsupportedChannel`, which claims **no** tipos precisely so
-registering a real channel never means editing the placeholder.
+`resolveStockPushProvider` falls back on its own — any tipo the caps row does
+not clear, or that has no exact provider, goes to the `unsupportedChannel`
+factory, which claims **no** tipos precisely so registering a real channel never
+means editing the placeholder.
+
+## The caps row is what decides, not the provider file (#1430)
+
+`resolveStockPushProvider` asks `MARKETPLACE_TIPO_CAPS` first — via
+`suporteEstoqueDoCanal`, which is also what `enviarEstoqueRun.ts`'s
+`suportado` and the dialog's pre-run warning read, so the three cannot disagree.
+Only then does an exact tipo match serve the request. Everything else gets the
+placeholder **carrying the reason**, and the reasons are four different
+sentences:
+
+| Caps row says                     | Reason                   | What the operator reads                                     |
+| --------------------------------- | ------------------------ | ----------------------------------------------------------- |
+| `estoque.suporte: 'nao'`          | `canal-nao-suportado`    | the provider cannot — building a backend will not change it |
+| `estoque.suporte: 'desconhecido'` | `canal-nao-pesquisado`   | nobody has read that provider's documentation yet           |
+| `'sim'` + `implementado: false`   | `canal-nao-implementado` | the provider can, we have not built the channel             |
+| caps say yes, no `PROVIDERS` row  | `canal-sem-provider`     | a wiring gap in this screen                                 |
+
+⚠️ This replaced `PROVIDERS[tipo] !== undefined` — "a provider file exists"
+answering "does the channel support it". Same substitution the `/canais` badge
+already removed (#815, ADR 0015), and it gave all four situations one sentence,
+which ended _"use o aplicativo antigo para este canal"_ — false for three of
+them, and expiring at the cutover (there is no dual run, root `CLAUDE.md`
+rule 8).
+
+⚠️ `caps/registriesAlinhadas.test.ts` asserts the table and this registry agree
+for **every** tipo. If a channel legitimately lands in the middle — backend
+shipped, this screen not wired yet — say so there with a named exception; do not
+delete the assertion.

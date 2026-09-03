@@ -328,8 +328,37 @@ export const pagamento = { schema: pagamentoSchema, meta: pagamentoMeta };
 
 /**
  * TIPO_INTEGRACAO_PGTO — int-coded enum, today only `mercadoPago`.
- * New gateways register against this enum + a corresponding
- * PaymentGateway plugin in packages/integrations/<channel>/.
+ *
+ * ⚠️ **Wire-frozen.** These integers come from the Flutter app and the migrated
+ * corpus is stored with them (see `guides/coexistence.md`), so a value may be
+ * ADDED but never renumbered.
+ *
+ * ⚠️ This used to say "new gateways register against this enum + a corresponding
+ * PaymentGateway plugin in packages/integrations/<channel>/". That path was never
+ * taken by anything, and the contract it named was deleted in #1429 — all three
+ * of its members threw, and the working Mercado Pago integration lives in
+ * `apps/mercado-pago`. The real procedure for a SECOND provider:
+ *
+ *  1. Widen `tipoIntegracaoPgtoSchema` from `z.literal(1)` to a union, and add the
+ *     `TIPO_INTEGRACAO_PGTO` + `_LABELS` entries.
+ *  2. Add `apps/<provider>` mirroring `apps/mercado-pago`: OAuth start/callback,
+ *     a credential store under `metodo_pgto/{id}/credenciais` (the schema is already
+ *     generic), a receiver on `defineNotificationPipeline`, Cloud Tasks.
+ *  3. Add `packages/integrations/<provider>` — client, wire schemas, error
+ *     taxonomy — and its own `<provider>PaymentToPagamento` mapper. ⚠️ Mercado
+ *     Livre and Mercado Pago deliberately keep SEPARATE mappers for the same
+ *     underlying payment resource; do not try to share one.
+ *  4. Add the `/pagamentos/<provider>` screens in apps/web.
+ *  5. **Introduce `PAGAMENTO_TIPO_CAPS` in that same PR, with BOTH rows.** A
+ *     capability table keyed on this enum was deliberately NOT created while it
+ *     had one member: its compile-error guarantee cannot fire against a single
+ *     literal, and its axes would have been invented from one sample. Model it
+ *     on `FREIGHT_TIPO_CAPS` / `MARKETPLACE_TIPO_CAPS` (`../../shared/`).
+ *
+ * ⚠️ Note the axis before you reach for that table: payments vary per ACCOUNT,
+ * not per provider — `hasLinkPagamento` is an operator setting on the
+ * `metodo_pgto` document and `user_id` is a per-account webhook routing key.
+ * Anything that varies per account belongs on the doc, not in a tipo-keyed table.
  */
 export const tipoIntegracaoPgtoSchema = z.literal(1);
 export type TipoIntegracaoPgto = z.infer<typeof tipoIntegracaoPgtoSchema>;

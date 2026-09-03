@@ -25,7 +25,7 @@ import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { BaixarRelatorioButton, PriceSyncEntryList } from './MercadoLivreJobCards';
 import { useBaixarRelatorioPreco } from './useBaixarRelatorioPreco';
-import type { ContaRef } from './startJobsForContas';
+import type { ContaRef } from '@/lib/marketplace/contaJobs/types';
 
 /** Runs fetched per open. Matches the route's own default. */
 const HISTORICO_LIMITE = 20;

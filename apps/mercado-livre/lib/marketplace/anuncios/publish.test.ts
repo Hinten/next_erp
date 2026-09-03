@@ -22,7 +22,6 @@ import {
 } from '../estoque/bulkEstoquePlan';
 import {
   MercadoLivrePublishError,
-  SKU_PAI_ATRIBUTO_FLAG_ENV,
   TABELA_BINDING_RECUSA,
   type TabelaBindingMotivo,
   sizeChartIssue,
@@ -1687,13 +1686,6 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
         (a) => a.name === ML_ATTR_SKU_PAI_NOME,
       );
 
-    beforeEach(() => {
-      process.env[SKU_PAI_ATRIBUTO_FLAG_ENV] = '1';
-    });
-    afterEach(() => {
-      delete process.env[SKU_PAI_ATRIBUTO_FLAG_ENV];
-    });
-
     it('⛔ member 1 created, member 2 rejected → the RETRY finishes the família uniformly', async () => {
       // ⚠️ The split-beyond-repair case. The fan-out is sequential and persists
       // each member as ML confirms it, while the parent link is written once at
@@ -1740,9 +1732,11 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
       }
     });
 
-    it('a família whose members all lack it never gains one — even with the flag on', async () => {
-      // The mirror control. Without it the test above would pass on an
-      // implementation that simply always sends the characteristic.
+    it('a família whose members all lack it never gains one', async () => {
+      // The mirror control, and the one that matters most now that there is no
+      // flag: without it the test above would pass on an implementation that
+      // simply always sends the characteristic — which is exactly what "send it
+      // by default" could be misread as, and what would split live listings.
       const db = new FakeDb();
       seedFamilyOfTwo(db);
       seedPublishedFamily(db, ['child-1', 'child-2']);
@@ -2136,12 +2130,26 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     expect(payload.variations).toHaveLength(1);
   });
 
-  it('a tagged account with NO children publishes in the UP shape', async () => {
+  it('a tagged account publishes in the UP shape on a FIRST publish', async () => {
     // The other half of the bug: reading only the link doc resolved every first
-    // publish to 'legacy', so a simple produto went out with `title` and no
+    // publish to 'legacy', so a produto went out with `title` and no
     // `family_name` — which ML rejects once the seller is tagged.
+    //
+    // ⚠️ Seeded WITH a member since #1398. This case used to seed none and rely
+    // on publish minting one; publish no longer does that, so a childless
+    // produto is refused before any payload is built (see the refusal test
+    // below). The model-resolution assertion is unchanged and is what this test
+    // is actually for.
     const db = new FakeDb();
     seedBase(db);
+    db.seed('produtos', 'membro-1', {
+      nome: 'Camiseta Básica',
+      sku: 'SKU-1',
+      paiId: PROD,
+      ordem: 0,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: null,
+    });
     const { api, mocks } = makeApi({
       getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
     });
@@ -2153,6 +2161,26 @@ describe('publishProduto — User-Products model resolution (#798)', () => {
     expect(payload.title).toBeUndefined();
     // ...and the resolution is PERSISTED, so the re-publish below needs no probe.
     expect(db.docs(LINKS_PATH).get('ML-DOC-1')).toMatchObject({ isUserProductModel: true });
+  });
+
+  // ⚠️ #1398: publish stopped reshaping the produto. It used to answer `'criar'`
+  // here and mint the sole member ITSELF — above every later throw site, so a
+  // publish the operator saw FAIL had still converted the produto and moved its
+  // stock onto a child, with nothing on screen saying the shape had changed.
+  it('a tagged account with NO member is refused, and NOTHING is written', async () => {
+    const db = new FakeDb();
+    seedBase(db);
+    const { api, mocks } = makeApi({
+      getMe: vi.fn(async () => ({ id: 9, tags: ['user_product_seller'] })),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow('sem item vendável');
+
+    // ⛔ The point of the refusal: no ML call, and no produto invented. A produto
+    // the operator never asked to reshape must come out of a failed publish
+    // exactly as it went in.
+    expect(mocks.createItem).not.toHaveBeenCalled();
+    expect([...db.docs('produtos').keys()].filter((id) => id !== PROD)).toEqual([]);
   });
 
   it('a PUBLISHED legacy listing never probes the account', async () => {
@@ -2571,6 +2599,25 @@ describe('publishProduto — the User-Products sole member (#1087)', () => {
     // exactly what the importer writes for an empty `attribute_combinations`.
     expect(child.variacoesUid).toBeNull();
     expect(child.grupoDeVariacoesUid).toBeNull();
+  });
+
+  // ⛔ Found by adversarial review. This reshape MOVES the produto's available
+  // units onto the child, and without the pointer `unidadeVendavel` resolves the
+  // parent to ITSELF — so the badge, the pedido line, the Balanço scan and the
+  // print all read the row publish just emptied, while the units the live listing
+  // advertises sit on a child no ERP surface reaches.
+  //
+  // ⚠️ Asserted on the DOCUMENT, not on the plan. A plan-level test passes with
+  // the batch write deleted — mutation-proven — because the plan and the write are
+  // two places and only one of them was ever wrong.
+  it('⛔ stamps filhoUnicoId on the PARENT, or the moved stock is unreachable', async () => {
+    const db = new FakeDb();
+    seedPublishedSingle(db);
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(db.docs('produtos').get(PROD)).toMatchObject({ filhoUnicoId: CHILD });
   });
 
   it('moves the AVAILABLE stock to the child and leaves the reserve on the parent', async () => {

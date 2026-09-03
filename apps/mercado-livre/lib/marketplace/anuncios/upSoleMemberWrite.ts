@@ -89,6 +89,15 @@ export interface GarantirMembroUnicoArgs {
  * adoption asked for with no anúncio to adopt — so the route's existing 422 mapping
  * carries the reason to the operator unchanged. ⚠️ A reserved depósito is NOT a
  * refusal: it splits the move (see `planejarMembroUnico`).
+ *
+ * ⚠️ **Publish only ever passes `'adotar'` since #1398.** The `'criar'` arm is not
+ * dead — `membroUnicoChildId` and `planejarMembroUnico` still answer for it, and
+ * the conversion script is its second consumer — but nothing in the publish path
+ * reaches it any more: `classificarMembroUnico` now returns `'recusar-sem-membro'`
+ * for a produto that was never published, and `publishModeIssues` refuses it above
+ * this call. Inventing a produto shape on a publish that then FAILS is the harm
+ * that motivated the change; adopting a live listing is not the same trade, which
+ * is why exactly one of the two survives here.
  */
 export async function garantirMembroUnico(
   deps: GarantirMembroUnicoDeps,
@@ -175,6 +184,12 @@ export async function garantirMembroUnico(
     // `findVariacaoLink` reads it to decide PUT vs POST. Without it the fan-out
     // POSTs a SECOND item and `sweepRemovedMembers` closes the original.
     batch.create(memberRef, plano.link);
+    // ⛔ The pointer, in the SAME batch as the stock it makes findable. Without it
+    // `unidadeVendavel` resolves the parent to ITSELF, so every ERP surface reads
+    // the row the loop below is about to empty — while the units the live listing
+    // advertises sit on a child nothing reaches. Written even when no stock moves:
+    // the pointer is about IDENTITY, not about units.
+    batch.update(produtoCollection.docRef(db, {}, produtoId), plano.parentProdutoPatch);
     for (const s of plano.parentEstoqueSaidas) {
       // Nothing moved (a fully reserved depósito) ⇒ no write at all, rather than a
       // no-op that still bumps the row's clock.

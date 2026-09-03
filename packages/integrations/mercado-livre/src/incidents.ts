@@ -5,14 +5,14 @@ import type {
   IncidentParty,
   SyncCursor,
   SyncPage,
-} from '@delfrance/core/plugins';
+} from '@delfrance/core/marketplace';
 import type { MercadoLivreApi } from './api';
 import { MercadoLivreHttpError } from './errors';
 import type { MlClaim, MlClaimMessage, MlClaimReason } from './types';
 
 /**
- * Pure wire → `ImportedIncident` mapping + the two MarketplaceChannel incident
- * adapters (claims import, Step 14). Platform-neutral on purpose: no Firebase,
+ * Pure wire → `ImportedIncident` mapping + the two incident READ adapters
+ * (claims import, Step 14). Platform-neutral on purpose: no Firebase,
  * no `@delfrance/schemas` — the Firestore upsert (Incidente/Conversa/Mensagem
  * at the byte-exact legacy doc ids) lives in `apps/mercado-livre`, driven by
  * the webhook pipeline; these adapters are the provider-agnostic read surface.
@@ -113,7 +113,7 @@ export function mapClaimToImportedIncident(
 }
 
 /**
- * `MarketplaceChannel.importIncidents` body — one `searchClaims` page per call.
+ * The incident LIST adapter — one `searchClaims` page per call.
  *
  * Honest limitations (the webhook handler in `apps/mercado-livre` is the
  * authoritative ingest; this adapter is a convenience read):
@@ -144,7 +144,7 @@ export async function importIncidentsMl(
 }
 
 /**
- * `MarketplaceChannel.getIncident` body — targeted hydrate: full claim +
+ * The incident HYDRATE adapter — targeted: full claim +
  * message thread + BEST-EFFORT reason (an HTTP failure on the reason endpoint
  * degrades to no reason — legacy parity, the motivo falls back to a default
  * text downstream — while a network error still aborts the whole hydrate).

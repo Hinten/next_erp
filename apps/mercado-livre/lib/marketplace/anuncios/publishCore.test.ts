@@ -116,15 +116,6 @@ describe('publishModeIssues', () => {
     expect(issues[0]).toContain('família User Products');
   });
 
-  it('a User-Products produto that NEVER had variations still publishes', () => {
-    // ⚠️ The case the guard must not claim. It is also `isUserProductModel` with
-    // zero children — the only difference is that its `linkId` is a real item
-    // id, which is why the guard tests the id's SHAPE and not the child count.
-    expect(publishModeIssues({ ...base, model: 'user-products', linkId: 'MLB2631229629' })).toEqual(
-      [],
-    );
-  });
-
   it('the same family id is fine while the variations still exist', () => {
     // With children the fan-out engages and never touches `link.id`.
     expect(
@@ -137,12 +128,35 @@ describe('publishModeIssues', () => {
     ).toEqual([]);
   });
 
-  it('a legacy listing is never judged by its id shape, and a first publish never is', () => {
+  it('a legacy listing is never judged by its id shape', () => {
     // The guard is scoped to User Products: only that model ever stores a family
     // id here, so a numeric legacy id (however unlikely) is not ours to reject.
     expect(publishModeIssues({ ...base, linkId: '123456' })).toEqual([]);
-    // Nothing published yet ⇒ no id to misread.
-    expect(publishModeIssues({ ...base, model: 'user-products', linkId: null })).toEqual([]);
+    // ...and a legacy produto with no children is an ordinary simple listing.
+    expect(publishModeIssues({ ...base, linkId: null })).toEqual([]);
+  });
+
+  // ⚠️ #1398. This case USED to publish: `classificarMembroUnico` answered
+  // `'criar'` and publish minted the sole member itself — above every later
+  // throw site, so a publish the operator saw FAIL had still reshaped the
+  // produto and moved its stock, silently. It is now refused, and the message
+  // names the repair rather than the diagnosis.
+  it('a User-Products produto that was never published and has no member is refused', () => {
+    const issues = publishModeIssues({ ...base, model: 'user-products', linkId: null });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('sem item vendável');
+    expect(issues[0]).toContain('Variações');
+  });
+
+  // ⛔ The near-miss, and the one that must NOT become a refusal. Same model,
+  // same zero children — but `link.id` is a real item id, so there is a live,
+  // selling listing whose id has to reach the member link. Refusing here would
+  // leave the operator creating a member BY HAND without that id, which makes
+  // the fan-out POST a duplicate and the sweep close the original.
+  it('a User-Products produto ALREADY published as a simple item still publishes', () => {
+    expect(publishModeIssues({ ...base, model: 'user-products', linkId: 'MLB2631229629' })).toEqual(
+      [],
+    );
   });
 });
 
@@ -249,18 +263,11 @@ describe('resolveSkuPaiAtributo (#1400)', () => {
     linkId: null as string | null,
     membros: [] as Array<{ itemId: string | null; skuPaiAtributo: boolean }>,
     produtoSku: 'SKU-PAI',
-    flagLigada: true,
   };
 
-  it('sends on a brand-new família while the flag is on', () => {
+  it('sends on a brand-new família, with no configuration', () => {
     expect(resolveSkuPaiAtributo({ ...base, membros: [novo, novo] })).toEqual({
       skuPai: 'SKU-PAI',
-    });
-  });
-
-  it('sends nothing while the flag is off', () => {
-    expect(resolveSkuPaiAtributo({ ...base, membros: [novo], flagLigada: false })).toEqual({
-      skuPai: null,
     });
   });
 
@@ -289,24 +296,29 @@ describe('resolveSkuPaiAtributo (#1400)', () => {
     expect(
       resolveSkuPaiAtributo({ ...base, linkId: null, membros: [vivoCom, novo, novo] }),
     ).toEqual({ skuPai: 'SKU-PAI' });
-    // …and it holds with the flag OFF, because uniformity is not a preference.
-    expect(
-      resolveSkuPaiAtributo({
-        ...base,
-        linkId: null,
-        membros: [vivoCom, novo],
-        flagLigada: false,
-      }),
-    ).toEqual({ skuPai: 'SKU-PAI' });
   });
 
-  it('keeps sending to a família that already carries it, flag or no flag', () => {
+  it('a SINGLE-product UP listing also gets it — deliberate, not incidental', () => {
+    // ⚠️ `publish.ts` materialises the sole member before this runs, so a
+    // childless UP produto arrives as ONE member with no itemId. The import
+    // chain does not need the characteristic there (rung 3 reads the member's
+    // own SELLER_SKU, since a família of one has no combos), so this is a
+    // public characteristic bought for one narrow case: variations added on ML
+    // instead of in the ERP, where rung 2 has no códigos to peel.
+    //
+    // Pinned so that switching to `membros.length > 1` — a legitimate choice
+    // that is uniform in both directions — is a conscious edit rather than a
+    // silent change to what buyers see.
+    expect(resolveSkuPaiAtributo({ ...base, membros: [novo] })).toEqual({
+      skuPai: 'SKU-PAI',
+    });
+  });
+
+  it('keeps sending to a família that already carries it', () => {
     // Dropping the attribute would re-hash every member that has it.
-    for (const flagLigada of [true, false]) {
-      expect(
-        resolveSkuPaiAtributo({ ...base, linkId: 'FAM1', membros: [vivoCom], flagLigada }),
-      ).toEqual({ skuPai: 'SKU-PAI' });
-    }
+    expect(resolveSkuPaiAtributo({ ...base, linkId: 'FAM1', membros: [vivoCom] })).toEqual({
+      skuPai: 'SKU-PAI',
+    });
   });
 
   it('one member carrying it is enough — the answer is an OR, never a majority', () => {

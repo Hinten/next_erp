@@ -115,7 +115,7 @@ describe('enviarEstoqueParaMarketplaces', () => {
       lerIntegracoes,
     );
 
-    const shopeeRows = res.rows.filter((r) => r.motivo === 'canal-nao-suportado');
+    const shopeeRows = res.rows.filter((r) => r.motivo === 'canal-nao-pesquisado');
     expect(shopeeRows.map((r) => r.produtoId)).toEqual(['p2']);
     spy.mockRestore();
   });
