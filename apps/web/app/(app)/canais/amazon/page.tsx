@@ -1,12 +1,14 @@
 'use client';
 
-import { PlaceholderPage } from '@delfrance/ui';
+import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { CanalCapsPanel } from '../_components/CanalCapsPanel';
 
 export default function CanalAmazonPage() {
   return (
-    <PlaceholderPage
-      title="Amazon"
-      description="Contas e configurações da integração com a Amazon."
+    <CanalCapsPanel
+      tipo={INTEGRACAO_TIPO.amazon}
+      titulo="Amazon"
+      descricao="Contas e configurações da integração com a Amazon."
     />
   );
 }

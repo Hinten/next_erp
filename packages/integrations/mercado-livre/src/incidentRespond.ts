@@ -1,6 +1,11 @@
 /**
- * `respondIncident` for Mercado Livre (#768) — the last unimplemented member of
- * the `MarketplaceChannel` contract.
+ * The seller's WRITE surface against a Mercado Livre claim (#768). Reached from
+ * `apps/mercado-livre/lib/marketplace/claims/claimResolve.ts`.
+ *
+ * ⚠️ It used to be described as the last unimplemented member of the
+ * `MarketplaceChannel` contract, and took a `ChannelContext` it never read. Both
+ * are gone (#815, ADR 0015); the `IncidentAction` union it dispatches on now
+ * lives in `@delfrance/core/marketplace`.
  *
  * Maps the channel-agnostic {@link IncidentAction} union onto ML's claim
  * endpoints. Everything here is a WRITE against a live claim, so the module's
@@ -15,13 +20,14 @@
  * that into a refusal naming what IS available.
  *
  * ⚠️ **Partial refund takes a PERCENTAGE off an allow-list, never an amount.**
- * `IncidentAction.offer_refund` carries `refundAmount` in minor units, which is
- * the contract's shape for every other channel; here it has to be matched
- * against `available-offers` and refused when it is not on the list. Inventing
- * one is not a validation error — ML defaults a missing percentage to **50%**,
- * so a wrong guess refunds half the order silently.
+ * `IncidentAction.offer_refund` carries `refundAmount` in **reais** (#815 — the
+ * model is reais throughout, because that is what the produto price tables and
+ * ML's own wire both speak). Here it has to be matched against
+ * `available-offers` and refused when it is not on the list. Inventing one is
+ * not a validation error — ML defaults a missing percentage to **50%**, so a
+ * wrong guess refunds half the order silently.
  */
-import type { ChannelContext, IncidentAction, IncidentActionResult } from '@delfrance/core/plugins';
+import type { IncidentAction, IncidentActionResult } from '@delfrance/core/marketplace';
 
 import { roundReais } from '@delfrance/core/money';
 
@@ -133,7 +139,6 @@ function claimIdNumerico(externalIncidentId: string): number {
  */
 export async function respondIncidentMl(
   api: MercadoLivreApi,
-  _ctx: ChannelContext,
   externalIncidentId: string,
   action: IncidentAction,
 ): Promise<IncidentActionResult> {
@@ -204,10 +209,17 @@ export async function respondIncidentMl(
  * than the operator authorised — and a refund is not a value worth approximating.
  * A miss lists what IS on offer so the caller can pick one.
  *
- * `refundAmount` is MINOR units (the contract's `MinorUnits`); ML's `amount` is
- * a major-unit decimal. The comparison happens in MAJOR units through
- * `roundReais` — scaling to cents by hand is the ad-hoc rounding the money lint
- * rule forbids, and `roundReais` is what the rest of the ERP compares with.
+ * Both sides are **reais**: `refundAmount` since #815, and ML's `amount` always.
+ * The comparison still goes through `roundReais` rather than `===` — ML sends a
+ * decimal and the caller computed one, so two values that mean the same money
+ * can differ in the last bit. `roundReais` is also what the rest of the ERP
+ * compares with, so a match here means a match everywhere.
+ *
+ * ⚠️ The centavos→reais conversion now happens at the CALLER
+ * (`claimResolve.ts`), on purpose: the `/reclamacao/acao` wire between apps/web
+ * and this backend still carries `valorReembolsoMinor`, and changing a live
+ * refund's wire format would make a web deploy against an older backend refund
+ * 100× the intended amount.
  */
 async function percentualParaValor(
   api: MercadoLivreApi,
@@ -215,7 +227,7 @@ async function percentualParaValor(
   refundAmount: number,
 ): Promise<number> {
   const ofertas = await api.getClaimPartialRefundOffers(claimId);
-  const alvoReais = roundReais(refundAmount / 100);
+  const alvoReais = roundReais(refundAmount);
   const escolhida = ofertas.available_offers.find(
     (o) => o.amount != null && roundReais(o.amount) === alvoReais,
   );

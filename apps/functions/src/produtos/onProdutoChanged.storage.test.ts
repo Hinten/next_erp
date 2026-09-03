@@ -317,3 +317,137 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     expect(await coreEntries(db, produtoId)).toHaveLength(0);
   });
 });
+
+/**
+ * The sole member's mirror (#1398, PR 7b).
+ *
+ * ⚠️ Against a REAL Firestore, deliberately: the write carries a
+ * `lastUpdateTime` precondition, and a stubbed `updateTime` proves nothing about
+ * whether the emulator accepts it. These assert the three outcomes that decide
+ * data — written, declined, untouched. The two error branches are unit tests
+ * (`onProdutoChanged.test.ts`), because a losing precondition needs a write
+ * between the read and the update that no emulator test can interleave.
+ */
+describe.skipIf(!EMULATED)('onProdutoChanged core — the sole member mirror (emulator)', () => {
+  /** A parent + its sole member, both already in step. */
+  async function familiaDeUm(db: Firestore, membro: Record<string, unknown> = {}) {
+    const paiId = freshId();
+    const filhoId = freshId('c');
+    const pai = { nome: 'Bandeja', sku: 'BAN-1', paiId: null, filhoUnicoId: filhoId };
+    await db.collection('produtos').doc(paiId).set(pai);
+    await db
+      .collection('produtos')
+      .doc(filhoId)
+      .set({ nome: 'Bandeja', sku: 'BAN-1', paiId, ...membro });
+    return { paiId, filhoId, pai };
+  }
+
+  /**
+   * Drive the core the way a real trigger reaches it.
+   *
+   * ⚠️ **`after` is PERSISTED first, and that is not a formality.** A Firestore
+   * trigger fires *because* the document was written, so by the time the core runs
+   * the parent already holds `after`. The mirror derives its patch from the parent
+   * as it is NOW — that re-read is what makes two out-of-order deliveries converge
+   * instead of the older one reverting the newer — so a test that passes `after`
+   * without writing it is describing a delivery that cannot happen, and would
+   * report the mirror as broken.
+   *
+   * The parent write is a plain `set` on the emulator, which fires the REAL
+   * `onProdutoChanged` as well; that is already true of every `set` in this file
+   * and is why `coreEntries` filters on the fixed event time.
+   */
+  const correr = async (db: Firestore, id: string, before: unknown, after: unknown) => {
+    await db
+      .collection('produtos')
+      .doc(id)
+      .set(after as Record<string, unknown>);
+    return recordProdutoModificationAndPropagate(
+      db,
+      id,
+      before as never,
+      after as never,
+      freshId('evt'),
+      EVENT_TIME_MICROS,
+    );
+  };
+
+  it('carries a renamed parent onto the member that still held the old name', async () => {
+    const db = getDb();
+    const { paiId, filhoId, pai } = await familiaDeUm(db);
+
+    await correr(db, paiId, pai, { ...pai, nome: 'Bandeja Decorativa' });
+
+    const filho = await db.collection('produtos').doc(filhoId).get();
+    expect(filho.data()?.nome).toBe('Bandeja Decorativa');
+    // The member is the sellable unit — its `sku` is what the Balanço scan and
+    // the ML order resolver match — so an untouched field must stay untouched.
+    expect(filho.data()?.sku).toBe('BAN-1');
+  });
+
+  // ⚠️ The member shows up as a row in the Variações tab, so this is reachable
+  // by an ordinary operator. A straight copy would undo their edit silently.
+  it('leaves a member the operator renamed alone', async () => {
+    const db = getDb();
+    const { paiId, filhoId, pai } = await familiaDeUm(db, { nome: 'nome do operador' });
+
+    await correr(db, paiId, pai, { ...pai, nome: 'Bandeja Decorativa' });
+
+    const filho = await db.collection('produtos').doc(filhoId).get();
+    expect(filho.data()?.nome).toBe('nome do operador');
+  });
+
+  // ⚠️ Zero extra reads AND zero writes: the mirror is decided by a pure diff
+  // before the member is ever fetched. `custo` is not mirrored, and this is the
+  // common case — most produto saves move nothing the member copies.
+  it('does not touch the member when the parent moved nothing mirrored', async () => {
+    const db = getDb();
+    const { paiId, filhoId, pai } = await familiaDeUm(db);
+    // ⚠️ Read AFTER seeding, and the run below writes the parent, never the
+    // member — so this stamp is the one the assertion is entitled to compare.
+    const antes = await db.collection('produtos').doc(filhoId).get();
+
+    await correr(db, paiId, { ...pai, custo: 5 }, { ...pai, custo: 9 });
+
+    const depois = await db.collection('produtos').doc(filhoId).get();
+    expect(depois.updateTime?.isEqual(antes.updateTime!)).toBe(true);
+  });
+
+  // ⚠️ The field that costs money rather than confusion: a kit's availability is
+  // `min` over its components, computed from the produto the surface reads — the
+  // member. A stale map advertises stock the kit cannot assemble.
+  it('carries an edited kit composition, map and keys together', async () => {
+    const db = getDb();
+    const componente = (quantidade: number) => ({ quantidade, limitarEstoque: true, timestamp: 1 });
+    const { paiId, filhoId, pai } = await familiaDeUm(db, {
+      ehKit: true,
+      componentesKit: { 'comp-1': componente(1) },
+      componentesKitKeys: ['comp-1'],
+    });
+    const antes = { ...pai, ehKit: true, componentesKit: { 'comp-1': componente(1) } };
+
+    await correr(db, paiId, antes, {
+      ...antes,
+      componentesKit: { 'comp-1': componente(1), 'comp-2': componente(2) },
+    });
+
+    const filho = (await db.collection('produtos').doc(filhoId).get()).data()!;
+    expect(filho.componentesKit['comp-2'].quantidade).toBe(2);
+    // Sorted and rewritten in the same patch — an `array-contains` query reads
+    // these keys, so a map that moved without them is a kit nothing can find.
+    expect(filho.componentesKitKeys).toEqual(['comp-1', 'comp-2']);
+  });
+
+  // ⚠️ `precos` has its own propagation with an operator opt-out. The mirror
+  // must not become a second path that ignores it.
+  it('honours propagatePriceToChildren, which the mirror must not bypass', async () => {
+    const db = getDb();
+    const { paiId, filhoId, pai } = await familiaDeUm(db, { precos: { l1: { valor: 10 } } });
+    const antes = { ...pai, precos: { l1: { valor: 10 } }, propagatePriceToChildren: false };
+
+    await correr(db, paiId, antes, { ...antes, precos: { l1: { valor: 99 } } });
+
+    const filho = await db.collection('produtos').doc(filhoId).get();
+    expect(filho.data()?.precos).toEqual({ l1: { valor: 10 } });
+  });
+});

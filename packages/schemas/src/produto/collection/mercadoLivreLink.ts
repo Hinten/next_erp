@@ -632,6 +632,99 @@ export function linkHasLiveListing(link: Record<string, unknown> | null | undefi
   return link.estado !== ESTADO_PUBLICACAO_ML.cancelado;
 }
 
+/** The two directions the operator can move a published listing's status. */
+export const ACAO_STATUS_ANUNCIO = {
+  pausar: 'pausar',
+  reativar: 'reativar',
+} as const satisfies Record<string, AcaoStatusAnuncio>;
+export type AcaoStatusAnuncio = 'pausar' | 'reativar';
+
+/** ML's `status` for each action's TARGET — what `PUT /items/{id}` receives. */
+export const STATUS_ML_DA_ACAO: Record<AcaoStatusAnuncio, 'paused' | 'active'> = {
+  pausar: 'paused',
+  reativar: 'active',
+};
+
+/**
+ * Which status action this stored link supports right now — or `null` for none.
+ *
+ * ⚠️ **Pure and total — no clock, no network, no Firestore**, which is the whole
+ * reason it lives here rather than in whichever surface needed it first. Two
+ * surfaces ask the identical question and must never disagree:
+ *
+ *  - **Client** (`apps/web`) — whether the produto's Mercado Livre tab renders
+ *    "Pausar anúncio", "Reativar anúncio", or no control at all.
+ *  - **Server** (`apps/mercado-livre`) — whether `anuncioStatus.ts` sends a
+ *    `PUT /items/{id}` or refuses locally.
+ *
+ * A second copy would be the failure `precisaConsultarModeracao` (#1239) and
+ * `clienteIdentity` (#786) were extracted to avoid: an operator offered a button
+ * the backend refuses, or a backend refusing what the UI presents as available.
+ *
+ * The rungs, in order:
+ *
+ *  - **Never published** (`id` absent or `''`) → `null`. There is no ML listing
+ *    to move. `''` counts as never published, matching the backend's own
+ *    `link.id !== ''` test — the schema permits it and the migrated corpus has it.
+ *  - **Cancelled** (`estado 'c'`) → `null`. `closed` is TERMINAL on ML: a closed
+ *    listing cannot be reopened, so both actions would only earn a 400.
+ *  - ⚠️ **Mid-UPtin migration** (`estado 'am'`) → `null`, and this rung is
+ *    checked from `estado` ABOVE the raw status, not below it. ML is rebuilding
+ *    the listing as one item per variation and **404s any change to the source
+ *    item** (`publishCore.ts`), and `anuncioStatus.ts`'s 404 branch records
+ *    `closed` — which drops the produto out of BOTH ML sweeps for a listing that
+ *    was merely migrating. The reason it cannot ride the status arm below:
+ *    `stampAguardandoMigracao` writes `estado` and `ultimaModificacao` **alone**
+ *    and its three call sites return immediately, so the stored `status` is left
+ *    at its previous value — `'active'` for a live listing — and would answer
+ *    `pausar` for exactly the population this rung exists to protect. Publish,
+ *    the price planner and the stock planner all carry the same rung; this is
+ *    the fourth writer, and the only one whose failure mode is a terminal write
+ *    rather than a refusal.
+ *  - **`status: 'paused'`** → `reativar`; **`status: 'active'`** → `pausar`.
+ *  - **`under_review`, `payment_required`, and anything else NAMED** → `null`.
+ *    ML is mid-decision on the listing; the operator's route back is the strip's
+ *    "Reverificar anúncio", not a status write that races ML's own.
+ *  - **No raw status at all** → decided from `estado`, as an **ALLOW-LIST**:
+ *    only `publicado` offers `pausar` and only `pausado` offers `reativar`.
+ *    ⚠️ The allow-list is the point. This branch serves the migrated corpus,
+ *    which carries `estado` (the schema defaults it to `'r'`, and Flutter always
+ *    wrote it) and lacks only `status`/`sub_status` — so "published" is exactly
+ *    `estado 'p'`, and there is no need to guess. A deny-list here read every
+ *    OTHER estado as live: `'am'`, `'v'`, `'ep'`, `'a'`, `'E'` and `'r'` all
+ *    answered `pausar`, which is the same defect as the migration rung above
+ *    with five more doors into it.
+ *
+ * Deliberately loose input: callers hold raw `snap.data()` payloads and
+ * `useDocSnapshot` values, never parsed schemas.
+ */
+export function acaoStatusAnuncio(
+  link: Record<string, unknown> | null | undefined,
+): AcaoStatusAnuncio | null {
+  if (link == null) return null;
+  if (typeof link.id !== 'string' || link.id.length === 0) return null;
+  if (link.estado === ESTADO_PUBLICACAO_ML.cancelado) return null;
+  // ⚠️ ABOVE the status arm, deliberately — see the rung list. `estado 'am'` is
+  // written on its own, so the `status` sitting beside it is stale by
+  // construction and must not be allowed to decide.
+  if (link.estado === ESTADO_PUBLICACAO_ML.aguardandoMigracao) return null;
+
+  const status = typeof link.status === 'string' && link.status !== '' ? link.status : null;
+  if (status === null) {
+    // The migrated corpus: `estado` present, `status`/`sub_status` absent. An
+    // ALLOW-LIST, never a fallthrough — every other estado means ML has not
+    // settled this listing, and offering an action there earns a 4xx at best.
+    if (link.estado === ESTADO_PUBLICACAO_ML.pausado) return ACAO_STATUS_ANUNCIO.reativar;
+    if (link.estado === ESTADO_PUBLICACAO_ML.publicado) return ACAO_STATUS_ANUNCIO.pausar;
+    return null;
+  }
+  if (status === 'paused') return ACAO_STATUS_ANUNCIO.reativar;
+  if (status === 'active') return ACAO_STATUS_ANUNCIO.pausar;
+  // `closed` is caught above via `estado`, but a link whose raw status says
+  // closed while `estado` lags must not offer an action either.
+  return null;
+}
+
 /**
  * Does this VARIATION link doc represent a listing? Existence plus an ML
  * identifier — `id` in the legacy `variations[]` model, `itemId` in the

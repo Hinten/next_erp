@@ -3,7 +3,14 @@ import { logger } from 'firebase-functions';
 import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
 import { produtoCollection } from '@delfrance/data/admin/collections';
 import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
-import { produtoMeta, samePrecos, type PrecosMap } from '@delfrance/schemas';
+import {
+  camposEspelhadosQueMudaram,
+  planejarSincronizacaoDoMembroUnico,
+  produtoMeta,
+  samePrecos,
+  type PrecosMap,
+} from '@delfrance/schemas';
+import { isFailedPrecondition } from '@delfrance/data/admin';
 
 import { getDb } from '../lib/admin';
 import { resolveUsuarioOuterRef } from '../lib/authContext';
@@ -125,6 +132,120 @@ async function findChildrenToPropagate(
     }
   }
   return writes;
+}
+
+/**
+ * Keep a family-of-one's SOLE MEMBER in step with its parent (#1398).
+ *
+ * After #1398 a produto with no variations is a parent plus one child, and the
+ * CHILD is the sellable unit: it owns the stock rows, it is what a pedido line
+ * binds, and it is what the Mercado Livre family publishes. Its `nome`, `sku`,
+ * kit composition, dimensions and categoria are a MIRROR of the parent's, copied
+ * once at creation (`montarMembroUnico`). Nothing refreshed that copy — so
+ * renaming a produto, changing its SKU, or editing the components of a kit left
+ * the sellable half holding the old values, invisibly: the member has no screen
+ * of its own, so the two could disagree indefinitely with nothing to look at.
+ *
+ * ⚠️ `componentesKit` is the one that costs money rather than confusion. A kit's
+ * availability is `min` over its components (ADR 0014), computed from the produto
+ * the surface reads — the member. An edited kit whose member kept the old map
+ * advertises stock it cannot assemble, and the ML sweep sends that number.
+ *
+ * ## Four properties, in the order they matter
+ *
+ * 1. **Zero extra reads on the common path.** `camposEspelhadosQueMudaram` is
+ *    pure, so a save that moved nothing mirrored — a stock edit, a photo, a
+ *    price — never touches the member. Same trade `planejarRollupKit` makes
+ *    above.
+ * 2. **A three-way merge, never a copy.** The member is an ordinary produto and
+ *    appears as a row in the Variações tab, so an operator can diverge it. A
+ *    field moves only when the member still holds the parent's PREVIOUS value.
+ *
+ *    ⚠️ **The merge alone is NOT the ordering guard**, and an earlier version of
+ *    this comment claimed it was. Value equality cannot tell "the member still
+ *    holds MY before" from "the member holds a NEWER value that happens to equal
+ *    my before" — and for the four mirrored BOOLEANS the value space is two, so
+ *    an A→B→A sequence of parent saves delivered out of order lands the older
+ *    run's value on the member and then FREEZES it there: every later toggle
+ *    finds the member diverged and declines. A produto the operator had just
+ *    hidden would stay `publicado` on the half that is actually sold.
+ * 3. **The patch is derived from the parent as it is NOW, not from `after`.**
+ *    That is what actually makes it converge. `after` is this delivery's
+ *    snapshot and may already be stale; re-reading makes every concurrent run
+ *    compute the SAME target, so a late-arriving older delivery agrees with the
+ *    newest state instead of reverting it (rule 7 tier 0 — the race is made
+ *    impossible, not detected).
+ *
+ *    ⚠️ `before` still comes from the delivery, and must: it is what says whether
+ *    THIS write moved the field, which is how an operator's own divergence is
+ *    told apart from a value the mirror itself set.
+ * 4. **A `lastUpdateTime` precondition** closes the remaining window — a write
+ *    landing between the member read and the member update. That is rule 7 tier
+ *    1, and it is the reason this can stay plain reads + an update rather than a
+ *    transaction. A losing write is CORRECT to lose: whoever won wrote either a
+ *    newer parent state or an operator's own edit, and both outrank this one, so
+ *    it is logged and dropped rather than retried.
+ *
+ * ⚠️ `precos` is deliberately NOT in the mirror — it has its own propagation
+ * above, with an operator opt-out (`propagatePriceToChildren`) that folding it in
+ * here would silently defeat. See `espelhoDoMembroUnico`.
+ *
+ * Exported for the tests: the emulator suite drives the three write outcomes,
+ * and the unit suite drives the two error branches with a stub `db` — a losing
+ * precondition needs a write to land BETWEEN this read and this update, which no
+ * emulator test can interleave.
+ *
+ * @returns the member id when it was written, else `null`.
+ */
+export async function sincronizarMembroUnico(
+  db: Firestore,
+  parentId: string,
+  before: DocumentData | undefined,
+  after: DocumentData,
+): Promise<string | null> {
+  if (after.paiId != null) return null; // a child never has a sole member
+  const membroId = after.filhoUnicoId;
+  if (typeof membroId !== 'string' || membroId === '') return null;
+  // ⚠️ Pure, and it runs BEFORE any read: this is what keeps an ordinary produto
+  // save at zero extra reads.
+  if (camposEspelhadosQueMudaram(before, after).length === 0) return null;
+
+  // ⚠️ The parent as it is NOW, not `after` — see property 3. Two out-of-order
+  // deliveries have to compute the same target, or the older one reverts the
+  // newer. Read only after the pure gate above said something moved, so an
+  // ordinary produto save still costs nothing.
+  const paiSnap = await produtoCollection.ref(db, {}).doc(parentId).get();
+  const paiAgora = (paiSnap.data() ?? after) as DocumentData;
+
+  const ref = produtoCollection.ref(db, {}).doc(membroId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    // A pointer naming a document that is gone. Loud, because every stock reader
+    // resolves through it — but not thrown: this trigger does not retry, and the
+    // parent's own write is already durable.
+    logger.error(
+      `onProdutoChanged: ${parentId}.filhoUnicoId aponta para ${membroId}, que não existe — ` +
+        `o espelho do membro único não foi atualizado`,
+    );
+    return null;
+  }
+
+  const patch = planejarSincronizacaoDoMembroUnico(before, paiAgora, snap.data() ?? {});
+  if (patch === null) return null;
+
+  try {
+    await ref.update(patch, { lastUpdateTime: snap.updateTime });
+  } catch (err: unknown) {
+    if (isFailedPrecondition(err)) {
+      // Someone wrote the member between the read and the write. They hold a
+      // newer state by definition, so losing is the right outcome — retrying
+      // with the same stale precondition could only fail again.
+      logger.info(`onProdutoChanged: espelho de ${membroId} ignorado — escrita concorrente venceu`);
+      return null;
+    }
+    throw err;
+  }
+  return membroId;
 }
 
 /**
@@ -253,8 +374,34 @@ export async function recordProdutoModificationAndPropagate(
     );
   }
 
-  // LAST on purpose — a failed enqueue must not cost the history row above.
+  // Dispatched before the mirror below, and that order is the point: a failed
+  // enqueue must not cost the history row above, and the mirror must not cost the
+  // enqueue. See the mirror's own note.
   await enfileirarRollupDeKit(kitScheduler, produtoId, rollup);
+
+  // ⚠️ LAST, and OUTSIDE the `entry !== null` block.
+  //
+  // Outside, because the mirror is decided from the raw before/after exactly as
+  // the rollup is — an ignore-list edit that hides a field from the history must
+  // not stop the sellable half of the produto from following it.
+  //
+  // ⛔ Last, because `sincronizarMembroUnico` RETHROWS everything that is not
+  // `FAILED_PRECONDITION` (rule 6). Placed above the enqueue, a transient
+  // `UNAVAILABLE` from either read, or a `NOT_FOUND` from a member deleted between
+  // the read and the update, would propagate out of a handler that does not
+  // retry — and the kit rollup enqueue would simply be lost, leaving every kit
+  // containing this produto with a stale weight and box until someone edits
+  // another component. A wrong freight quote is exactly the harm #1152 was filed
+  // on, and `enfileirarRollupDeKit` was moved last once already for the mirror
+  // image of this reason.
+  //
+  // ⚠️ Still below the precos propagation, which is what it needs: that write is
+  // inside the `entry !== null` block above either way, so the member read here
+  // sees it rather than racing it.
+  const membroSincronizado = await sincronizarMembroUnico(db, produtoId, before, after);
+  if (membroSincronizado !== null) {
+    logger.info(`onProdutoChanged: ${produtoId} → espelho do membro único ${membroSincronizado}`);
+  }
 }
 
 /* -------------------------------------------------------------------------- */

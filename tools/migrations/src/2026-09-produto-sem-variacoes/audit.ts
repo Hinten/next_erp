@@ -28,9 +28,11 @@ import {
  *
  * #1398 settles that **a produto never holds available stock; the sellable unit
  * is always a child**. The legacy corpus disagrees — see the header of
- * `predicate.ts` for the two Flutter sources. This counts the disagreement
- * before the one-time conversion script is written, because the count is what
- * tells that script what it has to handle.
+ * `predicate.ts` for the two Flutter sources. This counts the disagreement, and
+ * the count is what tells `migrate.ts` — the one-time conversion beside it — what
+ * it has to handle. Run this FIRST: it is the only thing that reports how many
+ * units are reserved (those stay on the parent) and how many estoque rows sit at
+ * non-canonical doc ids, which are the two shapes the conversion cannot invent.
  *
  * `census-up-single.ts:9-15` puts the reason better than a restatement would:
  * *"'we think the corpus is empty' and 'we counted and it is empty' are not the
