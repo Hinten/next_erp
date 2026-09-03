@@ -539,7 +539,6 @@ describe('dispatchOutbound — failures patch erro on the original', () => {
     const db = new FakeDb();
     seedWhatsappConversa(db);
     db.seed(MSG_COL, 'orig-1', outboundDoc());
-    const client = fakeClient();
     const deps: OutboundDeps = {
       loadContext: vi.fn(async () => {
         throw new WhatsappContaNotConfiguredError('Integração não é do tipo WhatsApp.');

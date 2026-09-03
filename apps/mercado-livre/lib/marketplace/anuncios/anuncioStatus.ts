@@ -162,7 +162,7 @@ export async function definirStatusAnuncio(
   // ⚠️ ONE indexed group query, before anything reaches ML — rule 1 above.
   const membros = await membrosDaFamilia(db, target);
   if (membros.length > 0) {
-    return await definirStatusFamilia(db, integracaoId, target, membros, statusAlvo, api, nowMs);
+    return await definirStatusFamilia(db, integracaoId, target, membros, statusAlvo, api);
   }
 
   // A family id with no member links on disk. Refuse LOUDLY — see the class.
@@ -243,7 +243,6 @@ async function definirStatusFamilia(
   membros: readonly MembroDaFamilia[],
   statusAlvo: string,
   api: AnuncioStatusApi,
-  nowMs: number,
 ): Promise<AnuncioStatusResultado> {
   const resultados = new Map<string, ResultadoDeMembro>();
   await runPool(membros, MEMBER_CONCURRENCY, async (membro) => {

@@ -40,10 +40,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { millisToMicros } from '@delfrance/core/datetime';
 import { ESTADO_PUBLICACAO_ML, idFromRef, toOuterRef } from '@delfrance/schemas';
 import { MercadoLivreError, MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
-import {
-  produtoCollection,
-  produtoMercadoLivreLinkCollection,
-} from '@delfrance/data/admin/collections';
+import { produtoMercadoLivreLinkCollection } from '@delfrance/data/admin/collections';
 
 import {
   type FetchStockFamiliesByIds,

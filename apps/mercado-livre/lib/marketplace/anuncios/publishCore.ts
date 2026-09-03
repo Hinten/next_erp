@@ -617,8 +617,13 @@ export interface MembroSkuPai {
  * Sent for every família this app CREATES, unconditionally — there is no env
  * flag. What remains is not a rollout gate but the uniformity rule below, and
  * the consequence of having no switch is that backing the feature out is a code
- * change: the characteristic is public (ficha técnica) and cannot be removed
- * from an item that already carries it.
+ * change: the characteristic cannot be removed from an item that already
+ * carries it, which is also why `skuPaiAtributo` is write-`true`-only.
+ *
+ * ⚠️ That irreversibility used to be justified by the characteristic being
+ * public. It is not — measured 2026-09-03 on `MLB5183026663`, ML does not render
+ * it to buyers — but the irreversibility itself is unchanged, because it follows
+ * from the family hash rather than from visibility.
  *
  * The whole difficulty is that ML derives a família from `family_name`,
  * `domain_id`, `user_id` and the attributes, and a custom attribute contributes
@@ -669,19 +674,12 @@ export function resolveSkuPaiAtributo(args: {
   // resulting configuration matches another família is dropped as
   // `family_id.collision`. Sending unconditionally would split live listings.
   //
-  // ⚠️ DELIBERATE, and the "família" wording hides it: this also covers a plain
-  // SINGLE-PRODUCT UP listing. `publish.ts` materialises the sole member
-  // (`garantirMembroUnico`) BEFORE this runs, so a childless UP produto arrives
-  // as one member with no `itemId` — `familiaNova` — and ships the
-  // characteristic. On that shape the import chain does not need it: rung 3
-  // recovers the parent sku from the member's own `SELLER_SKU` precisely
-  // because a família of one has no combos. So the trade is a public
-  // characteristic on those listings for one narrow case — a single-product
-  // listing that later gains variations ON ML rather than in the ERP, where the
-  // importer invents variantes with `codigo: null`, rung 2 cannot peel and rung
-  // 3 no longer applies. Restricting this to `membros.length > 1` is uniform in
-  // both directions and would be a legitimate choice; it is not the one taken,
-  // and `publishCore.test.ts` pins the current answer so a change is conscious.
+  // Every família we create, including a plain SINGLE-PRODUCT UP listing —
+  // `publish.ts` materialises the sole member before this runs, so a childless
+  // UP produto is `familiaNova` too. Settled by measurement (#1418): ML does not
+  // render the characteristic to buyers, so there is no exposure to weigh
+  // against, and restricting it by member count would only cost the import a
+  // rung for no gain.
   const deveEnviar = algumCarrega || familiaNova;
   const sku = args.produtoSku?.trim();
   return { skuPai: deveEnviar && sku ? sku : null };
