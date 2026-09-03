@@ -4,6 +4,7 @@ import { CAMPOS_ROLLUP_KIT } from './kitRollupPayload';
 import {
   PRODUTO_HISTORY_IGNORE_FIELDS,
   produtoExtraIgnores,
+  reapontarKitsQueReferenciam,
   sincronizarMembroUnico,
 } from './onProdutoChanged';
 
@@ -265,5 +266,288 @@ describe('sincronizarMembroUnico — an out-of-order delivery converges', () => 
     ).resolves.toBe('c1');
 
     expect(chamadas).toEqual([{ publicado: true }]);
+  });
+});
+
+/**
+ * `reapontarKitsQueReferenciam` — the arm that keeps a kit correct when a produto
+ * becomes a family of one AFTER the #1402 migration has run.
+ *
+ * The migration deliberately skips produtos that sell on Mercado Livre; publish's
+ * `'adotar'` arm converts one whenever a seller publishes it, moving its available
+ * stock onto a new sole member. Without this sweep a kit naming that produto is
+ * correct the day the migration runs and broken the day the listing goes up, with
+ * no migration left to catch it — `kitEstoqueDisponivel` scores the parent 0 and
+ * the stock sweep pushes that 0 to ML.
+ */
+describe('reapontarKitsQueReferenciam', () => {
+  const kitDoc = (chaves: string[], mapa: Record<string, unknown>) => ({
+    componentesKitKeys: chaves,
+    componentesKit: mapa,
+  });
+  const comp = (quantidade = 1, limitarEstoque = true) => ({
+    quantidade,
+    limitarEstoque,
+    timestamp: null,
+  });
+
+  function stub(
+    kits: Record<string, Record<string, unknown>>,
+    opts: { update?: () => Promise<unknown>; semUpdateTime?: boolean } = {},
+  ) {
+    const escritas: Array<{ id: string; patch: Record<string, unknown>; pre?: unknown }> = [];
+    const consultas: unknown[] = [];
+    const refDe = (id: string) => ({
+      // ⚠️ The precondition is CAPTURED, not ignored. A stub that drops the second
+      // argument makes a blind `update()` indistinguishable from a guarded one —
+      // and a mutation test proved that: dropping tier 1 left every test green.
+      update: async (patch: Record<string, unknown>, pre?: unknown) => {
+        escritas.push({ id, patch, pre });
+        return (opts.update ?? (() => Promise.resolve()))();
+      },
+    });
+    const colecao = {
+      where: (_campo: string, _op: string, valor: unknown) => {
+        consultas.push(valor);
+        const achados = Object.entries(kits)
+          .filter(([, d]) => ((d.componentesKitKeys as string[]) ?? []).includes(String(valor)))
+          .map(([id, d]) => ({
+            id,
+            ref: refDe(id),
+            data: () => d,
+            updateTime: opts.semUpdateTime ? undefined : 'ut-1',
+          }));
+        // ⚠️ The double models the REAL query: `.limit()` truncates server-side,
+        // which is what makes the cap bound the SCAN. A stub that ignored it would
+        // let an unbounded read pass as bounded.
+        const q = (limite: number | null): Record<string, unknown> => ({
+          select: () => q(limite),
+          limit: (n: number) => q(n),
+          get: async () => ({ docs: limite === null ? achados : achados.slice(0, limite) }),
+        });
+        return q(null);
+      },
+    };
+    return { db: { collection: () => colecao } as never, escritas, consultas };
+  }
+
+  it('repoints a kit naming the parent when the pointer appears', async () => {
+    const { db, escritas } = stub({ k1: kitDoc(['pai'], { pai: comp(3) }) });
+
+    const r = await reapontarKitsQueReferenciam(
+      db,
+      'pai',
+      { paiId: null, filhoUnicoId: null },
+      { paiId: null, filhoUnicoId: 'novo' },
+    );
+
+    expect(r).toEqual({ reapontados: 1, conflitos: 0 });
+    expect(escritas).toEqual([
+      {
+        id: 'k1',
+        patch: { componentesKit: { novo: comp(3) }, componentesKitKeys: ['novo'] },
+        // ⚠️ Tier 1. The patch rewrites the WHOLE map from a document just read,
+        // and the Kit tab is a live editor surface — a blind write would silently
+        // drop an operator's component list.
+        pre: { lastUpdateTime: 'ut-1' },
+      },
+    ]);
+  });
+
+  // ...and the near-miss: with no `updateTime` to guard on there is nothing to
+  // compare, so the write goes unguarded rather than being skipped. Losing an
+  // edit is bad; refusing to repoint a kit at all leaves it reading 0 on ML.
+  it('writes unguarded when the snapshot carries no version', async () => {
+    const { db, escritas } = stub(
+      { k1: kitDoc(['pai'], { pai: comp() }) },
+      { semUpdateTime: true },
+    );
+
+    await reapontarKitsQueReferenciam(
+      db,
+      'pai',
+      { paiId: null, filhoUnicoId: null },
+      { paiId: null, filhoUnicoId: 'novo' },
+    );
+
+    expect(escritas[0]!.pre).toBeUndefined();
+  });
+
+  /**
+   * ⛔ The pointer MOVE, and why `before == null` is not the gate.
+   *
+   * `VariationManager` re-derives `filhoUnicoId` from the surviving child set on
+   * every save, so adding a row and delete-marking the old sole member in ONE
+   * save moves the pointer A → B. Miss it and `onProdutoDeleted`'s cascade runs
+   * for A instead — and its empty-kit rule forces `ehKit: false` on any kit whose
+   * only component was A. A kit silently stops being a kit.
+   */
+  it('sweeps the OUTGOING member too, not just the parent', async () => {
+    const { db, escritas, consultas } = stub({
+      k1: kitDoc(['antigo'], { antigo: comp(2) }),
+    });
+
+    const r = await reapontarKitsQueReferenciam(
+      db,
+      'pai',
+      { paiId: null, filhoUnicoId: 'antigo' },
+      { paiId: null, filhoUnicoId: 'novo' },
+    );
+
+    expect(consultas).toEqual(['pai', 'antigo']);
+    expect(r).toEqual({ reapontados: 1, conflitos: 0 });
+    expect(escritas[0]!.patch.componentesKit).toEqual({ novo: comp(2) });
+  });
+
+  it('reads a kit referencing BOTH ids once and writes it once', async () => {
+    const { db, escritas } = stub({
+      k1: kitDoc(['pai', 'antigo'], { pai: comp(1), antigo: comp(2) }),
+    });
+
+    await reapontarKitsQueReferenciam(
+      db,
+      'pai',
+      { paiId: null, filhoUnicoId: 'antigo' },
+      { paiId: null, filhoUnicoId: 'novo' },
+    );
+
+    expect(escritas).toHaveLength(1);
+    // Both entries fold onto the new member, so the quantities SUM.
+    expect(escritas[0]!.patch.componentesKit).toEqual({ novo: comp(3) });
+  });
+
+  // ⚠️ Idempotent, which is what makes an at-least-once redelivery free and a
+  // lost precondition recoverable: `unidadeVendavel` is a fixpoint.
+  it('writes nothing when the kit already names the member', async () => {
+    const { db, escritas } = stub({ k1: kitDoc(['novo'], { novo: comp() }) });
+
+    const r = await reapontarKitsQueReferenciam(
+      db,
+      'pai',
+      { paiId: null, filhoUnicoId: null },
+      { paiId: null, filhoUnicoId: 'novo' },
+    );
+
+    expect(r).toEqual({ reapontados: 0, conflitos: 0 });
+    expect(escritas).toEqual([]);
+  });
+
+  it('does nothing when the pointer did not move', async () => {
+    const { db, consultas } = stub({ k1: kitDoc(['pai'], { pai: comp() }) });
+    const mesmo = { paiId: null, filhoUnicoId: 'novo' };
+    await expect(reapontarKitsQueReferenciam(db, 'pai', mesmo, mesmo)).resolves.toBeNull();
+    expect(consultas).toEqual([]);
+  });
+
+  it('does nothing when the pointer was CLEARED', async () => {
+    const { db, consultas } = stub({ k1: kitDoc(['pai'], { pai: comp() }) });
+    await expect(
+      reapontarKitsQueReferenciam(
+        db,
+        'pai',
+        { paiId: null, filhoUnicoId: 'antigo' },
+        { paiId: null, filhoUnicoId: null },
+      ),
+    ).resolves.toBeNull();
+    expect(consultas).toEqual([]);
+  });
+
+  // A child never has a sole member of its own, whatever it stores — and the
+  // mirror write lands on a child, so without this the trigger it fires would
+  // sweep for a member of the member.
+  it('does nothing on a variation child', async () => {
+    const { db, consultas } = stub({ k1: kitDoc(['c1'], { c1: comp() }) });
+    await expect(
+      reapontarKitsQueReferenciam(
+        db,
+        'c1',
+        { paiId: 'pai', filhoUnicoId: null },
+        { paiId: 'pai', filhoUnicoId: 'x' },
+      ),
+    ).resolves.toBeNull();
+    expect(consultas).toEqual([]);
+  });
+
+  /**
+   * ⚠️ Tier 1, and the loss is REPORTED. The Kit tab is a live editor surface and
+   * this patch rewrites the whole map from a document it just read — a blind write
+   * would silently drop an operator's component list. Losing is safe because the
+   * rewrite is idempotent and `--target kits` reconciles, but nothing else would
+   * ever mention that this kit still names the parent.
+   */
+  it('counts a lost precondition instead of clobbering or throwing', async () => {
+    const { db } = stub(
+      { k1: kitDoc(['pai'], { pai: comp() }) },
+      { update: () => Promise.reject(Object.assign(new Error('stale'), { code: 9 })) },
+    );
+
+    const r = await reapontarKitsQueReferenciam(
+      db,
+      'pai',
+      { paiId: null, filhoUnicoId: null },
+      { paiId: null, filhoUnicoId: 'novo' },
+    );
+
+    expect(r).toEqual({ reapontados: 0, conflitos: 1 });
+  });
+
+  // ⚠️ Rule 6: everything that is not the one expected failure rethrows.
+  it('rethrows anything that is not a failed precondition', async () => {
+    const { db } = stub(
+      { k1: kitDoc(['pai'], { pai: comp() }) },
+      { update: () => Promise.reject(Object.assign(new Error('denied'), { code: 7 })) },
+    );
+
+    await expect(
+      reapontarKitsQueReferenciam(
+        db,
+        'pai',
+        { paiId: null, filhoUnicoId: null },
+        { paiId: null, filhoUnicoId: 'novo' },
+      ),
+    ).rejects.toThrow('denied');
+  });
+
+  /**
+   * ⛔ The bound. ADR 0014 measured ~2 000 kits sharing one component, and this
+   * sweep is one RPC per document — so past the cap it writes NOTHING and defers
+   * to the migration's re-runnable phase, rather than half-finishing inside a
+   * handler with a 60s timeout and no retry.
+   */
+  it('refuses the whole sweep past the inline cap', async () => {
+    const muitos: Record<string, Record<string, unknown>> = {};
+    for (let i = 0; i < 300; i += 1) muitos[`k${i}`] = kitDoc(['pai'], { pai: comp() });
+    const { db, escritas } = stub(muitos);
+
+    const r = await reapontarKitsQueReferenciam(
+      db,
+      'pai',
+      { paiId: null, filhoUnicoId: null },
+      { paiId: null, filhoUnicoId: 'novo' },
+    );
+
+    expect(escritas).toEqual([]);
+    // ⚠️ 201, not 300: the query stops at the cap + 1, so the count is a FLOOR and
+    // the scan is bounded rather than the writes alone.
+    expect(r).toEqual({ reapontados: 0, conflitos: 201 });
+  });
+
+  // ⛔ A mixed `limitarEstoque` collision has no correct sum, so the fold refuses
+  // it and both entries stay — which means the kit still names the parent and a
+  // human has to choose. `mudou` is false, so nothing is written.
+  it('leaves a kit whose collision cannot be merged', async () => {
+    const { db, escritas } = stub({
+      k1: kitDoc(['pai', 'novo'], { pai: comp(5, false), novo: comp(2, true) }),
+    });
+
+    const r = await reapontarKitsQueReferenciam(
+      db,
+      'pai',
+      { paiId: null, filhoUnicoId: null },
+      { paiId: null, filhoUnicoId: 'novo' },
+    );
+
+    expect(escritas).toEqual([]);
+    expect(r).toEqual({ reapontados: 0, conflitos: 0 });
   });
 });

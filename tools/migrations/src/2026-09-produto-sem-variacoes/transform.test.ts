@@ -7,6 +7,7 @@ import {
   idDoMembroUnico,
   movimentosDeEstoque,
   planejarConversao,
+  planejarPonteiro,
   unidadesPresasSemDeposito,
   type EntradaConversao,
 } from './transform';
@@ -251,5 +252,70 @@ describe('unidadesPresasSemDeposito', () => {
     ]);
     const plano = planejarConversao(entrada({ estoque: resumo }));
     expect(plano.tipo === 'converter' && plano.presasSemDeposito).toBe(10);
+  });
+});
+
+/**
+ * `planejarPonteiro` — the arm that stops a family which ALREADY exists from
+ * surviving its own migration.
+ *
+ * Nothing else backfills `filhoUnicoId`: its four writers (ML publish, the ML
+ * importer, `VariationManager`, produto creation) all fire on a WRITE, and
+ * `apps/functions` only reads it. So a family publish created before #1398 keeps
+ * a null pointer for ever, `unidadeVendavel` resolves it to the PARENT whose
+ * available stock publish already moved to the child, and every kit naming it
+ * reads 0 — #1398's opening symptom.
+ */
+describe('planejarPonteiro', () => {
+  const planejar = (filhos: string[], armazenado: string | null = null) =>
+    planejarPonteiro({
+      produtoId: PRODUTO,
+      filhoUnicoIdArmazenado: armazenado,
+      filhos: filhos.map((id) => ({ id })),
+    });
+
+  it('stamps the pointer on a family of one that has none', () => {
+    expect(planejar(['unico'])).toEqual({
+      tipo: 'estampar',
+      filhoUnicoId: 'unico',
+      substituiu: null,
+    });
+  });
+
+  // A stored pointer that disagrees with the LIVE child set is drift, and the
+  // live set wins — `derivarFilhoUnico` is the only producer of this value.
+  it('replaces a pointer that disagrees with the live child set, and says so', () => {
+    expect(planejar(['unico'], 'fantasma')).toEqual({
+      tipo: 'estampar',
+      filhoUnicoId: 'unico',
+      substituiu: 'fantasma',
+    });
+  });
+
+  // ⚠️ The re-run case, and the one that must not cost a write: this runs over
+  // every family in the corpus and most of them are already correct.
+  it('writes nothing when the pointer already matches', () => {
+    expect(planejar(['unico'], 'unico')).toEqual({ tipo: 'nada', motivo: 'ja-correto' });
+  });
+
+  // ⚠️ The near-miss that bounds the whole arm. A family of MANY has no single
+  // sellable unit, and stamping one anyway would send every stock reader to an
+  // arbitrary variation — the exact drift the pointer exists to prevent.
+  it('refuses a family of many, whatever is stored', () => {
+    expect(planejar(['a', 'b'])).toEqual({ tipo: 'nada', motivo: 'muitos-filhos' });
+    expect(planejar(['a', 'b'], 'a')).toEqual({ tipo: 'nada', motivo: 'muitos-filhos' });
+  });
+
+  it('refuses when the fresh re-read found no child after all', () => {
+    expect(planejar([])).toEqual({ tipo: 'nada', motivo: 'sem-filhos' });
+  });
+
+  /**
+   * ⛔ A produto whose only child names IT as its own parent. `derivarFilhoUnico`
+   * cannot catch this — it takes a child set and has no parent to compare against
+   * — and a pointer to self makes every stock read resolve in a circle.
+   */
+  it('refuses a produto whose only child is itself', () => {
+    expect(planejar([PRODUTO])).toEqual({ tipo: 'nada', motivo: 'filho-e-o-proprio-pai' });
   });
 });
