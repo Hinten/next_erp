@@ -1,12 +1,14 @@
 'use client';
 
-import { PlaceholderPage } from '@delfrance/ui';
+import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { CanalCapsPanel } from '../_components/CanalCapsPanel';
 
 export default function CanalFacebookPage() {
   return (
-    <PlaceholderPage
-      title="Facebook"
-      description="Contas e configurações da integração com Facebook/Messenger."
+    <CanalCapsPanel
+      tipo={INTEGRACAO_TIPO.facebook}
+      titulo="Facebook"
+      descricao="Contas e configurações da integração com Facebook/Messenger."
     />
   );
 }

@@ -144,6 +144,8 @@ const INVENTARIO = {
     'The #1402 census’s classifier. Uses the reservation TWICE, both read-only: `temEstoque` keys on the RAW counter (a row with 5 in stock and 5 reserved is holding units even though its available reads zero), while `moveria`/`ficaNoPai` split through `reservaEfetiva`, so a stored negative can never increase what the conversion would move. Flags a negative as `reservada-negativa` rather than laundering it — the #931 evidence stays intact.',
   'tools/migrations/src/2026-09-produto-sem-variacoes/audit.ts':
     'The census’s walk. Reads each candidate’s estoque rows and hands them to the classifier verbatim; writes nothing (`--apply` is rejected). No arithmetic of its own beyond summing the classifier’s per-row totals.',
+  'tools/migrations/src/2026-09-produto-sem-variacoes/migrate.ts':
+    'The #1398 conversion’s I/O half. It never READS the counter to decide anything — `transform.ts` does that through the classifier above, so the split between what moves and what stays is made in exactly one place — and it never WRITES `quantidadeReservada` at all: the reserved units are precisely what stays on the parent, because the release is keyed on the produto the pedido line names. The only counter it touches is `quantidade`, as a signed `FieldValue.increment` pair (−n off the parent’s stored row, +n onto the child’s canonical one) that is deliberately NOT floored — flooring one leg of a transfer would create or destroy units. The field appears here only in the projection handed to `resumirEstoques`.',
 };
 
 /** Files matching the pattern, over the index + untracked-but-not-ignored. */

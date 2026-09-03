@@ -1,8 +1,10 @@
 import { INTEGRACAO_TIPO_LABELS, type IntegracaoTipo } from '@delfrance/schemas';
 
+import { type VereditoCanal, vereditoCanal } from '@/lib/marketplace/caps/suporteCanal';
+
 import { buildProviderMap } from '../push/types';
 import { mercadoLivreAnuncioStatusProvider } from './providers/mercadoLivre';
-import { unsupportedChannelAnuncioStatusProvider } from './providers/unsupportedChannel';
+import { criarUnsupportedChannelAnuncioStatusProvider } from './providers/unsupportedChannel';
 import type {
   AnuncioStatusChannelResult,
   AnuncioStatusInput,
@@ -19,11 +21,25 @@ export const PROVIDERS: Readonly<Partial<Record<IntegracaoTipo, AnuncioStatusPro
   buildProviderMap([mercadoLivreAnuncioStatusProvider], 'Anúncio status');
 
 /**
- * An exact tipo match wins; ANY other tipo falls back to the
- * unsupported-channel placeholder.
+ * What `MARKETPLACE_TIPO_CAPS.pausarAnuncio` says about this channel, and — when
+ * it says no — which reason applies.
+ *
+ * ⚠️ `pausarAnuncio` is its OWN capability, not an inference off
+ * `publicarAnuncio`: several marketplaces expose only a terminal close, and
+ * deriving one from the other is the unverified claim #815 undid.
+ */
+export function suporteAnuncioStatusDoCanal(tipo: IntegracaoTipo): VereditoCanal {
+  return vereditoCanal('anuncioStatus', tipo, PROVIDERS);
+}
+
+/**
+ * The caps row decides; an exact tipo match then serves it. Anything else falls
+ * back to the placeholder CARRYING the reason (#1430).
  */
 export function resolveAnuncioStatusProvider(tipo: IntegracaoTipo): AnuncioStatusProvider {
-  return PROVIDERS[tipo] ?? unsupportedChannelAnuncioStatusProvider;
+  const veredito = suporteAnuncioStatusDoCanal(tipo);
+  if (!veredito.suportado) return criarUnsupportedChannelAnuncioStatusProvider(veredito.motivo);
+  return PROVIDERS[tipo] ?? criarUnsupportedChannelAnuncioStatusProvider('canal-sem-provider');
 }
 
 /**

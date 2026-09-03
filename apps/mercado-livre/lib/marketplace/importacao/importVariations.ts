@@ -39,7 +39,7 @@
  */
 import { createHash } from 'node:crypto';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { type MappedMlVariation } from '@delfrance/integrations-mercado-livre';
+import { type MappedMlVariation, idLocalMercadoLivre } from '@delfrance/integrations-mercado-livre';
 import { type MlModeracao, sameCombo } from '@delfrance/schemas';
 import {
   estoqueCollection,
@@ -151,7 +151,7 @@ export async function importVariationChildren(
       loadSiblings,
     });
     const fixedWidthId = up
-      ? `XMLB000000000000000${up.parentLinkDocId}vMLB${mappedVariation.variationId}`
+      ? idLocalMercadoLivre(up.parentLinkDocId, mappedVariation.variationId)
       : null;
     const produtoId =
       resolved?.produtoId ??
@@ -160,7 +160,7 @@ export async function importVariationChildren(
     const linkDocId =
       resolved?.linkDocId ??
       fixedWidthId ??
-      `XMLB000000000000000${parent.mlItemId}vMLB${mappedVariation.variationId}`;
+      idLocalMercadoLivre(parent.mlItemId, mappedVariation.variationId);
 
     const ref = produtoCollection.docRef(db, {}, produtoId);
     const existingProduto = await readRaw(ref);

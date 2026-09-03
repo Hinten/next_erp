@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PluginRegistry, PluginNotRegisteredError } from './index';
-import type { InvoiceProvider, PaymentGateway, TaxProvider } from './index';
+import type { InvoiceProvider, TaxProvider } from './index';
 
 const tax: TaxProvider = {
   id: 'flat-tax',
@@ -15,55 +15,53 @@ const invoice: InvoiceProvider = {
   issue: async () => ({ status: 'pending' }),
 };
 
-const gateway: PaymentGateway = {
-  id: 'fixture-gateway',
-  createCharge: async ({ orderId }) => ({ chargeId: `c-${orderId}`, status: 'created' }),
-  refund: async () => {},
-  webhook: async () => ({ status: 'ok' }),
-};
-
 describe('PluginRegistry', () => {
-  it('registers and retrieves each of the three kinds by id', () => {
+  it('registers and retrieves each of the two kinds by id', () => {
     const reg = new PluginRegistry();
     reg.registerTax(tax);
     reg.registerInvoice(invoice);
-    reg.registerPayment(gateway);
 
     expect(reg.tax('flat-tax').id).toBe('flat-tax');
     expect(reg.invoice('fixture-invoice').id).toBe('fixture-invoice');
-    expect(reg.payment('fixture-gateway').id).toBe('fixture-gateway');
   });
 
   it('throws PluginNotRegisteredError for an unknown id, naming the kind', () => {
     const reg = new PluginRegistry();
-    expect(() => reg.payment('nope')).toThrow(PluginNotRegisteredError);
+    expect(() => reg.invoice('nope')).toThrow(PluginNotRegisteredError);
     try {
-      reg.payment('nope');
+      reg.invoice('nope');
     } catch (err) {
       if (!(err instanceof PluginNotRegisteredError)) throw err;
-      expect(err.kind).toBe('PaymentGateway');
+      expect(err.kind).toBe('InvoiceProvider');
       expect(err.pluginId).toBe('nope');
     }
   });
 
-  it('keeps the three kinds in separate maps', () => {
+  it('keeps the two kinds in separate maps', () => {
     const reg = new PluginRegistry();
     reg.registerTax(tax);
-    // A tax id must not resolve as a payment.
-    expect(() => reg.payment('flat-tax')).toThrow(PluginNotRegisteredError);
+    // A tax id must not resolve as an invoice.
+    expect(() => reg.invoice('flat-tax')).toThrow(PluginNotRegisteredError);
   });
 
   /**
-   * ⚠️ The guard for #815. `registerMarketplace` / `marketplace(id)` were removed
-   * because a marketplace is resolved per request from its `integracao` document
-   * by its own App Hosting backend — it is never looked up by plugin id, and the
-   * marketplace map's only caller in the repo's whole history was this file.
-   * Re-adding it would re-open the door the ADR closed, so assert its absence
-   * rather than trusting a comment. See ADR 0015.
+   * ⚠️ The guards for #815 and #1429. Both kinds were removed because the thing
+   * they claimed to look up is resolved per request from a Firestore document by
+   * its own backend — never by plugin id. Between them, the two maps had exactly
+   * two callers in the repo's entire history: their own unit tests.
+   *
+   * Assert their ABSENCE rather than trusting a comment: re-adding either
+   * typechecks, lints, builds and passes every other suite. See ADR 0015.
    */
   it('has no marketplace kind — a channel is never looked up by plugin id', () => {
     const reg = new PluginRegistry() as unknown as Record<string, unknown>;
     expect(reg.registerMarketplace).toBeUndefined();
     expect(reg.marketplace).toBeUndefined();
+  });
+
+  it('has no payment kind — a payment account is never looked up by plugin id', () => {
+    const reg = new PluginRegistry() as unknown as Record<string, unknown>;
+    expect(reg.registerPayment).toBeUndefined();
+    expect(reg.payment).toBeUndefined();
   });
 });

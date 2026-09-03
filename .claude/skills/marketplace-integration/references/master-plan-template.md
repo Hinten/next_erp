@@ -15,13 +15,13 @@ prerequisites — nothing downstream works without them.
 | 2 | Account context + credential store + read cache | always | — | `integracao` | `@delfrance/data/admin/cache` |
 | 3 | Inbound: receiver + queue, or the poller | `notificacoes`, `assinaWebhook` | HTTP → Cloud Task, or `onSchedule` | `notificacoes<Canal>` | `defineNotificationPipeline` |
 | 4 | Delivery backstop (missed-feed replay and/or forward backfill) | `notificacoes` | `onSchedule` | a per-conta cursor doc | — |
-| 5 | Order → pedido import | `importarPedido`, `consolidaPacote` | Cloud Task | `pedidos` + subcollections, `clientes` | `findOrCreateCliente` |
+| 5 | Order → pedido import | `importarPedido`, `consolidaPacote`, `dadosFiscaisSeparados` | Cloud Task | `pedidos` + subcollections, `clientes` | `findOrCreateCliente` |
 | 6 | Payment → pagamento | `importarPagamento` | Cloud Task | `pedidos/{id}/pagamentos` | `@delfrance/core/wire` |
 | 7 | Shipment → `freteInicial` + conference | `rastreio` | Cloud Task | `pedidos.freteInicial` | — |
 | 8 | Stuck-reservation release | `importarPedido` | `onSchedule` | `pedidos` | — |
 | 9 | Product import (+ the resumable mass-import job) | `importarAnuncio` | HTTP + Cloud Task | `produtos` + link subcollection, `categorias`, `arquivos` | `@delfrance/storage/admin` |
 | 10 | Categories / attributes / taxonomy | `categoriasEAtributos` | HTTP (cached) | — | `@delfrance/data/admin/cache` |
-| 11 | Publish / listing lifecycle | `publicarAnuncio`, `variacoes` | HTTP + Cloud Task | link subcollection, `produtos.integracoesComProduto` | — |
+| 11 | Publish / listing lifecycle (+ pause / reactivate) | `publicarAnuncio`, `variacoes`, `pausarAnuncio` | HTTP + Cloud Task | link subcollection, `produtos.integracoesComProduto` | — |
 | 12 | **Stock sync** — the cost centre | `estoque.*` | `onSchedule` ×N + Cloud Task + HTTP | `produtos`, `estoques`, a sync-state doc | `firestore-pipelines` |
 | 13 | Price sync | `enviarPreco` | Cloud Task + HTTP | a job doc + link subcollection | — |
 | 14 | NF-e upload | `enviarNfe` | Firestore trigger → Cloud Task | `pedidos.freteInicial` (failure only) | — |
@@ -31,7 +31,7 @@ prerequisites — nothing downstream works without them.
 | 18 | Tabela de medidas | `tabelaDeMedidas` | HTTP | `tabMedi` | — |
 | 19 | **Kits virtuais** | `kitVirtual` | publish + stock | `produtos.ehKitVirtual` | — |
 | 20 | `int_frete` sync (marketplace-owned freight) | `etiqueta !== 'nenhuma'` | Firestore trigger | `int_frete` | `freight-integrations` |
-| 21 | `apps/web`: conta screen, row actions, inbox origin | derived | — | — | the three provider registries |
+| 21 | `apps/web`: conta screen, row actions, inbox origin | derived | — | — | the four provider registries + the caps row |
 
 ⚠️ **Step 19 is the one Mercado Livre does not have.** If it survives the caps filter
 you are writing code with no reference implementation — plan it from the provider's

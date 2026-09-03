@@ -41,7 +41,7 @@ import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
 import { describeMassImportCancelError } from './mercadoLivreJobErrors';
 import { useBaixarRelatorioPreco } from './useBaixarRelatorioPreco';
-import type { ContaRef } from './startJobsForContas';
+import type { ContaRef } from '@/lib/marketplace/contaJobs/types';
 
 /** Poll cadence while a job is `running` (unchanged from the conta panel). */
 const POLL_MS = 3000;

@@ -3,7 +3,7 @@ import type { Integracao } from '@delfrance/schemas';
 
 import { enviarParaMarketplaces } from '../push/run';
 import type { PushAlvo, PushRowBase } from '../push/types';
-import { PROVIDERS, enviarPrecoParaIntegracao } from './registry';
+import { enviarPrecoParaIntegracao, suportePrecoDoCanal } from './registry';
 import type { PricePushDeps, PricePushRow } from './types';
 
 /**
@@ -77,7 +77,7 @@ export function enviarPrecoParaMarketplaces(
     alvos,
     {
       db: runDeps.db,
-      suportado: (tipo) => PROVIDERS[tipo] !== undefined,
+      suportado: (tipo) => suportePrecoDoCanal(tipo).suportado,
       dispatch: (args) =>
         enviarPrecoParaIntegracao({
           integracao: args.integracao,

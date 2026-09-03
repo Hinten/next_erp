@@ -10,6 +10,7 @@ import { buildQuery, limit, whereArrayContains, whereEqual } from '@delfrance/da
 import {
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
+  buildMembroUnicoWriteOps,
   type EstoqueComando,
   type MovimentacaoInput,
   type ProdutoDataPort,
@@ -17,7 +18,11 @@ import {
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
 import type { TransactionWrite } from '@delfrance/ui';
-import { type ImpostoProduto, type ProdutoExtraData } from '@delfrance/schemas';
+import {
+  type ImpostoProduto,
+  type ParentParaMembroUnico,
+  type ProdutoExtraData,
+} from '@delfrance/schemas';
 import { getFirebaseFunctions } from '@/lib/firebase/client';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
@@ -77,6 +82,17 @@ export function buildProdutoTransactionWrites(
   db: Firestore,
   produtoId: string,
   values: Record<string, unknown>,
+  /**
+   * `'criar'` also mints the produto's SOLE MEMBER (#1398), so a produto is born
+   * as a family of one in the SAME transaction as its own document — never a
+   * parent that exists for a moment with no sellable unit.
+   *
+   * ⚠️ Create-only, deliberately. On an EDIT the family already exists (or the
+   * produto predates the invariant and belongs to the migration, #1402); minting
+   * one here would fork a second child for every save of a produto that already
+   * has variations.
+   */
+  modo: 'criar' | 'editar' = 'editar',
 ): TransactionWrite[] {
   const writes: TransactionWrite[] = [];
   const pushOp = (op: ProdutoWriteOp) => {
@@ -94,6 +110,20 @@ export function buildProdutoTransactionWrites(
   const impostos = (values.impostos as ImpostoProduto[] | null) ?? null;
   if (impostos && impostos.length > 0) {
     for (const op of buildImpostoWriteOps(produtoId, impostos, Date.now())) pushOp(op);
+  }
+
+  if (modo === 'criar') {
+    // ⚠️ Minted OUTSIDE the transaction callback, which is where `saveRecord`
+    // computes its sibling writes — so an OCC retry re-commits the SAME child id
+    // rather than minting a second one.
+    const childId = newDocId();
+    for (const op of buildMembroUnicoWriteOps(
+      produtoId,
+      childId,
+      values as ParentParaMembroUnico,
+    )) {
+      pushOp(op);
+    }
   }
 
   return writes;

@@ -1,8 +1,10 @@
 import { INTEGRACAO_TIPO_LABELS, type IntegracaoTipo } from '@delfrance/schemas';
 
+import { type VereditoCanal, vereditoCanal } from '@/lib/marketplace/caps/suporteCanal';
+
 import { buildProviderMap } from '../push/types';
 import { mercadoLivrePriceProvider } from './providers/mercadoLivre';
-import { unsupportedChannelPriceProvider } from './providers/unsupportedChannel';
+import { criarUnsupportedChannelPriceProvider } from './providers/unsupportedChannel';
 import type { PricePushChannelResult, PricePushInput, PricePushProvider } from './types';
 
 /**
@@ -19,11 +21,22 @@ export const PROVIDERS: Readonly<Partial<Record<IntegracaoTipo, PricePushProvide
   buildProviderMap([mercadoLivrePriceProvider], 'Price push');
 
 /**
- * An exact tipo match wins; ANY other tipo falls back to the
- * unsupported-channel placeholder, which IS the legacy fall-through.
+ * What `MARKETPLACE_TIPO_CAPS` says about sending prices to this channel, and --
+ * when it says no — which reason applies. The twin of `suporteEstoqueDoCanal`.
+ */
+export function suportePrecoDoCanal(tipo: IntegracaoTipo): VereditoCanal {
+  return vereditoCanal('preco', tipo, PROVIDERS);
+}
+
+/**
+ * The caps row decides; an exact tipo match then serves it. Anything else falls
+ * back to the placeholder CARRYING the reason (#1430) — see the stock twin for
+ * why "a provider file exists" was the wrong question.
  */
 export function resolvePricePushProvider(tipo: IntegracaoTipo): PricePushProvider {
-  return PROVIDERS[tipo] ?? unsupportedChannelPriceProvider;
+  const veredito = suportePrecoDoCanal(tipo);
+  if (!veredito.suportado) return criarUnsupportedChannelPriceProvider(veredito.motivo);
+  return PROVIDERS[tipo] ?? criarUnsupportedChannelPriceProvider('canal-sem-provider');
 }
 
 /**

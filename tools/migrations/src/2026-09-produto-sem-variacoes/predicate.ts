@@ -21,8 +21,10 @@ import { estoqueDisponivel, makeEstoqueUid, parseRef, reservaEfetiva } from '@de
  * standing on — the root, for those.
  *
  * So every legacy Produto Simples arrives holding stock that, after #1398, no
- * ERP surface reads. This counts them **before** the one-time conversion script
- * is written, because the count is what tells that script what it has to handle.
+ * ERP surface reads. This counts them, and the count is what tells `migrate.ts` —
+ * the one-time conversion sharing this folder — what it has to handle. Both read
+ * the same `ResumoEstoque`, so the census cannot report one number while the
+ * conversion moves another.
  *
  * ⚠️ It is deliberately WIDER than `apps/mercado-livre/scripts/census-up-single.ts`,
  * whose universe is `produtoMercadoLivre` links carrying `isUserProductModel`.

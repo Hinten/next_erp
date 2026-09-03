@@ -2,13 +2,16 @@
 
 import { Text } from '@mantine/core';
 import { ACAO_STATUS_ANUNCIO } from '@delfrance/schemas';
+import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useMercadoLivreClient } from '@/lib/mercado-livre/client';
+import { AvisoCanaisNaoSuportados } from '@/lib/marketplace/caps/AvisoCanaisNaoSuportados';
 import { PushProgressDialog } from '@/lib/marketplace/push/PushProgressDialog';
 import {
   type PausarAnuncioAlvo,
   definirStatusParaMarketplaces,
 } from '@/lib/marketplace/anuncioStatus/pausarAnunciosRun';
+import { suporteAnuncioStatusDoCanal } from '@/lib/marketplace/anuncioStatus/registry';
 import type { AnuncioStatusRow } from '@/lib/marketplace/anuncioStatus/types';
 
 /**
@@ -25,6 +28,9 @@ export interface PausarAnunciosDialogProps {
 
 export function PausarAnunciosDialog({ opened, alvos, onClose }: PausarAnunciosDialogProps) {
   const mercadoLivre = useMercadoLivreClient();
+  // The same shared `['integracoes']` entry `/produtos` already holds — this
+  // resolves the selection's conta ids to a tipo at no extra read.
+  const { byId, status } = useIntegracoes(getFirebaseFirestore());
 
   return (
     <PushProgressDialog<AnuncioStatusRow, null>
@@ -34,6 +40,15 @@ export function PausarAnunciosDialog({ opened, alvos, onClose }: PausarAnunciosD
       rotuloAcao="Pausar anúncios"
       testIdPrefix="pausar-anuncio-row-"
       totalAlvos={alvos.length}
+      avisos={
+        <AvisoCanaisNaoSuportados
+          acao="anuncioStatus"
+          alvos={alvos}
+          veredito={suporteAnuncioStatusDoCanal}
+          byId={byId}
+          status={status}
+        />
+      }
       descricao={
         <>
           <Text size="sm">
