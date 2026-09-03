@@ -1,3 +1,4 @@
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 // lint-staged runs from the git repository root and passes ABSOLUTE file paths.
@@ -6,46 +7,37 @@ const ROOT = process.cwd();
 // Workspaces that ship their own ESLint flat config. ESLint 9 flat config is
 // resolved from the CWD, so a single `eslint` invoked at the repo root would
 // NOT pick up these per-package configs — each staged file has to be linted
-// with the CWD set to its owning workspace. Every workspace except apps/docs
-// and packages/config-tsconfig; --max-warnings 0 + pre-existing warns = deliberate ratchet.
-// Sorted longest-first so the more specific `packages/integrations/nfe` matches
-// before any shorter prefix.
-const ESLINT_WORKSPACES = [
-  'apps/web',
-  'apps/integrations',
-  'apps/nfe',
-  'apps/webchat',
-  'apps/melhor-envio',
-  'apps/mercado-livre',
-  'apps/mercado-pago',
-  'apps/whatsapp',
-  'apps/functions',
-  'apps/example',
-  'packages/schemas',
-  'packages/auth',
-  'packages/core',
-  'packages/data',
-  'packages/plugin-sdk',
-  'packages/rules-gen',
-  'packages/storage',
-  'packages/ui',
-  'packages/config-eslint',
-  'packages/config-vitest',
-  'packages/integrations/nfe',
-  'packages/integrations/freight-br',
-  'packages/integrations/mercado-livre',
-  'packages/integrations/mercado-pago',
-  'packages/integrations/whatsapp-cloud-api',
-  'packages/integrations/amazon-sp-api',
-  'packages/integrations/facebook',
-  'packages/integrations/loja-integrada',
-  'packages/integrations/magalu',
-  'packages/integrations/shopee',
-  'tools/migrations',
-  'tools/test-fixtures',
-].sort((a, b) => b.length - a.length);
+// with the CWD set to its owning workspace.
+//
+// ⚠️ DISCOVERED, not hand-written, and that is the fix rather than a tidy-up.
+// The list used to be literal and had drifted in both directions: it still named
+// the five marketplace scaffolds deleted in #815, and it was MISSING
+// `packages/ai`, `tools/cmun-table` and `tools/deploy-env` — three workspaces
+// that each ship a flat config and a `lint` script, whose staged files
+// therefore got Prettier only and skipped the `--max-warnings 0` gate entirely.
+// Nothing failed either way, which is exactly the shape
+// `rules/lib/repo-scan.js` warns about: "a guard that only checks a
+// hand-written list cannot catch the thing nobody remembered to add."
+//
+// Sorted longest-first so a nested workspace (`packages/integrations/nfe`)
+// matches before any shorter prefix (`packages/integrations`).
+const WORKSPACE_GLOBS = ['apps', 'packages', 'packages/integrations', 'tools'];
 
-const CODE_RE = /\.(ts|tsx|mts|cts)$/;
+const ESLINT_WORKSPACES = WORKSPACE_GLOBS.flatMap((dir) => {
+  const abs = path.join(ROOT, dir);
+  if (!existsSync(abs)) return [];
+  return readdirSync(abs, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => `${dir}/${e.name}`)
+    .filter((ws) => existsSync(path.join(ROOT, ws, 'eslint.config.mjs')));
+}).sort((a, b) => b.length - a.length);
+
+// ⚠️ `.js`/`.mjs`/`.cjs` are included deliberately. They used to be absent, so
+// every custom rule and backstop under `packages/config-eslint/rules` and the
+// five `apps/*/functions/scripts/prepare-deploy.mjs` were never linted at
+// commit time — including by the error-level core `no-unused-vars` that #1445
+// re-enabled for exactly that surface.
+const CODE_RE = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
 
 // POSIX single-quote escaping: wrap in single quotes and replace every embedded
 // single quote with `'\''`. This keeps names containing spaces, `$`, backticks,

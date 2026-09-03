@@ -16,6 +16,7 @@ import {
   type AdminFirestoreLike,
   type AdminTxLike,
 } from '../../src/numeracao/firestore-adapter';
+import { AMBIENTE_NFE, CONTINGENCIA_MODO } from '@delfrance/schemas';
 
 /** Fake Firestore — same shape as firebase-admin, in-memory storage. */
 function fakeFirestore(seed: Record<string, NFeConfig>): {
@@ -62,7 +63,12 @@ const SEED: NFeConfig = {
   numeracao_atual: 0,
   serie: 1,
   idLote: 0,
-  ambiente: '2',
+  ambiente: AMBIENTE_NFE.homologacao,
+  contingencia_modo: CONTINGENCIA_MODO.none,
+  contingencia_justificativa: null,
+  contingencia_dataInicio: null,
+  emitirReformaTributaria: false,
+  timestamp: null,
 };
 
 describe('nfeConfigStoreFromFirestore', () => {
@@ -88,9 +94,26 @@ describe('nfeConfigStoreFromFirestore', () => {
     expect(state['filiais/F-1/nfeconfig/default']).toBeUndefined();
   });
 
+  // ⚠️ The seeded `timestamp` is a STRING, and so is the one this asserts on,
+  // because that is what `firestore-adapter.ts`'s `set()` actually writes
+  // (`new Date().toISOString()`) — while `nfeConfigSchema` declares the field
+  // as `millisSinceEpoch()`, i.e. a NUMBER. Nothing fails today only because
+  // that reader is tolerant: `z.preprocess(tolerant(coerceToMillis), ...)`
+  // coerces the ISO string back to millis on the way in, so the disagreement is
+  // invisible at runtime and was invisible to tsc too — this file was outside
+  // the package's tsconfig `include` until #1445's follow-up.
+  //
+  // Left as-is deliberately: changing what the adapter STORES is a data-shape
+  // change to documents that already exist, which this repo wants handled by a
+  // one-time migration and its own issue, not by a lint PR. The cast keeps the
+  // test honest about current behaviour instead of asserting an intent the code
+  // does not implement.
   it('stamps a timestamp on every write', async () => {
     const { fs, state } = fakeFirestore({
-      'filiais/F-1/nfeconfig/default': { ...SEED, timestamp: '2025-01-01T00:00:00Z' },
+      'filiais/F-1/nfeconfig/default': {
+        ...SEED,
+        timestamp: '2025-01-01T00:00:00Z',
+      } as unknown as NFeConfig,
     });
     const store = nfeConfigStoreFromFirestore(fs);
     await nextIdLote(store, 'F-1');
