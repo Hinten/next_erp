@@ -1,10 +1,16 @@
-# Census: produtos that hold their own stock — the legacy "Produto Simples" (#1402)
+# Produtos that hold their own stock — the legacy "Produto Simples" (#1402)
 
-**Status: CENSUS ONLY — this script has no `--apply` path and never writes.**
+**Two scripts, one folder, one runbook.**
 
-The one-time conversion script will live in this same folder and share this
-runbook. It is not written yet, deliberately: the count is what tells it what it
-has to handle.
+| script                        | writes?                                     | command                         |
+| ----------------------------- | ------------------------------------------- | ------------------------------- |
+| `audit.ts` — the census       | ⛔ never, rejects `--apply` by construction | `audit:produto-sem-variacoes`   |
+| `migrate.ts` — the conversion | only with `--apply`; dry-run otherwise      | `migrate:produto-sem-variacoes` |
+
+Run the census **first**. Its counts are what tell you whether the conversion
+has anything to do and what it will have to handle — above all how many units
+are reserved (they stay on the parent, see below) and how many estoque rows sit
+at non-canonical doc ids.
 
 ## Why
 
@@ -201,12 +207,122 @@ measures fixtures rather than the corpus. The number that matters is a run
 against the **new** project after the Phase 2 import — which is where #1402
 places it.
 
-## Verify
+## Verify the census
 
 - Exit 0, and `simples-com-estoque` = 0 ⇒ nothing to convert and the step is done.
-- Non-zero ⇒ that is when the one-time script gets written, reusing
-  `planejarMembroUnico` (already unit-tested and shared with publish).
 - `orfao` > 0 is worth resolving on its own, whatever the rest says.
-- Re-running after the conversion must report `simples-com-estoque` = 0. That
-  pass is the check, not a formality.
 - Record the counts in #1402.
+
+---
+
+# The conversion — `migrate:produto-sem-variacoes`
+
+Turns each legacy Produto Simples into a **family of one**: parent + a single
+child, with the available units moved onto the child and the pointer
+`filhoUnicoId` stamped on the parent.
+
+```bash
+pnpm --filter @delfrance/migrations migrate:produto-sem-variacoes --project <id>
+```
+
+```bash
+pnpm --filter @delfrance/migrations migrate:produto-sem-variacoes --project <id> --apply
+```
+
+Dry-run is the default and writes a JSONL to `out/` suffixed `-dryrun`. `--project`
+is required and is matched against the service account, so a run cannot land on
+the wrong database by omission.
+
+## What it writes, per produto
+
+One **atomic batch**, flushed per produto rather than per 400 ops:
+
+1. `produtos/<childId>` — the sole member, built by the SAME `montarMembroUnico`
+   the ERP uses when a produto is born a family, plus `ultimaModificacao` (the
+   `/produtos` default sort key — a document missing it is invisible, #159/#861).
+2. `produtos/<parentId>` — `filhoUnicoId`, and nothing else.
+3. Per depósito with units: `+n` onto the child's canonical row
+   (`est-<childId>-<depositoId>`, a merge-set with `FieldValue.increment` so it
+   is created when absent and ADDED to when present) and `-n` off the parent's
+   **stored** row id.
+
+⚠️ The parent's row is decremented, **never deleted**. A delete cascades through
+`onEstoqueDeleted` and takes the row's whole `historicoEstoque` ledger with it —
+and a migration run _inside_ the cutover window does fire triggers; only the
+import fires none (ADR 0013).
+
+## What it SKIPS, and why each skip matters
+
+| motivo                      | meaning                                                                                                                                                                                                          |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ja-tem-filho`              | already a family. Also the re-run guard, and it is **re-read just before the write** rather than taken from the opening walk — a variation created mid-run would otherwise get a second member minted beside it. |
+| `nao-e-raiz`                | carries a `paiId` — it is a child.                                                                                                                                                                               |
+| `tem-vinculo-mercado-livre` | ⛔ sells on ML. **Publish owns this one.**                                                                                                                                                                       |
+
+⛔ **The ML skip is not caution, it is a live listing.** Under User Products,
+publish's `'adotar'` arm is what seeds the sole member's link with the existing
+item id. Give the produto a child here and publish sees `childrenCount > 0`,
+answers `'nenhum'`, and the family fan-out finds a member with **no** link — so
+it POSTs a _second_ item and `sweepRemovedMembers` then confirms the original as
+an orphan and pauses-then-closes it. Under the legacy model the failure is
+quieter and just as real: a childless produto publishes as a simple item, and one
+child turns its next republish into a `variations[]` payload for a listing that
+has none. Those produtos keep the shape they have — which read-tolerance handles
+correctly, a childless produto resolves to itself — and publish converts them
+when it next runs.
+
+## ⚠️ Idempotence is arithmetic, not a flag
+
+There is no "already migrated" marker, deliberately: a flag can disagree with the
+data. What moves is `max(0, quantidade − reservaEfetiva)` **recomputed from the
+parent's current row**, so after a successful run the parent's quantidade equals
+its reserve and the same computation yields 0. No delta is ever stored, so no
+delta can be applied twice.
+
+⛔ **What that does not buy.** A second run skips an already-converted produto as
+`ja-tem-filho` **before reading any estoque row**, so units booked on the parent
+_after_ the conversion are never swept up by re-running. They stay on a parent
+whose pointer now routes every availability read to the child — so they are
+invisible, not merely misplaced.
+
+The arithmetic is idempotent; the pipeline short-circuits above it. Both are
+true, and the first version of this runbook wrote down only the first. Sweeping
+those residuals means a pass over produtos that **already** have children — the
+census's `--target residuais` mode sizes it — and that is a follow-up, not this
+script.
+
+⚠️ **So run the conversion INSIDE the window, after the source app is off.** The
+residual it cannot recover is exactly what a pre-window run accumulates.
+
+## Verify the conversion
+
+1. Dry-run. Read the JSONL in `out/`: one `change` line per produto for
+   `filhoUnicoId`, one per estoque move. Check the skip counts against the
+   census — `tem-vinculo-mercado-livre` in particular should match the number of
+   produtos you expect to have ML links.
+2. `--apply`.
+3. **Run it again, unchanged.** A clean second pass must convert **0** and move
+   **0 units** — every produto reporting `ja-tem-filho`. That pass is the
+   idempotence check, not a formality.
+4. Re-run the census: `simples-com-estoque` must be 0 apart from the produtos
+   skipped for an ML link.
+5. Spot-check one produto in `/produtos`: it shows one variation row, and its
+   available stock reads the same number it did before the run.
+
+⚠️ **The reserved remainder is left behind on purpose.** A reservation is keyed on
+the produto the pedido _line_ names — the parent — so moving it would make the
+eventual release decrement a document this script emptied while the child keeps a
+phantom reserve for ever. The run prints the total; once those pedidos ship, the
+units sit on the parent and a human moves them in the Balanço. They are visible,
+not lost.
+
+## Staging is a rehearsal, never a data-preservation goal
+
+Staging is disposable and re-seedable from `tools/test-fixtures`, so a run there
+measures fixtures rather than the corpus. Rehearse the sequence — dry-run, apply,
+clean second pass — and then re-seed. The authoritative run is the one **inside**
+the window: the legacy Flutter app keeps writing the source project until the
+window switches it off, so an earlier run is partially superseded by its own
+later writes.
+
+⛔ **Agents never run either script.** Root `CLAUDE.md` rule 8 / ADR 0013.

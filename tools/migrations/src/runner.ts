@@ -206,6 +206,46 @@ export class BatchWriter {
   }
 
   /**
+   * Write a whole document — `create` if it does not exist, full overwrite if it
+   * does. The first migration to need it MINTS documents rather than patching
+   * fields (#1398's conversion of a legacy Produto Simples into a family of one);
+   * every script before it was an in-place field update.
+   *
+   * ⚠️ **`set` OVERWRITES, and no precondition protects it.** That is safe only
+   * where the caller has already established that the document should not exist
+   * — for a mint, that means the id is deterministic AND the caller checked. It
+   * is deliberately NOT `create()`: a partially-applied previous run must be
+   * re-runnable, and `create()` would fail the whole batch on the first document
+   * that already carries exactly the content this run would write. Idempotence
+   * belongs in the caller's plan (recompute the target, never re-apply a delta),
+   * which is where it can be unit-tested.
+   *
+   * ⛔ There is still no `delete`, and that absence is deliberate. A produto or
+   * estoque delete cascades through `onProdutoDeleted` / `onEstoqueDeleted`, and
+   * a migration run INSIDE the cutover window fires triggers (only the import
+   * fires none — ADR 0013). Zero a row with `FieldValue.increment(-n)`; do not
+   * remove it.
+   *
+   * ⚠️ `{ merge: true }` is what makes a `FieldValue.increment` usable on a
+   * document that may not exist yet: the increment treats a missing base as 0 and
+   * the document is created. A plain `set` carrying an increment would still
+   * work, but it would also blow away every sibling field the row already had —
+   * so a merge-set is the shape for "add to this row, creating it if needed".
+   */
+  async set(
+    ref: DocumentReference,
+    data: Record<string, unknown>,
+    options?: { merge?: boolean },
+  ): Promise<void> {
+    if (!this.apply) return;
+    this.batch ??= this.db.batch();
+    if (options?.merge) this.batch.set(ref, data, { merge: true });
+    else this.batch.set(ref, data);
+    this.ops += 1;
+    if (this.ops >= this.maxOps) await this.flush();
+  }
+
+  /**
    * A LOST-UPDATE-GUARDED single-document update —
    * `ref.update(patch, { lastUpdateTime })`, root `CLAUDE.md` rule 7 **tier 1**.
    * Resolves `false` when the document changed since the snapshot the patch was

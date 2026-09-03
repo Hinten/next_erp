@@ -189,3 +189,97 @@ describe('BatchWriter.updateGuarded — rule 7 tier 1', () => {
     expect(w.committed).toBe(0);
   });
 });
+
+/**
+ * `BatchWriter.set` — the first primitive in this package that MINTS documents
+ * (#1398's conversion), where every script before it patched fields.
+ *
+ * ⚠️ The two properties below are the ones a caller's correctness rests on, and
+ * neither is visible from the call site: whether the merge flag actually reaches
+ * Firestore, and whether dry-run really writes nothing. A `set` that silently
+ * dropped `{ merge: true }` would overwrite the row it was asked to add to —
+ * destroying, in the conversion's case, every unit a previous run had moved.
+ */
+describe('BatchWriter.set — minting documents', () => {
+  type SetCall = { data: unknown; options: unknown };
+
+  function fakeBatch() {
+    const sets: SetCall[] = [];
+    let commits = 0;
+    return {
+      sets,
+      commits: () => commits,
+      db: {
+        batch: () => ({
+          set: (_ref: unknown, data: unknown, options?: unknown) => sets.push({ data, options }),
+          update: () => undefined,
+          commit: async () => {
+            commits += 1;
+          },
+        }),
+      } as never,
+    };
+  }
+
+  const ref = {} as never;
+
+  it('passes { merge: true } through, so an increment can create its own row', async () => {
+    // ⚠️ Asserted by SHAPE. A plain `set(ref, data)` also "works" and also
+    // resolves — it just blows away every sibling field the row already had.
+    const b = fakeBatch();
+    const w = new BatchWriter(b.db, true);
+
+    await w.set(ref, { a: 1 }, { merge: true });
+    await w.flush();
+
+    expect(b.sets).toEqual([{ data: { a: 1 }, options: { merge: true } }]);
+  });
+
+  it('sends NO options when merge is not asked for', async () => {
+    const b = fakeBatch();
+    const w = new BatchWriter(b.db, true);
+
+    await w.set(ref, { a: 1 });
+    await w.flush();
+
+    // `undefined`, not `{ merge: false }` — the SDK treats a present options
+    // object differently from an absent one on some paths.
+    expect(b.sets).toEqual([{ data: { a: 1 }, options: undefined }]);
+  });
+
+  it('writes NOTHING in dry-run', async () => {
+    const b = fakeBatch();
+    const w = new BatchWriter(b.db, false);
+
+    await w.set(ref, { a: 1 }, { merge: true });
+    await w.flush();
+
+    expect(b.sets).toEqual([]);
+    expect(w.committed).toBe(0);
+  });
+
+  it('counts toward committed only once flushed', async () => {
+    const b = fakeBatch();
+    const w = new BatchWriter(b.db, true);
+
+    await w.set(ref, { a: 1 });
+    expect(w.committed).toBe(0); // still buffered — a crash here writes nothing
+    await w.flush();
+    expect(w.committed).toBe(1);
+    expect(b.commits()).toBe(1);
+  });
+
+  // ⚠️ The conversion flushes per PRODUTO so its parent-decrement and
+  // child-increment land together. A second flush with nothing buffered must be
+  // free, or that per-unit discipline would cost an empty commit per produto.
+  it('is a no-op when flushed twice', async () => {
+    const b = fakeBatch();
+    const w = new BatchWriter(b.db, true);
+
+    await w.set(ref, { a: 1 });
+    await w.flush();
+    await w.flush();
+
+    expect(b.commits()).toBe(1);
+  });
+});
