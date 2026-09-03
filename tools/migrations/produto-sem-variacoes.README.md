@@ -217,9 +217,10 @@ places it.
 
 # The conversion — `migrate:produto-sem-variacoes`
 
-Turns each legacy Produto Simples into a **family of one**: parent + a single
+Turns each legacy Produto Simples into a **family of one** — parent + a single
 child, with the available units moved onto the child and the pointer
-`filhoUnicoId` stamped on the parent.
+`filhoUnicoId` stamped on the parent — and then repoints every kit's
+`componentesKit` at the produto that actually holds the stock.
 
 ```bash
 pnpm --filter @delfrance/migrations migrate:produto-sem-variacoes --project <id>
@@ -232,6 +233,119 @@ pnpm --filter @delfrance/migrations migrate:produto-sem-variacoes --project <id>
 Dry-run is the default and writes a JSONL to `out/` suffixed `-dryrun`. `--project`
 is required and is matched against the service account, so a run cannot land on
 the wrong database by omission.
+
+## Two phases, and the ordering is the risky part
+
+```bash
+# both phases, in order — this is what the window runs
+pnpm --filter @delfrance/migrations migrate:produto-sem-variacoes --project <id> --apply
+```
+
+| `--target`  | what it does                                                                    |
+| ----------- | ------------------------------------------------------------------------------- |
+| _(omitted)_ | **both**, `conversao` then `kits`. The default, and what the window should use. |
+| `conversao` | mint the sole members, move the units, stamp the pointers.                      |
+| `kits`      | repoint every `componentesKit` at the produto that holds the stock.             |
+
+⚠️ **The order is not negotiable and the script enforces it.** A kit's map can
+only name a child once that child exists, so `kits` has to follow `conversao` —
+and a run that converts without repointing leaves every kit naming a parent whose
+available stock has just moved away, which _creates_ the harm this script exists
+to remove. So a `--target conversao` run that actually converted something
+**exits non-zero** and tells you to run the `kits` phase; it does not report a
+half-done corpus as done.
+
+⚠️ An unknown `--target` **throws**. `runner.ts` accepts any string, so a typo
+like `--target kit` would otherwise select neither phase, write nothing, and exit
+**0** reporting success.
+
+`--target kits` alone is the re-runnable half: it resolves from the live child
+sets and is idempotent, so it is the right thing to run after a later conversion
+(publish's `'adotar'` arm converts an ML-linked produto long after this script
+skipped it) or after a human clears a residual.
+
+## Phase 1 also stamps the pointer on families that ALREADY exist
+
+Not just the ones it converts. **Nothing else ever backfills `filhoUnicoId`** —
+its four writers (ML publish, the ML importer, `VariationManager`, produto
+creation) all fire on a _write_, and `apps/functions` only reads it. So a family
+publish created before #1398 keeps a null pointer for ever: `unidadeVendavel`
+resolves it to the parent, whose available stock publish already moved to the
+child, and every kit naming it reads 0. That is #1398's opening symptom, and
+without this arm it survives its own migration untouched.
+
+The rules, all reported:
+
+| outcome                 | meaning                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------- |
+| stamped                 | exactly one live child, and the stored pointer was absent or wrong.                |
+| `ja-correto`            | already right. The common case on a re-run, and it costs no write.                 |
+| `muitos-filhos`         | more than one child — there is no single sellable unit, so no script may pick one. |
+| `sem-filhos`            | the fresh re-read found none after all (the opening walk was stale).               |
+| `filho-e-o-proprio-pai` | ⛔ corrupt: the only child names this produto as its own parent.                   |
+| `ponteiro-conflito`     | the produto changed mid-write, twice. Nothing was overwritten — **re-run**.        |
+
+⚠️ **It moves no stock.** Units already sitting on such a parent stay there; that
+is the `--target residuais` follow-up the census sizes, unchanged.
+
+⚠️ **Cost.** One extra `where('paiId','==',id).limit(2)` per produto that already
+has children, plus one parent read for each one that actually needs the write.
+On a corpus that is mostly families that is this run's dominant new read cost. It
+rides the existing `produtos(paiId ASC, nome ASC)` index on its prefix.
+
+⚠️ The write carries the parent's `lastUpdateTime` (rule 7 tier 1) and a lost
+precondition **re-runs the whole derivation**, not just the write — the value
+comes from a child QUERY and no precondition covers a query, so re-deriving is
+what sees the sibling that invalidated it. Copied from the ML importer's
+`aplicarPonteiroMembroUnico`, which documents the same reasoning.
+
+## Phase 2 — every kit map names the produto that holds the stock
+
+Reads nothing new. The opening walk already projects `componentesKit`, and it now
+keeps `filhoUnicoId` and `componentesKitKeys` alongside — so the rewrite costs
+**zero extra reads**, which is why it lives here rather than in a second script
+that would have to walk `produtos` again.
+
+Per produto carrying a composition — a root, a sole member, or a kit-variation
+child, all of which own one — `componentesKit` and `componentesKitKeys` are
+rewritten **together**, in one `update`.
+
+⚠️ **Two components can fold onto one id** — a kit listing a family-of-one parent
+_and_ its own sole member, which the picker shows with identical nome and SKU and
+no badge. Their `quantidade` is **summed**; keeping one understates what the sale
+removes.
+
+⛔ **A mixed collision is refused, not merged.** `limitarEstoque` decides both
+halves at once — a `false` component neither caps availability nor is decremented
+on sale — and the schema carries one flag per key, so summing removes 7 units
+where 2 are due while keeping 2 loses the 5 the cost and weight rollups read.
+Both entries are left exactly as they were and the run reports it: that kit still
+names a produto with no available stock and **a human has to choose**.
+
+⚠️ **A component that is a family of MANY is left alone and counted.** No script
+picks which variation a kit means. Pre-existing — the component picker never
+filtered `paiId` — and found for free.
+
+⚠️ **Idempotent by construction.** `unidadeVendavel` is a fixpoint, so a second
+pass rewrites nothing.
+
+⚠️ **A dry-run's targets do not exist yet.** Phase 1 wrote no children, so the
+destination ids in the JSONL are the _prediction_ of an `--apply`. The run says so
+on stdout.
+
+## ⚠️ What phase 2 leaves for a human
+
+`pedido.estoqueAplicado` is **not** rewritten. `planSincronizacaoEstoque` diffs
+the target against the snapshot, so an open pedido's next write releases the
+reservation on the old id and takes it on the new one — q and r stay conserved,
+nothing is lost. But a reserved remainder then becomes **available units on a
+parent**, and a fully reserved component can leave the child at a negative
+available (the #931 shape).
+
+Those units stay visible: `useEstoqueDisponivel` falls back to the other half of
+the family when a component's own row is absent. They still have to be moved by
+hand from the produto's Estoque tab, exactly like the `ficariaNoPai` residual —
+size both with `--target pedidos` and `--target residuais` **before** the window.
 
 ## What it writes, per produto
 
@@ -253,11 +367,11 @@ import fires none (ADR 0013).
 
 ## What it SKIPS, and why each skip matters
 
-| motivo                      | meaning                                                                                                                                                                                                          |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ja-tem-filho`              | already a family. Also the re-run guard, and it is **re-read just before the write** rather than taken from the opening walk — a variation created mid-run would otherwise get a second member minted beside it. |
-| `nao-e-raiz`                | carries a `paiId` — it is a child.                                                                                                                                                                               |
-| `tem-vinculo-mercado-livre` | ⛔ sells on ML. **Publish owns this one.**                                                                                                                                                                       |
+| motivo                      | meaning                                                                                                                                                                                                                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ja-tem-filho`              | already a family, so no member is minted — but it is **not** a blind skip any more: the pointer arm above runs for it. Re-read just before the write rather than taken from the opening walk, since a variation created mid-run would otherwise get a second member minted beside it. |
+| `nao-e-raiz`                | carries a `paiId` — it is a child.                                                                                                                                                                                                                                                    |
+| `tem-vinculo-mercado-livre` | ⛔ sells on ML. **Publish owns this one.**                                                                                                                                                                                                                                            |
 
 ⛔ **The ML skip is not caution, it is a live listing.** Under User Products,
 publish's `'adotar'` arm is what seeds the sole member's link with the existing
