@@ -121,6 +121,11 @@ export function useConversaQuery(input: UseConversaQueryInput): UseConversaQuery
   // key" swap can't cancel those.
 
   useEffect(() => {
+    // ⚠️ The directive must sit on the line the rule REPORTS — the first
+    // setState — not on the `useEffect` line above it, where it lived until
+    // now. There it suppressed nothing and ESLint counted it as unused, so the
+    // warning this comment claims is sanctioned was live the whole time.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setExtraRows([]);
     setExhausted(false);
     setLoadingMore(false);

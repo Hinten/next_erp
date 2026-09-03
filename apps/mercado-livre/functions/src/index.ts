@@ -8,6 +8,16 @@
 // `import/no-duplicates` by merging INTO it — moving the option registration
 // after the trigger modules and silently undoing the ordering this comment
 // exists to guarantee.
+//
+// ⚠️ This line is load-bearing even when its BINDING is not. The bare
+// `import './options';` it replaced was unremovable by construction — no
+// binding, nothing to look unused. A named import is only self-evidently
+// needed while `TASKS_SCHEDULER_REGION` has a reader, and `no-unused-vars` is
+// an error since #1448, so the day the last reference goes CI will point
+// whoever removes it straight at deleting this line. That un-registers the
+// global function options for every trigger in the file, and it is invisible:
+// the functions deploy fine, to the wrong region (#1108). If that day comes,
+// restore the bare `import './options';` — do not delete the line.
 import { TASKS_SCHEDULER_REGION } from './options';
 
 import { onSchedule } from 'firebase-functions/v2/scheduler';

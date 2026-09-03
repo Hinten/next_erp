@@ -143,7 +143,12 @@ export function typeAware(
         ],
 
         // ── Type-import hygiene ────────────────────────────────────────────
-        // Both rules exist because `packages/config-tsconfig/base.json` sets
+        // ERROR for all three below, on the same grounds as `no-unused-vars`
+        // above: every pre-existing site is fixed in the PR that enables them,
+        // so there is no population to grandfather — and `warn` gates nothing
+        // in CI.
+        //
+        // All three exist because `packages/config-tsconfig/base.json` sets
         // `verbatimModuleSyntax: true`, which every workspace inherits.
         //
         // That option already does the half people usually reach for
@@ -209,10 +214,6 @@ export function typeAware(
           'error',
           { fixStyle: 'inline-type-imports', disallowTypeAnnotations: false },
         ],
-
-        // ERROR for both, on the same grounds as `no-unused-vars` above: every
-        // pre-existing site is fixed in the PR that enables them, so there is no
-        // population to grandfather — and `warn` gates nothing in CI.
 
         // An `any` silently disables every other rule in this config for the
         // value it annotates — including the `no-unsafe-*` family this file
