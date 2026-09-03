@@ -52,3 +52,32 @@ export function statusOfFixture(file: string): number {
 export function listCompleteWireFixtures(): string[] {
   return listWireFixtures().filter((f) => statusOfFixture(f) === 200);
 }
+
+/**
+ * The endpoint slug a fixture filename encodes: `.json` and any `.NNN` status
+ * suffix removed. `orders-1.json` and `orders-1.404.json` both → `orders-1`.
+ */
+export function fixtureStem(file: string): string {
+  return file.replace(/\.json$/, '').replace(/\.\d{3}$/, '');
+}
+
+/**
+ * The committed fixture for a capture-plan slug, whatever status it was filed
+ * under — or `null` when the corpus never captured that endpoint.
+ *
+ * ⚠️ **Anchored on the WHOLE stem, and that is the entire point.** The first
+ * version asked `/^\d{3}\.json$/.test(f.slice(slug.length + 1))`, which never
+ * checked that `f` starts with `slug` — it only asked whether some filename's
+ * tail, cut at a fixed offset, looked like `NNN.json`. On the real corpus that
+ * resolved **15 of 33 plan slugs to a different resource**, including every
+ * `items-MLB…` to an ORDER fixture. A live verify would then have diffed an item
+ * against an order and reported the difference as ML drift.
+ *
+ * ⚠️ It lives HERE, next to the corpus reader, so the script and its tests share
+ * one implementation. A hand-copied predicate in a test is the "two copies drift
+ * toward plausible" shape from root `CLAUDE.md` — and it happened: the test's
+ * copy carried the same bug, so it was green while production was wrong.
+ */
+export function findFixtureForSlug(slug: string): string | null {
+  return listWireFixtures().find((f) => fixtureStem(f) === slug) ?? null;
+}

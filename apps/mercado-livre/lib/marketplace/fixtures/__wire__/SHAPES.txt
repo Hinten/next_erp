@@ -199,7 +199,7 @@ tags: []
 total_paid_amount: number
 transaction_amount: number
 transaction_order_id: null
-## item-MLB5095421681.json
+## items-MLB5095421681.json
 accepts_mercadopago: boolean
 attributes[].id: string
 attributes[].name: string
@@ -308,7 +308,7 @@ variations: []
 video_id: null
 warnings: []
 warranty: null
-## item-MLB5106837343.json
+## items-MLB5106837343.json
 accepts_mercadopago: boolean
 attributes[].id: string
 attributes[].name: string
@@ -417,7 +417,7 @@ variations: []
 video_id: null
 warnings: []
 warranty: null
-## item-MLB5140167173.json
+## items-MLB5140167173.json
 accepts_mercadopago: boolean
 attributes[].id: string
 attributes[].name: string
@@ -526,7 +526,7 @@ variations: []
 video_id: null
 warnings: []
 warranty: string
-## item-MLB7478467854.json
+## items-MLB7478467854.json
 accepts_mercadopago: boolean
 attributes[].id: string
 attributes[].name: string
