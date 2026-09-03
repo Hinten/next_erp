@@ -33,6 +33,7 @@ import { NfColumnFilter } from './NfColumnFilter';
 import { PedidoRowReadsContext, usePedidoRowReadPrefetch } from './rowReadPrefetch';
 import { PrintComumDialog } from './print/PrintComumDialog';
 import { usePrintComumAction } from './print/usePrintComumAction';
+import { useConfirmarEntregaAction } from './useConfirmarEntregaAction';
 import { useDownloadAnexosAction } from './useDownloadAnexosAction';
 import { useDuplicarPedidoAction } from './useDuplicarPedidoAction';
 import { DIRECAO, type Direcao } from './direcao';
@@ -180,6 +181,7 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
   const { action: printAction, printModal } = usePrintComumAction();
   const { action: downloadAnexosAction } = useDownloadAnexosAction();
   const { action: duplicarAction } = useDuplicarPedidoAction(direcao);
+  const { action: confirmarEntregaAction } = useConfirmarEntregaAction();
   // One batched read per collection for the whole page, instead of one `getDoc`
   // per row from `ClienteCell` and `FreteCell` (#1216). The provider only ever
   // makes those cells' reads cheaper — see `rowReadPrefetch` for why it can
@@ -223,16 +225,17 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
             </Button>
           )}
           selectable
-          // 5 actions on saída (emit + print + download anexos + duplicar +
-          // devolução integral). Default ActionBar threshold is 3 → overflow
-          // menu, which hid labeled buttons and broke every pedidos
-          // bulk-action e2e.
-          overflowThreshold={5}
+          // 6 actions on saída (emit + print + download anexos + duplicar +
+          // confirmar entrega + devolução integral). Default ActionBar
+          // threshold is 3 → overflow menu, which hid labeled buttons and
+          // broke every pedidos bulk-action e2e.
+          overflowThreshold={6}
           actions={[
             emitNFeAction,
             printAction,
             downloadAnexosAction,
             duplicarAction,
+            confirmarEntregaAction,
             ...extraActions,
           ]}
         />

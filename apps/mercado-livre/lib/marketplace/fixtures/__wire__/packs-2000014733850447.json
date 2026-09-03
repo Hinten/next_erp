@@ -1,0 +1,25 @@
+{
+  "shipment": {
+    "id": 47868991350
+  },
+  "orders": [
+    {
+      "id": 2000018144681452,
+      "static_tags": []
+    },
+    {
+      "id": 2000018144679512,
+      "static_tags": []
+    }
+  ],
+  "id": 2000014733850447,
+  "status": "cancelled",
+  "status_detail": "buyer",
+  "family_pack_id": null,
+  "trash_pack_id": null,
+  "buyer": {
+    "id": 3646520554
+  },
+  "date_created": "2026-08-27T10:18:01.000-0400",
+  "last_updated": "2026-08-27T10:43:12.000-0400"
+}
