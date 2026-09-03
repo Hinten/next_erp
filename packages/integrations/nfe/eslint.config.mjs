@@ -46,10 +46,15 @@ const config = [
       '**/dist/**',
       '**/node_modules/**',
       '**/coverage/**',
+      // Codegen output (never hand-edited, ADR 0004) and the certificate
+      // fixtures. `test/**` and `scripts/**` are deliberately NOT here: they
+      // were, and the effect was that 55 TypeScript files in this package —
+      // 53 of them tests vitest actually runs — were neither linted NOR
+      // typechecked, in the one package where a swallowed SEFAZ error costs
+      // most. Every sibling integration package includes `test/**` in its
+      // tsconfig; this one was the outlier.
       'generated/**',
       'ca/**',
-      'test/**',
-      'scripts/**',
       'src/codegen/**',
     ],
   },
@@ -96,7 +101,18 @@ const config = [
   // `vitest.config.ts` stays outside the typed program and is parsed by the
   // base's non-type-aware universal block. `projectService` discovers the
   // nearest tsconfig.
-  ...typeAware(import.meta.dirname, { files: ['src/**/*.{ts,mts}'] }),
+  // `scripts/**` are developer CLIs — fetching the SEFAZ chain, generating a
+  // test certificate, rendering DANFE samples. Printing to stdout IS their
+  // output, the same argument that already exempts `src/cert/index.ts` below.
+  // They came under lint for the first time when `test/**` and `scripts/**`
+  // left the `ignores` list above.
+  {
+    files: ['scripts/**/*.{ts,mjs}'],
+    rules: { 'no-console': 'off' },
+  },
+  ...typeAware(import.meta.dirname, {
+    files: ['src/**/*.{ts,mts}', 'test/**/*.ts', 'scripts/**/*.ts'],
+  }),
   // eslint-config-prettier LAST — disables stylistic rules that conflict with
   // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
   prettier,

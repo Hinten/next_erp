@@ -23,7 +23,6 @@ import {
   ESTADO_NFE_LABELS,
   type EstadoNFe,
   type IntegracaoFrete,
-  type NotaFiscalEletronica,
   type Pedido,
   TIPO_CLIENTE_LABELS,
   type TipoCliente,
@@ -57,7 +56,6 @@ import {
 } from '@tabler/icons-react';
 
 import { CopyIconButton } from '@/components/CopyIconButton';
-import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';

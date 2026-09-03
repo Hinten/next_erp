@@ -397,6 +397,28 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `a.trim().toLowerCase() === b.trim().toLowerCase()` is invisible to it (the
   wider pattern was measured at ~47 mostly-irrelevant files and rejected), so
   route comparisons through the shared readers.
+- **Adding a `test/` or `scripts/` directory to a package? Check it is in BOTH
+  the tsconfig `include` and outside the ESLint `ignores`.**
+  `packages/integrations/nfe` had `test/**` and `scripts/**` in its ESLint
+  `ignores` *and* outside its tsconfig `include` (`src/**/*.ts`), so **55
+  TypeScript files — 53 of them tests vitest runs on every ML lane — were
+  neither linted nor typechecked**, in the package where a swallowed SEFAZ error
+  costs most. Its sibling integration packages all include `test/**`. Bringing
+  them in surfaced 82 real findings, one of which was a live disagreement between
+  code and schema: `numeracao/firestore-adapter.ts` wrote
+  `timestamp: new Date().toISOString()` — a STRING — into a field
+  `nfeConfigSchema` declares as `millisSinceEpoch()`, while `apps/web`'s
+  Contingência panel wrote the same field as ms. So the document held whichever
+  shape wrote last. Nothing failed because that reader is TOLERANT and coerces
+  the string back, which is exactly why neither gate nor any test ever said so.
+  ⚠️ The fix needed no migration window, and the reasoning generalises: the
+  adapter's `set()` is a full overwrite that re-stamps the field on every
+  numbering transaction, so correcting the writer is **self-healing** — the next
+  transaction replaces any stored string, and the tolerant reader covers every
+  document until then. Reach for `tools/migrations` when a shape change would
+  otherwise leave permanent dual-read branches; a single disagreeing writer on a
+  field that is fully overwritten is not that.
+
 - **New e2e test** → the **filename suffix picks the lane**, nothing else to
   wire: `.cadastros.e2e.spec.ts` (master data), `.vendas.e2e.spec.ts`
   (sales/fiscal/config), `.emulator.e2e.spec.ts` (offline), `.smoke.spec.ts`.
@@ -437,14 +459,47 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Twelve custom lint rules in `packages/config-eslint/rules/`:
+- **Unused variables fail in BOTH gates, and `warn` gates nothing here.**
+  `@typescript-eslint/no-unused-vars` (error, inside `typeAware(...)`) plus
+  `noUnusedLocals` in `packages/config-tsconfig/base.json`, with core
+  `no-unused-vars` re-enabled for `.js`/`.mjs` only — `typeAware`'s glob is
+  TS-only, which would silently exclude every rule and backstop in
+  `packages/config-eslint/rules` and the five `prepare-deploy.mjs`. Before #1445
+  all three mechanisms were off at once and a dead import was invisible
+  repo-wide: #1442 orphaned a `useQuery` import that survived typecheck 28/28,
+  lint 30/30 and 3013 web tests. ⚠️ The severity is not cosmetic — **no lint
+  script passes `--max-warnings`**, so `turbo run lint` never fails on a
+  warning; only `.lintstagedrc.mjs` does, and only for staged files. That is why
+  the repo's stated bar is `error` when the pre-existing population is zero and
+  `warn` only as a ratchet over a known one. `^_` is the escape hatch.
+  Guarded by `rules/unused-vars-enabled.test.js`, because switching any of it
+  back off fails nothing.
+- Fourteen custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding`,
   `no-optional-without-nullable`, `no-client-estado-history-write`,
   `no-env-secrets-access`, `no-hardcoded-gcp-region`,
-  `no-unvalidated-response` and
+  `no-unvalidated-response`, `no-focused-test`,
+  `require-firestore-database-id` and
   `prefer-schema-enum` (error), `no-inline-admin-collection`,
   `no-lossy-date-parse`, `no-ambient-timezone` and
-  `no-error-as-sole-instanceof` (warn). `no-unvalidated-response` bans asserting
+  `no-error-as-sole-instanceof` (warn). `no-focused-test` bans a committed
+  `describe.only`/`it.only`/`test.only`: it does not fail anything, it stops the
+  rest of the file running while every reporter still says PASS. Playwright's
+  `forbidOnly` defaults to **false** and `apps/web/playwright.config.ts` did not
+  set it, so one `.only` in any of the 62 e2e specs took an `E2E gate` check
+  green over a suite that had stopped running — the silent-pass class the whole
+  `ci-lanes` design exists to prevent. That config now sets
+  `forbidOnly: !!process.env.CI`; Vitest's `allowOnly` is safe only by an
+  undeclared upstream default. `require-firestore-database-id` bans a call that never
+  reaches its database-id argument: Enterprise names the database `default`, not
+  the `(default)` sentinel such a call resolves, so the handle fails
+  `5 NOT_FOUND` on **every** operation — a convention seven copies of `admin.ts`
+  across five codebases were holding by comment alone. ⚠️ It covers **two**
+  callees whose id sits at different positions — argument 1 for `getFirestore`,
+  argument **2** for `initializeFirestore`, which `apps/web` uses deliberately
+  for the IndexedDB persistent cache. A single arity threshold silently exempts
+  the second, and `initializeFirestore(app, settings)` is the documented shape
+  everywhere outside this repo. `no-unvalidated-response` bans asserting
   a type onto an HTTP response body — `return parsed as T`, `(await res.json())
   as Foo`. Six near-identical clients ended that way, so on any 2xx the caller
   got whatever arrived wearing a type nobody verified, and all three failure

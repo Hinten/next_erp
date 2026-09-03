@@ -54,11 +54,40 @@ indistinguishable from ML's real ones, which is the single distinction this modu
 exists to preserve. A 206 is filed as `<slug>.206.json`, a 204 as `<slug>.204.json`,
 a 404 as `<slug>.404.json`.
 
-⚠️ **A 404 is data; everything else is a failure.** A missing claim is expected on
-the test account, so a 404 is recorded and the run continues — a partial capture
-is useful. A transient 5xx (or a 401 on a dead grant, or a 429) **throws**:
-recorded as an empty body it would later read as "ML returns this", which is
-strictly worse than having no fixture.
+⚠️ **A permanent 4xx is data; a failure that says nothing about the request is
+fatal (#1357).** The rule used to be "a 404 is data, everything else is a
+failure", and it meant the script **never once exited 0**: two calls in every plan
+answer **400**, and the search that answered it sat at the END of the plan, so
+every run aborted after capturing everything.
+
+| Live answer                    | What happens                | Why                                                                                                                                                |
+| ------------------------------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400, 404, 405, 409, 410, 422 … | **recorded**, run continues | A permanent, informative answer about _this one request_. Nothing about it says the other 22 calls are unsafe, and the refusal itself is evidence. |
+| **401 / 403**                  | throws                      | The grant is dead or under-scoped — every remaining call is equally doomed, and the body can carry credential detail (#1015).                      |
+| **429**                        | throws                      | Rate limited; continuing compounds it.                                                                                                             |
+| **5xx**                        | throws                      | Transient. Recorded as an empty body it would later read as "ML returns this", which is strictly worse than having no fixture.                     |
+
+`ehFalhaFatal` in `fixtureCapture.ts` is the one place that line is drawn, and it
+is asserted from **both** sides — a predicate tested only on what it rejects is
+satisfied by `() => true`.
+
+⚠️ Recording is safe only because the status suffix keeps a non-200 off the bare
+slug. A 400 filed as `<slug>.json` would read as the resource itself.
+
+The two measured 400s, both against the #1087 account:
+
+- **`/packs/{id}` on an order that is a pack MEMBER.** The fan-out assumed two
+  outcomes — a standalone order 404s, a pack id 200s. A member is a third.
+  `2000018143664980` (standalone) → 404 ✓; `2000018144681452` and
+  `2000018144679512` (both in pack `2000014733850447`) → **400**.
+- **`/post-purchase/v1/claims/search` with paging only.** ML documents this
+  precisely: the endpoint needs at least one real FILTER, `offset`/`limit`/`sort`
+  explicitly **do not count**, and paging alone returns
+  `400 {"error":"invalid_query"}`. The plan now sends ML's own recommended pair,
+  `players.user_id` + `players.role=respondent`, and **omits the call entirely**
+  when the integração has no stored `user_id` (#289) — a request guaranteed to be
+  refused discovers nothing. ⚠️ No `status` filter: the one claim this corpus
+  holds is `closed`, so `status=opened` would hide it.
 
 ⚠️ **This folder imports nothing from the other themes, and no channel RUNTIME
 imports it.** It is a diagnostic plus a test corpus, never part of a request path

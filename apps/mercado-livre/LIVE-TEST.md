@@ -875,6 +875,26 @@ has no legacy `variations[]` listing at all, so the corpus cannot produce this f
 The UP family shape is covered instead, which is what this integration actually publishes.
 A blank row would read as "not attempted"; this was attempted.
 
+⚠️ **The run that produced these 30 bodies ABORTED, and the corpus records where
+(#1357).** Under the old error contract any status but 404 was fatal, so three calls
+killed the run rather than being written: `/packs/2000018144681452` and
+`/packs/2000018144679512` (both **400** — a pack MEMBER is a third outcome the fan-out
+never anticipated) and `/post-purchase/v1/claims/search` (**400** — it was sent with
+paging only, which ML documents as `invalid_query`). Their absence from `__wire__/` is
+the visible symptom, and it is also why a `verify:wire` pass reports "sem baseline" for
+the claims search.
+
+A permanent 4xx is now recorded as data, so **a re-capture completes and exits 0** and
+should newly produce:
+
+| File                                                                 | Why it is worth committing                                                                  |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `packs-2000018144681452.400.json`, `packs-2000018144679512.400.json` | ML's refusal for a pack member — the fact this issue had to discover by hand                |
+| `post-purchase-v1-claims-search.json`                                | now sent with `players.user_id` + `players.role=respondent`, so it should be a **200** page |
+
+⚠️ Nothing in CI can produce them — the capture needs the seller credential. The command
+is in `lib/marketplace/fixtures/README.md`; run it, then `promote:fixtures`.
+
 ### Cleanup
 
 - [ ] Delete both test listings
@@ -948,7 +968,7 @@ inside this run** — the run's job is evidence.
 | 3.5   | "Reverificar anúncio" clears `errors`/`causas` on evidence that does not bear on them. The listing is healthy; our rejected edit is still unsent, and nothing says so                                               | the operator learns their edit never landed | #1339                  |
 | 3.1   | A size chart whose `domain_id` does not match the category's `catalog_domain` resolves to `null` **silently**, and ML answers `SIZE_GRID_ID is missing`. The ERP held both strings and discarded them               | a local refusal naming both domains         | #1381                  |
 | §9    | The `orderML` mirror is a curated legacy-parity projection, not a capture — it drops `mediations`, `fulfilled`, `cancel_detail`, `feedback`, `taxes`, `seller`, `context`                                           | a wire-faithful fixture                     | #1342                  |
-| §9    | `capture:fixtures` aborts on **every** run: `claims/search` always answers 400, and any non-404 status is fatal                                                                                                     | a permanent 4xx is data                     | #1357                  |
+| §9    | `capture:fixtures` aborts on **every** run: `claims/search` always answers 400, and any non-404 status is fatal                                                                                                     | a permanent 4xx is data                     | #1357 ◐                |
 | 4.2   | Re-import collapses every UP member's `nome` to the **family name** — 10 distinct became 1. ML returns the distinguishing member title; the importer discards it                                                    | member names survive                        | ⬜ accepted, not filed |
 | 4.2   | `snapshot-produto` compares children **positionally**, which cannot be right for a UP family: `produto.ordem` does not survive migration, so order is arbitrary. Produced 10 phantom findings                       | match by SKU                                | ⬜                     |
 | 5.x   | The stock sweep gates on the ERP `publicado` flag — server-side in S1, so an unpublished produto with a **live listing** is dropped with no skip row. #804/#1072 already removed this from the PRICE plan           | stock syncs while the listing is live       | ⬜ prompt running      |

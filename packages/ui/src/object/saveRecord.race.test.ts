@@ -83,7 +83,7 @@ vi.mock('firebase/firestore', () => ({
 
 const { RecordConflictError, saveRecord } = await import('./saveRecord');
 
-const schema = z.object({
+const _schema = z.object({
   nome: z.string().nullable().optional(),
   precos: z.record(z.string(), z.number()).nullable().optional(),
   ultimaModificacao: z.number().nullable().optional(),
@@ -91,7 +91,7 @@ const schema = z.object({
 
 let db: FakeDb;
 
-function fakeCollection(): CollectionHandle<typeof schema> {
+function fakeCollection(): CollectionHandle<typeof _schema> {
   return {
     resolvePath: () => 'produtos',
     ref: () => 'COLLECTION_REF' as never,

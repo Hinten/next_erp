@@ -5,12 +5,10 @@ import {
   ENDERECO_FALLBACKS,
   IE_SENTINELA,
   UF_SIGLA,
-  TIPO_CLIENTE,
   type EnderecoBuildOutcome,
 } from '@delfrance/schemas';
 
 import {
-  type ClienteImportFields,
   type EnderecoImportFields,
   MlBillingInfoUnsupportedError,
   billingInfoToClienteFields,
@@ -125,8 +123,6 @@ class FakeDb {
 function db(fake: FakeDb): Firestore {
   return fake as unknown as Firestore;
 }
-
-const NOW_MS = 1_753_180_800_000; // 2026-07-22T00:00:00.000Z (arbitrary, fixed)
 
 /* ------------------------------- fixtures --------------------------------- */
 

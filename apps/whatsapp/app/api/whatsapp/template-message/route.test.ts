@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { WhatsAppHttpError } from '@delfrance/integrations-whatsapp-cloud-api';
 import { mensagemDocId } from '@/lib/whatsapp/ids';
 import { WhatsappTokenMissingError } from '@/lib/whatsapp/whatsapp';
 

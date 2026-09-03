@@ -130,19 +130,28 @@ export function skuFromAttributes(
 /**
  * The FAMILY parent's sku, off the custom characteristic publish writes (#1400).
  *
- * ⚠️ Matched by **name**, never by id: it is sent id-less (`attrSkuPai`), and
- * whether ML echoes one back is unverified — ML has no sandbox, so no lane can
- * hold real credentials and no test here proves what the API returns. Ignoring
- * `id` entirely is what makes both answers work.
+ * Matched on an **id-less** attribute whose `name` folds equal. Both halves are
+ * load-bearing:
  *
- * ⚠️ The name comparison is deliberately trimmed + case-insensitive, because it
- * is matching a label ML round-trips rather than a value: the fold's scope is
- * `' código DE Referência '` ≡ `'Código de referência'`, and nothing else — the
- * VALUE is returned verbatim and never folded, so `'CAM-01'` and `'CAM-1'` stay
- * distinct sku. ⚠️ The fold being this loose is exactly why
- * {@link ML_ATTR_SKU_PAI_NOME} must not collide with an ML attribute's display
- * name; the near misses (`Modelo`, GTIN's `Código universal de produto`) are
- * checked there.
+ *  - ⚠️ **`id == null` is what makes a name collision harmless.** ML's taxonomy
+ *    attributes always carry an id, and the only party that can put an id-LESS
+ *    custom attribute on our own item is us — so id-less + name match is
+ *    unambiguously ours. Without this test an ML-DEFINED attribute whose display
+ *    name happened to fold equal would be read AS the parent sku, and the safe
+ *    name became much harder to guarantee once the characteristic was renamed
+ *    from a bespoke phrase to ordinary retail wording (#1418).
+ *  - the name fold is trimmed + case-insensitive because it matches a label ML
+ *    round-trips rather than a value: the scope is `' código DE Referência '` ≡
+ *    `'Código de referência'` and nothing else. The VALUE is returned verbatim
+ *    and never folded, so `'CAM-01'` and `'CAM-1'` stay distinct sku.
+ *
+ * ⚠️ **Observed on the wire 2026-09-03** (`GET /items/MLB5183026663`): ML stores
+ * the characteristic and echoes it back **`"id": null`** — it does not assign
+ * one. That is what licenses the `id == null` test; before that observation the
+ * match had to ignore `id` entirely because nothing proved what ML returns.
+ * ⚠️ If ML ever starts echoing an id, this stops matching and the parent sku
+ * falls through to the later rungs — blank, never wrong. That direction is
+ * deliberate.
  *
  * Never authoritative on its own: `import.ts` places it first in an ordered
  * chain precisely because it is absent from every família published before this
@@ -153,7 +162,8 @@ export function skuPaiFromAttributes(
 ): string | null {
   const alvo = ML_ATTR_SKU_PAI_NOME.trim().toLowerCase();
   const entry = (attrs ?? []).find(
-    (a) => typeof a.name === 'string' && a.name.trim().toLowerCase() === alvo,
+    // ⚠️ `a.id == null` is the whole safety of this function — see the docblock.
+    (a) => a.id == null && typeof a.name === 'string' && a.name.trim().toLowerCase() === alvo,
   );
   const v = entry?.value_name;
   return typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
@@ -448,18 +458,14 @@ export function attributesFromItem(
   attrs: readonly MlItemAttribute[] | null | undefined,
 ): MlAttribute[] {
   const mapped: MlAttribute[] = (attrs ?? [])
-    .filter(
-      (a) =>
-        typeof a.id === 'string' &&
-        a.id.length > 0 &&
-        !DERIVED_ATTRIBUTE_IDS.has(a.id) &&
-        // #1400 — publish RE-DERIVES the parent-sku characteristic from the
-        // produto, exactly like `SELLER_SKU`, so storing it would ship it twice.
-        // ⚠️ Excluded by NAME rather than by id because it is sent id-less and
-        // whether ML assigns one on the way back is unverified: the id filter
-        // above already drops the id-less case, and this covers the other.
-        skuPaiFromAttributes([a]) == null,
-    )
+    // #1400/#1418 — no clause is needed for the parent-sku characteristic.
+    // Publish re-derives it from the produto (like `SELLER_SKU`), so it must
+    // not be stored, and the id test below already drops it: ML echoes it
+    // back `id: null` (observed 2026-09-03, `MLB5183026663`). A name-based
+    // exclusion used to sit here for the case where ML assigned an id, and
+    // it was worse than the case it guarded — it silenced any REAL ML
+    // attribute whose display name folded equal, on simple items too.
+    .filter((a) => typeof a.id === 'string' && a.id.length > 0 && !DERIVED_ATTRIBUTE_IDS.has(a.id))
     .map((a) => {
       const measurement = measurementFromStruct(a) ?? measurementFromBakedValueName(a);
       const valueName = measurement?.value ?? a.value_name ?? null;

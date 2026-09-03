@@ -39,7 +39,7 @@ const PACKAGE_ROOT = join(HERE, '..', '..');
 function activeMoc(): string {
   const source = readFileSync(join(PACKAGE_ROOT, 'src', 'xsd', 'index.ts'), 'utf8');
   const match = /^const ACTIVE_MOC = '([^']+)';$/m.exec(source);
-  if (match == null) {
+  if (match?.[1] == null) {
     throw new Error(
       'could not read ACTIVE_MOC out of src/xsd/index.ts — if that constant was ' +
         'renamed or moved, teach this reader where it went',

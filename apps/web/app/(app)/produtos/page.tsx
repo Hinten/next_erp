@@ -23,6 +23,7 @@ import { ImportarMercadoLivreModal } from './_components/ImportarMercadoLivreMod
 import { EnviarEstoqueDialog } from './_components/EnviarEstoqueDialog';
 import { EnviarPrecoDialog } from './_components/EnviarPrecoDialog';
 import { PausarAnunciosDialog } from './_components/PausarAnunciosDialog';
+import { useDuplicarProdutoAction } from './_components/useDuplicarProdutoAction';
 import { useEnviarEstoqueAction } from './_components/useEnviarEstoqueAction';
 import { useEnviarPrecoAction } from './_components/useEnviarPrecoAction';
 import { usePausarAnunciosAction } from './_components/usePausarAnunciosAction';
@@ -145,12 +146,13 @@ export default function ProdutosPage() {
   // Gate the action by the SAME bit the backend route enforces, so a viewer is
   // never offered something that will 403.
   const { allowed: canWriteIntegracao } = usePermission(PERM.integracao.write);
+  const db = getFirebaseFirestore();
+  const { action: duplicarProdutoAction } = useDuplicarProdutoAction(db);
   const { action: enviarEstoqueAction, modal: enviarEstoqueModal } = useEnviarEstoqueAction();
   const { action: enviarPrecoAction, modal: enviarPrecoModal } = useEnviarPrecoAction();
   const { action: pausarAnunciosAction, modal: pausarAnunciosModal } = usePausarAnunciosAction();
   const [importOpen, setImportOpen] = useState(false);
 
-  const db = getFirebaseFirestore();
   // One read for the whole table, not one per row — see the hook. It serves
   // BOTH halves of the Preço column: the default lista's value inline and the
   // names behind its "ver todos os preços" button.
@@ -298,9 +300,15 @@ export default function ProdutosPage() {
         // ⚠️ "Pausar anúncios" is pause-only on purpose. Reactivating lives in
         // the produto's Mercado Livre tab, where the operator sees the listing
         // they are putting back on air — see `usePausarAnunciosAction`.
-        actions={
-          canWriteIntegracao ? [enviarPrecoAction, enviarEstoqueAction, pausarAnunciosAction] : []
-        }
+        //
+        // "Duplicar" is gated on `produto.write` (it creates a new produto),
+        // independently of the other three's `integracao.write` gate.
+        actions={[
+          ...(canWritePrecos ? [duplicarProdutoAction] : []),
+          ...(canWriteIntegracao
+            ? [enviarPrecoAction, enviarEstoqueAction, pausarAnunciosAction]
+            : []),
+        ]}
         // The docked rail rather than the top toolbar — the shape
         // /canais/mercado-livre adopted in #816. This screen carries the most
         // controls of any list in the app (Novo, Importar, Preços em massa,

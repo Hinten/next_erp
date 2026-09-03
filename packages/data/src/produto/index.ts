@@ -33,4 +33,8 @@ export {
   ProdutoReferencedError,
   MARKETPLACE_CHANNEL_LABELS,
   type ProdutoReferences,
+  buildDuplicarProdutoWriteOps,
+  ehFamiliaDeUmParaDuplicar,
+  type DuplicarProdutoInput,
+  type FilhoParaDuplicar,
 } from './usecases';
