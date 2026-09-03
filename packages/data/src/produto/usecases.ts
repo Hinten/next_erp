@@ -15,6 +15,7 @@ import {
   type ComponentesKit,
   type ImpostoProduto,
   type ParentParaMembroUnico,
+  type Produto,
   camposDeKitDoMembroUnico,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
@@ -737,4 +738,322 @@ export function buildMembroUnicoWriteOps(
       data: { filhoUnicoId: derivarFilhoUnico([{ id: childId }]) },
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Duplicar produto (#556) — clone a parent + its variation children
+// ---------------------------------------------------------------------------
+
+/** Flutter caps a produto name at 100 (`produto.ts:45`); the renamed clone must too. */
+const PRODUTO_NOME_MAX = 100;
+
+/** Port of the legacy `CopiarProdutoAction`'s "(cópia)" suffix. */
+const SUFIXO_DUPLICATA = ' (cópia)';
+
+/**
+ * Fields a duplicate must never inherit from its source, on BOTH the cloned
+ * parent and every re-created child.
+ *
+ * **Exclusive identifiers.** A second document carrying one of these does not
+ * merely look wrong — it makes an existing lookup answer the wrong question:
+ *
+ * - `sku` — the app's de-facto unique produto key, and the one that costs money
+ *   to get wrong. `orderProdutoResolve` (apps/mercado-livre) resolves an ML
+ *   order line by SKU through `probeSkuUnico`: two produtos sharing one yields
+ *   `via: 'ambiguous-sku'` with `produtoId: null`, so a LIVE sale moves no
+ *   stock and only an incidente records it. `resolveScan` (despacho checkout)
+ *   is worse — `where('sku','==',x) limit(1)` silently binds whichever produto
+ *   Firestore returns first. `SkuField`'s "gerar SKU único" button already
+ *   probes that same query, so uniqueness is an assumption the app makes
+ *   today, and `firestore.indexes.json` carries `produtos(sku)` plus
+ *   `produtos(sku, paiId)` to serve it. Cleared here; the caller supplies a
+ *   FRESHLY MINTED unique value per document (`novoSku` below).
+ * - `gtin` — catalogue-owned: it identifies the physical product, not our
+ *   record of it (`categoriaAtributos.ts` says exactly that of the ML
+ *   attribute), so two produtos may never claim the same one.
+ * - `codPai` — the parent's own code, mirrored onto its members by
+ *   `espelhoDoMembroUnico`. The clone no longer carries that code, so a copy
+ *   would name a produto that is not its parent.
+ * - `codFornecedor` — the supplier's code for that one stocked item.
+ *
+ * **Marketplace links** (`marketplace`/`marketplaceIds`/`integracoesComProduto`/
+ * `statusProdutosMarketplace`) — copying a live external listing id onto a new
+ * produto would make two documents claim the same anúncio. ⚠️ The anúncios
+ * THEMSELVES are the produto's `PRODUTO_SUBCOLLECTION_NAMES` subcollections and
+ * are never cloned at all: {@link buildDuplicarProdutoWriteOps} emits no
+ * subcollection path except the produto's own `extraData`/`imposto`, which is
+ * pinned by a test rather than left true by accident.
+ *
+ * **Media** (`fotos`/`videos`/`anexos`/`fotosArquivosIds`) — arquivos are
+ * content-addressed and doc-anchored (the `arquivos` skill); duplicating the
+ * REFERENCE here would double-count the same file in the orphan sweep without
+ * duplicating anything the operator could actually reuse.
+ *
+ * **Lifecycle** — `publicado` goes back to `false`. A produto is born a draft
+ * and is published explicitly (see that field's own docstring); a clone that
+ * arrived already visible in the catalogue would have been published by nobody.
+ *
+ * **Server-managed** — `nome_embedding` describes the SOURCE's name, which the
+ * parent clone changes below; stale from the moment it is written.
+ *
+ * ⚠️ What deliberately DOES carry over, because none of it is an identity:
+ * `categoriaProdutoOuterRef`; `tabelaDeMedidasModaUid` (a tabela de medidas is
+ * a shared document meant to be reused across produtos); `precos`/`custo`; the
+ * five dimensions; the kit fields — `componentesKit` names OTHER produtos, so a
+ * duplicated kit assembles from the same components, which is the point; and
+ * the variation taxonomy (`variacoesUid`/`grupoDeVariacoesUid`, ids of shared
+ * `grupoDeVariacoes` docs).
+ */
+function limparParaDuplicar(dados: Produto): Record<string, unknown> {
+  return {
+    ...dados,
+    sku: null,
+    gtin: null,
+    codPai: null,
+    codFornecedor: null,
+    marketplace: [],
+    marketplaceIds: null,
+    statusProdutosMarketplace: null,
+    integracoesComProduto: [],
+    fotos: null,
+    videos: null,
+    anexos: null,
+    fotosArquivosIds: null,
+    publicado: false,
+    nome_embedding: null,
+  };
+}
+
+/**
+ * The clone's name — the legacy `" (cópia)"` suffix, always present.
+ *
+ * ⚠️ Truncating the CONCATENATION instead drops the suffix exactly when it
+ * matters most: a source already at the 100-char cap would clone to a name
+ * character-for-character identical to its source, with nothing on screen
+ * saying which of the two rows is the copy. Truncate the base, then append.
+ */
+function nomeDuplicado(nome: string): string {
+  return `${nome.slice(0, PRODUTO_NOME_MAX - SUFIXO_DUPLICATA.length)}${SUFIXO_DUPLICATA}`;
+}
+
+/**
+ * The new PARENT document for a "Duplicar produto" clone: every field of
+ * `origem` except the exclusive ones (see {@link limparParaDuplicar}), renamed
+ * with the legacy suffix and carrying the freshly minted SKU.
+ */
+function montarProdutoPaiDuplicado(
+  origem: Produto,
+  novoSku: string | null,
+  now: number,
+): Record<string, unknown> {
+  return {
+    ...limparParaDuplicar(origem),
+    paiId: null,
+    nome: nomeDuplicado(origem.nome),
+    sku: novoSku,
+    timestamp: now,
+    ultimaModificacao: now,
+  };
+}
+
+/**
+ * One re-created variation CHILD for a "Duplicar produto" clone: every field of
+ * `origem` except the exclusive ones, re-parented onto the new clone and
+ * carrying its OWN freshly minted SKU.
+ *
+ * ⚠️ Unlike the parent, `nome` is copied VERBATIM. A variation's name is what
+ * tells two siblings apart (Camisa Azul — P / G), not a marker that this is a
+ * copy; the copy is named on the parent.
+ */
+function montarProdutoFilhoDuplicado(
+  origem: Produto,
+  novoPaiId: string,
+  novoSku: string | null,
+  now: number,
+): Record<string, unknown> {
+  return {
+    ...limparParaDuplicar(origem),
+    paiId: novoPaiId,
+    sku: novoSku,
+    // A child never points at a child (`familia.ts`'s `montarMembroUnico`
+    // makes the same choice for the sole-member case this mirrors).
+    filhoUnicoId: null,
+    timestamp: now,
+    ultimaModificacao: now,
+  };
+}
+
+/** One existing variation child, paired with the fresh identity its clone gets. */
+export interface FilhoParaDuplicar {
+  /** The SOURCE child's doc id — what the family-of-one check compares against. */
+  id: string;
+  dados: Produto;
+  /** Fresh doc id for the clone; this module has no id generator (the adapter does). */
+  novoId: string;
+  /**
+   * Fresh unique SKU for the clone, or null to leave it empty.
+   *
+   * ⚠️ Ignored for the genuine family-of-one member, which mirrors the parent's
+   * SKU by design (`espelhoDoMembroUnico`) — see
+   * {@link ehFamiliaDeUmParaDuplicar}.
+   */
+  novoSku: string | null;
+  /** The source child's `extraData` singleton, when it has one. */
+  extraData?: ProdutoExtraData | null;
+  /** The source child's per-operação `imposto` docs. */
+  impostos?: readonly ImpostoProduto[];
+}
+
+/** Everything {@link buildDuplicarProdutoWriteOps} needs — read and minted by the caller. */
+export interface DuplicarProdutoInput {
+  novoParentId: string;
+  parentOrigem: Produto;
+  /** Freshly minted unique SKU for the clone, or null to leave it empty. */
+  novoParentSku: string | null;
+  parentExtraData?: ProdutoExtraData | null;
+  parentImpostos?: readonly ImpostoProduto[];
+  filhos: readonly FilhoParaDuplicar[];
+  now: number;
+}
+
+/**
+ * Is the source a GENUINE family of one — exactly one child, and that child is
+ * the parent's REGISTERED `filhoUnicoId` (#1398)?
+ *
+ * Exported because the SDK adapter needs the same answer before this runs: the
+ * mirrored sole member takes the parent's SKU, so a SKU minted for it would
+ * cost a server probe and then be dropped. One rule in one place — two copies
+ * of it would drift toward plausible and disagree silently (root `CLAUDE.md`).
+ *
+ * ⚠️ One child is NOT sufficient, because what the mirror branch does is
+ * DISCARD the source child's own document and re-derive the member from the
+ * renamed parent clone. That is right for a registered family of one and wrong
+ * for a produto whose `filhoUnicoId` disagrees with its actual single child (a
+ * data anomaly #1402 exists to find): there the stored child is the only record
+ * of what that variation is, so it is re-created field-for-field like any other
+ * family member.
+ *
+ * ⚠️ This says nothing about the clone's OWN `filhoUnicoId` — neither branch
+ * copies it. `buildDuplicarProdutoWriteOps` always re-derives it from the fresh
+ * ids in the same batch, so a source's dangling pointer is not reproduced on the
+ * clone; reproducing it would just mint a second #1402 case.
+ */
+export function ehFamiliaDeUmParaDuplicar(
+  parentOrigem: Pick<Produto, 'filhoUnicoId'>,
+  filhos: readonly Pick<FilhoParaDuplicar, 'id'>[],
+): boolean {
+  return filhos.length === 1 && parentOrigem.filhoUnicoId === filhos[0]!.id;
+}
+
+/**
+ * The produto-owned subdocuments that ride a clone: the `extraData` singleton
+ * and the per-operação `imposto` docs. Both are catalog CONTENT (descrição,
+ * marca, SEO copy; the produto's tax overrides) — what an operator duplicating
+ * a produto expects to keep — and both go through the same builders every other
+ * produto save uses, so their wire shapes cannot drift from those.
+ *
+ * ⚠️ `googleMerchantData.id` is cleared: that is the Google Merchant OFFER id,
+ * an external identifier for one produto, and the reasoning that clears
+ * `marketplaceIds` applies to it unchanged. `title` stays — operator copy, not
+ * an identifier.
+ *
+ * ⚠️ Each cloned `imposto` row is re-stamped `now` (`timestamp: null` makes
+ * `buildImpostoWriteOps` do it); inheriting the source's stamp would date the
+ * new produto's tax row from before the produto existed. Only `set` ops ride
+ * along: a brand-new produto has nothing to delete, so a fully-cleared source
+ * row simply does not come with it.
+ */
+function buildSubdocsDuplicadosOps(
+  produtoId: string,
+  extraData: ProdutoExtraData | null | undefined,
+  impostos: readonly ImpostoProduto[] | undefined,
+  now: number,
+): ProdutoWriteOp[] {
+  const ops: ProdutoWriteOp[] = [];
+  if (extraData) {
+    const merchant = extraData.googleMerchantData;
+    ops.push(
+      ...buildExtraDataWriteOps(produtoId, {
+        ...extraData,
+        googleMerchantData: merchant ? { ...merchant, id: null } : null,
+      }),
+    );
+  }
+  if (impostos && impostos.length > 0) {
+    const semStamp = impostos.map((imp) => ({ ...imp, timestamp: null }));
+    ops.push(...buildImpostoWriteOps(produtoId, semStamp, now).filter((op) => op.type === 'set'));
+  }
+  return ops;
+}
+
+/**
+ * The full write set for "Duplicar produto" (#556): a new parent document, one
+ * re-created document per existing variation child, and each of those
+ * produtos' `extraData`/`imposto` subdocuments — never a `copyHref` pre-fill,
+ * because a produto owns children, kit composition and marketplace links a
+ * plain create-form seed can't touch (the issue's own opening line).
+ *
+ * Every fresh id and every fresh SKU is the CALLER's: this module is pure, and
+ * minting a unique SKU needs a server probe (`gerarSkuUnico`, apps/web).
+ *
+ * ⚠️ **What the clone does not inherit is the whole point** — see
+ * {@link limparParaDuplicar} for the exclusive-field list and the failure each
+ * entry prevents.
+ *
+ * ⚠️ **The family-of-one case reuses {@link buildMembroUnicoWriteOps}, not a
+ * field-by-field child clone.** When `parentOrigem` has exactly one child AND
+ * that child is its registered `filhoUnicoId` (a genuine family of one,
+ * #1398), the new child is MIRRORED from the renamed clone — the same mechanism
+ * every other creation path in the app uses to mint a sole member — rather than
+ * copied verbatim from the old child, which would leave the new child naming
+ * the OLD (pre-rename) produto and carrying the OLD SKU. Every other shape
+ * (zero children, or more than one — a real variation family) re-creates each
+ * child's own document.
+ */
+export function buildDuplicarProdutoWriteOps(input: DuplicarProdutoInput): ProdutoWriteOp[] {
+  const { novoParentId, parentOrigem, novoParentSku, filhos, now } = input;
+
+  const ehFamiliaDeUm = ehFamiliaDeUmParaDuplicar(parentOrigem, filhos);
+  const parentClonado = montarProdutoPaiDuplicado(parentOrigem, novoParentSku, now);
+  // ⚠️ Never inherited: `parentOrigem.filhoUnicoId` names the OLD child, which
+  // would be actively wrong on the clone rather than merely stale. For a
+  // genuine family of one it stays null here and `buildMembroUnicoWriteOps`
+  // sets the real value in its own `update`; otherwise it is derived from the
+  // fresh child ids in this same batch (`derivarFilhoUnico`).
+  parentClonado.filhoUnicoId = ehFamiliaDeUm
+    ? null
+    : derivarFilhoUnico(filhos.map((f) => ({ id: f.novoId })));
+
+  const ops: ProdutoWriteOp[] = [
+    { type: 'set', path: produtoDocPath(novoParentId), data: parentClonado },
+  ];
+
+  if (ehFamiliaDeUm) {
+    ops.push(
+      ...buildMembroUnicoWriteOps(
+        novoParentId,
+        filhos[0]!.novoId,
+        parentClonado as ParentParaMembroUnico,
+      ),
+    );
+  } else {
+    for (const filho of filhos) {
+      ops.push({
+        type: 'set',
+        path: produtoDocPath(filho.novoId),
+        data: montarProdutoFilhoDuplicado(filho.dados, novoParentId, filho.novoSku, now),
+      });
+    }
+  }
+
+  // Subdocuments last, after every produto doc: they are separate documents
+  // whose relative write order does not matter, and keeping them at the tail
+  // leaves the produto ops at stable indices for the caller and the tests.
+  ops.push(
+    ...buildSubdocsDuplicadosOps(novoParentId, input.parentExtraData, input.parentImpostos, now),
+  );
+  for (const filho of filhos) {
+    ops.push(...buildSubdocsDuplicadosOps(filho.novoId, filho.extraData, filho.impostos, now));
+  }
+  return ops;
 }
