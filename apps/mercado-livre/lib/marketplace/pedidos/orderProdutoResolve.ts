@@ -254,11 +254,21 @@ export async function resolveOrderLineProduto(
     // A sole member's sku is derived (`<paiSku>-UN`) and the member is what
     // publish sends, so ML's `seller_sku` for a família of one is a string NO
     // root carries. Without this, resolution falls to the unscoped rung below,
-    // which has no `ehKit` guard: a KIT would bind its own sole member, whose
-    // `componentesKit` publish never copied, and `calcularAlteracoesEstoque`
-    // would then move NOTHING — a live ML sale reserving no components, with no
-    // incidente raised because the pedido does have a produto. Silent
-    // overselling, which is exactly the harm the block above exists to prevent.
+    // which has no `ehKit` guard — so a KIT would bind its own sole member.
+    //
+    // ⚠️ That is wrong for the reason `probeSkuUnico` gives, NOT for the one an
+    // earlier version of this comment gave. It claimed the member carries no
+    // `componentesKit`, so the sale would move nothing; that stopped being true
+    // when `planejarMembroUnico` moved to `montarMembroUnico`, whose mirror
+    // copies all four kit fields. The real reason is that the member's map is a
+    // MIRROR and the three-way merge deliberately leaves a field the operator
+    // diverged alone — so parent and member can legitimately disagree, and the
+    // parent is the document that owns the composition an operator edits and
+    // that #1450's repointing rewrites. Binding the member reads a copy; binding
+    // the parent reads the answer.
+    //
+    // It also keeps the diagnostic honest: the unscoped rung would report
+    // `sku-any` with its "sem vínculo" warning for a line this rung can name.
     //
     // ⚠️ One extra indexed read, and only on the path that already missed both
     // the link and the scoped probes. The `produtos (sku, paiId)` composite
