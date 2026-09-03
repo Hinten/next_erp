@@ -1,4 +1,9 @@
-import type { DocumentData, DocumentReference, Firestore } from 'firebase-admin/firestore';
+import type {
+  DocumentData,
+  DocumentReference,
+  Firestore,
+  Timestamp,
+} from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
 import { produtoCollection } from '@delfrance/data/admin/collections';
@@ -7,6 +12,8 @@ import {
   camposEspelhadosQueMudaram,
   planejarSincronizacaoDoMembroUnico,
   produtoMeta,
+  reapontarComponentesKit,
+  type ComponentesKit,
   samePrecos,
   type PrecosMap,
 } from '@delfrance/schemas';
@@ -249,6 +256,158 @@ export async function sincronizarMembroUnico(
 }
 
 /**
+ * How many referencing kits one pointer move may repoint inline.
+ *
+ * ⚠️ Not a round number picked for tidiness. ADR 0014 measured **~2 000 kits
+ * sharing one component** on the printed-shirt catalogue (`kitRollup.ts`), and
+ * this sweep is tier 1 — one RPC per document, because a 400-doc `WriteBatch`
+ * commits atomically and a single stale kit would fail the other 399. So the
+ * fan-out is bounded rather than assumed small: past the cap the trigger stops,
+ * says so loudly, and leaves the rest to the migration's re-runnable
+ * `--target kits` phase, which is built for exactly this shape of work.
+ *
+ * The census (`audit:produto-sem-variacoes`) reports the corpus's real worst
+ * fan-out. If it comes back near the ADR's number, the fix is the queued
+ * `recalcularDimensoesKit` shape — the paged index
+ * (`componentesKitKeys CONTAINS, __name__ ASC`) already exists — not a bigger cap.
+ */
+const LIMITE_DE_KITS_INLINE = 200;
+
+/**
+ * Repoint every kit that names `produtoId` (or the sole member it just stopped
+ * naming) at the produto that now holds the stock.
+ *
+ * ## ⚠️ Why this exists at all
+ *
+ * The #1402 migration fixes the corpus once, and deliberately SKIPS produtos
+ * that sell on Mercado Livre — publish owns those. Publish's `'adotar'` arm then
+ * converts one whenever a seller publishes it, moving its available stock onto a
+ * new sole member. A kit naming that produto was correct the day the migration
+ * ran and breaks the day the listing goes up, with no migration left to catch it:
+ * `kitEstoqueDisponivel` scores the parent 0, and the stock sweep pushes that 0
+ * to ML, so the kit stops selling.
+ *
+ * ## ⚠️ It fires on any pointer MOVE, not just null → set
+ *
+ * `VariationManager` re-derives `filhoUnicoId` from the surviving child set on
+ * every save, so adding a row and delete-marking the old sole member in ONE save
+ * moves the pointer A → B. Gating on `before == null` misses that, and then
+ * `onProdutoDeleted`'s cascade runs for A instead — whose empty-kit rule forces
+ * `ehKit: false` on any kit whose only component was A. **A kit silently stops
+ * being a kit.** So the outgoing member is swept too.
+ *
+ * ## ⚠️ `cleanupInboundKitReferences` is NOT the precedent it looks like
+ *
+ * That sweep runs the same `array-contains` query with an unguarded 400-doc
+ * batch, and gets away with it because `findProdutoReferences` BLOCKS deleting a
+ * referenced produto — so it almost always matches zero rows. This one fires
+ * precisely when references exist. Hence tier 1 per document and the cap above.
+ *
+ * ## ⚠️ No re-entry loop
+ *
+ * The sweep writes other produtos' `componentesKit`; it never writes
+ * `filhoUnicoId`. So the trigger re-fired by each of those writes sees no pointer
+ * move and exits on the pure gate. Redelivery is idempotent for the same reason
+ * the migration's phase is: `unidadeVendavel` is a fixpoint, so a second pass
+ * finds `mudou: false` and writes nothing.
+ *
+ * @returns how many kits were repointed, and how many lost their precondition.
+ */
+export async function reapontarKitsQueReferenciam(
+  db: Firestore,
+  produtoId: string,
+  before: DocumentData | undefined,
+  after: DocumentData,
+): Promise<{ reapontados: number; conflitos: number } | null> {
+  // A child never has a sole member of its own, whatever it stores.
+  if (after.paiId != null) return null;
+  const novo = typeof after.filhoUnicoId === 'string' ? after.filhoUnicoId : '';
+  if (novo === '') return null;
+  const anterior = typeof before?.filhoUnicoId === 'string' ? before.filhoUnicoId : null;
+  if (anterior === novo) return null;
+
+  // Both ids: the parent (whose stock has just moved to `novo`) and the member it
+  // stopped naming, which `onProdutoDeleted` may be about to strip out of every
+  // kit rather than repoint.
+  const alvos = [produtoId, ...(anterior !== null && anterior !== '' ? [anterior] : [])];
+  const resolver = (id: string): string => (alvos.includes(id) ? novo : id);
+
+  const porId = new Map<string, DocumentReference>();
+  const dados = new Map<string, DocumentData>();
+  const versoes = new Map<string, Timestamp>();
+  for (const alvo of alvos) {
+    const snap = await produtoCollection
+      .ref(db, {})
+      .where('componentesKitKeys', 'array-contains', alvo)
+      .get();
+    for (const doc of snap.docs) {
+      // A kit cannot list itself, but be defensive — `cleanupInboundKitReferences`
+      // filters the same id for the same reason.
+      if (doc.id === produtoId) continue;
+      // ⚠️ A pointer move queries TWO ids and one kit can reference both. Keying
+      // by doc id is what makes it read and written once; a plain array here would
+      // write the same document twice and the second write would lose its own
+      // precondition against the first.
+      porId.set(doc.id, doc.ref);
+      dados.set(doc.id, doc.data() ?? {});
+      if (doc.updateTime) versoes.set(doc.id, doc.updateTime);
+    }
+  }
+
+  if (porId.size > LIMITE_DE_KITS_INLINE) {
+    logger.error(
+      `onProdutoChanged: ${produtoId} é componente de ${porId.size} kit(s) — acima do limite ` +
+        `de ${LIMITE_DE_KITS_INLINE} para reaponte inline. NENHUM foi reapontado; rode ` +
+        `\`migrate:produto-sem-variacoes --target kits\` para esse produto`,
+    );
+    return { reapontados: 0, conflitos: porId.size };
+  }
+
+  let reapontados = 0;
+  let conflitos = 0;
+  for (const [id, ref] of porId) {
+    const plano = reapontarComponentesKit(
+      (dados.get(id) ?? {}).componentesKit as ComponentesKit | null,
+      resolver,
+    );
+    if (!plano.mudou) continue;
+    for (const colisao of plano.colisoes) {
+      if (colisao.quantidadeSomada !== null) continue;
+      // ⛔ `limitarEstoque` disagrees between the two entries, so there is no
+      // correct sum — see `reapontarComponentesKit`. Both were left alone; a human
+      // has to choose, and this is the only place that will ever say so.
+      logger.error(
+        `onProdutoChanged: kit ${id} tem componentes que colidem em ${colisao.alvo} com ` +
+          `limitarEstoque divergente (${colisao.de.join(', ')}) — ficaram como estavam`,
+      );
+    }
+    const versao = versoes.get(id);
+    const patch = {
+      componentesKit: plano.componentesKit,
+      componentesKitKeys: plano.componentesKitKeys,
+    };
+    try {
+      // ⚠️ Tier 1. The patch is derived from the document just read, and the Kit
+      // tab is a live editor surface — a blind write would silently drop an
+      // operator's whole component list.
+      await (versao ? ref.update(patch, { lastUpdateTime: versao }) : ref.update(patch));
+      reapontados += 1;
+    } catch (err) {
+      if (!isFailedPrecondition(err)) throw err;
+      conflitos += 1;
+      // Losing is safe but NOT silent: the rewrite is idempotent and
+      // `--target kits` is the reconciler, so the kit is recoverable — but nothing
+      // else would ever mention it.
+      logger.warn(
+        `onProdutoChanged: kit ${id} não reapontado (escrita concorrente venceu) — ` +
+          `ainda aponta para ${produtoId}`,
+      );
+    }
+  }
+  return { reapontados, conflitos };
+}
+
+/**
  * Fan the kit weight/box rollup out to a queue when — and only when — this write
  * actually moved one of the five derived fields on a produto that can be a kit
  * component. One enqueue, no Firestore reads: a component can sit in thousands
@@ -401,6 +560,21 @@ export async function recordProdutoModificationAndPropagate(
   const membroSincronizado = await sincronizarMembroUnico(db, produtoId, before, after);
   if (membroSincronizado !== null) {
     logger.info(`onProdutoChanged: ${produtoId} → espelho do membro único ${membroSincronizado}`);
+  }
+
+  // ⚠️ LAST, below the mirror, and for the same reason the mirror sits below the
+  // enqueue: this one rethrows anything that is not `FAILED_PRECONDITION` (rule
+  // 6), and a handler that does not retry must not lose the work above to a
+  // transient `UNAVAILABLE` from a query this sweep makes.
+  //
+  // It is also the only piece here that writes OTHER produtos, so running it last
+  // means every effect on THIS produto has already landed.
+  const kitsReapontados = await reapontarKitsQueReferenciam(db, produtoId, before, after);
+  if (kitsReapontados !== null && kitsReapontados.reapontados > 0) {
+    logger.info(
+      `onProdutoChanged: ${produtoId} → ${kitsReapontados.reapontados} kit(s) reapontado(s) ` +
+        `para o membro único`,
+    );
   }
 }
 
