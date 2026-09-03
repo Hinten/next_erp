@@ -838,12 +838,18 @@ describe('buildDuplicarProdutoWriteOps', () => {
 
       // The mirror sources from the ALREADY-cleaned, ALREADY-renamed parent
       // (`montarMembroUnico` reads `parentClonado`), so the child's name carries
-      // the suffix and its SKU is the freshly minted one — the whole point of not
-      // cloning the old child's doc verbatim.
+      // the suffix and its SKU is derived from the freshly minted one — the whole
+      // point of not cloning the old child's doc verbatim.
+      //
+      // ⚠️ The sku is DERIVED, not copied: `skuDoMembroUnico` appends
+      // `SUFIXO_MEMBRO_UNICO`, because a verbatim copy put two produto documents
+      // behind one code. Nothing in this module chooses that — the literal is
+      // asserted here rather than re-derived so this test can still fail if the
+      // derivation changes.
       expect(dadosDe(ops[1])).toMatchObject({
         nome: 'Camisa Azul (cópia)',
         paiId: 'p2',
-        sku: 'NOVO-1',
+        sku: 'NOVO-1-UN',
       });
     });
 
@@ -861,7 +867,8 @@ describe('buildDuplicarProdutoWriteOps', () => {
         entrada({ parentOrigem: origem, filhos: [filhoAntigo] }),
       );
 
-      expect(dadosDe(ops[1])).toMatchObject({ sku: 'NOVO-1', gtin: null });
+      // Derived from the parent's FRESH sku (`NOVO-1`), never the source's.
+      expect(dadosDe(ops[1])).toMatchObject({ sku: 'NOVO-1-UN', gtin: null });
       expect(dadosDe(ops[1]).sku).not.toBe('CAM-1');
     });
 
