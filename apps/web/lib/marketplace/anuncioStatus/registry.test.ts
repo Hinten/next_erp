@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { INTEGRACAO_TIPO, type IntegracaoTipo } from '@delfrance/schemas';
 
 import type { MotivoNaoSuportado } from '@/lib/marketplace/caps/suporteCanal';

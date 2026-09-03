@@ -6,7 +6,7 @@
  * real Firestore). These offline tests cover correctness of the
  * single-call paths + the failure modes.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { NFeConfig } from '@delfrance/schemas';
 
 import {
@@ -19,6 +19,7 @@ import {
   type NFeConfigStore,
   type NFeConfigTx,
 } from '../../src/numeracao/index';
+import { AMBIENTE_NFE, CONTINGENCIA_MODO } from '@delfrance/schemas';
 
 /**
  * In-memory store backed by a Map. `runTransaction` serialises calls
@@ -60,7 +61,12 @@ const SEED: NFeConfig = {
   numeracao_atual: 0,
   serie: 1,
   idLote: 0,
-  ambiente: '2',
+  ambiente: AMBIENTE_NFE.homologacao,
+  contingencia_modo: CONTINGENCIA_MODO.none,
+  contingencia_justificativa: null,
+  contingencia_dataInicio: null,
+  emitirReformaTributaria: false,
+  timestamp: null,
 };
 
 const FILIAL = 'F-1';

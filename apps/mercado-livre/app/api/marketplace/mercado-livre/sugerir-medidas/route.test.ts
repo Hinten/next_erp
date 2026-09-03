@@ -292,14 +292,13 @@ describe('POST /sugerir-medidas — the happy path', () => {
   it('does not lock the operator out of the OTHER agent', async () => {
     // The two agents share the in-flight map. A key that is not namespaced would
     // make a pending attribute suggestion block this button, and vice versa.
-    const { runSingleFlight } = await import('@delfrance/ai');
     const keys: string[] = [];
     const spy = vi.fn(async (key: string, task: () => Promise<unknown>) => {
       keys.push(key);
       return task();
     });
     vi.spyOn(await import('@delfrance/ai'), 'runSingleFlight').mockImplementation(
-      spy as typeof runSingleFlight,
+      spy as typeof import('@delfrance/ai').runSingleFlight,
     );
 
     await POST(req(ok));

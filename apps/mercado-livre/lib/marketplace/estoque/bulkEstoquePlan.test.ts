@@ -228,7 +228,6 @@ const FROM_MS = Date.parse('2026-07-24T10:00:00.000Z');
 const T1 = Date.parse('2026-07-24T10:05:00.000Z');
 const T2 = Date.parse('2026-07-24T10:10:00.000Z');
 const T4 = Date.parse('2026-07-24T10:20:00.000Z');
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Every env var the tests mutate — cleared after each test. */
 const TOUCHED_ENV = [
@@ -269,7 +268,6 @@ const notOf = (b: unknown) => ({ kind: 'not', b });
 const existsOf = (fld: string) => ({ kind: 'exists', f: fld });
 const contains = (l: unknown, v: unknown) => ({ kind: 'arrayContains', l, v });
 const inAny = (l: unknown, values: unknown) => ({ kind: 'equalAny', l, values });
-const cnst = (v: unknown) => ({ kind: 'constant', v });
 const cond = (c: unknown, t: unknown, e: unknown) => ({ kind: 'conditional', c, t, e });
 const len = (of: unknown) => ({ kind: 'length', of });
 

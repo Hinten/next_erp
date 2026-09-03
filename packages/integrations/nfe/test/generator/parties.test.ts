@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
-import { IE_SENTINELA, TIPO_CLIENTE } from '@delfrance/schemas';
+import { IE_SENTINELA, TIPO_CLIENTE, UF_SIGLA } from '@delfrance/schemas';
 
 import { buildDest, buildEmit, NFePartiesError } from '../../src/generator/parties';
 
@@ -24,7 +24,7 @@ const ENDERECO: Endereco = {
   cep: '04504010',
   codigoMunicipio: '3550308',
   cidade: 'São Paulo',
-  estado: 'SP',
+  estado: UF_SIGLA.SP,
   cPais: null,
   pais: null,
   nome: null,
@@ -34,6 +34,7 @@ const ENDERECO: Endereco = {
   imun: null,
   email: null,
   telefone: null,
+  timestamp: null,
 };
 
 function cliente(overrides: Partial<Cliente> = {}): Cliente {
@@ -52,6 +53,7 @@ function cliente(overrides: Partial<Cliente> = {}): Cliente {
     nome_embedding: null,
     telefone_embedding: null,
     userCliente: null,
+    idMercadoLivre: null,
     ...overrides,
   };
 }
@@ -246,7 +248,7 @@ describe('buildEmit — filial.sede.codigoMunicipio', () => {
 
 describe('buildDest — endereco.codigoMunicipio', () => {
   it('accepts a 7-digit código', () => {
-    expect(dest().enderDest.cMun).toBe('3550308');
+    expect(dest().enderDest!.cMun).toBe('3550308');
   });
 
   it.each(CMUN_INVALIDO)('rejects %s, naming the field', (_label, codigoMunicipio) => {

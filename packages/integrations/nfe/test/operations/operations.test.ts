@@ -1,6 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import https from 'node:https';
-import forge from 'node-forge';
 
 import type { NFeCertificate } from '../../src/cert';
 import { NFeXsdValidationError } from '../../src/xsd';

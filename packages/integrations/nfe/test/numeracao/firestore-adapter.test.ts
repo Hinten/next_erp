@@ -16,6 +16,7 @@ import {
   type AdminFirestoreLike,
   type AdminTxLike,
 } from '../../src/numeracao/firestore-adapter';
+import { AMBIENTE_NFE, CONTINGENCIA_MODO } from '@delfrance/schemas';
 
 /** Fake Firestore — same shape as firebase-admin, in-memory storage. */
 function fakeFirestore(seed: Record<string, NFeConfig>): {
@@ -62,7 +63,12 @@ const SEED: NFeConfig = {
   numeracao_atual: 0,
   serie: 1,
   idLote: 0,
-  ambiente: '2',
+  ambiente: AMBIENTE_NFE.homologacao,
+  contingencia_modo: CONTINGENCIA_MODO.none,
+  contingencia_justificativa: null,
+  contingencia_dataInicio: null,
+  emitirReformaTributaria: false,
+  timestamp: null,
 };
 
 describe('nfeConfigStoreFromFirestore', () => {
@@ -88,15 +94,23 @@ describe('nfeConfigStoreFromFirestore', () => {
     expect(state['filiais/F-1/nfeconfig/default']).toBeUndefined();
   });
 
-  it('stamps a timestamp on every write', async () => {
+  it('stamps a millisecond timestamp on every write', async () => {
+    // Regression guard for the shape, not just the freshness. This writer used
+    // to send `new Date().toISOString()` while `nfeConfigSchema` declares the
+    // field as `millisSinceEpoch()` — invisible at runtime because that reader
+    // is tolerant and coerced it back, and invisible to tsc because this file
+    // was outside the package's tsconfig `include`. Raised in review on #1449.
+    const seeded = 1_735_689_600_000; // 2025-01-01T00:00:00Z
     const { fs, state } = fakeFirestore({
-      'filiais/F-1/nfeconfig/default': { ...SEED, timestamp: '2025-01-01T00:00:00Z' },
+      'filiais/F-1/nfeconfig/default': { ...SEED, timestamp: seeded },
     });
     const store = nfeConfigStoreFromFirestore(fs);
     await nextIdLote(store, 'F-1');
     const written = state['filiais/F-1/nfeconfig/default'];
-    expect(typeof written?.timestamp).toBe('string');
-    expect(written?.timestamp).not.toBe('2025-01-01T00:00:00Z'); // updated
+    expect(typeof written?.timestamp).toBe('number');
+    expect(written?.timestamp).not.toBe(seeded); // re-stamped
+    // ⚠️ A near-miss: an ISO string would satisfy "changed" but not the schema.
+    expect(written?.timestamp).not.toBe(new Date(seeded).toISOString());
   });
 
   it('runs an unknown filial through the not-found error path', async () => {

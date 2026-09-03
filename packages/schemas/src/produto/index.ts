@@ -45,6 +45,7 @@ export * from './pureLogic/kitEstoque'; // kit available-stock (min over limitar
 export * from './pureLogic/kitUnidadeVendavel'; // repoint componentesKit at the sellable unit (#1398)
 export * from './pureLogic/dimensoes'; // box/bag estimator + the ProdutoMedidas shape it reads
 export * from './pureLogic/dimensoesKit'; // kit weight + box rollup (the ONE impl client & server share)
+export * from './pureLogic/googleMerchantFeed'; // Google Merchant complementary XML feed (#553)
 
 // === PAGE MODEL (aggregate for the screen; NOT a collection) ===
 export * from './pageModel/pageModel';
