@@ -4,7 +4,7 @@ import {
   type Pedido,
   bucketOf,
   pedidoTotal,
-  EstadoBucket,
+  type EstadoBucket,
 } from '@delfrance/schemas';
 
 /**

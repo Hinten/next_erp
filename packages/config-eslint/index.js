@@ -182,6 +182,33 @@ export function typeAware(
         // `plugins` across every object matching a file, which is exactly how
         // `delfrance/prefer-schema-enum` above works.
         'import/no-duplicates': 'error',
+        // The third of the verbatimModuleSyntax family, and the one whose
+        // scope had to be cut down after measuring it.
+        //
+        // What it catches HERE is a binding that is a VALUE in TS terms — a Zod
+        // schema, a class, an enum — imported without `type` but referenced only
+        // in type positions. tsc cannot complain (the import is legal), so under
+        // verbatimModuleSyntax it is emitted and the module is loaded at runtime
+        // for nothing. `z.infer<typeof xSchema>` makes this the repo's most
+        // likely shape. 11 such sites existed.
+        //
+        // ⚠️ `disallowTypeAnnotations` is turned OFF, and that is a deliberate
+        // scope cut rather than a concession. It is a SEPARATE ban, on inline
+        // `import('./x').Foo` type annotations, and it accounted for 275 of the
+        // 286 reports — almost all in test files, where an `import()` annotation
+        // is the idiomatic way to name a type inside a `vi.mock` factory without
+        // hoisting an import above it.
+        //
+        // It has none of the justification the rest of this block rests on: an
+        // `import()` type annotation lives entirely in type space and TS erases
+        // it, so it emits NOTHING and verbatimModuleSyntax never sees it. It is
+        // also not autofixable. Enabling it would mean 275 hand-edits of working
+        // test code to buy zero runtime change — churn bought with the credibility
+        // of the two rules above, which do pay for themselves.
+        '@typescript-eslint/consistent-type-imports': [
+          'error',
+          { fixStyle: 'inline-type-imports', disallowTypeAnnotations: false },
+        ],
 
         // ERROR for both, on the same grounds as `no-unused-vars` above: every
         // pre-existing site is fixed in the PR that enables them, so there is no

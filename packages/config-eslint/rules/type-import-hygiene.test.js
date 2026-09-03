@@ -28,7 +28,10 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  * — emits `import './x';`, a real runtime module load that exists purely
  * because of how the import was spelled. It typechecks, lints, builds and runs.
  * There were 34 of these when the rule was turned on, and nothing anywhere in
- * the repo reported a single one.
+ * the repo reported a single one. A third shape belongs to the same family: a
+ * binding that is a VALUE in TS terms, imported without `type` but referenced
+ * only in type positions. tsc cannot object — the import is legal — so it too
+ * is emitted and the module loaded for nothing. 11 of those.
  *
  * ⚠️ This is why the third assertion below matters more than the first two:
  * **turning `verbatimModuleSyntax` off would silently remove the entire reason
@@ -60,6 +63,34 @@ describe('type-import hygiene is enabled', () => {
 
   it('sets import/no-duplicates to error', () => {
     expect(block().rules['import/no-duplicates']).toBe('error');
+  });
+
+  /**
+   * ⚠️ Both options are load-bearing and were chosen by measurement, not taste.
+   *
+   * `fixStyle: 'inline-type-imports'` — NOT the rule's default, and not the
+   * repo's majority spelling either. `separate-type-imports` emits a SECOND
+   * import declaration for the same module, which `import/no-duplicates` above
+   * then merges back; the two fixers fight, and the observed output was a
+   * malformed `import type { A , type B }` (TS2206) plus, in one file, a
+   * silently deleted `eslint-disable` directive. Inline keeps one declaration,
+   * so there is nothing to merge and the pair composes: a declaration that ends
+   * up ALL-inline-type is then picked up by `no-import-type-side-effects` and
+   * rewritten to `import type { … }`, which terminates.
+   *
+   * `disallowTypeAnnotations: false` — that sub-ban is a different rule wearing
+   * the same name: it forbids inline `import('./x').Foo` TYPE ANNOTATIONS, and
+   * it accounted for 275 of the 286 reports, nearly all in `vi.mock` factories.
+   * An `import()` annotation lives entirely in type space and TS erases it, so
+   * it emits nothing and the verbatimModuleSyntax argument does not reach it.
+   * It is also not autofixable. Leaving it on would mean 275 hand-edits of
+   * working test code for zero runtime change.
+   */
+  it('sets consistent-type-imports to error, inline, without the annotation ban', () => {
+    expect(block().rules['@typescript-eslint/consistent-type-imports']).toEqual([
+      'error',
+      { fixStyle: 'inline-type-imports', disallowTypeAnnotations: false },
+    ]);
   });
 });
 

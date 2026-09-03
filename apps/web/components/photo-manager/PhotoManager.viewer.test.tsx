@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { FormProvider, useForm } from 'react-hook-form';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { Firestore } from 'firebase/firestore';
-import { type GrupoComId, varianteFakePath, Foto } from '@delfrance/schemas';
+import { type GrupoComId, varianteFakePath, type Foto } from '@delfrance/schemas';
 import type { SnapshotState } from '@delfrance/data/hooks';
 
 type Snap = SnapshotState<{ id: string; data: { url: string | null } } | null>;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { INTEGRACAO_TIPO, type Integracao, Produto } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type Integracao, type Produto } from '@delfrance/schemas';
 import type { IntegracoesStatus } from '@/lib/data/useIntegracoes';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { ProdutoIntegracoesCell } from './ProdutoListCells';
