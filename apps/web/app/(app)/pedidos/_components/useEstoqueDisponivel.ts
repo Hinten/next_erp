@@ -308,6 +308,8 @@ export function useEstoqueDisponivel(
       // ⚠️ On ABSENCE, not on zero: when both rows hold units the target answers,
       // matching what the ERP does for any parent/child split.
       const fonteDeReserva = new Map<string, string>();
+      /** Components with no row of their own that MIGHT have units on a parent. */
+      const candidatosDePai = new Map<string, string>();
       for (const [id, alvo] of alvoDe) {
         if (porAlvo.has(alvo)) continue;
         if (alvo !== id) {
@@ -316,9 +318,45 @@ export function useEstoqueDisponivel(
           fonteDeReserva.set(id, id);
           continue;
         }
-        // The kit names the CHILD and the child has no row here: ask its parent.
+        // The kit names a CHILD with no row here. Whether its parent may answer
+        // depends on the parent, so it is only a CANDIDATE until proven below.
         const paiId = produtos.get(id)?.paiId ?? null;
-        if (paiId) fonteDeReserva.set(id, paiId);
+        if (paiId !== null && paiId !== '') candidatosDePai.set(id, paiId);
+      }
+
+      /**
+       * ⛔ Only a family of ONE, and the proof has to come from the PARENT.
+       *
+       * `paiId != null` is not that proof. `unidadeVendavel` maps EVERY child to
+       * itself, so `alvo === id` holds for a variation of a family of many too —
+       * and an earlier version let those through. Two siblings whose rows are
+       * absent then each read the parent's pool in full, and because they are
+       * DISTINCT targets the "one pool, divided once" logic below never fires: a
+       * kit needing 1+1 of a 100-unit parent read 100 assemblable instead of 50.
+       * Overstating availability is the direction ADR 0014 goes out of its way to
+       * avoid, and this lands on the screen where the operator picks quantities.
+       *
+       * The test is reciprocity — the parent must point back at THIS child — which
+       * is exactly what `unidadeVendavel` answers when asked about the parent, and
+       * it carries the drift guard for free.
+       *
+       * ⚠️ ONE chunked query for every candidate parent, matching the component
+       * read above, and only when some component's row was missing.
+       */
+      if (candidatosDePai.size > 0) {
+        const pais = await getDocsByIds(
+          db,
+          produtoCollection,
+          [...new Set(candidatosDePai.values())],
+          {},
+          { source: 'server' },
+        );
+        for (const [id, paiId] of candidatosDePai) {
+          const pai = pais.get(paiId);
+          if (pai && unidadeVendavel({ ...pai, id: paiId }) === id) {
+            fonteDeReserva.set(id, paiId);
+          }
+        }
       }
       // Read each distinct SOURCE once — a kit naming both halves of one family
       // resolves both entries to the same parent row.

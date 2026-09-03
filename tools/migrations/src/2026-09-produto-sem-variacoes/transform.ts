@@ -192,40 +192,6 @@ export function unidadesPresasSemDeposito(linhas: readonly LinhaDeposito[]): num
   return linhas.reduce((acc, l) => (l.depositoId == null ? acc + l.moveria : acc), 0);
 }
 
-/**
- * Plan one produto's conversion, or say why it is skipped.
- *
- * ## ⚠️ Idempotence is arithmetic, not bookkeeping
- *
- * There is no "already migrated" flag, and there must not be one — a flag can
- * disagree with the data. `moveria` is `max(0, quantidade − reservaEfetiva)`
- * recomputed from the parent's CURRENT row, so after a successful run the
- * parent's quantidade equals its reserve and the same computation yields **0**:
- * a second pass moves nothing. A delta applied twice is impossible because no
- * delta is ever stored.
- *
- * ⛔ **What that does NOT buy, though the first version of this comment claimed
- * it did.** `migrate.ts` skips an already-converted produto as `ja-tem-filho`
- * BEFORE it reads any estoque row, so a second run never reaches this function
- * for that produto at all. Units booked on the parent AFTER the conversion are
- * therefore not swept up by re-running — they stay on a parent whose pointer now
- * routes every availability read to the child, which makes them invisible.
- *
- * The arithmetic below is genuinely idempotent; the PIPELINE short-circuits above
- * it. Both are correct, and only one of them was written down. Sweeping those
- * residuals is a separate pass over produtos that ALREADY have children — which
- * is exactly the census's `--target residuais` mode, and is a follow-up, not this
- * script's job.
- *
- * ## ⚠️ The reserved remainder STAYS on the parent, deliberately
- *
- * A reservation is keyed on the produto the pedido LINE names — the parent. Move
- * it and the eventual release decrements a document this script emptied, while
- * the child keeps a phantom reserve for ever (`upSoleMember.ts:243-257`). So the
- * invariant #1398 establishes is precisely *"no **available** stock on the
- * parent"*: a parent may hold a reserved remainder until its open pedido ships,
- * and moving it afterwards is a human step the report sizes.
- */
 /* -------------------------------------------------------------------------- */
 /*                  The pointer, for a family that ALREADY exists              */
 /* -------------------------------------------------------------------------- */
@@ -297,6 +263,40 @@ export function planejarPonteiro(args: {
   return { tipo: 'estampar', filhoUnicoId: derivado, substituiu: armazenado };
 }
 
+/**
+ * Plan one produto's conversion, or say why it is skipped.
+ *
+ * ## ⚠️ Idempotence is arithmetic, not bookkeeping
+ *
+ * There is no "already migrated" flag, and there must not be one — a flag can
+ * disagree with the data. `moveria` is `max(0, quantidade − reservaEfetiva)`
+ * recomputed from the parent's CURRENT row, so after a successful run the
+ * parent's quantidade equals its reserve and the same computation yields **0**:
+ * a second pass moves nothing. A delta applied twice is impossible because no
+ * delta is ever stored.
+ *
+ * ⛔ **What that does NOT buy, though the first version of this comment claimed
+ * it did.** `migrate.ts` skips an already-converted produto as `ja-tem-filho`
+ * BEFORE it reads any estoque row, so a second run never reaches this function
+ * for that produto at all. Units booked on the parent AFTER the conversion are
+ * therefore not swept up by re-running — they stay on a parent whose pointer now
+ * routes every availability read to the child, which makes them invisible.
+ *
+ * The arithmetic below is genuinely idempotent; the PIPELINE short-circuits above
+ * it. Both are correct, and only one of them was written down. Sweeping those
+ * residuals is a separate pass over produtos that ALREADY have children — which
+ * is exactly the census's `--target residuais` mode, and is a follow-up, not this
+ * script's job.
+ *
+ * ## ⚠️ The reserved remainder STAYS on the parent, deliberately
+ *
+ * A reservation is keyed on the produto the pedido LINE names — the parent. Move
+ * it and the eventual release decrements a document this script emptied, while
+ * the child keeps a phantom reserve for ever (`upSoleMember.ts:243-257`). So the
+ * invariant #1398 establishes is precisely *"no **available** stock on the
+ * parent"*: a parent may hold a reserved remainder until its open pedido ships,
+ * and moving it afterwards is a human step the report sizes.
+ */
 export function planejarConversao(entrada: EntradaConversao): PlanoDeConversao {
   if (entrada.produto.paiId != null) return { tipo: 'pular', motivo: 'nao-e-raiz' };
   if (entrada.temFilhos) return { tipo: 'pular', motivo: 'ja-tem-filho' };

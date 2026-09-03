@@ -118,7 +118,12 @@ function decidir(over: Partial<Parameters<typeof decidirComponente>[0]> = {}) {
 
 describe('decidirComponente — the id it stores', () => {
   it('stores the SOLE MEMBER when a family-of-one parent is picked', () => {
-    expect(decidir()).toEqual({ tipo: 'adicionar', alvo: 'filho', reaproveitarDe: null });
+    expect(decidir()).toEqual({
+      tipo: 'adicionar',
+      alvo: 'filho',
+      reaproveitarDe: null,
+      removerChaves: [],
+    });
   });
 
   // ⚠️ The near-miss. A childless produto — and a family of MANY, which
@@ -129,6 +134,7 @@ describe('decidirComponente — the id it stores', () => {
       tipo: 'adicionar',
       alvo: 'avulso',
       reaproveitarDe: null,
+      removerChaves: [],
     });
   });
 
@@ -139,6 +145,7 @@ describe('decidirComponente — the id it stores', () => {
       tipo: 'adicionar',
       alvo: 'filho',
       reaproveitarDe: null,
+      removerChaves: [],
     });
   });
 
@@ -153,6 +160,7 @@ describe('decidirComponente — the id it stores', () => {
       tipo: 'adicionar',
       alvo: 'pai',
       reaproveitarDe: null,
+      removerChaves: [],
     });
   });
 });
@@ -251,11 +259,49 @@ describe('decidirComponente — what it refuses', () => {
 });
 
 describe('decidirComponente — reviving a staged deletion', () => {
+  /**
+   * ⛔ The one-sided hole a reviewer found. An earlier version collapsed the two
+   * lookups (`sobAlvo ?? sobId`) BEFORE testing `_delete`, so an ACTIVE parent
+   * entry hid behind a staged-deleted child entry: nothing refused, the child was
+   * revived, and `reaproveitarDe === alvo` made the caller's drop-the-old-key
+   * branch a no-op — leaving BOTH keys active for one physical produto, which
+   * `kitEstoqueDisponivel` scores as the MIN, so the parent (no row of its own)
+   * read 0 and the kit read 0.
+   *
+   * The reverse direction was always refused correctly, which is exactly why the
+   * suite could not see it.
+   */
+  it('refuses when the PARENT key is active and only the child key is deleted', () => {
+    expect(decidir({ componentes: { pai: {}, filho: { _delete: true } } })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Este componente já foi adicionado.',
+    });
+  });
+
+  it('refuses when the CHILD key is active and only the parent key is deleted', () => {
+    expect(decidir({ componentes: { pai: { _delete: true }, filho: {} } })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Este componente já foi adicionado.',
+    });
+  });
+
+  // Both staged-deleted: revive under `alvo` and drop the other key, so the
+  // un-delete cannot leave a second entry behind.
+  it('revives under the resolved key and removes the other when BOTH are deleted', () => {
+    expect(decidir({ componentes: { pai: { _delete: true }, filho: { _delete: true } } })).toEqual({
+      tipo: 'adicionar',
+      alvo: 'filho',
+      reaproveitarDe: 'filho',
+      removerChaves: ['pai'],
+    });
+  });
+
   it('reuses the entry filed under the resolved id', () => {
     expect(decidir({ componentes: { filho: { _delete: true } } })).toEqual({
       tipo: 'adicionar',
       alvo: 'filho',
       reaproveitarDe: 'filho',
+      removerChaves: [],
     });
   });
 
@@ -267,6 +313,7 @@ describe('decidirComponente — reviving a staged deletion', () => {
       tipo: 'adicionar',
       alvo: 'filho',
       reaproveitarDe: 'pai',
+      removerChaves: ['pai'],
     });
   });
 });

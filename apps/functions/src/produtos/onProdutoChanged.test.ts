@@ -309,18 +309,23 @@ describe('reapontarKitsQueReferenciam', () => {
     const colecao = {
       where: (_campo: string, _op: string, valor: unknown) => {
         consultas.push(valor);
-        return {
-          get: async () => ({
-            docs: Object.entries(kits)
-              .filter(([, d]) => ((d.componentesKitKeys as string[]) ?? []).includes(String(valor)))
-              .map(([id, d]) => ({
-                id,
-                ref: refDe(id),
-                data: () => d,
-                updateTime: opts.semUpdateTime ? undefined : 'ut-1',
-              })),
-          }),
-        };
+        const achados = Object.entries(kits)
+          .filter(([, d]) => ((d.componentesKitKeys as string[]) ?? []).includes(String(valor)))
+          .map(([id, d]) => ({
+            id,
+            ref: refDe(id),
+            data: () => d,
+            updateTime: opts.semUpdateTime ? undefined : 'ut-1',
+          }));
+        // ⚠️ The double models the REAL query: `.limit()` truncates server-side,
+        // which is what makes the cap bound the SCAN. A stub that ignored it would
+        // let an unbounded read pass as bounded.
+        const q = (limite: number | null): Record<string, unknown> => ({
+          select: () => q(limite),
+          limit: (n: number) => q(n),
+          get: async () => ({ docs: limite === null ? achados : achados.slice(0, limite) }),
+        });
+        return q(null);
       },
     };
     return { db: { collection: () => colecao } as never, escritas, consultas };
@@ -511,7 +516,7 @@ describe('reapontarKitsQueReferenciam', () => {
    */
   it('refuses the whole sweep past the inline cap', async () => {
     const muitos: Record<string, Record<string, unknown>> = {};
-    for (let i = 0; i < 201; i += 1) muitos[`k${i}`] = kitDoc(['pai'], { pai: comp() });
+    for (let i = 0; i < 300; i += 1) muitos[`k${i}`] = kitDoc(['pai'], { pai: comp() });
     const { db, escritas } = stub(muitos);
 
     const r = await reapontarKitsQueReferenciam(
@@ -522,6 +527,8 @@ describe('reapontarKitsQueReferenciam', () => {
     );
 
     expect(escritas).toEqual([]);
+    // ⚠️ 201, not 300: the query stops at the cap + 1, so the count is a FLOOR and
+    // the scan is bounded rather than the writes alone.
     expect(r).toEqual({ reapontados: 0, conflitos: 201 });
   });
 

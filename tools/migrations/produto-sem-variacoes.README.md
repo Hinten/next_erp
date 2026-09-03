@@ -301,10 +301,35 @@ what sees the sibling that invalidated it. Copied from the ML importer's
 
 ## Phase 2 — every kit map names the produto that holds the stock
 
-Reads nothing new. The opening walk already projects `componentesKit`, and it now
-keeps `filhoUnicoId` and `componentesKitKeys` alongside — so the rewrite costs
-**zero extra reads**, which is why it lives here rather than in a second script
+The opening walk already projects `componentesKit`, and it now keeps
+`filhoUnicoId` and `componentesKitKeys` alongside — so finding the kits costs
+**no extra reads**, which is why this lives here rather than in a second script
 that would have to walk `produtos` again.
+
+⛔ **"Family of one" is NOT "the child holds the stock", and only the CONVERSION
+arm makes it true.** `estamparPonteiro` stamps the pointer on families that
+already existed and deliberately moves nothing, so repointing one of those whose
+available units are still on the parent turns a **working** kit into a broken one
+— the two paths that matter have no fallback:
+
+- `bulkEstoquePlan`'s component join is `estoques.parentId equalAny componentesKitKeys`,
+  so the child's missing row scores 0 and the sweep **pushes** that 0 to ML;
+- `calcularAlteracoesEstoque` keys the delta on the raw map key, so the sale
+  creates the child's row at `0 − qty` while the parent's units sit untouched.
+
+(`useEstoqueDisponivel`'s family fallback covers only the web badge.)
+
+So a family the run did **not** convert must prove the invariant already holds
+before its kits move: **the parent must hold no available units.** That costs one
+`estoques` read per produto some kit actually names — bounded by the component
+set, not the corpus — and a converted produto needs none, because the conversion
+just emptied it. A family that fails the proof is left alone and **reported**: move
+its residual from the produto's Estoque tab, then re-run `--target kits`.
+
+⚠️ The proof is on **available** units, not on "any stock at all". A parent
+holding only a RESERVED remainder already satisfies the invariant
+(_"no **available** stock on the parent"_), and guarding on any stock would freeze
+exactly the families the conversion is designed to leave holding a reserve.
 
 Per produto carrying a composition — a root, a sole member, or a kit-variation
 child, all of which own one — `componentesKit` and `componentesKitKeys` are

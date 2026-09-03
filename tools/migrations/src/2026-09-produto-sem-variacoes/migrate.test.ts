@@ -271,6 +271,76 @@ describe('phase 2 — where a kit component is repointed', () => {
     expect(linhas.join('\n')).toContain('família de VÁRIOS filhos');
   });
 
+  /**
+   * ⛔ Reviewer-found, and it is the fix producing the bug. "Family of one" is
+   * NOT "the child holds the stock" — only the CONVERSION arm makes that true.
+   * `estamparPonteiro` deliberately moves nothing, so repointing a pre-existing
+   * family whose units are still on the parent breaks a WORKING kit: the two
+   * paths that matter have no fallback, so `bulkEstoquePlan` scores the child's
+   * missing row 0 and PUSHES it to ML, and the sale creates that row at `0 - qty`
+   * while the parent's units sit untouched.
+   */
+  it('does NOT repoint a pre-existing family whose parent still holds available units', async () => {
+    const { contexto, escritas } = ctx({
+      produtos: {
+        pai: produto({ filhoUnicoId: 'unico' }),
+        unico: produto({ paiId: 'pai' }),
+        oKit: produto({ filhoUnicoId: 'oKitFilho', ehKit: true, componentesKit: { pai: kit() } }),
+        oKitFilho: produto({ paiId: 'oKit' }),
+      },
+      estoques: { pai: { 'est-pai-dep1': { q: 7 } } },
+    });
+
+    await run(contexto);
+
+    expect(escritas.filter((e) => 'componentesKit' in (e.data ?? {}))).toEqual([]);
+    expect(linhas.some((l) => l.includes('unidades DISPONÍVEIS'))).toBe(true);
+  });
+
+  /**
+   * ...and the near-miss that keeps the guard on the right quantity: a RESERVED
+   * remainder is not available stock, so the family already satisfies the
+   * invariant (*"no **available** stock on the parent"*) and its kits must move.
+   * Guarding on "any stock at all" would freeze exactly the families the
+   * conversion is designed to leave holding a reserve.
+   */
+  it('still repoints when the parent holds only RESERVED units', async () => {
+    const { contexto, escritas } = ctx({
+      produtos: {
+        pai: produto({ filhoUnicoId: 'unico' }),
+        unico: produto({ paiId: 'pai' }),
+        oKit: produto({ filhoUnicoId: 'oKitFilho', ehKit: true, componentesKit: { pai: kit() } }),
+        oKitFilho: produto({ paiId: 'oKit' }),
+      },
+      estoques: { pai: { 'est-pai-dep1': { q: 3, r: 3 } } },
+    });
+
+    await run(contexto);
+
+    expect(mapaEscrito(escritas, 'oKit')).toEqual({ unico: kit() });
+  });
+
+  // A produto this run CONVERTED needs no such proof — the conversion just moved
+  // its available units onto the child — and must not pay a read for one.
+  it('repoints a converted produto without re-reading its estoque', async () => {
+    const { contexto, escritas } = ctx({
+      produtos: {
+        simples: produto(),
+        oKit: produto({
+          filhoUnicoId: 'oKitFilho',
+          ehKit: true,
+          componentesKit: { simples: kit() },
+        }),
+        oKitFilho: produto({ paiId: 'oKit' }),
+      },
+      estoques: { simples: { 'est-simples-dep1': { q: 5 } } },
+    });
+
+    await run(contexto);
+
+    expect(mapaEscrito(escritas, 'oKit')).toEqual({ [idDoMembroUnico('simples')]: kit() });
+  });
+
   it('repoints at the sole member of a family that already existed', async () => {
     const { contexto, escritas } = ctx({
       produtos: {

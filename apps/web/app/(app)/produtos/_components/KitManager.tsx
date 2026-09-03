@@ -155,6 +155,12 @@ export type DecisaoDeComponente =
       alvo: string;
       /** A staged-deleted entry to revive (its key, which may differ from `alvo`). */
       reaproveitarDe: string | null;
+      /**
+       * Keys the caller must DELETE before writing `alvo` — every other key that
+       * named this same produto. Dropping only the revived one leaves the map
+       * holding two entries for one physical produto.
+       */
+      removerChaves: string[];
     };
 
 /**
@@ -249,24 +255,32 @@ export function decidirComponente(args: {
     };
   }
 
-  // ⚠️ BOTH keys. A legacy map still names the parent, so guarding only the
-  // resolved id lets one physical produto occupy two entries — and
-  // `kitEstoqueDisponivel` takes the MIN, so the parent scores 0 and the kit
-  // reads 0. The fix producing the bug.
-  const sobId = componentes[id];
-  const sobAlvo = componentes[alvo];
-  const existente = sobAlvo ?? sobId;
-  if (existente && !existente._delete) {
+  // ⚠️ BOTH keys, and EITHER of them being active refuses. A legacy map still
+  // names the parent, so guarding only the resolved id lets one physical produto
+  // occupy two entries — and `kitEstoqueDisponivel` takes the MIN, so the parent
+  // scores 0 and the kit reads 0. The fix producing the bug.
+  //
+  // ⛔ An earlier version collapsed the two lookups into one (`sobAlvo ?? sobId`)
+  // before testing `_delete`, and that hid an ACTIVE parent entry behind a
+  // staged-deleted child entry: nothing refused, the child was revived, and
+  // `reaproveitarDe === alvo` made the caller's drop-the-old-key branch a no-op,
+  // so the map kept BOTH — the exact state this guard exists to prevent, reached
+  // through the guard. Reviewer-found; the reverse direction was already correct,
+  // which is what made it a one-sided hole.
+  const relacionadas = [...new Set([id, alvo])].filter((k) => componentes[k] !== undefined);
+  if (relacionadas.some((k) => componentes[k]!._delete !== true)) {
     return { tipo: 'recusar', motivo: 'Este componente já foi adicionado.' };
   }
 
   return {
     tipo: 'adicionar',
     alvo,
-    // The staged-deleted entry keeps its quantidade when re-added — including
-    // when it is filed under the OLD parent key, which the caller then drops so
-    // the two keys do not both survive.
-    reaproveitarDe: existente ? (sobAlvo ? alvo : id) : null,
+    // A staged-deleted entry keeps its quantidade when re-added. The one filed
+    // under `alvo` is preferred because that is the key being written.
+    reaproveitarDe: relacionadas.includes(alvo) ? alvo : (relacionadas[0] ?? null),
+    // ⚠️ Every OTHER key naming this produto goes, whether or not it is the one
+    // being revived — that is what stops an un-delete leaving a second entry.
+    removerChaves: relacionadas.filter((k) => k !== alvo),
   };
 }
 
@@ -598,14 +612,13 @@ export function KitManager({
       }
 
       // Re-add (un-delete) keeps the previous quantidade; a brand-new one
-      // defaults. ⚠️ A revived entry filed under the OLD parent key moves to
-      // `alvo`, and the old key is dropped — leaving both would give one physical
-      // produto two entries, and `kitEstoqueDisponivel` takes the MIN.
+      // defaults. ⚠️ Every other key naming this produto is dropped — read
+      // `anterior` off `components` FIRST, since the key it names may be one of
+      // them. Leaving one behind gives a single physical produto two entries, and
+      // `kitEstoqueDisponivel` takes the MIN.
       const anterior = decisao.reaproveitarDe ? components[decisao.reaproveitarDe] : undefined;
       const next = { ...components };
-      if (decisao.reaproveitarDe && decisao.reaproveitarDe !== alvo) {
-        delete next[decisao.reaproveitarDe];
-      }
+      for (const chave of decisao.removerChaves) delete next[chave];
       next[alvo] = anterior
         ? (() => {
             const { _delete, ...rest } = anterior;

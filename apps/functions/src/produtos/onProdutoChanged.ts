@@ -339,6 +339,16 @@ export async function reapontarKitsQueReferenciam(
     const snap = await produtoCollection
       .ref(db, {})
       .where('componentesKitKeys', 'array-contains', alvo)
+      // ⚠️ `.select()`, because Enterprise bills DATA SCANNED (root rule 1) and
+      // this is the only field the rewrite reads. Unprojected, each match pulls
+      // the whole produto — the `nome_embedding` vector, `fotos`, the marketplace
+      // denorms — and the cap below fires AFTER the query, so the ADR 0014 ~2 000
+      // case would read 2 000 full documents just to log that it wrote nothing.
+      // `recalcularDimensoesKit` projects for exactly this reason.
+      .select('componentesKit')
+      // ⚠️ Bounds the SCAN, not just the writes. `+ 1` is what lets the cap tell
+      // "exactly at the limit" from "over it" without reading the whole tail.
+      .limit(LIMITE_DE_KITS_INLINE + 1)
       .get();
     for (const doc of snap.docs) {
       // A kit cannot list itself, but be defensive — `cleanupInboundKitReferences`
@@ -356,10 +366,13 @@ export async function reapontarKitsQueReferenciam(
 
   if (porId.size > LIMITE_DE_KITS_INLINE) {
     logger.error(
-      `onProdutoChanged: ${produtoId} é componente de ${porId.size} kit(s) — acima do limite ` +
-        `de ${LIMITE_DE_KITS_INLINE} para reaponte inline. NENHUM foi reapontado; rode ` +
+      `onProdutoChanged: ${produtoId} é componente de mais de ${LIMITE_DE_KITS_INLINE} kit(s) — ` +
+        `acima do limite para reaponte inline. NENHUM foi reapontado; rode ` +
         `\`migrate:produto-sem-variacoes --target kits\` para esse produto`,
     );
+    // ⚠️ The count is a FLOOR, not a total: the query stops at the cap + 1, so
+    // saying how many there really are would need the scan the cap exists to
+    // avoid. The census reports the true fan-out.
     return { reapontados: 0, conflitos: porId.size };
   }
 

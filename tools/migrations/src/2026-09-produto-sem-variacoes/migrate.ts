@@ -552,6 +552,8 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
    * map, so it folds to exactly the same answer.
    */
   const kitsMintados: KitDoCorpus[] = [];
+  /** Produtos this run CONVERTED — the only ones whose parent it emptied itself. */
+  const convertidosAgora = new Set<string>();
 
   if (alvos.includes('conversao')) {
     for (const [produtoId, produto] of corpus.raizes) {
@@ -615,6 +617,7 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
       linhasSemDeposito += estoque.nDepositosIrreconheciveis;
       unidadesPresas += plano.presasSemDeposito;
       unidades.set(produtoId, plano.childId);
+      convertidosAgora.add(produtoId);
       const mapaDoPai = produto.componentesKit;
       if (mapaDoPai != null && typeof mapaDoPai === 'object') {
         kitsMintados.push({
@@ -646,7 +649,45 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   let colisoesSomadas = 0;
   let colisoesRecusadas = 0;
 
+  let naoReapontadosPorResiduo = 0;
+
   if (alvos.includes('kits')) {
+    /**
+     * ⛔ **"Family of one" is not "the child holds the stock", and only the
+     * CONVERSION arm makes it true.**
+     *
+     * `unidades` is seeded from the observed child set, so it also covers families
+     * that already existed — and `estamparPonteiro` deliberately moves no stock
+     * for those. Repointing one whose available units are still on the PARENT
+     * turns a working kit into a broken one, because the two paths that matter
+     * have no fallback: `bulkEstoquePlan`'s component join is
+     * `estoques.parentId equalAny componentesKitKeys`, so the child's missing row
+     * scores 0 and the sweep PUSHES that 0 to ML; and `calcularAlteracoesEstoque`
+     * keys the delta on the raw map key, so the sale creates the child's row at
+     * `0 - qty` while the parent's units sit untouched. Both are the failures this
+     * script exists to remove, produced by the fix. (`useEstoqueDisponivel`'s
+     * family fallback covers only the web badge.)
+     *
+     * So a family the run did not convert must PROVE the invariant already holds
+     * before its kits move: the parent must hold no available units. A converted
+     * produto needs no read — the conversion just emptied it.
+     *
+     * ⚠️ The read is paid only for a produto some kit actually names, which is
+     * what keeps this `O(kit components)` rather than `O(corpus)`.
+     */
+    const nomeadosPorKit = new Set<string>();
+    for (const kit of [...corpus.kits, ...kitsMintados]) {
+      for (const chave of Object.keys(kit.componentesKit ?? {})) nomeadosPorKit.add(chave);
+    }
+    for (const produtoId of [...unidades.keys()]) {
+      if (convertidosAgora.has(produtoId) || !nomeadosPorKit.has(produtoId)) continue;
+      const noPai = await lerEstoques(ctx, produtoId);
+      if (noPai.moveriaTotal <= 0) continue;
+      unidades.delete(produtoId);
+      naoReapontadosPorResiduo += 1;
+      ctx.sink.skip(`produtos/${produtoId}`, 'componentesKit', null, 'residuo-disponivel-no-pai');
+    }
+
     const resolver = (id: string): string => unidades.get(id) ?? id;
     for (const kit of [...corpus.kits, ...kitsMintados]) {
       // A component that is a family of MANY is left alone and COUNTED. It is a
@@ -742,6 +783,14 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
         `[produto-sem-variacoes] ⚠️ ${colisoesRecusadas} colisão(ões) RECUSADAS — os dois ` +
           `componentes discordam em limitarEstoque e não há soma correta. Ficaram como estavam; ` +
           `um humano precisa escolher`,
+      );
+    }
+    if (naoReapontadosPorResiduo > 0) {
+      log(
+        `[produto-sem-variacoes] ⚠️ ${naoReapontadosPorResiduo} família(s) que já existiam NÃO ` +
+          `tiveram seus kits reapontados: o pai ainda guarda unidades DISPONÍVEIS, e apontar o ` +
+          `kit para o filho publicaria 0 no ML e venderia contra uma linha inexistente. ` +
+          `Mova o resíduo (aba Estoque do produto) e rode de novo com --target kits`,
       );
     }
     if (componentesFamiliaDeMuitos > 0) {
