@@ -1522,7 +1522,6 @@ async function applyFreteStep(args: {
     shippingInstance,
     integracaoId,
     contaBag,
-    orderLastUpdatedUs,
     orderStatus,
     nowUs,
     loadShipmentPayments,

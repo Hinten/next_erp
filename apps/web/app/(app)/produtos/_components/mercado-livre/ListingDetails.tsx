@@ -4,7 +4,7 @@ import { Alert, Fieldset, SimpleGrid } from '@mantine/core';
 import type { ProdutoMercadoLivreLink } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
 
-import { EMPTY_VALUE, ListingField, textOr } from './ListingField';
+import { EMPTY_VALUE, ListingField } from './ListingField';
 
 /** ML caps a listing at 10 pictures; publish truncates to the first 10. */
 const MAX_PICTURES = 10;

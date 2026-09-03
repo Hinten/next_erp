@@ -9,7 +9,6 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 
 import { type ImportDeps, importProduto } from './import';
-import { MercadoLivreImportError } from './importCore';
 import { MAX_FAMILY_SIBLINGS } from './importFamily';
 import { type Bucket } from '../core/arquivoUpload';
 
