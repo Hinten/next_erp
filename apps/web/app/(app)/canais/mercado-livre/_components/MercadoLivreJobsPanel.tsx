@@ -35,7 +35,7 @@ import {
 import { mercadoLivreQueryRetry } from '@/lib/mercado-livre/errors';
 import { ContaJobErrorCard, MassImportJobCard, PriceSyncJobCard } from './MercadoLivreJobCards';
 import { PriceSyncHistoricoModal } from './PriceSyncHistoricoModal';
-import type { ContaJobOutcome, ContaRef } from './startJobsForContas';
+import type { ContaJobOutcome, ContaRef } from '@/lib/marketplace/contaJobs/types';
 
 /** Survives a reload; scoped to the tab, like the jobs the operator is watching. */
 const TRACKED_STORAGE_KEY = 'delfrance:ml:jobs:tracked';

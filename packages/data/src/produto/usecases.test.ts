@@ -8,6 +8,7 @@ import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
   buildChildrenComponentesKitOps,
+  buildMembroUnicoWriteOps,
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
   buildKitStatusChildOps,
@@ -562,5 +563,142 @@ describe('deleteProdutoCascade', () => {
     });
     await expect(deleteProdutoCascade(port, 'p1')).rejects.toBeInstanceOf(ProdutoReferencedError);
     expect(committed).toEqual([]);
+  });
+});
+
+/**
+ * The two writes that turn a freshly created produto into a family of one.
+ *
+ * ⚠️ They belong to ONE atomic boundary. A parent written without its child
+ * points at nothing; a child written without the pointer is invisible to every
+ * surface that looks the family up. Both are wrong in ways nothing later
+ * repairs, which is why this is a PAIR and the caller commits it as one.
+ */
+describe('buildMembroUnicoWriteOps', () => {
+  const pai = { nome: 'Bandeja', sku: 'BAN-1' };
+
+  it('creates the child and points the parent at it, in that order', () => {
+    const ops = buildMembroUnicoWriteOps('p1', 'c1', pai);
+    expect(ops).toHaveLength(2);
+    expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/c1' });
+    expect(ops[1]).toEqual({
+      type: 'update',
+      path: 'produtos/p1',
+      data: { filhoUnicoId: 'c1' },
+    });
+  });
+
+  it('writes the child under its OWN id, pointing back at the parent', () => {
+    const [child] = buildMembroUnicoWriteOps('p1', 'c1', pai);
+    expect(child!.path).toBe('produtos/c1');
+    expect((child as { data: Record<string, unknown> }).data).toMatchObject({ paiId: 'p1' });
+  });
+
+  // ⚠️ The pointer goes through `derivarFilhoUnico`, the ONE producer of the
+  // value — not set to `childId` directly. Same answer here, but routing every
+  // writer through it is what keeps the denormalisation honest when a later
+  // writer holds a child SET rather than a single id.
+  it('refuses to point at an empty id', () => {
+    const ops = buildMembroUnicoWriteOps('p1', '', pai);
+    expect(ops[1]).toMatchObject({ data: { filhoUnicoId: null } });
+  });
+});
+
+/**
+ * ⛔ The kit flag and its map travel TOGETHER onto the sole member.
+ *
+ * The propagation used to clear `componentesKit` when the parent stopped being a
+ * kit and write nothing when it BECAME one. A produto born as a family of one and
+ * later turned into a kit therefore left its sole member `ehKit: true` with a
+ * **null map** — and `calcularAlteracoesEstoque` reads exactly that as "kit with
+ * no components" (`if (!componentes) continue;`), so a pedido line for it moved
+ * NO stock: not the kit's own, not its components'. Silently, with a badge of 0
+ * to match.
+ */
+describe('buildKitStatusChildOps — becoming a kit', () => {
+  /** `ProdutoWriteOp` is a union and only the write arms carry `data`. */
+  const dadosDe = (op: ProdutoWriteOp): Record<string, unknown> | undefined =>
+    op.type === 'update' || op.type === 'set' ? op.data : undefined;
+
+  const comp = { 'c-1': { quantidade: 6, limitarEstoque: true } };
+
+  it('carries the map onto the sole member when ehKit goes true', () => {
+    const ops = buildKitStatusChildOps(
+      {
+        ehKit: true,
+        ehKitVirtual: false,
+        oldEhKit: false,
+        oldEhKitVirtual: false,
+        componentesKit: comp,
+        membroUnicoId: 'membro',
+      },
+      [{ id: 'membro' }],
+    );
+
+    expect(ops).toHaveLength(1);
+    expect(dadosDe(ops[0]!)).toEqual({
+      ehKit: true,
+      ehKitVirtual: false,
+      componentesKit: comp,
+      componentesKitKeys: ['c-1'],
+    });
+  });
+
+  // ⚠️ The near-miss, and the reason the write is scoped by the pointer. A real
+  // variation authors its own composition through `buildChildrenComponentesKitOps`,
+  // and copying the parent's over it would destroy a per-variation kit.
+  it('gives a REAL variation the flags only, never the parent’s map', () => {
+    const ops = buildKitStatusChildOps(
+      {
+        ehKit: true,
+        ehKitVirtual: false,
+        oldEhKit: false,
+        oldEhKitVirtual: false,
+        componentesKit: comp,
+        membroUnicoId: 'membro',
+      },
+      [{ id: 'variacao-p' }],
+    );
+
+    expect(dadosDe(ops[0]!)).toEqual({ ehKit: true, ehKitVirtual: false });
+  });
+
+  // Without the pointer the arm is inert — the pre-#1398 behaviour, so a produto
+  // with real variations and no sole member is untouched by this change.
+  it('is inert when the parent has no sole member', () => {
+    const ops = buildKitStatusChildOps(
+      {
+        ehKit: true,
+        ehKitVirtual: false,
+        oldEhKit: false,
+        oldEhKitVirtual: false,
+        componentesKit: comp,
+      },
+      [{ id: 'c1' }],
+    );
+
+    expect(dadosDe(ops[0]!)).toEqual({ ehKit: true, ehKitVirtual: false });
+  });
+
+  // The direction that was always right must survive: a non-kit keeps no map.
+  it('still clears the map on the sole member when ehKit goes false', () => {
+    const ops = buildKitStatusChildOps(
+      {
+        ehKit: false,
+        ehKitVirtual: false,
+        oldEhKit: true,
+        oldEhKitVirtual: false,
+        componentesKit: comp,
+        membroUnicoId: 'membro',
+      },
+      [{ id: 'membro' }],
+    );
+
+    expect(dadosDe(ops[0]!)).toEqual({
+      ehKit: false,
+      ehKitVirtual: false,
+      componentesKit: null,
+      componentesKitKeys: null,
+    });
   });
 });

@@ -1,12 +1,14 @@
 'use client';
 
-import { PlaceholderPage } from '@delfrance/ui';
+import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { CanalCapsPanel } from '../_components/CanalCapsPanel';
 
 export default function CanalShopeePage() {
   return (
-    <PlaceholderPage
-      title="Shopee"
-      description="Contas e configurações da integração com a Shopee."
+    <CanalCapsPanel
+      tipo={INTEGRACAO_TIPO.shopee}
+      titulo="Shopee"
+      descricao="Contas e configurações da integração com a Shopee."
     />
   );
 }

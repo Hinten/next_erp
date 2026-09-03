@@ -1,14 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createMercadoLivreChannel, MercadoLivreNotConfiguredError } from '../src/index';
-import type { ChannelContext } from '@delfrance/core/plugins';
+import {
+  buildAuthorizeUrl,
+  createMercadoLivreApi,
+  getIncidentMl,
+  importIncidentsMl,
+} from '../src/index';
 
-const channel = createMercadoLivreChannel({
-  clientId: 'CID',
-  clientSecretEnvVar: 'ML_SECRET',
-  redirectUri: 'https://app.test/oauth/mercado-livre/callback',
-});
-
-const ctx: ChannelContext = { integracaoId: 'i1', accessToken: 'live-token', account: {} };
+/**
+ * ⚠️ These used to run through `createMercadoLivreChannel(...)` and a
+ * `ChannelContext`, calling `channel.getIncident!(ctx, id)`. Both are gone with
+ * the `MarketplaceChannel` contract (#815): the channel object wrapped exactly
+ * these functions and added an argument `respondIncidentMl` never read. The
+ * assertions are unchanged — only the indirection is.
+ */
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -19,59 +23,46 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 type FetchMock = ReturnType<typeof vi.fn>;
 
-function channelWithFetch(fetchMock: FetchMock) {
-  return createMercadoLivreChannel({
-    clientId: 'CID',
-    clientSecretEnvVar: 'ML_SECRET',
-    redirectUri: 'https://app.test/oauth/mercado-livre/callback',
+function apiWithFetch(fetchMock: FetchMock) {
+  return createMercadoLivreApi({
+    getAccessToken: async () => 'live-token',
     fetch: fetchMock as unknown as typeof globalThis.fetch,
   });
 }
 
-describe('createMercadoLivreChannel scaffold (extended #288 contract)', () => {
-  it('exposes the channel id', () => {
-    expect(channel.id).toBe('mercado-livre');
-  });
-
-  // Not "not built yet": these four need Firestore, so the live implementation
-  // is the apps/mercado-livre backend and the contract members stay stubs (#815).
-  it('the four Firestore-bound contract members reject with NotConfigured', async () => {
-    await expect(channel.syncProducts(ctx)).rejects.toBeInstanceOf(MercadoLivreNotConfiguredError);
-    await expect(channel.pullOrders(ctx)).rejects.toBeInstanceOf(MercadoLivreNotConfiguredError);
-    await expect(channel.pushTracking(ctx, 'order-1', 'BR123')).rejects.toBeInstanceOf(
-      MercadoLivreNotConfiguredError,
+describe('buildAuthorizeUrl (the ONLY member the deleted contract ever served)', () => {
+  it('builds a consent URL carrying state, client_id and redirect_uri', () => {
+    const url = new URL(
+      buildAuthorizeUrl({
+        clientId: 'CID',
+        redirectUri: 'https://app.test/oauth/mercado-livre/callback',
+        state: 'xyz-state',
+      }),
     );
-    await expect(channel.oauthFlow.callback('code', 'state')).rejects.toBeInstanceOf(
-      MercadoLivreNotConfiguredError,
-    );
-  });
 
-  it('optional capabilities are absent on the scaffold (callers feature-detect)', () => {
-    expect(channel.pushPrice).toBeUndefined();
-    expect(channel.pushStock).toBeUndefined();
-    expect(channel.importOrders).toBeUndefined();
-    expect(channel.getOrderCharges).toBeUndefined();
-    expect(channel.getOrderFiscalIdentity).toBeUndefined();
-    expect(channel.fetchLabel).toBeUndefined();
-  });
-
-  it('exposes the incident READ **and** WRITE surface (#768 completed the contract)', () => {
-    // ⚠️ This test used to assert `respondIncident` was UNDEFINED — Step 14 was
-    // import-only. It is the whole point of #768 that it now exists, so the
-    // assertion inverts rather than being deleted: callers feature-detect on
-    // exactly this, and losing the member again must fail here.
-    expect(typeof channel.importIncidents).toBe('function');
-    expect(typeof channel.getIncident).toBe('function');
-    expect(typeof channel.respondIncident).toBe('function');
-  });
-
-  it('oauthFlow.start builds a consent URL carrying state, client_id and redirect_uri', () => {
-    const url = new URL(channel.oauthFlow.start('xyz-state'));
     expect(url.searchParams.get('state')).toBe('xyz-state');
     expect(url.searchParams.get('client_id')).toBe('CID');
     expect(url.searchParams.get('redirect_uri')).toBe(
       'https://app.test/oauth/mercado-livre/callback',
     );
+    // PKCE is a per-application toggle: absent unless the caller asks for it.
+    expect(url.searchParams.get('code_challenge')).toBeNull();
+    expect(url.searchParams.get('code_challenge_method')).toBeNull();
+  });
+
+  it('carries the PKCE challenge when the connect route minted a verifier', () => {
+    const url = new URL(
+      buildAuthorizeUrl({
+        clientId: 'CID',
+        redirectUri: 'https://app.test/cb',
+        state: 's',
+        codeChallenge: 'CHALLENGE',
+        codeChallengeMethod: 'S256',
+      }),
+    );
+
+    expect(url.searchParams.get('code_challenge')).toBe('CHALLENGE');
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
   });
 });
 
@@ -177,11 +168,11 @@ function claimFetchMock(over: { reason?: () => Response } = {}): FetchMock {
   });
 }
 
-describe('createMercadoLivreChannel — getIncident (claims import, Step 14)', () => {
+describe('getIncidentMl (claims import, Step 14)', () => {
   it('hydrates the legacy sample into an ImportedIncident (kind, order key, reason, messages, channelSpecific)', async () => {
     const fetchMock = claimFetchMock();
-    const withApi = channelWithFetch(fetchMock);
-    const incident = await withApi.getIncident!(ctx, '5142940410');
+    const api = apiWithFetch(fetchMock);
+    const incident = await getIncidentMl(api, '5142940410');
 
     expect(incident.externalId).toBe('5142940410');
     expect(incident.kind).toBe('return'); // type 'returns'
@@ -235,8 +226,8 @@ describe('createMercadoLivreChannel — getIncident (claims import, Step 14)', (
       const fetchMock = claimFetchMock({
         reason: () => jsonResponse({ message: 'not found' }, 404),
       });
-      const withApi = channelWithFetch(fetchMock);
-      const incident = await withApi.getIncident!(ctx, '5142940410');
+      const api = apiWithFetch(fetchMock);
+      const incident = await getIncidentMl(api, '5142940410');
       expect(incident.reason).toBeUndefined();
       expect(incident.messages).toHaveLength(3);
       expect(warn).toHaveBeenCalledTimes(1);
@@ -256,7 +247,7 @@ function searchClaim(id: number, lastUpdated: string) {
   };
 }
 
-describe('createMercadoLivreChannel — importIncidents (claims import, Step 14)', () => {
+describe('importIncidentsMl (claims import, Step 14)', () => {
   it('pages the opened-claims search: nextCursor advances by page length until paging.total is consumed', async () => {
     const fetchMock = vi.fn();
     fetchMock
@@ -275,9 +266,9 @@ describe('createMercadoLivreChannel — importIncidents (claims import, Step 14)
           data: [searchClaim(3, '2026-07-04T00:00:00.000-04:00')],
         }),
       );
-    const withApi = channelWithFetch(fetchMock);
+    const api = apiWithFetch(fetchMock);
 
-    const page1 = await withApi.importIncidents!(ctx);
+    const page1 = await importIncidentsMl(api);
     expect(page1.items.map((i) => i.externalId)).toEqual(['1', '2']);
     expect(page1.items[0]!.kind).toBe('mediation');
     // Search items are bare — no messages/reason (hydrate via getIncident).
@@ -290,7 +281,7 @@ describe('createMercadoLivreChannel — importIncidents (claims import, Step 14)
     expect(url1.searchParams.get('limit')).toBe('30');
     expect(url1.searchParams.get('offset')).toBe('0');
 
-    const page2 = await withApi.importIncidents!(ctx, page1.nextCursor);
+    const page2 = await importIncidentsMl(api, page1.nextCursor);
     expect(page2.items.map((i) => i.externalId)).toEqual(['3']);
     expect(page2.nextCursor).toBeUndefined(); // 2 + 1 == total 3
     const url2 = new URL(String(fetchMock.mock.calls[1]![0]));
@@ -307,10 +298,10 @@ describe('createMercadoLivreChannel — importIncidents (claims import, Step 14)
         ],
       }),
     );
-    const withApi = channelWithFetch(fetchMock);
+    const api = apiWithFetch(fetchMock);
     const sinceMs = Date.parse('2026-07-05T00:00:00.000-04:00');
 
-    const page = await withApi.importIncidents!(ctx, { sinceMs });
+    const page = await importIncidentsMl(api, { sinceMs });
     expect(page.items.map((i) => i.externalId)).toEqual(['2']);
     expect(page.nextCursor).toBeUndefined(); // 0 + 2 == total 2, filter aside
   });

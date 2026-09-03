@@ -23,13 +23,17 @@
  * with uncapped counters, and the final-attempt `failed` stamp all mirror
  * massImport.ts — see its module doc for the rationale behind each.
  *
- * ---- Plugin bypass (Step-10 precedent): `MarketplaceChannel.pushPrice`
- * exists, but this module calls `MercadoLivreApi.updateItem` directly, exactly
- * like the stock stack bypasses `pushStock`: the plugin contract's
- * `MinorUnits` (integer centavos, no floats) does not fit the reais floats the
- * produto price tables store and ML's wire format speaks, and the per-listing
- * GET-before-PUT gates below need the raw `MlItem` anyway. Folding this flow
- * into the plugin contract is a tracked post-migration follow-up.
+ * ---- ⚠️ This module calls `MercadoLivreApi.updateItem` directly, and the note
+ * that used to sit here called that a "plugin bypass" of
+ * `MarketplaceChannel.pushPrice`. It was not a bypass; it was the only thing
+ * that could work, and #815 deleted the contract on exactly this evidence. Two
+ * reasons, both still true: the contract typed money as `MinorUnits` (integer
+ * centavos) while the produto price tables and ML's own wire both speak reais
+ * floats, so there was no correct place to convert; and the per-listing
+ * GET-before-PUT gates below need the raw `MlItem`, which a
+ * `(ctx, update) => PushResult` signature cannot carry. The replacement is
+ * declarative — `MARKETPLACE_TIPO_CAPS.enviarPreco` says whether a channel can
+ * do this at all; the how stays here.
  *
  * ---- Price source (owner-locked, resolved at PLAN time by
  * `buildPrecoDrafts`): `propagatePriceToChildren: true` (the default) sends

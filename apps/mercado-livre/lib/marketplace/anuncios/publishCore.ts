@@ -362,11 +362,28 @@ export function publishModeIssues(args: {
   // ⚠️ Evaluated against the ORIGINAL `childrenCount`, before any sole-member
   // materialisation runs. Materialise first and `childrenCount` is 1, so this
   // guard silently stops firing — which is exactly the destructive case.
-  if (classificarMembroUnico(args) === 'recusar') {
+  const membroUnico = classificarMembroUnico(args);
+  if (membroUnico === 'recusar-familia') {
     issues.push(
       'este anúncio é uma família User Products (o vínculo aponta para a família, não para um ' +
         'anúncio) e o produto não tem mais variações — recadastre as variações ou encerre os ' +
         'anúncios da família no Mercado Livre',
+    );
+  }
+
+  // ⚠️ #1398: publish no longer INVENTS the missing member. It used to mint one
+  // here — above every later throw site — so a publish the operator saw FAIL had
+  // still reshaped the produto and moved its stock onto a child, with no message
+  // saying so. Every produto created since #1424 is born as a family and #1434
+  // stops it losing its last child, so what reaches this arm is a legacy produto
+  // the conversion has not touched yet: refusing it is a repair the operator can
+  // make in ten seconds, and it doubles as the sensor that says the conversion
+  // missed one.
+  if (membroUnico === 'recusar-sem-membro') {
+    issues.push(
+      'produto sem item vendável: o Mercado Livre publica sempre uma família, então o produto ' +
+        'precisa de ao menos uma variação. Abra a aba "Variações", adicione uma variante e ' +
+        'salve antes de publicar',
     );
   }
 
@@ -386,27 +403,48 @@ export function publishModeIssues(args: {
  * ⚠️ The three cases are told apart by the SHAPE of `link.id`, never by
  * `childrenCount` alone — all three have zero children:
  *
- *  - `'nenhum'`  – not a childless UP produto; nothing to do.
- *  - `'criar'`   – never published (`linkId == null`). Mint the sole member, POST it.
- *  - `'adotar'`  – published under the OLD convention, so `link.id` is a real item
- *                id (`MLB…`). Mint the sole member **carrying that item id** so the
- *                fan-out PUTs the existing listing. ⛔ Minting it WITHOUT the id
- *                makes the fan-out POST a second item, after which
+ *  - `'nenhum'`             – not a childless UP produto; nothing to do.
+ *  - `'recusar-sem-membro'` – never published (`linkId == null`). ⚠️ This USED to be
+ *                `'criar'`, and publish minted the member here. See below.
+ *  - `'adotar'`             – published under the OLD convention, so `link.id` is a
+ *                real item id (`MLB…`). Mint the sole member **carrying that item
+ *                id** so the fan-out PUTs the existing listing. ⛔ Minting it
+ *                WITHOUT the id makes the fan-out POST a second item, after which
  *                `sweepRemovedMembers` confirms the original as an orphan and
  *                pauses-then-closes it — a live listing, its sales history and its
  *                ranking, gone.
- *  - `'recusar'` – `link.id` is a FAMILY id (all digits), so the ERP's variations
- *                were deleted out from under a family that may still have live
- *                members. Not repairable from here.
+ *  - `'recusar-familia'`    – `link.id` is a FAMILY id (all digits), so the ERP's
+ *                variations were deleted out from under a family that may still
+ *                have live members. Not repairable from here.
+ *
+ * ## ⚠️ Why `'criar'` became a refusal, and `'adotar'` did NOT (#1398)
+ *
+ * The materialisation sits ABOVE every later throw site — the assembly's issue
+ * list, the picture uploads, every ML 4xx — so a publish the operator saw **fail**
+ * had still converted the produto into a family of one and moved its stock onto
+ * the child, with nothing on screen saying the shape had changed.
+ *
+ * For `'criar'` that repair now costs more than it buys: every produto created
+ * since #1424 is born a family and #1434 stops one losing its last child, so the
+ * only produtos left in this state are legacy ones the conversion has not reached.
+ * Refusing them is a ten-second fix for the operator, and a sensor for the
+ * conversion.
+ *
+ * ⛔ `'adotar'` is the opposite trade and is deliberately KEPT. There is a live,
+ * selling listing behind it, and the member link must be seeded with that item id
+ * or the fan-out POSTs a duplicate and the sweep closes the original. Refusing
+ * would not leave the operator where they started — it would leave them able to
+ * create a member BY HAND, without the item id, which is exactly the destructive
+ * path. It goes away when the conversion script owns it, not before.
  */
 export function classificarMembroUnico(args: {
   model: ListingModel;
   linkId: string | null;
   childrenCount: number;
-}): 'nenhum' | 'criar' | 'adotar' | 'recusar' {
+}): 'nenhum' | 'adotar' | 'recusar-familia' | 'recusar-sem-membro' {
   if (args.model !== 'user-products' || args.childrenCount > 0) return 'nenhum';
-  if (args.linkId == null || args.linkId === '') return 'criar';
-  return isFamilyId(args.linkId) ? 'recusar' : 'adotar';
+  if (args.linkId == null || args.linkId === '') return 'recusar-sem-membro';
+  return isFamilyId(args.linkId) ? 'recusar-familia' : 'adotar';
 }
 
 /**
@@ -564,19 +602,6 @@ export function linkAttributesAfterPublish(
  * would ship a payload with NO SKU anywhere. The caller must mirror the
  * mapper's own test, not the child count.
  */
-/**
- * Escape-hatch-shaped flag for the parent-sku characteristic (#1400). Ships OFF.
- *
- * ⚠️ It gates SENDING only — reading it back on import is unconditional, so a
- * família published while it was on is always understood afterwards.
- *
- * ⚠️ And it can only decide a família at CREATE time, because a custom
- * attribute's name feeds ML's family hash: turning it on does not retrofit
- * existing famílias, and turning it off does not strip it from famílias that
- * already carry it. See {@link resolveSkuPaiAtributo}.
- */
-export const SKU_PAI_ATRIBUTO_FLAG_ENV = 'MERCADO_LIVRE_SKU_PAI_ATRIBUTO_ENABLED';
-
 /** One prospective família member, as {@link resolveSkuPaiAtributo} judges it. */
 export interface MembroSkuPai {
   /** Its existing ML item id; non-null means ML already has this member. */
@@ -588,6 +613,12 @@ export interface MembroSkuPai {
 /**
  * Does THIS publish send the família parent's sku as a custom characteristic?
  * (#1400)
+ *
+ * Sent for every família this app CREATES, unconditionally — there is no env
+ * flag. What remains is not a rollout gate but the uniformity rule below, and
+ * the consequence of having no switch is that backing the feature out is a code
+ * change: the characteristic is public (ficha técnica) and cannot be removed
+ * from an item that already carries it.
  *
  * The whole difficulty is that ML derives a família from `family_name`,
  * `domain_id`, `user_id` and the attributes, and a custom attribute contributes
@@ -623,7 +654,6 @@ export function resolveSkuPaiAtributo(args: {
   linkId: string | null;
   membros: ReadonlyArray<MembroSkuPai>;
   produtoSku: string | null;
-  flagLigada: boolean;
 }): { skuPai: string | null } {
   // The legacy `variations[]` model has a real parent item carrying a real
   // `SELLER_SKU`, so it needs none of this.
@@ -631,7 +661,28 @@ export function resolveSkuPaiAtributo(args: {
 
   const algumCarrega = args.membros.some((m) => m.skuPaiAtributo);
   const familiaNova = args.linkId == null && args.membros.every((m) => m.itemId == null);
-  const deveEnviar = algumCarrega || (familiaNova && args.flagLigada);
+  // ⛔ `familiaNova` is NOT the leftover of a rollout switch — do not "simplify"
+  // it away now that the env flag is gone. It is the correctness half, and ML
+  // names the two failures it prevents: adding a custom attribute to some but
+  // not all members is refused as `user_products.miss_match_attribute`
+  // ("é obrigatório enviá-la para todos os membros"), and a member whose
+  // resulting configuration matches another família is dropped as
+  // `family_id.collision`. Sending unconditionally would split live listings.
+  //
+  // ⚠️ DELIBERATE, and the "família" wording hides it: this also covers a plain
+  // SINGLE-PRODUCT UP listing. `publish.ts` materialises the sole member
+  // (`garantirMembroUnico`) BEFORE this runs, so a childless UP produto arrives
+  // as one member with no `itemId` — `familiaNova` — and ships the
+  // characteristic. On that shape the import chain does not need it: rung 3
+  // recovers the parent sku from the member's own `SELLER_SKU` precisely
+  // because a família of one has no combos. So the trade is a public
+  // characteristic on those listings for one narrow case — a single-product
+  // listing that later gains variations ON ML rather than in the ERP, where the
+  // importer invents variantes with `codigo: null`, rung 2 cannot peel and rung
+  // 3 no longer applies. Restricting this to `membros.length > 1` is uniform in
+  // both directions and would be a legitimate choice; it is not the one taken,
+  // and `publishCore.test.ts` pins the current answer so a change is conscious.
+  const deveEnviar = algumCarrega || familiaNova;
   const sku = args.produtoSku?.trim();
   return { skuPai: deveEnviar && sku ? sku : null };
 }

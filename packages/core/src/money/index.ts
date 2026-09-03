@@ -87,10 +87,17 @@ export function formatReais(reais: number, currency = 'BRL', locale = 'pt-BR'): 
  * Reais → integer minor units (cents), applying {@link roundReais} first.
  *
  * The same conversion {@link formatReais} performs, exported because callers
- * increasingly need the NUMBER rather than the formatted string: a
- * `MinorUnits` field on a channel contract (Mercado Livre's partial-refund
- * amount, #364), a payment gateway payload, a comparison against a stored
- * integer.
+ * increasingly need the NUMBER rather than the formatted string: a payment
+ * gateway payload, a provider that prices in centavos, a comparison against a
+ * stored integer.
+ *
+ * ⚠️ It is NOT what a marketplace channel needs. The removed
+ * `MarketplaceChannel` contract typed its money as integer centavos
+ * (`MinorUnits`), and that is precisely why `pushPrice`/`pushStock` went
+ * unused for the whole Mercado Livre port: the produto price tables and every
+ * Brazilian marketplace wire speak reais floats, so the conversion had no
+ * correct place to happen. `@delfrance/core/marketplace` is reais throughout
+ * — see ADR 0015.
  *
  * ⚠️ Exists so those callers do not hand-roll `Math.round(x * 100)`, which
  * `delfrance/no-ad-hoc-money-rounding` forbids for a real reason: skipping

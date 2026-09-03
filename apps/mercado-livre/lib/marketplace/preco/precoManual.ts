@@ -40,7 +40,8 @@ import { type EnvioPrecoFilaItem, idFromRef } from '@delfrance/schemas';
 import { MercadoLivreError } from '@delfrance/integrations-mercado-livre';
 
 import { envInt } from '../estoque/bulkEstoquePlan';
-import { resolverAnchors, runPool } from '../estoque/estoqueManual';
+import { runPool } from '../core/pool';
+import { resolverAnchors } from '../core/anchors';
 import {
   type FetchPrecoFamiliasByIds,
   type PrecoFamilyRow,

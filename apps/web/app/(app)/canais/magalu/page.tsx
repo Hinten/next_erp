@@ -1,12 +1,14 @@
 'use client';
 
-import { PlaceholderPage } from '@delfrance/ui';
+import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { CanalCapsPanel } from '../_components/CanalCapsPanel';
 
 export default function CanalMagaluPage() {
   return (
-    <PlaceholderPage
-      title="Magalu"
-      description="Contas e configurações da integração com o Magalu Open API."
+    <CanalCapsPanel
+      tipo={INTEGRACAO_TIPO.magalu}
+      titulo="Magalu"
+      descricao="Contas e configurações da integração com o Magalu Open API."
     />
   );
 }

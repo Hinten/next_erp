@@ -22,8 +22,10 @@ import { IntegracoesColumnFilter } from './_components/IntegracoesColumnFilter';
 import { ImportarMercadoLivreModal } from './_components/ImportarMercadoLivreModal';
 import { EnviarEstoqueDialog } from './_components/EnviarEstoqueDialog';
 import { EnviarPrecoDialog } from './_components/EnviarPrecoDialog';
+import { PausarAnunciosDialog } from './_components/PausarAnunciosDialog';
 import { useEnviarEstoqueAction } from './_components/useEnviarEstoqueAction';
 import { useEnviarPrecoAction } from './_components/useEnviarPrecoAction';
+import { usePausarAnunciosAction } from './_components/usePausarAnunciosAction';
 
 // U+F8FF: a very high private-use code point. Appended to the search term it
 // bounds a nome prefix range (nome >= term && nome <= term + sentinel).
@@ -145,6 +147,7 @@ export default function ProdutosPage() {
   const { allowed: canWriteIntegracao } = usePermission(PERM.integracao.write);
   const { action: enviarEstoqueAction, modal: enviarEstoqueModal } = useEnviarEstoqueAction();
   const { action: enviarPrecoAction, modal: enviarPrecoModal } = useEnviarPrecoAction();
+  const { action: pausarAnunciosAction, modal: pausarAnunciosModal } = usePausarAnunciosAction();
   const [importOpen, setImportOpen] = useState(false);
 
   const db = getFirebaseFirestore();
@@ -288,10 +291,16 @@ export default function ProdutosPage() {
         }}
         rowHref={(id) => `/produtos/${id}/editar`}
         selectable
-        // Both pushes fan out over EVERY channel a produto is listed on, so the
-        // list grows with each integration rather than with each channel screen
-        // — see `lib/marketplace/push/README.md`.
-        actions={canWriteIntegracao ? [enviarPrecoAction, enviarEstoqueAction] : []}
+        // All three operations fan out over EVERY channel a produto is listed
+        // on, so the list grows with each integration rather than with each
+        // channel screen — see `lib/marketplace/push/README.md`.
+        //
+        // ⚠️ "Pausar anúncios" is pause-only on purpose. Reactivating lives in
+        // the produto's Mercado Livre tab, where the operator sees the listing
+        // they are putting back on air — see `usePausarAnunciosAction`.
+        actions={
+          canWriteIntegracao ? [enviarPrecoAction, enviarEstoqueAction, pausarAnunciosAction] : []
+        }
         // The docked rail rather than the top toolbar — the shape
         // /canais/mercado-livre adopted in #816. This screen carries the most
         // controls of any list in the app (Novo, Importar, Preços em massa,
@@ -350,6 +359,14 @@ export default function ProdutosPage() {
           opened
           alvos={enviarPrecoModal.alvos}
           onClose={enviarPrecoModal.close}
+        />
+      )}
+      {pausarAnunciosModal.opened && (
+        <PausarAnunciosDialog
+          key={pausarAnunciosModal.alvos.map((a) => a.produtoId).join(',')}
+          opened
+          alvos={pausarAnunciosModal.alvos}
+          onClose={pausarAnunciosModal.close}
         />
       )}
     </Stack>

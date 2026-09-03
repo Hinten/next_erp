@@ -18,6 +18,16 @@ the store does not have. See ADR 0014 §7.
   network call: the stored half is re-read inside the callback so a concurrent
   import aborts this attempt rather than losing to it. Losing would mark a
   **live** variation `closed` and silently stop its stock.
+- `variacoesReconciliacao.ts` — pure. Completes a legacy-model bulk
+  `variations[]` patch against the listing ML actually holds (**#831**).
+  ⚠️ **A `variations[]` body is not a patch: ML DELETES every variation the
+  array omits** — its own docs call omission the removal mechanism — and
+  `buildSendTasks` routinely emits a partial array, two of whose four drop
+  reasons are ordinary configuration. So the planner's array never reaches the
+  wire unreconciled, and a completion that cannot be proven complete refuses the
+  send outright rather than degrading to the partial one. ⚠️ A planner-side
+  check could not have covered this: a variation living on ML with no local link
+  produces no child row, so nothing is skipped and the array looks complete.
 - `estoqueSweep.ts` — the 15-minute and 02:00 `onSchedule` sweeps.
 - `estoqueManual.ts` — "enviar estoque agora" for a hand-picked produto set.
 - `mlStockTasks.ts` — the task-queue scheduler for the stock send queue.

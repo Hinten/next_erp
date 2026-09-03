@@ -38,7 +38,7 @@
  * predicate silently full-scans and is billed by data scanned.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { toOuterRef } from '@delfrance/schemas';
+import { toOuterRef, unidadeVendavel, type ProdutoDeFamilia } from '@delfrance/schemas';
 import {
   produtoCollection,
   produtoMercadoLivreLinkCollection,
@@ -59,7 +59,14 @@ export type OrderLineMatchKind =
   | 'up-member-link'
   | 'sku-child'
   | 'sku-root'
-  | 'sku-any';
+  | 'sku-any'
+  /**
+   * A SKU rung matched a produto that turned out to be the PARENT of a family
+   * of one, and the line was bound to its sole member instead — the produto
+   * that owns the stock (#1398). Distinct from the rung that found it, because
+   * "the SKU named a wrapper" is a different fact from "the SKU named this".
+   */
+  | 'sku-membro-unico';
 
 /** Why nothing bound. `ambiguous-sku` = the SKU named more than one produto. */
 export type OrderLineMissKind = 'ambiguous-sku' | 'unresolved';
@@ -189,7 +196,28 @@ export async function resolveOrderLineProduto(
       produtoCollection.ref(db, {}).where('sku', '==', sku).where('paiId', '==', null),
     );
     if (rootBySku.kind === 'many') return ambiguo('sku-root', rootBySku.ids);
-    if (rootBySku.kind === 'one') return { produtoId: rootBySku.produtoId, via: 'sku-root' };
+    if (rootBySku.kind === 'one') {
+      // ⚠️ This rung filters `paiId == null`, so it can only ever match a ROOT —
+      // and after #1398 a root with no variations is a WRAPPER whose stock lives
+      // on its sole member. Binding the wrapper is not an ambiguity, it is a
+      // wrong bind: `calcularAlteracoesEstoque` then moves stock on a produto
+      // that owns no estoque rows, and `aplicarPlano` creates one at
+      // `0 + delta` — negative, from nothing, on a live ML order.
+      //
+      // ⛔ ...unless it is a KIT. A kit's sole member has `ehKit: true` and no
+      // `componentesKit`, so binding it makes the sale move ZERO stock — worse than
+      // the wrong-row case above, because nothing anywhere reports it: the pedido
+      // has a produto, so `recordItensSemProduto` raises no incidente either. The
+      // ERP pick path reached the same conclusion one commit earlier
+      // (`PrincipalTab.tsx`); this is the surface with LIVE traffic and it must not
+      // disagree with it.
+      //
+      // The family fields ride along on the probe, so this costs no extra read.
+      const alvo = rootBySku.ehKit ? rootBySku.produtoId : unidadeVendavel(rootBySku.familia);
+      return alvo === rootBySku.produtoId
+        ? { produtoId: alvo, via: 'sku-root' }
+        : { produtoId: alvo, via: 'sku-membro-unico' };
+    }
 
     // Unscoped — legacy parity (`sku__isEqualTo(sku).first()` had no `paiId`
     // filter) and the only rung that can match a variation child of a DIFFERENT
@@ -263,7 +291,13 @@ async function resolveUpMemberChild(
  * rather than guess. `many` carries the ids: the only place they ever surface.
  */
 type SkuProbe =
-  | { kind: 'one'; produtoId: string }
+  | {
+      kind: 'one';
+      produtoId: string;
+      familia: ProdutoDeFamilia;
+      /** ⛔ A kit is never resolved — see the projection below. */
+      ehKit: boolean;
+    }
   | { kind: 'none' }
   | { kind: 'many'; ids: string[] };
 
@@ -284,7 +318,37 @@ type SkuProbe =
 async function probeSkuUnico(query: FirebaseFirestore.Query): Promise<SkuProbe> {
   const snap = await query.limit(2).get();
   if (snap.docs.length === 0) return { kind: 'none' };
-  if (snap.docs.length === 1) return { kind: 'one', produtoId: snap.docs[0]!.id };
+  if (snap.docs.length === 1) {
+    const doc = snap.docs[0]!;
+    const raw = doc.data() as Record<string, unknown>;
+    // Carried, not resolved here: only the `sku-root` rung can match a
+    // family-of-one PARENT, and folding the hop into this helper would read as a
+    // rule the other two rungs obey when it is one they cannot reach.
+    return {
+      kind: 'one',
+      produtoId: doc.id,
+      // ⛔ A KIT is never resolved. Its sole member carries `ehKit: true` and NO
+      // `componentesKit` (`planejarMembroUnico` does not copy the map), so binding
+      // it hands `calcularAlteracoesEstoque` a kit with a null map — its
+      // `if (!componentes) continue;` then moves NOTHING, and the components of a
+      // real ML sale are never reserved or removed. It costs a kit nothing to stay
+      // on the parent: the only thing the line needs from the produto it names is
+      // the composition, and the parent always has it.
+      ehKit: raw.ehKit === true,
+      familia: {
+        id: doc.id,
+        // ⚠️ `paiId` is deliberately NOT projected. `unidadeVendavel`'s drift
+        // guard reads it, and that guard cannot fire here: the ONLY rung that
+        // consumes `familia` is `sku-root`, whose own query is
+        // `.where('paiId', '==', null)`, so the value is null by construction.
+        // Projecting it would look like coverage while being unreachable —
+        // exactly the kind of comment-shaped guarantee this repo pays for. A
+        // future rung that resolves must project it and bring a test that fails
+        // without it.
+        filhoUnicoId: raw.filhoUnicoId as string | null | undefined,
+      },
+    };
+  }
   return { kind: 'many', ids: snap.docs.map((d) => d.id) };
 }
 

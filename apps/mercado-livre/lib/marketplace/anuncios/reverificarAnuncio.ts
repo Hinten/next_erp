@@ -36,7 +36,7 @@ import {
   MercadoLivreHttpError,
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
-import { precisaConsultarModeracao, toOuterRef } from '@delfrance/schemas';
+import { precisaConsultarModeracao } from '@delfrance/schemas';
 import type { Firestore } from 'firebase-admin/firestore';
 
 import { podeEnviarEstoque } from '../estoque/bulkEstoquePlan';
@@ -49,7 +49,7 @@ import {
 import { consultarModeracoes } from './moderacoes';
 import { clearFalha } from '../core/publishFalhas';
 import { isFamilyId } from '../core/linkRefs';
-import { familyMemberQuery } from './upMemberLink';
+import { type MembroDaFamilia, membrosDaFamilia } from './upMemberLink';
 
 /** The minimal ML surface a re-verification needs (injectable for tests). */
 export interface ReverificarApi {
@@ -228,52 +228,6 @@ export async function reverificarAnuncio(
     // predicate `consultarModeracoes` gates on says one was due.
     chamadasMl: precisaConsultarModeracao(item.status, item.sub_status) ? 2 : 1,
   };
-}
-
-/** One member link this family holds, reduced to what a re-read needs. */
-interface MembroDaFamilia {
-  itemId: string;
-  memberDocId: string;
-  memberProdutoId: string;
-  pmlOuterRef: string;
-}
-
-/**
- * The family's member links, or `[]` when this listing has none.
- *
- * ⚠️ Only members carrying an `itemId` count, and that filter is what keeps a
- * LEGACY `variations[]` listing on the single-item path where it belongs. Legacy
- * variations are rows in one ML item, not listings — `importCore.ts` leaves
- * their `itemId` null — so re-reading them as items would ask ML about ids that
- * do not exist. Only `publishUserProduct` and `importVariations` write `itemId`,
- * and only under User Products.
- *
- * The `pmlOuterRef` is rebuilt rather than read off a member, so the fold reads
- * by the same key regardless of which member answered. Safe as an exact `==`:
- * every writer stores it through `variacaoMercadoLivreLinkCollection.parse()`,
- * and `toOuterRef` normalises to the canonical `documents/…` form. Rides the
- * declared `produtoMercadoLivreOuterRef` COLLECTION_GROUP index.
- */
-async function membrosDaFamilia(
-  db: Firestore,
-  target: LinkStatusTarget,
-): Promise<MembroDaFamilia[]> {
-  const pmlOuterRef = toOuterRef(
-    `produtos/${target.produtoId}/produtoMercadoLivre/${target.linkDocId}`,
-  );
-  const snap = await familyMemberQuery(db, pmlOuterRef).get();
-  const membros: MembroDaFamilia[] = [];
-  for (const d of snap.docs) {
-    const raw = d.data() as Record<string, unknown>;
-    if (typeof raw.itemId !== 'string' || raw.itemId === '') continue;
-    membros.push({
-      itemId: raw.itemId,
-      memberDocId: d.id,
-      memberProdutoId: d.ref.parent?.parent?.id ?? '',
-      pmlOuterRef,
-    });
-  }
-  return membros;
 }
 
 /**

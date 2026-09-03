@@ -17,9 +17,15 @@ const h = vi.hoisted(() => {
   const snap = {
     current: { data: [] as Row[], loading: false, error: undefined },
   };
+  // ⚠️ `data` is deliberately widened: the promoted-survivor tests seed a KIT
+  // parent, and a narrow `{nome, sku}` would make the harness reject the very
+  // fields the mirror exists to carry.
   const parent = {
     current: {
-      data: { id: 'p1', data: { nome: 'Camiseta', sku: 'CAM' } },
+      data: {
+        id: 'p1',
+        data: { nome: 'Camiseta', sku: 'CAM' } as Record<string, unknown>,
+      },
       loading: false,
       error: undefined,
     },
@@ -135,6 +141,8 @@ const db = {} as unknown as Firestore;
 const DUP_ERROR = 'SKU duplicado entre as variações';
 const uidP = varianteFakePath('gT', 'P');
 const uidG = varianteFakePath('gT', 'G');
+/** A variante with NO `codigo` — its generated SKU is the parent's, verbatim. */
+const uidSemCodigo = varianteFakePath('gT', 'U');
 
 function grupos(): GrupoComId[] {
   return [
@@ -148,6 +156,7 @@ function grupos(): GrupoComId[] {
         variacoes: [
           { id: 'P', nome: 'P', codigo: 'P' },
           { id: 'G', nome: 'G', codigo: 'G' },
+          { id: 'U', nome: 'Único', codigo: null },
         ],
       },
     },
@@ -165,7 +174,7 @@ function child(
   return { id, data: { nome, sku, variacoesUid, ordem } };
 }
 
-function renderManager(value: string[] = [uidP, uidG]) {
+function renderManager(value: string[] = [uidP, uidG], membroUnicoId: string | null = null) {
   const flushRef: React.MutableRefObject<ChildrenFlush | null> = { current: null };
   const utils = render(
     <MantineTestProvider>
@@ -177,6 +186,7 @@ function renderManager(value: string[] = [uidP, uidG]) {
         onChange={() => undefined}
         onGroupsChange={() => undefined}
         flushRef={flushRef}
+        membroUnicoId={membroUnicoId}
       />
     </MantineTestProvider>,
   );
@@ -433,5 +443,318 @@ describe('VariationManager — staged rows vs the optimistic snapshot echo', () 
 
     expect(h.commits).toHaveLength(0);
     expect(rowCount()).toBe(0);
+  });
+});
+
+/**
+ * A family never loses its last child (#1398, PR 8).
+ *
+ * ⚠️ These assert WHICH outcome, not that there is one. `renomear` keeps the doc
+ * id — and with it the estoque rows and their ledger, kit entries, marketplace
+ * links, pedido lines — while `criar` starts empty. Getting that backwards is a
+ * silent stock loss on the most ordinary edit there is, and both look identical
+ * on screen afterwards: one row, named after the produto.
+ */
+describe('VariationManager — the family keeps a member', () => {
+  /** Mark every rendered row for deletion. */
+  async function removerTodas() {
+    const botoes = screen.getAllByRole('button', { name: 'Remover variação' });
+    for (const b of botoes) {
+      await act(async () => {
+        fireEvent.click(b);
+        await Promise.resolve();
+      });
+    }
+  }
+
+  // ⚠️ The child carries a REAL combo. An earlier version of this test used a
+  // child with `variacoesUid: null`, so "the taxonomy is cleared" was already
+  // true before the code ran — the mutation that stopped clearing it survived.
+  it('renames the only child in place instead of deleting it', async () => {
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0)]);
+    const { flushRef } = renderManager();
+    await removerTodas();
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    // ⛔ No delete at all — the id is the anchor for this produto's stock.
+    expect(h.ops.filter((o) => o.kind === 'delete')).toEqual([]);
+    const renomeada = h.ops.find((o) => o.id === 'c1' && o.kind === 'update');
+    // It takes the PARENT's identity: this is the produto's own sellable unit
+    // now, not a variation of it.
+    expect(renomeada?.data).toMatchObject({ nome: 'Camiseta', sku: 'CAM' });
+    // ...and stops being a variation, or the row keeps claiming a combo the
+    // produto no longer has.
+    expect(renomeada?.data?.variacoesUid).toBeNull();
+  });
+
+  it('points filhoUnicoId at the renamed survivor, not at nothing', async () => {
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0)]);
+    const { flushRef } = renderManager();
+    await removerTodas();
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops).toContainEqual(
+      expect.objectContaining({ kind: 'update', id: 'p1', data: { filhoUnicoId: 'c1' } }),
+    );
+  });
+
+  // ⚠️ Two children's stock cannot merge and choosing a survivor would be
+  // arbitrary, so this one starts empty — their estoque subtrees are swept by
+  // `onProdutoDeleted` either way. What it stops is the produto being left with
+  // no sellable unit at all.
+  it('mints a fresh member when every child of a real family is deleted', async () => {
+    h.setChildren([
+      child('c1', 'Camiseta P', 'CAM-P', [uidP], 0),
+      child('c2', 'Camiseta G', 'CAM-G', [uidG], 1),
+    ]);
+    const { flushRef } = renderManager([]);
+    await removerTodas();
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(
+      h.ops
+        .filter((o) => o.kind === 'delete')
+        .map((o) => o.id)
+        .sort(),
+    ).toEqual(['c1', 'c2']);
+    const criada = h.ops.find((o) => o.kind === 'set');
+    expect(criada?.data).toMatchObject({ paiId: 'p1', nome: 'Camiseta', variacoesUid: null });
+    expect(h.ops).toContainEqual(
+      expect.objectContaining({ kind: 'update', id: 'p1', data: { filhoUnicoId: criada!.id } }),
+    );
+  });
+
+  // ⛔ The hazard the guard exists for. A produto from before #1398 has no
+  // children AND holds its own stock; read-tolerance resolves it to itself.
+  // Minting an empty member without MOVING the units — a migration's job — points
+  // every stock reader at an empty document, and the produto reads 0.
+  it('mints nothing for a produto that never had a child', async () => {
+    h.setChildren([]);
+    const { flushRef } = renderManager([]);
+
+    // Stage a row and take it back: the flush runs with work to do and no
+    // persisted delete, which is exactly the shape that must NOT mint.
+    fireEvent.click(screen.getByRole('button', { name: 'Nova variante' }));
+    await removerTodas();
+
+    const { pending } = await startFlush(flushRef.current!);
+    if (h.commits.length > 0) await settleCommit(pending);
+    else await act(async () => void (await pending));
+
+    expect(h.ops.filter((o) => o.kind === 'set')).toEqual([]);
+  });
+
+  // Deleting one of two leaves a live child, so the invariant never engages —
+  // the ordinary delete must stay an ordinary delete.
+  it('still deletes outright while another child survives', async () => {
+    h.setChildren([
+      child('c1', 'Camiseta P', 'CAM-P', [uidP], 0),
+      child('c2', 'Camiseta G', 'CAM-G', [uidG], 1),
+    ]);
+    const { flushRef } = renderManager([]);
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Remover variação' })[0]!);
+      await Promise.resolve();
+    });
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops.filter((o) => o.kind === 'delete').map((o) => o.id)).toEqual(['c1']);
+    expect(h.ops.filter((o) => o.kind === 'set')).toEqual([]);
+  });
+});
+
+/**
+ * ⛔ A `codigo`-less variante must not block the save (found by adversarial review).
+ *
+ * The sole member copies the parent's SKU verbatim, and `cartesianVariations`
+ * emits `base.sku + (variante.codigo ?? '')` — so a variante with no `codigo`
+ * generates a child whose SKU **is** the parent's. Both shapes are modelled and
+ * legal (`findDuplicateSkus`' own docstring calls the child-SKU == parent-SKU case
+ * legacy-legal), and rule 3 exists to absorb exactly that create onto the sole
+ * member's document.
+ *
+ * The duplicate gate ran BEFORE reconciliation, so it threw first: the save was
+ * refused, both rows rendered red, and the operator could not proceed without
+ * hand-editing a SKU or deleting the member.
+ */
+describe('VariationManager — the SKU gate runs after the reuse', () => {
+  it('absorbs a codigo-less variante onto the sole member instead of refusing', async () => {
+    // The family of one, as it exists after #1424: one child carrying the
+    // parent's own SKU.
+    h.setChildren([child('membro-1', 'Camiseta', 'CAM', null, 0)]);
+    const { flushRef } = renderManager([uidSemCodigo], 'membro-1');
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+
+    // No refusal, and the generated row landed ON the member's document.
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops.filter((o) => o.kind === 'set')).toEqual([]);
+    expect(h.ops).toContainEqual(expect.objectContaining({ kind: 'update', id: 'membro-1' }));
+  });
+
+  // ...and the near-miss: a genuine collision between two DIFFERENT documents
+  // must still be refused, or moving the gate has disarmed it.
+  it('still refuses a real collision between two staged rows', async () => {
+    h.setChildren([]);
+    const { flushRef } = renderManager();
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+    await act(async () => {
+      const inputs = skuInputs();
+      fireEvent.change(inputs[0]!, { target: { value: 'MESMO' } });
+      fireEvent.change(inputs[1]!, { target: { value: 'MESMO' } });
+      await Promise.resolve();
+    });
+
+    await expect(flushRef.current!('p1')).rejects.toThrow(DUP_ERROR);
+  });
+});
+
+/**
+ * ⛔ The mirrored `gtin` does not survive becoming a real variation.
+ *
+ * `montarMembroUnico` copies the parent's barcode onto a sole member — correct,
+ * because it is the same physical article. But the moment rule 3 absorbs that
+ * document into the first staged variation, the barcode stops being true of it: a
+ * GTIN identifies ONE sellable article, so leaving it would publish variation P
+ * carrying the family's barcode while M has none.
+ */
+describe('VariationManager — the absorbed member drops the family barcode', () => {
+  it('clears gtin when a real variation absorbs the sole member', async () => {
+    h.setChildren([child('membro-1', 'Camiseta', 'CAM', null, 0)]);
+    const { flushRef } = renderManager([uidP, uidG], 'membro-1');
+
+    fireEvent.click(screen.getByText('Gerar variações'));
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    const absorvida = h.ops.find((o) => o.kind === 'update' && o.id === 'membro-1');
+    expect(absorvida?.data).toMatchObject({ gtin: null });
+  });
+
+  // ⚠️ The near-miss. A row the reuse did NOT absorb is an ordinary edit, and an
+  // ordinary edit must never wipe a barcode the operator entered.
+  it('leaves gtin alone on an ordinary variation edit', async () => {
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0)]);
+    const { flushRef } = renderManager();
+
+    await act(async () => {
+      fireEvent.change(skuInputs()[0]!, { target: { value: 'CAM-P2' } });
+      await Promise.resolve();
+    });
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    const editada = h.ops.find((o) => o.kind === 'update' && o.id === 'c1');
+    expect(editada?.data).not.toHaveProperty('gtin');
+  });
+});
+
+/**
+ * ⛔ The promoted survivor is a MIRROR, not just a rename.
+ *
+ * `filhoUnicoId` points at it, so `unidadeVendavel` sends every stock, kit and
+ * NF-e reader to it. The `criar` arm builds its member through
+ * `montarMembroUnico`; the `renomear` arm used to write only nome/sku/variacoesUid
+ * and leave everything else at whatever the variation happened to have.
+ *
+ * On a KIT parent that is a produto whose sellable unit is a non-kit with no
+ * composition — which `calcularAlteracoesEstoque` reads as a line that moves
+ * NOTHING.
+ */
+describe('VariationManager — the renamed survivor mirrors the parent', () => {
+  it('takes the parent’s kit fields, not the variation’s defaults', async () => {
+    h.parent.current = {
+      data: {
+        id: 'p1',
+        data: {
+          nome: 'Cesta',
+          sku: 'CES',
+          ehKit: true,
+          ehKitVirtual: false,
+          componentesKit: { 'comp-a': { quantidade: 2, limitarEstoque: true } },
+          publicado: true,
+          gtin: '789',
+        },
+      },
+      loading: false,
+      error: undefined,
+    };
+    // A variation carrying the create branch's defaults: not a kit, no map.
+    h.setChildren([
+      { id: 'c1', data: { nome: 'Cesta P', sku: 'CES-P', variacoesUid: [uidP], ordem: 0 } },
+    ]);
+    const { flushRef } = renderManager();
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Remover variação' })[0]!);
+      await Promise.resolve();
+    });
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    const promovida = h.ops.find((o) => o.kind === 'update' && o.id === 'c1');
+    expect(promovida?.data).toMatchObject({
+      nome: 'Cesta',
+      ehKit: true,
+      componentesKit: { 'comp-a': { quantidade: 2, limitarEstoque: true } },
+      componentesKitKeys: ['comp-a'],
+      publicado: true,
+    });
+  });
+
+  // ⚠️ `precos` stays out: the `onProdutoChanged` trigger owns it, with the
+  // `propagatePriceToChildren` opt-out this must not defeat.
+  it('does not carry precos', async () => {
+    h.parent.current = {
+      data: { id: 'p1', data: { nome: 'Cesta', sku: 'CES', precos: { l1: { valor: 9 } } } },
+      loading: false,
+      error: undefined,
+    };
+    h.setChildren([
+      { id: 'c1', data: { nome: 'Cesta P', sku: 'CES-P', variacoesUid: [uidP], ordem: 0 } },
+    ]);
+    const { flushRef } = renderManager();
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Remover variação' })[0]!);
+      await Promise.resolve();
+    });
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops.find((o) => o.kind === 'update' && o.id === 'c1')?.data).not.toHaveProperty(
+      'precos',
+    );
+  });
+
+  // The near-miss: an ordinary variation edit must NOT gain the parent's mirror.
+  it('leaves an ordinary edited variation alone', async () => {
+    h.setChildren([
+      child('c1', 'Camiseta P', 'CAM-P', [uidP], 0),
+      child('c2', 'Camiseta G', 'CAM-G', [uidG], 1),
+    ]);
+    const { flushRef } = renderManager();
+
+    await act(async () => {
+      fireEvent.change(skuInputs()[0]!, { target: { value: 'CAM-P2' } });
+      await Promise.resolve();
+    });
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+
+    expect(h.ops.find((o) => o.kind === 'update' && o.id === 'c1')?.data).not.toHaveProperty(
+      'ehKit',
+    );
   });
 });
