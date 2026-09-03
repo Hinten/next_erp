@@ -215,15 +215,10 @@ function buildEnderDest(endereco: Endereco): TEndereco {
   };
 }
 
-function requireField<T>(name: string, value: T | null | undefined): NonNullable<T> {
-  if (value == null) throw new NFePartiesError(`${name} is required`);
-  return value as NonNullable<T>;
-}
-
 /**
  * `cMun` — the 7-digit IBGE município code.
  *
- * Deliberately stricter than `requireField`, which only rejects `== null`.
+ * Deliberately stricter than a bare `== null` rejection.
  * `enderecoSchema.codigoMunicipio` is `z.string().max(8).regex(/^\d*$/)`, so an
  * empty string is perfectly storable — and it used to sail through here and
  * emit `<cMun></cMun>`, a malformed XML rejected by SEFAZ with no hint of which

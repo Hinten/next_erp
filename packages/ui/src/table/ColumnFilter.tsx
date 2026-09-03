@@ -1,16 +1,7 @@
 'use client';
 
 import { type ReactNode, useState } from 'react';
-import {
-  ActionIcon,
-  Button,
-  Group,
-  NumberInput,
-  Popover,
-  Select,
-  Stack,
-  TextInput,
-} from '@mantine/core';
+import { ActionIcon, Button, Group, Popover, Select, Stack, TextInput } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { IconFilter, IconFilterFilled } from '@tabler/icons-react';
 import type { PipelineFilterOp } from '@delfrance/data';
@@ -76,7 +67,7 @@ export function FilterPopover({ active, label, children }: FilterPopoverProps) {
  *    similarity — case- and accent-insensitive substring match)
  *  - enum                                    →  Select (eq)
  *  - boolean                                 →  Select Sim/Não (eq)
- *  - number / integer / currency             →  NumberInput + op picker
+ *  - number / integer / currency             →  DecimalInput + op picker
  *  - datetime                                →  DateTimePicker + ≥/≤ op
  *    (numeric-epoch fields; the exact chosen instant is converted to the
  *    field's `dateUnit` via `pickerStringToEpoch`)

@@ -15,6 +15,17 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 5_000 },
   fullyParallel: true,
+  // ⚠️ A committed `test.only` runs ONE test and silently skips the rest of its
+  // file — and Playwright's default for this option is `false`, so before #1445
+  // the `E2E gate (cadastros|vendas|emulator)` check reported GREEN for a lane
+  // that had stopped running its suite. That is the silent-pass class the whole
+  // `ci-lanes` design exists to prevent ("CI green" means "the suite passed"),
+  // and it was the one instance of it nothing guarded. Failing the RUN in CI is
+  // the half a lint rule cannot cover, since `.only` can also arrive through a
+  // `--grep` or a merge that never touches a linted line.
+  //
+  // CI only: locally, `.only` is the normal way to iterate on one spec.
+  forbidOnly: !!process.env.CI,
   // CI gets 2 retries; local gets 1 — local networks (and the real Firebase
   // round-trips every spec makes) are less stable than CI's, so a single
   // retry absorbs a transient blip without masking a deterministic failure.

@@ -53,9 +53,6 @@ import {
 } from '@delfrance/schemas';
 import { idLocalMercadoLivre } from '@delfrance/integrations-mercado-livre';
 
-/** Mirrors `importCore.ts`'s own cap on the child `nome`. */
-const PRODUTO_NOME_MAX = 100;
-
 /** One depósito row of the PARENT, as read before the move. */
 export interface MembroUnicoEstoque {
   /**

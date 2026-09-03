@@ -667,7 +667,7 @@ describe('CI lanes always report', () => {
   // ------------------------------------------------------------------
   it('the pinned gate and scope names are unchanged, and every check name is unique', () => {
     const actual = {};
-    for (const [file, lane] of Object.entries(LANES)) {
+    for (const file of Object.keys(LANES)) {
       const jobs = jobBlocks(read(file));
       actual[file] = {
         gate: checkName('gate', jobs.gate ?? ''),

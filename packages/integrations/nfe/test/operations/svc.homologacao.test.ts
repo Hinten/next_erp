@@ -156,13 +156,11 @@ const isFatalRun =
   process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' ||
   process.env.GITHUB_EVENT_NAME === 'schedule';
 if (probeSvc && !svcAnReachable && !isFatalRun) {
-  // eslint-disable-next-line no-console
   console.warn(
     '::warning::SVC-AN host unreachable from this runner — skipping SVC-AN SOAP tests (advisory, #337).',
   );
 }
 if (probeSvc && !svcRsReachable && !isFatalRun) {
-  // eslint-disable-next-line no-console
   console.warn(
     '::warning::SVC-RS host unreachable from this runner — skipping the SVC-RS test (advisory, #337).',
   );

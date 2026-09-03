@@ -138,7 +138,7 @@ describe('redactWireBody', () => {
       const out = new Map<string, string>();
       if (value === null) return out.set(path.join('.'), 'null');
       if (Array.isArray(value)) {
-        value.forEach((entry, i) => {
+        value.forEach((entry) => {
           for (const [k, v] of tipos(entry, [...path, '*'])) out.set(k, v);
         });
         return out;

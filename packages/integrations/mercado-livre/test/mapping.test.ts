@@ -22,7 +22,11 @@ import {
   estadoFromMlStatus,
   userProductMemberInputs,
 } from '../src/mapping/itemPayload';
-import { attributesFromItem, skuPaiFromAttributes } from '../src/mapping/importItem';
+import {
+  attributesFromItem,
+  skuFromAttributes,
+  skuPaiFromAttributes,
+} from '../src/mapping/importItem';
 
 describe('attributeToMercadoLivre', () => {
   it('emits value_name with the unit appended and keeps unit_id', () => {
@@ -77,58 +81,52 @@ describe('ML_ATTR_SKU_PAI_NOME (#1400)', () => {
     // It must not change, because a custom attribute contributes its NAME to
     // ML's family-id hash: renaming it moves every member of every família that
     // carries it into a DIFFERENT família, which ML reports as
-    // `family_id.collision` and which no later publish repairs. Since #1414 the
-    // characteristic is sent for every new família with no flag, so this value
-    // is live on real listings.
+    // `family_id.collision` and which no later publish repairs. It is sent for
+    // every new família with no flag, so this value is live on real listings.
     //
-    // It is also PUBLIC — it renders in the anúncio's ficha técnica — which is
-    // why it reads as ordinary Brazilian retail phrasing rather than naming the
-    // internal field it carries.
+    // ⚠️ It reads as ordinary Brazilian retail phrasing because a custom
+    // characteristic COULD be shown to buyers. Measured 2026-09-03 on
+    // `MLB5183026663`: ML does not render it (nor `SELLER_SKU`, which rides the
+    // same array) — but that is one listing in one category, so the wording
+    // stays buyer-safe rather than naming the internal field it carries.
     expect(ML_ATTR_SKU_PAI_NOME).toBe('Código de referência');
   });
 
-  it('does not collide with an ML attribute display name', () => {
-    // ⚠️ The match is id-AGNOSTIC: `skuPaiFromAttributes` folds `name` and never
-    // reads `id`, so these ML-DEFINED attributes — which all HAVE ids — can
-    // collide. (An id-less-only reading would make this test vacuous; it is
-    // not.) `skuPaiHijack` below pins the consequence.
-    //
-    // ⚠️ Eight literals cannot establish ABSENCE across ML's whole taxonomy, and
-    // the constant moved from a bespoke phrase to generic retail wording, so the
-    // population of plausible collisions grew. Checked 2026-09-01 against ML's
-    // `atributos` reference and a docs search — no documented attribute uses
-    // this name — but the authoritative check is a live authenticated sweep of
-    // `GET /categories/{id}/attributes` over the categories this seller lists
-    // in, which no lane may run (no ML credentials). Do it before the first
-    // deploy: the name freezes then.
-    const folded = ML_ATTR_SKU_PAI_NOME.trim().toLowerCase();
-    for (const mlName of [
-      'Modelo',
-      'Modelo Alfanumérico',
-      'Código universal de produto',
-      'SKU',
-      'GTIN',
-      'Marca',
-      'Cor',
-      'Tamanho',
-    ]) {
-      expect(folded).not.toBe(mlName.trim().toLowerCase());
-    }
-  });
-
-  it('a name collision would hijack rung 1 AND silence the real attribute', () => {
-    // Pins what a collision actually costs, so the guard above is sized against
-    // observed behaviour rather than against the docblock's description of it.
+  it('an ID-BEARING attribute is never ours, whatever it is called', () => {
+    // ⚠️ The safety property, and the inverse of what this file used to pin.
+    // `skuPaiFromAttributes` matches id-LESS only, licensed by the wire
+    // observation above — so a real ML attribute cannot be mistaken for the
+    // characteristic even when its display name is identical.
     const foreign = {
       id: 'REFERENCE_CODE',
       name: ML_ATTR_SKU_PAI_NOME,
       value_name: 'XYZ-123',
     };
-    // 1. Read as the parent sku, despite carrying an id that is not ours.
-    expect(skuPaiFromAttributes([foreign])).toBe('XYZ-123');
-    // 2. …and excluded from the link doc, so it stops being republished — which
-    //    reaches SIMPLE items too, though they never send this characteristic.
-    expect(attributesFromItem([foreign])).toEqual([]);
+    // 1. NOT read as the parent sku.
+    expect(skuPaiFromAttributes([foreign])).toBeNull();
+    // 2. …and it still reaches the link doc, so it keeps being republished.
+    //    Both halves used to go the other way, and the second reached SIMPLE
+    //    items too — which never send this characteristic at all.
+    expect(attributesFromItem([foreign])).toHaveLength(1);
+    expect(attributesFromItem([foreign])[0]).toMatchObject({
+      id: 'REFERENCE_CODE',
+      value_name: 'XYZ-123',
+    });
+  });
+
+  it('reads the real wire shape ML returned, and keeps it apart from SELLER_SKU', () => {
+    // Verbatim from `GET /items/MLB5183026663` (2026-09-03) — the two carry the
+    // SAME value on a família of one, so this also pins that they stay distinct
+    // readings rather than one shadowing the other.
+    const wire = [
+      { id: null, name: ML_ATTR_SKU_PAI_NOME, value_name: 'pratocoracao123' },
+      { id: 'SELLER_SKU', name: 'SKU', value_name: 'pratocoracao123' },
+    ];
+    expect(skuPaiFromAttributes(wire)).toBe('pratocoracao123');
+    expect(skuFromAttributes(wire)).toBe('pratocoracao123');
+    // Neither is stored on the link: SELLER_SKU is a DERIVED id, and the
+    // characteristic is id-less so the id filter drops it.
+    expect(attributesFromItem(wire)).toEqual([]);
   });
 });
 

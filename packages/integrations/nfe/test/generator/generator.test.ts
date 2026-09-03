@@ -8,6 +8,12 @@ import type { NFeCertificate } from '../../src/cert';
 import { generateNFe, NFeGeneratorError } from '../../src/generator/index';
 import { HOMOLOGACAO_XNOME } from '../../src/generator/parties';
 import type { GeneratorInput, GeneratorItem } from '../../src/generator/types';
+import {
+  IND_INTERMED_OPERACAO,
+  IND_PRES_OPERACAO,
+  TIPO_CLIENTE,
+  UF_SIGLA,
+} from '@delfrance/schemas';
 
 const FILIAL: Filial = {
   razaoSocial: 'Loja de Bicicletas Acmé S.A.',
@@ -26,7 +32,7 @@ const FILIAL: Filial = {
     cep: '01001000',
     codigoMunicipio: '3550308',
     cidade: 'São Paulo',
-    estado: 'SP',
+    estado: UF_SIGLA.SP,
     cPais: null,
     pais: null,
     nome: null,
@@ -36,11 +42,12 @@ const FILIAL: Filial = {
     imun: null,
     email: null,
     telefone: null,
+    timestamp: null,
   },
 };
 
 const CLIENTE: Cliente = {
-  tipo: '1',
+  tipo: TIPO_CLIENTE.pessoaJuridica,
   nome: 'Distribuidora André & Cia. Ltda.',
   cpf_cnpj: '99999999000191',
   idEstrangeiro: null,
@@ -57,6 +64,7 @@ const CLIENTE: Cliente = {
   nome_embedding: null,
   telefone_embedding: null,
   userCliente: null,
+  idMercadoLivre: null,
 };
 
 const ENDERECO_DEST: Endereco = {
@@ -68,7 +76,7 @@ const ENDERECO_DEST: Endereco = {
   cep: '04504010',
   codigoMunicipio: '3550308',
   cidade: 'São Paulo',
-  estado: 'SP',
+  estado: UF_SIGLA.SP,
   cPais: null,
   pais: null,
   nome: null,
@@ -78,6 +86,7 @@ const ENDERECO_DEST: Endereco = {
   imun: null,
   email: null,
   telefone: null,
+  timestamp: null,
 };
 
 const OPERACAO: Operacao = {
@@ -93,8 +102,8 @@ const OPERACAO: Operacao = {
   movimentaIndisponivelEstoque: true,
   ehFiscal: true,
   finNFe: 1,
-  indPres: '2',
-  indIntermed: '0',
+  indPres: IND_PRES_OPERACAO.naoPresencialInternet,
+  indIntermed: IND_INTERMED_OPERACAO.semIntermediador,
   cfop: '5102',
   cfopInterestadual: '6102',
   NCM: null,
