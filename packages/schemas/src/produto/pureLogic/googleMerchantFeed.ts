@@ -29,7 +29,12 @@ import { type GrupoComId, parseFakePath } from './variacoes';
  * The four `GoogleMerchantData` fields a kit can inherit from a component.
  *
  * A plain union rather than `(typeof CAMPOS_HERDAVEIS)[number]` over an
- * `as const` array: nothing iterates the set — `montarItem` names all four
+ * `as const` array: nothing iterates the set — `buildGoogleMerchantFeedItems`
+ * names all four explicitly — so the array was a runtime value no code read,
+ * and only the TYPE was load-bearing (it constrains `campoComHeranca`'s
+ * `campo`, which is what stops a typo at those four call sites). If a future
+ * change does need to iterate them, reintroduce the array THEN and derive this
+ * from it again.
  * explicitly — so the array was a runtime value no code read, and only the
  * TYPE was load-bearing (it constrains `campoComHeranca`'s `campo`, which is
  * what stops a typo at those four call sites). If a future change does need to
