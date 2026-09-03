@@ -56,8 +56,14 @@ export default function lintStaged(stagedFiles) {
   }
 
   // 2) ESLint --fix, grouped by owning workspace. Code files that live outside
-  //    any ESLint-config workspace (e.g. packages/core, packages/ui) have no
-  //    config to run against, so they get Prettier only.
+  //    any ESLint-config workspace get Prettier only — that is repo-root files
+  //    and `.github/scripts/**` / `.claude/hooks/**`, which belong to no
+  //    workspace and which no root flat config covers.
+  //    ⚠️ It used to name `packages/core` and `packages/ui` as the examples.
+  //    Both ship an `eslint.config.mjs` and are discovered above — `packages/ui`
+  //    is a workspace this same PR adds hook rules to — so the examples were
+  //    exactly backwards and would send the next reader hunting a hole that is
+  //    not there.
   const byWorkspace = new Map();
   for (const abs of stagedFiles) {
     if (!CODE_RE.test(abs)) continue;
@@ -69,8 +75,18 @@ export default function lintStaged(stagedFiles) {
     byWorkspace.get(ws).push(path.relative(ws, rel));
   }
 
+  // ⚠️ `--no-warn-ignored` is load-bearing, not tidiness. `--max-warnings 0`
+  //    counts the `File ignored because of a matching ignore pattern` warning,
+  //    so staging a file its workspace deliberately ignores fails the hook with
+  //    a message about nothing. `packages/integrations/nfe/src/codegen/generate.mjs`
+  //    is the live case — it is tracked, ESLint-ignored, and hand-edited on every
+  //    MOC bump, so `git commit` on a MOC bump would die. (Pre-existing for the
+  //    package's ignored `.ts` files; widening CODE_RE above to `.mjs` is what
+  //    made it reachable there too.) lint-staged only ever passes files the
+  //    developer deliberately staged, so skipping the ignored ones silently is
+  //    the intended behaviour.
   for (const [ws, files] of byWorkspace) {
-    const inner = `cd ${sq(ws)} && eslint --fix --max-warnings 0 ${files.map(sq).join(' ')}`;
+    const inner = `cd ${sq(ws)} && eslint --fix --max-warnings 0 --no-warn-ignored ${files.map(sq).join(' ')}`;
     commands.push(`sh -c ${sq(inner)}`);
   }
 

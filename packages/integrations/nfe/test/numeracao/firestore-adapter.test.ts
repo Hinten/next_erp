@@ -94,32 +94,23 @@ describe('nfeConfigStoreFromFirestore', () => {
     expect(state['filiais/F-1/nfeconfig/default']).toBeUndefined();
   });
 
-  // ⚠️ The seeded `timestamp` is a STRING, and so is the one this asserts on,
-  // because that is what `firestore-adapter.ts`'s `set()` actually writes
-  // (`new Date().toISOString()`) — while `nfeConfigSchema` declares the field
-  // as `millisSinceEpoch()`, i.e. a NUMBER. Nothing fails today only because
-  // that reader is tolerant: `z.preprocess(tolerant(coerceToMillis), ...)`
-  // coerces the ISO string back to millis on the way in, so the disagreement is
-  // invisible at runtime and was invisible to tsc too — this file was outside
-  // the package's tsconfig `include` until #1445's follow-up.
-  //
-  // Left as-is deliberately: changing what the adapter STORES is a data-shape
-  // change to documents that already exist, which this repo wants handled by a
-  // one-time migration and its own issue, not by a lint PR. The cast keeps the
-  // test honest about current behaviour instead of asserting an intent the code
-  // does not implement.
-  it('stamps a timestamp on every write', async () => {
+  it('stamps a millisecond timestamp on every write', async () => {
+    // Regression guard for the shape, not just the freshness. This writer used
+    // to send `new Date().toISOString()` while `nfeConfigSchema` declares the
+    // field as `millisSinceEpoch()` — invisible at runtime because that reader
+    // is tolerant and coerced it back, and invisible to tsc because this file
+    // was outside the package's tsconfig `include`. Raised in review on #1449.
+    const seeded = 1_735_689_600_000; // 2025-01-01T00:00:00Z
     const { fs, state } = fakeFirestore({
-      'filiais/F-1/nfeconfig/default': {
-        ...SEED,
-        timestamp: '2025-01-01T00:00:00Z',
-      } as unknown as NFeConfig,
+      'filiais/F-1/nfeconfig/default': { ...SEED, timestamp: seeded },
     });
     const store = nfeConfigStoreFromFirestore(fs);
     await nextIdLote(store, 'F-1');
     const written = state['filiais/F-1/nfeconfig/default'];
-    expect(typeof written?.timestamp).toBe('string');
-    expect(written?.timestamp).not.toBe('2025-01-01T00:00:00Z'); // updated
+    expect(typeof written?.timestamp).toBe('number');
+    expect(written?.timestamp).not.toBe(seeded); // re-stamped
+    // ⚠️ A near-miss: an ISO string would satisfy "changed" but not the schema.
+    expect(written?.timestamp).not.toBe(new Date(seeded).toISOString());
   });
 
   it('runs an unknown filial through the not-found error path', async () => {
