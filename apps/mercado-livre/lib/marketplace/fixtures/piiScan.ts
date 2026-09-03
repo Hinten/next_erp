@@ -113,7 +113,7 @@ export function patternFindings(value: WireValue): PiiFinding[] {
   function walk(node: WireValue, path: readonly string[]): void {
     if (node === null) return;
     if (Array.isArray(node)) {
-      node.forEach((entry, i) => walk(entry, [...path, '*']));
+      node.forEach((entry) => walk(entry, [...path, '*']));
       return;
     }
     if (typeof node === 'object') {
