@@ -171,12 +171,35 @@ function gravar(result: CaptureResult): ManifestEntry {
   };
 }
 
-/** 206 and an empty 2xx are flagged in the run output, never left looking complete. */
+/**
+ * 206, a recorded refusal and an empty 2xx are each flagged in the run output,
+ * never left looking complete.
+ *
+ * ⚠️ A recorded non-404 4xx gets its OWN mark. A 404 means "this resource does
+ * not exist"; a 400 means "you may not ask this question that way" — reading the
+ * second as the first is how the `/packs` fan-out's premise went unexamined.
+ */
 function marcaDe(entrada: ManifestEntry): string {
   if (entrada.status === 404) return '✗ ';
   if (entrada.status === 206) return '◐ ';
+  if (entrada.status >= 400) return '⛔ ';
   if (entrada.bytes === 0) return '⚠️ ';
   return '  ';
+}
+
+/**
+ * The connected account's ML `user_id`, off the channel context's account bag.
+ *
+ * ⚠️ It is legitimately absent: `exchangeAndPersist` stamps it only
+ * `if (resp.user_id != null)` (#289), so an account connected before that
+ * backfill has none. Absent ⇒ the claims search is dropped from the plan, which
+ * the run reports rather than hides.
+ */
+function sellerIdDe(account: Readonly<Record<string, unknown>>): string | undefined {
+  const raw = account['user_id'];
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+  if (typeof raw === 'string' && raw.trim() !== '') return raw.trim();
+  return undefined;
 }
 
 /* ----------------------------------- main ---------------------------------- */
@@ -189,11 +212,18 @@ async function main(): Promise<void> {
   const ctx = await loadMercadoLivreContext(db, args.integracaoId);
   const channelCtx = await ctx.resolveChannelContext();
 
-  const plan = buildCapturePlan(args);
+  const sellerId = sellerIdDe(channelCtx.account);
+  const plan = buildCapturePlan({ ...args, ...(sellerId === undefined ? {} : { sellerId }) });
   log(`[capture:fixtures] project=${args.projectId} integracao=${args.integracaoId}`);
   log(`  ${plan.length} chamada(s) → ${OUT_DIR}`);
-  if (plan.length === 1) {
-    log('  ⓘ Nenhum id informado — só a busca de claims será capturada.');
+  if (plan.length === 0) {
+    log('  ⓘ Nenhum id informado e nenhum seller id — nada a capturar.');
+  }
+  if (sellerId === undefined) {
+    log('  ⚠️ A integração não tem `user_id` gravado — a busca de claims foi OMITIDA.');
+    log('     Sem `players.user_id` o Mercado Livre responde 400 (a paginação não conta');
+    log('     como filtro), então a chamada não descobriria nada. Reconecte a conta por');
+    log('     OAuth para gravar o `user_id` (#289).');
   }
   log('');
 
@@ -240,13 +270,24 @@ async function main(): Promise<void> {
   const completos = manifesto.filter((m) => m.status === 200);
   const parciais = manifesto.filter((m) => m.status === 206);
   const faltando = manifesto.filter((m) => m.status === 404);
-  const vazios = manifesto.filter((m) => m.status !== 404 && m.bytes === 0);
+  // ⚠️ Every permanent 4xx is recorded now (#1357), so a 400 needs a bucket of
+  // its own — it used to have none even conceptually.
+  const recusados = manifesto.filter((m) => m.status >= 400 && m.status !== 404);
+  // ⚠️ "Empty 2xx" must be keyed on the 2xx RANGE, not on `!== 404`: a 400 with
+  // an empty body is a refusal, not a suspicious success.
+  const vazios = manifesto.filter((m) => m.status >= 200 && m.status < 300 && m.bytes === 0);
   log(
     `✅ ${completos.length} corpo(s) completo(s); ${parciais.length} parcial(is) (206); ` +
-      `${faltando.length} 404.`,
+      `${faltando.length} 404; ${recusados.length} recusado(s) (4xx permanente).`,
   );
   if (faltando.length > 0) {
     log('   Um 404 é DADO — ficou gravado como `<slug>.404.json` e nunca como um corpo válido.');
+  }
+  if (recusados.length > 0) {
+    log('   Um 4xx permanente também é DADO: é a resposta real do ML para essa pergunta,');
+    log('   gravada como `<slug>.<status>.json`. A execução NÃO para por causa dele —');
+    log('   antes do #1357 parava, e por isso o script nunca terminava com código 0:');
+    for (const r of recusados) log(`      ${r.status}  ${r.path}`);
   }
   if (parciais.length > 0) {
     log('   ⚠️ Um 206 OMITE campos em vez de anulá-los, e as omissões são');

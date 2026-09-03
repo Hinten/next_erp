@@ -30,6 +30,7 @@ export * from './types';
 // copy was always going to drift (#810). Import it from core directly.
 export * from './shipmentFields';
 export * from './oauth';
+export * from './claimSearch';
 export * from './api';
 export * from './incidents';
 export * from './incidentRespond';

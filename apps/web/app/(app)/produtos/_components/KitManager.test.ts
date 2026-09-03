@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DimensoesKit } from '@delfrance/schemas';
-import { kitDimensoesFormPatches, stripKitForSave } from './KitManager';
+import { decidirComponente, kitDimensoesFormPatches, stripKitForSave } from './KitManager';
+import type { ProdutoComponenteBruto } from './KitManager';
 
 describe('stripKitForSave', () => {
   it('drops _delete entries and the transient marker, keeping a clean record', () => {
@@ -88,5 +89,231 @@ describe('kitDimensoesFormPatches', () => {
       { field: 'larguraCm', value: 10 },
       { field: 'profundidadeCm', value: 10 },
     ]);
+  });
+});
+
+/**
+ * `decidirComponente` — which produto a picked component actually becomes, and
+ * every reason it can be refused.
+ *
+ * The corpus: `pai` is a family of one whose sellable unit is `filho`; `avulso`
+ * is a childless produto (or a family of MANY — `unidadeVendavel` answers the
+ * same for both, and for the same reason: there is no single unit to point at).
+ */
+const PAI: ProdutoComponenteBruto = { paiId: null, filhoUnicoId: 'filho' };
+const FILHO: ProdutoComponenteBruto = { paiId: 'pai', filhoUnicoId: null };
+const AVULSO: ProdutoComponenteBruto = { paiId: null, filhoUnicoId: null };
+
+function decidir(over: Partial<Parameters<typeof decidirComponente>[0]> = {}) {
+  return decidirComponente({
+    id: 'pai',
+    produtoId: 'kit-1',
+    excludeIds: [],
+    componentes: {},
+    doc: PAI,
+    docAlvo: AVULSO,
+    ...over,
+  });
+}
+
+describe('decidirComponente — the id it stores', () => {
+  it('stores the SOLE MEMBER when a family-of-one parent is picked', () => {
+    expect(decidir()).toEqual({
+      tipo: 'adicionar',
+      alvo: 'filho',
+      reaproveitarDe: null,
+      removerChaves: [],
+    });
+  });
+
+  // ⚠️ The near-miss. A childless produto — and a family of MANY, which
+  // `unidadeVendavel` answers identically — owns its own stock, so moving the id
+  // would name a produto that does not exist or pick one arbitrary variation.
+  it('leaves a childless produto exactly as picked', () => {
+    expect(decidir({ id: 'avulso', doc: AVULSO, docAlvo: undefined })).toEqual({
+      tipo: 'adicionar',
+      alvo: 'avulso',
+      reaproveitarDe: null,
+      removerChaves: [],
+    });
+  });
+
+  // ...and the fixpoint: a child picked directly resolves to itself, which is
+  // what makes the migration's rewrite and this screen agree on one answer.
+  it('leaves a sole member picked directly as itself', () => {
+    expect(decidir({ id: 'filho', doc: FILHO, docAlvo: undefined })).toEqual({
+      tipo: 'adicionar',
+      alvo: 'filho',
+      reaproveitarDe: null,
+      removerChaves: [],
+    });
+  });
+
+  /**
+   * ⛔ A pointer naming a document that is gone. `unidadeVendavel` never proves
+   * the child exists and nothing in the repo repairs a dangling `filhoUnicoId`,
+   * so adopting it anyway would file a component under an id with no custo, no
+   * weight and no estoque row — reading 0 for ever. It stays itself.
+   */
+  it('falls back to the picked produto when the sole member cannot be read', () => {
+    expect(decidir({ docAlvo: undefined })).toEqual({
+      tipo: 'adicionar',
+      alvo: 'pai',
+      reaproveitarDe: null,
+      removerChaves: [],
+    });
+  });
+});
+
+describe('decidirComponente — what it refuses', () => {
+  it('refuses a produto it could not read', () => {
+    expect(decidir({ doc: undefined })).toMatchObject({ tipo: 'recusar' });
+  });
+
+  it('refuses the produto being edited', () => {
+    expect(decidir({ id: 'kit-1', doc: AVULSO, docAlvo: undefined })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Um produto não pode ser componente de si mesmo.',
+    });
+  });
+
+  /**
+   * ⛔ The self-reference that only the RESOLVED id can catch, and the reason
+   * every guard runs twice.
+   *
+   * In the per-variation editor `produtoId` is the CHILD. Picking its parent
+   * resolves straight onto `produtoId` — and nothing checked that before, because
+   * the raw-id guard sees two different strings and the `excludeIds` guard reads
+   * the PROP, which never contains `produtoId`. The kit would contain itself, and
+   * the dimensions rollup's cycle bound would be load-bearing for real.
+   */
+  it('refuses a parent that RESOLVES onto the produto being edited', () => {
+    expect(decidir({ produtoId: 'filho', excludeIds: [] })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Um produto não pode ser componente de si mesmo.',
+    });
+  });
+
+  it('refuses a kit picked directly', () => {
+    expect(decidir({ id: 'k', doc: { ...AVULSO, ehKit: true }, docAlvo: undefined })).toMatchObject(
+      { tipo: 'recusar', motivo: 'Um kit não pode ser componente de outro kit.' },
+    );
+  });
+
+  // ⚠️ The mirror freezes the four kit fields the moment an operator diverges
+  // one, so a member that is a kit under a parent that is not is a state the
+  // code allows. Checking only the picked parent would let it in.
+  it('refuses when the SOLE MEMBER is a kit even though the parent is not', () => {
+    expect(decidir({ docAlvo: { ...AVULSO, ehKit: true } })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Um kit não pode ser componente de outro kit.',
+    });
+  });
+
+  // `buildChildrenComponentesKitOps` writes a child's `componentesKit` WITHOUT
+  // writing `ehKit`, so "not flagged a kit" is not the same as "has no
+  // composition".
+  it('refuses a sole member carrying a composition with no ehKit flag', () => {
+    expect(
+      decidir({ docAlvo: { ...AVULSO, componentesKit: { x: { quantidade: 1 } } } }),
+    ).toMatchObject({ tipo: 'recusar' });
+  });
+
+  it('refuses a variation of the produto being edited', () => {
+    expect(
+      decidir({ id: 'v', doc: { paiId: 'kit-1', filhoUnicoId: null }, docAlvo: undefined }),
+    ).toMatchObject({ tipo: 'recusar' });
+  });
+
+  it('refuses when the RESOLVED id is excluded, not just the picked one', () => {
+    expect(decidir({ excludeIds: ['filho'] })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Este produto não pode ser componente deste kit.',
+    });
+  });
+
+  it('refuses a component already in the map under its resolved id', () => {
+    expect(decidir({ componentes: { filho: {} } })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Este componente já foi adicionado.',
+    });
+  });
+
+  /**
+   * ⛔ The duplicate the resolution would otherwise create. A legacy map still
+   * names the PARENT, so guarding only the resolved id lets one physical produto
+   * occupy two keys — and `kitEstoqueDisponivel` takes the MIN over entries, so
+   * the parent (no estoque row of its own) scores 0 and the whole kit reads 0.
+   * The fix producing the bug.
+   */
+  it('refuses a component already in the map under its OLD parent id', () => {
+    expect(decidir({ componentes: { pai: {} } })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Este componente já foi adicionado.',
+    });
+  });
+
+  it('allows adding in create mode, where there is no produto to be self', () => {
+    expect(decidir({ produtoId: null })).toMatchObject({ tipo: 'adicionar', alvo: 'filho' });
+  });
+});
+
+describe('decidirComponente — reviving a staged deletion', () => {
+  /**
+   * ⛔ The one-sided hole a reviewer found. An earlier version collapsed the two
+   * lookups (`sobAlvo ?? sobId`) BEFORE testing `_delete`, so an ACTIVE parent
+   * entry hid behind a staged-deleted child entry: nothing refused, the child was
+   * revived, and `reaproveitarDe === alvo` made the caller's drop-the-old-key
+   * branch a no-op — leaving BOTH keys active for one physical produto, which
+   * `kitEstoqueDisponivel` scores as the MIN, so the parent (no row of its own)
+   * read 0 and the kit read 0.
+   *
+   * The reverse direction was always refused correctly, which is exactly why the
+   * suite could not see it.
+   */
+  it('refuses when the PARENT key is active and only the child key is deleted', () => {
+    expect(decidir({ componentes: { pai: {}, filho: { _delete: true } } })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Este componente já foi adicionado.',
+    });
+  });
+
+  it('refuses when the CHILD key is active and only the parent key is deleted', () => {
+    expect(decidir({ componentes: { pai: { _delete: true }, filho: {} } })).toMatchObject({
+      tipo: 'recusar',
+      motivo: 'Este componente já foi adicionado.',
+    });
+  });
+
+  // Both staged-deleted: revive under `alvo` and drop the other key, so the
+  // un-delete cannot leave a second entry behind.
+  it('revives under the resolved key and removes the other when BOTH are deleted', () => {
+    expect(decidir({ componentes: { pai: { _delete: true }, filho: { _delete: true } } })).toEqual({
+      tipo: 'adicionar',
+      alvo: 'filho',
+      reaproveitarDe: 'filho',
+      removerChaves: ['pai'],
+    });
+  });
+
+  it('reuses the entry filed under the resolved id', () => {
+    expect(decidir({ componentes: { filho: { _delete: true } } })).toEqual({
+      tipo: 'adicionar',
+      alvo: 'filho',
+      reaproveitarDe: 'filho',
+      removerChaves: [],
+    });
+  });
+
+  // ⚠️ The entry sits under the OLD parent key, and the caller drops that key
+  // when it writes the revived one under `alvo` — otherwise the un-delete leaves
+  // BOTH, which is the same min-over-two-keys zero as above.
+  it('reuses an entry filed under the OLD parent id, and names it for removal', () => {
+    expect(decidir({ componentes: { pai: { _delete: true } } })).toEqual({
+      tipo: 'adicionar',
+      alvo: 'filho',
+      reaproveitarDe: 'pai',
+      removerChaves: ['pai'],
+    });
   });
 });

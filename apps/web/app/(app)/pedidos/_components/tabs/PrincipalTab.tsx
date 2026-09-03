@@ -440,17 +440,20 @@ function ItemRow({
     // ⚠️ A KIT is NEVER resolved, and that is not an optimisation. A kit holds
     // no stock of its own — `calcularAlteracoesEstoque` expands it into its
     // COMPONENTS and decrements those (`estoquePlan.ts:95-99`) — so the only
-    // thing the line needs from the produto it names is the composition. The
-    // parent always has it; a sole member does not always, because
-    // `planejarMembroUnico` copies `ehKit` and NOT `componentesKit`
-    // (`upSoleMember.ts:191-211`). Binding such a child gives
-    // `calcularAlteracoesEstoque` a produto with `ehKit: true` and no map, and
-    // its `if (!componentes) continue;` then decrements NOTHING: the sale ships
-    // with its components untouched and still sellable.
+    // thing the line needs from the produto it names is the composition, and the
+    // parent is the document where an operator edits it.
     //
-    // Resolving buys a kit nothing and risks that, so it does not. The Balanço
-    // refuses kits before resolving for the same reason (`classificarProduto`),
-    // and the two paths now agree.
+    // ⚠️ This used to justify itself with "a sole member copies `ehKit` and NOT
+    // `componentesKit`". That stopped being true when `planejarMembroUnico` moved
+    // to `montarMembroUnico`: the mirror copies all four kit fields
+    // (`camposDeKitDoMembroUnico`), and `upSoleMember.ts` records that omitting
+    // them once cost a live listing. The rule outlived its reason and now has a
+    // better one — the member's map is a MIRROR, and the three-way merge leaves a
+    // field the operator diverged alone, so parent and member can legitimately
+    // disagree. Binding the parent keeps the line on the authoritative one.
+    //
+    // The Balanço refuses kits before resolving for the same reason
+    // (`classificarProduto`), and the two paths agree.
     const ehKitPicked = produtoPicked.ehKit === true;
     const alvo = ehKitPicked ? produtoId : unidadeVendavel({ ...produtoPicked, id: produtoId });
     const produtoUidDaLinha = await alvoQueRealmenteTemEstoque(db, produtoId, alvo, depositoId);

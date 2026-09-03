@@ -399,13 +399,18 @@ async function probeSkuUnico(query: FirebaseFirestore.Query): Promise<SkuProbe> 
     return {
       kind: 'one',
       produtoId: doc.id,
-      // ⛔ A KIT is never resolved. Its sole member carries `ehKit: true` and NO
-      // `componentesKit` (`planejarMembroUnico` does not copy the map), so binding
-      // it hands `calcularAlteracoesEstoque` a kit with a null map — its
-      // `if (!componentes) continue;` then moves NOTHING, and the components of a
-      // real ML sale are never reserved or removed. It costs a kit nothing to stay
-      // on the parent: the only thing the line needs from the produto it names is
-      // the composition, and the parent always has it.
+      // ⛔ A KIT is never resolved, and it costs nothing: a kit holds no stock of
+      // its own, so the only thing the line needs from the produto it names is the
+      // COMPOSITION — and the parent is where an operator edits it.
+      //
+      // ⚠️ This used to say the sole member carries `ehKit: true` and no
+      // `componentesKit`. That stopped being true when `planejarMembroUnico` moved
+      // to `montarMembroUnico`: the mirror copies all four kit fields, and
+      // `upSoleMember.ts` records that omitting them once cost a live listing. The
+      // rule survives its old reason for a better one — the member's map is a
+      // MIRROR, and the three-way merge deliberately leaves a field the operator
+      // diverged alone, so parent and member can legitimately disagree. Binding
+      // the parent keeps the line on the document that owns the answer.
       ehKit: raw.ehKit === true,
       familia: {
         id: doc.id,

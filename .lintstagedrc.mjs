@@ -45,6 +45,26 @@ const CODE_RE = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
 // applied to both the file arguments and the whole inner `sh -c` command.
 const sq = (s) => `'${s.replace(/'/g, "'\\''")}'`;
 
+// ⚠️ Separator normalisation, load-bearing on Windows rather than tidiness.
+// `path.relative` returns the PLATFORM separator, so `rel` came back as
+// `apps\web\app\x.ts` while the workspace names discovered above are built with
+// `/`. Every `rel.startsWith(ws + sep)` test was therefore false on Windows:
+// `byWorkspace` stayed empty, only the Prettier command was emitted, and the
+// `--max-warnings 0` gate — the ONLY place that flag is applied anywhere in this
+// repo — never ran on a single Windows commit, silently retiring every
+// warn-level rule (`no-console`, the `delfrance` ratchets,
+// `react-hooks/exhaustive-deps`) for those developers. Nothing failed; the
+// files were simply passed over. That is the shape
+// `rules/lint-staged-covers-workspaces.test.js` exists to catch, and it was
+// already reporting all 30 workspaces uncovered locally while CI, where
+// `path.sep === '/'`, stayed green.
+//
+// The workspace-relative paths are then handed to `sh -c`, which wants POSIX
+// separators too. Split on `path.sep` rather than replacing `\` globally: on
+// POSIX a backslash is a legal filename character and `path.sep` is already
+// `/`, so this is a no-op there.
+const toPosix = (p) => p.split(path.sep).join('/');
+
 /** @param {string[]} stagedFiles absolute paths of the staged files */
 export default function lintStaged(stagedFiles) {
   const commands = [];
@@ -67,12 +87,12 @@ export default function lintStaged(stagedFiles) {
   const byWorkspace = new Map();
   for (const abs of stagedFiles) {
     if (!CODE_RE.test(abs)) continue;
-    const rel = path.relative(ROOT, abs);
-    const ws = ESLINT_WORKSPACES.find((w) => rel === w || rel.startsWith(w + path.sep));
+    const rel = toPosix(path.relative(ROOT, abs));
+    const ws = ESLINT_WORKSPACES.find((w) => rel === w || rel.startsWith(`${w}/`));
     if (!ws) continue;
     if (!byWorkspace.has(ws)) byWorkspace.set(ws, []);
     // Path relative to the workspace dir, since the command cd's into it.
-    byWorkspace.get(ws).push(path.relative(ws, rel));
+    byWorkspace.get(ws).push(toPosix(path.relative(ws, rel)));
   }
 
   // ⚠️ `--no-warn-ignored` is load-bearing, not tidiness. `--max-warnings 0`

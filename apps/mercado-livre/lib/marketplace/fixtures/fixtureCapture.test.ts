@@ -8,6 +8,7 @@ import {
   buildCapturePlan,
   captureAll,
   captureOne,
+  ehFalhaFatal,
   fixtureFileName,
   slugForPath,
   type CaptureIds,
@@ -17,7 +18,16 @@ import {
 
 const TOKEN = 'APP_USR-token-de-teste';
 const BASE = 'https://api.mercadolibre.test';
+/** The #1087 seller test user. */
+const SELLER = '3616169770';
 
+const BUSCA_CLAIMS = '/post-purchase/v1/claims/search';
+
+/**
+ * ⚠️ **No `sellerId` here, so no claims search in any plan built from it** —
+ * which is what lets every fan-out assertion below be about its own resource.
+ * The search has its own describe block.
+ */
 const SEM_IDS: CaptureIds = {
   orderIds: [],
   itemIds: [],
@@ -73,11 +83,8 @@ describe('slugForPath', () => {
 });
 
 describe('buildCapturePlan', () => {
-  it('always captures the claims search, even with no ids at all', () => {
-    const plan = buildCapturePlan(SEM_IDS);
-    expect(plan).toHaveLength(1);
-    expect(plan[0]!.path).toBe('/post-purchase/v1/claims/search');
-    expect(plan[0]!.query).toEqual({ limit: '50', offset: '0' });
+  it('plans nothing at all with no ids and no seller id', () => {
+    expect(buildCapturePlan(SEM_IDS)).toEqual([]);
   });
 
   it('fans an --orderId out to the order, its billing info AND the pack', () => {
@@ -86,7 +93,6 @@ describe('buildCapturePlan', () => {
       '/orders/2000018143664980',
       '/orders/2000018143664980/billing_info',
       '/packs/2000018143664980',
-      '/post-purchase/v1/claims/search',
     ]);
   });
 
@@ -98,7 +104,6 @@ describe('buildCapturePlan', () => {
       '/shipments/47868202073/payments',
       '/shipments/47868202073/orders',
       '/shipments/47868202073/sla',
-      '/post-purchase/v1/claims/search',
     ]);
   });
 
@@ -107,7 +112,6 @@ describe('buildCapturePlan', () => {
     expect(plan.map((t) => t.path)).toEqual([
       '/post-purchase/v1/claims/5555',
       '/post-purchase/v1/claims/5555/messages',
-      '/post-purchase/v1/claims/search',
     ]);
   });
 
@@ -117,11 +121,7 @@ describe('buildCapturePlan', () => {
       itemIds: ['MLB5140167173'],
       paymentIds: ['174911485053'],
     });
-    expect(plan.map((t) => t.path)).toEqual([
-      '/items/MLB5140167173',
-      '/collections/174911485053',
-      '/post-purchase/v1/claims/search',
-    ]);
+    expect(plan.map((t) => t.path)).toEqual(['/items/MLB5140167173', '/collections/174911485053']);
   });
 
   it('gives every target a unique slug', () => {
@@ -131,8 +131,62 @@ describe('buildCapturePlan', () => {
       shipmentIds: ['9', '8'],
       paymentIds: ['7'],
       claimIds: ['6'],
+      sellerId: SELLER,
     });
     expect(new Set(plan.map((t) => t.slug)).size).toBe(plan.length);
+  });
+});
+
+/**
+ * #1357 — the search that aborted every single run.
+ *
+ * ⚠️ ML documents the refusal exactly: the endpoint needs at least one real
+ * FILTER, `offset`/`limit`/`sort` explicitly do not count, and a paging-only
+ * request answers `400 {"error":"invalid_query"}`. The plan used to send paging
+ * alone and the search was its LAST entry, so under the old "not 404 ⇒ stop"
+ * contract every invocation died at the end no matter what it had captured.
+ *
+ * Both directions are asserted, because either alone is satisfiable by a wrong
+ * implementation: one that never plans the search, and one that plans it
+ * unfiltered.
+ */
+describe('buildCapturePlan — the claims search needs a real filter', () => {
+  it('scopes the search to the seller and its role when the id is known', () => {
+    const plan = buildCapturePlan({ ...SEM_IDS, sellerId: SELLER });
+    expect(plan).toHaveLength(1);
+    expect(plan[0]!.path).toBe(BUSCA_CLAIMS);
+    expect(plan[0]!.query).toEqual({
+      'players.user_id': SELLER,
+      'players.role': 'respondent',
+      limit: '50',
+      offset: '0',
+    });
+  });
+
+  it('OMITS the search when no seller id is known — never sends it unfiltered', () => {
+    for (const sellerId of [undefined, '']) {
+      const plan = buildCapturePlan({ ...SEM_IDS, claimIds: ['5555'], sellerId });
+      expect(plan.map((t) => t.path)).not.toContain(BUSCA_CLAIMS);
+    }
+  });
+
+  it('never plans a paging-only search — the shape ML documents as a 400', () => {
+    // The near-miss: `limit`+`offset` ARE present in the valid query above, so
+    // "has paging" cannot be the test. What must never happen is paging with no
+    // filter beside it.
+    for (const sellerId of [undefined, '', SELLER]) {
+      const busca = buildCapturePlan({ ...SEM_IDS, sellerId }).find((t) => t.path === BUSCA_CLAIMS);
+      if (busca === undefined) continue;
+      const chaves = Object.keys(busca.query ?? {});
+      expect(chaves.filter((k) => k !== 'limit' && k !== 'offset' && k !== 'sort')).not.toEqual([]);
+    }
+  });
+
+  it('does not filter on status — the corpus claim 5567065796 is CLOSED', () => {
+    // `status=opened` would hide the one claim the capture exists to discover,
+    // and ML's own docs call a bare `status` filter a rate-limiting risk.
+    const busca = buildCapturePlan({ ...SEM_IDS, sellerId: SELLER })[0]!;
+    expect(Object.keys(busca.query ?? {})).not.toContain('status');
   });
 });
 
@@ -143,7 +197,12 @@ describe('buildCapturePlan', () => {
  * "aligned" with the other four shipment calls by someone tidying up.
  */
 describe('buildCapturePlan — the per-resource headers', () => {
-  const plan = buildCapturePlan({ ...SEM_IDS, orderIds: ['77'], shipmentIds: ['99'] });
+  const plan = buildCapturePlan({
+    ...SEM_IDS,
+    orderIds: ['77'],
+    shipmentIds: ['99'],
+    sellerId: SELLER,
+  });
 
   it('sends x-format-new on the shipment body, its costs and its payments', () => {
     for (const path of ['/shipments/99', '/shipments/99/costs', '/shipments/99/payments']) {
@@ -235,14 +294,23 @@ describe('captureOne — the request', () => {
     });
   });
 
+  /**
+   * ⚠️ Also pins that the DOTTED param names survive URL building unescaped.
+   * `players.user_id` is the name ML documents; a `.` percent-encoded to `%2E`
+   * would be a different parameter, and the failure would be a 400 that reads
+   * exactly like the paging-only one #1357 was about.
+   */
   it('appends the query string of a target that has one', async () => {
     const { fetchImpl, chamadas } = stubFetch();
-    await captureOne(alvo(buildCapturePlan(SEM_IDS), '/post-purchase/v1/claims/search'), {
+    const plano = buildCapturePlan({ ...SEM_IDS, sellerId: SELLER });
+    await captureOne(alvo(plano, BUSCA_CLAIMS), {
       fetchImpl,
       accessToken: TOKEN,
       baseUrl: BASE,
     });
-    expect(chamadas[0]!.url).toBe(`${BASE}/post-purchase/v1/claims/search?limit=50&offset=0`);
+    expect(chamadas[0]!.url).toBe(
+      `${BASE}${BUSCA_CLAIMS}?players.user_id=${SELLER}&players.role=respondent&limit=50&offset=0`,
+    );
   });
 });
 
@@ -292,7 +360,26 @@ describe('captureOne — byte-faithfulness', () => {
   });
 });
 
-describe('captureAll — a 404 is data, everything else is a failure', () => {
+/**
+ * The line #1357 moved, asserted from both sides so neither can be widened
+ * silently. A predicate tested only on the statuses it rejects is satisfied by
+ * `() => true`, and one tested only on what it accepts by `() => false`.
+ */
+describe('ehFalhaFatal', () => {
+  it.each([401, 403, 429, 500, 502, 503, 504])('treats %i as fatal', (status) => {
+    expect(ehFalhaFatal(status)).toBe(true);
+  });
+
+  it.each([400, 404, 405, 409, 410, 422, 451, 499])('treats %i as data', (status) => {
+    expect(ehFalhaFatal(status)).toBe(false);
+  });
+
+  it('never fires on a 2xx or 3xx — those never reach it', () => {
+    for (const status of [200, 204, 206, 301, 304]) expect(ehFalhaFatal(status)).toBe(false);
+  });
+});
+
+describe('captureAll — a permanent 4xx is data, an unrelated failure is fatal', () => {
   const plan: CaptureTarget[] = [
     { slug: 'orders-1', path: '/orders/1' },
     { slug: 'packs-1', path: '/packs/1' },
@@ -317,6 +404,63 @@ describe('captureAll — a 404 is data, everything else is a failure', () => {
     // The 404 body is kept — it is a real ML answer. The caller files it under a
     // name that cannot be mistaken for a success body.
     expect(results[1]!.body).toBe('{"message":"pack_not_found"}');
+  });
+
+  /**
+   * ⭐ **#1357's exact failure.** `/packs/{id}` answers 400 for an order that is a
+   * pack MEMBER, the claims search answered 400 for a paging-only query, and
+   * under the old "not 404 ⇒ stop" rule either aborted the run — so
+   * `capture:fixtures` had never exited 0.
+   *
+   * The assertion that matters is not "the 400 was recorded" but that **every
+   * later target still fired**: the search was the LAST plan entry, so a version
+   * that recorded the 400 and then stopped would look identical on the result
+   * list alone.
+   */
+  it.each([400, 405, 409, 410, 422])(
+    'records a permanent %i as data and still runs the rest of the plan',
+    async (status) => {
+      const { fetchImpl, chamadas } = stubFetch((url) =>
+        url.endsWith('/packs/1')
+          ? new Response('{"error":"invalid_query"}', { status })
+          : new Response('{"ok":true}', { status: 200 }),
+      );
+
+      const results = await captureAll(plan, { fetchImpl, accessToken: TOKEN, baseUrl: BASE });
+
+      expect(chamadas.map((c) => c.url)).toEqual([
+        `${BASE}/orders/1`,
+        `${BASE}/packs/1`,
+        `${BASE}/collections/7`,
+      ]);
+      expect(results.map((r) => [r.target.slug, r.status])).toEqual([
+        ['orders-1', 200],
+        ['packs-1', status],
+        ['collections-7', 200],
+      ]);
+      // The refusal body is kept — it IS the evidence. `fixtureFileName` is what
+      // keeps it off the bare slug.
+      expect(results[1]!.body).toBe('{"error":"invalid_query"}');
+      expect(fixtureFileName(results[1]!)).toBe(`packs-1.${status}.json`);
+    },
+  );
+
+  it('survives a 400 on the LAST entry of the plan — the #1357 abort', async () => {
+    // The whole issue: the claims search sat at the end of every plan, so the
+    // run died after capturing everything. `captureAll` must resolve, not reject.
+    const comBusca: CaptureTarget[] = [
+      ...plan,
+      { slug: 'post-purchase-v1-claims-search', path: '/post-purchase/v1/claims/search' },
+    ];
+    const { fetchImpl } = stubFetch((url) =>
+      url.includes('/claims/search')
+        ? new Response('{"error":"invalid_query"}', { status: 400 })
+        : new Response('{"ok":true}', { status: 200 }),
+    );
+
+    const results = await captureAll(comBusca, { fetchImpl, accessToken: TOKEN, baseUrl: BASE });
+    expect(results).toHaveLength(4);
+    expect(results[3]!.status).toBe(400);
   });
 
   it.each([500, 502, 401, 403, 429])('throws on %i rather than recording it', async (status) => {
