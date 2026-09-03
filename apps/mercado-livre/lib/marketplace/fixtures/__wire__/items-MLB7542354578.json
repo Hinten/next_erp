@@ -1,0 +1,491 @@
+{
+  "id": "MLB7542354578",
+  "site_id": "MLB",
+  "title": "Camiseta Lisa Infantil Branco 1 Liso",
+  "family_name": "Camiseta Lisa Infantil",
+  "family_id": 5066110917767378,
+  "seller_id": 3616169770,
+  "category_id": "MLB31447",
+  "user_product_id": "MLBU4976618211",
+  "official_store_id": null,
+  "price": 46.44,
+  "base_price": 46.44,
+  "original_price": null,
+  "inventory_id": null,
+  "currency_id": "BRL",
+  "initial_quantity": 1,
+  "available_quantity": 1,
+  "sold_quantity": 0,
+  "sale_terms": [],
+  "buying_mode": "buy_it_now",
+  "listing_type_id": "gold_pro",
+  "start_time": "2026-08-28T19:17:08.070Z",
+  "stop_time": "2046-08-23T04:00:00.000Z",
+  "end_time": "2046-08-23T04:00:00.000Z",
+  "expiration_time": "2026-11-16T19:17:08.164Z",
+  "condition": "new",
+  "permalink": "https://produto.mercadolivre.com.br/MLB-7542354578-camiseta-lisa-infantil-branco-1-liso-_JM",
+  "thumbnail_id": "719311-MLB115440994864_082026",
+  "thumbnail": "http://http2.mlstatic.com/D_719311-MLB115440994864_082026-I.webp",
+  "pictures": [
+    {
+      "id": "719311-MLB115440994864_082026",
+      "url": "http://http2.mlstatic.com/D_719311-MLB115440994864_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_719311-MLB115440994864_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    },
+    {
+      "id": "973906-MLB115441170772_082026",
+      "url": "http://http2.mlstatic.com/D_973906-MLB115441170772_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_973906-MLB115441170772_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    },
+    {
+      "id": "956531-MLB115440794360_082026",
+      "url": "http://http2.mlstatic.com/D_956531-MLB115440794360_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_956531-MLB115440794360_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    }
+  ],
+  "video_id": null,
+  "descriptions": [],
+  "accepts_mercadopago": true,
+  "non_mercado_pago_payment_methods": [],
+  "shipping": {
+    "mode": "me2",
+    "methods": [],
+    "tags": [],
+    "dimensions": null,
+    "local_pick_up": false,
+    "free_shipping": false,
+    "logistic_type": "xd_drop_off",
+    "store_pick_up": false
+  },
+  "international_delivery_mode": "none",
+  "seller_address": {
+    "comment": "REDACTED",
+    "address_line": "Rua Redacted, 0",
+    "zip_code": "00000000",
+    "city": {
+      "id": "BR-SP-27",
+      "name": "REDACTED"
+    },
+    "state": {
+      "id": "BR-SP",
+      "name": "São Paulo"
+    },
+    "country": {
+      "id": "BR",
+      "name": "Brasil"
+    },
+    "search_location": {
+      "neighborhood": {
+        "id": "TVhYQ2VudHJvVFZoWVU4T2pieUJLYjNQRHFTQ2",
+        "name": "REDACTED"
+      },
+      "city": {
+        "id": "TVhYU8OjbyBKb3PDqSBkb3MgQ2FtcG9zVFV4Q",
+        "name": "REDACTED"
+      },
+      "state": {
+        "id": "TUxCUFNBT085N2E4",
+        "name": "São Paulo"
+      }
+    },
+    "latitude": 0,
+    "longitude": 0,
+    "id": 1661311810
+  },
+  "seller_contact": null,
+  "location": {},
+  "geolocation": {
+    "latitude": 0,
+    "longitude": 0
+  },
+  "coverage_areas": [],
+  "attributes": [
+    {
+      "id": "ITEM_CONDITION",
+      "name": "Condição do item",
+      "value_id": "2230284",
+      "value_name": "Novo",
+      "values": [
+        {
+          "id": "2230284",
+          "name": "Novo",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "WEIGHT",
+      "name": "Peso",
+      "value_id": null,
+      "value_name": "0.9 kg",
+      "values": [
+        {
+          "id": null,
+          "name": "0.9 kg",
+          "struct": {
+            "number": 0.9,
+            "unit": "kg"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "BRAND",
+      "name": "Marca",
+      "value_id": null,
+      "value_name": "Teste",
+      "values": [
+        {
+          "id": null,
+          "name": "Teste",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "COLOR",
+      "name": "Cor",
+      "value_id": "52055",
+      "value_name": "Branco",
+      "values": [
+        {
+          "id": "52055",
+          "name": "Branco",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "FABRIC_DESIGN",
+      "name": "Desenho do tecido",
+      "value_id": null,
+      "value_name": "Liso",
+      "values": [
+        {
+          "id": null,
+          "name": "Liso",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "GARMENT_TYPE",
+      "name": "Tipo de roupa",
+      "value_id": "12038970",
+      "value_name": "Camiseta",
+      "values": [
+        {
+          "id": "12038970",
+          "name": "Camiseta",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "GENDER",
+      "name": "Gênero",
+      "value_id": "19159491",
+      "value_name": "Sem gênero infantil",
+      "values": [
+        {
+          "id": "19159491",
+          "name": "Sem gênero infantil",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "IS_SPORTIVE",
+      "name": "É esportiva",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "struct": null
+        }
+      ],
+      "value_type": "boolean"
+    },
+    {
+      "id": "IS_SUITABLE_FOR_PREGNACY",
+      "name": "É apta para gestação",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "struct": null
+        }
+      ],
+      "value_type": "boolean"
+    },
+    {
+      "id": "MAIN_MATERIAL",
+      "name": "Material principal",
+      "value_id": "466794",
+      "value_name": "Poliéster",
+      "values": [
+        {
+          "id": "466794",
+          "name": "Poliéster",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "MODEL",
+      "name": "Modelo",
+      "value_id": null,
+      "value_name": "Camiseta",
+      "values": [
+        {
+          "id": null,
+          "name": "Camiseta",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "SALE_FORMAT",
+      "name": "Formato de venda",
+      "value_id": "1359391",
+      "value_name": "Unidade",
+      "values": [
+        {
+          "id": "1359391",
+          "name": "Unidade",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "SELLER_PACKAGE_HEIGHT",
+      "name": "Altura da embalagem do vendor",
+      "value_id": null,
+      "value_name": "10 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "10 cm",
+          "struct": {
+            "number": 10,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_PACKAGE_LENGTH",
+      "name": "Comprimento da embalagem do vendor",
+      "value_id": null,
+      "value_name": "11 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "11 cm",
+          "struct": {
+            "number": 11,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_PACKAGE_WEIGHT",
+      "name": "Peso da embalagem do vendor",
+      "value_id": null,
+      "value_name": "250 g",
+      "values": [
+        {
+          "id": null,
+          "name": "250 g",
+          "struct": {
+            "number": 250,
+            "unit": "g"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_PACKAGE_WIDTH",
+      "name": "Largura da embalagem do vendor",
+      "value_id": null,
+      "value_name": "12 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "12 cm",
+          "struct": {
+            "number": 12,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "SELLER_SKU",
+      "name": "SKU",
+      "value_id": null,
+      "value_name": "camisetaListaInfantil123001001",
+      "values": [
+        {
+          "id": null,
+          "name": "camisetaListaInfantil123001001",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "SIZE",
+      "name": "Tamanho",
+      "value_id": null,
+      "value_name": "1",
+      "values": [
+        {
+          "id": null,
+          "name": "1",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "SIZE_GRID_ID",
+      "name": "ID da guia de tamanhos",
+      "value_id": null,
+      "value_name": "7528821",
+      "values": [
+        {
+          "id": null,
+          "name": "7528821",
+          "struct": null
+        }
+      ],
+      "value_type": "grid_id"
+    },
+    {
+      "id": "SIZE_GRID_ROW_ID",
+      "name": "ID da linha da guia de tamanhos",
+      "value_id": null,
+      "value_name": "7528821:1",
+      "values": [
+        {
+          "id": null,
+          "name": "7528821:1",
+          "struct": null
+        }
+      ],
+      "value_type": "grid_row_id"
+    },
+    {
+      "id": "SLEEVE_TYPE",
+      "name": "Tipo de manga",
+      "value_id": "466804",
+      "value_name": "Curta",
+      "values": [
+        {
+          "id": "466804",
+          "name": "Curta",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "T_SHIRT_COLLAR_TYPE",
+      "name": "Tipo de gola",
+      "value_id": "466787",
+      "value_name": "Redonda",
+      "values": [
+        {
+          "id": "466787",
+          "name": "Redonda",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "UNITS_PER_PACK",
+      "name": "Unidades por kit",
+      "value_id": null,
+      "value_name": "1",
+      "values": [
+        {
+          "id": null,
+          "name": "1",
+          "struct": null
+        }
+      ],
+      "value_type": "number"
+    },
+    {
+      "id": "WITH_RECYCLED_MATERIALS",
+      "name": "Com materiais reciclados",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "struct": null
+        }
+      ],
+      "value_type": "boolean"
+    }
+  ],
+  "warnings": [],
+  "listing_source": "",
+  "variations": [],
+  "status": "active",
+  "sub_status": [],
+  "tags": [
+    "user_product_listing",
+    "test_item",
+    "good_quality_thumbnail",
+    "immediate_payment",
+    "cart_eligible"
+  ],
+  "warranty": null,
+  "catalog_product_id": null,
+  "domain_id": "MLB-T_SHIRTS",
+  "seller_custom_field": "OVKIJOpaydplauBSrRnB",
+  "parent_item_id": null,
+  "differential_pricing": null,
+  "deal_ids": [],
+  "automatic_relist": false,
+  "date_created": "2026-08-28T19:17:08.306Z",
+  "last_updated": "2026-08-28T19:17:08.306Z",
+  "health": null,
+  "catalog_listing": false,
+  "item_relations": [],
+  "channels": ["marketplace"]
+}

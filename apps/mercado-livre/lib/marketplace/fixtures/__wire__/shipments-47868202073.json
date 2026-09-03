@@ -1,0 +1,224 @@
+{
+  "snapshot_packing": {
+    "snapshot_id": "9df283de-db2f-4d24-9fc2-38c62df5c9c6",
+    "pack_hash": "1"
+  },
+  "external_key": null,
+  "origin": {
+    "node": null,
+    "shipping_address": {
+      "country": {
+        "id": "BR",
+        "name": "Brasil"
+      },
+      "address_line": "Rua Redacted, 0",
+      "types": [
+        "billing",
+        "default_buying_address",
+        "default_return_address",
+        "default_selling_address",
+        "shipping"
+      ],
+      "scoring": 0,
+      "agency": {
+        "carrier_id": null,
+        "phone": null,
+        "agency_id": null,
+        "description": null,
+        "type": null,
+        "open_hours": null
+      },
+      "city": {
+        "id": "BR-SP-27",
+        "name": "REDACTED"
+      },
+      "geolocation_type": "ROOFTOP",
+      "latitude": 0,
+      "address_id": 1661311810,
+      "municipality": {
+        "id": null,
+        "name": null
+      },
+      "version": "BR-42c7a85ff9afc24d9ca5c4cce10e8422",
+      "location_id": 37054045,
+      "street_name": "Rua Redacted",
+      "zip_code": "00000000",
+      "geolocation_source": "corrections-api",
+      "node": null,
+      "intersection": null,
+      "street_number": "0",
+      "comment": "REDACTED",
+      "state": {
+        "id": "BR-SP",
+        "name": "São Paulo"
+      },
+      "neighborhood": {
+        "id": null,
+        "name": "REDACTED"
+      },
+      "geolocation_last_updated": "2026-08-26T13:52:42.623Z",
+      "longitude": 0
+    },
+    "type": "selling_address",
+    "sender_id": 3616169770,
+    "snapshot": {
+      "id": "b3JpZ2luX3NlbGxpbmdfYWRkcmVzcw",
+      "version": 47868202073
+    }
+  },
+  "destination": {
+    "comments": null,
+    "receiver_id": 3644236740,
+    "receiver_name": "REDACTED",
+    "shipping_address": {
+      "country": {
+        "id": "BR",
+        "name": "Brasil"
+      },
+      "city": {
+        "id": "BR-SP-44",
+        "name": "REDACTED"
+      },
+      "geolocation_type": "ROOFTOP",
+      "latitude": 0,
+      "municipality": {
+        "id": null,
+        "name": null
+      },
+      "location_id": 426965,
+      "street_name": "Rua Redacted",
+      "zip_code": "00000000",
+      "intersection": null,
+      "state": {
+        "id": "BR-SP",
+        "name": "São Paulo"
+      },
+      "longitude": 0,
+      "address_line": "Rua Redacted, 0",
+      "types": ["default_buying_address"],
+      "scoring": null,
+      "agency": {
+        "carrier_id": null,
+        "phone": null,
+        "agency_id": null,
+        "description": null,
+        "type": null,
+        "open_hours": null
+      },
+      "address_id": 1661710398,
+      "version": "BR-dc67125c5755d2546bff7cfd09ba07c5",
+      "geolocation_source": "corrections-api",
+      "delivery_preference": "residential",
+      "node": null,
+      "street_number": "0",
+      "comment": "REDACTED",
+      "neighborhood": {
+        "id": null,
+        "name": "REDACTED"
+      },
+      "geolocation_last_updated": "2026-08-27T13:13:04.043Z"
+    },
+    "type": "buying_address",
+    "receiver_phone": "REDACTED",
+    "snapshot": {
+      "id": "ZGVzdGluYXRpb25fYnV5aW5nX2FkZHJlc3M",
+      "version": 47868202073
+    }
+  },
+  "source": {
+    "site_id": "MLB",
+    "market_place": "MELI",
+    "customer_id": null,
+    "application_id": null
+  },
+  "priority_class": {
+    "id": "30"
+  },
+  "lead_time": {
+    "processing_time": null,
+    "cost": 12.99,
+    "estimated_schedule_limit": {
+      "date": null
+    },
+    "cost_type": "partially_free",
+    "estimated_delivery_final": {
+      "date": null
+    },
+    "buffering": {
+      "date": null
+    },
+    "pickup_promise": {
+      "from": null,
+      "to": null
+    },
+    "list_cost": 22.14,
+    "estimated_delivery_limit": {
+      "date": null
+    },
+    "priority_class": {
+      "id": "30"
+    },
+    "delivery_promise": "estimated",
+    "shipping_method": {
+      "name": "Normal",
+      "deliver_to": "address",
+      "id": 100009,
+      "type": "standard"
+    },
+    "delivery_type": "estimated",
+    "service_id": 157861,
+    "estimated_delivery_time": {
+      "date": "2026-08-31T00:00:00.000-03:00",
+      "pay_before": "2026-08-30T00:00:00.000-03:00",
+      "schedule": null,
+      "unit": "hour",
+      "offset": {
+        "date": "2026-09-02T00:00:00.000-03:00",
+        "shipping": 48
+      },
+      "shipping": 24,
+      "time_frame": {
+        "from": null,
+        "to": null
+      },
+      "handling": 48,
+      "type": "known_frame"
+    },
+    "option_id": 3442328457,
+    "estimated_delivery_extended": {
+      "date": null
+    },
+    "currency_id": "BRL"
+  },
+  "external_reference": null,
+  "tracking_number": null,
+  "id": 47868202073,
+  "tracking_method": "MEL Distribution",
+  "last_updated": "2026-08-27T09:15:07.548-04:00",
+  "items_types": ["new"],
+  "substatus": "invoice_pending",
+  "date_created": "2026-08-27T09:14:28.591-04:00",
+  "tags": ["test_shipment"],
+  "declared_value": 49.97,
+  "logistic": {
+    "mode": "me2",
+    "type": "xd_drop_off",
+    "direction": "forward"
+  },
+  "sibling": {
+    "reason": null,
+    "sibling_id": null,
+    "description": null,
+    "source": null,
+    "date_created": null,
+    "last_updated": null
+  },
+  "quotation": null,
+  "status": "ready_to_ship",
+  "dimensions": {
+    "height": 32,
+    "width": 24,
+    "length": 16,
+    "weight": 2095
+  }
+}

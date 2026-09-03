@@ -1,0 +1,45 @@
+{
+  "id": 5567065796,
+  "resource_id": 47868991350,
+  "status": "closed",
+  "type": "cancel_purchase",
+  "stage": "none",
+  "parent_id": null,
+  "resource": "shipment",
+  "reason_id": "PNR9501",
+  "fulfilled": false,
+  "quantity_type": "total",
+  "claimed_quantity": 3,
+  "claim_version": 2,
+  "players": [
+    {
+      "role": "complainant",
+      "type": "receiver",
+      "user_id": 3646520554,
+      "available_actions": []
+    },
+    {
+      "role": "respondent",
+      "type": "sender",
+      "user_id": 3616169770,
+      "available_actions": []
+    },
+    {
+      "role": "mediator",
+      "type": "internal",
+      "user_id": 46622406,
+      "available_actions": []
+    }
+  ],
+  "resolution": {
+    "reason": "coverage_decision",
+    "date_created": "2026-08-27T10:41:21.000-04:00",
+    "benefited": ["complainant"],
+    "closed_by": "mediator",
+    "applied_coverage": true
+  },
+  "site_id": "MLB",
+  "date_created": "2026-08-27T10:38:41.000-04:00",
+  "last_updated": "2026-08-27T10:41:21.000-04:00",
+  "related_entities": []
+}
