@@ -8,9 +8,14 @@
  * pre-fill: a produto owns variation children, kit composition and
  * marketplace links a plain create-form seed can't touch (the issue's own
  * opening line). `duplicarProduto` writes the clone directly; on success the
- * operator lands on the new produto's editor to review the copy and adjust
- * its SKU(s) — the acceptance criterion is that adjustment happens there, not
- * that this action dedupes them itself.
+ * operator lands on the new produto's editor to review the copy.
+ *
+ * ⚠️ The clone does NOT inherit the source's exclusive fields — SKU (a fresh
+ * unique one is minted per document), GTIN, `codPai`, `codFornecedor`, the
+ * marketplace links, the anúncios and the media. `limparParaDuplicar`
+ * (`@delfrance/data/produto`) is the single list, with the concrete failure
+ * each entry prevents; the editor is where the operator reviews the result,
+ * not where they have to repair an identity collision.
  *
  * `maxSelection: 1` disables the button (with an explanatory title) for zero
  * or multiple rows, matching `useDuplicarPedidoAction`'s guard. A thrown
