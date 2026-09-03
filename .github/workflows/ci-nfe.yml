@@ -626,8 +626,16 @@ jobs:
 
       - name: Surface advisory SVC failure
         if: steps.svc-live.outcome == 'failure'
+        # ⚠️ Do NOT name a cause here. This message used to assert the failure was
+        # SERPRO reachability, and that is the one cause it usually is NOT: an
+        # unreachable host makes the suite SKIP (the tcpReachable probe in
+        # svc.homologacao.test.ts) rather than fail, so it does not reach this
+        # step at all on an advisory run. The cStat=178 investigation lost time to
+        # exactly that — the log said 107 "Serviço em Operação" then 104 "Lote
+        # processado", so transport was proven and SEFAZ had refused the document.
+        # Point at the evidence instead, the way the RTC message below does.
         run: |
-          echo "::warning::SVC live suite failed — ADVISORY on PR/push runs (SERPRO hosts are intermittently unreachable from hosted runners). Re-run via workflow_dispatch (fatal there) to verify; a scheduled fatal run arrives with the EPEC workflow."
+          echo "::warning::SVC live suite failed — ADVISORY on PR/push runs. Check the step log for the SEFAZ cStat+xMotivo before assuming a transport fault: '[SVC-AN protNFe] cStat=... xMotivo=...' means SEFAZ REJECTED the document (reachability failures skip the suite instead). Re-run via workflow_dispatch (fatal there) to verify; a scheduled fatal run arrives with the EPEC workflow."
 
       - name: Surface advisory RTC failure
         if: steps.rtc-live.outcome == 'failure'

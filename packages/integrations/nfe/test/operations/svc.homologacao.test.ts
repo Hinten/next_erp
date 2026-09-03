@@ -86,6 +86,10 @@ const SVC_RS_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-svc-rs-homologacao.p
 // file is absent and the 410 transport test below self-skips — loudly on
 // both sides (workflow ::warning:: + the skip in the vitest report). The
 // SVC-AN lane (SP's real contingency authorizer) never degrades.
+//
+// ⚠️ That degradation is ADVISORY-RUN ONLY. On workflow_dispatch/schedule the
+// SVC-RS fatal-run gate below turns an absent chain into a FAILURE: a run whose
+// whole purpose is to verify SVC must not report green having skipped it.
 const hasSvcRsChain = existsSync(SVC_RS_CHAIN);
 
 // Same credential posture as emission.homologacao.test.ts — see the
@@ -167,8 +171,16 @@ if (probeSvc && !svcRsReachable && !isFatalRun) {
 }
 
 describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC-RS)', () => {
-  // Only reachable in CI (locally the suite skips via describeOrSkip):
-  // fail loud on missing secrets — never report green with zero coverage.
+  // Reached in CI, and locally too whenever credentials are present: fail loud
+  // on missing secrets — never report green with zero coverage.
+  //
+  // ⚠️ NOT "CI only". `vitest.config.ts` hoists the repo-root `.env.local` into
+  // `test.env`, so on a developer machine set up for live testing `hasFullCreds`
+  // is TRUE and `describeOrSkip` does NOT skip — a plain `vitest run` on this
+  // file transmits at SEFAZ homologação. (It fails at transport first if
+  // `packages/integrations/nfe/ca/` is empty, since the chains are fetched by
+  // ci-nfe.yml, not committed — but do not rely on that.) The accurate rule is
+  // the one at `describeOrSkip`: skipping needs NO credentials, not "not CI".
   beforeAll(() => {
     if (!hasFullCreds) {
       throw new Error(
@@ -188,6 +200,34 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       svcAnReachable,
       'SVC-AN host unreachable from this runner on a FATAL run (workflow_dispatch/schedule) — ' +
         'cannot prove SVC-AN transport. Re-run when SERPRO is reachable.',
+    ).toBe(true);
+  });
+
+  // The SVC-RS half had NO such gate (#1247 gap (a)), and it is the half that
+  // needs one most: it self-skipped on BOTH scheduled runs it has ever had, and
+  // the one time it ran it was by luck (the chain fetch recovered the ICP root
+  // from a sibling bundle). Two things hid that. The `skipIf` below takes either
+  // an unreachable host or a missing chain, and the two `::warning::` emitters
+  // above are themselves suppressed by `!isFatalRun` — so on a FATAL run an
+  // absent SVC-RS produced no warning AND no failure, just a green job that had
+  // proven nothing about half of what this lane tracks. Same shape as the
+  // silent-pass class root `CLAUDE.md` is built to prevent.
+  //
+  // Split into two assertions on purpose: "SVRS is down" and "our chain-fetch
+  // step degraded" are different failures with different fixes, and the message
+  // has to say which. Both stay advisory-run-silent — this whole test is gated
+  // on `isFatalRun`, so PR/push keeps its fast skip.
+  it.skipIf(!isFatalRun)('SVC-RS is reachable from the runner (fatal-run gate)', () => {
+    expect(
+      hasSvcRsChain,
+      `SVC-RS chain absent (${SVC_RS_CHAIN}) on a FATAL run (workflow_dispatch/schedule) — ` +
+        'the ci-nfe.yml chain-refresh step degraded to a warning, so SVC-RS transport ' +
+        'cannot be proven. Re-run, or fix the chain fetch.',
+    ).toBe(true);
+    expect(
+      svcRsReachable,
+      'SVC-RS host unreachable from this runner on a FATAL run (workflow_dispatch/schedule) — ' +
+        'cannot prove SVC-RS transport. Re-run when SVRS is reachable.',
     ).toBe(true);
   });
 
@@ -251,7 +291,28 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       const retCall = buildSvcCall(endpoints.NfeRetAutorizacao, TEST_CERT!, SVC_AN_CHAIN);
       const prot = await resolveProtocol(ret, retCall);
       if (prot) assertNotConsumoIndevido(prot.infProt, 'svc-an/protNFe');
-      expect(prot?.infProt.cStat).toBe('100');
+      // ⚠️ Log the protNFe's OWN cStat + xMotivo BEFORE asserting. The lote line
+      // above only says the BATCH was processed (104); when SEFAZ refuses the
+      // note itself the motive lives here and nowhere else, and a bare
+      // `expect(prot?.infProt.cStat).toBe('100')` discards it. That is how a
+      // rejection reached a dead end twice — cStat=999 (#1247) and the
+      // uncatalogued cStat=178 — with the one string that would have settled
+      // either never printed. `rtc.homologacao.test.ts` already learned this;
+      // same shape here.
+      const cStat = prot?.infProt.cStat ?? ret.cStat;
+      const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
+      // `cMsg`/`xMsg` are SEFAZ's supplementary-detail fields, absent on a normal
+      // response — so appending them only when present costs the usual line
+      // nothing and is exactly what an uncatalogued code needs.
+      const detalhe = prot?.infProt.xMsg
+        ? ` cMsg=${prot.infProt.cMsg ?? '-'} xMsg="${prot.infProt.xMsg}"`
+        : '';
+      // eslint-disable-next-line no-console
+      console.log(`[SVC-AN protNFe] cStat=${cStat} xMotivo="${xMotivo}"${detalhe}`);
+      // The `?? ret.*` fallback also covers `prot === undefined`: resolveProtocol
+      // has four paths that return it with no explanation, and the bare optional
+      // chain turned every one into `expected undefined to be '100'`.
+      expect(cStat, `SEFAZ rejected the SVC-AN NF-e: cStat=${cStat} — "${xMotivo}"`).toBe('100');
       expect(prot?.infProt.chNFe).toBe(out.chave);
       expect(prot?.infProt.tpAmb).toBe('2');
       // The authorizer must be the SVC-AN itself, not a relay to SEFAZ-SP.
@@ -263,9 +324,11 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       const consultaCall = buildSvcCall(endpoints.NfeConsultaProtocolo, TEST_CERT!, SVC_AN_CHAIN);
       const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
       assertNotConsumoIndevido(sit, 'svc-an/consSitNFe');
+      // Same omission one assertion later — `xMotivo` added to match
+      // `emission.homologacao.test.ts`'s consSitNFe line.
       // eslint-disable-next-line no-console
       console.log(
-        `[SVC-AN consSitNFe] cStat=${sit.cStat} prot.cStat=${sit.protNFe?.infProt.cStat}`,
+        `[SVC-AN consSitNFe] cStat=${sit.cStat} xMotivo="${sit.xMotivo}" prot.cStat=${sit.protNFe?.infProt.cStat}`,
       );
       expect(sit.chNFe).toBe(out.chave);
       expect(sit.protNFe?.infProt.cStat).toBe('100');
