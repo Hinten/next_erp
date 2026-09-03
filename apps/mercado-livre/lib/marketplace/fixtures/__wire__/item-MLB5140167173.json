@@ -388,5 +388,7 @@
   "health": null,
   "catalog_listing": false,
   "item_relations": [],
-  "channels": ["marketplace"]
+  "channels": [
+    "marketplace"
+  ]
 }

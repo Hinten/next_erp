@@ -28,7 +28,9 @@
     "free_shipping": true,
     "mode": "me2",
     "methods": [],
-    "tags": ["mandatory_free_shipping"],
+    "tags": [
+      "mandatory_free_shipping"
+    ],
     "dimensions": null,
     "local_pick_up": false,
     "logistic_type": "xd_drop_off",
@@ -519,5 +521,7 @@
   "health": null,
   "catalog_listing": false,
   "item_relations": [],
-  "channels": ["marketplace"]
+  "channels": [
+    "marketplace"
+  ]
 }

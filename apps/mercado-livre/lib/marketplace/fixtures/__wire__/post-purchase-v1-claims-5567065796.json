@@ -34,7 +34,9 @@
   "resolution": {
     "reason": "coverage_decision",
     "date_created": "2026-08-27T10:41:21.000-04:00",
-    "benefited": ["complainant"],
+    "benefited": [
+      "complainant"
+    ],
     "closed_by": "mediator",
     "applied_coverage": true
   },

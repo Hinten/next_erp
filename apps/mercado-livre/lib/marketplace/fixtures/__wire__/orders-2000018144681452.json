@@ -94,7 +94,9 @@
       "activation_uri": null,
       "operation_type": "regular_payment",
       "payment_type": "account_money",
-      "available_actions": [""],
+      "available_actions": [
+        ""
+      ],
       "status": "refunded",
       "status_code": null,
       "status_detail": "bpp_refunded",
@@ -121,8 +123,17 @@
   },
   "status": "cancelled",
   "status_detail": null,
-  "tags": ["no_shipping", "not_delivered", "not_paid", "test_order", "pack_order"],
-  "static_tags": ["test_order", "pack_order"],
+  "tags": [
+    "no_shipping",
+    "not_delivered",
+    "not_paid",
+    "test_order",
+    "pack_order"
+  ],
+  "static_tags": [
+    "test_order",
+    "pack_order"
+  ],
   "feedback": {
     "seller": null,
     "buyer": null

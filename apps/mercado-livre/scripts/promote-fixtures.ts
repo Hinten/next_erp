@@ -24,6 +24,7 @@ import { join, resolve } from 'node:path';
 
 import { formatFindings, scanForPii } from '../lib/marketplace/fixtures/piiScan';
 import { type WireValue, redactWireBody } from '../lib/marketplace/fixtures/redact';
+import { SHAPES_FILE, renderShapesFromCorpus } from '../lib/marketplace/fixtures/wireShapes';
 
 function log(message: string): void {
   // eslint-disable-next-line no-console -- CLI output
@@ -161,9 +162,25 @@ function main(): void {
   mkdirSync(WIRE_DIR, { recursive: true });
   for (const [file, texto] of saida) writeFileSync(join(WIRE_DIR, file), texto, 'utf8');
 
+  // ⚠️ Rendered from DISK, after the bodies land — never from `saida`.
+  //
+  // `saida` holds only what `out/fixtures/` contained on THIS run, and a partial
+  // capture is the normal workflow: `capture:fixtures` takes per-id flags, so
+  // capturing one new order and promoting it writes that body beside the other
+  // 30 and would then overwrite SHAPES.txt with a SINGLE section.
+  //
+  // `wireShapes.test.ts` would red — but the remediation it points at is
+  // "regenerate with promote:fixtures", which reproduced the truncation. A
+  // detector whose documented fix re-creates the defect is a loop that never
+  // closes, which is worse than no detector.
+  //
+  // Reading the directory back makes the script and the test share ONE source
+  // of truth, and makes a truncated document self-healing on the next run.
+  writeFileSync(join(WIRE_DIR, SHAPES_FILE), renderShapesFromCorpus(), 'utf8');
+
   log(`\n✅ ${saida.size} fixture(s) promovidas para ${WIRE_DIR}\n`);
   for (const p of promocoes) log(`  ${p.file}`);
-  log('\nRode `pnpm --filter @delfrance/mercado-livre-app test` para regenerar os digests.\n');
+  log(`\n📐 ${SHAPES_FILE} regenerado — revise o diff DELE, não o dos JSONs.\n`);
 }
 
 main();

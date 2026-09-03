@@ -10,19 +10,28 @@
   "available_quantity": 22,
   "condition": "new",
   "status": "under_review",
-  "sub_status": ["forbidden"],
+  "sub_status": [
+    "forbidden"
+  ],
   "listing_type_id": "free",
   "seller_id": 3616169770,
   "seller_custom_field": "1WXplQLpUO8hcL3xQ4D0",
   "permalink": "https://produto.mercadolivre.com.br/MLB-5106837343-item-de-teste-por-favor-no-ofertar-_JM",
   "date_created": "2026-08-21T14:39:24.101Z",
   "video_id": null,
-  "tags": ["user_product_listing", "test_item", "good_quality_thumbnail", "immediate_payment"],
+  "tags": [
+    "user_product_listing",
+    "test_item",
+    "good_quality_thumbnail",
+    "immediate_payment"
+  ],
   "shipping": {
     "free_shipping": false,
     "mode": "not_specified",
     "methods": [],
-    "tags": ["adoption_required"],
+    "tags": [
+      "adoption_required"
+    ],
     "dimensions": null,
     "local_pick_up": false,
     "logistic_type": "not_specified",
@@ -287,5 +296,7 @@
   "health": null,
   "catalog_listing": false,
   "item_relations": [],
-  "channels": ["marketplace"]
+  "channels": [
+    "marketplace"
+  ]
 }
