@@ -1232,6 +1232,40 @@ describe('CI lanes always report', () => {
   });
 
   // ------------------------------------------------------------------
+  // 9b. claude-code-review.yml's report-token-expired locates `review` by
+  //     EXACT name too — same silent-rename hazard as ci-nfe's shield above.
+  //     That file is UNGATED (no `pull_request` trigger to gate), so
+  //     assertion 9's LANES loop never looks at it — this pins it separately.
+  // ------------------------------------------------------------------
+  it('claude-code-review.yml pins REVIEW_JOB_NAME to the published name of the review job', () => {
+    const offenders = [];
+    const file = '.github/workflows/claude-code-review.yml';
+    const body = read(file);
+    const jobs = jobBlocks(body);
+    const reviewName = checkName('review', jobs.review ?? '');
+    const refs = (body.match(/REVIEW_JOB_NAME:\s*(.+)/g) ?? []).map((l) =>
+      l.replace(/^REVIEW_JOB_NAME:\s*/, '').trim(),
+    );
+    if (refs.length !== 1 || refs.some((r) => r !== reviewName)) {
+      offenders.push(
+        `${file} → REVIEW_JOB_NAME must appear once and equal ${JSON.stringify(reviewName)}; found ${JSON.stringify(refs)}`,
+      );
+    }
+    expect(
+      offenders,
+      [
+        ...offenders,
+        '',
+        'report-token-expired locates the review job by EXACT name through the jobs',
+        'API. Giving `review` a `name:` override, or renaming the job id, makes that',
+        'lookup match nothing — job_id comes back empty, the step exits 0, and the',
+        'expired-token diagnostic silently stops firing. Same failure class as',
+        "ci-nfe.yml's LIVE_JOB_NAME pin above; update REVIEW_JOB_NAME in the same change.",
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
   // 10. Guard wiring does not drift.
   // ------------------------------------------------------------------
   it('every optional job references the output backing each guard it claims', () => {

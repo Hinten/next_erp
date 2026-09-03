@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { type MlClaimSearchParams, validateClaimSearchParams } from './claimSearch';
 import {
   MercadoLivreError,
   MercadoLivreHttpError,
@@ -669,13 +670,21 @@ export interface MercadoLivreApi {
    */
   getClaimExpectedResolutions(claimId: number): Promise<MlExpectedResolution[]>;
 
-  /** `GET /post-purchase/v1/claims/search` — paged claims; only provided params are sent. */
-  searchClaims(params: {
-    status?: string;
-    stage?: string;
-    limit?: number;
-    offset?: number;
-  }): Promise<MlClaimSearch>;
+  /**
+   * `GET /post-purchase/v1/claims/search` — paged claims; only provided params
+   * are sent.
+   *
+   * ⚠️ **The query is validated locally first** and an invalid one throws
+   * `MercadoLivreClaimSearchParamsError` without a round trip. ML requires at
+   * least one real FILTER (`offset`/`limit`/`sort`/`range` do not count) and
+   * imposes several pairwise dependencies; see `claimSearch.ts` for the whole
+   * set and where each rule comes from.
+   *
+   * ⚠️ This signature used to accept `status | stage | limit | offset` only,
+   * which could not express a single one of ML's recommended filters. Its base
+   * recommendation is `players.user_id` + `players.role`.
+   */
+  searchClaims(params: MlClaimSearchParams): Promise<MlClaimSearch>;
   /**
    * `GET /post-purchase/v1/claims/{claimId}/attachments/{filename}/download` —
    * a claim-message attachment as raw bytes (legacy `getAttachment`,
@@ -1384,8 +1393,15 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       ),
     getClaimReason: (reasonId) =>
       request('GET', `/post-purchase/v1/claims/reasons/${reasonId}`, mlClaimReasonSchema),
-    searchClaims: (params) =>
-      request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, { query: params }),
+    searchClaims: (params) => {
+      // ⚠️ BEFORE the request. Every rule here is one ML answers 400 to, so a
+      // round trip would only confirm what is already knowable — and an HTTP
+      // error invites a retry of a query that can never succeed.
+      validateClaimSearchParams(params);
+      return request('GET', '/post-purchase/v1/claims/search', mlClaimSearchSchema, {
+        query: params,
+      });
+    },
     downloadClaimAttachment,
     downloadPostSaleAttachment,
 
