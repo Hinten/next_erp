@@ -5,7 +5,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import config, { typeAware, baseRestrictedImportPaths } from '../index.js';
-import { REPO_ROOT } from './lib/repo-scan.js';
+import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
 
 /**
  * Repo invariant: a dead import fails SOMETHING, automatically.
@@ -220,32 +220,58 @@ describe('import boundaries that flat config can silently drop', () => {
     expect(baseRestrictedImportPaths.some((p) => p.name === 'firebase/storage')).toBe(true);
   });
 
-  it('every app that re-declares no-restricted-imports spreads it back in', () => {
+  /**
+   * `packages/storage` sets `'no-restricted-imports': 'off'` ON PURPOSE — it IS
+   * the `@delfrance/storage` implementation the base block's ban points people
+   * at, so it is the one workspace that must be able to call the raw SDK.
+   *
+   * Named here so the exemption is a stated decision rather than an accident of
+   * which workspaces someone happened to type into a list.
+   */
+  const RESTRICTED_IMPORTS_EXCUSED = new Map([
+    ['packages/storage', 'is the @delfrance/storage implementation itself'],
+  ]);
+
+  it('every workspace that re-declares no-restricted-imports spreads the base back in', () => {
     // Flat config replaces a rule by NAME. Five backends added a
     // `firebase-admin/firestore` restriction and, in doing so, turned the base's
     // Cloud Storage ban off for themselves — while the base file's own comment
     // warned about that exact trap. A comment could not hold this; the spread
     // plus this assertion can.
-    const apps = [
-      'web',
-      'integrations',
-      'melhor-envio',
-      'mercado-livre',
-      'mercado-pago',
-      'whatsapp',
-    ];
     //
-    // ⚠️ The check is for the SPREAD, not merely the identifier: deleting the
-    // `...` while leaving the import is precisely the edit that reintroduces the
-    // bug, and an `includes('baseRestrictedImportPaths')` test passes straight
-    // through it. (Found by mutating this assertion rather than by reasoning.)
-    const missing = apps.filter((a) => {
-      const src = read(`apps/${a}/eslint.config.mjs`);
-      return (
-        src.includes("'no-restricted-imports'") && !/\.\.\.baseRestrictedImportPaths/.test(src)
-      );
-    });
+    // ⚠️ DISCOVERED, not enumerated. This used to check a hand-written list of
+    // six apps, which is the shape `no-middleware-file.test.js` in this very
+    // directory argues against: the failure it guards is "someone added
+    // `no-restricted-imports` without knowing about the spread", and the next
+    // person to do that in a workspace nobody typed here would reintroduce the
+    // bug with this assertion still green. Raised in review on #1448.
+    //
+    // ⚠️ It checks for the SPREAD, not merely the identifier: deleting the `...`
+    // while leaving the import is precisely the edit that reintroduces the bug,
+    // and an `includes('baseRestrictedImportPaths')` test passes straight
+    // through it. (Found by mutating this assertion, not by reasoning.)
+    const configs = gitLsFiles(['**/eslint.config.mjs']).filter(
+      (f) => !f.includes('/node_modules/'),
+    );
+    expect(configs.length).toBeGreaterThan(25);
+
+    const missing = configs
+      .map((f) => ({ ws: f.replace(/\/eslint\.config\.mjs$/, ''), src: read(f) }))
+      .filter(({ ws, src }) => {
+        if (RESTRICTED_IMPORTS_EXCUSED.has(ws)) return false;
+        if (!src.includes("'no-restricted-imports'")) return false;
+        return !/\.\.\.baseRestrictedImportPaths/.test(src);
+      })
+      .map(({ ws }) => ws);
     expect(missing).toEqual([]);
+  });
+
+  it('each excused workspace really does turn the rule off (no stale excuses)', () => {
+    // An excuse that stops being true is a hole with a comment over it.
+    for (const [ws] of RESTRICTED_IMPORTS_EXCUSED) {
+      const src = read(`${ws}/eslint.config.mjs`);
+      expect(src).toMatch(/'no-restricted-imports':\s*'off'/);
+    }
   });
 
   it('getFirestore must always be given a database id', () => {

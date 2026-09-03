@@ -30,13 +30,26 @@
  * backends that own every one of these call sites. Same reasoning as
  * `no-error-as-sole-instanceof`.
  *
- * WHAT IS FLAGGED. `getFirestore()` with no arguments, and `getFirestore(app)`
- * with exactly one — both resolve `(default)`.
+ * WHAT IS FLAGGED. A call that does not reach its database-id argument:
+ *
+ *   - `getFirestore()` / `getFirestore(app)` — the id is argument **1**;
+ *   - `initializeFirestore(app, settings)` — the id is argument **2**.
+ *
+ * ⚠️ The two arities differ, and a single `>= 2` threshold silently exempts the
+ * second. That is not hypothetical: `apps/web/lib/firebase/client.ts` holds the
+ * repo's most-used Firestore handle and deliberately uses `initializeFirestore`
+ * rather than `getFirestore`, to enable the IndexedDB persistent cache with
+ * multi-tab coordination. Its call is correct today — three arguments, the id
+ * last — and its own comment says "the 3rd positional arg pins the named
+ * database (`default`, not `(default)`)". But `initializeFirestore(app, settings)`
+ * is the DOCUMENTED two-argument shape everywhere outside this repo, it resolves
+ * `(default)`, and under one flat threshold it would have passed this rule while
+ * failing every read in the browser. So the required arity is keyed off the name.
  *
  * WHAT IS DELIBERATELY NOT FLAGGED:
- *   - Any call passing two or more arguments; the second IS the database id, and
- *     whether that id is correct is not a syntactic question.
- *   - `getFirestore` used as a value (`vi.mock`, a re-export, an import) — only a
+ *   - A call that DOES pass its id argument. Whether that id is the right string
+ *     is not a syntactic question.
+ *   - Either name used as a value (`vi.mock`, a re-export, an import) — only a
  *     CALL can reach the wrong database.
  *   - Comments and docs, which must stay free to explain the trap.
  */
@@ -45,29 +58,45 @@ const rule = {
     type: 'problem',
     docs: {
       description:
-        'Call getFirestore(app, databaseId) — a bare getFirestore() resolves `(default)`, which does not exist on this Enterprise project.',
+        'Give getFirestore / initializeFirestore their database-id argument — without it they resolve `(default)`, which does not exist on this Enterprise project.',
     },
     schema: [],
     messages: {
       missingDatabaseId:
-        "getFirestore() must name the database. This project is Firestore ENTERPRISE, where the database is named `default` — not the `(default)` sentinel a 0- or 1-argument call resolves — so every operation on this handle would fail with `5 NOT_FOUND`. Pass it explicitly: `getFirestore(app, process.env.FIREBASE_DATABASE_ID ?? 'default')`, or reuse the shared handle from your app's `lib/firebase/admin.ts`.",
+        "{{name}}() must name the database. This project is Firestore ENTERPRISE, where the database is named `default` — not the `(default)` sentinel a call missing that argument resolves — so every operation on this handle would fail with `5 NOT_FOUND`. Pass it explicitly — `getFirestore(app, databaseId)` or `initializeFirestore(app, settings, databaseId)`, with `process.env.FIREBASE_DATABASE_ID ?? 'default'` — or reuse the shared handle from your app's `lib/firebase/admin.ts` / `lib/firebase/client.ts`.",
     },
   },
   create(context) {
+    /**
+     * Zero-based index of the database-id argument, per callee. `getFirestore`
+     * takes `(app?, databaseId?)`; `initializeFirestore` takes
+     * `(app, settings, databaseId?)`. A shared threshold would exempt the
+     * second — see the header.
+     */
+    const ID_ARG_INDEX = new Map([
+      ['getFirestore', 1],
+      ['initializeFirestore', 2],
+    ]);
+
     return {
       CallExpression(node) {
         const callee = node.callee;
-        const isBare = callee.type === 'Identifier' && callee.name === 'getFirestore';
-        const isMember =
+        let name = null;
+        if (callee.type === 'Identifier') {
+          name = callee.name;
+        } else if (
           callee.type === 'MemberExpression' &&
           !callee.computed &&
-          callee.property.type === 'Identifier' &&
-          callee.property.name === 'getFirestore';
-        if (!isBare && !isMember) return;
-        if (node.arguments.length >= 2) return;
+          callee.property.type === 'Identifier'
+        ) {
+          name = callee.property.name;
+        }
+        const idIndex = name == null ? undefined : ID_ARG_INDEX.get(name);
+        if (idIndex === undefined) return;
+        if (node.arguments.length > idIndex) return;
         // A spread could carry the id at runtime; the rule cannot know.
         if (node.arguments.some((a) => a.type === 'SpreadElement')) return;
-        context.report({ node, messageId: 'missingDatabaseId' });
+        context.report({ node, messageId: 'missingDatabaseId', data: { name } });
       },
     };
   },
