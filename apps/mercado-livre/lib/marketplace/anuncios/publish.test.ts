@@ -2677,7 +2677,6 @@ describe('publishProduto — the User-Products sole member (#1087)', () => {
 
     await publishProduto(makeDeps(db, api), PROD);
 
-    // eslint-disable-next-line no-console
     // ⛔ The loser must STILL end up adopting. Its batch — the one that would have
     // written the member link — is exactly the one that failed, so without a
     // recovery here `findVariacaoLink` finds nothing, the member counts as new, and

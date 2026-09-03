@@ -4,8 +4,8 @@ import {
   type Pedido,
   bucketOf,
   pedidoTotal,
+  EstadoBucket,
 } from '@delfrance/schemas';
-import type { EstadoBucket } from '@delfrance/schemas';
 
 /**
  * Pure aggregation helpers consumed by /relatorios pages. Operate on

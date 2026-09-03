@@ -96,6 +96,12 @@ import {
   type FreteDoPedido,
   type ItemDoPedido,
   type Pedido,
+  recoverEnderecoFromCep,
+  type EnderecoBuildOutcome,
+  ESTADO_FRETE,
+  MODALIDADE_FRETE,
+  seedFreteInicial,
+  type EstadoFrete,
 } from '@delfrance/schemas';
 import { roundReais } from '@delfrance/core/money';
 import { coerceToMicros } from '@delfrance/core/datetime';
@@ -141,13 +147,6 @@ import {
 } from './orderCliente';
 import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import { type ViaCepClient, createViaCepClient } from '@delfrance/core/cep';
-import { recoverEnderecoFromCep, type EnderecoBuildOutcome } from '@delfrance/schemas';
-import {
-  ESTADO_FRETE,
-  MODALIDADE_FRETE,
-  seedFreteInicial,
-  type EstadoFrete,
-} from '@delfrance/schemas';
 import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 import { resolveShipmentSellerCost } from './shipmentSellerCost';

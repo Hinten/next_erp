@@ -1,6 +1,14 @@
 // Import side-effect first: registers global function options (region) before
 // any trigger is defined. See options.ts.
-import './options';
+//
+// ⚠️ `TASKS_SCHEDULER_REGION` is pulled in HERE rather than lower down with the
+// other named imports, and the position is the whole point: ESM evaluates
+// modules in the order their import declarations appear, so a second
+// `from './options'` further down would leave this one to satisfy
+// `import/no-duplicates` by merging INTO it — moving the option registration
+// after the trigger modules and silently undoing the ordering this comment
+// exists to guarantee.
+import { TASKS_SCHEDULER_REGION } from './options';
 
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
@@ -185,7 +193,6 @@ export {
   sweepMercadoLivreStockDaily,
   sweepMercadoLivreStockReconciliacao,
 } from './sweepStock';
-import { TASKS_SCHEDULER_REGION } from './options';
 
 /**
  * Periodic backstop that pulls new/updated ML orders for each connected account

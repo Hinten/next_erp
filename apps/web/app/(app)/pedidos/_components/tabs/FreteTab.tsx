@@ -6,7 +6,7 @@ import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle } from '@tabler/icons-react';
 import { Controller } from 'react-hook-form';
 import { useQueryClient } from '@tanstack/react-query';
-import { type Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import {
   MODALIDADE_FRETE,

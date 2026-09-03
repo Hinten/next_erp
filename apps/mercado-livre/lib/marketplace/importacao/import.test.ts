@@ -10,7 +10,7 @@ import {
 
 import { type ImportDeps, importProduto } from './import';
 import { MAX_FAMILY_SIBLINGS } from './importFamily';
-import { type Bucket } from '../core/arquivoUpload';
+import type { Bucket } from '../core/arquivoUpload';
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Supports doc get/set/update, chained where/limit/get, a collectionGroup query

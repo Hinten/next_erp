@@ -1,6 +1,6 @@
 'use client';
 
-import { type RefObject } from 'react';
+import type { RefObject } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 /** One rendered slice of a virtualized list. */

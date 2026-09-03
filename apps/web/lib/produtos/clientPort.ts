@@ -18,11 +18,7 @@ import {
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
 import type { TransactionWrite } from '@delfrance/ui';
-import {
-  type ImpostoProduto,
-  type ParentParaMembroUnico,
-  type ProdutoExtraData,
-} from '@delfrance/schemas';
+import type { ImpostoProduto, ParentParaMembroUnico, ProdutoExtraData } from '@delfrance/schemas';
 import { getFirebaseFunctions } from '@/lib/firebase/client';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
