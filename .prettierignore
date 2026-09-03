@@ -40,3 +40,6 @@ apps/docs/
 # commit normalises it back — which destroys the one property the corpus needs:
 # re-promoting an unchanged capture must produce no diff at all.
 apps/mercado-livre/lib/marketplace/fixtures/__wire__/
+
+# Master plans and their evidence surveys are prose with wide tables — same reason as CLAUDE.md.
+.master_plans/
