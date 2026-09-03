@@ -401,7 +401,6 @@ export async function processPriceSyncJob(
     let skips = [...job.skips];
     let failures = [...job.failures];
     let relatorioLinhas = job.relatorioLinhas;
-    let relatorioShards = job.relatorioShards;
 
     /**
      * Report rows produced since the last COMMITTED checkpoint. In memory only —
@@ -624,7 +623,6 @@ export async function processPriceSyncJob(
       // written in the same batch as the rows it indexes; that is what makes a
       // retry recompute the same shard instead of drifting.
       relatorioLinhas = total;
-      relatorioShards = shards;
       pendentes = [];
     };
 

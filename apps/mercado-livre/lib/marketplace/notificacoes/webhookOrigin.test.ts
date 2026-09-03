@@ -5,13 +5,6 @@ import { __resetWebhookOriginState, checkApplicationId } from './webhookOrigin';
 /** A realistic ML application id (from the Notificações reference examples). */
 const APP_ID = '2069392825111111';
 
-function req(headers: Record<string, string> = {}): Request {
-  return new Request('http://localhost:3006/api/webhooks/mercado-livre', {
-    method: 'POST',
-    headers,
-  });
-}
-
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();

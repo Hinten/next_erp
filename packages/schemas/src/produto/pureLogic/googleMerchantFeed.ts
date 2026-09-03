@@ -25,9 +25,18 @@ import { type GrupoComId, parseFakePath } from './variacoes';
  * rather than an all-or-nothing swap once ANY field is missing.
  */
 
-/** The four `GoogleMerchantData` fields a kit can inherit from a component. */
-const CAMPOS_HERDAVEIS = ['age_group', 'gender', 'material', 'pattern'] as const;
-type CampoHerdavel = (typeof CAMPOS_HERDAVEIS)[number];
+/**
+ * The four `GoogleMerchantData` fields a kit can inherit from a component.
+ *
+ * A plain union rather than `(typeof CAMPOS_HERDAVEIS)[number]` over an
+ * `as const` array: nothing iterates the set — `buildGoogleMerchantFeedItems`
+ * names all four explicitly — so the array was a runtime value no code read,
+ * and only the TYPE was load-bearing (it constrains `campoComHeranca`'s
+ * `campo`, which is what stops a typo at those four call sites). If a future
+ * change does need to iterate them, reintroduce the array THEN and derive this
+ * from it again.
+ */
+type CampoHerdavel = 'age_group' | 'gender' | 'material' | 'pattern';
 
 /**
  * `''`/whitespace-only counts as empty, same as `null`/`undefined` — never as

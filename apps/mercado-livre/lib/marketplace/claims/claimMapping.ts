@@ -218,9 +218,6 @@ export function tipoResolucaoFromReason(reason: string | null): TipoResolucao {
 /*                                 Incidente (µs)                             */
 /* -------------------------------------------------------------------------- */
 
-/** ML claim `status` wire literal for a closed claim (`_StatusClaims.closed`). */
-const CLAIM_STATUS_CLOSED = 'closed';
-
 /** The legacy fallback when the reason lookup yields no detail/name (tasks.dart:1778). */
 const MOTIVO_DESCONHECIDO = 'Motivo da reclamação desconhecido';
 

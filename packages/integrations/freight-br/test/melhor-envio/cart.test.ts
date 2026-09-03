@@ -6,6 +6,19 @@ import {
   withCartAgency,
 } from '../../src/melhor-envio/cart';
 
+/**
+ * Deep, assertion-only view of a built wire payload.
+ *
+ * Recursive rather than `Record<string, unknown>` so a nested read
+ * (`payload.to!.company_document`, `payload.products![0]!.name`) typechecks
+ * without reaching for `any` — see the `no-explicit-any` entry in
+ * `packages/config-eslint`. Assertions only: nothing here is the real shape,
+ * which is what `buildCartItem`'s own return type states.
+ */
+interface WireView {
+  [key: string]: WireView;
+}
+
 const STORE = {
   name: 'Loja Delfrance LTDA',
   phone: '11999990000',
@@ -48,30 +61,30 @@ function params(over: Partial<BuildCartItemParams> = {}): BuildCartItemParams {
 
 describe('buildCartItem', () => {
   it('maps a forward shipment: store → recipient with products, volumes and options', () => {
-    const payload = buildCartItem(params()) as Record<string, any>;
+    const payload = buildCartItem(params()) as unknown as WireView;
 
     expect(payload.service).toBe(3);
-    expect(payload.from.company_document).toBe(STORE.companyDocument);
-    expect(payload.from.economic_activity_code).toBe('4781400');
-    expect(payload.to.company_document).toBe(RECIPIENT_PJ.companyDocument);
-    expect(payload.to.state_abbr).toBe('RJ');
+    expect(payload.from!.company_document).toBe(STORE.companyDocument);
+    expect(payload.from!.economic_activity_code).toBe('4781400');
+    expect(payload.to!.company_document).toBe(RECIPIENT_PJ.companyDocument);
+    expect(payload.to!.state_abbr).toBe('RJ');
 
     expect(payload.products).toEqual([{ name: 'Camiseta', quantity: '2', unitary_value: '49.90' }]);
     expect(payload.volumes).toEqual([{ width: 11, height: 2, length: 16, weight: 0.3 }]);
 
-    expect(payload.options.reverse).toBe(false);
-    expect(payload.options.non_commercial).toBe(true); // no NF-e key
-    expect(payload.options.insurance_value).toBe(1); // floored
-    expect(payload.options.platform).toBe('Delfrance ERP');
-    expect(payload.options.invoice).toBeUndefined();
+    expect(payload.options!.reverse).toBe(false);
+    expect(payload.options!.non_commercial).toBe(true); // no NF-e key
+    expect(payload.options!.insurance_value).toBe(1); // floored
+    expect(payload.options!.platform).toBe('Delfrance ERP');
+    expect(payload.options!.invoice).toBeUndefined();
   });
 
   it('swaps from/to for a reverse shipment', () => {
-    const payload = buildCartItem(params({ reverse: true })) as Record<string, any>;
+    const payload = buildCartItem(params({ reverse: true })) as unknown as WireView;
     // Reverse ships back FROM the recipient TO the store.
-    expect(payload.from.company_document).toBe(RECIPIENT_PJ.companyDocument);
-    expect(payload.to.company_document).toBe(STORE.companyDocument);
-    expect(payload.options.reverse).toBe(true);
+    expect(payload.from!.company_document).toBe(RECIPIENT_PJ.companyDocument);
+    expect(payload.to!.company_document).toBe(STORE.companyDocument);
+    expect(payload.options!.reverse).toBe(true);
   });
 
   it('uses document (not company_document) for a Pessoa Física recipient', () => {
@@ -88,31 +101,30 @@ describe('buildCartItem', () => {
           postalCode: '01001000',
         },
       }),
-    ) as Record<string, any>;
+    ) as unknown as WireView;
 
-    expect(payload.to.document).toBe('73646548010');
-    expect(payload.to.company_document).toBeUndefined();
-    expect(payload.to.state_register).toBeUndefined();
+    expect(payload.to!.document).toBe('73646548010');
+    expect(payload.to!.company_document).toBeUndefined();
+    expect(payload.to!.state_register).toBeUndefined();
   });
 
   it('keeps a real insurance value above the floor and attaches the NF-e invoice', () => {
     const payload = buildCartItem(
       params({ options: { insuranceValue: 150, invoiceKey: '3526'.padEnd(44, '0') } }),
-    ) as Record<string, any>;
+    ) as unknown as WireView;
 
-    expect(payload.options.insurance_value).toBe(150);
-    expect(payload.options.non_commercial).toBe(false);
-    expect(payload.options.invoice).toEqual({ key: '3526'.padEnd(44, '0') });
+    expect(payload.options!.insurance_value).toBe(150);
+    expect(payload.options!.non_commercial).toBe(false);
+    expect(payload.options!.invoice).toEqual({ key: '3526'.padEnd(44, '0') });
   });
 
   it('treats a blank invoice key as no NF-e (non_commercial true, no invoice block)', () => {
-    const payload = buildCartItem(params({ options: { invoiceKey: '   ' } })) as Record<
-      string,
-      any
-    >;
+    const payload = buildCartItem(
+      params({ options: { invoiceKey: '   ' } }),
+    ) as unknown as WireView;
 
-    expect(payload.options.non_commercial).toBe(true);
-    expect(payload.options.invoice).toBeUndefined();
+    expect(payload.options!.non_commercial).toBe(true);
+    expect(payload.options!.invoice).toBeUndefined();
   });
 
   it('caps the address line at 39 chars and the product name at 50', () => {
@@ -123,19 +135,19 @@ describe('buildCartItem', () => {
         from: { ...STORE, address: longAddress },
         products: [{ name: longName, quantity: 1, unitaryValue: 1 }],
       }),
-    ) as Record<string, any>;
+    ) as unknown as WireView;
 
-    expect(payload.from.address).toHaveLength(39);
-    expect(payload.products[0].name).toHaveLength(50);
+    expect(payload.from!.address).toHaveLength(39);
+    expect(payload.products![0]!.name).toHaveLength(50);
   });
 
   it('falls back to a single default volume and tags the pedido', () => {
     const payload = buildCartItem(
       params({ volumes: [], options: { pedidoNumero: 4242 } }),
-    ) as Record<string, any>;
+    ) as unknown as WireView;
 
     expect(payload.volumes).toEqual([{ width: 20, height: 20, length: 20, weight: 1 }]);
-    expect(payload.options.tags).toEqual([{ tag: 'Pedido 4242' }]);
+    expect(payload.options!.tags).toEqual([{ tag: 'Pedido 4242' }]);
   });
 
   it('omits empty optional identity fields (phone/email/complement)', () => {
@@ -152,14 +164,14 @@ describe('buildCartItem', () => {
           postalCode: '01001000',
         },
       }),
-    ) as Record<string, any>;
+    ) as unknown as WireView;
 
     expect(payload.to).not.toHaveProperty('phone');
     expect(payload.to).not.toHaveProperty('email');
     expect(payload.to).not.toHaveProperty('complement');
     // Required fields stay present.
-    expect(payload.to.note).toBe('');
-    expect(payload.to.country_id).toBe('BR');
+    expect(payload.to!.note).toBe('');
+    expect(payload.to!.country_id).toBe('BR');
   });
 });
 
@@ -167,9 +179,9 @@ describe('withCartAgency', () => {
   it('sets (or overrides) the picked agency on a built payload', () => {
     const payload = buildCartItem(params());
     const out = withCartAgency(payload, 195);
-    expect((out as Record<string, any>).agency).toBe(195);
+    expect((out as unknown as WireView).agency).toBe(195);
     // Overrides a previously stored choice.
-    expect((withCartAgency(out, 200) as Record<string, any>).agency).toBe(200);
+    expect((withCartAgency(out, 200) as unknown as WireView).agency).toBe(200);
   });
 
   it('returns the payload unchanged when no agency was picked', () => {
