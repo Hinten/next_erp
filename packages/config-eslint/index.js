@@ -12,6 +12,8 @@ import noClientEstadoHistoryWrite from './rules/no-client-estado-history-write.j
 import noEnvSecretsAccess from './rules/no-env-secrets-access.js';
 import noHardcodedGcpRegion from './rules/no-hardcoded-gcp-region.js';
 import noUnvalidatedResponse from './rules/no-unvalidated-response.js';
+import noFocusedTest from './rules/no-focused-test.js';
+import requireFirestoreDatabaseId from './rules/require-firestore-database-id.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -93,10 +95,92 @@ export function typeAware(
         // turns that into a silent `undefined` return. Name the cases AND keep the
         // fallback; the rule is satisfied either way.
         '@typescript-eslint/switch-exhaustiveness-check': 'error',
+
+        // A dead import typechecks, lints and tests green without this. Core
+        // `no-unused-vars` is off in the base block (correct — it double-reports
+        // on TypeScript), and the TS replacement was assumed to arrive with
+        // `eslint-config-next` and never did: its FLAT export registers the
+        // plugin and the parser, but the `'@typescript-eslint/no-unused-vars'`
+        // entry lives in its `eslint-config-next/typescript` eslintrc export,
+        // which nothing here spreads. So until #1445 there was NO unused-variable
+        // detection anywhere in this repo, in either ESLint or tsc.
+        //
+        // #1442 is the worked example: it removed a block that used `useQuery`
+        // and orphaned the import. That survived `turbo run typecheck` (28/28),
+        // `turbo run lint` (30/30, zero errors) and 3013 apps/web tests, and was
+        // caught by a reviewer reading the diff — which is not a mechanism.
+        //
+        // ERROR, not a ratchet: the pre-existing hits are fixed in the PR that
+        // enables this, so there is no population to grandfather — the condition
+        // this repo states for `error` (see `no-unvalidated-response` below).
+        // ⚠️ And `warn` would gate NOTHING here: no lint script passes
+        // `--max-warnings`, so `turbo run lint` never fails on one. Only
+        // `.lintstagedrc.mjs` does, and only for files that happen to be staged.
+        //
+        // The `^_` patterns are the sanctioned escape hatch — this repo already
+        // writes `_ctx` / `_config` / `_exhaustive` by hand.
+        '@typescript-eslint/no-unused-vars': [
+          'error',
+          {
+            args: 'after-used',
+            argsIgnorePattern: '^_',
+            varsIgnorePattern: '^_',
+            caughtErrors: 'all',
+            caughtErrorsIgnorePattern: '^_',
+            destructuredArrayIgnorePattern: '^_',
+            ignoreRestSiblings: true,
+          },
+        ],
+
+        // An `any` silently disables every other rule in this config for the
+        // value it annotates — including the `no-unsafe-*` family this file
+        // deliberately does NOT enable, which is precisely what makes a stray
+        // `any` the hole those rules cannot be trusted around. `unknown` plus a
+        // narrowing check is the replacement, and `as unknown` is already the
+        // escape `no-unvalidated-response` sanctions for network payloads.
+        //
+        // ERROR, same condition as above: the repo had exactly nine real `any`
+        // annotations, all in one freight-br test file, and they were removed in
+        // the same PR. (Every other `: any` / `as any` in a grep is the English
+        // word "any" inside a comment.)
+        '@typescript-eslint/no-explicit-any': 'error',
       },
     },
   ];
 }
+
+/**
+ * The `no-restricted-imports` entries every workspace gets from the base block.
+ *
+ * Exported because flat config REPLACES a rule by name rather than merging it,
+ * so an app that declares its own `no-restricted-imports` silently drops these.
+ * That is not hypothetical: five backends
+ * (`apps/{integrations,melhor-envio,mercado-livre,mercado-pago,whatsapp}`) each
+ * added a `firebase-admin/firestore` restriction and, in doing so, turned the
+ * Cloud Storage ban OFF for themselves — while the base file's own comment
+ * warned about exactly that trap and only `apps/web` obeyed it. Spreading a
+ * shared const is the fix a comment could not be; it mirrors the runtime
+ * `baseRestrictedSyntax` reconstruction those same apps already do.
+ *
+ * Funnel all Cloud Storage access through the `@delfrance/storage` helpers
+ * (content-addressing, dedup, the Arquivo doc, the product-scoped path
+ * conventions). `getStorage()` for the singleton stays allowed.
+ */
+export const baseRestrictedImportPaths = [
+  {
+    name: 'firebase/storage',
+    importNames: [
+      'ref',
+      'uploadBytes',
+      'uploadBytesResumable',
+      'uploadString',
+      'getDownloadURL',
+      'deleteObject',
+    ],
+    message:
+      'Do not call the raw Storage SDK. Use the helpers from @delfrance/storage (uploadFile / uploadProductImage / uploadFromUrl) — `getStorage()` for the singleton is fine.',
+  },
+];
 
 const config = [
   {
@@ -135,40 +219,29 @@ const config = [
           'no-lossy-date-parse': noLossyDateParse,
           'no-ambient-timezone': noAmbientTimezone,
           'no-unvalidated-response': noUnvalidatedResponse,
+          'no-focused-test': noFocusedTest,
+          'require-firestore-database-id': requireFirestoreDatabaseId,
         },
       },
     },
     rules: {
       'no-console': ['warn', { allow: ['warn', 'error'] }],
+      // Off for TYPESCRIPT only. The core rule cannot see type positions, so it
+      // reports every type-only import as unused. The real gate is
+      // `@typescript-eslint/no-unused-vars` in `typeAware(...)` above, plus the
+      // JS-scoped re-enable of THIS rule at the bottom of this file. ⚠️ Do not
+      // delete either half: with this line on its own, a dead import is
+      // invisible repo-wide — which is the bug #1445 fixed.
       'no-unused-vars': 'off',
+      // tsc owns undefined-identifier detection, and it knows about types,
+      // `lib` globals and ambient declarations, which this rule does not.
       'no-undef': 'off',
       'no-empty': ['error', { allowEmptyCatch: false }],
-      // Funnel all Cloud Storage access through the @delfrance/storage helpers
-      // (content-addressing, dedup, the Arquivo doc, and the product-scoped
-      // path conventions). Ban the raw operation functions — `getStorage` for
-      // the app's Storage singleton stays allowed. Flat config REPLACES this
-      // rule when an app re-declares `no-restricted-imports` (see apps/web),
-      // so any such app must re-include this entry.
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: 'firebase/storage',
-              importNames: [
-                'ref',
-                'uploadBytes',
-                'uploadBytesResumable',
-                'uploadString',
-                'getDownloadURL',
-                'deleteObject',
-              ],
-              message:
-                'Do not call the raw Storage SDK. Use the helpers from @delfrance/storage (uploadFile / uploadProductImage / uploadFromUrl) — `getStorage()` for the singleton is fine.',
-            },
-          ],
-        },
-      ],
+      // Funnel all Cloud Storage access through the @delfrance/storage helpers.
+      // ⚠️ Flat config REPLACES this rule when an app re-declares
+      // `no-restricted-imports`, so any such app must SPREAD
+      // `baseRestrictedImportPaths` into its own `paths` — see the const above.
+      'no-restricted-imports': ['error', { paths: baseRestrictedImportPaths }],
       'no-restricted-syntax': [
         'error',
         {
@@ -331,6 +404,63 @@ const config = [
       // `as unknown` is the sanctioned escape; the rule header explains the rest,
       // including the three things it deliberately cannot catch.
       'delfrance/no-unvalidated-response': 'error',
+
+      // A committed `.only` does not fail anything — it stops the rest of its
+      // file from running while every reporter, and the CI gate in front of it,
+      // still say PASS. Playwright's `forbidOnly` defaults to FALSE and
+      // apps/web's config did not set it, so one `test.only` in any of the 62
+      // e2e specs would have taken an `E2E gate` check green over a suite that
+      // had stopped running. Vitest is safer only by an UNDECLARED upstream
+      // default (`allowOnly: !process.env.CI`), which nothing here asserts.
+      //
+      // ERROR, zero pre-existing sites: the only `.only` in the repo is the
+      // `RuleTester.itOnly = it.only` wiring, which is a reference rather than a
+      // call and so never reports. The runner flags fail the RUN; this fails the
+      // COMMIT, which is where a fix is cheapest.
+      'delfrance/no-focused-test': 'error',
+
+      // The database on this Enterprise project is named `default`, not the
+      // `(default)` sentinel a 0-/1-argument `getFirestore()` resolves — so a
+      // bare call yields a handle whose every operation fails `5 NOT_FOUND`,
+      // far from the line that made it.
+      //
+      // ERROR, zero pre-existing sites — but the convention is currently held by
+      // SEVEN copies of the same `admin.ts` across five codebases, each carrying
+      // its own prose warning. That is exactly the "these five agree" shape this
+      // repo writes guards for.
+      'delfrance/require-firestore-database-id': 'error',
+    },
+  },
+
+  // The TypeScript half of the unused-variable gate lives in `typeAware(...)`,
+  // whose `files` glob is TS-only. That silently excludes the plain-JS surface
+  // this repo actually has: every custom rule and backstop under
+  // `packages/config-eslint/rules`, `tools/deploy-env`, `packages/config-vitest`,
+  // the five `apps/*/functions/scripts/prepare-deploy.mjs` and their `build.mjs`.
+  //
+  // This is the same asymmetry that put `delfrance/no-env-secrets-access` in the
+  // base block rather than in `typeAware(...)` — see its entry above, which
+  // spells out that typeAware's scoping "would silently exclude the five
+  // prepare-deploy.mjs scripts".
+  //
+  // Scoped to JS so TypeScript keeps getting ONLY the typescript-eslint rule:
+  // the core rule double-reports on TS and misreads type-only usage, which is
+  // exactly why it is `off` in the block above.
+  {
+    files: ['**/*.{js,mjs,cjs}'],
+    rules: {
+      'no-unused-vars': [
+        'error',
+        {
+          args: 'after-used',
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrors: 'all',
+          caughtErrorsIgnorePattern: '^_',
+          destructuredArrayIgnorePattern: '^_',
+          ignoreRestSiblings: true,
+        },
+      ],
     },
   },
 ];

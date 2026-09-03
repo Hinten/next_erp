@@ -26,13 +26,13 @@ vi.mock('firebase/firestore', () => ({
 
 import { NothingChangedError, saveRecord, type TransactionWrite } from './saveRecord';
 
-const schema = z.object({
+const _schema = z.object({
   nome: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
   telefone: z.string().nullable().optional(),
 });
 
-function fakeCollection(): CollectionHandle<typeof schema> {
+function fakeCollection(): CollectionHandle<typeof _schema> {
   return {
     resolvePath: () => 'clientes',
     ref: () => 'COLLECTION_REF' as never,

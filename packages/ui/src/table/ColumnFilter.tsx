@@ -1,16 +1,7 @@
 'use client';
 
 import { type ReactNode, useState } from 'react';
-import {
-  ActionIcon,
-  Button,
-  Group,
-  NumberInput,
-  Popover,
-  Select,
-  Stack,
-  TextInput,
-} from '@mantine/core';
+import { ActionIcon, Button, Group, Popover, Select, Stack, TextInput } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { IconFilter, IconFilterFilled } from '@tabler/icons-react';
 import type { PipelineFilterOp } from '@delfrance/data';

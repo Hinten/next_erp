@@ -372,7 +372,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   onRowClick,
   newHref,
   renderNewButton,
-  renderRowLink,
   meta,
   queryParams,
   pageSize,
@@ -1161,16 +1160,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       ...virtualColumns.map((v) => ({ key: v.key, label: v.label })),
     ],
     [descriptors, fieldOverrides, virtualColumns],
-  );
-
-  /**
-   * Subset of schema descriptors that are currently visible — for legacy
-   * call sites (filter parsing, monitor-field auto-detect) that don't
-   * need to know about virtual columns.
-   */
-  const visibleDescriptors = useMemo(
-    () => visibleColumns.flatMap((c) => (c.kind === 'schema' ? [c.descriptor] : [])),
-    [visibleColumns],
   );
 
   // Hiding drops the key; showing appends it to the end of the order. The
