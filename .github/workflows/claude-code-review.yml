@@ -234,3 +234,79 @@ jobs:
             --model claude-opus-5
             --max-turns 60
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(pnpm turbo run:*),Bash(pnpm exec:*),Bash(pnpm --filter:*),Bash(pnpm format:check),Bash(npx vitest:*),Bash(node:*)"
+
+  # `review` fails hard, and silently, when CLAUDE_CODE_OAUTH_TOKEN has expired —
+  # there is otherwise no PR-visible signal beyond a red X in the Actions tab.
+  # This job greps that job's own log for the Claude API's own expired-token
+  # error and, only then, leaves a comment saying so. Modeled on
+  # ci-nfe.yml's `report-consumo-indevido`: locate one named job by exact match,
+  # fetch its log via the Jobs API, grep for one marker, comment only if found,
+  # stay silent otherwise — a review that failed for any OTHER reason is out of
+  # scope here, same as today (there is no generic failure reporter to defer to).
+  report-token-expired:
+    name: Detect expired Claude OAuth token
+    needs: [gate, review]
+    # No fork guard, unlike ci.yml's/ci-nfe.yml's report-failure jobs: those guard
+    # `pull-requests: write` because a `pull_request` run from a fork gets a
+    # read-only token. This workflow triggers on `issue_comment`, which always
+    # runs with the base repo's token regardless of where the PR branch lives —
+    # the same property `review` already relies on to use
+    # `secrets.CLAUDE_CODE_OAUTH_TOKEN` unconditionally.
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - name: Grep the review job's log for an expired OAuth token
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR: ${{ github.event.issue.number }}
+          # Exact match against the published check-run name, never a substring
+          # test (see CLAUDE.md / the ci-lanes skill). `review` carries no
+          # `name:` override, so its published name is the bare job id.
+          REVIEW_JOB_NAME: review
+        run: |
+          set -uo pipefail
+          job_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.name == env.REVIEW_JOB_NAME) | .id' | head -n1)
+          if [[ -z "$job_id" ]]; then
+            echo "Could not locate the '$REVIEW_JOB_NAME' job in this run — nothing to check."
+            exit 0
+          fi
+          if ! gh api "repos/$REPO/actions/jobs/$job_id/logs" > /tmp/review-job.log 2>/dev/null; then
+            echo "Log fetch failed — cannot confirm an expired-token failure, staying silent."
+            exit 0
+          fi
+          # Two anchored, low-false-positive substrings lifted verbatim from the
+          # real Claude API error body:
+          #   {"type":"error","error":{"type":"authentication_error","message":
+          #    "OAuth token has expired. Please obtain a new token or refresh
+          #    your existing token."}}
+          # Deliberately NOT matching a bare `401` — far too broad, would fire on
+          # any transient upstream hiccup unrelated to the token.
+          if grep -Fq '"authentication_error"' /tmp/review-job.log || \
+             grep -Fq 'OAuth token has expired' /tmp/review-job.log; then
+            {
+              echo "⚠️ **\`!reviewbot\` could not run — \`CLAUDE_CODE_OAUTH_TOKEN\` looks expired.**"
+              echo
+              echo "The \`review\` job failed with the Claude API's own \`authentication_error\`"
+              echo "(\"OAuth token has expired\"), not an issue with this PR."
+              echo
+              echo "To fix:"
+              echo "1. Run \`claude setup-token\` locally (as the token owner) to mint a new token."
+              echo "2. Update the repo secret, either:"
+              echo "   - \`gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo $REPO\`, or"
+              echo "   - GitHub → Settings → Secrets and variables → Actions → \`CLAUDE_CODE_OAUTH_TOKEN\`."
+              echo "3. Comment \`!reviewbot\` again to retry."
+              echo
+              echo "Full logs: $RUN_URL"
+            } > /tmp/comment.md
+            gh pr comment "$PR" --repo "$REPO" --body-file /tmp/comment.md
+          else
+            echo "review job failed for a reason other than an expired OAuth token — nothing posted (out of scope for this job)."
+          fi
