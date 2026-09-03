@@ -843,20 +843,28 @@ membros"*) and `family_id.collision`. Famílias already live never gain it; the
 only supported retrofit is `POST /user-products-families/{family_id}/tasks`,
 which rewrites EVERY member at once and is a feature of its own.
 
-⚠️ The name (`Código de referência`) is **public** — a custom characteristic
-renders in the anúncio's ficha técnica — and **frozen** at first publish, since
-it feeds the family hash. ML offers no seller-settable alternative: the `hidden`
-tag is metadata ML *returns* for attributes IT defines and rides no request body,
-and `PUT /user-products-families/{id}` takes only PARENT_PK/ITEM_CONDITION
+⚠️ The name (`Código de referência`) is **frozen** at first publish, since it
+feeds the family hash. ML offers no seller-settable alternative: the `hidden` tag
+is metadata ML *returns* for attributes IT defines and rides no request body, and
+`PUT /user-products-families/{id}` takes only PARENT_PK/ITEM_CONDITION
 (*"Não são permitidos atributos custom"*). Nor is there a parent slot for a
 `SELLER_SKU`: a User Product IS the variation, so a sku there is the member's.
-⚠️ It must also stay distinct from every ML attribute's display name, and the
-match is **id-AGNOSTIC** — `skuPaiFromAttributes` folds `name` and never reads
-`id`, so an ML-DEFINED attribute collides too. The cost is twofold: rung 1 reads
-that attribute's value as the parent sku, AND `attributesFromItem` drops it from
-`link.attributes`, so it stops being republished — on simple items as well.
-Only a live sweep of `GET /categories/{id}/attributes` can prove absence; run it
-before the first deploy, since the name freezes then.
+
+⭐ **Measured 2026-09-03 on `MLB5183026663`, and it settled two open questions.**
+ML echoes the characteristic back **`id: null`** (it assigns no id), and the
+listing page does **not** render it to buyers — `SELLER_SKU` rides the same
+`attributes` array and is not shown either, so ML clearly curates what it
+displays. ⚠️ One listing, one category, a `test_item` account: treat "invisible"
+as likely, not guaranteed, and keep the name buyer-safe.
+
+⚠️ That first half is why `skuPaiFromAttributes` matches **id-LESS only**. It is
+the whole safety of the reader: ML's own attributes always carry an id, so a name
+collision with a real ML attribute is harmless. The match used to ignore `id`
+because nothing proved what ML returns, and that cost two things — rung 1 read a
+foreign value as the parent sku, and `attributesFromItem` dropped that attribute
+from `link.attributes` (on simple items too). Both are now impossible, so **no
+category sweep is needed**. If ML ever starts echoing an id, rung 1 stops
+matching and the sku falls through — blank, never wrong.
 
 ⚠️ **The evidence lives on the MEMBER links (`variacaoMercadoLivre.skuPaiAtributo`),
 never on the família's parent link**, and the two reasons are really one — the
