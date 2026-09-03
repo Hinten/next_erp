@@ -136,7 +136,23 @@ export function nfeConfigStoreFromFirestore(
               set(filialId, next) {
                 txAdmin.set(refFor(filialId), {
                   ...next,
-                  timestamp: new Date().toISOString(),
+                  // ⚠️ MILLISECONDS, not an ISO string. `nfeConfigSchema` declares
+                  // this field as `millisSinceEpoch()`, and every other writer and
+                  // reader of the doc agrees: `apps/web`'s Contingência panel
+                  // writes `port.now()` (`saveNfeConfig.ts`, "timestamp /
+                  // contingencia_dataInicio are ms here"), the dev seed says "Both
+                  // filial.timestamp and nfeconfig.timestamp are milliseconds since
+                  // epoch", and `nfeConfig.test.ts` asserts the parsed value equals
+                  // `.getTime()`.
+                  //
+                  // This writer used to send `new Date().toISOString()`, so the
+                  // field held whichever shape wrote last. Nothing ever failed,
+                  // which is the point: `millisSinceEpoch()` is a TOLERANT reader
+                  // (`z.preprocess(tolerant(coerceToMillis), …)`) and coerced the
+                  // string back on the way in — and this file sat outside the
+                  // package's tsconfig `include` until #1445's follow-up, so tsc
+                  // never saw the mismatch either.
+                  timestamp: Date.now(),
                 });
               },
             };

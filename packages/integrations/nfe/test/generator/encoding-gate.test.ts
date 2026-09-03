@@ -49,6 +49,7 @@ const ENDERECO: Endereco = {
   imun: null,
   email: null,
   telefone: null,
+  timestamp: null,
 };
 
 const CLIENTE: Cliente = {
@@ -66,6 +67,7 @@ const CLIENTE: Cliente = {
   nome_embedding: null,
   telefone_embedding: null,
   userCliente: null,
+  idMercadoLivre: null,
 };
 
 const FILIAL: Filial = {
@@ -134,8 +136,8 @@ describe('encoding gate — enderDest (issue #788)', () => {
 
   it('still emits correctly-encoded accented addresses', () => {
     const out = dest();
-    expect(out.enderDest.xLgr).toBe('Rua Aclimacao');
-    expect(out.enderDest.xMun).toBe('Sao Paulo');
+    expect(out.enderDest!.xLgr).toBe('Rua Aclimacao');
+    expect(out.enderDest!.xMun).toBe('Sao Paulo');
   });
 
   it('the laundered value it now blocks was plausible ASCII, which is the danger', () => {

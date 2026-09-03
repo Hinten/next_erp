@@ -3,19 +3,22 @@
  * Re-exports the contracts from @delfrance/core/plugins so plugin packages
  * don't import from internal paths.
  *
- * ⚠️ **There is no `marketplace` kind, and adding one back is a mistake** (#815).
- * A sales channel is not a plugin in this repo: it is one App Hosting backend
- * (`apps/<channel>`) resolved per request from its `integracao` document, never
- * registered or looked up by plugin id. What used to be re-exported here — a
- * 25-member `MarketplaceChannel` plus ~25 support types — had zero importers
- * outside this barrel and two test files, while the one real channel implemented
- * three of its four required members as `throw`.
+ * ⚠️ **There is no `marketplace` kind (#815) and no `payment` kind (#1429), and
+ * neither may come back.** Sales channels and payment accounts are not plugins in
+ * this repo: each is one App Hosting backend (`apps/<channel>`) resolved per
+ * request from its own Firestore document, never registered or looked up by plugin
+ * id. What used to be re-exported here — a 25-member `MarketplaceChannel` with ~25
+ * support types, and a 3-member `PaymentGateway` — had zero importers outside this
+ * barrel and the test fixtures, while every implementation built against them was
+ * `throw`.
  *
- * Building a marketplace integration: read `MARKETPLACE_TIPO_CAPS`
- * (`@delfrance/schemas`), the model in `@delfrance/core/marketplace`, ADR 0015,
- * and the `marketplace-integration` skill.
+ * Building a marketplace integration: `MARKETPLACE_TIPO_CAPS`
+ * (`@delfrance/schemas`), the model in `@delfrance/core/marketplace`, ADR 0015, and
+ * the `marketplace-integration` skill. Building a payment integration: mirror
+ * `apps/mercado-pago` — the procedure is on `tipoIntegracaoPgtoSchema` in
+ * `@delfrance/schemas`.
  */
-export type { TaxProvider, InvoiceProvider, PaymentGateway } from '@delfrance/core/plugins';
+export type { TaxProvider, InvoiceProvider } from '@delfrance/core/plugins';
 
 export interface PluginManifest {
   id: string;
@@ -25,7 +28,7 @@ export interface PluginManifest {
    * Which contract this plugin implements. A single plugin can implement more
    * than one (e.g. an NFe plugin that also exposes a TaxProvider).
    */
-  kinds: ReadonlyArray<'tax' | 'invoice' | 'payment'>;
+  kinds: ReadonlyArray<'tax' | 'invoice'>;
 }
 
 export interface DefinedIntegration {

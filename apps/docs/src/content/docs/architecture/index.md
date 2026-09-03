@@ -19,7 +19,7 @@ The ERP is behind authentication. No SEO, no public crawling. RSC's main wins (i
 
 ## Plugins
 
-Brazilian features are **opt-in**. Three contracts live in `packages/core/src/plugins/`: `TaxProvider`, `InvoiceProvider` and `PaymentGateway`. The core stays locale-agnostic.
+Brazilian features are **opt-in**. Two contracts live in `packages/core/src/plugins/`: `TaxProvider` and `InvoiceProvider`. The core stays locale-agnostic.
 
 ⚠️ **Nothing in-tree composes into a registry at app boot** — that sentence used to sit here and was never true of any channel. `PluginRegistry` is the surface for *third-party* plugins published to npm; every in-tree integration resolves its account **per request** from a Firestore document (`integracao` / `int_frete` / `metodo_pgto`), which is what makes one App Hosting backend per channel possible.
 

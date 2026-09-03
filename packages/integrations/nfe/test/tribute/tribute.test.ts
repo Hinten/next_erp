@@ -27,6 +27,7 @@ import {
   type Imposto,
   type Retencao,
 } from '../../src/tribute/index';
+import { IND_INCENTIVO, IND_ISS, ORIGEM } from '@delfrance/schemas';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
@@ -125,7 +126,7 @@ const item1500 = { vProd: 1500 };
 
 function impostoFor(csosn: string, extra: Partial<Imposto['configuracaoICMS']> = {}): Imposto {
   return {
-    origem: '0',
+    origem: ORIGEM.nacional,
     configuracaoICMS: {
       crt: '1',
       csosn: csosn as never,
@@ -385,8 +386,8 @@ function issqnFor(extra: Partial<ConfiguracaoISSQN> = {}): ConfiguracaoISSQN {
     vISSQN: 25,
     cMunFG: '3550308', // São Paulo (IBGE)
     cListServ: '01.05',
-    indISS: '1',
-    indIncentivo: '2',
+    indISS: IND_ISS.exigivel,
+    indIncentivo: IND_INCENTIVO.nao,
     ...extra,
   };
 }
@@ -394,7 +395,7 @@ function issqnFor(extra: Partial<ConfiguracaoISSQN> = {}): ConfiguracaoISSQN {
 describe('buildImpostoXml — ISSQN (xs:choice with ICMS)', () => {
   it('emits <ISSQN> with required fields and no <ICMS> when configuracaoISSQN is set', async () => {
     const imposto: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoISSQN: issqnFor(),
     };
     const xml = buildImpostoXml(imposto, { vProd: 500 });
@@ -412,7 +413,7 @@ describe('buildImpostoXml — ISSQN (xs:choice with ICMS)', () => {
 
   it('emits optional ISSQN fields when set (vDeducao, vDescIncond, vDescCond, vISSRet, vOutro)', async () => {
     const imposto: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoISSQN: issqnFor({
         vDeducao: 10,
         vDescIncond: 5,
@@ -433,13 +434,13 @@ describe('buildImpostoXml — ISSQN (xs:choice with ICMS)', () => {
   });
 
   it('throws when neither configuracaoICMS nor configuracaoISSQN is provided', () => {
-    const imposto: Imposto = { origem: '0' };
+    const imposto: Imposto = { origem: ORIGEM.nacional };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
   });
 
   it('allows IPI to ride alongside ISSQN (both choice + IPI block)', async () => {
     const imposto: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoISSQN: issqnFor(),
       configuracaoIPI: { cEnq: '999', CST: '01' },
     };
@@ -459,13 +460,16 @@ describe('aggregateISSQN', () => {
   });
 
   it('sums vServ / vBC / vISS across ISSQN items and stamps dCompet', () => {
-    const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
+    const issqnImposto: Imposto = { origem: ORIGEM.nacional, configuracaoISSQN: issqnFor() };
     const out = aggregateISSQN(
       [
         { item: { vProd: 500 }, imposto: issqnImposto },
         {
           item: { vProd: 300 },
-          imposto: { origem: '0', configuracaoISSQN: issqnFor({ vBC: 300, vISSQN: 15 }) },
+          imposto: {
+            origem: ORIGEM.nacional,
+            configuracaoISSQN: issqnFor({ vBC: 300, vISSQN: 15 }),
+          },
         },
         { item: { vProd: 100 }, imposto: impostoFor102() }, // mixed — ignored by ISSQN aggregator
       ],
@@ -478,14 +482,14 @@ describe('aggregateISSQN', () => {
   });
 
   it('throws when ISSQN items are present but extras.dCompet is missing', () => {
-    const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
+    const issqnImposto: Imposto = { origem: ORIGEM.nacional, configuracaoISSQN: issqnFor() };
     expect(() => aggregateISSQN([{ item: { vProd: 500 }, imposto: issqnImposto }])).toThrow(
       /dCompet/,
     );
   });
 
   it('emits cRegTrib when supplied via extras', () => {
-    const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
+    const issqnImposto: Imposto = { origem: ORIGEM.nacional, configuracaoISSQN: issqnFor() };
     const out = aggregateISSQN([{ item: { vProd: 500 }, imposto: issqnImposto }], {
       dCompet: '2026-05-27',
       cRegTrib: '3',
@@ -555,7 +559,7 @@ describe('aggregateRetTrib', () => {
 describe('buildImpostoXml — failure modes', () => {
   it('throws on CRT=3 (Regime Normal) — Phase D', () => {
     const imposto: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoICMS: { crt: '3', csosn: null },
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
@@ -563,7 +567,7 @@ describe('buildImpostoXml — failure modes', () => {
 
   it('throws on CRT=4 (MEI)', () => {
     const imposto: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoICMS: { crt: '4', csosn: null },
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
@@ -571,7 +575,7 @@ describe('buildImpostoXml — failure modes', () => {
 
   it('throws on missing csosn for CRT=1', () => {
     const imposto: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoICMS: { crt: '1', csosn: null },
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(/csosn/i);
@@ -579,7 +583,7 @@ describe('buildImpostoXml — failure modes', () => {
 
   it('throws on CSOSN 101 without csosn101 sub-config', () => {
     const imposto: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoICMS: { crt: '1', csosn: '101' },
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
@@ -587,7 +591,7 @@ describe('buildImpostoXml — failure modes', () => {
 
   it('throws on CSOSN 500 without csosn500 sub-config', () => {
     const imposto: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoICMS: { crt: '1', csosn: '500' },
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
@@ -661,7 +665,8 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
 
   it.each(CASES)('CSOSN %s → full trio emits all three', async (csosn, key, base, trio) => {
     const sub = { ...base } as Record<string, number>;
-    for (const f of trio) sub[f] = trioValues[f];
+    // `trio` members are keys of `trioValues` by construction (CASES pairs them).
+    for (const f of trio) sub[f] = trioValues[f]!;
     const imposto = impostoFor(csosn, { [key]: sub });
     const xml = buildImpostoXml(imposto, item1500);
     for (const f of trio) expect(xml).toContain(`<${f}>`);
@@ -707,7 +712,10 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
 
   // Each single-field-present and each two-fields-present combination rejects.
   it.each(CASES)('CSOSN %s → partial trio (1 or 2 of 3) throws', (csosn, key, base, trio) => {
-    const partials = [
+    // Annotated `readonly string[]`: `trio` is a union across CASES, so the
+    // inferred element type collapses to `never` and both `includes` and the
+    // `trioValues` lookup below stop typechecking.
+    const partials: readonly (readonly string[])[] = [
       [trio[0]],
       [trio[1]],
       [trio[2]],
@@ -717,7 +725,7 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
     ];
     for (const present of partials) {
       const sub = { ...base } as Record<string, number>;
-      for (const f of present) sub[f] = trioValues[f];
+      for (const f of present) sub[f] = trioValues[f]!;
       const imposto = impostoFor(csosn, { [key]: sub });
       expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
       const message = tributeErrorMessage(imposto);
@@ -729,7 +737,7 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
       // instead of silently slicing the last character (indexOf → -1).
       expect(message).toContain('missing:');
       const missingClause = message.slice(message.indexOf('missing:'));
-      const missing = trio.filter((f) => !present.includes(f));
+      const missing = (trio as readonly string[]).filter((f) => !present.includes(f));
       for (const m of missing) expect(missingClause).toContain(m);
       for (const p of present) expect(missingClause).not.toContain(p);
     }
@@ -857,7 +865,7 @@ describe('aggregateTotals', () => {
     // buildImpostoXml emits <ISSQN> and drops the ICMS config (xs:choice). The
     // totals must match: no vICMS/vBCST/vST from an item that emitted none.
     const issqnPlusIcms: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoISSQN: { vBC: 1000, vAliq: 5, vISSQN: 50, cMunFG: '3550308', cListServ: '01.01' },
       // A CSOSN 900 config with real ICMS values that must be IGNORED here.
       configuracaoICMS: { crt: '1', csosn: '900', csosn900: { vBC: 1000, pICMS: 18, vICMS: 180 } },
@@ -1005,7 +1013,7 @@ describe('format helpers', () => {
 /** CSOSN 102 (Simples) + a "tributação integral" RTC config (2026 test rates). */
 function impostoForRtc(): Imposto {
   return {
-    origem: '0',
+    origem: ORIGEM.nacional,
     configuracaoICMS: { crt: '1', csosn: '102' },
     configuracaoIBSCBS: {
       CST: '000',
@@ -1060,7 +1068,7 @@ describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
 
   it('emits the optional IS group when configured', async () => {
     const imposto: Imposto = {
-      origem: '0',
+      origem: ORIGEM.nacional,
       configuracaoICMS: { crt: '1', csosn: '102' },
       configuracaoIBSCBS: {
         CST: '000',

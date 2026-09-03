@@ -222,7 +222,7 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `orderBy` | Initial sort `{ field, direction }`. User changes it by clicking the header. |
 | `rowHref` | `(id, row) => string` — row-click target. |
 | `onRowClick` | `(id, row) => void` — row-click handler instead of navigation (e.g. a modal editor for an embedded subcollection table). `rowHref` is ignored while set. |
-| `renderRowLink` | `(href, content) => ReactNode` — wrap the row in a custom link (e.g. Next `<Link>`). |
+| `renderRowLink` | ⚠️ **Declared but IGNORED** — `TableView` never reads it. Row navigation is `router.push`, so there is no link to wrap. Do not reach for it; it is marked `@deprecated` at its declaration pending a decision to implement or remove. |
 | `newHref` | "New" button as a plain href — simpler alternative to `renderNewButton`. |
 | `renderNewButton` | "New" button render-prop (use `<Button component={Link}>`). |
 | `fields` | `Record<string, FieldConfig>` — per-field overrides (see §6). |

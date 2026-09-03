@@ -17,7 +17,6 @@ import {
   resolveTpEmis,
   sanitizeNFeText,
   signNFe,
-  type NFeStatePatch,
   type SefazCall,
   type SefazOutcome,
   type TpEmis,
