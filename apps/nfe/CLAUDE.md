@@ -41,6 +41,17 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    cert** — the process boots with NO env cert. The env cert (`NFE_CERT_*`) is
    OPTIONAL, built lazily by `base.envRuntime()` only as the
    `NFE_CERT_ENV_FALLBACK` cert + the `/api/health` diagnostics.
+   ⚠️ **One chain per TRANSPORT, and the contingency ones are LAZY.** The home
+   SEFAZ chain is read at build time; `rt.svc('svc-an'|'svc-rs')` and `rt.an()`
+   (the EPEC Ambiente Nacional drop-box) read
+   `ca/sefaz-{svc-an,svc-rs,an}-<ambiente>.pem` only on **first use** — so a
+   deploy or a CI job missing one boots green, passes every unit test, and
+   throws `NFeRuntimeConfigError` (ENOENT) the first time contingency is
+   actually activated. Nothing is checked in (`ca/.gitignore` ignores every
+   `sefaz-*.pem`), so each slot must be fetched explicitly:
+   `fetch:sefaz-ca --uf=AN --ambiente=homologacao`. That gap cost the
+   monthly EPEC live lane every run it ever had (#1393); the guard is
+   `packages/config-eslint/rules/sefaz-chain-fetch-coverage.test.js`.
    **Every SEFAZ call signs with the FILIAL's own A1**: orchestrator entry
    points take the base and call
    `lib/nfe/filial-cert.ts:resolveFilialRuntime(fs, baseRt, filialId)`, which
@@ -192,7 +203,9 @@ curl http://localhost:3004/api/health
 Port: **3004** (3000 = web, 3001 = integrations, 3002 = webchat). The
 homologação chain at `packages/integrations/nfe/ca/sefaz-sp-homologacao.pem`
 must exist — `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca`
-captures it on first setup.
+captures it on first setup. Exercising **contingência** needs its transport's
+own chain as well (rule 4 above) — `--uf=SVC-AN`, `--uf=SVC-RS`, and
+`--uf=AN` for EPEC.
 
 ## Async reconcile: task queue (primary) + scheduled sweep (backstop)
 
