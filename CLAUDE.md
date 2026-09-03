@@ -466,11 +466,16 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   green over a suite that had stopped running — the silent-pass class the whole
   `ci-lanes` design exists to prevent. That config now sets
   `forbidOnly: !!process.env.CI`; Vitest's `allowOnly` is safe only by an
-  undeclared upstream default. `require-firestore-database-id` bans a 0-/1-arg
-  `getFirestore()`: Enterprise names the database `default`, not the `(default)`
-  sentinel such a call resolves, so the handle fails `5 NOT_FOUND` on **every**
-  operation — a convention seven copies of `admin.ts` across five codebases were
-  holding by comment alone. `no-unvalidated-response` bans asserting
+  undeclared upstream default. `require-firestore-database-id` bans a call that never
+  reaches its database-id argument: Enterprise names the database `default`, not
+  the `(default)` sentinel such a call resolves, so the handle fails
+  `5 NOT_FOUND` on **every** operation — a convention seven copies of `admin.ts`
+  across five codebases were holding by comment alone. ⚠️ It covers **two**
+  callees whose id sits at different positions — argument 1 for `getFirestore`,
+  argument **2** for `initializeFirestore`, which `apps/web` uses deliberately
+  for the IndexedDB persistent cache. A single arity threshold silently exempts
+  the second, and `initializeFirestore(app, settings)` is the documented shape
+  everywhere outside this repo. `no-unvalidated-response` bans asserting
   a type onto an HTTP response body — `return parsed as T`, `(await res.json())
   as Foo`. Six near-identical clients ended that way, so on any 2xx the caller
   got whatever arrived wearing a type nobody verified, and all three failure
