@@ -67,7 +67,7 @@ export function FilterPopover({ active, label, children }: FilterPopoverProps) {
  *    similarity — case- and accent-insensitive substring match)
  *  - enum                                    →  Select (eq)
  *  - boolean                                 →  Select Sim/Não (eq)
- *  - number / integer / currency             →  NumberInput + op picker
+ *  - number / integer / currency             →  DecimalInput + op picker
  *  - datetime                                →  DateTimePicker + ≥/≤ op
  *    (numeric-epoch fields; the exact chosen instant is converted to the
  *    field's `dateUnit` via `pickerStringToEpoch`)
