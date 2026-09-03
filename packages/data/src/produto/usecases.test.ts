@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
+  anexoSchema,
+  fotoSchema,
   impostoProdutoSchema,
   operacaoIdFromImpostoRef,
   produtoExtraDataSchema,
+  produtoSchema,
+  videoSchema,
+  type Produto,
 } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
   buildChildrenComponentesKitOps,
+  buildDuplicarProdutoWriteOps,
   buildMembroUnicoWriteOps,
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
@@ -700,5 +706,198 @@ describe('buildKitStatusChildOps — becoming a kit', () => {
       componentesKit: null,
       componentesKitKeys: null,
     });
+  });
+});
+
+/**
+ * "Duplicar produto" (#556) — clone a parent + its variation children.
+ *
+ * The suite is organized by which of the two shapes the source is: a genuine
+ * family of one (the sole member is MIRRORED from the renamed clone, the same
+ * mechanism `buildMembroUnicoWriteOps` uses everywhere else) vs. everything
+ * else (zero children, or a real variation family — each child's own
+ * document is re-created verbatim). Getting the branch wrong is silent: a
+ * family-of-one clone built the "verbatim" way leaves the child naming the
+ * OLD, pre-rename produto, with nothing that ever fixes it later (see the
+ * function's own docstring).
+ */
+describe('buildDuplicarProdutoWriteOps', () => {
+  const produto = (overrides: Partial<Produto> = {}): Produto =>
+    produtoSchema.parse({ nome: 'Camisa Azul', ...overrides });
+
+  /** `ProdutoWriteOp` is a union and only the write arms carry `data`. */
+  const dadosDe = (op: ProdutoWriteOp | undefined): Record<string, unknown> => {
+    if (!op || op.type === 'delete') throw new Error('esperava uma escrita com dados');
+    return op.data;
+  };
+
+  const marketplaceELinks = {
+    marketplace: ['algo'],
+    marketplaceIds: ['MLB1'],
+    statusProdutosMarketplace: { MLB1: { status: 'active' } },
+    integracoesComProduto: ['int1'],
+    fotos: [fotoSchema.parse({ arquivoOuterRef: 'arquivos/f1' })],
+    videos: [videoSchema.parse({ arquivoOuterRef: 'arquivos/v1' })],
+    anexos: [anexoSchema.parse({ arquivoOuterRef: 'arquivos/a1' })],
+    fotosArquivosIds: ['f1'],
+    nome_embedding: [0.1, 0.2],
+  };
+
+  describe('childless source', () => {
+    it('clones only the parent, with no filhoUnicoId', () => {
+      const origem = produto({ sku: 'CAM-1' });
+      const ops = buildDuplicarProdutoWriteOps('p2', origem, [], [], 5000);
+
+      expect(ops).toHaveLength(1);
+      expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p2' });
+      expect(dadosDe(ops[0])).toMatchObject({
+        nome: 'Camisa Azul (cópia)',
+        sku: 'CAM-1',
+        paiId: null,
+        filhoUnicoId: null,
+        timestamp: 5000,
+        ultimaModificacao: 5000,
+      });
+    });
+  });
+
+  describe('genuine family of one', () => {
+    it('mirrors the child from the RENAMED clone, not a verbatim copy of the old child', () => {
+      const origem = produto({ sku: 'CAM-1', filhoUnicoId: 'c-antigo', custo: 10 });
+      const filhoAntigo = { id: 'c-antigo', dados: produto({ sku: 'CAM-1', custo: 10 }) };
+
+      const ops = buildDuplicarProdutoWriteOps('p2', origem, [filhoAntigo], ['c-novo'], 5000);
+
+      expect(ops).toHaveLength(3);
+      expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p2' });
+      expect(ops[1]).toMatchObject({ type: 'set', path: 'produtos/c-novo' });
+      expect(ops[2]).toEqual({
+        type: 'update',
+        path: 'produtos/p2',
+        data: { filhoUnicoId: 'c-novo' },
+      });
+
+      // The mirror sources from the ALREADY-renamed parent (`montarMembroUnico`
+      // reads `parentClonado`), so the child's name carries the suffix too —
+      // the whole point of not cloning the old child's doc verbatim.
+      expect(dadosDe(ops[1])).toMatchObject({ nome: 'Camisa Azul (cópia)', paiId: 'p2' });
+    });
+
+    it("leaves the parent's OWN filhoUnicoId pointed at the new child only, never the old id", () => {
+      const origem = produto({ filhoUnicoId: 'c-antigo' });
+      const filhoAntigo = { id: 'c-antigo', dados: produto() };
+
+      const ops = buildDuplicarProdutoWriteOps('p2', origem, [filhoAntigo], ['c-novo'], 5000);
+
+      expect(dadosDe(ops[0]).filhoUnicoId).toBe(null); // overwritten by the update below
+      expect(dadosDe(ops[2])).toEqual({ filhoUnicoId: 'c-novo' });
+    });
+  });
+
+  describe('a real variation family (2+ children)', () => {
+    it('re-creates each child verbatim, re-parented, with no forced rename', () => {
+      const origem = produto({ filhoUnicoId: null });
+      const filhos = [
+        { id: 'c1', dados: produto({ nome: 'Camisa Azul - P', sku: 'CAM-P' }) },
+        { id: 'c2', dados: produto({ nome: 'Camisa Azul - G', sku: 'CAM-G' }) },
+      ];
+
+      const ops = buildDuplicarProdutoWriteOps('p2', origem, filhos, ['n1', 'n2'], 5000);
+
+      expect(ops).toHaveLength(3);
+      expect(dadosDe(ops[0])).toMatchObject({ nome: 'Camisa Azul (cópia)', filhoUnicoId: null });
+      expect(ops[1]).toMatchObject({ type: 'set', path: 'produtos/n1' });
+      expect(dadosDe(ops[1])).toMatchObject({ nome: 'Camisa Azul - P', sku: 'CAM-P', paiId: 'p2' });
+      expect(ops[2]).toMatchObject({ type: 'set', path: 'produtos/n2' });
+      expect(dadosDe(ops[2])).toMatchObject({ nome: 'Camisa Azul - G', sku: 'CAM-G', paiId: 'p2' });
+    });
+  });
+
+  // ⚠️ Exactly one child is NOT sufficient — it must also be the parent's
+  // REGISTERED sole member. A produto whose `filhoUnicoId` disagrees with its
+  // actual (single) child is a data anomaly the migration (#1402) exists to
+  // find, and duplicating it must not paper over the anomaly by mirroring —
+  // it must reproduce what is actually stored, verbatim, like any other
+  // multi-child family.
+  it('does not take the mirror shortcut when filhoUnicoId disagrees with the actual child', () => {
+    const origem = produto({ filhoUnicoId: 'algum-outro-id' });
+    const filho = { id: 'c1', dados: produto({ nome: 'Nome do filho', sku: 'SKU-FILHO' }) };
+
+    const ops = buildDuplicarProdutoWriteOps('p2', origem, [filho], ['n1'], 5000);
+
+    expect(ops).toHaveLength(2); // no separate `update` — filhoUnicoId is set inline
+    expect(dadosDe(ops[0])).toMatchObject({ filhoUnicoId: 'n1' });
+    expect(dadosDe(ops[1])).toMatchObject({ nome: 'Nome do filho', sku: 'SKU-FILHO', paiId: 'p2' });
+  });
+
+  it('clears marketplace links and media on the cloned parent', () => {
+    const origem = produto(marketplaceELinks);
+    const ops = buildDuplicarProdutoWriteOps('p2', origem, [], [], 5000);
+
+    expect(dadosDe(ops[0])).toMatchObject({
+      marketplace: [],
+      marketplaceIds: null,
+      statusProdutosMarketplace: null,
+      integracoesComProduto: [],
+      fotos: null,
+      videos: null,
+      anexos: null,
+      fotosArquivosIds: null,
+      nome_embedding: null,
+    });
+  });
+
+  it('clears marketplace links and media on a re-created (non-mirrored) child too', () => {
+    const origem = produto({ filhoUnicoId: null });
+    const filho = { id: 'c1', dados: produto(marketplaceELinks) };
+
+    const ops = buildDuplicarProdutoWriteOps('p2', origem, [filho], ['n1'], 5000);
+
+    expect(dadosDe(ops[1])).toMatchObject({
+      marketplace: [],
+      marketplaceIds: null,
+      statusProdutosMarketplace: null,
+      integracoesComProduto: [],
+      fotos: null,
+      videos: null,
+      anexos: null,
+      fotosArquivosIds: null,
+      nome_embedding: null,
+    });
+  });
+
+  it('truncates the renamed nome at 100 characters', () => {
+    const nomeLongo = 'X'.repeat(100);
+    const origem = produto({ nome: nomeLongo });
+    const ops = buildDuplicarProdutoWriteOps('p2', origem, [], [], 5000);
+
+    const nome = dadosDe(ops[0]).nome as string;
+    expect(nome).toHaveLength(100);
+    expect(nome.startsWith('X'.repeat(90))).toBe(true);
+  });
+
+  it('preserves fields the issue does not ask to change, verbatim', () => {
+    const origem = produto({
+      custo: 42,
+      precos: { lista1: { valor: 19.9 } },
+      pesoLiquidoKg: 1.5,
+      componentesKit: { comp1: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+      ehKit: true,
+    });
+    const ops = buildDuplicarProdutoWriteOps('p2', origem, [], [], 5000);
+
+    expect(dadosDe(ops[0])).toMatchObject({
+      custo: 42,
+      precos: { lista1: { valor: 19.9 } },
+      pesoLiquidoKg: 1.5,
+      componentesKit: { comp1: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+      ehKit: true,
+    });
+  });
+
+  it('refuses a mismatched pairing between children and their fresh ids', () => {
+    const origem = produto({ filhoUnicoId: null });
+    const filho = { id: 'c1', dados: produto() };
+    expect(() => buildDuplicarProdutoWriteOps('p2', origem, [filho], [], 5000)).toThrow();
   });
 });

@@ -15,6 +15,7 @@ import {
   type ComponentesKit,
   type ImpostoProduto,
   type ParentParaMembroUnico,
+  type Produto,
   camposDeKitDoMembroUnico,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
@@ -737,4 +738,160 @@ export function buildMembroUnicoWriteOps(
       data: { filhoUnicoId: derivarFilhoUnico([{ id: childId }]) },
     },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Duplicar produto (#556) — clone a parent + its variation children
+// ---------------------------------------------------------------------------
+
+/** Flutter caps a produto name at 100 (`produto.ts:45`); the renamed clone must too. */
+const PRODUTO_NOME_MAX = 100;
+
+/** Port of the legacy `CopiarProdutoAction`'s "(cópia)" suffix. */
+const SUFIXO_DUPLICATA = ' (cópia)';
+
+/**
+ * Fields a duplicate must never inherit from its source, on BOTH the cloned
+ * parent and every re-created child:
+ *
+ * - Marketplace links (`marketplace`/`marketplaceIds`/`integracoesComProduto`/
+ *   `statusProdutosMarketplace`) — copying a live external listing id onto a
+ *   new produto would make two documents claim the same anúncio.
+ * - Media (`fotos`/`videos`/`anexos`/`fotosArquivosIds`) — arquivos are
+ *   content-addressed and doc-anchored (the `arquivos` skill); duplicating the
+ *   REFERENCE here would double-count the same file in the orphan sweep
+ *   without duplicating anything the operator could actually reuse.
+ * - `nome_embedding` — server-managed, and describes the SOURCE's name, which
+ *   the parent clone changes below; stale from the moment it is written.
+ */
+function limparParaDuplicar(dados: Produto): Record<string, unknown> {
+  return {
+    ...dados,
+    marketplace: [],
+    marketplaceIds: null,
+    statusProdutosMarketplace: null,
+    integracoesComProduto: [],
+    fotos: null,
+    videos: null,
+    anexos: null,
+    fotosArquivosIds: null,
+    nome_embedding: null,
+  };
+}
+
+/**
+ * The new PARENT document for a "Duplicar produto" clone: every field of
+ * `origem` except identity, marketplace links and media (see
+ * {@link limparParaDuplicar}), renamed with the legacy suffix.
+ *
+ * ⚠️ `filhoUnicoId` is deliberately NOT set here — it still carries whatever
+ * `origem` had, which names the OLD child and would be actively wrong on the
+ * clone, not merely stale. {@link buildDuplicarProdutoWriteOps} always
+ * overwrites it once the new children are known.
+ */
+function montarProdutoPaiDuplicado(origem: Produto, now: number): Record<string, unknown> {
+  return {
+    ...limparParaDuplicar(origem),
+    paiId: null,
+    nome: `${origem.nome}${SUFIXO_DUPLICATA}`.slice(0, PRODUTO_NOME_MAX),
+    timestamp: now,
+    ultimaModificacao: now,
+  };
+}
+
+/**
+ * One re-created variation CHILD for a "Duplicar produto" clone: every field
+ * of `origem` except identity and marketplace/media state, re-parented onto
+ * the new clone.
+ *
+ * ⚠️ Unlike the parent, `nome` and `sku` are copied VERBATIM. A variation's
+ * name is what tells two siblings apart (Camisa Azul — P / G), not a marker
+ * that this is a copy — and the issue's own acceptance criterion is that the
+ * operator lands on the new produto's editor "to adjust SKUs" themselves,
+ * not that this function dedupes them.
+ */
+function montarProdutoFilhoDuplicado(
+  origem: Produto,
+  novoPaiId: string,
+  now: number,
+): Record<string, unknown> {
+  return {
+    ...limparParaDuplicar(origem),
+    paiId: novoPaiId,
+    // A child never points at a child (`familia.ts`'s `montarMembroUnico`
+    // makes the same choice for the sole-member case this mirrors).
+    filhoUnicoId: null,
+    timestamp: now,
+    ultimaModificacao: now,
+  };
+}
+
+/** One existing variation child, paired with the fresh id its clone gets. */
+export interface FilhoParaDuplicar {
+  id: string;
+  dados: Produto;
+}
+
+/**
+ * The full write set for "Duplicar produto" (#556): a new parent document plus
+ * one re-created document per existing variation child — never a `copyHref`
+ * pre-fill, because a produto owns children, kit composition and marketplace
+ * links a plain create-form seed can't touch (the issue's own opening line).
+ *
+ * This module has no id generator (SDK adapters supply one): `novoParentId`
+ * and each child's fresh id (paired via {@link FilhoParaDuplicar}) are the
+ * caller's.
+ *
+ * ⚠️ **The family-of-one case reuses {@link buildMembroUnicoWriteOps}, not a
+ * field-by-field child clone.** When `origem` has exactly one child AND that
+ * child is its registered `filhoUnicoId` (a genuine family of one, #1398),
+ * the new child is MIRRORED from the renamed clone — the same mechanism every
+ * other creation path in the app uses to mint a sole member — rather than
+ * copied verbatim from the old child, which would leave the new child naming
+ * the OLD (pre-rename) produto. Every other shape (zero children, or more
+ * than one — a real variation family) re-creates each child's own document,
+ * as the issue asks.
+ */
+export function buildDuplicarProdutoWriteOps(
+  novoParentId: string,
+  parentOrigem: Produto,
+  filhosOrigem: readonly FilhoParaDuplicar[],
+  novosFilhoIds: readonly string[],
+  now: number,
+): ProdutoWriteOp[] {
+  if (filhosOrigem.length !== novosFilhoIds.length) {
+    throw new Error(
+      'buildDuplicarProdutoWriteOps: filhosOrigem and novosFilhoIds must pair up 1:1',
+    );
+  }
+
+  const parentClonado = montarProdutoPaiDuplicado(parentOrigem, now);
+
+  const ehFamiliaDeUmNaOrigem =
+    filhosOrigem.length === 1 && parentOrigem.filhoUnicoId === filhosOrigem[0]!.id;
+
+  if (ehFamiliaDeUmNaOrigem) {
+    parentClonado.filhoUnicoId = null; // buildMembroUnicoWriteOps sets the real value below
+    return [
+      { type: 'set', path: produtoDocPath(novoParentId), data: parentClonado },
+      ...buildMembroUnicoWriteOps(
+        novoParentId,
+        novosFilhoIds[0]!,
+        parentClonado as ParentParaMembroUnico,
+      ),
+    ];
+  }
+
+  parentClonado.filhoUnicoId = derivarFilhoUnico(novosFilhoIds.map((id) => ({ id })));
+  const ops: ProdutoWriteOp[] = [
+    { type: 'set', path: produtoDocPath(novoParentId), data: parentClonado },
+  ];
+  filhosOrigem.forEach((filho, i) => {
+    ops.push({
+      type: 'set',
+      path: produtoDocPath(novosFilhoIds[i]!),
+      data: montarProdutoFilhoDuplicado(filho.dados, novoParentId, now),
+    });
+  });
+  return ops;
 }
