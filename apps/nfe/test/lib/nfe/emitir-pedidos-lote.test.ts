@@ -516,33 +516,6 @@ function autorizarLoteAsync(nRec: string): void {
   } as never);
 }
 
-function consultarLoteResolves(chaves: ReadonlyArray<string>): void {
-  vi.mocked(consultarLote).mockImplementation(
-    async () =>
-      ({
-        versao: '4.00',
-        tpAmb: '2',
-        verAplic: 'TEST',
-        cStat: '104',
-        xMotivo: 'Lote processado',
-        cUF: '35',
-        protNFe: chaves.map((ch, i) => ({
-          versao: '4.00',
-          infProt: {
-            tpAmb: '2',
-            verAplic: 'TEST',
-            chNFe: ch,
-            dhRecbto: new Date().toISOString(),
-            cStat: '100',
-            xMotivo: 'Autorizado o uso da NF-e',
-            nProt: `135${ch.slice(0, 9)}${i}`,
-            digVal: `dig-${i}`,
-          },
-        })),
-      }) as never,
-  );
-}
-
 beforeEach(() => {
   // Fixtures have no per-filial stored cert — emit with the env cert via the
   // fallback (per-filial resolution is covered in filial-cert.test.ts).

@@ -24,6 +24,8 @@ export {
   saveChequeSplit,
   nextPedidoEstado,
   cancelarPedido,
+  confirmarEntregaPedido,
+  type ConfirmarEntregaResultado,
   PedidoConflictError,
   PedidoNothingChangedError,
 } from './usecases';

@@ -9,6 +9,7 @@ import {
   buildPagamentoOp,
   buildPedidoPatch,
   cancelarPedido,
+  confirmarEntregaPedido,
   deleteIncidente,
   deletePagamento,
   isIgnoredForConcurrency,
@@ -506,5 +507,122 @@ describe('cancelarPedido', () => {
     const result = await cancelarPedido(port, { pedidoId: 'x' });
     expect(result).toBe(false);
     expect(committed()).toEqual([]);
+  });
+});
+
+describe('confirmarEntregaPedido', () => {
+  it('confirms a pago pedido: freteInicial.estado=entregue, estado=finalizado', async () => {
+    const { port, written } = fakePort({ estado: 'pago', freteInicial: null }, 777);
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('confirmado');
+    const patch = written() as {
+      estado: string;
+      freteInicial: { estado: string };
+      ultimaModificacao: number;
+    };
+    expect(patch.estado).toBe('finalizado');
+    expect(patch.freteInicial.estado).toBe('entregue');
+    expect(patch.ultimaModificacao).toBe(777);
+  });
+
+  it('confirms an emProcessamento pedido too', async () => {
+    const { port, written } = fakePort({ estado: 'emProcessamento', freteInicial: null }, 777);
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('confirmado');
+    expect((written() as { estado: string }).estado).toBe('finalizado');
+  });
+
+  it('synthesizes a semFrete (sem-transporte) block when freteInicial is absent', async () => {
+    const { port, written } = fakePort({ estado: 'pago', freteInicial: null, ehSaida: true }, 777);
+    await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    const patch = written() as { freteInicial: { modalidade: string; estado: string } };
+    expect(patch.freteInicial.modalidade).toBe('9');
+    expect(patch.freteInicial.estado).toBe('entregue');
+  });
+
+  it('preserves the rest of an existing freteInicial block, only moving estado', async () => {
+    const { port, written } = fakePort(
+      {
+        estado: 'pago',
+        freteInicial: { estado: 'aCaminho', modalidade: '1', codRastreio: 'BR123' },
+      },
+      777,
+    );
+    await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    const patch = written() as {
+      freteInicial: { estado: string; modalidade: string; codRastreio: string };
+    };
+    expect(patch.freteInicial.estado).toBe('entregue');
+    expect(patch.freteInicial.modalidade).toBe('1');
+    expect(patch.freteInicial.codRastreio).toBe('BR123');
+  });
+
+  it('blocks a cancelado pedido — no write', async () => {
+    const { port, written, committed } = fakePort({ estado: 'cancelado' }, 777);
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('bloqueado');
+    expect(written()).toEqual({});
+    expect(committed()).toEqual([]);
+  });
+
+  it('blocks every estado outside {emProcessamento, pago}', async () => {
+    for (const estado of ['iniciado', 'estornadoParcialmente', 'fraude', 'finalizado']) {
+      const { port, written } = fakePort({ estado }, 777);
+      const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+      expect(result).toBe('bloqueado');
+      expect(written()).toEqual({});
+    }
+  });
+
+  it('blocks when the doc is gone — mirrors cancelarPedido', async () => {
+    const { port, committed } = fakePort(null, 777);
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('bloqueado');
+    expect(committed()).toEqual([]);
+  });
+
+  it('writes no história row — the onPedidoChanged trigger owns it', async () => {
+    const { port, committed } = fakePort({ estado: 'pago', freteInicial: null }, 777);
+    await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(committed()).toEqual([]);
+  });
+
+  // #1322 — bloqueioFinalizarAtivo: an open reclamação/devolução refuses
+  // `finalizado` even though ML keeps the pedido `pago` for the whole claim,
+  // which is exactly why it would otherwise sit in ESTADOS_CONFIRMAVEIS.
+  it('blocks a pago pedido with an open reclamação (disputaAbertaEm) — no write', async () => {
+    const { port, written, committed } = fakePort(
+      { estado: 'pago', freteInicial: null, disputaAbertaEm: 1_700_000_000_000_000 },
+      777,
+    );
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('incidenteAberto');
+    expect(written()).toEqual({});
+    expect(committed()).toEqual([]);
+  });
+
+  it('blocks a pago pedido with an open devolução (devolucaoAbertaEm) — no write', async () => {
+    const { port, written } = fakePort(
+      { estado: 'pago', freteInicial: null, devolucaoAbertaEm: 1_700_000_000_000_000 },
+      777,
+    );
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('incidenteAberto');
+    expect(written()).toEqual({});
+  });
+
+  it('still confirms once the finalizar block has been released (bloqueiosLiberados)', async () => {
+    const { port, written } = fakePort(
+      {
+        estado: 'pago',
+        freteInicial: null,
+        disputaAbertaEm: 1_700_000_000_000_000,
+        bloqueiosLiberados: ['finalizar'],
+      },
+      777,
+    );
+    const result = await confirmarEntregaPedido(port, { pedidoId: 'x' });
+    expect(result).toBe('confirmado');
+    expect((written() as { estado: string }).estado).toBe('finalizado');
   });
 });

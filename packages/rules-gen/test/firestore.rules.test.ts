@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import {
   assertFails,
   assertSucceeds,
@@ -16,7 +16,7 @@ import {
   updateDoc,
   type Firestore,
 } from 'firebase/firestore';
-import { PERM, rulesClaimsFromBits } from '@delfrance/auth';
+import { rulesClaimsFromBits } from '@delfrance/auth';
 import { createTestEnv, EMULATED } from './helpers';
 
 // Behavior matrix for the GENERATED firestore.rules, on the emulator. Each

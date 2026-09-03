@@ -1,0 +1,394 @@
+{
+  "id": "MLB5140167173",
+  "title": "Estátua Leão Madeira Amadeirado",
+  "family_name": "Estátua Leão Madeira",
+  "family_id": 8280040282054095,
+  "user_product_id": "MLBU4974343322",
+  "category_id": "MLB186814",
+  "price": 49.97,
+  "base_price": 49.97,
+  "available_quantity": 26,
+  "condition": "new",
+  "status": "active",
+  "sub_status": [],
+  "listing_type_id": "gold_pro",
+  "seller_id": 3616169770,
+  "seller_custom_field": null,
+  "permalink": "https://produto.mercadolivre.com.br/MLB-5140167173-estatua-leo-madeira-amadeirado-_JM",
+  "date_created": "2026-08-26T19:29:44.215Z",
+  "video_id": null,
+  "tags": [
+    "test_item",
+    "user_product_listing",
+    "good_quality_thumbnail",
+    "immediate_payment",
+    "cart_eligible"
+  ],
+  "shipping": {
+    "free_shipping": false,
+    "mode": "me2",
+    "methods": [],
+    "tags": [],
+    "dimensions": null,
+    "local_pick_up": false,
+    "logistic_type": "xd_drop_off",
+    "store_pick_up": false
+  },
+  "attributes": [
+    {
+      "id": "ARTWORK_TYPE",
+      "name": "Tipo de obra",
+      "value_id": "2489101",
+      "value_name": "Original",
+      "values": [
+        {
+          "id": "2489101",
+          "name": "Original",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "BRAND",
+      "name": "Marca",
+      "value_id": "16018996",
+      "value_name": "Própria",
+      "values": [
+        {
+          "id": "16018996",
+          "name": "Própria",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "CHARACTER",
+      "name": "Personagem",
+      "value_id": "4394713",
+      "value_name": "Leão",
+      "values": [
+        {
+          "id": "4394713",
+          "name": "Leão",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "COLOR",
+      "name": "Cor",
+      "value_id": "3890144",
+      "value_name": "Amadeirado",
+      "values": [
+        {
+          "id": "3890144",
+          "name": "Amadeirado",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "HEIGHT",
+      "name": "Altura",
+      "value_id": null,
+      "value_name": "12 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "12 cm",
+          "struct": {
+            "number": 12,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "ITEM_CONDITION",
+      "name": "Condição do item",
+      "value_id": "2230284",
+      "value_name": "Novo",
+      "values": [
+        {
+          "id": "2230284",
+          "name": "Novo",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    },
+    {
+      "id": "LENGTH",
+      "name": "Comprimento",
+      "value_id": "570734",
+      "value_name": "15 cm",
+      "values": [
+        {
+          "id": "570734",
+          "name": "15 cm",
+          "struct": {
+            "number": 15,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "MANUFACTURER",
+      "name": "Fabricante",
+      "value_id": null,
+      "value_name": "Eu mesmo",
+      "values": [
+        {
+          "id": null,
+          "name": "Eu mesmo",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "MATERIAL",
+      "name": "Material",
+      "value_id": "2431881",
+      "value_name": "Madeira",
+      "values": [
+        {
+          "id": "2431881",
+          "name": "Madeira",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "MODEL",
+      "name": "Modelo",
+      "value_id": "4067990",
+      "value_name": "Leão",
+      "values": [
+        {
+          "id": "4067990",
+          "name": "Leão",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "SCULPTURE_THEME",
+      "name": "Temática da escultura",
+      "value_id": "38332108",
+      "value_name": "Leão",
+      "values": [
+        {
+          "id": "38332108",
+          "name": "Leão",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "SCULPTURE_TYPE",
+      "name": "Tipo de escultura",
+      "value_id": "2489103",
+      "value_name": "Estátua",
+      "values": [
+        {
+          "id": "2489103",
+          "name": "Estátua",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "SELLER_SKU",
+      "name": "SKU",
+      "value_id": null,
+      "value_name": "leao123",
+      "values": [
+        {
+          "id": null,
+          "name": "leao123",
+          "struct": null
+        }
+      ],
+      "value_type": "string"
+    },
+    {
+      "id": "WEIGHT",
+      "name": "Peso",
+      "value_id": null,
+      "value_name": "1 kg",
+      "values": [
+        {
+          "id": null,
+          "name": "1 kg",
+          "struct": {
+            "number": 1,
+            "unit": "kg"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "WIDTH",
+      "name": "Largura",
+      "value_id": null,
+      "value_name": "10 cm",
+      "values": [
+        {
+          "id": null,
+          "name": "10 cm",
+          "struct": {
+            "number": 10,
+            "unit": "cm"
+          }
+        }
+      ],
+      "value_type": "number_unit"
+    },
+    {
+      "id": "WITH_BASE",
+      "name": "Com base",
+      "value_id": "242084",
+      "value_name": "Não",
+      "values": [
+        {
+          "id": "242084",
+          "name": "Não",
+          "struct": null
+        }
+      ],
+      "value_type": "boolean"
+    }
+  ],
+  "pictures": [
+    {
+      "id": "798282-MLB115356158302_082026",
+      "url": "http://http2.mlstatic.com/D_798282-MLB115356158302_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_798282-MLB115356158302_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    },
+    {
+      "id": "602196-MLB115356273204_082026",
+      "url": "http://http2.mlstatic.com/D_602196-MLB115356273204_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_602196-MLB115356273204_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    },
+    {
+      "id": "858993-MLB116769024597_082026",
+      "url": "http://http2.mlstatic.com/D_858993-MLB116769024597_082026-O.webp",
+      "secure_url": "https://http2.mlstatic.com/D_858993-MLB116769024597_082026-O.webp",
+      "size": "333x500",
+      "max_size": "768x1152",
+      "quality": ""
+    }
+  ],
+  "variations": [],
+  "site_id": "MLB",
+  "official_store_id": null,
+  "original_price": null,
+  "inventory_id": null,
+  "currency_id": "BRL",
+  "initial_quantity": 27,
+  "sold_quantity": 1,
+  "sale_terms": [
+    {
+      "id": "WARRANTY_TYPE",
+      "name": "Tipo de garantia",
+      "value_id": "6150835",
+      "value_name": "Sem garantia",
+      "value_struct": null,
+      "values": [
+        {
+          "id": "6150835",
+          "name": "Sem garantia",
+          "struct": null
+        }
+      ],
+      "value_type": "list"
+    }
+  ],
+  "buying_mode": "buy_it_now",
+  "start_time": "2026-08-26T19:29:43.956Z",
+  "stop_time": "2046-08-21T04:00:00.000Z",
+  "end_time": "2046-08-21T04:00:00.000Z",
+  "expiration_time": "2026-11-15T18:13:52.325Z",
+  "thumbnail_id": "798282-MLB115356158302_082026",
+  "thumbnail": "http://http2.mlstatic.com/D_798282-MLB115356158302_082026-I.webp",
+  "descriptions": [],
+  "accepts_mercadopago": true,
+  "non_mercado_pago_payment_methods": [],
+  "international_delivery_mode": "none",
+  "seller_address": {
+    "comment": "REDACTED",
+    "address_line": "Rua Redacted, 0",
+    "zip_code": "00000000",
+    "city": {
+      "id": "BR-SP-27",
+      "name": "REDACTED"
+    },
+    "state": {
+      "id": "BR-SP",
+      "name": "São Paulo"
+    },
+    "country": {
+      "id": "BR",
+      "name": "Brasil"
+    },
+    "search_location": {
+      "neighborhood": {
+        "id": "TVhYQ2VudHJvVFZoWVU4T2pieUJLYjNQRHFTQ2",
+        "name": "REDACTED"
+      },
+      "city": {
+        "id": "TVhYU8OjbyBKb3PDqSBkb3MgQ2FtcG9zVFV4Q",
+        "name": "REDACTED"
+      },
+      "state": {
+        "id": "TUxCUFNBT085N2E4",
+        "name": "São Paulo"
+      }
+    },
+    "latitude": 0,
+    "longitude": 0,
+    "id": 1661311810
+  },
+  "seller_contact": null,
+  "location": {},
+  "geolocation": {
+    "latitude": 0,
+    "longitude": 0
+  },
+  "coverage_areas": [],
+  "warnings": [],
+  "listing_source": "",
+  "warranty": "Sem garantia",
+  "catalog_product_id": null,
+  "domain_id": "MLB-SCULPTURES_AND_STATUES",
+  "parent_item_id": null,
+  "differential_pricing": null,
+  "deal_ids": [],
+  "automatic_relist": false,
+  "last_updated": "2026-08-27T18:13:52.492Z",
+  "health": null,
+  "catalog_listing": false,
+  "item_relations": [],
+  "channels": [
+    "marketplace"
+  ]
+}

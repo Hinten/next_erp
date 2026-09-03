@@ -115,7 +115,6 @@ import {
 import {
   produtoCollection,
   produtoMercadoLivreLinkCollection,
-  variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
 import { loadMercadoLivreContext } from '../core/mercadoLivre';

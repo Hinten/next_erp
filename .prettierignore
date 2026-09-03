@@ -32,3 +32,11 @@ packages/rules-gen/src/__snapshots__/
 .github/
 apps/docs/
 .changeset/
+
+# Captured Mercado Livre wire bodies (#1087). These are ARTEFACTS, not source:
+# `promote:fixtures` writes them with `JSON.stringify(v, null, 2)` and regenerates
+# SHAPES.txt from exactly those bytes. Letting prettier reformat them makes the
+# generator and the formatter fight — every promote produces a diff and every
+# commit normalises it back — which destroys the one property the corpus needs:
+# re-promoting an unchanged capture must produce no diff at all.
+apps/mercado-livre/lib/marketplace/fixtures/__wire__/

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
+import { type EstadoNFe, ESTADO_NFE, UF_SIGLA } from '@delfrance/schemas';
 import {
   ESTADOS_FINAIS_NFE,
   applyOutcome,
@@ -350,24 +350,24 @@ describe('nextConsultaDelayMs', () => {
 
 describe('resolveTpEmis', () => {
   it('mode none → 1 for any UF', () => {
-    expect(resolveTpEmis('SP')).toBe(1);
-    expect(resolveTpEmis('PR', 'none')).toBe(1);
+    expect(resolveTpEmis(UF_SIGLA.SP)).toBe(1);
+    expect(resolveTpEmis(UF_SIGLA.PR, 'none')).toBe(1);
   });
 
   it("mode 'svc' resolves per UF — SP (SVC-AN) → 6", () => {
-    expect(resolveTpEmis('SP', 'svc')).toBe(6);
-    expect(resolveTpEmis('MG', 'svc')).toBe(6);
+    expect(resolveTpEmis(UF_SIGLA.SP, 'svc')).toBe(6);
+    expect(resolveTpEmis(UF_SIGLA.MG, 'svc')).toBe(6);
   });
 
   it("mode 'svc' resolves per UF — PR (SVC-RS) → 7", () => {
-    expect(resolveTpEmis('PR', 'svc')).toBe(7);
-    expect(resolveTpEmis('BA', 'svc')).toBe(7);
+    expect(resolveTpEmis(UF_SIGLA.PR, 'svc')).toBe(7);
+    expect(resolveTpEmis(UF_SIGLA.BA, 'svc')).toBe(7);
   });
 
   it("mode 'epec' → 4 for ANY UF (the evento goes to the Ambiente Nacional)", () => {
-    expect(resolveTpEmis('SP', 'epec')).toBe(4);
-    expect(resolveTpEmis('PR', 'epec')).toBe(4);
-    expect(resolveTpEmis('AM', 'epec')).toBe(4);
+    expect(resolveTpEmis(UF_SIGLA.SP, 'epec')).toBe(4);
+    expect(resolveTpEmis(UF_SIGLA.PR, 'epec')).toBe(4);
+    expect(resolveTpEmis(UF_SIGLA.AM, 'epec')).toBe(4);
   });
 });
 
