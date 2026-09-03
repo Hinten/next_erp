@@ -247,14 +247,6 @@ const UNGATED = {
     'The shared engine. `workflow_call`-only — asserted separately below.',
   '.github/workflows/nfe-epec-scheduled.yml':
     'schedule + workflow_dispatch only. Never runs on a PR, so it can gate nothing.',
-  '.github/workflows/ml-integration-watch.yml':
-    'schedule + workflow_dispatch only — the weekly Mercado Livre integration ' +
-    'watch. Never runs on a PR, so it can gate nothing. ⚠️ It is also the one ' +
-    'lane permitted to hold an ML credential: the notices/applications ' +
-    'endpoints need the APPLICATION OWNER grant, a different account from any ' +
-    'seller integração and held by no deployed backend, so refreshing it here ' +
-    "cannot race the backend's single-use token — which is the whole reason " +
-    'behind the no-ML-credentials-in-CI rule.',
   '.github/workflows/main-red-alert.yml':
     'workflow_run + workflow_dispatch only. It reports on the TRUNK after a merge, ' +
     'not on a PR — it cannot gate anything, and by construction it cannot even run ' +

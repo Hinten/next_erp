@@ -107,6 +107,12 @@ corpus would report every personal field as a difference and bury the real one.
 ⚠️ **Deliberately not in any CI lane.** It needs the seller credential, and the
 #1087 run measured why an automated live lane fails: two of three buyer test
 users were blocked by ML unprompted (slots capped at 10 forever), the credential
-rotates on every invocation, and ML acts on its own clock. Run it when the
-weekly watch (`.github/workflows/ml-integration-watch.yml`) opens an issue, or
-before trusting a fixture that has sat still for months.
+rotates on every invocation, and ML acts on its own clock. Run it before
+trusting a fixture that has sat still for months, or whenever you have reason to
+think Mercado Livre changed something.
+
+⚠️ There is deliberately **no automated signal telling you when to run it.** #1421
+tried to build one and was closed: every route to ML's API-change feed needs a
+token we cannot store in CI — the DevCenter news page redirects to a browser
+login, the news API answers 403, and the ML MCP answers 401. See #1451, which
+records what was measured so the next attempt does not repeat it.
