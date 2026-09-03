@@ -140,6 +140,10 @@ export function mapClaimToImportedIncident(
  *   empty while `nextCursor` still advances.
  * - Items carry NO messages/reason (no N+1) — hydrate via `getIncidentMl`.
  * - Paging stops at ML's 10000-row window (see `nextCursor` below).
+ * - Paging also stops on an EMPTY page, even when `paging.total` still claims
+ *   more rows — `total` is an estimate over an eventually-consistent engine.
+ *   Continuing is impossible anyway: the offset cannot advance past a page that
+ *   returned nothing.
  */
 export async function importIncidentsMl(
   api: MercadoLivreApi,
@@ -170,9 +174,25 @@ export async function importIncidentsMl(
   // the walk deliberately is still better than ending it by exception.
   const podePaginar = consumed + SEARCH_PAGE_LIMIT < CLAIM_SEARCH_WINDOW_MAX;
 
+  // ⚠️ **An EMPTY page must end the walk, whatever `total` still claims.**
+  // `consumed` is `offset + pageItems.length`, so an empty page leaves it equal
+  // to the offset just passed in — and `consumed < total` is then still true
+  // against a stale or estimated `total`, so the cursor emitted is the SAME one
+  // the caller arrived with. A driver looping `while (page.nextCursor)` re-issues
+  // an identical request for ever, and the 10000-row guard cannot break it
+  // because the offset never advances. ML's search is an estimate over an
+  // eventually-consistent engine and `status: 'opened'` narrows under our feet,
+  // so "total says more, this page has none" is an ordinary answer, not a bug.
+  //
+  // ⚠️ It must test `pageItems`, NOT `items`: `items` is the `sinceMs`-filtered
+  // view, and a page legitimately filters down to nothing while the offset DID
+  // advance — the limitation documented above. Testing `items` would truncate
+  // those walks at the first fully-filtered page.
+  const houveProgresso = pageItems.length > 0;
+
   return {
     items,
-    ...(total != null && consumed < total && podePaginar
+    ...(total != null && consumed < total && podePaginar && houveProgresso
       ? { nextCursor: { token: String(consumed) } }
       : {}),
   };

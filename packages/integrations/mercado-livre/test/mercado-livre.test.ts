@@ -311,4 +311,47 @@ describe('importIncidentsMl (claims import, Step 14)', () => {
     expect(page.items.map((i) => i.externalId)).toEqual(['2']);
     expect(page.nextCursor).toBeUndefined(); // 0 + 2 == total 2, filter aside
   });
+
+  /**
+   * ⚠️ **The non-terminating walk.** An empty page leaves `consumed` equal to
+   * the offset that was passed in, so `consumed < total` still holds against a
+   * stale or estimated `total` and the cursor emitted is the SAME one the caller
+   * arrived with. A driver looping `while (page.nextCursor)` re-issues an
+   * identical request for ever, and the 10000-row guard cannot break it because
+   * the offset never advances.
+   */
+  it('ENDS the walk on an empty page, even while paging.total still claims more', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ paging: { total: 5, offset: 0, limit: 30 }, data: [] }),
+    );
+    const api = apiWithFetch(fetchMock);
+
+    const page = await importIncidentsMl(api, SELLER_ID);
+    expect(page.items).toEqual([]);
+    expect(page.nextCursor).toBeUndefined();
+  });
+
+  /**
+   * The control for the rule above: the stop must key on the RAW page, not on
+   * the `sinceMs`-filtered view. A page that filters down to nothing DID
+   * advance the offset, so its walk must continue — testing `items` instead of
+   * `page.data` would truncate exactly these.
+   */
+  it('KEEPS paging when the page filtered to nothing but the offset advanced', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        paging: { total: 10, offset: 0, limit: 30 },
+        data: [
+          searchClaim(1, '2026-07-01T00:00:00.000-04:00'), // stale
+          searchClaim(2, '2026-07-02T00:00:00.000-04:00'), // stale
+        ],
+      }),
+    );
+    const api = apiWithFetch(fetchMock);
+    const sinceMs = Date.parse('2026-07-05T00:00:00.000-04:00');
+
+    const page = await importIncidentsMl(api, SELLER_ID, { sinceMs });
+    expect(page.items).toEqual([]); // everything filtered out …
+    expect(page.nextCursor).toEqual({ token: '2' }); // … but the walk goes on
+  });
 });

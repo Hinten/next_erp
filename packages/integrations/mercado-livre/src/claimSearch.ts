@@ -124,6 +124,19 @@ export const CLAIM_SEARCH_WINDOW_MAX = 10000;
 /** ML's documented `limit` default when the caller sends none. */
 export const CLAIM_SEARCH_DEFAULT_LIMIT = 30;
 
+/**
+ * ML's documented `limit` ceiling: *"Valores maiores que 100 são ajustados
+ * automaticamente para 100."*
+ *
+ * ⚠️ **It is a CLAMP, not a refusal, and that is why the window check below has
+ * to apply it.** ML evaluates `offset + limit` against the clamped value, so
+ * summing the RAW one refuses queries ML would answer: `offset: 9500,
+ * limit: 1000` is legal (ML sees `9500 + 100 = 9600`) but a raw sum reads
+ * `10500` and throws. Refusing a legal call is its own defect — the same
+ * principle that keeps a bare `status` a warning here rather than an error.
+ */
+export const CLAIM_SEARCH_MAX_LIMIT = 100;
+
 function presente(value: unknown): boolean {
   if (value === undefined || value === null) return false;
   return typeof value !== 'string' || value.trim() !== '';
@@ -199,10 +212,34 @@ export function validateClaimSearchParams(params: MlClaimSearchParams): void {
   // because ML applies its own default of 30 and the sum lands past the cap.
   const offset = params.offset ?? 0;
   const limit = params.limit ?? CLAIM_SEARCH_DEFAULT_LIMIT;
-  if (offset + limit >= CLAIM_SEARCH_WINDOW_MAX) {
+
+  // ⚠️ Checked BEFORE the arithmetic, because `NaN` passes every comparison
+  // below silently: `NaN + 30 >= 10000` is `false`, so a non-finite offset
+  // sails through the window rule and leaves the process as the literal query
+  // string `offset=NaN` — a 400 from ML about a value we could see was broken.
+  // `SyncCursor.token` is an opaque persisted string in the generic sync
+  // contract, so `Number(token)` is not guaranteed to yield a number and the
+  // adapter has no way to know; catching it here covers every caller at once.
+  for (const [nome, valor] of [
+    ['offset', offset],
+    ['limit', limit],
+  ] as const) {
+    if (!Number.isFinite(valor)) {
+      throw new MercadoLivreClaimSearchParamsError(
+        `\`${nome}\` precisa ser um número finito — recebido ${String(valor)}.`,
+      );
+    }
+  }
+
+  // ⚠️ The CLAMPED limit, never the raw one — see {@link CLAIM_SEARCH_MAX_LIMIT}.
+  // ML compares the window against what it actually applies, so a raw sum would
+  // refuse legal calls.
+  const limitEfetivo = Math.min(limit, CLAIM_SEARCH_MAX_LIMIT);
+  if (offset + limitEfetivo >= CLAIM_SEARCH_WINDOW_MAX) {
     throw new MercadoLivreClaimSearchParamsError(
       `offset + limit deve ser menor que ${CLAIM_SEARCH_WINDOW_MAX} — recebido ` +
-        `${offset} + ${limit} = ${offset + limit}.`,
+        `${offset} + ${limitEfetivo} = ${offset + limitEfetivo}` +
+        (limitEfetivo === limit ? '.' : ` (limit ${limit} é ajustado para ${limitEfetivo}).`),
     );
   }
 

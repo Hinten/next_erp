@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CLAIM_SEARCH_DEFAULT_LIMIT,
   CLAIM_SEARCH_FILTER_KEYS,
+  CLAIM_SEARCH_MAX_LIMIT,
   CLAIM_SEARCH_WINDOW_MAX,
   MercadoLivreClaimSearchParamsError,
   claimSearchFiltersUsed,
@@ -220,6 +221,74 @@ describe('validateClaimSearchParams — the 10000-row window', () => {
         offset: CLAIM_SEARCH_WINDOW_MAX - 31,
       }),
     ).not.toThrow();
+  });
+
+  /**
+   * ⚠️ The window is evaluated against the CLAMPED limit, because that is what
+   * ML applies (*"Valores maiores que 100 são ajustados automaticamente para
+   * 100"*). Summing the raw limit refuses a call ML answers — and refusing a
+   * legal call is its own defect. The pair below is the whole point: the same
+   * over-100 limit passes at one offset and is still refused at another, so the
+   * clamp cannot be mistaken for "large limits are always fine".
+   */
+  it('sums the CLAMPED limit, so an over-100 limit is not refused on its own', () => {
+    expect(CLAIM_SEARCH_MAX_LIMIT).toBe(100);
+    // ML sees 9500 + 100 = 9600 and answers.
+    expect(() => validateClaimSearchParams({ ...VALIDO, offset: 9500, limit: 1000 })).not.toThrow();
+  });
+
+  it('still refuses when even the CLAMPED limit overflows the window', () => {
+    // 9950 + min(1000, 100) = 10050.
+    const erro = recusa({ ...VALIDO, offset: 9950, limit: 1000 });
+    expect(erro.message).toContain('10050');
+    // …and it says the limit was adjusted, so the arithmetic is not a mystery.
+    expect(erro.message).toContain('100');
+  });
+});
+
+/**
+ * ⚠️ `NaN` passes every comparison in the window rule silently — `NaN + 30 >=
+ * 10000` is `false` — so without an explicit finiteness test a broken cursor
+ * leaves the process as the literal query string `offset=NaN`.
+ * `SyncCursor.token` is opaque and persisted, so `Number(token)` genuinely can
+ * be `NaN` in normal operation.
+ */
+describe('validateClaimSearchParams — offset and limit must be finite', () => {
+  /**
+   * ⚠️ Every assertion here matches the word `finito`, NOT just the field name.
+   * The window rule's message names `offset` too, and `Infinity + 30 >= 10000`
+   * is `true` — so asserting the field name alone lets the window rule satisfy
+   * a test that claims to pin finiteness, and the test passes with the
+   * finiteness check deleted. Mutation-proven: it does.
+   */
+  it('refuses a NaN offset instead of letting it reach the wire', () => {
+    const erro = recusa({ ...VALIDO, offset: Number('nao-e-numero') });
+    expect(erro.message).toContain('offset');
+    expect(erro.message).toContain('finito');
+  });
+
+  it('refuses a NaN limit too', () => {
+    const erro = recusa({ ...VALIDO, limit: Number.NaN });
+    expect(erro.message).toContain('limit');
+    expect(erro.message).toContain('finito');
+  });
+
+  it('refuses Infinity, not just NaN — and for BEING infinite, not for overflowing', () => {
+    const erro = recusa({ ...VALIDO, offset: Number.POSITIVE_INFINITY });
+    expect(erro.message).toContain('offset');
+    expect(erro.message).toContain('finito');
+  });
+
+  /** `-Infinity` cannot trip the window rule at all, so only finiteness catches it. */
+  it('refuses -Infinity, which no other rule would reject', () => {
+    const erro = recusa({ ...VALIDO, offset: Number.NEGATIVE_INFINITY });
+    expect(erro.message).toContain('finito');
+  });
+
+  /** The control: ordinary finite values are untouched by the new rule. */
+  it('accepts ordinary finite paging', () => {
+    expect(() => validateClaimSearchParams({ ...VALIDO, offset: 0, limit: 30 })).not.toThrow();
+    expect(() => validateClaimSearchParams({ ...VALIDO, offset: 60, limit: 30 })).not.toThrow();
   });
 });
 
