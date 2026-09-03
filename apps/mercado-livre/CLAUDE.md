@@ -887,11 +887,12 @@ The família-wide answer is the **OR** of the members. It is written `true` only
 a publish that did not send the characteristic OMITS the key rather than storing
 `false`, because nothing here can strip the attribute from an item that has it —
 the same three-valued discipline `moderacoes` uses.
-⚠️ It is also **publicly visible** — a custom characteristic renders in the
-anúncio's ficha técnica — and how ML echoes an id-less attribute on `GET /items`
-is **unverified** (no sandbox, no lane may hold real credentials), which is
-exactly why it is an addition to the chain above and never its replacement.
-`skuPaiFromAttributes` matches by NAME and ignores any id ML may attach.
+⚠️ Rung 1 stays an ADDITION to the chain above and never its replacement, because
+it is absent from every família published before it shipped. Everything else this
+paragraph used to assert — that the characteristic is publicly visible, that ML's
+echo shape is unverified, and that the reader ignores any id — was measured and
+is **false**; the ⭐ block above is the single description of what ML does, and
+`skuPaiFromAttributes` matches **id-LESS only**.
 
 Four facts from the ML docs that the payload builder now encodes (#797) — check
 these before "fixing" what looks wrong in `publishCore.ts`:

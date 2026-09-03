@@ -617,8 +617,13 @@ export interface MembroSkuPai {
  * Sent for every família this app CREATES, unconditionally — there is no env
  * flag. What remains is not a rollout gate but the uniformity rule below, and
  * the consequence of having no switch is that backing the feature out is a code
- * change: the characteristic is public (ficha técnica) and cannot be removed
- * from an item that already carries it.
+ * change: the characteristic cannot be removed from an item that already
+ * carries it, which is also why `skuPaiAtributo` is write-`true`-only.
+ *
+ * ⚠️ That irreversibility used to be justified by the characteristic being
+ * public. It is not — measured 2026-09-03 on `MLB5183026663`, ML does not render
+ * it to buyers — but the irreversibility itself is unchanged, because it follows
+ * from the family hash rather than from visibility.
  *
  * The whole difficulty is that ML derives a família from `family_name`,
  * `domain_id`, `user_id` and the attributes, and a custom attribute contributes

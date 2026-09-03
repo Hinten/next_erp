@@ -458,16 +458,14 @@ export function attributesFromItem(
   attrs: readonly MlItemAttribute[] | null | undefined,
 ): MlAttribute[] {
   const mapped: MlAttribute[] = (attrs ?? [])
-    .filter(
-      (a) => typeof a.id === 'string' && a.id.length > 0 && !DERIVED_ATTRIBUTE_IDS.has(a.id),
-      // #1400/#1418 — no clause is needed for the parent-sku characteristic.
-      // Publish re-derives it from the produto (like `SELLER_SKU`), so it must
-      // not be stored, and the id test above already drops it: ML echoes it
-      // back `id: null` (observed 2026-09-03, `MLB5183026663`). A name-based
-      // exclusion used to sit here for the case where ML assigned an id, and
-      // it was worse than the case it guarded — it silenced any REAL ML
-      // attribute whose display name folded equal, on simple items too.
-    )
+    // #1400/#1418 — no clause is needed for the parent-sku characteristic.
+    // Publish re-derives it from the produto (like `SELLER_SKU`), so it must
+    // not be stored, and the id test below already drops it: ML echoes it
+    // back `id: null` (observed 2026-09-03, `MLB5183026663`). A name-based
+    // exclusion used to sit here for the case where ML assigned an id, and
+    // it was worse than the case it guarded — it silenced any REAL ML
+    // attribute whose display name folded equal, on simple items too.
+    .filter((a) => typeof a.id === 'string' && a.id.length > 0 && !DERIVED_ATTRIBUTE_IDS.has(a.id))
     .map((a) => {
       const measurement = measurementFromStruct(a) ?? measurementFromBakedValueName(a);
       const valueName = measurement?.value ?? a.value_name ?? null;
