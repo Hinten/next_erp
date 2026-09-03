@@ -215,6 +215,22 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   freight quote and then a carrier re-billing. `onProdutoChanged` gates on a raw
   before/after diff of those five fields and does **one enqueue, zero reads**;
   this worker does the fan-out.
+  ⚠️ **That "zero reads" is the ROLLUP gate, not the whole trigger.** Since #1398
+  `onProdutoChanged` also repoints inbound KIT REFERENCES when a produto's
+  `filhoUnicoId` moves (`reapontarKitsQueReferenciam`): one
+  `componentesKitKeys array-contains` query per moved id, then a rule-7 **tier 1**
+  write per referencing kit. It exists because the #1402 migration deliberately
+  skips produtos that sell on ML — publish's `'adotar'` arm converts one later, and
+  a kit naming it then reads 0 and the sweep pushes that 0 to ML.
+  It fires on a pointer MOVE, which happens about once per produto ever, where the
+  rollup fires on any of five fields on every edit — **that frequency gap is the
+  whole reason one is inline and the other is a queue**, and it is why
+  `cleanupInboundKitReferences`' unguarded 400-doc batch is not the precedent it
+  looks like (that sweep almost always matches zero rows, because the client
+  BLOCKS deleting a referenced produto). Capped at 200 kits, above which it writes
+  nothing and defers to `migrate:produto-sem-variacoes --target kits`; read the
+  census's worst-fan-out line before raising the cap, and if the corpus is near
+  ADR 0014's ~2 000 the answer is this worker's queued shape, not a bigger cap.
   ⚠️ **A queue, not inline trigger work, because the fan-out is `O(kits
   containing the component)` — ADR 0014 measured ~2 000** for the printed-shirt
   catalogue where every kit shares the same blank shirt + print. That ADR

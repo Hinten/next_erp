@@ -42,6 +42,7 @@ export * from './pureLogic/familia'; // parent ⇄ sole-member identity (shared 
 export * from './pureLogic/fotosVariacao'; // per-variant gallery resolution (own → tagged → parent)
 export * from './pureLogic/kitVariacoes'; // "Gerar Variações" kit-component matcher
 export * from './pureLogic/kitEstoque'; // kit available-stock (min over limitarEstoque components)
+export * from './pureLogic/kitUnidadeVendavel'; // repoint componentesKit at the sellable unit (#1398)
 export * from './pureLogic/dimensoes'; // box/bag estimator + the ProdutoMedidas shape it reads
 export * from './pureLogic/dimensoesKit'; // kit weight + box rollup (the ONE impl client & server share)
 export * from './pureLogic/googleMerchantFeed'; // Google Merchant complementary XML feed (#553)

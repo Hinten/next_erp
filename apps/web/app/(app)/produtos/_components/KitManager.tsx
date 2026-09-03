@@ -23,6 +23,7 @@ import {
   custoDoKit,
   dimensoesDoKit,
   idFromRef,
+  unidadeVendavel,
   type CampoDimensoesKit,
   type ComponentesKit,
   type DimensoesKit,
@@ -135,6 +136,152 @@ function refToId(ref: unknown): string | null {
   if (typeof ref === 'string' && ref.length > 0) return idFromRef(ref) || null;
   if (ref && typeof ref === 'object' && 'id' in ref) return (ref as DocumentReference).id;
   return null;
+}
+
+/** The stored produto fields the component decision reads. Deliberately loose —
+ *  these are raw Firestore values, not a parsed `Produto`. */
+export interface ProdutoComponenteBruto {
+  ehKit?: unknown;
+  paiId?: string | null;
+  filhoUnicoId?: string | null;
+  componentesKit?: unknown;
+}
+
+export type DecisaoDeComponente =
+  | { tipo: 'recusar'; motivo: string }
+  | {
+      tipo: 'adicionar';
+      /** The id to STORE — the sellable unit, not necessarily what was picked. */
+      alvo: string;
+      /** A staged-deleted entry to revive (its key, which may differ from `alvo`). */
+      reaproveitarDe: string | null;
+      /**
+       * Keys the caller must DELETE before writing `alvo` — every other key that
+       * named this same produto. Dropping only the revived one leaves the map
+       * holding two entries for one physical produto.
+       */
+      removerChaves: string[];
+    };
+
+/**
+ * Whether a component may be added to this kit, and under WHICH id.
+ *
+ * ## ⚠️ The id that is stored is the sellable unit, not the one picked
+ *
+ * A produto with no variations is a family of one (#1398): the parent is a
+ * wrapper and the CHILD owns the estoque. The picker cannot tell them apart —
+ * both carry the same nome and SKU and neither is badged — and `componentesKit`
+ * is read by ~fifteen surfaces of which only two resolve the hop themselves. So
+ * the map has to name the child, and this is where that happens for every kit
+ * built from now on. Without it the #1402 migration fixes the corpus once and the
+ * next kit an operator builds re-creates the bug.
+ *
+ * ## ⚠️ Every guard runs on BOTH ids
+ *
+ * The two were not symmetric before, and one gap was reachable: `id ===
+ * produtoId` was checked while `excludeIds` was checked against the PROP, which
+ * does not contain `produtoId` (only `pickerExcludeIds` does, and this function
+ * never saw it). In the per-variation editor `produtoId` is the CHILD and the
+ * parent sits in `excludeIds` — so picking the parent resolves straight onto
+ * `produtoId` with nothing left to refuse it, and the kit contains itself.
+ * `existeKitAninhado` in the dimensions rollup then has a real cycle to bound.
+ *
+ * ## ⚠️ Pure, and exported, because the guards are the part that can be wrong
+ *
+ * This file already keeps its decisions out of the component for that reason
+ * (`stripKitForSave`, `kitDimensoesFormPatches`, `projetarMedidas`). The caller
+ * does the two reads and shows the notification; everything that decides is here.
+ *
+ * @param doc the PICKED produto's stored document, or `undefined` when it could
+ *   not be read.
+ * @param docAlvo the resolved sole member's stored document — only consulted when
+ *   the resolution moved the id. `undefined` means the pointer names a document
+ *   that is gone, and then the component resolves to ITSELF: `unidadeVendavel`
+ *   never proves the child exists, and a dangling `filhoUnicoId` is a state the
+ *   repo has seen and never repairs. Adopting the id anyway would add a component
+ *   with no custo and no weight that reads 0 for ever.
+ */
+export function decidirComponente(args: {
+  id: string;
+  /** `null` in create mode — the produto has no id yet, so no self-check applies. */
+  produtoId: string | null;
+  excludeIds?: readonly string[];
+  componentes: Readonly<Record<string, { _delete?: boolean }>>;
+  doc: ProdutoComponenteBruto | undefined;
+  docAlvo?: ProdutoComponenteBruto | undefined;
+}): DecisaoDeComponente {
+  const { id, produtoId, componentes, doc, docAlvo } = args;
+  const excludeIds = args.excludeIds ?? [];
+
+  if (!doc) {
+    return { tipo: 'recusar', motivo: 'Não foi possível ler este produto.' };
+  }
+  if (produtoId !== null && id === produtoId) {
+    return { tipo: 'recusar', motivo: 'Um produto não pode ser componente de si mesmo.' };
+  }
+  // A kit cannot be a component of another kit. The picker filters `ehKit`, but
+  // the "Recentes" group is unfiltered and a produto can become a kit mid-edit.
+  if (doc.ehKit === true) {
+    return { tipo: 'recusar', motivo: 'Um kit não pode ser componente de outro kit.' };
+  }
+  if (produtoId !== null && doc.paiId === produtoId) {
+    return {
+      tipo: 'recusar',
+      motivo: 'Uma variação do próprio produto não pode ser componente do kit.',
+    };
+  }
+
+  const resolvido = unidadeVendavel({ id, paiId: doc.paiId, filhoUnicoId: doc.filhoUnicoId });
+  // See `docAlvo` above: an unreadable sole member means the component stays
+  // itself rather than becoming an id nothing can resolve.
+  const alvo = resolvido !== id && !docAlvo ? id : resolvido;
+  const docDoAlvo = alvo === id ? doc : docAlvo;
+
+  if (produtoId !== null && alvo === produtoId) {
+    return { tipo: 'recusar', motivo: 'Um produto não pode ser componente de si mesmo.' };
+  }
+  // ⚠️ Re-checked on the CHILD, not just the picked parent. The mirror freezes
+  // the four kit fields the moment an operator diverges any of them, so "member
+  // is a kit under a non-kit parent" is a state the code allows — and
+  // `buildChildrenComponentesKitOps` writes a child's `componentesKit` WITHOUT
+  // `ehKit`, so "not a kit" is not the same as "has no composition".
+  if (docDoAlvo && (docDoAlvo.ehKit === true || docDoAlvo.componentesKit != null)) {
+    return { tipo: 'recusar', motivo: 'Um kit não pode ser componente de outro kit.' };
+  }
+  if (excludeIds.includes(id) || excludeIds.includes(alvo)) {
+    return {
+      tipo: 'recusar',
+      motivo: 'Este produto não pode ser componente deste kit.',
+    };
+  }
+
+  // ⚠️ BOTH keys, and EITHER of them being active refuses. A legacy map still
+  // names the parent, so guarding only the resolved id lets one physical produto
+  // occupy two entries — and `kitEstoqueDisponivel` takes the MIN, so the parent
+  // scores 0 and the kit reads 0. The fix producing the bug.
+  //
+  // ⛔ An earlier version collapsed the two lookups into one (`sobAlvo ?? sobId`)
+  // before testing `_delete`, and that hid an ACTIVE parent entry behind a
+  // staged-deleted child entry: nothing refused, the child was revived, and
+  // `reaproveitarDe === alvo` made the caller's drop-the-old-key branch a no-op,
+  // so the map kept BOTH — the exact state this guard exists to prevent, reached
+  // through the guard. Reviewer-found; the reverse direction was already correct,
+  // which is what made it a one-sided hole.
+  const relacionadas = [...new Set([id, alvo])].filter((k) => componentes[k] !== undefined);
+  if (relacionadas.some((k) => componentes[k]!._delete !== true)) {
+    return { tipo: 'recusar', motivo: 'Este componente já foi adicionado.' };
+  }
+
+  return {
+    tipo: 'adicionar',
+    alvo,
+    // A staged-deleted entry keeps its quantidade when re-added. The one filed
+    // under `alvo` is preferred because that is the key being written.
+    reaproveitarDe: relacionadas.includes(alvo) ? alvo : (relacionadas[0] ?? null),
+    // ⚠️ Every OTHER key naming this produto goes, whether or not it is the one
+    // being revived — that is what stops an un-delete leaving a second entry.
+    removerChaves: relacionadas.filter((k) => k !== alvo),
+  };
 }
 
 /** Resolves a component produto's `<sku> - <nome>` for display. */
@@ -402,70 +549,84 @@ export function KitManager({
 
   const addComponent = async (id: string | null) => {
     if (!id) return;
-    if (id === produtoId) {
-      notifications.show({
-        color: 'yellow',
-        message: 'Um produto não pode ser componente de si mesmo.',
-      });
-      return;
-    }
-    const existing = components[id];
-    if (existing && !existing._delete) {
-      notifications.show({ color: 'yellow', message: 'Este componente já foi adicionado.' });
-      return;
-    }
-    if (excludeIds?.includes(id)) {
-      // Excluded ids = the kit family (the produto itself + its variations). The
-      // picker hides these, but the "Recentes" group is unfiltered, so guard on
-      // add too. Generic message — the excluded id may be self, a variation, or
-      // (for a per-variation editor) the parent kit / a sibling.
-      notifications.show({
-        color: 'yellow',
-        message: 'Este produto não pode ser componente deste kit.',
-      });
-      return;
-    }
-    // A kit cannot be a component of another kit, nor can a variation of THIS
-    // produto. The picker hides both, but the unfiltered "Recentes" group + a
-    // race (a produto becoming a kit) can still slip through — so validate the
-    // picked produto on add, and reuse the read to seed its custo.
+    const lerProduto = async (pid: string) =>
+      (await getDocFromServer(produtoCollection.docRef(db, {}, pid))).data();
+
+    // Every guard lives in `decidirComponente`; this block does the reads, seeds
+    // the caches and shows the notification. The picker filters kits and the kit
+    // family, but the "Recentes" group is unfiltered and a produto can become a
+    // kit mid-edit, so the picked produto is validated on add either way — and
+    // the read is reused for the custo/weight caches.
     try {
-      const snap = await getDocFromServer(produtoCollection.docRef(db, {}, id));
-      const data = snap.data();
-      if (data?.ehKit === true) {
-        notifications.show({
-          color: 'yellow',
-          message: 'Um kit não pode ser componente de outro kit.',
-        });
+      const data = await lerProduto(id);
+      // ⚠️ Resolve BEFORE deciding: a produto with no variations is a family of
+      // one and the CHILD owns the estoque, so the child is what gets stored —
+      // and therefore the child's custo and dimensions are what the caches need.
+      const resolvido = data
+        ? unidadeVendavel({ id, paiId: data.paiId, filhoUnicoId: data.filhoUnicoId })
+        : id;
+      const docAlvo = resolvido !== id ? await lerProduto(resolvido) : undefined;
+
+      const decisao = decidirComponente({
+        id,
+        produtoId,
+        excludeIds,
+        componentes: components,
+        doc: data,
+        docAlvo,
+      });
+      if (decisao.tipo === 'recusar') {
+        notifications.show({ color: 'yellow', message: decisao.motivo });
         return;
       }
-      if (produtoId && data?.paiId === produtoId) {
-        notifications.show({
-          color: 'yellow',
-          message: 'Uma variação do próprio produto não pode ser componente do kit.',
-        });
-        return;
-      }
-      const own = (data?.custo as number | null | undefined) ?? null;
-      const medidas = projetarMedidas(data);
+      const { alvo } = decisao;
+      // ⚠️ The document the caches describe is the one the map now names. Seeding
+      // the PARENT's numbers under the child's key would read correctly today and
+      // silently lie the moment the two diverge.
+      const dados = alvo === id ? data : docAlvo;
+
+      const own = (dados?.custo as number | null | undefined) ?? null;
+      const medidas = projetarMedidas(dados);
       const paiId = medidas.paiId;
-      setPaiCache((p) => ({ ...p, [id]: paiId }));
+      // ⚠️ Every cache is keyed on `alvo`. Miss one and `custoResult`'s
+      // "wait for reads" gate never satisfies: the kit's custo and weight stay
+      // null for ever, with nothing logged and nothing on screen.
+      setPaiCache((p) => ({ ...p, [alvo]: paiId }));
       const missingField = own === null || semPesoProprio(medidas) || semCaixaPropria(medidas);
       if (missingField && paiId && !(paiId in custoCache)) {
         // Variation child missing custo/weight/box with an UNCACHED parent — read
         // the parent once for the Flutter fallback (`models.dart:1271-1287` / :1487-1541).
-        // A parent already cached (e.g. by a sibling component) is reused.
-        const pd = (await getDocFromServer(produtoCollection.docRef(db, {}, paiId))).data();
+        // A parent already cached (e.g. by a sibling component) is reused. A sole
+        // member takes this path by construction: the mirror copies the five
+        // dimensions but NOT `custo`, so its parent supplies it.
+        const pd = (await lerProduto(paiId)) as Record<string, unknown> | undefined;
         setCustoCache((c) => ({
           ...c,
-          [id]: own,
+          [alvo]: own,
           [paiId]: (pd?.custo as number | null | undefined) ?? null,
         }));
-        setDimensoesCache((p) => ({ ...p, [id]: medidas, [paiId]: projetarMedidas(pd) }));
+        setDimensoesCache((p) => ({ ...p, [alvo]: medidas, [paiId]: projetarMedidas(pd) }));
       } else {
-        setCustoCache((c) => ({ ...c, [id]: own }));
-        setDimensoesCache((p) => ({ ...p, [id]: medidas }));
+        setCustoCache((c) => ({ ...c, [alvo]: own }));
+        setDimensoesCache((p) => ({ ...p, [alvo]: medidas }));
       }
+
+      // Re-add (un-delete) keeps the previous quantidade; a brand-new one
+      // defaults. ⚠️ Every other key naming this produto is dropped — read
+      // `anterior` off `components` FIRST, since the key it names may be one of
+      // them. Leaving one behind gives a single physical produto two entries, and
+      // `kitEstoqueDisponivel` takes the MIN.
+      const anterior = decisao.reaproveitarDe ? components[decisao.reaproveitarDe] : undefined;
+      const next = { ...components };
+      for (const chave of decisao.removerChaves) delete next[chave];
+      next[alvo] = anterior
+        ? (() => {
+            const { _delete, ...rest } = anterior;
+            void _delete;
+            return rest;
+          })()
+        : { quantidade: 1, limitarEstoque: true, timestamp: null };
+      onChange(next);
     } catch (err) {
       if (err instanceof FirebaseError) {
         notifications.show({
@@ -476,16 +637,6 @@ export function KitManager({
       }
       throw err;
     }
-    // Re-add (un-delete) keeps the previous quantidade; a brand-new one defaults.
-    const next = { ...components };
-    next[id] = existing
-      ? (() => {
-          const { _delete, ...rest } = existing;
-          void _delete;
-          return rest;
-        })()
-      : { quantidade: 1, limitarEstoque: true, timestamp: null };
-    onChange(next);
   };
 
   const custoKit = custoResult?.custo ?? null;
