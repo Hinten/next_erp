@@ -893,8 +893,9 @@ export interface FilhoParaDuplicar {
   /**
    * Fresh unique SKU for the clone, or null to leave it empty.
    *
-   * ⚠️ Ignored for the genuine family-of-one member, which mirrors the parent's
-   * SKU by design (`espelhoDoMembroUnico`) — see
+   * ⚠️ Ignored for the genuine family-of-one member, whose SKU is DERIVED from
+   * the parent's rather than minted here — `espelhoDoMembroUnico` runs it
+   * through `skuDoMembroUnico`, which appends `SUFIXO_MEMBRO_UNICO`. See
    * {@link ehFamiliaDeUmParaDuplicar}.
    */
   novoSku: string | null;
@@ -921,9 +922,10 @@ export interface DuplicarProdutoInput {
  * the parent's REGISTERED `filhoUnicoId` (#1398)?
  *
  * Exported because the SDK adapter needs the same answer before this runs: the
- * mirrored sole member takes the parent's SKU, so a SKU minted for it would
- * cost a server probe and then be dropped. One rule in one place — two copies
- * of it would drift toward plausible and disagree silently (root `CLAUDE.md`).
+ * mirrored sole member's SKU is DERIVED from the parent's (`skuDoMembroUnico`,
+ * suffix included), so a SKU minted for it would cost a server probe and then
+ * be dropped. One rule in one place — two copies of it would drift toward
+ * plausible and disagree silently (root `CLAUDE.md`).
  *
  * ⚠️ One child is NOT sufficient, because what the mirror branch does is
  * DISCARD the source child's own document and re-derive the member from the
