@@ -122,6 +122,8 @@ const INVENTARIO = {
   'packages/ai/src/index.ts': 'Barrel re-export of `normalizeLoose`. No fold.',
   'packages/ai/src/cells.ts':
     'Comment only — names `normalizeLoose` when explaining a neighbouring trade. No fold.',
+  'packages/data/src/produto/usecases.ts':
+    'Comment only — names `skuDoMembroUnico` to explain why `FilhoParaDuplicar.novoSku` is DISCARDED for a sole member (the sku is derived from the parent, not minted per child). The file never calls it: `buildDuplicarProdutoWriteOps` delegates to `montarMembroUnico`, so the derived value arrives already built and is written verbatim. Nothing here decides sameness — the family-of-one branch keys on `filhoUnicoId`, never on a sku.',
 };
 
 /** Files matching the pattern, over the index + untracked-but-not-ignored. */
