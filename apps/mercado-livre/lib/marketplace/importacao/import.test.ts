@@ -1762,6 +1762,31 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       expect(skuDoPai(db)).toBe('SKU-A');
     });
 
+    // ⛔ The ROUND TRIP, and the reason rung 3 cannot take the member's sku
+    // verbatim any more. A sole member's sku is DERIVED (`<paiSku>-UN`) and the
+    // member is what publish sends, so verbatim would return a parent at
+    // `SKU-A-UN` — whose own member is then minted `SKU-A-UN-UN`, one suffix per
+    // delete → re-import cycle, for ever. It would also stop the produto
+    // resolution below finding the EXISTING parent (that step matches
+    // `sku == <this value>` with `paiId == null`, and no root carries a suffixed
+    // sku), so the re-import would mint a SECOND parent produto.
+    it('rung 3 — strips the sole-member suffix, so a re-import is stable', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attribute_combinations: [],
+            attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-A-UN' }],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('SKU-A');
+      // ...and emphatically not the member's own identity.
+      expect(skuDoPai(db)).not.toBe('SKU-A-UN');
+    });
+
     it('SELF-HEAL — replaces a stored family id without "sobrescrever"', async () => {
       // A parent imported before #1400 carries the 16-digit família key. The
       // fill-blank rule would otherwise preserve it for ever.

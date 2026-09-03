@@ -2,6 +2,7 @@
 
 import { getDoc, getDocs, type Firestore } from 'firebase/firestore';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
+import { skuPaiDoMembroUnico } from '@delfrance/schemas';
 import type { EngineProduto, Produto } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 
@@ -68,6 +69,25 @@ function toEngineProduto(id: string, p: Produto): EngineProduto {
  */
 export function buildScanIndex(produtos: ReadonlyMap<string, EngineProduto>): ScanIndex {
   const bySku = new Map<string, EngineProduto>();
+
+  // ⚠️ TWO passes, and the order is load-bearing.
+  //
+  // This index is built from the PEDIDO's produtos, and a pedido line names the
+  // sellable unit — for a família de um, the sole member, whose sku is DERIVED
+  // (`<paiSku>-UN`). The operator scans the code printed on the box, which is
+  // the parent's. Without the first pass that scan misses the index entirely,
+  // falls to the Firestore probe below, matches the PARENT — a produto this
+  // order has no line for — and the engine answers `produtoNaoEsperado`. The
+  // order cannot be checked out.
+  //
+  // The parent form is registered FIRST so that the second pass overwrites it
+  // wherever a produto genuinely OWNS that sku: an own-sku match must always
+  // beat another produto's derived-parent form, and `bySku` is last-wins.
+  for (const p of produtos.values()) {
+    if (!p.sku) continue;
+    const skuDoPai = skuPaiDoMembroUnico(p.sku);
+    if (skuDoPai !== null && skuDoPai !== p.sku) bySku.set(normalizeScanCode(skuDoPai), p);
+  }
   for (const p of produtos.values()) {
     if (p.sku) bySku.set(normalizeScanCode(p.sku), p);
   }

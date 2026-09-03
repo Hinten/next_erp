@@ -63,6 +63,7 @@ import {
   PRODUTO_EXTRA_DATA_DOC_ID,
   derivarFilhoUnico,
   precisaConsultarModeracao,
+  skuPaiDoMembroUnico,
   skuPaiPorSufixo,
   toOuterRef,
 } from '@delfrance/schemas';
@@ -356,10 +357,22 @@ export async function importProduto(
         taxonomia.map((t) => t.varianteCodigo),
       ) ??
       // 3. A família of ONE (#1087) — no variation attributes at all, so the
-      //    member IS the produto and its `SELLER_SKU` is the parent's too.
+      //    member IS the produto and its `SELLER_SKU` is the parent's, MINUS the
+      //    sole-member suffix.
       //    ⚠️ Gated on the member having no combos, never on the child count:
       //    the children are imported below, so no count exists yet here.
-      (up!.member.combos.length === 0 ? mapped.sku : null) ??
+      //    ⛔ `skuPaiDoMembroUnico` is what keeps this rung stable across a
+      //    delete → re-import. A sole member's sku is DERIVED (`<paiSku>-UN`),
+      //    so taking it verbatim would return a parent at `X-UN`, whose own
+      //    member is then minted `X-UN-UN` — compounding one suffix per cycle.
+      //    It also keeps the produto resolution below finding the EXISTING
+      //    parent: that step matches `sku == <this value>` with
+      //    `paiId == null`, and a suffixed value matches no root, so with the
+      //    link docs gone the re-import would mint a SECOND parent produto.
+      //    It strips at most one suffix, so a legacy member — stored before the
+      //    derivation existed, carrying the parent's sku verbatim — passes
+      //    through unchanged and this rung answers exactly as it always did.
+      (up!.member.combos.length === 0 ? skuPaiDoMembroUnico(mapped.sku) : null) ??
       // 4. Unknown. Deliberately NOT the family id.
       null)
     : null;

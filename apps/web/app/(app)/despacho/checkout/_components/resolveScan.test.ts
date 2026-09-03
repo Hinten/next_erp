@@ -49,3 +49,49 @@ describe('buildScanIndex + resolveFromIndex', () => {
     expect(index.bySku.size).toBe(2);
   });
 });
+
+/**
+ * ⛔ The scan has to answer to BOTH forms of a família-de-um's code.
+ *
+ * A pedido line names the sellable unit — the sole member — whose sku is derived
+ * (`<paiSku>-UN`). What is printed on the box, and what the operator scans, is
+ * the parent's. Before this, that scan missed the index, fell through to the
+ * Firestore probe, matched the PARENT — a produto the order has no line for —
+ * and the engine answered `produtoNaoEsperado`: the order could not be checked
+ * out at all.
+ */
+describe('buildScanIndex — a familia de um answers to the parent sku too', () => {
+  const membro = produto('membro-1', 'CAM-BR-P-UN');
+
+  it('resolves the code printed on the box (the PARENT sku)', () => {
+    const idx = buildScanIndex(new Map([[membro.id, membro]]));
+    expect(resolveFromIndex('CAM-BR-P', idx)).toBe(membro);
+  });
+
+  it('still resolves the member own sku', () => {
+    const idx = buildScanIndex(new Map([[membro.id, membro]]));
+    expect(resolveFromIndex('CAM-BR-P-UN', idx)).toBe(membro);
+  });
+
+  // ⚠️ The near-miss that pins the pass ORDER. A produto that genuinely OWNS the
+  // scanned code must win over another produto's derived-parent form — `bySku`
+  // is last-wins, so registering the parent form second would let a member
+  // hijack a real produto's sku.
+  it('an own-sku match beats another produto derived-parent form', () => {
+    const proprio = produto('proprio-1', 'CAM-BR-P');
+    const idx = buildScanIndex(
+      new Map([
+        [membro.id, membro],
+        [proprio.id, proprio],
+      ]),
+    );
+    expect(resolveFromIndex('CAM-BR-P', idx)).toBe(proprio);
+    expect(resolveFromIndex('CAM-BR-P-UN', idx)).toBe(membro);
+  });
+
+  // ...and an ordinary produto registers ONE entry, not two.
+  it('does not invent an entry for a sku that carries no suffix', () => {
+    const idx = buildScanIndex(new Map([['p1', produto('p1', 'SIMPLES')]]));
+    expect(idx.bySku.size).toBe(1);
+  });
+});

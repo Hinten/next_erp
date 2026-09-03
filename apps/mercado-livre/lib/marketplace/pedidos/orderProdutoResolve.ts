@@ -38,7 +38,12 @@
  * predicate silently full-scans and is billed by data scanned.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { toOuterRef, unidadeVendavel, type ProdutoDeFamilia } from '@delfrance/schemas';
+import {
+  skuPaiDoMembroUnico,
+  toOuterRef,
+  unidadeVendavel,
+  type ProdutoDeFamilia,
+} from '@delfrance/schemas';
 import {
   produtoCollection,
   produtoMercadoLivreLinkCollection,
@@ -190,6 +195,20 @@ export async function resolveOrderLineProduto(
       if (childBySku.kind === 'one') return { produtoId: childBySku.produtoId, via: 'sku-child' };
     }
 
+    /**
+     * The kit guard + the family hop, shared by BOTH root probes below.
+     *
+     * ⚠️ It is only ever handed the result of a `paiId == null` query, which is
+     * what lets `probeSkuUnico` leave `paiId` out of the projected `familia`.
+     * A rung that resolves anything else must project it and bring a test.
+     */
+    const ligarNaRaiz = (raiz: Extract<SkuProbe, { kind: 'one' }>): ResolvedOrderLineProduto => {
+      const alvo = raiz.ehKit ? raiz.produtoId : unidadeVendavel(raiz.familia);
+      return alvo === raiz.produtoId
+        ? { produtoId: alvo, via: 'sku-root' }
+        : { produtoId: alvo, via: 'sku-membro-unico' };
+    };
+
     // Root-only — today's shape, kept ahead of the unscoped step so a simple
     // listing's SKU fallback still resolves to the same produto it always did.
     const rootBySku = await probeSkuUnico(
@@ -213,10 +232,31 @@ export async function resolveOrderLineProduto(
       // disagree with it.
       //
       // The family fields ride along on the probe, so this costs no extra read.
-      const alvo = rootBySku.ehKit ? rootBySku.produtoId : unidadeVendavel(rootBySku.familia);
-      return alvo === rootBySku.produtoId
-        ? { produtoId: alvo, via: 'sku-root' }
-        : { produtoId: alvo, via: 'sku-membro-unico' };
+      return ligarNaRaiz(rootBySku);
+    }
+
+    // ⛔ The same rung, asked with the SUFFIX REMOVED — and it is the KIT guard
+    // above that makes it load-bearing rather than tidy.
+    //
+    // A sole member's sku is derived (`<paiSku>-UN`) and the member is what
+    // publish sends, so ML's `seller_sku` for a família of one is a string NO
+    // root carries. Without this, resolution falls to the unscoped rung below,
+    // which has no `ehKit` guard: a KIT would bind its own sole member, whose
+    // `componentesKit` publish never copied, and `calcularAlteracoesEstoque`
+    // would then move NOTHING — a live ML sale reserving no components, with no
+    // incidente raised because the pedido does have a produto. Silent
+    // overselling, which is exactly the harm the block above exists to prevent.
+    //
+    // ⚠️ One extra indexed read, and only on the path that already missed both
+    // the link and the scoped probes. The `produtos (sku, paiId)` composite
+    // already serves it, so nothing is full-scanned (root `CLAUDE.md` rule 1).
+    const skuDoPai = skuPaiDoMembroUnico(sku);
+    if (skuDoPai !== null && skuDoPai !== sku) {
+      const raizDoMembro = await probeSkuUnico(
+        produtoCollection.ref(db, {}).where('sku', '==', skuDoPai).where('paiId', '==', null),
+      );
+      if (raizDoMembro.kind === 'many') return ambiguo('sku-root', raizDoMembro.ids);
+      if (raizDoMembro.kind === 'one') return ligarNaRaiz(raizDoMembro);
     }
 
     // Unscoped — legacy parity (`sku__isEqualTo(sku).first()` had no `paiId`

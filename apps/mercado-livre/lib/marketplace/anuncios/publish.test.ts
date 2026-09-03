@@ -2594,7 +2594,9 @@ describe('publishProduto — the User-Products sole member (#1087)', () => {
 
     const child = db.docs('produtos').get(CHILD)!;
     expect(child.paiId).toBe(PROD);
-    expect(child.sku).toBe('SKU-1');
+    // Derived from the parent's, so one produto no longer puts two documents
+    // behind one code.
+    expect(child.sku).toBe('SKU-1-UN');
     // A sole member has nothing to vary, so it carries no variation taxonomy —
     // exactly what the importer writes for an empty `attribute_combinations`.
     expect(child.variacoesUid).toBeNull();

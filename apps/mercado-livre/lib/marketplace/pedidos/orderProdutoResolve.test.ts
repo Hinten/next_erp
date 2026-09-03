@@ -811,3 +811,115 @@ describe('resolveOrderLineProduto — a kit stays on the parent', () => {
     expect(out).toEqual({ produtoId: 'membro-1', via: 'sku-membro-unico' });
   });
 });
+
+/**
+ * ⛔ ML sends the MEMBER's `seller_sku`, and a sole member's sku is DERIVED
+ * (`<paiSku>-UN`) — so for a família de um the incoming string matches NO root.
+ *
+ * Without a second, stripped probe the resolution falls through to the unscoped
+ * `sku-any` rung, which has no `ehKit` guard. For a KIT that binds its own sole
+ * member, whose `componentesKit` publish never copied, and
+ * `calcularAlteracoesEstoque`'s `if (!componentes) continue;` then moves
+ * NOTHING: a live ML sale reserves no components and raises no incidente,
+ * because the pedido does have a produto. Silent overselling.
+ */
+describe('resolveOrderLineProduto — a familia de um arrives with the derived SKU', () => {
+  const produtosQueries = (db: FakeDb) => db.queries.filter((q) => q.source === 'produtos');
+
+  it('⛔ keeps a KIT on the parent, so the sale still expands componentesKit', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'pai-kit', {
+      nome: 'Kit Camiseta',
+      sku: 'KIT-1',
+      paiId: null,
+      ehKit: true,
+      filhoUnicoId: 'membro-kit',
+    });
+    // The member EXISTS and carries the sku ML sent, so the unscoped rung would
+    // happily bind it — that is precisely the wrong answer being guarded here.
+    db.seed('produtos', 'membro-kit', {
+      nome: 'Kit Camiseta',
+      sku: 'KIT-1-UN',
+      paiId: 'pai-kit',
+      ehKit: true,
+      componentesKit: null,
+    });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'KIT-1-UN',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'pai-kit', via: 'sku-root' });
+  });
+
+  // ⚠️ The `via` is the assertion that matters here, not the id: the unscoped
+  // rung would reach the SAME produto by matching the member's own sku, and
+  // report `sku-any` with its "sem vínculo" warning. A test asserting only
+  // `produtoId` would pass with this rung deleted.
+  it('binds the CHILD of a non-kit, through the guarded rung', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'pai-1', {
+      nome: 'Bandeja',
+      sku: 'BAN-1',
+      paiId: null,
+      filhoUnicoId: 'membro-unico',
+    });
+    db.seed('produtos', 'membro-unico', {
+      nome: 'Bandeja',
+      sku: 'BAN-1-UN',
+      paiId: 'pai-1',
+    });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'BAN-1-UN',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'membro-unico', via: 'sku-membro-unico' });
+  });
+
+  // The near-miss on COST: the stripped probe must not run for a sku that never
+  // carried the suffix, or every unresolved line pays a second indexed read.
+  it('does not pay a second read for a sku with no suffix', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'raiz', { nome: 'Solto', sku: 'UNI', paiId: null, filhoUnicoId: null });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'UNI',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'raiz', via: 'sku-root' });
+    // sku-child is skipped (no parent link), so this is the ONE query.
+    expect(produtosQueries(db)).toHaveLength(1);
+  });
+
+  // ...and a produto that genuinely OWNS a sku ending in the suffix is matched
+  // by the FIRST probe, so it is never mistaken for somebody's sole member.
+  it('an own-sku root wins before the stripped probe runs', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'raiz-un', {
+      nome: 'Parafuso',
+      sku: 'PARAFUSO-UN',
+      paiId: null,
+      filhoUnicoId: null,
+    });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'PARAFUSO-UN',
+      integracaoId: CONTA,
+    });
+
+    expect(out).toEqual({ produtoId: 'raiz-un', via: 'sku-root' });
+    expect(produtosQueries(db)).toHaveLength(1);
+  });
+});

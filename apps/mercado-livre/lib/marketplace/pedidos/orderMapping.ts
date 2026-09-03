@@ -100,6 +100,7 @@
  */
 import type { MlOrder } from '@delfrance/integrations-mercado-livre';
 import type { EstadoPedido, ItemDoPedido } from '@delfrance/schemas';
+import { skuPaiDoMembroUnico } from '@delfrance/schemas';
 import { roundReais } from '@delfrance/core/money';
 import { coerceToMicros } from '@delfrance/core/datetime';
 import { estadoPedidoFromOrderStatus } from './orderStatusMaps';
@@ -219,7 +220,15 @@ export function mlOrderItemToItemDoPedido(args: {
     ordem: index,
     ensureUniqueId: makeItemEnsureUniqueId(orderId, mktplaceId, index),
     mktplaceId,
-    sku: item?.seller_sku ?? null,
+    // ⚠️ The produto's OWN sku, not the member's — for a família of one ML sends
+    // the sole member's derived `<paiSku>-UN`, and this field is a denormalised
+    // snapshot that outlives the resolution: it is what the NF-e uses as `cProd`
+    // (`generator-input.ts`) and what the picking sheet falls back to. A manual
+    // sale stores the sku of the produto the operator PICKED — the parent — so
+    // without this the same physical unit would carry `X` on a manual nota and
+    // `X-UN` on an ML one. Strips at most one suffix, so a legacy member's
+    // verbatim sku passes through unchanged.
+    sku: skuPaiDoMembroUnico(item?.seller_sku ?? null),
     gtin: null,
     nomeDeVenda: item?.title ?? null,
     precoDeVenda: roundReais(unitPrice + discountTotal),
