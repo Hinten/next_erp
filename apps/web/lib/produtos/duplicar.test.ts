@@ -55,11 +55,13 @@ vi.mock('@/lib/data/impostoProdutoCollection', () => ({
 vi.mock('./docId', () => ({ newDocId: h.newDocId }));
 vi.mock('./skuUnico', () => ({ gerarSkuUnico: h.gerarSkuUnico }));
 vi.mock('./clientPort', () => ({
+  BATCH_LIMIT: 499,
   createClientProdutoPort: () => ({ commit: h.commit }),
 }));
 
 import {
   duplicarProduto,
+  ProdutoFamiliaGrandeDemaisError,
   ProdutoFilhoNaoDuplicavelError,
   ProdutoNaoEncontradoError,
 } from './duplicar';
@@ -226,6 +228,41 @@ describe('duplicarProduto', () => {
     expect(h.buildDuplicarProdutoWriteOps).toHaveBeenCalledWith(
       expect.objectContaining({ novoParentSku: null }),
     );
+    expect(h.commit).toHaveBeenCalled();
+  });
+  /**
+   * ⚠️ `commit` chunks at `BATCH_LIMIT` and is atomic only WITHIN a chunk, so an
+   * oversized set does not fail cleanly — it half-clones the family. Both cases
+   * below are needed: one that the guard FIRES and writes nothing, and the
+   * near-miss at exactly the limit proving it does not refuse a set that commits
+   * atomically. A guard tested only on what it rejects is satisfied by `() => true`.
+   */
+  const opsDe = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      type: 'set' as const,
+      path: `produtos/x${i}`,
+      data: {},
+    }));
+
+  it('refuses — writing NOTHING — when the clone needs more ops than one atomic batch', async () => {
+    h.getDocFromServer
+      .mockResolvedValueOnce(snapDe({ nome: 'Camisa' }))
+      .mockResolvedValueOnce(semExtraData);
+    h.getDocsFromServer.mockResolvedValueOnce(vazio).mockResolvedValueOnce(vazio);
+    h.buildDuplicarProdutoWriteOps.mockReturnValueOnce(opsDe(500));
+
+    await expect(duplicarProduto(db, 'p1')).rejects.toThrow(ProdutoFamiliaGrandeDemaisError);
+    expect(h.commit).not.toHaveBeenCalled();
+  });
+
+  it('still commits a family sitting exactly on the limit', async () => {
+    h.getDocFromServer
+      .mockResolvedValueOnce(snapDe({ nome: 'Camisa' }))
+      .mockResolvedValueOnce(semExtraData);
+    h.getDocsFromServer.mockResolvedValueOnce(vazio).mockResolvedValueOnce(vazio);
+    h.buildDuplicarProdutoWriteOps.mockReturnValueOnce(opsDe(499));
+
+    await expect(duplicarProduto(db, 'p1')).resolves.toBe('novo-1');
     expect(h.commit).toHaveBeenCalled();
   });
 });

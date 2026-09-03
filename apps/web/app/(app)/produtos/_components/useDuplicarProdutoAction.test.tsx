@@ -5,16 +5,24 @@ import type { Firestore } from 'firebase/firestore';
 const h = vi.hoisted(() => ({
   push: vi.fn(),
   duplicarProduto: vi.fn(async () => 'novo-id'),
+  notifyShow: vi.fn(),
+  // A real class, not a stub: the hook narrows with `instanceof`, so a plain
+  // object here would make the catch unreachable and the test vacuous.
+  ProdutoFamiliaGrandeDemaisError: class extends Error {},
 }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: h.push }),
 }));
-vi.mock('@/lib/produtos/duplicar', () => ({ duplicarProduto: h.duplicarProduto }));
+vi.mock('@mantine/notifications', () => ({ notifications: { show: h.notifyShow } }));
+vi.mock('@/lib/produtos/duplicar', () => ({
+  duplicarProduto: h.duplicarProduto,
+  ProdutoFamiliaGrandeDemaisError: h.ProdutoFamiliaGrandeDemaisError,
+}));
 
 import { useDuplicarProdutoAction } from './useDuplicarProdutoAction';
 
-const { push, duplicarProduto } = h;
+const { push, duplicarProduto, notifyShow, ProdutoFamiliaGrandeDemaisError } = h;
 
 const db = {} as Firestore;
 
@@ -51,6 +59,25 @@ describe('useDuplicarProdutoAction', () => {
 
     await expect(result.current.action.run([{ id: 'p1', data: {} }] as never)).rejects.toThrow(
       'boom',
+    );
+    expect(push).not.toHaveBeenCalled();
+  });
+  // ⚠️ `useActionRunner` re-throws anything that is not a `FirebaseError`, so
+  // without this arm the refusal would surface as an unhandled rejection with
+  // nothing on screen — and nothing was written, which the operator must be told.
+  it('turns an oversized family into a notification instead of navigating', async () => {
+    notifyShow.mockClear();
+    push.mockClear();
+    duplicarProduto.mockRejectedValueOnce(new ProdutoFamiliaGrandeDemaisError('grande demais'));
+    const { result } = renderHook(() => useDuplicarProdutoAction(db));
+
+    await result.current.action.run([{ id: 'p1', data: {} }] as never);
+
+    expect(notifyShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'red',
+        message: expect.stringContaining('Nada foi criado'),
+      }),
     );
     expect(push).not.toHaveBeenCalled();
   });

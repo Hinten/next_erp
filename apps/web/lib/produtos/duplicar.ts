@@ -13,7 +13,7 @@ import {
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
-import { createClientProdutoPort } from './clientPort';
+import { BATCH_LIMIT, createClientProdutoPort } from './clientPort';
 import { newDocId } from './docId';
 import { gerarSkuUnico } from './skuUnico';
 
@@ -30,6 +30,24 @@ export class ProdutoNaoEncontradoError extends Error {}
  * reach this — which is exactly why it must fail loudly rather than write.
  */
 export class ProdutoFilhoNaoDuplicavelError extends Error {}
+
+/**
+ * The clone would need more writes than one Firestore batch can carry
+ * atomically (`BATCH_LIMIT`).
+ *
+ * ⚠️ This is a REFUSAL, not a limit we could raise. `clientProdutoPort.commit`
+ * chunks at `BATCH_LIMIT` and awaits one batch per chunk, so an oversized write
+ * set is not one failed operation — it is a family half-written: chunk 1 lands,
+ * chunk 2 throws, and the partially-built produto sits in the catalogue with
+ * nothing cleaning it up and nothing navigating to it.
+ *
+ * The op count is `(1 + filhos) × (1 + extraData + impostos)`, so it grows with
+ * BOTH the family size and each member's imposto rows — a 6-colour × 6-size
+ * family with a dozen operações is already in range. Refusing before the first
+ * write keeps this flow's fail-closed posture, the same reason every SKU probe
+ * runs before the batch opens.
+ */
+export class ProdutoFamiliaGrandeDemaisError extends Error {}
 
 /** Same cap the Imposto tab reads with (`ImpostoManager`). */
 const IMPOSTO_LIMIT = 200;
@@ -152,6 +170,14 @@ export async function duplicarProduto(db: Firestore, produtoId: string): Promise
     filhos,
     now: Date.now(),
   });
+  // ⚠️ Before the first write, never after: `commit` is atomic only WITHIN a
+  // chunk, so committing an oversized set half-clones the family.
+  if (ops.length > BATCH_LIMIT) {
+    throw new ProdutoFamiliaGrandeDemaisError(
+      `duplicar produto ${produtoId} exige ${ops.length} escritas, acima do limite atômico de ${BATCH_LIMIT}`,
+    );
+  }
+
   await createClientProdutoPort(db).commit(ops);
 
   return novoParentId;

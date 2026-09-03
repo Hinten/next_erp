@@ -925,9 +925,18 @@ export interface DuplicarProdutoInput {
  * cost a server probe and then be dropped. One rule in one place — two copies
  * of it would drift toward plausible and disagree silently (root `CLAUDE.md`).
  *
- * ⚠️ One child is NOT sufficient. A produto whose `filhoUnicoId` disagrees with
- * its actual single child is a data anomaly (#1402 exists to find them), and a
- * duplicate must reproduce what is STORED rather than paper over it.
+ * ⚠️ One child is NOT sufficient, because what the mirror branch does is
+ * DISCARD the source child's own document and re-derive the member from the
+ * renamed parent clone. That is right for a registered family of one and wrong
+ * for a produto whose `filhoUnicoId` disagrees with its actual single child (a
+ * data anomaly #1402 exists to find): there the stored child is the only record
+ * of what that variation is, so it is re-created field-for-field like any other
+ * family member.
+ *
+ * ⚠️ This says nothing about the clone's OWN `filhoUnicoId` — neither branch
+ * copies it. `buildDuplicarProdutoWriteOps` always re-derives it from the fresh
+ * ids in the same batch, so a source's dangling pointer is not reproduced on the
+ * clone; reproducing it would just mint a second #1402 case.
  */
 export function ehFamiliaDeUmParaDuplicar(
   parentOrigem: Pick<Produto, 'filhoUnicoId'>,
