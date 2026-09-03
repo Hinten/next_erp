@@ -49,3 +49,8 @@ packages/integrations/nfe/scripts/*.mjs text eol=lf
 # Scoped to the generated corpus only; this path is new, so no existing working
 # tree gets re-flagged.
 apps/mercado-livre/lib/marketplace/fixtures/__wire__/** text eol=lf
+
+# Fifth instance: the docs reader committed beside the Shopee master plan starts
+# with a shebang. Same vite/Windows hazard as the .mjs rules above; kept total
+# by `shebang-files-lf.test.js`.
+.master_plans/**/*.mjs text eol=lf

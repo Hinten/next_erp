@@ -69,6 +69,16 @@ export interface EngineProduto {
   componentesKit: Record<string, { quantidade: number }> | null;
   /** passthrough for UI photo resolution (PR 5); the engine ignores it. */
   fotos: Produto['fotos'] | null;
+  /**
+   * Passthrough, ignored by the engine — the checkout SCAN index needs it to
+   * tell a família-de-um MEMBER from an ordinary root (#1398).
+   *
+   * ⚠️ OPTIONAL on purpose, the same trade `ProdutoDeFamilia` makes: a builder
+   * that does not project it is unaffected (`undefined == null`), and only one
+   * that does gains the distinction. A REQUIRED field would break every fixture
+   * and harness that constructs this view, for a value the engine never reads.
+   */
+  paiId?: string | null;
 }
 
 /** One component of a kit expected-item. */

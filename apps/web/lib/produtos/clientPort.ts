@@ -27,8 +27,16 @@ import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
 import { PRODUTO_MARKETPLACE_SUBCOLLECTIONS } from '@/lib/data/produtoMarketplaceSubcollections';
 import { newDocId } from './docId';
 
-// A writeBatch caps at 500 operations.
-const BATCH_LIMIT = 499;
+/**
+ * A `writeBatch` caps at 500 operations, so `commit` chunks at this size.
+ *
+ * ⚠️ It is therefore also the ATOMICITY boundary, not merely a Firestore cap:
+ * `commit` awaits one batch per chunk, so a write set larger than this lands in
+ * SEVERAL independent commits and a failure on the second leaves the first
+ * applied. A caller whose ops must be all-or-nothing has to refuse a set larger
+ * than this BEFORE committing — there is no way to widen it here.
+ */
+export const BATCH_LIMIT = 499;
 
 const subcollectionHandles = new Map(
   PRODUTO_MARKETPLACE_SUBCOLLECTIONS.map((s) => [s.name, s.handle] as const),

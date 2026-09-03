@@ -248,7 +248,23 @@ export function planejarMembroUnico(args: PlanejarMembroUnicoArgs): MembroUnicoR
       `produtos/${args.produtoId}/produtoMercadoLivre/${args.parentLinkDocId}`,
     ),
     contaOuterRef: toOuterRef(`integracao/${args.integracaoId}`),
-    sku: args.produto.sku,
+    // ⚠️ The MEMBER's sku, read off the document built above — not
+    // `args.produto.sku`, which is the PARENT's.
+    //
+    // `link.sku` means "what ML holds as this member's `SELLER_SKU`"
+    // (`importCore.ts` states it for the importer, the other writer of this
+    // field), and what publish sends is `child.produto.sku`
+    // (`publishCore.ts`'s member attributes). Those were the same string only
+    // while the sole member copied its parent's sku verbatim; now that it is
+    // derived (`<paiSku>-UN`), the parent's value would record a SELLER_SKU ML
+    // was never sent. Taking it from `produto` keeps one derivation rather than
+    // a second call that could drift.
+    // ⚠️ NARROWED, not cast. `produto` is a `Record<string, unknown>`, so an
+    // `as string | null` here would be an assertion nothing checks — correct
+    // only for as long as `montarMembroUnico` keeps returning a string, with no
+    // compile-time link saying so. This is the same shape `publish.ts` uses when
+    // it reads the field back off the stored link.
+    sku: typeof produto.sku === 'string' ? produto.sku : null,
     // Seeded from the parent so the family has a member observation IMMEDIATELY.
     // Without it `foldFamilyStatus` has nothing to fold and the family stays
     // un-concludable until an `items` webhook that, for a listing nobody touches, may

@@ -60,7 +60,7 @@ import { gitGrep } from './lib/repo-scan.js';
  * bottom of this file.
  */
 const PATTERN =
-  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep)\\b';
+  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico)\\b';
 
 /**
  * Source only. Tests are excluded deliberately: a test SHOULD exercise a fold
@@ -101,6 +101,16 @@ const INVENTARIO = {
     '`normalizeLoose` is the DEDUPE key for row labels — a collision drops a row and sets `truncated`, so it must fold exactly what `applyAiMedidas` resolves with and no more. Near-miss: "keeps two size labels that differ by more than case and accents".',
 
   // ---- The helpers themselves --------------------------------------------
+  'packages/schemas/src/produto/pureLogic/familia.ts':
+    'DEFINES the pair. `skuDoMembroUnico` derives a sole member sku as `<paiSku>-UN`; `skuPaiDoMembroUnico` is its inverse. The fold that matters is the MIRROR one: `planejarSincronizacaoDoMembroUnico` compares a stored member sku against `skuDoMembroUnico(paiAntes.sku)`, and a mismatch reads as "the operator diverged this field" — permanent, so an over-eager fold silently stops `sku` propagating for ever. Equal: leading/trailing whitespace on the parent value, since both sides trim; exactly one trailing suffix on the inverse. Distinct: `CAM-UNI` vs `CAM-UN`, and a base whose own code ends in `-UN` (parent `PARAFUSO-UN` gives member `PARAFUSO-UN-UN`, and the inverse gives `PARAFUSO-UN` — ONE suffix, never two). The inverse is genuinely AMBIGUOUS for a legacy member stored before the derivation existed, and the test pins that as a known limitation rather than hiding it. Near-miss: "strips at most one suffix" plus "leaves a sku that carries no suffix alone", and the ambiguity itself is pinned by "cannot tell a legacy member from a derived one when the parent sku ends in the suffix".',
+  'apps/mercado-livre/lib/marketplace/pedidos/orderProdutoResolve.ts':
+    'Uses the INVERSE to ask whether the ML `seller_sku` is a sole member one. The fold alone is NOT the decision: stripping also matches a variation child of a familia de MUITOS, because `cartesianVariations` builds `parentSku + codigo` and a codigo of `-UN` produces the identical string — binding its parent would move stock on a produto that owns no estoque rows. The rung is gated on `ehFamiliaDeUm`, i.e. on `filhoUnicoId`; the fold only proposes a candidate. Near-miss: "does NOT bind the parent when the sku belongs to a variation of a familia de MUITOS".',
+  'apps/mercado-livre/lib/marketplace/importacao/import.ts':
+    'Uses the INVERSE for rung 3 of the User-Products parent-sku cascade, and deliberately does not trust it alone: `skuPaiDeMembroUnicoExistente` strips only when a root produto really carries the stripped value, because rung 3 mostly serves familias this app never published. Equal: a member sku derived from an existing root. Distinct: a seller code that merely ends in `-UN`, where blind stripping mints a SECOND parent produto on re-import. Near-miss: "rung 3 — keeps a seller code that merely ENDS in the suffix".',
+  'apps/web/app/(app)/despacho/checkout/_components/resolveScan.ts':
+    'Uses the INVERSE to index a familia-de-um member under the sku printed on the box, which is the parent one. Gated on `paiId`, never on the sku shape: a ROOT whose own code ends in `-UN` would otherwise claim the stripped code, and scanning some OTHER produto sku would check off this line. Equal: a member derived sku and its parent one. Distinct: an own-sku match always wins, via two passes and last-wins. Near-miss: "registers no parent form for a ROOT whose own sku ends in the suffix".',
+  'apps/web/app/(app)/produtos/_components/VariationManager.tsx':
+    'Uses the DERIVE only, to stage the promoted survivor sku when the last variation is deleted and that row becomes the sole member. Not a comparison — it produces the value written, and the document takes the same value from the `espelhoDoPai` spread.',
   'packages/core/src/decimal/index.ts':
     'Defines `localizarDecimal` / `parseDecimalPtBr` / `parseCentesimos`. Own tests carry both directions, incl. the ambiguous forms each REFUSES to fold (`1.234,5`, three decimals).',
   'packages/ai/src/text.ts':
@@ -112,6 +122,8 @@ const INVENTARIO = {
   'packages/ai/src/index.ts': 'Barrel re-export of `normalizeLoose`. No fold.',
   'packages/ai/src/cells.ts':
     'Comment only — names `normalizeLoose` when explaining a neighbouring trade. No fold.',
+  'packages/data/src/produto/usecases.ts':
+    'Comment only — names `skuDoMembroUnico` to explain why `FilhoParaDuplicar.novoSku` is DISCARDED for a sole member (the sku is derived from the parent, not minted per child). The file never calls it: `buildDuplicarProdutoWriteOps` delegates to `montarMembroUnico`, so the derived value arrives already built and is written verbatim. Nothing here decides sameness — the family-of-one branch keys on `filhoUnicoId`, never on a sku.',
 };
 
 /** Files matching the pattern, over the index + untracked-but-not-ignored. */

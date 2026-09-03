@@ -263,3 +263,45 @@ describe('assertOrderItemsComplete', () => {
     expect(caught?.message).toContain('element_id=EL-1');
   });
 });
+
+/**
+ * ⛔ The pedido line's `sku` is ML's `seller_sku`, BYTE FOR BYTE.
+ *
+ * This exists because an earlier version of the #1398 SKU work ran the value
+ * through `skuPaiDoMembroUnico`, to keep an ML nota's `cProd` matching a manual
+ * one. That is a string transform, and this function has no produto document —
+ * so it fired just as happily on a produto whose own seller code merely ends in
+ * `-UN`, storing a code the catalogue does not contain into a field that becomes
+ * the NF-e `cProd` (`generator-input.ts`) and the picking sheet's fallback.
+ *
+ * Both directions are pinned: the fold that must NOT happen, and the value that
+ * must survive. Without the second case a re-added strip would still pass the
+ * first, because `CAM-AZ-P` has no suffix to remove.
+ */
+describe('mlOrderItemToItemDoPedido — the sku denorm is never normalised', () => {
+  const linha = (sellerSku: string | null) =>
+    mlOrderItemToItemDoPedido({
+      orderId: 987654321,
+      orderItem: {
+        item: { id: 'MLB123456', variation_id: null, seller_sku: sellerSku, title: 'X' },
+        quantity: 1,
+        unit_price: 10,
+      } as never,
+      index: 0,
+      produtoUid: 'produto-1',
+      timestampUs: 42,
+    }).sku;
+
+  it('keeps a familia-de-um member sku verbatim, suffix and all', () => {
+    expect(linha('CAM-BR-P-UN')).toBe('CAM-BR-P-UN');
+  });
+
+  // ⛔ The one that fails the moment anyone re-adds the strip.
+  it('keeps a seller code that merely ENDS in the suffix', () => {
+    expect(linha('PARAFUSO-UN')).toBe('PARAFUSO-UN');
+  });
+
+  it('carries a null through as null', () => {
+    expect(linha(null)).toBeNull();
+  });
+});

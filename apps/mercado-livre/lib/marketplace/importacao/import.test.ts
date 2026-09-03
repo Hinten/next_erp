@@ -1761,6 +1761,60 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       expect(skuDoPai(db)).toBe('SKU-A');
     });
 
+    // ⛔ The ROUND TRIP, and the reason rung 3 cannot take the member's sku
+    // verbatim any more. A sole member's sku is DERIVED (`<paiSku>-UN`) and the
+    // member is what publish sends, so verbatim would return a parent at
+    // `SKU-A-UN` — whose own member is then minted `SKU-A-UN-UN`, one suffix per
+    // delete → re-import cycle, for ever. It would also stop the produto
+    // resolution below finding the EXISTING parent (that step matches
+    // `sku == <this value>` with `paiId == null`, and no root carries a suffixed
+    // sku), so the re-import would mint a SECOND parent produto.
+    it('rung 3 — strips the sole-member suffix when the parent really exists', async () => {
+      const db = new FakeDb();
+      // The EVIDENCE. `SKU-A-UN` can only be a derived member sku if some root
+      // actually carries `SKU-A`; this is that root, so stripping is provably
+      // the right reading and a delete → re-import lands back on this document.
+      db.seed('produtos', expectedParentId, { nome: 'Camiseta', sku: 'SKU-A', paiId: null });
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attribute_combinations: [],
+            attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-A-UN' }],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('SKU-A');
+      // ...and emphatically not the member's own identity.
+      expect(skuDoPai(db)).not.toBe('SKU-A-UN');
+    });
+
+    /**
+     * ⛔ The near-miss, and the reason rung 3 pays for a read.
+     *
+     * Nothing here is a família de um of ours: no root carries `SKU-A`, so
+     * `SKU-A-UN` is simply this seller's own code — a listing that has nothing to
+     * do with #1398. Stripping it on the SHAPE of the string alone would write a
+     * parent at `SKU-A`, which the produto resolution then fails to match
+     * (`sku == 'SKU-A'`, `paiId == null` finds nothing), and the re-import mints a
+     * SECOND parent produto for a listing that already had one.
+     */
+    it('rung 3 — keeps a seller code that merely ENDS in the suffix', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: {
+            ...MEMBER_A,
+            attribute_combinations: [],
+            attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-A-UN' }],
+          },
+        },
+      });
+      await importProduto(deps(db, api), MEMBER_A_ID);
+      expect(skuDoPai(db)).toBe('SKU-A-UN');
+    });
+
     it('SELF-HEAL — replaces a stored family id without "sobrescrever"', async () => {
       // A parent imported before #1400 carries the 16-digit família key. The
       // fill-blank rule would otherwise preserve it for ever.
