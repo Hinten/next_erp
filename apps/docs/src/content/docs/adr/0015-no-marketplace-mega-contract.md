@@ -130,13 +130,24 @@ does not exist yet: the same unreached surface, one round later.
   deliberately: the precedent is `findOrCreateCliente`, promoted out of
   `apps/mercado-livre` once a second caller existed and its cascade defect was
   understood. Extracting before that point is how this ADR's subject was created.
-- The other deferrals from this decision are #1429 (the payment contract has the
-  identical disease), #1430 (wire the caps table into the `apps/web` provider
+- **#1429 resolved the payments deferral the same way**: `PaymentGateway` was
+  deleted, not repaired. All three of its members threw; its `webhook` had already
+  shipped outside the contract on `defineNotificationPipeline`; its `createCharge`
+  mis-described the real write (a Checkout Pro preference returns a link and an
+  expiry, not a charge id and a status); and its `refund` had no precedent in this
+  repo or the legacy one. ⚠️ **No capability table replaced it**, and that asymmetry
+  with the marketplace case is deliberate: `TIPO_INTEGRACAO_PGTO` is `z.literal(1)`,
+  so a `Record` over it would be a one-row table whose compile-error guarantee could
+  never fire, and its axes would have been invented from a single sample — which is
+  how #288 built the contract this ADR removed. Payments also vary per ACCOUNT, not
+  per provider. The table lands with provider #2, per the procedure on
+  `tipoIntegracaoPgtoSchema`.
+- The other deferrals from this decision are #1430 (wire the caps table into the `apps/web` provider
   registries), #1431 (the four `verifyCaller`/`hmac` copies), #1432 (generalizing
   the listing editor — blocked on a second channel, for this ADR's own reason) and
   #1433 (four unaligned channel enums).
 - The invariant is enforced by
-  `packages/config-eslint/rules/marketplace-contract-removed.test.js`, because every
+  `packages/config-eslint/rules/removed-plugin-contracts.test.js`, because every
   part of it is silent when violated: re-adding the interface typechecks, lints,
   builds and passes every suite.
 
