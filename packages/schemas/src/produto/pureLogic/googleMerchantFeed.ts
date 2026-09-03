@@ -212,14 +212,29 @@ function escapeXml(value: string): string {
 
 function tag(name: string, value: string | null): string {
   if (value === null) return '';
-  return `    <g:${name}>${escapeXml(value)}</g:${name}>\n`;
+  return `    <g:${name}>${escapeXml(value)}</g:${name}>`;
+}
+
+/** Channel-level RSS metadata a caller can supply once it exposes this feed
+ * behind a real URL. `link` has no safe generic default — unlike
+ * `description`, it is meant to identify the actual store the feed
+ * describes, which this pure module has no way to know — so callers that
+ * care about strict RSS validity should pass their own site URL. */
+export interface RenderFeedOptions {
+  channelLink?: string;
+  channelDescription?: string;
 }
 
 /** Render resolved {@link FeedItem}s as the Google Merchant complementary feed
  * — RSS 2.0 with the `g:` (`http://base.google.com/ns/1.0`) namespace, one
  * `<item>` per entry, the field's tag omitted (never emitted empty) when the
- * value is `null`. */
-export function renderGoogleMerchantFeedXml(items: readonly FeedItem[]): string {
+ * value is `null`. The `<channel>` carries all three RSS 2.0-mandatory
+ * elements (`title`/`link`/`description`); see {@link RenderFeedOptions} for
+ * how `link` is resolved. */
+export function renderGoogleMerchantFeedXml(
+  items: readonly FeedItem[],
+  options: RenderFeedOptions = {},
+): string {
   const body = items
     .map((item) =>
       [
@@ -244,6 +259,11 @@ export function renderGoogleMerchantFeedXml(items: readonly FeedItem[]): string 
     '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">',
     '<channel>',
     '  <title>Feed complementar Google Merchant</title>',
+    `  <link>${escapeXml(options.channelLink ?? '')}</link>`,
+    `  <description>${escapeXml(
+      options.channelDescription ??
+        'Atributos complementares de produtos para o Google Merchant Center.',
+    )}</description>`,
     body,
     '</channel>',
     '</rss>',
@@ -257,7 +277,7 @@ export function renderGoogleMerchantFeedXml(items: readonly FeedItem[]): string 
  * for callers (and tests) that only need one half. */
 export function gerarFeedComplementarGoogleMerchantXml(
   produtos: readonly FeedProdutoInput[],
-  options: BuildFeedItemsOptions,
+  options: BuildFeedItemsOptions & RenderFeedOptions,
 ): string {
-  return renderGoogleMerchantFeedXml(buildGoogleMerchantFeedItems(produtos, options));
+  return renderGoogleMerchantFeedXml(buildGoogleMerchantFeedItems(produtos, options), options);
 }

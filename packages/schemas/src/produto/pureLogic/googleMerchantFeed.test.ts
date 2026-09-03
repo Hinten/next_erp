@@ -388,13 +388,41 @@ describe('renderGoogleMerchantFeedXml', () => {
     expect(xml).toContain('<g:color>&lt;Preto &amp; Branco&gt;</g:color>');
   });
 
-  it('wraps items in a valid RSS 2.0 + g: namespace channel', () => {
+  it('wraps items in a valid RSS 2.0 + g: namespace channel carrying all three mandatory elements', () => {
     const xml = renderGoogleMerchantFeedXml([]);
     expect(xml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
     expect(xml).toContain('xmlns:g="http://base.google.com/ns/1.0"');
     expect(xml).toContain('<channel>');
+    expect(xml).toContain('<title>');
+    expect(xml).toContain('<link>');
+    expect(xml).toContain('<description>');
     expect(xml).toContain('</channel>');
     expect(xml).toContain('</rss>');
+  });
+
+  it('lets the caller supply the channel link/description', () => {
+    const xml = renderGoogleMerchantFeedXml([], {
+      channelLink: 'https://loja.example.com',
+      channelDescription: 'Feed da Loja Exemplo',
+    });
+    expect(xml).toContain('<link>https://loja.example.com</link>');
+    expect(xml).toContain('<description>Feed da Loja Exemplo</description>');
+  });
+
+  it('never emits a blank line between tags — one line per tag, no trailing blank', () => {
+    const xml = renderGoogleMerchantFeedXml([
+      {
+        id: 'A',
+        itemGroupId: 'G',
+        ageGroup: null,
+        gender: null,
+        material: null,
+        pattern: null,
+        color: null,
+        size: null,
+      },
+    ]);
+    expect(xml).not.toMatch(/\n[ \t]*\n\s*<g:/);
   });
 });
 
