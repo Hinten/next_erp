@@ -200,6 +200,43 @@ export interface ImportResult {
   };
 }
 
+/**
+ * Rung 3's sku for a família de um: the member's `SELLER_SKU` with the
+ * sole-member suffix removed — but ONLY when a root produto actually carries the
+ * stripped value.
+ *
+ * ⛔ The evidence read is the whole point, and a plain `skuPaiDoMembroUnico`
+ * here was a bug. Stripping is a STRING transform, and rung 3's population is
+ * mostly famílias this app did NOT publish (a família we published carries the
+ * `Código de referência` characteristic, so rung 1 answers first and this never
+ * runs). For a seller whose own code simply ends in `-UN`, blind stripping
+ * returns a value no produto carries — and the resolution below matches
+ * `sku == <this value>` with `paiId == null`, so it misses the REAL parent and
+ * the re-import mints a SECOND parent produto for the same listing.
+ *
+ * Asking Firestore turns the guess into a fact: if `X` exists as a root then the
+ * member's `X-UN` was derived from it and stripping is right; if it does not,
+ * the member's sku is its own and passes through untouched. One indexed read
+ * (`produtos (sku, paiId)`), on a rung that already missed two others.
+ */
+async function skuPaiDeMembroUnicoExistente(
+  db: Firestore,
+  membroSku: string | null | undefined,
+): Promise<string | null> {
+  const bruto = typeof membroSku === 'string' ? membroSku.trim() : '';
+  if (bruto === '') return null;
+  const semSufixo = skuPaiDoMembroUnico(bruto);
+  // Nothing to strip ⇒ the member's sku IS the parent's, exactly as before #1398.
+  if (semSufixo === null || semSufixo === bruto) return bruto;
+  const snap = await produtoCollection
+    .ref(db, {})
+    .where('sku', '==', semSufixo)
+    .where('paiId', '==', null)
+    .limit(1)
+    .get();
+  return snap.empty ? bruto : semSufixo;
+}
+
 export async function importProduto(
   deps: ImportDeps,
   itemId: string,
@@ -332,6 +369,13 @@ export async function importProduto(
     ? uniqueFirstSeen(taxonomia.map((t) => t.varianteFake))
     : null;
 
+  // Rung 3's evidence read (see the chain below). Only for a família of one, and
+  // only when the sku actually looks suffixed, so the ordinary path pays nothing.
+  const skuPaiDeUmMembro =
+    isUserProduct && up!.member.combos.length === 0
+      ? await skuPaiDeMembroUnicoExistente(db, mapped.sku)
+      : null;
+
   // ---- The User-Products FAMILY parent's own sku (#1400) -----------------
   // Under User Products there is no parent ML item: a família is N items sharing
   // a `family_name`, and each one's `SELLER_SKU` is the MEMBER's. So the parent's
@@ -357,22 +401,13 @@ export async function importProduto(
         taxonomia.map((t) => t.varianteCodigo),
       ) ??
       // 3. A família of ONE (#1087) — no variation attributes at all, so the
-      //    member IS the produto and its `SELLER_SKU` is the parent's, MINUS the
-      //    sole-member suffix.
+      //    member IS the produto and its `SELLER_SKU` is the parent's.
       //    ⚠️ Gated on the member having no combos, never on the child count:
       //    the children are imported below, so no count exists yet here.
-      //    ⛔ `skuPaiDoMembroUnico` is what keeps this rung stable across a
-      //    delete → re-import. A sole member's sku is DERIVED (`<paiSku>-UN`),
-      //    so taking it verbatim would return a parent at `X-UN`, whose own
-      //    member is then minted `X-UN-UN` — compounding one suffix per cycle.
-      //    It also keeps the produto resolution below finding the EXISTING
-      //    parent: that step matches `sku == <this value>` with
-      //    `paiId == null`, and a suffixed value matches no root, so with the
-      //    link docs gone the re-import would mint a SECOND parent produto.
-      //    It strips at most one suffix, so a legacy member — stored before the
-      //    derivation existed, carrying the parent's sku verbatim — passes
-      //    through unchanged and this rung answers exactly as it always did.
-      (up!.member.combos.length === 0 ? skuPaiDoMembroUnico(mapped.sku) : null) ??
+      //    The sole-member suffix is removed only against EVIDENCE — see
+      //    `skuPaiDeMembroUnicoExistente`, which is why this rung is awaited
+      //    above rather than sitting in the `??` chain.
+      (up!.member.combos.length === 0 ? skuPaiDeUmMembro : null) ??
       // 4. Unknown. Deliberately NOT the family id.
       null)
     : null;

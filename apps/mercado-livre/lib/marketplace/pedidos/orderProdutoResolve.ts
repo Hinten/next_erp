@@ -39,6 +39,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import {
+  ehFamiliaDeUm,
   skuPaiDoMembroUnico,
   toOuterRef,
   unidadeVendavel,
@@ -71,7 +72,16 @@ export type OrderLineMatchKind =
    * that owns the stock (#1398). Distinct from the rung that found it, because
    * "the SKU named a wrapper" is a different fact from "the SKU named this".
    */
-  | 'sku-membro-unico';
+  | 'sku-membro-unico'
+  /**
+   * No produto carries the incoming SKU, but removing the sole-member suffix
+   * named exactly one ROOT that is a família de um — so the SKU was its
+   * MEMBER's. Distinct from `sku-root`/`sku-membro-unico`, which both mean the
+   * SKU matched a produto literally: here nothing did, and the bind rests on a
+   * string transform. A wrong bind on this rung has a different cause from a
+   * wrong bind on those, so the diagnostic must not collapse them.
+   */
+  | 'sku-pai-do-membro';
 
 /** Why nothing bound. `ambiguous-sku` = the SKU named more than one produto. */
 export type OrderLineMissKind = 'ambiguous-sku' | 'unresolved';
@@ -196,18 +206,17 @@ export async function resolveOrderLineProduto(
     }
 
     /**
-     * The kit guard + the family hop, shared by BOTH root probes below.
+     * The kit guard + the family hop: which produto a matched ROOT means.
      *
      * ⚠️ It is only ever handed the result of a `paiId == null` query, which is
      * what lets `probeSkuUnico` leave `paiId` out of the projected `familia`.
      * A rung that resolves anything else must project it and bring a test.
+     *
+     * It returns the id only — the `via` belongs to the RUNG, and the two rungs
+     * below reach here having proved different things.
      */
-    const ligarNaRaiz = (raiz: Extract<SkuProbe, { kind: 'one' }>): ResolvedOrderLineProduto => {
-      const alvo = raiz.ehKit ? raiz.produtoId : unidadeVendavel(raiz.familia);
-      return alvo === raiz.produtoId
-        ? { produtoId: alvo, via: 'sku-root' }
-        : { produtoId: alvo, via: 'sku-membro-unico' };
-    };
+    const alvoDaRaiz = (raiz: Extract<SkuProbe, { kind: 'one' }>): string =>
+      raiz.ehKit ? raiz.produtoId : unidadeVendavel(raiz.familia);
 
     // Root-only — today's shape, kept ahead of the unscoped step so a simple
     // listing's SKU fallback still resolves to the same produto it always did.
@@ -232,7 +241,11 @@ export async function resolveOrderLineProduto(
       // disagree with it.
       //
       // The family fields ride along on the probe, so this costs no extra read.
-      return ligarNaRaiz(rootBySku);
+      const alvo = alvoDaRaiz(rootBySku);
+      return {
+        produtoId: alvo,
+        via: alvo === rootBySku.produtoId ? 'sku-root' : 'sku-membro-unico',
+      };
     }
 
     // ⛔ The same rung, asked with the SUFFIX REMOVED — and it is the KIT guard
@@ -255,8 +268,27 @@ export async function resolveOrderLineProduto(
       const raizDoMembro = await probeSkuUnico(
         produtoCollection.ref(db, {}).where('sku', '==', skuDoPai).where('paiId', '==', null),
       );
-      if (raizDoMembro.kind === 'many') return ambiguo('sku-root', raizDoMembro.ids);
-      if (raizDoMembro.kind === 'one') return ligarNaRaiz(raizDoMembro);
+      // ⛔ `ehFamiliaDeUm`, and it is the whole correctness of this rung.
+      //
+      // Stripping is a STRING transform, so it also fires on a sku that was
+      // never derived — above all a VARIATION CHILD of a família de muitos:
+      // `cartesianVariations` builds a child as `parentSku + variante.codigo`,
+      // so a variante whose código is `-UN` produces `X-UN`, byte-identical to
+      // what a sole member of `X` would carry. Without this guard that child's
+      // sale finds root `X`, `unidadeVendavel` returns `X` ITSELF (a família de
+      // muitos has no `filhoUnicoId`), and the line binds a parent that owns no
+      // estoque rows — `aplicarPlano` then creates one at `0 + delta`, negative
+      // from nothing, which is the exact harm the rung above exists to prevent.
+      // A família de um is the only shape whose member's sku this transform can
+      // legitimately have produced.
+      //
+      // ⚠️ `many` FALLS THROUGH rather than ending the stage. The ambiguity
+      // would be about `skuDoPai` — a string nobody sent — while the unscoped
+      // rung below may still match the incoming `sku` exactly and bind
+      // correctly. Ending here would suppress a resolution that works.
+      if (raizDoMembro.kind === 'one' && ehFamiliaDeUm(raizDoMembro.familia)) {
+        return { produtoId: alvoDaRaiz(raizDoMembro), via: 'sku-pai-do-membro' };
+      }
     }
 
     // Unscoped — legacy parity (`sku__isEqualTo(sku).first()` had no `paiId`
@@ -378,9 +410,10 @@ async function probeSkuUnico(query: FirebaseFirestore.Query): Promise<SkuProbe> 
       familia: {
         id: doc.id,
         // ⚠️ `paiId` is deliberately NOT projected. `unidadeVendavel`'s drift
-        // guard reads it, and that guard cannot fire here: the ONLY rung that
-        // consumes `familia` is `sku-root`, whose own query is
+        // guard reads it, and that guard cannot fire here: BOTH rungs that
+        // consume `familia` — `sku-root` and `sku-pai-do-membro` — filter
         // `.where('paiId', '==', null)`, so the value is null by construction.
+        // (`ehFamiliaDeUm` reads it too, and reaches the same `undefined`.)
         // Projecting it would look like coverage while being unreachable —
         // exactly the kind of comment-shaped guarantee this repo pays for. A
         // future rung that resolves must project it and bring a test that fails

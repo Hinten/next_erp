@@ -852,7 +852,7 @@ describe('resolveOrderLineProduto — a familia de um arrives with the derived S
       integracaoId: CONTA,
     });
 
-    expect(out).toEqual({ produtoId: 'pai-kit', via: 'sku-root' });
+    expect(out).toEqual({ produtoId: 'pai-kit', via: 'sku-pai-do-membro' });
   });
 
   // ⚠️ The `via` is the assertion that matters here, not the id: the unscoped
@@ -880,7 +880,73 @@ describe('resolveOrderLineProduto — a familia de um arrives with the derived S
       integracaoId: CONTA,
     });
 
-    expect(out).toEqual({ produtoId: 'membro-unico', via: 'sku-membro-unico' });
+    expect(out).toEqual({ produtoId: 'membro-unico', via: 'sku-pai-do-membro' });
+  });
+
+  /**
+   * ⛔ THE near-miss, and the one this rung was shipped without.
+   *
+   * `cartesianVariations` builds a variation child as `parentSku + codigo`, so a
+   * variante whose código is `-UN` produces a sku byte-identical to what a sole
+   * member of the same parent would carry. Stripping is a string transform and
+   * cannot tell them apart — only `filhoUnicoId` can, which is why the rung is
+   * gated on `ehFamiliaDeUm` rather than on the sku's shape.
+   *
+   * Without that guard this bound `pai-muitos`: `unidadeVendavel` returns the
+   * ROOT for a família de muitos, and the root owns no estoque rows, so
+   * `aplicarPlano` would create one at `0 + delta` — negative, from nothing, on a
+   * live ML sale.
+   */
+  it('⛔ does NOT bind the parent when the sku belongs to a variation of a familia de MUITOS', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'pai-muitos', {
+      nome: 'Camiseta',
+      sku: 'CAM',
+      paiId: null,
+      // A família de muitos has NO sole member — this is the whole distinction.
+      filhoUnicoId: null,
+    });
+    db.seed('produtos', 'filho-un', {
+      nome: 'Camiseta UN',
+      // `CAM` + a variante whose código is `-UN`.
+      sku: 'CAM-UN',
+      paiId: 'pai-muitos',
+    });
+    db.seed('produtos', 'filho-p', { nome: 'Camiseta P', sku: 'CAM-P', paiId: 'pai-muitos' });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'CAM-UN',
+      integracaoId: CONTA,
+    });
+
+    // The unscoped rung finds the real variation child — the produto that holds
+    // the stock — instead of the wrapper the stripped probe would have named.
+    expect(out).toEqual({ produtoId: 'filho-un', via: 'sku-any' });
+  });
+
+  // A `many` on the STRIPPED sku must not end the stage: the ambiguity is about
+  // a string nobody sent, and the unscoped rung below can still match exactly.
+  it('falls through when the stripped sku is ambiguous, instead of refusing', async () => {
+    const db = new FakeDb();
+    db.seed('produtos', 'raiz-a', { nome: 'A', sku: 'DUP', paiId: null, filhoUnicoId: null });
+    db.seed('produtos', 'raiz-b', { nome: 'B', sku: 'DUP', paiId: null, filhoUnicoId: null });
+    // ⚠️ A CHILD, so the FIRST root probe misses and the stripped one is really
+    // the rung under test. As a root it would match directly and this test would
+    // pass with the fall-through removed.
+    db.seed('produtos', 'exato', { nome: 'Exato', sku: 'DUP-UN', paiId: 'raiz-a' });
+
+    const out = await resolveOrderLineProduto(asDb(db), {
+      itemId: 'MLB-SEM-LINK',
+      variationId: null,
+      sku: 'DUP-UN',
+      integracaoId: CONTA,
+    });
+
+    // Reached the unscoped rung and bound the exact match, rather than ending
+    // the stage with `ambiguous-sku` about `DUP`.
+    expect(out).toEqual({ produtoId: 'exato', via: 'sku-any' });
   });
 
   // The near-miss on COST: the stripped probe must not run for a sku that never

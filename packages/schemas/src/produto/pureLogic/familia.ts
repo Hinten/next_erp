@@ -233,6 +233,14 @@ export const SUFIXO_MEMBRO_UNICO = '-UN';
  * identity the ERP resolves produtos by, so inventing one is worse than having
  * none.
  *
+ * ⚠️ The base is TRIMMED, so a parent stored as `' ABC '` gives a member
+ * `'ABC-UN'`. That is deliberate — the member's sku is a fresh identity and
+ * should not carry the parent's stray whitespace — and it is the reason
+ * {@link espelhoArmazenadoDoMembro} normalises the STORED value the same way:
+ * were only one side trimmed, the three-way merge would read every such member
+ * as operator-diverged and stop propagating `sku` for good. The parent's own
+ * value is left exactly as the operator typed it; nothing here rewrites it.
+ *
  * ⚠️ The base is TRUNCATED so the result fits `PRODUTO_SKU_MAX`. `nome` has
  * been defensively capped here since #1398; `sku` was not, and
  * `montarMembroUnico` is unguarded — the migration, ML publish and

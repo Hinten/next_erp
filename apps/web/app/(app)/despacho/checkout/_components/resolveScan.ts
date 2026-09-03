@@ -58,6 +58,8 @@ function toEngineProduto(id: string, p: Produto): EngineProduto {
     ehKit: p.ehKit,
     componentesKit: p.componentesKit,
     fotos: p.fotos,
+    // Only a MEMBER may contribute a parent-form sku to the scan index.
+    paiId: p.paiId ?? null,
   };
 }
 
@@ -83,8 +85,16 @@ export function buildScanIndex(produtos: ReadonlyMap<string, EngineProduto>): Sc
   // The parent form is registered FIRST so that the second pass overwrites it
   // wherever a produto genuinely OWNS that sku: an own-sku match must always
   // beat another produto's derived-parent form, and `bySku` is last-wins.
+  //
+  // ⛔ Gated on `paiId`, never on the sku's SHAPE. Stripping is a string
+  // transform and fires just as happily on a ROOT whose own seller code ends in
+  // `-UN` — registering `PARAFUSO` for a produto really called `PARAFUSO-UN`.
+  // Scanning `PARAFUSO`, a code belonging to some other produto entirely, would
+  // then check off this line and the wrong item ships; before the parent pass
+  // existed that scan correctly answered `produtoNaoEsperado`. Only a produto
+  // that IS a member can have a derived sku, and `paiId` is what says so.
   for (const p of produtos.values()) {
-    if (!p.sku) continue;
+    if (!p.sku || p.paiId == null) continue;
     const skuDoPai = skuPaiDoMembroUnico(p.sku);
     if (skuDoPai !== null && skuDoPai !== p.sku) bySku.set(normalizeScanCode(skuDoPai), p);
   }

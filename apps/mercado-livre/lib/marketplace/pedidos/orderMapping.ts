@@ -100,7 +100,6 @@
  */
 import type { MlOrder } from '@delfrance/integrations-mercado-livre';
 import type { EstadoPedido, ItemDoPedido } from '@delfrance/schemas';
-import { skuPaiDoMembroUnico } from '@delfrance/schemas';
 import { roundReais } from '@delfrance/core/money';
 import { coerceToMicros } from '@delfrance/core/datetime';
 import { estadoPedidoFromOrderStatus } from './orderStatusMaps';
@@ -220,15 +219,25 @@ export function mlOrderItemToItemDoPedido(args: {
     ordem: index,
     ensureUniqueId: makeItemEnsureUniqueId(orderId, mktplaceId, index),
     mktplaceId,
-    // ⚠️ The produto's OWN sku, not the member's — for a família of one ML sends
-    // the sole member's derived `<paiSku>-UN`, and this field is a denormalised
-    // snapshot that outlives the resolution: it is what the NF-e uses as `cProd`
-    // (`generator-input.ts`) and what the picking sheet falls back to. A manual
-    // sale stores the sku of the produto the operator PICKED — the parent — so
-    // without this the same physical unit would carry `X` on a manual nota and
-    // `X-UN` on an ML one. Strips at most one suffix, so a legacy member's
-    // verbatim sku passes through unchanged.
-    sku: skuPaiDoMembroUnico(item?.seller_sku ?? null),
+    // ⛔ ML's `seller_sku` VERBATIM. Do not "normalise" it — an earlier version of
+    // this line stripped the sole-member suffix to keep an ML nota's `cProd`
+    // matching a manual one, and that was wrong in the direction that matters.
+    //
+    // Stripping is a STRING transform and this function has no produto doc, so it
+    // cannot tell a família-de-um member from a produto whose own seller code
+    // simply ends in `-UN`. For the latter — an ordinary listing, nothing to do
+    // with #1398 — it stored a code the catalogue does not contain, and this field
+    // is a denormalised snapshot that OUTLIVES the resolution: `generator-input.ts`
+    // makes it the NF-e `cProd` and the picking sheet falls back to it. A wrong
+    // value here reaches a fiscal document.
+    //
+    // Verbatim is also the truthful reading: after #1398 the ERP sku and the
+    // listing's `SELLER_SKU` are ONE value by design, so for a família de um
+    // `<paiSku>-UN` is genuinely what ML holds and what was sold. That a manual
+    // sale instead snapshots the produto the operator PICKED (the parent) is a
+    // real asymmetry, but it is one to settle deliberately across BOTH paths —
+    // not by guessing here from the shape of a string.
+    sku: item?.seller_sku ?? null,
     gtin: null,
     nomeDeVenda: item?.title ?? null,
     precoDeVenda: roundReais(unitPrice + discountTotal),
