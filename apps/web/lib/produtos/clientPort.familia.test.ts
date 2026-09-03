@@ -96,7 +96,10 @@ describe('buildProdutoTransactionWrites — the sole member', () => {
     );
     expect(dados(ws[0])).toMatchObject({
       nome: 'Bandeja',
-      sku: 'BAN-1',
+      // ⚠️ The sku is DERIVED, not carried — it is the one mirrored field that
+      // is not a plain copy, because a verbatim copy put two produto documents
+      // behind one code. Everything else here IS carried verbatim.
+      sku: 'BAN-1-UN',
       paiId: 'p1',
       ehKit: true,
       componentesKitKeys: ['a'],

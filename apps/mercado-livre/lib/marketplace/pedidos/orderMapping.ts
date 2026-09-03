@@ -219,6 +219,24 @@ export function mlOrderItemToItemDoPedido(args: {
     ordem: index,
     ensureUniqueId: makeItemEnsureUniqueId(orderId, mktplaceId, index),
     mktplaceId,
+    // ⛔ ML's `seller_sku` VERBATIM. Do not "normalise" it — an earlier version of
+    // this line stripped the sole-member suffix to keep an ML nota's `cProd`
+    // matching a manual one, and that was wrong in the direction that matters.
+    //
+    // Stripping is a STRING transform and this function has no produto doc, so it
+    // cannot tell a família-de-um member from a produto whose own seller code
+    // simply ends in `-UN`. For the latter — an ordinary listing, nothing to do
+    // with #1398 — it stored a code the catalogue does not contain, and this field
+    // is a denormalised snapshot that OUTLIVES the resolution: `generator-input.ts`
+    // makes it the NF-e `cProd` and the picking sheet falls back to it. A wrong
+    // value here reaches a fiscal document.
+    //
+    // Verbatim is also the truthful reading: after #1398 the ERP sku and the
+    // listing's `SELLER_SKU` are ONE value by design, so for a família de um
+    // `<paiSku>-UN` is genuinely what ML holds and what was sold. That a manual
+    // sale instead snapshots the produto the operator PICKED (the parent) is a
+    // real asymmetry, but it is one to settle deliberately across BOTH paths —
+    // not by guessing here from the shape of a string.
     sku: item?.seller_sku ?? null,
     gtin: null,
     nomeDeVenda: item?.title ?? null,

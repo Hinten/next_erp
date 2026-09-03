@@ -58,6 +58,7 @@ import {
   montarMembroUnico,
   parseFakePath,
   planejarMembroSobrevivente,
+  skuDoMembroUnico,
   produtoSchema,
   derivarFilhoUnico,
   reconcileStagedChildren,
@@ -473,7 +474,21 @@ export function VariationManager({
                   deleteMark: false,
                   dirty: true,
                   nome: liveParent('nome') ?? r.nome,
-                  sku: liveParent('sku') ?? '',
+                  // ⚠️ The survivor becomes the produto's SOLE MEMBER, so its
+                  // sku is DERIVED from the parent's, never the parent's own —
+                  // that verbatim copy is what put two documents behind one code.
+                  //
+                  // ⚠️ CONSISTENCY only, with no behaviour of its own, and it
+                  // is worth saying so rather than implying coverage: the
+                  // document written below already receives the derived value
+                  // from the `espelhoDoPai` spread, which lands AFTER
+                  // `sku: row.sku`. No test can distinguish the two, because the
+                  // `renomear` arm leaves exactly one live row and
+                  // `findDuplicateSkus` needs two. What this buys is that the
+                  // staged row cannot disagree with the document — the raw
+                  // parent sku is otherwise one spread-reorder away from being
+                  // the value that ships.
+                  sku: skuDoMembroUnico(liveParent('sku') as string | null) ?? '',
                   variacoesUid: [],
                 }
               : r,

@@ -94,7 +94,12 @@ describe('planejarConversao — the conversion', () => {
     // `montarMembroUnico`'s output, so the two shapes cannot drift apart.
     expect(plano.tipo === 'converter' && plano.childDoc).toMatchObject({
       nome: 'Bandeja',
-      sku: 'BAN-1',
+      // ⚠️ DERIVED from the parent's, and this script gets that for FREE by
+      // going through `montarMembroUnico` — which is the whole point of sharing
+      // the builder. A converted produto and one born a family carry the same
+      // shape, including the sole-member suffix that stops one produto putting
+      // two documents behind one code.
+      sku: 'BAN-1-UN',
       paiId: PRODUTO,
       variacoesUid: null,
     });

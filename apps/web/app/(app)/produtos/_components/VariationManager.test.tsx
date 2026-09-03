@@ -483,7 +483,10 @@ describe('VariationManager — the family keeps a member', () => {
     const renomeada = h.ops.find((o) => o.id === 'c1' && o.kind === 'update');
     // It takes the PARENT's identity: this is the produto's own sellable unit
     // now, not a variation of it.
-    expect(renomeada?.data).toMatchObject({ nome: 'Camiseta', sku: 'CAM' });
+    // ⚠️ The sku is DERIVED, not copied. It takes the parent's IDENTITY but not
+    // its literal code — a verbatim copy is what put two produto documents
+    // behind one sku.
+    expect(renomeada?.data).toMatchObject({ nome: 'Camiseta', sku: 'CAM-UN' });
     // ...and stops being a variation, or the row keeps claiming a combo the
     // produto no longer has.
     expect(renomeada?.data?.variacoesUid).toBeNull();
