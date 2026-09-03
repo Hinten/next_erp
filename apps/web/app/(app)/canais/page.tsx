@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Alert, Badge, Card, Code, Group, Skeleton, Stack, Text, Tooltip } from '@mantine/core';
+import { Alert, Badge, Card, Code, Group, Skeleton, Stack, Text } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -9,10 +9,11 @@ import {
   INTEGRACAO_TIPO_LABELS,
   type Integracao,
   type IntegracaoTipo,
-  pluginIdForTipo,
+  marketplaceCapsOrNull,
 } from '@delfrance/schemas';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { StatusCanalBadge } from './_components/StatusCanalBadge';
 
 export default function CanaisListPage() {
   const q = useMemo(() => {
@@ -30,13 +31,10 @@ export default function CanaisListPage() {
       />
 
       <Alert color="blue" title="OAuth + sincronização">
-        A configuração inicial (OAuth) e sincronização contínua (catálogo, pedidos, tracking) vivem
-        em
-        <Code mx={4}>apps/integrations</Code>+ Cloud Functions. Esta tela é a visão consolidada das
-        integrações já cadastradas no Firestore. Plugins de canal (
-        <Code>@delfrance/integrations-mercado-livre</Code>,
-        <Code>@delfrance/integrations-shopee</Code>, etc.) são scaffolds hoje; implementação
-        concreta entra na Fase 5.
+        Cada canal tem seu próprio backend (<Code mx={4}>apps/&lt;canal&gt;</Code>) com as rotas de
+        OAuth, o receptor de webhooks e os Cloud Functions da sincronização contínua. Esta tela é a
+        visão consolidada das integrações já cadastradas no Firestore. O que cada canal suporta está
+        declarado em <Code>MARKETPLACE_TIPO_CAPS</Code>; hoje só o Mercado Livre está implementado.
       </Alert>
 
       {error && <Alert color="red">{error.message}</Alert>}
@@ -65,7 +63,7 @@ export default function CanaisListPage() {
 
 function IntegracaoCard({ id, integracao }: { id: string; integracao: Integracao }) {
   const tipoLabel = INTEGRACAO_TIPO_LABELS[integracao.tipo as IntegracaoTipo];
-  const pluginId = pluginIdForTipo(integracao.tipo as IntegracaoTipo);
+  const caps = marketplaceCapsOrNull(integracao.tipo as IntegracaoTipo);
   return (
     <Card withBorder padding="md" w={280} shadow="xs">
       <Stack gap="xs">
@@ -90,15 +88,7 @@ function IntegracaoCard({ id, integracao }: { id: string; integracao: Integracao
           </Badge>
         )}
         <Group gap="xs">
-          <Tooltip
-            label={
-              pluginId ? `Plugin: @delfrance/integrations-${pluginId}` : 'Sem plugin associado'
-            }
-          >
-            <Badge variant="light" color={pluginId ? 'blue' : 'gray'} size="xs">
-              {pluginId ?? 'sem plugin'}
-            </Badge>
-          </Tooltip>
+          <StatusCanalBadge caps={caps} />
         </Group>
         <Text size="xs" c="dimmed">
           ID: {id}

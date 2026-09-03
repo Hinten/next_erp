@@ -17,6 +17,7 @@ export {
   type EstoqueAtual,
   buildImpostoWriteOps,
   saveProdutoImpostos,
+  buildMembroUnicoWriteOps,
   buildChildrenComponentesKitOps,
   saveChildrenComponentesKit,
   type ChildComponentesKit,

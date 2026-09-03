@@ -73,6 +73,37 @@ export function temCausaVariacoesInvalidas(causas: readonly MlCausa[]): boolean 
 }
 
 /**
+ * **THE** variation-id fold: one wire value → the string every comparison in
+ * this repo keys on, or `null` when the value names no variation.
+ *
+ * `String`, never `Number`: ML has sent variation ids as numbers and (rarely) as
+ * strings, so `15092589430` and `'15092589430'` must fold together — but `'01'`
+ * and `'1'` must NOT, and a numeric fold would collapse them and apply a
+ * quantity to the wrong row.
+ *
+ * ⚠️ **Every caller must use this, and there must never be a second copy.**
+ * Three of them decide the SAME question about the same values from opposite
+ * sides — which live ids exist ({@link idsDasVariacoesVivas}), which stored ids
+ * are phantoms ({@link idDaVariacaoArmazenada}), and which live ids our stock
+ * payload covers (`reconciliarVariations`, #831) — so a copy that drifts makes
+ * the send carry a variation the prune calls dead, or prune one the send just
+ * updated. Root `CLAUDE.md`: a comment asserting what the other copy does is the
+ * smell, and this function is what replaced one.
+ *
+ * ⚠️ It is deliberately the STRICTER of the two readings it replaced:
+ * `idsDasVariacoesVivas` used to fold a non-finite number to the string
+ * `'NaN'` while the stored-side helper answered `null` — a real disagreement
+ * between two halves of the same diff. Unnameable is now unnameable on both
+ * sides, which is the safe direction: the completion refuses to send rather
+ * than omit a variation it cannot name.
+ */
+export function idDaVariacao(id: unknown): string | null {
+  if (typeof id === 'number') return Number.isFinite(id) ? String(id) : null;
+  if (typeof id === 'string') return id.length > 0 ? id : null;
+  return null;
+}
+
+/**
  * The variation ids ML currently reports for a legacy-model item, as strings.
  *
  * An entry with no id contributes nothing: it cannot match a stored id, and
@@ -81,9 +112,8 @@ export function temCausaVariacoesInvalidas(causas: readonly MlCausa[]): boolean 
 export function idsDasVariacoesVivas(item: MlItem): Set<string> {
   const ids = new Set<string>();
   for (const v of item.variations ?? []) {
-    if (v.id == null) continue;
-    const id = String(v.id);
-    if (id.length > 0) ids.add(id);
+    const id = idDaVariacao(v.id);
+    if (id != null) ids.add(id);
   }
   return ids;
 }
@@ -105,10 +135,8 @@ export interface PodaAlvo extends MembroFamilia {
 }
 
 /** The stored variation id as a string, or null when the row names none. */
-function idDaVariacao(raw: Record<string, unknown>): string | null {
-  if (typeof raw.id === 'number' && Number.isFinite(raw.id)) return String(raw.id);
-  if (typeof raw.id === 'string' && raw.id.length > 0) return raw.id;
-  return null;
+function idDaVariacaoArmazenada(raw: Record<string, unknown>): string | null {
+  return idDaVariacao(raw.id);
 }
 
 /**
@@ -136,7 +164,7 @@ export function planejarPoda(
   const alvos: PodaAlvo[] = [];
   for (const membro of membros) {
     if (typeof membro.raw.itemId === 'string' && membro.raw.itemId.length > 0) continue;
-    const variacaoId = idDaVariacao(membro.raw);
+    const variacaoId = idDaVariacaoArmazenada(membro.raw);
     if (variacaoId == null) continue;
     if (idsVivos.has(variacaoId)) continue;
     if (membro.raw.status === 'closed') continue;

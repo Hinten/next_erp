@@ -4,6 +4,8 @@ import {
   impostoProdutoMeta,
   impostoProdutoSchema,
   makeEstoqueUid,
+  derivarFilhoUnico,
+  montarMembroUnico,
   operacaoIdFromImpostoRef,
   produtoExtraDataMeta,
   produtoExtraDataSchema,
@@ -12,6 +14,8 @@ import {
   PRODUTO_SUBCOLLECTION_NAMES,
   type ComponentesKit,
   type ImpostoProduto,
+  type ParentParaMembroUnico,
+  camposDeKitDoMembroUnico,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoWriteOp } from './port';
@@ -422,6 +426,18 @@ export interface KitStatusChange {
   ehKitVirtual: boolean;
   oldEhKit: boolean;
   oldEhKitVirtual: boolean;
+  /**
+   * The parent's component map, carried onto the SOLE MEMBER when `ehKit` goes
+   * true. See {@link buildKitStatusChildOps} — omitting it reproduces the bug it
+   * was added for.
+   */
+  componentesKit?: Record<string, unknown> | null;
+  /**
+   * The parent's `filhoUnicoId`. ⚠️ ONLY that child mirrors the parent's map: a
+   * real variation authors its own (`buildChildrenComponentesKitOps`), and
+   * writing the parent's over it would destroy a per-variation composition.
+   */
+  membroUnicoId?: string | null;
 }
 
 /** True when `ehKit` or `ehKitVirtual` actually changed across the save. */
@@ -432,17 +448,49 @@ function kitStatusChanged(c: KitStatusChange): boolean {
 /**
  * Build the per-child updates that sync a kit-status change onto existing
  * variation children. `ehKitVirtual` collapses to false when the parent is no
- * longer a kit; `componentesKit` (+ keys) is cleared only when the parent stops
- * being a kit. Empty when nothing changed.
+ * longer a kit. Empty when nothing changed.
+ *
+ * ## ⛔ Why the propagation is SYMMETRIC now
+ *
+ * It used to clear `componentesKit` (+ keys) when the parent stopped being a kit
+ * and write nothing when it BECAME one. That left the sole member of a produto
+ * turned into a kit after creation holding `ehKit: true` with a **null map** —
+ * and `calcularAlteracoesEstoque` reads exactly that as "kit with no components"
+ * (`if (!componentes) continue;`), so a pedido line for that produto moved **no
+ * stock at all**: not the kit's own, not its components'. Silent, and the badge
+ * read 0 to match.
+ *
+ * The mirror is only ever built once, at create time, so nothing else closed the
+ * gap. `camposDeKitDoMembroUnico` is now the single definition of the group and
+ * both directions go through it — the invariant "`ehKit` and the map travel
+ * together" holds on the child the way `montarMembroUnico` already made it hold
+ * at birth.
+ *
+ * ⚠️ The map is written onto the SOLE MEMBER only. A real variation authors its
+ * own composition through `buildChildrenComponentesKitOps`, and copying the
+ * parent's over it would destroy that. Without `membroUnicoId` the arm is inert,
+ * which is the pre-#1398 behaviour.
  */
 export function buildKitStatusChildOps(
   change: KitStatusChange,
   children: Array<{ id: string }>,
 ): ProdutoWriteOp[] {
   if (!kitStatusChanged(change)) return [];
-  const ehKitVirtual = change.ehKit ? change.ehKitVirtual : false;
+  const grupo = camposDeKitDoMembroUnico(change);
+  const membroUnicoId = change.membroUnicoId ?? null;
   return children.map((c) => {
-    const data: Record<string, unknown> = { ehKit: change.ehKit, ehKitVirtual };
+    // The whole group for the sole member — flag, virtual flag, map and keys —
+    // so it can never hold a flag without the map it gates.
+    if (membroUnicoId !== null && c.id === membroUnicoId) {
+      return { type: 'update', path: produtoDocPath(c.id), data: { ...grupo } };
+    }
+    // A real variation takes the flags only. Its own map is authored by
+    // `buildChildrenComponentesKitOps`, and the clear stays because a non-kit
+    // must not keep a map — the direction that was always right.
+    const data: Record<string, unknown> = {
+      ehKit: grupo.ehKit,
+      ehKitVirtual: grupo.ehKitVirtual,
+    };
     if (!change.ehKit) {
       data.componentesKit = null;
       data.componentesKitKeys = null;
@@ -652,4 +700,41 @@ export async function deleteProdutoCascade(
 
   // Delete only the parent; `onProdutoDeleted` cascades children + subcollections.
   await port.commit([{ type: 'delete', path: produtoDocPath(produtoId) }]);
+}
+
+// ---------------------------------------------------------------------------
+// The sole member a produto is born with (#1398)
+// ---------------------------------------------------------------------------
+
+/**
+ * The two writes that turn a freshly created produto into a FAMILY OF ONE: the
+ * sole member's document, and the parent's pointer at it.
+ *
+ * ⚠️ They belong to ONE atomic boundary and the caller must keep them there.
+ * The pointer is what every reader resolves through; a parent written without
+ * its child points at nothing, and a child written without the pointer is
+ * invisible to every surface that looks the family up. Both halves are wrong in
+ * ways nothing later repairs, which is why this returns a pair rather than two
+ * callables — `saveRecord`'s `siblingWrites` commit with the produto doc or not
+ * at all.
+ *
+ * ⚠️ `filhoUnicoId` goes through {@link derivarFilhoUnico} rather than being set
+ * to `childId` directly. It is the same value here — there is exactly one child
+ * — but routing every writer through the one producer is what keeps the
+ * denormalisation honest when a later writer has a child SET rather than a
+ * single id.
+ */
+export function buildMembroUnicoWriteOps(
+  parentId: string,
+  childId: string,
+  parent: ParentParaMembroUnico,
+): ProdutoWriteOp[] {
+  return [
+    { type: 'set', path: produtoDocPath(childId), data: montarMembroUnico(parentId, parent) },
+    {
+      type: 'update',
+      path: produtoDocPath(parentId),
+      data: { filhoUnicoId: derivarFilhoUnico([{ id: childId }]) },
+    },
+  ];
 }

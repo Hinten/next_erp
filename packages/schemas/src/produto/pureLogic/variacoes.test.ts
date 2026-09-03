@@ -7,6 +7,7 @@ import {
   grupoOuterRef,
   normalizeVariacoesUid,
   parseFakePath,
+  planejarMembroSobrevivente,
   reconcileStagedChildren,
   reconstructFromSkuSuffix,
   reconstructFromVariacoesUid,
@@ -509,5 +510,191 @@ describe('reconcileStagedChildren', () => {
     const out = reconcileStagedChildren([persisted, cre]);
     expect(out.reusedIds).toEqual([]);
     expect(out.rows).toHaveLength(2);
+  });
+});
+
+/**
+ * Rule 3 — the sole member is absorbed by the first real variation (#1398).
+ *
+ * A produto born as a family of one owns a child that mirrors it: its stock,
+ * its estoque history, the pedido lines and kit entries that name it. When real
+ * variations arrive that child stops being a sole member, and leaving it beside
+ * them is wrong twice — a phantom row in the tab, and a `filhoUnicoId` still
+ * naming it while the family has several members.
+ */
+describe('reconcileStagedChildren — the sole member (rule 3)', () => {
+  const linha = (over: Partial<ReconcilableRow> & { key?: string } = {}) => ({
+    id: null as string | null,
+    sku: '',
+    variacoesUid: [] as string[],
+    deleteMark: false,
+    ...over,
+  });
+
+  it('gives the first staged create the sole member’s id', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1' }),
+      linha({ key: 'novo-P', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+      linha({ key: 'novo-M', sku: 'BAN-1M', variacoesUid: ['g/M'] }),
+    ];
+    const { rows: out, reusedIds } = reconcileStagedChildren(rows, 'membro');
+
+    // The member row is absorbed; the first create takes its doc id.
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ id: 'membro', sku: 'BAN-1P' });
+    expect(out[1]).toMatchObject({ id: null, sku: 'BAN-1M' });
+    expect(reusedIds).toEqual(['membro']);
+  });
+
+  // ⚠️ Rules 1-2 win. The operator who deleted a variation and recreated it
+  // means THAT doc; the sole member is only the fallback anchor.
+  it('lets an explicit delete/create SKU pair win over the sole member', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1' }),
+      linha({ id: 'antigo', sku: 'BAN-1P', variacoesUid: ['g/P'], deleteMark: true }),
+      linha({ key: 'novo-P', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+    ];
+    const { rows: out } = reconcileStagedChildren(rows, 'membro');
+    // The recreated P keeps the DELETED doc's id, not the member's.
+    expect(out.find((r) => r.sku === 'BAN-1P')).toMatchObject({ id: 'antigo' });
+    // Nothing claimed the member, so it survives as an ordinary row.
+    expect(out.some((r) => r.id === 'membro')).toBe(true);
+  });
+
+  it('absorbs at most ONE create', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1' }),
+      linha({ key: 'a', sku: 'A', variacoesUid: ['g/A'] }),
+      linha({ key: 'b', sku: 'B', variacoesUid: ['g/B'] }),
+      linha({ key: 'c', sku: 'C', variacoesUid: ['g/C'] }),
+    ];
+    const { reusedIds } = reconcileStagedChildren(rows, 'membro');
+    expect(reusedIds).toEqual(['membro']);
+  });
+
+  // ⚠️ A child that already carries a combo is a real variation whatever the
+  // parent points at — rules 1-2 own it, and absorbing it would rewrite a
+  // variation the operator did not touch.
+  it('refuses a "sole member" that already has a variacoesUid', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1', variacoesUid: ['g/X'] }),
+      linha({ key: 'novo', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+    ];
+    const { rows: out, reusedIds } = reconcileStagedChildren(rows, 'membro');
+    expect(reusedIds).toEqual([]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('does nothing when the operator marked the sole member for deletion', () => {
+    const rows = [
+      linha({ id: 'membro', sku: 'BAN-1', deleteMark: true }),
+      linha({ key: 'novo', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+    ];
+    expect(reconcileStagedChildren(rows, 'membro').reusedIds).toEqual([]);
+  });
+
+  it('does nothing when there is no staged create', () => {
+    const rows = [linha({ id: 'membro', sku: 'BAN-1' })];
+    expect(reconcileStagedChildren(rows, 'membro').reusedIds).toEqual([]);
+  });
+
+  // ⚠️ Inert without the pointer, which is what makes this safe to ship ahead of
+  // the produtos that have one: a produto with real variations passes null and
+  // the function behaves exactly as it did before #1398.
+  it('is inert when the parent has no sole member', () => {
+    const rows = [
+      linha({ id: 'c1', sku: 'BAN-1P', variacoesUid: ['g/P'] }),
+      linha({ key: 'novo', sku: 'BAN-1M', variacoesUid: ['g/M'] }),
+    ];
+    expect(reconcileStagedChildren(rows, null).reusedIds).toEqual([]);
+    expect(reconcileStagedChildren(rows).reusedIds).toEqual([]);
+  });
+
+  it('ignores a pointer naming a produto that is not in the rows', () => {
+    const rows = [linha({ key: 'novo', sku: 'BAN-1P', variacoesUid: ['g/P'] })];
+    expect(reconcileStagedChildren(rows, 'sumiu').reusedIds).toEqual([]);
+  });
+});
+
+/**
+ * A family never loses its last child (#1398, PR 8).
+ *
+ * ⚠️ The interesting half is WHICH outcome, not that there is one: `renomear`
+ * keeps the doc id — and with it the estoque rows, their ledger, kit entries,
+ * marketplace links and pedido lines — while `criar` starts empty. Getting that
+ * backwards is a silent stock loss on the most ordinary edit there is.
+ */
+describe('planejarMembroSobrevivente', () => {
+  const linha = (over: Partial<ReconcilableRow> = {}): ReconcilableRow => ({
+    id: 'c1',
+    sku: 'SKU-1',
+    variacoesUid: [],
+    deleteMark: false,
+    ...over,
+  });
+
+  it('does nothing while a child survives', () => {
+    expect(planejarMembroSobrevivente([linha(), linha({ id: 'c2', deleteMark: true })])).toEqual({
+      tipo: 'nada',
+    });
+  });
+
+  // The common case after PR 7: every produto has exactly one member row, and
+  // deleting it means "no variations", never "throw away this produto's stock".
+  it('renames in place when the ONE child being deleted is the only one', () => {
+    expect(planejarMembroSobrevivente([linha({ deleteMark: true })])).toEqual({
+      tipo: 'renomear',
+      id: 'c1',
+    });
+  });
+
+  // ⚠️ Two children's stock cannot merge into one, and choosing which survives
+  // would be arbitrary. Their estoque subtrees are already swept by
+  // `onProdutoDeleted` today, so nothing extra is lost.
+  it('creates a fresh member when several children are deleted at once', () => {
+    expect(
+      planejarMembroSobrevivente([
+        linha({ deleteMark: true }),
+        linha({ id: 'c2', sku: 'SKU-2', deleteMark: true }),
+      ]),
+    ).toEqual({ tipo: 'criar' });
+  });
+
+  // A staged create IS a live child — replacing the whole variation set in one
+  // save must not trigger the invariant at all.
+  it('does nothing when a staged create replaces every deleted child', () => {
+    expect(
+      planejarMembroSobrevivente([linha({ deleteMark: true }), linha({ id: null, sku: 'novo' })]),
+    ).toEqual({ tipo: 'nada' });
+  });
+
+  // ⛔ The hazard this guard exists for. A legacy produto from before #1398 has
+  // no children AND holds its own stock; read-tolerance resolves it to itself.
+  // Minting an empty member without MOVING the units — a migration's job, with
+  // reserved remainders and non-canonical estoque doc ids to handle — would point
+  // every stock reader at an empty document and the produto would read 0.
+  it('mints NOTHING for a produto that never had a child', () => {
+    expect(planejarMembroSobrevivente([])).toEqual({ tipo: 'nada' });
+  });
+
+  // ⚠️ A delete row with no doc id was never persisted, so this flush took no
+  // child away — and there is no anchor for `renomear` either.
+  it('does nothing when the only deleted row was never persisted', () => {
+    expect(planejarMembroSobrevivente([linha({ id: null, deleteMark: true })])).toEqual({
+      tipo: 'nada',
+    });
+  });
+
+  // ⚠️ The order dependency, stated as a test: a pair `reconcileStagedChildren`
+  // absorbed is no longer a delete, so it must not push the flush into `criar`.
+  it('runs on the RECONCILED rows, where an absorbed pair is already gone', () => {
+    const bruto = [
+      linha({ deleteMark: true }),
+      linha({ id: null, sku: 'SKU-1' }), // same SKU: rule 1 absorbs the delete
+    ];
+    const { rows } = reconcileStagedChildren(bruto);
+    expect(planejarMembroSobrevivente(rows)).toEqual({ tipo: 'nada' });
+    // ...and the survivor kept the original doc id, which is the whole point.
+    expect(rows.map((r) => r.id)).toEqual(['c1']);
   });
 });

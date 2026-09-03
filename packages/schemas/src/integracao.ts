@@ -50,31 +50,16 @@ export const INTEGRACAO_TIPO_LABELS: Record<IntegracaoTipo, string> = {
 };
 
 /**
- * Map a Flutter INTEGRACAO_PEDIDO int to the plugin id used by
- * MarketplaceChannel implementations under packages/integrations/.
+ * ⚠️ `pluginIdForTipo` lived here and was deleted in #815. It mapped a tipo to
+ * a `packages/integrations/<id>` package name for "MarketplaceChannel
+ * implementations" that no longer exist — five of those packages were
+ * throw-only scaffolds with no importer anywhere, and its single caller was a
+ * badge on `/canais` asking a capability question in plugin-id costume.
+ *
+ * The replacement is `MARKETPLACE_TIPO_CAPS` (`./shared/marketplace`), whose
+ * `channel` field is the backend segment and whose `implementado` field is the
+ * thing that badge actually wanted to show. See ADR 0015.
  */
-export function pluginIdForTipo(tipo: IntegracaoTipo): string | null {
-  switch (tipo) {
-    case INTEGRACAO_TIPO.mercadoLivre:
-      return 'mercado-livre';
-    case INTEGRACAO_TIPO.shopee:
-      return 'shopee';
-    case INTEGRACAO_TIPO.amazon:
-      return 'amazon-sp-api';
-    case INTEGRACAO_TIPO.magalu:
-      return 'magalu';
-    case INTEGRACAO_TIPO.lojaIntegrada:
-      return 'loja-integrada';
-    case INTEGRACAO_TIPO.facebook:
-      return 'facebook';
-    case INTEGRACAO_TIPO.whatsapp:
-      return 'whatsapp-cloud-api';
-    case INTEGRACAO_TIPO.balcao:
-    case INTEGRACAO_TIPO.nenhuma:
-    default:
-      return null;
-  }
-}
 
 /**
  * WhatsApp business-hours entry — legacy `Horario_Whatsapp`

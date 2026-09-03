@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
@@ -1341,5 +1341,178 @@ describe('variações de uma família User-Products (#1142)', () => {
 
     const shown = h.notify.mock.calls.at(-1)?.[0] as { message: string } | undefined;
     expect(shown?.message).not.toContain('variaç');
+  });
+});
+
+/**
+ * Pausar / Reativar — the only lifecycle control this app has over a LIVE
+ * listing (#476 closed by decision: deleting a produto leaves the marketplace
+ * untouched, so an operator's way to take an anúncio off the air is here).
+ *
+ * ⚠️ Which control is offered is `acaoStatusAnuncio` in `packages/schemas`, the
+ * SAME predicate the backend route refuses by. These tests pin the WIRING —
+ * that the label follows the link's stored state, that a pause is confirmed and
+ * a reactivate is not, and that the toast repeats the backend's wording rather
+ * than the request. The predicate's own rungs are pinned beside it.
+ */
+describe('Pausar / Reativar anúncio', () => {
+  const pausarBtn = () => screen.queryByRole('button', { name: /^Pausar anúncio$/ });
+  const reativarBtn = () => screen.queryByRole('button', { name: /^Reativar anúncio$/ });
+
+  const RESPOSTA = (over: Record<string, unknown> = {}) => ({
+    canal: 'mercado-livre',
+    integracaoId: 'conta-1',
+    acao: 'pausar',
+    solicitados: 1,
+    familias: 1,
+    resumo: { aplicados: 1, pulados: 0, falhas: 0, naoTentados: 0 },
+    listings: [{ mensagem: 'Anúncio pausado.', outcome: 'enviado' }],
+    produtosSemAnuncio: [],
+    pausadoAte: null,
+    ...over,
+  });
+
+  it('offers Pausar on a live listing and Reativar on a paused one', async () => {
+    h.links = [
+      link('L1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado, status: 'active' }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(pausarBtn()).toBeDefined());
+    expect(reativarBtn()).toBeNull();
+
+    cleanup();
+    h.links = [link('L1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.pausado, status: 'paused' })];
+    renderEditor();
+    await waitFor(() => expect(reativarBtn()).not.toBeNull());
+    expect(pausarBtn()).toBeNull();
+  });
+
+  it('offers NEITHER on a draft or a cancelled listing', async () => {
+    h.links = [link('L1', { id: null, estado: ESTADO_PUBLICACAO_ML.rascunho, status: null })];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('listing-form-L1')).toBeDefined());
+    expect(pausarBtn()).toBeNull();
+    expect(reativarBtn()).toBeNull();
+
+    cleanup();
+    // `closed` is TERMINAL on ML — both directions would only earn a 400.
+    h.links = [
+      link('L1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.cancelado, status: 'closed' }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('listing-form-L1')).toBeDefined());
+    expect(pausarBtn()).toBeNull();
+    expect(reativarBtn()).toBeNull();
+  });
+
+  it('is absent while ML is mid-UPtin-migration, despite a live stored status', async () => {
+    // ⚠️ `stampAguardandoMigracao` writes `estado` ALONE, so the link carries a
+    // stale `status: 'active'` — the shape that looks most eligible. ML 404s any
+    // change to a migrating item and the backend's 404 branch records `closed`,
+    // dropping the produto out of both ML sweeps.
+    h.links = [
+      link('L1', {
+        id: 'MLB1',
+        estado: ESTADO_PUBLICACAO_ML.aguardandoMigracao,
+        status: 'active',
+      }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('listing-form-L1')).toBeDefined());
+    expect(pausarBtn()).toBeNull();
+    expect(reativarBtn()).toBeNull();
+  });
+
+  it('is absent without `integracao.write` — the bit the backend route enforces', async () => {
+    h.permitidos = new Set([PERM.produto.delete]);
+    h.links = [
+      link('L1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado, status: 'active' }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(screen.getByTestId('listing-form-L1')).toBeDefined());
+    expect(pausarBtn()).toBeNull();
+  });
+
+  it('CONFIRMS a pause before calling ML, and sends `pausar` for this listing only', async () => {
+    const definir = vi.fn().mockResolvedValue(RESPOSTA());
+    h.client = { definirStatusAnuncios: definir };
+    h.links = [
+      link('L1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado, status: 'active' }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(pausarBtn()).not.toBeNull());
+
+    fireEvent.click(pausarBtn()!);
+    // The click alone must not reach ML — a pause stops a live sale.
+    expect(definir).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Pausar$/ }));
+    await waitFor(() => expect(definir).toHaveBeenCalledTimes(1));
+    expect(definir.mock.calls[0]![0]).toMatchObject({
+      integracaoId: 'conta-1',
+      acao: 'pausar',
+      linkDocId: 'L1',
+      produtoIds: ['prod-1'],
+    });
+  });
+
+  it('reactivates WITHOUT a confirm — the safe direction, and the way back', async () => {
+    const definir = vi
+      .fn()
+      .mockResolvedValue(
+        RESPOSTA({ acao: 'reativar', listings: [{ mensagem: 'Anúncio reativado.' }] }),
+      );
+    h.client = { definirStatusAnuncios: definir };
+    h.links = [link('L1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.pausado, status: 'paused' })];
+    renderEditor();
+    await waitFor(() => expect(reativarBtn()).not.toBeNull());
+
+    fireEvent.click(reativarBtn()!);
+    await waitFor(() => expect(definir).toHaveBeenCalledTimes(1));
+    expect(definir.mock.calls[0]![0]).toMatchObject({ acao: 'reativar' });
+  });
+
+  it('repeats the BACKEND’s wording, plus the save-reactivates warning', async () => {
+    const definir = vi.fn().mockResolvedValue(RESPOSTA());
+    h.client = { definirStatusAnuncios: definir };
+    h.links = [
+      link('L1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado, status: 'active' }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(pausarBtn()).not.toBeNull());
+    fireEvent.click(pausarBtn()!);
+    fireEvent.click(await screen.findByRole('button', { name: /^Pausar$/ }));
+
+    await waitFor(() => expect(h.notify).toHaveBeenCalled());
+    const toast = h.notify.mock.calls.at(-1)![0] as { color: string; message: string };
+    expect(toast.color).toBe('green');
+    expect(toast.message).toContain('Anúncio pausado.');
+    // ⚠️ The half that must never be dropped: `buildItemPayload` sends
+    // `status: 'active'` on every update, so an ordinary save undoes this.
+    expect(toast.message).toContain('reativa no Mercado Livre');
+  });
+
+  it('does NOT claim success when ML applied nothing', async () => {
+    // The row is the backend's, and it already says what ML reported. Inventing
+    // "Anúncio pausado" from the REQUEST is the failure this pins.
+    const definir = vi.fn().mockResolvedValue(
+      RESPOSTA({
+        resumo: { aplicados: 0, pulados: 0, falhas: 1, naoTentados: 0 },
+        listings: [{ mensagem: 'O Mercado Livre não aceitou pausado nenhum anúncio.' }],
+      }),
+    );
+    h.client = { definirStatusAnuncios: definir };
+    h.links = [
+      link('L1', { id: 'MLB1', estado: ESTADO_PUBLICACAO_ML.publicado, status: 'active' }),
+    ];
+    renderEditor();
+    await waitFor(() => expect(pausarBtn()).not.toBeNull());
+    fireEvent.click(pausarBtn()!);
+    fireEvent.click(await screen.findByRole('button', { name: /^Pausar$/ }));
+
+    await waitFor(() => expect(h.notify).toHaveBeenCalled());
+    const toast = h.notify.mock.calls.at(-1)![0] as { color: string; message: string };
+    expect(toast.color).toBe('red');
+    expect(toast.message).not.toContain('reativa no Mercado Livre');
   });
 });
