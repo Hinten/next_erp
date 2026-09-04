@@ -24,7 +24,9 @@ conta status only**.
 - `app/api/health/route.ts` — `{ service: 'shopee' }`.
 - `lib/shopee/env.ts` — the one place this app reads its **Shopee**
   configuration from the environment, and every read there is blank-guarded
-  (`?.trim()` + a length check, never `??`). ⚠️ It is **not** the app's only
+  (`?.trim()` + a length check, never `??`) — the one exception is
+  `shopeeSandbox()`, whose `=== '1'` treats a blank value as production by
+  construction. ⚠️ It is **not** the app's only
   `process.env` reader: Firebase credentials are read in
   `lib/firebase/admin.ts` (a verbatim copy of the same singleton the six sibling
   channel apps carry, `??`-defaulted `FIREBASE_DATABASE_ID` included) and the

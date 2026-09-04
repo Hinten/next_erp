@@ -56,7 +56,11 @@ export interface ShopeeConfig {
   readonly sandbox: boolean;
 }
 
-/** Trimmed value, or `null` when unset OR blank. The only reader of `process.env` here. */
+/**
+ * Trimmed value, or `null` when unset OR blank. Every `SHOPEE_*` read goes
+ * through here except `shopeeSandbox` below, whose `=== '1'` is blank-safe by
+ * construction (a blank value is production, which is the intended default).
+ */
 function envValue(name: string): string | null {
   const raw = process.env[name]?.trim();
   return raw != null && raw.length > 0 ? raw : null;

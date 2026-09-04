@@ -8,7 +8,7 @@
  * in the request (the HMAC `sign` stands in), no `scope`, and no PKCE. The
  * legacy Flutter app sent no `state` at all.
  *
- * ## The order of the five checks, and why each sits where it does
+ * ## The order of the six checks, and why each sits where it does
  *
  *  1. **state secret** — without the HMAC key nothing here can be trusted;
  *     redirect to the LIST page (no id is trustworthy yet) with `reason=config`.
@@ -23,7 +23,13 @@
  *     attempt: with no code there is nothing to exchange, and forcing the
  *     operator to restart from `oauth/start` would be a worse answer than
  *     letting them retry the same pending attempt.
- *  5. **`consume`** — single-use redemption, BEFORE the exchange. A replay of a
+ *  5. **subject present** (`shop_id` or `main_account_id`, a safe integer) —
+ *     same reasoning and same position as check 4: a callback with a valid
+ *     state but no usable subject id has nothing to exchange either, so it
+ *     answers `loja_invalida` WITHOUT consuming the attempt, and the operator
+ *     can retry the same pending one. Move it below `consume` and a malformed
+ *     redirect from Shopee burns a good attempt.
+ *  6. **`consume`** — single-use redemption, BEFORE the exchange. A replay of a
  *     captured callback finds the attempt consumed and lands as `bad_state`,
  *     before anything touches the credential. Its failure is deliberately NOT an
  *     `exchange` error: nothing about the Shopee `code` can rescue an attempt we

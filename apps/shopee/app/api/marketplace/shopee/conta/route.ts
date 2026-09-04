@@ -86,19 +86,29 @@ export async function GET(req: Request): Promise<NextResponse> {
     const cred = await ctx.readCredential();
     if (cred === null) return NextResponse.json(CONTA_DESCONECTADA);
 
-    const shopId = ctx.conta.shop_id;
-    if (shopId == null) {
-      // The consent never completed (or completed against a main account, whose
-      // shop fan-out is a later step): there is no shop to ask Shopee about.
-      return NextResponse.json(CONTA_DESCONECTADA);
-    }
-
+    // The credential clock is computed BEFORE the shop guard: a stored
+    // credential is a fact about the conta whether or not a shop is known, and
+    // `status.ts` documents `credencial: null` as "nothing stored at all".
     const now = Date.now();
     const expiraEm = expiryOf(cred);
     const credencial = {
       expiraEm: expiraEm ?? 0,
       expirada: expiraEm === null || expiraEm <= now,
     };
+
+    const shopId = ctx.conta.shop_id;
+    if (shopId == null) {
+      // A credential exists but the consent was main-account-scoped (the
+      // callback denormalises only the id class it carried), so there is no
+      // shop to ask Shopee about until the shop fan-out lands in a later step.
+      // Echo the second clock, as the revoked branch below does, so the two
+      // clocks stay distinguishable even in the disconnected state.
+      return NextResponse.json({
+        ...CONTA_DESCONECTADA,
+        mainAccountId: ctx.conta.main_account_id,
+        credencial,
+      });
+    }
 
     const partnerClient = createShopeePartnerClient({
       partnerId: ctx.config.partnerId,

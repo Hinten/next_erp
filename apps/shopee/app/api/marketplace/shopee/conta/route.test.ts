@@ -156,12 +156,20 @@ describe('the disconnected states are 200, not errors', () => {
     expect(h.getShopInfo).not.toHaveBeenCalled();
   });
 
-  it('answers connected:false when the conta has no shop_id yet', async () => {
-    h.loadCtx.mockResolvedValue(ctxDouble({ shop_id: null }));
+  it('answers connected:false when the conta has no shop_id yet, still echoing the credential clock', async () => {
+    // A main-account-scoped consent stores a credential and denormalises only
+    // `main_account_id`. `status.ts` documents `credencial: null` as "nothing
+    // stored at all", so this branch must NOT answer null for a stored token —
+    // the near-miss of the no-credential case above.
+    h.loadCtx.mockResolvedValue(ctxDouble({ shop_id: null, main_account_id: 777 }));
     const res = await GET(req('int-1', { authorization: 'Bearer t' }));
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({ connected: false });
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ connected: false, shopId: null, mainAccountId: 777 });
+    expect(body.credencial).not.toBeNull();
+    expect(body.credencial).toMatchObject({ expirada: expect.any(Boolean) });
     expect(h.getShopsByPartner).not.toHaveBeenCalled();
+    expect(h.getShopInfo).not.toHaveBeenCalled();
   });
 
   it('echoes shopId and the credential clock when the authorization was revoked', async () => {
