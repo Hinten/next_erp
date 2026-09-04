@@ -184,8 +184,8 @@ export const integracaoCamposDeSistema: readonly string[] = [
  * `dono: null` means "owns no per-channel field" (Balcão), so every channel's
  * fields are excluded.
  *
- * The result is de-duplicated; order carries no meaning (`ObjectView` and
- * `TableView` both consume it through `includes`).
+ * The result is de-duplicated; order carries no meaning — `ObjectView` filters
+ * with `.includes`.
  */
 export function integracaoExcludedFields(
   dono: CanalComCampos | null,
