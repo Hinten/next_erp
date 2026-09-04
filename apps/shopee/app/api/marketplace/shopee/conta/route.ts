@@ -4,9 +4,10 @@
  *
  * ## It must work with NO valid access token
  *
- * Token refresh is step 2, so today a stored access token is dead within four
- * hours of the connect. If this route needed one it would report every conta as
- * broken from lunchtime onwards. It does not: `get_shops_by_partner` is
+ * A stored access token dies within four hours of the connect. Step 2's token
+ * store renews it on the next call that needs one, but a renewal can be in
+ * flight elsewhere, or refused outright — so this route still has to answer
+ * fully without a live token, and it can: `get_shops_by_partner` is
  * **Public-signed** — no token in the base string — so the authorization state
  * is readable regardless.
  *
@@ -15,29 +16,35 @@
  *  - **no credential stored** → `connected: false` at HTTP 200, with ZERO
  *    provider calls. A conta that was never connected is a state to render, not
  *    a failure;
- *  - **an EXPIRED credential** → still `connected: true`, with `expireTime` and
- *    `diasParaExpirar`. The 4-hour access token and the 7–365-day authorization
- *    are two different clocks (see `../../../../../lib/shopee/conta/status.ts`),
- *    and only the second one means "reconnect";
- *  - **`get_shop_info`** runs only while the access token is live, and it is a
- *    SIDE read: a failure there degrades to `loja: null` at 200 rather than
- *    costing the operator the whole answer.
+ *  - **an EXPIRED stored credential** → still `connected: true`, with
+ *    `expireTime` and `diasParaExpirar` — and normally with `loja` too, because
+ *    the shop read renews the token on its way through. The 4-hour access token
+ *    and the 7–365-day authorization are two different clocks (see
+ *    `../../../../../lib/shopee/conta/status.ts`), and only the second one means
+ *    "reconnect";
+ *  - **`get_shop_info`** is a SIDE read: a failure there — including a renewal
+ *    held by another instance and a dead grant — degrades to `loja: null` at 200
+ *    rather than costing the operator the whole answer.
  */
 import { NextResponse } from 'next/server';
 import {
   ShopeeApiError,
   ShopeeHttpError,
   ShopeeNetworkError,
+  ShopeeReauthRequiredError,
   ShopeeSchemaError,
-  createShopeeClient,
   createShopeePartnerClient,
 } from '@delfrance/integrations-shopee';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import type { ShopeeConfig } from '@/lib/shopee/env';
-import { loadShopeeContext } from '@/lib/shopee/core/shopee';
+import { type ShopeeContext, loadShopeeContext } from '@/lib/shopee/core/shopee';
+import { type CredencialArmazenada, expiryOf } from '@/lib/shopee/core/credentialStore';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
+import {
+  ShopeeRefreshEmAndamentoError,
+  ShopeeSemCredencialError,
+} from '@/lib/shopee/core/tokenStore';
 import { findAuthorizedShop } from '@/lib/shopee/conta/shops';
 import {
   CONTA_DESCONECTADA,
@@ -49,24 +56,35 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+/** The `credencial` block of the wire shape. */
+type CredencialWire = NonNullable<ShopeeContaStatus['credencial']>;
+
 /**
- * A stored expiry we can actually compare against a clock.
+ * The second clock, as the panel renders it.
+ *
+ * `expiryOf` lives in `core/credentialStore.ts` with the document shape it
+ * tolerates; only the terminal-failure stamp is read here, because this route is
+ * its one reader.
  *
  * ⚠️ `parseRead` is SOFT — it logs and returns the RAW document on a schema
- * mismatch (migration tolerance, rule 8) — so `expirationDate` is not guaranteed
- * to be a number here. A comparison against `undefined` answers `false` for
- * reasons that have nothing to do with freshness, so an uncomparable value is
- * treated as EXPIRED: the worst outcome is one skipped side read.
+ * mismatch (migration tolerance, rule 8) — and `ultimaFalhaRefresh` is an
+ * unmodelled `.passthrough()` key on top of that, so nothing about its shape may
+ * be assumed. Anything that is not literally `terminal === true` reads as "no
+ * terminal failure": the wrong-way default here would tell an operator to
+ * reconnect a perfectly healthy conta.
  */
-function expiryOf(cred: { expirationDate: unknown }): number | null {
-  const raw = cred.expirationDate;
-  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
-}
-
-/** Same tolerance for the token itself: an unusable value is no token at all. */
-function accessTokenOf(cred: { access_token: unknown }): string | null {
-  const raw = cred.access_token;
-  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+function credencialDe(cred: CredencialArmazenada, nowMs: number): CredencialWire {
+  const expiraEm = expiryOf(cred);
+  const falha: unknown = cred.ultimaFalhaRefresh;
+  const renovacaoFalhou =
+    typeof falha === 'object' &&
+    falha !== null &&
+    (falha as Record<string, unknown>).terminal === true;
+  return {
+    expiraEm: expiraEm ?? 0,
+    expirada: expiraEm === null || expiraEm <= nowMs,
+    renovacaoFalhou,
+  };
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -90,11 +108,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     // credential is a fact about the conta whether or not a shop is known, and
     // `status.ts` documents `credencial: null` as "nothing stored at all".
     const now = Date.now();
-    const expiraEm = expiryOf(cred);
-    const credencial = {
-      expiraEm: expiraEm ?? 0,
-      expirada: expiraEm === null || expiraEm <= now,
-    };
+    const credencial = credencialDe(cred, now);
 
     const shopId = ctx.conta.shop_id;
     if (shopId == null) {
@@ -123,6 +137,15 @@ export async function GET(req: Request): Promise<NextResponse> {
       return NextResponse.json({ ...CONTA_DESCONECTADA, shopId, credencial });
     }
 
+    // ⚠️ ORDER IS LOAD-BEARING. `readLoja` goes through the token store, so it
+    // can RENEW the pair on its way through; reading the credential only
+    // afterwards is what keeps this answer self-consistent. Derived from the
+    // first read, `expirada: true` would sit next to a populated `loja` — the
+    // panel would tell the operator the token is dead while showing data that
+    // could only have come from a live one.
+    const loja = await readLoja(ctx);
+    const depois = await ctx.readCredential();
+
     const status: ShopeeContaStatus = {
       connected: true,
       shopId: shop.shopId,
@@ -130,8 +153,12 @@ export async function GET(req: Request): Promise<NextResponse> {
       authTime: shop.authTime,
       expireTime: shop.expireTime,
       diasParaExpirar: diasParaExpirar(shop.expireTime, now),
-      loja: credencial.expirada ? null : await readLoja(ctx.config, shopId, cred),
-      credencial,
+      loja,
+      // A document that vanished between the two reads is an operator
+      // disconnecting mid-request. The first read is what this answer was in
+      // fact computed from, so it is reported rather than `null` — which
+      // `status.ts` defines as "nothing was ever stored", a different claim.
+      credencial: depois === null ? credencial : credencialDe(depois, Date.now()),
     };
     return NextResponse.json(status);
   } catch (err) {
@@ -143,38 +170,56 @@ export async function GET(req: Request): Promise<NextResponse> {
 /**
  * The shop's name / region / lifecycle state — a SIDE read that degrades.
  *
+ * It is ALWAYS attempted, even when the stored token was already stale: the
+ * client takes its token from the store, so a stale pair is renewed on the way
+ * in and the read succeeds. Gating on the stored expiry would skip the read that
+ * repairs it.
+ *
  * ⚠️ The narrowing is a POSITIVE list: the request-scoped failures that say
  * nothing about the account behind them. Anything else rethrows and reaches the
  * route's own catch (rule 6).
+ *
+ * ⚠️ Three of the six are degraded ON PURPOSE, against the reflex of surfacing
+ * them:
+ *
+ *  - `ShopeeRefreshEmAndamentoError` — another instance holds the renewal lease.
+ *    Nothing is wrong with this conta; the next request finds the fresh pair.
+ *  - `ShopeeSemCredencialError` — the document vanished between the read above
+ *    and this call.
+ *  - `ShopeeReauthRequiredError` — the grant is dead, and the operator DOES have
+ *    to act. Answering 409 here is nevertheless the wrong move: it would throw
+ *    away `expireTime` and `diasParaExpirar`, which this route already read
+ *    WITHOUT a token and which are the authoritative statement about the
+ *    authorization. That is the legacy defect in mirror image — the Flutter app
+ *    reported the conta's health from the 4-hour clock and never read the
+ *    365-day one. The dead grant reaches the panel through
+ *    `credencial.renovacaoFalhou` instead, next to both clocks.
+ *
+ * ⚠️ `ShopeeReauthRequiredError` is named EXPLICITLY even though it extends
+ * `ShopeeApiError` and the line below it already matches. The arms are a single
+ * `||`, so today the extra line changes no verdict — it is there so that
+ * narrowing the `ShopeeApiError` arm one day (surfacing a generic Shopee failure
+ * rather than degrading it, a defensible change) cannot silently take the dead
+ * grant back to a 409 with it. The order is most-derived-first to match
+ * `core/respond.ts`, where it IS load-bearing.
  */
-async function readLoja(
-  config: ShopeeConfig,
-  shopId: number,
-  cred: { access_token: unknown },
-): Promise<ShopeeLoja | null> {
-  const accessToken = accessTokenOf(cred);
-  if (accessToken === null) return null;
-
-  const client = createShopeeClient({
-    partnerId: config.partnerId,
-    partnerKey: config.partnerKey,
-    hosts: config.hosts,
-    shopId,
-    getAccessToken: async () => accessToken,
-  });
-
+async function readLoja(ctx: ShopeeContext): Promise<ShopeeLoja | null> {
   try {
-    const info = await client.getShopInfo();
+    const info = await ctx.createShopClient().getShopInfo();
     return { shopName: info.shop_name, region: info.region, status: info.status };
   } catch (err) {
     if (
+      err instanceof ShopeeReauthRequiredError ||
       err instanceof ShopeeApiError ||
       err instanceof ShopeeHttpError ||
       err instanceof ShopeeNetworkError ||
-      err instanceof ShopeeSchemaError
+      err instanceof ShopeeSchemaError ||
+      err instanceof ShopeeRefreshEmAndamentoError ||
+      err instanceof ShopeeSemCredencialError
     ) {
       console.warn('[shopee/conta] get_shop_info falhou; seguindo sem os dados da loja', {
-        shopId,
+        integracaoId: ctx.integracaoId,
+        shopId: ctx.conta.shop_id,
         erro: err.name,
         mensagem: err.message,
       });

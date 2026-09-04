@@ -10,8 +10,11 @@
  *    is what `get_shops_by_partner` reports, it needs no token to read, and its
  *    lapse means a re-consent.
  *  - the **access token** (`credencial.expiraEm`, ~4 hours) — a refreshable
- *    detail. Its lapse means nothing to the operator once step 2's refresh
- *    exists.
+ *    detail, and one the operator is not asked to act on: the store renews it on
+ *    the next call that needs it. `expirada` therefore reads "the stored token
+ *    was stale when this answer was computed and the renewal did not produce a
+ *    live one"; `renovacaoFalhou` adds "and it will not, until someone
+ *    reconnects".
  *
  * The legacy app rendered "Conectado" from the 4-hour one and never read the
  * other, so an authorization about to lapse looked identical to a healthy conta
@@ -42,10 +45,34 @@ export const shopeeContaStatusSchema = z.object({
   /** Milliseconds — when the AUTHORIZATION lapses. */
   expireTime: z.number().int().nullable(),
   diasParaExpirar: z.number().int().nullable(),
-  /** `null` while the access token is dead — `get_shop_info` needs a live one. */
+  /**
+   * `null` when `get_shop_info` could not be read — the renewal is in flight on
+   * another instance, the authorization is dead, or Shopee simply failed. It is
+   * a SIDE read, so its absence never costs the operator the two clocks.
+   */
   loja: shopeeLojaSchema.nullable(),
   /** The OTHER clock. `null` when no credential is stored at all. */
-  credencial: z.object({ expiraEm: z.number().int(), expirada: z.boolean() }).nullable(),
+  credencial: z
+    .object({
+      expiraEm: z.number().int(),
+      /**
+       * The stored token was stale when this answer was computed AND the
+       * renewal did not produce a live one. On its own it is a transient state
+       * the operator does nothing about.
+       */
+      expirada: z.boolean(),
+      /**
+       * The last renewal failed **terminally** — Shopee refused the refresh
+       * token itself — so no further call can fix it and the seller must consent
+       * again.
+       *
+       * ⚠️ `.default(false)` so an answer from a backend deployed before this
+       * field existed still parses. The skew is cosmetic and self-correcting:
+       * an older backend simply never reports the failure.
+       */
+      renovacaoFalhou: z.boolean().default(false),
+    })
+    .nullable(),
 });
 export type ShopeeContaStatus = z.infer<typeof shopeeContaStatusSchema>;
 
