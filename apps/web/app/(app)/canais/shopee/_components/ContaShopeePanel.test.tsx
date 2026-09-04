@@ -91,7 +91,10 @@ describe('ContaShopeePanel — connected', () => {
       credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: true },
     });
 
-    expect(await screen.findByText('Loja 220099 · #220099')).toBeTruthy();
+    // The id is the whole identity here, shown ONCE — `Loja 220099 · #220099`
+    // is the near-miss this pins against.
+    expect(await screen.findByText('Loja #220099')).toBeTruthy();
+    expect(screen.queryByText(/220099 · #220099/)).toBeNull();
     expect(screen.getByText(/Token de acesso expirado/)).toBeTruthy();
     expect(screen.getByText(/renovação automática do token/)).toBeTruthy();
   });

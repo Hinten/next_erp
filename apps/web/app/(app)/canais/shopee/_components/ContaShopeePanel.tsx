@@ -61,9 +61,14 @@ function formatarData(ms: number | null): string | null {
  */
 function identidadeDaConta(conta: ShopeeContaStatus): string {
   if (conta.shopId !== null) {
-    const nome = conta.loja?.shopName ?? `Loja ${String(conta.shopId)}`;
+    const id = String(conta.shopId);
     const regiao = conta.loja?.region == null ? '' : ` · ${conta.loja.region}`;
-    return `${nome} · #${String(conta.shopId)}${regiao}`;
+    // Without a live token there is no name and the id IS the whole identity —
+    // which is the common state until step 2 ships refresh — so `Loja #<id>`
+    // must not then repeat the number as `· #<id>`.
+    return conta.loja?.shopName == null
+      ? `Loja #${id}${regiao}`
+      : `${conta.loja.shopName} · #${id}${regiao}`;
   }
   if (conta.mainAccountId !== null) return `Conta principal #${String(conta.mainAccountId)}`;
   return 'Conta conectada';
