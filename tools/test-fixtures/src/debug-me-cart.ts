@@ -1,4 +1,4 @@
-import { localTelefone } from '@delfrance/core/phone';
+import { localTelefoneOrNull } from '@delfrance/core/phone';
 import { db } from './admin';
 
 /**
@@ -80,14 +80,15 @@ async function getAccessToken(): Promise<string> {
 
 const cap = (s: string | null | undefined, n: number) => (s ?? '').slice(0, n).trim();
 /**
- * Mirror of `melhorEnvioCart.ts`'s boundary strip: ME gets the LOCAL BR shape,
- * whatever this repo stores. Kept identical on purpose — this script exists to
- * reproduce what the app sends, so a phone shape it does NOT share would make
- * every bisect run answer a question nobody asked. To probe a `55…` value
- * deliberately, add it as a `variants()` entry instead.
+ * The same boundary strip the app's cart mapper applies — shared through
+ * `@delfrance/core/phone` rather than restated, so this script cannot drift
+ * from what it exists to reproduce (the reasoning lives above
+ * `BuildPedidoCartInput` in `melhorEnvioCart.ts`). `?? undefined` because this
+ * payload omits absent fields instead of sending `null`. To probe a `55…`
+ * value deliberately, add it as a `variants()` entry.
  */
 const wirePhone = (v: unknown) =>
-  typeof v === 'string' && v !== '' ? localTelefone(v) : undefined;
+  localTelefoneOrNull(typeof v === 'string' ? v : null) ?? undefined;
 
 async function buildBasePayload(): Promise<Record<string, unknown>> {
   const intFrete = (await db().collection('int_frete').doc(INT_ID).get()).data() as
