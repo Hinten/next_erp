@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ESTADO_FRETE,
+  ORIGEM_INCIDENTE,
+  STATUS_CLAIM,
   TIPO_INCIDENTE,
   TIPO_RESOLUCAO,
   resolucaoSchema,
+  type EstadoFrete,
   type Incidente,
 } from '@delfrance/schemas';
 import {
+  CAMPOS_AUTORAIS_INCIDENTE,
   EMPTY_INCIDENTE_FORM,
+  buildIncidentePatch,
   buildResolucao,
+  detectIncidenteConflict,
   formFromIncidente,
   incidenteDataFromForm,
   isResolucaoLocked,
@@ -209,5 +216,149 @@ describe('formFromIncidente', () => {
       resValor: 7.5,
       resComentarios: 'parcial',
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    Update path — patch + conflict (#1250)                  */
+/* -------------------------------------------------------------------------- */
+
+function incidente(overrides: Partial<Incidente> = {}): Incidente {
+  return {
+    origem: ORIGEM_INCIDENTE.pedidoMercadoLivre,
+    tipo: TIPO_INCIDENTE.devolucao,
+    motivoDoIncidente: 'Motivo original',
+    comentarios: 'Comentário original',
+    timestamp: 1,
+    ultimaModificacao: 1,
+    externalId: '9001',
+    resolucao: null,
+    claimStatus: STATUS_CLAIM.aberta,
+    claimStage: null,
+    entregue: null,
+    ...overrides,
+  } as Incidente;
+}
+
+function comFrete(estado: EstadoFrete): NonNullable<Incidente['resolucao']> {
+  return {
+    data: 10,
+    valor: 0,
+    tipo: TIPO_RESOLUCAO.etiquetaDeDevolucao,
+    comentarios: null,
+    frete: { estado },
+  } as NonNullable<Incidente['resolucao']>;
+}
+
+/** The form as it looks right after `openEdit` on `doc` — i.e. untouched. */
+const pristine = (doc: Incidente): IncidenteFormState => formFromIncidente(doc);
+
+describe('buildIncidentePatch', () => {
+  it('is empty for an untouched form — an unchanged field is never written', () => {
+    const doc = incidente();
+    expect(buildIncidentePatch(pristine(doc), doc, NOW)).toEqual({});
+  });
+
+  it('carries only the authored fields the operator actually changed', () => {
+    const doc = incidente();
+    const patch = buildIncidentePatch({ ...pristine(doc), motivo: 'Motivo novo' }, doc, NOW);
+    expect(patch).toEqual({ motivoDoIncidente: 'Motivo novo' });
+  });
+
+  it('never carries a key outside CAMPOS_AUTORAIS_INCIDENTE', () => {
+    const doc = incidente({ resolucao: comFrete(ESTADO_FRETE.iniciado) });
+    const patch = buildIncidentePatch(
+      { ...pristine(doc), tipo: TIPO_INCIDENTE.troca, origem: '', comentarios: 'x', resValor: 5 },
+      doc,
+      NOW,
+    );
+    // `claimStatus`, `claimStage`, `entregue`, `externalId`, `timestamp`,
+    // `ultimaModificacao` and `overrideBloqueio` belong to other writers.
+    for (const key of Object.keys(patch)) {
+      expect(CAMPOS_AUTORAIS_INCIDENTE).toContain(key);
+    }
+    expect(patch).not.toHaveProperty('claimStatus');
+    expect(patch).not.toHaveProperty('externalId');
+  });
+
+  it('omits resolucao entirely once the doc is locked, even with resolução edits pending', () => {
+    const locked = incidente({ resolucao: comFrete(ESTADO_FRETE.postado) });
+    const patch = buildIncidentePatch(
+      { ...pristine(locked), resValor: 99, resComentarios: 'tentativa' },
+      locked,
+      NOW,
+    );
+    expect(patch).not.toHaveProperty('resolucao');
+  });
+
+  it('carries resolucao while the frete is still iniciado, keeping the live frete', () => {
+    const doc = incidente({ resolucao: comFrete(ESTADO_FRETE.iniciado) });
+    const patch = buildIncidentePatch({ ...pristine(doc), resValor: 99 }, doc, NOW);
+    expect(patch.resolucao).toMatchObject({ valor: 99, frete: { estado: ESTADO_FRETE.iniciado } });
+  });
+});
+
+describe('detectIncidenteConflict', () => {
+  it('reports no conflict when only a NON-authored field moved remotely', () => {
+    const baseline = incidente();
+    // Exactly what the ML claims webhook merges while the editor is open.
+    const current = incidente({
+      claimStatus: STATUS_CLAIM.fechada,
+      claimStage: 'dispute',
+      entregue: true,
+      ultimaModificacao: 999,
+    });
+    const patch = buildIncidentePatch({ ...pristine(baseline), motivo: 'Novo' }, baseline, NOW);
+    expect(detectIncidenteConflict(baseline, current, patch)).toEqual({
+      conflito: false,
+      campos: [],
+      bloqueouAgora: false,
+    });
+  });
+
+  it('reports a conflict when an authored field this save writes moved remotely', () => {
+    const baseline = incidente();
+    const current = incidente({ motivoDoIncidente: 'Outra pessoa escreveu isto' });
+    const patch = buildIncidentePatch({ ...pristine(baseline), motivo: 'Novo' }, baseline, NOW);
+    expect(detectIncidenteConflict(baseline, current, patch)).toMatchObject({
+      conflito: true,
+      campos: ['motivoDoIncidente'],
+    });
+  });
+
+  it('ignores an authored field that moved remotely but is NOT in this patch', () => {
+    const baseline = incidente();
+    const current = incidente({ comentarios: 'nota de outra pessoa' });
+    const patch = buildIncidentePatch({ ...pristine(baseline), motivo: 'Novo' }, baseline, NOW);
+    expect(detectIncidenteConflict(baseline, current, patch).conflito).toBe(false);
+  });
+
+  it('conflicts with bloqueouAgora when the lock arms over pending resolução edits', () => {
+    const baseline = incidente({ resolucao: comFrete(ESTADO_FRETE.iniciado) });
+    const current = incidente({ resolucao: comFrete(ESTADO_FRETE.postado) });
+    const patch = buildIncidentePatch({ ...pristine(baseline), resValor: 99 }, baseline, NOW);
+    expect(detectIncidenteConflict(baseline, current, patch)).toMatchObject({
+      conflito: true,
+      campos: ['resolucao'],
+      bloqueouAgora: true,
+    });
+  });
+
+  it('does NOT conflict when the lock arms and the operator never touched the resolução', () => {
+    const baseline = incidente({ resolucao: comFrete(ESTADO_FRETE.iniciado) });
+    const current = incidente({ resolucao: comFrete(ESTADO_FRETE.postado) });
+    const patch = buildIncidentePatch({ ...pristine(baseline), motivo: 'Novo' }, baseline, NOW);
+    expect(detectIncidenteConflict(baseline, current, patch)).toMatchObject({
+      conflito: false,
+      bloqueouAgora: true,
+    });
+    expect(patch).not.toHaveProperty('resolucao');
+  });
+
+  it('does not fire bloqueouAgora for a resolução that was ALREADY locked at capture', () => {
+    const baseline = incidente({ resolucao: comFrete(ESTADO_FRETE.postado) });
+    const current = incidente({ resolucao: comFrete(ESTADO_FRETE.postado) });
+    const patch = buildIncidentePatch(pristine(baseline), baseline, NOW);
+    expect(detectIncidenteConflict(baseline, current, patch).bloqueouAgora).toBe(false);
   });
 });
