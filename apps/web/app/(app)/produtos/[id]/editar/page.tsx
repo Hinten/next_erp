@@ -447,10 +447,13 @@ export default function EditarProdutoPage() {
       modificacoes: {
         label: SECTION_MODIFICACOES,
         section: SECTION_MODIFICACOES,
-        // Self-contained tab (like Estoque/Mercado Livre): a read-only feed of
-        // the produto's unified `historicoDeModificacoes` entries with
-        // per-field revert, decoupled from this form's save.
-        renderInput: () => <ModificacoesManager produtoId={params.id} db={db} />,
+        // Self-contained tab (like Estoque/Mercado Livre): a feed of the
+        // produto's unified `historicoDeModificacoes` entries. "Restaurar"
+        // STAGES the old value into THIS form (#660) — hence `disabled`, which
+        // hides an action a read-only viewer could never commit.
+        renderInput: (p) => (
+          <ModificacoesManager produtoId={params.id} db={db} disabled={p.disabled} />
+        ),
       },
       componentesKit: {
         label: 'Componentes do kit',

@@ -3,7 +3,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { produtoSchema } from '@delfrance/schemas';
+import { REVERTIBLE_PRODUTO_FIELDS } from '@/lib/produtos/revert';
 import {
+  PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_PERSISTENT_SECTIONS,
   PRODUTO_SECTIONS,
   PRODUTO_SECTIONS_BASE,
@@ -155,5 +157,45 @@ describe('produto page model vs. the produto document write', () => {
     expect(
       keysReachingTheProdutoWrite(['nome', 'extraData', 'abaNova'], PRODUTO_TRANSIENT_FIELDS),
     ).toEqual(['abaNova']);
+  });
+});
+
+/**
+ * A revert is STAGED into the produto form (#660), not written directly — so
+ * every field the Modificações tab offers "Restaurar" for must have an input the
+ * operator can actually look at before saving.
+ *
+ * `ordem` broke this: it was whitelisted for revert AND excluded from the form,
+ * so staging one told the operator a value was waiting to be reviewed with
+ * nothing on screen to review and no tab to jump to. The write still landed on
+ * save, which is what kept it invisible.
+ *
+ * The two lists live in different files and neither one knows about the other,
+ * so this is the only thing that would notice a field leaving the form while
+ * staying revertible.
+ */
+describe('every revertible produto field is rendered on the form', () => {
+  it('has no field that is both revertible and excluded from the form', () => {
+    const excluded = new Set(PRODUTO_EXCLUDED_FIELDS);
+    const invisiveis = [...REVERTIBLE_PRODUTO_FIELDS].filter((f) => excluded.has(f));
+    expect(
+      invisiveis,
+      [
+        'These fields can be restored from the Modificações tab but have no input',
+        'on the produto form, so a staged revert of one is announced and then',
+        'invisible. Either drop it from REVERTIBLE_PRODUTO_FIELDS (apps/web/lib/',
+        'produtos/revert.ts) or give it a rendered input:',
+        ...invisiveis.map((f) => `  - ${f}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  it('cannot pass vacuously — both sets are populated', () => {
+    // Two empty sets are trivially disjoint; a renamed export would do that.
+    expect(REVERTIBLE_PRODUTO_FIELDS.size).toBeGreaterThan(0);
+    expect(PRODUTO_EXCLUDED_FIELDS.length).toBeGreaterThan(0);
+    // And the check must be able to FAIL: a field that IS excluded reads as
+    // excluded, so the intersection above is a real question.
+    expect(new Set(PRODUTO_EXCLUDED_FIELDS).has('ordem')).toBe(true);
   });
 });

@@ -40,6 +40,20 @@ export async function fillField(page: Page, label: string, value: string): Promi
 }
 
 /**
+ * Assert what the operator SEES in a text field — the visible one, per
+ * `visibleField`. Used where the point of a step is that something else put a
+ * value in the form (a staged revert, an autofill), not that the user typed it.
+ */
+export async function expectFieldValue(
+  page: Page,
+  label: string,
+  value: string,
+  timeout = 15_000,
+): Promise<void> {
+  await expect(visibleField(page, label)).toHaveValue(value, { timeout });
+}
+
+/**
  * Read the number a BRL-masked field is actually holding.
  *
  * Mirrors `parseBrl` in `apps/web/app/(app)/produtos/_components/CurrencyInput.tsx`
@@ -55,6 +69,26 @@ function parseBrlText(raw: string): number | null {
   if (cleaned === '' || cleaned === '-') return null;
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Assert the NUMBER a BRL-masked money input is holding (`null` when empty).
+ *
+ * The plain `expectFieldValue` cannot serve here: the mask means the rendered
+ * string varies with focus (`R$ 40` vs `R$ 40,00`), so the assertion has to go
+ * through the same parse `typeMoney` verifies with. Retried, because the value
+ * can arrive from a form write rather than a keystroke.
+ */
+export async function expectMoneyValue(
+  page: Page,
+  name: string,
+  value: number | null,
+  timeout = 15_000,
+): Promise<void> {
+  const input = page.getByRole('textbox', { name });
+  await expect(async () => {
+    expect(parseBrlText(await input.inputValue())).toBe(value);
+  }).toPass({ timeout });
 }
 
 /**
