@@ -123,7 +123,26 @@ jobs:
         # svc-live below.
         run: |
           ensure_chain() {
-            local file="packages/integrations/nfe/ca/$1"; shift
+            # ⚠️ The chain filename is DERIVED from the same flags that are
+            # forwarded to the fetcher — never passed alongside them. It used to
+            # be `$1`, which made the probe path and the fetch two independent
+            # sources of truth with nothing reconciling them: `ensure_chain
+            # sefaz-an-homologacao.pem --uf=AN --ambiente=producao` fetched fine,
+            # wrote `sefaz-an-producao.pem`, returned 0 without ever reaching the
+            # `-f` probe, and the job then ENOENTed inside the test. Enforced by
+            # `packages/config-eslint/rules/sefaz-chain-fetch-coverage.test.js`.
+            local uf='' ambiente='' arg
+            for arg in "$@"; do
+              case "$arg" in
+                --uf=*)       uf="${arg#--uf=}" ;;
+                --ambiente=*) ambiente="${arg#--ambiente=}" ;;
+              esac
+            done
+            if [[ -z "$uf" || -z "$ambiente" ]]; then
+              echo "::error::ensure_chain needs --uf= and --ambiente=; got: $*"
+              return 1
+            fi
+            local file="packages/integrations/nfe/ca/sefaz-${uf,,}-${ambiente}.pem"
             for i in 1 2; do
               pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
               echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 5s"
@@ -136,8 +155,8 @@ jobs:
             echo "::error::fetch:sefaz-ca $* failed after 2 attempts and no cached chain is available"
             return 1
           }
-          ensure_chain sefaz-sp-homologacao.pem --uf=SP --ambiente=homologacao
-          ensure_chain sefaz-an-homologacao.pem --uf=AN --ambiente=homologacao
+          ensure_chain --uf=SP --ambiente=homologacao
+          ensure_chain --uf=AN --ambiente=homologacao
 
       - name: SEFAZ-SP HOM status gate (single status call per run)
         # Short-circuits the EPEC round-trip below if SEFAZ-SP is paralisado
@@ -252,7 +271,26 @@ jobs:
         # test self-skips (loudly) when its chain file is absent.
         run: |
           ensure_chain() {
-            local file="packages/integrations/nfe/ca/$1"; shift
+            # ⚠️ The chain filename is DERIVED from the same flags that are
+            # forwarded to the fetcher — never passed alongside them. It used to
+            # be `$1`, which made the probe path and the fetch two independent
+            # sources of truth with nothing reconciling them: `ensure_chain
+            # sefaz-an-homologacao.pem --uf=AN --ambiente=producao` fetched fine,
+            # wrote `sefaz-an-producao.pem`, returned 0 without ever reaching the
+            # `-f` probe, and the job then ENOENTed inside the test. Enforced by
+            # `packages/config-eslint/rules/sefaz-chain-fetch-coverage.test.js`.
+            local uf='' ambiente='' arg
+            for arg in "$@"; do
+              case "$arg" in
+                --uf=*)       uf="${arg#--uf=}" ;;
+                --ambiente=*) ambiente="${arg#--ambiente=}" ;;
+              esac
+            done
+            if [[ -z "$uf" || -z "$ambiente" ]]; then
+              echo "::error::ensure_chain needs --uf= and --ambiente=; got: $*"
+              return 1
+            fi
+            local file="packages/integrations/nfe/ca/sefaz-${uf,,}-${ambiente}.pem"
             for i in 1 2; do
               pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
               echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 5s"
@@ -264,8 +302,8 @@ jobs:
             fi
             return 1
           }
-          ensure_chain sefaz-svc-an-homologacao.pem -- --uf=SVC-AN --ambiente=homologacao
-          ensure_chain sefaz-svc-rs-homologacao.pem -- --uf=SVC-RS --ambiente=homologacao \
+          ensure_chain --uf=SVC-AN --ambiente=homologacao
+          ensure_chain --uf=SVC-RS --ambiente=homologacao \
             || echo "::warning::SVC-RS chain unavailable (fetch failed, no cache) — the off-binding transport test will self-skip this run"
 
       - name: Live SVC contingency round-trips — SVC-AN emission/consulta + SVC-RS transport

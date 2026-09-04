@@ -77,11 +77,29 @@ const CHAIN_CALL_SITES = {
 
 /**
  * Every workflow job that runs a live SEFAZ suite: the suite's command, and the
- * `--uf=` slots that suite reaches.
+ * chains that suite reaches as `<UF>:<ambiente>` pairs.
  *
- * `ufs` is what the job MUST fetch, not everything it may — a job fetching more
- * passes (`nfe-live` also pulls the SVC chains for its advisory step).
+ * ⚠️ The AMBIENTE is half the identity, not decoration. `runtime.ts` resolves
+ * `sefaz-<uf>-<ambiente>.pem`, so a job that fetches `--uf=AN --ambiente=producao`
+ * has fetched a real chain and still leaves `sefaz-an-homologacao.pem` absent —
+ * the job passes its fetch step and ENOENTs inside the test. Pairing them here
+ * is what makes that a red guard instead of a live-lane surprise.
+ *
+ * `chains` is what the job MUST fetch, not everything it may — a job fetching
+ * more passes (`nfe-live` also pulls the SVC chains for its advisory step).
+ *
+ * ⚠️ Model limit, deliberate: ONE suite per row. A job running several live
+ * suites is covered only for the one named here, so a NEW suite added to an
+ * EXISTING job inherits that row's chains rather than declaring its own. No gap
+ * today — `operations` and `rtc` both run in `nfe-live`, whose SP row already
+ * covers them — but a new suite reaching a NEW transport from an existing job
+ * would slip through. Add a row for it.
  */
+const WORKFLOWS_WITH_HELPERS = [
+  '.github/workflows/nfe-epec-scheduled.yml',
+  '.github/workflows/ci-nfe.yml',
+];
+
 const LIVE_JOBS = [
   {
     workflow: '.github/workflows/nfe-epec-scheduled.yml',
@@ -89,52 +107,141 @@ const LIVE_JOBS = [
     test: 'test epec.homologacao',
     // Both halves of the round-trip: the evento at the AN (`rt.an()`), then
     // the pós-EPEC transmission of the full NF-e to the home SEFAZ.
-    ufs: ['AN', 'SP'],
+    chains: ['AN:homologacao', 'SP:homologacao'],
     why: 'EPEC registers at the Ambiente Nacional and retransmits to the home SEFAZ (#1393)',
   },
   {
     workflow: '.github/workflows/nfe-epec-scheduled.yml',
     job: 'svc-live',
     test: 'test svc.homologacao',
-    ufs: ['SVC-AN', 'SVC-RS'],
+    chains: ['SVC-AN:homologacao', 'SVC-RS:homologacao'],
     why: 'SVC-AN native emission + SVC-RS off-binding transport',
   },
   {
     workflow: '.github/workflows/ci-nfe.yml',
     job: 'nfe-live',
     test: 'test orchestrator.homologacao',
-    ufs: ['SP'],
+    chains: ['SP:homologacao'],
     why: 'the per-PR live lane emits against the SP homologação endpoint',
   },
 ];
 
 /**
- * The `--uf=` slots a job body actually fetches.
+ * Resolve the two shell variables a fetch step may assign, so `--uf="$uf"`
+ * reads as `--uf=SP`.
  *
- * Two invocation shapes are in use and both must be read:
+ * ⚠️ Deliberately narrow — only bare `uf=`/`ambiente=` assignments, nothing
+ * else. `ci-nfe.yml`'s SP step assigns them precisely so its fetch flags and
+ * its cache-probe path derive from ONE value; a guard that could not follow
+ * that indirection would read no slot there at all and pass vacuously over
+ * the step it most needs to check.
+ */
+function resolveShellVars(body) {
+  const vars = new Map();
+  for (const m of body.matchAll(/(?:^|\s|;)(uf|ambiente)=([A-Za-z0-9_-]+)\s*(?=;|$)/gm)) {
+    vars.set(m[1], m[2]);
+  }
+  return body.replace(
+    /"\$(uf|ambiente)"|\$\{(uf|ambiente)\}|\$(uf|ambiente)\b/g,
+    (whole, a, b, c) => {
+      const name = a ?? b ?? c;
+      return vars.get(name) ?? whole;
+    },
+  );
+}
+
+/**
+ * The `<UF>:<ambiente>` chains a job body actually fetches.
  *
- *   - explicit — `ensure_chain <file> -- --uf=AN --ambiente=homologacao`, whose
- *     `--uf=` sits on the CALLER line while `fetch:sefaz-ca "$@"` sits inside
- *     the helper, so this scans the whole job body rather than per line;
- *   - bare — `pnpm ... fetch:sefaz-ca` with no `--uf=` at all, which
- *     `scripts/fetch-sefaz-chain.mjs` defaults to `SP` (`args.uf ?? 'SP'`).
- *     ⚠️ Reading that default here is what keeps `ci-nfe.yml`'s bare call
- *     honest instead of forcing a cosmetic rewrite of a working lane.
+ * Paired PER LINE, because every call site now carries both flags together:
+ * `ensure_chain --uf=AN --ambiente=homologacao`, whose flags sit on the CALLER
+ * line while `fetch:sefaz-ca "$@"` sits inside the helper. Collecting the two
+ * flags independently across the body would happily pair an `AN` from one line
+ * with a `homologacao` from another.
  *
  * Comments are stripped first: a `--uf=` named in prose is not a fetch, the
  * exact confusion `lib/workflow-scan.js`'s header documents.
  */
-function fetchedSlots(jobBody) {
-  const body = stripComments(jobBody);
-  const slots = new Set();
-  for (const m of body.matchAll(/--uf=([A-Za-z-]+)/g)) slots.add(m[1].toUpperCase());
+function fetchedChains(jobBody) {
+  const body = resolveShellVars(stripComments(jobBody));
+  const chains = new Set();
   for (const line of body.split('\n')) {
-    if (!line.includes('fetch:sefaz-ca')) continue;
-    const after = line.slice(line.indexOf('fetch:sefaz-ca') + 'fetch:sefaz-ca'.length);
-    // `"$@"` forwards the caller's flags; those were collected above.
-    if (!after.includes('--uf=') && !after.includes('$@')) slots.add('SP');
+    const uf = line.match(/--uf=([A-Za-z-]+)/);
+    const ambiente = line.match(/--ambiente=([A-Za-z-]+)/);
+    if (uf && ambiente) chains.add(`${uf[1].toUpperCase()}:${ambiente[1]}`);
   }
-  return slots;
+  return chains;
+}
+
+/**
+ * Lines invoking the fetcher without saying which chain they want.
+ *
+ * `scripts/fetch-sefaz-chain.mjs` defaults to `SP`/`homologacao`, and leaning on
+ * those defaults is how a step ends up fetching one chain while probing for
+ * another. A line is fine when it forwards `"$@"` (the helper's own invocation,
+ * whose flags come from its caller) or when it names both flags itself.
+ *
+ * ⚠️ Scoped to lines that actually run `pnpm`. Each helper echoes
+ * `fetch:sefaz-ca $*` in its retry and fallback diagnostics; naming the script
+ * is not running it.
+ */
+function flaglessFetches(jobBody) {
+  const body = resolveShellVars(stripComments(jobBody));
+  return body
+    .split('\n')
+    .filter((line) => {
+      const at = line.indexOf('fetch:sefaz-ca');
+      if (at === -1) return false;
+      // ⚠️ Only an INVOCATION counts. Every helper echoes `fetch:sefaz-ca $*`
+      // in its retry and fallback diagnostics, and those name the script
+      // without running it — the qualifier that keeps this off five innocent
+      // lines per workflow, the same shape `no-unvalidated-response` uses.
+      if (!/\bpnpm\b/.test(line.slice(0, at))) return false;
+      const after = line.slice(at + 'fetch:sefaz-ca'.length);
+      if (after.includes('$@')) return false;
+      return !(after.includes('--uf=') && after.includes('--ambiente='));
+    })
+    .map((line) => line.trim());
+}
+
+/**
+ * `ensure_chain()` definitions that do NOT derive their cache-probe path from
+ * their own flags.
+ *
+ * ⚠️ This is the assertion that makes three inline copies of the helper safe.
+ * The original took the filename as `$1` and forwarded the flags separately, so
+ * the probe and the fetch were independent sources of truth:
+ * `ensure_chain sefaz-an-homologacao.pem --uf=AN --ambiente=producao` fetched
+ * successfully, wrote `sefaz-an-producao.pem`, returned 0 on the first attempt
+ * without ever reaching the `-f` probe, and the job then ENOENTed inside the
+ * test. Worse in `ci-nfe.yml`, whose copy reads the probe path BEFORE fetching
+ * to decide whether to fetch at all — a mismatch there skips the fetch on the
+ * strength of the wrong file.
+ *
+ * The helper is duplicated per job on purpose rather than extracted to
+ * `.github/scripts/`: workflow YAML comes from the merge ref while the checkout
+ * comes from the PR head (root `CLAUDE.md` rule 5), and a chain fetch has no
+ * safe degraded verdict. This guard is what keeps the copies from drifting.
+ */
+function helpersNotDerivingTheirPath(source) {
+  const offenders = [];
+  for (const m of source.matchAll(/ensure_chain\(\)\s*\{([\s\S]*?)\n {10}\}/g)) {
+    // ⚠️ Comments first. This helper's own docblock NAMES the `$1` shape it
+    // exists to ban, and a mention is not a use — the same confusion
+    // `lib/workflow-scan.js`'s header documents for job bodies.
+    const body = stripComments(m[1]);
+    const derives =
+      /local file="packages\/integrations\/nfe\/ca\/sefaz-\$\{uf,,\}-\$\{ambiente\}\.pem"/.test(
+        body,
+      );
+    const positional = /\$\{?1\}?/.test(body);
+    if (!derives || positional) {
+      offenders.push(
+        positional ? 'takes the filename as a positional ($1)' : 'does not derive its probe path',
+      );
+    }
+  }
+  return offenders;
 }
 
 /** `loadChainCached(<arg>, …)` call sites, excluding the function's own declaration. */
@@ -198,7 +305,7 @@ describe('every SEFAZ chain slot the runtime loads is fetched by its live lane',
   });
 
   it('covers every inventoried slot with at least one live job', () => {
-    const covered = new Set(LIVE_JOBS.flatMap((j) => j.ufs));
+    const covered = new Set(LIVE_JOBS.flatMap((j) => j.chains.map((c) => c.split(':')[0])));
     const uncovered = Object.entries(CHAIN_CALL_SITES).flatMap(([site, { slots, what }]) =>
       slots.filter((s) => !covered.has(s)).map((s) => `${s} (${site} — ${what})`),
     );
@@ -240,17 +347,18 @@ describe('every SEFAZ chain slot the runtime loads is fetched by its live lane',
     ).toEqual([]);
   });
 
-  it('fetches every chain its live suite reaches', () => {
-    const gaps = LIVE_JOBS.flatMap(({ workflow, job, test, ufs, why }) => {
+  it('fetches every chain its live suite reaches, at the right ambiente', () => {
+    const gaps = LIVE_JOBS.flatMap(({ workflow, job, test, chains, why }) => {
       const body = jobBlocks(read(workflow))[job] ?? '';
-      const fetched = fetchedSlots(body);
-      const missing = ufs.filter((u) => !fetched.has(u));
+      const fetched = fetchedChains(body);
+      const missing = chains.filter((c) => !fetched.has(c));
       if (missing.length === 0) return [];
+      const [uf, ambiente] = missing[0].split(':');
       return [
         `${workflow} › ${job} runs \`${test}\` but never fetches: ${missing.join(', ')}`,
         `    (${why})`,
         `    fetched: ${[...fetched].sort().join(', ') || '(nothing)'}`,
-        `    add: ensure_chain sefaz-${missing[0].toLowerCase()}-homologacao.pem --uf=${missing[0]} --ambiente=homologacao`,
+        `    add: ensure_chain --uf=${uf} --ambiente=${ambiente}`,
       ];
     });
 
@@ -258,10 +366,69 @@ describe('every SEFAZ chain slot the runtime loads is fetched by its live lane',
       gaps,
       [
         'A live suite reaches a SEFAZ transport whose TLS chain its job never',
-        'fetches. Nothing is vendored, so that chain is ENOENT at the first call',
-        'and the job dies before reaching SEFAZ — exactly issue #1393:',
+        'fetches at the ambiente it needs. Nothing is vendored, so that chain is',
+        'ENOENT at the first call and the job dies before reaching SEFAZ —',
+        'exactly issue #1393:',
         '',
         ...gaps,
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  it('every ensure_chain derives its probe path from its own flags', () => {
+    // ⚠️ The finding this guard grew for. A helper taking the filename
+    // alongside the flags lets the two disagree silently — see
+    // `helpersNotDerivingTheirPath`'s note for the exact failure.
+    const offenders = WORKFLOWS_WITH_HELPERS.flatMap((wf) =>
+      helpersNotDerivingTheirPath(read(wf)).map((why) => `${wf}: ${why}`),
+    );
+
+    expect(
+      offenders,
+      [
+        'An `ensure_chain()` definition no longer derives its cache-probe path',
+        'from the same `--uf=`/`--ambiente=` flags it forwards to the fetcher,',
+        'so the probe and the fetch can name different files:',
+        '',
+        ...offenders.map((o) => `  - ${o}`),
+        '',
+        'The body must open by parsing its own flags and building',
+        '`packages/integrations/nfe/ca/sefaz-${uf,,}-${ambiente}.pem`.',
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  it('finds an ensure_chain helper in every workflow that should have one', () => {
+    // Anti-vacuity floor for the assertion above: a renamed helper, or a
+    // regex that stopped matching the block, would make it pass over nothing.
+    const without = WORKFLOWS_WITH_HELPERS.filter((wf) => !/ensure_chain\(\)\s*\{/.test(read(wf)));
+
+    expect(
+      without,
+      [
+        'These workflows are expected to define `ensure_chain()` and no longer do,',
+        'so the shape assertion above examines nothing for them:',
+        ...without.map((wf) => `  - ${wf}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  it('no fetch:sefaz-ca leans on the script defaults', () => {
+    // `fetch-sefaz-chain.mjs` defaults to SP/homologacao. A call that says
+    // neither is a call whose chain identity lives nowhere in the workflow.
+    const bare = LIVE_JOBS.flatMap(({ workflow, job }) => {
+      const body = jobBlocks(read(workflow))[job] ?? '';
+      return flaglessFetches(body).map((line) => `${workflow} › ${job}: ${line}`);
+    });
+
+    expect(
+      bare,
+      [
+        'These invoke the chain fetcher without naming both `--uf=` and',
+        "`--ambiente=`, so which chain lands on disk depends on the script's",
+        'defaults rather than on anything the workflow says:',
+        '',
+        ...bare.map((b) => `  - ${b}`),
       ].join('\n'),
     ).toEqual([]);
   });

@@ -495,8 +495,14 @@ jobs:
         # SVC step below, so SERPRO reachability can't sink the SP lanes.
         # A failed fetch falls back to the cached chain when one exists.
         run: |
-          if ! pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca; then
-            if [[ -f packages/integrations/nfe/ca/sefaz-sp-homologacao.pem ]]; then
+          # Flags explicit and the probe DERIVED from them — never the
+          # script's `SP`/`homologacao` defaults against a literal
+          # filename, which is the same two-sources-of-truth trap the
+          # `ensure_chain` helper below documents.
+          uf=SP; ambiente=homologacao
+          file="packages/integrations/nfe/ca/sefaz-${uf,,}-${ambiente}.pem"
+          if ! pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca --uf="$uf" --ambiente="$ambiente"; then
+            if [[ -f "$file" ]]; then
               echo "::warning::SP chain fetch failed — using the last-known-good cached chain"
             else
               echo "::error::SP chain fetch failed and no cached chain is available"
@@ -603,7 +609,26 @@ jobs:
           # nor cache, SVC-RS's 410 transport test self-skips.
           FORCE_FRESH="${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
           ensure_chain() {
-            local file="packages/integrations/nfe/ca/$1"; shift
+            # ⚠️ The chain filename is DERIVED from the same flags that are
+            # forwarded to the fetcher — never passed alongside them. It used to
+            # be `$1`, which made the probe path and the fetch two independent
+            # sources of truth with nothing reconciling them: `ensure_chain
+            # sefaz-an-homologacao.pem --uf=AN --ambiente=producao` fetched fine,
+            # wrote `sefaz-an-producao.pem`, returned 0 without ever reaching the
+            # `-f` probe, and the job then ENOENTed inside the test. Enforced by
+            # `packages/config-eslint/rules/sefaz-chain-fetch-coverage.test.js`.
+            local uf='' ambiente='' arg
+            for arg in "$@"; do
+              case "$arg" in
+                --uf=*)       uf="${arg#--uf=}" ;;
+                --ambiente=*) ambiente="${arg#--ambiente=}" ;;
+              esac
+            done
+            if [[ -z "$uf" || -z "$ambiente" ]]; then
+              echo "::error::ensure_chain needs --uf= and --ambiente=; got: $*"
+              return 1
+            fi
+            local file="packages/integrations/nfe/ca/sefaz-${uf,,}-${ambiente}.pem"
             if [[ "$FORCE_FRESH" != "true" && -f "$file" && -z "$(find "$file" -mtime +7 2>/dev/null)" ]]; then
               echo "Using cached SVC chain $file (fresh <7d) — skipping fetch."
               return 0
@@ -619,8 +644,8 @@ jobs:
             fi
             return 1
           }
-          ensure_chain sefaz-svc-an-homologacao.pem -- --uf=SVC-AN --ambiente=homologacao
-          ensure_chain sefaz-svc-rs-homologacao.pem -- --uf=SVC-RS --ambiente=homologacao \
+          ensure_chain --uf=SVC-AN --ambiente=homologacao
+          ensure_chain --uf=SVC-RS --ambiente=homologacao \
             || echo "::warning::SVC-RS chain unavailable (fetch failed, no cache) — the 410 transport test will self-skip this run"
           pnpm --filter @delfrance/integrations-nfe test svc.homologacao
 
