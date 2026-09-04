@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { INTEGRACAO_TIPO, marketplaceCapsFor } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type IntegracaoTipo, marketplaceCapsFor } from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 
 import { CAMPOS_CAPS, CanalCapsPanel } from './CanalCapsPanel';
 
-function renderPanel(tipo = INTEGRACAO_TIPO.shopee) {
+function renderPanel(tipo: IntegracaoTipo = INTEGRACAO_TIPO.shopee, titulo = 'Shopee') {
   return render(
     <MantineTestProvider>
-      <CanalCapsPanel tipo={tipo} titulo="Shopee" descricao="Integração com a Shopee." />
+      <CanalCapsPanel tipo={tipo} titulo={titulo} descricao={`Integração com a ${titulo}.`} />
     </MantineTestProvider>,
   );
 }
@@ -57,23 +57,32 @@ describe('CanalCapsPanel', () => {
   });
 
   /**
-   * ⚠️ The near-miss the whole tri-state exists for. Shopee's row is
-   * `'desconhecido'` almost everywhere; rendering that as "não" would put an
+   * ⚠️ The near-miss the whole tri-state exists for. Magalu's row is
+   * `'desconhecido'` everywhere; rendering that as "não" would put an
    * unverified claim in front of an operator, which is the failure #815 undid.
+   *
+   * ⚠️ The fixture used to be Shopee. It stopped being an unresearched
+   * channel the day its Phase 0 survey landed — which is why the pair below
+   * exists: an unbuilt channel is NOT automatically an unresearched one.
    */
   it('renders an unresearched capability as "não pesquisado", never as "não"', () => {
-    renderPanel();
+    renderPanel(INTEGRACAO_TIPO.magalu, 'Magalu');
     expect(screen.getAllByText('não pesquisado').length).toBeGreaterThan(0);
     expect(screen.queryByText('não')).toBeNull();
+    expect(screen.queryByText('sim')).toBeNull();
     expect(screen.getByText(/não quer dizer que o canal não faz/)).toBeTruthy();
   });
 
-  it('renders the two Shopee facts that ARE evidenced as a real "sim"', () => {
-    // `assinaWebhook` and `tabelaDeMedidas` are the only cited values on that
-    // row — if they rendered yellow like the rest, the badge would be lying in
-    // the other direction.
+  it('renders a SURVEYED but unbuilt channel with no yellow left, and both answers', () => {
+    // The near-miss of the test above: Shopee is unbuilt (`implementado: false`,
+    // so the yellow alert still shows) yet fully surveyed, so not one capability
+    // may render as "não pesquisado" — and both a real "sim" (`publicarAnuncio`)
+    // and a real "não" (`perguntas`) have to be on screen.
     renderPanel();
-    expect(screen.getAllByText('sim')).toHaveLength(2);
+    expect(screen.queryByText('não pesquisado')).toBeNull();
+    expect(screen.getAllByText('sim').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('não').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Canal ainda não implementado/)).toBeTruthy();
   });
 
   it('shows a real "não" for an implemented channel that genuinely cannot', () => {

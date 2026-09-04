@@ -219,9 +219,9 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
   (hosts the ADRs) · `example` OSS demo — **not** Next either, a plain `tsx`
   script: `pnpm --filter @delfrance/example demo`, no dev server.
 - `nfe` (:3004) · `melhor-envio` (:3005) · `mercado-livre` (:3006) ·
-  `mercado-pago` (:3007) · `whatsapp` (:3008) — API-only App Hosting backends,
-  **one deployable per channel**, each importing its logic from the matching
-  `packages/integrations/<channel>`.
+  `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) — API-only App
+  Hosting backends, **one deployable per channel**, each importing its logic
+  from the matching `packages/integrations/<channel>`.
 - `functions` — **not** a Next app: gen2 Cloud Functions, codebase `storage`.
 
 `apps/{nfe,mercado-livre,mercado-pago,whatsapp}/functions/` are **nested**
@@ -236,12 +236,15 @@ truth) · `data` (`defineCollection<T>`, cascade) · `ui` (Mantine theme +
 `apps/web` reaches it transitively, so `@google/genai` and `firebase-admin` may
 be imported only behind `./admin`; enforced by
 `packages/config-eslint/rules/ai-root-entry-browser-safe.test.js`, because
-breaking it fails nothing) · `integrations/<channel>` — **five packages, all
-implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api.
-⚠️ The five throw-only marketplace scaffolds (shopee, magalu, amazon-sp-api,
-facebook, loja-integrada) were **deleted** in #815: they existed only to typecheck
-against `MarketplaceChannel`, and had no importer anywhere. **That contract is
-gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
+breaking it fails nothing) · `integrations/<channel>` — **six packages, all
+implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api,
+shopee. ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
+amazon-sp-api, facebook, loja-integrada) were **deleted** in #815: they existed
+only to typecheck against `MarketplaceChannel`, and had no importer anywhere.
+**Four of the five stay deleted**; `shopee` was **re-created** as a real
+fetch-only package (the Shopee master plan, step 1) — it declares no
+`MarketplaceChannel` and has no plugin registry, only Shopee's wire protocol.
+**That contract is gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
 (`packages/schemas/src/shared/marketplace.ts`, the `FREIGHT_TIPO_CAPS` shape) and
 implemented as one App Hosting backend per channel; its shared data shapes live in
 `@delfrance/core/marketplace`. `packages/core/src/plugins` keeps exactly two
@@ -276,7 +279,7 @@ can push nothing.
 ```bash
 pnpm install                                # per worktree too; apps read ../../.env.local
 pnpm --filter @delfrance/web dev            # ONE app — prefer this
-pnpm dev                                    # WARNING: 9 dev servers, :3000-:3008
+pnpm dev                                    # WARNING: 10 dev servers, :3000-:3009
 pnpm turbo run lint typecheck               # before commits
 pnpm format:check                           # a CI gate; `pnpm format` fixes
 pnpm turbo run test
@@ -455,7 +458,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   core, `./react` adds the `react-hooks` warns (plugin supplied by
   `eslint-config-next`, or registered locally as in `packages/ui`), and
   `typeAware(...)` layers the async-correctness rules scoped to the workspace's
-  tsconfig `include`. The 8 Next apps spread base + react + `eslint-config-next`
+  tsconfig `include`. The 9 Next apps spread base + react + `eslint-config-next`
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
@@ -546,7 +549,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `IndIncentivo` and the NF-e engine's `TpAmb`, and matching on the set once
   rewrote `tpImp: '1'` (DANFE layout) to `MOD_BCST.listaNegativa`.
 - Firebase App Hosting deploys every Next app **except `webchat`** (static
-  export served by `firebase.json` hosting — 7 `apphosting.yaml` files, 8 Next
+  export served by `firebase.json` hosting — 8 `apphosting.yaml` files, 9 Next
   apps); heavy work goes to Cloud Functions. `apps/portal/` does NOT exist —
   public pages are deferred. ⚠️ An `apphosting.yaml` carries only `runConfig` +
   `env` — no build-root and no build command — so anything the **buildpack**
@@ -562,7 +565,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   runtime `dependencies` (every `prepare-deploy.mjs` copies `dependencies`
   verbatim into an artifact that plain cloud `npm install` must resolve), all
   `peerDependencies` (libraries keep broad ranges), `workspace:*` specs, and
-  **`next` in the 7 `apps/*/package.json` that have an `apphosting.yaml`** —
+  **`next` in the 8 `apps/*/package.json` that have an `apphosting.yaml`** —
   an exact literal there, never `catalog:` and never a `^` range. The App
   Hosting buildpack `google.nodejs.firebasenextjs` derives `FRAMEWORK_VERSION`
   from a lockfile it cannot read (`pnpm-lock.yaml`), silently falls back to the
@@ -585,8 +588,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   Three high-blast-radius deps stay pinned **exact** in the catalog for the same
   "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.2.0`)
   and `firebase-functions` (`7.3.2`). ⚠️ `next` propagates by **copy**, not by
-  reference: the catalog is still where a bump *starts*, but it is **8
-  deliberate edits** — the catalog plus the 7 App Hosting app manifests — and
+  reference: the catalog is still where a bump *starts*, but it is **9
+  deliberate edits** — the catalog plus the 8 App Hosting app manifests — and
   the guard above fails on drift. Its only remaining `catalog:` consumers are
   `apps/webchat` (static export, no buildpack) and `packages/ui`'s
   devDependency, which makes them load-bearing: literalise BOTH and

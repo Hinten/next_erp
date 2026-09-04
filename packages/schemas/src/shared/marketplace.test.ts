@@ -77,17 +77,49 @@ describe('MARKETPLACE_TIPO_CAPS — unbuilt channels', () => {
     expect(amazon.assinaWebhook).toBe('desconhecido');
   });
 
-  it('keeps the two Shopee facts that ARE evidenced, and nothing else', () => {
+  it('records the full Shopee survey with implementado still false', () => {
+    // The master plan's Phase 0 caps row
+    // (`.master_plans/shopee/shopee-marketplace-integration.md` §1) answers
+    // every field — unlike Amazon above, this is NOT a partial survey, so this
+    // test asserts the whole row rather than a couple of evidenced facts plus a
+    // "the rest is unknown" pair.
     const shopee = marketplaceCapsFor(INTEGRACAO_TIPO.shopee);
 
     expect(shopee.implementado).toBe(false);
-    // Legacy carried an (disabled) HMAC verifier for Shopee pushes — #682.
+    expect(shopee.channel).toBe('shopee');
+
     expect(shopee.assinaWebhook).toBe('sim');
-    // `tabMedi.tabelasMedidasShopee` exists in the schema and holds migrated rows.
+    expect(shopee.notificacoes).toBe('push');
+    expect(shopee.auth).toBe('oauth2');
+    expect(shopee.pkce).toBe('nao');
+
+    expect(shopee.estoque).toEqual({
+      suporte: 'sim',
+      protocolo: 'por-anuncio',
+      loteMax: 50,
+      multiDeposito: 'sim',
+    });
+
+    expect(shopee.etiqueta).toBe('fetch');
+    expect(shopee.rastreio).toBe('push');
+    expect(shopee.kitVirtual).toBe('sim');
     expect(shopee.tabelaDeMedidas).toBe('sim');
-    // Everything without a citation stays unanswered.
-    expect(shopee.kitVirtual).toBe('desconhecido');
-    expect(shopee.publicarAnuncio).toBe('desconhecido');
+    expect(shopee.consolidaPacote).toBe('nao');
+    expect(shopee.perguntas).toBe('nao');
+    expect(shopee.mensagensPosVenda).toBe('nao');
+    expect(shopee.reclamacoes).toBe('sim');
+    expect(shopee.origensConversa).toEqual([]);
+
+    // ⚠️ A Shopee-specific version of the "an implemented channel has no
+    // unanswered capability" loop below (`MARKETPLACE_TIPO_CAPS — structural
+    // rules`), worded so it does NOT claim the channel is implemented:
+    // `implementado` stays false until step 22, but the SURVEY itself (unlike
+    // Amazon's, still all 'desconhecido' above) is complete, and that
+    // completeness is worth pinning on its own.
+    const naoRespondidos = CAMPOS_SUPORTE.filter((c) => shopee[c] === 'desconhecido');
+    expect(naoRespondidos).toEqual([]);
+    expect(shopee.estoque.suporte).not.toBe('desconhecido');
+    expect(shopee.estoque.protocolo).not.toBe('desconhecido');
   });
 });
 

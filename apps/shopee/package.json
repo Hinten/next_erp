@@ -1,0 +1,38 @@
+{
+  "name": "@delfrance/shopee-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "dotenv -e ../../.env.local -- next dev --port 3009",
+    "build": "dotenv -e ../../.env.local -- next build",
+    "start": "dotenv -e ../../.env.local -- next start --port 3009",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "oauth:url": "dotenv -e ../../.env.local -- tsx scripts/oauth-url.ts",
+    "clean": "rm -rf .next .turbo dist coverage"
+  },
+  "dependencies": {
+    "@delfrance/auth": "workspace:*",
+    "@delfrance/data": "workspace:*",
+    "@delfrance/integrations-shopee": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
+    "firebase-admin": "catalog:",
+    "next": "16.2.6",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
+    "@delfrance/config-tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "eslint": "catalog:",
+    "eslint-config-next": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

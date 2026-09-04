@@ -56,12 +56,27 @@ describe('vereditoCanal / capsPermitem — against the real table', () => {
     expect(vereditoCanal(acao, INTEGRACAO_TIPO.mercadoLivre, COM_ML)).toEqual({ suportado: true });
   });
 
-  it.each(acoes)('an unbuilt channel is "nobody checked", not "cannot", for %s', (acao) => {
-    // Shopee/Amazon/Magalu/Loja Integrada/Facebook are all `'desconhecido'` on
-    // these three today. Reading that as `'nao'` is the false claim #815 undid.
-    expect(vereditoCanal(acao, INTEGRACAO_TIPO.shopee, COM_ML)).toEqual({
+  it.each(acoes)('an unsurveyed channel is "nobody checked", not "cannot", for %s', (acao) => {
+    // Amazon/Magalu/Loja Integrada/Facebook are all `'desconhecido'` on these
+    // three today. Reading that as `'nao'` is the false claim #815 undid.
+    expect(vereditoCanal(acao, INTEGRACAO_TIPO.magalu, COM_ML)).toEqual({
       suportado: false,
       motivo: 'canal-nao-pesquisado',
+    });
+    expect(capsPermitem(acao, INTEGRACAO_TIPO.magalu)).toBe(false);
+  });
+
+  /**
+   * ⚠️ The near-miss, and the reason it is no longer hypothetical: Shopee's
+   * Phase 0 survey answered these three `'sim'` while `implementado` stays
+   * false until the backend ships. Same verdict for the operator (the action
+   * cannot run), a DIFFERENT reason — and the two must not collapse, because
+   * "nobody checked" invites a survey and "not built here" invites a build.
+   */
+  it.each(acoes)('a SURVEYED but unbuilt channel says "not built" for %s', (acao) => {
+    expect(vereditoCanal(acao, INTEGRACAO_TIPO.shopee, COM_ML)).toEqual({
+      suportado: false,
+      motivo: 'canal-nao-implementado',
     });
     expect(capsPermitem(acao, INTEGRACAO_TIPO.shopee)).toBe(false);
   });
