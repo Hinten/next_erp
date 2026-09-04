@@ -21,19 +21,32 @@ import {
   ShopeeError,
   ShopeeHttpError,
   ShopeeNetworkError,
+  ShopeeReauthRequiredError,
   ShopeeSchemaError,
 } from '@delfrance/integrations-shopee';
 
 import { ShopeeCredencialInvalidaError } from './credentialStore';
 import { ShopeeContaNotConfiguredError } from './shopee';
+import {
+  ShopeeContaSemShopIdError,
+  ShopeeRefreshEmAndamentoError,
+  ShopeeSemCredencialError,
+} from './tokenStore';
 
 /**
- * ⚠️ Two of these are NOT `ShopeeError` subclasses — they are this app's own
- * classes — so the guard has to name them explicitly. `ShopeeConfigError` IS one
+ * ⚠️ FIVE of these are NOT `ShopeeError` subclasses — they are this app's own
+ * classes — so the guard has to name each one explicitly, and an app-local class
+ * forgotten here falls past the route catch and 500s. `ShopeeConfigError` IS one
  * (re-exported by `../env`), which is exactly why there is a single class rather
  * than an app-local copy.
  */
-type KnownError = ShopeeContaNotConfiguredError | ShopeeCredencialInvalidaError | ShopeeError;
+type KnownError =
+  | ShopeeContaNotConfiguredError
+  | ShopeeCredencialInvalidaError
+  | ShopeeSemCredencialError
+  | ShopeeContaSemShopIdError
+  | ShopeeRefreshEmAndamentoError
+  | ShopeeError;
 
 /** A Shopee body is unbounded; a log line is not. Enough to identify it. */
 const MAX_LOGGED_BODY = 500;
@@ -42,6 +55,9 @@ export function isShopeeError(err: unknown): err is KnownError {
   return (
     err instanceof ShopeeContaNotConfiguredError ||
     err instanceof ShopeeCredencialInvalidaError ||
+    err instanceof ShopeeSemCredencialError ||
+    err instanceof ShopeeContaSemShopIdError ||
+    err instanceof ShopeeRefreshEmAndamentoError ||
     err instanceof ShopeeError
   );
 }
@@ -116,6 +132,37 @@ function toResponse(err: KnownError): NextResponse {
   if (err instanceof ShopeeContaNotConfiguredError) {
     return NextResponse.json({ error: err.message }, { status: 404 });
   }
+  if (err instanceof ShopeeRefreshEmAndamentoError) {
+    // Transient by construction: another instance holds the refresh lease and
+    // the very next call almost certainly finds the fresh pair. `Retry-After: 1`
+    // is a second because the whole race is one provider round trip wide, and
+    // the lease that bounds it expires in `REFRESH_LEASE_TTL_MS`.
+    return NextResponse.json(
+      {
+        error: err.message,
+        code: 'SHOPEE_REFRESH_EM_ANDAMENTO',
+        leaseExpiraEm: err.leaseExpiraEm,
+      },
+      { status: 503, headers: { 'Retry-After': '1' } },
+    );
+  }
+  if (err instanceof ShopeeSemCredencialError) {
+    // Nothing stored, or nothing usable — only a new consent fixes it. Same
+    // code as a dead grant: from the operator's side the action is identical.
+    return NextResponse.json(
+      { error: err.message, code: 'SHOPEE_REAUTH_REQUIRED' },
+      { status: 409 },
+    );
+  }
+  if (err instanceof ShopeeContaSemShopIdError) {
+    // A connected conta with a main-account-scoped consent. Its own code: the
+    // fix is the shop fan-out, never a reconnect, and telling the operator to
+    // reconnect would send them round a loop that cannot help.
+    return NextResponse.json(
+      { error: err.message, code: 'SHOPEE_CONTA_SEM_SHOP_ID' },
+      { status: 409 },
+    );
+  }
   if (err instanceof ShopeeCredencialInvalidaError) {
     return NextResponse.json(
       { error: err.message, code: 'SHOPEE_BAD_RESPONSE', campos: err.campos },
@@ -127,6 +174,15 @@ function toResponse(err: KnownError): NextResponse {
     return NextResponse.json(
       { error: err.message, code: 'SHOPEE_BAD_RESPONSE', campos: err.campos },
       { status: 502 },
+    );
+  }
+  if (err instanceof ShopeeReauthRequiredError) {
+    // ⚠️ ABOVE the `ShopeeApiError` arm it extends, or a dead grant would be
+    // reported as a generic 502 upstream failure and the operator would never
+    // be told to reconnect (ML parity — `ML_REAUTH_REQUIRED`).
+    return NextResponse.json(
+      { error: err.message, code: 'SHOPEE_REAUTH_REQUIRED', shopeeCode: err.code },
+      { status: 409 },
     );
   }
   if (err instanceof ShopeeApiError) {

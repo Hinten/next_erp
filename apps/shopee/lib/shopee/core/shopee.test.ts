@@ -15,6 +15,9 @@ const h = vi.hoisted(() => ({
   exchangeCode: vi.fn(),
   credLoad: vi.fn(),
   credSave: vi.fn(),
+  tokenStore: vi.fn(),
+  getOrRefresh: vi.fn(),
+  createShopeeClient: vi.fn(),
 }));
 
 vi.mock('@delfrance/data/admin/collections', () => ({
@@ -36,9 +39,23 @@ vi.mock('./credentialStore', async (importActual) => {
   };
 });
 
+/**
+ * The token store is exercised in full by `tokenStore.test.ts`; here only the
+ * WIRING is under test, so the two entry points are stubbed. The error classes
+ * stay real — `ShopeeContaSemShopIdError` is asserted with `instanceof`.
+ */
+vi.mock('./tokenStore', async (importActual) => {
+  const actual = await importActual<typeof import('./tokenStore')>();
+  return {
+    ...actual,
+    createShopeeTokenStore: h.tokenStore,
+    getOrRefreshAccessToken: h.getOrRefresh,
+  };
+});
+
 vi.mock('@delfrance/integrations-shopee', async (importActual) => {
   const actual = await importActual<typeof import('@delfrance/integrations-shopee')>();
-  return { ...actual, exchangeCode: h.exchangeCode };
+  return { ...actual, exchangeCode: h.exchangeCode, createShopeeClient: h.createShopeeClient };
 });
 
 const {
@@ -47,6 +64,7 @@ const {
   invalidateShopeeConta,
   loadShopeeContext,
 } = await import('./shopee');
+const { ShopeeContaSemShopIdError } = await import('./tokenStore');
 
 const db = {} as never;
 
@@ -78,6 +96,9 @@ beforeEach(() => {
   h.exchangeCode.mockResolvedValue(PAIR);
   h.credLoad.mockResolvedValue(null);
   h.credSave.mockResolvedValue(undefined);
+  h.tokenStore.mockReturnValue({ marca: 'token-store' });
+  h.getOrRefresh.mockResolvedValue('at-fake');
+  h.createShopeeClient.mockReturnValue({ marca: 'shop-client' });
 
   vi.stubEnv('SHOPEE_PARTNER_ID', '1234567');
   vi.stubEnv('SHOPEE_PARTNER_KEY', 'chave-de-teste');
@@ -164,6 +185,76 @@ describe('readCredential', () => {
     await ctx.readCredential();
     await ctx.readCredential();
     expect(h.credLoad).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('getAccessToken', () => {
+  it('delegates to the token store with the exact deps', async () => {
+    const ctx = await loadShopeeContext(db, 'int-1');
+    await expect(ctx.getAccessToken()).resolves.toBe('at-fake');
+
+    expect(h.tokenStore).toHaveBeenCalledWith(db, 'int-1');
+    expect(h.getOrRefresh).toHaveBeenCalledWith({
+      store: { marca: 'token-store' },
+      // The package's OAuth config, never this app's wider `ShopeeConfig`.
+      config: {
+        partnerId: 1234567,
+        partnerKey: 'chave-de-teste',
+        hosts: ctx.config.hosts,
+      },
+      // ⚠️ The REFRESH subject, whose union has no `main_account` arm.
+      subject: { kind: 'shop', shopId: 111 },
+      integracaoId: 'int-1',
+    });
+  });
+});
+
+describe('a main-account conta (no shop_id)', () => {
+  beforeEach(() => {
+    h.docRefGet.mockResolvedValue({
+      exists: true,
+      data: () => ({ ...CONTA, shop_id: null, main_account_id: 999 }),
+    });
+  });
+
+  it('LOADS — a consent with no shop is a legitimate connected state', async () => {
+    // The conta route renders exactly this. Failing the loader would turn a
+    // connected account into a 404 for every endpoint at once.
+    const ctx = await loadShopeeContext(db, 'int-1');
+    expect(ctx.conta).toMatchObject({ main_account_id: 999 });
+  });
+
+  it('refuses the two members that need a shop-signed token', async () => {
+    const ctx = await loadShopeeContext(db, 'int-1');
+    await expect(ctx.getAccessToken()).rejects.toBeInstanceOf(ShopeeContaSemShopIdError);
+    expect(() => ctx.createShopClient()).toThrow(ShopeeContaSemShopIdError);
+    // ⚠️ Resolved EAGERLY: the package would otherwise raise `ShopeeConfigError`
+    // from its positive-integer assertion — a 500 reading as "the backend is
+    // misconfigured" for what is a legitimate conta.
+    expect(h.createShopeeClient).not.toHaveBeenCalled();
+    expect(h.getOrRefresh).not.toHaveBeenCalled();
+  });
+});
+
+describe('createShopClient', () => {
+  it('hands the token over as a FUNCTION, called once per signed call', async () => {
+    // A string would be resolved once and replayed for the whole batch, so a
+    // token lapsing mid-batch could not heal.
+    const ctx = await loadShopeeContext(db, 'int-1');
+    expect(ctx.createShopClient()).toEqual({ marca: 'shop-client' });
+
+    const config = h.createShopeeClient.mock.calls[0]?.[0] as {
+      shopId: number;
+      partnerId: number;
+      getAccessToken: () => Promise<string>;
+    };
+    expect(config).toMatchObject({ shopId: 111, partnerId: 1234567 });
+    expect(typeof config.getAccessToken).toBe('function');
+
+    expect(h.getOrRefresh).not.toHaveBeenCalled();
+    await config.getAccessToken();
+    await config.getAccessToken();
+    expect(h.getOrRefresh).toHaveBeenCalledTimes(2);
   });
 });
 

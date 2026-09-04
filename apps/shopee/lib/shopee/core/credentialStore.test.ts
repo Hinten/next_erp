@@ -6,8 +6,12 @@ import {
   EXPIRY_GUARD_MS,
   SHOPEE_CREDENCIAL_DOC_ID,
   ShopeeCredencialInvalidaError,
+  accessTokenOf,
   createShopeeCredentialStore,
   credentialFromTokenPair,
+  expiryOf,
+  leaseOf,
+  refreshTokenOf,
 } from './credentialStore';
 
 /**
@@ -85,6 +89,70 @@ describe('credentialFromTokenPair', () => {
     const doc = credentialFromTokenPair(PAIR, MAIN, 1);
     expect(doc.main_account_id).toBe(999);
     expect(doc.shop_id).toBeNull();
+  });
+});
+
+describe('credentialFromTokenPair — the lease and diagnostic keys', () => {
+  const LEASE_KEYS = [
+    'refreshLeaseOwner',
+    'refreshLeaseExpiraEm',
+    'ultimoRefreshEm',
+    'ultimaFalhaRefresh',
+  ] as const;
+
+  it.each(LEASE_KEYS)('emits %s as an explicit null, never as an absent key', (campo) => {
+    // ⚠️ PRESENT and `null`, not merely falsy. `parseMergePatch` drops
+    // undefined-valued keys before writing, so an omitted key clears NOTHING —
+    // a consent would leave a crashed refresher's lease standing until its TTL
+    // elapsed, and the panel would keep rendering a stale failure stamp.
+    const doc = credentialFromTokenPair(PAIR, SHOP, 1);
+    expect(doc).toHaveProperty(campo);
+    expect(doc[campo]).toBeNull();
+  });
+});
+
+describe('the tolerant readers', () => {
+  it('reads the three modelled fields when they are usable', () => {
+    const cred = { access_token: 'at-1', refresh_token: 'rt-1', expirationDate: 42 };
+    expect(accessTokenOf(cred)).toBe('at-1');
+    expect(refreshTokenOf(cred)).toBe('rt-1');
+    expect(expiryOf(cred)).toBe(42);
+  });
+
+  it('refuses an unusable value rather than typing it as usable', () => {
+    // `parseRead` is soft, so a hand-edited or legacy document arrives RAW.
+    expect(accessTokenOf({ access_token: '' })).toBeNull();
+    expect(accessTokenOf({ access_token: 7 })).toBeNull();
+    expect(refreshTokenOf({ refresh_token: null })).toBeNull();
+    expect(expiryOf({ expirationDate: '1700000000000' })).toBeNull();
+    expect(expiryOf({ expirationDate: Number.NaN })).toBeNull();
+  });
+
+  it('never normalises the refresh token — it is an identity, not a value', () => {
+    // The commit guard compares this string against the one it spent. Trimming
+    // would make two DIFFERENT stored pairs read as the same one.
+    expect(refreshTokenOf({ refresh_token: 'rt-1 ' })).toBe('rt-1 ');
+    expect(refreshTokenOf({ refresh_token: 'rt-1 ' })).not.toBe(
+      refreshTokenOf({ refresh_token: 'rt-1' }),
+    );
+  });
+
+  it('reads a well-formed lease', () => {
+    expect(leaseOf({ refreshLeaseOwner: 'owner-a', refreshLeaseExpiraEm: 1_000 })).toEqual({
+      owner: 'owner-a',
+      expiraEm: 1_000,
+    });
+  });
+
+  it('reads a corrupt lease as NO lease (ADR 0011 wrong-way default)', () => {
+    // A document that cannot be understood must not be able to freeze an
+    // account's refresh forever.
+    expect(leaseOf({})).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: 'owner-a', refreshLeaseExpiraEm: '1000' })).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: 'owner-a', refreshLeaseExpiraEm: Number.NaN })).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: 7, refreshLeaseExpiraEm: 1_000 })).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: '', refreshLeaseExpiraEm: 1_000 })).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: null, refreshLeaseExpiraEm: null })).toBeNull();
   });
 });
 

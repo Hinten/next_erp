@@ -12,12 +12,20 @@ import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { INTEGRACAO_TIPO, type CredenciaisIntegracao, type Integracao } from '@delfrance/schemas';
 import {
   type ShopeeAuthSubject,
+  type ShopeeClient,
   type ShopeeOAuthConfig,
+  type ShopeeRefreshSubject,
+  createShopeeClient,
   exchangeCode,
 } from '@delfrance/integrations-shopee';
 
 import { type ShopeeConfig, shopeeConfig } from '../env';
 import { createShopeeCredentialStore, credentialFromTokenPair } from './credentialStore';
+import {
+  ShopeeContaSemShopIdError,
+  createShopeeTokenStore,
+  getOrRefreshAccessToken,
+} from './tokenStore';
 
 /** The account doc is missing or is not a Shopee conta. Maps to HTTP 404. */
 export class ShopeeContaNotConfiguredError extends Error {
@@ -38,6 +46,23 @@ export interface ShopeeContext {
   readCredential(): Promise<CredenciaisIntegracao | null>;
   /** Exchange a consent `code` and persist the resulting pair. */
   exchangeAndPersist(code: string, subject: ShopeeAuthSubject, now?: number): Promise<void>;
+  /**
+   * A live shop-scoped access token, refreshing it when it is about to lapse.
+   *
+   * ⚠️ Throws `ShopeeContaSemShopIdError` when the stored consent was
+   * main-account-scoped. That is NOT a broken conta — the conta route renders it
+   * as a connected account with no shop — which is why the throw lives here and
+   * never in {@link loadShopeeContext}.
+   */
+  getAccessToken(): Promise<string>;
+  /**
+   * A shop-signed client for this conta.
+   *
+   * ⚠️ The token is handed to the package as a FUNCTION, not as a string:
+   * `createShopeeClient` calls it once per shop-signed request, so a token that
+   * lapses in the middle of a batch is renewed rather than replayed dead.
+   */
+  createShopClient(): ShopeeClient;
 }
 
 /**
@@ -130,6 +155,34 @@ export async function loadShopeeContext(
   // Shopee — and, in `oauth/start`, before any state is minted.
   const config = shopeeConfig();
   const store = createShopeeCredentialStore(db, integracaoId);
+  const tokenStore = createShopeeTokenStore(db, integracaoId);
+
+  /**
+   * Which id class this conta's token pair is refreshed on.
+   *
+   * ⚠️ `ShopeeRefreshSubject` is NOT `ShopeeAuthSubject`: `main_account_id` is a
+   * consent-time identity and is never a refresh key, so a main-account conta
+   * has no subject here at all until the shop fan-out lands.
+   */
+  const shopIdDaConta = conta.shop_id;
+  function shopSubject(): Extract<ShopeeRefreshSubject, { kind: 'shop' }> {
+    const shopId = shopIdDaConta;
+    if (shopId == null) {
+      throw new ShopeeContaSemShopIdError(
+        `Integração ${integracaoId} está conectada por conta principal e ainda não tem uma loja (shop_id) para assinar chamadas.`,
+      );
+    }
+    return { kind: 'shop', shopId };
+  }
+
+  async function getAccessToken(): Promise<string> {
+    return getOrRefreshAccessToken({
+      store: tokenStore,
+      config: oauthConfigFrom(config),
+      subject: shopSubject(),
+      integracaoId,
+    });
+  }
 
   return {
     integracaoId,
@@ -138,6 +191,24 @@ export async function loadShopeeContext(
 
     async readCredential(): Promise<CredenciaisIntegracao | null> {
       return store.load();
+    },
+
+    getAccessToken,
+
+    createShopClient(): ShopeeClient {
+      // ⚠️ The subject is resolved EAGERLY, before the package sees anything.
+      // `createShopeeClient` asserts a positive-integer `shop_id` and raises
+      // `ShopeeConfigError` — a 500 reading as "the backend is misconfigured" —
+      // for what is really a legitimate main-account conta. Resolving here turns
+      // that into the 409 the panel knows how to render.
+      const subject = shopSubject();
+      return createShopeeClient({
+        partnerId: config.partnerId,
+        partnerKey: config.partnerKey,
+        hosts: config.hosts,
+        shopId: subject.shopId,
+        getAccessToken,
+      });
     },
 
     async exchangeAndPersist(
