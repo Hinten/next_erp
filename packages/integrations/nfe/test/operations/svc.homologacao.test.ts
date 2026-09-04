@@ -252,7 +252,60 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
     45_000,
   );
 
-  it.skipIf(!svcAnReachable)(
+  // ⚠️ SKIPPED pending #1471 — a deliberate, TEMPORARY pause, not a deletion.
+  // Flip to `false` to restore the test exactly as it was; nothing else changes.
+  //
+  // SVC-AN rejects this emission with `cStat=178` ("CNPJ do Emitente não
+  // cadastrado na Receita Federal"). The cause is NOT here: in the same CI run
+  // the same certificate and CNPJ are AUTHORIZED by SEFAZ-SP (`cStat=100`), so
+  // the issuer is plainly registered and it is SVC-AN's own cadastro replica
+  // that intermittently disagrees. It flaps — a pass is a clean `100` — which is
+  // why this is a pause and not a fix. Nothing in this repo can fix it;
+  // registering the CNPJ on the SVC-AN side is an external step (#1471).
+  //
+  // ⚠️ What the skip COSTS, stated so the next reviewer can weigh it: this is
+  // the ONLY test that proves SVC-AN AUTHORIZES, and its body also carries the
+  // consSitNFe recovery-lane assertions (the path `processar-pendentes` uses for
+  // stuck tpEmis-6 docs). On an ADVISORY run this lane therefore proves SVC-AN
+  // TRANSPORT (the status pre-flight above, `107`) and nothing about
+  // authorization. The fatal lanes keep proving both — see the posture note
+  // below, which is why the skip is not unconditional.
+  //
+  // ⚠️ ADVISORY RUNS ONLY — `&& !isFatalRun`, like every other skip in this
+  // file. An unconditional flag would also silence the two FATAL lanes
+  // (`nfe-epec-scheduled.yml`'s weekly `svc-live`, and `ci-nfe.yml`'s
+  // `workflow_dispatch` "verify SVC" path), so a run whose entire purpose is to
+  // verify SVC-AN would report green having never attempted the emission — and
+  // `report-failure` self-alerts on `failure`, so it would stop alerting too.
+  // That is #1247 gap (a) exactly, the bug this same file just gained a gate
+  // for in the SVC-RS half; shipping its inverse here would be indefensible.
+  //
+  // ⚠️ Consequence, stated plainly: the Monday `svc-live` run will go RED while
+  // SVC-AN keeps answering 178. That is the intended trade — it is also the only
+  // remaining detector for when the cadastro HEALS, since the skip removes the
+  // `[SVC-AN protNFe]` line that would otherwise say so.
+  //
+  // ⚠️ `process.stdout.write`, NOT `console.warn`. Vitest 4's default reporter
+  // only replays intercepted `console.*` for FAILING files, so a `console.warn`
+  // here is invisible on precisely the green runs this skip creates — measured
+  // on this checkout (vitest 4.1.6, CI=true, piped stdout): console.warn 0 lines,
+  // process.stdout.write 1 line. A signal that only fires when the suite is
+  // already red is not a signal.
+  //
+  // ⚠️ When restoring the test, do NOT print a raw `xMotivo`: SEFAZ embeds the
+  // emitente's CNPJ in this rejection's text, so logging it verbatim puts that
+  // number in a public Actions log. Redact before printing.
+  const SKIP_SVC_AN_EMISSAO_1471 = true;
+  const pulandoEmissaoSvcAn = SKIP_SVC_AN_EMISSAO_1471 && !isFatalRun;
+  if (pulandoEmissaoSvcAn && process.env.CI) {
+    process.stdout.write(
+      '::warning::SVC-AN emission test is SKIPPED (#1471) — SVC-AN answers cStat=178 ' +
+        '"CNPJ do Emitente não cadastrado" while SEFAZ-SP authorizes the same issuer. ' +
+        'SVC-AN AUTHORIZATION is UNPROVEN on this run; only transport is. It still runs ' +
+        'on workflow_dispatch/schedule, where it is FATAL.\n',
+    );
+  }
+  it.skipIf(pulandoEmissaoSvcAn || !svcAnReachable)(
     'native SVC-AN emission — tpEmis=6 NF-e is AUTHORIZED (cStat=100)',
     async () => {
       const numeracao = seedNNF();
