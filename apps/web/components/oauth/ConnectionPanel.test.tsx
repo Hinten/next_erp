@@ -42,7 +42,7 @@ interface TestConta {
   readonly apelido: string | null;
 }
 
-/** ⚠️ Module-level, as the prop's docblock demands — an inline object re-fires the toast. */
+/** ⚠️ Module-level so `mensagens` stays referentially stable — a fresh map per render re-fires the toast. */
 const TOAST = {
   chave: 'ml',
   sucesso: 'Conta conectada.',
