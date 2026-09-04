@@ -58,6 +58,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { buildHomologacaoFixture } from '../helpers/homologacao-fixture';
 import { resolveProtocol } from '../helpers/resolve-protocol';
+import { descreverSefaz, logSefaz } from '../helpers/sefaz-log';
 import { SEFAZ_HOM_SVC_SERIE, seedNNF } from '../helpers/homologacao-seed';
 import {
   assertCertNotExpired,
@@ -241,8 +242,7 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       );
       const ret = await consultarStatusServico(call, { cUF: '35' });
       assertNotConsumoIndevido(ret, 'svc-an/statusServico');
-      // eslint-disable-next-line no-console
-      console.log(`[SVC-AN status] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+      logSefaz('SVC-AN status', ret);
       expect(ret.tpAmb).toBe('2');
       // 107 = operating (the permanent homologação posture); 108/109 =
       // paralisado, 113/114 = SVC em desativação — non-failure outcomes
@@ -335,8 +335,7 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
         indSinc: '1',
       });
       assertNotConsumoIndevido(ret, 'svc-an/autorizarLote');
-      // eslint-disable-next-line no-console
-      console.log(`[SVC-AN lote] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+      logSefaz('SVC-AN lote', ret);
 
       // SVC-AN answered sync (104 + inline protNFe) in the 2026-06-11 live
       // validation; resolveProtocol also covers a 103 → consReci fallback,
@@ -352,20 +351,27 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       // uncatalogued cStat=178 — with the one string that would have settled
       // either never printed. `rtc.homologacao.test.ts` already learned this;
       // same shape here.
-      const cStat = prot?.infProt.cStat ?? ret.cStat;
-      const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
       // `cMsg`/`xMsg` are SEFAZ's supplementary-detail fields, absent on a normal
-      // response — so appending them only when present costs the usual line
-      // nothing and is exactly what an uncatalogued code needs.
-      const detalhe = prot?.infProt.xMsg
-        ? ` cMsg=${prot.infProt.cMsg ?? '-'} xMsg="${prot.infProt.xMsg}"`
-        : '';
-      // eslint-disable-next-line no-console
-      console.log(`[SVC-AN protNFe] cStat=${cStat} xMotivo="${xMotivo}"${detalhe}`);
+      // response — `descreverSefaz` appends them only when present, which costs
+      // the usual line nothing and is exactly what an uncatalogued code needs.
+      const resposta = {
+        cStat: prot?.infProt.cStat ?? ret.cStat,
+        xMotivo: prot?.infProt.xMotivo ?? ret.xMotivo,
+        cMsg: prot?.infProt.cMsg,
+        xMsg: prot?.infProt.xMsg,
+      };
+      logSefaz('SVC-AN protNFe', resposta);
       // The `?? ret.*` fallback also covers `prot === undefined`: resolveProtocol
       // has four paths that return it with no explanation, and the bare optional
       // chain turned every one into `expected undefined to be '100'`.
-      expect(cStat, `SEFAZ rejected the SVC-AN NF-e: cStat=${cStat} — "${xMotivo}"`).toBe('100');
+      //
+      // ⚠️ The message goes through `descreverSefaz` too — a vitest assertion
+      // message lands in the CI ANNOTATION, which is as public as the log, and
+      // this is the exact rejection whose `xMotivo` carries the emitente CNPJ.
+      expect(
+        resposta.cStat,
+        `SEFAZ rejected the SVC-AN NF-e — ${descreverSefaz('SVC-AN protNFe', resposta)}`,
+      ).toBe('100');
       expect(prot?.infProt.chNFe).toBe(out.chave);
       expect(prot?.infProt.tpAmb).toBe('2');
       // The authorizer must be the SVC-AN itself, not a relay to SEFAZ-SP.
@@ -379,10 +385,7 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       assertNotConsumoIndevido(sit, 'svc-an/consSitNFe');
       // Same omission one assertion later — `xMotivo` added to match
       // `emission.homologacao.test.ts`'s consSitNFe line.
-      // eslint-disable-next-line no-console
-      console.log(
-        `[SVC-AN consSitNFe] cStat=${sit.cStat} xMotivo="${sit.xMotivo}" prot.cStat=${sit.protNFe?.infProt.cStat}`,
-      );
+      logSefaz('SVC-AN consSitNFe', { ...sit, protCStat: sit.protNFe?.infProt.cStat });
       expect(sit.chNFe).toBe(out.chave);
       expect(sit.protNFe?.infProt.cStat).toBe('100');
       expect(sit.protNFe?.infProt.nProt).toBe(prot!.infProt.nProt);
@@ -402,8 +405,7 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
       );
       const ret = await consultarStatusServico(call, { cUF: '35' });
       assertNotConsumoIndevido(ret, 'svc-rs/statusServico');
-      // eslint-disable-next-line no-console
-      console.log(`[SVC-RS status] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+      logSefaz('SVC-RS status', ret);
       // SP is bound to SVC-AN (Ato COTEPE 39/2012), so SVC-RS answering
       // 410 "UF informada no campo cUF não é atendida pelo Web Service"
       // is the EXPECTED outcome — the round-trip itself (mTLS handshake,

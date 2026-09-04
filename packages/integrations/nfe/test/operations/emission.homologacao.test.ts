@@ -50,6 +50,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { buildHomologacaoFixture } from '../helpers/homologacao-fixture';
 import { resolveProtocol } from '../helpers/resolve-protocol';
+import { logSefaz } from '../helpers/sefaz-log';
 import { seedNNF } from '../helpers/homologacao-seed';
 import {
   assertCertNotExpired,
@@ -211,8 +212,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
       indSinc: '1',
     });
     assertNotConsumoIndevido(second, 'duplicidade/autorizarLote#2');
-    // eslint-disable-next-line no-console
-    console.log(`[duplicidade lote2] cStat=${second.cStat} xMotivo="${second.xMotivo}"`);
+    logSefaz('duplicidade lote2', second);
     const secondProt = await resolveProtocol(second, consReciCall);
     if (secondProt) assertNotConsumoIndevido(secondProt.infProt, 'duplicidade/protNFe#2');
     const dupCStat = secondProt?.infProt.cStat ?? second.cStat;
@@ -228,10 +228,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
     );
     const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
     assertNotConsumoIndevido(sit, 'duplicidade/consSitNFe');
-    // eslint-disable-next-line no-console
-    console.log(
-      `[consSitNFe] cStat=${sit.cStat} xMotivo="${sit.xMotivo}" prot.cStat=${sit.protNFe?.infProt.cStat}`,
-    );
+    logSefaz('consSitNFe', { ...sit, protCStat: sit.protNFe?.infProt.cStat });
     // SEFAZ retConsSitNFe.cStat=100 means "consulta atendida"; the
     // **inner** protNFe.infProt.cStat is the actual NF-e status.
     expect(sit.chNFe).toBe(out.chave);
