@@ -148,7 +148,8 @@ const CONCURRENCY_IGNORE = new Set<string>([
   'disputaAbertaEm',
   'devolucaoAbertaEm',
   'bloqueiosLiberados',
-  // Removed derived caches (#796). `baseline`/`current` are NOT raw
+  // Removed money fields — the five derived caches (#796) below, then the four
+  // aggregate pass-throughs (#1151) after them. `baseline`/`current` are NOT raw
   // `snap.data()` — `PedidoDocData`'s contract (`port.ts`) requires the
   // parsed wire shape, and the client adapter gets that "for free by reading
   // through the Zod converter" (`clientPort.ts`'s `updatePedido` reads via
@@ -165,12 +166,25 @@ const CONCURRENCY_IGNORE = new Set<string>([
   // fails validation) but not the other, which can still expose a
   // stale/mismatched value here. Without this ignore, either path could
   // surface a conflict modal naming a field the operator cannot see or have
-  // authored, which is exactly the question this set answers.
+  // authored, which is exactly the question this set answers. The same holds
+  // for the four below, which #1151 removed for a different reason but which
+  // reach this diff by the identical route.
   'valorCusto',
   'valorFreteInicial',
   'custoFreteInicial',
   'valorDevolucao',
   'valorCustoDevolvidos',
+  // The four aggregate pass-throughs (#1151), here for exactly the mechanism
+  // spelled out above and no other: they were never derived from this document
+  // (a pipeline aggregates `incidentes` / `orderML` at read time instead), but
+  // the migrated corpus still stores them, nothing in this app has ever written
+  // one, and no interactive editor can author one — so a value surfacing on the
+  // raw-fallback path could only ever raise a conflict modal naming a field the
+  // operator cannot see.
+  'valorComissoes',
+  'valorDespesasIncidentes',
+  'valorFretesIncidentes',
+  'impostos',
 ]);
 
 /**

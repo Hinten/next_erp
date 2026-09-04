@@ -106,11 +106,15 @@ export interface PedidoDerivedTotals {
 /**
  * Port of `Pedido.factory.fromItensCalculados`
  * (`.old/packages/pedido/lib/src/models.dart:3528-3668`) — derives every money
- * cache the order doc stores from its items, freight and returns. The
- * pass-through inputs the factory does NOT compute from items (`impostos`,
- * `valorComissoes`, `valorDespesasIncidentes`, `valorFretesIncidentes`) are left
- * to the caller; this owns only the item/frete/devolução-derived caches so the
- * web resolver and a future MCP agent share one implementation.
+ * cache the order doc stores from its items, freight and returns — and nothing
+ * else. The four pass-throughs the Flutter factory did NOT compute from items
+ * (`impostos`, `valorComissoes`, `valorDespesasIncidentes`,
+ * `valorFretesIncidentes`) were "left to the caller" here for as long as this
+ * port existed, and no caller ever appeared. #1151 dropped them from
+ * `pedidoSchema` outright: a pipeline aggregates the pedido's own
+ * subcollections at read time, so there is nothing for a caller to fill in.
+ * This owns the item/frete/devolução-derived caches, full stop, so the web
+ * resolver and a future MCP agent share one implementation of them.
  *
  * Every value is rounded with the canonical `roundReais`, which rounds from the
  * IEEE-754 double at 2dp — byte-parity with Flutter's `.duasCasasDecimais`

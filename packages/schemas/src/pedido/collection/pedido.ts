@@ -272,23 +272,40 @@ export const pedidoSchema = z.object({
   // Stock sync (server-owned — see estoqueAplicadoSchema) ------------------
   estoqueAplicado: estoqueAplicadoSchema.nullable().default(null).describe('Estoque aplicado'),
 
-  // Totals. `valorCobrado` is the ONE derived money cache still persisted:
-  // it backs a server-side `orderBy` + currency filter on `/pedidos`
+  // Totals. `valorCobrado` is the ONE money field still persisted here: it
+  // backs a server-side `orderBy` + currency filter on `/pedidos`
   // (`PedidosListView.tsx`) and the two indexes serving them, so it cannot be
-  // computed at read time. The other five Flutter wrote here
-  // (`valorCusto`, `valorFreteInicial`, `custoFreteInicial`, `valorDevolucao`,
-  // `valorCustoDevolvidos`) were REMOVED: each was a pure function of `itens`
-  // or `freteInicial` on this same document, with no reader, no query and no
-  // index, so a cache could only ever drift from the value it cached (#796).
-  // `derivePedidoTotals` still computes all six — they are display values now.
-  // ⚠️ Do not re-add one to "make a report easier": reports sum item
-  // subtotals, NF-e reads `frete.valorCobrado`, the footer derives live.
+  // computed at read time. NINE others Flutter wrote here were REMOVED, in two
+  // passes with two different reasons:
+  //
+  //  - The five DERIVED caches (`valorCusto`, `valorFreteInicial`,
+  //    `custoFreteInicial`, `valorDevolucao`, `valorCustoDevolvidos`) — each a
+  //    pure function of `itens` or `freteInicial` on this same document, so a
+  //    cache could only ever drift from the value it cached (#796).
+  //    `derivePedidoTotals` still computes all six; they are display values now.
+  //  - The four AGGREGATE pass-throughs (`valorComissoes`,
+  //    `valorDespesasIncidentes`, `valorFretesIncidentes`, `impostos`) — never
+  //    derivable from this document, which is exactly why they were persisted:
+  //    the only way to report them used to be a stored cache. They had no
+  //    writer in this app and no reader anywhere, and Enterprise's Pipelines
+  //    API removed the constraint that created them — a correlated subquery
+  //    aggregates the pedido's own subcollections at read time:
+  //    `incidentes` (`valor`, `frete`) covers the two incident totals and
+  //    `orderML` (`unnest(order_items)` → `sale_fee`) covers the commission.
+  //    `impostos` went with them for the same "no writer" reason, but it is
+  //    the one a pipeline canNOT replace: `nfev4` persists the NF-e as raw
+  //    XML, which no aggregation can parse. Keeping the field produced no
+  //    number either way; giving it a real fiscal source is #1491. (#1151.)
+  //
+  // ⚠️ Do not re-add one to "make a report easier" — that is precisely the
+  // reasoning #1151 retired. Reports AGGREGATE: item subtotals and the
+  // subcollections above, through a pipeline. NF-e reads `frete.valorCobrado`,
+  // and the footer derives live. A re-added field also costs more than a dead
+  // column: `TableView` offers every non-`hidden` schema field in its column
+  // picker, and `/pedidos` sorts server-side, so one header click on an
+  // unindexed field is a silent full scan billed by the byte (rule 1).
   valorCobrado: z.number().nullable().default(null).describe('Valor cobrado'),
   descontoTotal: z.number().default(0).describe('Desconto total'),
-  valorDespesasIncidentes: z.number().nullable().default(null).describe('Despesas incidentes'),
-  valorFretesIncidentes: z.number().nullable().default(null).describe('Fretes incidentes'),
-  valorComissoes: z.number().nullable().default(null).describe('Comissões'),
-  impostos: z.number().nullable().default(null).describe('Impostos'),
 
   // Timestamps — all stored as µs since epoch ----------------------------
   timestamp: microsSinceEpoch('Criação').nullable().default(null),
