@@ -290,6 +290,56 @@ describe('buildPedidoCartPayload', () => {
     expect((payload.from as { phone: string }).phone).toBe('1144445555');
   });
 
+  it('sends phones in the LOCAL shape, stripping the stored 55 country code', () => {
+    // This app stores phones `55`-prefixed (`normalizeTelefone`); ME's own
+    // documented example, every fixture here and the legacy app all use the
+    // local 10/11-digit shape, so the boundary strips it (#868).
+    const payload = buildPedidoCartPayload({
+      frete: makeFrete(),
+      enderecoOrigem: { ...ORIGIN, telefone: '5511333334444' },
+      filial: FILIAL,
+      enderecoDestino: { ...DEST_PF, telefone: null },
+      clienteDestino: { nome: 'Cliente Pedido', telefone: '5521999998888' },
+      itens: ITENS,
+      pedidoNumero: null,
+    }) as Record<string, unknown>;
+
+    expect((payload.from as { phone: string }).phone).toBe('11333334444');
+    expect((payload.to as { phone: string }).phone).toBe('21999998888');
+  });
+
+  it('passes a legacy raw phone through untouched and omits a missing one', () => {
+    const payload = buildPedidoCartPayload({
+      frete: makeFrete(),
+      enderecoOrigem: { ...ORIGIN, telefone: '1133334444' },
+      filial: { ...FILIAL, sede: { ...ORIGIN, telefone: null } },
+      enderecoDestino: { ...DEST_PF, telefone: null },
+      clienteDestino: null,
+      itens: ITENS,
+      pedidoNumero: null,
+    }) as Record<string, unknown>;
+
+    expect((payload.from as { phone: string }).phone).toBe('1133334444');
+    // `buildCartItem` drops a falsy phone rather than sending an empty one.
+    expect((payload.to as { phone?: string }).phone).toBeUndefined();
+  });
+
+  it('keeps a foreign phone with its own country code', () => {
+    // `localTelefone` strips only a leading `55`, so a number that already
+    // carries another country code is not mangled.
+    const payload = buildPedidoCartPayload({
+      frete: makeFrete(),
+      enderecoOrigem: ORIGIN,
+      filial: FILIAL,
+      enderecoDestino: { ...DEST_PF, telefone: '351912345678' },
+      clienteDestino: null,
+      itens: ITENS,
+      pedidoNumero: null,
+    }) as Record<string, unknown>;
+
+    expect((payload.to as { phone: string }).phone).toBe('351912345678');
+  });
+
   it('attaches the NF-e key as invoice and flips non_commercial off', () => {
     const chave = '35200114200166000187550010000000015000000016';
     const payload = buildPedidoCartPayload({

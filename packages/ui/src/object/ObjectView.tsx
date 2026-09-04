@@ -34,6 +34,7 @@ import { ConflictModal } from './ConflictModal';
 import { buildConflictFields, labelFromShape } from './conflictFields';
 import { valuesEqual } from './diff';
 import { FieldRenderer } from './FieldRenderer';
+import { applyPrepareForSave, collectPrepareForSave } from './prepareForSave';
 import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
 import { resolveStampFields, type StampFieldOverride } from './resolveStampFields';
@@ -368,6 +369,15 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // get a stable initial value.
   const emptyDefaults = useMemo(() => buildEmptyDefaults(descriptors), [descriptors]);
 
+  // Every `prepareForSave` in the tree, flattened to a path list ONCE — the
+  // sub-field overrides under `FieldConfig.fields` included, which is what
+  // #870 fixed: `renderInput` had always recursed there, `prepareForSave`
+  // never did, so a nested transform typechecked and did nothing.
+  // `fieldOverrides` is identity-tracked deliberately: every call site passes
+  // a module-level const (the lint rule on inline configs is the backstop),
+  // so this walk runs once per config, not once per keystroke.
+  const preparedTransforms = useMemo(() => collectPrepareForSave(fieldOverrides), [fieldOverrides]);
+
   // Validate what will be SAVED, not the raw editor state: apply each
   // field's `prepareForSave` before delegating to zodResolver. Staged
   // deletions are the motivating case — a schema-invalid row marked with
@@ -375,18 +385,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // Note for editors: error paths therefore index the TRANSFORMED value
   // (e.g. the array with marked rows removed) — composite editors map the
   // indices back (see FaixaCepEditor).
-  // `fieldOverrides` is identity-tracked deliberately: every call site
-  // passes a module-level const (the lint rule on inline configs is the
-  // backstop).
   const resolver = useMemo<Resolver<FieldValues>>(() => {
     const base = zodResolver(schema as never) as Resolver<FieldValues>;
-    const transforms = Object.entries(fieldOverrides).filter(([, cfg]) => cfg?.prepareForSave);
-    if (transforms.length === 0 && !validate) return base;
+    if (preparedTransforms.length === 0 && !validate) return base;
     const wrapped: Resolver<FieldValues> = async (values, ctx, opts) => {
-      const prepared: Record<string, unknown> = { ...(values as Record<string, unknown>) };
-      for (const [key, cfg] of transforms) {
-        prepared[key] = cfg!.prepareForSave!(prepared[key]);
-      }
+      // Copy-on-write: `values` is RHF's live object and must not be mutated.
+      const prepared = applyPrepareForSave(values as Record<string, unknown>, preparedTransforms);
       const result = await base(prepared as FieldValues, ctx, opts);
       if (!validate) return result;
       // Merge cross-document issues at each path's first segment. A real shape
@@ -422,7 +426,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       return { ...result, errors } as typeof result;
     };
     return wrapped;
-  }, [schema, fieldOverrides, validate]);
+  }, [schema, preparedTransforms, validate]);
 
   const form = useForm<FieldValues>({
     resolver,
@@ -562,17 +566,21 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     // We reset the form to these transformed values on success so the UI
     // reflects what was actually persisted.
     const raw = form.getValues() as Record<string, unknown>;
-    const values: Record<string, unknown> = { ...raw };
     const isUpdate = !!internalId;
     const dirty = form.formState.dirtyFields as Record<string, unknown>;
-    for (const [key, cfg] of Object.entries(fieldOverrides)) {
-      if (!cfg?.prepareForSave) continue;
-      // Only transform fields that will actually be written — all fields on
-      // create, just the dirty ones on update — so `form.reset(values)` can't
-      // show a transformed value that never reached Firestore.
-      if (isUpdate && !dirty[key]) continue;
-      values[key] = cfg.prepareForSave(raw[key]);
-    }
+    // Only transform fields that will actually be written — all fields on
+    // create, just the dirty ones on update — so `form.reset(values)` can't
+    // show a transformed value that never reached Firestore.
+    //
+    // The gate reads the TOP-LEVEL key even for a nested transform, and that is
+    // the correct coarseness: `dirtyFields` is a DeepMap, so a parent is truthy
+    // when any descendant changed, and Firestore replaces a nested object
+    // wholesale — a dirty parent writes ALL its sub-fields, so all of them must
+    // be normalized (see `pickDirty` in ./diff).
+    const activeTransforms = isUpdate
+      ? preparedTransforms.filter((t) => dirty[t.path[0]!])
+      : preparedTransforms;
+    const values: Record<string, unknown> = applyPrepareForSave(raw, activeTransforms);
     // Record-level derivations (e.g. denormalized `variacoesIds` from the
     // already-transformed `variacoes`). Merge the derived keys into the values
     // and mark each dirty only when it changed, so a pristine update still

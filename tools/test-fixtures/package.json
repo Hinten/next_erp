@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@delfrance/auth": "workspace:*",
+    "@delfrance/core": "workspace:*",
     "@delfrance/data": "workspace:*",
     "@delfrance/rules-gen": "workspace:*",
     "@delfrance/schemas": "workspace:*",

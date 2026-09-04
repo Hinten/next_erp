@@ -141,12 +141,27 @@ export interface FieldConfig<TValue = unknown> {
    * marks items for removal in-place (see `DELETE_MARK`) and `prepareForSave`
    * (e.g. `stripMarkedForDeletion`) drops them + strips the transient marker at
    * save time, so nothing is destroyed until the user saves. Must be pure.
+   *
+   * Honoured at any depth: declared on a sub-field under `fields`, it runs for
+   * that sub-field's value (#870). A parent's transform runs BEFORE its own
+   * descendants', so the more specific config wins for its own key. On update
+   * the dirty gate is per TOP-LEVEL key — Firestore replaces a nested object
+   * wholesale, so a dirty parent normalizes ALL of its sub-fields, and a
+   * pristine parent normalizes none. A `null` parent (a nullable object whose
+   * Switch is off) is skipped, never materialized.
    */
   prepareForSave?: (value: TValue) => unknown;
   /**
    * Per-field overrides for the sub-fields of a `kind: 'object'` field.
    * Keyed by the nested key (e.g. `sede.cpf_cnpj` → `{ cpf_cnpj: {...} }`).
    * Lets callers hide/relabel address fields without flattening the schema.
+   *
+   * What a nested entry actually does: `label`, `hint`, `kind`, `options`,
+   * `hidden`, `editable`, `renderInput` and `defaultValue` are honoured by
+   * `FieldRenderer`, and `prepareForSave` by `ObjectView`'s save + resolver
+   * pipeline. `section` and `renderCell` are top-level-only — the first groups
+   * TOP-LEVEL fields into tabs, the second belongs to `TableView`, which has no
+   * nested surface.
    */
   fields?: Record<string, FieldConfig>;
   /**
