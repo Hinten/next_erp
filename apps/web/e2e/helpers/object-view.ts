@@ -40,6 +40,20 @@ export async function fillField(page: Page, label: string, value: string): Promi
 }
 
 /**
+ * Assert what the operator SEES in a text field — the visible one, per
+ * `visibleField`. Used where the point of a step is that something else put a
+ * value in the form (a staged revert, an autofill), not that the user typed it.
+ */
+export async function expectFieldValue(
+  page: Page,
+  label: string,
+  value: string,
+  timeout = 15_000,
+): Promise<void> {
+  await expect(visibleField(page, label)).toHaveValue(value, { timeout });
+}
+
+/**
  * Read the number a BRL-masked field is actually holding.
  *
  * Mirrors `parseBrl` in `apps/web/app/(app)/produtos/_components/CurrencyInput.tsx`

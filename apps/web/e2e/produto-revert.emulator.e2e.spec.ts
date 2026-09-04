@@ -9,7 +9,7 @@ import {
   seedProdutoComFilho,
   setProdutoFields,
 } from './_helpers/seed-data';
-import { clickSave, fillField, typeMoney } from './helpers/object-view';
+import { clickSave, expectFieldValue, fillField, typeMoney } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -17,30 +17,25 @@ import { warmRoutes } from './helpers/warmup';
  * history + per-field revert) on the produto edit screen. Where
  * `produto-preco.emulator.e2e.spec.ts` proves the trigger writes the right
  * `historicoDeModificacoes` documents, THIS spec drives the actual revert UI
- * on top of them: list → expand → "Restaurar" → the real produto write (and,
- * for `precos`, the real re-propagation to a variation child).
+ * on top of them.
+ *
+ * ## Restaurar STAGES; "Salvar alterações" writes (#660)
+ *
+ * Every scenario below is in two halves, and the seam between them is the
+ * point: the click pre-fills the form and leaves Firestore ALONE, and only the
+ * operator's own save commits it. That is what makes the revert reviewable, and
+ * what stops a dirty form's next save from silently overwriting it — the bug
+ * this behaviour replaced.
  *
  * Emulator-only (`e2e-emulator.yml`): the functions emulator must be running
- * for `onProdutoChanged` to fire on every write this spec makes (including
- * the revert writes themselves — a revert is a normal produto write, so it
- * logs its OWN new history entry, which is the "re-propagation is a feature"
- * decision this spec asserts on in scenario (c)).
- *
- * Pipeline gotcha this spec exercises transitively: `isPipelineSupported(db)`
- * reports `true` against the Firestore emulator too (it only checks
- * `typeof db.pipeline === 'function'`, a static SDK capability — see the
- * `firestore-pipelines` skill, §7), while the emulator does NOT implement the
- * Pipelines RPC. `ModificacoesManager` and `ProdutoHistoryButton` therefore
- * gate the pipeline attempt on the build-time
- * `NEXT_PUBLIC_USE_FIREBASE_EMULATOR` flag (the same one
- * `lib/firebase/client.ts` uses to connect the emulator) and go straight to
- * the classic `buildQuery` path in this lane. If this suite's list/expand
- * steps time out waiting for rows, that emulator gate — not this spec — is
- * where to look first.
+ * for `onProdutoChanged` to fire on every write this spec makes (including the
+ * save that commits a revert — it is a normal produto write, so it logs its OWN
+ * new history entry, and for `precos` re-propagates to the variation children,
+ * which is what scenario (c) asserts).
  */
 test.describe.serial('Produto revert e2e — histórico unificado + restauração por campo', () => {
-  // Group A: nome revert (scenario a) + conflict revert (scenario b), reusing
-  // the same produto across both — (b) picks up from (a)'s restored state.
+  // Group A: nome revert (a), conflict (b) and discard (d), reusing the same
+  // produto across all three — each picks up from the previous one's state.
   const prefixA = e2ePrefix('prod-revert-nome');
   // Group C: precos revert + re-propagation to a variation child (scenario c).
   const prefixC = e2ePrefix('prod-revert-preco');
@@ -102,10 +97,12 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     return changes?.[field];
   }
 
-  /** Open the produto's Modificações tab fresh (a full navigation, not a tab
-   * re-click) so a `keepMounted` panel from a previous visit can never serve
-   * stale rows — the list has no live listener (pipelines/classic queries here
-   * are one-shot), so only a remount is guaranteed to refetch. */
+  /**
+   * Open the produto's Modificações tab on a FRESH navigation, so no staged
+   * pre-fill from an earlier scenario is still sitting in the form. (The list
+   * itself streams its first page, so a remount is not needed to see new rows —
+   * it is the form state a remount clears.)
+   */
   async function openModificacoesTab(page: Page, produtoId: string): Promise<void> {
     await page.goto(`/produtos/${produtoId}/editar`);
     await page.getByRole('tab', { name: 'Modificações' }).click();
@@ -121,10 +118,8 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     return entry;
   }
 
-  test('(a) edits nome via the UI, then Restaurar reverts it and logs a new entry', async ({
-    page,
-  }) => {
-    const edited = `${nomeOriginal}-editado`;
+  /** Edit `Nome` through the UI and wait for the trigger to record the change. */
+  async function editNomeAndSave(page: Page, edited: string): Promise<void> {
     await page.goto(`/produtos/${produtoAId}/editar`);
     await fillField(page, 'Nome', edited);
     await clickSave(page, 'Salvar alterações');
@@ -141,6 +136,11 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
         { timeout: 30_000 },
       )
       .toBe(true);
+  }
+
+  test('(a) Restaurar pre-fills the form and writes nothing until Salvar', async ({ page }) => {
+    const edited = `${nomeOriginal}-editado`;
+    await editNomeAndSave(page, edited);
 
     await openModificacoesTab(page, produtoAId);
     const entry = await expandNewestEntry(page);
@@ -148,13 +148,21 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     await expect(restaurar).toBeVisible({ timeout: 15_000 });
     await restaurar.click();
 
-    // Reverted: the produto doc is back to its pre-edit nome...
+    // The click moved the operator to the field's own tab and put the old value
+    // in the input — the half that was invisible when the revert wrote directly.
+    await expectFieldValue(page, 'Nome', nomeOriginal);
+    // …and Firestore still holds the edited value. Nothing is committed until
+    // the operator says so.
+    expect((await getProdutoData(produtoAId))?.nome).toBe(edited);
+
+    await clickSave(page, 'Salvar alterações');
+
     await expect
       .poll(async () => (await getProdutoData(produtoAId))?.nome, { timeout: 30_000 })
       .toBe(nomeOriginal);
-    // ...AND the revert write is itself a normal produto write, so the trigger
-    // logs a NEW entry recording it (old: edited, new: original) — distinct
-    // from the entry we just acted on (old: original, new: edited).
+    // The commit rides the normal save path, so the trigger logs a NEW entry
+    // recording it (old: edited, new: original) — distinct from the entry that
+    // was restored (old: original, new: edited).
     await expect
       .poll(
         async () =>
@@ -172,22 +180,7 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
   }) => {
     const edited = `${nomeOriginal}-conflito`;
     const thirdValue = `${nomeOriginal}-terceiro`;
-    await page.goto(`/produtos/${produtoAId}/editar`);
-    await fillField(page, 'Nome', edited);
-    await clickSave(page, 'Salvar alterações');
-
-    await expect
-      .poll(async () => (await getProdutoData(produtoAId))?.nome, { timeout: 30_000 })
-      .toBe(edited);
-    await expect
-      .poll(
-        async () =>
-          findByChangedField(await listHistoricoModificacoes(produtoAId), 'nome').some(
-            (e) => fieldChange(e, 'nome')?.new === edited,
-          ),
-        { timeout: 30_000 },
-      )
-      .toBe(true);
+    await editNomeAndSave(page, edited);
 
     await openModificacoesTab(page, produtoAId);
     const entry = await expandNewestEntry(page);
@@ -211,14 +204,38 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     });
     await dialog.getByRole('button', { name: 'Restaurar mesmo assim', exact: true }).click();
 
-    // Confirming anyway restores the ORIGINAL old value recorded on the
-    // entry, overriding the third-party write.
+    // Confirming stages the entry's recorded old value; the third-party write
+    // still stands in Firestore until the save.
+    await expectFieldValue(page, 'Nome', nomeOriginal);
+    expect((await getProdutoData(produtoAId))?.nome).toBe(thirdValue);
+
+    await clickSave(page, 'Salvar alterações');
     await expect
       .poll(async () => (await getProdutoData(produtoAId))?.nome, { timeout: 30_000 })
       .toBe(nomeOriginal);
   });
 
-  test('(c) reverting a parent precos change re-propagates to its variation child', async ({
+  test('(d) leaving without saving discards the staged value', async ({ page }) => {
+    const edited = `${nomeOriginal}-descartado`;
+    await editNomeAndSave(page, edited);
+
+    await openModificacoesTab(page, produtoAId);
+    const entry = await expandNewestEntry(page);
+    await entry.getByRole('button', { name: 'Restaurar nome', exact: true }).click();
+    await expectFieldValue(page, 'Nome', nomeOriginal);
+
+    // A staged form is a dirty form, so leaving raises the unsaved-changes
+    // guard; accept it, which is the operator choosing to throw the revert away.
+    page.once('dialog', (d) => void d.accept());
+    await page.goto(`/produtos/${produtoAId}/editar`);
+
+    // Reloaded from the server, the field shows the value Firestore actually
+    // holds — the revert left no trace, which is the whole point of staging.
+    await expectFieldValue(page, 'Nome', edited, 30_000);
+    expect((await getProdutoData(produtoAId))?.nome).toBe(edited);
+  });
+
+  test('(c) saving a restored parent precos re-propagates to its variation child', async ({
     page,
   }) => {
     await page.goto(`/produtos/${parentCId}/editar`);
@@ -248,19 +265,26 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
 
     await openModificacoesTab(page, parentCId);
     const entry = await expandNewestEntry(page);
-    // Reverting `precos` on a parent is going to re-fire the trigger and flow
-    // to every variation child — surfaced as a warning, not silently done.
+    // Restoring `precos` on a parent will re-fire the trigger and flow to every
+    // variation child when saved — surfaced as a warning, not silently done.
     await expect(entry.getByText(/variações/i)).toBeVisible({ timeout: 15_000 });
     const restaurar = entry.getByRole('button', { name: 'Restaurar precos', exact: true });
     await expect(restaurar).toBeVisible();
     await restaurar.click();
 
+    // The jump landed on Preço e custo (the tab `precos` is rendered in), and
+    // the price is staged only — the parent doc still holds the edited value.
+    await expect(page.getByRole('textbox', { name: varejoNome })).toBeVisible({ timeout: 15_000 });
+    expect((await getProdutoData(parentCId))?.precos).toEqual({ [varejoId]: { valor: 30 } });
+
+    await clickSave(page, 'Salvar alterações');
+
     await expect
       .poll(async () => (await getProdutoData(parentCId))?.precos, { timeout: 30_000 })
       .toBeNull();
-    // The child follows: the revert write re-fires `onProdutoChanged`, which
-    // propagates the parent's (now null) precos to its variation children —
-    // the exact re-propagation-on-revert decision this scenario proves.
+    // The child follows: the save re-fires `onProdutoChanged`, which propagates
+    // the parent's (now null) precos to its variation children — the exact
+    // re-propagation-on-revert decision this scenario proves.
     await expect
       .poll(async () => (await getProdutoData(childCId))?.precos, { timeout: 30_000 })
       .toBeNull();
