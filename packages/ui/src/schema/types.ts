@@ -157,11 +157,24 @@ export interface FieldConfig<TValue = unknown> {
    * Lets callers hide/relabel address fields without flattening the schema.
    *
    * What a nested entry actually does: `label`, `hint`, `kind`, `options`,
-   * `hidden`, `editable`, `renderInput` and `defaultValue` are honoured by
-   * `FieldRenderer`, and `prepareForSave` by `ObjectView`'s save + resolver
-   * pipeline. `section` and `renderCell` are top-level-only — the first groups
-   * TOP-LEVEL fields into tabs, the second belongs to `TableView`, which has no
-   * nested surface.
+   * `hidden`, `editable` and `renderInput` are honoured by `FieldRenderer`, and
+   * `prepareForSave` by `ObjectView`'s save + resolver pipeline. `defaultValue`
+   * is honoured only when the nested entry is ITSELF a nullable
+   * `kind: 'object'` field — its one consumer repo-wide is the Switch's
+   * `seedObject`, so on a leaf it is inert. `section` and `renderCell` are
+   * top-level-only: the first groups TOP-LEVEL fields into tabs, the second
+   * belongs to `TableView`, which has no nested surface.
+   *
+   * ⚠️ One asymmetry, in the opposite direction to the one #870 fixed. When the
+   * PARENT declares a `renderInput`, `FieldRenderer` skips its nested branch
+   * entirely (`kind === 'object' && !config?.renderInput`) and never reads
+   * `fields` — the custom widget owns the whole subtree. The `prepareForSave`
+   * walk has no such gate, so under such a parent a nested transform still runs
+   * while every rendering key above is ignored. That is deliberate: the
+   * transform is about the VALUE being written, which the widget edits either
+   * way, and gating it would silently drop it — the exact failure mode this
+   * type's `prepareForSave` doc exists to rule out. Nothing in the repo pairs a
+   * parent `renderInput` with `fields` today.
    */
   fields?: Record<string, FieldConfig>;
   /**
