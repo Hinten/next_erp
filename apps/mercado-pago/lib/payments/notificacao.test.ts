@@ -3,6 +3,7 @@ import { READ_CACHE_TTL, __resetAllReadCaches } from '@delfrance/data/admin/cach
 import { __setMercadoPagoCacheClockForTests } from './metodoCache';
 import type { Firestore } from 'firebase-admin/firestore';
 import { PedidoReconcileNotFoundError } from '@delfrance/data/admin';
+import { ESTADO_PEDIDO } from '@delfrance/schemas';
 import {
   MercadoPagoHttpError,
   MercadoPagoNetworkError,
@@ -399,6 +400,144 @@ describe('handleNotificationTask', () => {
     const reconcileArg = (deps.reconcile as unknown as { mock: { calls: unknown[][] } }).mock
       .calls[0]![1] as { pagamento: { metodoPagamentoOuterRef: string } };
     expect(reconcileArg.pagamento.metodoPagamentoOuterRef).toBe('documents/metodo_pgto/metodo-A');
+  });
+
+  /**
+   * ⚠️ The regression these guard against is INVISIBLE without them.
+   *
+   * `done` is a disposition, not a claim that work happened: a reconcile that
+   * moved the pedido to `pago`, one that wrote a pagamento and moved no estado,
+   * and one that wrote NOTHING because the delivery was stale all resolve to it.
+   * On Mercado Livre's first live run (#1087) the task handler logged a bare
+   * success for every delivery while nothing was being written, and no field
+   * could say which had occurred.
+   *
+   * The property under test is not "detail is present" — it is that runs which
+   * DID different things REPORT differently. Dropping `kind` or `detail` again
+   * would restore the blindness while leaving every other assertion in this file
+   * green, so they are asserted here rather than trusted.
+   */
+  describe('reports what it actually did (#1087)', () => {
+    /** Drive one delivery with a reconcile that returns exactly this. */
+    async function runReconcile(ret: {
+      transition: string | null;
+      skippedStale: boolean;
+    }): Promise<Awaited<ReturnType<typeof handleNotificationTask>>> {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      return handleNotificationTask(
+        asDb(db),
+        payloadOf(),
+        0,
+        fakeDeps({ reconcile: vi.fn(async () => ret) as never }),
+      );
+    }
+
+    it('an estado transition reports the estado it moved to', async () => {
+      const r = await runReconcile({ transition: ESTADO_PEDIDO.pago, skippedStale: false });
+      expect(r).toMatchObject({
+        outcome: 'done',
+        kind: 'reconciled',
+        detail: ESTADO_PEDIDO.pago,
+      });
+    });
+
+    it('a STALE redelivery wrote nothing, and does not report as a transition', async () => {
+      const r = await runReconcile({ transition: null, skippedStale: true });
+      expect(r).toMatchObject({ outcome: 'done', kind: 'reconciled', detail: 'stale-ignorado' });
+    });
+
+    it('a pagamento written with no estado change is its own outcome', async () => {
+      const r = await runReconcile({ transition: null, skippedStale: false });
+      expect(r).toMatchObject({ outcome: 'done', kind: 'reconciled', detail: 'sem-transicao' });
+    });
+
+    it('THE PROPERTY: the three reconcile outcomes share `done` and stay distinct', async () => {
+      const details = [
+        (await runReconcile({ transition: ESTADO_PEDIDO.pago, skippedStale: false })).detail,
+        (await runReconcile({ transition: null, skippedStale: true })).detail,
+        (await runReconcile({ transition: null, skippedStale: false })).detail,
+      ];
+      expect(new Set(details).size).toBe(3);
+    });
+
+    it('carries the success arm `kind` out to the caller', async () => {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      const r = await handleNotificationTask(asDb(db), payloadOf(), 0, fakeDeps());
+      expect(r.kind).toBe('reconciled');
+    });
+
+    it('carries a NON-success arm `kind` out too — a drop is not a reconcile', async () => {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ liveMode: false }),
+        0,
+        fakeDeps(),
+      );
+      expect(r.kind).toBe('dropped');
+    });
+
+    it('the two pre-refetch drops are told apart — both were `dropped` alone before', async () => {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      const sandbox = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ liveMode: false }),
+        0,
+        fakeDeps(),
+      );
+      const topico = await handleNotificationTask(
+        asDb(db),
+        payloadOf({ topic: 'merchant_order' }),
+        0,
+        fakeDeps(),
+      );
+      expect(sandbox.detail).toBe('sandbox');
+      expect(topico.detail).toBe('topico-nao-suportado');
+      expect(sandbox.detail).not.toBe(topico.detail);
+    });
+
+    it('a sandbox found only by the REFETCH is distinct — an MP call was spent', async () => {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf(),
+        0,
+        fakeDeps({ fetchPayment: vi.fn(async () => paymentOf({ live_mode: false })) }),
+      );
+      expect(r).toMatchObject({ outcome: 'dropped', kind: 'dropped', detail: 'sandbox-refetch' });
+      // The account WAS resolved before the refetch, so the park names it.
+      expect(r.metodoId).toBe('metodo-A');
+    });
+
+    it('a park that resolved an account carries `metodoId`, and no `detail`', async () => {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      const r = await handleNotificationTask(
+        asDb(db),
+        payloadOf(),
+        0,
+        fakeDeps({
+          fetchPayment: vi.fn(async () => paymentOf({ external_reference: null })),
+        }),
+      );
+      expect(r).toMatchObject({ outcome: 'failed', kind: 'failed', metodoId: 'metodo-A' });
+      // `fail` writes a Firestore doc carrying the whole reason as `erro`, so it
+      // deliberately gets no coarser second copy in the log.
+      expect(r.detail).toBeUndefined();
+    });
+
+    it('the shared pipeline schema-parse drop carries NO kind — a coding bug, not ours', async () => {
+      const db = new FakeDb();
+      seedMetodo(db, 'metodo-A', 55);
+      const r = await handleNotificationTask(asDb(db), { paymentId: '' }, 0, fakeDeps());
+      expect(r.outcome).toBe('dropped');
+      expect(r.kind).toBeUndefined();
+    });
   });
 
   it('live_mode=false webhook → dropped, no refetch, no persist', async () => {

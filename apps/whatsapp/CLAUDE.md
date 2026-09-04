@@ -149,6 +149,20 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
    attaches the `mensagem` (downloading + caching media), runs the daily auto-reply,
    then `fixConversaAnonima`. All ids are DETERMINISTIC (conversa/mensagem/event/
    auto-reply) so redeliveries + retries converge instead of forking.
+   **#1137**: it also REPORTS what the change did on the outcome's `detail` — a written
+   mensagem, an idempotent redelivery, a spam skip, an outbound echo, a statuses-only
+   change, or `vazio` (neither `messages` nor `statuses`, i.e. nothing happened). That
+   value comes from `createOrUpdateMensagem`'s boolean, which used to be discarded at
+   its only call site; it is REPORTED only and must never gate the `ultima_modificacao`
+   bump (see the comment at that bump). `processStatuses` is deliberately NOT widened —
+   it already `console.warn`s per miss, so a change whose every status is a soft miss
+   still reports `statuses`, which overstates; a per-status count is a separate design
+   question. ⚠️ Two matching UNDERSTATEMENTS, so `detail` is not read as "nothing was
+   written": `upsertConversa` runs BEFORE the echo/spam returns, so every value except
+   `statuses`/`vazio` implies the conversa was touched; a change carrying BOTH
+   `messages` and `statuses` folds to `echo` (because `incoming = false`) and hides
+   that the statuses WERE applied; and `redelivery` names the mensagem skip while the
+   same run may still have reopened the conversa and bumped `ultima_modificacao`.
 4. **`lib/whatsapp/processStatus.ts`** — advances an OUTBOUND mensagem's
    `estadoEnvio` from a `statuses[]` entry, guarded by the exact legacy forward-only
    transition matrix + the `lastExternalUpdateDateTime` out-of-order guard, and
