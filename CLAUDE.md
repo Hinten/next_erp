@@ -219,9 +219,9 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
   (hosts the ADRs) · `example` OSS demo — **not** Next either, a plain `tsx`
   script: `pnpm --filter @delfrance/example demo`, no dev server.
 - `nfe` (:3004) · `melhor-envio` (:3005) · `mercado-livre` (:3006) ·
-  `mercado-pago` (:3007) · `whatsapp` (:3008) — API-only App Hosting backends,
-  **one deployable per channel**, each importing its logic from the matching
-  `packages/integrations/<channel>`.
+  `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) — API-only App
+  Hosting backends, **one deployable per channel**, each importing its logic
+  from the matching `packages/integrations/<channel>`.
 - `functions` — **not** a Next app: gen2 Cloud Functions, codebase `storage`.
 
 `apps/{nfe,mercado-livre,mercado-pago,whatsapp}/functions/` are **nested**
@@ -236,12 +236,15 @@ truth) · `data` (`defineCollection<T>`, cascade) · `ui` (Mantine theme +
 `apps/web` reaches it transitively, so `@google/genai` and `firebase-admin` may
 be imported only behind `./admin`; enforced by
 `packages/config-eslint/rules/ai-root-entry-browser-safe.test.js`, because
-breaking it fails nothing) · `integrations/<channel>` — **five packages, all
-implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api.
-⚠️ The five throw-only marketplace scaffolds (shopee, magalu, amazon-sp-api,
-facebook, loja-integrada) were **deleted** in #815: they existed only to typecheck
-against `MarketplaceChannel`, and had no importer anywhere. **That contract is
-gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
+breaking it fails nothing) · `integrations/<channel>` — **six packages, all
+implemented**: nfe, mercado-livre, mercado-pago, freight-br, whatsapp-cloud-api,
+shopee. ⚠️ The five throw-only marketplace scaffolds (shopee, magalu,
+amazon-sp-api, facebook, loja-integrada) were **deleted** in #815: they existed
+only to typecheck against `MarketplaceChannel`, and had no importer anywhere.
+**Four of the five stay deleted**; `shopee` was **re-created** as a real
+fetch-only package (the Shopee master plan, step 1) — it declares no
+`MarketplaceChannel` and has no plugin registry, only Shopee's wire protocol.
+**That contract is gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
 (`packages/schemas/src/shared/marketplace.ts`, the `FREIGHT_TIPO_CAPS` shape) and
 implemented as one App Hosting backend per channel; its shared data shapes live in
 `@delfrance/core/marketplace`. `packages/core/src/plugins` keeps exactly two
@@ -276,7 +279,7 @@ can push nothing.
 ```bash
 pnpm install                                # per worktree too; apps read ../../.env.local
 pnpm --filter @delfrance/web dev            # ONE app — prefer this
-pnpm dev                                    # WARNING: 9 dev servers, :3000-:3008
+pnpm dev                                    # WARNING: 10 dev servers, :3000-:3009
 pnpm turbo run lint typecheck               # before commits
 pnpm format:check                           # a CI gate; `pnpm format` fixes
 pnpm turbo run test
