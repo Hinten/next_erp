@@ -54,9 +54,11 @@ export const SHOPEE_OAUTH_MENSAGENS: Readonly<Record<string, string>> = {
 };
 
 /**
- * ⚠️ A module-level constant, not an object built at the call site: the toast
- * effect's dependency list includes `mensagens`, so a fresh literal per render
- * would re-fire the notification on every render. `ContaShopeePanel` hands this
+ * ⚠️ `mensagens` must be referentially STABLE: `useOAuthCallbackToast`
+ * destructures the config and lists `mensagens` (not the config object) among
+ * its effect dependencies, so a fresh message map per render would re-fire the
+ * notification on every render. Keeping the whole config a module-level
+ * constant is the simplest way to guarantee that. `ContaShopeePanel` hands this
  * straight to `ConnectionPanel`'s `toast` prop.
  */
 export const SHOPEE_OAUTH_TOAST = {

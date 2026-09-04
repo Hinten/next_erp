@@ -131,15 +131,35 @@ function ContaConectada({ conta }: { conta: ShopeeContaStatus }) {
  *
  * The 365-day advice is a product decision (P8): the consent screen defaults to
  * a shorter window, and every shorter window is another interruption.
+ *
+ * A consent given on the PARENT account is the other disconnected-with-data
+ * state: the callback stored a credential and `main_account_id` but no shop,
+ * and the backend answers `connected: false` because it has no shop to ask
+ * Shopee about. Without this line the operator sees a green "conectada" toast
+ * beside a gray "Não conectada" badge and nothing in between — the shop
+ * fan-out that turns a main-account consent into per-shop credentials is a
+ * later step of the master plan, and the panel has to say so.
  */
 function ContaDesconectada({ conta }: { conta: ShopeeContaStatus }) {
-  if (conta.shopId === null) return null;
-  return (
-    <Text size="xs" c="dimmed">
-      A Shopee não reconhece mais a loja #{String(conta.shopId)}: a autorização foi revogada pelo
-      vendedor ou expirou. Clique em Reautenticar e escolha 365 dias.
-    </Text>
-  );
+  if (conta.shopId !== null) {
+    return (
+      <Text size="xs" c="dimmed">
+        A Shopee não reconhece mais a loja #{String(conta.shopId)}: a autorização foi revogada pelo
+        vendedor ou expirou. Clique em Reautenticar e escolha 365 dias.
+      </Text>
+    );
+  }
+  if (conta.mainAccountId !== null) {
+    return (
+      <Text size="xs" c="dimmed">
+        Consentimento feito pela conta principal #{String(conta.mainAccountId)}: a credencial foi
+        guardada, mas nenhuma loja está ligada ainda — a ligação por loja chega em um passo seguinte
+        da integração. Para conectar uma loja agora, reautentique entrando com a conta da loja, não
+        com a conta principal.
+      </Text>
+    );
+  }
+  return null;
 }
 
 /**

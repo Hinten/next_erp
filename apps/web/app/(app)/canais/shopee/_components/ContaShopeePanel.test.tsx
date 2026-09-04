@@ -187,6 +187,29 @@ describe('ContaShopeePanel — disconnected', () => {
 
     expect(await screen.findByText('Não conectada')).toBeTruthy();
     expect(screen.queryByText(/não reconhece mais a loja/)).toBeNull();
+    expect(screen.queryByText(/conta principal/)).toBeNull();
+  });
+
+  it('explains a main-account consent, which stores a credential but binds no shop', async () => {
+    // The backend answers `connected: false` here because it has no shop to ask
+    // Shopee about; without this line the operator would see the green
+    // "conectada" toast beside a gray badge and nothing in between.
+    renderPanel({
+      connected: false,
+      shopId: null,
+      mainAccountId: 990_001,
+      authTime: null,
+      expireTime: null,
+      diasParaExpirar: null,
+      loja: null,
+      credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: false },
+    });
+
+    expect(await screen.findByText('Não conectada')).toBeTruthy();
+    expect(screen.getByText(/conta principal #990001/)).toBeTruthy();
+    expect(screen.getByText(/nenhuma loja está ligada ainda/)).toBeTruthy();
+    // It is NOT the revoked hint — the two disconnected-with-data states differ.
+    expect(screen.queryByText(/não reconhece mais a loja/)).toBeNull();
   });
 });
 
