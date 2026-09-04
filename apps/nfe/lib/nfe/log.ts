@@ -131,6 +131,5 @@ export function safeLog(
   level: 'log' | 'debug' | 'info' | 'warn' | 'error',
   ...args: ReadonlyArray<unknown>
 ): void {
-  // eslint-disable-next-line no-restricted-syntax
   console[level](...args.map((a) => redactSensitive(a)));
 }

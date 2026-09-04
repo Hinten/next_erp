@@ -1,8 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 import { millisSinceEpoch } from './shared/datetime';
-import { estadoEnviNFeMsgSchema } from './enviNfeMsg';
-import { ESTADO_ENVI_NFE_MSG } from './enviNfeMsg';
+import { estadoEnviNFeMsgSchema, ESTADO_ENVI_NFE_MSG } from './enviNfeMsg';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth — same audit
 // surface as `EnviNFeMsg` (`.old/packages/nfe_client/lib/src/models.dart`

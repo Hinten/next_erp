@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -216,20 +216,58 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
     expect(read(CORE_BARREL)).toMatch(/export \* from '\.\/plugins';/);
   });
 
-  it('the five throw-only channel scaffolds stay deleted', () => {
+  it('the four remaining throw-only channel scaffolds stay deleted', () => {
     // They existed only to typecheck against the removed contract, and had no
     // importer anywhere. Recreating one is how the contract comes back.
+    //
+    // ⚠️ `shopee` LEFT this list, and only this list. It is a real package again —
+    // fetch-only signing/hosts/wire schemas/typed errors for the Shopee Open
+    // Platform, paired with `apps/shopee` — which is the ADR-0015 shape, the
+    // opposite of the throw-only scaffold that was deleted. Shrinking the list
+    // alone would have reopened the hole this guard exists for, so the shape it
+    // graduated INTO is asserted by the sibling test below.
     //
     // ⚠️ Keyed on the MANIFEST, not the directory. A deleted workspace package can
     // leave an empty `node_modules/` behind in an existing checkout, which would
     // make a directory check red locally and green on a fresh CI clone — the
     // worst kind of guard. `package.json` is what makes it a package.
-    for (const pkg of ['shopee', 'magalu', 'amazon-sp-api', 'facebook', 'loja-integrada']) {
+    for (const pkg of ['magalu', 'amazon-sp-api', 'facebook', 'loja-integrada']) {
       expect(
         existsSync(resolve(repoRoot, `packages/integrations/${pkg}/package.json`)),
         `packages/integrations/${pkg} was recreated — see ADR 0015`,
       ).toBe(false);
     }
+  });
+
+  it('the re-created shopee package is a library, not a channel plugin', () => {
+    // The replacement for shopee's row in the list above. A package that exists
+    // again may only exist in the ADR-0015 shape: it describes the PROVIDER's
+    // wire protocol and nothing about this ERP's orchestration.
+    //
+    // ⚠️ Guarded by `existsSync` rather than asserted unconditionally so this
+    // file keeps working if the package is ever removed again — but the vacuity
+    // check below means an EMPTIED `src/` cannot pass it silently.
+    const manifest = resolve(repoRoot, 'packages/integrations/shopee/package.json');
+    if (!existsSync(manifest)) return;
+
+    const srcDir = resolve(repoRoot, 'packages/integrations/shopee/src');
+    const files = readdirSync(srcDir, { recursive: true })
+      .map(String)
+      .filter((f) => f.endsWith('.ts'));
+
+    for (const file of files) {
+      const src = readFileSync(resolve(srcDir, file), 'utf8');
+      expect(declaresMarketplaceChannel(src), `${file} declares MarketplaceChannel`).toBe(false);
+      expect(reExportsMarketplaceChannelSymbol(src), `${file} re-exports MarketplaceChannel`).toBe(
+        false,
+      );
+      expect(hasMarketplaceRegistry(src), `${file} registers a marketplace plugin`).toBe(false);
+    }
+
+    // Vacuity guard: an empty (or wrongly-rooted) `src/` would make the loop above
+    // pass without reading a line — the exact failure mode this file's other
+    // anchors exist to close.
+    expect(files.length, 'no shopee src files were read').toBeGreaterThan(0);
   });
 });
 

@@ -66,7 +66,6 @@ vi.mock('firebase/firestore', async (importOriginal) => ({
 vi.mock('@/components/pickers/FilialPicker', () => ({
   filialRefRenderInput:
     () =>
-    // eslint-disable-next-line react/display-name
     (props: { name: string; label: string; value: unknown; onChange: (v: unknown) => void }) => (
       <input
         aria-label={props.label}

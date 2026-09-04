@@ -14,7 +14,7 @@ import {
   TextInput,
 } from '@mantine/core';
 import { Controller, type UseFormReturn } from 'react-hook-form';
-import { type Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import type { Pedido } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { clienteCollection } from '@/lib/data/clienteCollection';

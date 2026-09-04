@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { formatFindings, scanForPii } from './piiScan';
-import { type WireValue } from './redact';
+import type { WireValue } from './redact';
 import { WIRE_DIR, listWireFixtures, readWireFixture } from './wireCorpus';
 
 /**

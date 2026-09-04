@@ -2,11 +2,11 @@ import type { Firestore } from 'firebase-admin/firestore';
 
 import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
-  autorizarLote,
+  type autorizarLote,
   buildNFeProcSafe,
   classifyCStat,
-  consultarLote,
-  consultarSituacaoNFe,
+  type consultarLote,
+  type consultarSituacaoNFe,
   isEstadoFinalNFe,
   nextConsultaDelayMs,
   outcomeFromInfProt,

@@ -1,6 +1,24 @@
 // Import side-effect first: registers global function options (region) before
 // any trigger is defined. See options.ts.
-import './options';
+//
+// ⚠️ `TASKS_SCHEDULER_REGION` is pulled in HERE rather than lower down with the
+// other named imports, and the position is the whole point: ESM evaluates
+// modules in the order their import declarations appear, so a second
+// `from './options'` further down would leave this one to satisfy
+// `import/no-duplicates` by merging INTO it — moving the option registration
+// after the trigger modules and silently undoing the ordering this comment
+// exists to guarantee.
+//
+// ⚠️ This line is load-bearing even when its BINDING is not. The bare
+// `import './options';` it replaced was unremovable by construction — no
+// binding, nothing to look unused. A named import is only self-evidently
+// needed while `TASKS_SCHEDULER_REGION` has a reader, and `no-unused-vars` is
+// an error since #1448, so the day the last reference goes CI will point
+// whoever removes it straight at deleting this line. That un-registers the
+// global function options for every trigger in the file, and it is invisible:
+// the functions deploy fine, to the wrong region (#1108). If that day comes,
+// restore the bare `import './options';` — do not delete the line.
+import { TASKS_SCHEDULER_REGION } from './options';
 
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
@@ -185,7 +203,6 @@ export {
   sweepMercadoLivreStockDaily,
   sweepMercadoLivreStockReconciliacao,
 } from './sweepStock';
-import { TASKS_SCHEDULER_REGION } from './options';
 
 /**
  * Periodic backstop that pulls new/updated ML orders for each connected account

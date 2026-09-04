@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { Select } from '@mantine/core';
 import { FirebaseError } from 'firebase/app';
-import { type Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { useIntegracoes } from '@/lib/data/useIntegracoes';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';

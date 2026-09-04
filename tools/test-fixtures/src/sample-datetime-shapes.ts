@@ -22,7 +22,7 @@
  */
 import { pathToFileURL } from 'node:url';
 import type { z } from 'zod';
-import { type Firestore } from 'firebase-admin/firestore';
+import type { Firestore } from 'firebase-admin/firestore';
 import { ALL_DOMAINS } from '@delfrance/schemas';
 import { VALIDATOR_WHITELIST } from '@delfrance/rules-gen';
 import { db } from './admin';

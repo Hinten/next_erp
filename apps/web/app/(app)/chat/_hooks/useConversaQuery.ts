@@ -12,7 +12,7 @@ import {
   whereEqual,
 } from '@delfrance/data';
 import { mapSnapshotRows, useSnapshotWithDocs, type SnapshotRow } from '@delfrance/data/hooks';
-import { type Conversa } from '@delfrance/schemas';
+import type { Conversa } from '@delfrance/schemas';
 import {
   CONVERSA_PAGE_SIZE,
   conversaConstraintSpecs,
@@ -119,8 +119,13 @@ export function useConversaQuery(input: UseConversaQueryInput): UseConversaQuery
   // state in an effect is the sanctioned reset shape here: the reset must
   // also discard in-flight loadMore results, and an in-render "derive from
   // key" swap can't cancel those.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
+
   useEffect(() => {
+    // ⚠️ The directive must sit on the line the rule REPORTS — the first
+    // setState — not on the `useEffect` line above it, where it lived until
+    // now. There it suppressed nothing and ESLint counted it as unused, so the
+    // warning this comment claims is sanctioned was live the whole time.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setExtraRows([]);
     setExhausted(false);
     setLoadingMore(false);

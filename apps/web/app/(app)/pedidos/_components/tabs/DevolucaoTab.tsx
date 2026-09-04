@@ -14,8 +14,8 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
-import { type UseFormReturn } from 'react-hook-form';
-import { type Firestore } from 'firebase/firestore';
+import type { UseFormReturn } from 'react-hook-form';
+import type { Firestore } from 'firebase/firestore';
 import {
   flattenItensDevolvidos,
   itemCusto,

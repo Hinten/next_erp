@@ -6,9 +6,9 @@ import {
   itemSubtotal,
   pedidoSchema,
   pedidoTotal,
+  ESTADO_PEDIDO,
 } from './pedido';
 import type { ItemDoPedido } from './pedido';
-import { ESTADO_PEDIDO } from './pedido';
 
 const baseInput = {
   estado: 'pago' as const,

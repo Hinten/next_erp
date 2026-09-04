@@ -1,0 +1,85 @@
+# Firebase App Hosting backend config for apps/shopee.
+# API-only service for the Shopee Open Platform channel integration: OAuth
+# connect and account status today (step 1 of the master plan); the push
+# receiver and heavier async work land in later steps, dispatched to a nested
+# Cloud Functions codebase the way apps/mercado-livre does.
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  maxInstances: 20
+  # ⚠️ DECISION (P3, master plan §2.1) — deliberately kept at 0. Read this
+  # before changing it. Same reasoning `apps/mercado-livre/apphosting.yaml`
+  # (#812) already worked through for a sibling channel backend.
+  #
+  # Shopee's push notification waits roughly 3 s for a 2xx with an EMPTY body,
+  # and a cold Next instance has to boot Next.js, load the route module,
+  # initialise firebase-admin and (once the receiver exists) issue an
+  # HTTPS enqueue RPC before it can ack — a 2–6 s cold boot. Shopee's own
+  # retry ladder is +5 min / +30 min / +3 h, and it disables a subscription
+  # after more than 600 pushes in 6 hours with under 30% success — after
+  # which nothing is redelivered.
+  #
+  # What was rejected: `minInstances: 1` — one always-on Cloud Run instance at
+  # the `cpu: 1` / `memoryMiB: 512` configured below, billed at the idle
+  # vCPU-second + GiB-second rates for every channel backend that adopts the
+  # same reasoning.
+  #
+  # What is accepted instead: this step ships no receiver yet (that is step
+  # 3), so there is nothing here for a cold start to miss today. When the
+  # receiver lands, the accepted backstops are a lost-push sweep plus a
+  # push-health monitor (step 4) — a missed push is recovered on the next
+  # sweep, not lost. That is a LATENCY cost, not a correctness one.
+  #
+  # Revisit if the monitor reports repeated missed pushes or Shopee actually
+  # disables the subscription.
+  minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
+  concurrency: 80
+# No `timeoutSeconds` — every route here today is a fast Firestore read/write
+# plus at most one Shopee API call; nothing long-running like ML's manual
+# stock push exists in this channel yet.
+#
+# No `runConfig.vpcAccess` — Shopee's IP allow-list (master plan P2 option D:
+# a static-egress VPC connector + reserved IP) is migration-window
+# infrastructure (root CLAUDE.md rule 8), not something this step provisions.
+# See #1208 when that window is scheduled; no issue opened yet.
+#
+# Env (set per-environment in the Firebase console → App Hosting → Environment
+# variables, or via Cloud Secret Manager for secrets; required unless marked
+# OPTIONAL):
+#   FIREBASE_PROJECT_ID     OPTIONAL — auto-detected on App Hosting/Cloud Run
+#                           (via FIREBASE_CONFIG.projectId; Cloud Run sets no project env var); set only to
+#                           override, or in local dev without a service account
+#   FIREBASE_DATABASE_ID    Firestore database id (default: "default")
+#   SHOPEE_PARTNER_ID       Shopee Open Platform partner id       (Secret Manager)
+#   SHOPEE_PARTNER_KEY      Shopee Open Platform partner key      (Secret Manager)
+#   SHOPEE_STATE_SECRET     HMAC key for the OAuth state          (Secret Manager)
+#   SHOPEE_SANDBOX          OPTIONAL — exactly "1" selects the Shopee sandbox
+#                           hosts; unset/anything else means PRODUCTION. This
+#                           is the OPPOSITE polarity of MELHOR_ENVIO_SANDBOX,
+#                           because production here reuses the live legacy
+#                           Flutter app's registered application.
+#   SHOPEE_API_HOST         OPTIONAL — override the resolved API host
+#   SHOPEE_AUTH_HOST        OPTIONAL — override the resolved consent host
+#   SHOPEE_PUBLIC_URL       this backend's public origin — used to build the
+#                           OAuth redirect_uri (must match the URI registered
+#                           in the Shopee Open Platform application)
+#   WEB_APP_URL             apps/web origin (the callback redirects back here)
+#   ALLOWED_ADMIN_ORIGINS   CSV of apps/web origins for CORS. ⚠️ REQUIRED in
+#                           prod: localhost is no longer implicitly allowed
+#                           (#821/T5), so an unset value allows NO origin at all.
+
+env:
+  - variable: SHOPEE_PARTNER_ID
+    secret: SHOPEE_PARTNER_ID
+    availability:
+      - RUNTIME
+
+  - variable: SHOPEE_PARTNER_KEY
+    secret: SHOPEE_PARTNER_KEY
+    availability:
+      - RUNTIME
+
+  - variable: SHOPEE_STATE_SECRET
+    secret: SHOPEE_STATE_SECRET
+    availability:
+      - RUNTIME

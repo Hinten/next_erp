@@ -36,8 +36,12 @@ const NAO_SUPORTADOS: ReadonlyArray<readonly [IntegracaoTipo, MotivoNaoSuportado
   [INTEGRACAO_TIPO.facebook, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.lojaIntegrada, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.magalu, 'canal-nao-pesquisado'],
-  [INTEGRACAO_TIPO.shopee, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.amazon, 'canal-nao-pesquisado'],
+  // ⚠️ Shopee is the near-miss of the line above, and the ONLY tipo on the
+  // other side of it: its Phase 0 survey answered this capability `'sim'`, so
+  // the honest reason is that WE have not built the channel — not that nobody
+  // has looked. It flips to supported when `implementado` does.
+  [INTEGRACAO_TIPO.shopee, 'canal-nao-implementado'],
 ];
 
 describe('resolvePricePushProvider', () => {
@@ -88,12 +92,15 @@ describe('enviarPrecoParaIntegracao — the shared gates', () => {
       }),
     );
     expect(res.rows).toHaveLength(1);
-    expect(res.rows[0]).toMatchObject({ outcome: 'pulado', motivo: 'canal-nao-pesquisado' });
+    expect(res.rows[0]).toMatchObject({ outcome: 'pulado', motivo: 'canal-nao-implementado' });
     // It must name the channel — "not supported" alone is not actionable.
     expect(res.rows[0]!.mensagem).toContain('Shopee BR');
-    // ⚠️ The near-miss: unresearched must not read as "the provider cannot".
-    expect(res.rows[0]!.mensagem).toContain('ainda não foi verificado');
+    // ⚠️ The near-miss: "we have not built it" must not read as "the provider
+    // cannot", and must not read as "nobody checked" either — Shopee's Phase 0
+    // survey answered `enviarPreco` `'sim'`.
+    expect(res.rows[0]!.mensagem).toContain('ainda não foi implementado');
     expect(res.rows[0]!.mensagem).not.toContain('não oferece');
+    expect(res.rows[0]!.mensagem).not.toContain('ainda não foi verificado');
     // And it names the OPERATION, so the stock twin's sentence is distinguishable.
     expect(res.rows[0]!.mensagem).toContain('envio de preços');
   });

@@ -8,7 +8,7 @@ import {
 } from 'firebase/firestore';
 import type { z, ZodTypeAny } from 'zod';
 import { nowMicros, nowMillis } from '@delfrance/core/datetime';
-import { type CollectionHandle, type PathContext } from '@delfrance/data';
+import type { CollectionHandle, PathContext } from '@delfrance/data';
 import { isEmpty, pickDirty, valuesEqual } from './diff';
 
 /**
