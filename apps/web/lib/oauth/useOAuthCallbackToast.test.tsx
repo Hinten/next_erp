@@ -43,6 +43,26 @@ describe('oauthCallbackMessage', () => {
     );
   });
 
+  // Near-miss pair. `server_config` is an OWN key of the map; `constructor` is only
+  // an INHERITED one. A bare `mensagens[reason]` cannot tell them apart — it hands
+  // back `Object`, a truthy FUNCTION, which the toast would render as an empty red
+  // notification instead of the unknown-reason fallback.
+  it('resolves a slug the map actually owns', () => {
+    expect(oauthCallbackMessage('server_config', MENSAGENS)).toBe('Servidor sem credenciais.');
+  });
+
+  it.each([
+    ['constructor', 'Motivo não reconhecido (constructor).'],
+    ['__proto__', 'Motivo não reconhecido (__proto__).'],
+    // `valueOf` carries an uppercase letter, so it fails the slug alphabet too and
+    // lands one branch further along — same class of key, different fallback.
+    ['valueOf', 'Motivo não informado.'],
+  ])('treats the inherited %j as unknown, never as a message', (reason, esperado) => {
+    const msg = oauthCallbackMessage(reason, MENSAGENS);
+    expect(typeof msg).toBe('string');
+    expect(msg).toBe(esperado);
+  });
+
   it.each([
     ['<img src=x onerror=alert(1)>', 'an HTML payload'],
     ['a'.repeat(64), 'an overlong value'],
@@ -74,6 +94,15 @@ describe('useOAuthCallbackToast', () => {
       color: 'red',
       title: 'Falha ao conectar',
       message: 'Servidor sem credenciais.',
+    });
+  });
+
+  it('toasts the fallback text, not a function, for a prototype-named reason', () => {
+    render('ml=error&reason=constructor');
+    expect(h.notify).toHaveBeenCalledWith({
+      color: 'red',
+      title: 'Falha ao conectar',
+      message: 'Motivo não reconhecido (constructor).',
     });
   });
 
