@@ -1,7 +1,7 @@
 /**
  * Mint a Shopee consent URL from the command line.
  *
- *   pnpm --filter @delfrance/shopee-app oauth:url -- --project <id> --integracao <integracaoId>
+ *   pnpm --filter @delfrance/shopee-app oauth:url --project <id> --integracao <integracaoId>
  *
  * ## Why this exists at all
  *

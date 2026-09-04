@@ -18,7 +18,7 @@ import type { OrigemConversa } from '../conversa';
  */
 
 /**
- * ⚠️ **Three-valued on purpose.** Five of the six rows below are channels nobody
+ * ⚠️ **Three-valued on purpose.** Four of the six rows below are channels nobody
  * has researched, and a `boolean` cannot say *"nobody has checked"* — it can only
  * say `false`, which reads as an answer. Putting an unverified claim into a type
  * is exactly the failure #815 exists to undo, so the honest default for an
@@ -227,9 +227,11 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
   },
 
   /**
-   * ⚠️ Everything below is UNBUILT. A `'desconhecido'` is not a gap in this file
-   * — it is the honest state of the question, and Phase 0 of the skill is what
-   * closes it. Only values with a citation are set.
+   * ⚠️ Everything below is UNBUILT — which is NOT the same as unresearched.
+   * Shopee's row is a completed Phase 0 survey with `implementado: false`; the
+   * other four are still all `'desconhecido'`. A `'desconhecido'` is not a gap
+   * in this file — it is the honest state of the question, and Phase 0 of the
+   * skill is what closes it. Only values with a citation are set.
    */
   /**
    * The Shopee Phase 0 survey (`.master_plans/shopee/shopee-marketplace-integration.md`

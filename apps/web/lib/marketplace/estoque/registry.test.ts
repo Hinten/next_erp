@@ -35,8 +35,12 @@ const NAO_SUPORTADOS: ReadonlyArray<readonly [IntegracaoTipo, MotivoNaoSuportado
   [INTEGRACAO_TIPO.facebook, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.lojaIntegrada, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.magalu, 'canal-nao-pesquisado'],
-  [INTEGRACAO_TIPO.shopee, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.amazon, 'canal-nao-pesquisado'],
+  // ⚠️ Shopee is the near-miss of the line above, and the ONLY tipo on the
+  // other side of it: its Phase 0 survey answered this capability `'sim'`, so
+  // the honest reason is that WE have not built the channel — not that nobody
+  // has looked. It flips to supported when `implementado` does.
+  [INTEGRACAO_TIPO.shopee, 'canal-nao-implementado'],
 ];
 
 describe('resolveStockPushProvider', () => {
@@ -90,11 +94,24 @@ describe('enviarEstoqueParaIntegracao — the shared gates', () => {
       }),
     );
     expect(res.rows).toHaveLength(1);
-    expect(res.rows[0]).toMatchObject({ outcome: 'pulado', motivo: 'canal-nao-pesquisado' });
+    expect(res.rows[0]).toMatchObject({ outcome: 'pulado', motivo: 'canal-nao-implementado' });
     // It must name the channel — "not supported" alone is not actionable.
     expect(res.rows[0]!.mensagem).toContain('Shopee BR');
-    // ⚠️ The near-miss: nobody has read Shopee's docs, so the sentence must not
-    // claim Shopee CANNOT do it. Those were one sentence before #1430.
+    // ⚠️ The near-miss: Shopee's survey says it CAN, so the sentence must not
+    // claim Shopee cannot — nor that nobody looked. Those were one sentence
+    // before #1430.
+    expect(res.rows[0]!.mensagem).toContain('ainda não foi implementado');
+    expect(res.rows[0]!.mensagem).not.toContain('não oferece');
+    expect(res.rows[0]!.mensagem).not.toContain('ainda não foi verificado');
+  });
+
+  it('an UNSURVEYED channel gets the other reason, not this one', async () => {
+    const res = await enviarEstoqueParaIntegracao(
+      input({
+        integracao: { id: 'c8', nome: 'Magalu BR', tipo: INTEGRACAO_TIPO.magalu, ativo: true },
+      }),
+    );
+    expect(res.rows[0]).toMatchObject({ outcome: 'pulado', motivo: 'canal-nao-pesquisado' });
     expect(res.rows[0]!.mensagem).toContain('ainda não foi verificado');
     expect(res.rows[0]!.mensagem).not.toContain('não oferece');
   });

@@ -92,7 +92,7 @@ once step 21 adds the panel.
 The connect round trip, without a web UI:
 
 ```bash
-pnpm --filter @delfrance/shopee-app oauth:url -- --project <projectId> --integracao <integracaoId>
+pnpm --filter @delfrance/shopee-app oauth:url --project <projectId> --integracao <integracaoId>
 ```
 
 Open the printed URL, log in with the sandbox shop, and the browser lands on
