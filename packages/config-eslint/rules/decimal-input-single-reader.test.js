@@ -108,6 +108,8 @@ const CARVE_OUTS = {
     'Google Merchant multipack/quantidade — allowDecimal={false}',
   'apps/web/app/(app)/balanco/_components/LancamentoForm.tsx':
     'quantidade contada — allowDecimal={false}',
+  'apps/web/app/(app)/canais/webchat/_components/MensagensInatividadeField.tsx':
+    'tempo_inatividade em segundos — allowDecimal={false}',
 };
 
 const FIX = [

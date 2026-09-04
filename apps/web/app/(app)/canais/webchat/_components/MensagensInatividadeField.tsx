@@ -83,6 +83,7 @@ export function MensagensInatividadeField({
               error={rowErrors[index]?.tempo_inatividade?.message}
               min={1}
               max={3600}
+              allowDecimal={false}
               w={140}
             />
             {deleted ? (
