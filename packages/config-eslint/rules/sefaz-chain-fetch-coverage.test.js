@@ -119,6 +119,21 @@ function workflowsDefiningEnsureChain() {
 const HELPER_DEFINITION = /ensure_chain\(\)\s*\{/;
 
 /**
+ * One `ensure_chain()` definition: group 1 is its indent, group 2 its body.
+ *
+ * ⚠️ The closing brace is anchored by BACKREFERENCE to the opening line's
+ * indent, not at a fixed column. It used to be `\n {10}\}` — exactly ten
+ * spaces — which is right for a `run:` block today and silently wrong the
+ * moment anything reindents the file: the scan yields ZERO blocks, `offenders`
+ * comes back empty, and the shape assertion passes over no helpers at all.
+ * Measured: reindenting `nfe-epec-scheduled.yml` by two spaces took the old
+ * pattern from 2 matches to 0 while every assertion stayed green.
+ *
+ * `matchAll` clones the regex, so sharing this `/g` instance is safe.
+ */
+const HELPER_BLOCK = /^([ \t]*)ensure_chain\(\)\s*\{\n([\s\S]*?)\n\1\}/gm;
+
+/**
  * The copies that exist today — an anti-vacuity FLOOR under the discovery
  * above, not its input. Renaming the helper (or a pathspec that stops matching)
  * empties the discovery, and an empty list passes every scan silently; this is
@@ -254,11 +269,11 @@ function flaglessFetches(jobBody) {
  */
 function helpersNotDerivingTheirPath(source) {
   const offenders = [];
-  for (const m of source.matchAll(/ensure_chain\(\)\s*\{([\s\S]*?)\n {10}\}/g)) {
+  for (const m of source.matchAll(HELPER_BLOCK)) {
     // ⚠️ Comments first. This helper's own docblock NAMES the `$1` shape it
     // exists to ban, and a mention is not a use — the same confusion
     // `lib/workflow-scan.js`'s header documents for job bodies.
-    const body = stripComments(m[1]);
+    const body = stripComments(m[2]);
     const derives =
       /local file="packages\/integrations\/nfe\/ca\/sefaz-\$\{uf,,\}-\$\{ambiente\}\.pem"/.test(
         body,
@@ -447,6 +462,34 @@ describe('every SEFAZ chain slot the runtime loads is fetched by its live lane',
         '',
         'Either the helper was renamed (update KNOWN_HELPER_WORKFLOWS and',
         '`HELPER_DEFINITION` together) or the git pathspec stopped matching.',
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  it('parses every helper it discovered — no block goes unexamined', () => {
+    // ⚠️ Presence is not parsing, and the gap between them is silent. The floor
+    // above proves a workflow still SAYS `ensure_chain() {`; only this proves
+    // the block scan actually reached it. A definition whose brace anchor
+    // drifts — or one sibling in a file whose other helper still matches —
+    // leaves the shape assertion examining fewer helpers than exist, and an
+    // empty `offenders` reads exactly like a clean bill of health.
+    const unparsed = workflowsDefiningEnsureChain().flatMap((wf) => {
+      const source = read(wf);
+      const declared = (source.match(/ensure_chain\(\)\s*\{/g) ?? []).length;
+      const parsed = [...source.matchAll(HELPER_BLOCK)].length;
+      return declared === parsed ? [] : [`${wf}: ${declared} declared, ${parsed} parsed`];
+    });
+
+    expect(
+      unparsed,
+      [
+        '`HELPER_BLOCK` matched fewer `ensure_chain()` definitions than these',
+        'files declare, so the shape assertion skipped the difference in silence:',
+        '',
+        ...unparsed.map((u) => `  - ${u}`),
+        '',
+        "The block regex derives the closing brace from the opening line's",
+        'indent; a definition it cannot parse is one it cannot check.',
       ].join('\n'),
     ).toEqual([]);
   });
