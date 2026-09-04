@@ -288,7 +288,9 @@ unifying them needs a runtime `firebase-admin/functions` import.
    structurally common, the other a real bug, and merged they bury the second
    under the first's noise floor. The rule deciding what earns a log field at all
    is **report what leaves no other trace** — a soft miss writes nothing but a
-   `console.warn`, while state that writes its own documents is already recorded. Add `firebase.<canal>.deploy.json`. **Copy `src/tasksInvoker.ts`
+   `console.warn`, while state that writes its own documents is already recorded.
+
+   Add `firebase.<canal>.deploy.json`. **Copy `src/tasksInvoker.ts`
    verbatim from another codebase, spread `...tasksInvokerOptions()` into the
    options, and add the `process.env.TASKS_INVOKER_SA` `define` to `build.mjs`**
    (#1133) — `packages/config-eslint/rules/tasks-invoker-inventory.test.js` reds
