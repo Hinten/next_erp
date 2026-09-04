@@ -71,6 +71,14 @@ const UI_PROBE = 'packages/ui/src/testing/mantine-transitions.test.tsx';
  *   `<Activity>` entirely (`TabsPanel.mjs:19`), and an inactive panel having its
  *   effects torn down and re-run is precisely what that file pins. Every OTHER
  *   SectionTabs test keeps the helper.
+ * - `ObjectView.sections.activity.test.tsx`: same reason as
+ *   `SectionTabs.persistence.test.tsx`, one layer up. It pins what
+ *   `<Activity mode="hidden">` costs a FORM: the panel's effects are unmounted,
+ *   so the subscription each RHF `Controller` registers is gone and a
+ *   `setValue` into that tab never reaches its input — which is how a staged
+ *   revert shipped invisible (#660). Under `env="test"` there is no `Activity`
+ *   at all, so both halves of that assertion would pass vacuously. Every OTHER
+ *   ObjectView test keeps the helper.
  * - `ContaTabs.persistence.test.tsx`: same mechanism, other direction. The
  *   Mercado Livre account tabs opt OUT of `<Activity>` with
  *   `keepMountedMode="display-none"`, because an off-screen account whose
@@ -87,6 +95,7 @@ const ALLOWED_BARE_PROVIDER = new Set([
   WEB_PROBE,
   UI_PROBE,
   'packages/ui/src/object/SectionTabs.persistence.test.tsx',
+  'packages/ui/src/object/ObjectView.sections.activity.test.tsx',
   'apps/web/app/(app)/produtos/_components/mercado-livre/ContaTabs.persistence.test.tsx',
 ]);
 
