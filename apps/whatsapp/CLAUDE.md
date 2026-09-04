@@ -157,7 +157,12 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
    bump (see the comment at that bump). `processStatuses` is deliberately NOT widened —
    it already `console.warn`s per miss, so a change whose every status is a soft miss
    still reports `statuses`, which overstates; a per-status count is a separate design
-   question.
+   question. ⚠️ Two matching UNDERSTATEMENTS, so `detail` is not read as "nothing was
+   written": `upsertConversa` runs BEFORE the echo/spam returns, so every value except
+   `statuses`/`vazio` implies the conversa was touched; a change carrying BOTH
+   `messages` and `statuses` folds to `echo` (because `incoming = false`) and hides
+   that the statuses WERE applied; and `redelivery` names the mensagem skip while the
+   same run may still have reopened the conversa and bumped `ultima_modificacao`.
 4. **`lib/whatsapp/processStatus.ts`** — advances an OUTBOUND mensagem's
    `estadoEnvio` from a `statuses[]` entry, guarded by the exact legacy forward-only
    transition matrix + the `lastExternalUpdateDateTime` out-of-order guard, and

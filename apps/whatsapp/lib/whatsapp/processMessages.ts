@@ -126,14 +126,36 @@ type InboundMessageOutcome =
  * ⚠️ Typed as the narrow union, not `string`, ON PURPOSE — `TaskResult.detail`
  * widens it for the log, and that widening would otherwise let a renamed or
  * dropped member compile everywhere in silence.
+ *
+ * ⚠️ These name what happened to the MENSAGEM, not whether anything was written
+ * at all: `upsertConversa` runs BEFORE the `echo` and `spam` returns, so every
+ * value except `statuses` and `vazio` implies the conversa was created, reopened
+ * or touched. Two UNDERSTATEMENTS follow from the priority chain below and are
+ * residuals, not bugs — read alongside the `processStatuses` overstatement in
+ * `apps/whatsapp/CLAUDE.md`:
+ *
+ *  - `echo` outranks `statuses`. A change carrying BOTH `messages` and
+ *    `statuses` sets `incoming = false` for every message, so it folds to
+ *    `echo` — and the statuses that WERE applied do not show in the log.
+ *  - `redelivery` means the MENSAGEM was skipped; the same run may still have
+ *    reopened the conversa and bumped its `ultima_modificacao`.
  */
 export type MessagesFieldOutcome =
-  | 'mensagens' // >= 1 inbound mensagem written or updated
-  | 'redelivery' // messages present, every one an idempotent skip
-  | 'spam' // messages present, every one suppressed by the spam-conversa guard
-  | 'echo' // outbound echo: the conversa was touched, no mensagem written
-  | 'statuses' // no messages in the change; `statuses[]` applied
-  | 'vazio'; // NEITHER present — nothing happened at all
+  // >= 1 inbound mensagem written or updated.
+  | 'mensagens'
+  // Messages present, every one an idempotent mensagem skip. The conversa may
+  // still have been reopened + bumped on this same run.
+  | 'redelivery'
+  // Messages present, every one suppressed by the spam-conversa guard — but
+  // `upsertConversa` already ran.
+  | 'spam'
+  // Outbound echo (the change also carries `statuses`): the conversa was
+  // touched and the statuses WERE applied; no mensagem was written.
+  | 'echo'
+  // No `messages` key at all; `statuses[]` applied.
+  | 'statuses'
+  // NEITHER present — nothing happened at all.
+  | 'vazio';
 
 /**
  * Why a change was acked without processing. Low-cardinality on purpose — a
@@ -284,6 +306,9 @@ export async function processMessagesField(
     await processStatuses(db, contaId, value);
   }
 
+  // ⚠️ `echo` outranks `statuses` here: a change carrying BOTH keys sets
+  // `incoming = false`, so every message folds to `echo` even though
+  // `processStatuses` just ran above. Documented as a residual on the union.
   const detail: MessagesFieldOutcome = seen.has('mensagem')
     ? 'mensagens'
     : seen.has('redelivery')
