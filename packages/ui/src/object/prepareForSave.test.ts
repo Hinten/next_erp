@@ -198,7 +198,18 @@ describe('applyPrepareForSave', () => {
 
   it('transforms a nested key that is absent on an existing parent', () => {
     // Parity with the top-level behaviour, which calls `fn(raw[key])`
-    // unconditionally; in practice `buildEmptyDefaults` puts the key there.
+    // unconditionally.
+    //
+    // ⚠️ This CREATES the key, so a transform that answers `undefined` here
+    // would put `undefined` into the patch — which `tx.update` rejects
+    // outright (nothing sets `ignoreUndefinedProperties`, and the update path
+    // writes the patch as-is). It is benign only because ObjectView seeds the
+    // sub-keys itself before any of this runs: `buildEmptyDefaults` fills a
+    // non-nullable nested object, and `seedObject` fills a nullable one when
+    // its Switch is turned on. So the value the transform sees is the one the
+    // save was going to write anyway, and on create `tx.set` runs the
+    // converter, where `.default(null)` absorbs it regardless. A transform
+    // that maps a missing value must still yield `null`, never `undefined`.
     const out = applyPrepareForSave(
       { endereco: { cep: '01000000' } },
       collectPrepareForSave({ endereco: { fields: { telefone: { prepareForSave: () => null } } } }),
