@@ -7,6 +7,14 @@
 //   node shopee-doc.mjs api <api_name>          # e.g. v2.product.update_stock
 //   node shopee-doc.mjs push-list               # push categories + push_api_ids
 //   node shopee-doc.mjs push <push_api_id>      # e.g. 1 (order_status_push)
+//   node shopee-doc.mjs announcements [category_id] [regex]
+//   node shopee-doc.mjs announcement <id>       # full text of one announcement
+//   node shopee-doc.mjs faqs [category_id]      # FAQ category tree, or one category's FAQs
+//   node shopee-doc.mjs faq <faq_id>            # e.g. 144 (the refresh_token backup plan)
+//
+// The legacy `faq=NNN` ids that developer guides link to are NOT today’s faq_ids
+// (guide 20’s faq=216 is faq_id=144, "refresh_token Backup Plan"), so reach a
+// linked FAQ through `faqs` and its category listing, never by the linked number.
 //
 // Responses are cached under ./cache/ next to this script.
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -92,6 +100,46 @@ function renderParams(list, depth = 0) {
 
 const safeParse = (s, fb) => { try { return JSON.parse(s); } catch { return fb; } };
 
+const day = (secs) => new Date((secs ?? 0) * 1000).toISOString().slice(0, 10);
+
+// error_list and common_error_list carry the same {name, description, solution} shape.
+const errLine = (e) =>
+  `- ${e.name}: ${stripHtml(e.description)}` +
+  (e.solution?.content ? ' → ' + stripHtml(e.solution.content).replace(/\n/g, ' ') : '');
+
+const faqCategories = () => getJson('/category/list?category_type=2&language_code=en', 'faq_categories_en');
+
+const findCategory = (list, id) => {
+  for (const c of list ?? []) {
+    if (String(c.category_id) === String(id)) return c;
+    const hit = findCategory(c.children, id);
+    if (hit) return hit;
+  }
+  return null;
+};
+
+// Only LEAF categories hold FAQs — a parent id answers total=0, never its children's rows.
+async function faqList(categoryId) {
+  const rows = [];
+  const seen = new Set();
+  for (let page = 1; ; page += 1) {
+    const j = await getJson(
+      `/portal_faq/list?category_id=${categoryId}&language_code=en&page_size=50&page_no=${page}`,
+      `faq_list_${categoryId}_p${page}`,
+    );
+    const list = j.faq_list ?? [];
+    // page_no IS honoured (measured: page_size=10 on 2026 gives 3 disjoint pages), but a page
+    // that adds nothing new still ends the loop — its neighbour /content/list spells the
+    // parameter page_index, and repeating page 1 forever would read as a longer category, not
+    // as a bug. An unknown total means "keep going", never "already done".
+    const fresh = list.filter((f) => !seen.has(f.faq_id));
+    for (const f of fresh) seen.add(f.faq_id);
+    rows.push(...fresh);
+    if (list.length < 50 || !fresh.length || rows.length >= (j.total ?? Infinity)) break;
+  }
+  return rows;
+}
+
 const cmd = process.argv[2];
 const arg = process.argv[3];
 const out = [];
@@ -129,7 +177,9 @@ if (cmd === 'modules') {
   for (const s of safeParse(j.response_sample, [])) out.push(`\n## Response sample (${s.type})\n${s.value}`);
   for (const s of safeParse(j.error_example, [])) out.push(`\n## Error example (${s.type})\n${s.value}`);
   out.push('\n## Errors (api-specific)');
-  for (const e of j.error_list ?? []) out.push(`- ${e.name}: ${stripHtml(e.description)}${e.solution?.content ? ' → ' + stripHtml(e.solution.content).replace(/\n/g, ' ') : ''}`);
+  for (const e of j.error_list ?? []) out.push(errLine(e));
+  out.push('\n## Errors (common — the same list on every API page)');
+  for (const e of j.common_error_list ?? []) out.push(errLine(e));
   out.push('\n## Update log');
   for (const u of j.update_log_list ?? []) out.push(`- ${u.date}: ${stripHtml(u.content)}`);
   if (j.related_documents?.developer_guides?.length) out.push('\n## Related guides: ' + JSON.stringify(j.related_documents.developer_guides));
@@ -180,8 +230,41 @@ if (cmd === 'modules') {
     const blocks = safeParse(j.detail ?? j.content, []) ?? [];
     out.push(stripHtml(blocks.map((b) => b.html ?? (b.type === 'image' ? '[image]' : '')).join('\n')));
   }
+} else if (cmd === 'faqs') {
+  // faqs                — the FAQ category tree with per-category counts
+  // faqs <category_id>  — one category's FAQs; a parent id fans out over its children
+  const tree = (await faqCategories()).category_list ?? [];
+  if (!arg) {
+    const walk = (list, d) => {
+      for (const c of list ?? []) { out.push(`${'   '.repeat(d)}${c.category_id}: ${c.name}  (${c.count})`); walk(c.children, d + 1); }
+    };
+    walk(tree, 0);
+    out.push('\nfaqs <category_id> lists one category; a parent id lists every child category.');
+  } else {
+    const node = findCategory(tree, arg);
+    // Collect LEAVES, not direct children: on a deeper tree a mid-level parent would answer
+    // total=0 and print (no FAQs) — the very failure the fan-out exists to prevent.
+    const leavesOf = (n) => (n.children?.length ? n.children.flatMap(leavesOf) : [n]);
+    const leaves = node ? leavesOf(node) : [{ category_id: arg, name: `category ${arg}` }];
+    for (const leaf of leaves) {
+      out.push(`\n## [${leaf.category_id}] ${leaf.name}`);
+      const rows = await faqList(leaf.category_id);
+      if (!rows.length) out.push('(no FAQs)');
+      for (const f of rows) out.push(`${f.faq_id} | ${day(f.update_time)} | ${String(f.short_info ?? '').replace(/\s+/g, ' ').trim()}`);
+    }
+  }
+} else if (cmd === 'faq') {
+  // faq <faq_id>  — one FAQ as text. NOT the legacy `faq=NNN` id guides link to; see the header.
+  const j = await getJson(`/portal_faq/detail?faq_id=${arg}&language_code=en`, `faq_${arg}_en`);
+  if (!j.faq_id) out.push(`faq ${arg} not found: ${JSON.stringify(j).slice(0, 200)}`);
+  else {
+    const cat = findCategory((await faqCategories()).category_list ?? [], j.category_id);
+    const where = cat ? `${cat.name} (${j.category_id})` : j.category_id;
+    out.push(`# [faq ${j.faq_id}] ${j.short_info}  (category: ${where}; updated ${day(j.update_time)})`);
+    rtRender(safeParse(j.raw_content, []), out);
+  }
 } else {
-  out.push('usage: modules | guides | guide <id> [lang] | api <name> | push-list | push <id> | announcements [category_id] [regex] | announcement <id>');
+  out.push('usage: modules | guides | guide <id> [lang] | api <name> | push-list | push <id> | announcements [category_id] [regex] | announcement <id> | faqs [category_id] | faq <id>');
 }
 
 process.stdout.write(out.join('\n') + '\n');
