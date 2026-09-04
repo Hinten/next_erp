@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { useSearchParams } from 'next/navigation';
 import {
   Alert,
@@ -815,11 +816,24 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // renders it — otherwise the change lands in a hidden panel and reads as
   // "nothing happened". `goToSection` ignores an unknown section rather than
   // stranding `activeSection` on a value `effectiveSection` would discard.
+  //
+  // ⚠️ The switch is COMMITTED synchronously, and that is what makes the
+  // gesture work rather than a performance choice. `SectionTabs` hides an
+  // inactive panel with `<Activity mode="hidden">`, which unmounts every effect
+  // in it — including the subscription each RHF `Controller` registers. A
+  // `setValue` into a hidden panel therefore never reaches that field's input,
+  // and the input does NOT re-sync when its effects mount again: it re-renders
+  // from the state it held before, so the operator lands on the right tab
+  // still looking at the OLD value. Flushing here means a caller can
+  // `goToSection(...)` and then `setValue(...)`, with the target mounted and
+  // subscribed in between. Pinned by `ObjectView.sections.activity.test.tsx`,
+  // which has to render without `env="test"` to see it at all.
   const sectionsApi = useMemo<ObjectViewSections>(
     () => ({
       activeSection: effectiveSection,
       goToSection: (section) => {
-        if (sections?.includes(section)) setActiveSection(section);
+        if (!sections?.includes(section)) return;
+        flushSync(() => setActiveSection(section));
       },
       sectionOfField: (fieldKey) => sectionOf.get(fieldKey) ?? null,
     }),

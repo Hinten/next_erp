@@ -19,7 +19,18 @@ import { createContext, useContext } from 'react';
 export interface ObjectViewSections {
   /** The tab currently rendered, or `null` when the view has no `sections`. */
   activeSection: string | null;
-  /** Switch tabs. A section the view does not render is ignored. */
+  /**
+   * Switch tabs, COMMITTED before it returns. A section the view does not
+   * render is ignored.
+   *
+   * ⚠️ Order matters when you are also writing a field in that tab: go to the
+   * section FIRST, then `setValue`. An inactive panel is hidden with
+   * `<Activity mode="hidden">`, whose subtree has every effect unmounted — so a
+   * `setValue` into it never reaches that field's `Controller`, and the input
+   * re-renders from stale state when the panel comes back. This call returning
+   * only once the switch has committed is what lets the write land on a mounted,
+   * subscribed input.
+   */
   goToSection: (section: string) => void;
   /**
    * The tab a TOP-LEVEL field key is rendered in, or `null` when the key has no

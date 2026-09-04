@@ -109,13 +109,31 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     await expect(page.getByTestId('modificacao-entry').first()).toBeVisible({ timeout: 30_000 });
   }
 
-  /** Expand the newest (topmost) `modificacao-entry` row and return its locator,
-   * scoped so every subsequent query (Restaurar buttons, the precos warning
-   * text) only ever matches within THIS row. */
-  async function expandNewestEntry(page: Page) {
-    const entry = page.getByTestId('modificacao-entry').first();
-    await entry.getByRole('button', { name: 'Detalhes da modificação' }).click();
-    return entry;
+  /**
+   * Expand history rows newest-first until one offers `Restaurar <field>`, and
+   * return that row plus its button — scoped, so every subsequent query (the
+   * precos warning, the button itself) only ever matches within THAT row.
+   *
+   * ⚠️ Taking the topmost row and assuming it carries the field is a race: the
+   * produto's own triggers can land a NEWER entry with different `campos`
+   * between the poll that waited for our edit and this navigation, and then the
+   * first row has no such button at all. Selecting by the affordance the test
+   * needs is deterministic whatever else was recorded in between.
+   */
+  async function expandEntryOferecendoRestaurar(page: Page, field: string) {
+    const rows = page.getByTestId('modificacao-entry');
+    const total = Math.min(await rows.count(), 5);
+    for (let i = 0; i < total; i++) {
+      const entry = rows.nth(i);
+      await entry.getByRole('button', { name: 'Detalhes da modificação' }).click();
+      const restaurar = entry.getByRole('button', { name: `Restaurar ${field}`, exact: true });
+      const found = await restaurar
+        .waitFor({ state: 'visible', timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false);
+      if (found) return { entry, restaurar };
+    }
+    throw new Error(`Nenhuma das ${total} entradas mais recentes oferece "Restaurar ${field}"`);
   }
 
   /** Edit `Nome` through the UI and wait for the trigger to record the change. */
@@ -143,9 +161,7 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     await editNomeAndSave(page, edited);
 
     await openModificacoesTab(page, produtoAId);
-    const entry = await expandNewestEntry(page);
-    const restaurar = entry.getByRole('button', { name: 'Restaurar nome', exact: true });
-    await expect(restaurar).toBeVisible({ timeout: 15_000 });
+    const { restaurar } = await expandEntryOferecendoRestaurar(page, 'nome');
     await restaurar.click();
 
     // The click moved the operator to the field's own tab and put the old value
@@ -183,9 +199,7 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     await editNomeAndSave(page, edited);
 
     await openModificacoesTab(page, produtoAId);
-    const entry = await expandNewestEntry(page);
-    const restaurar = entry.getByRole('button', { name: 'Restaurar nome', exact: true });
-    await expect(restaurar).toBeVisible({ timeout: 15_000 });
+    const { restaurar } = await expandEntryOferecendoRestaurar(page, 'nome');
 
     // Someone else (an Admin-seeded write, standing in for a second user)
     // changes the field AFTER this row's target was loaded but BEFORE
@@ -210,6 +224,16 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     expect((await getProdutoData(produtoAId))?.nome).toBe(thirdValue);
 
     await clickSave(page, 'Salvar alterações');
+
+    // The third-party write also collides with the FORM's own baseline, so the
+    // save raises ObjectView's tier-3 concurrency guard (ADR 0011). That is a
+    // consequence of staging worth having: the old direct write went AROUND
+    // this guard and clobbered the concurrent change silently; the revert now
+    // goes through it, and the operator confirms the overwrite knowingly.
+    const saveConflict = page.getByRole('dialog').filter({ hasText: 'Registro alterado' });
+    await expect(saveConflict).toBeVisible({ timeout: 15_000 });
+    await saveConflict.getByRole('button', { name: 'Salvar mesmo assim', exact: true }).click();
+
     await expect
       .poll(async () => (await getProdutoData(produtoAId))?.nome, { timeout: 30_000 })
       .toBe(nomeOriginal);
@@ -220,8 +244,8 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     await editNomeAndSave(page, edited);
 
     await openModificacoesTab(page, produtoAId);
-    const entry = await expandNewestEntry(page);
-    await entry.getByRole('button', { name: 'Restaurar nome', exact: true }).click();
+    const { restaurar } = await expandEntryOferecendoRestaurar(page, 'nome');
+    await restaurar.click();
     await expectFieldValue(page, 'Nome', nomeOriginal);
 
     // A staged form is a dirty form, so leaving raises the unsaved-changes
@@ -264,12 +288,10 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
       .toEqual({ [varejoId]: { valor: 30 } });
 
     await openModificacoesTab(page, parentCId);
-    const entry = await expandNewestEntry(page);
+    const { entry, restaurar } = await expandEntryOferecendoRestaurar(page, 'precos');
     // Restoring `precos` on a parent will re-fire the trigger and flow to every
     // variation child when saved — surfaced as a warning, not silently done.
     await expect(entry.getByText(/variações/i)).toBeVisible({ timeout: 15_000 });
-    const restaurar = entry.getByRole('button', { name: 'Restaurar precos', exact: true });
-    await expect(restaurar).toBeVisible();
     await restaurar.click();
 
     // The jump landed on Preço e custo (the tab `precos` is rendered in), and

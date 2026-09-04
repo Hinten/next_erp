@@ -210,15 +210,20 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
     const base = await loadPrefillBase(target.subcolecao);
     const { key, value } = buildRevertPrefill(target, base);
 
+    // ⚠️ Jump BEFORE writing, not after. An inactive tab is hidden with
+    // `<Activity mode="hidden">`, which unmounts every effect in it — including
+    // the subscription the field's RHF `Controller` registers — and the input
+    // does NOT re-sync when those effects mount again. Staging first left the
+    // operator on the right tab still reading the OLD value, with the restored
+    // one live in the form but invisible. `goToSection` commits synchronously,
+    // so the input is mounted and subscribed by the time `setValue` runs.
+    const section = sections?.sectionOfField(key);
+    if (section) sections?.goToSection(section);
+
     // `shouldDirty` is load-bearing, not cosmetic: `ObjectView.doSave` writes
     // only the dirty keys, so without it the staged value would never reach
     // Firestore.
     form.setValue(key, value, { shouldDirty: true, shouldValidate: true });
-
-    // Show the operator where it landed. Without this the value sits in a
-    // hidden panel and the click reads as "nothing happened".
-    const section = sections?.sectionOfField(key);
-    if (section) sections?.goToSection(section);
 
     setStaged((prev) => ({
       ...prev,
