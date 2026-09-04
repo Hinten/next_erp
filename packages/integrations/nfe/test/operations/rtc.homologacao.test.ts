@@ -43,6 +43,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { buildHomologacaoFixture, impostoCsosn102ComRtc } from '../helpers/homologacao-fixture';
 import { resolveProtocol } from '../helpers/resolve-protocol';
+import { descreverSefaz, logSefaz } from '../helpers/sefaz-log';
 import { seedNNF, SEFAZ_HOM_RTC_SERIE } from '../helpers/homologacao-seed';
 import {
   assertCertNotExpired,
@@ -119,16 +120,20 @@ describeOrSkip('SEFAZ-SP homologação — Reforma Tributária (IBS/CBS/IS) emis
       indSinc: '1',
     });
     assertNotConsumoIndevido(ret, 'rtc/autorizarLote');
-    // eslint-disable-next-line no-console
-    console.log(`[rtc lote] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+    logSefaz('rtc lote', ret);
     const prot = await resolveProtocol(ret, consReciCall);
     if (prot) assertNotConsumoIndevido(prot.infProt, 'rtc/protNFe');
     const cStat = prot?.infProt.cStat ?? ret.cStat;
     const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
-    // eslint-disable-next-line no-console
-    console.log(`[rtc protNFe] cStat=${cStat} xMotivo="${xMotivo}"`);
+    logSefaz('rtc protNFe', { cStat, xMotivo });
     // The best-guess codes target cStat=100. On a first-run rejection the log
     // above names the exact code/alíquota to refine (1020/1023/1024/1026/...).
-    expect(cStat, `SEFAZ rejected the RTC NF-e: cStat=${cStat} — "${xMotivo}"`).toBe('100');
+    //
+    // ⚠️ The assertion message goes through `descreverSefaz` too: a vitest
+    // message lands in the CI ANNOTATION, which is as public as the log.
+    expect(
+      cStat,
+      `SEFAZ rejected the RTC NF-e — ${descreverSefaz('rtc protNFe', { cStat, xMotivo })}`,
+    ).toBe('100');
   }, 180_000);
 });
