@@ -629,6 +629,75 @@ describe('syncItemStatus — cancel (closed)', () => {
   });
 });
 
+/**
+ * #1226. `under_review` + `forbidden` is the one state ML documents as a
+ * REMOVAL — "Item desativado pelo Mercado Livre" — and before this the sync had
+ * no word for it: the link kept `estado 'v'` and its now-dead item id for ever,
+ * which is what made every republish a `PUT` against a listing ML had deleted.
+ */
+describe('syncItemStatus — removed by moderation (#1226)', () => {
+  it('under_review + forbidden → estado rm + the same denorm removal a cancel does', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor(
+        { status: 'under_review', sub_status: ['forbidden'] },
+        // ML's own shape for an unrecoverable one: a REASON and NO remedy.
+        [
+          moderacaoMl({
+            name: 'DOMAIN_WRONG_CATEG_V2',
+            wordings: [{ type: 'REASON', value: 'Seu anúncio foi cancelado.' }],
+          }),
+        ],
+      ),
+    );
+
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
+      estado: 'rm',
+      status: 'under_review',
+      sub_status: ['forbidden'],
+    });
+    // ⚠️ The listing is over, so the produto must leave the denorm exactly as a
+    // cancel makes it — otherwise both sweeps keep selecting it for ever.
+    // `integracoesComProduto` stays the link trigger's call (#920).
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({
+      marketplace: [],
+      marketplaceIds: [],
+    });
+  });
+
+  /**
+   * ⚠️ The near-miss, and the one that matters most: every OTHER `under_review`
+   * sub_status is a listing the operator can still save. Mapping one of those to
+   * the terminal estado would drop a savable produto out of both sweeps AND tell
+   * the operator to throw the anúncio away.
+   */
+  it('leaves every other review sub_status on emRevisao, still live', async () => {
+    for (const sub of ['waiting_for_patch', 'held', 'pending_documentation']) {
+      const db = new FakeDb();
+      seedLink(db);
+
+      await syncItemStatus(
+        asDb(db),
+        CONTA,
+        ITEM,
+        resolverFor({ status: 'under_review', sub_status: [sub] }, [moderacaoMl()]),
+      );
+
+      expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'v' });
+      // Still in the denorm — the sweeps must keep reaching it. Asserted as
+      // "not the REMOVAL shape": the live arm goes through `arrayUnion`, which
+      // this fake stores as an unresolved transform rather than a plain array.
+      expect(db.docData('produtos', PRODUTO)).not.toMatchObject({ marketplaceIds: [] });
+    }
+  });
+});
+
 describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', () => {
   it('cancel: denorm write fails, then a retry reconciles — the link never advances ahead of the denorm', async () => {
     const db = new FakeDb();

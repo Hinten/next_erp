@@ -94,9 +94,24 @@ describe('publishModeIssues', () => {
     ]);
   });
 
+  /**
+   * #1226, and THE refusal that stops the damage rather than describing it.
+   * `assemblePublishInput` derives `isUpdate` from `link.id != null`, so without
+   * this every republish is a `PUT /items/<id ML deleted>` — a call that cannot
+   * succeed, on a produto with no other way back into the catalogue.
+   */
+  it("estado 'rm' blocks the publish and names the way out", () => {
+    const issues = publishModeIssues({ ...base, estado: 'rm' });
+    expect(issues).toEqual([expect.stringContaining('removido pelo Mercado Livre')]);
+    // The remedy is an operator action, not a wait — so the message has to name
+    // it. A bare "não pode ser reativado" leaves the produto stuck.
+    expect(issues[0]).toContain('Descartar anúncio removido');
+  });
+
   it('every OTHER estado publishes normally', () => {
     // Including null (a first publish) — the block must not fire on a listing
-    // that has no state yet.
+    // that has no state yet. ⚠️ `'v'` is the near-miss: a listing merely under
+    // review is savable and must stay publishable.
     for (const estado of [null, 'r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E']) {
       expect(publishModeIssues({ ...base, estado })).toEqual([]);
     }

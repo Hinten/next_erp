@@ -38,6 +38,7 @@ import {
   attrWeightKg,
 } from '@delfrance/integrations-mercado-livre';
 import {
+  ESTADO_PUBLICACAO_ML,
   MARCA_ATTRIBUTE_ID,
   dimensoesDoPacote,
   marcaArmazenadaDe,
@@ -93,7 +94,10 @@ export interface PublishLink {
   isUserProductModel?: boolean | null;
   attributes?: MlAttribute[] | null;
   video_id?: string | null;
-  /** `estadoPublicacaoMl` wire code — only `'am'` (mid-UPtin) is read here. */
+  /**
+   * `estadoPublicacaoMl` wire code. Two values are read here, both refusals:
+   * `'am'` (mid-UPtin) and `'rm'` (removed by ML moderation, #1226).
+   */
   estado?: string | null;
 }
 
@@ -348,6 +352,26 @@ export function publishModeIssues(args: {
   if (args.estado === 'am') {
     issues.push(
       'anúncio em migração para o modelo User Products (UPtin) — aguarde a conclusão antes de publicar',
+    );
+  }
+
+  // ⚠️ THE refusal #1226 exists for, and the one that stops the damage rather
+  // than describing it. `assemblePublishInput` derives `isUpdate` from
+  // `link.id != null`, so a listing Mercado Livre REMOVED keeps its dead item id
+  // and every republish goes out as `PUT /items/<id ML deleted>` — a call that
+  // cannot succeed, on a produto with no other way back into the catalogue.
+  // Nothing cleared `link.id`, so the operator's only recourse was editing
+  // Firestore by hand.
+  //
+  // Refusing here (rather than clearing the id automatically) is the decision on
+  // the issue: the two ways out — "Descartar anúncio removido", which keeps the
+  // form and drops the dead identity, and "Excluir anúncio" — are OPERATOR
+  // actions on the produto's Mercado Livre tab, so the message names them
+  // instead of doing either silently.
+  if (args.estado === ESTADO_PUBLICACAO_ML.removidoPorModeracao) {
+    issues.push(
+      'anúncio removido pelo Mercado Livre e não pode ser reativado — use "Descartar anúncio ' +
+        'removido" para publicar um novo com os mesmos dados, ou exclua o anúncio',
     );
   }
 

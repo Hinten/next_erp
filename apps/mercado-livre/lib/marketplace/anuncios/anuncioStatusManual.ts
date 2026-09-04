@@ -101,6 +101,14 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   'anuncio-em-migracao':
     'Anúncio em migração para o modelo User Products — o Mercado Livre recusa qualquer alteração ' +
     'até concluir. Aguarde e tente novamente.',
+  // ⚠️ Its OWN motivo rather than `status-indefinido` (#1226). Both are refusals
+  // on an `under_review` listing and their REMEDIES are opposite: a listing ML is
+  // still deciding on is what "Reverificar anúncio" exists for, while a REMOVED
+  // one re-reads to the same removal for ever. Sending the operator to that
+  // button here is sending them to something that cannot help.
+  'anuncio-removido':
+    'O Mercado Livre removeu este anúncio e ele não pode ser reativado. Abra a aba Mercado Livre ' +
+    'do produto para descartá-lo e publicar um novo.',
   'ja-pausado': 'Este anúncio já está pausado.',
   'ja-ativo': 'Este anúncio já está ativo.',
   'familia-sem-membros':
@@ -301,6 +309,10 @@ function motivoRecusaLocal(raw: Record<string, unknown>, acao: AcaoStatusAnuncio
     if (raw.status === 'closed' || raw.estado === ESTADO_PUBLICACAO_ML.cancelado) {
       return 'anuncio-cancelado';
     }
+    // Above the `aguardandoMigracao` rung only by convention — the two are
+    // mutually exclusive. Below `anuncio-cancelado` for the same reason: both are
+    // terminal, and the operator needs to know WHICH ended the listing.
+    if (raw.estado === ESTADO_PUBLICACAO_ML.removidoPorModeracao) return 'anuncio-removido';
     // ⚠️ Its OWN motivo, not `status-indefinido`. The two look alike and the
     // REMEDY is opposite: a mid-decision listing is what "Reverificar anúncio"
     // exists for, while a migrating one is not stale at all — ML is rebuilding
