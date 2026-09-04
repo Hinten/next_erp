@@ -24,21 +24,31 @@
  * Fiscal identifiers SEFAZ embeds in free text, longest-first so a CNPJ inside
  * a 44-digit chave is not half-eaten by the CNPJ pattern.
  *
- * ⚠️ Anchored on `\d` runs with word boundaries, and every entry is a FIXED
- * width. That is what keeps `nProt`/`nRec` (15 digits) and `nNF` (9) readable:
- * they carry no personal data and are often the only way to correlate a run
- * with a document. A greedy `\d{11,}` would swallow both.
+ * ⚠️ Bounded by DIGIT lookarounds, not `\b`, and every entry is a FIXED width.
+ *
+ * The fixed widths are what keep `nProt`/`nRec` (15 digits) and `nNF` (9)
+ * readable — they carry no personal data and are often the only way to
+ * correlate a run with a document, so a greedy `\d{11,}` would swallow both.
+ *
+ * ⚠️ `\b` was WRONG here and shipped in the first draft. It is a
+ * word-character boundary, and both letters and digits are word characters, so
+ * `\b` never fires between them: `NFe<44 digits>` — literally how a chave is
+ * written in `infNFe/@Id`, and the shape that turns up in SOAP faults — passed
+ * through completely untouched, leaking the very CNPJ (positions 7-20) that
+ * masking the bare chave exists to hide. `CNPJ<14 digits>` did the same.
+ * `(?<!\d)…(?!\d)` still refuses to match inside a longer digit run, so the
+ * fixed-width property the whole design rests on is unchanged.
  */
 const PADROES: readonly { readonly re: RegExp; readonly rotulo: string }[] = [
   // Chave de acesso — 44 digits, and it EMBEDS the CNPJ at positions 7-20, so
   // printing one leaks the issuer just as surely as printing the CNPJ itself.
-  { re: /\b\d{44}\b/g, rotulo: '[chave]' },
+  { re: /(?<!\d)\d{44}(?!\d)/g, rotulo: '[chave]' },
   // CNPJ, punctuated then bare.
-  { re: /\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/g, rotulo: '[CNPJ]' },
-  { re: /\b\d{14}\b/g, rotulo: '[CNPJ]' },
+  { re: /(?<!\d)\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}(?!\d)/g, rotulo: '[CNPJ]' },
+  { re: /(?<!\d)\d{14}(?!\d)/g, rotulo: '[CNPJ]' },
   // CPF, punctuated then bare. A destinatário can be a person.
-  { re: /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/g, rotulo: '[CPF]' },
-  { re: /\b\d{11}\b/g, rotulo: '[CPF]' },
+  { re: /(?<!\d)\d{3}\.\d{3}\.\d{3}-\d{2}(?!\d)/g, rotulo: '[CPF]' },
+  { re: /(?<!\d)\d{11}(?!\d)/g, rotulo: '[CPF]' },
 ];
 
 /**

@@ -44,6 +44,33 @@ describe('redigirIdentificadores', () => {
         'de [CNPJ] para [CNPJ]',
       );
     });
+
+    /**
+     * ⚠️ The regression the first draft shipped. `\b` is a WORD-character
+     * boundary, and letters and digits are both word characters, so `\b` never
+     * fires between them — every letter-prefixed identifier passed through
+     * untouched. `NFe` + chave is not a hypothetical: it is exactly how the
+     * chave is written in `infNFe/@Id`, and it is what appears in SOAP faults.
+     * Digit lookarounds `(?<!\d)…(?!\d)` are what make these pass.
+     */
+    describe('LETTER-PREFIXED — the `\\b` hole', () => {
+      it('masks a chave glued to the `NFe` prefix (the infNFe/@Id form)', () => {
+        const chave = '3'.repeat(44);
+        expect(redigirIdentificadores(`Id NFe${chave} invalida`)).toBe('Id NFe[chave] invalida');
+      });
+
+      it('masks a CNPJ glued to a `CNPJ` label with no space', () => {
+        expect(redigirIdentificadores('Emitente CNPJ11222333000144 nao cadastrado')).toBe(
+          'Emitente CNPJ[CNPJ] nao cadastrado',
+        );
+      });
+
+      it('masks a CPF glued to a label', () => {
+        expect(redigirIdentificadores('dest CPF12345678909 invalido')).toBe(
+          'dest CPF[CPF] invalido',
+        );
+      });
+    });
   });
 
   describe('NEAR-MISS — must stay readable', () => {
@@ -70,6 +97,14 @@ describe('redigirIdentificadores', () => {
     it('leaves a 12- or 13-digit run alone — neither is a CNPJ or a CPF', () => {
       expect(redigirIdentificadores('valor 112223330001 e 1122233300014')).toBe(
         'valor 112223330001 e 1122233300014',
+      );
+    });
+
+    it('leaves a LETTER-GLUED 15-digit nProt alone — the lookarounds still bound on digits', () => {
+      // The counterpart to the `\b` fix: widening the boundary must not make a
+      // longer digit run matchable just because a letter sits next to it.
+      expect(redigirIdentificadores('protocolo135260000012345 emitido')).toBe(
+        'protocolo135260000012345 emitido',
       );
     });
 
