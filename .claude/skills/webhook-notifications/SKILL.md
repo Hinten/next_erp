@@ -276,7 +276,19 @@ unifying them needs a runtime `firebase-admin/functions` import.
    exists, while `done` and `dropped` persist nothing and the log is all there is.
    ⚠️ Never log a raw provider body — WhatsApp's change `value` carries message
    content, so its handler narrows `req.data` to the two id keys rather than
-   spreading it. Add `firebase.<canal>.deploy.json`. **Copy `src/tasksInvoker.ts`
+   spreading it.
+
+   ⭐ **A handler with an INNER per-item loop reports COUNTS beside `detail`, not
+   more `detail` members.** WhatsApp's `statuses[]` is the worked example: one
+   batch can carry entries with different fates (applied / mensagem not found /
+   refused by the forward-only matrix), which no single enum value can express,
+   and a count rides out whichever arm of the `detail` priority chain won — so it
+   needs no reshuffle of an order the tests already pin. Split the skip reasons by
+   WHO is at fault rather than lumping them: one may be working-as-designed and
+   structurally common, the other a real bug, and merged they bury the second
+   under the first's noise floor. The rule deciding what earns a log field at all
+   is **report what leaves no other trace** — a soft miss writes nothing but a
+   `console.warn`, while state that writes its own documents is already recorded. Add `firebase.<canal>.deploy.json`. **Copy `src/tasksInvoker.ts`
    verbatim from another codebase, spread `...tasksInvokerOptions()` into the
    options, and add the `process.env.TASKS_INVOKER_SA` `define` to `build.mjs`**
    (#1133) — `packages/config-eslint/rules/tasks-invoker-inventory.test.js` reds

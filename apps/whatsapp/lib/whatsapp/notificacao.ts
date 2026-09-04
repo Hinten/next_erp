@@ -58,6 +58,7 @@ import {
   type ProcessOutcome,
   type WhatsappProcessDeps,
 } from './processMessages';
+import type { StatusesReport } from './processStatus';
 import type { MediaCacheContext } from './media';
 
 /**
@@ -167,6 +168,14 @@ export interface TaskResult {
    * PRODUCER is held to.
    */
   detail?: string;
+  /**
+   * What the change's `statuses[]` batch did, absent when it carried none.
+   *
+   * ⚠️ Counts, not a `detail` member: one batch can carry entries with DIFFERENT
+   * fates, which no single enum value can express. It also rides out whichever
+   * arm of the `detail` chain won, so an `echo` no longer hides applied statuses.
+   */
+  statuses?: StatusesReport;
 }
 
 /** Drop `undefined` (Firestore rejects it) from the replayed change value. */
@@ -258,12 +267,15 @@ export async function handleNotificationTask(
   // `payload` is absent only on the schema-parse drop, where there is no field
   // to report; `result` is absent on the transient-failure path.
   //
-  // Structural `in` checks rather than `r.result?.kind === 'processed'`: both
-  // fields ride on one arm today, and an equality narrow silently stops covering
-  // them the moment another arm gains one — whereas the `in` check keeps
+  // Structural `in` checks rather than `r.result?.kind === 'processed'`: all
+  // three fields ride on one arm today, and an equality narrow silently stops
+  // covering them the moment another arm gains one — whereas the `in` check keeps
   // compiling and keeps reporting.
   const contaId = r.result && 'contaId' in r.result ? r.result.contaId : null;
   const detail = r.result && 'detail' in r.result ? r.result.detail : null;
+  // `statuses` is required-and-nullable on the arm, so this narrows in one step:
+  // null means the change carried no `statuses` key, never "we forgot to set it".
+  const statuses = r.result && 'statuses' in r.result ? r.result.statuses : null;
   return {
     // WhatsApp produces neither a `park` nor a `defer` disposition, so both
     // arms are unreachable here — mapped defensively rather than widening this
@@ -275,6 +287,7 @@ export async function handleNotificationTask(
     // the `r.result` presence guard is the whole condition.
     ...(r.result ? { kind: r.result.kind } : {}),
     ...(detail != null ? { detail } : {}),
+    ...(statuses != null ? { statuses } : {}),
   };
 }
 

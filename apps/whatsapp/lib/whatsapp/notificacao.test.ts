@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
-import { encodeHorarioMs } from '@delfrance/schemas';
+import { ESTADO_ENVIO, encodeHorarioMs } from '@delfrance/schemas';
 
 // Isolate the messages pipeline from contact resolution + media storage (both
 // have their own suites). The conta lookup, conversa/mensagem writes, status
@@ -376,18 +376,65 @@ describe('handleNotificationTask — reports what it actually did (#1087)', () =
         { id: 'wamid.OUT', recipient_id: FROM, status: 'delivered', timestamp: '1700000100' },
       ],
     });
+    // The outbound mensagem the echo's status callback is about.
+    db.seed(CONV_PATH, mensagemDocId(CONTA, 'wamid.OUT'), {
+      estadoEnvio: ESTADO_ENVIO.enviando,
+      mid: 'wamid.OUT',
+    });
     const r = await handleNotificationTask(asDb(db), messagesPayload(value), 0, deps);
     expect(r).toMatchObject({ outcome: 'done', detail: 'echo' });
     // The conversa IS touched (and gets its `nova conversa` event), but the echo
     // must not land as an inbound mensagem.
     expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.A'))).toBe(false);
+    // ⚠️ `echo` outranks `statuses` in the priority chain, so this arm used to
+    // HIDE the status work entirely. The report rides out regardless of which arm
+    // won — which is why the chain did not have to be reshuffled to fix it.
+    expect(r.statuses).toEqual({ aplicados: 1, naoEncontrados: 0, staleIgnorados: 0 });
   });
 
-  it('a statuses-only change reports as such', async () => {
+  /**
+   * ⚠️ These two are a PAIR, and neither alone is the property.
+   *
+   * `statusOnlyValue()` seeds no mensagem, so its every status is a soft miss —
+   * yet before #1478's follow-up this very test asserted `detail: 'statuses'`
+   * and nothing else, which is the OVERSTATEMENT encoded as expected behaviour:
+   * identical to a batch that advanced every mensagem. `detail` still says
+   * `statuses` (a batch ran, which is true); the report beside it is what says
+   * whether anything LANDED.
+   */
+  it('a statuses-only change that landed NOTHING says so', async () => {
     const db = new FakeDb();
     seedConta(db);
     const r = await handleNotificationTask(asDb(db), messagesPayload(statusOnlyValue()), 0, deps);
-    expect(r).toMatchObject({ outcome: 'done', detail: 'statuses' });
+    expect(r).toMatchObject({
+      outcome: 'done',
+      detail: 'statuses',
+      statuses: { aplicados: 0, naoEncontrados: 1, staleIgnorados: 0 },
+    });
+  });
+
+  it('a statuses-only change that DID land reports the same `detail`, a different report', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    // The outbound mensagem the status callback is about, at the deterministic id.
+    db.seed(CONV_PATH, mensagemDocId(CONTA, 'wamid.OUT'), {
+      estadoEnvio: ESTADO_ENVIO.enviando,
+      mid: 'wamid.OUT',
+    });
+    const r = await handleNotificationTask(asDb(db), messagesPayload(statusOnlyValue()), 0, deps);
+    expect(r).toMatchObject({
+      outcome: 'done',
+      detail: 'statuses',
+      statuses: { aplicados: 1, naoEncontrados: 0, staleIgnorados: 0 },
+    });
+  });
+
+  it('a change with NO statuses key reports the report as absent, not as zeros', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const r = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(r.detail).toBe('mensagens');
+    expect(r.statuses).toBeUndefined();
   });
 
   it('THE PROPERTY: six different runs, all `done`, six distinct details', async () => {
@@ -898,7 +945,7 @@ describe('status transition matrix', () => {
     expect(db.docs(CONV_PATH).get(OUT_MSG_ID)!.estadoEnvio).toBe(3);
   });
 
-  it('status for an unknown mensagem is skipped (soft miss)', async () => {
+  it('status for an unknown mensagem is skipped (soft miss), and the report NAMES it', async () => {
     const db = new FakeDb();
     seedConta(db);
     const r = await handleNotificationTask(
@@ -908,6 +955,30 @@ describe('status transition matrix', () => {
       deps,
     );
     expect(r.outcome).toBe('done'); // no throw, nothing to update
+    // ⚠️ "did not throw" was this test's ENTIRE assertion. A soft miss leaves no
+    // Firestore write and only a `console.warn` carrying the mid — so without
+    // this the run was indistinguishable from one that advanced a mensagem.
+    expect(r.statuses).toEqual({ aplicados: 0, naoEncontrados: 1, staleIgnorados: 0 });
+  });
+
+  it('an out-of-order stale skip is reported apart from a soft miss', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    // enviado(3) already, last update NEWER than the incoming delivered → refused
+    // by the forward-only matrix. Working as designed, and structurally common:
+    // the queue dispatches up to 3 concurrently, so statuses routinely race.
+    db.seed(CONV_PATH, OUT_MSG_ID, {
+      estadoEnvio: 3,
+      mid: OUT_WAMID,
+      lastExternalUpdateDateTime: new Date(1700000200000).toISOString(),
+    });
+    const r = await handleNotificationTask(
+      asDb(db),
+      messagesPayload(statusValue('delivered', '1700000100')),
+      0,
+      deps,
+    );
+    expect(r.statuses).toEqual({ aplicados: 0, naoEncontrados: 0, staleIgnorados: 1 });
   });
 });
 

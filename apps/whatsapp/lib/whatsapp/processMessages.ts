@@ -90,7 +90,7 @@ import {
   usuarioOuterRef,
 } from './discoverUser';
 import { getAndUploadMedia, type MediaCacheContext } from './media';
-import { processStatuses } from './processStatus';
+import { processStatuses, type StatusesReport } from './processStatus';
 
 /** 24 hours in ms — the conversa prazo window and the auto-reply dedupe threshold. */
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -130,15 +130,22 @@ type InboundMessageOutcome =
  * ⚠️ These name what happened to the MENSAGEM, not whether anything was written
  * at all: `upsertConversa` runs BEFORE the `echo` and `spam` returns, so every
  * value except `statuses` and `vazio` implies the conversa was created, reopened
- * or touched. Two UNDERSTATEMENTS follow from the priority chain below and are
- * residuals, not bugs — read alongside the `processStatuses` overstatement in
- * `apps/whatsapp/CLAUDE.md`:
+ * or touched.
  *
- *  - `echo` outranks `statuses`. A change carrying BOTH `messages` and
- *    `statuses` sets `incoming = false` for every message, so it folds to
- *    `echo` — and the statuses that WERE applied do not show in the log.
- *  - `redelivery` means the MENSAGEM was skipped; the same run may still have
- *    reopened the conversa and bumped its `ultima_modificacao`.
+ * The `statuses` half of that gap is CLOSED: `StatusesReport` rides out beside
+ * `detail` whichever arm of the chain wins, so an `echo` no longer hides the
+ * status work and a `statuses` that applied nothing no longer overstates.
+ *
+ * What REMAINS, deliberately: `redelivery` names the mensagem skip while the same
+ * run may have reopened the conversa and bumped `ultima_modificacao`. It stays
+ * unreported because of the rule the statuses report is an instance of —
+ * **report in the log what leaves no other trace**. A soft-missed status writes
+ * NOTHING but a `console.warn`, which is why it earned a field; the conversa
+ * story writes its own documents (`evento_nova`, `evento_reaberto_<wamid>`, a
+ * moved `estadoConversa`/`prazo_resposta`) and is derivable from `detail` besides
+ * — `conversaTocada === (detail ∉ {statuses, vazio})`. A field that is a pure
+ * function of another field on the same line makes the line longer, not the
+ * operator wiser. This is a recorded decision, not an open TODO.
  */
 export type MessagesFieldOutcome =
   // >= 1 inbound mensagem written or updated.
@@ -152,7 +159,9 @@ export type MessagesFieldOutcome =
   // Outbound echo (the change also carries `statuses`): the conversa was
   // touched and the statuses WERE applied; no mensagem was written.
   | 'echo'
-  // No `messages` key at all; `statuses[]` applied.
+  // No `messages` key at all; a `statuses[]` batch ran. ⚠️ Says nothing about
+  // whether any of them LANDED — that is what the `StatusesReport` beside it is
+  // for, and it is the whole reason this member is no longer an overstatement.
   | 'statuses'
   // NEITHER present — nothing happened at all.
   | 'vazio';
@@ -169,7 +178,21 @@ export type DropOutcome =
 
 /** Deterministic result of processing a `messages`-field change. */
 export type ProcessOutcome =
-  | { kind: 'processed'; contaId: string; detail: MessagesFieldOutcome }
+  | {
+      kind: 'processed';
+      contaId: string;
+      detail: MessagesFieldOutcome;
+      /**
+       * What the `statuses[]` batch did, or null when the change carried no
+       * `statuses` key at all.
+       *
+       * ⚠️ Required-and-nullable rather than optional ON PURPOSE: it makes the
+       * compiler force every `processed` return path to DECIDE the value, so
+       * "absent means there were no statuses" is a fact rather than a convention
+       * — and the projection's structural `in` check narrows it in one step.
+       */
+      statuses: StatusesReport | null;
+    }
   | { kind: 'dropped'; reason: string; detail: DropOutcome } // ack, never persist
   // ⚠️ No `detail` here, and that asymmetry is the rule rather than an omission:
   // a `fail` WRITES a Firestore document carrying the whole `reason` as `erro`,
@@ -302,13 +325,12 @@ export async function processMessagesField(
       seen.add(await processInboundMessage(db, deps, { contaId, conta, value, message, incoming }));
     }
   }
-  if (value.statuses) {
-    await processStatuses(db, contaId, value);
-  }
+  const statuses = value.statuses ? await processStatuses(db, contaId, value) : null;
 
-  // ⚠️ `echo` outranks `statuses` here: a change carrying BOTH keys sets
-  // `incoming = false`, so every message folds to `echo` even though
-  // `processStatuses` just ran above. Documented as a residual on the union.
+  // `echo` outranks `statuses` here: a change carrying BOTH keys sets
+  // `incoming = false`, so every message folds to `echo`. That used to HIDE the
+  // statuses work; it no longer does — the report above rides out beside `detail`
+  // whichever arm wins, which is why this chain did not have to be reshuffled.
   const detail: MessagesFieldOutcome = seen.has('mensagem')
     ? 'mensagens'
     : seen.has('redelivery')
@@ -325,7 +347,7 @@ export async function processMessagesField(
             ? 'statuses'
             : 'vazio';
 
-  return { kind: 'processed', contaId, detail };
+  return { kind: 'processed', contaId, detail, statuses };
 }
 
 /* ---------------------------- inbound one message ------------------------- */
