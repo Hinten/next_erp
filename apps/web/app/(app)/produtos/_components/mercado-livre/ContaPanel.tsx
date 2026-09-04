@@ -10,7 +10,7 @@ import type {
 
 import type { StockPushIntegracao, StockPushRow } from '@/lib/marketplace/estoque/types';
 import { mergeServerErrors, splitCausas } from '@/lib/mercado-livre/listingCausas';
-import { isStockLatched } from '@/lib/mercado-livre/listingLinks';
+import { anuncioRemovidoPorModeracao, isStockLatched } from '@/lib/mercado-livre/listingLinks';
 import { moderacoesPorCampo } from '@/lib/mercado-livre/listingModeracoes';
 import { mapPublishIssues } from '@/lib/mercado-livre/publishIssues';
 import { publishDisabledReason } from '@/lib/mercado-livre/publishDisabled';
@@ -91,8 +91,12 @@ export interface ContaPanelProps {
   onNovoAnuncio: (integracaoId: string) => void;
   /** Undefined when the operator lacks `PERM.produto.delete`. */
   onExcluirAnuncio?: (linkDocId: string) => void;
+  /** Undefined when the operator lacks `PERM.produto.delete` — same gate (#1226). */
+  onDescartarAnuncio?: (linkDocId: string) => void;
   /** The link doc whose delete is in flight, across every account. */
   excluindo: string | null;
+  /** The link doc whose descarte is in flight, across every account. */
+  descartando: string | null;
   onSalvarAnuncios: (contaId: string, linkIds: readonly string[]) => void;
   onEnviarEstoque: (conta: StockPushIntegracao, temLatch: boolean) => void;
   onReverificar: (integracaoId: string, linkDocId: string, motivo: MotivoReverificacao) => void;
@@ -137,7 +141,9 @@ export function ContaPanel({
   onPublish,
   onNovoAnuncio,
   onExcluirAnuncio,
+  onDescartarAnuncio,
   excluindo,
+  descartando,
   onSalvarAnuncios,
   onEnviarEstoque,
   onReverificar,
@@ -229,6 +235,11 @@ export function ContaPanel({
           // Livre não definida"). Saying so here beats a round trip that comes
           // back as a 422 the operator has to read.
           const missingCategoria = (l.data.category_id ?? '') === '';
+          // #1226: ML removed the listing, so a republish would `PUT` a dead
+          // item id. Read from the LINK, so the control repaints from the same
+          // live snapshot the backend wrote — the feedback model "Reverificar"
+          // already relies on.
+          const removidoPorModeracao = anuncioRemovidoPorModeracao(l.data);
           // One place decides both whether Publicar is disabled and what the
           // tooltip says, so the two can never disagree.
           //
@@ -246,6 +257,7 @@ export function ContaPanel({
             produtoDirty,
             contaDirty: anuncioDirty,
             missingCategoria,
+            removidoPorModeracao,
           });
           return (
             <AnuncioBlock
@@ -302,6 +314,8 @@ export function ContaPanel({
               onPublish={(withPrices) => onPublish(conta.id, l.id, withPrices)}
               onExcluir={onExcluirAnuncio ? () => onExcluirAnuncio(l.id) : undefined}
               excluindo={excluindo === l.id}
+              onDescartar={onDescartarAnuncio ? () => onDescartarAnuncio(l.id) : undefined}
+              descartando={descartando === l.id}
               onDefinirStatus={
                 onDefinirStatus ? (acao) => onDefinirStatus(conta.id, l.id, acao) : undefined
               }

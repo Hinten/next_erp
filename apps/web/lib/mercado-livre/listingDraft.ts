@@ -19,10 +19,12 @@
  * category must be *offered* — but it left nothing to break the cycle. This is
  * that something.
  */
-import { addDoc, runTransaction, type Firestore } from 'firebase/firestore';
-import { ESTADO_PUBLICACAO_ML, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
+import { addDoc, getDocs, runTransaction, type Firestore } from 'firebase/firestore';
+import { buildQuery, groupQuery, whereEqual } from '@delfrance/data';
+import { ESTADO_PUBLICACAO_ML, toOuterRef, type ProdutoMercadoLivreLink } from '@delfrance/schemas';
 
 import { produtoMercadoLivreLinkCollection } from '@/lib/data/produtoMercadoLivreLinkCollection';
+import { variacaoMercadoLivreLinkCollection } from '@/lib/data/variacaoMercadoLivreLinkCollection';
 
 export interface ListingDraftArgs {
   integracaoId: string;
@@ -159,11 +161,62 @@ export async function createListingDraft(
   return { docId, outcome };
 }
 
-/** What {@link removeListingDraft} found when it looked. */
-export type RemoveDraftOutcome = 'removed' | 'missing' | 'published';
+/** What {@link removeListing} found when it looked. */
+export type RemoveListingOutcome = 'removed' | 'missing' | 'published';
 
 /**
- * Delete a draft listing — one that has never reached Mercado Livre.
+ * The two shapes a link doc may be removed or reset in.
+ *
+ * ⚠️ Both are decided from the `tx.get` snapshot, never from the `link` the
+ * button was rendered with (root `CLAUDE.md` rule 7 — a predicate re-checked
+ * against a binding read OUTSIDE the transaction is not a guard).
+ *
+ *  - **`'rascunho'`** — the listing has never reached ML (`id` absent or `''`,
+ *    matching the backend's own `link.id !== ''` test; the schema permits `''`
+ *    and the migrated corpus contains it).
+ *  - **`'removido'`** — ML REMOVED the listing (`estado 'rm'`, #1226). The item
+ *    id is dead, so the reason the published case is normally refused — that
+ *    removing the doc would orphan a LIVE anúncio — does not apply: there is
+ *    nothing live at the other end to orphan.
+ */
+function podeRemover(atual: Pick<ProdutoMercadoLivreLink, 'id' | 'estado'> | undefined): boolean {
+  if ((atual?.id ?? '') === '') return true;
+  return atual?.estado === ESTADO_PUBLICACAO_ML.removidoPorModeracao;
+}
+
+/**
+ * Every `variacaoMercadoLivre` member link belonging to one parent listing.
+ *
+ * Read OUTSIDE the transaction, deliberately: the Web SDK's `runTransaction`
+ * takes only document reads, so a query cannot go inside one. The cost is a
+ * member created between this read and the commit, which is the same window
+ * {@link removeListing} has always accepted — and its residue is inert, since
+ * both ML sweeps filter `paiId == null` and never select a variation child.
+ *
+ * The ref is REBUILT rather than read off a member, matching
+ * `VariacoesAnuncioTable`: every writer stores it through
+ * `variacaoMercadoLivreLinkCollection.parse()` and `toOuterRef` normalises to
+ * the `documents/…` form, so an exact `==` is safe and rides the declared
+ * `produtoMercadoLivreOuterRef` COLLECTION_GROUP index.
+ */
+async function membrosDoAnuncio(db: Firestore, produtoId: string, linkDocId: string) {
+  const snap = await getDocs(
+    buildQuery(
+      groupQuery(db, 'variacaoMercadoLivre', variacaoMercadoLivreLinkCollection.converter),
+      [
+        whereEqual(
+          'produtoMercadoLivreOuterRef',
+          toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${linkDocId}`),
+        ),
+      ],
+    ),
+  );
+  return snap.docs.map((d) => d.ref);
+}
+
+/**
+ * Delete a listing the ERP has no reason to keep — a draft, or one Mercado Livre
+ * has removed.
  *
  * ## Why this exists at all
  *
@@ -171,43 +224,127 @@ export type RemoveDraftOutcome = 'removed' | 'missing' | 'published';
  * bounded at one per account and every one of them meant something. "Novo
  * anúncio" is the first way to make a link doc that is pure clutter — the
  * duplicated-intent case `createListingDraft` accepts rather than prevents — so
- * the way to remove one ships with it.
+ * the way to remove one ships with it. #1226 added the second: a listing ML
+ * removed keeps a dead item id for ever with no path out of the ERP.
  *
  * ## Why a transaction, for a delete
  *
- * The predicate is "never published", and it can stop being true between the
- * operator opening the confirm and confirming it: a publish from another tab, or
- * the `items` webhook, stamps `id` on this same doc. Deleting then would orphan a
- * LIVE Mercado Livre listing — `itemsStatusSync`'s `resolveLink` would find
- * nothing, both sweeps would stop reaching it, and its child
- * `variacaoMercadoLivre` docs would dangle with no parent.
- *
- * So the check is re-derived from the `tx.get` snapshot rather than from the
- * `link` the button was rendered with (root `CLAUDE.md` rule 7 — a predicate
- * re-checked against a binding read OUTSIDE the transaction is not a guard).
+ * The predicate can stop being true between the operator opening the confirm and
+ * confirming it: a publish from another tab, or the `items` webhook, stamps `id`
+ * on this same doc. Deleting then would orphan a LIVE Mercado Livre listing —
+ * `itemsStatusSync`'s `resolveLink` would find nothing, both sweeps would stop
+ * reaching it, and its child `variacaoMercadoLivre` docs would dangle with no
+ * parent. So the check is re-derived inside (see {@link podeRemover});
  * `'published'` is the caller's cue to say so rather than to retry.
  *
- * ⚠️ `id === ''` counts as never published, matching the backend's own test
- * (`bulkEstoquePlan` takes `link.id !== ''`): the schema permits `''` and the
- * migrated corpus contains it.
+ * ⚠️ It deletes the MEMBER links too, which the draft-only version never had to:
+ * a draft has none (they are written at publish time). Leaving them would strand
+ * a member pointing at a parent that no longer exists, which is the dangling the
+ * old refusal existed to prevent, arriving from the other side.
  *
  * The `integracoesComProduto` denorm needs nothing here — the
  * `onProdutoMercadoLivreLinkChanged` trigger re-derives account membership from
- * the whole subcollection, so removing one draft cannot drop an account that
- * still holds a live listing.
+ * the whole subcollection, so removing one listing cannot drop an account that
+ * still holds a live one.
  */
-export async function removeListingDraft(
+export async function removeListing(
   db: Firestore,
   produtoId: string,
   linkDocId: string,
-): Promise<RemoveDraftOutcome> {
+): Promise<RemoveListingOutcome> {
   const ref = produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId);
-  return runTransaction<RemoveDraftOutcome>(db, async (tx) => {
+  const membros = await membrosDoAnuncio(db, produtoId, linkDocId);
+  return runTransaction<RemoveListingOutcome>(db, async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists()) return 'missing';
-    const atual = snap.data() as Pick<ProdutoMercadoLivreLink, 'id'> | undefined;
-    if ((atual?.id ?? '') !== '') return 'published';
+    const atual = snap.data() as Pick<ProdutoMercadoLivreLink, 'id' | 'estado'> | undefined;
+    if (!podeRemover(atual)) return 'published';
+    for (const membro of membros) tx.delete(membro);
     tx.delete(ref);
     return 'removed';
+  });
+}
+
+/** What {@link descartarAnuncioRemovido} found when it looked. */
+export type DescartarOutcome = 'descartado' | 'missing' | 'nao-removido';
+
+/**
+ * Drop the dead Mercado Livre identity of a REMOVED listing, keeping everything
+ * the operator wrote (#1226).
+ *
+ * ## Why this and not just the delete
+ *
+ * A removal is almost always fixable at the produto level — the case that
+ * motivated the issue is `DOMAIN_WRONG_CATEG_V2`, a wrong category — while the
+ * listing's título, categoria, atributos, descrição and tabela de medidas
+ * binding are hours of operator work. Deleting the doc throws all of it away to
+ * fix one field. This keeps the doc, drops only what belonged to the listing ML
+ * deleted, and returns it to `rascunho` — so `assemblePublishInput` sees
+ * `link.id == null`, takes the `POST /items` branch, and creates a genuinely new
+ * anúncio instead of `PUT`ing a dead one.
+ *
+ * ## What it clears, and why each one
+ *
+ *  - `id` — the whole point: it is what makes a republish an update.
+ *  - `status` / `sub_status` — they describe the removed listing. Left behind,
+ *    `acaoStatusAnuncio` and both send gates would keep reading `under_review`.
+ *  - `moderacoes` — ML's verdict ON THAT LISTING. `null` ("never asked"), not
+ *    `[]`: the new listing has not been moderated, and `[]` would record a
+ *    verdict nobody obtained.
+ *  - `userProductId` — the removed item's stock identity (#706); it is
+ *    self-healing, so a stale one would be written over anyway, but a dead id
+ *    sent to `PUT /user-products/{id}/stock` before that heal is a 4xx.
+ *  - `errors` / `causas` — our last failed write against a listing that no
+ *    longer exists.
+ *
+ * ⚠️ It does NOT clear `attributes`, `title`, `category_id`, `descricao`,
+ * `listing_type_id` or `condition`. That is the entire difference from
+ * {@link removeListing}.
+ *
+ * ⚠️ Member links are MARKED, never deleted — `variacoesFantasma.ts`'s
+ * precedent, for its reason: the member link carries the variation's `sku` and
+ * `attribute_combinations`, which a republish would otherwise have to rebuild
+ * from nothing. They lose exactly what the parent loses: the ML identity
+ * (`itemId`, `id`), the status pair, and the moderation.
+ *
+ * ⚠️ Guarded the same way as the delete and refused the same way: `'nao-removido'`
+ * when the tx-fresh doc is not in the removed state. Discarding the identity of a
+ * listing that is merely paused would abandon a LIVE anúncio.
+ */
+export async function descartarAnuncioRemovido(
+  db: Firestore,
+  produtoId: string,
+  linkDocId: string,
+): Promise<DescartarOutcome> {
+  const ref = produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId);
+  const membros = await membrosDoAnuncio(db, produtoId, linkDocId);
+  return runTransaction<DescartarOutcome>(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return 'missing';
+    const atual = snap.data() as Pick<ProdutoMercadoLivreLink, 'estado'> | undefined;
+    if (atual?.estado !== ESTADO_PUBLICACAO_ML.removidoPorModeracao) return 'nao-removido';
+    const nowMs = Date.now();
+    for (const membro of membros) {
+      tx.update(membro, {
+        itemId: null,
+        id: null,
+        status: null,
+        sub_status: null,
+        moderacoes: null,
+        ultimaModificacao: nowMs,
+      });
+    }
+    tx.update(ref, {
+      estado: ESTADO_PUBLICACAO_ML.rascunho,
+      id: null,
+      status: null,
+      sub_status: null,
+      moderacoes: null,
+      userProductId: null,
+      errors: [],
+      causas: [],
+      ultimaModificacao: nowMs,
+    });
+    return 'descartado';
   });
 }

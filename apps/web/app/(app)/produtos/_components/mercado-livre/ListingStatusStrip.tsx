@@ -37,6 +37,9 @@ const ESTADO_COLORS: Record<EstadoPublicacaoMl, string> = {
   c: 'gray',
   E: 'red',
   am: 'orange',
+  // RED, not the `cancelado` grey: this one is not a lifecycle end the seller
+  // chose, it is revenue lost without anyone being told (#1226).
+  rm: 'red',
 };
 
 /**
@@ -204,6 +207,19 @@ export function ListingStatusStrip({
 
           Gated on the DERIVED estado rather than the raw status, so it also
           covers a legacy row that carries `estado 'pa'` and no `status`. */}
+      {/* ⚠️ The one estado whose remedy is NOT on this listing. Everything else in
+          this strip explains a state the operator waits out or fixes in place;
+          a removal is terminal on ML's side (REASON, no REMEDY), so the only
+          useful sentence names the two controls below the form. Without it the
+          operator reads "Removido pelo Mercado Livre", finds Republicar
+          disabled, and has nothing to go on. */}
+      {estado === ESTADO_PUBLICACAO_ML.removidoPorModeracao && (
+        <Text size="xs" c="red.7" data-testid="ml-aviso-removido">
+          O Mercado Livre removeu este anúncio e ele não pode ser reativado. Use “Descartar anúncio
+          removido” para publicar um novo com os mesmos dados, ou exclua o anúncio.
+        </Text>
+      )}
+
       {estado === ESTADO_PUBLICACAO_ML.pausado && (
         <Text size="xs" c="orange.7" data-testid="ml-aviso-pausado">
           Anúncio pausado. Salvar ou republicar este anúncio o reativa no Mercado Livre.

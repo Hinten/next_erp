@@ -1110,6 +1110,9 @@ importers:
       '@delfrance/core':
         specifier: workspace:*
         version: link:../../core
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../schemas
       fflate:
         specifier: 'catalog:'
         version: 0.8.3

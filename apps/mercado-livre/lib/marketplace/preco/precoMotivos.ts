@@ -26,6 +26,9 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   SEM_LINK: 'Este produto não tem anúncio nesta conta.',
   SEM_ITEM_ID: 'O anúncio ainda não foi publicado no Mercado Livre.',
   AGUARDANDO_MIGRACAO: 'Anúncio em migração para User Products — envio suspenso.',
+  ANUNCIO_REMOVIDO:
+    'O Mercado Livre removeu este anúncio e ele não pode ser reativado. Abra a aba Mercado ' +
+    'Livre do produto para descartá-lo e publicar um novo.',
   PRECO_NAO_ENCONTRADO:
     'O produto não tem preço na tabela normal desta conta. Preencha o preço e tente de novo.',
   FAMILIA_MUITO_GRANDE: 'A família tem variações demais para um único envio.',
@@ -40,7 +43,13 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   PRECO_NAO_ATUALIZADO:
     'O Mercado Livre aceitou o envio mas não confirmou o preço novo. Confira o anúncio.',
   CLOSED: 'O anúncio está encerrado no Mercado Livre.',
-  FORBIDDEN: 'O anúncio está em revisão e foi bloqueado pelo Mercado Livre.',
+  // ⚠️ Same state as `ANUNCIO_REMOVIDO` above, reached at SEND time instead of
+  // plan time (the stored estado had not caught up yet). ML's docs are explicit
+  // that `under_review` + `forbidden` is a REMOVAL with no remedy, so the old
+  // wording — "está em revisão e foi bloqueado" — read as something to wait out.
+  FORBIDDEN:
+    'O Mercado Livre removeu este anúncio e ele não pode ser reativado. Abra a aba Mercado ' +
+    'Livre do produto para descartá-lo e publicar um novo.',
   STATUS_desconhecido: 'O Mercado Livre não informou o status deste anúncio.',
   GET_PRODUTO_ERROR: 'Não foi possível ler o anúncio no Mercado Livre.',
   UPDATE_PRECO_ERROR: 'O Mercado Livre recusou o novo preço.',

@@ -11,6 +11,7 @@ import {
 } from '@delfrance/schemas';
 
 import type { StockPushRow } from '@/lib/marketplace/estoque/types';
+import { anuncioRemovidoPorModeracao } from '@/lib/mercado-livre/listingLinks';
 import { ListingDetails } from './ListingDetails';
 import { TabelaMedidasResumo } from './TabelaMedidasResumo';
 import { ListingForm } from './ListingForm';
@@ -101,6 +102,14 @@ export interface AnuncioBlockProps {
   onExcluir?: () => void;
   excluindo: boolean;
   /**
+   * Ask to drop this listing's dead Mercado Livre identity and keep the draft
+   * (#1226). Undefined hides the control, same gate as {@link onExcluir}:
+   * `PERM.produto.delete`, the bit Firestore rules require to write a link doc's
+   * removal — both actions destroy the listing's link to ML.
+   */
+  onDescartar?: () => void;
+  descartando: boolean;
+  /**
    * Pause or reactivate this listing on Mercado Livre. Undefined hides the
    * control — no client, or the operator lacks `PERM.integracao.write`, the bit
    * the backend route enforces.
@@ -151,6 +160,8 @@ export function AnuncioBlock({
   onPublish,
   onExcluir,
   excluindo,
+  onDescartar,
+  descartando,
   onDefinirStatus,
   alterandoStatus,
   statusBusy,
@@ -159,6 +170,9 @@ export function AnuncioBlock({
   // the backend's own `link.id !== ''` test: the schema permits it and the
   // migrated corpus contains it.
   const isFirstPublish = (link.id ?? '') === '';
+  // #1226. Read from the LINK for the same reason `acaoDeStatus` below is: the
+  // controls repaint from the live snapshot the backend just wrote.
+  const removido = anuncioRemovidoPorModeracao(link);
   // ⚠️ Read from the LINK, so the control repaints from the live snapshot the
   // backend just wrote — the same feedback model "Reverificar" relies on.
   const acaoDeStatus = acaoStatusAnuncio(link as unknown as Record<string, unknown>);
@@ -323,14 +337,34 @@ export function AnuncioBlock({
             {acaoDeStatus === ACAO_STATUS_ANUNCIO.pausar ? 'Pausar anúncio' : 'Reativar anúncio'}
           </Button>
         )}
-        {/* Only for a listing Mercado Livre has never seen. Removing a PUBLISHED
-            one would orphan a live anúncio: `itemsStatusSync` would stop
-            resolving it, both sweeps would stop reaching it, and its child
-            `variacaoMercadoLivre` docs would dangle. Deleting a produto in the
-            ERP deliberately leaves the marketplace untouched (#476, closed by
-            decision) — the operator's way to take a live listing off the air is
-            "Pausar anúncio" above, never a delete. */}
-        {isFirstPublish && onExcluir && (
+        {/* For a listing Mercado Livre has never seen, or one it has REMOVED.
+            Removing a listing that is still LIVE would orphan it:
+            `itemsStatusSync` would stop resolving it, both sweeps would stop
+            reaching it, and its child `variacaoMercadoLivre` docs would dangle.
+            Deleting a produto in the ERP deliberately leaves the marketplace
+            untouched (#476, closed by decision) — the operator's way to take a
+            live listing off the air is "Pausar anúncio" above, never a delete.
+            ⚠️ That argument is exactly what admits `removido` (#1226): ML already
+            took the listing down, so there is nothing live left to orphan, and
+            the delete carries the member links with it. */}
+        {/* #1226, and it is offered BEFORE the delete deliberately: the produto
+            is almost always publishable again after fixing whatever ML objected
+            to (the case that motivated the issue is a wrong category), and this
+            is the action that keeps the título, categoria, atributos, descrição
+            and tabela de medidas the operator already wrote. */}
+        {removido && onDescartar && (
+          <Button
+            type="button"
+            variant="light"
+            color="orange"
+            onClick={onDescartar}
+            loading={descartando}
+            disabled={Boolean(disabled) || loading}
+          >
+            Descartar anúncio removido
+          </Button>
+        )}
+        {(isFirstPublish || removido) && onExcluir && (
           <Button
             type="button"
             variant="subtle"

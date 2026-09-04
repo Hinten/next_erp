@@ -184,7 +184,9 @@ export async function definirStatusAnuncio(
         { nowMs, extra: { ...clearFalha(), moderacoes: [] } },
       );
       return {
-        estado: estadoFromMlStatus('closed'),
+        // The 404 branch synthesises the status itself, so there is no
+        // sub_status to read — `null`, deliberately, not `[]`.
+        estado: estadoFromMlStatus('closed', null),
         status: 'closed',
         subStatus: [],
         aplicados: 0,
@@ -208,7 +210,7 @@ export async function definirStatusAnuncio(
   });
 
   return {
-    estado: estadoFromMlStatus(item.status),
+    estado: estadoFromMlStatus(item.status, item.sub_status ?? null),
     status: item.status ?? null,
     subStatus: item.sub_status ?? null,
     aplicados: 1,
@@ -315,7 +317,7 @@ async function definirStatusFamilia(
     // `linkHasLiveListing` → `integracoesComProduto`, the anchor pre-filter both
     // ML sweeps open with, so one member's reading reaching it here would move a
     // produto in or out of the sweeps on the strength of a sibling.
-    estado: folded.estado ?? estadoFromMlStatus(folded.status),
+    estado: folded.estado ?? estadoFromMlStatus(folded.status, folded.subStatus),
     status: folded.status,
     subStatus: folded.subStatus,
     aplicados: relatorio.filter((m) => m.aplicado).length,

@@ -103,7 +103,7 @@
  * observed.
  */
 import { type DocumentReference, FieldValue, type Firestore } from 'firebase-admin/firestore';
-import { ESTADO_PUBLICACAO_ML, type MlModeracao } from '@delfrance/schemas';
+import { ESTADO_PUBLICACAO_ML, estadoEncerraAnuncio, type MlModeracao } from '@delfrance/schemas';
 import {
   type MlItem,
   type MlModeration,
@@ -381,7 +381,7 @@ async function applyResolvedStatus(
   userProductId: string | null,
   moderacoes: MlModeracao[],
 ): Promise<ItemsSyncOutcome> {
-  const estado = estadoFromMlStatus(status);
+  const estado = estadoFromMlStatus(status, subStatus);
 
   const currentEstado = typeof link.data.estado === 'string' ? link.data.estado : null;
   const currentStatus = typeof link.data.status === 'string' ? link.data.status : null;
@@ -742,7 +742,7 @@ export async function applyFamilyStatusAndFold(
     const folded = foldFamilyStatus(foldable);
 
     // ---- Parent decision, re-derived from the tx-fresh parent snapshot.
-    const estado = folded ? estadoFromMlStatus(folded.status) : null;
+    const estado = folded ? estadoFromMlStatus(folded.status, folded.subStatus) : null;
     const currentEstado = typeof parent.estado === 'string' ? parent.estado : null;
     const currentStatus = typeof parent.status === 'string' ? parent.status : null;
     const currentSubStatus = Array.isArray(parent.sub_status)
@@ -812,7 +812,11 @@ export async function applyFamilyStatusAndFold(
       // `applyItemStatusToLink` needs does not apply here: there is no window in
       // which one landed and the other did not.
       const produtoRaw = (produtoSnap.data() ?? {}) as Record<string, unknown>;
-      if (estado === ESTADO_PUBLICACAO_ML.cancelado) {
+      // ⚠️ `estadoEncerraAnuncio`, not an `=== cancelado` test: a moderation
+      // removal (#1226) ends the listing exactly as a cancel does, and the two
+      // denorm arms must not disagree with `linkHasLiveListing` about which
+      // estados mean "gone".
+      if (estadoEncerraAnuncio(estado)) {
         const patch = removeMarketplaceEntry(produtoRaw, integracaoId, familyItemId);
         if (patch) tx.update(produtoRef, patch);
       } else {
@@ -998,7 +1002,7 @@ export async function applyItemStatusToLink(
   item: { status?: string | null; sub_status?: string[] | null },
   opts: ApplyItemStatusOpts,
 ): Promise<boolean> {
-  const estado = estadoFromMlStatus(item.status);
+  const estado = estadoFromMlStatus(item.status, item.sub_status ?? null);
 
   // THE LINK IS THE ANCHOR — check it before touching anything else. The denorm
   // has to run BEFORE the link write (see the ordering note above), which means
@@ -1229,7 +1233,8 @@ async function updateParentDenorm(
   const ref = produtoCollection.docRef(db, {}, produtoId);
   const snap = await ref.get();
   if (!snap.exists) return;
-  if (estado === 'c') {
+  // Shared with `linkHasLiveListing` and the family arm above — see there.
+  if (estadoEncerraAnuncio(estado)) {
     const patch = removeMarketplaceEntry(
       (snap.data() ?? {}) as Record<string, unknown>,
       integracaoId,

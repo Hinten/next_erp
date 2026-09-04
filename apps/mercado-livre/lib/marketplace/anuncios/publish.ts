@@ -699,7 +699,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const parentExternalId = family ? (family.familyId ?? family.itemIds[0]!) : item.id;
 
   // ---- Persist the link docs from the response ---------------------------
-  const estado = estadoFromMlStatus(item.status);
+  const estado = estadoFromMlStatus(item.status, item.sub_status ?? null);
   await writeLinkDoc({
     sku: produto.sku ?? null,
     condition: input.condition,

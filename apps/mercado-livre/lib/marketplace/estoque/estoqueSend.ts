@@ -742,7 +742,7 @@ export async function processStockSendTask(
         ...(ehMembro
           ? {}
           : {
-              estado: estadoFromMlStatus(resp.status),
+              estado: estadoFromMlStatus(resp.status, resp.sub_status ?? null),
               status: resp.status ?? null,
               sub_status: resp.sub_status ?? [],
               // ⚠️ #1252, and read the paragraph below before touching it: the
