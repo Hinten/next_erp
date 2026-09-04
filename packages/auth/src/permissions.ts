@@ -201,6 +201,14 @@ export const PERM = {
     read: 1n << 107n,
     write: 1n << 108n,
   },
+  // Webchat — embeddable widget configs (`webchat` collection, /canais/webchat).
+  // Byte 14, the next free byte after `incidenteResolucao` (bits 107-108,
+  // byte 13). Mirrored by `webchatMeta` in packages/schemas/src/webchat.ts.
+  webchat: {
+    read: 1n << 112n,
+    write: 1n << 113n,
+    delete: 1n << 114n,
+  },
 } as const;
 
 export function hasPerm(grantedClaim: string | undefined, requiredBit: bigint): boolean {

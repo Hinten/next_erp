@@ -25,6 +25,7 @@ const DOMAIN_LABELS: Record<keyof typeof PERM, string> = {
   frete: 'Frete',
   cmun: 'Tabela de municípios (CEP → IBGE)',
   incidenteResolucao: 'Resolução de reclamações (marketplace)',
+  webchat: 'Webchat',
 };
 
 const ACTION_LABELS: Record<string, string> = {

@@ -676,6 +676,25 @@ export {
 } from './bandeiraCartao';
 
 export {
+  webchat,
+  webchatSchema,
+  webchatMeta,
+  webchatIconeSchema,
+  WEBCHAT_ICONE_LABELS,
+  webchatPosicionamentoSchema,
+  WEBCHAT_POSICIONAMENTO_LABELS,
+  horarioWebchatSchema,
+  periodoWebchatSchema,
+  mensagemInatividadeWebchatSchema,
+  type Webchat,
+  type WebchatIcone,
+  type WebchatPosicionamento,
+  type HorarioWebchat,
+  type PeriodoWebchat,
+  type MensagemInatividadeWebchat,
+} from './webchat';
+
+export {
   nfe,
   nfeSchema,
   nfeMeta,
