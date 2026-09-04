@@ -44,9 +44,12 @@ import { RetryAlert } from '@/components/feedback/RetryAlert';
  *    refuses to prerender a page that mounts it outside a `<Suspense>`
  *    boundary. Every current caller is a dynamic `[id]` route, which is why the
  *    three panels never needed one; a static route must wrap it.
- * 2. `toast` must be a MODULE-LEVEL constant. The toast effect's dependency
- *    list includes `mensagens`, so a fresh object literal on each render
- *    re-fires the notification on every render.
+ * 2. `toast.mensagens` must be referentially STABLE. `useOAuthCallbackToast`
+ *    destructures the config and lists `mensagens` — not the config object —
+ *    among its effect dependencies, so a fresh message map on each render
+ *    re-fires the notification on every render, while a fresh config literal
+ *    around a hoisted map does not. Keeping the whole config a module-level
+ *    constant is the simplest way to guarantee it.
  */
 
 /**
@@ -85,7 +88,7 @@ export interface ConnectionPanelProps<TConta extends { readonly connected: boole
   readonly queryKey: readonly unknown[];
   /** TanStack `retry` for the conta read. Default `false`; only Mercado Livre passes a predicate. */
   readonly retry?: boolean | number | ((failureCount: number, err: unknown) => boolean);
-  /** ⚠️ A module-level constant — see the mounting traps above. */
+  /** ⚠️ Its `mensagens` must be referentially stable — see mounting trap 2 above. */
   readonly toast: OAuthCallbackToastConfig;
   /** Omit for no gate at all (Melhor Envio). */
   readonly permission?: ConnectionPermission;
