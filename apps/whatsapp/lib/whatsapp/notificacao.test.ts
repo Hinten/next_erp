@@ -289,6 +289,184 @@ describe('handleNotificationTask — dispatch & disposition', () => {
   });
 });
 
+/* ------------------ what the change actually did (#1087) ----------------- */
+
+/**
+ * ⚠️ The regression these guard against is INVISIBLE without them.
+ *
+ * `processed` is a disposition, not a claim that work happened: a delivered
+ * inbound message, an idempotent redelivery of one already stored, and an
+ * `errors`-only change that touched nothing at all ALL resolve to it. On Mercado
+ * Livre's first live run (#1087) the task handler logged a bare success for
+ * every delivery while nothing was being written, and no field could say which
+ * had occurred.
+ *
+ * The property under test is not "detail is present" — it is that runs which DID
+ * different things REPORT differently. `createOrUpdateMensagem`'s boolean was
+ * discarded at its only call site, so dropping it again (or dropping `detail`
+ * from the projection) would restore the blindness while leaving every other
+ * assertion in this file green.
+ */
+describe('handleNotificationTask — reports what it actually did (#1087)', () => {
+  /** A `messages` change carrying neither messages nor statuses. */
+  function errorsOnlyValue(): DocData {
+    return {
+      messaging_product: 'whatsapp',
+      metadata: { display_phone_number: DISPLAY, phone_number_id: PNID },
+      errors: [{ code: 131051, title: 'Unsupported message type' }],
+    };
+  }
+
+  function statusOnlyValue(): DocData {
+    return {
+      messaging_product: 'whatsapp',
+      metadata: { display_phone_number: DISPLAY, phone_number_id: PNID },
+      statuses: [
+        { id: 'wamid.OUT', recipient_id: FROM, status: 'delivered', timestamp: '1700000100' },
+      ],
+    };
+  }
+
+  it('a delivered inbound message reports that a mensagem was written', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const r = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(r).toMatchObject({
+      outcome: 'done',
+      kind: 'processed',
+      detail: 'mensagens',
+      contaId: CONTA,
+    });
+    // The inbound mensagem itself — the conversa also carries a `nova conversa`
+    // EVENT doc, so a bare collection count would not say a message landed.
+    expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.A'))).toBe(true);
+  });
+
+  it('THE #1087 SHAPE: an errors-only change wrote nothing, and now says so', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const r = await handleNotificationTask(asDb(db), messagesPayload(errorsOnlyValue()), 0, deps);
+    expect(r).toMatchObject({ outcome: 'done', kind: 'processed', detail: 'vazio' });
+    // And it really did nothing — no conversa, no mensagem. That is the whole
+    // point: `done` alone was indistinguishable from the happy path above.
+    expect(db.docs('chat').size).toBe(0);
+    expect(db.docs(CONV_PATH).size).toBe(0);
+  });
+
+  it('a REDELIVERY of the same message is not a second write', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const first = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    const second = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(first.detail).toBe('mensagens');
+    expect(second.detail).toBe('redelivery');
+    // Both are `done`; only `detail` separates them.
+    expect(second.outcome).toBe('done');
+    // The redelivery converged on the same doc rather than forking one.
+    const depois = db.docs(CONV_PATH).size;
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(db.docs(CONV_PATH).size).toBe(depois);
+  });
+
+  it('messages arriving WITH statuses are an outbound echo, not an inbound write', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const value = inboundValue({
+      statuses: [
+        { id: 'wamid.OUT', recipient_id: FROM, status: 'delivered', timestamp: '1700000100' },
+      ],
+    });
+    const r = await handleNotificationTask(asDb(db), messagesPayload(value), 0, deps);
+    expect(r).toMatchObject({ outcome: 'done', detail: 'echo' });
+    // The conversa IS touched (and gets its `nova conversa` event), but the echo
+    // must not land as an inbound mensagem.
+    expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.A'))).toBe(false);
+  });
+
+  it('a statuses-only change reports as such', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const r = await handleNotificationTask(asDb(db), messagesPayload(statusOnlyValue()), 0, deps);
+    expect(r).toMatchObject({ outcome: 'done', detail: 'statuses' });
+  });
+
+  it('THE PROPERTY: five different runs, all `done`, five distinct details', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const run = async (value: DocData): Promise<string | undefined> =>
+      (await handleNotificationTask(asDb(db), messagesPayload(value), 0, deps)).detail;
+
+    const details = [
+      await run(inboundValue()), // mensagens
+      await run(inboundValue()), // redelivery (same wamid + timestamp)
+      await run(
+        inboundValue({
+          statuses: [
+            { id: 'wamid.OUT', recipient_id: FROM, status: 'delivered', timestamp: '1700000100' },
+          ],
+        }),
+      ), // echo
+      await run(statusOnlyValue()), // statuses
+      await run(errorsOnlyValue()), // vazio
+    ];
+    expect(new Set(details).size).toBe(5);
+  });
+
+  it('carries the success arm `kind` out to the caller', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const r = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(r.kind).toBe('processed');
+  });
+
+  it('carries a NON-success arm `kind` out too — a drop is not a processed change', async () => {
+    const db = new FakeDb();
+    const r = await handleNotificationTask(
+      asDb(db),
+      { field: 'message_template_status_update', phoneNumberId: null, messageId: null, value: {} },
+      0,
+      deps,
+    );
+    expect(r.kind).toBe('dropped');
+  });
+
+  it('the two drop causes are told apart — both were `dropped` alone before', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const campo = await handleNotificationTask(
+      asDb(db),
+      { field: 'message_template_status_update', phoneNumberId: null, messageId: null, value: {} },
+      0,
+      deps,
+    );
+    const malformado = await handleNotificationTask(
+      asDb(db),
+      messagesPayload({ garbage: true }),
+      0,
+      deps,
+    );
+    expect(campo.detail).toBe('campo-nao-suportado');
+    expect(malformado.detail).toBe('value-malformado');
+    expect(campo.detail).not.toBe(malformado.detail);
+  });
+
+  it('a failed park reports its `kind` and no `detail`', async () => {
+    const db = new FakeDb(); // no conta seeded → resolveConta parks
+    const r = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(r).toMatchObject({ outcome: 'failed', kind: 'failed' });
+    // `fail` writes a Firestore doc carrying the whole reason as `erro`, so it
+    // deliberately gets no coarser second copy in the log.
+    expect(r.detail).toBeUndefined();
+  });
+
+  it('the shared pipeline schema-parse drop carries NO kind — a coding bug, not ours', async () => {
+    const db = new FakeDb();
+    const r = await handleNotificationTask(asDb(db), { field: '', value: {} }, 0, deps);
+    expect(r.outcome).toBe('dropped');
+    expect(r.kind).toBeUndefined();
+  });
+});
+
 /* --------------------- conversa create / reopen / spam ------------------- */
 
 describe('conversa create / reopen / spam', () => {

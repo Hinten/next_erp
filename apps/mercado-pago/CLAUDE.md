@@ -42,6 +42,12 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
   disposition, failures-only persistence to `notificacoesMercadoPago`, the
   durable-cursor sweep) is the SHARED core in `@delfrance/data/admin/notifications` —
   see the `webhook-notifications` skill. Do not re-implement it here.
+  **#1137**: the reconcile's `{ transition, skippedStale }` is collapsed into a single
+  filterable `detail` on the `reconciled` outcome, and `TaskResult` carries `kind` +
+  `detail` out to the task log — `done` is a DISPOSITION, not a claim that work
+  happened, and a stale redelivery that wrote nothing used to log exactly like a real
+  estado transition (#1087, fixed for ML in #1136). `metodoId` now also rides every
+  park that resolved an account, and the `dropped` arm names WHICH drop it was.
 - `lib/payments/mpTasks.ts` — the `processMercadoPagoNotification` task-queue scheduler
   (`MERCADO_PAGO_TASKS_DISABLED` valve → persist-for-the-sweep). Mirrors `mlTasks.ts`.
 - `lib/payments/{state,oauthState}.ts` — **#1034**, thin bindings to the SHARED OAuth

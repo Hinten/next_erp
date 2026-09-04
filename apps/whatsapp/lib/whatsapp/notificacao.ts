@@ -143,13 +143,30 @@ export async function processChangePayload(
     return processMessagesField(db, payload.value, deps);
   }
   console.warn('[whatsapp] campo não suportado — dropping', { field: payload.field });
-  return { kind: 'dropped', reason: `campo não suportado: ${payload.field}` };
+  return {
+    kind: 'dropped',
+    reason: `campo não suportado: ${payload.field}`,
+    detail: 'campo-nao-suportado',
+  };
 }
 
 export interface TaskResult {
   outcome: 'done' | 'failed' | 'dropped';
   contaId?: string;
   field?: string;
+  /**
+   * The channel's own `ProcessOutcome` discriminant, so the caller can tell an
+   * unsupported-field drop from a malformed-value drop — and both from the
+   * shared pipeline's schema-parse drop, which is a CODING BUG and carries no
+   * `result` at all.
+   */
+  kind?: ProcessOutcome['kind'];
+  /**
+   * What the change actually did. Widened to `string` deliberately: this is the
+   * log-facing shape, and `MessagesFieldOutcome` is the narrow union the
+   * PRODUCER is held to.
+   */
+  detail?: string;
 }
 
 /** Drop `undefined` (Firestore rejects it) from the replayed change value. */
@@ -240,14 +257,24 @@ export async function handleNotificationTask(
   const r = await pipelineFor(deps).handleTask(db, data, retryCount);
   // `payload` is absent only on the schema-parse drop, where there is no field
   // to report; `result` is absent on the transient-failure path.
-  const contaId = r.result?.kind === 'processed' ? r.result.contaId : undefined;
+  //
+  // Structural `in` checks rather than `r.result?.kind === 'processed'`: both
+  // fields ride on one arm today, and an equality narrow silently stops covering
+  // them the moment another arm gains one — whereas the `in` check keeps
+  // compiling and keeps reporting.
+  const contaId = r.result && 'contaId' in r.result ? r.result.contaId : null;
+  const detail = r.result && 'detail' in r.result ? r.result.detail : null;
   return {
     // WhatsApp produces neither a `park` nor a `defer` disposition, so both
     // arms are unreachable here — mapped defensively rather than widening this
     // channel's public union with arms it cannot emit (mirrors Mercado Pago).
     outcome: r.outcome === 'parked' || r.outcome === 'deferred' ? 'failed' : r.outcome,
-    ...(contaId !== undefined ? { contaId } : {}),
+    ...(contaId != null ? { contaId } : {}),
     ...(r.payload ? { field: r.payload.field } : {}),
+    // `kind` needs no `in` check — every arm of a discriminated union has it, so
+    // the `r.result` presence guard is the whole condition.
+    ...(r.result ? { kind: r.result.kind } : {}),
+    ...(detail != null ? { detail } : {}),
   };
 }
 
