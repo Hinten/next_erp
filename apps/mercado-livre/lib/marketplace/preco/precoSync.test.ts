@@ -1973,6 +1973,86 @@ describe('cancelPriceSyncJob', () => {
     expect(db.docs(relPath('job-tarde')).size).toBe(0);
   });
 
+  it('⭐ filaRestante never disagrees with fila, even when the cancel lands mid-drain', async () => {
+    // The cancel stamps `filaRestante` from the snapshot it read, and the
+    // in-flight dispatch then FINISHES its batch (documented behaviour, mirroring
+    // the mass import). So a cancel-time count stays frozen at N while `fila`
+    // drains to empty — and the CSV trailer, which prints
+    // `${filaRestante} itens não foram tentados`, would say that about an item it
+    // had just sent and whose row is in the same report. `checkpoint()` therefore
+    // re-derives the field on every write.
+    const db = new FakeDb();
+    seedJob(db, 'job-drena', { fila: [draft('MLB1')], planejamentoConcluido: false });
+    seedLink(db, 'MLB1');
+    const api = makeApi({ MLB1: mlItem('MLB1') });
+    const deps = runDeps(db, api, {
+      resolveContext: async () => {
+        await cancelPriceSyncJob(asDb(db), {
+          jobId: 'job-drena',
+          integracaoId: CONTA,
+          now: CLOCK_NOW,
+        });
+        return { api: api as unknown as PriceSyncApi, tabelaNormalOuterRef: TAB_REF };
+      },
+    });
+
+    await processPriceSyncJob(deps, { jobId: 'job-drena', integracaoId: CONTA }, 0);
+
+    const job = db.docs(JOBS_PATH).get('job-drena') as DocData;
+    expect(job.status).toBe('cancelled');
+    // The near-miss that makes this test mean something: the item WAS sent, so
+    // the honest remainder is 0 — not the 1 the cancel snapshot saw.
+    expect(job.enviados).toBe(1);
+    expect(job.fila).toEqual([]);
+    expect(job.filaRestante).toBe(0);
+
+    // And no row in the report is claimed un-attempted while sitting in the body.
+    const linhas = linhasDe(db, 'job-drena');
+    expect(Object.keys(linhas)).toHaveLength(2); // JOB_CANCELADO + the sent item
+    expect(Object.values(linhas).some((l) => l.motivo === 'JOB_CANCELADO')).toBe(true);
+    expect(Object.values(linhas).some((l) => l.resultado === 'enviado')).toBe(true);
+  });
+
+  it('⭐ a row-less checkpoint cannot strand the cancel row in an undeclared shard', async () => {
+    // The narrow case, and the one that loses DATA rather than just miscounting:
+    // the cancel lands with `relatorioLinhas` on an exact shard boundary, so its
+    // synthetic row opens shard 1 and `relatorioShards` becomes 2. A checkpoint
+    // carrying no rows of its own (the plan phase, when the page produced drafts
+    // but no skips) then rewrites the counters from this dispatch's local value —
+    // which never saw that increment — and declares 1 shard again. The row is
+    // still stored; the download simply never pages far enough to read it.
+    const db = new FakeDb();
+    seedJob(db, 'job-borda', {
+      relatorioLinhas: RELATORIO_ENVIO_PRECO_SHARD_SIZE,
+      relatorioShards: 1,
+      planejamentoConcluido: false,
+    });
+    const api = makeApi();
+    const deps = runDeps(db, api, {
+      // A plan page with drafts and NO skips ⇒ a checkpoint with zero pending rows.
+      fetchPage: vi.fn(async () => ({ rows: [], nextAfterAnchorId: null })),
+      resolveContext: async () => {
+        await cancelPriceSyncJob(asDb(db), {
+          jobId: 'job-borda',
+          integracaoId: CONTA,
+          now: CLOCK_NOW,
+        });
+        return { api: api as unknown as PriceSyncApi, tabelaNormalOuterRef: TAB_REF };
+      },
+    });
+
+    await processPriceSyncJob(deps, { jobId: 'job-borda', integracaoId: CONTA }, 0);
+
+    const job = db.docs(JOBS_PATH).get('job-borda') as DocData;
+    const shardIds = [...db.docs(`${JOBS_PATH}/job-borda/relatorios`).keys()];
+    const maiorShardUsado = Math.max(...shardIds.map((id) => Number(id)));
+
+    // Every shard that HOLDS a row must be inside the declared range, or the
+    // download cannot reach it.
+    expect(job.relatorioShards as number).toBeGreaterThan(maiorShardUsado);
+    expect(job.relatorioLinhas as number).toBe(RELATORIO_ENVIO_PRECO_SHARD_SIZE + 1);
+  });
+
   it('finalizePriceSyncJob without expectIntegracaoId skips the ownership check', async () => {
     // The dispatch loop's own stamps pass no conta — they already know whose job
     // they are running — so the check has to be opt-in, not a silent default.

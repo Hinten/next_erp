@@ -762,11 +762,38 @@ export async function processPriceSyncJob(
       const shards =
         total === 0 ? 0 : Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1;
 
+      /**
+       * ⚠️ A checkpoint carrying NO rows must not move the row counters, and this
+       * is a correctness guard rather than an optimisation. `relatorioShards` is
+       * what the download PAGES OVER, and `total` here is derived from this
+       * dispatch's local counter — which does not include the synthetic
+       * `JOB_CANCELADO`/`JOB_INTERROMPIDO` row a terminal stamp may have just
+       * committed. Writing it back with zero pending rows therefore ROLLS BACK
+       * over that increment, and when the cancel landed on an exact shard
+       * boundary (`relatorioLinhas` a multiple of RELATORIO_ENVIO_PRECO_SHARD_SIZE)
+       * the synthetic row sits in a shard the rolled-back count no longer
+       * declares — a row that exists and can never be downloaded. With rows to
+       * write the counter only ever advances, so this is the whole exposure.
+       */
+      const contadores =
+        pendentes.length === 0 ? {} : { relatorioLinhas: total, relatorioShards: shards };
+
       const batch = db.batch();
       batch.set(
         envioPrecoMercadoLivreCollection.docRef(db, {}, payload.jobId),
         envioPrecoMercadoLivreCollection.parseMerge({
           fila,
+          // ⚠️ Written HERE, on every checkpoint, and not only by the terminal
+          // stamps — because `filaRestante` is a claim ABOUT `fila` and the two
+          // must land together or the CSV lies. A cancel stamps it from the
+          // snapshot it read and then an in-flight dispatch keeps draining (the
+          // batch finishes, by design — see the route docblock), so a
+          // cancel-time count would stay frozen at N while `fila` emptied: the
+          // trailer would print "N itens não foram tentados" about items whose
+          // own rows are in the same report. Derived on every write, last-write-
+          // wins is CORRECT, because both writers derive it from their own view
+          // of the queue rather than from a captured number.
+          filaRestante: fila.length,
           afterAnchorId,
           planejamentoConcluido,
           afterLinkPath,
@@ -781,8 +808,7 @@ export async function processPriceSyncJob(
           pausas,
           skips,
           failures,
-          relatorioLinhas: total,
-          relatorioShards: shards,
+          ...contadores,
           updatedAt: nowMs,
         }) as DocumentData,
         { merge: true },
