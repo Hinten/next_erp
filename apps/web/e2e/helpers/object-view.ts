@@ -72,6 +72,26 @@ function parseBrlText(raw: string): number | null {
 }
 
 /**
+ * Assert the NUMBER a BRL-masked money input is holding (`null` when empty).
+ *
+ * The plain `expectFieldValue` cannot serve here: the mask means the rendered
+ * string varies with focus (`R$ 40` vs `R$ 40,00`), so the assertion has to go
+ * through the same parse `typeMoney` verifies with. Retried, because the value
+ * can arrive from a form write rather than a keystroke.
+ */
+export async function expectMoneyValue(
+  page: Page,
+  name: string,
+  value: number | null,
+  timeout = 15_000,
+): Promise<void> {
+  const input = page.getByRole('textbox', { name });
+  await expect(async () => {
+    expect(parseBrlText(await input.inputValue())).toBe(value);
+  }).toPass({ timeout });
+}
+
+/**
  * Fill a BRL-masked money input (`CurrencyInput`) found by accessible name.
  * Playwright's `.fill()` mis-scales a fixed-decimal masked input — it sets the
  * value wholesale and `react-number-format` reads "30" as 3000 — so clear and

@@ -9,7 +9,13 @@ import {
   seedProdutoComFilho,
   setProdutoFields,
 } from './_helpers/seed-data';
-import { clickSave, expectFieldValue, fillField, typeMoney } from './helpers/object-view';
+import {
+  clickSave,
+  expectFieldValue,
+  expectMoneyValue,
+  fillField,
+  typeMoney,
+} from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -294,9 +300,10 @@ test.describe.serial('Produto revert e2e — histórico unificado + restauraçã
     await expect(entry.getByText(/variações/i)).toBeVisible({ timeout: 15_000 });
     await restaurar.click();
 
-    // The jump landed on Preço e custo (the tab `precos` is rendered in), and
-    // the price is staged only — the parent doc still holds the edited value.
-    await expect(page.getByRole('textbox', { name: varejoNome })).toBeVisible({ timeout: 15_000 });
+    // The jump landed on Preço e custo AND the staged value is on screen: the
+    // entry's `old` side is "no price at all", so the field reads empty. The
+    // parent doc still holds 30 — staged, not written.
+    await expectMoneyValue(page, varejoNome, null);
     expect((await getProdutoData(parentCId))?.precos).toEqual({ [varejoId]: { valor: 30 } });
 
     await clickSave(page, 'Salvar alterações');
