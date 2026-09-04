@@ -143,6 +143,24 @@ function seedConta(db: FakeDb, over: DocData = {}): void {
   db.seed(INTEG, CONTA, { tipo: 6, wa_id: PNID, nome: 'WA', cor: 5, ...over });
 }
 
+/**
+ * A complete `StatusesReport` with every counter zeroed but the named ones.
+ *
+ * ⚠️ Still EXACT — `toEqual` against the full object pins all five keys, so a
+ * counter that moves when it should not still fails. It only keeps the zeros
+ * from being retyped; `toMatchObject` would actually narrow the check.
+ */
+function statusesReport(counts: Record<string, number>): Record<string, number> {
+  return {
+    aplicados: 0,
+    naoEncontrados: 0,
+    staleIgnorados: 0,
+    malformados: 0,
+    desconhecidos: 0,
+    ...counts,
+  };
+}
+
 function inboundValue(over: DocData = {}): DocData {
   return {
     messaging_product: 'whatsapp',
@@ -389,7 +407,7 @@ describe('handleNotificationTask — reports what it actually did (#1087)', () =
     // ⚠️ `echo` outranks `statuses` in the priority chain, so this arm used to
     // HIDE the status work entirely. The report rides out regardless of which arm
     // won — which is why the chain did not have to be reshuffled to fix it.
-    expect(r.statuses).toEqual({ aplicados: 1, naoEncontrados: 0, staleIgnorados: 0 });
+    expect(r.statuses).toEqual(statusesReport({ aplicados: 1 }));
   });
 
   /**
@@ -435,6 +453,66 @@ describe('handleNotificationTask — reports what it actually did (#1087)', () =
     const r = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
     expect(r.detail).toBe('mensagens');
     expect(r.statuses).toBeUndefined();
+  });
+
+  it('a change WITH messages reports the mensagens report, absent when it has none', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const comMensagens = await handleNotificationTask(
+      asDb(db),
+      messagesPayload(inboundValue()),
+      0,
+      deps,
+    );
+    // A clean batch still reports — zero is an answer, and it is what makes a
+    // LATER nonzero readable as a change rather than a new key appearing.
+    expect(comMensagens.mensagens).toEqual({ malformados: 0 });
+
+    const semMensagens = await handleNotificationTask(
+      asDb(db),
+      messagesPayload(statusOnlyValue()),
+      0,
+      deps,
+    );
+    // Absent, not zeros — "the change carried no messages[]" is a different fact
+    // from "it carried some and all of them were fine".
+    expect(semMensagens.mensagens).toBeUndefined();
+  });
+
+  it('THE PROPERTY: a malformed message is counted, and its good sibling is STILL written', async () => {
+    // ⚠️ This is the whole point of element tolerance. Before it, the bad entry
+    // failed the array, the array failed the value, the value failed the ENVELOPE,
+    // and `parseWebhookBody` returned null — so the receiver acked 200 and this
+    // customer message was lost with no task, no failure doc and no log line.
+    const db = new FakeDb();
+    seedConta(db);
+    const r = await handleNotificationTask(
+      asDb(db),
+      messagesPayload(
+        inboundValue({
+          messages: [
+            { id: 'wamid.BAD' }, // no `from` / `timestamp` / `type`
+            {
+              from: FROM,
+              id: 'wamid.A',
+              timestamp: '1700000000',
+              type: 'text',
+              text: { body: 'oi' },
+            },
+          ],
+        }),
+      ),
+      0,
+      deps,
+    );
+
+    expect(r).toMatchObject({ outcome: 'done', detail: 'mensagens' });
+    expect(r.mensagens).toEqual({ malformados: 1 });
+    // The survivor really landed — not merely "did not throw".
+    const msg = db.docs(CONV_PATH).get(mensagemDocId(CONTA, 'wamid.A'));
+    expect(msg?.conteudo).toBe('oi');
+    // And the entry that failed wrote nothing under its own id.
+    expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.BAD'))).toBe(false);
   });
 
   it('THE PROPERTY: six different runs, all `done`, six distinct details', async () => {
@@ -958,7 +1036,7 @@ describe('status transition matrix', () => {
     // ⚠️ "did not throw" was this test's ENTIRE assertion. A soft miss leaves no
     // Firestore write and only a `console.warn` carrying the mid — so without
     // this the run was indistinguishable from one that advanced a mensagem.
-    expect(r.statuses).toEqual({ aplicados: 0, naoEncontrados: 1, staleIgnorados: 0 });
+    expect(r.statuses).toEqual(statusesReport({ naoEncontrados: 1 }));
   });
 
   it('an out-of-order stale skip is reported apart from a soft miss', async () => {
@@ -978,7 +1056,44 @@ describe('status transition matrix', () => {
       0,
       deps,
     );
-    expect(r.statuses).toEqual({ aplicados: 0, naoEncontrados: 0, staleIgnorados: 1 });
+    expect(r.statuses).toEqual(statusesReport({ staleIgnorados: 1 }));
+  });
+
+  /**
+   * ⚠️ END-TO-END, and the case this whole change exists for. Meta ships a sixth
+   * `status` value; the enum used to fail the element → the array → the value →
+   * the ENVELOPE, so `parseWebhookBody` returned null, the receiver acked 200,
+   * and the delivery vanished without a task, a failure doc or a log line.
+   * It now reaches the processor, which has always known what to do with it.
+   */
+  it('a status value Meta added later is stored as `desconhecido` and REPORTED', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed(CONV_PATH, OUT_MSG_ID, { estadoEnvio: 2, mid: OUT_WAMID }); // enviando
+    const r = await handleNotificationTask(
+      asDb(db),
+      messagesPayload(statusValue('warning', '1700000100')),
+      0,
+      deps,
+    );
+
+    expect(r.outcome).toBe('done');
+    expect(db.docs(CONV_PATH).get(OUT_MSG_ID)!.estadoEnvio).toBe(ESTADO_ENVIO.desconhecido);
+    // Applied AND flagged: `desconhecidos` overlays the fate rather than replacing
+    // it, so the operator learns the wire drifted without losing what happened.
+    expect(r.statuses).toEqual(statusesReport({ aplicados: 1, desconhecidos: 1 }));
+  });
+
+  it('a MALFORMED status entry is counted while its sibling still advances', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed(CONV_PATH, OUT_MSG_ID, { estadoEnvio: 2, mid: OUT_WAMID }); // enviando
+    const value = statusValue('delivered', '1700000100');
+    (value.statuses as unknown[]).unshift({ id: 'wamid.BAD' }); // fails the element
+    const r = await handleNotificationTask(asDb(db), messagesPayload(value), 0, deps);
+
+    expect(db.docs(CONV_PATH).get(OUT_MSG_ID)!.estadoEnvio).toBe(ESTADO_ENVIO.enviado);
+    expect(r.statuses).toEqual(statusesReport({ aplicados: 1, malformados: 1 }));
   });
 });
 
