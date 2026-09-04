@@ -11,14 +11,17 @@ import type { HistoricoModificacao } from '@delfrance/schemas';
 const h = vi.hoisted(() => ({
   getDocs: vi.fn(),
   getDoc: vi.fn(),
-  buildRevertPrefill: vi.fn(() => ({ key: 'nome', value: 'Antigo' })),
+  buildRevertPrefill: vi.fn((): { key: string; value: unknown } => ({
+    key: 'nome',
+    value: 'Antigo',
+  })),
   checkRevert: vi.fn(),
   isRevertible: vi.fn(() => ({ ok: true, reason: null }) as { ok: boolean; reason: string | null }),
   /** Re-declared here because the module under mock is fully replaced. */
   RevertPrefillError: class RevertPrefillError extends Error {},
   toasts: [] as Array<{ title?: string; message?: string }>,
   goToSection: vi.fn(),
-  sectionOfField: vi.fn((key: string) => (key === 'nome' ? 'Dados gerais' : null)),
+  sectionOfField: vi.fn((key: string): string | null => (key === 'nome' ? 'Dados gerais' : null)),
   sections: {
     current: null as {
       activeSection: string | null;
@@ -454,6 +457,88 @@ describe('ModificacoesManager', { timeout: 30_000 }, () => {
       expect(screen.queryByText('Alterações não salvas')).toBeNull();
     });
     expect(screen.queryByText(/salve para aplicar/)).toBeNull();
+  });
+
+  it('does not resurrect a committed note when the form goes dirty again', async () => {
+    // `staged` is only ever added to, so a form-WIDE dirty gate would hide the
+    // notes while pristine and bring every one of them back the moment the
+    // operator touches any field — telling them a revert that was already
+    // written is still unsaved. The gate has to be per-key.
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+    expect(await screen.findByText('Alterações não salvas')).toBeTruthy();
+
+    // Saved: the form resets to the persisted values and goes pristine.
+    await act(async () => {
+      formRef.current?.reset({ nome: 'Antigo', extraData: null, impostos: null });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Alterações não salvas')).toBeNull();
+    });
+
+    // The operator now edits something ELSE — "Salvar e continuar" keeps them
+    // on this screen, so this is the ordinary next move.
+    await act(async () => {
+      formRef.current?.setValue('sku', 'SKU-2', { shouldDirty: true });
+    });
+
+    expect(screen.queryByText('Alterações não salvas')).toBeNull();
+    expect(screen.queryByText(/salve para aplicar/)).toBeNull();
+  });
+
+  it('drops a note when the operator types the staged field back by hand', async () => {
+    renderManager([nomeUpdate]);
+    await clickRestaurar();
+    expect(await screen.findByText('Alterações não salvas')).toBeTruthy();
+
+    // Undoing the staged edit leaves nothing staged, with no save involved.
+    await act(async () => {
+      formRef.current?.setValue('nome', 'Novo', { shouldDirty: true });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Alterações não salvas')).toBeNull();
+    });
+    expect(screen.queryByText(/salve para aplicar/)).toBeNull();
+  });
+
+  it('retires an extraData note too, whose dirty flag is a nested shape', async () => {
+    // `extraData` and `impostos` are ONE form key each holding a whole
+    // object/array, so RHF tracks their dirtiness as a nested structure rather
+    // than a boolean. A gate that only understood booleans would leave these
+    // notes on screen for ever.
+    h.buildRevertPrefill.mockReturnValue({
+      key: 'extraData',
+      value: { descricao: 'antiga', marca: 'M' },
+    });
+    h.sectionOfField.mockReturnValue('Descrição');
+    // The Descrição tab has not been opened, so the staging path reads the
+    // singleton itself before folding the revert into it.
+    h.getDoc.mockResolvedValue({ data: () => ({}) });
+
+    renderManager([
+      {
+        ...nomeUpdate,
+        subcolecao: 'extraData',
+        docId: 'singleton',
+        campos: ['descricao'],
+        changes: { descricao: { old: 'antiga', new: 'nova' } },
+      },
+    ]);
+    await clickRestaurar('descricao');
+    expect(await screen.findByText('Alterações não salvas')).toBeTruthy();
+
+    await act(async () => {
+      formRef.current?.reset({
+        nome: 'Novo',
+        extraData: { descricao: 'antiga', marca: 'M' },
+        impostos: null,
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Alterações não salvas')).toBeNull();
+    });
   });
 
   it('warns before staging when the field moved again, then stages on confirm', async () => {

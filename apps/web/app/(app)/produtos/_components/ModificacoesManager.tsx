@@ -105,20 +105,25 @@ const SUBCOLECAO_LABELS: Record<string, string> = {
 const dateFmt = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
 
 /**
- * `formState.isDirty`, subscribed from THIS component.
+ * `formState.dirtyFields`, subscribed from THIS component.
  *
- * Reading `form.formState.isDirty` off the object `useFormContext()` returns
- * would register the proxy subscription on whoever called `useForm` —
- * `ObjectView` — not here, so this component would only re-render when that one
- * happened to. `useFormState` subscribes locally, but it needs a control, and
- * the context is null outside an `ObjectView` (this tab renders standalone in
- * its own unit tests): the throwaway form supplies one, permanently pristine,
- * which is the right answer when there is no form to stage into anyway.
+ * Reading `form.formState` off the object `useFormContext()` returns would
+ * register the proxy subscription on whoever called `useForm` — `ObjectView` —
+ * not here, so this component would only re-render when that one happened to.
+ * `useFormState` subscribes locally, but it needs a control, and the context is
+ * null outside an `ObjectView` (this tab renders standalone in its own unit
+ * tests): the throwaway form supplies one, permanently pristine, which is the
+ * right answer when there is no form to stage into anyway.
+ *
+ * ⚠️ Per-KEY, not the form-wide `isDirty`. `staged` only ever grows, so a
+ * form-wide gate hides the notes while the form is pristine and brings every
+ * one of them back the moment it goes dirty again — after a save, the next
+ * unrelated edit would re-announce a revert that is already written.
  */
-function useIsFormDirty(control: Control<FieldValues> | undefined): boolean {
+function useDirtyFields(control: Control<FieldValues> | undefined): Record<string, unknown> {
   const fallback = useForm<FieldValues>();
-  const { isDirty } = useFormState({ control: control ?? fallback.control });
-  return isDirty;
+  const { dirtyFields } = useFormState({ control: control ?? fallback.control });
+  return dirtyFields as Record<string, unknown>;
 }
 
 export interface ModificacoesManagerProps {
@@ -145,12 +150,17 @@ export function ModificacoesManager({ db, produtoId, disabled }: ModificacoesMan
   // `useFormContext` call site in this app.
   const form = useFormContext();
   const sections = useObjectViewSections();
-  const isDirty = useIsFormDirty(form?.control);
+  const dirtyFields = useDirtyFields(form?.control);
 
-  // A save (or a manual undo of every edit) resets the form to pristine, which
-  // is exactly when nothing is staged any more. Derived rather than cleared in
-  // an effect — an effect here would not run while the tab is hidden.
-  const stagedVisible = isDirty ? staged : {};
+  // A note survives exactly as long as its OWN key is still dirty. A save
+  // resets the form to the persisted values and a manual undo restores the
+  // original, and RHF drops the key from `dirtyFields` either way — so both
+  // cases retire the note, and an unrelated edit afterwards does not revive it.
+  // Derived rather than cleared in an effect: an effect here would not run
+  // while the tab is hidden.
+  const stagedVisible = Object.fromEntries(
+    Object.entries(staged).filter(([, s]) => dirtyFields[s.key] != null),
+  );
   const stagedCount = Object.keys(stagedVisible).length;
 
   /**
