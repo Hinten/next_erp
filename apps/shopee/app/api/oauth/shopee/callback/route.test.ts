@@ -62,6 +62,19 @@ function location(res: Response): URL {
   return new URL(loc!);
 }
 
+/**
+ * The redirect's PARAMETER SET, sorted.
+ *
+ * ⚠️ Reading `searchParams.get('reason')` proves a key is PRESENT and can never
+ * prove no OTHER key is. That gap is the one that matters here: a
+ * `ShopeeApiError`'s `message` embeds Shopee's own text verbatim, so one extra
+ * `mensagem` key would put provider text in the address bar, in browser history
+ * and in every outbound `Referer` — with the whole suite still green.
+ */
+function paramKeys(url: URL): string[] {
+  return [...url.searchParams.keys()].sort();
+}
+
 function apiError(code: string): ShopeeApiError {
   return new ShopeeApiError(`Shopee respondeu ${code}`, {
     code,
@@ -100,6 +113,8 @@ describe('GET /api/oauth/shopee/callback — the happy paths', () => {
     const url = location(res);
     expect(url.pathname).toBe('/canais/shopee/int-1');
     expect(url.searchParams.get('shopee')).toBe('connected');
+    // The success redirect carries `shopee` and NOTHING else.
+    expect(paramKeys(url)).toEqual(['shopee']);
     expect(h.exchangeAndPersist).toHaveBeenCalledWith('auth-code', { kind: 'shop', shopId: 111 });
     // The attempt named by THIS state is what gets redeemed.
     expect(h.consumeOauthState).toHaveBeenCalledWith(expect.anything(), 'int-1', nonce);
@@ -131,6 +146,8 @@ describe('the state is the only trust anchor', () => {
     const url = location(res);
     expect(url.pathname).toBe('/canais/shopee');
     expect(url.searchParams.get('reason')).toBe('config');
+    // The LIST redirect family: `shopee` + `reason`, nothing else.
+    expect(paramKeys(url)).toEqual(['reason', 'shopee']);
   });
 
   it('FAILS CLOSED when the callback carries no state at all', async () => {
@@ -141,6 +158,7 @@ describe('the state is the only trust anchor', () => {
     const url = location(res);
     expect(url.pathname).toBe('/canais/shopee');
     expect(url.searchParams.get('reason')).toBe('bad_state');
+    expect(paramKeys(url)).toEqual(['reason', 'shopee']);
     expect(h.consumeOauthState).not.toHaveBeenCalled();
     expect(h.exchangeAndPersist).not.toHaveBeenCalled();
   });
@@ -178,6 +196,8 @@ describe('the callback parameters', () => {
     const url = location(res);
     expect(url.pathname).toBe('/canais/shopee/int-1');
     expect(url.searchParams.get('reason')).toBe('missing_params');
+    // The ACCOUNT redirect family: `shopee` + `reason`, nothing else.
+    expect(paramKeys(url)).toEqual(['reason', 'shopee']);
     expect(h.consumeOauthState).not.toHaveBeenCalled();
   });
 
@@ -193,8 +213,68 @@ describe('the callback parameters', () => {
     const { state } = signState('int-1', STATE_SECRET);
     const res = await GET(req({ code: 'c', state, ...extra }));
 
-    expect(location(res).searchParams.get('reason')).toBe('loja_invalida');
+    const url = location(res);
+    expect(url.searchParams.get('reason')).toBe('loja_invalida');
+    // The rejected id is NEVER echoed back into the query string.
+    expect(paramKeys(url)).toEqual(['reason', 'shopee']);
     expect(h.consumeOauthState).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The redirect query string is a CLOSED surface: `shopee`, plus `reason` when
+ * `shopee=error`, and nothing else — ever.
+ *
+ * ⚠️ This is the assertion the twelve-case slug table above cannot make. Every
+ * one of those reads `searchParams.get(…)`, which proves a key is PRESENT and
+ * says nothing about the keys beside it, so adding
+ * `mensagem: err.message` to the failure redirect survived all 132 tests in
+ * this app. `ShopeeApiError`'s message is built as
+ * `Shopee <path> respondeu <code> (HTTP <status>) — <Shopee's own message>`, so
+ * that one extra key would carry provider text into the browser address bar,
+ * into browser history, into `apps/web`'s access logs and into any outbound
+ * `Referer`. The route's `RedirectParams` type now makes the addition a compile
+ * error; these cases are what make it a TEST error too.
+ */
+describe('the redirect query string carries slugs only', () => {
+  it('never lets a ShopeeApiError message reach the query string', async () => {
+    const provider = 'Invalid code, please re-authorize from the seller centre';
+    h.exchangeAndPersist.mockRejectedValue(
+      new ShopeeApiError(
+        `Shopee /api/v2/auth/token/get respondeu invalid_code (HTTP 200) — ${provider}`,
+        {
+          code: 'invalid_code',
+          kind: 'other',
+          httpStatus: 200,
+          path: '/api/v2/auth/token/get',
+          requestId: 'req-1',
+        },
+      ),
+    );
+    const res = await GET(
+      req({ code: 'auth-code', state: signState('int-1', STATE_SECRET).state, shop_id: '111' }),
+    );
+
+    const raw = res.headers.get('location')!;
+    // The slug alone survives; not the message, and not a URL-encoded slice of it.
+    expect(raw).toContain('reason=codigo_invalido');
+    expect(raw).not.toContain('Invalid');
+    expect(raw).not.toContain('re-authorize');
+    expect(decodeURIComponent(raw)).not.toContain(provider);
+    expect(paramKeys(location(res))).toEqual(['reason', 'shopee']);
+  });
+
+  it('carries no reason at all on the success redirect', async () => {
+    // NEAR-MISS to the case above: same route, same helper, one key fewer.
+    // `['reason', 'shopee']` and `['shopee']` must stay distinguishable, so a
+    // helper that always stamped both would fail here rather than pass twice.
+    const res = await GET(
+      req({ code: 'auth-code', state: signState('int-1', STATE_SECRET).state, shop_id: '111' }),
+    );
+
+    const url = location(res);
+    expect(paramKeys(url)).toEqual(['shopee']);
+    expect(url.searchParams.get('reason')).toBeNull();
   });
 });
 
@@ -255,6 +335,8 @@ describe.each([
     expect(url.pathname).toBe('/canais/shopee/int-1');
     expect(url.searchParams.get('shopee')).toBe('error');
     expect(url.searchParams.get('reason')).toBe(reason);
+    // The slug travels ALONE: no diagnostic key rides along with it.
+    expect(paramKeys(url)).toEqual(['reason', 'shopee']);
   });
 });
 

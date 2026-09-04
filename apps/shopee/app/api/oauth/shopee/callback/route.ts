@@ -65,7 +65,40 @@ export const runtime = 'nodejs';
  * and `REASON_BY_CODE['constructor']` on an object would answer a truthy
  * FUNCTION that sails past `?? …`.
  */
-const REASON_BY_CODE = new Map<string, string>([
+/**
+ * The complete set of `reason` slugs this route may emit. A CLOSED union, so a
+ * new cause has to be added here (and rendered by `apps/web`) rather than
+ * leaking whatever string was at hand.
+ */
+type RedirectReason =
+  | 'config'
+  | 'bad_state'
+  | 'missing_params'
+  | 'loja_invalida'
+  | 'codigo_invalido'
+  | 'shopee_rejeitou'
+  | 'server_config'
+  | 'conta'
+  | 'resposta_invalida'
+  | 'rede'
+  | 'exchange';
+
+/**
+ * The complete set of query parameters a Shopee redirect may carry.
+ *
+ * ⚠️ A CLOSED shape, never `Record<string, string>`. A `ShopeeApiError`'s
+ * `message` embeds Shopee's OWN text verbatim, so appending one more "helpful"
+ * key here would put provider text in the browser address bar, in browser
+ * history, in `apps/web`'s access logs and in any outbound `Referer`. With this
+ * type that addition is a compile error; `route.test.ts` additionally pins the
+ * key SET of every redirect family, because a widened type on its own fails
+ * nothing.
+ */
+type RedirectParams =
+  | { readonly shopee: 'connected' }
+  | { readonly shopee: 'error'; readonly reason: RedirectReason };
+
+const REASON_BY_CODE = new Map<string, RedirectReason>([
   ['invalid_code', 'codigo_invalido'],
   ['invalid_shop_id', 'loja_invalida'],
   ['invalid_main_acount_id', 'loja_invalida'],
@@ -90,7 +123,7 @@ const REASON_BY_CODE = new Map<string, string>([
  * does not render would be a contract nobody honours. It stays distinguishable
  * in the log line, which carries `erro` and `status`.
  */
-function exchangeFailureReason(err: unknown): string {
+function exchangeFailureReason(err: unknown): RedirectReason {
   if (err instanceof ShopeeApiError) {
     return REASON_BY_CODE.get(err.code) ?? 'shopee_rejeitou';
   }
@@ -123,18 +156,28 @@ function errorDetail(err: unknown): {
   return {};
 }
 
-/** Redirect to a specific Shopee account page with status params. */
-function backToAccount(integracaoId: string, params: Record<string, string>): NextResponse {
-  const url = new URL(`${webBase()}/canais/shopee/${integracaoId}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+/**
+ * Build a redirect, writing the two allowed keys EXPLICITLY.
+ *
+ * ⚠️ Deliberately not a loop over `Object.entries(params)`: enumerating the
+ * object would happily carry any extra property the type ever gains, which is
+ * how provider text reaches a query string. Each key is named once, here.
+ */
+function redirectTo(path: string, params: RedirectParams): NextResponse {
+  const url = new URL(`${webBase()}${path}`);
+  url.searchParams.set('shopee', params.shopee);
+  if (params.shopee === 'error') url.searchParams.set('reason', params.reason);
   return NextResponse.redirect(url.toString());
 }
 
+/** Redirect to a specific Shopee account page with status params. */
+function backToAccount(integracaoId: string, params: RedirectParams): NextResponse {
+  return redirectTo(`/canais/shopee/${integracaoId}`, params);
+}
+
 /** Redirect to the account list (used before a trustworthy id is known). */
-function backToList(params: Record<string, string>): NextResponse {
-  const url = new URL(`${webBase()}/canais/shopee`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  return NextResponse.redirect(url.toString());
+function backToList(params: RedirectParams): NextResponse {
+  return redirectTo('/canais/shopee', params);
 }
 
 /**

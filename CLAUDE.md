@@ -458,7 +458,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   core, `./react` adds the `react-hooks` warns (plugin supplied by
   `eslint-config-next`, or registered locally as in `packages/ui`), and
   `typeAware(...)` layers the async-correctness rules scoped to the workspace's
-  tsconfig `include`. The 8 Next apps spread base + react + `eslint-config-next`
+  tsconfig `include`. The 9 Next apps spread base + react + `eslint-config-next`
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
@@ -549,7 +549,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `IndIncentivo` and the NF-e engine's `TpAmb`, and matching on the set once
   rewrote `tpImp: '1'` (DANFE layout) to `MOD_BCST.listaNegativa`.
 - Firebase App Hosting deploys every Next app **except `webchat`** (static
-  export served by `firebase.json` hosting — 7 `apphosting.yaml` files, 8 Next
+  export served by `firebase.json` hosting — 8 `apphosting.yaml` files, 9 Next
   apps); heavy work goes to Cloud Functions. `apps/portal/` does NOT exist —
   public pages are deferred. ⚠️ An `apphosting.yaml` carries only `runConfig` +
   `env` — no build-root and no build command — so anything the **buildpack**
@@ -565,7 +565,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   runtime `dependencies` (every `prepare-deploy.mjs` copies `dependencies`
   verbatim into an artifact that plain cloud `npm install` must resolve), all
   `peerDependencies` (libraries keep broad ranges), `workspace:*` specs, and
-  **`next` in the 7 `apps/*/package.json` that have an `apphosting.yaml`** —
+  **`next` in the 8 `apps/*/package.json` that have an `apphosting.yaml`** —
   an exact literal there, never `catalog:` and never a `^` range. The App
   Hosting buildpack `google.nodejs.firebasenextjs` derives `FRAMEWORK_VERSION`
   from a lockfile it cannot read (`pnpm-lock.yaml`), silently falls back to the
@@ -588,8 +588,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   Three high-blast-radius deps stay pinned **exact** in the catalog for the same
   "one deliberate edit" reason — `next` (`16.2.6`), `firebase-admin` (`14.2.0`)
   and `firebase-functions` (`7.3.2`). ⚠️ `next` propagates by **copy**, not by
-  reference: the catalog is still where a bump *starts*, but it is **8
-  deliberate edits** — the catalog plus the 7 App Hosting app manifests — and
+  reference: the catalog is still where a bump *starts*, but it is **9
+  deliberate edits** — the catalog plus the 8 App Hosting app manifests — and
   the guard above fails on drift. Its only remaining `catalog:` consumers are
   `apps/webchat` (static export, no buildpack) and `packages/ui`'s
   devDependency, which makes them load-bearing: literalise BOTH and

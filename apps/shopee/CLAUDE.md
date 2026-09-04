@@ -22,8 +22,14 @@ conta status only**.
 - `app/api/marketplace/shopee/conta/route.ts` — `PERM.integracao.read`. Reports
   the **two clocks** separately (see below).
 - `app/api/health/route.ts` — `{ service: 'shopee' }`.
-- `lib/shopee/env.ts` — the ONE place this app reads `process.env`. Every read is
-  blank-guarded (`?.trim()` + a length check, never `??`).
+- `lib/shopee/env.ts` — the one place this app reads its **Shopee**
+  configuration from the environment, and every read there is blank-guarded
+  (`?.trim()` + a length check, never `??`). ⚠️ It is **not** the app's only
+  `process.env` reader: Firebase credentials are read in
+  `lib/firebase/admin.ts` (a verbatim copy of the same singleton the six sibling
+  channel apps carry, `??`-defaulted `FIREBASE_DATABASE_ID` included) and the
+  CORS allow-list in `proxy.ts`. The blank-guard rule is enforceable precisely
+  because it is scoped to the Shopee values.
 - `lib/shopee/core/{shopee,credentialStore,respond,validationIssues}.ts` — the
   context loader (cached `integracao` doc, uncached credential), the Firestore
   credential store, the error→HTTP mapper, and the Next-free Zod-path helper

@@ -1,11 +1,18 @@
 /**
- * The ONE place `apps/shopee` reads the environment.
+ * The one place `apps/shopee` reads its **Shopee** configuration from the
+ * environment.
  *
  * `@delfrance/integrations-shopee` deliberately never touches `process.env` —
  * every value it needs is a parameter — so this module is the boundary where
  * the environment becomes a typed config object.
  *
- * ## Every read is BLANK-GUARDED, never `??`
+ * ⚠️ Not the app's only `process.env` reader, and the narrower claim is the
+ * true one: Firebase credentials are read by `lib/firebase/admin.ts` and the
+ * CORS allow-list by `proxy.ts`, neither of which follows the rule below.
+ * Scoping the claim to the Shopee values is what makes that rule enforceable
+ * here instead of an app-wide invariant two other modules already break.
+ *
+ * ## Every SHOPEE read is BLANK-GUARDED, never `??`
  *
  * `??` guards only `undefined`/`null`, so a variable declared and left empty
  * (`SHOPEE_PUBLIC_URL=`) reads as a present empty string. That is not a
