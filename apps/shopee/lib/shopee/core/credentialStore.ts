@@ -8,36 +8,49 @@
  * every client read and write — only the Admin SDK, which bypasses rules, gets
  * here.
  *
- * ## The write is TIER 0 — a plain `set`, no transaction (root CLAUDE.md rule 7)
+ * ## The consent write stays TIER 0 — a plain `set` (root CLAUDE.md rule 7)
  *
- * Rule 7 asks what happens when this write LOSES a race. Five reasons say the
- * question does not arise yet, and the sixth says a transaction would make the
- * code worse rather than safer:
+ * ⚠️ **There IS a second writer now.** Step 2 added `./tokenStore.ts`, whose
+ * leased refresher rotates the very same `current` document. `save()`
+ * nevertheless stays a full-document `set`, and that asymmetry is the design
+ * rather than an omission: the human reconnect must WIN, and the refresher
+ * YIELDS to it through its own commit guard — it compares the stored
+ * `refresh_token` against the one it spent and, when a consent has replaced the
+ * pair meanwhile, drops its own and hands back the stored token.
  *
- *  1. **There is no second writer.** This subcollection is admin-only and
- *     default-denied, and today `apps/shopee` has exactly one writer — the OAuth
- *     callback. There is no refresh flow yet (step 2), no sweep, no trigger.
+ * Rule 7 asks what happens when this write LOSES a race. Of the five reasons
+ * this docblock used to give, reason 1 is now **false**, reason 3 is
+ * **qualified**, and 2, 4 and 5 stand unchanged:
+ *
+ *  1. ⛔ ~~There is no second writer.~~ **False since step 2.** What survives is
+ *     narrower and still enough: the two writers do not both decide the same
+ *     field from a read — the consent writes an authoritative pair it just
+ *     received, and the refresher's write is conditional on the pair it read.
  *  2. **Two callbacks cannot both reach this line.** The single-use attempt is
  *     redeemed BEFORE the exchange, at a fixed `current` doc id under Firestore's
  *     OCC; the second redemption of a single-use value must fail, and does.
  *  3. **Two consents in SEQUENCE are a human reconnect, where last-write-wins is
- *     the correct answer.** This is the `force: true` reasoning in
- *     `apps/melhor-envio/lib/freight/tokenStore.ts`: an update-if-newer guard
- *     would let a stale-but-longer-lived stored token silently defeat a
- *     deliberate reconnect.
+ *     the correct answer** — for the CONSENT, and only for it. This is the
+ *     `force: true` reasoning in `apps/melhor-envio/lib/freight/tokenStore.ts`:
+ *     an update-if-newer guard would let a stale-but-longer-lived stored token
+ *     silently defeat a deliberate reconnect. ⚠️ It does NOT extend to the
+ *     refresher, which is guarded precisely because it is not a human decision.
  *  4. **The single-token invariant holds vacuously.** The legacy `actokshopee`
  *     tokens are never migrated into this collection (master plan §5 item 4), so
  *     there is no stray-doc lineage to collapse at a fixed id.
- *  5. **A transaction would need a class-C inventory entry** in
+ *  5. **A guarded write here would need a class-C inventory entry** in
  *     `firestore-transaction-inventory.test.js` describing a guard that guards
  *     nothing — an inventory line asserting the absence of a decision.
  *
- * ⚠️ The escape hatch is the {@link ShopeeCredentialStore} PORT, not a comment:
- * step 2 replaces `save()`'s body with the leased, class-B transactional version
- * (re-read inside the transaction, compare the stored expiry, advance it on the
- * write that wins) without touching a single caller. When that lands, this
- * docblock is what has to be rewritten — reasons 1 and 3 both stop holding the
- * moment a background refresh exists.
+ * ## The invariant `credentialFromTokenPair` carries
+ *
+ * ⚠️ It MUST emit the four lease/diagnostic keys **explicitly as `null`**, so a
+ * consent CLEARS a lease a crashed refresher still holds and wipes a stale
+ * failure stamp. Writing them explicitly is what makes the contract independent
+ * of `save()` staying a full-document `set`: were it ever to become a merge, the
+ * omitted keys would survive and the account would stay frozen until the lease
+ * TTL elapsed. `parseMergePatch` drops `undefined`-valued keys before writing,
+ * so `null` is the only spelling that clears anything.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { credenciaisIntegracaoCollection } from '@delfrance/data/admin/collections';
@@ -77,6 +90,77 @@ export class ShopeeCredencialInvalidaError extends Error {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/*                              Tolerant readers                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A credential document as it comes back from `parseRead`.
+ *
+ * ⚠️ `parseRead` is SOFT — it logs and returns the RAW document on a schema
+ * mismatch (migration tolerance, rule 8) — so nothing below may assume a type,
+ * not even for the three fields `credenciaisIntegracaoSchema` declares. The four
+ * step-2 fields are unmodelled `.passthrough()` keys and were never typed at
+ * all.
+ */
+export type CredencialArmazenada = Readonly<Record<string, unknown>>;
+
+/** The refresh lease held on a credential document. Milliseconds, like every stamp here. */
+export interface RefreshLease {
+  readonly owner: string;
+  readonly expiraEm: number;
+}
+
+/**
+ * A stored expiry a clock can actually be compared against, or `null`.
+ *
+ * An uncomparable value is treated as EXPIRED rather than as "fresh enough": a
+ * comparison against `undefined` answers `false` for reasons that have nothing
+ * to do with freshness, and the worst outcome of the safe direction is one extra
+ * refresh.
+ */
+export function expiryOf(cred: CredencialArmazenada): number | null {
+  const raw = cred.expirationDate;
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+}
+
+/** Same tolerance for the token itself: an unusable value is no token at all. */
+export function accessTokenOf(cred: CredencialArmazenada): string | null {
+  const raw = cred.access_token;
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
+/**
+ * The stored refresh token, or `null` when there is nothing to spend.
+ *
+ * ⚠️ Returned VERBATIM — never trimmed, never case-folded. This value is the
+ * identity the refresh commit guard compares on, so any normalisation here would
+ * make two DIFFERENT stored pairs read as the same one and let a refresh
+ * overwrite a pair it did not derive from.
+ */
+export function refreshTokenOf(cred: CredencialArmazenada): string | null {
+  const raw = cred.refresh_token;
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
+/**
+ * The live-or-not lease on this document, or `null` when there is none.
+ *
+ * ⚠️ A corrupt lease reads as NO lease — a non-string owner, an empty one, a
+ * missing or non-finite expiry. ADR 0011's wrong-way default is the failure that
+ * matters here: a hand-edited or half-written document must never be able to
+ * freeze an account's refresh forever. This function answers "is anyone holding
+ * it", never "has it expired"; the clock comparison belongs to the caller, which
+ * owns `nowMs`.
+ */
+export function leaseOf(cred: CredencialArmazenada): RefreshLease | null {
+  const owner = cred.refreshLeaseOwner;
+  const expiraEm = cred.refreshLeaseExpiraEm;
+  if (typeof owner !== 'string' || owner.length === 0) return null;
+  if (typeof expiraEm !== 'number' || !Number.isFinite(expiraEm)) return null;
+  return { owner, expiraEm };
+}
+
 /**
  * Build the credential document from a fresh token pair.
  *
@@ -91,6 +175,11 @@ export class ShopeeCredencialInvalidaError extends Error {
  * (step 2 refreshes per id class), and the two lists are stored so a
  * main-account fan-out never needs a second consent. Nothing reads the lists
  * today, deliberately.
+ *
+ * ⚠️ The four step-2 keys are emitted as an explicit `null` — see the module
+ * header's invariant. A consent is the operator's authoritative statement about
+ * this conta, so it clears a lease a crashed refresher still holds and drops the
+ * failure stamp the panel renders; leaving the keys out would keep both.
  */
 export function credentialFromTokenPair(
   pair: ShopeeTokenPair,
@@ -107,6 +196,10 @@ export function credentialFromTokenPair(
     shop_id_list: pair.shopIdList === null ? null : [...pair.shopIdList],
     merchant_id_list: pair.merchantIdList === null ? null : [...pair.merchantIdList],
     obtidoEm: nowMs,
+    refreshLeaseOwner: null,
+    refreshLeaseExpiraEm: null,
+    ultimoRefreshEm: null,
+    ultimaFalhaRefresh: null,
   };
 }
 

@@ -2,9 +2,9 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Step 1 of
-`.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect and
-conta status only**.
+Runs on `:3009` in dev. Steps 1–2 of
+`.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
+conta status and the access-token refresh**. No business call yet.
 
 ## What lives here
 
@@ -32,10 +32,15 @@ conta status only**.
   channel apps carry, `??`-defaulted `FIREBASE_DATABASE_ID` included) and the
   CORS allow-list in `proxy.ts`. The blank-guard rule is enforceable precisely
   because it is scoped to the Shopee values.
-- `lib/shopee/core/{shopee,credentialStore,respond,validationIssues}.ts` — the
-  context loader (cached `integracao` doc, uncached credential), the Firestore
-  credential store, the error→HTTP mapper, and the Next-free Zod-path helper
-  (step 3's functions bundle will reuse it).
+- `lib/shopee/core/{shopee,credentialStore,tokenStore,respond,validationIssues}.ts`
+  — the context loader (cached `integracao` doc, uncached credential,
+  `getAccessToken` / `createShopClient`), the Firestore credential store, the
+  error→HTTP mapper, and the Next-free Zod-path helper (step 3's functions bundle
+  will reuse it).
+- `lib/shopee/core/tokenStore.ts` — the leased access-token refresh (see **Token
+  refresh** below). Its three transactions are inventoried in
+  `packages/config-eslint/rules/firestore-transaction-inventory.test.js`, which
+  is where the full race analysis lives.
 - `lib/shopee/conta/{oauthState,shops,status}.ts` — the per-attempt record
   binding, the token-free connection oracle, and the conta wire shape.
 - `scripts/oauth-url.ts` — dev-only: mints a consent URL without the web UI.
@@ -58,8 +63,83 @@ the seller's consent and is read WITHOUT a token via the Public-signed
 a refreshable detail. The legacy app rendered "Conectado" from the 4-hour one and
 never read the other, so an authorization about to lapse looked identical to a
 healthy conta until the day everything stopped. `conta` therefore answers
-`connected: true` on an expired access token, and degrades `loja` to `null`
-rather than failing.
+`connected: true` on a stale stored access token — and normally with `loja`
+populated too, because the shop read goes through the token store and renews the
+pair on its way in. `loja` degrades to `null` only when the renewal could not
+happen: another instance holds the lease, or the grant itself is dead — and that
+second case is reported as `credencial.renovacaoFalhou`, never as a 4xx, because
+a 4xx would throw away the very clocks this route read WITHOUT a token.
+
+## Token refresh (`lib/shopee/core/tokenStore.ts`, step 2)
+
+`getOrRefreshAccessToken` is the ONLY way to obtain an access token. Reach it
+through the context — `ctx.getAccessToken()`, or `ctx.createShopClient()`, which
+hands the package a **function** so a token that lapses mid-batch is renewed
+rather than replayed dead. Never read `access_token` off the document to sign a
+call.
+
+**Fast path first.** One uncached read of `credenciais/current`; if the stored
+token outlives `REFRESH_SKEW_MS` it is returned with zero writes, zero
+transactions and zero provider calls. That is the overwhelmingly common case and
+it must stay free.
+
+**Otherwise: a lease that EXPIRES.** ADR 0011 rejected pessimistic leases for
+general writes and it is right to — the balanço lock is this repo's own example
+of a lock that cannot expire. Token refresh is the one override, for one reason:
+Shopee's refresh token is single-use and rotating, so two instances that both
+spend it do not merely write twice, they can burn the pair. Firestore's OCC
+cannot prevent that on its own, because OCC arbitrates the WRITE while the
+expensive act — `POST /api/v2/auth/access_token/get` — happens between two of
+them. So OCC excludes the two callers that read the same version, and the stored
+lease excludes the caller arriving after one of them committed.
+
+The constants, and the invariant that ties them (a test pins it):
+
+| constant | value | |
+|---|---|---|
+| `REFRESH_POLL_BUDGET_MS` | `3_000` | how long a waiting caller polls before answering 503 |
+| `REFRESH_POLL_INTERVAL_MS` | `250` | between re-reads while it waits |
+| `REFRESH_LEASE_TTL_MS` | `30_000` | before anyone may take the lease over |
+| `REFRESH_SKEW_MS` | `60_000` | a token with less life than this is renewed |
+
+⚠️ **`BUDGET < TTL < SKEW`, and both inequalities are load-bearing.** TTL below
+the skew means a crashed or hung refresher's lease expires while the old token is
+still nominally alive, so the takeover lands inside the window the skew reserved
+instead of after the conta has already stopped working (`shopeeCall` has no
+timeout, so a hung fetch is the crash case by another name). Budget below the TTL
+means a caller that waited out the whole budget and tries once more is still
+refusing to steal a LIVE lease — it answers 503 and lets its caller retry.
+
+The lease is **never renewed**: a lock that renews itself cannot expire, which is
+exactly what made the legacy Flutter `isRefreshing` flag fatal. A corrupt lease
+(a non-string owner, a non-finite expiry) reads as NO lease, so a half-written
+document can never freeze an account.
+
+**FAQ 144 vs the API page.** Shopee's refresh API page says a refresh token "can
+be used once only"; Shopee's own FAQ 144 ("refresh_token Backup Plan") says a
+used one stays valid for four more hours and, re-sent, returns the **same** new
+pair. The two readings disagree and nothing published settles it, so the design
+serves both. The commit guard is the seam: it re-reads the document inside its
+transaction and compares the **stored `refresh_token` against the one we spent**
+— an identity comparison, not a clock, so rule 7's cross-unit trap cannot apply.
+If they differ, a newer pair landed (a re-consent, or another instance) and OURS
+is dropped, the stored token returned. Under FAQ 144 that costs one wasted call;
+under "once only" it is what stops a second write burning a live pair. The
+release path does the mirror image: it adopts a newer stored pair **before** any
+terminal verdict is written, so a `refresh_token_expired` answered about a token
+that has since been replaced cannot disconnect a healthy conta.
+
+⚠️ **The accepted residual is a crash between Shopee's answer and the commit.**
+The pair we were handed is lost, and once the lease TTL elapses the next caller
+re-sends the OLD refresh token: that heals under FAQ 144 and forces a re-consent
+under "once only". Narrowing the window further would mean writing before the
+provider answers, which is a worse trade. When it does happen the operator sees
+`credencial.renovacaoFalhou` on the conta screen and reconnects.
+
+**Not here:** the authorization-expiry sweep (the 7–365-day clock, P8) is
+**step 3**, which creates the nested Cloud Functions codebase for the push
+receiver anyway — an API-only App Hosting backend is the wrong place to grow a
+scheduler.
 
 ## Rules specific to this app
 
