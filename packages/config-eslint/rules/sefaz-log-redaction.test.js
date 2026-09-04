@@ -48,19 +48,32 @@ const PATHSPECS = [
   '*.homologacao.test.ts',
   '*.staging.test.ts',
   'packages/integrations/nfe/test/helpers/*.ts',
+  // Symmetric with the glob above. Nothing in apps/nfe's helper directory logs
+  // a SEFAZ response today, but the reasoning that pulled `resolve-protocol.ts`
+  // in applies identically to the other workspace, and an asymmetric guard is
+  // one someone has to notice.
+  'apps/nfe/test/helpers/*.ts',
   ':(exclude)packages/integrations/nfe/test/helpers/sefaz-log.ts',
   ':(exclude)packages/config-eslint/rules/*',
 ];
 
 /**
- * A `console.*` call and `xMotivo` on the SAME line.
+ * A `console.*` call and a redacted SEFAZ free-text field on the SAME line.
+ *
+ * ⚠️ BOTH fields, not just `xMotivo`. `descreverSefaz` redacts `xMsg` too, and
+ * correctly — it is SEFAZ's supplementary free text and carries the same class
+ * of content. A guard naming only `xMotivo` left the `xMsg`-only half of the
+ * shape re-introducible, and that half is not hypothetical: it is almost
+ * exactly the `detalhe` string this PR deletes from `svc.homologacao.test.ts`.
+ * `cMsg` is deliberately absent — it is a bare numeric code with nothing to
+ * redact, so requiring it here would only add false positives.
  *
  * ⚠️ Line-scoped on purpose. `git grep` has no multi-line mode here, and every
  * offending site in the repo was a single-line template literal — the shape
  * this bans. A multi-line `console.log(\n  \`…xMotivo…\`\n)` slips through;
  * `descreverSefaz` being the ergonomic option is what keeps that theoretical.
  */
-const PATTERN = 'console\\.[a-z]+\\(.*xMotivo';
+const PATTERN = 'console\\.[a-z]+\\(.*(xMotivo|xMsg)';
 
 /**
  * Files allowed to print a raw `xMotivo`.
@@ -127,6 +140,9 @@ describe('live SEFAZ logs redact fiscal identifiers', () => {
     // vacuous and the whole file is decoration.
     expect(PATTERN).toMatch(/console/);
     expect('  console.log(`[svc] cStat=${a} xMotivo="${b}"`);').toMatch(new RegExp(PATTERN));
+    // The `xMsg`-only half — the shape a guard naming just `xMotivo` missed.
+    expect('  console.log(`cMsg=${a} xMsg="${b}"`);').toMatch(new RegExp(PATTERN));
     expect("  logSefaz('svc', { cStat, xMotivo });").not.toMatch(new RegExp(PATTERN));
+    expect("  logSefaz('svc', { cStat, xMotivo, cMsg, xMsg });").not.toMatch(new RegExp(PATTERN));
   });
 });

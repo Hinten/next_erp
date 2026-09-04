@@ -142,6 +142,20 @@ describe('descreverSefaz', () => {
     );
   });
 
+  it('prints cMsg even when xMsg is absent — the uncatalogued-cStat case', () => {
+    // Keying the branch on `xMsg` alone dropped a bare supplementary code, which
+    // is the one extra signal an uncatalogued cStat has.
+    expect(descreverSefaz('protNFe', { cStat: '178', xMotivo: 'Rejeicao', cMsg: '9' })).toBe(
+      '[protNFe] cStat=178 xMotivo="Rejeicao" cMsg=9 xMsg=""',
+    );
+  });
+
+  it('omits the cMsg/xMsg pair entirely when SEFAZ sent neither', () => {
+    expect(descreverSefaz('lote', { cStat: '104', xMotivo: 'Lote processado' })).toBe(
+      '[lote] cStat=104 xMotivo="Lote processado"',
+    );
+  });
+
   it('appends cMsg/xMsg only when present, and redacts xMsg too', () => {
     expect(
       descreverSefaz('protNFe', {

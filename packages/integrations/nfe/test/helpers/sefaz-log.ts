@@ -93,7 +93,14 @@ export function descreverSefaz(escopo: string, r: RespostaSefaz): string {
     `xMotivo="${redigirIdentificadores(r.xMotivo)}"`,
   ];
   if (r.protCStat !== undefined) partes.push(`prot.cStat=${r.protCStat}`);
-  if (r.xMsg) partes.push(`cMsg=${r.cMsg ?? '-'} xMsg="${redigirIdentificadores(r.xMsg)}"`);
+  // ⚠️ `cMsg || xMsg`, not `xMsg` alone. Keying on `xMsg` reproduced the old
+  // `svc.homologacao.test.ts` behaviour, where a response carrying `cMsg` with
+  // no `xMsg` printed NEITHER — and this pair exists precisely to serve the
+  // uncatalogued-cStat case, where a bare supplementary code is still the only
+  // extra signal there is. `cMsg` is numeric, so there is nothing to redact.
+  if (r.cMsg || r.xMsg) {
+    partes.push(`cMsg=${r.cMsg ?? '-'} xMsg="${redigirIdentificadores(r.xMsg)}"`);
+  }
   return partes.join(' ');
 }
 
