@@ -94,10 +94,12 @@ pnpm --filter @delfrance/shopee-app dev   # :3009
 curl http://localhost:3009/api/health
 ```
 
-Set `NEXT_PUBLIC_SHOPEE_URL=http://localhost:3009` so apps/web targets this app
-once step 21 adds the panel.
+Set `NEXT_PUBLIC_SHOPEE_URL=http://localhost:3009` so apps/web targets this app.
 
-The connect round trip, without a web UI:
+The `/canais/shopee/[id]` panel (step 21a) is the normal connect path —
+**Conectar conta** starts the OAuth round trip from the browser. The script
+below is now the headless fallback for when there is no web UI to click
+through:
 
 ```bash
 pnpm --filter @delfrance/shopee-app oauth:url --project <projectId> --integracao <integracaoId>
