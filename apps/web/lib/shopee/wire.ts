@@ -31,14 +31,18 @@
  *    is `.strict()`. `apps/web` calls the DEPLOYED channel backend, so the
  *    browser is routinely OLDER *or* NEWER than the thing answering it — a
  *    strict object would turn every forward deploy into an outage.
- * 2. ⚠️ **Nothing is optional today, and that is a measured claim rather than a
- *    default.** All four return paths of `GET /api/marketplace/shopee/conta` are
- *    total over these eight keys (they all spread `CONTA_DESCONECTADA`), so
- *    there is no field a deployed backend can omit. **The maintenance rule:**
- *    when a field is added to `status.ts`, declare it here as
+ * 2. ⚠️ **A field is required here only while no deployed backend can omit it.**
+ *    All four return paths of `GET /api/marketplace/shopee/conta` are total over
+ *    the eight top-level keys (they all spread `CONTA_DESCONECTADA`), which is a
+ *    measured claim rather than a default, so those eight stay required. **The
+ *    maintenance rule** for anything added later: declare it
  *    `.optional()`/`.default(…)` with the fallback the panel already applies —
  *    an OLDER backend answering a NEWER browser is the risk, and a required
  *    field is what turns that skew into a dead screen.
+ *    `credencial.renovacaoFalhou` is the first field to take that rule up: it
+ *    defaults to `false`, so a browser carrying it still reads a payload written
+ *    before the field existed, and the only cost of the skew is that a failed
+ *    renewal is not announced until the backend catches up.
  * 3. ⚠️ **Numbers are tolerant when the value ORIGINATES outside our own
  *    arithmetic** (`wireInt()` from `@delfrance/core/wire`) and strict
  *    (`z.number()`) when the backend computed it. `shopId` / `mainAccountId` are
@@ -90,7 +94,23 @@ export const shopeeContaStatusSchema = z.object({
   /** `null` while the access token is dead — `get_shop_info` needs a live one. */
   loja: shopeeLojaSchema.nullable(),
   /** The OTHER clock. `null` when no credential is stored at all. */
-  credencial: z.object({ expiraEm: z.number().int(), expirada: z.boolean() }).nullable(),
+  credencial: z
+    .object({
+      expiraEm: z.number().int(),
+      expirada: z.boolean(),
+      /**
+       * The last renewal of the access token failed TERMINALLY and none has
+       * succeeded since — the one credential state an operator can act on
+       * (everything else heals on the next call that needs a token).
+       *
+       * ⚠️ `.default(false)` under rule 2: a payload written before this field
+       * existed still parses, and reads as "no failure known", which is the
+       * tolerant direction — a browser one deploy ahead of the backend shows
+       * the healthy copy for a while instead of a dead screen.
+       */
+      renovacaoFalhou: z.boolean().default(false),
+    })
+    .nullable(),
 });
 export type ShopeeContaStatus = z.infer<typeof shopeeContaStatusSchema>;
 

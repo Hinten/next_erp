@@ -33,11 +33,13 @@ import { SHOPEE_OAUTH_TOAST } from './shopeeOAuthErrors';
  *  - the **authorization** (`diasParaExpirar` / `expireTime`, 7–365 days) — the
  *    seller's consent. Its lapse means someone has to re-consent, so it gets the
  *    coloured badge that turns yellow a month out.
- *  - the **access token** (`credencial.expirada`, ~4 hours) — a refreshable
- *    detail that means nothing to the operator except as the reason the shop
- *    NAME is missing from the line above (`get_shop_info` needs a live token).
- *    Automatic renewal is a later step of the integration, and the copy says so
- *    rather than implying something is broken.
+ *  - the **access token** (`credencial`, ~4 hours) — renewed by the backend on
+ *    the next call that needs it, so `expirada` on its own is an observation
+ *    about the instant of the read and not a problem: the copy says the renewal
+ *    is automatic. The single operator-actionable credential state is
+ *    `renovacaoFalhou` — the renewal itself was refused, so the authorization is
+ *    probably gone — and that is the one that gets colour and points at the
+ *    Reautenticar button already on this card.
  *
  * Conflating them is the defect the legacy Flutter app shipped: it painted
  * "Conectado" from the 4-hour clock and never read the other, so an
@@ -63,9 +65,10 @@ function identidadeDaConta(conta: ShopeeContaStatus): string {
   if (conta.shopId !== null) {
     const id = String(conta.shopId);
     const regiao = conta.loja?.region == null ? '' : ` · ${conta.loja.region}`;
-    // Without a live token there is no name and the id IS the whole identity —
-    // which is the common state until step 2 ships refresh — so `Loja #<id>`
-    // must not then repeat the number as `· #<id>`.
+    // Without a live token there is no name and the id IS the whole identity.
+    // The renewal is automatic, but the read still lands while one is in
+    // flight — or after one was refused — so `Loja #<id>` must not then repeat
+    // the number as `· #<id>`.
     return conta.loja?.shopName == null
       ? `Loja #${id}${regiao}`
       : `${conta.loja.shopName} · #${id}${regiao}`;
@@ -88,6 +91,36 @@ function BadgeStatusLoja({ status }: { status: ShopeeContaStatus['loja'] }) {
       <Badge color="orange" variant="light">
         Loja congelada
       </Badge>
+    );
+  }
+  return null;
+}
+
+/**
+ * The access-token line, or nothing.
+ *
+ * Two states, and the ORDER between them is the point: `renovacaoFalhou` wins
+ * over `expirada`, because a conta whose renewal was refused is also expired,
+ * and telling that operator "não é preciso fazer nada" is the one wrong thing
+ * this panel could say. A live token renders neither line — the panel must not
+ * narrate a mechanism that is working.
+ */
+function LinhaCredencial({ credencial }: { credencial: ShopeeContaStatus['credencial'] }) {
+  if (credencial?.renovacaoFalhou === true) {
+    return (
+      <Text size="xs" c="red">
+        Não foi possível renovar o token de acesso: a Shopee recusou a renovação. A autorização da
+        conta pode ter sido revogada ou ter expirado — clique em Reautenticar para restabelecer a
+        integração.
+      </Text>
+    );
+  }
+  if (credencial?.expirada === true) {
+    return (
+      <Text size="xs" c="dimmed">
+        Token de acesso expirado no momento da leitura (dura cerca de 4 horas). A renovação é
+        automática e acontece na próxima chamada — não é preciso fazer nada.
+      </Text>
     );
   }
   return null;
@@ -116,13 +149,7 @@ function ContaConectada({ conta }: { conta: ShopeeContaStatus }) {
         )}
       </Group>
 
-      {conta.credencial?.expirada === true && (
-        <Text size="xs" c="dimmed">
-          Token de acesso expirado (dura cerca de 4 horas) — é por isso que o nome da loja não
-          aparece acima. A autorização da conta continua válida; a renovação automática do token
-          chega em um passo seguinte da integração.
-        </Text>
-      )}
+      <LinhaCredencial credencial={conta.credencial} />
     </Stack>
   );
 }
