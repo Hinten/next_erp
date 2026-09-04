@@ -254,16 +254,54 @@ describe('processStatuses — reports what the batch did', () => {
  * REPORT as well as the write.
  */
 describe('processStatuses — a status this pipeline does not model', () => {
-  it('a FRESH unknown status lands on `desconhecido` and is counted', async () => {
+  it('a FRESH unknown status advances the watermark but NEVER touches estadoEnvio', async () => {
     stored(ESTADO_ENVIO.enviando, null);
     const r = await processStatuses(db, 'conta-1', payload('warning', STATUS_SEC));
 
+    // The merge still happens — we DID learn that Meta emitted an event at this
+    // instant, and the watermark is how the out-of-order guard knows.
     expect(h.merge).toHaveBeenCalledTimes(1);
-    expect(writtenPatch()?.estadoEnvio).toBe(ESTADO_ENVIO.desconhecido);
-    // ⚠️ `desconhecidos` is an OVERLAY, not a fate: the entry WAS applied, so it
+    expect(writtenPatch()?.lastExternalUpdateDateTime).toBe(STATUS_MS);
+    // ...but the state is not ours to guess. See the `recebido` test below for
+    // why this is the whole point rather than an omission.
+    expect(writtenPatch()).not.toHaveProperty('estadoEnvio');
+    // ⚠️ `desconhecidos` is an OVERLAY, not a fate: the entry WAS patched, so it
     // counts in `aplicados` too and the four fates still sum to the batch size.
     expect(r).toEqual(report({ aplicados: 1, desconhecidos: 1 }));
     expect(r.aplicados + r.naoEncontrados + r.staleIgnorados + r.malformados).toBe(1);
+  });
+
+  /**
+   * ⚠️ THE PROPERTY, and the one worth the most: an unmodelled status must not
+   * DESTROY a state we do know.
+   *
+   * The out-of-order guard only consults `shouldApplyStale` when the incoming
+   * status is NOT newer, so a status Meta adds LATER in the lifecycle — the
+   * realistic shape, e.g. a post-`read` event — always carries the newest
+   * timestamp and bypasses the guard entirely. Writing `desconhecido` there is
+   * the NORMAL path, not the rare one, and it is unrecoverable: nothing
+   * backfills `estadoEnvio`, so a message the customer demonstrably READ would
+   * permanently read back as "we have no idea".
+   *
+   * It also moves an outbound message OUT of `ESTADO_ENVIO_SAIDA` (which holds
+   * salva/enviando/enviado/erro — not `desconhecido`). `mensagemEhNossa` returns
+   * early for WhatsApp, so the bubble does not flip today; but its documented
+   * fallback for an unknown origem is `ehEstadoDeSaida`, which would then put one
+   * of OUR messages on the contact's side.
+   */
+  it.each([
+    ['recebido (read — the customer demonstrably saw it)', ESTADO_ENVIO.recebido],
+    ['enviado (delivered)', ESTADO_ENVIO.enviado],
+    ['erro', ESTADO_ENVIO.erro],
+  ])('a FRESH unknown status PRESERVES a known %s', async (_label, estadoConhecido) => {
+    stored(estadoConhecido, LAST_FRESH); // stored update is OLDER → the status is fresh
+    const r = await processStatuses(db, 'conta-1', payload('warning', STATUS_SEC));
+
+    // The known state survives — the patch must not carry `estadoEnvio` at all,
+    // since a merge of `undefined` would be a write just the same.
+    expect(writtenPatch()).not.toHaveProperty('estadoEnvio');
+    // And the arrival is still not silent.
+    expect(r.desconhecidos).toBe(1);
   });
 
   it('a STALE unknown status is refused by the matrix — the conservative direction', async () => {

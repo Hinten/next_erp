@@ -224,6 +224,30 @@ Three rules follow, all load-bearing:
    (`?? null` — Cloud Logging drops `undefined` keys). A `.filter()`, or a counter
    that stops incrementing, converts visible data loss into invisible data loss.
 
+⚠️ **An unknown `status` NEVER writes `estadoEnvio`** — it advances only the
+`lastExternalUpdateDateTime` watermark and increments `desconhecidos`. The arm used
+to stamp `ESTADO_ENVIO.desconhecido`, whose stated reason ("rather than leaving
+`estadoEnvio` unset") cannot apply: `processStatuses` returns early when the doc does
+not exist, so the mensagem **always** has a state. The sentinel could therefore only
+*destroy* a known one — on the **normal** path, since a status Meta adds later in the
+lifecycle carries the newest timestamp and bypasses the stale guard — and nothing
+backfills `estadoEnvio`. It also moved an outbound mensagem out of
+`ESTADO_ENVIO_SAIDA`, which `mensagemEhNossa`'s unknown-origem fallback reads.
+`processStatus.ts` was the repo's **only** writer of `ESTADO_ENVIO.desconhecido`; the
+value now exists for READING legacy documents only. ⚠️ Consequence for the log:
+`aplicados` means *patched*, not *advanced* — read it together with `desconhecidos`.
+
+⚠️ **The two counters get DIFFERENT dispositions, and that asymmetry is the point.**
+A change whose `mensagens.malformados > 0` returns **`fail`**, so the raw `value` is
+persisted to `notificacoesWhatsapp` and can be re-driven after
+`incomingMessageSchema` is widened; `statuses.malformados` alone still **resolves**.
+A dropped status is re-derivable (the next callback for that wamid re-stamps
+`estadoEnvio`), while a dropped message is a customer message that **exists nowhere
+else** — this channel carries the replay body for exactly that reason, and resolving
+would leave the recovery path unused in the one case it was built for. The messages
+that DID parse are already written and every id is deterministic, so a replay
+converges rather than duplicating.
+
 ### Locating an outbound mensagem for a status callback (PR-3 contract)
 
 `processStatus` reads the DETERMINISTIC doc directly rather than a collection-group

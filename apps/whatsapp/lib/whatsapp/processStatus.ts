@@ -134,7 +134,13 @@ function mapError(e: unknown): {
  * same ambiguity, one level down, that `detail` was added to remove.
  */
 export interface StatusesReport {
-  /** The mensagem was found and patched — the one `merge()` in the loop. */
+  /**
+   * The mensagem was found and patched — the one `merge()` in the loop.
+   *
+   * ⚠️ "Patched", not "advanced": an entry counted here whose `desconhecidos`
+   * overlay is set moved only the `lastExternalUpdateDateTime` watermark, never
+   * `estadoEnvio`. Read the two counters together.
+   */
   aplicados: number;
   /** Soft miss: no mensagem at the deterministic id. Also `console.warn`ed per status. */
   naoEncontrados: number;
@@ -157,7 +163,8 @@ export interface StatusesReport {
   malformados: number;
   /**
    * The entry parsed, but its `status` is not one of the five this pipeline
-   * models, so it landed on `ESTADO_ENVIO.desconhecido`.
+   * models, so its `estadoEnvio` was left EXACTLY as it was — only the
+   * `lastExternalUpdateDateTime` watermark advanced.
    *
    * ⚠️ NOT a fate, and deliberately OUTSIDE the sum above — it is a property of
    * the INPUT that overlaps whichever fate the entry then met (usually
@@ -285,14 +292,34 @@ export async function processStatuses(
         patch.estadoEnvio = ESTADO_ENVIO.excluido;
         break;
       case WA_STATUS_DESCONHECIDO:
-        // ⚠️ LIVE, and it was written for exactly this. This arm was a `default`
-        // commented "unreachable through `statusUpdateSchema`'s enum" — the
-        // handler had always been able to survive a status it does not model,
-        // and only the schema stopped one arriving. Now that the enum is gone it
-        // is a real arm of the union, so the switch stays exhaustive with no
-        // `default` at all: a member added to `WaStatus` later fails the lint
-        // rule here instead of silently folding into this bucket.
-        patch.estadoEnvio = ESTADO_ENVIO.desconhecido;
+        // ⚠️ Deliberately writes NO `estadoEnvio`. The watermark above still
+        // advances (we did learn Meta emitted an event at this instant) and
+        // `desconhecidos` still counts it — but the STATE is not ours to guess.
+        //
+        // This arm was a `default` stamping `ESTADO_ENVIO.desconhecido`, and its
+        // stated reason — "rather than leaving `estadoEnvio` unset" — cannot
+        // apply here: `processStatuses` returns early when the doc does not
+        // exist, so the mensagem ALWAYS has a state already. Writing the
+        // sentinel therefore never fills a gap; it can only DESTROY a state we
+        // know, and nothing backfills `estadoEnvio`.
+        //
+        // That would be the NORMAL path, not a rare one. The out-of-order guard
+        // consults `shouldApplyStale` only when the incoming status is NOT
+        // newer, so a status Meta adds LATER in the lifecycle (a post-`read`
+        // event, say) carries the newest timestamp, bypasses the guard, and
+        // would collapse a message the customer demonstrably READ into "we have
+        // no idea" — permanently.
+        //
+        // It also moved an outbound mensagem OUT of `ESTADO_ENVIO_SAIDA`
+        // (salva/enviando/enviado/erro — `desconhecido` is not a member).
+        // `mensagemEhNossa` returns early for WhatsApp so the bubble does not
+        // flip today, but its documented fallback for an unknown origem is
+        // `ehEstadoDeSaida`, which would put one of OUR messages on the
+        // contact's side.
+        //
+        // Same principle as `narrowWaStatus` being exact: a confident wrong
+        // state is worse than an honest unknown — and here the honest answer is
+        // to keep the last state we actually understood and say so in the log.
         break;
     }
 

@@ -268,7 +268,37 @@ function pipelineFor(deps: WhatsappProcessDeps) {
     },
     process: (db, payload) => processChangePayload(db, payload, deps),
     toDisposition: (outcome): NotificationDisposition => {
-      if (outcome.kind === 'processed') return { kind: 'resolve', label: 'processed' };
+      if (outcome.kind === 'processed') {
+        // ⚠️ The ONE asymmetry between the two element-tolerance counters, and
+        // it is deliberate: `statuses` resolves, `messages` does not.
+        //
+        // A `statuses[]` element we could not read costs nothing durable — the
+        // next callback for that wamid re-stamps `estadoEnvio` from scratch, so
+        // the information is re-derivable and persisting would only add a doc
+        // that re-fails five times before parking.
+        //
+        // A `messages[]` element we could not read is a CUSTOMER MESSAGE THAT
+        // EXISTS NOWHERE ELSE. WhatsApp has no re-fetch anchor — which is
+        // precisely why this channel, alone in the repo, carries the raw change
+        // `value` on its failure doc so the sweep can REPLAY it. Resolving here
+        // would ack and discard the body, leaving that recovery path unused in
+        // exactly the case it was built for and reducing the loss to a counter.
+        //
+        // So the change persists: `fail` re-drives it up to MAX_TENTATIVAS and
+        // then parks, keeping the body either way. A re-drive after
+        // `incomingMessageSchema` is widened is what actually recovers the
+        // message; before that it simply holds. The messages that DID parse are
+        // already written, and every id here is deterministic, so a replay
+        // converges on them instead of duplicating them.
+        const ilegiveis = outcome.mensagens?.malformados ?? 0;
+        if (ilegiveis > 0) {
+          return {
+            kind: 'fail',
+            reason: `${ilegiveis} mensagem(ns) ilegível(is) — corpo retido para replay`,
+          };
+        }
+        return { kind: 'resolve', label: 'processed' };
+      }
       if (outcome.kind === 'dropped') return { kind: 'drop', reason: outcome.reason };
       return { kind: 'fail', reason: outcome.reason };
     },
