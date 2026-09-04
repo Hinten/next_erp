@@ -13,6 +13,7 @@
  * `invoice.key` and flips `non_commercial` off (#209); without one it sends
  * `non_commercial: true` (declaração de conteúdo).
  */
+import { localTelefoneOrNull } from '@delfrance/core/phone';
 import {
   type CartInsertRequest,
   type VolumeInput,
@@ -32,6 +33,23 @@ export interface ClienteDestinoLike {
   readonly email?: string | null;
   readonly telefone?: string | null;
 }
+
+/*
+ * Why `from.phone` / `to.phone` go out in the LOCAL BR shape (DDD + subscriber,
+ * no country code), through `localTelefoneOrNull` below:
+ *
+ * That is what ME's own documented example uses, what every fixture in
+ * `packages/integrations/freight-br` sends, and what the legacy Flutter app
+ * demonstrably sent. This app, meanwhile, stores phones `55`-prefixed
+ * (`normalizeTelefone`), so without the strip the shape on the wire would
+ * change silently the moment a cliente or a freight origin is edited in this
+ * UI — and whether ME accepts, normalizes or mangles a `55…` value is an OPEN
+ * question (#868), answerable only against their sandbox. Stripping at the
+ * boundary decouples the stored shape from the wire: correct whichever way
+ * #868 lands, and a no-op on the legacy raw values already in the corpus.
+ * `localTelefone` only ever strips a leading `55`, so a foreign number keeps
+ * its own country code.
+ */
 
 export interface BuildPedidoCartInput {
   readonly frete: FreteInicialFormState;
@@ -98,7 +116,7 @@ export function buildPedidoCartPayload(input: BuildPedidoCartInput): CartInsertR
     name: filial?.razaoSocial ?? '',
     // Some carriers (e.g. Jadlog, service 3) require the sender phone; fall back
     // to the filial's sede phone when the integração's origin address has none.
-    phone: enderecoOrigem?.telefone ?? filial?.sede?.telefone ?? null,
+    phone: localTelefoneOrNull(enderecoOrigem?.telefone ?? filial?.sede?.telefone),
     email: enderecoOrigem?.email ?? filial?.sede?.email ?? null,
     companyDocument: filial?.cnpj ?? null,
     stateRegister: filial?.ie ?? null,
@@ -119,7 +137,7 @@ export function buildPedidoCartPayload(input: BuildPedidoCartInput): CartInsertR
   const pj = isPessoaJuridica(destDocument);
   const to = {
     name: enderecoDestino?.nome ?? clienteDestino?.nome ?? '',
-    phone: enderecoDestino?.telefone ?? clienteDestino?.telefone ?? null,
+    phone: localTelefoneOrNull(enderecoDestino?.telefone ?? clienteDestino?.telefone),
     email: enderecoDestino?.email ?? clienteDestino?.email ?? null,
     document: pj ? null : destDocument,
     companyDocument: pj ? destDocument : null,

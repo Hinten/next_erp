@@ -83,6 +83,11 @@ export function TelefoneField({
  * validation (resolver) and, at save time, to all fields on create but only
  * to DIRTY fields on update — so untouched legacy raw phones are validated
  * leniently and never silently rewritten.
+ *
+ * ⚠️ On a NESTED field (`enderecoDeOrigem.telefone`) the gate is the PARENT's
+ * dirty flag, so editing any sub-field of that address normalizes the phone
+ * too. That is not an over-reach: Firestore replaces a nested object
+ * wholesale, so the phone is being rewritten by that save either way.
  */
 export const prepareForSaveTelefone = (v: unknown): unknown =>
   typeof v === 'string' && v !== '' ? normalizeTelefone(v) : v;

@@ -4,6 +4,7 @@ import {
   formatTelefoneLocal,
   isValidTelefone,
   localTelefone,
+  localTelefoneOrNull,
   normalizeTelefone,
   telefoneQueryShapes,
 } from './index';
@@ -116,6 +117,23 @@ describe('localTelefone', () => {
 
   it('strips punctuation', () => {
     expect(localTelefone('+55 (11) 99999-8888')).toBe('11999998888');
+  });
+});
+
+describe('localTelefoneOrNull', () => {
+  it('strips the country code exactly like localTelefone for a real value', () => {
+    expect(localTelefoneOrNull('5511999998888')).toBe('11999998888');
+    expect(localTelefoneOrNull('11999998888')).toBe('11999998888');
+    expect(localTelefoneOrNull('441632960961')).toBe('441632960961');
+  });
+
+  it('keeps an absent phone absent instead of turning it into an empty string', () => {
+    // The whole point of the variant: `localTelefone('')` is `''`, which a
+    // wire that omits empty fields would then have to special-case at every
+    // call site.
+    expect(localTelefoneOrNull('')).toBeNull();
+    expect(localTelefoneOrNull(null)).toBeNull();
+    expect(localTelefoneOrNull(undefined)).toBeNull();
   });
 });
 
