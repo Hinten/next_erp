@@ -84,7 +84,6 @@ describe('whitelist membership', () => {
       'gtin',
       'codPai',
       'codFornecedor',
-      'ordem',
       'custo',
       'precos',
       'pesoLiquidoKg',
@@ -103,8 +102,10 @@ describe('whitelist membership', () => {
     ]) {
       expect(REVERTIBLE_PRODUTO_FIELDS.has(f)).toBe(true);
     }
-    // Server-owned/denorm/identity fields never make the cut.
-    for (const f of ['paiId', 'componentesKitKeys', 'fotosArquivosIds', 'variacoesUid']) {
+    // Server-owned/denorm/identity fields never make the cut. `ordem` joins them:
+    // it is server ordering, hidden from the form, so a staged revert of it
+    // would have nothing on screen to review (see the set's doc comment).
+    for (const f of ['paiId', 'componentesKitKeys', 'fotosArquivosIds', 'variacoesUid', 'ordem']) {
       expect(REVERTIBLE_PRODUTO_FIELDS.has(f)).toBe(false);
     }
   });

@@ -25,14 +25,23 @@ export interface RevertScopeFields {
   imposto: 'all-except-ignored';
 }
 
-/** Revertible top-level fields on the `produtos/{id}` doc itself. */
+/**
+ * Revertible top-level fields on the `produtos/{id}` doc itself.
+ *
+ * ⚠️ Every one of these must have a RENDERED INPUT on the produto form —
+ * `produtoFields.test.ts` asserts the set is disjoint from
+ * `PRODUTO_EXCLUDED_FIELDS`. Since a revert is staged into that form (#660)
+ * rather than written directly, offering one for a field the form does not show
+ * tells the operator a value is waiting to be reviewed with nothing to review
+ * and no tab to jump to. `ordem` was in this list and is excluded from the form,
+ * which is exactly that case: it is server-ordering, not operator data.
+ */
 export const REVERTIBLE_PRODUTO_FIELDS: ReadonlySet<string> = new Set([
   'nome',
   'sku',
   'gtin',
   'codPai',
   'codFornecedor',
-  'ordem',
   'custo',
   'precos',
   'pesoLiquidoKg',
