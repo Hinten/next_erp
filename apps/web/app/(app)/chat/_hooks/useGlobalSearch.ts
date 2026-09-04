@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FirebaseError } from 'firebase/app';
 import { type QueryDocumentSnapshot, getDocs } from 'firebase/firestore';
 import { buildQuery, groupQuery, orderByField, paginate } from '@delfrance/data';
-import { type Mensagem } from '@delfrance/schemas';
+import type { Mensagem } from '@delfrance/schemas';
 import {
   type ConversaGroup,
   type FetchedMensagem,

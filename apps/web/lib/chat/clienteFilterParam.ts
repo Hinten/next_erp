@@ -7,7 +7,7 @@
  * assertable — it is a correctness property with a billing consequence, not a
  * detail of how a hook happens to be wired.
  */
-import { type ConversaTab } from './conversaConstraints';
+import type { ConversaTab } from './conversaConstraints';
 
 /** The collection a cliente filter value must name. */
 const COLECAO_CLIENTES = 'clientes';

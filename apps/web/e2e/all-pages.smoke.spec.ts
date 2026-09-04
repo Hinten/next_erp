@@ -111,7 +111,6 @@ test.describe('All pages load', () => {
       // Image preloads, etc.) so we don't gate the build on them — instead
       // we log them via the test runner output for inspection.
       if (consoleErrors.length > 0) {
-        // eslint-disable-next-line no-console
         console.warn(
           `[smoke ${route}] ${consoleErrors.length} console.error(s):\n${consoleErrors.join('\n')}`,
         );

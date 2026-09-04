@@ -46,14 +46,14 @@ import {
   type PostResult,
   type SefazCall,
 } from '../soap';
-import {
-  type TConsStatServ,
-  type TRetConsStatServ,
-  type TRetConsSitNFe,
-  type TRetConsReciNFe,
-  type TRetEnvEvento,
-  type TRetEnviNFe,
-  type TRetInutNFe,
+import type {
+  TConsStatServ,
+  TRetConsStatServ,
+  TRetConsSitNFe,
+  TRetConsReciNFe,
+  TRetEnvEvento,
+  TRetEnviNFe,
+  TRetInutNFe,
 } from '../types/nfe-schema';
 import { NFeXmlError, parse, serialize } from '../xml';
 

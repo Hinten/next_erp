@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
-import type { Arquivo } from '@delfrance/schemas';
+import type { Arquivo, Mensagem } from '@delfrance/schemas';
 import { FILETYPE } from '@delfrance/schemas';
-import type { Mensagem } from '@delfrance/schemas';
 
 // Swap the arquivo fetch for a controllable stub (mirrors the TanStack one-shot).
 const { useArquivoMock } = vi.hoisted(() => ({
