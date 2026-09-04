@@ -94,6 +94,7 @@ describe('processWhatsappNotification log line', () => {
       detail: 'mensagens',
       field: 'messages',
       contaId: 'conta-1',
+      statuses: { aplicados: 2, naoEncontrados: 1, staleIgnorados: 0 },
     });
 
     await run({ data: RAW, retryCount: 2 });
@@ -109,6 +110,7 @@ describe('processWhatsappNotification log line', () => {
       messageId: 'wamid.A',
       phoneNumberId: 'PNID1',
       contaId: 'conta-1',
+      statuses: { aplicados: 2, naoEncontrados: 1, staleIgnorados: 0 },
       retryCount: 2,
       readCache: expect.anything(),
     });
@@ -148,7 +150,10 @@ describe('processWhatsappNotification log line', () => {
     await run({ data: RAW, retryCount: 0 });
 
     const payload = loggedPayload(info);
-    for (const key of ['kind', 'detail', 'field', 'contaId']) {
+    // ⚠️ `toHaveProperty(key, null)`, NOT the `toEqual` above: `toEqual` treats an
+    // `undefined`-valued key as equal to an absent one, so it cannot catch a
+    // dropped `?? null`. This loop is what actually pins the discipline.
+    for (const key of ['kind', 'detail', 'field', 'contaId', 'statuses']) {
       expect(payload).toHaveProperty(key, null);
     }
   });

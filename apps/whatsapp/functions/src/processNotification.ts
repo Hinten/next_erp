@@ -77,6 +77,9 @@ export const processWhatsappNotification = onTaskDispatched(
       messageId: typeof payload?.messageId === 'string' ? payload.messageId : null,
       phoneNumberId: typeof payload?.phoneNumberId === 'string' ? payload.phoneNumberId : null,
       contaId: result.contaId ?? null,
+      // Counts, not a `detail` member — one `statuses[]` can carry entries with
+      // different fates. `null` when the change carried no statuses at all.
+      statuses: result.statuses ?? null,
       retryCount: req.retryCount ?? 0,
       // CUMULATIVE for this instance — a notification has no tick to bracket
       // (the sweep in `index.ts` brackets its own with mark/delta instead).

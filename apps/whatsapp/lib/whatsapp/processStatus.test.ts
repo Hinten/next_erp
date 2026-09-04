@@ -69,6 +69,25 @@ function payload(status: string, timestampSeconds: number) {
   });
 }
 
+/** A multi-status webhook `value` — one entry per id, parsed by the real schema. */
+function batch(ids: string[], status = 'delivered', timestampSeconds = STATUS_SEC) {
+  return valuePayloadSchema.parse({
+    messaging_product: 'whatsapp',
+    metadata: { display_phone_number: '5511999999999', phone_number_id: 'pn-1' },
+    statuses: ids.map((id) => ({
+      id,
+      recipient_id: '5511888888888',
+      status,
+      timestamp: String(timestampSeconds),
+    })),
+  });
+}
+
+/** No mensagem at the deterministic id — the S1 soft miss. */
+function missing() {
+  h.get.mockResolvedValue({ exists: false, data: () => ({}) });
+}
+
 /** The patch `processStatuses` wrote, or undefined if it wrote nothing. */
 function writtenPatch(): Record<string, unknown> | undefined {
   const call = h.merge.mock.calls[0];
@@ -131,5 +150,74 @@ describe('processStatuses — stale guard', () => {
     await processStatuses(db, 'conta-1', payload('failed', STATUS_SEC));
 
     expect(writtenPatch()?.estadoEnvio).toBe(ESTADO_ENVIO.erro);
+  });
+});
+
+/* ------------------------- what the batch actually did -------------------- */
+
+/**
+ * ⚠️ These pin the #1478 residual: `processStatuses` used to return `void`, so a
+ * batch whose every status was a soft miss reported exactly like one that
+ * advanced every mensagem. `detail: 'statuses'` said "a batch ran", never
+ * "anything landed".
+ *
+ * The property is not "a report is returned" — it is that batches which DID
+ * different things REPORT differently, including a MIXED batch, which no single
+ * `MessagesFieldOutcome` member could ever have expressed.
+ */
+describe('processStatuses — reports what the batch did', () => {
+  it('an applied status counts as `aplicados`', async () => {
+    stored(ESTADO_ENVIO.salva, null);
+    const r = await processStatuses(db, 'conta-1', payload('delivered', STATUS_SEC));
+    expect(r).toEqual({ aplicados: 1, naoEncontrados: 0, staleIgnorados: 0 });
+    expect(h.merge).toHaveBeenCalledTimes(1);
+  });
+
+  it('a missing mensagem counts as `naoEncontrados`, NOT as a stale skip', async () => {
+    missing();
+    const r = await processStatuses(db, 'conta-1', payload('delivered', STATUS_SEC));
+    expect(r).toEqual({ aplicados: 0, naoEncontrados: 1, staleIgnorados: 0 });
+    expect(h.merge).not.toHaveBeenCalled();
+  });
+
+  it('a stale-refused status counts as `staleIgnorados`, NOT as a soft miss', async () => {
+    // The two skips are kept apart deliberately: a stale skip is working as
+    // designed and structurally common, a soft miss may be a real derivation bug.
+    stored(ESTADO_ENVIO.recebido, LAST_STALE);
+    const r = await processStatuses(db, 'conta-1', payload('deleted', STATUS_SEC));
+    expect(r).toEqual({ aplicados: 0, naoEncontrados: 0, staleIgnorados: 1 });
+    expect(h.merge).not.toHaveBeenCalled();
+  });
+
+  it('THE PROPERTY: a MIXED batch reports each fate, and the three sum to the batch size', async () => {
+    // One of each, in order — the case a single `detail` member cannot express.
+    h.get
+      .mockResolvedValueOnce({
+        exists: true,
+        data: () => ({ estadoEnvio: ESTADO_ENVIO.salva, lastExternalUpdateDateTime: null }),
+      })
+      .mockResolvedValueOnce({ exists: false, data: () => ({}) })
+      .mockResolvedValueOnce({
+        exists: true,
+        data: () => ({
+          estadoEnvio: ESTADO_ENVIO.recebido,
+          lastExternalUpdateDateTime: LAST_STALE,
+        }),
+      });
+
+    const value = batch(['wamid.A', 'wamid.B', 'wamid.C'], 'deleted', STATUS_SEC);
+    const r = await processStatuses(db, 'conta-1', value);
+
+    expect(r).toEqual({ aplicados: 1, naoEncontrados: 1, staleIgnorados: 1 });
+    // ⚠️ The sum invariant is the only thing that catches a FUTURE fourth exit
+    // added to the loop without a counter — the type system cannot.
+    expect(r.aplicados + r.naoEncontrados + r.staleIgnorados).toBe(3);
+    expect(h.merge).toHaveBeenCalledTimes(1);
+  });
+
+  it('an EMPTY statuses[] reports all zeros — `[]` is truthy, so this function still runs', async () => {
+    const r = await processStatuses(db, 'conta-1', batch([]));
+    expect(r).toEqual({ aplicados: 0, naoEncontrados: 0, staleIgnorados: 0 });
+    expect(h.get).not.toHaveBeenCalled();
   });
 });

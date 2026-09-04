@@ -154,15 +154,28 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
    change, or `vazio` (neither `messages` nor `statuses`, i.e. nothing happened). That
    value comes from `createOrUpdateMensagem`'s boolean, which used to be discarded at
    its only call site; it is REPORTED only and must never gate the `ultima_modificacao`
-   bump (see the comment at that bump). `processStatuses` is deliberately NOT widened —
-   it already `console.warn`s per miss, so a change whose every status is a soft miss
-   still reports `statuses`, which overstates; a per-status count is a separate design
-   question. ⚠️ Two matching UNDERSTATEMENTS, so `detail` is not read as "nothing was
-   written": `upsertConversa` runs BEFORE the echo/spam returns, so every value except
-   `statuses`/`vazio` implies the conversa was touched; a change carrying BOTH
-   `messages` and `statuses` folds to `echo` (because `incoming = false`) and hides
-   that the statuses WERE applied; and `redelivery` names the mensagem skip while the
-   same run may still have reopened the conversa and bumped `ultima_modificacao`.
+   bump (see the comment at that bump). ⚠️ `detail` names what happened to the
+   MENSAGEM, not whether anything was written at all — `upsertConversa` runs BEFORE the
+   echo/spam returns, so every value except `statuses`/`vazio` implies the conversa was
+   touched.
+   **The statuses half of that is separately reported.** `processStatuses` returns a
+   `StatusesReport` — `{ aplicados, naoEncontrados, staleIgnorados }` — carried out to
+   the task log beside `detail`. Counts rather than more `detail` members, because one
+   `statuses[]` can carry entries with DIFFERENT fates, which no single enum value can
+   express; and because they ride out whichever arm of the priority chain won, an
+   `echo` no longer hides applied statuses and a `statuses` that landed nothing no
+   longer overstates. The two skip reasons stay APART: a stale skip is working as
+   designed and structurally common (the queue dispatches 3 concurrently, so statuses
+   race), while a soft miss may be a real doc-id derivation bug — merging them buries
+   the interesting one under a permanent noise floor. ⚠️ The SWEEP recomputes the report
+   and discards it: `ReprocessResult.outcomes` is a `Record<string, number>` keyed by
+   the constant disposition label, with no room for a nested object.
+   **One residual remains, deliberately**: `redelivery` names the mensagem skip while
+   the same run may have reopened the conversa and bumped `ultima_modificacao`. It stays
+   unreported under the rule the statuses report is an instance of — *report in the log
+   what leaves no other trace*. A soft-missed status writes nothing but a `console.warn`;
+   the conversa story writes its own documents (`evento_nova`, `evento_reaberto_<wamid>`)
+   and is derivable from `detail` besides.
 4. **`lib/whatsapp/processStatus.ts`** — advances an OUTBOUND mensagem's
    `estadoEnvio` from a `statuses[]` entry, guarded by the exact legacy forward-only
    transition matrix + the `lastExternalUpdateDateTime` out-of-order guard, and
