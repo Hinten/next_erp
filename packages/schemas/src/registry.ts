@@ -52,6 +52,7 @@ import { impostoProduto } from './impostoProduto';
 import { impostoCategoria } from './impostoCategoria';
 import { regraImposto } from './regraImposto';
 import { arquivo } from './storage/arquivo';
+import { webchat } from './webchat';
 
 /**
  * Every DomainSchema in the package, in barrel-export order. This is the
@@ -130,4 +131,5 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   estoqueProduto,
   historicoEstoque,
   arquivo,
+  webchat,
 ];

@@ -606,6 +606,43 @@ export async function seedBandeirasCartao(prefix: string, n: number): Promise<vo
 }
 
 /**
+ * Seed `n` `webchat` docs. `nome` = `<prefix>-NNN`; every field the ObjectView
+ * exposes is left at its schema default (null/preset) — the suite's own tests
+ * edit `mensagens_padrao` / `horario_funcionamento` / colors through the UI
+ * rather than asserting on seeded values.
+ */
+export async function seedWebchatFixtures(prefix: string, n: number): Promise<void> {
+  const col = db().collection('webchat');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      nome: `${prefix}-${pad(i)}`,
+      url: null,
+      posicionamento: 'direita',
+      icone: 'mensagem',
+      saudacao: null,
+      corBorda: '#e5e7eb',
+      corIcone: '#2563eb',
+      corCabecalho: '#2563eb',
+      corBolhaInatividade: '#dc2626',
+      corCorpoChat: '#ffffff',
+      corTextoChat: '#111827',
+      horario_funcionamento: null,
+      mensagens_padrao: null,
+      mensagens_inatividade: null,
+      timestamp: Date.now(),
+      ultimaModificacao: Date.now(),
+    });
+  }
+  await batch.commit();
+}
+
+/** Teardown for `seedWebchatFixtures`. */
+export async function cleanupWebchatFixtures(prefix: string): Promise<void> {
+  await cleanupByNamePrefix('webchat', prefix);
+}
+
+/**
  * Seed `n` filial docs. `razaoSocial` = `<prefix>-NNN`; `fantasia` alternates
  * null/string and the embedded `sede` carries a valid São Paulo address so
  * the nested-object ObjectView fieldset round-trips.

@@ -534,6 +534,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_configuracoes', 2);
     }
 
+    match /webchat/{docId} {
+      allow read: if isSuperUser() || p('d_webchat', 1);
+      allow create, update: if isSuperUser() || p('d_webchat', 2);
+      allow delete: if isSuperUser() || p('d_webchat', 4);
+    }
+
     match /{nsColl}/{document=**} {
       allow read, write: if request.auth != null && nsColl.matches('^e2e_[0-9A-Za-z_]+$');
     }

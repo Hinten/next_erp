@@ -157,6 +157,7 @@ export const E2E_FIXTURE_TARGETS: readonly E2EFixtureTarget[] = [
   { collection: 'produtos', fields: ['nome'] },
   { collection: 'tabMedi', fields: ['nome'] },
   { collection: 'usuarios', fields: ['nome'] },
+  { collection: 'webchat', fields: ['nome'] },
 ];
 
 /**
