@@ -15,6 +15,7 @@ import noUnvalidatedResponse from './rules/no-unvalidated-response.js';
 import noFocusedTest from './rules/no-focused-test.js';
 import requireFirestoreDatabaseId from './rules/require-firestore-database-id.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
+import importPlugin from 'eslint-plugin-import';
 import tseslint from 'typescript-eslint';
 
 // Re-export eslint-config-prettier so every consumer can append it as the LAST
@@ -39,11 +40,18 @@ export const prettier = eslintConfigPrettier;
  * are the high-value async-correctness subset worth gating CI on.
  *
  * `registerPlugin` (default `true`) makes the block self-contained — it
- * registers the `@typescript-eslint` plugin the rules below need, so a config
- * that does NOT extend `eslint-config-next` works out of the box. Consumers
- * that DO spread `eslint-config-next` (every app in this repo) must pass
- * `registerPlugin: false`: next already registers that plugin and flat config
- * forbids defining a plugin name twice ("Cannot redefine plugin").
+ * registers the `@typescript-eslint` AND `import` plugins the rules below need,
+ * so a config that does NOT extend `eslint-config-next` works out of the box.
+ * Consumers that DO spread `eslint-config-next` (every app in this repo) must
+ * pass `registerPlugin: false`: next registers BOTH of those plugin names and
+ * flat config forbids defining one twice ("Cannot redefine plugin").
+ *
+ * ⚠️ Same version is NOT the same instance. `eslint-plugin-import` resolves to
+ * two different physical copies here — this package's peer context is
+ * `@typescript-eslint/parser`, next's is `eslint-import-resolver-typescript` —
+ * so pnpm hands out two distinct module objects for 2.32.0 and ESLint compares
+ * by identity. Dropping the guard therefore throws in all 8 Next apps rather
+ * than silently deduping.
  *
  * @param {string} tsconfigRootDir usually `import.meta.dirname`
  * @param {{ files?: string[], registerPlugin?: boolean }} [opts]
@@ -59,7 +67,9 @@ export function typeAware(
         parser: tseslint.parser,
         parserOptions: { projectService: true, tsconfigRootDir },
       },
-      ...(registerPlugin ? { plugins: { '@typescript-eslint': tseslint.plugin } } : {}),
+      ...(registerPlugin
+        ? { plugins: { '@typescript-eslint': tseslint.plugin, import: importPlugin } }
+        : {}),
       rules: {
         '@typescript-eslint/no-floating-promises': 'error',
         // checksVoidReturn.attributes:false silences only the benign JSX
@@ -130,6 +140,79 @@ export function typeAware(
             destructuredArrayIgnorePattern: '^_',
             ignoreRestSiblings: true,
           },
+        ],
+
+        // ── Type-import hygiene ────────────────────────────────────────────
+        // ERROR for all three below, on the same grounds as `no-unused-vars`
+        // above: every pre-existing site is fixed in the PR that enables them,
+        // so there is no population to grandfather — and `warn` gates nothing
+        // in CI.
+        //
+        // All three exist because `packages/config-tsconfig/base.json` sets
+        // `verbatimModuleSyntax: true`, which every workspace inherits.
+        //
+        // That option already does the half people usually reach for
+        // `consistent-type-imports` to get: importing something that is ONLY a
+        // type without the `type` keyword is TS error 1484, and `turbo run
+        // typecheck` is green, so there are provably zero of those in the repo.
+        // tsc is the mechanism there, not ESLint.
+        //
+        // What it does NOT do is stop an import from being EMITTED. It emits
+        // import statements verbatim, so:
+        //
+        //   import { type A, type B } from './x';   // every specifier elided
+        //
+        // still leaves `import './x';` in the output — a real runtime module
+        // load that exists only because of how the import was spelled. Nothing
+        // catches it: it typechecks, lints, builds and runs. 34 such sites
+        // existed when this rule was turned on.
+        '@typescript-eslint/no-import-type-side-effects': 'error',
+
+        // Two imports of the same module in one file. Autofixable, and the 46
+        // sites this found were all accidental — a second import appended
+        // rather than merged into the existing one.
+        //
+        // ⚠️ Two sites are NOT accidental and the fixer correctly refused both:
+        // a bare side-effect `import 'x'` sitting above a named import of the
+        // same module, where the position is load-bearing. Merging is safe only
+        // when it does not MOVE the declaration, because ESM evaluates modules
+        // in the order their import declarations appear. See the ⚠️ at the top
+        // of `apps/mercado-livre/functions/src/index.ts`.
+        //
+        // ⚠️ This needs the `import` plugin, which is registered above under
+        // `registerPlugin` rather than in the base block: the base block has no
+        // plugin of its own beyond `delfrance`, and the 8 Next apps get `import`
+        // from `eslint-config-next` instead. Setting the rule here and getting
+        // the plugin from a different config object is fine — flat config merges
+        // `plugins` across every object matching a file, which is exactly how
+        // `delfrance/prefer-schema-enum` above works.
+        'import/no-duplicates': 'error',
+        // The third of the verbatimModuleSyntax family, and the one whose
+        // scope had to be cut down after measuring it.
+        //
+        // What it catches HERE is a binding that is a VALUE in TS terms — a Zod
+        // schema, a class, an enum — imported without `type` but referenced only
+        // in type positions. tsc cannot complain (the import is legal), so under
+        // verbatimModuleSyntax it is emitted and the module is loaded at runtime
+        // for nothing. `z.infer<typeof xSchema>` makes this the repo's most
+        // likely shape. 11 such sites existed.
+        //
+        // ⚠️ `disallowTypeAnnotations` is turned OFF, and that is a deliberate
+        // scope cut rather than a concession. It is a SEPARATE ban, on inline
+        // `import('./x').Foo` type annotations, and it accounted for 275 of the
+        // 286 reports — almost all in test files, where an `import()` annotation
+        // is the idiomatic way to name a type inside a `vi.mock` factory without
+        // hoisting an import above it.
+        //
+        // It has none of the justification the rest of this block rests on: an
+        // `import()` type annotation lives entirely in type space and TS erases
+        // it, so it emits NOTHING and verbatimModuleSyntax never sees it. It is
+        // also not autofixable. Enabling it would mean 275 hand-edits of working
+        // test code to buy zero runtime change — churn bought with the credibility
+        // of the two rules above, which do pay for themselves.
+        '@typescript-eslint/consistent-type-imports': [
+          'error',
+          { fixStyle: 'inline-type-imports', disallowTypeAnnotations: false },
         ],
 
         // An `any` silently disables every other rule in this config for the

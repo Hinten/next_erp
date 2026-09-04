@@ -1,7 +1,7 @@
 import { arrayRemove, arrayUnion, type WriteBatch } from 'firebase/firestore';
 import { ESTADO_CONVERSA } from '@delfrance/schemas';
 import { conversaCollection } from '@/lib/data/conversaCollection';
-import { getFirebaseFirestore } from '@/lib/firebase/client';
+import type { getFirebaseFirestore } from '@/lib/firebase/client';
 import { writeEvent } from './writeEvent';
 
 /**

@@ -28,18 +28,15 @@ import {
   buildItemPayload,
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
-import type { Arquivo, Foto, ProdutoMercadoLivreLink } from '@delfrance/schemas';
-import {
-  type PublishUserProductResult,
-  type UserProductMember,
-  publishUserProductMembers,
-  sweepRemovedMembers,
-} from './publishUserProduct';
-import { type EscopoFalha, falhaPatch } from '../core/publishFalhas';
-import type { ComponentesKit } from '@delfrance/schemas';
+import type {
+  Arquivo,
+  ComponentesKit,
+  Foto,
+  ProdutoMercadoLivreLink,
+  Variante,
+} from '@delfrance/schemas';
 import {
   INTEGRACAO_TIPO,
-  type Variante,
   componentesKitEntries,
   estoqueDisponivel,
   fotosForVariacao,
@@ -49,6 +46,13 @@ import {
   precisaConsultarModeracao,
   toOuterRef,
 } from '@delfrance/schemas';
+import {
+  type PublishUserProductResult,
+  type UserProductMember,
+  publishUserProductMembers,
+  sweepRemovedMembers,
+} from './publishUserProduct';
+import { type EscopoFalha, falhaPatch } from '../core/publishFalhas';
 import {
   arquivoCollection,
   estoqueCollection,

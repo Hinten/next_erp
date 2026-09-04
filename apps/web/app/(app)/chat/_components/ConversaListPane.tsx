@@ -17,7 +17,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { IconChecklist, IconSearch } from '@tabler/icons-react';
-import { type Conversa } from '@delfrance/schemas';
+import type { Conversa } from '@delfrance/schemas';
 import { CONVERSA_TABS, TAB_LABELS, type ConversaTab } from '@/lib/chat/conversaConstraints';
 import { useAuth } from '@/lib/auth';
 import { useConversaFilters } from '../_hooks/useConversaFilters';

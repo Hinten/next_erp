@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 
-import { type Bucket } from '../core/arquivoUpload';
+import type { Bucket } from '../core/arquivoUpload';
 import { importProdutoPhotos } from './importPhotos';
 
 /* ------------------------------ fakes ------------------------------------- */

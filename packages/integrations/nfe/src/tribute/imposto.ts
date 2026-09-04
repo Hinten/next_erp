@@ -14,7 +14,7 @@
  *   - missing required sub-config for the active CSOSN
  *   - unknown CSOSN value
  */
-import { z } from 'zod';
+import type { z } from 'zod';
 
 import { fmtMoney, fmtMoneyOpt, fmtQuantity, fmtRate, fmtRateOpt, roundReais } from './format';
 import {
