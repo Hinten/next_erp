@@ -95,9 +95,38 @@ const CHAIN_CALL_SITES = {
  * covers them — but a new suite reaching a NEW transport from an existing job
  * would slip through. Add a row for it.
  */
-const WORKFLOWS_WITH_HELPERS = [
-  '.github/workflows/nfe-epec-scheduled.yml',
+/**
+ * Every workflow that defines an `ensure_chain()` helper — DISCOVERED, never
+ * listed.
+ *
+ * ⚠️ A hardcoded list would defeat the point. The shape assertion below is what
+ * makes N inline copies of the helper safe, and it can only do that for copies
+ * it can SEE: with a two-file allowlist, a FOURTH copy pasted into a new lane
+ * is back to being kept honest by discipline — the exact thing this guard
+ * replaces. Same "discover, don't enumerate" rule `functions-region-supplied`
+ * and `runtime-deps-pinned` follow.
+ *
+ * Untracked files count (`gitLsFiles` default), so a new workflow is covered
+ * before it is committed.
+ */
+function workflowsDefiningEnsureChain() {
+  return gitLsFiles(':(glob).github/workflows/*.y*ml').filter((wf) =>
+    HELPER_DEFINITION.test(read(wf)),
+  );
+}
+
+/** ⚠️ Stateless: `RegExp#test` with `/g` would advance `lastIndex` across calls. */
+const HELPER_DEFINITION = /ensure_chain\(\)\s*\{/;
+
+/**
+ * The copies that exist today — an anti-vacuity FLOOR under the discovery
+ * above, not its input. Renaming the helper (or a pathspec that stops matching)
+ * empties the discovery, and an empty list passes every scan silently; this is
+ * what turns that into a red.
+ */
+const KNOWN_HELPER_WORKFLOWS = [
   '.github/workflows/ci-nfe.yml',
+  '.github/workflows/nfe-epec-scheduled.yml',
 ];
 
 const LIVE_JOBS = [
@@ -379,7 +408,7 @@ describe('every SEFAZ chain slot the runtime loads is fetched by its live lane',
     // ⚠️ The finding this guard grew for. A helper taking the filename
     // alongside the flags lets the two disagree silently — see
     // `helpersNotDerivingTheirPath`'s note for the exact failure.
-    const offenders = WORKFLOWS_WITH_HELPERS.flatMap((wf) =>
+    const offenders = workflowsDefiningEnsureChain().flatMap((wf) =>
       helpersNotDerivingTheirPath(read(wf)).map((why) => `${wf}: ${why}`),
     );
 
@@ -398,17 +427,26 @@ describe('every SEFAZ chain slot the runtime loads is fetched by its live lane',
     ).toEqual([]);
   });
 
-  it('finds an ensure_chain helper in every workflow that should have one', () => {
-    // Anti-vacuity floor for the assertion above: a renamed helper, or a
-    // regex that stopped matching the block, would make it pass over nothing.
-    const without = WORKFLOWS_WITH_HELPERS.filter((wf) => !/ensure_chain\(\)\s*\{/.test(read(wf)));
+  it('discovers at least the helper copies known to exist', () => {
+    // Anti-vacuity floor under the discovery: a renamed helper, a pathspec that
+    // stopped matching, or a broken definition regex all EMPTY the list rather
+    // than failing, and the shape assertion above would then pass having
+    // examined nothing.
+    const found = workflowsDefiningEnsureChain();
+    const missing = KNOWN_HELPER_WORKFLOWS.filter((wf) => !found.includes(wf));
 
     expect(
-      without,
+      missing,
       [
-        'These workflows are expected to define `ensure_chain()` and no longer do,',
-        'so the shape assertion above examines nothing for them:',
-        ...without.map((wf) => `  - ${wf}`),
+        'These workflows are known to define `ensure_chain()` and the discovery',
+        'no longer finds them, so the shape assertion above examines less than it',
+        'should — possibly nothing:',
+        ...missing.map((wf) => `  - ${wf}`),
+        '',
+        `discovered: ${found.join(', ') || '(nothing)'}`,
+        '',
+        'Either the helper was renamed (update KNOWN_HELPER_WORKFLOWS and',
+        '`HELPER_DEFINITION` together) or the git pathspec stopped matching.',
       ].join('\n'),
     ).toEqual([]);
   });
