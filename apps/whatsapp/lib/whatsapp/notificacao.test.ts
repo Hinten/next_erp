@@ -390,7 +390,7 @@ describe('handleNotificationTask — reports what it actually did (#1087)', () =
     expect(r).toMatchObject({ outcome: 'done', detail: 'statuses' });
   });
 
-  it('THE PROPERTY: five different runs, all `done`, five distinct details', async () => {
+  it('THE PROPERTY: six different runs, all `done`, six distinct details', async () => {
     const db = new FakeDb();
     seedConta(db);
     const run = async (value: DocData): Promise<string | undefined> =>
@@ -409,7 +409,19 @@ describe('handleNotificationTask — reports what it actually did (#1087)', () =
       await run(statusOnlyValue()), // statuses
       await run(errorsOnlyValue()), // vazio
     ];
-    expect(new Set(details).size).toBe(5);
+
+    // `spam` needs its own db — the guard is a property of the CONVERSA, and
+    // seeding it above would change what every run before it reports.
+    const spamDb = new FakeDb();
+    seedConta(spamDb);
+    spamDb.seed('chat', CONV_ID, { estadoConversa: 99, sender_id: SENDER, nome: 'Fulano' });
+    details.push(
+      (await handleNotificationTask(asDb(spamDb), messagesPayload(inboundValue()), 0, deps)).detail,
+    );
+
+    // Six members in `MessagesFieldOutcome`, six distinct reports. This set IS
+    // the property — every member is reachable AND none collapses onto another.
+    expect(new Set(details).size).toBe(6);
   });
 
   it('carries the success arm `kind` out to the caller', async () => {
@@ -510,12 +522,16 @@ describe('conversa create / reopen / spam', () => {
     expect(db.docs(CONV_PATH).has('evento_reaberto_wamid.A')).toBe(true);
   });
 
-  it('spam conversa → mensagem NOT created', async () => {
+  it('spam conversa → mensagem NOT created, and the change SAYS it was spam', async () => {
     const db = new FakeDb();
     seedConta(db);
     db.seed('chat', CONV_ID, { estadoConversa: 99, sender_id: SENDER, nome: 'Fulano' });
-    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    const r = await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
     expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.A'))).toBe(false);
+    // ⚠️ Asserting the absence of the doc is NOT enough: `spam` and `echo` both
+    // write no mensagem, so without this a mis-fold to the neighbouring member
+    // ships silently — the exact failure mode the rest of this file guards.
+    expect(r.detail).toBe('spam');
   });
 
   it('out-of-order message → conversa untouched, but mensagem still written', async () => {
