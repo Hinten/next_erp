@@ -115,8 +115,12 @@ describe('enviarEstoqueParaMarketplaces', () => {
       lerIntegracoes,
     );
 
-    const shopeeRows = res.rows.filter((r) => r.motivo === 'canal-nao-pesquisado');
+    // Scoped by the CONTA, not by the reason — which reason a channel earns is
+    // the caps table's business and it moved once already (Shopee's Phase 0
+    // survey turned "nobody checked" into "not built here").
+    const shopeeRows = res.rows.filter((r) => r.integracaoId === 'shopee');
     expect(shopeeRows.map((r) => r.produtoId)).toEqual(['p2']);
+    expect(shopeeRows[0]!.motivo).toBe('canal-nao-implementado');
     spy.mockRestore();
   });
 

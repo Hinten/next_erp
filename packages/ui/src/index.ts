@@ -75,6 +75,7 @@ export {
   type ConflictField,
 } from './object/conflictFields';
 export { FieldRenderer, type FieldRendererProps } from './object/FieldRenderer';
+export { useObjectViewSections, type ObjectViewSections } from './object/ObjectViewSectionsContext';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
 export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';
 export { RecordPager, type RecordPagerProps } from './object/RecordPager';

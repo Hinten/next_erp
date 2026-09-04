@@ -150,6 +150,22 @@ does not exist yet: the same unreached surface, one round later.
   `packages/config-eslint/rules/removed-plugin-contracts.test.js`, because every
   part of it is silent when violated: re-adding the interface typechecks, lints,
   builds and passes every suite.
+- **`packages/integrations/shopee` exists again — in this ADR's shape, not the
+  deleted one.** Step 1 of the Shopee master plan re-created it as a real
+  fetch-only library: the HMAC request signature, the hosts, the consent URL and
+  the two token endpoints, the wire schemas and a typed error taxonomy — no
+  `MarketplaceChannel`, no plugin registration, no Firestore, and nothing that
+  claims to orchestrate the ERP. That is the whole difference from the
+  throw-only scaffold: this package describes **Shopee's wire protocol**, while
+  the scaffold described *our* orchestration and implemented three of four
+  members as `throw`. What Shopee supports is still declared in
+  `MARKETPLACE_TIPO_CAPS`, and its `implementado` stays `false` until the channel
+  ships. The guard above changed with it: it still asserts the ABSENCE of the
+  other four scaffolds (`magalu`, `amazon-sp-api`, `facebook`,
+  `loja-integrada`), and for `shopee` it now asserts the SHAPE — every file
+  under its `src/` declares no `MarketplaceChannel`, re-exports none, and
+  registers no marketplace plugin. Shrinking the absence list alone would have
+  reopened exactly the hole the guard exists for.
 
 ## Status
 

@@ -57,6 +57,14 @@
  * checkpoint, plus the job-level meaning of each outcome: a `pausa` re-enqueues
  * WITHOUT consuming the draft, a `fatal` stamps the job `failed`, and
  * `pulado`/`falha` feed the capped detail lists behind uncapped counters.
+ *
+ * ---- ⚠️ Every terminal `status` write goes through `finalizePriceSyncJob`
+ * (#1144), and nothing may reintroduce a bare `merge()` for that field. Six
+ * writers reach it — the stale-orphan reclaim, `failJob`, the `completed` flip,
+ * the final-attempt stamp, the start route's enqueue-failure fallback and the
+ * operator's `atualizar-precos/cancelar` — and only the transaction's `tx.get`
+ * can tell whichever arrives second that it has already lost. `checkpoint()` is
+ * the deliberate exception: it writes no `status`.
  */
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
@@ -66,6 +74,7 @@ import {
   ENVIO_PRECO_RESULTADO,
   type EnvioPrecoFase,
   type EnvioPrecoMercadoLivre,
+  type EnvioPrecoMercadoLivreStatus,
   type LinhaRelatorioEnvioPreco,
   RELATORIO_ENVIO_PRECO_ERRO_MAX,
   RELATORIO_ENVIO_PRECO_SHARD_SIZE,
@@ -188,9 +197,13 @@ export async function startPriceSyncJob(
     // Orphaned job (crash bypassed the final-attempt stamp): mark it failed —
     // best-effort, a stamp failure must not block the fresh job the user asked
     // for, so it is only logged.
+    //
+    // Guarded like every other terminal stamp: an operator cancelling this very
+    // job in the window between the query above and this write must win, and a
+    // `not-running` outcome here is that no-op, not a failure.
     try {
-      await envioPrecoMercadoLivreCollection.merge(db, {}, staleDoc.id, {
-        status: 'failed',
+      await finalizePriceSyncJob(db, staleDoc.id, {
+        status: ENVIO_PRECO_MERCADO_LIVRE_STATUS.failed,
         erro: 'job órfão — superado por um novo envio',
         finishedAt: now,
         updatedAt: now,
@@ -278,6 +291,208 @@ async function readJob(db: Firestore, jobId: string): Promise<EnvioPrecoMercadoL
   );
 }
 
+/** What a terminal stamp actually did — see {@link finalizePriceSyncJob}. */
+export type PriceSyncFinalizeOutcome = 'stamped' | 'not-running' | 'not-found' | 'wrong-integracao';
+
+/**
+ * The fields a terminal stamp may write. `status` is terminal by construction.
+ *
+ * A type alias rather than an interface, deliberately: only an alias gets an
+ * implicit index signature, which is what makes it assignable to the
+ * `Record<string, unknown>` the collection handle's `parseMerge` takes.
+ */
+export type PriceSyncTerminalPatch = {
+  status: Exclude<EnvioPrecoMercadoLivreStatus, 'running'>;
+  finishedAt: number;
+  updatedAt: number;
+  erro?: string | null;
+  filaRestante?: number;
+  relatorioCompleto?: boolean;
+  pausas?: number;
+};
+
+/**
+ * The patch as actually WRITTEN: the caller's, plus the two report counters that
+ * only the synthetic-row path below may move. They are deliberately off
+ * {@link PriceSyncTerminalPatch} — a caller computing a shard cursor outside the
+ * transaction is the stale value rule 7 is about.
+ */
+type PriceSyncTerminalWrite = PriceSyncTerminalPatch & {
+  relatorioLinhas?: number;
+  relatorioShards?: number;
+};
+
+/** Extra work a terminal stamp derives from the job it just read — see `doSnapshot`. */
+interface PriceSyncFinalizeDerivado {
+  /** Merged over the caller's patch. */
+  patch?: Partial<PriceSyncTerminalPatch>;
+  /** One synthetic report row, sharded from the snapshot's own `relatorioLinhas`. */
+  linha?: LinhaRelatorioEnvioPreco;
+}
+
+export interface PriceSyncFinalizeOptions {
+  /** Ownership check for the route: only finalize a job belonging to the named conta. */
+  expectIntegracaoId?: string;
+  /**
+   * Everything the patch takes FROM the read, computed INSIDE the callback so an
+   * OCC retry recomputes it against the winner instead of replaying a value
+   * captured before the transaction (root `CLAUDE.md` rule 7): `filaRestante`,
+   * and the one synthetic row whose shard index comes off `relatorioLinhas`.
+   */
+  doSnapshot?: (job: EnvioPrecoMercadoLivre) => PriceSyncFinalizeDerivado;
+}
+
+/**
+ * Stamp a terminal state on a price-sync job **only while it is still
+ * `running`** — the single writer of terminal `status` in this flow.
+ *
+ * There were FIVE writers of that field and none of them coordinated: the
+ * stale-orphan reclaim in `startPriceSyncJob`, `failJob`, the `completed` flip,
+ * the final-attempt `stampFalhaTerminal`, and the start route's enqueue-failure
+ * fallback. #1144 added a sixth — the operator's `atualizar-precos/cancelar`,
+ * which lands at any moment, including mid-dispatch. A plain `merge()` from the
+ * dispatch would then silently overwrite a cancel that arrived while it was
+ * draining, and a cancel would overwrite a `completed` that had just landed:
+ * the lost update of root `CLAUDE.md` rule 7, in both directions.
+ *
+ * Class **B**: the decision to finalize is made outside the callback (the loop
+ * ran out of work; the operator clicked cancel), so the guard is explicit —
+ * `status` and `integracaoId` are re-read through `tx.get` and the write only
+ * happens on that fresh snapshot. An OCC retry re-runs both checks, so a
+ * concurrent winner turns this into a `'not-running'` no-op rather than a
+ * clobber.
+ *
+ * ⚠️ Anything the patch DERIVES from the job belongs in `doSnapshot`, not in the
+ * caller: a `filaRestante` or a shard index computed before the transaction is
+ * exactly the value an OCC retry would re-apply verbatim over the winner.
+ *
+ * ⚠️ `checkpoint()` is deliberately NOT routed through here. It never writes
+ * `status`, so it cannot clobber a terminal state, and putting a per-item write
+ * behind an OCC retry loop inside a 540s worker would cost contention for
+ * nothing.
+ */
+export async function finalizePriceSyncJob(
+  db: Firestore,
+  jobId: string,
+  patch: PriceSyncTerminalPatch,
+  opts: PriceSyncFinalizeOptions = {},
+): Promise<PriceSyncFinalizeOutcome> {
+  const ref = envioPrecoMercadoLivreCollection.docRef(db, {}, jobId);
+  return db.runTransaction<PriceSyncFinalizeOutcome>(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return 'not-found';
+    const job = envioPrecoMercadoLivreCollection.parseRead(
+      snap.data(),
+      envioPrecoMercadoLivreCollection.docPath({}, jobId),
+    );
+    if (opts.expectIntegracaoId != null && job.integracaoId !== opts.expectIntegracaoId) {
+      return 'wrong-integracao';
+    }
+    if (job.status !== ENVIO_PRECO_MERCADO_LIVRE_STATUS.running) return 'not-running';
+
+    const derivado = opts.doSnapshot?.(job) ?? {};
+    const final: PriceSyncTerminalWrite = { ...patch, ...derivado.patch };
+
+    if (derivado.linha) {
+      // The row lands in the shard the PERSISTED counter selects, exactly as
+      // `checkpoint()` assigns one, so a retry recomputes the same index rather
+      // than drifting. Same transaction as the stamp, so the two cannot half-land.
+      const total = job.relatorioLinhas + 1;
+      const indice = Math.floor(job.relatorioLinhas / RELATORIO_ENVIO_PRECO_SHARD_SIZE);
+      tx.set(
+        relatorioEnvioPrecoMercadoLivreCollection.docRef(
+          db,
+          { envioId: jobId },
+          relatorioEnvioPrecoShardId(indice),
+        ),
+        relatorioEnvioPrecoMercadoLivreCollection.parseMerge({
+          linhas: { [relatorioEnvioPrecoRowKey(derivado.linha)]: derivado.linha },
+          timestamp: final.updatedAt,
+        }) as DocumentData,
+        { merge: true },
+      );
+      final.relatorioLinhas = total;
+      final.relatorioShards = Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1;
+    }
+
+    tx.set(ref, envioPrecoMercadoLivreCollection.parseMerge(final) as DocumentData, {
+      merge: true,
+    });
+    return 'stamped';
+  });
+}
+
+/**
+ * Operator-initiated cancel — the "Cancelar envio" action behind the job card's
+ * close button (#1144).
+ *
+ * The task handler needs no cooperation: `processPriceSyncJob` re-reads the job
+ * at the top of every dispatch and returns `'noop'` the moment the status is not
+ * `running`, and it re-checks once more before re-enqueuing, so an in-flight
+ * dispatch finishes its current batch and schedules nothing further.
+ *
+ * ⚠️ Unlike the mass import, this is NOT what unblocks the button — a `running`
+ * job already stops blocking once its `updatedAt` passes
+ * `PRICE_SYNC_STALE_RUNNING_MS`. What it buys is not making the operator wait
+ * out those six hours, and stopping work that is still live.
+ *
+ * It records the abandoned queue the same way every other terminal stamp that
+ * stops short does: `filaRestante` plus ONE synthetic `JOB_CANCELADO` row. Both
+ * come off the transaction's own snapshot. Without them the CSV's completeness
+ * trailer reads `0 itens não foram tentados` on a run that abandoned a full
+ * queue — the defect `stampFalhaTerminal` exists to have fixed.
+ */
+export async function cancelPriceSyncJob(
+  db: Firestore,
+  args: { jobId: string; integracaoId: string; now?: number },
+): Promise<PriceSyncFinalizeOutcome> {
+  const nowMs = args.now ?? Date.now();
+  return finalizePriceSyncJob(
+    db,
+    args.jobId,
+    {
+      status: ENVIO_PRECO_MERCADO_LIVRE_STATUS.cancelled,
+      // `erro` is for a failure that exhausted the retries. A cancel is not one.
+      erro: null,
+      relatorioCompleto: false,
+      finishedAt: nowMs,
+      updatedAt: nowMs,
+    },
+    {
+      expectIntegracaoId: args.integracaoId,
+      doSnapshot: (job) => ({
+        patch: { filaRestante: job.fila.length },
+        linha: linhaJobInterrompido(job.integracaoId, 'JOB_CANCELADO', null),
+      }),
+    },
+  );
+}
+
+/**
+ * The one synthetic row a terminal stamp writes to say the rest was never
+ * attempted. `motivo` carries which kind of stop it was; the COUNT rides
+ * `filaRestante`, so this row never multiplies with the queue length.
+ */
+function linhaJobInterrompido(
+  integracaoId: string,
+  motivo: 'JOB_INTERROMPIDO' | 'JOB_CANCELADO',
+  erro: string | null,
+): LinhaRelatorioEnvioPreco {
+  return {
+    produtoId: integracaoId,
+    variacaoProdutoId: null,
+    anuncioId: null,
+    linkDocId: null,
+    resultado: ENVIO_PRECO_RESULTADO.naoTentado,
+    fase: ENVIO_PRECO_FASE.envio,
+    motivo,
+    erro: erro === null ? null : erro.slice(0, RELATORIO_ENVIO_PRECO_ERRO_MAX),
+    preco: null,
+    precoAnterior: null,
+    variacoes: null,
+  };
+}
+
 /**
  * Stamp a job `failed` from OUTSIDE the dispatch closure — the final-attempt
  * catch, which cannot reach `fila`/`pendentes`/`checkpoint` because those are
@@ -289,10 +504,12 @@ async function readJob(db: Firestore, jobId: string): Promise<EnvioPrecoMercadoL
  * queued drafts reads as "0 itens não foram tentados" with no row explaining
  * anything, which is exactly what `relatorioCompleto: false` alone cannot convey.
  *
- * Re-reading is correct rather than merely convenient: whatever the dying
- * dispatch held in memory is gone, so the last committed checkpoint IS the run's
- * final state, and its `relatorioLinhas` is the shard cursor the row belongs at.
- * One batch, so the row and the terminal stamp cannot half-land.
+ * Deriving both from the transaction's own snapshot is correct rather than
+ * merely convenient: whatever the dying dispatch held in memory is gone, so the
+ * last committed checkpoint IS the run's final state, and its `relatorioLinhas`
+ * is the shard cursor the row belongs at. One transaction, so the row and the
+ * terminal stamp cannot half-land — and, since #1144, so a cancel that landed
+ * while this dispatch was dying is not overwritten by it.
  */
 async function stampFalhaTerminal(
   db: Firestore,
@@ -300,53 +517,26 @@ async function stampFalhaTerminal(
   erro: string,
   nowMs: number,
 ): Promise<void> {
-  const job = await readJob(db, jobId);
-  if (!job) return; // nothing to stamp; the caller still logs the original error
-
-  const linha: LinhaRelatorioEnvioPreco = {
-    produtoId: job.integracaoId,
-    variacaoProdutoId: null,
-    anuncioId: null,
-    linkDocId: null,
-    resultado: ENVIO_PRECO_RESULTADO.naoTentado,
-    fase: ENVIO_PRECO_FASE.envio,
-    motivo: 'JOB_INTERROMPIDO',
-    erro: erro.slice(0, RELATORIO_ENVIO_PRECO_ERRO_MAX),
-    preco: null,
-    precoAnterior: null,
-    variacoes: null,
-  };
-  const total = job.relatorioLinhas + 1;
-  const indice = Math.floor(job.relatorioLinhas / RELATORIO_ENVIO_PRECO_SHARD_SIZE);
-
-  const batch = db.batch();
-  batch.set(
-    relatorioEnvioPrecoMercadoLivreCollection.docRef(
-      db,
-      { envioId: jobId },
-      relatorioEnvioPrecoShardId(indice),
-    ),
-    relatorioEnvioPrecoMercadoLivreCollection.parseMerge({
-      linhas: { [relatorioEnvioPrecoRowKey(linha)]: linha },
-      timestamp: nowMs,
-    }) as DocumentData,
-    { merge: true },
-  );
-  batch.set(
-    envioPrecoMercadoLivreCollection.docRef(db, {}, jobId),
-    envioPrecoMercadoLivreCollection.parseMerge({
-      status: 'failed',
+  await finalizePriceSyncJob(
+    db,
+    jobId,
+    {
+      status: ENVIO_PRECO_MERCADO_LIVRE_STATUS.failed,
       erro,
-      filaRestante: job.fila.length,
-      relatorioLinhas: total,
-      relatorioShards: Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1,
       relatorioCompleto: false,
       finishedAt: nowMs,
       updatedAt: nowMs,
-    }) as DocumentData,
-    { merge: true },
+    },
+    {
+      doSnapshot: (job) => ({
+        patch: { filaRestante: job.fila.length },
+        linha: linhaJobInterrompido(job.integracaoId, 'JOB_INTERROMPIDO', erro),
+      }),
+    },
   );
-  await batch.commit();
+  // `not-found` and `not-running` are both no-ops here, deliberately: there is
+  // nothing to stamp, or someone terminal got there first. The caller logs the
+  // original error either way.
 }
 
 /** Deterministic outcome of one dispatch — see the module doc for each branch. */
@@ -542,17 +732,20 @@ export async function processPriceSyncJob(
      * commit re-processes the item and re-reports it exactly once, and a crash
      * after does neither.
      *
-     * ⚠️ A batch is NOT a transaction — nothing here is read-modify-write, since
-     * the shard index is derived from `relatorioLinhas`, a counter that only
-     * advances on a committed checkpoint. Promoting this to a Firestore
-     * transaction would buy nothing and cost an OCC retry loop inside a 540s
-     * worker.
+     * ⚠️ A batch, not a `runTransaction`, and that is deliberate on both counts.
+     * Nothing here is read-modify-write — the shard index is derived from
+     * `relatorioLinhas`, a counter that only advances on a committed checkpoint —
+     * so an OCC retry loop inside a 540s worker would buy nothing and cost
+     * contention. And it writes no `status`, so it cannot clobber a terminal
+     * state: `finalizePriceSyncJob` is the sole writer of that field, and this
+     * checkpoint is deliberately outside it.
      *
-     * ⚠️ The phrase above deliberately avoids the bare API name:
-     * `firestore-transaction-inventory.test.js` greps the literal token across
-     * the repo and cannot tell a CALL from a mention in a comment, so naming it
-     * here would demand an inventory entry for a file that runs no transaction —
-     * i.e. a false entry in the ledger that exists to be trusted.
+     * ⚠️ This paragraph used to avoid the bare API name, because
+     * `firestore-transaction-inventory.test.js` greps the literal token and
+     * cannot tell a CALL from a mention — so naming it would have demanded an
+     * entry for a file that ran no transaction. Since #1144 the file runs one
+     * (`finalizePriceSyncJob`) and carries a real entry, so the ledger is
+     * truthful either way and the evasion is no longer needed.
      */
     const checkpoint = async (): Promise<void> => {
       // Assign each pending row its shard from the PERSISTED counter, so a
@@ -569,11 +762,38 @@ export async function processPriceSyncJob(
       const shards =
         total === 0 ? 0 : Math.floor((total - 1) / RELATORIO_ENVIO_PRECO_SHARD_SIZE) + 1;
 
+      /**
+       * ⚠️ A checkpoint carrying NO rows must not move the row counters, and this
+       * is a correctness guard rather than an optimisation. `relatorioShards` is
+       * what the download PAGES OVER, and `total` here is derived from this
+       * dispatch's local counter — which does not include the synthetic
+       * `JOB_CANCELADO`/`JOB_INTERROMPIDO` row a terminal stamp may have just
+       * committed. Writing it back with zero pending rows therefore ROLLS BACK
+       * over that increment, and when the cancel landed on an exact shard
+       * boundary (`relatorioLinhas` a multiple of RELATORIO_ENVIO_PRECO_SHARD_SIZE)
+       * the synthetic row sits in a shard the rolled-back count no longer
+       * declares — a row that exists and can never be downloaded. With rows to
+       * write the counter only ever advances, so this is the whole exposure.
+       */
+      const contadores =
+        pendentes.length === 0 ? {} : { relatorioLinhas: total, relatorioShards: shards };
+
       const batch = db.batch();
       batch.set(
         envioPrecoMercadoLivreCollection.docRef(db, {}, payload.jobId),
         envioPrecoMercadoLivreCollection.parseMerge({
           fila,
+          // ⚠️ Written HERE, on every checkpoint, and not only by the terminal
+          // stamps — because `filaRestante` is a claim ABOUT `fila` and the two
+          // must land together or the CSV lies. A cancel stamps it from the
+          // snapshot it read and then an in-flight dispatch keeps draining (the
+          // batch finishes, by design — see the route docblock), so a
+          // cancel-time count would stay frozen at N while `fila` emptied: the
+          // trailer would print "N itens não foram tentados" about items whose
+          // own rows are in the same report. Derived on every write, last-write-
+          // wins is CORRECT, because both writers derive it from their own view
+          // of the queue rather than from a captured number.
+          filaRestante: fila.length,
           afterAnchorId,
           planejamentoConcluido,
           afterLinkPath,
@@ -588,8 +808,7 @@ export async function processPriceSyncJob(
           pausas,
           skips,
           failures,
-          relatorioLinhas: total,
-          relatorioShards: shards,
+          ...contadores,
           updatedAt: nowMs,
         }) as DocumentData,
         { merge: true },
@@ -652,10 +871,15 @@ export async function processPriceSyncJob(
       // terminal state. Two writes, deliberately: `relatorioCompleto` must stay
       // false here, and a failure stamp that also carried the rows would have to
       // duplicate the whole shard-assignment path.
+      //
+      // No `doSnapshot`: `fila` and the row are this dispatch's own in-memory
+      // state, which `checkpoint()` has just committed, so there is nothing to
+      // re-derive from the snapshot. The guard still applies — a cancel that
+      // landed mid-drain wins and this returns `not-running`.
       await checkpoint();
-      await envioPrecoMercadoLivreCollection.merge(db, {}, payload.jobId, {
+      await finalizePriceSyncJob(db, payload.jobId, {
         ...extra,
-        status: 'failed',
+        status: ENVIO_PRECO_MERCADO_LIVRE_STATUS.failed,
         erro,
         filaRestante: fila.length,
         relatorioCompleto: false,
@@ -868,12 +1092,19 @@ export async function processPriceSyncJob(
       !planejamentoConcluido ||
       (!reconciliacaoConcluida && precoReconciliacaoHabilitada())
     ) {
+      // A cancel that landed while this dispatch was draining must not buy one
+      // more. The next dispatch would stop at the status gate above anyway —
+      // this just declines to pay for it.
+      const atual = await readJob(db, payload.jobId);
+      if (!atual || atual.status !== ENVIO_PRECO_MERCADO_LIVRE_STATUS.running) return 'noop';
       await deps.scheduler.enqueue({ jobId: payload.jobId, integracaoId: payload.integracaoId });
       return 'continued';
     }
 
-    await envioPrecoMercadoLivreCollection.merge(db, {}, payload.jobId, {
-      status: 'completed',
+    // Guarded, not a plain merge: a cancel may have landed while this dispatch
+    // was draining, and `completed` must not overwrite it (rule 7).
+    const stamp = await finalizePriceSyncJob(db, payload.jobId, {
+      status: ENVIO_PRECO_MERCADO_LIVRE_STATUS.completed,
       // ⚠️ The ONLY place this is written true. Reaching here means the fila is
       // drained AND `planejamentoConcluido` AND the reconciliation is done, so
       // it is exactly the claim "the report covers the whole run" — which is
@@ -882,7 +1113,7 @@ export async function processPriceSyncJob(
       finishedAt: nowMs,
       updatedAt: nowMs,
     });
-    return 'done';
+    return stamp === 'stamped' ? 'done' : 'noop';
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     if (retryCount < PRICE_SYNC_MAX_ATTEMPTS - 1) throw err; // let the queue retry with backoff
