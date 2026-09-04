@@ -241,6 +241,12 @@ describe('IncidentesTab — the resolução lock re-arms from live data (#1250)'
     fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
 
     expect(await screen.findByText(/frete da resolução avançou/i)).toBeDefined();
+    // A resolução-only conflict must still SHOW something: rendering both sides
+    // as "alterado" would be a diff with no information in it, at exactly the
+    // moment the operator has to decide whether to override.
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByText(/Item devolvido .* frete Iniciado/)).toBeDefined();
+    expect(dialog.getByText(/Item devolvido .* frete Postado/)).toBeDefined();
   });
 
   it('refuses to re-create an incidente deleted under the open form', async () => {

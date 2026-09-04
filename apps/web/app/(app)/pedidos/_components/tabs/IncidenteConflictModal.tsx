@@ -3,8 +3,10 @@
 import { Alert, Button, Group, Modal, Stack, Table, Text } from '@mantine/core';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import {
+  ESTADO_FRETE_LABELS,
   ORIGEM_INCIDENTE_LABELS,
   TIPO_INCIDENTE_LABELS,
+  TIPO_RESOLUCAO_LABELS,
   incidenteSchema,
   type Incidente,
 } from '@delfrance/schemas';
@@ -31,9 +33,29 @@ function labelDoCampo(campo: CampoAutoralIncidente): string {
   return parseZodDescription(incidenteSchema.shape[campo]).label ?? campo;
 }
 
+const BRL = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
+
+/**
+ * A one-line summary of a resolução for the diff table.
+ *
+ * ⚠️ Deliberately not `'alterado'`. The lock arming is a resolução-ONLY
+ * conflict — the case this whole guard exists for — so rendering both sides as
+ * "alterado" would hand the operator a diff with nothing in it at exactly the
+ * moment they have to decide whether to override. The full object would be a
+ * wall of JSON; these are the three fields the editor lets them author plus the
+ * frete estado that takes the resolução away from them.
+ */
+function resumoResolucao(res: Incidente['resolucao']): string {
+  if (res == null) return '(sem resolução)';
+  const tipo = TIPO_RESOLUCAO_LABELS[res.tipo] ?? String(res.tipo);
+  const estado = res.frete?.estado;
+  const frete = estado ? `frete ${ESTADO_FRETE_LABELS[estado] ?? estado}` : 'sem frete';
+  return `${tipo} · ${BRL.format(res.valor)} · ${frete}`;
+}
+
 function formatValue(campo: CampoAutoralIncidente, doc: Incidente | null): string {
-  // The two enum-coded fields render as their label — a raw `'returns'` or a
-  // bare `2` in a diff the operator has to judge is worse than no diff at all.
+  // The enum-coded fields render as their label — a raw `'returns'` or a bare
+  // `2` in a diff the operator has to judge is worse than no diff at all.
   if (campo === 'tipo') {
     const tipo = doc?.tipo;
     return tipo == null ? '(vazio)' : (TIPO_INCIDENTE_LABELS[tipo] ?? tipo);
@@ -42,11 +64,10 @@ function formatValue(campo: CampoAutoralIncidente, doc: Incidente | null): strin
     const origem = doc?.origem;
     return origem == null ? '(vazio)' : (ORIGEM_INCIDENTE_LABELS[origem] ?? String(origem));
   }
+  if (campo === 'resolucao') return resumoResolucao(doc?.resolucao ?? null);
+  // Everything left is `string | null` (motivoDoIncidente, comentarios).
   const value = doc?.[campo] ?? null;
-  if (value === null) return '(vazio)';
-  if (typeof value === 'string') return value.trim() === '' ? '(vazio)' : value;
-  // `resolucao` is an object; showing it inline would be a wall of JSON.
-  return 'alterado';
+  return value === null || value.trim() === '' ? '(vazio)' : value;
 }
 
 /**
