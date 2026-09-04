@@ -77,6 +77,34 @@ const PRICE_SYNC_LIST_LIMIT = 8;
  * one the operator meant instead of guessing — unless the job is KNOWN to have
  * finished, in which case there is nothing to ask about. See `encerrado`.
  */
+/**
+ * The cancel half of {@link JobCardShell}'s props — a UNION, so the three travel
+ * together or not at all.
+ *
+ * ⚠️ It was three independent optionals with a docblock saying
+ * `describeCancelError` was "required alongside `onCancel`". A rule asserted in a
+ * comment is a rule nothing enforces: a flow could ship a cancel with no copy for
+ * its own failures, and only a runtime fallback would have caught it. The shell
+ * already learned this once — it called `describeMassImportCancelError` outright
+ * while serving two flows (#1144), so a price-sync 404 read "Importação não
+ * encontrada." Here the compiler carries it: pass `onCancel` and you must pass
+ * the label and the mapper.
+ */
+type CancelaveisProps =
+  | {
+      /**
+       * Stops the job server-side. A rejection is shown in the confirm itself and
+       * never rethrown — see `handleCancel`.
+       */
+      onCancel: () => Promise<void>;
+      /** Copy for the destructive button, e.g. "Cancelar importação". */
+      cancelLabel: string;
+      /** Per-flow copy for a rejected cancel. Always returns something to show. */
+      describeCancelError: (err: unknown) => string;
+    }
+  /** This flow has no cancel yet: the X keeps its dismiss-only behaviour. */
+  | { onCancel?: never; cancelLabel?: never; describeCancelError?: never };
+
 function JobCardShell({
   conta,
   flowLabel,
@@ -107,25 +135,8 @@ function JobCardShell({
    */
   encerrado?: boolean;
   onDismiss: () => void;
-  /**
-   * Stops the job server-side. Omitted = this flow has no cancel yet, and the X
-   * keeps its original dismiss-only behaviour. A rejection is shown in the
-   * confirm itself and never rethrown — see `handleCancel`.
-   */
-  onCancel?: () => Promise<void>;
-  /** Copy for the destructive button, e.g. "Cancelar importação". */
-  cancelLabel?: string;
-  /**
-   * Per-flow copy for a rejected cancel. A PROP rather than a hard-coded
-   * `describeMassImportCancelError`, which is what this shell called while
-   * serving two flows: the price-sync cancel (#1144) would have rendered
-   * "Importação não encontrada." on its own 404, and the shared-shell bug would
-   * have read as a backend one. Required alongside `onCancel` — a flow that can
-   * be cancelled must be able to say why a cancel failed.
-   */
-  describeCancelError?: (err: unknown) => string;
   children: ReactNode;
-}) {
+} & CancelaveisProps) {
   const [confirmOpened, setConfirmOpened] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cancelErro, setCancelErro] = useState<string | null>(null);
@@ -170,9 +181,11 @@ function JobCardShell({
       }
       setCancelErro(
         describeCancelError?.(err) ??
-          // Unreachable while every `onCancel` ships its mapper, and deliberately
-          // not an empty string: a modal whose spinner stops with nothing said is
-          // the failure the whole catch exists to prevent.
+          // Unreachable: `CancelaveisProps` makes the mapper mandatory wherever
+          // `onCancel` is, and `handleCancel` returns early without one. The `??`
+          // survives only because destructured union members do not narrow
+          // against each other — and an empty string here would be the silent
+          // modal the whole catch exists to prevent.
           'Não foi possível cancelar.',
       );
     } finally {

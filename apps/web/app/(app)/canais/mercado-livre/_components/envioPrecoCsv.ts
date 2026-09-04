@@ -14,7 +14,10 @@
  * report's trailer and as `RECONCILIACAO_INCOMPLETA`. When the run did not cover
  * everything the trailer says so in words, not just in numbers.
  */
-import type { MercadoLivreRelatorioEnvioPrecoLinha } from '@/lib/mercado-livre/client';
+import type {
+  MercadoLivreRelatorioEnvioPrecoLinha,
+  MercadoLivreRelatorioEnvioPrecoPagina,
+} from '@/lib/mercado-livre/client';
 import { CSV_BOM, csvRow } from '@/lib/nfe/export/csv';
 
 /**
@@ -81,21 +84,23 @@ function comparar(
   return a.sku.localeCompare(b.sku);
 }
 
-export interface EnvioPrecoCsvResumo {
-  /**
-   * Printed verbatim into the incomplete-report trailer below, which is why the
-   * union has to track the schema: a `cancelled` run (#1144) is exactly a run
-   * whose report is partial, and a narrower type here would have silently
-   * excluded the case the trailer exists for.
-   */
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
-  relatorioCompleto: boolean;
-  filaRestante: number;
-  planejados: number;
-  enviados: number;
-  pulados: number;
-  falhas: number;
-}
+/**
+ * The job-level facts the trailer needs — DERIVED from the relatório page rather
+ * than re-spelled, because that page is literally where every one of them comes
+ * from (`useBaixarRelatorioPreco` passes them straight through).
+ *
+ * ⚠️ It used to hand-spell them, and the `status` union carried a comment saying
+ * it "has to track the schema". That is the root `CLAUDE.md` smell: a comment
+ * asserting what another copy does, which reads correct right up until the two
+ * disagree. `cancelled` (#1144) was remembered here, and the next member would
+ * have been a coin flip. `Pick` makes the compiler carry the rule instead — and
+ * a status the wire can return is now, by construction, a status the trailer can
+ * print.
+ */
+export type EnvioPrecoCsvResumo = Pick<
+  MercadoLivreRelatorioEnvioPrecoPagina,
+  'status' | 'relatorioCompleto' | 'filaRestante' | 'planejados' | 'enviados' | 'pulados' | 'falhas'
+>;
 
 /** Build the whole CSV text. Pure — the caller hands it to `saveBlob`. */
 export function buildEnvioPrecoCsv(
