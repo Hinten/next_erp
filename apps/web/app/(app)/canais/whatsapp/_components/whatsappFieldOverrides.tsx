@@ -4,13 +4,11 @@ import { Group, Stack, Switch, Text } from '@mantine/core';
 import { TimeInput } from '@mantine/dates';
 import type { HorarioWhatsapp, PeriodoWhatsapp } from '@delfrance/schemas';
 import type { FieldConfig, FieldRenderProps } from '@delfrance/ui';
-import { depositoCollection } from '@/lib/data/depositoCollection';
-import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
-import { operacaoCollection } from '@/lib/data/operacaoCollection';
-import { refRenderInput } from '@/components/collection-select/refRenderInput';
-import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
 import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
-import { CorInput } from '@/components/inputs/CorInput';
+import {
+  integracaoExcludedFields,
+  integracaoFieldsCompartilhados,
+} from '../../_components/integracaoFieldOverrides';
 import { applyWeekdayEdit, defaultHorario, hhmmToMs, msToHHMM } from './horarioFuncionamento';
 
 /* -------------------------------------------------------------------------- */
@@ -126,13 +124,19 @@ function HorarioFuncionamentoInput({ value, onChange, disabled, label, hint }: F
 export const WHATSAPP_SECTIONS: string[] = ['Geral', 'Conexão (Cloud API)', 'Atendimento'];
 
 /**
- * Field config shared by the WhatsApp create and edit screens — mirrors
- * `balcaoFields`/`mercadoLivreFields` (the outer-ref selectors + `cor`), plus
- * the WhatsApp-only identity/messaging fields (#528). Each field carries a
- * `section` so the form renders as subject-grouped tabs (`WHATSAPP_SECTIONS`).
+ * Field config for the WhatsApp create and edit screens: the shared
+ * `integracao` block (the six outer-ref selectors + `cor`/`nome`/`ativo`/
+ * `padrao`, all on the `'Geral'` tab) plus the WhatsApp-only
+ * identity/messaging fields (#528). Every field carries a `section` so the
+ * form renders as subject-grouped tabs (`WHATSAPP_SECTIONS`).
+ *
+ * WhatsApp names no `canal` to the shared factory: it is not a marketplace, so
+ * "pedidos importados do …" and "estoque enviado ao …" would be wrong here —
+ * which is why its Filial and Depósito fields carry no hint, as they ship
+ * today.
  */
 export const whatsappFields: Record<string, FieldConfig> = {
-  nome: { label: 'Nome', section: 'Geral' },
+  ...integracaoFieldsCompartilhados({ section: 'Geral' }),
   numero: {
     label: 'Número',
     section: 'Geral',
@@ -140,9 +144,6 @@ export const whatsappFields: Record<string, FieldConfig> = {
     renderInput: TelefoneField,
     prepareForSave: prepareForSaveTelefone,
   },
-  ativo: { label: 'Ativo', section: 'Geral' },
-  padrao: { label: 'Padrão', section: 'Geral' },
-  cor: { section: 'Geral', renderInput: CorInput },
   phoneNumberId: {
     label: 'ID do Número de Telefone',
     section: 'Conexão (Cloud API)',
@@ -187,36 +188,6 @@ export const whatsappFields: Record<string, FieldConfig> = {
     hint: 'Ative os dias em que a conta atende e defina o horário de abertura/fechamento de cada um.',
     renderInput: HorarioFuncionamentoInput,
   },
-  filialIntegracaoPedidoOuterRef: {
-    label: 'Filial',
-    section: 'Geral',
-    renderInput: filialRefRenderInput(true),
-  },
-  tabelaNormalOuterRef: {
-    label: 'Tabela de preços',
-    section: 'Geral',
-    renderInput: refRenderInput(listaDePrecosCollection, true),
-  },
-  tabelaPromocionalOuterRef: {
-    label: 'Tabela promocional',
-    section: 'Geral',
-    renderInput: refRenderInput(listaDePrecosCollection, false),
-  },
-  operacaoOuterRef: {
-    label: 'Operação fiscal',
-    section: 'Geral',
-    renderInput: refRenderInput(operacaoCollection, false),
-  },
-  operacaoDevolucaoOuterRef: {
-    label: 'Operação de devolução',
-    section: 'Geral',
-    renderInput: refRenderInput(operacaoCollection, false),
-  },
-  depositoOuterRef: {
-    label: 'Depósito',
-    section: 'Geral',
-    renderInput: refRenderInput(depositoCollection, true),
-  },
 };
 
 /**
@@ -225,25 +196,13 @@ export const whatsappFields: Record<string, FieldConfig> = {
  *  - `cpf_cnpj`, `idCadIntTran`, `modalidadeFreteImportacao` are marketplace-
  *    oriented and irrelevant here, mirroring Balcão.
  *  - `dataCadastro` is stamped automatically on create.
- *  - `verificado` is set server-side once the number completes the Cloud API
- *    verification flow (#527/#529) — not hand-edited here, mirroring how the
- *    OAuth channels never expose their own connection-status flags as inputs.
- *  - the per-OTHER-channel account fields below (#289) are irrelevant to a
- *    WhatsApp account — see each field's own comment.
+ *  - `verificado` IS a WhatsApp field, hidden anyway: it is set server-side
+ *    once the number completes the Cloud API verification flow (#527/#529) —
+ *    not hand-edited here, mirroring how the OAuth channels never expose their
+ *    own connection-status flags as inputs. Hence the explicit `extra`, since
+ *    the shared rule keeps the owner channel's own fields visible.
+ *  - every OTHER channel's flat account field (#289) is irrelevant to a
+ *    WhatsApp account, and left visible each renders as a raw number/text
+ *    input.
  */
-export const whatsappExcludedFields = [
-  'tipo',
-  'cpf_cnpj',
-  'idCadIntTran',
-  'modalidadeFreteImportacao',
-  'dataCadastro',
-  'ultimaModificacao',
-  'verificado',
-  'user_id', // latent leak (rendered as a raw number input) — per-channel field, hidden here, surfaced by their own channel screens/flows
-  'modoEnvioMercadoLivre', // Mercado Livre field — hidden here, surfaced by its own channel screen
-  'shop_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-  'main_account_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-  'tabelasAtacado', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-  'selling_partner_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-  'tenant_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
-];
+export const whatsappExcludedFields = integracaoExcludedFields('whatsapp', ['verificado']);
