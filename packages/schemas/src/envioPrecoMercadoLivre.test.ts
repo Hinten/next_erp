@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ENVIO_PRECO_MERCADO_LIVRE_STATUS,
   envioPrecoFailureSchema,
   envioPrecoFilaItemSchema,
   envioPrecoMercadoLivreSchema,
@@ -175,11 +176,21 @@ describe('envioPrecoMercadoLivreSchema', () => {
     ).toBe(false);
   });
 
-  it('only accepts running/completed/failed as status', () => {
+  it('only accepts running/completed/failed/cancelled as status', () => {
     expect(envioPrecoMercadoLivreStatusSchema.safeParse('running').success).toBe(true);
     expect(envioPrecoMercadoLivreStatusSchema.safeParse('completed').success).toBe(true);
     expect(envioPrecoMercadoLivreStatusSchema.safeParse('failed').success).toBe(true);
+    // #1144 — the operator's cancel is terminal like the other two.
+    expect(envioPrecoMercadoLivreStatusSchema.safeParse('cancelled').success).toBe(true);
     expect(envioPrecoMercadoLivreStatusSchema.safeParse('parked').success).toBe(false);
+  });
+
+  it('names every status member on the as-const companion', () => {
+    // `prefer-schema-enum` reads the companion, so a member added to the enum
+    // and not to it is a member no call site can spell.
+    expect(Object.keys(ENVIO_PRECO_MERCADO_LIVRE_STATUS).sort()).toEqual(
+      [...envioPrecoMercadoLivreStatusSchema.options].sort(),
+    );
   });
 });
 

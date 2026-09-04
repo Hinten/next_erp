@@ -469,6 +469,21 @@ export interface MercadoLivreClient {
     jobId: string;
   }): Promise<MercadoLivrePriceSyncStatus>;
   /**
+   * Cancel a running price sync (PERM.integracao.write) — stamps the job
+   * `cancelled`, which the task handler observes at its next dispatch: an
+   * in-flight batch finishes and nothing further is scheduled.
+   *
+   * ⚠️ Unlike `cancelMassImport` this is not how a stuck job gets CLEARED — a
+   * price-sync job stops blocking `startPriceSync` on its own once it goes six
+   * hours without a checkpoint. What it buys is not waiting those six hours.
+   *
+   * A job that already finished comes back as a 409
+   * `MercadoLivreClientHttpError` with `code: 'ML_PRICE_SYNC_NOT_RUNNING'` — one
+   * letter from the start route's `ML_PRICE_SYNC_RUNNING`, and the opposite
+   * meaning; an unknown or foreign jobId 404s.
+   */
+  cancelPriceSync(input: { integracaoId: string; jobId: string }): Promise<{ status: 'cancelled' }>;
+  /**
    * Push the CURRENT stock of up to 50 produtos to their ML listings, right now
    * (PERM.integracao.write) — the on-demand twin of the 15-minute sweep (#819).
    *
@@ -1094,6 +1109,11 @@ export function createMercadoLivreClient(config: {
         },
         input.signal,
       ),
+    cancelPriceSync: (input) =>
+      call('/api/marketplace/mercado-livre/atualizar-precos/cancelar', wire.cancelledSchema, {
+        integracaoId: input.integracaoId,
+        jobId: input.jobId,
+      }),
     priceSyncStatus: (input) =>
       call(
         `/api/marketplace/mercado-livre/atualizar-precos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,

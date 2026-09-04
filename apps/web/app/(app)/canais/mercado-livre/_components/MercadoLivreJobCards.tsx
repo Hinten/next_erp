@@ -39,7 +39,10 @@ import {
 import { describeMercadoLivreFailure } from '@/lib/mercado-livre/errors';
 import { queryRetry } from '@/lib/query/queryRetry';
 import { RetryAlert } from '@/components/feedback/RetryAlert';
-import { describeMassImportCancelError } from './mercadoLivreJobErrors';
+import {
+  describeMassImportCancelError,
+  describePriceSyncCancelError,
+} from './mercadoLivreJobErrors';
 import { useBaixarRelatorioPreco } from './useBaixarRelatorioPreco';
 import type { ContaRef } from '@/lib/marketplace/contaJobs/types';
 
@@ -74,6 +77,34 @@ const PRICE_SYNC_LIST_LIMIT = 8;
  * one the operator meant instead of guessing — unless the job is KNOWN to have
  * finished, in which case there is nothing to ask about. See `encerrado`.
  */
+/**
+ * The cancel half of {@link JobCardShell}'s props — a UNION, so the three travel
+ * together or not at all.
+ *
+ * ⚠️ It was three independent optionals with a docblock saying
+ * `describeCancelError` was "required alongside `onCancel`". A rule asserted in a
+ * comment is a rule nothing enforces: a flow could ship a cancel with no copy for
+ * its own failures, and only a runtime fallback would have caught it. The shell
+ * already learned this once — it called `describeMassImportCancelError` outright
+ * while serving two flows (#1144), so a price-sync 404 read "Importação não
+ * encontrada." Here the compiler carries it: pass `onCancel` and you must pass
+ * the label and the mapper.
+ */
+type CancelaveisProps =
+  | {
+      /**
+       * Stops the job server-side. A rejection is shown in the confirm itself and
+       * never rethrown — see `handleCancel`.
+       */
+      onCancel: () => Promise<void>;
+      /** Copy for the destructive button, e.g. "Cancelar importação". */
+      cancelLabel: string;
+      /** Per-flow copy for a rejected cancel. Always returns something to show. */
+      describeCancelError: (err: unknown) => string;
+    }
+  /** This flow has no cancel yet: the X keeps its dismiss-only behaviour. */
+  | { onCancel?: never; cancelLabel?: never; describeCancelError?: never };
+
 function JobCardShell({
   conta,
   flowLabel,
@@ -82,6 +113,7 @@ function JobCardShell({
   onDismiss,
   onCancel,
   cancelLabel,
+  describeCancelError,
   children,
 }: {
   conta: ContaRef;
@@ -103,16 +135,8 @@ function JobCardShell({
    */
   encerrado?: boolean;
   onDismiss: () => void;
-  /**
-   * Stops the job server-side. Omitted = this flow has no cancel yet, and the X
-   * keeps its original dismiss-only behaviour. A rejection is shown in the
-   * confirm itself and never rethrown — see `handleCancel`.
-   */
-  onCancel?: () => Promise<void>;
-  /** Copy for the destructive button, e.g. "Cancelar importação". */
-  cancelLabel?: string;
   children: ReactNode;
-}) {
+} & CancelaveisProps) {
   const [confirmOpened, setConfirmOpened] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cancelErro, setCancelErro] = useState<string | null>(null);
@@ -145,7 +169,7 @@ function JobCardShell({
       // modal still open and nothing said at all. The reachable case is
       // `onCancel` throwing a plain Error when the client is null.
       //
-      // `describeMassImportCancelError` always returns copy, so the guard here
+      // Every `describeCancelError` always returns copy, so the guard here
       // exists only to decide what reaches the console — and to satisfy rule 6's
       // lint rule, which reads the catch body rather than the helper it calls.
       if (
@@ -153,9 +177,17 @@ function JobCardShell({
         !(err instanceof MercadoLivreClientNetworkError)
       ) {
         // Not a client failure at all — keep the original where it can be read.
-        console.error('[mercado-livre] cancelamento da importação falhou', err);
+        console.error(`[mercado-livre] cancelamento falhou (${flowLabel})`, err);
       }
-      setCancelErro(describeMassImportCancelError(err));
+      setCancelErro(
+        describeCancelError?.(err) ??
+          // Unreachable: `CancelaveisProps` makes the mapper mandatory wherever
+          // `onCancel` is, and `handleCancel` returns early without one. The `??`
+          // survives only because destructured union members do not narrow
+          // against each other — and an empty string here would be the silent
+          // modal the whole catch exists to prevent.
+          'Não foi possível cancelar.',
+      );
     } finally {
       setCancelling(false);
     }
@@ -295,6 +327,7 @@ export function MassImportJobCard({
       encerrado={data != null && data.status !== 'running'}
       onDismiss={onDismiss}
       cancelLabel="Cancelar importação"
+      describeCancelError={describeMassImportCancelError}
       onCancel={async () => {
         if (!client) throw new Error('not ready');
         await client.cancelMassImport({ integracaoId: conta.id, jobId });
@@ -391,7 +424,19 @@ export function PriceSyncJobCard({
       conta={conta}
       flowLabel="Envio de preços"
       running={data?.status === 'running'}
+      // Only a status we actually READ closes the confirm off. `data` is
+      // undefined before the first poll lands, after a failed poll, and while
+      // the client is null — none of which mean the job stopped.
+      encerrado={data != null && data.status !== 'running'}
       onDismiss={onDismiss}
+      cancelLabel="Cancelar envio"
+      describeCancelError={describePriceSyncCancelError}
+      onCancel={async () => {
+        if (!client) throw new Error('not ready');
+        await client.cancelPriceSync({ integracaoId: conta.id, jobId });
+        // Show the terminal state now rather than waiting out the poll window.
+        await query.refetch();
+      }}
     >
       {failure ? (
         <RetryAlert
@@ -430,6 +475,14 @@ export function PriceSyncJobCard({
           {data.status === 'failed' && (
             <Alert color="red" variant="light" p="xs">
               <Text size="xs">Falha no envio de preços{data.erro ? `: ${data.erro}` : '.'}</Text>
+            </Alert>
+          )}
+          {/* Gray, not red: the operator asked for this. The counters above
+              still show what did go out before the stop, and `podeBaixar`
+              already lets them download the partial report. */}
+          {data.status === 'cancelled' && (
+            <Alert color="gray" variant="light" p="xs">
+              <Text size="xs">Envio de preços cancelado.</Text>
             </Alert>
           )}
           {temAmostras && (

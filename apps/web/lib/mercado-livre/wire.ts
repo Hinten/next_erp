@@ -164,7 +164,18 @@ export type MercadoLivrePriceSyncFailure = z.infer<typeof priceSyncFailureSchema
 
 /** Progress snapshot of a price-sync job (`GET atualizar-precos/status`). */
 export const priceSyncStatusSchema = z.object({
-  status: z.enum(['running', 'completed', 'failed']),
+  /**
+   * ⚠️ `cancelled` (#1144) reaches this schema through TWO extenders —
+   * `jobsEmAndamentoSchema` and `priceSyncHistoricoEntrySchema` — so the member
+   * is not optional politeness: a browser holding a bundle older than the
+   * backend that first stamps one rejects the whole response with
+   * `MercadoLivreClientRespostaInvalidaError`, which on the rail means the
+   * operator loses the mass-import cards too (see `naoEnumerados` below for the
+   * live instance of exactly that). Only the new cancel route can produce the
+   * value, and only this build calls it, so the residual exposure is a stale
+   * browser tab open across the deploy.
+   */
+  status: z.enum(['running', 'completed', 'failed', 'cancelled']),
   baixarPreco: z.boolean(),
   planejados: z.number(),
   enviados: z.number(),
@@ -445,7 +456,7 @@ export const relatorioEnvioPrecoPaginaSchema = z.object({
   linhas: z.array(relatorioEnvioPrecoLinhaSchema),
   /** `null` on the last page — the caller loops until it sees this. */
   proximoDepois: z.string().nullable(),
-  status: z.enum(['running', 'completed', 'failed']),
+  status: z.enum(['running', 'completed', 'failed', 'cancelled']),
   relatorioLinhas: z.number().default(0),
   relatorioShards: z.number().default(0),
   relatorioCompleto: z.boolean().default(false),

@@ -355,6 +355,190 @@ describe('MercadoLivreJobsPanel — o X de um job em andamento', () => {
   });
 });
 
+describe('MercadoLivreJobsPanel — o X de um envio de preços em andamento', () => {
+  // #1144. Mirrors the mass-import block above, and the mirroring is the point:
+  // both cards share `JobCardShell`, so the shell's copy and its error mapper
+  // have to come out per-flow. Before this the shell hard-coded the mass-import
+  // mapper, and a price-sync 404 would have said "Importação não encontrada."
+  const CARD_X = 'Dispensar Envio de preços de Conta A';
+  const AVISO = 'Fechar o cartão não interrompe o job — ele segue no servidor.';
+
+  const RUNNING_PRECO = {
+    jobId: 'job-p',
+    integracaoId: 'a',
+    status: 'running' as const,
+    baixarPreco: false,
+    planejados: 30,
+    enviados: 7,
+    pulados: 2,
+    naoEnumerados: 0,
+    falhas: 0,
+    pausas: 0,
+    skips: [],
+    failures: [],
+    startedAt: 1,
+    updatedAt: 2,
+    finishedAt: null,
+    erro: null,
+  };
+
+  /**
+   * Renders one started price-sync card and waits for its FIRST poll to land.
+   * The wait is load-bearing for the same reason as the mass-import helper's:
+   * before the status query answers, `encerrado` is false because `data` is
+   * undefined, and the X takes a different branch than the one under test.
+   */
+  async function renderCartaoEmAndamento(
+    over: Record<string, unknown> = {},
+  ): Promise<{ dismiss: ReturnType<typeof vi.fn> }> {
+    const dismiss = vi.fn();
+    h.clientRef.current = {
+      jobsEmAndamento: vi.fn(async () => ({ importacoes: [], enviosPreco: [] })),
+      massImportStatus: vi.fn(),
+      priceSyncStatus: vi.fn(async () => RUNNING_PRECO),
+      priceSyncHistorico: vi.fn(async () => ({ envios: [] })),
+      cancelPriceSync: vi.fn(async () => ({ status: 'cancelled' })),
+      ...over,
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MercadoLivreJobsPanel
+        collapsed={false}
+        selecionadas={[]}
+        massImport={{ entries: [], dismiss: vi.fn() }}
+        priceSync={{ entries: [{ kind: 'started', conta: CONTA_A, jobId: 'job-p' }], dismiss }}
+      />,
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <MantineTestProvider>
+            <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+          </MantineTestProvider>
+        ),
+      },
+    );
+    await screen.findByText(/7 \/ 30 enviados/);
+    return { dismiss };
+  }
+
+  it('pergunta em vez de dispensar em silêncio — o envio não para ao fechar o cartão', async () => {
+    const { dismiss } = await renderCartaoEmAndamento();
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+
+    expect(await screen.findByText(AVISO)).toBeTruthy();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('"Apenas ocultar" esconde o cartão SEM tocar no job', async () => {
+    const { dismiss } = await renderCartaoEmAndamento();
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+    fireEvent.click(await screen.findByRole('button', { name: 'Apenas ocultar' }));
+
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith('a'));
+    expect(h.clientRef.current!.cancelPriceSync).not.toHaveBeenCalled();
+  });
+
+  it('"Cancelar envio" chama a rota e o cartão passa a mostrar o estado final', async () => {
+    const priceSyncStatus = vi
+      .fn<() => Promise<Record<string, unknown>>>()
+      .mockResolvedValue(RUNNING_PRECO);
+    await renderCartaoEmAndamento({ priceSyncStatus });
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+    await screen.findByText(AVISO);
+    // The post-cancel refetch is what surfaces the new state on the card.
+    priceSyncStatus.mockResolvedValue({ ...RUNNING_PRECO, status: 'cancelled', finishedAt: 9 });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar envio' }));
+    });
+
+    await waitFor(() => {
+      expect(h.clientRef.current!.cancelPriceSync).toHaveBeenCalledWith({
+        integracaoId: 'a',
+        jobId: 'job-p',
+      });
+    });
+    expect(await screen.findByText('Envio de preços cancelado.')).toBeTruthy();
+  });
+
+  it('⭐ mostra a falha do cancelamento com a cópia DESTE fluxo, não a da importação', async () => {
+    // The regression this pins: with the shell's mapper hard-coded, a 409 here
+    // rendered "Esta importação já foi finalizada." on a price-sync card.
+    const { MercadoLivreClientHttpError } = await import('@/lib/mercado-livre/client');
+    const { dismiss } = await renderCartaoEmAndamento({
+      cancelPriceSync: vi.fn(async () => {
+        throw new MercadoLivreClientHttpError('x', 409, 'ML_PRICE_SYNC_NOT_RUNNING');
+      }),
+    });
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+    await screen.findByText(AVISO);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar envio' }));
+    });
+
+    expect(await screen.findByText('Este envio de preços já foi finalizado.')).toBeTruthy();
+    expect(screen.queryByText('Esta importação já foi finalizada.')).toBeNull();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('um erro NÃO reconhecido ainda diz alguma coisa, em vez de morrer calado', async () => {
+    const { dismiss } = await renderCartaoEmAndamento({
+      cancelPriceSync: vi.fn(async () => {
+        throw new Error('not ready');
+      }),
+    });
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+    await screen.findByText(AVISO);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancelar envio' }));
+    });
+
+    expect(await screen.findByText('Não foi possível cancelar o envio de preços.')).toBeTruthy();
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('um envio já terminado dispensa direto, sem confirmação', async () => {
+    const dismiss = vi.fn();
+    h.clientRef.current = {
+      jobsEmAndamento: vi.fn(async () => ({ importacoes: [], enviosPreco: [] })),
+      massImportStatus: vi.fn(),
+      priceSyncStatus: vi.fn(async () => ({
+        ...RUNNING_PRECO,
+        status: 'completed',
+        finishedAt: 9,
+      })),
+      priceSyncHistorico: vi.fn(async () => ({ envios: [] })),
+      cancelPriceSync: vi.fn(),
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <MercadoLivreJobsPanel
+        collapsed={false}
+        selecionadas={[]}
+        massImport={{ entries: [], dismiss: vi.fn() }}
+        priceSync={{ entries: [{ kind: 'started', conta: CONTA_A, jobId: 'job-p' }], dismiss }}
+      />,
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <MantineTestProvider>
+            <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+          </MantineTestProvider>
+        ),
+      },
+    );
+    await screen.findByText('Envio de preços concluído.');
+
+    fireEvent.click(screen.getByLabelText(CARD_X));
+
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith('a'));
+    expect(screen.queryByText(AVISO)).toBeNull();
+    expect(h.clientRef.current!.cancelPriceSync).not.toHaveBeenCalled();
+  });
+});
+
 describe('MercadoLivreJobsPanel — o X antes de saber o estado do job', () => {
   const CARD_X = 'Dispensar Importação em massa de Conta A';
   const AVISO = 'Fechar o cartão não interrompe o job — ele segue no servidor.';
