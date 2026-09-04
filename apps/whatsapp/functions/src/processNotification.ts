@@ -80,6 +80,11 @@ export const processWhatsappNotification = onTaskDispatched(
       // Counts, not a `detail` member — one `statuses[]` can carry entries with
       // different fates. `null` when the change carried no statuses at all.
       statuses: result.statuses ?? null,
+      // The `messages[]` counterpart: entries that failed the element schema and
+      // were skipped instead of taking their siblings down with them. A nonzero
+      // `malformados` on either key is the signal that the wire has drifted from
+      // what we model — the thing element tolerance would otherwise hide.
+      mensagens: result.mensagens ?? null,
       retryCount: req.retryCount ?? 0,
       // CUMULATIVE for this instance — a notification has no tick to bracket
       // (the sweep in `index.ts` brackets its own with mark/delta instead).

@@ -246,3 +246,103 @@ describe('POST /api/webhooks/whatsapp (signature + enqueue)', () => {
     ).rejects.toThrow('firestore down');
   });
 });
+
+/**
+ * ⚠️ These are the receiver-level regression tests for the drop this change
+ * exists to remove.
+ *
+ * `webhookEnvelopeSchema` used to demand the FULL `valuePayloadSchema` at
+ * `changes[].value` — far more than `parseWebhookBody` reads. A Zod array fails
+ * as a WHOLE when any element fails, so one unrecognised `status`, one new
+ * message `type`, or any account-level event whose value has no `metadata` made
+ * the parse fail, `parseWebhookBody` return null, and THIS route ack 200 with no
+ * enqueue, no persist and no log. Meta saw a 200 and never retried; the whole
+ * delivery — every entry, every change, every customer message riding along —
+ * was gone with no replayable record.
+ */
+describe('POST /api/webhooks/whatsapp — a change the schema does not fully model', () => {
+  function signedPost(body: Record<string, unknown>): Promise<Response> {
+    vi.stubEnv('WHATSAPP_APP_SECRET', APP_SECRET);
+    const raw = JSON.stringify(body);
+    return POST(
+      postReq(raw, { 'x-hub-signature-256': metaSig(raw, APP_SECRET) }),
+    ) as Promise<Response>;
+  }
+
+  it('still ENQUEUES a delivery whose statuses[] carries a value Meta added later', async () => {
+    const res = await signedPost(
+      envelope({
+        entry: [
+          {
+            id: 'WABA1',
+            changes: [
+              {
+                field: 'messages',
+                value: {
+                  messaging_product: 'whatsapp',
+                  metadata: { display_phone_number: '5511000000000', phone_number_id: 'PNID1' },
+                  statuses: [
+                    {
+                      id: 'wamid.OUT',
+                      recipient_id: '5511999999999',
+                      status: 'warning',
+                      timestamp: '1700000000',
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(h.enqueue).toHaveBeenCalledTimes(1);
+    // The hints the failure doc and the logs are keyed on still resolve off the
+    // now-`unknown` value.
+    expect(h.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        field: 'messages',
+        phoneNumberId: 'PNID1',
+        messageId: 'wamid.OUT',
+      }),
+    );
+  });
+
+  it('THE PROPERTY: an account-level change no longer takes a customer message with it', async () => {
+    // Meta batches changes per WABA, so a metadata-less `account_update` really
+    // can ride in the same POST as a real inbound message.
+    const base = envelope();
+    const changes = (base.entry as Array<{ changes: unknown[] }>)[0]!.changes;
+    changes.unshift({ field: 'account_update', value: { event: 'PARTNER_ADDED' } });
+
+    const res = await signedPost(base);
+
+    expect(res.status).toBe(200);
+    // BOTH changes enqueue: the account one to be dropped WITH A LOG one layer
+    // down (`campo-nao-suportado`, which until now was dead code in production),
+    // the messages one to be processed. Neither is silently discarded.
+    expect(h.enqueue).toHaveBeenCalledTimes(2);
+    expect(h.enqueue.mock.calls.map(([p]) => (p as { field: string }).field)).toEqual([
+      'account_update',
+      'messages',
+    ]);
+    expect(h.enqueue).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'wamid.A' }));
+  });
+
+  it('a signed body that is NOT an envelope is still acked without enqueuing — but no longer SILENTLY', async () => {
+    const warn = vi.spyOn(console, 'warn');
+    const res = await signedPost({ hello: 'world' } as Record<string, unknown>);
+
+    expect(res.status).toBe(200);
+    expect(h.enqueue).not.toHaveBeenCalled();
+    // ⚠️ The branch that used to have NO log line at all — unlike the malformed
+    // JSON branch beside it. A body Meta signed and we could not read must leave
+    // a trace, since nothing else about it is persisted.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('sem mudanças processáveis'),
+      expect.anything(),
+    );
+  });
+});
