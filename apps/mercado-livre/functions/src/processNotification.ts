@@ -104,7 +104,7 @@ export const processMercadoLivreNotification = onTaskDispatched(
       outcome: result.outcome,
       kind: result.kind ?? null,
       detail: result.detail ?? null,
-      topic: result.topic,
+      topic: result.topic ?? null,
       resource: typeof payload?.resource === 'string' ? payload.resource : null,
       user_id: typeof payload?.user_id === 'number' ? payload.user_id : null,
       integracaoId: result.integracaoId ?? null,

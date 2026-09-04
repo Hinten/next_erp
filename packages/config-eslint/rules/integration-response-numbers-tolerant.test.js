@@ -104,6 +104,7 @@ const PATHSPECS = [
   ':(glob)packages/integrations/mercado-livre/src/**/*.ts',
   ':(glob)packages/integrations/mercado-pago/src/**/*.ts',
   ':(glob)packages/integrations/freight-br/src/**/*.ts',
+  ':(glob)packages/integrations/shopee/src/**/*.ts',
 ];
 
 /** Both bans in ONE spawn — `git grep` ORs its `-e` patterns. */
@@ -161,6 +162,9 @@ const ALLOWED_STRICT = {
       'REQUEST — declared value we send on shipment/calculate',
     'service: z.number(),': 'REQUEST — the carrier service id we send on the cart insert',
   },
+  // No `shopee` entry, deliberately: that package declares RESPONSE shapes only
+  // (its outbound bodies are plain objects built in `oauth.ts`, with no schema),
+  // so there is nothing there for which strictness would be the right direction.
 };
 
 /**
@@ -211,6 +215,16 @@ const KNOWN_TOLERANT_LINES = {
     'expires_in: wireNumber(),',
     'balance: wireNumber().nullable().optional(),',
     'delivery_time: wireNumber().nullable().optional(),',
+  ],
+  // Shopee. ⚠️ The anchor exists BECAUSE the package has no `ALLOWED_STRICT`
+  // entry: it declares response shapes only, so the staleness test below (which
+  // reports a carve-out whose file stopped matching) has nothing to say about
+  // it. Without these three lines a mistyped `shopee` pathspec would leave the
+  // "no bare z.number()" assertion running over an empty set, green forever.
+  'packages/integrations/shopee/src/types.ts': [
+    'expire_in: wireInt(),',
+    'shop_id: wireInt(),',
+    'auth_time: wireInt(),',
   ],
 };
 

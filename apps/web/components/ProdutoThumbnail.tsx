@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { Center, Image, Loader, Modal, Skeleton, UnstyledButton } from '@mantine/core';
 import { IconPhotoOff } from '@tabler/icons-react';
-import { type Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import type { Produto } from '@delfrance/schemas';
 import { arquivoCollection } from '@delfrance/storage';
 import { useDocSnapshot } from '@delfrance/data/hooks';

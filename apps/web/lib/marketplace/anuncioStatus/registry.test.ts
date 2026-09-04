@@ -32,8 +32,12 @@ const NAO_SUPORTADOS: ReadonlyArray<readonly [IntegracaoTipo, MotivoNaoSuportado
   [INTEGRACAO_TIPO.facebook, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.lojaIntegrada, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.magalu, 'canal-nao-pesquisado'],
-  [INTEGRACAO_TIPO.shopee, 'canal-nao-pesquisado'],
   [INTEGRACAO_TIPO.amazon, 'canal-nao-pesquisado'],
+  // ⚠️ Shopee is the near-miss of the line above, and the ONLY tipo on the
+  // other side of it: its Phase 0 survey answered this capability `'sim'`, so
+  // the honest reason is that WE have not built the channel — not that nobody
+  // has looked. It flips to supported when `implementado` does.
+  [INTEGRACAO_TIPO.shopee, 'canal-nao-implementado'],
 ];
 
 describe('resolveAnuncioStatusProvider', () => {
@@ -73,10 +77,20 @@ describe('resolveAnuncioStatusProvider', () => {
     expect(res.rows).toHaveLength(2);
     expect(res.rows[0]!.mensagem).toContain('Shopee');
     expect(res.rows[0]!.mensagem).toContain('pausa de anúncios');
-    // ⚠️ Unresearched, NOT "the provider cannot" — `pausarAnuncio` is
-    // `'desconhecido'` for every unbuilt channel, and reading that as a refusal
-    // is the claim the tri-state exists to prevent.
+    // ⚠️ Unbuilt, NOT "the provider cannot" — Shopee's survey answered
+    // `pausarAnuncio` `'sim'` (unlist_item), and reading an unbuilt channel as a
+    // refusal is the claim the tri-state exists to prevent.
+    expect(res.rows[0]!.motivo).toBe('canal-nao-implementado');
+  });
+
+  it('an UNSURVEYED channel still says "nobody checked", not "we have not built it"', async () => {
+    const res = await resolveAnuncioStatusProvider(INTEGRACAO_TIPO.magalu).definirStatus(
+      input({
+        integracao: { id: 'c3', nome: 'Magalu', tipo: INTEGRACAO_TIPO.magalu, ativo: true },
+      }),
+    );
     expect(res.rows[0]!.motivo).toBe('canal-nao-pesquisado');
+    expect(res.rows[0]!.mensagem).toContain('Magalu');
   });
 });
 

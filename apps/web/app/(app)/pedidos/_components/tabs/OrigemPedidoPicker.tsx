@@ -14,7 +14,7 @@ import {
 } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import { useQuery } from '@tanstack/react-query';
-import { type DocumentReference, type Firestore } from 'firebase/firestore';
+import type { DocumentReference, Firestore } from 'firebase/firestore';
 import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { ESTADO_PEDIDO_LABELS, type Pedido } from '@delfrance/schemas';

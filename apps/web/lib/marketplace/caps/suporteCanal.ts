@@ -71,12 +71,12 @@ const ACOES: Record<AcaoCanal, DescritorAcao> = {
  * The precedence itself, as a pure function of the two facts a caps row carries
  * about one capability. `null` means "nothing stands in the way".
  *
- * ⚠️ Exported because it is the only way to EXERCISE the rule. Through the live
- * table today, `'nao'` and `'sim' + !implementado` are both unreachable for
- * these three actions — the one implemented channel answers `'sim'` to all
- * three and every unbuilt one answers `'desconhecido'`. A branch that cannot be
- * reached from the table is a branch nobody has checked, and it becomes
- * reachable the day someone runs Phase 0 on a second channel.
+ * ⚠️ Exported because it is the only way to EXERCISE every arm. Through the
+ * live table today `'nao'` is still unreachable for these three actions, but
+ * `'sim' + !implementado` is NOT: Shopee's Phase 0 survey answered all three
+ * `'sim'` while its backend is unbuilt, which is exactly the day this comment
+ * predicted. A branch that cannot be reached from the table is a branch nobody
+ * has checked, so `'nao'` stays pinned here rather than through the table.
  */
 export function motivoDaCapacidade(
   suporte: Suporte,

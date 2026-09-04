@@ -18,7 +18,7 @@ import type { OrigemConversa } from '../conversa';
  */
 
 /**
- * ⚠️ **Three-valued on purpose.** Five of the six rows below are channels nobody
+ * ⚠️ **Three-valued on purpose.** Four of the six rows below are channels nobody
  * has researched, and a `boolean` cannot say *"nobody has checked"* — it can only
  * say `false`, which reads as an answer. Putting an unverified claim into a type
  * is exactly the failure #815 exists to undo, so the honest default for an
@@ -227,23 +227,86 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
   },
 
   /**
-   * ⚠️ Everything below is UNBUILT. A `'desconhecido'` is not a gap in this file
-   * — it is the honest state of the question, and Phase 0 of the skill is what
-   * closes it. Only values with a citation are set.
+   * ⚠️ Everything below is UNBUILT — which is NOT the same as unresearched.
+   * Shopee's row is a completed Phase 0 survey with `implementado: false`; the
+   * other four are still all `'desconhecido'`. A `'desconhecido'` is not a gap
+   * in this file — it is the honest state of the question, and Phase 0 of the
+   * skill is what closes it. Only values with a citation are set.
+   */
+  /**
+   * The Shopee Phase 0 survey (`.master_plans/shopee/shopee-marketplace-integration.md`
+   * §1). Every field below is cited — `implementado` stays `false` until step 22
+   * of that plan ships the App Hosting backend; `channel` is named now because
+   * the backend segment is a fact about THIS repo's layout, not about Shopee.
    */
   [INTEGRACAO_TIPO.shopee]: {
-    ...NAO_INVESTIGADO,
-    channel: null,
+    channel: 'shopee', // apps/shopee, :3009 (next free port)
     implementado: false,
-    notificacoes: 'push',
-    // Legacy Flutter carried an HMAC verifier for Shopee pushes
-    // (`_verifyPushMsg`) — commented out at both call sites, which is the gap
-    // #682 exists to close. Shopee DOES sign; its receiver must fail CLOSED.
+    // Authorization-code-SHAPED, not RFC 6749: no client_secret (HMAC `sign` with
+    // the partner_key instead), no scope (fixed by the immutable App Category),
+    // no PKCE. guide 20, guide 16.
+    auth: 'oauth2',
+    pkce: 'nao', // no code_challenge anywhere in guide 20
+    notificacoes: 'push', // + a pull backstop: v2.push.get_lost_push_message (3 days)
+    // Authorization header = lowercase hex HMAC-SHA256(partner_key, callback_url +
+    // "|" + raw_body). Fail CLOSED. guide 18.
     assinaWebhook: 'sim',
-    // `tabMedi.tabelasMedidasShopee` already exists in the schema and the
-    // migrated corpus carries rows the legacy app wrote, so a Shopee build
-    // inherits stored data here rather than starting empty.
+    publicarAnuncio: 'sim', // api v2.product.add_item / update_item
+    importarAnuncio: 'sim', // get_item_list → get_item_base_info (50) → get_model_list (1/item)
+    variacoes: 'sim', // ≤2 tiers, ≤50 models; standardise_tier_variation (guide 219, init_tier_variation)
+    categoriasEAtributos: 'sim', // get_category / get_attribute_tree / get_brand_list / get_item_limit
+    // READ + ATTACH only: get_size_chart_list/detail + size_chart_info.size_chart_id
+    // on add/update_item. Authoring is Seller Centre only —
+    // v2.product.update_size_chart no longer exists (survey C §6).
     tabelaDeMedidas: 'sim',
+    // Native kit SKU: add_kit_item mints an item_id whose category/attributes/brand
+    // sync from a main component; no stock field anywhere in the kit APIs
+    // (derived). 1 tier, ≤9 kit variations, 2–10 components each
+    // (get_kit_item_limit), composition frozen after create. survey C §7.
+    kitVirtual: 'sim',
+    // unlist_item {unlist:false} re-lists (guide 221 §6) — but its own error list
+    // carries `error_set_normal_unlisted_item`; step 11 verifies live before this
+    // row flips implementado.
+    pausarAnuncio: 'sim',
+    estoque: {
+      suporte: 'sim',
+      // One item per call (api v2.product.update_stock); the item's models ride
+      // in the same call with a per-model success_list/failure_list. Fan-out is
+      // per LISTING, attribution per MODEL.
+      protocolo: 'por-anuncio',
+      loteMax: 50, // models per call, not items
+      multiDeposito: 'sim', // location_id from get_warehouse_detail — WHITELIST feature; structure is sticky
+    },
+    enviarPreco: 'sim', // update_price, one item ≤50 models, 2 decimals in BR, LOCKED during a promotion
+    importarPedido: 'sim',
+    // No payment resource and no payment push: payment = pay_time != null on
+    // get_order_detail, fees/settlement = get_escrow_detail (floats, one order
+    // per call). survey B §3.
+    importarPagamento: 'sim',
+    // One order → N packages (package_list). Many orders → one parcel exists only
+    // as a read-only group_shipment_id with no seller action; split_order is not
+    // a BR flow. survey B §10.
+    consolidaPacote: 'nao',
+    // Same call, but STATUS- and WHITELIST-gated: buyer name/address/CPF only
+    // from INVOICE_PENDING onward and only for a CNPJ seller; masked values are
+    // '***' STRINGS, not nulls; phone never. guide 382 / 743 / 718. The importer
+    // must re-read after the gate opens.
+    dadosFiscaisSeparados: 'sim',
+    etiqueta: 'fetch', // Shopee mints; BR forbids self-design outright (guide 292)
+    rastreio: 'push', // push 2 / 33 / 44 + pull get_tracking_info
+    enviarNfe: 'sim', // upload_invoice_doc (XML, file_type 4, 1 MB), BEFORE ship_order, 5-min SERPRO delay
+    perguntas: 'nao', // no public pre-sale Q&A surface; only private chat + post-purchase reviews
+    // 12 v2.sellerchat.* APIs exist (docs login-gated) and webchat_push (code 10)
+    // carries the message inline — but access is a per-app grant closed to ISVs
+    // since 2024-11-18 (announcement 1026); BR Registered Business Sellers
+    // request it via their Account Manager (1363/1430).
+    // Decision 2026-09-03: the production app is an ERP System app, which
+    // excludes the Chat API and the webchat push BY TYPE (guide 14, guide 18) —
+    // unreachable from this app regardless of any grant. Revisit after the
+    // cutover with a Seller In-house System app + the RM grant (step 16).
+    mensagensPosVenda: 'nao',
+    reclamacoes: 'sim', // v2.returns.* + push 32
+    origensConversa: [], // filled by step 16 only if the chat grant lands
   },
   [INTEGRACAO_TIPO.amazon]: {
     ...NAO_INVESTIGADO,

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PriceSyncAlreadyRunningError } from '@/lib/marketplace/preco/precoSync';
 
-// verifyCaller / context loader / job start / scheduler / job-doc merge are
+// verifyCaller / context loader / job start / scheduler / terminal stamp are
 // mocked; the route's own logic (body validation, the tabela-normal gate,
 // error mapping, enqueue-failure fallback) runs real.
 const h = vi.hoisted(() => ({
@@ -10,7 +10,7 @@ const h = vi.hoisted(() => ({
   loadCtx: vi.fn(),
   startPriceSyncJob: vi.fn(),
   enqueue: vi.fn(async (_payload: unknown) => {}),
-  merge: vi.fn(async (..._args: unknown[]) => {}),
+  finalizePriceSyncJob: vi.fn(async (..._args: unknown[]) => 'stamped' as const),
 }));
 
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
@@ -27,7 +27,11 @@ vi.mock('@/lib/marketplace/core/mercadoLivre', async (importActual) => {
 
 vi.mock('@/lib/marketplace/preco/precoSync', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/marketplace/preco/precoSync')>();
-  return { ...actual, startPriceSyncJob: h.startPriceSyncJob };
+  return {
+    ...actual,
+    startPriceSyncJob: h.startPriceSyncJob,
+    finalizePriceSyncJob: h.finalizePriceSyncJob,
+  };
 });
 
 vi.mock('@/lib/marketplace/preco/mlPriceSyncTasks', () => ({
@@ -35,7 +39,7 @@ vi.mock('@/lib/marketplace/preco/mlPriceSyncTasks', () => ({
 }));
 
 vi.mock('@delfrance/data/admin/collections', () => ({
-  envioPrecoMercadoLivreCollection: { merge: h.merge },
+  envioPrecoMercadoLivreCollection: {},
   integracaoCollection: {},
 }));
 
@@ -74,7 +78,7 @@ describe('POST /api/marketplace/mercado-livre/atualizar-precos', () => {
       startedBy: 'u1',
     });
     expect(h.enqueue).toHaveBeenCalledWith({ jobId: 'job-1', integracaoId: 'int-1' });
-    expect(h.merge).not.toHaveBeenCalled();
+    expect(h.finalizePriceSyncJob).not.toHaveBeenCalled();
   });
 
   it('forwards baixarPreco: true when the caller opts into price decreases', async () => {
@@ -133,8 +137,11 @@ describe('POST /api/marketplace/mercado-livre/atualizar-precos', () => {
     const body = await res.json();
     expect(body.code).toBe('ML_PRICE_SYNC_ENQUEUE_FAILED');
     expect(body.error).toBe('cloudtasks down');
-    expect(h.merge).toHaveBeenCalledOnce();
-    const [, , id, patch] = h.merge.mock.calls[0]!;
+    // Through the GUARDED stamp, not a bare merge — #1144 made
+    // `finalizePriceSyncJob` the sole writer of terminal `status`, and this is
+    // the site that most looks safe without it.
+    expect(h.finalizePriceSyncJob).toHaveBeenCalledOnce();
+    const [, id, patch] = h.finalizePriceSyncJob.mock.calls[0]!;
     expect(id).toBe('job-1');
     expect(patch).toMatchObject({ status: 'failed', erro: 'cloudtasks down' });
   });
@@ -142,9 +149,9 @@ describe('POST /api/marketplace/mercado-livre/atualizar-precos', () => {
   it('still 503s when the failure-stamp itself throws — the stamp is best-effort, only logged', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     h.enqueue.mockRejectedValue(new Error('cloudtasks down'));
-    // Once-only: h.merge is not re-primed in beforeEach, so a sticky rejection
-    // would leak into later tests.
-    h.merge.mockRejectedValueOnce(new Error('firestore down'));
+    // Once-only: h.finalizePriceSyncJob is not re-primed in beforeEach, so a
+    // sticky rejection would leak into later tests.
+    h.finalizePriceSyncJob.mockRejectedValueOnce(new Error('firestore down'));
 
     const res = await POST(req({ integracaoId: 'int-1' }));
 

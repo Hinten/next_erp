@@ -14,8 +14,8 @@
  * This requires PR-3's outbound sender to store each sent message at
  * `chat/{conversaId}/mensagem/{mensagemDocId(contaId, sendWamid)}` with
  * `mid = sendWamid` (re-anchoring the doc id to the wamid the Graph API returns).
- * A status whose message isn't found is logged and skipped (legacy behaviour) —
- * a soft miss, never a throw.
+ * A status whose message isn't found is logged, COUNTED and skipped (legacy
+ * behaviour) — a soft miss, never a throw. See {@link StatusesReport}.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { mensagemCollection } from '@delfrance/data/admin/collections';
@@ -99,18 +99,68 @@ function mapError(e: unknown): {
 }
 
 /**
+ * What a `statuses[]` batch ACTUALLY did. Every iteration of the loop below hits
+ * exactly one of these three, so they sum to `statuses.length` — and a
+ * present-but-EMPTY `statuses: []` (truthy, so this function still runs) yields
+ * all zeros, which is itself the honest answer and one no enum value could give.
+ *
+ * ⚠️ A COUNT, not a `MessagesFieldOutcome` member, and that is the whole point:
+ * one batch can carry several entries with DIFFERENT fates, which a single enum
+ * value structurally cannot express. `detail` names what happened to the
+ * mensagem; this names what happened to the statuses (#1137 follow-up).
+ *
+ * ⚠️ Named `*Report`, not `*Outcome`: in this repo `*Outcome` is always a narrow
+ * string union (`MessagesFieldOutcome`, `DropOutcome`, `InboundMessageOutcome`).
+ * The neighbouring key in the very same `logger.info` is a `CacheReport`.
+ *
+ * ⚠️ `naoEncontrados` and `staleIgnorados` are kept APART on purpose, though both
+ * mean "no write happened". A stale skip is working as designed AND structurally
+ * common — the queue dispatches up to 3 concurrently, so `sent`/`delivered`/`read`
+ * for one message routinely land out of order and the forward-only matrix refuses
+ * the loser. A healthy channel therefore has a permanently nonzero `staleIgnorados`.
+ * A not-found is the opposite: the outbound mensagem is not where the deterministic
+ * doc-id derivation says it should be — a re-anchor that failed, a `recipient_id`
+ * that is not what `senderId` assumes, or a foreign sender. Merged into one
+ * counter, that signal sits under a permanent noise floor forever — which is the
+ * same ambiguity, one level down, that `detail` was added to remove.
+ */
+export interface StatusesReport {
+  /** The mensagem was found and patched — the one `merge()` in the loop. */
+  aplicados: number;
+  /** Soft miss: no mensagem at the deterministic id. Also `console.warn`ed per status. */
+  naoEncontrados: number;
+  /**
+   * Not newer than the last applied update, and the forward-only matrix refused
+   * it. Spelled to match Mercado Pago's existing `stale-ignorado` token for the
+   * same phenomenon — one concept, one vocabulary, across the log family.
+   */
+  staleIgnorados: number;
+}
+
+/**
  * Apply every `statuses[]` entry to its outbound mensagem. A transient Firestore
  * failure PROPAGATES (throws) so the queue retries; a not-found message is
  * skipped.
+ *
+ * Returns {@link StatusesReport} rather than `void`: discarding it made a batch
+ * whose every status was a soft miss report exactly like one that advanced every
+ * mensagem — the OVERSTATEMENT named as a residual in #1478.
+ *
+ * ⚠️ The SWEEP re-drives `process` and therefore recomputes this report, then
+ * discards it: `ReprocessResult.outcomes` is a `Record<string, number>` keyed by
+ * the channel's constant disposition label, with no room for a nested object. A
+ * replayed change's statuses report is invisible by construction — recorded here
+ * so the next reader does not re-derive the question.
  */
 export async function processStatuses(
   db: Firestore,
   contaId: string,
   value: ValuePayload,
-): Promise<void> {
+): Promise<StatusesReport> {
   const displayPhone = value.metadata.display_phone_number;
   const statuses = value.statuses ?? [];
   const valueErrors = value.errors ?? null;
+  const out: StatusesReport = { aplicados: 0, naoEncontrados: 0, staleIgnorados: 0 };
 
   for (let i = 0; i < statuses.length; i++) {
     const status = statuses[i]!;
@@ -121,7 +171,11 @@ export async function processStatuses(
 
     const snap = await ref.get();
     if (!snap.exists) {
+      // ⚠️ Keep BOTH: the counter carries the RATE, this line carries the `mid`.
+      // Chasing down which message the id derivation missed needs the mid, so the
+      // warn is not made redundant by the count beside it.
       console.warn('[whatsapp] status ignorado — mensagem não encontrada', { mid: status.id });
+      out.naoEncontrados += 1;
       continue;
     }
     const mensagem = mensagemCollection.parseRead(
@@ -139,6 +193,7 @@ export async function processStatuses(
       lastMs >= statusTs &&
       !shouldApplyStale(status.status, mensagem.estadoEnvio)
     ) {
+      out.staleIgnorados += 1;
       continue;
     }
 
@@ -186,5 +241,8 @@ export async function processStatuses(
     if (errors.length > 0) patch.errors = errors;
 
     await mensagemCollection.merge(db, { conversaId }, msgId, patch);
+    out.aplicados += 1;
   }
+
+  return out;
 }

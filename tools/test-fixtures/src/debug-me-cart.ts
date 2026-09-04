@@ -1,3 +1,4 @@
+import { localTelefoneOrNull } from '@delfrance/core/phone';
 import { db } from './admin';
 
 /**
@@ -78,6 +79,16 @@ async function getAccessToken(): Promise<string> {
 }
 
 const cap = (s: string | null | undefined, n: number) => (s ?? '').slice(0, n).trim();
+/**
+ * The same boundary strip the app's cart mapper applies — shared through
+ * `@delfrance/core/phone` rather than restated, so this script cannot drift
+ * from what it exists to reproduce (the reasoning lives above
+ * `BuildPedidoCartInput` in `melhorEnvioCart.ts`). `?? undefined` because this
+ * payload omits absent fields instead of sending `null`. To probe a `55…`
+ * value deliberately, add it as a `variants()` entry.
+ */
+const wirePhone = (v: unknown) =>
+  localTelefoneOrNull(typeof v === 'string' ? v : null) ?? undefined;
 
 async function buildBasePayload(): Promise<Record<string, unknown>> {
   const intFrete = (await db().collection('int_frete').doc(INT_ID).get()).data() as
@@ -108,7 +119,7 @@ async function buildBasePayload(): Promise<Record<string, unknown>> {
     service,
     from: {
       name: filial?.razaoSocial ?? '',
-      phone: origem?.telefone ?? (filial?.sede as Record<string, unknown>)?.telefone ?? undefined,
+      phone: wirePhone(origem?.telefone ?? (filial?.sede as Record<string, unknown>)?.telefone),
       company_document: filial?.cnpj ?? undefined,
       state_register: filial?.ie ?? undefined,
       economic_activity_code: filial?.cnae ?? undefined,
@@ -123,7 +134,7 @@ async function buildBasePayload(): Promise<Record<string, unknown>> {
     },
     to: {
       name: dest?.nome ?? cliente?.nome ?? '',
-      phone: dest?.telefone ?? cliente?.telefone ?? undefined,
+      phone: wirePhone(dest?.telefone ?? cliente?.telefone),
       email: dest?.email ?? cliente?.email ?? undefined,
       ...(pj ? { company_document: destDoc } : { document: destDoc }),
       address: cap(dest?.logradouro as string, 39),

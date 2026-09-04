@@ -3,31 +3,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Select, Stack, Text } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
-import {
-  impostoProdutoSchema,
-  operacaoIdFromImpostoRef,
-  type ImpostoProduto,
-} from '@delfrance/schemas';
+import { operacaoIdFromImpostoRef, type ImpostoProduto } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
+import {
+  emptyImposto,
+  IMPOSTO_LIMIT,
+  montarLinhasImposto,
+  OPERACAO_LIMIT,
+  operacoesAtivas,
+  type OperacaoRow,
+} from '@/lib/produtos/impostoRows';
 import { ImpostoConfigEditor, type ImpostoConfigValue } from '@/components/imposto';
-
-// Operações are few (fiscal operations); a bounded, name-ordered query suffices.
-const OPERACAO_LIMIT = 200;
-const IMPOSTO_LIMIT = 200;
-
-interface OperacaoRow {
-  id: string;
-  nome: string;
-  padrao: boolean;
-}
-
-/** A blank imposto entry scoped to one operação (Flutter typo wire key). */
-function emptyImposto(operacaoId: string): ImpostoProduto {
-  return impostoProdutoSchema.parse({ impostoOpercaoOuterRef: `operacao/${operacaoId}` });
-}
 
 export interface ImpostoManagerProps {
   produtoId: string | null;
@@ -68,10 +57,7 @@ export function ImpostoManager({
   );
   const operacoesSnap = useSnapshot(operacoesQuery);
   const operacoes: OperacaoRow[] = useMemo(
-    () =>
-      (operacoesSnap.data ?? [])
-        .filter((o) => o.data.ativo !== false)
-        .map((o) => ({ id: o.id, nome: o.data.nome, padrao: o.data.padrao === true })),
+    () => operacoesAtivas(operacoesSnap.data ?? []),
     [operacoesSnap.data],
   );
 
@@ -92,16 +78,7 @@ export function ImpostoManager({
     if (operacoesSnap.loading) return;
     if (produtoId && impostosSnap.loading) return;
     if (operacoes.length === 0) return;
-    const byOperacao = new Map<string, ImpostoProduto>();
-    for (const d of impostosSnap.data ?? []) {
-      const opId = operacaoIdFromImpostoRef(d.data.impostoOpercaoOuterRef);
-      // Skip a null-scoped (default-fallback) imposto — it is not a per-operação
-      // entry; leaving it out of the form keeps it untouched on save (rather than
-      // rewriting its scope to a fake `operacao/<docId>`).
-      if (!opId) continue;
-      byOperacao.set(opId, { ...d.data, id: d.id, impostoOpercaoOuterRef: `operacao/${opId}` });
-    }
-    onChange(operacoes.map((op) => byOperacao.get(op.id) ?? emptyImposto(op.id)));
+    onChange(montarLinhasImposto(operacoes, impostosSnap.data ?? []));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [produtoId, operacoesSnap.loading, impostosSnap.loading, operacoes.length, value]);
 

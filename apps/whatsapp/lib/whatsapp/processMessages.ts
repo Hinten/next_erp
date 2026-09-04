@@ -90,7 +90,7 @@ import {
   usuarioOuterRef,
 } from './discoverUser';
 import { getAndUploadMedia, type MediaCacheContext } from './media';
-import { processStatuses } from './processStatus';
+import { processStatuses, type StatusesReport } from './processStatus';
 
 /** 24 hours in ms — the conversa prazo window and the auto-reply dedupe threshold. */
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -104,10 +104,100 @@ export interface WhatsappProcessDeps {
   mediaContext(db: Firestore, contaId: string): Promise<MediaCacheContext>;
 }
 
+/**
+ * What ONE inbound message did. Every value is an existing branch of
+ * `processInboundMessage` — nothing here is invented for the log.
+ */
+type InboundMessageOutcome =
+  | 'mensagem' // the mensagem was written or updated
+  | 'redelivery' // an existing mensagem at/after this timestamp — idempotent skip
+  | 'echo' // outbound echo (the change also carries `statuses`) — conversa only
+  | 'spam'; // the spam-conversa guard suppressed it
+
+/**
+ * What the whole `messages`-field change did.
+ *
+ * ⚠️ `processed` is a DISPOSITION, not an assertion that work happened: a change
+ * carrying neither `messages` nor `statuses` resolves to it having written
+ * nothing at all, and so does a redelivery of a message already stored. Without
+ * this field they are indistinguishable in the logs — the blind spot that cost a
+ * full day on Mercado Livre's first live run (#1087, fixed for ML in #1136).
+ *
+ * ⚠️ Typed as the narrow union, not `string`, ON PURPOSE — `TaskResult.detail`
+ * widens it for the log, and that widening would otherwise let a renamed or
+ * dropped member compile everywhere in silence.
+ *
+ * ⚠️ These name what happened to the MENSAGEM, not whether anything was written
+ * at all: `upsertConversa` runs BEFORE the `echo` and `spam` returns, so every
+ * value except `statuses` and `vazio` implies the conversa was created, reopened
+ * or touched.
+ *
+ * The `statuses` half of that gap is CLOSED: `StatusesReport` rides out beside
+ * `detail` whichever arm of the chain wins, so an `echo` no longer hides the
+ * status work and a `statuses` that applied nothing no longer overstates.
+ *
+ * What REMAINS, deliberately: `redelivery` names the mensagem skip while the same
+ * run may have reopened the conversa and bumped `ultima_modificacao`. It stays
+ * unreported because of the rule the statuses report is an instance of —
+ * **report in the log what leaves no other trace**. A soft-missed status writes
+ * NOTHING but a `console.warn`, which is why it earned a field; the conversa
+ * story writes its own documents (`evento_nova`, `evento_reaberto_<wamid>`, a
+ * moved `estadoConversa`/`prazo_resposta`) and is derivable from `detail` besides
+ * — `conversaTocada === (detail ∉ {statuses, vazio})`. A field that is a pure
+ * function of another field on the same line makes the line longer, not the
+ * operator wiser. This is a recorded decision, not an open TODO.
+ */
+export type MessagesFieldOutcome =
+  // >= 1 inbound mensagem written or updated.
+  | 'mensagens'
+  // Messages present, every one an idempotent mensagem skip. The conversa may
+  // still have been reopened + bumped on this same run.
+  | 'redelivery'
+  // Messages present, every one suppressed by the spam-conversa guard — but
+  // `upsertConversa` already ran.
+  | 'spam'
+  // Outbound echo (the change also carries `statuses`): the conversa was
+  // touched and the statuses WERE applied; no mensagem was written.
+  | 'echo'
+  // No `messages` key at all; a `statuses[]` batch ran. ⚠️ Says nothing about
+  // whether any of them LANDED — that is what the `StatusesReport` beside it is
+  // for, and it is the whole reason this member is no longer an overstatement.
+  | 'statuses'
+  // NEITHER present — nothing happened at all.
+  | 'vazio';
+
+/**
+ * Why a change was acked without processing. Low-cardinality on purpose — a
+ * `drop` persists NOTHING in either phase, so this log line is the only record
+ * the delivery ever arrived, and the free-text `reason` beside it is not
+ * filterable.
+ */
+export type DropOutcome =
+  | 'campo-nao-suportado' // a field other than `messages`
+  | 'value-malformado'; // the `messages` value failed `valuePayloadSchema`
+
 /** Deterministic result of processing a `messages`-field change. */
 export type ProcessOutcome =
-  | { kind: 'processed'; contaId: string }
-  | { kind: 'dropped'; reason: string } // ack, never persist (malformed value)
+  | {
+      kind: 'processed';
+      contaId: string;
+      detail: MessagesFieldOutcome;
+      /**
+       * What the `statuses[]` batch did, or null when the change carried no
+       * `statuses` key at all.
+       *
+       * ⚠️ Required-and-nullable rather than optional ON PURPOSE: it makes the
+       * compiler force every `processed` return path to DECIDE the value, so
+       * "absent means there were no statuses" is a fact rather than a convention
+       * — and the projection's structural `in` check narrows it in one step.
+       */
+      statuses: StatusesReport | null;
+    }
+  | { kind: 'dropped'; reason: string; detail: DropOutcome } // ack, never persist
+  // ⚠️ No `detail` here, and that asymmetry is the rule rather than an omission:
+  // a `fail` WRITES a Firestore document carrying the whole `reason` as `erro`,
+  // so the record already exists. `done` and `dropped` persist nothing, which is
+  // why only those two need a filterable token in the log.
   | { kind: 'failed'; reason: string }; // persist as `failed`, sweep re-drives
 
 /** Owning-account resolution for an inbound change. */
@@ -203,7 +293,11 @@ export async function processMessagesField(
 ): Promise<ProcessOutcome> {
   const parsed = valuePayloadSchema.safeParse(rawValue);
   if (!parsed.success) {
-    return { kind: 'dropped', reason: 'payload de mensagens malformado' };
+    return {
+      kind: 'dropped',
+      reason: 'payload de mensagens malformado',
+      detail: 'value-malformado',
+    };
   }
   const value = parsed.data;
   const phoneNumberId = value.metadata.phone_number_id;
@@ -223,16 +317,37 @@ export async function processMessagesField(
   // but no mensagem/auto-reply/fixup runs.
   const incoming = value.statuses == null;
 
+  // Fold the per-message outcomes most-work-first, so the reported value is the
+  // strongest claim the change can actually support.
+  const seen = new Set<InboundMessageOutcome>();
   if (value.messages) {
     for (const message of value.messages) {
-      await processInboundMessage(db, deps, { contaId, conta, value, message, incoming });
+      seen.add(await processInboundMessage(db, deps, { contaId, conta, value, message, incoming }));
     }
   }
-  if (value.statuses) {
-    await processStatuses(db, contaId, value);
-  }
+  const statuses = value.statuses ? await processStatuses(db, contaId, value) : null;
 
-  return { kind: 'processed', contaId };
+  // `echo` outranks `statuses` here: a change carrying BOTH keys sets
+  // `incoming = false`, so every message folds to `echo`. That used to HIDE the
+  // statuses work; it no longer does — the report above rides out beside `detail`
+  // whichever arm wins, which is why this chain did not have to be reshuffled.
+  const detail: MessagesFieldOutcome = seen.has('mensagem')
+    ? 'mensagens'
+    : seen.has('redelivery')
+      ? 'redelivery'
+      : seen.has('spam')
+        ? 'spam'
+        : seen.has('echo')
+          ? 'echo'
+          : // No messages in the change at all. `statuses` is the only other
+            // thing this field can carry, so its absence means the change moved
+            // nothing — an errors-only body, say. That is a real outcome and it
+            // must not read as a processed message.
+            value.statuses
+            ? 'statuses'
+            : 'vazio';
+
+  return { kind: 'processed', contaId, detail, statuses };
 }
 
 /* ---------------------------- inbound one message ------------------------- */
@@ -249,7 +364,7 @@ async function processInboundMessage(
   db: Firestore,
   deps: WhatsappProcessDeps,
   { contaId, conta, value, message, incoming }: InboundArgs,
-): Promise<void> {
+): Promise<InboundMessageOutcome> {
   const displayPhone = value.metadata.display_phone_number;
   const from = message.from;
   const timestampMs = waTimestampToMs(message.timestamp);
@@ -277,9 +392,15 @@ async function processInboundMessage(
   });
 
   // Outbound echo (statuses present) or a spam conversa → no mensagem, no reply.
-  if (!incoming || skipMensagem) return;
+  // Reported apart: both wrote no mensagem, but for entirely different reasons.
+  if (!incoming) return 'echo';
+  if (skipMensagem) return 'spam';
 
-  await createOrUpdateMensagem(db, deps, {
+  // ⚠️ This boolean used to be discarded — so an idempotent redelivery that
+  // wrote NOTHING and a real inbound message produced a byte-identical log line.
+  // It is propagated for REPORTING only; see the bump below, which must stay
+  // ungated.
+  const wrote = await createOrUpdateMensagem(db, deps, {
     contaId,
     conversaId,
     userId: user.id,
@@ -310,6 +431,8 @@ async function processInboundMessage(
     if (!(err instanceof Error)) throw err;
     console.error('[whatsapp] fixConversaAnonima falhou', { message: err.message });
   }
+
+  return wrote ? 'mensagem' : 'redelivery';
 }
 
 /* --------------------------- conversa create/reopen ----------------------- */
@@ -507,7 +630,10 @@ interface MensagemArgs {
  * redelivery → skip. Media is downloaded + cached into the typed schema
  * sub-objects; context/reaction/referral are mapped to the mensagem fields.
  * Returns `true` when a mensagem was written/updated, `false` on the idempotent
- * redelivery skip — so the caller only bumps `ultima_modificacao` on a real write.
+ * redelivery skip. ⚠️ The caller does NOT gate the `ultima_modificacao` bump on
+ * it — see the comment at that bump for why gating there would be wrong. The
+ * boolean is what the change's reported `MessagesFieldOutcome` is derived from,
+ * which is the whole reason a redelivery is distinguishable from a real write.
  */
 async function createOrUpdateMensagem(
   db: Firestore,

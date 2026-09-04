@@ -24,7 +24,7 @@ import {
   FreightAuthError,
   FreightSchemaError,
   FreightBadRequestError,
-  FreightHttpError,
+  type FreightHttpError,
   FreightLabelTerminalError,
   FreightNetworkError,
   FreightNotFoundError,

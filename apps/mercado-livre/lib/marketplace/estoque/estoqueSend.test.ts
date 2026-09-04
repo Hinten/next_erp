@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
+import type { z } from 'zod';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,

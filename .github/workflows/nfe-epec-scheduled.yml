@@ -97,7 +97,7 @@ jobs:
           fi
           echo "All 5 live-test secrets are configured."
 
-      - name: Restore last-known-good SEFAZ chain
+      - name: Restore last-known-good SEFAZ chains (SP + AN)
         # Same fallback posture as ci-nfe.yml's nfe-live job: a fresh fetch
         # is ALWAYS attempted first, the cache only backstops a failed one.
         uses: actions/cache/restore@v4
@@ -107,19 +107,56 @@ jobs:
           restore-keys: |
             sefaz-chains-
 
-      - name: Refresh SEFAZ-SP TLS chain
-        # Only SP is needed here — EPEC registers at the AN (whose endpoint
-        # rides the vendored DFe root, no per-run fetch) and the pós-EPEC leg
-        # transmits to the home SEFAZ (SP for the test filial).
+      - name: Refresh SEFAZ TLS chains (SP home + AN)
+        # EPEC needs BOTH slots, and NEITHER is vendored: `ca/.gitignore`
+        # ignores every `sefaz-*.pem`, so a slot no job fetches here is ENOENT
+        # at runtime — before a byte reaches SEFAZ. The evento registers at
+        # the **Ambiente Nacional** (hom1.nfe.fazenda.gov.br) through
+        # `runtime.ts`'s `rt.an()`, which reads `ca/sefaz-an-<ambiente>.pem`;
+        # the pós-EPEC leg then transmits the full NF-e to the home SEFAZ (SP
+        # for the test filial). ⚠️ Issue #1393: this step fetched SP alone, on
+        # the strength of a comment claiming the AN endpoint rode a vendored
+        # root — no such file is or ever was checked in — and the job died on
+        # the missing AN chain on its first-ever scheduled run. Both slots are
+        # FATAL when fetch AND cache fail: neither half of the round-trip can
+        # run without its chain. Same retry + cache-fallback helper as
+        # svc-live below.
         run: |
-          if ! pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca; then
-            if [[ -f packages/integrations/nfe/ca/sefaz-sp-homologacao.pem ]]; then
-              echo "::warning::SP chain fetch failed — using the last-known-good cached chain"
-            else
-              echo "::error::SP chain fetch failed and no cached chain is available"
-              exit 1
+          ensure_chain() {
+            # ⚠️ The chain filename is DERIVED from the same flags that are
+            # forwarded to the fetcher — never passed alongside them. It used to
+            # be `$1`, which made the probe path and the fetch two independent
+            # sources of truth with nothing reconciling them: `ensure_chain
+            # sefaz-an-homologacao.pem --uf=AN --ambiente=producao` fetched fine,
+            # wrote `sefaz-an-producao.pem`, returned 0 without ever reaching the
+            # `-f` probe, and the job then ENOENTed inside the test. Enforced by
+            # `packages/config-eslint/rules/sefaz-chain-fetch-coverage.test.js`.
+            local uf='' ambiente='' arg
+            for arg in "$@"; do
+              case "$arg" in
+                --uf=*)       uf="${arg#--uf=}" ;;
+                --ambiente=*) ambiente="${arg#--ambiente=}" ;;
+              esac
+            done
+            if [[ -z "$uf" || -z "$ambiente" ]]; then
+              echo "::error::ensure_chain needs --uf= and --ambiente=; got: $*"
+              return 1
             fi
-          fi
+            local file="packages/integrations/nfe/ca/sefaz-${uf,,}-${ambiente}.pem"
+            for i in 1 2; do
+              pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
+              echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 5s"
+              sleep 5
+            done
+            if [[ -f "$file" ]]; then
+              echo "::warning::fetch:sefaz-ca $* failed after 2 attempts — using the last-known-good cached chain"
+              return 0
+            fi
+            echo "::error::fetch:sefaz-ca $* failed after 2 attempts and no cached chain is available"
+            return 1
+          }
+          ensure_chain --uf=SP --ambiente=homologacao
+          ensure_chain --uf=AN --ambiente=homologacao
 
       - name: SEFAZ-SP HOM status gate (single status call per run)
         # Short-circuits the EPEC round-trip below if SEFAZ-SP is paralisado
@@ -145,7 +182,7 @@ jobs:
         run: |
           pnpm --filter @delfrance/nfe-app test epec.homologacao
 
-      - name: Save SEFAZ chain to cache (last-known-good)
+      - name: Save SEFAZ chains to cache (last-known-good)
         if: always()
         continue-on-error: true
         uses: actions/cache/save@v4
@@ -234,7 +271,26 @@ jobs:
         # test self-skips (loudly) when its chain file is absent.
         run: |
           ensure_chain() {
-            local file="packages/integrations/nfe/ca/$1"; shift
+            # ⚠️ The chain filename is DERIVED from the same flags that are
+            # forwarded to the fetcher — never passed alongside them. It used to
+            # be `$1`, which made the probe path and the fetch two independent
+            # sources of truth with nothing reconciling them: `ensure_chain
+            # sefaz-an-homologacao.pem --uf=AN --ambiente=producao` fetched fine,
+            # wrote `sefaz-an-producao.pem`, returned 0 without ever reaching the
+            # `-f` probe, and the job then ENOENTed inside the test. Enforced by
+            # `packages/config-eslint/rules/sefaz-chain-fetch-coverage.test.js`.
+            local uf='' ambiente='' arg
+            for arg in "$@"; do
+              case "$arg" in
+                --uf=*)       uf="${arg#--uf=}" ;;
+                --ambiente=*) ambiente="${arg#--ambiente=}" ;;
+              esac
+            done
+            if [[ -z "$uf" || -z "$ambiente" ]]; then
+              echo "::error::ensure_chain needs --uf= and --ambiente=; got: $*"
+              return 1
+            fi
+            local file="packages/integrations/nfe/ca/sefaz-${uf,,}-${ambiente}.pem"
             for i in 1 2; do
               pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
               echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 5s"
@@ -246,8 +302,8 @@ jobs:
             fi
             return 1
           }
-          ensure_chain sefaz-svc-an-homologacao.pem -- --uf=SVC-AN --ambiente=homologacao
-          ensure_chain sefaz-svc-rs-homologacao.pem -- --uf=SVC-RS --ambiente=homologacao \
+          ensure_chain --uf=SVC-AN --ambiente=homologacao
+          ensure_chain --uf=SVC-RS --ambiente=homologacao \
             || echo "::warning::SVC-RS chain unavailable (fetch failed, no cache) — the off-binding transport test will self-skip this run"
 
       - name: Live SVC contingency round-trips — SVC-AN emission/consulta + SVC-RS transport

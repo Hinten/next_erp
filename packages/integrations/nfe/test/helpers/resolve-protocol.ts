@@ -16,6 +16,7 @@
  * so a mistargeted call fails loudly at the first poll instead of
  * producing a confusing SOAP fault mid-test.
  */
+import { logSefaz } from './sefaz-log';
 import { assertNotConsumoIndevido } from '../../src/state';
 import { consultarLote } from '../../src/operations/index';
 import type { SefazCall } from '../../src/soap';
@@ -43,10 +44,7 @@ export async function resolveProtocol(
     await new Promise((r) => setTimeout(r, 5_000));
     const poll = await consultarLote(consReciCall, { nRec: ret.infRec.nRec });
     assertNotConsumoIndevido(poll, `consultarLote/attempt=${attempt + 1}`);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[consultarLote attempt=${attempt + 1}] cStat=${poll.cStat} xMotivo="${poll.xMotivo}"`,
-    );
+    logSefaz(`consultarLote attempt=${attempt + 1}`, poll);
     if (poll.cStat === '105') continue; // ainda em processamento
     if (poll.protNFe && poll.protNFe[0]) return poll.protNFe[0];
     return undefined;

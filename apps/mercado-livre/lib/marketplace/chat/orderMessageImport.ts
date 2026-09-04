@@ -44,7 +44,7 @@ import { coerceToMillis } from '@delfrance/core/datetime';
 import { ack404EhSeguro } from '../notificacoes/notificacaoFrescor';
 import { resolvePedidoIdByOrderId } from '../pedidos/orderPedidoResolve';
 import { makeConversaIdOrderMessage, makeOrderMensagemId } from './orderMessageIds';
-import { type Bucket } from '../core/arquivoUpload';
+import type { Bucket } from '../core/arquivoUpload';
 import { ensureOrderMessageAttachmentArquivo } from './orderMessageAttachments';
 import { makeAttachmentMensagemId } from '../claims/claimIds';
 import { limparMensagensProvisorias } from './mensagemProvisoria';

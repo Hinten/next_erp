@@ -808,3 +808,176 @@ describe('validate-what-you-save resolver (prepareForSave before validation)', (
     expect(saveRecordMock).not.toHaveBeenCalled();
   });
 });
+
+describe('prepareForSave on nested sub-fields (FieldConfig.fields)', () => {
+  const nestedSchema = z.object({
+    nome: z.string().nullable().optional().describe('Nome'),
+    endereco: z
+      .object({
+        telefone: z.string().describe('Telefone'),
+        cidade: z.string().describe('Cidade'),
+      })
+      .describe('Endereço'),
+  });
+
+  // Deliberately NOT idempotent: re-running it would compound the prefix, which
+  // is what pins that the resolver's transformed copy never leaks back into
+  // form state.
+  const prefix55 = (v: unknown): unknown => `55${v as string}`;
+  const nestedFields = { endereco: { fields: { telefone: { prepareForSave: prefix55 } } } };
+
+  const existing = {
+    id: 'EXISTING',
+    data: { nome: 'Alice', endereco: { telefone: '11999998888', cidade: 'SP' } },
+  };
+
+  function renderNested(props: Record<string, unknown> = {}) {
+    return render(
+      <Wrap>
+        <ObjectView
+          schema={nestedSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          fields={nestedFields}
+          {...props}
+        />
+      </Wrap>,
+    );
+  }
+
+  function savedValues(): Record<string, unknown> {
+    const arg = saveRecordMock.mock.calls[0]![0] as { values: Record<string, unknown> };
+    return arg.values;
+  }
+
+  async function editAndSave(label: string, value: string) {
+    const input = screen.getByRole('textbox', { name: label }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value } });
+      fireEvent.blur(input);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+  }
+
+  it('transforms the edited nested sub-field before saving', async () => {
+    docState.current = { data: existing, loading: false, error: undefined };
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    renderNested({ recordId: 'EXISTING' });
+    await editAndSave('Telefone', '11999997777');
+    expect(savedValues().endereco).toEqual({ telefone: '5511999997777', cidade: 'SP' });
+  });
+
+  it('transforms an UNTOUCHED sub-field when a sibling made the parent dirty', async () => {
+    // The whole nested object is written (Firestore replaces it wholesale), so
+    // every sub-field of a dirty parent must be normalized, not just the edited one.
+    docState.current = { data: existing, loading: false, error: undefined };
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    renderNested({ recordId: 'EXISTING' });
+    await editAndSave('Cidade', 'Campinas');
+    expect(savedValues().endereco).toEqual({ telefone: '5511999998888', cidade: 'Campinas' });
+  });
+
+  it('leaves a PRISTINE parent alone on update (nothing about it is written)', async () => {
+    docState.current = { data: existing, loading: false, error: undefined };
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    renderNested({ recordId: 'EXISTING' });
+    await editAndSave('Nome', 'Bruna');
+    expect(savedValues().endereco).toEqual({ telefone: '11999998888', cidade: 'SP' });
+  });
+
+  it('transforms every configured sub-field on create', async () => {
+    saveRecordMock.mockResolvedValueOnce({ id: 'NEW', patch: {} });
+    renderNested({
+      defaultValues: { nome: 'Nova', endereco: { telefone: '11999998888', cidade: 'SP' } },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(savedValues().endereco).toEqual({ telefone: '5511999998888', cidade: 'SP' });
+  });
+
+  it('leaves a switched-off nullable object as null instead of materializing it', async () => {
+    const nullableSchema = z.object({
+      nome: z.string().nullable().optional().describe('Nome'),
+      endereco: z
+        .object({ telefone: z.string().describe('Telefone') })
+        .nullable()
+        .default(null)
+        .describe('Endereço'),
+    });
+    saveRecordMock.mockResolvedValueOnce({ id: 'NEW', patch: {} });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={nullableSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          fields={nestedFields}
+          defaultValues={{ nome: 'Nova', endereco: null }}
+        />
+      </Wrap>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(savedValues().endereco).toBeNull();
+  });
+
+  it('runs before validation, so a nested transform can repair a schema-invalid sub-value', async () => {
+    const strictSchema = z.object({
+      endereco: z
+        .object({ telefone: z.string().regex(/^\d*$/, 'apenas números').describe('Telefone') })
+        .describe('Endereço'),
+    });
+    const stripNonDigits = {
+      endereco: {
+        fields: { telefone: { prepareForSave: (v: unknown) => String(v).replace(/\D/g, '') } },
+      },
+    };
+    saveRecordMock.mockResolvedValueOnce({ id: 'NEW', patch: {} });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={strictSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          fields={stripNonDigits}
+          defaultValues={{ endereco: { telefone: '(11) 99999-8888' } }}
+        />
+      </Wrap>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(saveRecordMock).toHaveBeenCalledOnce();
+    expect(savedValues().endereco).toEqual({ telefone: '11999998888' });
+  });
+
+  it('without the nested transform the same invalid sub-value still blocks the save', async () => {
+    const strictSchema = z.object({
+      endereco: z
+        .object({ telefone: z.string().regex(/^\d*$/, 'apenas números').describe('Telefone') })
+        .describe('Endereço'),
+    });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={strictSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          defaultValues={{ endereco: { telefone: '(11) 99999-8888' } }}
+        />
+      </Wrap>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(saveRecordMock).not.toHaveBeenCalled();
+  });
+});

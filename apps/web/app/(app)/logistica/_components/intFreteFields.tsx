@@ -3,6 +3,7 @@
 import type { FieldConfig } from '@delfrance/ui';
 import { stripMarkedForDeletion } from '@delfrance/ui';
 import { enderecoNestedFields } from '@/components/inputs/enderecoFields';
+import { prepareForSaveTelefone, TelefoneField } from '@/components/inputs/TelefoneInput';
 import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
 import { FaixaCepEditor } from './FaixaCepEditor';
 import { HorarioCorteEditor } from './HorarioCorteEditor';
@@ -23,10 +24,24 @@ function stripThenNullIfEmpty(value: unknown): unknown {
  * **re-exposes** `telefone` + `email`: Melhor Envio requires `from.phone` for
  * some carriers (e.g. Jadlog), so the origin address must let the operator set
  * them (they stay hidden on the cliente + filial `sede` forms).
+ *
+ * `telefone` gets the same masked input + save-time normalization the cliente
+ * form uses, so this — the one operator-editable `endereco.telefone` in the
+ * app — is stored in the standardized `55…` wire format like every other phone.
+ * This is a NESTED `prepareForSave`, which ObjectView ignored until #870.
+ *
+ * ⚠️ The stored shape is deliberately independent of what Melhor Envio
+ * receives: `melhorEnvioCart.ts` strips the country code at the boundary, so
+ * `from.phone` stays the local 10/11-digit shape ME's own docs and every
+ * fixture use, whatever is stored here (#868).
  */
 const enderecoOrigemFields: Record<string, FieldConfig> = {
   ...enderecoNestedFields,
-  telefone: { label: 'Telefone' },
+  telefone: {
+    label: 'Telefone',
+    renderInput: TelefoneField,
+    prepareForSave: prepareForSaveTelefone,
+  },
   email: { label: 'E-mail' },
 };
 

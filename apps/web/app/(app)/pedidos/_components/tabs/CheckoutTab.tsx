@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Badge, Card, Group, Skeleton, Stack, Text } from '@mantine/core';
 import { IconCheck } from '@tabler/icons-react';
-import { type Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
 import {
   ESTADO_FRETE_LABELS,

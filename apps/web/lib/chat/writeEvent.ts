@@ -1,8 +1,8 @@
-import { type WriteBatch } from 'firebase/firestore';
+import type { WriteBatch } from 'firebase/firestore';
 import { TIPO_MENSAGEM, ESTADO_ENVIO } from '@delfrance/schemas';
 import { mensagemCollection } from '@/lib/data/conversaCollection';
 import { newDocId } from '@/lib/data/newDocId';
-import { getFirebaseFirestore } from '@/lib/firebase/client';
+import type { getFirebaseFirestore } from '@/lib/firebase/client';
 
 /**
  * Append a lifecycle EVENT mensagem (`tipo: 'e'`) for a conversa to a batch —

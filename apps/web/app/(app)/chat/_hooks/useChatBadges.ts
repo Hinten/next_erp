@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { buildQuery, limit, whereArrayContains, whereEqual } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { type Conversa } from '@delfrance/schemas';
+import type { Conversa } from '@delfrance/schemas';
 import {
   ESTADO_CONVERSA_EM_RESPOSTA,
   ESTADO_CONVERSA_NAO_RESPONDIDO,

@@ -70,7 +70,7 @@ import { type ImportDeps, importProduto } from '../importacao/import';
 import { type ImportOptions, MercadoLivreImportError } from '../importacao/importCore';
 import { refMatchesIntegracao } from '../core/linkRefs';
 import { loadMercadoLivreContext } from '../core/mercadoLivre';
-import { type Bucket } from '../core/arquivoUpload';
+import type { Bucket } from '../core/arquivoUpload';
 import { tryGetAdminBucket } from '../../firebase/admin';
 
 /**

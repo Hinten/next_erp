@@ -75,6 +75,23 @@ export function localTelefone(input: string): string {
 }
 
 /**
+ * Null-preserving {@link localTelefone}, for a wire that wants the local BR
+ * shape and OMITS the field when there is no phone: an empty, `null` or
+ * absent value stays absent instead of becoming an empty string.
+ *
+ * Exists because two surfaces send the same phone to the same provider — the
+ * Melhor Envio cart mapper in `apps/web` and the `debug-me-cart` diagnostic
+ * that reproduces it — and a wrapper duplicated across them is a rule the
+ * compiler cannot diff. They had already drifted (one yielded `null`, the
+ * other `undefined`) before this was shared; the remaining difference is now
+ * one `?? undefined` at the call site that needs it, not a second copy of the
+ * rule.
+ */
+export function localTelefoneOrNull(input: string | null | undefined): string | null {
+  return input ? localTelefone(input) : null;
+}
+
+/**
  * Mask a BR **local** number: 11 digits → `(00) 00000-0000`, 10 →
  * `(00) 0000-0000`. Any other length is returned unchanged.
  *
