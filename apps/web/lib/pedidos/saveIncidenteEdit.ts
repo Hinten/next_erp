@@ -1,6 +1,7 @@
 import type { Incidente } from '@delfrance/schemas';
 
 import {
+  CAMPOS_AUTORAIS_INCIDENTE,
   buildIncidentePatch,
   detectIncidenteConflict,
   type CampoAutoralIncidente,
@@ -111,12 +112,31 @@ export async function saveIncidenteEdit(
       throw new IncidenteConflictError(current, veredito.campos, veredito.bloqueouAgora);
     }
 
-    // Re-derived from the tx-fresh document rather than reusing `pretendido`:
-    // the resolução may have LOCKED since the baseline without conflicting (the
-    // operator never touched it), and a locked resolução must not be written at
-    // all. Nothing captured before the read reaches the write, so an OCC retry
+    // The write is the INTERSECTION of what was judged and what re-derivation
+    // against the tx-fresh document still asks for. Both halves are load-bearing
+    // and neither is sufficient alone:
+    //
+    //  - only `pretendido`'s keys may be written, because those are the ones the
+    //    verdict above covered. An authored field the operator left alone is not
+    //    in it — and re-derivation WOULD ask to write it, because the form still
+    //    holds the baseline value while the document holds someone else's. That
+    //    write reverts them, and `detectIncidenteConflict` never looked at the
+    //    key, so nothing catches it and the modal never shows it. It is the
+    //    whole-document `set` regression in miniature;
+    //  - the VALUES come from the re-derivation, because that is what drops a
+    //    resolução that locked since the baseline (a lock can arm without
+    //    conflicting, when the operator never touched it) and what carries the
+    //    live `resolucao.frete`.
+    //
+    // Nothing captured before the read reaches the write, so an OCC retry
     // recomputes from scratch.
-    escrito = buildIncidentePatch(args.form, current, port.now());
+    const contraCurrent = buildIncidentePatch(args.form, current, port.now());
+    escrito = {};
+    for (const campo of CAMPOS_AUTORAIS_INCIDENTE) {
+      if (!Object.prototype.hasOwnProperty.call(pretendido, campo)) continue;
+      if (!Object.prototype.hasOwnProperty.call(contraCurrent, campo)) continue;
+      Object.assign(escrito, { [campo]: contraCurrent[campo] });
+    }
     if (Object.keys(escrito).length === 0) return {};
     // Stamped inside the callback: the retry loop can run this more than once,
     // and a stamp taken before the transaction would age with each attempt.

@@ -132,6 +132,29 @@ describe('saveIncidenteEdit', () => {
     expect(writes).toEqual([{ motivoDoIncidente: 'Motivo novo', ultimaModificacao: NOW }]);
   });
 
+  /**
+   * ⚠️ The other half of the scope pair, and the one the first pass got wrong.
+   *
+   * The verdict is judged over the patch built against the BASELINE, but the
+   * write was rebuilt against `current` — so an authored key the operator never
+   * touched, which someone else changed, was absent from the judged patch (no
+   * conflict) yet present in the written one (form value != remote value), and
+   * went back over the other writer silently. Narrower than the whole-document
+   * `set` this PR removes, identical in kind.
+   */
+  it('never writes an authored field the operator left alone, however it moved remotely', async () => {
+    const baseline = incidente();
+    const current = incidente({ comentarios: 'Outra pessoa escreveu isto' });
+    const { port, writes } = fakePort(current);
+
+    await saveIncidenteEdit(port, {
+      form: { ...pristine(baseline), motivo: 'Motivo novo' },
+      baseline,
+    });
+
+    expect(writes).toEqual([{ motivoDoIncidente: 'Motivo novo', ultimaModificacao: NOW }]);
+  });
+
   it('conflicts with bloqueouAgora when the lock arms over pending resolução edits', async () => {
     const baseline = incidente({ resolucao: comFrete(ESTADO_FRETE.iniciado) });
     const current = incidente({ resolucao: comFrete(ESTADO_FRETE.postado) });
