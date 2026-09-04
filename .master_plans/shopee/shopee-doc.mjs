@@ -121,14 +121,21 @@ const findCategory = (list, id) => {
 // Only LEAF categories hold FAQs — a parent id answers total=0, never its children's rows.
 async function faqList(categoryId) {
   const rows = [];
+  const seen = new Set();
   for (let page = 1; ; page += 1) {
     const j = await getJson(
       `/portal_faq/list?category_id=${categoryId}&language_code=en&page_size=50&page_no=${page}`,
       `faq_list_${categoryId}_p${page}`,
     );
     const list = j.faq_list ?? [];
-    rows.push(...list);
-    if (list.length < 50 || rows.length >= (j.total ?? 0)) break;
+    // page_no IS honoured (measured: page_size=10 on 2026 gives 3 disjoint pages), but a page
+    // that adds nothing new still ends the loop — its neighbour /content/list spells the
+    // parameter page_index, and repeating page 1 forever would read as a longer category, not
+    // as a bug. An unknown total means "keep going", never "already done".
+    const fresh = list.filter((f) => !seen.has(f.faq_id));
+    for (const f of fresh) seen.add(f.faq_id);
+    rows.push(...fresh);
+    if (list.length < 50 || !fresh.length || rows.length >= (j.total ?? Infinity)) break;
   }
   return rows;
 }
@@ -235,7 +242,10 @@ if (cmd === 'modules') {
     out.push('\nfaqs <category_id> lists one category; a parent id lists every child category.');
   } else {
     const node = findCategory(tree, arg);
-    const leaves = node?.children?.length ? node.children : [node ?? { category_id: arg, name: `category ${arg}` }];
+    // Collect LEAVES, not direct children: on a deeper tree a mid-level parent would answer
+    // total=0 and print (no FAQs) — the very failure the fan-out exists to prevent.
+    const leavesOf = (n) => (n.children?.length ? n.children.flatMap(leavesOf) : [n]);
+    const leaves = node ? leavesOf(node) : [{ category_id: arg, name: `category ${arg}` }];
     for (const leaf of leaves) {
       out.push(`\n## [${leaf.category_id}] ${leaf.name}`);
       const rows = await faqList(leaf.category_id);
