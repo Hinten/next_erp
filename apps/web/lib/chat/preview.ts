@@ -9,9 +9,8 @@
  * ("áudio"/"vídeo"/"figurinha") — the modern copy for the legacy
  * "audio"/"video"/"sticker" placeholders.
  */
-import type { Mensagem } from '@delfrance/schemas';
+import type { Mensagem, OrigemConversa } from '@delfrance/schemas';
 import { TIPO_MENSAGEM } from '@delfrance/schemas';
-import type { OrigemConversa } from '@delfrance/schemas';
 import { mensagemEhNossa } from './direcao';
 
 /**

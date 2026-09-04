@@ -132,7 +132,7 @@
  * never mask the original with it).
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import type { MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import { toOuterRef } from '@delfrance/schemas';
 import {
   produtoCollection,

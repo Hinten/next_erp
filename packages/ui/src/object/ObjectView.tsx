@@ -25,7 +25,7 @@ import {
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { ZodError, type z, type ZodObject, type ZodRawShape, type ZodTypeAny } from 'zod';
-import { type CollectionHandle, type PathContext } from '@delfrance/data';
+import type { CollectionHandle, PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import type { FieldConfig, FieldDescriptor } from '../schema/types';

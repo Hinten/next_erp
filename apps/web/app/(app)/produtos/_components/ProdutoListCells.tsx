@@ -14,7 +14,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { IconCurrencyReal, IconPhotoOff } from '@tabler/icons-react';
-import { type Firestore } from 'firebase/firestore';
+import type { Firestore } from 'firebase/firestore';
 import { formatReais } from '@delfrance/core';
 import {
   INTEGRACAO_TIPO_LABELS,

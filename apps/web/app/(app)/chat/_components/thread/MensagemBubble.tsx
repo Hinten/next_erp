@@ -14,9 +14,8 @@ import {
 import { useHover } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconArrowForward, IconCopy, IconDots, IconFileText } from '@tabler/icons-react';
-import type { Mensagem } from '@delfrance/schemas';
+import type { Mensagem, OrigemConversa } from '@delfrance/schemas';
 import { ESTADO_ENVIO, TIPO_MENSAGEM } from '@delfrance/schemas';
-import type { OrigemConversa } from '@delfrance/schemas';
 import { mensagemEhNossa } from '@/lib/chat/direcao';
 import { formatMensagemTime } from '@/lib/chat/mensagemTime';
 import { HighlightedText } from '@/lib/chat/highlight';

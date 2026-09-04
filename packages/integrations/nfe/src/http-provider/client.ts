@@ -18,7 +18,7 @@ import {
   NFeBlockedError,
   NFeCertificateError,
   NFeDanfeUnavailableError,
-  NFeHttpError,
+  type NFeHttpError,
   NFeInutilizacaoAbortedError,
   NFeNetworkError,
   NFePedidoNotFoundError,

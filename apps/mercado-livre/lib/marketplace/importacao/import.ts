@@ -92,7 +92,7 @@ import { type ImportVariationChildrenResult, importVariationChildren } from './i
 import { resolveFamilySiblingIds } from './importFamily';
 import { isAlreadyExists, isFailedPrecondition } from '@delfrance/data/admin';
 import { lastSegment, refMatchesIntegracao } from '../core/linkRefs';
-import { type Bucket } from '../core/arquivoUpload';
+import type { Bucket } from '../core/arquivoUpload';
 import { importProdutoPhotos } from './importPhotos';
 
 export interface ImportDeps {

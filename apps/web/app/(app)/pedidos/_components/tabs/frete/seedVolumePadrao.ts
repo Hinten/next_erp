@@ -2,11 +2,15 @@
 
 import type { QueryClient } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
-import { MODALIDADE_FRETE, type ModalidadeFrete } from '@delfrance/schemas';
+import {
+  MODALIDADE_FRETE,
+  type ModalidadeFrete,
+  estimarDimensoes,
+  type AvisoDimensoes,
+} from '@delfrance/schemas';
 import type { VolumeFormState } from '../../types';
 import { fretePath, type PedidoFormHandle } from './fields';
 import { pesoPedido, shouldSeedVolume, volumePadrao, type PesoPedidoItem } from './pesoPedido';
-import { estimarDimensoes, type AvisoDimensoes } from '@delfrance/schemas';
 import { loadProdutoPesoMap } from './produtoPeso';
 
 /** A `FlatItem` subset — the fields the seed reads. */

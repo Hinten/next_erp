@@ -3,10 +3,9 @@ import {
   ESTADOS_FRETE_IGNORAR_REMOCAO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   estadoFreteSchema,
+  ESTADO_FRETE,
 } from '../../shared/frete';
-import { estadoPedidoSchema } from '../collection/pedido';
-import { ESTADO_PEDIDO } from '../collection/pedido';
-import { ESTADO_FRETE } from '../../shared/frete';
+import { estadoPedidoSchema, ESTADO_PEDIDO } from '../collection/pedido';
 import {
   EFEITO_ESTOQUE_NENHUM,
   ESTADOS_PEDIDO_MOVIMENTACAO,

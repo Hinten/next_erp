@@ -74,7 +74,7 @@ import {
   relatorioEnvioPrecoShardId,
 } from '@delfrance/schemas';
 import {
-  MercadoLivreHttpError,
+  type MercadoLivreHttpError,
   createMercadoLivreApi,
 } from '@delfrance/integrations-mercado-livre';
 import {

@@ -1,5 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 

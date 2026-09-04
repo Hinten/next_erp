@@ -55,7 +55,7 @@ import {
   medidasEfetivas,
   resolveVariationCombo,
 } from './importCore';
-import { type TaxonomiaResolution } from './taxonomiaCore';
+import type { TaxonomiaResolution } from './taxonomiaCore';
 import { isAlreadyExists } from '@delfrance/data/admin';
 import { lastSegment } from '../core/linkRefs';
 
