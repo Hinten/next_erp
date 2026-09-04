@@ -770,6 +770,14 @@ export async function seedMercadoLivreFixtures(
   return seedIntegracaoFixtures(prefix, n, 1);
 }
 
+/** Shopee (tipo 5) fixture set — see `seedIntegracaoFixtures`. */
+export async function seedShopeeFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string; listaId: string; depositoId: string }> {
+  return seedIntegracaoFixtures(prefix, n, 5);
+}
+
 /**
  * WhatsApp (tipo 6) fixture set — see `seedIntegracaoFixtures`, then patches
  * each doc with the flat WhatsApp fields (#528) the `/canais/whatsapp`
@@ -821,6 +829,11 @@ export async function cleanupBalcaoFixtures(prefix: string): Promise<void> {
 
 /** Teardown for `seedMercadoLivreFixtures`. */
 export async function cleanupMercadoLivreFixtures(prefix: string): Promise<void> {
+  await cleanupIntegracaoFixtures(prefix);
+}
+
+/** Teardown for `seedShopeeFixtures`. */
+export async function cleanupShopeeFixtures(prefix: string): Promise<void> {
   await cleanupIntegracaoFixtures(prefix);
 }
 
