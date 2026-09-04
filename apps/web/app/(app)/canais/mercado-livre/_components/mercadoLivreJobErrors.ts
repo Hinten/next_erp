@@ -90,3 +90,24 @@ export function describeMassImportCancelError(err: unknown): string {
     unknown: 'Não foi possível cancelar a importação.',
   });
 }
+
+/**
+ * `POST /atualizar-precos/cancelar` failures (#1144) — the price-sync twin of
+ * the helper above, with the same always-returns-copy contract and for the same
+ * reason: its caller is an async click handler that must never rethrow.
+ *
+ * ⚠️ The code is `ML_PRICE_SYNC_NOT_RUNNING`, one word from the start route's
+ * `ML_PRICE_SYNC_RUNNING` and the opposite condition. Matching the wrong one
+ * here shows "já existe um envio em andamento" to an operator whose envio has
+ * just finished.
+ */
+export function describePriceSyncCancelError(err: unknown): string {
+  if (err instanceof MercadoLivreClientHttpError) {
+    if (err.code === 'ML_PRICE_SYNC_NOT_RUNNING') return 'Este envio de preços já foi finalizado.';
+    if (err.status === 404) return 'Envio de preços não encontrado.';
+  }
+  return mercadoLivreErrorMessage(err, {
+    network: 'Falha de rede ao cancelar o envio de preços.',
+    unknown: 'Não foi possível cancelar o envio de preços.',
+  });
+}

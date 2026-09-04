@@ -34,6 +34,7 @@ const STATUS_LABEL = {
   running: { texto: 'Em andamento', cor: 'blue' },
   completed: { texto: 'Concluído', cor: 'green' },
   failed: { texto: 'Falhou', cor: 'red' },
+  cancelled: { texto: 'Cancelado', cor: 'gray' },
 } as const satisfies Record<
   MercadoLivrePriceSyncHistoricoEntry['status'],
   { texto: string; cor: string }
@@ -169,6 +170,15 @@ function EnvioRow({
       {envio.status === 'failed' && (
         <Text size="xs" c="red.7">
           {envio.erro ? `Erro: ${envio.erro}` : 'O envio terminou em falha.'}
+        </Text>
+      )}
+
+      {/* Dimmed rather than red — a cancel is a decision, not a fault. The
+          report button below stays available either way: a cancelled run still
+          moved whatever prices it got to. */}
+      {envio.status === 'cancelled' && (
+        <Text size="xs" c="dimmed">
+          O envio foi cancelado.
         </Text>
       )}
 

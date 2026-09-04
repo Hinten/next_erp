@@ -82,7 +82,13 @@ function comparar(
 }
 
 export interface EnvioPrecoCsvResumo {
-  status: 'running' | 'completed' | 'failed';
+  /**
+   * Printed verbatim into the incomplete-report trailer below, which is why the
+   * union has to track the schema: a `cancelled` run (#1144) is exactly a run
+   * whose report is partial, and a narrower type here would have silently
+   * excluded the case the trailer exists for.
+   */
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
   relatorioCompleto: boolean;
   filaRestante: number;
   planejados: number;
