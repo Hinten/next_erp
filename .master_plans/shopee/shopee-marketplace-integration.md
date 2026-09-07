@@ -1,6 +1,7 @@
 # Shopee — master plan for the marketplace integration
 
 Date: 2026-09-03 · Branch: `claude/shopee-marketplace-integration-536e69` · Method: `marketplace-integration` skill, Phases 0–2.
+Tracker: **#1537** â one issue per remaining step (#1511â#1530; step N = #1508+N, #1524 = step 16 deferred), the migration-window operations #1531â#1535 (linked from #1208), the in-app notification surface #1536. Shipped: step 1 (#1481), step 21a (#1486, #1487), step 2 (#1493).
 Evidence: Shopee Open Platform docs read through their JSON API (`shopee-doc.mjs`, no login), 4 doc surveys (A auth/push · B orders/logistics · C products/stock · D chat/promotions), 1 legacy survey of `.old/packages/canais_de_venda/shopee`, and the announcements feed (552 entries scanned). Citations use `guide N` (developer guide document id), `api v2.x.y` (API reference page), `push N` (push_api_id) and `announcement N`.
 
 ---
