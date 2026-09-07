@@ -1,7 +1,9 @@
 import { type DocumentReference, type Firestore, getDocFromServer } from 'firebase/firestore';
 import { TRUNCATED_VALUE_KEY, valuesEqual } from '@delfrance/core';
 import {
+  impostoProdutoSchema,
   operacaoIdFromImpostoRef,
+  produtoExtraDataSchema,
   type ImpostoProduto,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
@@ -132,8 +134,11 @@ export interface RevertTarget {
   newValue: unknown;
 }
 
+/** The slice of a target `refFor` actually needs — shared by field and document restores. */
+type RefTarget = Pick<RevertTarget, 'produtoId' | 'subcolecao' | 'docId'>;
+
 /** Resolves the converter-bound doc ref a revert target reads through. */
-function refFor(db: Firestore, target: RevertTarget): DocumentReference {
+function refFor(db: Firestore, target: RefTarget): DocumentReference {
   if (target.subcolecao === null) {
     // The produto doc's entries carry docId == produtoId; key on `produtoId`
     // (the produto the UI is editing) so a malformed/mismatched target can
@@ -275,4 +280,136 @@ export function buildRevertPrefill(target: RevertTarget, base: RevertPrefillBase
   }
 
   throw new Error(`revert: unsupported subcolecao "${target.subcolecao}"`);
+}
+
+/**
+ * "Restaurar documento" support (#648) — undelete a `delete`-kind
+ * `historicoDeModificacoes` entry, whose `changes` map carries the FULL
+ * pre-delete snapshot (`old` = every field's last value, `new` = null for
+ * each). Scoped to the produto's two SUBCOLLECTIONS only — `extraData` and
+ * `imposto` — never the produto document itself: a produto-level delete entry
+ * is swept by `onProdutoDeleted`'s subtree cascade (`apps/functions/CLAUDE.md`)
+ * before an operator could ever reach it, since the editor it would render in
+ * no longer exists once the produto is gone.
+ *
+ * Restaurar STAGES here exactly like the field-level revert (#660) — nothing
+ * is written until the operator hits "Salvar alterações".
+ */
+
+const DOCUMENT_RESTORABLE_SUBCOLECOES = new Set(['extraData', 'imposto']);
+
+/** One `delete`-kind entry's data, as `buildDocumentRestorePrefill` needs it. */
+export interface DocumentRestoreTarget {
+  produtoId: string;
+  subcolecao: string | null;
+  docId: string;
+  changes: Record<string, { old: unknown; new: unknown }>;
+}
+
+/**
+ * Whether a `delete`-kind entry's document can be restored. Unlike
+ * {@link isRevertible} there is no per-field whitelist to check: every stored
+ * field of a deleted `extraData`/`imposto` doc is user data (the schemas'
+ * server/identity fields — `id`/`timestamp` on `imposto` — are dropped in
+ * {@link buildDocumentRestorePrefill}, not gated here). A truncated field on
+ * EITHER side blocks the whole restore: the trigger never stored the real
+ * value for that field, so the reconstructed document would be missing data
+ * silently instead of failing loudly.
+ */
+export function isDocumentRestorable(
+  subcolecao: string | null,
+  changes: Record<string, { old: unknown; new: unknown }>,
+): { ok: boolean; reason: string | null } {
+  if (subcolecao === null || !DOCUMENT_RESTORABLE_SUBCOLECOES.has(subcolecao)) {
+    return { ok: false, reason: 'Este documento não pode ser restaurado.' };
+  }
+  for (const change of Object.values(changes)) {
+    if (isTruncationSentinel(change.old)) {
+      return {
+        ok: false,
+        reason: 'Um ou mais valores são grandes demais para restaurar automaticamente.',
+      };
+    }
+  }
+  return { ok: true, reason: null };
+}
+
+/**
+ * Advisory conflict check for a document-level restore — the document-level
+ * counterpart of {@link checkRevert}. A `delete` entry has no single field to
+ * compare against a "moved again" value: either the document is still gone
+ * (safe to restore) or SOMETHING re-created it since (an unrelated new
+ * `imposto` row for the same operação, a fresh `extraData` singleton) — in
+ * which case restoring would silently overwrite it. Reads fresh from the
+ * server, never the local cache, for the same reason `checkRevert` does.
+ */
+export async function checkDocumentRestore(
+  db: Firestore,
+  target: Pick<DocumentRestoreTarget, 'produtoId' | 'subcolecao' | 'docId'>,
+): Promise<{ conflict: boolean; currentData: Record<string, unknown> | null }> {
+  const snap = await getDocFromServer(refFor(db, target));
+  const data = snap.data() as Record<string, unknown> | undefined;
+  return { conflict: data !== undefined, currentData: data ?? null };
+}
+
+/**
+ * Builds the form pre-fill that STAGES a document restore — nothing is
+ * written here, mirroring {@link buildRevertPrefill}. Reconstructs the full
+ * document from `target.changes`' `old` side, schema-parses it (so a value
+ * that no longer fits the current schema throws a `ZodError` the caller can
+ * report instead of staging a broken document), and folds it into the same
+ * transient form fields the field-level revert uses — `extraData` replaces
+ * the whole singleton, `imposto` replaces the one row the entry's `docId`
+ * (the operação id) names.
+ */
+export function buildDocumentRestorePrefill(
+  target: DocumentRestoreTarget,
+  base: RevertPrefillBase,
+): RevertPrefill {
+  const gate = isDocumentRestorable(target.subcolecao, target.changes);
+  if (!gate.ok) {
+    throw new Error(`revert: documento não é restaurável — ${gate.reason}`);
+  }
+
+  if (target.subcolecao === 'extraData') {
+    // Unlike the field-level revert, there is nothing of `base.extraData` to
+    // fold into: a `delete` entry's `changes` already carries every field the
+    // singleton had, so the reconstructed object stands on its own — a full
+    // REPLACE, not a merge. Whatever the "Descrição" tab currently holds
+    // (loaded or not) is superseded, same as the doc itself was.
+    const raw: Record<string, unknown> = {};
+    for (const [field, change] of Object.entries(target.changes)) {
+      raw[field] = change.old ?? null;
+    }
+    return { key: 'extraData', value: produtoExtraDataSchema.parse(raw) };
+  }
+
+  // subcolecao === 'imposto' (the only other value `isDocumentRestorable` accepts).
+  if (base.impostos === null) {
+    throw new RevertPrefillError('Os dados da aba Impostos ainda não foram carregados.');
+  }
+  // Same lookup as the field-level imposto revert: the row is missing only
+  // when its operação was deactivated since the entry was recorded — the
+  // Impostos tab seeds one row per ACTIVE operação (`montarLinhasImposto`),
+  // so there is otherwise always a (possibly blank) row to replace.
+  const index = base.impostos.findIndex(
+    (row) => operacaoIdFromImpostoRef(row.impostoOpercaoOuterRef) === target.docId,
+  );
+  if (index < 0) {
+    throw new RevertPrefillError(
+      'A operação deste imposto não está mais ativa — não é possível restaurar pelo formulário.',
+    );
+  }
+  const raw: Record<string, unknown> = {};
+  for (const [field, change] of Object.entries(target.changes)) {
+    if (IMPOSTO_IGNORED_FIELDS.has(field)) continue; // server/doc identity — never restored
+    raw[field] = change.old ?? null;
+  }
+  // Re-derived rather than trusted from `changes`: this is what pins the
+  // restored row to the operação the entry names, regardless of whether the
+  // field happened to be stored verbatim before the delete.
+  raw.impostoOpercaoOuterRef = `operacao/${target.docId}`;
+  const rows = [...base.impostos];
+  rows[index] = impostoProdutoSchema.parse(raw) as ImpostoProduto;
+  return { key: 'impostos', value: rows };
 }
