@@ -152,6 +152,30 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(row(2));
   });
 
+  test('opens an existing cliente from the list with the keyboard', async ({ page }) => {
+    await page.goto('/clientes');
+    await applyTextFilter(page, 'Nome', row(2));
+    await expectRowVisible(page, row(2));
+
+    // The row itself is not focusable and never will be — a <tr> carrying a
+    // link role would break the table's required owned structure. What makes
+    // the row reachable is the anchor `rowLinkColumn` puts in the Nome cell.
+    // `press` focuses before pressing, so this asserts BOTH reachability and
+    // Enter-activation. A literal Tab walk is deliberately avoided: the number
+    // of stops before the first row depends on the search box, the ⚙, every
+    // column's filter button and the selection checkbox, so a Tab count would
+    // break on unrelated toolbar changes rather than on this behaviour.
+    await page.getByRole('link', { name: row(2), exact: true }).press('Enter');
+    await page.waitForURL(/\/clientes\/[^/]+$/, { timeout: 10_000 });
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(row(2));
+
+    // One history entry, not two. The anchor's handler stops the click from
+    // also reaching the row's own `router.push`; without that guard both fire
+    // and a single Back lands back on the detail page.
+    await page.goBack();
+    await page.waitForURL(/\/clientes(\?.*)?$/, { timeout: 10_000 });
+  });
+
   test('keeps the list filter after opening a cliente and going back', async ({ page }) => {
     await page.goto('/clientes');
     await applyTextFilter(page, 'Nome', row(2));
