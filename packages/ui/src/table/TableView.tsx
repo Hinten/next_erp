@@ -1,7 +1,8 @@
 'use client';
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useLocalStorage } from '@mantine/hooks';
 import {
   ActionIcon,
@@ -95,6 +96,42 @@ export const MAX_RESTORED_PAGES = 3;
  * is captured by the unmount flush rather than lost.
  */
 export const SCROLL_PERSIST_DEBOUNCE_MS = 150;
+
+/**
+ * Styling for the `rowLinkColumn` anchor. The link is a SEMANTIC affordance,
+ * not a visual one: an adopted screen must look exactly as it did, because the
+ * row already advertises itself with `highlightOnHover` + a pointer cursor, and
+ * the wrapped content is frequently a `<Badge>`/`<Code>` carrying its own
+ * colour that an anchor colour would fight rather than unify. What the anchor
+ * adds is the focus ring, which is half the point of the feature.
+ *
+ * `inline-block` rather than the anchor default `inline` because the wrapped
+ * content can be a block-level `<Group>`/`<Text>`: an inline box split by a
+ * block child renders a broken, discontinuous focus ring.
+ */
+const ROW_LINK_STYLE = { display: 'inline-block', color: 'inherit', textDecoration: 'none' };
+
+/**
+ * Click handler for the `rowLinkColumn` anchor.
+ *
+ * `stopPropagation` is load-bearing. Without it a plain click runs BOTH
+ * handlers in one tick — `next/link` pushes, then the event bubbles to
+ * `<Table.Tr>` and that handler pushes the same URL again. Neither is deduped
+ * against "the current URL" because both are queued before either commits, so
+ * the user needs two Back presses to return to the list, on the single most
+ * common gesture in the app.
+ *
+ * The cost of stopping it is that the row's own text-selection guard never runs
+ * for clicks on the link, so it is replicated here. `preventDefault` is what
+ * actually cancels the navigation: `next/link` checks `defaultPrevented` after
+ * calling this handler and bails, and it also cancels the browser's own anchor
+ * activation. Net: select-and-copy over the link behaves exactly as it does
+ * over padding.
+ */
+function handleRowLinkClick(event: MouseEvent<HTMLAnchorElement>) {
+  event.stopPropagation();
+  if (window.getSelection()?.toString()) event.preventDefault();
+}
 
 // Re-exported for back-compat; the implementations now live in
 // ./useTableUrlState alongside the hook that owns this state.
@@ -195,6 +232,43 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * embedded subcollection table. `rowHref` is ignored while this is set.
    */
   onRowClick?: (id: string, row: z.infer<S>) => void;
+  /**
+   * Name ONE visible column whose cell content is wrapped in a real `next/link`
+   * anchor pointing at this row's `rowHref`. Default off — unset, nothing about
+   * the table changes.
+   *
+   * The row is already clickable, but only by MOUSE: the row handler below
+   * takes no event argument, so Tab never reaches a row, Enter never opens one,
+   * Cmd/Ctrl-click navigates the CURRENT tab instead of opening a new one, and
+   * there is nothing to right-click → "Copy link address". An `<a href>` is the
+   * only thing that fixes all four, because all four are browser behaviours OF
+   * THE ANCHOR ELEMENT rather than behaviours an `onClick` could grow.
+   *
+   * The key is matched against the rendered column key — a schema field key OR
+   * a `virtualColumns` key — so both cell branches can be linked. It reads no
+   * additional field, so `selectFields` and therefore the screen's read cost
+   * are untouched, and because the primary stays a schema column it keeps its
+   * header sort AND its `<ColumnFilter>` (a virtual column gets a filter only
+   * when it declares `filter`, which is how /produtos silently lost its Nome
+   * filter when it hand-rolled a link column).
+   *
+   * ⚠️ Do NOT name a column whose cell ALREADY renders an `<a>` (a hand-rolled
+   * `<Anchor component={Link}>` — /produtos' `nomeLink`). React builds the DOM
+   * directly, so `<a><a></a></a>` really renders: invalid HTML, and two links
+   * with the same accessible name in one row break every
+   * `getByRole('link', { name })` locator under Playwright strict mode. Adopt
+   * this prop OR keep the hand-rolled link, never both.
+   *
+   * ⚠️ Never give that anchor an `aria-label`. The row's accessible name is
+   * computed FROM CONTENTS, and a descendant's `aria-label` replaces its text
+   * in that computation — it would rename every row and break the
+   * `getByRole('row', { name })` locators the e2e suite is built on.
+   *
+   * Ignored while `onRowClick` is set (that prop outranks `rowHref`, so a link
+   * would navigate where the row does not) and for a row with an empty `id`
+   * (same reason the row's own `onClick` is skipped there).
+   */
+  rowLinkColumn?: string;
   /** Optional "Novo" link rendered in the ActionBar. */
   newHref?: string;
   /**
@@ -368,6 +442,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   monitorField,
   rowHref,
   onRowClick,
+  rowLinkColumn,
   newHref,
   renderNewButton,
   meta,
@@ -1139,6 +1214,39 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   }, [visibleKeysArr, descriptors, virtualColumns, fieldOverrides]);
 
   /**
+   * A `rowLinkColumn` that can never match is otherwise SILENT — the row still
+   * navigates on click, the anchor just never appears, and the bug presents as
+   * "the prop does nothing". Report only keys that cannot match AT ALL, which
+   * are design-time facts: an unknown key, an `unknown`-kind descriptor, or one
+   * hidden via `fields[key].hidden` (the shape /produtos uses to replace a
+   * schema column with a virtual one — naming the hidden key there would render
+   * nothing, forever). A key the USER merely unticked in the ColumnPicker is a
+   * legitimate runtime state, not a bug, so it is deliberately not reported.
+   *
+   * `console.warn` rather than the `throw` used for query misconfiguration
+   * above: those guard correctness of a BILLED read, where failing silently
+   * widens the scan. This one degrades to exactly today's behaviour.
+   */
+  const rowLinkColumnUnresolvable = useMemo(() => {
+    if (!rowLinkColumn) return false;
+    if (virtualColumns.some((v) => v.key === rowLinkColumn)) return false;
+    const descriptor = descriptors.find((d) => d.key === rowLinkColumn);
+    return !descriptor || descriptor.kind === 'unknown' || !!fieldOverrides[rowLinkColumn]?.hidden;
+  }, [rowLinkColumn, descriptors, virtualColumns, fieldOverrides]);
+
+  // Keyed on the derived boolean, not on its inputs: callers pass `fields={{…}}`
+  // as an inline literal, so an effect depending on `fieldOverrides` directly
+  // would re-warn on every render.
+  useEffect(() => {
+    if (!rowLinkColumnUnresolvable) return;
+    console.warn(
+      `TableView: rowLinkColumn="${rowLinkColumn}" names no renderable column ` +
+        `(unknown key, unknown-kind field, or fields.${rowLinkColumn}.hidden). ` +
+        `No row link will render; the row's own click navigation is unaffected.`,
+    );
+  }, [rowLinkColumnUnresolvable, rowLinkColumn]);
+
+  /**
    * Columns offered by the ColumnPicker. It MUST apply the same exclusions as
    * `visibleColumns` above: `hidden` is a design-time decision by the page, so
    * a hidden field is not a column the user may turn on, and offering its
@@ -1484,6 +1592,32 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                   const href = rowHref ? rowHref(row.id, row.data) : undefined;
                   // `onRowClick` takes precedence over `rowHref` navigation.
                   const clickable = !!row.id && (!!onRowClick || !!href);
+                  // The row link MIRRORS the row's own navigation, so it exists
+                  // only where the row would navigate: `clickable` already
+                  // carries the empty-id guard (an `<a href="/collection/">`
+                  // would be worse than a dead row — it is keyboard-reachable
+                  // and lands on a 404), and `onRowClick` outranking `rowHref`
+                  // means a link there would go somewhere the row does not.
+                  const linkHref = rowLinkColumn && !onRowClick && clickable ? href : undefined;
+                  const wrapRowLink = (key: string, content: ReactNode) =>
+                    linkHref && key === rowLinkColumn ? (
+                      // `draggable={false}` is required, not cosmetic: anchors
+                      // are draggable by default, so without it a drag across
+                      // this cell starts a LINK drag and the text can no longer
+                      // be selected at all — which would make the selection
+                      // guard in `handleRowLinkClick` unreachable rather than
+                      // merely redundant.
+                      <Link
+                        href={linkHref as Route}
+                        draggable={false}
+                        onClick={handleRowLinkClick}
+                        style={ROW_LINK_STYLE}
+                      >
+                        {content}
+                      </Link>
+                    ) : (
+                      content
+                    );
                   return (
                     <Table.Tr
                       key={row.id}
@@ -1519,7 +1653,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                       {visibleColumns.map((col) => {
                         if (col.kind === 'virtual') {
                           return (
-                            <Table.Td key={col.column.key}>{col.column.renderCell(row)}</Table.Td>
+                            <Table.Td key={col.column.key}>
+                              {wrapRowLink(col.column.key, col.column.renderCell(row))}
+                            </Table.Td>
                           );
                         }
                         const d = col.descriptor;
@@ -1528,7 +1664,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                         const content = override?.renderCell
                           ? override.renderCell(value as never, row.data)
                           : renderCell(value, d);
-                        return <Table.Td key={d.key}>{content}</Table.Td>;
+                        return <Table.Td key={d.key}>{wrapRowLink(d.key, content)}</Table.Td>;
                       })}
                     </Table.Tr>
                   );
