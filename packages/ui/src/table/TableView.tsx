@@ -127,10 +127,20 @@ const ROW_LINK_STYLE = { display: 'inline-block', color: 'inherit', textDecorati
  * calling this handler and bails, and it also cancels the browser's own anchor
  * activation. Net: select-and-copy over the link behaves exactly as it does
  * over padding.
+ *
+ * ⚠️ `event.detail > 0` scopes that guard to POINTER clicks, and it is not
+ * optional. Copied verbatim from the row it can only ever cancel a mouse click,
+ * because the row is mouse-only — but this anchor is reachable by Enter, and
+ * `getSelection()` is DOCUMENT-scoped rather than "a selection inside this
+ * cell". So: select some text anywhere on the page, Tab to a row link (moving
+ * focus does not clear that selection), press Enter — the guard would see the
+ * stale selection and cancel the navigation, silently killing the exact gesture
+ * this prop exists to enable. A keyboard-activated click carries `detail === 0`,
+ * which is how the browser distinguishes the two.
  */
 function handleRowLinkClick(event: MouseEvent<HTMLAnchorElement>) {
   event.stopPropagation();
-  if (window.getSelection()?.toString()) event.preventDefault();
+  if (event.detail > 0 && window.getSelection()?.toString()) event.preventDefault();
 }
 
 // Re-exported for back-compat; the implementations now live in
@@ -1214,37 +1224,53 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   }, [visibleKeysArr, descriptors, virtualColumns, fieldOverrides]);
 
   /**
-   * A `rowLinkColumn` that can never match is otherwise SILENT — the row still
-   * navigates on click, the anchor just never appears, and the bug presents as
-   * "the prop does nothing". Report only keys that cannot match AT ALL, which
-   * are design-time facts: an unknown key, an `unknown`-kind descriptor, or one
-   * hidden via `fields[key].hidden` (the shape /produtos uses to replace a
-   * schema column with a virtual one — naming the hidden key there would render
-   * nothing, forever). A key the USER merely unticked in the ColumnPicker is a
-   * legitimate runtime state, not a bug, so it is deliberately not reported.
+   * A `rowLinkColumn` that can never render is otherwise SILENT — the row still
+   * navigates on click, the anchor just never appears, and every cause presents
+   * identically as "the prop does nothing". Report the ones that are DESIGN-TIME
+   * facts, i.e. inert for every row on every render, and name which one it is:
+   *
+   * - by configuration: no `rowHref` (nothing to link to), or `onRowClick` set
+   *   (it outranks `rowHref`, so a link would navigate where the row does not);
+   * - by key: matches nothing, an `unknown`-kind descriptor, or one hidden via
+   *   `fields[key].hidden` (the shape /produtos uses to replace a schema column
+   *   with a virtual one — naming the hidden key there renders nothing, ever).
+   *
+   * A key the USER merely unticked in the ColumnPicker is a legitimate runtime
+   * state, not a bug, so it is deliberately not reported.
    *
    * `console.warn` rather than the `throw` used for query misconfiguration
    * above: those guard correctness of a BILLED read, where failing silently
    * widens the scan. This one degrades to exactly today's behaviour.
    */
-  const rowLinkColumnUnresolvable = useMemo(() => {
-    if (!rowLinkColumn) return false;
-    if (virtualColumns.some((v) => v.key === rowLinkColumn)) return false;
+  const rowLinkInertReason = useMemo(() => {
+    if (!rowLinkColumn) return null;
+    // Inert by CONFIGURATION, not by key — and these two are likelier than a
+    // typo'd key, which at least has the key itself as a clue. `rowHref` and
+    // `rowLinkColumn` sit adjacent in the skill's snippet, so copying one
+    // without the other is the plausible slip.
+    if (!rowHref) return 'rowHref is not set, so there is no target to link to';
+    if (onRowClick) return 'onRowClick is set, and it outranks rowHref';
+    // Inert by key.
+    if (virtualColumns.some((v) => v.key === rowLinkColumn)) return null;
     const descriptor = descriptors.find((d) => d.key === rowLinkColumn);
-    return !descriptor || descriptor.kind === 'unknown' || !!fieldOverrides[rowLinkColumn]?.hidden;
-  }, [rowLinkColumn, descriptors, virtualColumns, fieldOverrides]);
+    if (!descriptor) return 'it matches no schema field and no virtualColumns key';
+    if (descriptor.kind === 'unknown') return 'that field is of unknown kind, so it never renders';
+    if (fieldOverrides[rowLinkColumn]?.hidden) {
+      return `fields.${rowLinkColumn}.hidden is set, so that column never renders`;
+    }
+    return null;
+  }, [rowLinkColumn, rowHref, onRowClick, descriptors, virtualColumns, fieldOverrides]);
 
-  // Keyed on the derived boolean, not on its inputs: callers pass `fields={{…}}`
+  // Keyed on the derived reason, not on its inputs: callers pass `fields={{…}}`
   // as an inline literal, so an effect depending on `fieldOverrides` directly
   // would re-warn on every render.
   useEffect(() => {
-    if (!rowLinkColumnUnresolvable) return;
+    if (!rowLinkInertReason) return;
     console.warn(
-      `TableView: rowLinkColumn="${rowLinkColumn}" names no renderable column ` +
-        `(unknown key, unknown-kind field, or fields.${rowLinkColumn}.hidden). ` +
-        `No row link will render; the row's own click navigation is unaffected.`,
+      `TableView: rowLinkColumn="${rowLinkColumn}" renders no row link — ` +
+        `${rowLinkInertReason}. The row's own click navigation is unaffected.`,
     );
-  }, [rowLinkColumnUnresolvable, rowLinkColumn]);
+  }, [rowLinkInertReason, rowLinkColumn]);
 
   /**
    * Columns offered by the ColumnPicker. It MUST apply the same exclusions as
@@ -1609,6 +1635,18 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                       // merely redundant.
                       <Link
                         href={linkHref as Route}
+                        // `prefetch={false}` is a cost decision, not a default.
+                        // next/link's `prefetch` defaults to `null`, which is
+                        // "auto" — it mounts an IntersectionObserver per link
+                        // and fires an RSC request as each enters the viewport.
+                        // A list page renders `resolvedPageSize` rows (50 by
+                        // default) and grows from there, so leaving it on means
+                        // ~one App Hosting request PER ROW, per page-grow, on
+                        // every list screen. And it buys nothing here: apps/web
+                        // is client-first, so a detail route's prefetched
+                        // payload is a near-empty shell whose real data is read
+                        // from Firestore on mount either way.
+                        prefetch={false}
                         draggable={false}
                         onClick={handleRowLinkClick}
                         style={ROW_LINK_STYLE}

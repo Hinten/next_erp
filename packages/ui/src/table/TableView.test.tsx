@@ -393,11 +393,16 @@ describe('TableView', () => {
     expect(pushSpy).toHaveBeenCalledWith('/tests/1');
   });
 
-  it('does not navigate from the row link while text is selected', () => {
+  it('does not navigate from the row link while text is selected with the mouse', () => {
     // Asserting `defaultPrevented` — not merely "no push" — is what pins the
     // cancellation contract: next/link bails when the handler preventDefaults,
     // and jsdom's Link never navigates anyway, so "no push" alone would pass
     // even if the guard were deleted.
+    //
+    // `detail: 1` is load-bearing and must be explicit: testing-library's click
+    // defaults to `detail: 0`, which is the KEYBOARD shape (see the near-miss
+    // below), so without it this case would assert the opposite of what its
+    // name says.
     pushSpy.mockClear();
     const selection = vi
       .spyOn(window, 'getSelection')
@@ -413,7 +418,7 @@ describe('TableView', () => {
         />,
       );
       const link = screen.getByRole('link', { name: 'Alice' });
-      const event = createEvent.click(link);
+      const event = createEvent.click(link, { detail: 1 });
       fireEvent(link, event);
       expect(event.defaultPrevented).toBe(true);
       expect(pushSpy).not.toHaveBeenCalled();
@@ -422,23 +427,81 @@ describe('TableView', () => {
     }
   });
 
-  it('renders no row link when onRowClick is set', () => {
+  it('still navigates on Enter while text is selected elsewhere on the page', () => {
+    // The NEAR-MISS half of the case above, and the whole reason the guard is
+    // scoped to `detail > 0`. `getSelection()` is document-scoped, and moving
+    // focus does not clear a selection — so a user who selected text anywhere,
+    // then Tabbed to a row link and pressed Enter, would otherwise have the
+    // navigation cancelled with nothing to explain why: the exact gesture this
+    // prop exists to enable, killed by a guard copied from a mouse-only row.
+    // A keyboard-activated click carries `detail === 0`.
+    const selection = vi
+      .spyOn(window, 'getSelection')
+      .mockReturnValue({ toString: () => 'selected elsewhere' } as unknown as Selection);
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      const link = screen.getByRole('link', { name: 'Alice' });
+      const event = createEvent.click(link, { detail: 0 });
+      fireEvent(link, event);
+      expect(event.defaultPrevented).toBe(false);
+    } finally {
+      selection.mockRestore();
+    }
+  });
+
+  it('renders no row link when onRowClick is set, and says so', () => {
     // `onRowClick` outranks `rowHref`, so a link would navigate where the row
-    // opens a modal instead.
+    // opens a modal instead. Inert for every row on every render ⇒ a
+    // design-time fact ⇒ warned, not left to present as "the prop does nothing".
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const onRowClick = vi.fn();
-    wrap(
-      <TableView
-        schema={testSchema}
-        collection={fakeCollection()}
-        db={{} as never}
-        rowHref={(id) => `/tests/${id}`}
-        rowLinkColumn="nome"
-        onRowClick={onRowClick}
-      />,
-    );
-    expect(screen.queryByRole('link', { name: 'Alice' })).toBeNull();
-    fireEvent.click(screen.getByText('Alice'));
-    expect(onRowClick).toHaveBeenCalledWith('1', expect.objectContaining({ nome: 'Alice' }));
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+          onRowClick={onRowClick}
+        />,
+      );
+      expect(screen.queryByRole('link', { name: 'Alice' })).toBeNull();
+      fireEvent.click(screen.getByText('Alice'));
+      expect(onRowClick).toHaveBeenCalledWith('1', expect.objectContaining({ nome: 'Alice' }));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/onRowClick is set/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns when rowLinkColumn is set without a rowHref', () => {
+    // The likeliest slip of all: the two props sit adjacent in the skill's
+    // snippet, so copying one without the other names a perfectly valid column
+    // that can never link to anything.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowLinkColumn="nome"
+        />,
+      );
+      expect(screen.queryAllByRole('link')).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/rowHref is not set/));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('leaves the row accessible name unchanged', () => {
