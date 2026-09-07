@@ -8,6 +8,7 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { ShopeeContaNotConfiguredError } from '@/lib/shopee/core/shopee';
+import { ShopeeCredencialInvalidaError } from '@/lib/shopee/core/credentialStore';
 import {
   ShopeeRefreshEmAndamentoError,
   ShopeeSemCredencialError,
@@ -383,6 +384,29 @@ describe('get_shop_info is a SIDE read', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toMatchObject({ connected: true, loja: null });
     expect(body.expireTime).not.toBeNull();
+  });
+
+  it('degrades a renewed pair this app cannot store, keeping both clocks intact', async () => {
+    // Shopee answered the renewal with a pair that fails the credential schema
+    // (a pathological `expire_in`; blank tokens never get this far). A 502 here
+    // would discard `expireTime` / `diasParaExpirar`, read WITHOUT a token —
+    // the same reasoning as the dead grant above. The store released the lease
+    // and stamped nothing, so the credential block stays quiet and the next
+    // request tries again.
+    h.getAccessToken.mockRejectedValue(
+      new ShopeeCredencialInvalidaError('par inválido', ['expirationDate']),
+    );
+    const res = await GET(req('int-1', { authorization: 'Bearer t' }));
+
+    expect(res.status).toBe(200);
+    expect(res.status).not.toBe(502);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ connected: true, shopId: 111, loja: null });
+    expect(body.expireTime).not.toBeNull();
+    expect(body.diasParaExpirar).toBe(29);
+    expect(body.credencial).toMatchObject({ renovacaoFalhou: false });
+    expect(h.getShopInfo).not.toHaveBeenCalled();
+    expect(spyWarn).toHaveBeenCalledTimes(1);
   });
 
   it('lets an unrelated failure surface instead of swallowing it (rule 6)', async () => {

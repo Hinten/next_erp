@@ -39,7 +39,11 @@ import {
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { type ShopeeContext, loadShopeeContext } from '@/lib/shopee/core/shopee';
-import { type CredencialArmazenada, expiryOf } from '@/lib/shopee/core/credentialStore';
+import {
+  type CredencialArmazenada,
+  ShopeeCredencialInvalidaError,
+  expiryOf,
+} from '@/lib/shopee/core/credentialStore';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
 import {
   ShopeeRefreshEmAndamentoError,
@@ -179,13 +183,18 @@ export async function GET(req: Request): Promise<NextResponse> {
  * nothing about the account behind them. Anything else rethrows and reaches the
  * route's own catch (rule 6).
  *
- * ⚠️ Three of the six are degraded ON PURPOSE, against the reflex of surfacing
+ * ⚠️ Four of them are degraded ON PURPOSE, against the reflex of surfacing
  * them:
  *
  *  - `ShopeeRefreshEmAndamentoError` — another instance holds the renewal lease.
  *    Nothing is wrong with this conta; the next request finds the fresh pair.
  *  - `ShopeeSemCredencialError` — the document vanished between the read above
  *    and this call.
+ *  - `ShopeeCredencialInvalidaError` — Shopee answered the renewal with a pair
+ *    this app cannot store (a pathological `expire_in`; the package already
+ *    rejects blank tokens). It says the same thing about the conta as
+ *    `ShopeeSchemaError` beside it: nothing. The store has already released
+ *    the lease, so the next request simply tries again.
  *  - `ShopeeReauthRequiredError` — the grant is dead, and the operator DOES have
  *    to act. Answering 409 here is nevertheless the wrong move: it would throw
  *    away `expireTime` and `diasParaExpirar`, which this route already read
@@ -214,6 +223,7 @@ async function readLoja(ctx: ShopeeContext): Promise<ShopeeLoja | null> {
       err instanceof ShopeeHttpError ||
       err instanceof ShopeeNetworkError ||
       err instanceof ShopeeSchemaError ||
+      err instanceof ShopeeCredencialInvalidaError ||
       err instanceof ShopeeRefreshEmAndamentoError ||
       err instanceof ShopeeSemCredencialError
     ) {
