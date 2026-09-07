@@ -365,8 +365,21 @@ export function createShopeeTokenStore(
         // answers, which is a worse trade.
         if (refreshTokenOf(stored) !== refreshTokenGasto) {
           descartes.push({ expiraEmArmazenado: expiryOf(stored) });
+          // The lease is usually another instance's by now — it wrote the pair we
+          // lost to, or a re-consent cleared it — and is that instance's to
+          // release. It can still be OURS: our lease lapsed, a second instance
+          // re-took it and spent the SAME refresh token, both of us reached
+          // Shopee, and the first to commit won while leaving the lease alone
+          // (it was not its own). The second lands here still holding it. Hand
+          // it back, exactly as `releaseOrAdopt`'s adoption arm does — leaving
+          // it would only cost the TTL (every caller takes the fast path on the
+          // fresh pair meanwhile), but a lease nobody releases is the shape the
+          // module header warns about.
+          const lease = leaseOf(stored);
+          if (lease !== null && lease.owner === owner) {
+            tx.update(docRef(), credenciaisIntegracaoCollection.parseMerge({ ...LEASE_LIMPO }));
+          }
           const accessToken = accessTokenOf(stored);
-          // The lease is NOT touched here: it is not ours any more.
           // A stored token we cannot serve is, to this caller, no credential.
           return accessToken === null ? { kind: 'ausente' } : { kind: 'descartado', accessToken };
         }
