@@ -216,8 +216,9 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 - `integrations` (:3001) — generic webhook/OAuth scaffolding; per-channel routes
   have moved out to their own apps.
 - `webchat` (:3002) static-export chat widget · `docs` (:3003) Astro Starlight
-  (hosts the ADRs) · `example` OSS demo — **not** Next either, a plain `tsx`
-  script: `pnpm --filter @delfrance/example demo`, no dev server.
+  (hosts the ADRs). ⚠️ `apps/example` (the OSS demo) was **deleted** in #1444 — it
+  demoed the plugin registry, and nothing ever ran it, so the rest of it had silently
+  drifted out of sync with the schemas. A replacement is planned.
 - `nfe` (:3004) · `melhor-envio` (:3005) · `mercado-livre` (:3006) ·
   `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) — API-only App
   Hosting backends, **one deployable per channel**, each importing its logic
@@ -231,7 +232,7 @@ pnpm workspace members — the parent app's tsconfig/eslint/vitest cover them.
 **packages/** — `schemas` (Zod schemas + collection metadata, **the** source of
 truth) · `data` (`defineCollection<T>`, cascade) · `ui` (Mantine theme +
 `TableView`/`ObjectView` derived from the schemas) · `core` · `auth` ·
-`storage` · `plugin-sdk` · `rules-gen` · `config-{eslint,tsconfig,vitest}` ·
+`storage` · `rules-gen` · `config-{eslint,tsconfig,vitest}` ·
 `ai` (the shared model runtime — ⚠️ its ROOT entry is browser-safe because
 `apps/web` reaches it transitively, so `@google/genai` and `firebase-admin` may
 be imported only behind `./admin`; enforced by
@@ -247,13 +248,22 @@ fetch-only package (the Shopee master plan, step 1) — it declares no
 **That contract is gone too** — a marketplace is declared by `MARKETPLACE_TIPO_CAPS`
 (`packages/schemas/src/shared/marketplace.ts`, the `FREIGHT_TIPO_CAPS` shape) and
 implemented as one App Hosting backend per channel; its shared data shapes live in
-`@delfrance/core/marketplace`. `packages/core/src/plugins` keeps exactly two
-contracts (tax/invoice) — `PaymentGateway` went the same way in #1429, for the same
-reason plus one more: its `webhook` had ALREADY shipped outside it, on
-`defineNotificationPipeline` — and nothing in-tree registers at boot. ADR 0015 +
-the `marketplace-integration` skill; guarded by
-`packages/config-eslint/rules/removed-plugin-contracts.test.js`, because
-re-adding the interface fails nothing.
+`@delfrance/core/marketplace`. ⚠️ **`packages/core/src/plugins` and
+`packages/plugin-sdk` NO LONGER EXIST — there is no plugin system at all.** Five
+contracts were declared there over time and all five were deleted: `FreightProvider`
+(#262), `MarketplaceChannel` (#815), `PaymentGateway` (#1429 — its `webhook` had
+ALREADY shipped outside it, on `defineNotificationPipeline`), and `TaxProvider` +
+`InvoiceProvider` with `PluginRegistry` (#1444). The last two were the ones ADR 0015
+had SPARED as "a defensible altitude", and that was the error: pure and
+fetch-shaped they were, but `calculate({ amount, ncm })` carries no CRT, CST/CSOSN,
+origem or UF pair while `buildImpostoXml` emits XSD-valid XML per CST, and
+`issue(orderId)` → 3 statuses cannot express `aguardandoVinculo`, cStat 136,
+SVC/EPEC, filial, ambiente or série. **A contract whose altitude is defensible but
+which no implementation can satisfy is still the wrong contract.** Nothing in-tree
+ever registered at boot. ADR 0015 + the `marketplace-integration` skill; guarded by
+`packages/config-eslint/rules/removed-plugin-contracts.test.js`, which now asserts
+both paths are ABSENT and scans every file under `packages/core/src`, because
+re-adding an interface fails nothing.
 
 **tools/** — `test-fixtures` (Admin SDK seed/teardown, `create-super-user`) ·
 `migrations` · `cmun-table` (moves the legacy `CMUN` CEP-faixa → IBGE table
