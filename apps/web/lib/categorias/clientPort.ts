@@ -29,9 +29,7 @@ export function categoriaImpostoCarriesInfo(imp: ImpostoCategoria): boolean {
     imp.cfop,
     imp.cfopInterestadual,
     imp.NCM,
-    imp.NVE,
     imp.CEST,
-    imp.indEscala,
     imp.CNPJFab,
     imp.cBenef,
     imp.extipi,
@@ -46,8 +44,13 @@ export function categoriaImpostoCarriesInfo(imp: ImpostoCategoria): boolean {
     imp.configuracaoISSQN,
     imp.retencao,
   ];
+  // ⚠️ `NVE` and `indEscala` are NOT strings on the wire (#466) — see the twin
+  // check in `packages/data/src/produto/usecases.ts`. A typed value folded into
+  // `strings` above reads as "no info" and DELETES a configured doc.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
+    (Array.isArray(imp.NVE) && imp.NVE.some((c) => typeof c === 'string' && c.trim() !== '')) ||
+    imp.indEscala != null ||
     imp.compoeValorTotalDaNFe != null ||
     configs.some((c) => c != null) ||
     hasNonNullLeaf(imp.configuracaoIBSCBS)

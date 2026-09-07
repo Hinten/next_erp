@@ -13,7 +13,10 @@ describe('impostoProdutoSchema', () => {
     expect(out.timestamp).toBeNull();
   });
 
-  it('preserves a passthrough imposto blob', () => {
+  // Named "preserves a passthrough imposto blob" until #466 — there has been no
+  // `.passthrough()` on this schema since #352, and `configuracaoICMS` is fully
+  // typed, so the old title described neither the schema nor the assertion.
+  it('keeps a typed tribute config through the parse', () => {
     const out = impostoProdutoSchema.parse({
       origem: '0',
       NCM: '61091000',
@@ -22,6 +25,59 @@ describe('impostoProdutoSchema', () => {
     expect(out.origem).toBe('0');
     expect(out.NCM).toBe('61091000');
     expect(out.configuracaoICMS).toEqual({ crt: '1', csosn: '102' });
+  });
+
+  // The regression pin for #466. `_$ImpostoToJson` writes `NVE` as a
+  // `List<String>?` and `indEscala` as a `bool?`; this schema typed both
+  // `z.string()`, so a migrated doc failed the parse — and
+  // `readImpostoProdutoSubcoll` (`apps/nfe/lib/nfe/imposto-resolver.ts`) DROPS
+  // a doc that fails, resolving the item against a lower cascade tier. Not a
+  // loud failure: a wrong NF-e.
+  it('reads a legacy `_$ImpostoToJson` doc verbatim', () => {
+    const out = impostoProdutoSchema.parse({
+      impostoOpercaoOuterRef: 'operacao/op-1', // Flutter's typo key
+      cfop: '5102', // lowercase on THIS collection, unlike its siblings
+      cfopInterestadual: '6102',
+      origem: '0',
+      NCM: '61091000',
+      NVE: ['AB1234', 'CD5678'],
+      CEST: '2806300',
+      indEscala: true,
+      CNPJFab: '12345678000199',
+      cBenef: 'SEM CBENEF',
+      extipi: '01',
+      unidade: 'UN',
+      compoeValorTotalDaNFe: true,
+      configuracaoICMS: { crt: '1', csosn: '102' },
+      timestamp: 1751000000000,
+    });
+    expect(out.NVE).toEqual(['AB1234', 'CD5678']);
+    expect(out.indEscala).toBe(true);
+    expect(out.compoeValorTotalDaNFe).toBe(true);
+    expect(out.impostoOpercaoOuterRef).toBe('operacao/op-1');
+    expect(out.cfop).toBe('5102');
+  });
+
+  it('still reads a doc carrying the pre-#466 scalar this app itself wrote', () => {
+    const out = impostoProdutoSchema.parse({ NVE: 'AB1234', indEscala: 'N' });
+    expect(out.NVE).toEqual(['AB1234']);
+    expect(out.indEscala).toBe(false);
+  });
+
+  // Same strip-on-read / throw-on-write pair the sibling schemas carry — this
+  // was the one tier with neither.
+  it('silently strips a genuinely unknown top-level key on a lenient (read) parse', () => {
+    const parsed = impostoProdutoSchema.parse({ origem: '0', someRetiredLegacyField: 'x' });
+    expect(parsed).not.toHaveProperty('someRetiredLegacyField');
+  });
+
+  it('rejects a genuinely unknown top-level key on a strict (write) parse', () => {
+    // Mirrors the `.strict()` re-parse `parseForWrite`/`parseMergePatch`
+    // (`packages/data/src/zodParse.ts`) run internally once they notice the
+    // lenient parse above dropped a caller-supplied key.
+    expect(() =>
+      impostoProdutoSchema.strict().parse({ origem: '0', someUnknownField: 'x' }),
+    ).toThrow(/nrecognized/);
   });
 
   it('targets the produtos imposto subcollection', () => {
@@ -45,26 +101,29 @@ describe('impostoCategoriaSchema', () => {
     expect(out.cfop ?? null).toBeNull();
   });
 
-  // NVE (wire: List<String>?) and indEscala (wire: bool?) are DELIBERATELY
-  // kept as lenient strings, not retyped to match the wire — see the class
-  // doc comment. The shared ImpostoConfigEditor renders both as plain text
-  // inputs producing `string | null`, and `categoriaImpostoCarriesInfo`
-  // (apps/web/lib/categorias/clientPort.ts) keys emptiness off
-  // `typeof v === 'string'`; retyping either broke the categoria save path
-  // (caught in review on #467's own PR).
-  it('reads a legacy doc verbatim: UPPERCASE CFOP alongside string NVE/indEscala', () => {
+  // Since #466 `NVE`/`indEscala` carry their real wire types here too, through
+  // the shared `nveField()`/`indEscalaField()`. `CFOP` stays UPPERCASE on this
+  // collection (unlike `impostoProduto`'s lowercase `cfop`) and is a read
+  // fallback the editor never writes.
+  it('reads a legacy doc verbatim: UPPERCASE CFOP alongside list NVE / bool indEscala', () => {
     const out = impostoCategoriaSchema.parse({
       impostoCategoriaOperacaoOuterRef: null,
       CFOP: '5405',
       origem: '0',
       NCM: '61091000',
-      NVE: 'some legacy value',
-      indEscala: 'S',
+      NVE: ['AB1234'],
+      indEscala: true,
       configuracaoICMS: { crt: '1', csosn: '102' },
     });
     expect(out.CFOP).toBe('5405');
-    expect(out.NVE).toBe('some legacy value');
-    expect(out.indEscala).toBe('S');
+    expect(out.NVE).toEqual(['AB1234']);
+    expect(out.indEscala).toBe(true);
+  });
+
+  it('still reads a doc carrying the pre-#466 scalar this app itself wrote', () => {
+    const out = impostoCategoriaSchema.parse({ NVE: 'AB1234', indEscala: 'S' });
+    expect(out.NVE).toEqual(['AB1234']);
+    expect(out.indEscala).toBe(true);
   });
 
   // No `.passthrough()`: an unmodeled key is stripped on a lenient parse (the
@@ -149,6 +208,13 @@ describe('regraImpostoSchema', () => {
     expect(out.timeStamp).toBe(1_700_000_000_000);
     expect(out.NVE).toEqual(['12345678']);
     expect(out.indEscala).toBe(true);
+  });
+
+  it('silently strips a genuinely unknown top-level key on a lenient (read) parse', () => {
+    // The other half of the pair below — the read path (`parseSoftRead`) must
+    // stay tolerant so a legacy doc with a since-retired field still reads.
+    const parsed = regraImpostoSchema.parse({ someRetiredLegacyField: 'x' });
+    expect(parsed).not.toHaveProperty('someRetiredLegacyField');
   });
 
   it('rejects a genuinely unknown key on a strict (write-path) parse', () => {

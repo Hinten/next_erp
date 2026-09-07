@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { impostoCategoriaSchema } from '@delfrance/schemas';
 import { categoriaImpostoCarriesInfo } from './clientPort';
 
-// Regression coverage for the review finding on #467's PR: `carriesInfo`
-// keys emptiness off `typeof v === 'string'` for the Dados Gerais fields.
-// Any field in that list whose type stops being a string (an earlier
-// version of `impostoCategoriaSchema` retyped `NVE`/`indEscala` to
-// array/boolean) makes an entry that carries ONLY that field silently
-// unrepresentable — `buildCategoriaImpostoTransactionWrites` reads it as
-// empty and DELETES the stored doc instead of writing it. These tests pin
-// every Dados Gerais field currently modeled as a lenient string.
+// Regression coverage for the review finding on #467's PR: `carriesInfo` used
+// to key emptiness off `typeof v === 'string'` across a field list that
+// included `NVE`/`indEscala`. Once those two carry their real wire types
+// (#466), a typed value can never satisfy a string check — so an entry whose
+// ONLY content is one of them reads as empty and
+// `buildCategoriaImpostoTransactionWrites` DELETES the stored doc instead of
+// writing it. That is what forced the revert on #1279; these tests pin every
+// Dados Gerais field in the shape it is actually stored in.
 describe('categoriaImpostoCarriesInfo', () => {
   const empty = () => impostoCategoriaSchema.parse({});
 
@@ -22,9 +22,7 @@ describe('categoriaImpostoCarriesInfo', () => {
     'cfop',
     'cfopInterestadual',
     'NCM',
-    'NVE',
     'CEST',
-    'indEscala',
     'CNPJFab',
     'cBenef',
     'extipi',
@@ -34,9 +32,29 @@ describe('categoriaImpostoCarriesInfo', () => {
     expect(categoriaImpostoCarriesInfo(imp)).toBe(true);
   });
 
-  it('treats a whitespace-only string field as empty', () => {
-    const imp = impostoCategoriaSchema.parse({ NVE: '   ' });
-    expect(categoriaImpostoCarriesInfo(imp)).toBe(false);
+  // The two non-scalar fields, in their stored shapes. Each of these four
+  // assertions is the exact silent-delete case from #1279.
+  it('reads an entry whose only content is a populated NVE list as carrying info', () => {
+    expect(categoriaImpostoCarriesInfo(impostoCategoriaSchema.parse({ NVE: ['AB1234'] }))).toBe(
+      true,
+    );
+  });
+
+  it.each([true, false])(
+    'reads an entry whose only content is indEscala=%s as carrying info',
+    (v) => {
+      expect(categoriaImpostoCarriesInfo(impostoCategoriaSchema.parse({ indEscala: v }))).toBe(
+        true,
+      );
+    },
+  );
+
+  it('treats an empty or whitespace-only NVE as empty', () => {
+    // `[]` and `['   ']` both mean "the operator cleared it" — the doc must be
+    // deleted, not written with a meaningless list.
+    expect(categoriaImpostoCarriesInfo(impostoCategoriaSchema.parse({ NVE: '   ' }))).toBe(false);
+    expect(categoriaImpostoCarriesInfo(impostoCategoriaSchema.parse({ NVE: [] }))).toBe(false);
+    expect(categoriaImpostoCarriesInfo(impostoCategoriaSchema.parse({ NVE: ['  '] }))).toBe(false);
   });
 
   it('reads an explicit compoeValorTotalDaNFe=false as carrying info', () => {

@@ -8,6 +8,7 @@ import {
 } from '@delfrance/schemas';
 
 import {
+  createFirestoreImpostoResolver,
   createImpostoResolver,
   type ImpostoResolverDeps,
   type ResolverBundle,
@@ -123,12 +124,16 @@ describe('resolveItemImposto — cascade priority', () => {
       id: 'cat-def',
       impostoCategoriaOperacaoOuterRef: null,
       dataCadastro: null,
+      NVE: null,
+      indEscala: null,
       ...BLOB_400,
     };
     const exactCat: ImpostoCategoria = {
       id: 'cat-exact',
       impostoCategoriaOperacaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
       dataCadastro: null,
+      NVE: null,
+      indEscala: null,
       ...VALID_IMPOSTO_BLOB,
     };
     const deps = makeDeps({
@@ -168,6 +173,8 @@ describe('resolveItemImposto — cascade priority', () => {
       id: 'cat-doc',
       impostoCategoriaOperacaoOuterRef: null,
       dataCadastro: null,
+      NVE: null,
+      indEscala: null,
       ...VALID_IMPOSTO_BLOB,
     };
     const deps = makeDeps({
@@ -546,12 +553,16 @@ describe('resolveItemImposto — verbatim legacy Flutter wire (#423)', () => {
       id: 'leg-def',
       impostoCategoriaOperacaoOuterRef: null,
       dataCadastro: null,
+      NVE: null,
+      indEscala: null,
       ...BLOB_400,
     };
     const legacyExact: ImpostoCategoria = {
       id: 'leg-exact',
       impostoCategoriaOperacaoOuterRef: ACTIVE_OPERACAO, // bare uid, no prefix
       dataCadastro: null,
+      NVE: null,
+      indEscala: null,
       ...VALID_IMPOSTO_BLOB,
     };
     const deps = makeDeps({
@@ -567,6 +578,8 @@ describe('resolveItemImposto — verbatim legacy Flutter wire (#423)', () => {
       id: 'cat-legacy',
       impostoCategoriaOperacaoOuterRef: null,
       dataCadastro: null,
+      NVE: null,
+      indEscala: null,
       CFOP: '5405',
       ...VALID_IMPOSTO_BLOB,
     };
@@ -584,6 +597,8 @@ describe('resolveItemImposto — verbatim legacy Flutter wire (#423)', () => {
       id: 'cat-mixed',
       impostoCategoriaOperacaoOuterRef: null,
       dataCadastro: null,
+      NVE: null,
+      indEscala: null,
       cfop: '5102',
       CFOP: '5405',
       ...VALID_IMPOSTO_BLOB,
@@ -640,5 +655,71 @@ describe('resolveItemImposto — verbatim legacy Flutter wire (#423)', () => {
     });
     const out = await createImpostoResolver(deps).resolve('p1', null);
     expect(out?.cfop).toBe('5102');
+  });
+});
+
+describe('createFirestoreImpostoResolver — a doc that fails its own collection schema', () => {
+  /**
+   * Minimal Firestore stand-in for the two subcollection reads. Only the calls
+   * `createFirestoreImpostoResolver` actually makes are modeled.
+   */
+  function fakeFs(impostoDocs: { id: string; data: Record<string, unknown> }[]) {
+    return {
+      collection: (root: string) => ({
+        doc: (uid: string) => ({
+          get: async () => ({ exists: false, data: () => null }),
+          collection: () => ({
+            get: async () => ({
+              docs: impostoDocs.map((d) => ({
+                id: d.id,
+                ref: { path: `${root}/${uid}/imposto/${d.id}` },
+                data: () => d.data,
+              })),
+            }),
+          }),
+        }),
+      }),
+    };
+  }
+
+  const bundle: ResolverBundle = { operacaoId: ACTIVE_OPERACAO, regrasImposto: [] };
+
+  it('WARNS with the concrete doc path instead of dropping it silently', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // `NVE` must be a list; a number is neither the wire shape nor a legacy
+    // scalar, so the doc genuinely cannot be read.
+    const fs = fakeFs([{ id: ACTIVE_OPERACAO, data: { NVE: 42, ...VALID_IMPOSTO_BLOB } }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- narrow test double
+    const resolver = createFirestoreImpostoResolver(fs as any, bundle);
+
+    await resolver.resolve('p1', null);
+
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes(`produtos/p1/imposto/${ACTIVE_OPERACAO}`))).toBe(true);
+    expect(messages.some((m) => m.includes('does not match its collection schema'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('does NOT warn for a doc carrying the legacy wire shapes', async () => {
+    // The whole point of the read-tolerant preprocess (#466): a migrated doc
+    // with a list NVE and a boolean indEscala must reach the cascade, not the
+    // warning above.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fs = fakeFs([
+      {
+        id: ACTIVE_OPERACAO,
+        data: { NVE: ['AB1234'], indEscala: true, ...VALID_IMPOSTO_BLOB },
+      },
+    ]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- narrow test double
+    const resolver = createFirestoreImpostoResolver(fs as any, bundle);
+
+    const out = await resolver.resolve('p1', null);
+
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+    expect(warn.mock.calls.map((c) => String(c[0])).join(' ')).not.toContain(
+      'does not match its collection schema',
+    );
+    warn.mockRestore();
   });
 });
