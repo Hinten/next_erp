@@ -311,10 +311,11 @@ export interface DocumentRestoreTarget {
  * {@link isRevertible} there is no per-field whitelist to check: every stored
  * field of a deleted `extraData`/`imposto` doc is user data (the schemas'
  * server/identity fields — `id`/`timestamp` on `imposto` — are dropped in
- * {@link buildDocumentRestorePrefill}, not gated here). A truncated field on
- * EITHER side blocks the whole restore: the trigger never stored the real
- * value for that field, so the reconstructed document would be missing data
- * silently instead of failing loudly.
+ * {@link buildDocumentRestorePrefill}, not gated here). A truncated `old`
+ * value blocks the whole restore (only `old` is checked — a `delete` entry's
+ * `new` side is always `null`, never a truncation sentinel): the trigger
+ * never stored the real value for that field, so the reconstructed document
+ * would be missing data silently instead of failing loudly.
  */
 export function isDocumentRestorable(
   subcolecao: string | null,
