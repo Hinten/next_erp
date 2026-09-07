@@ -216,8 +216,9 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 - `integrations` (:3001) — generic webhook/OAuth scaffolding; per-channel routes
   have moved out to their own apps.
 - `webchat` (:3002) static-export chat widget · `docs` (:3003) Astro Starlight
-  (hosts the ADRs) · `example` OSS demo — **not** Next either, a plain `tsx`
-  script: `pnpm --filter @delfrance/example demo`, no dev server.
+  (hosts the ADRs). ⚠️ `apps/example` (the OSS demo) was **deleted** in #1444 — it
+  demoed the plugin registry, and nothing ever ran it, so the rest of it had silently
+  drifted out of sync with the schemas. A replacement is planned.
 - `nfe` (:3004) · `melhor-envio` (:3005) · `mercado-livre` (:3006) ·
   `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) — API-only App
   Hosting backends, **one deployable per channel**, each importing its logic

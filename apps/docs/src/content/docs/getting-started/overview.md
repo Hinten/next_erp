@@ -13,7 +13,6 @@ Delfrance is an **open-source ERP** for business process automation. The Next.js
 | `apps/integrations` | API-only Next.js for webhooks and OAuth callbacks. App Hosting. |
 | `apps/webchat` | Embeddable chat widget. Static export on Firebase Hosting. |
 | `apps/docs` | This documentation site (Astro Starlight). |
-| `apps/example` | OSS demo — schemas, money primitives and permission helpers, no Firebase. |
 
 ## Stack
 

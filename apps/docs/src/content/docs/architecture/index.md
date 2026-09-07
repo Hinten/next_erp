@@ -11,7 +11,6 @@ The monorepo splits Next.js apps **by persona/runtime**, not by ERP domain. The 
 - `apps/integrations` — API-only for external systems (webhooks, OAuth, NFe SEFAZ async).
 - `apps/webchat` — embeddable widget; static.
 - `apps/docs` — this site.
-- `apps/example` — minimal OSS demo.
 
 ## Why client-first in `apps/web`
 
