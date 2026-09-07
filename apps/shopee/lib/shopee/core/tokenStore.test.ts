@@ -366,6 +366,30 @@ describe('commit — persisting the pair (class C)', () => {
     expect(db.read(DOC_PATH)).toMatchObject({ refreshLeaseOwner: 'owner-b' });
   });
 
+  it('releases a lease that is STILL OURS when our pair lost — the pair to the case above', async () => {
+    // Our lease lapsed, another instance re-took it and spent the same refresh
+    // token, and it committed FIRST: its commit leaves the lease alone (not its
+    // own) and writes the pair, so we land in the drop branch while the document
+    // still bears OUR owner id. The lease goes back; the winner's pair stays.
+    const db = new FakeDb();
+    db.seed(DOC_PATH, {
+      ...credencial(REFRESH_SKEW_MS * 10),
+      access_token: 'at-3',
+      refresh_token: 'rt-3',
+      refreshLeaseOwner: 'owner-a',
+      refreshLeaseExpiraEm: T0 + REFRESH_LEASE_TTL_MS,
+    });
+
+    expect(await commit(db)).toEqual({ kind: 'descartado', accessToken: 'at-3' });
+    const doc = db.read(DOC_PATH) as Record<string, unknown>;
+    expect(doc).toMatchObject({ access_token: 'at-3', refresh_token: 'rt-3' });
+    // PRESENT and null — `undefined` would be dropped by the merge parser and
+    // the lease would survive until its TTL.
+    expect(doc).toHaveProperty('refreshLeaseOwner');
+    expect(doc.refreshLeaseOwner).toBeNull();
+    expect(doc.refreshLeaseExpiraEm).toBeNull();
+  });
+
   it('logs the drop ONCE, with ids and clocks and neither token', async () => {
     const db = new FakeDb();
     db.seed(DOC_PATH, { ...credencial(1), access_token: 'at-3', refresh_token: 'rt-3' });

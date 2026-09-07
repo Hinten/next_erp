@@ -412,6 +412,7 @@ export function createShopeeTokenStore(
         const lease = leaseOf(stored);
         const nossa = lease !== null && lease.owner === owner;
 
+        if (!nossa) return { kind: 'liberado' };
         if (refreshTokenOf(stored) !== refreshTokenGasto) {
           if (nossa) {
             tx.update(docRef(), credenciaisIntegracaoCollection.parseMerge({ ...LEASE_LIMPO }));
