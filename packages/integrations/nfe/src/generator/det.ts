@@ -6,6 +6,7 @@
  * sub-tree arrives pre-built from the caller and is spliced in raw (tributary
  * computation is intentionally out of scope for Phase A — see the plan).
  */
+import { validateCNPJ } from '@delfrance/core/documents';
 import { sanitizeNFeText, temTextoCorrompido } from '../sanitize';
 import type { TNFe_infNFe_det_prod } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
@@ -40,6 +41,62 @@ function fmtMoney(n: number): string {
     throw new NFeDetError(`monetary value must be ≥ 0 and finite, got ${n}`);
   }
   return n.toFixed(2);
+}
+
+/**
+ * `det.prod.CNPJFab` is XSD type `TCnpj` — `[0-9]{14}`, digits only — and MOC
+ * 7.0 Anexo I I05e-20 (Obrigatória) rejects an invalid one with **489** ("CNPJ
+ * informado inválido (DV ou zeros)").
+ *
+ * ⚠️ Nothing upstream constrains it. `filial.cnpj` and `cliente.cpf_cnpj` carry
+ * their own regexes in the schemas, which is why `buildEmit`/`buildDest` may
+ * emit those raw; `CNPJFab` is a bare `z.string()` on all four tax schemas and
+ * the Impostos tab renders it as an unmasked `TextInput`, so a cadastro can
+ * legitimately hold `12.345.678/0001-99`. Normalise then validate, the same
+ * shape as `requireIeDigits` in ./parties — forgiving about punctuation, strict
+ * about content — because the alternative is a rejection on a note that has
+ * already consumed a número and been signed.
+ */
+function requireCnpjFab(raw: string | undefined, nItem: number): string {
+  if (!raw) {
+    throw new NFeDetError(
+      `item ${nItem}: indEscala='N' (produção em escala NÃO relevante) requires CNPJFab ` +
+        `— MOC Anexo I I05e-10, SEFAZ rejeição 879. Fill "CNPJ do fabricante" on the ` +
+        `produto's Impostos tab, or clear "Indicador de escala".`,
+    );
+  }
+  const digits = raw.replace(/\D/g, '');
+  if (!/^\d{14}$/.test(digits) || !validateCNPJ(digits)) {
+    throw new NFeDetError(
+      `item ${nItem}: CNPJFab='${raw}' is not a valid CNPJ (expected 14 digits with a ` +
+        `correct DV, got '${digits}') — SEFAZ rejeição 489. Fix the produto's Impostos tab.`,
+    );
+  }
+  return digits;
+}
+
+/** `det.prod.cBenef` — `([!-ÿ]{8}|[!-ÿ]{10}|SEM CBENEF)?` (leiauteNFe_v4.00.xsd:967). */
+function requireCBenef(raw: string, nItem: number): string {
+  const value = raw.trim();
+  if (!/^([!-ÿ]{8}|[!-ÿ]{10}|SEM CBENEF)$/.test(value)) {
+    throw new NFeDetError(
+      `item ${nItem}: cBenef='${raw}' must be 8 or 10 characters, or the literal ` +
+        `'SEM CBENEF'. Fix the produto's Impostos tab.`,
+    );
+  }
+  return value;
+}
+
+/** `det.prod.EXTIPI` — `[0-9]{2,3}` (leiauteNFe_v4.00.xsd:1013). */
+function requireExtipi(raw: string, nItem: number): string {
+  const value = raw.trim();
+  if (!/^[0-9]{2,3}$/.test(value)) {
+    throw new NFeDetError(
+      `item ${nItem}: EXTIPI='${raw}' must be 2 or 3 digits (código EX da TIPI). ` +
+        `Fix the produto's Impostos tab.`,
+    );
+  }
+  return value;
 }
 
 /** Build the `prod` value object for one item. */
@@ -103,13 +160,20 @@ export function buildProd(item: GeneratorItem): TNFe_infNFe_det_prod {
   if (item.indEscala != null && item.CEST) {
     prod.indEscala = item.indEscala ? 'S' : 'N';
     // "CNPJ do Fabricante da Mercadoria, obrigatório para produto em escala NÃO
-    // relevante" (XSD annotation) — so it belongs with `indEscala='N'` only.
-    // Flutter gated it on `indEscala != null` instead, emitting it alongside an
-    // 'S' where the field has no meaning; this follows the XSD.
-    if (item.indEscala === false && item.CNPJFab) prod.CNPJFab = item.CNPJFab;
+    // relevante" (XSD annotation) — read in BOTH directions. Flutter gated it on
+    // `indEscala != null`, emitting it alongside an 'S' where the field has no
+    // meaning; and the annotation's other half is a hard rule, not a hint:
+    // MOC 7.0 Anexo I I05e-10 (Obrigatória) → **rejeição 879**, "Informado item
+    // 'Produzido em Escala NÃO Relevante' e não informado CNPJ do Fabricante".
+    // `CNPJFab` is `minOccurs="0"`, so the pre-send `validateXsd` cannot catch
+    // that combination — without this throw the note is numbered, signed and
+    // transmitted before SEFAZ says no.
+    if (item.indEscala === false) {
+      prod.CNPJFab = requireCnpjFab(item.CNPJFab, item.nItem);
+    }
   }
-  if (item.cBenef) prod.cBenef = item.cBenef;
-  if (item.EXTIPI) prod.EXTIPI = item.EXTIPI;
+  if (item.cBenef) prod.cBenef = requireCBenef(item.cBenef, item.nItem);
+  if (item.EXTIPI) prod.EXTIPI = requireExtipi(item.EXTIPI, item.nItem);
   // Optional per-item frete value — set by the orchestrator on det[0]
   // when frete.modalidade='0' (contratação por conta do emitente).
   // Mirrors Flutter `pedido_nfe_base.dart:932`.
