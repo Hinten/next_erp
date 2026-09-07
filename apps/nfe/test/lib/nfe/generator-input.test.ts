@@ -430,6 +430,82 @@ describe('buildGeneratorInput — <vTroco> channel gate', () => {
     expect(out.pagXml).toContain('<vTroco>20.00</vTroco>');
     expect(out.pagXml.match(/<vTroco>/g)).toHaveLength(1);
   });
+
+  // ── Second axis: tPag. The channel says a troco is POSSIBLE; the payment form
+  // says how much of it can be REAL. Change comes out of cash. Every row below
+  // threw before #1506 and must keep throwing (PR #1506 review).
+
+  it('balcão + CARD over-payment → throws 866: no acquirer hands back change', () => {
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 110, forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito }],
+      integracaoTipo: INTEGRACAO_TIPO.balcao,
+    });
+    expect(() => build(bundle)).toThrow(/866/);
+    expect(() => build(bundle)).toThrow(/dinheiro/);
+  });
+
+  it('balcão + PIX over-payment → throws 866', () => {
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 110, forma_de_pagamento: FORMA_PAGAMENTO.pix }],
+      integracaoTipo: INTEGRACAO_TIPO.balcao,
+    });
+    expect(() => build(bundle)).toThrow(/866/);
+  });
+
+  it('balcão + VALE over-payment → throws 866', () => {
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 110, forma_de_pagamento: FORMA_PAGAMENTO.vale_alimentacao }],
+      integracaoTipo: INTEGRACAO_TIPO.balcao,
+    });
+    expect(() => build(bundle)).toThrow(/866/);
+  });
+
+  it('⚠️ balcão + BOLETO duplicata over-payment → throws: no <vTroco> beside a <cobr>', () => {
+    // The <pag> ↔ <cobr> ↔ vNF invariant `buildCobrFromPagamentos` documents. It
+    // builds the duplicatas from `bundle.pagamentos` and knows nothing about a
+    // troco, so a R$ 110 fatura must never ride a R$ 100 nota that also claims
+    // R$ 10 of change — a receivable overstated against its own nota, with the
+    // change pure fiction on an indPag='1' payment where no money has moved.
+    const bundle = fullBundle({
+      pagamentos: [
+        {
+          valor: 110,
+          forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+          duplicata: true,
+          aVista: false,
+        },
+      ],
+      integracaoTipo: INTEGRACAO_TIPO.balcao,
+    });
+    expect(() => build(bundle)).toThrow(/866/);
+  });
+
+  it('⚠️ mixed: excess ABOVE the cash leg throws — you cannot hand back 20 from a 5', () => {
+    // 5 dinheiro + 115 pix on a 100 nota → excess 20 > 5 cash. The pix row is the
+    // over-recorded one. This is the near-miss for the boundary test below.
+    const bundle = fullBundle({
+      pagamentos: [
+        { valor: 5, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
+        { valor: 115, forma_de_pagamento: FORMA_PAGAMENTO.pix },
+      ],
+      integracaoTipo: INTEGRACAO_TIPO.balcao,
+    });
+    expect(() => build(bundle)).toThrow(/866/);
+  });
+
+  it('mixed: excess exactly equal to the cash leg is allowed (boundary)', () => {
+    // 20 dinheiro + 100 pix on a 100 nota → excess 20 == cash 20.
+    const out = build(
+      fullBundle({
+        pagamentos: [
+          { valor: 20, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
+          { valor: 100, forma_de_pagamento: FORMA_PAGAMENTO.pix },
+        ],
+        integracaoTipo: INTEGRACAO_TIPO.balcao,
+      }),
+    );
+    expect(out.pagXml).toContain('<vTroco>20.00</vTroco>');
+  });
 });
 
 describe('buildGeneratorInput — guard uses the WIRE (rounded) vPag values', () => {
