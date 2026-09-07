@@ -49,6 +49,24 @@ describe('categoriaImpostoCarriesInfo', () => {
     },
   );
 
+  // ⚠️ The twin of the produto-side case in
+  // `packages/data/src/produto/usecases.test.ts`. Every other case here parses
+  // first; `parseSoftRead` hands back a RAW doc on any unrelated mismatch, and
+  // this decision runs BEFORE `impostoCategoriaSchema.parse`. Found in review
+  // on #1507.
+  it('reads a RAW (unparsed) entry whose only content is a legacy scalar NVE as carrying info', () => {
+    const raw = {
+      ...empty(),
+      NVE: 'AB1234' as unknown as string[],
+    };
+    expect(categoriaImpostoCarriesInfo(raw)).toBe(true);
+  });
+
+  it('still reads a RAW entry whose legacy scalar NVE is blank as empty', () => {
+    const raw = { ...empty(), NVE: '   ' as unknown as string[] };
+    expect(categoriaImpostoCarriesInfo(raw)).toBe(false);
+  });
+
   it('treats an empty or whitespace-only NVE as empty', () => {
     // `[]` and `['   ']` both mean "the operator cleared it" — the doc must be
     // deleted, not written with a meaningless list.

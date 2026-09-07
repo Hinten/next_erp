@@ -10,6 +10,7 @@ import {
   indEscalaField,
   indEscalaFromScalar,
   nveField,
+  nveCarriesValue,
   nveFromScalar,
   taxConfigFields,
 } from './tribute';
@@ -246,5 +247,30 @@ describe('indEscalaField — read tolerance', () => {
 
   it('still REJECTS a shape that is neither', () => {
     expect(() => schema.parse({ indEscala: 42 })).toThrow();
+  });
+});
+
+describe('nveCarriesValue — accepts BOTH stored shapes', () => {
+  it('is true for a populated list and for the pre-#466 scalar', () => {
+    expect(nveCarriesValue(['AB1234'])).toBe(true);
+    expect(nveCarriesValue('AB1234')).toBe(true);
+  });
+
+  it('is false for every empty spelling, in either shape', () => {
+    for (const v of [null, undefined, [], [''], ['  '], '', '   ']) {
+      expect(nveCarriesValue(v)).toBe(false);
+    }
+  });
+
+  it('is false for a shape that is neither', () => {
+    expect(nveCarriesValue(42)).toBe(false);
+    expect(nveCarriesValue({})).toBe(false);
+  });
+
+  // The whole reason it takes `unknown` rather than `string[] | null`: its two
+  // call sites run on a value that may not have been parsed at all.
+  it('does not throw on a list holding a non-string', () => {
+    expect(() => nveCarriesValue([1, 2])).not.toThrow();
+    expect(nveCarriesValue([1, 2])).toBe(false);
   });
 });

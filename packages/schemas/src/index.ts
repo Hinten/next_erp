@@ -755,6 +755,7 @@ export {
   // Dados Gerais folds shared by storage and the imposto editor (#466).
   nveFromScalar,
   indEscalaFromScalar,
+  nveCarriesValue,
   // enums
   crtSchema,
   csosnSchema,

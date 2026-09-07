@@ -1068,6 +1068,27 @@ export function indEscalaFromScalar(raw: string): boolean | null {
 }
 
 /**
+ * True when a STORED `NVE` carries at least one code — in either shape.
+ *
+ * ⚠️ This exists because the "does this imposto entry carry anything worth
+ * persisting" checks run on the value as it came off the wire, BEFORE the
+ * schema parse: `impostoCarriesInfo` (`packages/data/src/produto/usecases.ts`)
+ * and `categoriaImpostoCarriesInfo` (`apps/web/lib/categorias/clientPort.ts`)
+ * both decide `set` vs `delete` first and parse second. `parseSoftRead`
+ * (`packages/data/src/zodParse.ts`) hands back the RAW document whenever the
+ * parse failed for ANY unrelated reason, and on such a document `NVE` is still
+ * the pre-#466 scalar — so a plain `Array.isArray` check reads it as empty and
+ * DELETES the doc. Same silent-delete shape as #1279, one door further in.
+ *
+ * Shared rather than duplicated: the two call sites are character-identical
+ * twins whose comments promise they agree, and they have drifted before.
+ */
+export function nveCarriesValue(v: unknown): boolean {
+  const list = typeof v === 'string' ? nveFromScalar(v) : v;
+  return Array.isArray(list) && list.some((c) => typeof c === 'string' && c.trim() !== '');
+}
+
+/**
  * `det.prod.NVE` — Nomenclatura de Valor aduaneiro e Estatístico.
  *
  * The wire type is a LIST on every legacy Flutter tax model (`List<String>?` on

@@ -334,6 +334,28 @@ describe('produto imposto (per-operação override)', () => {
     expect(buildImpostoWriteOps('p1', [imp({ NVE: ['  '] })], 1000)).toEqual([]);
   });
 
+  // ⚠️ Every case above goes through `impostoProdutoSchema.parse` first, so
+  // none of them can reach the shape this one does. `parseSoftRead`
+  // (`packages/data/src/zodParse.ts`) returns the RAW document whenever the
+  // parse failed for ANY unrelated reason, and on such a document `NVE` is
+  // still the pre-#466 scalar — while `impostoCarriesInfo` runs BEFORE the
+  // parse in `buildImpostoWriteOps`. A bare `Array.isArray` check reads that as
+  // empty and DELETES a configured doc. Found in review on #1507.
+  it('keeps a RAW (unparsed) entry whose only content is a legacy scalar NVE', () => {
+    const raw = {
+      ...imp({ id: 'op1' }),
+      NVE: 'AB1234' as unknown as string[], // what parseSoftRead hands back
+    };
+    expect(buildImpostoWriteOps('p1', [raw], 1000)).toMatchObject([{ type: 'set' }]);
+  });
+
+  it('still deletes a RAW entry whose legacy scalar NVE is blank', () => {
+    const raw = { ...imp({ id: 'op1' }), NVE: '   ' as unknown as string[] };
+    expect(buildImpostoWriteOps('p1', [raw], 1000)).toEqual([
+      { type: 'delete', path: 'produtos/p1/imposto/op1' },
+    ]);
+  });
+
   it('extracts the operação id from a documents/operacao/<id> ref (resolver tolerance)', () => {
     // The schema is now strict bare `operacao/<id>`, but the runtime resolver
     // still tolerates a legacy `documents/operacao/<id>` value when reading docs.
