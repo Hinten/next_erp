@@ -967,8 +967,12 @@ export const impostoSchema = z.object({
    * item gets — a wrong NF-e. Validated at emit instead, where a bad value
    * surfaces as a loud SEFAZ rejection.
    */
-  NVE: nveWire().optional(),
-  indEscala: indEscalaWire().optional(),
+  // `.optional().nullable()` like every sibling above: `nveWire()`'s own target
+  // is already nullable, but `delfrance/no-optional-without-nullable` reads the
+  // chain syntactically and cannot see through the preprocess — and spelling
+  // the tri-state out matches the rest of this schema anyway.
+  NVE: nveWire().optional().nullable(),
+  indEscala: indEscalaWire().optional().nullable(),
   CNPJFab: z.string().optional().nullable(),
   cBenef: z.string().optional().nullable(),
   extipi: z.string().optional().nullable(),
