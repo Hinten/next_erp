@@ -5,9 +5,11 @@ import {
   MODALIDADE_FRETE,
   ORIGEM,
   FORMA_PAGAMENTO,
+  INTEGRACAO_TIPO,
   freteDoPedidoSchema,
   pagamentoSchema,
   type FreteDoPedido,
+  type IntegracaoTipo,
 } from '@delfrance/schemas';
 
 import {
@@ -168,6 +170,12 @@ function fullBundle(opts: {
   pagamentos?: unknown[];
   frete?: FreteDoPedido | null;
   pedido?: Record<string, unknown>;
+  /**
+   * Sales channel — drives the <vTroco> gate. OMITTED on purpose in the older
+   * guard tests: an absent tipo is the conservative "unknown channel" arm, so
+   * those keep asserting the plain 865/866 throw.
+   */
+  integracaoTipo?: IntegracaoTipo | null;
 }): PedidoBundle {
   return {
     pedidoId: 'PED-GUARD',
@@ -177,6 +185,7 @@ function fullBundle(opts: {
     cliente: {},
     enderecoDest: { estado: 'SP' },
     integracao: null,
+    integracaoTipo: opts.integracaoTipo,
     frete: opts.frete ?? null,
     pagamentos: (opts.pagamentos ?? []).map((p) => pagamentoSchema.parse(p)),
     regrasImposto: [],
@@ -211,7 +220,9 @@ describe('buildGeneratorInput — Σ vPag ↔ vNF guard', () => {
     expect(() => build(semFrete)).not.toThrow(/emitente/);
   });
 
-  it('Σ vPag > vNF → throws (would be SEFAZ 866)', () => {
+  it('Σ vPag > vNF on an UNKNOWN channel → throws (would be SEFAZ 866)', () => {
+    // No integracaoTipo: emitting a troco requires KNOWING the channel does not
+    // settle the payment for us, so an unreadable tipo keeps the hard throw.
     const bundle = fullBundle({
       pagamentos: [
         { valor: 60, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
@@ -219,6 +230,7 @@ describe('buildGeneratorInput — Σ vPag ↔ vNF guard', () => {
       ],
     });
     expect(() => build(bundle)).toThrow(/866/);
+    expect(() => build(bundle)).toThrow(/não informa o campo "tipo"/);
   });
 
   it('Σ vPag == vNF → passes and emits the payments', () => {
@@ -303,6 +315,120 @@ describe('buildGeneratorInput — Σ vPag ↔ vNF guard', () => {
     const out = build(bundle);
     expect(out.pagXml).toContain('<vPag>100.00</vPag>');
     expect(out.pagXml).not.toContain('<tPag>90</tPag>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// <vTroco> — an over-payment is LEGAL with change, and only on a channel that
+// does not settle the payment for us. cStat 866 (YA03-20) is literally
+// "ausência de troco quando o valor dos pagamentos informados for maior que o
+// total da nota", so the rejection names its own remedy.
+//
+// ⚠️ These tests pin the SCOPE of the gate, not just that it fires: every
+// "emits a troco" case is paired with an identical over-payment that must NOT.
+// ---------------------------------------------------------------------------
+
+/** vNF = 100 (ITEM_100). Customer hands 110 → troco 10. */
+const PAGO_110 = [{ valor: 110, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }];
+
+describe('buildGeneratorInput — <vTroco> channel gate', () => {
+  it('balcão + over-payment → emits <vTroco>, no throw', () => {
+    const out = build(fullBundle({ pagamentos: PAGO_110, integracaoTipo: INTEGRACAO_TIPO.balcao }));
+    expect(out.pagXml).toContain('<vPag>110.00</vPag>');
+    expect(out.pagXml).toContain('<vTroco>10.00</vTroco>');
+  });
+
+  it('⚠️ whatsapp + over-payment → emits <vTroco>: the gate is the CHANNEL, not buyer presence', () => {
+    // A WhatsApp order paid in cash to the motoboy is indPres='2' (não
+    // presencial) and still hands back real change. This is the case that rules
+    // out gating on operacao.indPres — do not "fix" the gate back to it.
+    const out = build(
+      fullBundle({ pagamentos: PAGO_110, integracaoTipo: INTEGRACAO_TIPO.whatsapp }),
+    );
+    expect(out.pagXml).toContain('<vTroco>10.00</vTroco>');
+  });
+
+  it('nenhuma (no marketplace integration) + over-payment → emits <vTroco>', () => {
+    const out = build(
+      fullBundle({ pagamentos: PAGO_110, integracaoTipo: INTEGRACAO_TIPO.nenhuma }),
+    );
+    expect(out.pagXml).toContain('<vTroco>10.00</vTroco>');
+  });
+
+  it('⚠️ mercadoLivre + the IDENTICAL over-payment → still throws 866', () => {
+    // The near-miss. ML settles the payment, so Σ vPag > vNF there is a data
+    // defect (duplicated / over-recorded pagamento), which is what the guard
+    // was built for (#394) — never change handed back.
+    const bundle = fullBundle({
+      pagamentos: PAGO_110,
+      integracaoTipo: INTEGRACAO_TIPO.mercadoLivre,
+    });
+    expect(() => build(bundle)).toThrow(/866/);
+    expect(() => build(bundle)).toThrow(/administrado pelo canal de venda/);
+  });
+
+  it('shopee — a marketplace this gate was never taught about — also throws', () => {
+    const bundle = fullBundle({ pagamentos: PAGO_110, integracaoTipo: INTEGRACAO_TIPO.shopee });
+    expect(() => build(bundle)).toThrow(/866/);
+  });
+
+  it('a tipo OUTSIDE the enum counts as a marketplace → throws, never emits a troco', () => {
+    // ehMarketplace is tolerant on purpose (the migrated legacy corpus carries
+    // wire-format enums integracaoTipoSchema does not model). The tolerant
+    // answer must be the SAFE one.
+    const bundle = fullBundle({
+      pagamentos: PAGO_110,
+      integracaoTipo: 4242 as unknown as IntegracaoTipo,
+    });
+    expect(() => build(bundle)).toThrow(/866/);
+  });
+
+  it('balcão + UNDER-payment → still throws 865 (a troco is no remedy for a shortfall)', () => {
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 90, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
+      integracaoTipo: INTEGRACAO_TIPO.balcao,
+    });
+    expect(() => build(bundle)).toThrow(/865/);
+    expect(() => build(bundle)).not.toThrow(/troco/);
+  });
+
+  it('balcão + exact payment → no <vTroco> element at all', () => {
+    const out = build(
+      fullBundle({
+        pagamentos: [{ valor: 100, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
+        integracaoTipo: INTEGRACAO_TIPO.balcao,
+      }),
+    );
+    expect(out.pagXml).not.toContain('vTroco');
+  });
+
+  it('<vTroco> lands AFTER </detPag>, inside <pag> (XSD sequence order)', () => {
+    const out = build(fullBundle({ pagamentos: PAGO_110, integracaoTipo: INTEGRACAO_TIPO.balcao }));
+    expect(out.pagXml).toContain('</detPag><vTroco>10.00</vTroco></pag>');
+  });
+
+  it('a centavos troco keeps 2 decimals', () => {
+    const out = build(
+      fullBundle({
+        pagamentos: [{ valor: 110.5, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
+        integracaoTipo: INTEGRACAO_TIPO.balcao,
+      }),
+    );
+    expect(out.pagXml).toContain('<vTroco>10.50</vTroco>');
+  });
+
+  it('over-payment split across two pagamentos → ONE troco for the whole excess', () => {
+    const out = build(
+      fullBundle({
+        pagamentos: [
+          { valor: 60, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
+          { valor: 60, forma_de_pagamento: FORMA_PAGAMENTO.pix },
+        ],
+        integracaoTipo: INTEGRACAO_TIPO.balcao,
+      }),
+    );
+    expect(out.pagXml).toContain('<vTroco>20.00</vTroco>');
+    expect(out.pagXml.match(/<vTroco>/g)).toHaveLength(1);
   });
 });
 
