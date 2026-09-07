@@ -235,7 +235,20 @@ jobs:
     name: Storage emulator (firestore + storage + functions)
     runs-on: ubuntu-latest
     # Observed max across 15 successful runs: 3.9 min.
-    timeout-minutes: 25
+    #
+    # ⚠️ The headroom is sized for the FAILING case, not the green one. The suite
+    # polls for real trigger deliveries with a 45s deadline
+    # (TRIGGER_DELIVERY_TIMEOUT_MS in apps/functions/src/testing/emulatorWaits.ts).
+    # A test aborts at its first failing wait, so a regression that broke delivery
+    # entirely costs one deadline per polling test — ~20 of them, ~15 min, plus
+    # ~2.5 min for the rest. 25 left that uncomfortably close.
+    #
+    # Being close matters more here than the wasted minutes suggest: a job killed
+    # by `timeout-minutes` reports `cancelled`, and this workflow sets
+    # `concurrency: cancel-in-progress`, so a real breakage would be reported the
+    # same way as a routine superseded run. Raising the budget keeps a genuine
+    # failure legible as a FAILURE.
+    timeout-minutes: 35
     needs: [changes, storage-build-test]
     # Inlined into the functions bundle at build time (build.mjs).
     env:
