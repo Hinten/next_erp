@@ -50,7 +50,7 @@ export interface Observation {
 /** Field names known to be ISO strings in the legacy wire shape (per #155). */
 export const KNOWN_ISO_EXCEPTIONS: ReadonlySet<string> = new Set([
   'bomPara', // Cheque.bomPara — nested in pedido/pagamento data
-  'abertura', // webchat (ISO) vs integracao_frete (ms) — shape is per-package
+  'abertura', // legacy webchat collection (ISO) vs integracao_frete (ms) — per-package
   'fechamento',
 ]);
 

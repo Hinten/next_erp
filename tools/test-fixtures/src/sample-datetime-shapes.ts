@@ -311,7 +311,7 @@ export function renderMarkdown(reports: CollectionReport[], options: Options): s
     );
   }
   lines.push(
-    '- webchat `abertura`/`fechamento`: out of scope — `webchat` is not in `VALIDATOR_WHITELIST`, so it is not sampled here. Any ISO `abertura`/`fechamento` nested in the sampled collections would appear in the discovered rows above.',
+    '- legacy `webchat` collection `abertura`/`fechamento`: out of scope — `webchat` is not in `VALIDATOR_WHITELIST`, so it is not sampled here (and never will be: the webchat widget was dropped 2026-09-07, so no new `webchat` collection is created). Any ISO `abertura`/`fechamento` nested in the sampled collections would appear in the discovered rows above.',
   );
   return lines.join('\n');
 }

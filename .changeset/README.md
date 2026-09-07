@@ -14,7 +14,7 @@ Pick the affected packages, choose the bump type (`patch`/`minor`/`major`), and 
 
 ## Ignored packages
 
-Apps (`apps/web`, `apps/integrations`, `apps/webchat`, `apps/docs`, `apps/example`), tooling (`tools/test-fixtures`), and shared configs (`packages/config-*`) are listed in `config.json` under `ignore` — they are private and never published to npm.
+Apps (`apps/web`, `apps/integrations`, `apps/docs`, `apps/example`), tooling (`tools/test-fixtures`), and shared configs (`packages/config-*`) are listed in `config.json` under `ignore` — they are private and never published to npm.
 
 ## Releasing
 

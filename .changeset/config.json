@@ -9,8 +9,7 @@
   "updateInternalDependencies": "patch",
   "ignore": [
     "@delfrance/web",
-    "@delfrance/integrations-app",
-    "@delfrance/webchat",
+    "@delfrance/integrations-app",
     "@delfrance/docs",
     "@delfrance/example",
     "@delfrance/test-fixtures",
