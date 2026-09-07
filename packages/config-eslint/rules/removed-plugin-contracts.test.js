@@ -60,6 +60,7 @@ const read = (rel) => readFileSync(resolve(repoRoot, rel), 'utf8');
 const CORE_BARREL = 'packages/core/src/index.ts';
 const CORE_SRC = 'packages/core/src';
 const NFE_BARREL = 'packages/integrations/nfe/src/index.ts';
+const NFE_SRC = 'packages/integrations/nfe/src';
 const CAPS = 'packages/schemas/src/shared/marketplace.ts';
 const MP_PACKAGE = 'packages/integrations/mercado-pago/src/index.ts';
 const PAGAMENTO_SCHEMA = 'packages/schemas/src/pedido/collection/pagamento.ts';
@@ -88,22 +89,36 @@ const SDK_MANIFEST = 'packages/plugin-sdk/package.json';
 const MARKETPLACE_MODEL = 'packages/core/src/marketplace/index.ts';
 
 /**
- * Every `.ts` under `packages/core/src` — the module all four removed contracts
- * lived in, and where a re-creation would most naturally land.
+ * Every `.ts` under a source root, as `[relativePath, contents]`.
  *
- * ⚠️ This replaces the per-file reads of `src/plugins/index.ts` that this suite
- * did before #1444 deleted it. Scanning the whole directory is strictly stronger:
- * the old assertions only caught a contract re-added to the ONE path they named,
- * so `src/plugins2/index.ts` — or an interface appended to `src/money/index.ts` —
- * passed. It is also cheap: a few dozen small files, no network, no build.
+ * ⚠️ Scanning a whole directory replaces the per-file reads this suite did before
+ * #1444 deleted the files they named, and is strictly stronger: a per-file
+ * assertion only catches a re-creation at the ONE path it names, so
+ * `src/plugins2/index.ts` — or an interface appended to `src/money/index.ts` —
+ * passed. Cheap enough to prefer everywhere: the two roots below are 36 and 51
+ * small files, no network, no build.
  */
-const coreSrcFiles = () => {
-  const dir = resolve(repoRoot, CORE_SRC);
+const tsFilesUnder = (root) => {
+  const dir = resolve(repoRoot, root);
   return readdirSync(dir, { recursive: true })
     .map(String)
     .filter((f) => f.endsWith('.ts'))
     .map((f) => [f, readFileSync(resolve(dir, f), 'utf8')]);
 };
+
+/** The module all five removed contracts lived in. */
+const coreSrcFiles = () => tsFilesUnder(CORE_SRC);
+
+/**
+ * The NF-e package — the only place that ever implemented one of the contracts.
+ *
+ * ⚠️ The barrel alone is not enough, and that is a review finding, not a
+ * precaution: `createNFeProvider` would most naturally come back **in
+ * `http-provider/client.ts`**, beside the `createNFeHttpClient` it wrapped, with
+ * only its NAME added to the barrel's existing re-export block. Guarding the
+ * barrel catches the second half; scanning the tree catches both.
+ */
+const nfeSrcFiles = () => tsFilesUnder(NFE_SRC);
 
 /* -------------------------------------------------------------------------- */
 /*                      The detectors, and their two controls                 */
@@ -155,15 +170,40 @@ const hasPluginRegistry = (src) =>
   /\bregisterInvoice\s*\(/.test(src);
 
 /**
- * The dead NF-e adapter (#1444).
+ * A `TaxProvider` / `InvoiceProvider` NAME crossing a module boundary — either
+ * direction, since `import type { InvoiceProvider } from '@delfrance/core/plugins'`
+ * is exactly the line the NF-e barrel carried before #1444.
+ *
+ * ⚠️ Separate from {@link declaresPluginContract}, which matches a DECLARATION
+ * only and so lets a re-export through. Same split as
+ * {@link declaresMarketplaceChannel} / {@link reExportsMarketplaceChannelSymbol}.
+ */
+const reExportsPluginContractSymbol = (src) =>
+  /^\s*(?:export|import)\s+(?:type\s+)?\{[^}]*\b(?:TaxProvider|InvoiceProvider)\b/m.test(src);
+
+/**
+ * The dead NF-e adapter (#1444), in any shape that EXPOSES the name.
  *
  * ⚠️ Needs its own detector: every other declaration regex here alternates over
  * `interface|type|class`, and `createNFeProvider` was a `function`. Folding it
  * into that alternation would have been the smaller diff and would have silently
  * matched nothing.
+ *
+ * ⚠️ And it must match the name CROSSING A MODULE BOUNDARY, not only a
+ * declaration. Review caught this on the first version of the guard, which tested
+ * `export function` alone: `packages/integrations/nfe/src/index.ts` is composed
+ * ENTIRELY of `export { … } from './x'` blocks — `createNFeProvider` was the only
+ * bare declaration it ever held, and this change deleted it. So a
+ * declaration-only regex guarded the one shape that file never uses. Verified by
+ * mutation: appending `export { createNFeProvider } from './http-provider';` to
+ * the barrel left this suite at 23/23 green. The most natural re-creation — put
+ * the adapter back in `http-provider/client.ts` beside its counterpart and add
+ * the name to the existing re-export block — walked straight past it, and so did
+ * `export const`.
  */
-const declaresNFeProviderFactory = (src) =>
-  /^\s*export\s+function\s+createNFeProvider\b/m.test(src);
+const exposesNFeProviderFactory = (src) =>
+  /^\s*export\s+(?:async\s+)?(?:function|const|let|var)\s+createNFeProvider\b/m.test(src) ||
+  /^\s*(?:export|import)\s+(?:type\s+)?\{[^}]*\bcreateNFeProvider\b/m.test(src);
 
 /** A re-export of the `./plugins` subpath from a barrel. */
 const reExportsPlugins = (src) => /(?:export|import)[^;\n]*from\s+'\.\/plugins'/.test(src);
@@ -206,8 +246,33 @@ describe('the detectors themselves', () => {
     expect(hasPluginRegistry('  registerTax(p: TaxProvider) {}')).toBe(true);
     expect(hasPluginRegistry('  registerInvoice(p: InvoiceProvider) {}')).toBe(true);
     expect(
-      declaresNFeProviderFactory(
+      exposesNFeProviderFactory(
         'export function createNFeProvider(config: NFeHttpClientConfig): InvoiceProvider {',
+      ),
+    ).toBe(true);
+    // ⚠️ The three shapes the declaration-only first version let through. The
+    // re-export one is not hypothetical — it was reproduced against the real
+    // barrel and the suite stayed green.
+    expect(exposesNFeProviderFactory('export const createNFeProvider = (c) => ({ id: 1 });')).toBe(
+      true,
+    );
+    expect(exposesNFeProviderFactory("export { createNFeProvider } from './http-provider';")).toBe(
+      true,
+    );
+    expect(
+      exposesNFeProviderFactory(`export {
+  createNFeHttpClient,
+  createNFeProvider,
+} from './http-provider';`),
+    ).toBe(true);
+    expect(
+      reExportsPluginContractSymbol(
+        "export type { TaxProvider, InvoiceProvider } from '@delfrance/core/plugins';",
+      ),
+    ).toBe(true);
+    expect(
+      reExportsPluginContractSymbol(
+        "import type { InvoiceProvider } from '@delfrance/core/plugins';",
       ),
     ).toBe(true);
     expect(reExportsPlugins("export * from './plugins';")).toBe(true);
@@ -230,7 +295,17 @@ describe('the detectors themselves', () => {
       ' * ⚠️ `TaxProvider` / `InvoiceProvider` were deleted in #1444, with `PluginRegistry`.';
     expect(declaresPluginContract(pluginProse)).toBe(false);
     expect(hasPluginRegistry(pluginProse)).toBe(false);
-    expect(declaresNFeProviderFactory(' * the throwing `createNFeProvider()` stub')).toBe(false);
+    expect(exposesNFeProviderFactory(' * the throwing `createNFeProvider()` stub')).toBe(false);
+    // ⚠️ The widened detector must not swallow the SURVIVING factory next to it in
+    // every one of the barrel's re-export blocks. `createNFeHttpClient` is the
+    // live NF-e path; flagging it would red CI on correct code.
+    expect(
+      exposesNFeProviderFactory("export { createNFeHttpClient } from './http-provider';"),
+    ).toBe(false);
+    expect(reExportsPluginContractSymbol(pluginProse)).toBe(false);
+    expect(
+      reExportsPluginContractSymbol("export { createNFeHttpClient } from './http-provider';"),
+    ).toBe(false);
     expect(reExportsPlugins("export * from './money';")).toBe(false);
     // The removed contracts must not trip EACH OTHER's detectors — these three
     // ran against the same file, so a regex that over-matched would have been
@@ -399,6 +474,10 @@ describe('the plugin system itself stays deleted (#1444)', () => {
       expect(declaresPluginContract(src), `${file} declares TaxProvider/InvoiceProvider`).toBe(
         false,
       );
+      expect(
+        reExportsPluginContractSymbol(src),
+        `${file} imports or re-exports TaxProvider/InvoiceProvider`,
+      ).toBe(false);
       expect(hasPluginRegistry(src), `${file} declares or feeds a PluginRegistry`).toBe(false);
     }
   });
@@ -414,15 +493,31 @@ describe('the plugin system itself stays deleted (#1444)', () => {
     expect(read('packages/core/package.json')).not.toMatch(/"\.\/plugins"/);
   });
 
-  it('the NF-e barrel does not re-create the dead InvoiceProvider adapter', () => {
+  it('nothing under the NF-e package re-creates the dead InvoiceProvider adapter', () => {
     // `createNFeProvider` was the ONLY implementation either contract ever had,
     // and it had zero callers. Worse than a dead stub: it compiled, it ran, and
     // it sat on a live package's public `.` entry looking supported, while every
     // real caller goes through `createNFeHttpClient` on the `./http-provider`
     // subpath (which `apps/web`'s no-restricted-imports rule pins it to).
-    const src = read(NFE_BARREL);
-    expect(declaresNFeProviderFactory(src)).toBe(false);
-    expect(declaresPluginContract(src)).toBe(false);
+    //
+    // ⚠️ Scans the tree, not just the barrel. Review's finding: the adapter comes
+    // back most naturally IN `http-provider/client.ts`, with only its name added
+    // to the barrel's re-export block — two halves, and the barrel-only check saw
+    // neither, because it tested for a declaration shape that file never uses.
+    for (const [file, src] of nfeSrcFiles()) {
+      expect(exposesNFeProviderFactory(src), `${file} exposes createNFeProvider`).toBe(false);
+      expect(declaresPluginContract(src), `${file} declares TaxProvider/InvoiceProvider`).toBe(
+        false,
+      );
+      expect(
+        reExportsPluginContractSymbol(src),
+        `${file} imports or re-exports TaxProvider/InvoiceProvider`,
+      ).toBe(false);
+    }
+  });
+
+  it('reads a non-empty NF-e src (guards the scan above)', () => {
+    expect(nfeSrcFiles().length, 'no NF-e src files were read').toBeGreaterThan(0);
   });
 
   it('is reading the NF-e barrel it thinks it is', () => {
