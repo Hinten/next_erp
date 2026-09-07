@@ -111,8 +111,10 @@ export interface PedidoDerivedTotals {
  * (`impostos`, `valorComissoes`, `valorDespesasIncidentes`,
  * `valorFretesIncidentes`) were "left to the caller" here for as long as this
  * port existed, and no caller ever appeared. #1151 dropped them from
- * `pedidoSchema` outright: a pipeline aggregates the pedido's own
- * subcollections at read time, so there is nothing for a caller to fill in.
+ * `pedidoSchema` outright: nothing read them, and Enterprise's Pipelines API
+ * makes the same numbers DERIVABLE from the pedido's own subcollections at
+ * read time, so persisting them buys nothing. (No such pipeline is written
+ * today — see the note on `pedidoSchema`'s totals block.)
  * This owns the item/frete/devolução-derived caches, full stop, so the web
  * resolver and a future MCP agent share one implementation of them.
  *

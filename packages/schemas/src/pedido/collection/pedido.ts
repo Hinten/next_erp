@@ -288,17 +288,22 @@ export const pedidoSchema = z.object({
   //    derivable from this document, which is exactly why they were persisted:
   //    the only way to report them used to be a stored cache. They had no
   //    writer in this app and no reader anywhere, and Enterprise's Pipelines
-  //    API removed the constraint that created them — a correlated subquery
-  //    aggregates the pedido's own subcollections at read time:
-  //    `incidentes` (`valor`, `frete`) covers the two incident totals and
-  //    `orderML` (`unnest(order_items)` → `sale_fee`) covers the commission.
+  //    API removed the constraint that created them: a correlated subquery
+  //    CAN aggregate the pedido's own subcollections at read time —
+  //    `incidentes` (`valor`, `frete`) for the two incident totals, `orderML`
+  //    (`unnest(order_items)` → `sale_fee`) for the commission.
+  //    ⚠️ No such pipeline is WRITTEN — nothing read these fields, so there is
+  //    no number to replace and nothing regressed. The shape is proven by
+  //    `bulkEstoquePlan.ts` (`apps/mercado-livre`), which runs exactly this
+  //    kind of `subcollection()` aggregate; what changed is that the reason
+  //    for persisting a cache is gone, not that a report now exists.
   //    `impostos` went with them for the same "no writer" reason, but it is
-  //    the one a pipeline canNOT replace: `nfev4` persists the NF-e as raw
-  //    XML, which no aggregation can parse. Keeping the field produced no
+  //    the one a pipeline canNOT reach at all: `nfev4` persists the NF-e as
+  //    raw XML, which no aggregation can parse. Keeping the field produced no
   //    number either way; giving it a real fiscal source is #1491. (#1151.)
   //
   // ⚠️ Do not re-add one to "make a report easier" — that is precisely the
-  // reasoning #1151 retired. Reports AGGREGATE: item subtotals and the
+  // reasoning #1151 retired. Reports should AGGREGATE: item subtotals and the
   // subcollections above, through a pipeline. NF-e reads `frete.valorCobrado`,
   // and the footer derives live. A re-added field also costs more than a dead
   // column: `TableView` offers every non-`hidden` schema field in its column
