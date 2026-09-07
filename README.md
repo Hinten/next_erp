@@ -14,7 +14,7 @@ Multi-app Turborepo monorepo split by **persona/runtime**, not by ERP domain:
 | `apps/integrations/` | External systems (webhooks, OAuth callbacks)         | SSR API-only    | Firebase App Hosting |
 | `apps/webchat/`      | End-visitor on tenant's site                         | Static export   | Firebase Hosting     |
 | `apps/docs/`         | Contributors / users                                 | Astro Starlight | external (TBD)       |
-| `apps/example/`      | OSS demo                                             | Static / SSR    | external             |
+| `apps/example/`      | OSS demo                                             | Node CLI        | not deployed         |
 
 Heavy webhook work is dispatched from `apps/integrations` to **Cloud Functions** (Node 22 + the existing Python functions).
 
@@ -24,9 +24,8 @@ Shared code lives under `packages/`:
 - `packages/data/` — `defineCollection<T>` + cascade runtime, no codegen.
 - `packages/auth/` — permission helpers, BigInt-encoded custom claims.
 - `packages/ui/` — Mantine v9 theme + primitives.
-- `packages/core/` — money, address, documents, tenant, plugin contracts.
-- `packages/integrations/*/` — domain integrations behind plugin contracts (NFe, Mercado Pago, marketplaces, freight).
-- `packages/plugin-sdk/` — public surface for third-party plugin authors.
+- `packages/core/` — money, address, documents, tenant, wire, region.
+- `packages/integrations/*/` — provider libraries, each imported directly by its app (NF-e, Mercado Livre, Mercado Pago, WhatsApp, freight, Shopee).
 - `packages/config-*` — shared ESLint/TS/Prettier configs.
 
 ## Stack
@@ -49,9 +48,11 @@ pnpm dev
 
 Boots `apps/web` on :3000 and `apps/integrations` on :3001.
 
-## Domain plugins
+## Domain integrations
 
-Brazilian features (NFe, Mercado Pago, marketplaces) are **opt-in plugins** behind contracts in `packages/core/plugins/`. The core is locale-agnostic.
+Brazilian features (NF-e, Mercado Pago, marketplaces, freight) live in `packages/integrations/<channel>`, each paired with one App Hosting backend in `apps/<channel>`. `packages/core` stays locale-agnostic.
+
+⚠️ **There is no plugin system.** Five contracts were declared in `packages/core` over time and all five were deleted — `FreightProvider` (#262), `MarketplaceChannel` (#815, ADR 0015), `PaymentGateway` (#1429), and `TaxProvider` + `InvoiceProvider` (#1444) — because a registry interface there cannot express work that needs Firestore, Storage and a token refresher. An account is resolved **per request** from its Firestore document; see the integration authoring guide in `apps/docs`.
 
 # Useful Commands:
 

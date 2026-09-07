@@ -4,24 +4,34 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Repo invariant: TWO plugin contracts were removed and neither may come back.
+ * Repo invariant: the plugin system was removed, and no part of it may come back.
  *
  *  - **`MarketplaceChannel`** (#815, ADR 0015) — a marketplace is described by
  *    `MARKETPLACE_TIPO_CAPS` and implemented as one App Hosting backend.
  *  - **`PaymentGateway`** (#1429) — all three members threw, `registerPayment`
  *    had one caller (its own test), and the one live consumer was a permanently
  *    disabled button. Payments live in `apps/mercado-pago`.
+ *  - **`TaxProvider`, `InvoiceProvider`, `PluginRegistry` and
+ *    `@delfrance/plugin-sdk`** (#1444) — the last two contracts and the registry
+ *    itself. Neither contract could describe its own domain: `calculate({ amount,
+ *    ncm })` carries no CRT, no CST/CSOSN, no origem and no UF pair, while the
+ *    real engine (`buildImpostoXml`) emits XSD-valid XML per CST; and
+ *    `issue(orderId)` → three statuses cannot express `aguardandoVinculo`, cStat
+ *    136 reconciliation, SVC/EPEC contingência, filial, ambiente or série. The one
+ *    implementation, `createNFeProvider()`, had zero callers — `apps/web` always
+ *    reached `createNFeHttpClient` directly.
  *
  * ## Why this is a test and not a comment
  *
- * Every part of this is invisible when violated. Re-adding a `MarketplaceChannel`
- * interface to `packages/core/src/plugins` typechecks, lints, builds and passes
- * every suite — it just recreates a contract that took one channel port to
- * disprove and that five throw-only scaffold packages existed to satisfy. The
- * same is true of a `'marketplace'` plugin kind in the SDK (it advertises a kind
- * nothing can register) and of re-exporting `@delfrance/core/marketplace` from
- * core's root barrel (that puts the model in every browser bundle, and, worse,
- * makes an unimplemented order model look like a shared surface).
+ * Every part of this is invisible when violated. Re-creating
+ * `packages/core/src/plugins` with a `MarketplaceChannel` interface typechecks,
+ * lints, builds and passes every suite — it just recreates a contract that took
+ * one channel port to disprove and that five throw-only scaffold packages existed
+ * to satisfy. The same is true of re-exporting `@delfrance/core/marketplace` from
+ * core's root barrel (that puts the model in every browser bundle and, worse,
+ * makes an unimplemented order model look like a shared surface), and of a second
+ * `createNFeProvider()` — dead on arrival, but sitting on a live package's public
+ * barrel where it reads as the supported path.
  *
  * ⚠️ No capability table replaced the payment contract, deliberately:
  * `TIPO_INTEGRACAO_PGTO` is `z.literal(1)`, so a `Record` over it would be a
@@ -47,12 +57,25 @@ const repoRoot = resolve(here, '../../..');
 
 const read = (rel) => readFileSync(resolve(repoRoot, rel), 'utf8');
 
-const CORE_PLUGINS = 'packages/core/src/plugins/index.ts';
 const CORE_BARREL = 'packages/core/src/index.ts';
-const SDK_INDEX = 'packages/plugin-sdk/src/index.ts';
+const CORE_SRC = 'packages/core/src';
+const NFE_BARREL = 'packages/integrations/nfe/src/index.ts';
 const CAPS = 'packages/schemas/src/shared/marketplace.ts';
 const MP_PACKAGE = 'packages/integrations/mercado-pago/src/index.ts';
 const PAGAMENTO_SCHEMA = 'packages/schemas/src/pedido/collection/pagamento.ts';
+
+/**
+ * ⚠️ These two are `existsSync` targets, NOT `read` targets. #1444 deleted both,
+ * and `read` throws on a missing path — this suite used to read them on every
+ * run. Each is keyed on the file that makes the thing EXIST: the barrel for a
+ * directory, the manifest for a workspace package. Same reasoning as the scaffold
+ * list below — a removed package can leave an empty `node_modules/` behind in an
+ * existing checkout, which would make a bare directory check red locally and
+ * green on a fresh CI clone. `package.json` is what makes it a package.
+ */
+const CORE_PLUGINS_ENTRY = 'packages/core/src/plugins/index.ts';
+const SDK_MANIFEST = 'packages/plugin-sdk/package.json';
+
 /**
  * ⚠️ The file this guard was blind to until review caught it, and the one most
  * at risk: its own header opens with "There is deliberately **no
@@ -63,6 +86,24 @@ const PAGAMENTO_SCHEMA = 'packages/schemas/src/pedido/collection/pagamento.ts';
  * silent-when-broken condition the file was written to close.
  */
 const MARKETPLACE_MODEL = 'packages/core/src/marketplace/index.ts';
+
+/**
+ * Every `.ts` under `packages/core/src` — the module all four removed contracts
+ * lived in, and where a re-creation would most naturally land.
+ *
+ * ⚠️ This replaces the per-file reads of `src/plugins/index.ts` that this suite
+ * did before #1444 deleted it. Scanning the whole directory is strictly stronger:
+ * the old assertions only caught a contract re-added to the ONE path they named,
+ * so `src/plugins2/index.ts` — or an interface appended to `src/money/index.ts` —
+ * passed. It is also cheap: a few dozen small files, no network, no build.
+ */
+const coreSrcFiles = () => {
+  const dir = resolve(repoRoot, CORE_SRC);
+  return readdirSync(dir, { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith('.ts'))
+    .map((f) => [f, readFileSync(resolve(dir, f), 'utf8')]);
+};
 
 /* -------------------------------------------------------------------------- */
 /*                      The detectors, and their two controls                 */
@@ -75,9 +116,6 @@ const declaresMarketplaceChannel = (src) =>
 /** A registry member for marketplaces. */
 const hasMarketplaceRegistry = (src) =>
   /\bregisterMarketplace\s*\(/.test(src) || /\bmarketplaces\s*=\s*new Map\b/.test(src);
-
-/** `'marketplace'` listed as a plugin manifest kind. */
-const advertisesMarketplaceKind = (src) => /kinds\s*:\s*ReadonlyArray<[^>]*'marketplace'/.test(src);
 
 /** A re-export of the `./marketplace` subpath from a barrel. */
 const reExportsMarketplace = (src) => /(?:export|import)[^;\n]*from\s+'\.\/marketplace'/.test(src);
@@ -106,8 +144,29 @@ const hasPaymentRegistry = (src) =>
 
 const hasGatewayFactory = (src) => /\bcreateMercadoPagoGateway\s*\(/.test(src);
 
-/** `'payment'` listed as a plugin manifest kind. */
-const advertisesPaymentKind = (src) => /kinds\s*:\s*ReadonlyArray<[^>]*'payment'/.test(src);
+/** A `TaxProvider` or `InvoiceProvider` DECLARATION (#1444). */
+const declaresPluginContract = (src) =>
+  /^\s*export\s+(?:interface|type|class)\s+(?:TaxProvider|InvoiceProvider)\b/m.test(src);
+
+/** The registry class itself, or either of its two remaining register members. */
+const hasPluginRegistry = (src) =>
+  /^\s*export\s+class\s+PluginRegistry\b/m.test(src) ||
+  /\bregisterTax\s*\(/.test(src) ||
+  /\bregisterInvoice\s*\(/.test(src);
+
+/**
+ * The dead NF-e adapter (#1444).
+ *
+ * ⚠️ Needs its own detector: every other declaration regex here alternates over
+ * `interface|type|class`, and `createNFeProvider` was a `function`. Folding it
+ * into that alternation would have been the smaller diff and would have silently
+ * matched nothing.
+ */
+const declaresNFeProviderFactory = (src) =>
+  /^\s*export\s+function\s+createNFeProvider\b/m.test(src);
+
+/** A re-export of the `./plugins` subpath from a barrel. */
+const reExportsPlugins = (src) => /(?:export|import)[^;\n]*from\s+'\.\/plugins'/.test(src);
 
 describe('the detectors themselves', () => {
   // ⚠️ A checker needs BOTH controls: known-bad must fail, known-good must pass.
@@ -119,9 +178,6 @@ describe('the detectors themselves', () => {
     ).toBe(true);
     expect(hasMarketplaceRegistry('  registerMarketplace(p: MarketplaceChannel) {}')).toBe(true);
     expect(hasMarketplaceRegistry('  private marketplaces = new Map<string, X>();')).toBe(true);
-    expect(
-      advertisesMarketplaceKind("  kinds: ReadonlyArray<'tax' | 'invoice' | 'marketplace'>;"),
-    ).toBe(true);
     expect(reExportsMarketplace("export * from './marketplace';")).toBe(true);
     expect(
       declaresPaymentGateway(`export interface PaymentGateway {
@@ -131,7 +187,6 @@ describe('the detectors themselves', () => {
     expect(hasPaymentRegistry('  registerPayment(p: PaymentGateway) {}')).toBe(true);
     expect(hasPaymentRegistry('  private payments = new Map<string, X>();')).toBe(true);
     expect(hasGatewayFactory('export function createMercadoPagoGateway(c) {}')).toBe(true);
-    expect(advertisesPaymentKind("  kinds: ReadonlyArray<'tax' | 'payment'>;")).toBe(true);
     expect(
       reExportsMarketplaceChannelSymbol(
         "export type { MarketplaceChannel } from '@delfrance/core/marketplace';",
@@ -144,6 +199,18 @@ describe('the detectors themselves', () => {
   MarketplaceChannel,
 } from './x';`),
     ).toBe(true);
+    // #1444
+    expect(declaresPluginContract('export interface TaxProvider { id: string }')).toBe(true);
+    expect(declaresPluginContract('export interface InvoiceProvider { id: string }')).toBe(true);
+    expect(hasPluginRegistry('export class PluginRegistry {}')).toBe(true);
+    expect(hasPluginRegistry('  registerTax(p: TaxProvider) {}')).toBe(true);
+    expect(hasPluginRegistry('  registerInvoice(p: InvoiceProvider) {}')).toBe(true);
+    expect(
+      declaresNFeProviderFactory(
+        'export function createNFeProvider(config: NFeHttpClientConfig): InvoiceProvider {',
+      ),
+    ).toBe(true);
+    expect(reExportsPlugins("export * from './plugins';")).toBe(true);
   });
 
   it('does NOT flag a known-GOOD source', () => {
@@ -152,58 +219,44 @@ describe('the detectors themselves', () => {
     const prose = ' * ⚠️ `MarketplaceChannel` is NOT here, and must not come back (#815).';
     expect(declaresMarketplaceChannel(prose)).toBe(false);
     expect(hasMarketplaceRegistry(prose)).toBe(false);
-    expect(
-      advertisesMarketplaceKind("  kinds: ReadonlyArray<'tax' | 'invoice' | 'payment'>;"),
-    ).toBe(false);
     expect(reExportsMarketplace("export * from './money';")).toBe(false);
     const paymentProse = ' * ⚠️ `PaymentGateway` was deleted in #1429 and must not come back.';
     expect(declaresPaymentGateway(paymentProse)).toBe(false);
     expect(hasPaymentRegistry(paymentProse)).toBe(false);
     expect(hasGatewayFactory(paymentProse)).toBe(false);
-    // The surviving contracts must NOT trip the payment detector.
-    expect(declaresPaymentGateway('export interface InvoiceProvider { id: string }')).toBe(false);
-    expect(advertisesPaymentKind("  kinds: ReadonlyArray<'tax' | 'invoice'>;")).toBe(false);
     expect(reExportsMarketplaceChannelSymbol(prose)).toBe(false);
-    expect(
-      reExportsMarketplaceChannelSymbol(
-        "export type { TaxProvider, InvoiceProvider } from '@delfrance/core/plugins';",
-      ),
-    ).toBe(false);
+    // #1444 — the same prose tolerance, on the contracts this file now also guards.
+    const pluginProse =
+      ' * ⚠️ `TaxProvider` / `InvoiceProvider` were deleted in #1444, with `PluginRegistry`.';
+    expect(declaresPluginContract(pluginProse)).toBe(false);
+    expect(hasPluginRegistry(pluginProse)).toBe(false);
+    expect(declaresNFeProviderFactory(' * the throwing `createNFeProvider()` stub')).toBe(false);
+    expect(reExportsPlugins("export * from './money';")).toBe(false);
+    // The removed contracts must not trip EACH OTHER's detectors — these three
+    // ran against the same file, so a regex that over-matched would have been
+    // read as the wrong invariant failing.
+    expect(declaresPaymentGateway('export interface InvoiceProvider { id: string }')).toBe(false);
+    expect(declaresPluginContract('export interface PaymentGateway { id: string }')).toBe(false);
+    expect(declaresMarketplaceChannel('export interface TaxProvider { id: string }')).toBe(false);
   });
 });
 
 /* -------------------------------------------------------------------------- */
 
 describe('MarketplaceChannel stays deleted (#815)', () => {
-  it('packages/core/src/plugins declares no MarketplaceChannel', () => {
-    expect(declaresMarketplaceChannel(read(CORE_PLUGINS))).toBe(false);
-  });
-
-  it('PluginRegistry has no marketplace kind', () => {
-    expect(hasMarketplaceRegistry(read(CORE_PLUGINS))).toBe(false);
-  });
-
-  it('the plugin SDK advertises no marketplace plugin kind', () => {
-    const src = read(SDK_INDEX);
-    expect(advertisesMarketplaceKind(src)).toBe(false);
-    expect(declaresMarketplaceChannel(src)).toBe(false);
-    // ⚠️ The SDK can bring the name back WITHOUT declaring it: a one-line
-    // `export type { MarketplaceChannel } from '@delfrance/core/marketplace';`
-    // re-advertises the contract to every third-party plugin author.
-    expect(reExportsMarketplaceChannelSymbol(src)).toBe(false);
-  });
-
-  it('the marketplace MODEL module declares no MarketplaceChannel either', () => {
-    // The file whose own header forbids exactly this. See MARKETPLACE_MODEL above.
-    const src = read(MARKETPLACE_MODEL);
-    expect(declaresMarketplaceChannel(src)).toBe(false);
-    expect(reExportsMarketplaceChannelSymbol(src)).toBe(false);
-    expect(hasMarketplaceRegistry(src)).toBe(false);
+  it('nothing under packages/core/src declares one, or registers one', () => {
+    for (const [file, src] of coreSrcFiles()) {
+      expect(declaresMarketplaceChannel(src), `${file} declares MarketplaceChannel`).toBe(false);
+      expect(reExportsMarketplaceChannelSymbol(src), `${file} re-exports MarketplaceChannel`).toBe(
+        false,
+      );
+      expect(hasMarketplaceRegistry(src), `${file} registers a marketplace plugin`).toBe(false);
+    }
   });
 
   it('is reading the model module it thinks it is', () => {
     // Vacuity guard: `read` throws on a missing path, but a moved-and-emptied
-    // file would make the three assertions above pass for the wrong reason.
+    // file would make the assertions above pass for the wrong reason.
     expect(read(MARKETPLACE_MODEL)).toMatch(/export interface ChannelContext/);
   });
 
@@ -213,7 +266,11 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
 
   it('is reading the barrel it thinks it is', () => {
     // Guards the assertion above from passing because the file moved or emptied.
-    expect(read(CORE_BARREL)).toMatch(/export \* from '\.\/plugins';/);
+    //
+    // ⚠️ This anchor used to be `export * from './plugins';` — which #1444 then
+    // deleted, reddening a test that is not about plugins. Anchored on `./money`
+    // now: the oldest, most-imported subpath in the package.
+    expect(read(CORE_BARREL)).toMatch(/export \* from '\.\/money';/);
   });
 
   it('the four remaining throw-only channel scaffolds stay deleted', () => {
@@ -274,21 +331,11 @@ describe('MarketplaceChannel stays deleted (#815)', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('PaymentGateway stays deleted (#1429)', () => {
-  it('packages/core/src/plugins declares no PaymentGateway', () => {
-    expect(declaresPaymentGateway(read(CORE_PLUGINS))).toBe(false);
-  });
-
-  it('PluginRegistry has no payment kind', () => {
-    expect(hasPaymentRegistry(read(CORE_PLUGINS))).toBe(false);
-  });
-
-  it('the plugin SDK neither declares, re-exports nor advertises it', () => {
-    const src = read(SDK_INDEX);
-    expect(declaresPaymentGateway(src)).toBe(false);
-    expect(advertisesPaymentKind(src)).toBe(false);
-    // A re-export brings the name back without declaring it — the hole review
-    // caught for MarketplaceChannel in #1423.
-    expect(/^\s*(?:export|import)\s+(?:type\s+)?\{[^}]*\bPaymentGateway\b/m.test(src)).toBe(false);
+  it('nothing under packages/core/src declares one, or registers one', () => {
+    for (const [file, src] of coreSrcFiles()) {
+      expect(declaresPaymentGateway(src), `${file} declares PaymentGateway`).toBe(false);
+      expect(hasPaymentRegistry(src), `${file} registers a payment gateway`).toBe(false);
+    }
   });
 
   it('the Mercado Pago package exposes no gateway factory', () => {
@@ -323,6 +370,71 @@ describe('PaymentGateway stays deleted (#1429)', () => {
     expect(src).toMatch(/#1429/);
     expect(src).toMatch(/apps\/<provider>/);
     expect(src).toMatch(/PAGAMENTO_TIPO_CAPS/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe('the plugin system itself stays deleted (#1444)', () => {
+  it('packages/core/src/plugins does not exist', () => {
+    expect(
+      existsSync(resolve(repoRoot, CORE_PLUGINS_ENTRY)),
+      'the plugin contracts came back — see #1444',
+    ).toBe(false);
+  });
+
+  it('the @delfrance/plugin-sdk package does not exist', () => {
+    // Keyed on the manifest, for the `node_modules/` reason spelled out above.
+    expect(
+      existsSync(resolve(repoRoot, SDK_MANIFEST)),
+      'the plugin SDK came back — see #1444',
+    ).toBe(false);
+  });
+
+  it('nothing under packages/core/src declares a contract or a registry', () => {
+    // ⚠️ The two `existsSync` checks above only cover the paths those files USED
+    // to sit at. This is what stops the same three declarations reappearing one
+    // directory over, which is the cheaper mistake to make.
+    for (const [file, src] of coreSrcFiles()) {
+      expect(declaresPluginContract(src), `${file} declares TaxProvider/InvoiceProvider`).toBe(
+        false,
+      );
+      expect(hasPluginRegistry(src), `${file} declares or feeds a PluginRegistry`).toBe(false);
+    }
+  });
+
+  it('the core ROOT barrel does not re-export a ./plugins subpath', () => {
+    // It did, for the whole life of the contracts — which put `PluginRegistry`
+    // and `PluginNotRegisteredError`, both runtime CLASSES, into every browser
+    // bundle that imports bare `@delfrance/core`. `apps/web` is one.
+    expect(reExportsPlugins(read(CORE_BARREL))).toBe(false);
+  });
+
+  it('the core package.json advertises no ./plugins subpath', () => {
+    expect(read('packages/core/package.json')).not.toMatch(/"\.\/plugins"/);
+  });
+
+  it('the NF-e barrel does not re-create the dead InvoiceProvider adapter', () => {
+    // `createNFeProvider` was the ONLY implementation either contract ever had,
+    // and it had zero callers. Worse than a dead stub: it compiled, it ran, and
+    // it sat on a live package's public `.` entry looking supported, while every
+    // real caller goes through `createNFeHttpClient` on the `./http-provider`
+    // subpath (which `apps/web`'s no-restricted-imports rule pins it to).
+    const src = read(NFE_BARREL);
+    expect(declaresNFeProviderFactory(src)).toBe(false);
+    expect(declaresPluginContract(src)).toBe(false);
+  });
+
+  it('is reading the NF-e barrel it thinks it is', () => {
+    // Vacuity guard: an emptied or moved barrel would pass the assertion above
+    // without reading a line of the real surface.
+    expect(read(NFE_BARREL)).toMatch(/createNFeHttpClient/);
+  });
+
+  it('reads a non-empty packages/core/src (guards every scan above)', () => {
+    // The three `coreSrcFiles()` loops in this file iterate — a wrongly-rooted or
+    // empty directory makes all of them pass without reading anything.
+    expect(coreSrcFiles().length, 'no packages/core/src files were read').toBeGreaterThan(0);
   });
 });
 

@@ -10,17 +10,13 @@
  * What it demonstrates:
  * 1. Schemas — parse + validate.
  * 2. Money / Address / Documents primitives.
- * 3. PluginRegistry — register a TaxProvider via the public plugin SDK
- *    and query it.
- * 4. Permission helpers — check claim against required bit.
+ * 3. Permission helpers — check claim against required bit.
  */
 
-import { PluginRegistry, type TaxProvider } from '@delfrance/core/plugins';
 import { format, money, add, formatReais } from '@delfrance/core/money';
 import { brDocumentProvider } from '@delfrance/core/documents';
 import { clienteSchema, produtoSchema, pedidoSchema, pedidoTotal } from '@delfrance/schemas';
 import { PERM, hasPerm } from '@delfrance/auth';
-import demoPlugin from './customPlugin';
 
 function section(label: string) {
   console.log(`\n=== ${label} ===`);
@@ -50,7 +46,7 @@ async function main() {
 
   const pedido = pedidoSchema.parse({
     estado: 'pago',
-    integracaoPedidoOuterRef: { uid: 'integracao/balcao' },
+    integracaoPedidoOuterRef: 'documents/integracao/balcao',
     numero: 'D-001',
     itens: {
       [produto.sku!]: [
@@ -72,21 +68,7 @@ async function main() {
   const b = money(750); // R$ 7,50
   console.log('add:', format(add(a, b)));
 
-  section('3. Plugin registry');
-  const registry = new PluginRegistry();
-  demoPlugin.register({
-    register: (impl) => registry.registerTax(impl as TaxProvider),
-  });
-  const tax = registry.tax('demo-flat-tax');
-  const r = tax.calculate({
-    items: [{ amount: 10000 }, { amount: 5000 }], // 100,00 + 50,00 (cents)
-  });
-  console.log(
-    'tax breakdown:',
-    r.breakdown.map((b) => `${b.name}: ${format(money(b.amount))}`).join(', '),
-  );
-
-  section('4. Permission claim check');
+  section('3. Permission claim check');
   const granted = (PERM.cliente.read | PERM.cliente.write).toString();
   console.log('can read cliente?', hasPerm(granted, PERM.cliente.read));
   console.log('can delete cliente?', hasPerm(granted, PERM.cliente.delete));

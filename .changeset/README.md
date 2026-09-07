@@ -4,7 +4,7 @@ This folder holds [changesets](https://github.com/changesets/changesets) — fil
 
 ## When to add a changeset
 
-Whenever a PR changes a publishable package (`packages/schemas`, `packages/data`, `packages/auth`, `packages/core`, `packages/ui`, `packages/plugin-sdk`, anything under `packages/integrations/*`), run:
+Whenever a PR changes a publishable package (`packages/schemas`, `packages/data`, `packages/auth`, `packages/core`, `packages/ui`, anything under `packages/integrations/*`), run:
 
 ```bash
 pnpm changeset
