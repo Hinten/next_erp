@@ -7,6 +7,7 @@ import {
   classifyCStat,
   type consultarLote,
   type consultarSituacaoNFe,
+  extrairTotaisNFe,
   isEstadoFinalNFe,
   nextConsultaDelayMs,
   outcomeFromInfProt,
@@ -22,6 +23,7 @@ import {
   ESTADO_NFE,
   type EnviNFeMsg,
   type EstadoNFe,
+  type NFeTotais,
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
@@ -197,8 +199,20 @@ export function markAsLost(patch: NFeStatePatch, reason: string): NFeStatePatch 
 export function swapAnchorForProc(nfeProcXml: string): {
   xml_nfe_proc: string;
   xml_assinado: null;
+  totais?: NFeTotais;
 } {
-  return { xml_nfe_proc: nfeProcXml, xml_assinado: null };
+  // `totais` rides this same write on purpose (#1491): it is a pure function of
+  // the very bytes being persisted, so there is no window in which the XML and
+  // the numbers derived from it can disagree, and no second writer to race
+  // (root `CLAUDE.md` rule 7 — class A, self-contained).
+  //
+  // ⚠️ OMITTED, never `null`, when the parse fails. A merge patch that carries
+  // the key would overwrite a good stored block with `null`; omitting it leaves
+  // whatever is there untouched. The monthly apuração counts unreadable notes
+  // via `exists('totais.vNF')` and refuses to publish a rate while any exist,
+  // so an absent block is a loud state rather than a silent zero.
+  const totais = extrairTotaisNFe(nfeProcXml);
+  return { xml_nfe_proc: nfeProcXml, xml_assinado: null, ...(totais != null ? { totais } : {}) };
 }
 
 /**

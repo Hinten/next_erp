@@ -315,6 +315,7 @@ export {
   NFeRuntimeNotReadyError,
   NFeServerError,
   createNFeHttpClient,
+  extrairTotaisNFe,
   type NFeCartaCorrecaoResult,
   type NFeConsultaCadastroInfCad,
   type NFeConsultaCadastroResult,

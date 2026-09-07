@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 import { microsSinceEpoch, millisSinceEpoch } from './shared/datetime';
+import { finNFeOperacaoSchema, tipoNFeSchema } from './operacao';
 
 // Mirror `PERM.nfe` from @delfrance/auth.
 const PERM_NFE_READ = 1n << 32n;
@@ -83,6 +84,59 @@ export function isEstadoFinalNFe(estado: EstadoNFe | null | undefined): boolean 
 export const CHAVE_NFE_REGEX = /^\d{44}$/;
 
 /**
+ * `<ICMSTot>` totals lifted out of the authorized XML into modeled numeric
+ * fields, plus the two `<ide>` codes that decide whether a note is revenue at
+ * all.
+ *
+ * **Why this exists.** `xml_nfe_proc` is a string, and no Firestore aggregation
+ * can parse it — that is the whole finding of #1491, and why `pedido.impostos`
+ * was retired in #1151 rather than kept. Persisting the totals is what turns
+ * "sum the last 12 months of faturamento" from a full download of every NF-e
+ * XML (which is what `apps/web/lib/nfe/export/buildCsvReport.ts` does today)
+ * into an index-covered aggregate.
+ *
+ * **Components, not just `vNF`.** `vNF` is *not* receita bruta: ICMS-ST and IPI
+ * are excluded from it by LC 123 art. 3º §1º, and `vDesc` covers unconditional
+ * discounts, which are also excluded. Storing the parts costs the same single
+ * write and means the receita-bruta definition can be refined without a second
+ * migration over the whole corpus. ⚠️ No such reduction is written yet — this
+ * block is deliberately a faithful copy of the document, never an
+ * interpretation of it, and whichever components count as receita bruta is a
+ * decision for the apuração that consumes them.
+ *
+ * ⚠️ **All-or-nothing on purpose.** Every component is required once the block
+ * is present, because the monthly apuração asks Firestore for
+ * `exists('totais.vNF')` to count notes it could NOT read. A partially
+ * populated block would answer that question wrongly, and `sum()` skips missing
+ * fields **silently** — which would understate RBT12, drop the company into a
+ * lower faixa, and under-declare tax with every job still reporting success.
+ */
+export const nfeTotaisSchema = z.object({
+  /** `<vProd>` — soma dos produtos, antes de desconto/frete/ST. */
+  vProd: z.number(),
+  /** `<vDesc>` — descontos incondicionais; NÃO integram a receita bruta. */
+  vDesc: z.number(),
+  /** `<vST>` — ICMS-ST retido; NÃO integra a receita bruta. */
+  vST: z.number(),
+  /** `<vIPI>` — IPI; NÃO integra a receita bruta. */
+  vIPI: z.number(),
+  /** `<vFrete>` — frete cobrado do destinatário; integra o preço da operação. */
+  vFrete: z.number(),
+  /** `<vSeg>` — seguro cobrado do destinatário; integra o preço da operação. */
+  vSeg: z.number(),
+  /** `<vOutro>` — outras despesas acessórias; integram o preço da operação. */
+  vOutro: z.number(),
+  /** `<vNF>` — valor total da nota, como impresso no DANFE. */
+  vNF: z.number(),
+  /** `<tpNF>` (B11) — 0 entrada, 1 saída. Uma entrada SUBTRAI do faturamento. */
+  tpNF: tipoNFeSchema,
+  /** `<finNFe>` (B25) — 1 normal, 2 complementar, 3 ajuste, 4 devolução. */
+  finNFe: finNFeOperacaoSchema,
+});
+
+export type NFeTotais = z.infer<typeof nfeTotaisSchema>;
+
+/**
  * NotaFiscalEletronica — documento fiscal eletrônico. Subcoleção de Pedido
  * (`pedidos/{pedidoId}/nfev4` — wire name original do Flutter). Read-only na
  * UI Next; emissão fica no `apps/integrations`/Cloud Functions (Phase 5).
@@ -150,6 +204,17 @@ export const nfeSchema = z.object({
   data_autorizacao: millisSinceEpoch().nullable().default(null),
   dataContingencia: millisSinceEpoch().nullable().default(null),
   justificativaContingencia: z.string().min(15).max(255).nullable(),
+
+  /**
+   * Totais do `<ICMSTot>` — ver {@link nfeTotaisSchema}. Escrito no MESMO write
+   * que persiste `xml_nfe_proc`, derivado desses próprios bytes. `null` em
+   * documentos anteriores ao #1491 até a migração `2026-09-nfe-totais` rodar.
+   *
+   * A alíquota e o imposto rateado NÃO moram aqui ainda: os campos chegam
+   * junto do runner que os escreve, e não antes. Um campo que nada escreve é
+   * exatamente o que o #1151 acabou de remover deste repositório.
+   */
+  totais: nfeTotaisSchema.nullable().default(null),
 
   error: z.string().nullable(),
   ultima_modificacao: millisSinceEpoch().nullable().default(null),
