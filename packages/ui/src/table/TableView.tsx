@@ -202,19 +202,6 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * `<Button component={Link} href="/x/novo">` instance.
    */
   renderNewButton?: () => ReactNode;
-  /**
-   * @deprecated CURRENTLY IGNORED — nothing in `TableView` reads this.
-   *
-   * Row navigation is `router.push(rowHref(...))`, so there is no link element
-   * to wrap and no "plain `<a>`" default (which this docstring used to claim).
-   * `ComunicacoesNfeScreen.tsx` passes one and it has never had any effect.
-   *
-   * Kept declared rather than deleted because removing a public prop a caller
-   * passes is a behaviour change, not a lint cleanup: #1445 only removed the
-   * dead destructure, which left this declaration as the sole trace. Marked so
-   * it does not read as a working API until it is either implemented or removed.
-   */
-  renderRowLink?: (href: string, content: ReactNode) => ReactNode;
 
   /**
    * Collection metadata — pass the schema's `<x>Meta`. Its `defaultQuery`

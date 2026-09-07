@@ -13,8 +13,6 @@
  * replaced by a Skeleton while resolving).
  */
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
-import type { Route } from 'next';
 import { Alert, Badge, Code, Group, Paper, Skeleton, Stack } from '@mantine/core';
 import { skipToken, useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
@@ -180,7 +178,6 @@ export function ComunicacoesNfeScreen() {
           orderBy={{ field: 'timestamp', direction: 'desc' }}
           fields={FIELDS}
           rowHref={(id) => `/nfe/comunicacoes/${filialId}/${id}`}
-          renderRowLink={(href, content) => <Link href={href as Route}>{content}</Link>}
           selectable
           actions={[verificarAction]}
         />
