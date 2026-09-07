@@ -65,10 +65,13 @@ never read the other, so an authorization about to lapse looked identical to a
 healthy conta until the day everything stopped. `conta` therefore answers
 `connected: true` on a stale stored access token — and normally with `loja`
 populated too, because the shop read goes through the token store and renews the
-pair on its way in. `loja` degrades to `null` only when the renewal could not
-happen: another instance holds the lease, or the grant itself is dead — and that
-second case is reported as `credencial.renovacaoFalhou`, never as a 4xx, because
-a 4xx would throw away the very clocks this route read WITHOUT a token.
+pair on its way in. `loja` degrades to `null` whenever `get_shop_info`
+could not be read AT ALL: another instance holds the renewal lease, the grant
+itself is dead, or the shop call simply failed (a Shopee error envelope, edge
+HTML under the IP whitelist, a network drop, an unparseable body). ⚠️ So a null
+`loja` does NOT imply a renewal problem — only `credencial.renovacaoFalhou` says
+that, and a dead grant is reported through it rather than as a 4xx, because a 4xx
+would throw away the very clocks this route read WITHOUT a token.
 
 ## Token refresh (`lib/shopee/core/tokenStore.ts`, step 2)
 

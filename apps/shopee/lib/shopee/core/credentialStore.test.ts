@@ -10,6 +10,7 @@ import {
   createShopeeCredentialStore,
   credentialFromTokenPair,
   expiryOf,
+  falhaRefreshOf,
   leaseOf,
   refreshTokenOf,
 } from './credentialStore';
@@ -153,6 +154,41 @@ describe('the tolerant readers', () => {
     expect(leaseOf({ refreshLeaseOwner: 7, refreshLeaseExpiraEm: 1_000 })).toBeNull();
     expect(leaseOf({ refreshLeaseOwner: '', refreshLeaseExpiraEm: 1_000 })).toBeNull();
     expect(leaseOf({ refreshLeaseOwner: null, refreshLeaseExpiraEm: null })).toBeNull();
+  });
+
+  it('reads a well-formed failure stamp', () => {
+    expect(
+      falhaRefreshOf({
+        ultimaFalhaRefresh: { em: 1_000, codigo: 'refresh_token_expired', terminal: true },
+      }),
+    ).toEqual({ em: 1_000, codigo: 'refresh_token_expired', terminal: true });
+  });
+
+  it('keeps a NON-terminal stamp rather than folding it into "no stamp"', () => {
+    // The two are different facts: a transient failure was recorded, and the
+    // caller is the one that decides only `terminal` drives the red copy.
+    expect(
+      falhaRefreshOf({
+        ultimaFalhaRefresh: { em: 1_000, codigo: 'error_rate_limit', terminal: false },
+      }),
+    ).toEqual({ em: 1_000, codigo: 'error_rate_limit', terminal: false });
+  });
+
+  it.each([
+    ['the STRING "true"', { em: 1_000, codigo: 'refresh_token_expired', terminal: 'true' }],
+    ['the NUMBER 1', { em: 1_000, codigo: 'refresh_token_expired', terminal: 1 }],
+    ['a non-finite `em`', { em: Number.NaN, codigo: 'refresh_token_expired', terminal: true }],
+    ['a string `em`', { em: '1000', codigo: 'refresh_token_expired', terminal: true }],
+    ['a numeric `codigo`', { em: 1_000, codigo: 7, terminal: true }],
+    ['a stamp that is not a map at all', 'refresh_token_expired'],
+    ['an array', [1, 2]],
+    ['no stamp', null],
+    ['no key', undefined],
+  ])('NEAR MISS — reads %s as NO failure', (_caso, ultimaFalhaRefresh) => {
+    // The wrong-way default: telling an operator to reconnect a healthy conta
+    // costs a re-consent, and `parseRead` is soft enough for any of these to
+    // arrive.
+    expect(falhaRefreshOf({ ultimaFalhaRefresh })).toBeNull();
   });
 });
 

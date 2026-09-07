@@ -13,8 +13,10 @@
  *    detail, and one the operator is not asked to act on: the store renews it on
  *    the next call that needs it. `expirada` therefore reads "the stored token
  *    was stale when this answer was computed and the renewal did not produce a
- *    live one"; `renovacaoFalhou` adds "and it will not, until someone
- *    reconnects".
+ *    live one". `renovacaoFalhou` is INDEPENDENT of it rather than an increment
+ *    on top: the refresh runs inside the 60 s skew, so a terminal refusal is
+ *    stamped while the stored token is still nominally alive, and what it says
+ *    is "no further call will fix this, until someone reconnects".
  *
  * The legacy app rendered "Conectado" from the 4-hour one and never read the
  * other, so an authorization about to lapse looked identical to a healthy conta

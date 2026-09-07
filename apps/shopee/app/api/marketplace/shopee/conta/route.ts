@@ -43,6 +43,7 @@ import {
   type CredencialArmazenada,
   ShopeeCredencialInvalidaError,
   expiryOf,
+  falhaRefreshOf,
 } from '@/lib/shopee/core/credentialStore';
 import { isShopeeError, shopeeErrorResponse } from '@/lib/shopee/core/respond';
 import {
@@ -66,24 +67,19 @@ type CredencialWire = NonNullable<ShopeeContaStatus['credencial']>;
 /**
  * The second clock, as the panel renders it.
  *
- * `expiryOf` lives in `core/credentialStore.ts` with the document shape it
- * tolerates; only the terminal-failure stamp is read here, because this route is
- * its one reader.
- *
- * ⚠️ `parseRead` is SOFT — it logs and returns the RAW document on a schema
- * mismatch (migration tolerance, rule 8) — and `ultimaFalhaRefresh` is an
- * unmodelled `.passthrough()` key on top of that, so nothing about its shape may
- * be assumed. Anything that is not literally `terminal === true` reads as "no
- * terminal failure": the wrong-way default here would tell an operator to
- * reconnect a perfectly healthy conta.
+ * ⚠️ Both readers live in `core/credentialStore.ts`, with the document shape
+ * they tolerate — `parseRead` is SOFT (it logs and returns the RAW document on a
+ * schema mismatch, migration tolerance, rule 8) and `ultimaFalhaRefresh` is an
+ * unmodelled `.passthrough()` key on top of that, so no shape may be assumed
+ * here. This route only turns those two readings into the wire fields; a stamp
+ * `falhaRefreshOf` refuses reads as "no terminal failure", which is the
+ * wrong-way default that matters — the other one tells an operator to reconnect
+ * a perfectly healthy conta. Step 3's sweep reads the same key, and it reads it
+ * through the same function.
  */
 function credencialDe(cred: CredencialArmazenada, nowMs: number): CredencialWire {
   const expiraEm = expiryOf(cred);
-  const falha: unknown = cred.ultimaFalhaRefresh;
-  const renovacaoFalhou =
-    typeof falha === 'object' &&
-    falha !== null &&
-    (falha as Record<string, unknown>).terminal === true;
+  const renovacaoFalhou = falhaRefreshOf(cred)?.terminal === true;
   return {
     expiraEm: expiraEm ?? 0,
     expirada: expiraEm === null || expiraEm <= nowMs,

@@ -112,6 +112,20 @@ export interface RefreshLease {
 }
 
 /**
+ * The terminal-failure stamp the token store's release path writes.
+ *
+ * Distinct from `tokenStore`'s own `FalhaRefresh`, which is a VERDICT about a
+ * failure just classified and carries no clock: this is what came back off the
+ * document, stamp time included.
+ */
+export interface FalhaRefreshArmazenada {
+  /** Milliseconds — when the failure was stamped. */
+  readonly em: number;
+  readonly codigo: string;
+  readonly terminal: boolean;
+}
+
+/**
  * A stored expiry a clock can actually be compared against, or `null`.
  *
  * An uncomparable value is treated as EXPIRED rather than as "fresh enough": a
@@ -159,6 +173,31 @@ export function leaseOf(cred: CredencialArmazenada): RefreshLease | null {
   if (typeof owner !== 'string' || owner.length === 0) return null;
   if (typeof expiraEm !== 'number' || !Number.isFinite(expiraEm)) return null;
   return { owner, expiraEm };
+}
+
+/**
+ * The last refresh failure stamped on this document, or `null` when there is
+ * none this reader is prepared to believe.
+ *
+ * ⚠️ Tolerant like every reader above, and stricter than the one field its
+ * caller acts on: a stamp that is not a map, or whose `em` / `codigo` /
+ * `terminal` is not the type written here, reads as NO failure at all. That
+ * direction is chosen, not incidental — `terminal: true` is what tells an
+ * operator to re-consent, so the cost of believing a malformed stamp is a
+ * re-consent nobody needed, while the cost of ignoring one is a single further
+ * failed call that stamps it again properly.
+ *
+ * ⚠️ The stamp is an unmodelled `.passthrough()` key behind a SOFT `parseRead`,
+ * so no shape is guaranteed even for a document this app itself wrote.
+ */
+export function falhaRefreshOf(cred: CredencialArmazenada): FalhaRefreshArmazenada | null {
+  const raw = cred.ultimaFalhaRefresh;
+  if (typeof raw !== 'object' || raw === null) return null;
+  const { em, codigo, terminal } = raw as Record<string, unknown>;
+  if (typeof em !== 'number' || !Number.isFinite(em)) return null;
+  if (typeof codigo !== 'string') return null;
+  if (typeof terminal !== 'boolean') return null;
+  return { em, codigo, terminal };
 }
 
 /**

@@ -197,10 +197,13 @@ export type ReleaseOutcome =
   | { readonly kind: 'adotado'; readonly accessToken: string };
 
 /**
- * A refresh failure, reduced to what may be persisted.
+ * A refresh failure, classified. Only the TERMINAL ones are ever persisted.
  *
- * ⚠️ `codigo` is Shopee's own `error` string (or one of the two synthetic codes
- * below), and NEVER a token, a token fragment or a response body.
+ * ⚠️ `codigo` is Shopee's own `error` string, or one of the FOUR synthetic codes
+ * `classificarFalha` mints — `schema_invalido`, `network`, `http` and
+ * {@link CODIGO_CREDENCIAL_INVALIDA} — and NEVER a token, a token fragment or a
+ * response body. All four synthetics are non-terminal, so the only code that
+ * reaches `ultimaFalhaRefresh` today is Shopee's own.
  */
 export interface FalhaRefresh {
   readonly codigo: string;
@@ -314,10 +317,14 @@ export function createShopeeTokenStore(
      * stored `refresh_token` is compared against the one we spent.
      */
     async commit(owner, refreshTokenGasto, pair, nowMs) {
-      // ⚠️ Built BEFORE the transaction opens, both variants. A blank
-      // `refresh_token` from Shopee therefore fails HERE — on the release path,
-      // where the lease is handed back — instead of throwing inside the callback
-      // with the lease still held for its full TTL.
+      // ⚠️ Built BEFORE the transaction opens, both variants. ANY rejection of
+      // the pair by the credential schema therefore fails HERE — on the release
+      // path, where the lease is handed back — instead of throwing inside the
+      // callback with the lease still held for its full TTL. ⚠️ A blank
+      // `refresh_token` is NOT the example: `shopeeRefreshResponseSchema`
+      // declares both tokens `.min(1)`, so the package rejects one before
+      // `commit` is ever reached. What can still land here is a pathological
+      // `expire_in` whose `expirationDate` falls outside `millisSinceEpoch`.
       const campos = {
         access_token: pair.accessToken,
         refresh_token: pair.refreshToken,
@@ -425,7 +432,11 @@ export function createShopeeTokenStore(
         const lease = leaseOf(stored);
         const nossa = lease !== null && lease.owner === owner;
 
-        if (!nossa) return { kind: 'liberado' };
+        // ⚠️ The token comparison runs FIRST, before the ownership test below. A
+        // newer pair on disk is a fact about the conta whoever holds the lease:
+        // our lease may have lapsed and been re-taken by the very instance that
+        // wrote that pair, and answering `liberado` there would rethrow the
+        // provider failure over a perfectly good token.
         if (refreshTokenOf(stored) !== refreshTokenGasto) {
           if (nossa) {
             tx.update(docRef(), credenciaisIntegracaoCollection.parseMerge({ ...LEASE_LIMPO }));
@@ -497,11 +508,18 @@ export interface GetOrRefreshOpts {
  * own classes (root CLAUDE.md rule 6 — `instanceof Error` would not count).
  *
  * `null` means "not a Shopee failure we can classify": the lease is still
- * released, nothing is stamped, and the original error is rethrown untouched.
+ * released and nothing is stamped. The original error is then rethrown untouched
+ * — on the `liberado` arm ONLY. The adoption arm returns the newer stored token
+ * instead, and it does so for a classified failure just the same: adoption is
+ * decided from what is on disk, never from the error class.
  *
- * ⚠️ Most-derived FIRST. `ShopeeReauthRequiredError` and `ShopeeRateLimitError`
- * both extend `ShopeeApiError`, so testing the base first would stamp a rate
- * limit as terminal and disconnect a healthy conta.
+ * ⚠️ Most-derived FIRST. `ShopeeReauthRequiredError` extends `ShopeeApiError`,
+ * and it is the only arm in this function that answers `terminal: true`, so
+ * testing the base first would classify a DEAD GRANT as non-terminal: nothing
+ * would ever be stamped and the panel would never ask for a re-consent.
+ * `ShopeeRateLimitError` extends the base too and answers exactly what the base
+ * arm answers today — it is spelled out so that narrowing `ShopeeApiError` one
+ * day cannot take a rate limit terminal with it.
  */
 function classificarFalha(err: unknown): FalhaRefresh | null {
   if (err instanceof ShopeeReauthRequiredError) return { codigo: err.code, terminal: true };
@@ -511,7 +529,8 @@ function classificarFalha(err: unknown): FalhaRefresh | null {
   if (err instanceof ShopeeNetworkError) return { codigo: 'network', terminal: false };
   if (err instanceof ShopeeHttpError) return { codigo: 'http', terminal: false };
   // Raised by the pre-transaction patch build when Shopee's pair does not
-  // satisfy the credential schema (a blank `refresh_token`, above all).
+  // satisfy the credential schema — a pathological `expire_in`, never a blank
+  // token: the package rejects those one surface earlier (see `commit`).
   if (err instanceof z.ZodError) return { codigo: CODIGO_CREDENCIAL_INVALIDA, terminal: false };
   return null;
 }
@@ -528,12 +547,16 @@ function classificarFalha(err: unknown): FalhaRefresh | null {
  *     whether the operation is worth repeating.
  *  2. **The pair is stored BEFORE the token is returned.** A token handed to a
  *     caller that nobody could refresh afterwards is the legacy defect.
- *  3. **The lease is released on every exit**, including the throwing ones.
+ *  3. **A lease that is still OURS is released on every exit**, including the
+ *     throwing ones. One another instance has already taken over is left
+ *     standing: it is that instance's to release.
  *
  * Throws {@link ShopeeSemCredencialError} (409, reconnect),
  * {@link ShopeeRefreshEmAndamentoError} (503, retry shortly),
  * `ShopeeCredencialInvalidaError` (502, Shopee's pair did not validate), or the
- * ORIGINAL provider error instance for anything else.
+ * ORIGINAL provider error instance for anything else — unless a NEWER pair
+ * landed on the document while we failed, in which case the failure is dropped
+ * and that stored token is returned instead, whatever the error class.
  */
 export async function getOrRefreshAccessToken(
   deps: ShopeeTokenDeps,

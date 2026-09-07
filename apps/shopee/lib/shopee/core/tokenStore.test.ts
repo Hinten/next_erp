@@ -3,8 +3,9 @@
  *
  *  1. **The three transactions** against a `FakeDb` wired to the shared
  *     `OccEngine` (`@delfrance/data/testing`), with the REAL collection handle —
- *     so `credenciaisIntegracaoSchema` actually runs on every patch and a blank
- *     `refresh_token` fails here exactly as it would in production.
+ *     so `credenciaisIntegracaoSchema` actually runs on every patch and a pair
+ *     it rejects fails exactly where it would in production: before the
+ *     transaction opens, on the release path.
  *  2. **The flow** end to end over that same fake, with the provider call
  *     injected. This is where "the pair is stored before the token is returned"
  *     and "at most one provider call" are observable.
@@ -227,6 +228,20 @@ describe('acquire — the lease claim (class A)', () => {
     }
   });
 
+  it.each([
+    ['a blank access token', ''],
+    ['a non-string access token', 7],
+  ])('NEAR MISS — a FRESH expiry beside %s is not `fresh`', async (_nome, access_token) => {
+    // The verdict is THREE conjuncts and the token is one of them. `parseRead`
+    // is soft, so a hand-edited document can carry a future `expirationDate`
+    // beside a value nothing can sign with; answering `fresh` there would hand
+    // the caller an unusable token and — the expiry still being fresh — never
+    // refresh again.
+    const db = new FakeDb();
+    db.seed(DOC_PATH, credencial(REFRESH_SKEW_MS + 1, { access_token }));
+    expect(await acquire(db)).toEqual({ kind: 'acquired', refreshToken: 'rt-1' });
+  });
+
   it('acquires the lease and stamps owner + expiry on the document', async () => {
     const db = new FakeDb();
     db.seed(DOC_PATH, credencial(-1));
@@ -431,7 +446,12 @@ describe('commit — persisting the pair (class C)', () => {
     });
   });
 
-  it('refuses a pair Shopee returned without a refresh token, BEFORE opening a transaction', async () => {
+  it('refuses a pair the credential schema rejects, BEFORE opening a transaction', async () => {
+    // ⚠️ A blank `refresh_token` is the cheapest lever at THIS layer (`commit`
+    // takes a `ShopeeTokenPair`, whose token is a bare `string`), not the shape
+    // production sees: `shopeeRefreshResponseSchema` rejects a blank token in
+    // the package, so what reaches this parse is a pathological `expire_in`.
+    // What the test pins is the PLACEMENT, which is the same either way.
     const db = new FakeDb();
     db.seed(DOC_PATH, credencial(-1, { refreshLeaseOwner: 'owner-a', refreshLeaseExpiraEm: T0 }));
 
@@ -532,6 +552,30 @@ describe('releaseOrAdopt — handing the lease back (class C)', () => {
     expect(db.opLog.filter((o) => o.op !== 'get')).toEqual([]);
     expect(db.read(DOC_PATH)).toMatchObject({ refreshLeaseOwner: 'owner-b' });
   });
+
+  it('NEAR MISS — a lease that is NOT ours still ADOPTS a newer pair', async () => {
+    // The pair to the case above, and the reason the token comparison runs
+    // BEFORE the ownership test: our lease lapsed, another instance took it over
+    // and wrote its own pair. That pair is a fact about the conta whoever holds
+    // the lease, so it is adopted and the failure dropped; testing ownership
+    // first would answer `liberado` and rethrow a provider failure over a token
+    // that is perfectly good.
+    const db = new FakeDb();
+    db.seed(DOC_PATH, {
+      ...credencial(REFRESH_SKEW_MS * 10),
+      access_token: 'at-3',
+      refresh_token: 'rt-3',
+      refreshLeaseOwner: 'owner-b',
+      refreshLeaseExpiraEm: T0 + 5_000,
+    });
+
+    expect(await release(db, TERMINAL)).toEqual({ kind: 'adotado', accessToken: 'at-3' });
+    // Not ours: nothing to release, and nothing to stamp either.
+    expect(db.opLog.filter((o) => o.op !== 'get')).toEqual([]);
+    const doc = db.read(DOC_PATH);
+    expect(doc).not.toHaveProperty('ultimaFalhaRefresh');
+    expect(doc).toMatchObject({ refreshLeaseOwner: 'owner-b' });
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -574,6 +618,20 @@ describe('getOrRefreshAccessToken — over the real store', () => {
 
     await expect(correr(db, refresh)).resolves.toBe('at-2');
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('NEAR MISS — a fresh expiry beside an unusable token refreshes, never returns it', async () => {
+    // The fast path shares the freshness verdict with `acquire`. Without the
+    // token conjunct this returns an empty string AND, the stored expiry still
+    // being fresh, never refreshes again: every shop-signed call is rejected for
+    // the rest of that expiry while the panel reports a healthy conta.
+    const db = new FakeDb();
+    db.seed(DOC_PATH, credencial(REFRESH_SKEW_MS + 1, { access_token: '' }));
+    const refresh = provedor();
+
+    await expect(correr(db, refresh)).resolves.toBe('at-2');
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(db.read(DOC_PATH)).toMatchObject({ access_token: 'at-2' });
   });
 
   it('stores the pair BEFORE the token is observable, in one provider call', async () => {
@@ -724,7 +782,40 @@ describe('getOrRefreshAccessToken — over the real store', () => {
     expect(db.read(DOC_PATH)).not.toHaveProperty('ultimaFalhaRefresh');
   });
 
+  it('ADOPTS the pair a fresh CONSENT wrote, which leaves NO lease behind', async () => {
+    // The most reachable shape of the case above: `credentialFromTokenPair`
+    // writes `refreshLeaseOwner: null`, so an operator re-consenting mid-refresh
+    // leaves a newer pair and no lease at all. Deciding on ownership first would
+    // disconnect the conta they have just reconnected.
+    const db = new FakeDb();
+    db.seed(DOC_PATH, credencial(-1));
+    const morto = new ShopeeReauthRequiredError('token de renovação expirado', {
+      code: 'refresh_token_expired',
+      kind: 'reauth',
+      httpStatus: 200,
+      path: '/api/v2/auth/access_token/get',
+    });
+    const refresh = provedor(async () => {
+      db.seed(DOC_PATH, {
+        ...credentialFromTokenPair(
+          { ...PAR_NOVO, accessToken: 'at-3', refreshToken: 'rt-3' },
+          { kind: 'shop', shopId: SHOP_ID },
+          T0,
+        ),
+        expirationDate: T0 + REFRESH_SKEW_MS * 10,
+      });
+      throw morto;
+    });
+
+    await expect(correr(db, refresh)).resolves.toBe('at-3');
+    expect(db.read(DOC_PATH)?.ultimaFalhaRefresh).toBeNull();
+  });
+
   it('turns a pair that fails the credential schema into ShopeeCredencialInvalidaError', async () => {
+    // Same lever, same caveat as the `commit` case above: the package rejects a
+    // blank token before this arm can be reached in production. The property
+    // under test is that a `ZodError` from the patch build hands the lease back
+    // rather than stranding it.
     const db = new FakeDb();
     db.seed(DOC_PATH, credencial(-1));
     const refresh = provedor(async () => ({ ...PAR_NOVO, refreshToken: '' }));

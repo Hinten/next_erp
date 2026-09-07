@@ -50,9 +50,11 @@ export interface ShopeeContext {
    * A live shop-scoped access token, refreshing it when it is about to lapse.
    *
    * ⚠️ Throws `ShopeeContaSemShopIdError` when the stored consent was
-   * main-account-scoped. That is NOT a broken conta — the conta route renders it
-   * as a connected account with no shop — which is why the throw lives here and
-   * never in {@link loadShopeeContext}.
+   * main-account-scoped. That is NOT a broken conta — the conta route's own
+   * `shopId == null` branch answers 200 with `connected: false`, echoing
+   * `mainAccountId` and the credential clock — which is why the throw lives here
+   * and never in {@link loadShopeeContext}, where it would cost every caller the
+   * whole context over a state that renders perfectly well.
    */
   getAccessToken(): Promise<string>;
   /**

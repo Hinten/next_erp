@@ -58,8 +58,9 @@ import { z } from 'zod';
 import { wireInt } from '@delfrance/core/wire';
 
 /**
- * `get_shop_info`'s projection — the SIDE read, absent (`loja: null`) whenever
- * the ~4-hour access token is dead.
+ * `get_shop_info`'s projection — a SIDE read, absent (`loja: null`) whenever the
+ * backend could not make it. A stale stored access token does NOT imply that
+ * absence, and the absence implies nothing about either clock.
  */
 export const shopeeLojaSchema = z.object({
   shopName: z.string().nullable(),
@@ -91,7 +92,7 @@ export const shopeeContaStatusSchema = z.object({
   expireTime: wireInt().nullable(),
   /** Whole days to that lapse, floored by the backend. Ours, hence strict. */
   diasParaExpirar: z.number().int().nullable(),
-  /** `null` while the access token is dead — `get_shop_info` needs a live one. */
+  /** `null` whenever the backend could not read `get_shop_info` at all. */
   loja: shopeeLojaSchema.nullable(),
   /** The OTHER clock. `null` when no credential is stored at all. */
   credencial: z

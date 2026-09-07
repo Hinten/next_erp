@@ -100,10 +100,11 @@ function BadgeStatusLoja({ status }: { status: ShopeeContaStatus['loja'] }) {
  * The access-token line, or nothing.
  *
  * Two states, and the ORDER between them is the point: `renovacaoFalhou` wins
- * over `expirada`, because a conta whose renewal was refused is also expired,
- * and telling that operator "não é preciso fazer nada" is the one wrong thing
- * this panel could say. A live token renders neither line — the panel must not
- * narrate a mechanism that is working.
+ * over `expirada`. It neither implies it nor waits for it — the backend refreshes
+ * inside its skew, so a refusal is stamped while the stored token still has life
+ * left — but when both are true, telling that operator "não é preciso fazer nada"
+ * is the one wrong thing this panel could say. A live token renders neither line:
+ * the panel must not narrate a mechanism that is working.
  */
 function LinhaCredencial({ credencial }: { credencial: ShopeeContaStatus['credencial'] }) {
   if (credencial?.renovacaoFalhou === true) {
