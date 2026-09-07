@@ -76,7 +76,13 @@
  */
 import { FieldPath, type Firestore } from 'firebase-admin/firestore';
 import { roundReais } from '@delfrance/core/money';
-import { type EnvioPrecoFilaItem, type EnvioPrecoSkip, toOuterRef } from '@delfrance/schemas';
+import {
+  ESTADO_PUBLICACAO_ML,
+  type EnvioPrecoFilaItem,
+  type EnvioPrecoSkip,
+  moderacaoRemoveuAnuncio,
+  toOuterRef,
+} from '@delfrance/schemas';
 import {
   produtoCollection,
   produtoMercadoLivreLinkCollection,
@@ -545,6 +551,23 @@ export function buildPrecoDrafts(
       );
       continue;
     }
+    // #1226: ML removed the listing, so its item id is dead. `podeEnviarPreco`
+    // already refuses it at SEND time — but only after the fresh `GET /items`
+    // gate 1 pays for, so planning a draft here costs one ML read per run to
+    // learn what the stored estado already says. Reachable whenever another
+    // listing keeps the produto in the anchor query; a produto whose only
+    // listing was removed leaves `integracoesComProduto` and never gets here.
+    if (link.estado === ESTADO_PUBLICACAO_ML.removidoPorModeracao) {
+      skips.push(
+        skipPlano({
+          itemId,
+          produtoId: row.produtoId,
+          code: 'ANUNCIO_REMOVIDO',
+          linkDocId: link.linkDocId,
+        }),
+      );
+      continue;
+    }
 
     if (link.isUserProductModel !== true || row.children.length === 0) {
       // Legacy always sends the anchor price (uniform family price is all ML
@@ -688,7 +711,12 @@ export function podeEnviarPreco(
 ): PrecoStatusGate {
   if (status === 'active' || status === 'paused') return { ok: true };
   if (status === 'under_review') {
-    return (subStatus ?? []).includes('forbidden')
+    // ⚠️ Through the SHARED predicate, not a local `includes('forbidden')`.
+    // `estadoFromMlStatus` reads the identical pair to decide the terminal
+    // `estado 'rm'` (#1226), and a gate that disagreed with it would refuse a
+    // price on a listing the ERP still calls live, or send one at a listing it
+    // has already written off.
+    return moderacaoRemoveuAnuncio(status, subStatus)
       ? { ok: false, code: 'FORBIDDEN' }
       : { ok: true };
   }

@@ -30,8 +30,28 @@ import { outerRefSchema } from '../../shared/outerRef';
  *    null until the first successful publish).
  */
 
-/** Old `ESTADO_PUBLICACAO` short string codes, 1–2 chars (models.dart 605–695). */
-export const estadoPublicacaoMlSchema = z.enum(['r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E', 'am']);
+/**
+ * Old `ESTADO_PUBLICACAO` short string codes, 1–2 chars (models.dart 605–695),
+ * plus the two this app added for verdicts the legacy app had no word for.
+ *
+ * ⚠️ `'rm'` is OURS, not one of Flutter's (#1226). That is safe rather than a
+ * compatibility risk: root `CLAUDE.md` rule 8 — the two apps never share a
+ * document, so no Flutter reader will ever meet it, and the legacy app is
+ * switched off at the cutover. What survives the window is legacy DATA, and
+ * legacy data simply lacks this code.
+ */
+export const estadoPublicacaoMlSchema = z.enum([
+  'r',
+  'a',
+  'ep',
+  'v',
+  'p',
+  'pa',
+  'c',
+  'E',
+  'am',
+  'rm',
+]);
 export type EstadoPublicacaoMl = z.infer<typeof estadoPublicacaoMlSchema>;
 
 /**
@@ -42,6 +62,22 @@ export type EstadoPublicacaoMl = z.infer<typeof estadoPublicacaoMlSchema>;
  *
  * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
  * Zod enum that has a companion constant like this one.
+ *
+ * ⚠️ **`removidoPorModeracao` is TERMINAL, and it is not `cancelado`** (#1226).
+ * Mercado Livre removed the listing itself — `under_review` + `forbidden`, which
+ * ML's own docs call *"Item desativado pelo Mercado Livre. Substitui o status
+ * Inactive"* and which returns a REASON with no REMEDY. The item id is dead
+ * forever: no edit reactivates it and every `PUT /items/{id}` against it is a
+ * doomed call. `cancelado` means the SELLER closed the listing, and conflating
+ * the two loses the distinction exactly where the operator needs it — "ML
+ * removed this" and "I closed this" call for opposite next steps.
+ *
+ * Written by whatever last read the listing from ML — the `items` status-sync,
+ * publish, "Reverificar anúncio", the stock/price writebacks — all through the
+ * one mapper, `estadoFromMlStatus`, which is why that mapper takes `sub_status`.
+ * Never written speculatively: only ML saying `forbidden` produces it, and only
+ * an operator (never a sweep) acts on it, through the produto's Mercado Livre
+ * tab.
  */
 export const ESTADO_PUBLICACAO_ML = {
   rascunho: 'r',
@@ -53,6 +89,7 @@ export const ESTADO_PUBLICACAO_ML = {
   cancelado: 'c',
   erro: 'E',
   aguardandoMigracao: 'am',
+  removidoPorModeracao: 'rm',
 } as const satisfies Record<string, EstadoPublicacaoMl>;
 
 export const ESTADO_PUBLICACAO_ML_LABELS: Record<EstadoPublicacaoMl, string> = {
@@ -65,6 +102,9 @@ export const ESTADO_PUBLICACAO_ML_LABELS: Record<EstadoPublicacaoMl, string> = {
   c: 'Cancelado',
   E: 'Erro',
   am: 'Aguardando migração',
+  // Names the AUTHOR of the removal, which is the whole point of the code
+  // existing beside `Cancelado`.
+  rm: 'Removido pelo Mercado Livre',
 };
 
 /** One embedded listing attribute (old `AttributesMLNew` wire shape). */
@@ -316,6 +356,50 @@ export function precisaConsultarModeracao(
 ): boolean {
   if (status === 'under_review') return true;
   return (subStatus ?? []).some((s) => MODERATION_SUB_STATUS.has(s));
+}
+
+/**
+ * Has Mercado Livre REMOVED this listing for good? (#1226)
+ *
+ * ⚠️ **`forbidden` alone, and the narrowness is the whole content of this
+ * predicate.** ML's status/substatus table (*Gerenciar moderações*) gives
+ * `under_review` six substatuses and only this one says the listing is gone:
+ * *"Item desativado pelo Mercado Livre. Substitui o status Inactive."* The
+ * others describe a listing ML has not finished with, and every one of them is a
+ * listing an operator can still save —
+ *
+ *  - `waiting_for_patch` — ML names the fix; editing reactivates it;
+ *  - `held` — *"Inativo. Em revisão pelo Mercado Livre"*, ML is still deciding;
+ *  - `pending_documentation` — a Programa de Proteção de Marca report, answered
+ *    with documents;
+ *  - `suspended` / `suspended_for_prevention` — a fraud-risk suspension;
+ *  - `picture_downloading_pending` — transient, resolves itself.
+ *
+ * Widening this set would mark a recoverable listing terminal, and TERMINAL here
+ * is expensive in both directions: it drops the produto out of
+ * {@link linkHasLiveListing} (and so out of both ML sweeps) and it tells the
+ * operator to throw the anúncio away. The corroboration is ML's own wording
+ * rather than the sub_status string: `forbidden` is the case its docs describe
+ * as returning a REASON and no REMEDY *because there is no way back* — the same
+ * fact {@link mlModeracaoSchema.shape.remedio} records.
+ *
+ * ⚠️ **Pure and total — no clock, no network, no Firestore**, for exactly the
+ * reasons spelled out on {@link precisaConsultarModeracao} above: three surfaces
+ * ask this identical question and must never disagree —
+ * `estadoFromMlStatus` (the one writer of `estado`), the publish pre-flight
+ * that refuses to `PUT` a dead item, and the produto tab that offers the
+ * operator a way out. A second copy is the drift root `CLAUDE.md` names.
+ *
+ * ⚠️ It reads ML's RAW `status`/`sub_status`, never the derived `estado`. The
+ * derivation runs through this function, so consulting `estado` here would be
+ * circular — and a caller holding a stored link that predates the sync has the
+ * raw pair or nothing.
+ */
+export function moderacaoRemoveuAnuncio(
+  status: string | null | undefined,
+  subStatus: readonly string[] | null | undefined,
+): boolean {
+  return status === 'under_review' && (subStatus ?? []).includes('forbidden');
 }
 
 /** `produtos/{id}/produtoMercadoLivre/{docId}` — the listing link doc. */
@@ -608,6 +692,35 @@ export const variacaoMercadoLivreLinkSchema = z
 export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSchema>;
 
 /**
+ * The estados that mean "there is no listing at the other end of this link any
+ * more" — the two ways an ML listing ends, and the only two.
+ *
+ * ⚠️ ONE definition, because the question is asked in three places that must
+ * agree: {@link linkHasLiveListing} (which drives `produtos.integracoesComProduto`
+ * and therefore both sweeps' coverage) and `itemsStatusSync`'s two legacy-denorm
+ * arms, two of which used to spell it as a bare `'c'` literal. A per-site test
+ * is how the second member of this set would get missed on one of them.
+ *
+ * They stay DISTINCT estados despite folding together here — see
+ * {@link ESTADO_PUBLICACAO_ML}: `cancelado` is the seller closing a listing,
+ * `removidoPorModeracao` is ML removing it, and only the second one leaves the
+ * operator with a produto to rescue.
+ */
+const ESTADOS_ENCERRADOS: ReadonlySet<string> = new Set<string>([
+  ESTADO_PUBLICACAO_ML.cancelado,
+  ESTADO_PUBLICACAO_ML.removidoPorModeracao,
+]);
+
+/**
+ * Is this stored `estado` one where the ML listing is over? See
+ * {@link ESTADOS_ENCERRADOS}. Loose input for the same reason its callers are:
+ * they hold raw `snap.data()` payloads, not parsed schemas.
+ */
+export function estadoEncerraAnuncio(estado: unknown): boolean {
+  return typeof estado === 'string' && ESTADOS_ENCERRADOS.has(estado);
+}
+
+/**
  * Does this PARENT link doc represent a listing the produto's conta still holds?
  *
  * This is the membership predicate behind `produtos.integracoesComProduto` — the
@@ -621,7 +734,15 @@ export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSc
  * `estado: 'c'` and the doc survives with its `id` intact. A trigger keyed on
  * document deletion would therefore never remove anything and the array would go
  * append-only, which is exactly the failure #431's lock 2 describes. Hence the
- * `estado` term.
+ * `estado` term. The same is true of a moderation removal (#1226), which merges
+ * `estado: 'rm'` and likewise leaves the doc — with its now-dead `id` — in place
+ * for the operator to act on.
+ *
+ * ⚠️ A `false` here is a produto DROPPED from both sweeps, and
+ * `integracoesComProduto`'s docblock is explicit that a false negative is a
+ * SILENT stock + price outage while a false positive costs one skipped row. So
+ * the set stays exactly the two estados that are terminal on ML's side, never
+ * anything merely unsendable: `'E'`, `'am'`, `'pa'`, `'v'` all stay live.
  *
  * Deliberately loose input: callers hold raw `event.data.*.data()` payloads and
  * migration snapshots, never parsed schemas.
@@ -629,7 +750,7 @@ export type VariacaoMercadoLivreLink = z.infer<typeof variacaoMercadoLivreLinkSc
 export function linkHasLiveListing(link: Record<string, unknown> | null | undefined): boolean {
   if (link == null) return false;
   if (typeof link.id !== 'string' || link.id.length === 0) return false;
-  return link.estado !== ESTADO_PUBLICACAO_ML.cancelado;
+  return !estadoEncerraAnuncio(link.estado);
 }
 
 /** The two directions the operator can move a published listing's status. */
@@ -666,8 +787,17 @@ export const STATUS_ML_DA_ACAO: Record<AcaoStatusAnuncio, 'paused' | 'active'> =
  *  - **Never published** (`id` absent or `''`) → `null`. There is no ML listing
  *    to move. `''` counts as never published, matching the backend's own
  *    `link.id !== ''` test — the schema permits it and the migrated corpus has it.
- *  - **Cancelled** (`estado 'c'`) → `null`. `closed` is TERMINAL on ML: a closed
- *    listing cannot be reopened, so both actions would only earn a 400.
+ *  - **Ended** (`estado 'c'` or `'rm'`) → `null`. `closed` is TERMINAL on ML: a
+ *    closed listing cannot be reopened, so both actions would only earn a 400.
+ *    A moderation removal (#1226) is terminal in the stronger sense — ML took
+ *    the listing down and published no remedy — so the same answer, and for the
+ *    same reason, through {@link estadoEncerraAnuncio}.
+ *    ⚠️ The `'rm'` half is not redundant with the `under_review` arm below, even
+ *    though both answer `null` today. It is what lets `anuncioStatusManual`'s
+ *    `motivoRecusaLocal` name the refusal: without it a removed listing falls to
+ *    `status-indefinido`, whose message sends the operator to "Reverificar
+ *    anúncio" — a button that cannot help, because re-reading a removed listing
+ *    only re-confirms it is removed.
  *  - ⚠️ **Mid-UPtin migration** (`estado 'am'`) → `null`, and this rung is
  *    checked from `estado` ABOVE the raw status, not below it. ML is rebuilding
  *    the listing as one item per variation and **404s any change to the source
@@ -703,7 +833,7 @@ export function acaoStatusAnuncio(
 ): AcaoStatusAnuncio | null {
   if (link == null) return null;
   if (typeof link.id !== 'string' || link.id.length === 0) return null;
-  if (link.estado === ESTADO_PUBLICACAO_ML.cancelado) return null;
+  if (estadoEncerraAnuncio(link.estado)) return null;
   // ⚠️ ABOVE the status arm, deliberately — see the rung list. `estado 'am'` is
   // written on its own, so the `status` sitting beside it is stale by
   // construction and must not be allowed to decide.
