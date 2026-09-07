@@ -74,6 +74,42 @@ export function buildProd(item: GeneratorItem): TNFe_infNFe_det_prod {
     vUnTrib: fmtUnitValue(item.vUnTrib),
     indTot: item.indTot ?? '1',
   };
+  // The remaining `<prod>` children Flutter emitted
+  // (`pedido_nfe_base.dart:938-947`). All optional in the XSD.
+  if (item.NVE && item.NVE.length > 0) {
+    if (item.NVE.length > 8) {
+      throw new NFeDetError(
+        `item ${item.nItem}: NVE accepts at most 8 codes, got ${item.NVE.length}`,
+      );
+    }
+    for (const nve of item.NVE) {
+      // Validated HERE, not in `impostoSchema`: a parse failure there makes the
+      // resolver fall through to a lower tax tier SILENTLY, which is a wrong
+      // NF-e. A throw here is loud and names the offending value.
+      if (!/^[A-Z]{2}[0-9]{4}$/.test(nve)) {
+        throw new NFeDetError(
+          `item ${item.nItem}: NVE=${JSON.stringify(nve)} must be 2 uppercase letters ` +
+            `followed by 4 digits (ex.: AB1234)`,
+        );
+      }
+    }
+    prod.NVE = [...item.NVE];
+  }
+  // ⚠️ `indEscala` and `CNPJFab` live inside an `<xs:sequence minOccurs="0">`
+  // whose FIRST element, `CEST`, is required (leiauteNFe_v4.00.xsd:936-962).
+  // Emitting either without a `CEST` is schema-invalid — SEFAZ rejection 215,
+  // after signing. The group is optional as a whole, so dropping them is the
+  // only valid choice when the produto carries no CEST.
+  if (item.indEscala != null && item.CEST) {
+    prod.indEscala = item.indEscala ? 'S' : 'N';
+    // "CNPJ do Fabricante da Mercadoria, obrigatório para produto em escala NÃO
+    // relevante" (XSD annotation) — so it belongs with `indEscala='N'` only.
+    // Flutter gated it on `indEscala != null` instead, emitting it alongside an
+    // 'S' where the field has no meaning; this follows the XSD.
+    if (item.indEscala === false && item.CNPJFab) prod.CNPJFab = item.CNPJFab;
+  }
+  if (item.cBenef) prod.cBenef = item.cBenef;
+  if (item.EXTIPI) prod.EXTIPI = item.EXTIPI;
   // Optional per-item frete value — set by the orchestrator on det[0]
   // when frete.modalidade='0' (contratação por conta do emitente).
   // Mirrors Flutter `pedido_nfe_base.dart:932`.

@@ -244,6 +244,16 @@ export function buildGenItems(
       xProd: it.nomeDeVenda!, // guarded in flattenAndValidate
       NCM,
       ...(CEST ? { CEST } : {}),
+      // The remaining `<prod>` children, straight off the resolved tier — the
+      // resolver picks ONE tier whole, so there is no per-field fallback to the
+      // operação here (unlike CEST above, which the operação can supply).
+      // `buildProd` validates the NVE format and enforces the XSD's
+      // CEST-required group around `indEscala`/`CNPJFab`.
+      ...(it.imposto.NVE && it.imposto.NVE.length > 0 ? { NVE: it.imposto.NVE } : {}),
+      ...(it.imposto.indEscala != null ? { indEscala: it.imposto.indEscala } : {}),
+      ...(it.imposto.CNPJFab ? { CNPJFab: it.imposto.CNPJFab } : {}),
+      ...(it.imposto.cBenef ? { cBenef: it.imposto.cBenef } : {}),
+      ...(it.imposto.extipi ? { EXTIPI: it.imposto.extipi } : {}),
       CFOP: cfop,
       uCom: unidade,
       qCom: it.quantidade,

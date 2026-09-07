@@ -956,6 +956,23 @@ export const impostoSchema = z.object({
     .nullable(),
   unidade: z.string().min(1).max(6).optional().nullable(),
   /**
+   * The remaining `det.prod` children the legacy Flutter emitter carried
+   * (`pedido_nfe_base.dart:938-947`). They are stored on every Imposto-bearing
+   * doc but were absent here, so the resolver's strip-policy parse dropped them
+   * off every resolved tier and they could never reach the XML.
+   *
+   * ⚠️ No format regexes here, unlike `cfop`/`NCM`/`CEST` above. A failed
+   * `impostoSchema` parse makes the resolver fall through to a LOWER tier
+   * silently, so a malformed `NVE` would quietly change which tax config the
+   * item gets — a wrong NF-e. Validated at emit instead, where a bad value
+   * surfaces as a loud SEFAZ rejection.
+   */
+  NVE: nveWire().optional(),
+  indEscala: indEscalaWire().optional(),
+  CNPJFab: z.string().optional().nullable(),
+  cBenef: z.string().optional().nullable(),
+  extipi: z.string().optional().nullable(),
+  /**
    * `det.prod.indTot` source — `false` = the item does NOT compose the NF-e
    * totals (`indTot='0'`; excluded from ICMSTot `vProd`/`vDesc`/`vNF`).
    * `null`/absent = composes (`'1'`, the legacy Flutter default). Stored on
@@ -1069,13 +1086,22 @@ export function indEscalaFromScalar(raw: string): boolean | null {
  * error must surface as a SEFAZ rejection at emit, never as a silent tier
  * fall-through at resolve.
  */
+export function nveWire() {
+  return z.preprocess(
+    (v) => (typeof v === 'string' ? nveFromScalar(v) : v),
+    z.array(z.string()).nullable(),
+  );
+}
+
+/**
+ * {@link nveWire} in the shape a STORED collection schema wants: an absent key
+ * materialises as `null` (root `CLAUDE.md` — a Firestore field is
+ * `.nullable().default(null)`, never bare `.optional()`). The engine blob
+ * `impostoSchema` uses `nveWire().optional()` instead, so that a resolved tier
+ * simply omits what it does not carry.
+ */
 export function nveField() {
-  return z
-    .preprocess(
-      (v) => (typeof v === 'string' ? nveFromScalar(v) : v),
-      z.array(z.string()).nullable(),
-    )
-    .default(null);
+  return nveWire().default(null);
 }
 
 /**
@@ -1089,8 +1115,14 @@ export function nveField() {
  * ⚠️ Same read-tolerance contract as {@link nveField} — see its note — folding
  * a stored scalar through {@link indEscalaFromScalar}.
  */
+export function indEscalaWire() {
+  return z.preprocess(
+    (v) => (typeof v === 'string' ? indEscalaFromScalar(v) : v),
+    z.boolean().nullable(),
+  );
+}
+
+/** {@link indEscalaWire} in the stored-collection shape. See {@link nveField}. */
 export function indEscalaField() {
-  return z
-    .preprocess((v) => (typeof v === 'string' ? indEscalaFromScalar(v) : v), z.boolean().nullable())
-    .default(null);
+  return indEscalaWire().default(null);
 }
