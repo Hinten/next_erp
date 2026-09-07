@@ -2,6 +2,7 @@ import type { DocumentReference, Firestore } from 'firebase/firestore';
 import {
   type ImpostoCategoria,
   impostoCategoriaSchema,
+  nveCarriesValue,
   operacaoIdFromImpostoRef,
 } from '@delfrance/schemas';
 import { nowMillis } from '@delfrance/core/datetime';
@@ -45,11 +46,14 @@ export function categoriaImpostoCarriesInfo(imp: ImpostoCategoria): boolean {
     imp.retencao,
   ];
   // ⚠️ `NVE` and `indEscala` are NOT strings on the wire (#466) — see the twin
-  // check in `packages/data/src/produto/usecases.ts`. A typed value folded into
-  // `strings` above reads as "no info" and DELETES a configured doc.
+  // check in `packages/data/src/produto/usecases.ts`, which carries the full
+  // note. `nveCarriesValue` is shared with it precisely because these two are
+  // character-identical and have drifted before; it accepts the raw pre-#466
+  // scalar a failed `parseSoftRead` hands back, which this decision runs on
+  // BEFORE `impostoCategoriaSchema.parse` below.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
-    (Array.isArray(imp.NVE) && imp.NVE.some((c) => typeof c === 'string' && c.trim() !== '')) ||
+    nveCarriesValue(imp.NVE) ||
     imp.indEscala != null ||
     imp.compoeValorTotalDaNFe != null ||
     configs.some((c) => c != null) ||

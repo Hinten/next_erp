@@ -4,6 +4,7 @@ import {
   impostoProdutoMeta,
   impostoProdutoSchema,
   makeEstoqueUid,
+  nveCarriesValue,
   derivarFilhoUnico,
   montarMembroUnico,
   operacaoIdFromImpostoRef,
@@ -290,9 +291,17 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
   // checked in their own shapes. Folding them into `strings` above made a
   // typed value read as "no info", which DELETES a configured doc instead of
   // writing it (the defect that forced the revert on #1279).
+  //
+  // ⚠️ `nveCarriesValue` accepts BOTH shapes, and that matters here: this
+  // function runs on the value as it arrived, BEFORE `impostoProdutoSchema.parse`
+  // below, and `parseSoftRead` hands back a RAW document whenever the parse
+  // failed for any unrelated reason — `NVE` is then still the pre-#466 scalar.
+  // A bare `Array.isArray` would read that as empty and delete the doc.
+  // `indEscala` needs no such helper: `!= null` already covers a raw string,
+  // and folding it here would turn unrecognised text into a delete.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
-    (Array.isArray(imp.NVE) && imp.NVE.some((c) => typeof c === 'string' && c.trim() !== '')) ||
+    nveCarriesValue(imp.NVE) ||
     imp.indEscala != null ||
     imp.compoeValorTotalDaNFe != null ||
     configs.some((c) => c != null) ||
