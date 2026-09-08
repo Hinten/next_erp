@@ -38,6 +38,21 @@ import { warmRoutes } from './helpers/warmup';
  * lista ids keeps the assertion strict over everything this spec owns (a price
  * appearing under its own atacado lista still fails) while ignoring what it
  * provably does not control.
+ *
+ * ⚠️ That NARROWS the window — it does not close it, so do not read a green
+ * run as proof this assertion can no longer be the cause. `applyPrecoAlteracoes`
+ * re-reads each chunk of 5 and then writes the WHOLE field back
+ * (`updateDoc(ref, { precos })`, a plain map replace — see its own docstring),
+ * so a foreign apply whose read lands BEFORE this spec's save and whose write
+ * lands AFTER it drops this suite's own key, and the projection then reads `{}`
+ * or a stale value. The staged-removal test fails the same way in reverse: a
+ * foreign apply that read before the removal writes the removed price back.
+ * What the projection removes is the ADDITIVE collision (a foreign key merely
+ * appearing alongside ours), which is the failure actually observed; what
+ * survives is a LOST UPDATE (root `CLAUDE.md` rule 7) confined to that foreign
+ * apply's own read→write gap. No client-side assertion can rule it out — rule
+ * 7's tier-1 `lastUpdateTime` precondition is Admin-only, and `apps/web` is
+ * client-first (`apps/web/CLAUDE.md` rule 3).
  */
 test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
   const prefix = e2ePrefix('prod-preco');
