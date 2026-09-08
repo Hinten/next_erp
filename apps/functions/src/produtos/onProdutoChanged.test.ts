@@ -24,7 +24,6 @@ describe('PRODUTO_HISTORY_IGNORE_FIELDS', () => {
         // missing from this list — so one of the pair produced history rows and
         // the other did not.
         'marketplaceIds',
-        'nome_embedding',
         'statusProdutosMarketplace',
         'timestamp',
         'ultimaModificacao',

@@ -172,8 +172,6 @@ export async function seedClientes(prefix: string, n: number): Promise<void> {
       observacoesInternas: null,
       timestamp: Date.now(),
       ultimaModificacao: Date.now() + i,
-      nome_embedding: null,
-      telefone_embedding: null,
       userCliente: null,
     });
   }
@@ -1324,8 +1322,6 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     // Stamped so the fixture cliente shows in `/clientes` (default sort is
     // `ultimaModificacao desc`; Firestore skips docs missing the field).
     ultimaModificacao: clienteNow,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
   batch.set(db().collection('operacao').doc(operacaoId), {
@@ -1424,7 +1420,6 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   });
   await batch.commit();
 
@@ -1555,7 +1550,6 @@ export async function seedPedidoEstoqueFixtures(prefix: string): Promise<{
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   });
   batch.set(db().collection('pedidos').doc(pedidoId), {
     ehSaida: true,
@@ -1735,8 +1729,6 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
     observacoesInternas: null,
     timestamp: now,
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
   batch.set(db().collection('integracao').doc(integracaoId), {
@@ -1790,7 +1782,6 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   });
   batch.set(db().collection('pedidos').doc(naoImpressoId), {
     ...pedidoBase,
@@ -3426,7 +3417,6 @@ function checkoutProdutoDoc(nome: string, sku: string, ehKit = false) {
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   };
 }
 
@@ -3617,8 +3607,6 @@ export async function seedCheckoutFixtures(prefix: string): Promise<CheckoutFixt
     observacoesInternas: null,
     timestamp: now,
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
 
@@ -3915,7 +3903,6 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
     ...extra,
   });
 
@@ -3933,8 +3920,6 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
     observacoesInternas: null,
     timestamp: now,
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
   batch.set(db().collection('integracao').doc(integracaoId), {

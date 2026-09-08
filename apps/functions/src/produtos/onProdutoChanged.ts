@@ -56,7 +56,6 @@ export const PRODUTO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
   // did not (#961). Both are legacy denorms with no query consumers; their churn
   // is never an operator edit.
   'marketplaceIds',
-  'nome_embedding',
   'statusProdutosMarketplace',
   'timestamp',
   'ultimaModificacao',
@@ -341,7 +340,7 @@ export async function reapontarKitsQueReferenciam(
       .where('componentesKitKeys', 'array-contains', alvo)
       // ⚠️ `.select()`, because Enterprise bills DATA SCANNED (root rule 1) and
       // this is the only field the rewrite reads. Unprojected, each match pulls
-      // the whole produto — the `nome_embedding` vector, `fotos`, the marketplace
+      // the whole produto — `fotos`, the marketplace
       // denorms — and the cap below fires AFTER the query, so the ADR 0014 ~2 000
       // case would read 2 000 full documents just to log that it wrote nothing.
       // `recalcularDimensoesKit` projects for exactly this reason.

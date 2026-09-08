@@ -114,8 +114,6 @@ async function writeCliente(): Promise<void> {
     // Stamped so the dev cliente shows in `/clientes` (default sort is
     // `ultimaModificacao desc`; Firestore skips docs missing the field).
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
 

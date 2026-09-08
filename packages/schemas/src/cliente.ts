@@ -140,7 +140,7 @@ export function refineClienteTipoDocumento(
  * the label; JSON objects encode richer hints (kind overrides, reference
  * collection ids, etc.).
  *
- * Vector embeddings (`nome_embedding`, `telefone_embedding`) are written by
+ * Vector embeddings were dropped in favour of the Enterprise text index; see
  * server-side code (Functions). They aren't part of the form schema; the
  * runtime treats them as opaque pass-through.
  */
@@ -212,8 +212,6 @@ export const clienteSchema = z.object({
   // Pinned by `defaultQuery.sortKeyPresence.test.ts`.
   ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
   // Embeddings are server-managed; treat as opaque on the client.
-  nome_embedding: z.unknown().nullable().default(null),
-  telefone_embedding: z.unknown().nullable().default(null),
   // userCliente outer reference: stored as a Firestore document path string
   // (`users/<uid>`) on writes from this app. Phase 1 keeps it pass-through.
   userCliente: z.string().nullable().default(null),

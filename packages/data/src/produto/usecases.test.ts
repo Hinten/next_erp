@@ -821,7 +821,6 @@ describe('buildDuplicarProdutoWriteOps', () => {
     videos: [videoSchema.parse({ arquivoOuterRef: 'arquivos/v1' })],
     anexos: [anexoSchema.parse({ arquivoOuterRef: 'arquivos/a1' })],
     fotosArquivosIds: ['f1'],
-    nome_embedding: [0.1, 0.2],
   };
 
   /** What a cloned document must look like once every exclusion has been applied. */
@@ -838,7 +837,6 @@ describe('buildDuplicarProdutoWriteOps', () => {
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   };
 
   describe('childless source', () => {

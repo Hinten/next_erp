@@ -806,7 +806,7 @@ const SUFIXO_DUPLICATA = ' (cópia)';
  * and is published explicitly (see that field's own docstring); a clone that
  * arrived already visible in the catalogue would have been published by nobody.
  *
- * **Server-managed** — `nome_embedding` describes the SOURCE's name, which the
+ * **Server-managed** — nothing here; the vector that used to live on a produto
  * parent clone changes below; stale from the moment it is written.
  *
  * ⚠️ What deliberately DOES carry over, because none of it is an identity:
@@ -833,7 +833,6 @@ function limparParaDuplicar(dados: Produto): Record<string, unknown> {
     anexos: null,
     fotosArquivosIds: null,
     publicado: false,
-    nome_embedding: null,
   };
 }
 
