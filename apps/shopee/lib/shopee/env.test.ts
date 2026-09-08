@@ -10,6 +10,7 @@ import {
 import {
   shopeeConfig,
   shopeeHosts,
+  shopeePushCallbackUrl,
   shopeeRedirectUri,
   shopeeSandbox,
   shopeeStateSecret,
@@ -27,6 +28,7 @@ beforeEach(() => {
   vi.stubEnv('SHOPEE_AUTH_HOST', '');
   vi.stubEnv('SHOPEE_VARIATIONS_PATH', '');
   vi.stubEnv('WEB_APP_URL', '');
+  vi.stubEnv('SHOPEE_PUSH_CALLBACK_URL', '');
 });
 
 afterEach(() => {
@@ -206,5 +208,38 @@ describe('shopeeConfig', () => {
       if (!(err instanceof ShopeeConfigError)) throw err;
       expect(err.message).not.toContain('chave-de-teste');
     }
+  });
+});
+
+describe('shopeePushCallbackUrl — a URL do HMAC do push, sem normalização', () => {
+  it('devolve null quando a variável está ausente', () => {
+    expect(shopeePushCallbackUrl()).toBeNull();
+  });
+
+  it('devolve null quando a variável está em branco', () => {
+    vi.stubEnv('SHOPEE_PUSH_CALLBACK_URL', '   ');
+    expect(shopeePushCallbackUrl()).toBeNull();
+  });
+
+  it('devolve o valor configurado com o espaço em volta aparado', () => {
+    vi.stubEnv('SHOPEE_PUSH_CALLBACK_URL', '  https://erp.example/api/webhooks/shopee  ');
+    expect(shopeePushCallbackUrl()).toBe('https://erp.example/api/webhooks/shopee');
+  });
+
+  // ⚠️ O par que importa: a barra final PERMANECE. Ela está dentro da base
+  // string do HMAC, então removê-la aqui mudaria todo dígito computado e faria
+  // todo push legítimo falhar a verificação. `shopeeRedirectUri` faz o
+  // OPOSTO — e é por isso que os dois não compartilham o mesmo reader.
+  it('PRESERVA a barra final (ao contrário de shopeeRedirectUri)', () => {
+    vi.stubEnv('SHOPEE_PUSH_CALLBACK_URL', 'https://erp.example/api/webhooks/shopee/');
+    expect(shopeePushCallbackUrl()).toBe('https://erp.example/api/webhooks/shopee/');
+
+    vi.stubEnv('SHOPEE_PUBLIC_URL', 'https://erp.example/');
+    expect(shopeeRedirectUri()).toBe('https://erp.example/api/oauth/shopee/callback');
+  });
+
+  it('não mexe no esquema nem na porta', () => {
+    vi.stubEnv('SHOPEE_PUSH_CALLBACK_URL', 'http://localhost:3009/api/webhooks/shopee');
+    expect(shopeePushCallbackUrl()).toBe('http://localhost:3009/api/webhooks/shopee');
   });
 });

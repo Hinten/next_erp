@@ -1,0 +1,745 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import type { Firestore } from 'firebase-admin/firestore';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Type-only — erased at compile time, so it does not defeat the mocks below.
+import type { ShopeeNotificationPayload } from './notificacao';
+
+/**
+ * Mocked: the three modules the conta arms lean on — the shop→integração
+ * resolver and the conta reader (`core/contaCache`), the avisos producer
+ * (`avisos/autorizacao`) and the expiry sweep (`conta/expiracaoSweep`). Each
+ * one has its own suite; here they are seams, so this file can pin the ROUTING
+ * (which arm runs, and how often) without a Firestore.
+ */
+const h = vi.hoisted(() => ({
+  find: vi.fn(async (_db: unknown, _shopId: number) => null as string | null),
+  readConta: vi.fn(async (_db: unknown, _id: string) => null as Record<string, unknown> | null),
+  avisarDesautorizacao: vi.fn(async () => ({ chave: 'k', resultado: 'criado' })),
+  resolverAvisos: vi.fn(async () => ({ expiracao: true, desautorizacao: false })),
+  sweep: vi.fn(async () => ({
+    lojasEnumeradas: 0,
+    paginasLidas: 1,
+    truncado: false,
+    semIntegracao: 0,
+    avisados: 0,
+    resolvidos: 0,
+    resultados: {},
+    erros: [],
+  })),
+}));
+
+vi.mock('../core/contaCache', () => ({
+  findIntegracaoByShopId: (db: unknown, shopId: number) => h.find(db, shopId),
+  readConta: (db: unknown, id: string) => h.readConta(db, id),
+}));
+
+vi.mock('../avisos/autorizacao', () => ({
+  avisarDesautorizacao: (...args: unknown[]) => h.avisarDesautorizacao(...(args as [])),
+  resolverAvisosDeAutorizacao: (...args: unknown[]) => h.resolverAvisos(...(args as [])),
+}));
+
+vi.mock('../conta/expiracaoSweep', () => ({
+  runShopeeAuthorizationExpirySweep: (...args: unknown[]) => h.sweep(...(args as [])),
+}));
+
+const {
+  asDocId,
+  dedupKeyOf,
+  destinoDoCodigo,
+  docIdOf,
+  identidadeDoPush,
+  lojasDoPushDeConta,
+  lojasExpirandoDoPush12,
+  motivoDoParque,
+  MOTIVO_SEM_AUTHORIZE_TYPE,
+  parseNotificationBody,
+  processNotificationPayload,
+  sanitizarData,
+  SHOPEE_NOTIFICATION_QUEUE,
+  toDisposition,
+} = await import('./notificacao');
+
+const db = {} as unknown as Firestore;
+
+const deps = {
+  partnerClient: () => ({ getShopsByPartner: async () => ({}) }) as never,
+  increment: (by: number) => by,
+  nowMs: () => 1_700_000_000_000,
+};
+
+function payload(over: Partial<ShopeeNotificationPayload> = {}): ShopeeNotificationPayload {
+  return { code: 1, shopId: null, timestamp: 1000, data: null, ...over };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.find.mockResolvedValue(null);
+  h.readConta.mockResolvedValue(null);
+  h.resolverAvisos.mockResolvedValue({ expiracao: true, desautorizacao: false });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+// ── parseNotificationBody ───────────────────────────────────────────────────
+
+describe('parseNotificationBody', () => {
+  it('devolve null para o que não é um envelope de push', () => {
+    expect(parseNotificationBody(null)).toBeNull();
+    expect(parseNotificationBody('{"code":1}')).toBeNull();
+    expect(parseNotificationBody([{ code: 1 }])).toBeNull();
+    expect(parseNotificationBody({})).toBeNull();
+    expect(parseNotificationBody({ code: 'um' })).toBeNull();
+    expect(parseNotificationBody({ code: null })).toBeNull();
+    expect(parseNotificationBody({ code: '' })).toBeNull();
+  });
+
+  it('aceita um code em string numérica (o coercer compartilhado)', () => {
+    expect(parseNotificationBody({ code: '12' })?.code).toBe(12);
+  });
+
+  // `asInt` TRUNCA qualquer número finito, então um code fracionário — que a
+  // Shopee nunca envia — roteia pelo inteiro. Fixado para que a tolerância seja
+  // uma escolha registrada e não uma surpresa na próxima leitura.
+  it('trunca um code fracionário em vez de recusá-lo', () => {
+    expect(parseNotificationBody({ code: 1.9 })?.code).toBe(1);
+  });
+
+  // ⚠️ QUATRO colocações: `shop_id` e `shopid`, no topo e dentro de `data`.
+  // Três dos cinco exemplos do push 16 usam a grafia sem underscore.
+  it.each([
+    ['shop_id no topo', { code: 3, shop_id: 987654 }],
+    ['shopid no topo', { code: 3, shopid: 987654 }],
+    ['shop_id dentro de data', { code: 1, data: { shop_id: 987654 } }],
+    ['shopid dentro de data', { code: 2, data: { shopid: 987654 } }],
+  ])('levanta o shop id de %s', (_nome, body) => {
+    expect(parseNotificationBody(body)?.shopId).toBe(987654);
+  });
+
+  it('devolve shopId null quando nenhuma das quatro colocações traz um', () => {
+    expect(parseNotificationBody({ code: 12, data: { page_no: 1 } })?.shopId).toBeNull();
+  });
+
+  // ⚠️ O envelope traz SEGUNDOS; deste lado tudo é MILLIS. `asMillis` trunca
+  // qualquer número finito COMO millis, então o ×1000 tem de vir antes dele.
+  it('converte o timestamp de SEGUNDOS para MILLIS', () => {
+    expect(parseNotificationBody({ code: 12, timestamp: 1568606634 })?.timestamp).toBe(
+      1568606634000,
+    );
+  });
+
+  // NEAR-MISS: sem o ×1000 o valor seria 1568606634 — dezembro de 1970. Este
+  // par é o que impede a conversão de sumir sem ninguém notar.
+  it('NÃO trata o timestamp do envelope como se já fosse millis', () => {
+    expect(parseNotificationBody({ code: 12, timestamp: 1568606634 })?.timestamp).not.toBe(
+      1568606634,
+    );
+  });
+
+  it('mantém o clamp superior: um timestamp absurdo vira null, não NaN', () => {
+    // 1e16 s × 1000 estoura MILLIS_UPPER_BOUND — um valor não clampado chegaria
+    // a `millisSinceEpoch()` como NaN e lançaria DENTRO de `persistFailure`.
+    expect(parseNotificationBody({ code: 1, timestamp: 1e16 })?.timestamp).toBeNull();
+  });
+
+  it('timestamp ausente vira null', () => {
+    expect(parseNotificationBody({ code: 1 })?.timestamp).toBeNull();
+  });
+
+  it('preserva `data` e ignora o resto do envelope', () => {
+    const p = parseNotificationBody({
+      code: 1,
+      partner_id: 1000001,
+      data: { authorize_type: 'expiry', shop_id: 987654 },
+    });
+    expect(p?.data).toEqual({ authorize_type: 'expiry', shop_id: 987654 });
+  });
+});
+
+// ── sanitizarData ───────────────────────────────────────────────────────────
+
+describe('sanitizarData — os três ramos', () => {
+  it('1. o que não é um objeto vira null', () => {
+    expect(sanitizarData(undefined)).toBeNull();
+    expect(sanitizarData(null)).toBeNull();
+    expect(sanitizarData('texto')).toBeNull();
+    expect(sanitizarData(42)).toBeNull();
+    expect(sanitizarData([1, 2])).toBeNull();
+  });
+
+  it('2. arrays DIRETAMENTE dentro de arrays viram texto (o Firestore os recusa)', () => {
+    const out = sanitizarData({ matriz: [[1, 2], 3] });
+    expect(out).toEqual({ matriz: ['[1,2]', 3] });
+  });
+
+  // NEAR-MISS do mesmo ramo: um array dentro de um OBJETO dentro de um array é
+  // LEGAL no Firestore, e achatá-lo perderia dados sem motivo.
+  it('2b. um array dentro de um objeto dentro de um array é PRESERVADO', () => {
+    const out = sanitizarData({ itens: [{ ids: [1, 2] }] });
+    expect(out).toEqual({ itens: [{ ids: [1, 2] }] });
+  });
+
+  it('3. acima do orçamento vira { _truncado, _bytes }', () => {
+    const grande = { texto: 'x'.repeat(70 * 1024) };
+    const out = sanitizarData(grande) as Record<string, unknown>;
+    expect(out._truncado).toBe(true);
+    expect(out._bytes).toBeGreaterThan(64 * 1024);
+    expect(out.texto).toBeUndefined();
+    expect(Object.keys(out).sort()).toEqual(['_bytes', '_truncado']);
+  });
+
+  // NEAR-MISS do orçamento: logo abaixo do limite o conteúdo passa inteiro.
+  it('3b. logo abaixo do orçamento o conteúdo é preservado', () => {
+    const out = sanitizarData({ texto: 'x'.repeat(1024) }) as { texto?: string };
+    expect(out.texto).toHaveLength(1024);
+  });
+
+  it('descarta nomes de campo que o Firestore recusa', () => {
+    expect(sanitizarData({ '': 1, __x__: 2, ok: 3 })).toEqual({ ok: 3 });
+  });
+});
+
+// ── the doc id table ────────────────────────────────────────────────────────
+
+describe('asDocId — as cinco recusas', () => {
+  it.each([
+    ['.', '.'],
+    ['..', '..'],
+    ['com barra', 'a/b'],
+    ['nome reservado', '__x__'],
+    ['acima de 1500 caracteres', 'a'.repeat(1501)],
+  ])('recusa %s devolvendo null (⇒ id automático)', (_nome, valor) => {
+    expect(asDocId(valor)).toBeNull();
+  });
+
+  it('aceita um id normal e o limite exato de 1500', () => {
+    expect(asDocId('3:111:ORD1:2222')).toBe('3:111:ORD1:2222');
+    expect(asDocId('a'.repeat(1500))).toHaveLength(1500);
+  });
+
+  it('um ordersn com barra degrada o docId inteiro para null', () => {
+    expect(docIdOf(payload({ code: 3, shopId: 111, data: { ordersn: 'A/B' } }))).toBeNull();
+  });
+});
+
+describe('docIdOf — uma linha por push_code', () => {
+  it.each([
+    [
+      '3 status do pedido (update_time é o relógio)',
+      3,
+      { ordersn: 'ORD1', update_time: 2222 },
+      '3:111:ORD1:2222',
+    ],
+    // ⚠️ O par do de cima: sem `update_time` o code 3 cai para o carimbo do
+    // ENVELOPE, exatamente como o 4/30/47/29. Antes ele caía para `-`, e duas
+    // entregas sem relógio sobre o MESMO pedido dividiam uma única linha de
+    // dead-letter — a segunda sobrescrevendo a primeira, em silêncio.
+    ['3 status do pedido (cai para o timestamp)', 3, { ordersn: 'ORD1' }, '3:111:ORD1:1000'],
+    ['4 rastreio (cai para o timestamp)', 4, { ordersn: 'ORD1' }, '4:111:ORD1:1000'],
+    ['30 fulfillment do pacote', 30, { package_number: 'PKG1' }, '30:111:PKG1:1000'],
+    ['47 informação do pacote', 47, { package_number: 'PKG1' }, '47:111:PKG1:1000'],
+    [
+      '15 documento de envio (ordersn primeiro)',
+      15,
+      { ordersn: 'ORD1', package_number: 'PKG1' },
+      '15:111:ORD1:1000',
+    ],
+    ['15 documento de envio (package_number)', 15, { package_number: 'PKG1' }, '15:111:PKG1:1000'],
+    ['29 devolução', 29, { return_sn: 'RET1' }, '29:111:RET1:1000'],
+    ['16 violação de anúncio', 16, { item_id: 55 }, '16:111:55:1000'],
+    ['22 eco de preço', 22, { item_id: 55 }, '22:111:55:1000'],
+    ['27 publicação agendada', 27, { item_id: 55 }, '27:111:55:1000'],
+    ['7 promoção', 7, { item_id: 55 }, '7:111:55:1000'],
+    ['8 estoque reservado', 8, { item_id: 55 }, '8:111:55:1000'],
+    ['9 promoção/estoque', 9, { item_id: 55 }, '9:111:55:1000'],
+    ['10 chat', 10, { conversation_id: 'C1' }, '10:111:C1:1000'],
+    ['10 chat (só message_id)', 10, { message_id: 'M1' }, '10:111:M1:1000'],
+    ['5 shopee updates', 5, { video_id: 'V1' }, '5:111:V1:1000'],
+    ['11 vídeo', 11, { video_id: 'V1' }, '11:111:V1:1000'],
+    ['13 marca', 13, { brand_id: 9 }, '13:111:9:1000'],
+    ['28 penalidade', 28, {}, '28:111:-:1000'],
+    ['999 desconhecido', 999, {}, '999:111:-:1000'],
+  ])('%s', (_nome, code, data, esperado) => {
+    expect(docIdOf(payload({ code, shopId: 111, data }))).toBe(esperado);
+  });
+
+  it.each([
+    ['1 autorização (shop_id em data)', 1, { shop_id: 987654 }, '1:-:987654:1000'],
+    ['1 autorização (shopid em data)', 1, { shopid: 987654 }, '1:-:987654:1000'],
+    ['1 autorização (merchant)', 1, { merchant_id: 600222872 }, '1:-:600222872:1000'],
+    ['1 autorização (main account)', 1, { main_account_id: 68272 }, '1:-:68272:1000'],
+    [
+      '1 autorização (lista de lojas)',
+      1,
+      { shop_id_list: [62000001, 62000002] },
+      '1:-:62000001_62000002:1000',
+    ],
+    ['2 cancelamento', 2, { shop_id: 987654 }, '2:-:987654:1000'],
+    ['2 sem sujeito nenhum', 2, {}, '2:-:-:1000'],
+  ])('%s', (_nome, code, data, esperado) => {
+    expect(docIdOf(payload({ code, shopId: null, data }))).toBe(esperado);
+  });
+
+  it('um segmento ausente vira "-", nunca é omitido', () => {
+    // Sem shopId, sem ordersn e sem NENHUM relógio (nem `update_time` nem o
+    // carimbo do envelope), o code 3 ainda produz quatro segmentos.
+    expect(docIdOf(payload({ code: 3, shopId: null, timestamp: null, data: {} }))).toBe('3:-:-:-');
+  });
+
+  // ⚠️ push 12 é PAGINADO. Sem o `page_no` na identidade, a página 2 sobrescreve
+  // a linha da página 1 e as lojas dela somem em silêncio.
+  it('12 expiração: páginas diferentes produzem ids DISTINTOS', () => {
+    const p1 = docIdOf(
+      payload({ code: 12, shopId: null, data: { expire_before: 1619740800, page_no: 1 } }),
+    );
+    const p2 = docIdOf(
+      payload({ code: 12, shopId: null, data: { expire_before: 1619740800, page_no: 2 } }),
+    );
+    expect(p1).toBe('12:-:1619740800:1:1000');
+    expect(p2).toBe('12:-:1619740800:2:1000');
+    expect(p1).not.toBe(p2);
+  });
+});
+
+describe('dedupKeyOf', () => {
+  // O fold APLICA: o carimbo cai fora, então duas reentregas do mesmo trabalho
+  // são um trabalho só na deduplicação do sweep.
+  it('duas entregas do mesmo pedido com timestamps diferentes colapsam', () => {
+    const a = dedupKeyOf(
+      payload({ code: 3, shopId: 111, timestamp: 1000, data: { ordersn: 'ORD1', update_time: 1 } }),
+    );
+    const b = dedupKeyOf(
+      payload({ code: 3, shopId: 111, timestamp: 9999, data: { ordersn: 'ORD1', update_time: 2 } }),
+    );
+    expect(a).toBe('3:111:ORD1');
+    expect(b).toBe(a);
+  });
+
+  // …e PARA aqui: recursos diferentes continuam distintos.
+  it('pedidos diferentes NÃO colapsam', () => {
+    const a = dedupKeyOf(payload({ code: 3, shopId: 111, data: { ordersn: 'ORD1' } }));
+    const b = dedupKeyOf(payload({ code: 3, shopId: 111, data: { ordersn: 'ORD2' } }));
+    expect(a).not.toBe(b);
+  });
+
+  it('o mesmo recurso em lojas diferentes NÃO colapsa', () => {
+    const a = dedupKeyOf(payload({ code: 3, shopId: 111, data: { ordersn: 'ORD1' } }));
+    const b = dedupKeyOf(payload({ code: 3, shopId: 222, data: { ordersn: 'ORD1' } }));
+    expect(a).not.toBe(b);
+  });
+
+  it('codes diferentes sobre o mesmo recurso NÃO colapsam', () => {
+    const a = dedupKeyOf(payload({ code: 3, shopId: 111, data: { ordersn: 'ORD1' } }));
+    const b = dedupKeyOf(payload({ code: 4, shopId: 111, data: { ordersn: 'ORD1' } }));
+    expect(a).not.toBe(b);
+  });
+
+  it('o docId de dois carimbos difere onde a chave de dedup coincide', () => {
+    const a = payload({ code: 3, shopId: 111, data: { ordersn: 'ORD1', update_time: 1 } });
+    const b = payload({ code: 3, shopId: 111, data: { ordersn: 'ORD1', update_time: 2 } });
+    expect(dedupKeyOf(a)).toBe(dedupKeyOf(b));
+    expect(docIdOf(a)).not.toBe(docIdOf(b));
+  });
+});
+
+// ── the dispatch table ──────────────────────────────────────────────────────
+
+describe('destinoDoCodigo — todo push_code tem destino', () => {
+  it.each([
+    [1, 'conta'],
+    [2, 'conta'],
+    [12, 'conta'],
+    [5, 'ack'],
+    [7, 'ack'],
+    [8, 'ack'],
+    [9, 'ack'],
+    [11, 'ack'],
+    [13, 'ack'],
+    [22, 'ack'],
+    [28, 'ack'],
+    [3, 'parado'],
+    [4, 'parado'],
+    [10, 'parado'],
+    [15, 'parado'],
+    [16, 'parado'],
+    [27, 'parado'],
+    [29, 'parado'],
+    [30, 'parado'],
+    [47, 'parado'],
+  ])('push_code %i ⇒ %s', (code, destino) => {
+    expect(destinoDoCodigo(code)).toBe(destino);
+  });
+
+  it('um code jamais visto é "desconhecido" — o único sinal de que apareceu', () => {
+    expect(destinoDoCodigo(999)).toBe('desconhecido');
+    expect(destinoDoCodigo(0)).toBe('desconhecido');
+  });
+
+  // ⚠️ O `push_api_id` da URL da doc NÃO é o `code` do envelope: o
+  // `shop_authorization_push` é push_api_id 15 e chega como code 1, enquanto o
+  // code 15 é o status do documento de envio. Rotear pelo número errado
+  // despacharia em silêncio para o handler errado.
+  it('o code 15 é o documento de envio, NÃO a autorização (push_api_id 15)', () => {
+    expect(destinoDoCodigo(15)).toBe('parado');
+    expect(destinoDoCodigo(1)).toBe('conta');
+  });
+
+  it('o motivo do parque nomeia o passo dono do handler', () => {
+    expect(motivoDoParque(3)).toContain('passo 5');
+    expect(motivoDoParque(4)).toContain('passo 7');
+    expect(motivoDoParque(29)).toContain('passo 17');
+    expect(motivoDoParque(999)).toContain('desconhecido');
+  });
+});
+
+describe('toDisposition', () => {
+  it('ack ⇒ drop rotulado "ack"', () => {
+    expect(toDisposition({ kind: 'ack', reason: 'r', detail: 'd' })).toEqual({
+      kind: 'drop',
+      reason: 'r',
+      label: 'ack',
+    });
+  });
+
+  it('aviso ⇒ resolve rotulado "aviso"', () => {
+    expect(toDisposition({ kind: 'aviso', lojas: 1, avisados: 1, resolvidos: 0 })).toEqual({
+      kind: 'resolve',
+      label: 'aviso',
+    });
+  });
+
+  it('sem-conta ⇒ defer (a ÚNICA saída defer do canal)', () => {
+    expect(toDisposition({ kind: 'sem-conta', shopId: 1, reason: 'r' })).toEqual({
+      kind: 'defer',
+      reason: 'r',
+    });
+  });
+
+  it('parado ⇒ park, nunca defer', () => {
+    expect(toDisposition({ kind: 'parado', motivo: 'm' })).toEqual({ kind: 'park', reason: 'm' });
+  });
+});
+
+// ── processNotificationPayload ──────────────────────────────────────────────
+
+describe('processNotificationPayload — a ordem das portas', () => {
+  it.each([5, 7, 8, 9, 11, 13, 22, 28])(
+    'push_code %i é ack e NÃO lê nenhuma conta',
+    async (code) => {
+      const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
+      expect(out.kind).toBe('ack');
+      expect(h.find).not.toHaveBeenCalled();
+      expect(h.readConta).not.toHaveBeenCalled();
+      expect(h.sweep).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([3, 4, 10, 15, 16, 27, 29, 30, 47, 999])(
+    'push_code %i PARA antes de qualquer leitura de conta',
+    async (code) => {
+      const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
+      expect(out.kind).toBe('parado');
+      // ⚠️ A prova de que a porta do parque vem ANTES da resolução da conta: um
+      // code sem handler não pode custar uma consulta ao Firestore por entrega.
+      expect(h.find).not.toHaveBeenCalled();
+      expect(h.readConta).not.toHaveBeenCalled();
+    },
+  );
+
+  it('um code desconhecido para com um motivo que diz que ele é novo', async () => {
+    const out = await processNotificationPayload(db, payload({ code: 4242 }), deps);
+    expect(out).toEqual({ kind: 'parado', motivo: motivoDoParque(4242) });
+  });
+});
+
+describe('code 1 — reautorização RESOLVE os avisos da loja', () => {
+  it('chama resolverAvisosDeAutorizacao uma vez por loja mapeada', async () => {
+    h.find.mockImplementation(async (_db, shopId) => (shopId === 111 ? 'int-1' : 'int-2'));
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 1, shopId: 111, data: { shop_id_list: [111, 222] } }),
+      deps,
+    );
+    expect(out).toEqual({ kind: 'aviso', lojas: 2, avisados: 0, resolvidos: 2 });
+    expect(h.resolverAvisos).toHaveBeenCalledTimes(2);
+    expect(h.resolverAvisos).toHaveBeenCalledWith(
+      db,
+      { integracaoId: 'int-1', shopId: 111 },
+      { nowMs: 1_700_000_000_000 },
+    );
+    // Uma reautorização nunca LEVANTA um aviso.
+    expect(h.avisarDesautorizacao).not.toHaveBeenCalled();
+  });
+});
+
+describe('code 2 — desautorização LEVANTA um aviso por loja mapeada', () => {
+  it('passa o nome da loja, o authorize_type como motivo e o relógio do evento', async () => {
+    h.find.mockResolvedValue('int-1');
+    h.readConta.mockResolvedValue({ nome: 'Loja Delfrance' });
+    const out = await processNotificationPayload(
+      db,
+      payload({
+        code: 2,
+        shopId: 987654,
+        timestamp: 1_660_616_278_000,
+        data: { shopid: 987654, authorize_type: 'expiry' },
+      }),
+      deps,
+    );
+    expect(out).toEqual({ kind: 'aviso', lojas: 1, avisados: 1, resolvidos: 0 });
+    expect(h.avisarDesautorizacao).toHaveBeenCalledWith(
+      db,
+      {
+        integracaoId: 'int-1',
+        shopId: 987654,
+        lojaNome: 'Loja Delfrance',
+        motivo: 'expiry',
+        relogioEventoMs: 1_660_616_278_000,
+      },
+      { increment: deps.increment, nowMs: 1_700_000_000_000 },
+    );
+    expect(h.resolverAvisos).not.toHaveBeenCalled();
+  });
+
+  // ⚠️ Ausente significa "não sei"; um `null` explícito RESETARIA a marca
+  // d'água guardada, e uma marca d'água resetada é pior que uma que nunca
+  // avança (`camposInformados`, regra 7 do CLAUDE.md).
+  it('OMITE relogioEventoMs quando o envelope não trouxe timestamp', async () => {
+    h.find.mockResolvedValue('int-1');
+    await processNotificationPayload(
+      db,
+      payload({ code: 2, shopId: 987654, timestamp: null, data: { shop_id: 987654 } }),
+      deps,
+    );
+    const [, evento] = h.avisarDesautorizacao.mock.calls[0]! as unknown as [
+      unknown,
+      Record<string, unknown>,
+    ];
+    expect('relogioEventoMs' in evento).toBe(false);
+    expect(evento.relogioEventoMs).toBeUndefined();
+  });
+
+  it('cai para null no nome quando a conta não tem `nome`', async () => {
+    h.find.mockResolvedValue('int-1');
+    h.readConta.mockResolvedValue({ nome: '' });
+    await processNotificationPayload(
+      db,
+      payload({ code: 2, shopId: 987654, data: { shop_id: 987654 } }),
+      deps,
+    );
+    const [, evento] = h.avisarDesautorizacao.mock.calls[0]! as unknown as [
+      unknown,
+      Record<string, unknown>,
+    ];
+    expect(evento.lojaNome).toBeNull();
+  });
+
+  it('motivo cai para um texto que diz que a Shopee não informou', async () => {
+    h.find.mockResolvedValue('int-1');
+    await processNotificationPayload(
+      db,
+      payload({ code: 2, shopId: 987654, data: { shop_id: 987654 } }),
+      deps,
+    );
+    const [, evento] = h.avisarDesautorizacao.mock.calls[0]! as unknown as [
+      unknown,
+      Record<string, unknown>,
+    ];
+    expect(evento.motivo).toBe(MOTIVO_SEM_AUTHORIZE_TYPE);
+  });
+});
+
+describe('defer — só para uma loja de push de conta que não mapeia nada', () => {
+  it('code 2 nomeando UMA loja não mapeada ⇒ sem-conta ⇒ defer', async () => {
+    h.find.mockResolvedValue(null);
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 2, shopId: 987654, data: { shop_id: 987654 } }),
+      deps,
+    );
+    expect(out).toMatchObject({ kind: 'sem-conta', shopId: 987654 });
+    expect(toDisposition(out).kind).toBe('defer');
+  });
+
+  it('code 1 nomeando UMA loja não mapeada ⇒ defer também', async () => {
+    h.find.mockResolvedValue(null);
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 1, shopId: 111, data: { shop_id: 111 } }),
+      deps,
+    );
+    expect(out.kind).toBe('sem-conta');
+  });
+
+  // NEAR-MISS: um push de conta SEM loja nenhuma (autorização de merchant) é
+  // ack, não defer — nenhuma reentrega diária pode melhorar esse estado.
+  it('um push de conta sem shop_id é ACK, não defer', async () => {
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 2, shopId: null, data: { merchant_id: 600222872 } }),
+      deps,
+    );
+    expect(out).toMatchObject({ kind: 'ack', detail: 'nenhuma-loja-mapeada' });
+    expect(toDisposition(out).kind).toBe('drop');
+  });
+
+  it('várias lojas e nenhuma mapeada é ACK (sem-conta só nomeia uma)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.find.mockResolvedValue(null);
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 2, shopId: null, data: { shop_id_list: [111, 222] } }),
+      deps,
+    );
+    expect(out.kind).toBe('ack');
+  });
+
+  it('lojas parcialmente mapeadas processam as mapeadas', async () => {
+    h.find.mockImplementation(async (_db, shopId) => (shopId === 111 ? 'int-1' : null));
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 2, shopId: null, data: { shop_id_list: [111, 222] } }),
+      deps,
+    );
+    expect(out).toEqual({ kind: 'aviso', lojas: 1, avisados: 1, resolvidos: 0 });
+  });
+
+  // ⚠️ O code 12 é de nível PARTNER: lojas dele que não mapeiam nada pertencem
+  // a outro parceiro, e um defer diário sobre isso queimaria a faixa lenta.
+  it('code 12 sem loja mapeada é ACK, NUNCA defer', async () => {
+    h.find.mockResolvedValue(null);
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 12, shopId: null, data: { shop_expire_soon: [111, 222] } }),
+      deps,
+    );
+    expect(out).toMatchObject({ kind: 'ack', detail: 'nenhuma-loja-mapeada' });
+    expect(h.sweep).not.toHaveBeenCalled();
+  });
+});
+
+describe('code 12 — a expiração re-enumera pelo mesmo produtor do sweep', () => {
+  it('roda o sweep escopado às lojas mapeadas', async () => {
+    h.find.mockImplementation(async (_db, shopId) => (shopId === 111 ? 'int-1' : null));
+    h.sweep.mockResolvedValue({
+      lojasEnumeradas: 1,
+      paginasLidas: 1,
+      truncado: false,
+      semIntegracao: 0,
+      avisados: 1,
+      resolvidos: 0,
+      resultados: {},
+      erros: [],
+    });
+    const out = await processNotificationPayload(
+      db,
+      payload({
+        code: 12,
+        shopId: null,
+        data: { shop_expire_soon: [111, 111, 222], expire_before: 1619740800, page_no: 1 },
+      }),
+      deps,
+    );
+    expect(out).toEqual({ kind: 'aviso', lojas: 1, avisados: 1, resolvidos: 0 });
+    const [, opts] = h.sweep.mock.calls[0]! as unknown as [unknown, { apenasShopIds: Set<number> }];
+    expect([...opts.apenasShopIds]).toEqual([111]);
+  });
+
+  // ⚠️ `expire_before` é um CORTE DO LOTE, não a expiração de cada loja — por
+  // isso o aviso nunca é montado a partir dele; o sweep lê o `expire_time` real.
+  it('não repassa expire_before como prazo de loja nenhuma', async () => {
+    h.find.mockResolvedValue('int-1');
+    await processNotificationPayload(
+      db,
+      payload({ code: 12, data: { shop_expire_soon: [111], expire_before: 1619740800 } }),
+      deps,
+    );
+    const [, opts] = h.sweep.mock.calls[0]! as unknown as [unknown, Record<string, unknown>];
+    expect(JSON.stringify(opts)).not.toContain('1619740800');
+  });
+
+  // ⚠️ O relógio do ENVELOPE (ms) atravessa até o produtor do aviso: sem ele a
+  // marca d'água nunca avança pelo braço do push e uma reentrega velha do
+  // mesmo lote seria aplicada de novo — nova ocorrência, novo alerta, sobre um
+  // problema já tratado.
+  it('repassa o relógio do envelope em milissegundos para o sweep', async () => {
+    h.find.mockResolvedValue('int-1');
+    await processNotificationPayload(
+      db,
+      // 1568606634 s → 1568606634000 ms, feito por `parseNotificationBody`; aqui
+      // o payload já vem normalizado, então o valor é o de milissegundos.
+      payload({ code: 12, timestamp: 1_568_606_634_000, data: { shop_expire_soon: [111] } }),
+      deps,
+    );
+    const [, opts] = h.sweep.mock.calls[0]! as unknown as [unknown, Record<string, unknown>];
+    expect(opts.relogioEventoMs).toBe(1_568_606_634_000);
+  });
+
+  // A quase-falha do teste acima: o par que prova onde o repasse PARA. Um
+  // envelope sem `timestamp` não pode virar `relogioEventoMs: null` — isso
+  // RESETA a marca d'água armazenada, e uma marca resetada é uma guarda que não
+  // rejeita mais nada (`camposInformados`, regra 7 do CLAUDE.md da raiz).
+  it('um envelope sem timestamp não repassa a chave — nem sequer como null', async () => {
+    h.find.mockResolvedValue('int-1');
+    await processNotificationPayload(
+      db,
+      payload({ code: 12, timestamp: null, data: { shop_expire_soon: [111] } }),
+      deps,
+    );
+    const [, opts] = h.sweep.mock.calls[0]! as unknown as [unknown, Record<string, unknown>];
+    expect('relogioEventoMs' in opts).toBe(false);
+  });
+
+  it('deduplica a lista (os próprios exemplos da Shopee repetem ids)', () => {
+    expect(
+      lojasExpirandoDoPush12(payload({ code: 12, data: { shop_expire_soon: [123, 123, 4342] } })),
+    ).toEqual([123, 4342]);
+  });
+});
+
+describe('lojasDoPushDeConta', () => {
+  it('junta as quatro fontes sem repetir e preservando a ordem', () => {
+    expect(
+      lojasDoPushDeConta(
+        payload({
+          code: 2,
+          shopId: 111,
+          data: { shop_id: 111, shopid: 222, shop_id_list: [222, 333] },
+        }),
+      ),
+    ).toEqual([111, 222, 333]);
+  });
+
+  it('devolve lista vazia para uma autorização de merchant', () => {
+    expect(lojasDoPushDeConta(payload({ code: 1, data: { merchant_id: 600222872 } }))).toEqual([]);
+  });
+});
+
+// ── the pipeline wiring ─────────────────────────────────────────────────────
+
+describe('a fiação do pipeline', () => {
+  it('o nome da fila é o nome da função exportada em functions/src', () => {
+    expect(SHOPEE_NOTIFICATION_QUEUE).toBe('processShopeeNotification');
+  });
+
+  // ⚠️ `notificationGuardrails.test.ts` (guarda B) IGNORA a forma abreviada
+  // `collection,` de propósito — ela é a assinatura dos fakes sintéticos. Uma
+  // abreviação aqui leria como "este canal escreveu o próprio store" e
+  // avermelharia a suíte do @delfrance/data, sem nada apontar para este arquivo.
+  it('passa `collection: notificacaoShopeeCollection` na forma EXPLÍCITA', () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./notificacao.ts', import.meta.url)), 'utf8');
+    expect(fonte).toContain('collection: notificacaoShopeeCollection');
+    expect(fonte).not.toMatch(/\bcollection,\s*$/m);
+  });
+
+  it('identidadeDoPush separa o que sobrevive a uma reentrega do que não', () => {
+    const id = identidadeDoPush(
+      payload({ code: 3, shopId: 111, timestamp: 5000, data: { ordersn: 'ORD1' } }),
+    );
+    expect(id.entidade).toBe('111:ORD1');
+    expect(id.entidade).not.toContain('5000');
+  });
+});
