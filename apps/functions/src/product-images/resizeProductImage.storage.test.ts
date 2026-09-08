@@ -258,7 +258,14 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
       return d.data()?.uploadState === 'finalized' ? d : null;
     }, WAIT_LABELS.uploadFinalized);
 
-    // Same intra-invocation window as the idempotency test above.
+    // ⚠️ Unlike the idempotency test above, `uploadState` IS the right anchor here
+    // and no resize-completion signal exists to wait for: this object is not a
+    // watched original, so `shouldResize` is false and the handler returns right
+    // after `markUploadFinalized` — there is no `markDone`, and `resizeState` never
+    // moves. Observing the flag therefore means the invocation is essentially done,
+    // and this window only covers the tail of that same invocation. That is the
+    // contract `INTRA_HANDLER_WINDOW_MS` was written for, and it is why the fix
+    // above (anchor on `resizeState`) does not apply to this test.
     await sleep(INTRA_HANDLER_WINDOW_MS);
 
     // The product's derivative set must stay put through the unrelated upload.
