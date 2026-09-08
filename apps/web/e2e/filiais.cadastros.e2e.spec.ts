@@ -205,12 +205,18 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
     await expect(page.getByText(/sem certificado/i)).toBeVisible();
     await expect(page.getByText(/formato \.pfx ou \.p12/i)).toBeVisible();
-    // The Simples tab hosts the fiscal-regime config. A fixture filial has no
-    // `simplesnacional/default`, so it offers to create one — and, having never
-    // been apurada, shows no state badge rather than an invented one.
-    await page.getByRole('tab', { name: 'Simples Nacional' }).click();
-    await expect(page.getByText(/simples nacional ainda não configurado/i)).toBeVisible();
-    await expect(page.getByRole('button', { name: /criar configuração/i })).toBeVisible();
+    // ⚠️ The Simples tab is asserted only as far as the TAB, deliberately.
+    // Its panel reads `filiais/{id}/simplesnacional/default`, and the rules
+    // granting that read are generated in this same change and deployed by a
+    // human — so on staging the read is denied and the panel renders its error
+    // alert instead of the "not configured" one. Asserting the panel's content
+    // here would be asserting a DEPLOYMENT STATE (`apps/web/CLAUDE.md` rule 8):
+    // green the day the rules ship, red on every PR until then. The three query
+    // states are covered deterministically in `SimplesNacionalPanel.test.tsx`,
+    // and the panel's save-first hint has its own test on the create page.
+    const simples = page.getByRole('tab', { name: 'Simples Nacional' });
+    await simples.click();
+    await expect(simples).toHaveAttribute('aria-selected', 'true');
   });
 
   test('deletes a filial through the typed-confirm modal', async ({ page }) => {
