@@ -25,15 +25,27 @@ import { dirname } from 'node:path';
  * That pairing was an accident of Vitest's file ordering, not a design: the file
  * that eats the run's first (slowest) deliveries is whichever the sequencer runs
  * first, which would shift on a Vitest upgrade or a rename. One constant for the
- * whole family is what makes that unable to matter.
+ * whole family is what stops the unluckiest file from also being the one with the
+ * tightest budget.
  *
- * The measurement also settled what the flake IS: all 210 waits were eventually
- * satisfied, so it is LATENCY, never dropped delivery. The tail is densest on a
- * run's first deliveries but is not only cold start (dropping the first 6 samples
- * per run still leaves p99 = 7083ms), and it is load-sensitive — the same samples
- * grew from ~4s to ~9.4s on one box as it got busier. Hence a deadline with real
- * headroom rather than a warm-up, which measurement showed cuts p90 9x but the
- * max only 1.3x.
+ * The measurement also settled what the flake IS: across 210 samples in the
+ * suite's normal (deterministic) order, every wait was eventually satisfied — so
+ * in everything reproducible it is LATENCY, not dropped delivery. The tail is
+ * densest on a run's first deliveries but is not only cold start (dropping the
+ * first 6 samples per run still leaves p99 = 7083ms), and it is load-sensitive —
+ * the same samples grew from ~4s to ~9.4s on one box as it got busier. Hence a
+ * deadline with real headroom rather than a warm-up, which measurement showed
+ * cuts p90 9x but the max only 1.3x.
+ *
+ * ⚠️ ONE observation this does NOT explain, recorded so the next person does not
+ * assume it away. Running the suite with `--sequence.shuffle.files=true` (which
+ * nothing in this repo does — it was a check that ordering no longer decides who
+ * fails) produced, in 1 of 4 runs, a wait that exceeded 45s reporting "nothing had
+ * arrived", in a run where the trigger had already fired 231 times and another
+ * wait had succeeded at 20459ms. Three follow-up shuffled runs with the deadline
+ * temporarily raised to 300s all passed with a max of 25508ms, so it did NOT
+ * reproduce and could not be classified as slow-vs-lost. Treat "never dropped" as
+ * proven for the ORDER THIS SUITE ACTUALLY RUNS IN, and open for shuffled order.
  *
  * ⚠️ The deadline is bounded from ABOVE, so it cannot simply be maximised. A
  * test aborts at its FIRST failing wait, so a regression that broke delivery
