@@ -17,6 +17,7 @@ import {
   MODALIDADE_FRETE,
   IND_INTERMED_OPERACAO,
   FORMA_PAGAMENTO,
+  ehMarketplace,
   type Filial,
   type FreteDoPedido,
   type Integracao,
@@ -27,6 +28,13 @@ import {
 import type { NFeRuntime } from '../runtime';
 import { NFeOrchestratorError } from './errors';
 import type { FiscalItem, PedidoBundle } from './bundle';
+
+/**
+ * `tPag` for dinheiro. DERIVED from the schema enum rather than written as
+ * '01' so it cannot drift from `buildPaymentsFromPagamentos`, which builds
+ * every `tPag` the same way (`String(forma).padStart(2, '0')`).
+ */
+const TPAG_DINHEIRO = String(FORMA_PAGAMENTO.dinheiro).padStart(2, '0');
 
 /**
  * Project the validated fiscal items + filial + cliente + operação +
@@ -113,28 +121,102 @@ export function buildGeneratorInput(
   // instead, naming the values so the operator fixes the pagamentos. Skipped
   // when every entry is tPag='90' (sem pagamento — the empty-list default and
   // explicit no-payment records legitimately carry vPag=0 ≠ vNF).
+  //
+  // ONE mismatch is not an error: an over-payment on a channel WE settle
+  // ourselves is change handed back, and emits <vTroco> instead of throwing.
+  // See the block below.
   const allSemPagamento = payments.every((pay) => pay.tPag === '90');
+  // Change handed back to the customer — `Σ vPag − vNF`. Rounded HERE so the
+  // wire, this guard and SEFAZ's own YA03 summation all see the same 2 decimals
+  // (`buildPagObject` documents that the caller rounds). 0 ⇒ no <vTroco>.
+  let vTroco = 0;
   if (!allSemPagamento) {
     const somaVPag = roundReais(payments.reduce((sum, pay) => sum + pay.vPag, 0));
     if (somaVPag !== totals.vNF) {
-      // ⚠️ Name the frete-emitente override when it is the likely cause (#1322).
-      // The shortfall is EXACTLY the freight whenever the issuer contracts the
-      // carrier and there is more than one pagamento: the adjustment that would
-      // have absorbed it is gated on `pagamentos.length === 1` (Flutter parity,
-      // `pedido_nfe_base.dart:1790-1821`). Without this sentence an operator
-      // reads "fix the pagamentos" while looking at two pagamentos that are
-      // both correct, with no route to the real explanation.
-      const freteEmitente =
-        bundle.frete?.modalidade === MODALIDADE_FRETE.cif && (bundle.frete.valorCobrado ?? 0) > 0;
-      const pista =
-        freteEmitente && bundle.pagamentos.length > 1
-          ? ` O frete é por conta do emitente (R$ ${(bundle.frete?.valorCobrado ?? 0).toFixed(2)}) e o pedido tem ${bundle.pagamentos.length} pagamentos — o ajuste que soma o frete ao pagamento só se aplica quando há UM único pagamento.`
-          : '';
-      throw new NFeOrchestratorError(
-        `pedido '${bundle.pedidoId}': payments total (R$ ${somaVPag.toFixed(2)}) differs ` +
-          `from the NF-e total (R$ ${totals.vNF.toFixed(2)}) — SEFAZ would reject with cStat ` +
-          `${somaVPag < totals.vNF ? '865' : '866'}. Fix the pedido's pagamentos before emitting.${pista}`,
+      // An over-payment is LEGAL with a troco: 866 is literally "ausência de
+      // troco quando o valor dos pagamentos informados for maior que o total da
+      // nota" (YA03-20) — the rejection names its own remedy. Emit one wherever
+      // emitting one is honest, instead of blocking the nota and leaving the
+      // operator to edit the pagamento down (destroying the cash record).
+      //
+      // TWO axes must agree, and BOTH are load-bearing.
+      //
+      // (1) WHO SETTLES THE PAYMENT — never buyer presence. A WhatsApp order
+      //     paid in cash to the motoboy is `indPres='2'` (não presencial) and
+      //     still hands back real change, so `indPres` is the wrong axis and
+      //     must not be "fixed" back to it. On a marketplace the platform settles
+      //     the payment and no change can exist, so there Σ vPag > vNF is a data
+      //     defect (duplicated / over-recorded pagamento) — precisely what this
+      //     guard was built to catch (#394) — and must keep throwing.
+      //
+      // (2) HOW MUCH OF THE EXCESS CAN BE REAL — change comes out of CASH. No
+      //     acquirer refunds R$ 10 on a R$ 110 card capture, and a PIX / boleto /
+      //     vale over-payment is the SAME over-recorded pagamento as on a
+      //     marketplace, just on our own counter. Axis (1) alone would wave all
+      //     of those through on balcão/whatsapp/nenhuma, silently emitting a nota
+      //     for a row that used to throw and telling the operator nothing.
+      //
+      //     ⚠️ This is also what keeps <pag> and <cobr> consistent.
+      //     `buildCobrFromPagamentos` builds the duplicatas from
+      //     `bundle.pagamentos`, knows nothing about a troco, and its doc block
+      //     requires them to stay consistent with <pag> and vNF. A duplicata is
+      //     never `tPag='01'`, so an over-recorded one can no longer emit a
+      //     R$ 110 fatura beside a R$ 10 troco on a R$ 100 nota — a receivable
+      //     overstated against its own nota, the change pure fiction on an
+      //     `indPag='1'` payment where no money has moved yet.
+      //
+      //     `cheque` (`tPag='02'`) is deliberately NOT cash-like: handing cash
+      //     back against a cheque is not this counter's flow. Widening it is one
+      //     entry in the filter, and a business decision, not a mechanical one.
+      //
+      // ⚠️ `ehMarketplace` is TOLERANT by design (see its doc comment): a tipo
+      // outside the enum — the migrated legacy corpus carries wire-format enums
+      // `integracaoTipoSchema` does not model — answers "is a marketplace", and
+      // an unreadable tipo reaches us as null, which takes the same arm. Unknown
+      // channel ⇒ no troco ⇒ throw. Do NOT invert this into a whitelist of
+      // marketplace tipos: that would let an unreadable tipo emit a troco.
+      const excedente = roundReais(somaVPag - totals.vNF);
+      const vDinheiro = roundReais(
+        payments
+          .filter((pay) => pay.tPag === TPAG_DINHEIRO)
+          .reduce((sum, pay) => sum + pay.vPag, 0),
       );
+      const canalDevolveTroco =
+        bundle.integracaoTipo != null && !ehMarketplace(bundle.integracaoTipo);
+      if (excedente > 0 && canalDevolveTroco && excedente <= vDinheiro) {
+        vTroco = excedente;
+      } else {
+        // ⚠️ Name the frete-emitente override when it is the likely cause (#1322).
+        // The shortfall is EXACTLY the freight whenever the issuer contracts the
+        // carrier and there is more than one pagamento: the adjustment that would
+        // have absorbed it is gated on `pagamentos.length === 1` (Flutter parity,
+        // `pedido_nfe_base.dart:1790-1821`). Without this sentence an operator
+        // reads "fix the pagamentos" while looking at two pagamentos that are
+        // both correct, with no route to the real explanation.
+        const freteEmitente =
+          bundle.frete?.modalidade === MODALIDADE_FRETE.cif && (bundle.frete.valorCobrado ?? 0) > 0;
+        const pista =
+          freteEmitente && bundle.pagamentos.length > 1
+            ? ` O frete é por conta do emitente (R$ ${(bundle.frete?.valorCobrado ?? 0).toFixed(2)}) e o pedido tem ${bundle.pagamentos.length} pagamentos — o ajuste que soma o frete ao pagamento só se aplica quando há UM único pagamento.`
+            : '';
+        // On an over-payment, say WHY troco was not the answer — otherwise "fix
+        // the pagamentos" reads as nonsense next to a footer showing a Troco.
+        let pistaTroco = '';
+        if (excedente > 0) {
+          if (bundle.integracaoTipo == null) {
+            pistaTroco = ` A integração do pedido não informa o campo "tipo", então o excedente não pode ser emitido como troco — confira o cadastro da integração.`;
+          } else if (!canalDevolveTroco) {
+            pistaTroco = ` O pagamento é administrado pelo canal de venda (integracao.tipo=${bundle.integracaoTipo}), que não devolve troco — confira se há pagamento duplicado ou com valor acima do cobrado.`;
+          } else {
+            pistaTroco = ` O excedente de R$ ${excedente.toFixed(2)} só seria troco se houvesse dinheiro (tPag=01) que o cobrisse, e este pedido tem R$ ${vDinheiro.toFixed(2)} em dinheiro — não se devolve troco de cartão, PIX, boleto ou vale. Confira se há pagamento duplicado ou com valor acima do cobrado.`;
+          }
+        }
+        throw new NFeOrchestratorError(
+          `pedido '${bundle.pedidoId}': payments total (R$ ${somaVPag.toFixed(2)}) differs ` +
+            `from the NF-e total (R$ ${totals.vNF.toFixed(2)}) — SEFAZ would reject with cStat ` +
+            `${somaVPag < totals.vNF ? '865' : '866'}. Fix the pedido's pagamentos before emitting.${pista}${pistaTroco}`,
+        );
+      }
     }
   }
 
@@ -170,7 +252,7 @@ export function buildGeneratorInput(
     itens: genItems,
     totalXml: buildTotalXml(totals),
     transpXml: buildTranspXml(transpOpts),
-    pagXml: buildPagXml(payments),
+    pagXml: buildPagXml(payments, vTroco),
     ...(cobr ? { cobr } : {}),
     ...(infAdic ? { infAdic } : {}),
     ...(exporta ? { exporta } : {}),
