@@ -227,7 +227,7 @@ describe('ChatComposer — send capability (#817)', () => {
    * this stack. `site` still qualifies, and now permanently: with no widget there
    * is no outbound path to build, so this fixture cannot silently go inert.
    */
-  const conversaMlClaims: Conversa = conversaSchema.parse({
+  const conversaSite: Conversa = conversaSchema.parse({
     usuarios: ['op1'],
     estadoConversa: 1,
     origem: 'site',
@@ -241,7 +241,7 @@ describe('ChatComposer — send capability (#817)', () => {
     wrap(
       <ChatComposer
         conversaId="c1"
-        conversa={conversaMlClaims}
+        conversa={conversaSite}
         addOptimistic={vi.fn()}
         markOptimisticError={vi.fn()}
       />,
