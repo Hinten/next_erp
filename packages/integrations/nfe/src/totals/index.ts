@@ -8,9 +8,9 @@
  *
  * 1. the emitter (`apps/nfe/lib/nfe/orchestrator/audit.ts`), stamping `totais`
  *    in the same write that persists `xml_nfe_proc`;
- * 2. the backfill (`tools/migrations/src/2026-09-nfe-totais`), reading the same
- *    field out of historical documents;
- * 3. eventually `apps/web/lib/nfe/export/parseNfeReportRow.ts`, which today
+ * 2. a historical backfill, once one is written and scheduled for the migration
+ *    window (#1491) — no such script exists under `tools/migrations` yet;
+ * 3. eventually `apps/web/lib/nfe/export/parseNfeReportRow.ts`, which still
  *    hand-rolls the same parse with `DOMParser` for the CSV report.
  *
  * A second copy of a rule like this drifts *toward plausible* — it keeps
@@ -30,8 +30,8 @@
  *
  * ⚠️ **A silent zero is as bad as a silent miss, and it cuts BOTH ways.** The
  * block is all-or-nothing precisely because a component that quietly becomes
- * `0` still leaves the note looking readable, so the apuração's
- * `notasSemTotais` counter never sees it. Which way the total then moves
+ * `0` still leaves the note looking readable, so the unreadable-note counter
+ * the apuração will keep (#1491) never sees it. Which way the total then moves
  * depends on the component: losing `vDesc` (subtracted) overstates receita
  * bruta and over-declares; losing `vFrete`/`vSeg`/`vOutro` (added) understates
  * it and UNDER-declares. Hence `decimalOpcional` below distinguishes an absent
@@ -45,7 +45,7 @@
  * to that slice. The same hazard is documented in `parseNfeReportRow.ts`.
  */
 import { roundReais } from '@delfrance/core/money';
-import type { NFeTotais } from '@delfrance/schemas';
+import type { NFeTotais, NFeTotaisRtc } from '@delfrance/schemas';
 
 /**
  * Slice out the inner text of the first `<tag>…</tag>`, tolerating a namespace
@@ -86,7 +86,8 @@ function decimal(escopo: string, tag: string): number | null {
  * (`null`).
  *
  * ⚠️ The two must not collapse into `0`. A malformed value folded to zero
- * leaves the block looking COMPLETE, so `notasSemTotais` never counts it — and
+ * leaves the block looking COMPLETE, so the planned unreadable-note counter
+ * (#1491) never sees it — and
  * the error's DIRECTION depends on which component was lost: a dropped `vDesc`
  * overstates receita bruta (higher faixa, over-declared), while a dropped
  * `vFrete`/`vSeg`/`vOutro` understates it (lower faixa, under-declared).
@@ -101,22 +102,59 @@ function decimalOpcional(escopo: string, tag: string): number | null {
   return decimal(escopo, tag);
 }
 
+/** Separates "no RTC group here" (`null`) from "present but unreadable". */
+const POISON = Symbol('rtc-ilegivel');
+
+/**
+ * `<IBSCBSTot>` / `<ISTot>` / `<vNFTot>` — the NT 2025.002 totals, siblings of
+ * `<ICMSTot>` inside `<total>`.
+ *
+ * ⚠️ Captured here rather than "later" for the reason the whole block exists:
+ * a note emitted with RTC on stores a `vNF` that is NOT its own grand total
+ * (`vNFTot` is — `ICMSTot.vNF` deliberately excludes the por-fora tributes, see
+ * `tribute/total.ts`), so leaving these out would need a second pass over every
+ * RTC-era note.
+ *
+ * ⚠️ `vIBS`/`vCBS` also appear on each item's own RTC group, so they are read
+ * from the `<IBSCBSTot>` slice — the same scoping hazard as `vProd`. `<ISTot>`
+ * is omitted outright when there is no Imposto Seletivo, so absent is `0`.
+ */
+function extrairRtc(total: string): NFeTotaisRtc | null | typeof POISON {
+  const ibsCbsTot = elemento(total, 'IBSCBSTot');
+  if (ibsCbsTot === null) return null; // not an RTC emission — a correct absence
+
+  const vBCIBSCBS = decimal(ibsCbsTot, 'vBCIBSCBS');
+  const vIBS = decimal(ibsCbsTot, 'vIBS');
+  const vCBS = decimal(ibsCbsTot, 'vCBS');
+  const vNFTot = decimal(total, 'vNFTot');
+  const isTot = elemento(total, 'ISTot');
+  const vIS = isTot === null ? 0 : decimal(isTot, 'vIS');
+
+  if (vBCIBSCBS === null || vIBS === null || vCBS === null || vNFTot === null || vIS === null) {
+    return POISON;
+  }
+  return { vBCIBSCBS, vIBS, vCBS, vIS, vNFTot };
+}
+
 /**
  * Parse the totals out of an `<nfeProc>` / `<NFe>` XML string.
  *
  * Returns `null` — never a partial block — when the document does not carry
- * what a revenue figure needs. `null` is a legible state that the apuração
- * counts and reports (`notasSemTotais`); a half-filled block would be counted
- * as readable and silently understate the month. See {@link NFeTotais}.
+ * what a revenue figure needs. `null` is a legible state the apuração planned
+ * in #1491 will be able to count; a half-filled block would be counted as
+ * readable and silently understate the month. See {@link NFeTotais}.
  */
 export function extrairTotaisNFe(xml: string): NFeTotais | null {
   if (typeof xml !== 'string' || xml.length === 0) return null;
 
-  // ⚠️ Scope first — see the module header. `<ICMSTot>` is the note total;
-  // `<det><prod>` carries same-named per-item fields.
-  const icmsTot = elemento(xml, 'ICMSTot');
+  // ⚠️ Scope first — see the module header. `<det><prod>` and the per-item RTC
+  // groups carry fields named exactly like the totals, so every read below is
+  // scoped to `<total>` and then to the group that owns the value.
+  const total = elemento(xml, 'total');
   const ide = elemento(xml, 'ide');
-  if (icmsTot === null || ide === null) return null;
+  if (total === null || ide === null) return null;
+  const icmsTot = elemento(total, 'ICMSTot');
+  if (icmsTot === null) return null;
 
   const vProd = decimal(icmsTot, 'vProd');
   const vNF = decimal(icmsTot, 'vNF');
@@ -152,6 +190,13 @@ export function extrairTotaisNFe(xml: string): NFeTotais | null {
   if (tpNFbruto !== '0' && tpNFbruto !== '1') return null;
   if (!['1', '2', '3', '4'].includes(finNFebruto)) return null;
 
+  // Reforma Tributária (NT 2025.002). `<IBSCBSTot>` is emitted only when the
+  // filial has `emitirReformaTributaria` on, so its ABSENCE is the ordinary
+  // case and means `null`, never zero. When it IS present the same
+  // all-or-nothing rule applies.
+  const rtc = extrairRtc(total);
+  if (rtc === POISON) return null;
+
   return {
     vProd,
     vDesc,
@@ -163,5 +208,6 @@ export function extrairTotaisNFe(xml: string): NFeTotais | null {
     vNF,
     tpNF: Number(tpNFbruto) as NFeTotais['tpNF'],
     finNFe: Number(finNFebruto) as NFeTotais['finNFe'],
+    rtc,
   };
 }

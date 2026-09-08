@@ -43,6 +43,7 @@ describe('swapAnchorForProc', () => {
       vNF: 108,
       tpNF: 1,
       finNFe: 1,
+      rtc: null,
     });
   });
 

@@ -208,9 +208,10 @@ export function swapAnchorForProc(nfeProcXml: string): {
   //
   // ⚠️ OMITTED, never `null`, when the parse fails. A merge patch that carries
   // the key would overwrite a good stored block with `null`; omitting it leaves
-  // whatever is there untouched. The monthly apuração counts unreadable notes
-  // via `exists('totais.vNF')` and refuses to publish a rate while any exist,
-  // so an absent block is a loud state rather than a silent zero.
+  // whatever is there untouched. That absence is meant to stay legible to the
+  // monthly apuração planned in #1491, which will count unreadable notes and
+  // refuse to publish a rate while any exist — that consumer is NOT written
+  // yet, so today the absence is simply preserved rather than acted on.
   const totais = extrairTotaisNFe(nfeProcXml);
   return { xml_nfe_proc: nfeProcXml, xml_assinado: null, ...(totais != null ? { totais } : {}) };
 }

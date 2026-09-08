@@ -13,6 +13,8 @@ function nfeProc(opts: {
   finNFe?: string;
   itens?: { vProd: string; vDesc: string }[];
   total?: Record<string, string>;
+  /** Raw RTC siblings of `<ICMSTot>` inside `<total>` (NT 2025.002). */
+  rtc?: string;
 }): string {
   const itens = (opts.itens ?? [{ vProd: '10.00', vDesc: '0.00' }])
     .map(
@@ -30,7 +32,7 @@ function nfeProc(opts: {
     `<ide><cUF>35</cUF><natOp>VENDA</natOp><tpNF>${opts.tpNF ?? '1'}</tpNF>` +
     `<finNFe>${opts.finNFe ?? '1'}</finNFe></ide>` +
     itens +
-    `<total><ICMSTot>${total}</ICMSTot></total>` +
+    `<total><ICMSTot>${total}</ICMSTot>${opts.rtc ?? ''}</total>` +
     `</infNFe></NFe><protNFe><infProt><cStat>100</cStat></infProt></protNFe></nfeProc>`
   );
 }
@@ -62,6 +64,7 @@ describe('extrairTotaisNFe', () => {
       vNF: 271.5,
       tpNF: 1,
       finNFe: 1,
+      rtc: null,
     });
   });
 
@@ -164,7 +167,8 @@ describe('extrairTotaisNFe', () => {
     // ── A malformed COMPONENT poisons the block too ──────────────────────
     //
     // These six used to fold to 0 on any unparseable value, which left the
-    // block looking complete: `notasSemTotais` never counted the note, and the
+    // block looking complete: the planned unreadable-note counter (#1491) would
+    // never have seen the note, and the
     // total silently moved — up for a lost `vDesc`, DOWN for a lost `vFrete`.
     it.each([
       ['vDesc', '1,50'],
@@ -211,6 +215,84 @@ describe('extrairTotaisNFe', () => {
     const t = extrairTotaisNFe(nfeProc({ tpNF: '0', finNFe: '4' }));
     expect(t?.tpNF).toBe(0);
     expect(t?.finNFe).toBe(4);
+  });
+
+  // ── Reforma Tributária (NT 2025.002) ────────────────────────────────────
+  describe('RTC totals', () => {
+    /** A realistic `<IBSCBSTot>` + `<ISTot>` + `<vNFTot>` tail. */
+    function rtcTail(over: Record<string, string> = {}): string {
+      const v = {
+        vBCIBSCBS: '1000.00',
+        vIBS: '1.50',
+        vCBS: '13.50',
+        vIS: '5.00',
+        vNFTot: '1020.00',
+        ...over,
+      };
+      return (
+        `<IBSCBSTot><vBCIBSCBS>${v.vBCIBSCBS}</vBCIBSCBS>` +
+        `<gIBS><gIBSUF><vIBSUF>1.00</vIBSUF></gIBSUF><gIBSMun><vIBSMun>0.50</vIBSMun></gIBSMun>` +
+        `<vIBS>${v.vIBS}</vIBS></gIBS>` +
+        `<gCBS><vCBS>${v.vCBS}</vCBS></gCBS></IBSCBSTot>` +
+        `<ISTot><vIS>${v.vIS}</vIS></ISTot>` +
+        `<vNFTot>${v.vNFTot}</vNFTot>`
+      );
+    }
+
+    const comRtc = (over: Record<string, string> = {}) =>
+      nfeProc({ total: { vProd: '1000.00', vNF: '1000.00' }, rtc: rtcTail(over) });
+
+    it('lifts IBSCBSTot / ISTot / vNFTot when the note was emitted with RTC', () => {
+      expect(extrairTotaisNFe(comRtc())?.rtc).toEqual({
+        vBCIBSCBS: 1000,
+        vIBS: 1.5,
+        vCBS: 13.5,
+        vIS: 5,
+        vNFTot: 1020,
+      });
+    });
+
+    it('vNF is NOT the grand total on an RTC note — vNFTot is', () => {
+      // The whole reason this block is captured now: `ICMSTot.vNF` deliberately
+      // excludes the por-fora tributes, so a reader taking `vNF` for "the value
+      // of the note" is wrong by exactly IBS + CBS + IS.
+      const t = extrairTotaisNFe(comRtc());
+      expect(t?.vNF).toBe(1000);
+      expect(t?.rtc?.vNFTot).toBe(1020);
+      expect(t?.rtc?.vNFTot).toBeCloseTo(t!.vNF + t!.rtc!.vIBS + t!.rtc!.vCBS + t!.rtc!.vIS, 2);
+    });
+
+    it('takes vIBS from IBSCBSTot, not from the nested vIBSUF/vIBSMun', () => {
+      // 1.00 (UF) and 0.50 (Mun) are the plausible-looking wrong answers.
+      expect(extrairTotaisNFe(comRtc())?.rtc?.vIBS).toBe(1.5);
+    });
+
+    it('a note WITHOUT RTC carries rtc: null — an absence, not a zero', () => {
+      const t = extrairTotaisNFe(nfeProc({}));
+      expect(t).not.toBeNull();
+      expect(t?.rtc).toBeNull();
+    });
+
+    it('an omitted <ISTot> means no Imposto Seletivo — 0, still readable', () => {
+      const semIs =
+        '<IBSCBSTot><vBCIBSCBS>100.00</vBCIBSCBS><gIBS><vIBS>1.00</vIBS></gIBS>' +
+        '<gCBS><vCBS>2.00</vCBS></gCBS></IBSCBSTot><vNFTot>103.00</vNFTot>';
+      expect(extrairTotaisNFe(nfeProc({ rtc: semIs }))?.rtc?.vIS).toBe(0);
+    });
+
+    it.each([['vIBS'], ['vCBS'], ['vBCIBSCBS'], ['vNFTot']])(
+      'a malformed %s poisons the whole block',
+      (campo) => {
+        expect(extrairTotaisNFe(comRtc({ [campo]: '1,50' }))).toBeNull();
+      },
+    );
+
+    it('an IBSCBSTot missing vNFTot is unreadable, not partially readable', () => {
+      const semTotal =
+        '<IBSCBSTot><vBCIBSCBS>100.00</vBCIBSCBS><gIBS><vIBS>1.00</vIBS></gIBS>' +
+        '<gCBS><vCBS>2.00</vCBS></gCBS></IBSCBSTot>';
+      expect(extrairTotaisNFe(nfeProc({ rtc: semTotal }))).toBeNull();
+    });
   });
 
   it('tolerates a namespace prefix on the elements', () => {

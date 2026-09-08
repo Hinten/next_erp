@@ -105,12 +105,47 @@ export const CHAVE_NFE_REGEX = /^\d{44}$/;
  * decision for the apuração that consumes them.
  *
  * ⚠️ **All-or-nothing on purpose.** Every component is required once the block
- * is present, because the monthly apuração asks Firestore for
- * `exists('totais.vNF')` to count notes it could NOT read. A partially
- * populated block would answer that question wrongly, and `sum()` skips missing
- * fields **silently** — which would understate RBT12, drop the company into a
- * lower faixa, and under-declare tax with every job still reporting success.
+ * is present. The apuração planned in #1491 will count unreadable notes with an
+ * `exists('totais.vNF')` probe and refuse to publish a rate while any exist —
+ * that consumer is NOT written yet, and this invariant is what will make it
+ * possible. A partially populated block would answer the probe wrongly, and
+ * Firestore's `sum()` skips missing fields **silently**, which would understate
+ * RBT12, drop the company into a lower faixa, and under-declare tax with every
+ * job still reporting success.
  */
+/**
+ * Totais da Reforma Tributária (NT 2025.002, Grupo W03) — `<IBSCBSTot>`,
+ * `<ISTot>` e `<vNFTot>`, irmãos de `<ICMSTot>` dentro de `<total>`.
+ *
+ * ⚠️ Presente apenas quando a nota foi emitida com RTC ligado
+ * (`nfeConfig.emitirReformaTributaria`, opt-in por filial). `null` numa nota
+ * pré-RTC não é dado faltando — é a ausência correta.
+ *
+ * Capturado JUNTO com o resto, e não depois, porque é exatamente o caso que a
+ * justificativa deste bloco cita: guardar as partes custa o mesmo write e evita
+ * uma segunda migração. Toda nota emitida com RTC entre o merge disto e um
+ * "depois a gente vê" precisaria de um backfill próprio.
+ */
+export const nfeTotaisRtcSchema = z.object({
+  /** `<vBCIBSCBS>` — base de cálculo do IBS/CBS. */
+  vBCIBSCBS: z.number(),
+  /** `<gIBS><vIBS>` — IBS total (UF + Município). */
+  vIBS: z.number(),
+  /** `<gCBS><vCBS>` — CBS total. */
+  vCBS: z.number(),
+  /** `<ISTot><vIS>` — Imposto Seletivo. `<ISTot>` é omitido quando zero. */
+  vIS: z.number(),
+  /**
+   * `<vNFTot>` — `vNF` + IBS + CBS + IS. **Este** é o total da nota numa
+   * emissão RTC; `ICMSTot.vNF` fica deliberadamente sem os tributos "por fora"
+   * (regra de transição 2025–2026, RV VB01-10 Exceção 1) — ver
+   * `packages/integrations/nfe/src/tribute/total.ts`.
+   */
+  vNFTot: z.number(),
+});
+
+export type NFeTotaisRtc = z.infer<typeof nfeTotaisRtcSchema>;
+
 export const nfeTotaisSchema = z.object({
   /** `<vProd>` — soma dos produtos, antes de desconto/frete/ST. */
   vProd: z.number(),
@@ -126,12 +161,21 @@ export const nfeTotaisSchema = z.object({
   vSeg: z.number(),
   /** `<vOutro>` — outras despesas acessórias; integram o preço da operação. */
   vOutro: z.number(),
-  /** `<vNF>` — valor total da nota, como impresso no DANFE. */
+  /**
+   * `<vNF>` — total do bloco ICMS.
+   *
+   * ⚠️ **Não é necessariamente o total impresso no DANFE.** Numa nota emitida
+   * com Reforma Tributária os tributos IBS/CBS/IS vão "por fora" e o total da
+   * nota é `rtc.vNFTot`; `ICMSTot.vNF` permanece sem eles por regra de
+   * transição. Para "o valor da nota" use `rtc?.vNFTot ?? vNF`.
+   */
   vNF: z.number(),
   /** `<tpNF>` (B11) — 0 entrada, 1 saída. Uma entrada SUBTRAI do faturamento. */
   tpNF: tipoNFeSchema,
   /** `<finNFe>` (B25) — 1 normal, 2 complementar, 3 ajuste, 4 devolução. */
   finNFe: finNFeOperacaoSchema,
+  /** Totais RTC — ver {@link nfeTotaisRtcSchema}. `null` fora de emissão RTC. */
+  rtc: nfeTotaisRtcSchema.nullable().default(null),
 });
 
 export type NFeTotais = z.infer<typeof nfeTotaisSchema>;
@@ -206,9 +250,13 @@ export const nfeSchema = z.object({
   justificativaContingencia: z.string().min(15).max(255).nullable(),
 
   /**
-   * Totais do `<ICMSTot>` — ver {@link nfeTotaisSchema}. Escrito no MESMO write
-   * que persiste `xml_nfe_proc`, derivado desses próprios bytes. `null` em
-   * documentos anteriores ao #1491 até a migração `2026-09-nfe-totais` rodar.
+   * Totais do `<ICMSTot>` (+ RTC) — ver {@link nfeTotaisSchema}. Escrito no
+   * MESMO write que persiste `xml_nfe_proc`, derivado desses próprios bytes.
+   *
+   * ⚠️ `null` em toda nota autorizada ANTES deste campo existir, e assim
+   * permanece: nada preenche o histórico retroativamente hoje. Um backfill é
+   * trabalho da janela de migração (regra 8) e ainda não tem script nem issue
+   * — o #1491 acompanha.
    *
    * A alíquota e o imposto rateado NÃO moram aqui ainda: os campos chegam
    * junto do runner que os escreve, e não antes. Um campo que nada escreve é
