@@ -50,6 +50,7 @@ import {
   isPipelineSupported,
 } from '@delfrance/data/pipeline-queries';
 import { extractFieldsFromSchema } from '../schema/derive';
+import { expandColumnFilter } from '../schema/types';
 import type {
   ActionConfig,
   ColumnFilterValue,
@@ -848,7 +849,27 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     searchConfig && searchTerm !== '' && !searchIdsActive && !searchResolving
       ? searchConfig.toForcedOrderBy?.(searchTerm)
       : undefined;
-  const resolvedForcedOrderBy = forcedOrderBy ?? searchForcedOrderBy;
+  /**
+   * A `between` filter makes its field an INEQUALITY, and Firestore requires an
+   * inequality field to lead the `orderBy`. Sorting by anything else silently
+   * stops matching the composite index — no error on Enterprise, just a scan
+   * billed by data read. So an active range takes the sort, exactly as the
+   * legacy app did for its despacho range (`pedidoTableView.dart:210,218`).
+   *
+   * ⚠️ Only the FIRST range wins. A second inequality is a post-filter that,
+   * per Firestore's own docs, "does not reduce the number of index entries
+   * scanned" (root CLAUDE.md, #785) — so a second range cannot be served by
+   * leading the sort with it, and pretending otherwise would just move the scan.
+   * The UI should keep one range active; this makes the query honest either way.
+   */
+  const rangeFilterField = useMemo(
+    () => Object.entries(serverFilters).find(([, v]) => v.op === 'between')?.[0],
+    [serverFiltersSerial],
+  );
+  const rangeForcedOrderBy = rangeFilterField
+    ? { field: rangeFilterField, direction: 'desc' as const }
+    : undefined;
+  const resolvedForcedOrderBy = forcedOrderBy ?? rangeForcedOrderBy ?? searchForcedOrderBy;
   const forcedSort: SortState | undefined = resolvedForcedOrderBy
     ? {
         field: resolvedForcedOrderBy.field,
@@ -978,7 +999,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         filters: [
           ...baseFilters,
           ...(effectiveExtraFilters ?? []),
-          ...Object.entries(serverFilters).map(([field, v]) => ({ field, ...v })),
+          // `flatMap`, not `map`: a `between` filter is ONE piece of UI state
+          // that expands to TWO predicates (`expandColumnFilter`). The query
+          // builder never learns about the UI op.
+          ...Object.entries(serverFilters).flatMap(([field, v]) => expandColumnFilter(field, v)),
         ],
         // Constrain to the parent ids a subcollection lookup resolved (NF
         // by numero/chave). Undefined when no such filter is active.

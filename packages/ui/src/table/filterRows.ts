@@ -50,6 +50,21 @@ function getByPath(data: unknown, path: string): unknown {
  */
 function compileFilter(f: ColumnFilterValue): (value: unknown) => boolean {
   switch (f.op) {
+    case 'between': {
+      // Inclusive both ends, matching the gte+lte that `expandColumnFilter`
+      // emits server-side.
+      // absent bound is not a constraint — the same degradation the server
+      // side gets, where the missing predicate is simply not emitted.
+      const lo = f.value == null ? null : Number(f.value);
+      const hi = f.valueTo == null ? null : Number(f.valueTo);
+      return (value) => {
+        if (value == null) return false;
+        const n = Number(value);
+        if (lo !== null && n < lo) return false;
+        if (hi !== null && n > hi) return false;
+        return true;
+      };
+    }
     case 'contains': {
       // Case- and accent-insensitive substring, like regexContains server-side.
       const re = buildSimilarityRegExp(String(f.value));

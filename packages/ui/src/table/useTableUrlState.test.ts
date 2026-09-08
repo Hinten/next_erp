@@ -98,7 +98,7 @@ describe('parseFiltersFromParams', () => {
 describe('encodeFilterValue ⇄ parseFiltersFromParams round trip', () => {
   function roundTrip(field: string, v: ColumnFilterValue) {
     const params = new URLSearchParams();
-    params.set(field, `${v.op}:${encodeFilterValue(v.value)}`);
+    params.set(field, `${v.op}:${encodeFilterValue(v)}`);
     return parseFiltersFromParams(params, FIELDS)[field];
   }
 

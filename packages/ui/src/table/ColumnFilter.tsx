@@ -228,7 +228,15 @@ function TextBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
 }
 
 function NumericBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
-  const [op, setOp] = useState<PipelineFilterOp>(value?.op ?? 'eq');
+  // A stored op can now be the UI-only `between`, which this body does not
+  // offer (ranges are a datetime affordance today). Fall back rather than
+  // widening the Select, so the picker never shows an option it cannot emit.
+  const NUMERIC_OPS = ['eq', 'lt', 'lte', 'gt', 'gte'] as const;
+  const [op, setOp] = useState<PipelineFilterOp>(() =>
+    (NUMERIC_OPS as ReadonlyArray<string>).includes(value?.op ?? '')
+      ? (value!.op as PipelineFilterOp)
+      : 'eq',
+  );
   const [local, setLocal] = useState<number | null>((value?.value as number) ?? null);
   const disabled = local === null;
   const apply = () => {
@@ -287,46 +295,60 @@ function NumericBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
  */
 function DateBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
   const unit: EpochUnit = descriptor.dateUnit ?? 'us';
-  const [op, setOp] = useState<PipelineFilterOp>(value?.op === 'lte' ? 'lte' : 'gte');
-  const initial =
-    value && typeof value.value === 'number' ? epochToPickerString(value.value, unit) : null;
-  // Full picker string: 'YYYY-MM-DD HH:mm:ss' (local wall-clock).
-  const [dt, setDt] = useState<string | null>(initial);
-  const disabled = !dt;
+  // Two bounds, either optional. This replaced an operator Select that could
+  // express only ONE side, which is why "criado entre X e Y" — the single most
+  // common thing an operator asks a pedido list — was not expressible at all.
+  // The legacy app had exactly this pair (`pedidoTableView.dart`: "Despacho
+  // desde" / "Despacho até", "Criado desde" / "Criado até"), and every one of
+  // its dashboard despacho presets is a range.
+  const toPicker = (v: unknown) => (typeof v === 'number' ? epochToPickerString(v, unit) : null);
+  const [from, setFrom] = useState<string | null>(() =>
+    value?.op === 'between' || value?.op === 'gte' ? toPicker(value.value) : null,
+  );
+  const [to, setTo] = useState<string | null>(() => {
+    if (value?.op === 'between') return toPicker(value.valueTo);
+    if (value?.op === 'lte') return toPicker(value.value);
+    return null;
+  });
+  const disabled = !from && !to;
   const apply = () => {
-    const micros = pickerStringToEpoch(dt, unit);
-    if (micros == null) return;
-    onApply({ op, value: micros });
+    const lo = pickerStringToEpoch(from, unit);
+    const hi = pickerStringToEpoch(to, unit);
+    // One bound is a plain inequality; two are a range. Emitting `between` for a
+    // single bound would work — `expandColumnFilter` drops the empty side — but
+    // it would put a two-operand op in the URL for a one-operand filter, and the
+    // chip would have to describe a range that has no second end.
+    if (lo != null && hi != null) onApply({ op: 'between', value: lo, valueTo: hi });
+    else if (lo != null) onApply({ op: 'gte', value: lo });
+    else if (hi != null) onApply({ op: 'lte', value: hi });
   };
   return (
     <FilterShell
       onClear={() => {
-        setDt(null);
+        setFrom(null);
+        setTo(null);
         onClear();
       }}
       onApply={apply}
       applyDisabled={disabled}
     >
       <Stack gap="xs">
-        <Select
-          label="Operador"
-          data={[
-            { value: 'gte', label: 'A partir de (≥)' },
-            { value: 'lte', label: 'Até (≤)' },
-          ]}
-          value={op}
-          onChange={(v) => v && setOp(v as PipelineFilterOp)}
-          // Render inline (see NumericBody): keep the FilterPopover open.
-          comboboxProps={{ withinPortal: false }}
-        />
         <DateTimePicker
-          label={descriptor.label}
-          value={dt}
-          onChange={setDt}
+          label={`${descriptor.label} de`}
+          value={from}
+          onChange={setFrom}
           valueFormat="DD/MM/YYYY HH:mm"
           clearable
-          // Render inline (see the operator Select): a portaled calendar/time
-          // click would read as a click-outside and close the FilterPopover.
+          // Render inline: a portaled calendar/time click would read as a
+          // click-outside and close the FilterPopover.
+          popoverProps={{ withinPortal: false }}
+        />
+        <DateTimePicker
+          label={`${descriptor.label} até`}
+          value={to}
+          onChange={setTo}
+          valueFormat="DD/MM/YYYY HH:mm"
+          clearable
           popoverProps={{ withinPortal: false }}
         />
       </Stack>

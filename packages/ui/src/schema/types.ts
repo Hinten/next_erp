@@ -75,9 +75,57 @@ export type FilterableField = Pick<
  * emitting one must short-circuit (see the TableView guard) or, better, emit
  * `undefined` and drop the filter entirely.
  */
+/**
+ * Ops a column filter may carry. A superset of `PipelineFilterOp`: `between` is
+ * a UI-ONLY op that expands to two real predicates at query-build time.
+ *
+ * It is deliberately NOT added to `PipelineFilterOp`. The data layer's op set
+ * describes what Firestore can be asked directly; `between` is a presentation
+ * of two of those, and letting it reach `buildPipeline` would mean teaching the
+ * query builder about a second operand it has no field for. Expansion happens
+ * in exactly one place — {@link expandColumnFilter}.
+ */
+export type ColumnFilterOp = PipelineFilterOp | 'between';
+
 export interface ColumnFilterValue {
-  op: PipelineFilterOp;
+  op: ColumnFilterOp;
   value: string | number | boolean | null | ReadonlyArray<string>;
+  /**
+   * Upper bound. `between` only, and required there — the lower bound rides
+   * `value`. Anything else must leave it undefined.
+   */
+  valueTo?: string | number | null;
+}
+
+/**
+ * The one place a `ColumnFilterValue` becomes real query predicates.
+ *
+ * `between` is the only op that expands to more than one, and it expands to an
+ * INCLUSIVE pair — `gte` lower, `lte` upper — which is what an operator means by
+ * "de X até Y" for both a date range and a value range.
+ *
+ * ⚠️ A range makes the field an inequality, so it must lead the `orderBy` or the
+ * query stops matching its composite index (silently, on Enterprise). Callers
+ * must derive a forced sort from an active range; see `TableView`.
+ *
+ * ⚠️ An incomplete range is NOT a range. A `between` whose `valueTo` never
+ * arrived degrades to the single bound it does have rather than emitting a
+ * comparison against `undefined`, which would match nothing and look like an
+ * empty result set.
+ */
+export function expandColumnFilter(
+  field: string,
+  v: ColumnFilterValue,
+): Array<{ field: string; op: PipelineFilterOp; value: ColumnFilterValue['value'] }> {
+  if (v.op !== 'between') {
+    return [{ field, op: v.op, value: v.value }];
+  }
+  const lo = v.value;
+  const hi = v.valueTo;
+  const out: Array<{ field: string; op: PipelineFilterOp; value: ColumnFilterValue['value'] }> = [];
+  if (lo !== null && lo !== undefined && lo !== '') out.push({ field, op: 'gte', value: lo });
+  if (hi !== null && hi !== undefined && hi !== '') out.push({ field, op: 'lte', value: hi });
+  return out;
 }
 
 /**
