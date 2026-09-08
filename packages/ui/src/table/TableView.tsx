@@ -7,6 +7,7 @@ import { useLocalStorage } from '@mantine/hooks';
 import {
   ActionIcon,
   Alert,
+  Badge,
   Button,
   Center,
   Checkbox,
@@ -61,6 +62,7 @@ import { ActionBar } from './ActionBar';
 import { ActionSidePanel } from './ActionSidePanel';
 import { ActiveFilters } from './ActiveFilters';
 import { useCollectionMonitor } from './useCollectionMonitor';
+import { LIVE_LABEL, STATIC_REASON_LABEL, resolveListMode } from './resolveListMode';
 import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@tabler/icons-react';
 import { ColumnFilter, FilterPopover } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
@@ -872,6 +874,44 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       ? { field: defaultQuery.orderBy[0].field, direction: defaultQuery.orderBy[0].direction }
       : undefined);
 
+  // --- Transport: live stream vs static snapshot ---------------------------
+  // LIVE is permitted only when the query about to be issued is byte-for-byte
+  // the declared `meta.defaultQuery`. See `resolveListMode` for why the rule is
+  // this strict, and what must ship before it can be widened.
+  const orderBySerial = useMemo(() => JSON.stringify(effectiveOrderBy ?? []), [effectiveOrderBy]);
+  const declaredOrderBySerial = useMemo(
+    () =>
+      JSON.stringify(
+        (defaultQuery?.orderBy ?? []).map((o) => ({ field: o.field, direction: o.direction })),
+      ),
+    [defaultQuery],
+  );
+  const listMode = useMemo(
+    () =>
+      resolveListMode({
+        hasQueryOverride: !!queryOverride,
+        hasDeclaredQuery: !!defaultQuery,
+        columnFilterCount: Object.keys(serverFilters).length,
+        extraFilterCount: effectiveExtraFilters?.length ?? 0,
+        searchTerm,
+        idRestrictionActive,
+        orderBySerial,
+        declaredOrderBySerial,
+      }),
+    // `serverFiltersSerial` stands in for the `serverFilters` object content,
+    // matching how every other memo in this file tracks it.
+    [
+      queryOverride,
+      defaultQuery,
+      serverFiltersSerial,
+      effectiveExtraFilters,
+      searchTerm,
+      idRestrictionActive,
+      orderBySerial,
+      declaredOrderBySerial,
+    ],
+  );
+
   // Pipeline projection (`select`). Project the visible schema columns to cut
   // payload; `buildPipeline` re-appends the doc id. Visible virtual columns
   // can read arbitrary fields from `row.data`, so a visible virtual WITHOUT a
@@ -916,6 +956,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Always use the classic Query path when an override is supplied. Otherwise,
   // try Pipelines first; fall back to buildQuery when unsupported by the SDK.
   const pipeline: Pipeline | null = useMemo(() => {
+    // The declared query streams instead. Returning null here routes it to
+    // `fallbackQuery` below, which builds exactly `where(base) + orderBy(declared)
+    // + limit` — the shape both index guards already assert an index for.
+    if (listMode.mode === 'live') return null;
     if (queryOverride) return null;
     if (!isPipelineSupported(db)) return null;
     // A subcollection-lookup filter is active but still resolving, or it
@@ -969,6 +1013,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     lookupLoading,
     lookupEmpty,
     selectFieldsSerial,
+    listMode,
     refreshKey,
   ]);
 
@@ -1385,7 +1430,24 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // and pays for its vertical space.
   const actionBarShown =
     !panelEnabled && (actions.length > 0 || !!newHref || !!renderNewButton || !!copyHref);
-  const headerToolbarShown = monitor.stale || showColumnPicker || actionBarShown;
+  /**
+   * What the operator is actually looking at.
+   *
+   * ⚠️ Derived from the TRANSPORT that was selected (`pipeline === null` ⇒ the
+   * rows come from `useSnapshot`), never from `listMode`. The two disagree on
+   * `queryOverride`: the policy calls it static, but `fallbackQuery` returns the
+   * caller's query and `useSnapshot` streams it — so `/clientes`' endereço search
+   * is genuinely LIVE while the policy says otherwise. A badge that is wrong on
+   * the one screen reaching that branch is worse than no badge.
+   */
+  const transportIsLive = pipeline === null;
+  const transportLabel = transportIsLive
+    ? LIVE_LABEL
+    : STATIC_REASON_LABEL[listMode.reason ?? 'override'];
+
+  // Always shown, because it now carries the transport badge. Two lists that
+  // behave differently and look identical is how #40 stayed invisible.
+  const headerToolbarShown = true;
 
   // An id restriction that hit its cap is showing a PREFIX of the real answer.
   // Both sources compute this and neither used to render it, so the 30-row cap
@@ -1412,6 +1474,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           {headerToolbarShown && (
             <Group justify="flex-end" wrap="nowrap" align="flex-end">
               <Group gap="xs">
+                <Tooltip label={transportLabel} withinPortal multiline maw={280}>
+                  <Badge variant="light" color={transportIsLive ? 'teal' : 'yellow'}>
+                    {transportIsLive ? 'Tempo real' : 'Resultado fixo'}
+                  </Badge>
+                </Tooltip>
                 {monitor.stale && (
                   <Tooltip
                     label="Os dados desta coleção foram alterados desde que a página carregou. Clique para atualizar."
