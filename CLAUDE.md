@@ -215,10 +215,15 @@ anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 - `web` (:3000) — internal ERP UI, client-first. Only app with Playwright e2e.
 - `integrations` (:3001) — generic webhook/OAuth scaffolding; per-channel routes
   have moved out to their own apps.
-- `webchat` (:3002) static-export chat widget · `docs` (:3003) Astro Starlight
-  (hosts the ADRs). ⚠️ `apps/example` (the OSS demo) was **deleted** in #1444 — it
-  demoed the plugin registry, and nothing ever ran it, so the rest of it had silently
-  drifted out of sync with the schemas. A replacement is planned.
+- `docs` (:3003) Astro Starlight (hosts the ADRs) — the only app left in this
+  bullet, because **both of its former neighbours are gone**. ⚠️ **:3002 is free**:
+  it was `webchat`, the embeddable widget, **dropped on 2026-09-07** and never to be
+  ported (#153, #558 closed as not planned). The `site` origem it produced STAYS in
+  `conversaSchema` — the imported legacy corpus carries `site` conversas and `origem`
+  defaults to it, so the writer went and the reader stayed. ⚠️ `apps/example` (the OSS
+  demo) was **deleted** in #1444 — it demoed the plugin registry, and nothing ever ran
+  it, so the rest of it had silently drifted out of sync with the schemas. A
+  replacement is planned.
 - `nfe` (:3004) · `melhor-envio` (:3005) · `mercado-livre` (:3006) ·
   `mercado-pago` (:3007) · `whatsapp` (:3008) · `shopee` (:3009) — API-only App
   Hosting backends, **one deployable per channel**, each importing its logic
@@ -289,7 +294,7 @@ can push nothing.
 ```bash
 pnpm install                                # per worktree too; apps read ../../.env.local
 pnpm --filter @delfrance/web dev            # ONE app — prefer this
-pnpm dev                                    # WARNING: 10 dev servers, :3000-:3009
+pnpm dev                                    # WARNING: 9 dev servers, :3000-:3009 (no :3002)
 pnpm turbo run lint typecheck               # before commits
 pnpm format:check                           # a CI gate; `pnpm format` fixes
 pnpm turbo run test
@@ -558,9 +563,10 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   type — never by the member set, which is not an identity: `'1' | '2'` is both
   `IndIncentivo` and the NF-e engine's `TpAmb`, and matching on the set once
   rewrote `tpImp: '1'` (DANFE layout) to `MOD_BCST.listaNegativa`.
-- Firebase App Hosting deploys every Next app **except `webchat`** (static
-  export served by `firebase.json` hosting — 8 `apphosting.yaml` files, 9 Next
-  apps); heavy work goes to Cloud Functions. `apps/portal/` does NOT exist —
+- Firebase App Hosting deploys **every** Next app — 8 `apphosting.yaml` files, 8
+  Next apps, no exception since `webchat` (the one static export, served by
+  `firebase.json` hosting) was dropped on 2026-09-07; `firebase.json` no longer
+  has a `hosting` key at all. Heavy work goes to Cloud Functions. `apps/portal/` does NOT exist —
   public pages are deferred. ⚠️ An `apphosting.yaml` carries only `runConfig` +
   `env` — no build-root and no build command — so anything the **buildpack**
   gets wrong has to be fixed in the manifest itself (see the `next` pin under
@@ -600,11 +606,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   and `firebase-functions` (`7.3.2`). ⚠️ `next` propagates by **copy**, not by
   reference: the catalog is still where a bump *starts*, but it is **9
   deliberate edits** — the catalog plus the 8 App Hosting app manifests — and
-  the guard above fails on drift. Its only remaining `catalog:` consumers are
-  `apps/webchat` (static export, no buildpack) and `packages/ui`'s
-  devDependency, which makes them load-bearing: literalise BOTH and
-  `cleanupUnusedCatalogs: true` deletes `next: 16.2.6` from the catalog on the
-  next install. Do not bump it with `pnpm add` — under `catalogMode: strict`
+  the guard above fails on drift. ⚠️ `packages/ui`'s devDependency is now its
+  **SOLE** remaining `catalog:` consumer — `apps/webchat` was the other, deleted
+  with the webchat widget — which makes that one spec load-bearing: literalise it
+  and `cleanupUnusedCatalogs: true` deletes `next: 16.2.6` from the catalog on the
+  next install, leaving the 8 app pins agreeing with nothing. There is no margin
+  left; a change that must touch it adds a replacement keeper in the same commit. Do not bump it with `pnpm add` — under `catalogMode: strict`
   that rewrites the spec back to `catalog:`, the exact string that blocks the
   deploy. **`packageManager` is the sole authority for pnpm *in CI*** — corepack
   honours it over any activated default, so CI runs only `corepack enable`

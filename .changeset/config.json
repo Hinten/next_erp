@@ -10,7 +10,6 @@
   "ignore": [
     "@delfrance/web",
     "@delfrance/integrations-app",
-    "@delfrance/webchat",
     "@delfrance/docs",
     "@delfrance/test-fixtures",
     "@delfrance/config-eslint",

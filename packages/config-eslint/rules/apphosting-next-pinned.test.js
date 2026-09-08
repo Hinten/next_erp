@@ -51,10 +51,12 @@ import { REPO_ROOT, gitLsFiles } from './lib/repo-scan.js';
  * and does not need adding here; this list exists only as an anchor, so a glob that
  * silently stops matching fails loudly instead of vacuously passing over an empty set.
  *
- * `apps/webchat` is deliberately absent — it is a static export served by classic
- * Firebase Hosting (`firebase.json`), has no `apphosting.yaml`, and never touches this
- * buildpack. If it ever gains one, the glob pulls it in and this guard demands the pin
- * BEFORE the deploy fails, which is the whole point of keying on the config file.
+ * Every Next app in the repo is an App Hosting backend today. (`apps/webchat` used to be
+ * the one exception — a static export served by classic Firebase Hosting — but the
+ * webchat widget was dropped on 2026-09-07 and the app deleted.) If a future app lands
+ * without an `apphosting.yaml`, the glob simply does not pull it in; the day it gains
+ * one, this guard demands the pin BEFORE the deploy fails, which is the whole point of
+ * keying on the config file.
  */
 const KNOWN_APPHOSTING_APPS = [
   'apps/integrations',
@@ -72,13 +74,17 @@ const KNOWN_APPHOSTING_APPS = [
  * pnpm deletes a catalog entry that zero workspace projects reference — so if every
  * manifest went literal, the next `pnpm install` would silently drop `next: 16.2.6`
  * from `pnpm-workspace.yaml` and the catalog-agreement assertion below would have
- * nothing left to compare against. Neither of these is read by any buildpack:
- * `apps/webchat` is a static export, `packages/ui` is a library devDependency.
+ * nothing left to compare against. This one is not read by any buildpack: `packages/ui`
+ * is a library devDependency.
+ *
+ * ⚠️ There used to be TWO keepers; `apps/webchat` was deleted with the webchat widget on
+ * 2026-09-07, so the margin is gone. `packages/ui` is now the SOLE consumer, which makes
+ * a single "make it consistent" edit — literalising that devDependency, exactly the
+ * tidy-up the App Hosting pins invite — enough to delete the catalog entry outright. If
+ * a future change has to touch it, add a replacement keeper in the SAME commit rather
+ * than emptying this list.
  */
-const CATALOG_KEEPERS = [
-  { manifest: 'apps/webchat/package.json', field: 'dependencies' },
-  { manifest: 'packages/ui/package.json', field: 'devDependencies' },
-];
+const CATALOG_KEEPERS = [{ manifest: 'packages/ui/package.json', field: 'devDependencies' }];
 
 /**
  * Exact STABLE semver — no `^`, `~`, `x`, range, `catalog:`, `workspace:*` or URL, and
@@ -290,6 +296,16 @@ describe('App Hosting apps pin next to an exact literal version', () => {
   });
 
   it('keeps a `catalog:` consumer so cleanupUnusedCatalogs cannot delete the entry', () => {
+    // The loop below is vacuous over an empty list — it would report zero offenders while
+    // zero manifests reference the catalog, which is the exact state that deletes the
+    // entry. Assert the anchor exists before trusting what it says.
+    expect(
+      CATALOG_KEEPERS.length,
+      'CATALOG_KEEPERS is empty, so the assertion below passes over nothing while ' +
+        '`cleanupUnusedCatalogs: true` drops `next` from pnpm-workspace.yaml on the next ' +
+        'install. At least one workspace manifest must keep `next: "catalog:"`.',
+    ).toBeGreaterThan(0);
+
     const offenders = [];
     for (const { manifest: relPath, field } of CATALOG_KEEPERS) {
       const spec = (manifest(relPath)[field] ?? {}).next;
@@ -300,20 +316,22 @@ describe('App Hosting apps pin next to an exact literal version', () => {
     expect(
       offenders,
       [
-        'These manifests are the only remaining `catalog:` consumers of `next`, which',
-        'makes them load-bearing: `cleanupUnusedCatalogs: true` deletes a catalog entry',
-        'with zero consumers on the next `pnpm install`. Literalise or drop them ALL and',
-        '`next: <version>` silently vanishes from pnpm-workspace.yaml, after which the two',
-        'catalog assertions above have nothing left to compare against.',
+        'This manifest is the ONLY remaining `catalog:` consumer of `next`, which makes it',
+        'load-bearing: `cleanupUnusedCatalogs: true` deletes a catalog entry with zero',
+        'consumers on the next `pnpm install`. Literalise or drop it and `next: <version>`',
+        'silently vanishes from pnpm-workspace.yaml, after which the two catalog assertions',
+        'above have nothing left to compare against and the App Hosting pins agree with',
+        'nothing. (There used to be a second keeper, apps/webchat; it was deleted with the',
+        'webchat widget on 2026-09-07, so there is no margin left.)',
         '',
-        'Neither is read by a buildpack — apps/webchat is a static export to classic',
-        'Firebase Hosting, packages/ui is a library devDependency — so neither carries the',
-        'deploy exposure that forced the literal pins.',
+        'It is not read by a buildpack — packages/ui is a library devDependency — so it does',
+        'not carry the deploy exposure that forced the literal pins elsewhere. That is',
+        'exactly why it is safe to keep on `catalog:`, and why it must stay.',
         '',
         ...offenders.map((o) => `  - ${o}`),
         '',
-        'If you genuinely must change one, move the keeper to another workspace member and',
-        'update CATALOG_KEEPERS in the same commit.',
+        'If you genuinely must change it, move the keeper to another workspace member and',
+        'update CATALOG_KEEPERS in the same commit — never leave this list empty.',
       ].join('\n'),
     ).toEqual([]);
   });
