@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineTestProvider } from '../testing/mantine';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
@@ -292,6 +292,312 @@ describe('TableView', () => {
     // surrounding <tr>, which receives the event via bubbling.
     fireEvent.click(screen.getByText('Alice'));
     expect(pushSpy).toHaveBeenCalledWith('/tests/1');
+  });
+
+  // `rowLinkColumn` — the row is clickable but MOUSE-ONLY without it: the row's
+  // handler takes no event, so Tab/Enter/Cmd-click/"Copy link address" are all
+  // unreachable. Naming a column wraps its cell in a real anchor.
+  //
+  // jsdom renders the real `next/link` (nothing mocks it), but with no
+  // AppRouterContext its own onClick returns early — so these cases assert the
+  // rendered `href` and OUR handler's effects, never a next/link navigation.
+
+  it('renders no row link and still pushes on click when rowLinkColumn is unset', () => {
+    // The negative and the untouched default path in ONE case, so they cannot
+    // drift apart: an implementation that always wrapped would fail both halves.
+    pushSpy.mockClear();
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+      />,
+    );
+    expect(screen.queryByRole('link', { name: 'Alice' })).toBeNull();
+    fireEvent.click(screen.getByText('Alice'));
+    expect(pushSpy).toHaveBeenCalledWith('/tests/1');
+  });
+
+  it("rowLinkColumn wraps that column's cell in an anchor carrying the rowHref", () => {
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Alice' }).getAttribute('href')).toBe('/tests/1');
+    expect(screen.getByRole('link', { name: 'Bob' }).getAttribute('href')).toBe('/tests/2');
+  });
+
+  it('wraps only the named column', () => {
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        defaultColumns={['nome', 'tipo']}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    // Two rows, one link each, and it is the Nome cell — the Tipo cell (an
+    // enum, so a <Badge>) stays unwrapped. Queried by role rather than by cell
+    // text so the case does not depend on how a given kind renders.
+    expect(screen.getAllByRole('link')).toHaveLength(2);
+    const [, firstRow] = screen.getAllByRole('row'); // index 0 is the header
+    const cells = within(firstRow!).getAllByRole('cell');
+    expect(within(cells[0]!).getByRole('link').getAttribute('href')).toBe('/tests/1');
+    expect(within(cells[1]!).queryByRole('link')).toBeNull();
+  });
+
+  it('clicking the row link does not also fire the row navigation', () => {
+    // The double-push guard. Without `stopPropagation` a click runs next/link's
+    // push AND the row's `router.push` in one tick — two undeduped App Router
+    // pushes, so Back needs two presses. This case is the entire justification
+    // for stopping propagation; if it ever goes green after the guard is
+    // removed, the guard is not doing what its comment claims.
+    pushSpy.mockClear();
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    fireEvent.click(screen.getByRole('link', { name: 'Alice' }));
+    expect(pushSpy).not.toHaveBeenCalled();
+  });
+
+  it('clicking outside the row link still navigates via router.push', () => {
+    pushSpy.mockClear();
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        defaultColumns={['nome', 'tipo']}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    // Proves the anchor did not swallow the rest of the row: the Tipo cell has
+    // no link, so its click bubbles to the <tr> exactly as it did before.
+    const [, firstRow] = screen.getAllByRole('row'); // index 0 is the header
+    fireEvent.click(within(firstRow!).getAllByRole('cell')[1]!);
+    expect(pushSpy).toHaveBeenCalledWith('/tests/1');
+  });
+
+  it('does not navigate from the row link while text is selected with the mouse', () => {
+    // Asserting `defaultPrevented` — not merely "no push" — is what pins the
+    // cancellation contract: next/link bails when the handler preventDefaults,
+    // and jsdom's Link never navigates anyway, so "no push" alone would pass
+    // even if the guard were deleted.
+    //
+    // `detail: 1` is load-bearing and must be explicit: testing-library's click
+    // defaults to `detail: 0`, which is the KEYBOARD shape (see the near-miss
+    // below), so without it this case would assert the opposite of what its
+    // name says.
+    pushSpy.mockClear();
+    const selection = vi
+      .spyOn(window, 'getSelection')
+      .mockReturnValue({ toString: () => 'Ali' } as unknown as Selection);
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      const link = screen.getByRole('link', { name: 'Alice' });
+      const event = createEvent.click(link, { detail: 1 });
+      fireEvent(link, event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(pushSpy).not.toHaveBeenCalled();
+    } finally {
+      selection.mockRestore();
+    }
+  });
+
+  it('still navigates on Enter while text is selected elsewhere on the page', () => {
+    // The NEAR-MISS half of the case above, and the whole reason the guard is
+    // scoped to `detail > 0`. `getSelection()` is document-scoped, and moving
+    // focus does not clear a selection — so a user who selected text anywhere,
+    // then Tabbed to a row link and pressed Enter, would otherwise have the
+    // navigation cancelled with nothing to explain why: the exact gesture this
+    // prop exists to enable, killed by a guard copied from a mouse-only row.
+    // A keyboard-activated click carries `detail === 0`.
+    const selection = vi
+      .spyOn(window, 'getSelection')
+      .mockReturnValue({ toString: () => 'selected elsewhere' } as unknown as Selection);
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      const link = screen.getByRole('link', { name: 'Alice' });
+      const event = createEvent.click(link, { detail: 0 });
+      fireEvent(link, event);
+      expect(event.defaultPrevented).toBe(false);
+    } finally {
+      selection.mockRestore();
+    }
+  });
+
+  it('renders no row link when onRowClick is set, and says so', () => {
+    // `onRowClick` outranks `rowHref`, so a link would navigate where the row
+    // opens a modal instead. Inert for every row on every render ⇒ a
+    // design-time fact ⇒ warned, not left to present as "the prop does nothing".
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onRowClick = vi.fn();
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+          onRowClick={onRowClick}
+        />,
+      );
+      expect(screen.queryByRole('link', { name: 'Alice' })).toBeNull();
+      fireEvent.click(screen.getByText('Alice'));
+      expect(onRowClick).toHaveBeenCalledWith('1', expect.objectContaining({ nome: 'Alice' }));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/onRowClick is set/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns when rowLinkColumn is set without a rowHref', () => {
+    // The likeliest slip of all: the two props sit adjacent in the skill's
+    // snippet, so copying one without the other names a perfectly valid column
+    // that can never link to anything.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowLinkColumn="nome"
+        />,
+      );
+      expect(screen.queryAllByRole('link')).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/rowHref is not set/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves the row accessible name unchanged', () => {
+    // The one case standing between a future `aria-label` on that anchor and a
+    // silently broken e2e suite: a descendant's aria-label REPLACES its text in
+    // the row's name-from-contents computation, so every
+    // `getByRole('row', { name })` locator in apps/web/e2e would stop matching
+    // at once, with nothing here to say why.
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    expect(screen.getByRole('row', { name: /Alice/ })).toBeTruthy();
+  });
+
+  it('wraps a virtual column too', () => {
+    // The virtual branch is the only one that can reach `row.id`, which is why
+    // /produtos had to hand-roll its link there. Both branches are wrapped so
+    // such a screen can adopt the prop instead.
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        defaultColumns={['ir']}
+        virtualColumns={[
+          {
+            key: 'ir',
+            label: 'Ir',
+            dependsOn: [],
+            renderCell: (row) => <span>abrir {row.id}</span>,
+          },
+        ]}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="ir"
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'abrir 1' }).getAttribute('href')).toBe('/tests/1');
+  });
+
+  it('renders no row link for a row with an empty id', () => {
+    // An `<a href="/tests/">` would be worse than today's dead row: it is
+    // keyboard-reachable and lands on a 404.
+    snapState.current = {
+      data: [{ id: '', path: 'x/', data: { nome: 'Alice', tipo: '0' } }],
+      loading: false,
+      error: undefined,
+    };
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    expect(screen.queryAllByRole('link')).toHaveLength(0);
+    // Reset for sibling tests.
+    snapState.current = {
+      data: [
+        { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
+        { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
+      ],
+      loading: false,
+      error: undefined,
+    };
+  });
+
+  it('warns and renders no row link when rowLinkColumn names a hidden field', () => {
+    // The /produtos shape: `fields: { nome: { hidden: true } }` replaces a
+    // schema column with a virtual one. Naming the hidden key would render
+    // nothing, forever, while the row kept navigating — indistinguishable from
+    // "the prop does nothing" without this warning.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          fields={{ nome: { hidden: true } }}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      expect(screen.queryAllByRole('link')).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/rowLinkColumn="nome"/));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('shows an empty state when no rows', () => {
