@@ -307,11 +307,15 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
 
     expect(await precosDaSuite(bId)).toEqual(bPrecosBefore);
 
-    // 'Com base no preço atual' errors on a produto with NO price yet under
-    // the target lista. A and C both just gained one from the apply above
-    // (custo 10 → 132, custo 5 → 84 under the detalhado defaults), so the
-    // untouched 4th fixture (D — baseline atacado price only, never selected
-    // until now) is what carries this assertion.
+    // 'Com base no preço atual' errors on a produto with NO price under the
+    // target lista, and the apply above leaves A and C holding one: the
+    // detalhado defaults compute `f(c) = 9.6c + 36`, so A's baseline 20 was
+    // REPLACED by 132 and C gained 84. B would still qualify — its calc erro
+    // keeps it out of the write, so it stays at the baseline's `precos: null`
+    // — but D carries the assertion because this test's own apply never
+    // touched it at all. That property holds whatever the erro path does;
+    // B's depends on `detalhado` continuing to exclude a null-custo produto
+    // from the write.
     await includeProdutos(page, prefix, [dNome]);
     await selectField(page, 'Regra', 'Com base no preço atual');
 
