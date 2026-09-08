@@ -80,6 +80,23 @@ export function impostoDaReceita(receita: number, aliquota: number): number {
  *
  * `receitasAnteriores` são os meses já fechados, do mais antigo ao mais
  * recente, sem o mês corrente. `receitaDoMes` é o mês de apuração.
+ *
+ * ⚠️ **SEM CHAMADOR EM PRODUÇÃO, e a razão é falta de DADO, não de código.**
+ * Aplicar a regra exige saber que a empresa está nos 12 primeiros meses, e
+ * `filialSchema` não tem data de início de atividade — nenhum campo do
+ * cadastro diz isso. Deduzir de "meses com receita < 12" não serve: é
+ * indistinguível de uma empresa antiga que passou meses sem vender, e o erro
+ * tem direção — tratar a antiga como nova inflaciona a RBT12 (média × 12 > soma
+ * bruta) e pode SUBIR a faixa; o contrário desce. Nenhum dos dois é chute
+ * aceitável numa apuração fiscal.
+ *
+ * O efeito hoje: uma empresa em início de atividade recebe a soma bruta dos
+ * meses que existirem, que é MENOR que a proporcional — RBT12 subestimada,
+ * faixa possivelmente menor. Fica registrado aqui, e não numa flag no
+ * documento: o campo `proporcional` foi REMOVIDO da `apuracaoSimplesSchema` no
+ * #1546 justamente por ser gravado como `false` constante, isto é, uma
+ * afirmação que o runner não tinha como fazer. Um campo escrito como constante
+ * é o mesmo defeito de um campo que nada escreve, menos a visibilidade (#1151).
  */
 export function rbt12Proporcional(args: {
   readonly receitasAnteriores: readonly number[];

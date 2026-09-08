@@ -70,7 +70,18 @@ export interface SimplesConfigSavePort {
 export interface SaveSimplesConfigArgs {
   /** Local edits. `null` means "the operator did not touch this". */
   anexo: AnexoSimplesWire | null;
-  aliquotaDeclarada: number | null;
+  /**
+   * ⚠️ **Three-valued, unlike its neighbours**: `undefined` is "not touched",
+   * and `null` is "the operator CLEARED it".
+   *
+   * The other two cannot be cleared — `anexo` renders with
+   * `allowDeselect={false}` and the switch is a boolean — so `null` is free to
+   * mean untouched there. Here it is not: `DecimalInput` emits `null` for an
+   * empty field, so folding the two together made "the accountant withdrew the
+   * figure" unrepresentable. The document models it (`.nullable()`), and once a
+   * rate had been typed the only way off it was another rate (#1546 review).
+   */
+  aliquotaDeclarada: number | null | undefined;
   recalculoAutomatico: boolean | null;
   /**
    * The doc the panel rendered from — the concurrency baseline. `null` means
@@ -97,7 +108,7 @@ function mudouRemotamente(
 function documentoInicial(args: SaveSimplesConfigArgs, agora: number): SimplesNacionalConfig {
   return {
     anexo: args.anexo ?? ANEXO_SIMPLES.comercio,
-    aliquotaDeclarada: args.aliquotaDeclarada,
+    aliquotaDeclarada: args.aliquotaDeclarada ?? null,
     recalculoAutomatico: args.recalculoAutomatico ?? false,
     rbt12: null,
     aliquotaEfetiva: null,
@@ -130,7 +141,8 @@ export async function saveSimplesConfig(
   // written, so it cannot lose a race it never entered — nor raise a conflict.
   const escreve = new Set<PainelSimplesKey>();
   if (anexo !== null) escreve.add('anexo');
-  if (aliquotaDeclarada !== null) escreve.add('aliquotaDeclarada');
+  // ⚠️ `!== undefined`, not `!== null`: a CLEARED field is an edit to write.
+  if (aliquotaDeclarada !== undefined) escreve.add('aliquotaDeclarada');
   if (recalculoAutomatico !== null) escreve.add('recalculoAutomatico');
 
   await port.update((current) => {
@@ -158,7 +170,7 @@ export async function saveSimplesConfig(
       // survive untouched.
       ...current,
       ...(anexo !== null ? { anexo } : {}),
-      ...(aliquotaDeclarada !== null ? { aliquotaDeclarada } : {}),
+      ...(aliquotaDeclarada !== undefined ? { aliquotaDeclarada } : {}),
       ...(recalculoAutomatico !== null ? { recalculoAutomatico } : {}),
       ultimaModificacao: agora,
     };

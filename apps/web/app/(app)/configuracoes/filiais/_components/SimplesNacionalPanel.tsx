@@ -167,7 +167,12 @@ export function SimplesNacionalPanel({ filialId }: { filialId: string }) {
   });
 
   const [anexo, setAnexo] = useState<AnexoSimplesWire | null>(null);
-  const [aliquota, setAliquota] = useState<number | null>(null);
+  // ⚠️ Three-valued: `undefined` is "untouched", `null` is "the operator
+  // cleared the field". `DecimalInput` emits `null` on clear, so collapsing the
+  // two made a cleared alíquota indistinguishable from an untouched one — the
+  // `??` below fell straight back to the stored value, `dirty` stayed false and
+  // Save was disabled, so a typed rate could never be withdrawn (#1546 review).
+  const [aliquota, setAliquota] = useState<number | null | undefined>(undefined);
   const [recalculo, setRecalculo] = useState<boolean | null>(null);
   const [conflict, setConflict] = useState<{
     current: SimplesNacionalConfig;
@@ -183,7 +188,8 @@ export function SimplesNacionalPanel({ filialId }: { filialId: string }) {
   const anexoValue = anexo ?? base?.anexo ?? 'I';
   // Stored as a FRACTION, typed as a percentage — the input shows 6,728 while
   // the document holds 0.06728.
-  const aliquotaValue = aliquota ?? aliquotaParaCampo(base?.aliquotaDeclarada ?? null);
+  const aliquotaValue =
+    aliquota !== undefined ? aliquota : aliquotaParaCampo(base?.aliquotaDeclarada ?? null);
   const recalculoValue = recalculo ?? base?.recalculoAutomatico ?? false;
 
   const dirty =
@@ -199,7 +205,7 @@ export function SimplesNacionalPanel({ filialId }: { filialId: string }) {
         // render-time doc, and an untouched field must stay unwritten so it
         // cannot lose a race it never entered.
         anexo,
-        aliquotaDeclarada: campoParaAliquota(aliquota),
+        aliquotaDeclarada: aliquota === undefined ? undefined : campoParaAliquota(aliquota),
         recalculoAutomatico: recalculo,
         baseline: base,
       });
@@ -207,7 +213,7 @@ export function SimplesNacionalPanel({ filialId }: { filialId: string }) {
     onSuccess: () => {
       notifications.show({ color: 'green', message: 'Configuração do Simples Nacional salva.' });
       setAnexo(null);
-      setAliquota(null);
+      setAliquota(undefined);
       setRecalculo(null);
       setConflict(null);
       void queryClient.invalidateQueries({ queryKey: ['simplesnacional', filialId] });
