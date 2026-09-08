@@ -74,6 +74,7 @@ export default function CanalShopeePage() {
         // this?" — the one question the list cannot answer from `nome` alone.
         defaultColumns={['nome', 'shop_id', 'ativo', 'padrao']}
         rowHref={(id) => `/canais/shopee/${id}`}
+        rowLinkColumn="nome"
         renderNewButton={() => (
           <Button component={Link} href="/canais/shopee/novo">
             Nova conta

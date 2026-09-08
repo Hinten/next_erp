@@ -11,6 +11,13 @@ import {
   recordFreteHistory,
 } from './registrarHistoricoPedido';
 
+import {
+  WAIT_LABELS,
+  type WaitLabel,
+  expectNoRowForEvent,
+  waitForTrigger,
+} from '../testing/emulatorWaits';
+
 // Integration test — requires the Firebase emulators. Two layers:
 //
 //  1. the I/O core, driven directly (firestore emulator only) — the row shape
@@ -62,6 +69,21 @@ async function historyRows(db: Firestore, pedidoId: string) {
 
 async function freteHistoryRows(db: Firestore, pedidoId: string) {
   const snap = await db.collection('pedidos').doc(pedidoId).collection('historicoFtIni').get();
+  return snap.docs;
+}
+
+/**
+ * The third trail the same trigger writes. Used as a positive ANCHOR: a write
+ * whose fields are not ignored must produce a row here, so observing it proves
+ * the handler ran for that event — which is what lets a "the other trails did
+ * NOT grow" claim mean anything.
+ */
+async function modificationRows(db: Firestore, pedidoId: string) {
+  const snap = await db
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('historicoDeModificacoes')
+    .get();
   return snap.docs;
 }
 
@@ -236,52 +258,22 @@ describe.skipIf(!EMULATED)('registrarFreteHistory core (emulator)', () => {
   });
 });
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
+/**
+ * Wait for the trigger to produce something. The deadline is the suite-wide one
+ * (`../testing/emulatorWaits`); this file used to carry its own 20s.
+ */
 async function waitFor<T>(
   fn: () => Promise<T | null>,
-  timeoutMs = 20_000,
-  stepMs = 500,
+  label: WaitLabel = WAIT_LABELS.estadoTrail,
 ): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const v = await fn();
-    if (v !== null) return v;
-    if (Date.now() > deadline) throw new Error('timed out waiting for the trigger to fire');
-    await sleep(stepMs);
-  }
-}
-
-/**
- * Bounded negative: assert a trail never gains a row keyed on `eventId`,
- * re-reading across `windowMs`.
- *
- * A ONE-SHOT read is not sound here, and the difference is exactly the bug this
- * guards. The handler launches both trails' writes concurrently (`Promise.all`
- * in `registrarHistoricoPedido.ts`), so observing ONE trail's row proves the
- * trigger RAN for that CloudEvent — it does NOT prove the other trail's `set()`
- * has settled. A regressed builder's row could land a moment later, and a single
- * read would miss it: the assertion would pass in precisely the broken case it
- * exists to catch.
- *
- * Re-reading across a window closes that without degrading into a
- * sleep-then-count: the claim stays keyed on the CloudEvent id, so it can never
- * be satisfied by an unrelated row, and it fails on the FIRST tick that sees the
- * row rather than after the whole window.
- */
-async function expectNoRowForEvent(
-  readRows: () => Promise<Array<{ id: string }>>,
-  eventId: string,
-  windowMs = 2_000,
-  stepMs = 250,
-): Promise<void> {
-  const deadline = Date.now() + windowMs;
-  for (;;) {
-    const rows = await readRows();
-    expect(rows.some((d) => d.id === eventId)).toBe(false);
-    if (Date.now() >= deadline) return;
-    await sleep(stepMs);
-  }
+  const value = await waitForTrigger(
+    fn,
+    (v) => v !== null,
+    'the trigger to fire',
+    () => 'nothing had arrived',
+    { label },
+  );
+  return value as T;
 }
 
 /**
@@ -311,11 +303,13 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     // …and no frete block was written, so the frete trail must stay empty.
     // Bounded, keyed on the same CloudEvent: had the builder wrongly emitted an
     // entry, its write would race the estado one rather than precede it.
-    await expectNoRowForEvent(() => freteHistoryRows(db, pedidoId), rows[0]!.id);
+    await expectNoRowForEvent(
+      () => freteHistoryRows(db, pedidoId),
+      (d) => d.id,
+      rows[0]!.id,
+    );
     expect(await freteHistoryRows(db, pedidoId)).toHaveLength(0);
-    // Explicit timeout: the suite default is 30s, and a first invocation pays
-    // the functions emulator's cold start on top of trigger delivery.
-  }, 60_000);
+  });
 
   it('appends a row on a transition and stays quiet on an unrelated edit', async () => {
     const db = getDb();
@@ -341,13 +335,56 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     // A write that leaves `estado` alone must take the fast path — no new row.
     // `numero` touches neither `estado` nor `freteInicial`, so BOTH trails must
     // stay exactly where they were.
+    // ⚠️ This was `sleep(3_000)` then a one-shot count — 70 lines below this
+    // file's own docstring explaining why a one-shot read is unsound. #1201
+    // measured delivery at p99 7083ms and max 10712ms, so a REGRESSED fast path
+    // would write its row well after the read, and the assertion would go green
+    // in exactly the case it exists to catch. A bigger sleep only lowers the
+    // odds; it cannot make the claim provable.
+    //
+    // `numero` is not in PEDIDO_HISTORY_IGNORE_FIELDS, so this write DOES produce
+    // a modification row. Waiting for THAT row is positive proof the handler ran
+    // for this event.
+    //
+    // ⚠️ But that anchor alone does NOT license a one-shot count, and the reason
+    // is the `Promise.all` itself: the three trail writes are issued CONCURRENTLY,
+    // so seeing the modification row proves the handler ran — not that a regressed
+    // fast path's `recordEstadoHistory`/`recordFreteHistory` `set()` has finished
+    // landing. A plain read here could slip between them and pass in exactly the
+    // regressed case, which is the vacuity this test was rewritten to remove.
+    //
+    // The marker hands us the fix for free: all three trails key their row at
+    // `entry.eventId`, so the modification row's DOC ID is this write's CloudEvent
+    // id. Scoping the negatives to that id is strictly stronger than a quiet
+    // window — it can never be satisfied by an unrelated row, and it fails on the
+    // first tick that sees one.
     await ref.update({ numero: 'A-123' });
-    await sleep(3_000);
+    const modRows = await waitFor(async () => {
+      const docs = await modificationRows(db, pedidoId);
+      const seen = docs.some((d) =>
+        ((d.data().campos as string[] | undefined) ?? []).includes('numero'),
+      );
+      return seen ? docs : null;
+    }, WAIT_LABELS.historicoDeModificacoes);
+
+    const markerEventId = modRows.find((d) =>
+      ((d.data().campos as string[] | undefined) ?? []).includes('numero'),
+    )!.id;
+
+    await expectNoRowForEvent(
+      () => historyRows(db, pedidoId),
+      (d) => d.id,
+      markerEventId,
+    );
+    await expectNoRowForEvent(
+      () => freteHistoryRows(db, pedidoId),
+      (d) => d.id,
+      markerEventId,
+    );
+
     expect(await historyRows(db, pedidoId)).toHaveLength(2);
     expect(await freteHistoryRows(db, pedidoId)).toHaveLength(0);
-    // Two sequential waits plus the quiet-window sleep can exceed the suite's
-    // 30s default even when each step is fast.
-  }, 90_000);
+  });
 
   it('opens BOTH trails when a pedido is created with a frete block', async () => {
     const db = getDb();
@@ -365,7 +402,7 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     const freteRows = await waitFor(async () => {
       const docs = await freteHistoryRows(db, pedidoId);
       return docs.length > 0 ? docs : null;
-    });
+    }, WAIT_LABELS.freteTrail);
     expect(freteRows).toHaveLength(1);
     expect(freteRows[0]!.data()).toMatchObject({
       estado: ESTADO_FRETE.iniciado,
@@ -382,7 +419,7 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     expect(estadoRows[0]!.data()).toMatchObject({ estado: 'iniciado' });
     // One create, one row in each trail, both keyed on the same CloudEvent.
     expect(freteRows[0]!.id).toBe(estadoRows[0]!.id);
-  }, 60_000);
+  });
 
   it('records a frete-only move without touching the estado trail', async () => {
     const db = getDb();
@@ -397,7 +434,7 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     await waitFor(async () => {
       const docs = await freteHistoryRows(db, pedidoId);
       return docs.length >= 1 ? docs : null;
-    });
+    }, WAIT_LABELS.freteTrail);
 
     // A DOTTED patch — how the Frete tab and the tracking pollers write.
     await ref.update({ 'freteInicial.estado': ESTADO_FRETE.postado });
@@ -405,7 +442,7 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     const freteRows = await waitFor(async () => {
       const docs = await freteHistoryRows(db, pedidoId);
       return docs.length >= 2 ? docs : null;
-    });
+    }, WAIT_LABELS.freteTrail);
     expect(freteRows.map((d) => d.data().estado as string).sort()).toEqual(
       [ESTADO_FRETE.empacotado, ESTADO_FRETE.postado].sort(),
     );
@@ -414,9 +451,13 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     // Asserted by EVENT ID over a bounded window — see `expectNoRowForEvent`
     // for why a single read would pass vacuously against the concurrent writes.
     const postadoRow = freteRows.find((d) => d.data().estado === ESTADO_FRETE.postado)!;
-    await expectNoRowForEvent(() => historyRows(db, pedidoId), postadoRow.id);
+    await expectNoRowForEvent(
+      () => historyRows(db, pedidoId),
+      (d) => d.id,
+      postadoRow.id,
+    );
     expect(await historyRows(db, pedidoId)).toHaveLength(1);
-  }, 90_000);
+  });
 
   it('records an estado-only move without touching the frete trail', async () => {
     const db = getDb();
@@ -445,11 +486,15 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     // Only the opening frete row — the second pedido write appended nothing.
     // Same bounded event-id proof as its mirror above.
     const pagoRow = estadoRows.find((d) => d.data().estado === 'pago')!;
-    await expectNoRowForEvent(() => freteHistoryRows(db, pedidoId), pagoRow.id);
+    await expectNoRowForEvent(
+      () => freteHistoryRows(db, pedidoId),
+      (d) => d.id,
+      pagoRow.id,
+    );
     const freteRows = await freteHistoryRows(db, pedidoId);
     expect(freteRows).toHaveLength(1);
     expect(freteRows[0]!.data().estado).toBe(ESTADO_FRETE.empacotado);
-  }, 90_000);
+  });
 
   it('records one row in each trail, sharing the event id, when a write moves both', async () => {
     const db = getDb();
@@ -481,7 +526,7 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     const freteRows = await waitFor(async () => {
       const docs = await freteHistoryRows(db, pedidoId);
       return docs.length >= 2 ? docs : null;
-    });
+    }, WAIT_LABELS.freteTrail);
     expect(estadoRows).toHaveLength(2);
     expect(freteRows).toHaveLength(2);
 
@@ -493,5 +538,5 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     )!;
     expect(pagoRow.id).toBe(autorizadoRow.id);
     expect(pagoRow.data().eventId).toBe(autorizadoRow.data().eventId);
-  }, 90_000);
+  });
 });

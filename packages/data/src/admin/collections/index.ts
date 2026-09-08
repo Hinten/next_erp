@@ -81,3 +81,4 @@ export {
   envioPrecoMercadoLivreCollection,
   relatorioEnvioPrecoMercadoLivreCollection,
 } from './envioPrecoMercadoLivreCollection';
+export { avisoCollection } from './avisoCollection';

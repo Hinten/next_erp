@@ -13,6 +13,7 @@
     "./server": "./src/server/index.ts",
     "./admin": "./src/admin/index.ts",
     "./admin/cache": "./src/admin/cache/index.ts",
+    "./admin/avisos": "./src/admin/avisos/index.ts",
     "./admin/clientes": "./src/admin/clientes/index.ts",
     "./admin/collections": "./src/admin/collections/index.ts",
     "./admin/grpcErrors": "./src/admin/grpcErrors.ts",

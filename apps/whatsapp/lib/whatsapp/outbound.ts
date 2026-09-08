@@ -19,9 +19,13 @@
  * Operator replies (apps/web) and the daily auto-reply (#527) both write
  * `{ estadoEnvio: salva, tipo: 'c', mid: null }`; lifecycle events are `tipo 'e'`
  * and inbound customer messages are `estadoEnvio: recebido (7)` — neither matches.
- * The `origem === 'whatsapp'` clause is the AUTHORITATIVE channel gate: apps/webchat
- * ('site' conversas) writes its own NON-null local `mid`, but a 'site' conversa is
- * excluded here by the origem gate regardless of its `mid` convention.
+ * The `origem === 'whatsapp'` clause is the AUTHORITATIVE channel gate, and it stays
+ * authoritative even though the only other writer is gone: the legacy webchat widget
+ * ('site' conversas) wrote its own NON-null local `mid`, and although that widget was
+ * never ported (dropped 2026-09-07), the imported legacy corpus still holds 'site'
+ * conversas carrying that convention. They are excluded here by the origem gate
+ * regardless of their `mid` convention — which is why the gate is on `origem` and NOT
+ * on `mid`.
  *
  * ── RE-ANCHOR contract (#527 status pipeline depends on it) ────────────────────
  * `processStatus` locates an outbound mensagem by the DETERMINISTIC id

@@ -15,6 +15,15 @@ import {
 
 import { processProductOriginal } from './processOriginal';
 
+import {
+  INTRA_HANDLER_WINDOW_MS,
+  WAIT_LABELS,
+  type WaitLabel,
+  sleep,
+  waitForTrigger,
+  waitForTriggerThenSettle,
+} from '../testing/emulatorWaits';
+
 // Integration test — requires the Firebase emulators (firestore + storage +
 // functions). Run via `firebase emulators:exec`; skipped when run bare so the
 // offline suite stays green.
@@ -37,50 +46,21 @@ function getBucket() {
   return getStorage(app).bucket(bucketName);
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function waitFor<T>(
-  fn: () => Promise<T | null>,
-  timeoutMs = 20_000,
-  stepMs = 500,
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const v = await fn();
-    if (v !== null) return v;
-    if (Date.now() > deadline) throw new Error('timed out waiting for condition');
-    await new Promise((r) => setTimeout(r, stepMs));
-  }
-}
-
 /**
- * Poll `count()` until the value stops changing for `stableMs`, then return the
- * settled value. More robust than a blind sleep for asserting "nothing further
- * happened": a late or runaway write (e.g. the function recursing on its own
- * outputs) keeps the count changing, so it never settles early at the expected
- * value — and if it settles higher, the caller's assertion catches it.
+ * Wait for the trigger to produce something. The deadline is the suite-wide one
+ * (`../testing/emulatorWaits`); this file used to carry its own 20s.
  */
-async function waitForStableCount(
-  count: () => Promise<number>,
-  { stableMs = 2_000, stepMs = 500, timeoutMs = 20_000 } = {},
-): Promise<number> {
-  const deadline = Date.now() + timeoutMs;
-  let last = await count();
-  let stableSince = Date.now();
-  for (;;) {
-    await new Promise((r) => setTimeout(r, stepMs));
-    const cur = await count();
-    if (cur !== last) {
-      last = cur;
-      stableSince = Date.now();
-    } else if (Date.now() - stableSince >= stableMs) {
-      return cur;
-    }
-    if (Date.now() > deadline) return cur;
-  }
+async function waitFor<T>(fn: () => Promise<T | null>, label: WaitLabel): Promise<T> {
+  const value = await waitForTrigger(
+    fn,
+    (v) => v !== null,
+    'the trigger to fire',
+    () => 'nothing had arrived',
+    { label },
+  );
+  return value as T;
 }
 
-/** List this product's derivative objects (the `derivatives/` subdir). */
 async function listDerivatives(produtoId: string): Promise<string[]> {
   const [files] = await getBucket().getFiles({
     prefix: `produtos/${produtoId}/derivatives/`,
@@ -135,7 +115,7 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
       const snap = await waitFor(async () => {
         const doc = await db.collection('arquivos').doc(id).get();
         return doc.exists ? doc : null;
-      });
+      }, WAIT_LABELS.arquivoDoc);
       const data = snap.data();
       expect(data?.filetype).toBe('image');
       expect(data?.contentType).toBe('image/jpeg');
@@ -150,7 +130,7 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
       const [exists] = await waitFor(async () => {
         const [ok] = await file.exists();
         return ok ? [ok] : null;
-      });
+      }, WAIT_LABELS.derivativeObject);
       expect(exists).toBe(true);
 
       // Custom metadata is the anti-loop marker: derivatives are tagged
@@ -171,12 +151,21 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
 
   it('does not recurse on its own derivative outputs', async () => {
     // The function fires on EVERY finalize, including the derivatives it just
-    // wrote — the loop guard must stop it. Wait for the derivative count to
-    // SETTLE (a runaway recursion would keep it climbing) and assert it settled
-    // at exactly one per variant, with no derivative-of-derivative names.
-    const settled = await waitForStableCount(async () => (await listDerivatives(produtoId)).length);
-    expect(settled).toBe(PRODUCT_IMAGE_VARIANTS.length);
-    const names = await listDerivatives(produtoId);
+    // wrote — the loop guard must stop it.
+    //
+    // Wait for the full set (positive proof the resize ran), then hold still and
+    // RE-READ: a recursion would push the count past one-per-variant during the
+    // quiet window, and the exact-count assertion below then fails. The old
+    // `waitForStableCount` returned its last value on deadline instead of
+    // throwing, so a stalled emulator reported a stale count as if it had settled.
+    const names = await waitForTriggerThenSettle(
+      () => listDerivatives(produtoId),
+      (files) => files.length >= PRODUCT_IMAGE_VARIANTS.length,
+      `${PRODUCT_IMAGE_VARIANTS.length} derivative object(s)`,
+      (files) => `saw ${files.length}`,
+      { label: WAIT_LABELS.derivativeObject },
+    );
+    expect(names).toHaveLength(PRODUCT_IMAGE_VARIANTS.length);
     expect(names.every((n) => !/_(?:200|400|jpeg)_(?:200|400|jpeg)\./.test(n))).toBe(true);
   });
 
@@ -185,12 +174,41 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
     const id = derivativeArquivoId(produtoId, hash, PRODUCT_IMAGE_VARIANTS[0]!.key);
     const before = (await db.collection('arquivos').doc(id).get()).data();
 
+    // ⚠️ This was `sleep(5_000)` then the comparison below. #1201 measured
+    // delivery at max 10712ms, so "the derivative was not rewritten" was
+    // indistinguishable from "the trigger had not run yet" — it passed in exactly
+    // the regressed case it exists to catch, and a longer sleep only lowers the
+    // odds rather than making the claim provable.
+    //
+    // ⚠️ `uploadState` alone is the WRONG anchor here, and a quiet window does not
+    // rescue it. `resizeProductImage.ts:37-41` awaits `markUploadFinalized` and
+    // THEN awaits `processProductOriginal`, so the upload flag flips before the
+    // resize work even begins — and in the regressed case that work is a bucket
+    // download, 3 sharp renders and 6 writes, i.e. seconds under the same load
+    // #1201 measured at p99 7s. A 2s `INTRA_HANDLER_WINDOW_MS` is not a bound on
+    // that; it is also outside that constant's contract, which is the gap between
+    // two `set()`s issued CONCURRENTLY.
+    //
+    // `processProductOriginal` calls `markDone` at the end of BOTH branches
+    // (`processOriginal.ts:59` skip, `:91` write), so `resizeState` flipping back
+    // to 'done' is exact positive proof the resize branch COMPLETED. Reset it with
+    // the upload flag and wait for that instead — no window, nothing sized by guess.
+    const origId = productArquivoId(produtoId, hash);
+    await db
+      .collection('arquivos')
+      .doc(origId)
+      .update({ uploadState: 'pending', resizeState: 'pending' });
+
     // Re-upload the SAME original bytes → onObjectFinalized fires again; the
     // existing-derivative check must skip the write.
     await getBucket()
       .file(productOriginalPath(produtoId, hash, 'png'))
       .save(original, { contentType: 'image/png' });
-    await sleep(5_000);
+
+    await waitFor(async () => {
+      const d = await db.collection('arquivos').doc(origId).get();
+      return d.data()?.resizeState === 'done' ? d : null;
+    }, WAIT_LABELS.arquivoDoc);
 
     const after = (await db.collection('arquivos').doc(id).get()).data();
     expect(after?.criadoEm).toBe(before?.criadoEm);
@@ -201,15 +219,57 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
     // A file outside `produtos/<id>/originals/` is not a watched original, so
     // the function bails and produces no derivatives — neither under `media/`
     // NOR (the assertion that actually matters) against the existing product.
+    const db = getDb();
     const before = (await listDerivatives(produtoId)).length;
     const otherHash = randomUUID().replace(/-/g, '');
+
+    // ⚠️ This asserted "the trigger did not do X" while having NO proof the
+    // trigger ran at all: the old `waitForStableCount` settled at the unchanged
+    // count in ~2.5s, well inside the 8-10s delivery tail #1201 measured. So it
+    // could only ever have caught a regression that was ALSO fast.
+    //
+    // Create-first (the repo's upload contract) gives the object an owning doc,
+    // and tagging it with `arquivoId` is what lets `markUploadFinalized` resolve
+    // it — so `uploadState` flipping is positive proof the handler ran for THIS
+    // object, even though the resize branch correctly skipped it.
+    const mediaArquivoId = `media-${otherHash}`;
+    await db
+      .collection('arquivos')
+      .doc(mediaArquivoId)
+      .set({
+        filetype: 'image',
+        filepath: 'media',
+        filename: `${otherHash}.png`,
+        contentType: 'image/png',
+        url: null,
+        externalIds: [],
+        uploadState: 'pending',
+      });
+
     await getBucket()
       .file(mediaPath(otherHash, 'png'))
-      .save(original, { contentType: 'image/png' });
+      .save(original, {
+        contentType: 'image/png',
+        metadata: { metadata: { arquivoId: mediaArquivoId } },
+      });
+
+    await waitFor(async () => {
+      const d = await db.collection('arquivos').doc(mediaArquivoId).get();
+      return d.data()?.uploadState === 'finalized' ? d : null;
+    }, WAIT_LABELS.uploadFinalized);
+
+    // ⚠️ Unlike the idempotency test above, `uploadState` IS the right anchor here
+    // and no resize-completion signal exists to wait for: this object is not a
+    // watched original, so `shouldResize` is false and the handler returns right
+    // after `markUploadFinalized` — there is no `markDone`, and `resizeState` never
+    // moves. Observing the flag therefore means the invocation is essentially done,
+    // and this window only covers the tail of that same invocation. That is the
+    // contract `INTRA_HANDLER_WINDOW_MS` was written for, and it is why the fix
+    // above (anchor on `resizeState`) does not apply to this test.
+    await sleep(INTRA_HANDLER_WINDOW_MS);
 
     // The product's derivative set must stay put through the unrelated upload.
-    const after = await waitForStableCount(async () => (await listDerivatives(produtoId)).length);
-    expect(after).toBe(before);
+    expect(await listDerivatives(produtoId)).toHaveLength(before);
 
     const [mediaFiles] = await getBucket().getFiles({ prefix: 'media/' });
     expect(mediaFiles.map((f) => f.name)).toEqual([mediaPath(otherHash, 'png')]);
@@ -223,7 +283,7 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
     const orig = await waitFor(async () => {
       const d = await db.collection('arquivos').doc(origId).get();
       return d.exists && d.data()?.resizeState === 'done' ? d : null;
-    });
+    }, WAIT_LABELS.arquivoDoc);
     expect(orig.data()?.resizeState).toBe('done');
     // The same trigger run flips uploadState → 'finalized' (markUploadFinalized
     // runs before the resize), so by the time resizeState is 'done' it is set.

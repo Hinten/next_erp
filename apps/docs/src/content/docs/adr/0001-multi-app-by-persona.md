@@ -3,6 +3,22 @@ title: 0001 — Multi-app split by persona/runtime
 description: Why we split into multiple Next.js apps and what defines the boundaries.
 ---
 
+:::note[Partially superseded — 2026-09-07]
+`apps/webchat` no longer exists. The embeddable widget was **dropped** rather than
+ported, and the app, its `firebase.json` hosting entry and the `/canais/webchat`
+configuration screen were deleted (issues #153 and #558, closed as not planned).
+
+The decision below is **left as written** because it is the record of a choice that was
+actually taken — the widget really was a persona in the split, and the split is still
+sound for the personas that remain. Only the webchat lines are obsolete: the deploy
+topology is now App Hosting backends plus Cloud Functions, with no classic Hosting site,
+and one fewer persona.
+
+⚠️ What survives the removal is the **data**: the `site` origem stays in
+`conversaSchema` (it is the schema default, and the imported legacy corpus carries `site`
+conversas the inbox must still render). The widget was the writer; the reader stays.
+:::
+
 ## Context
 
 The Flutter app being rewritten covers ERP UI, customer-facing chat widget, marketplace webhooks, and OAuth flows in one codebase. In Next.js, we considered keeping it as one app, splitting by ERP domain (clients, products, orders), or splitting by persona/runtime.
