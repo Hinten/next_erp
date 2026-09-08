@@ -147,6 +147,27 @@ export function sinalDe(tpNF: NFeTotais['tpNF'], finNFe: NFeTotais['finNFe']): -
   return finNFe === 4 ? -1 : 0;
 }
 
+/**
+ * O imposto do Simples ATRIBUÍDO a uma nota: a receita bruta dela vezes a
+ * alíquota efetiva da competência em que foi emitida.
+ *
+ * ⚠️ **É um rateio, não o imposto devido.** O DAS é apurado MENSALMENTE sobre a
+ * receita segregada do período (PGDAS-D), nunca nota a nota. Este número serve
+ * a relatório de margem e custo; quem apura o DAS é a contabilidade.
+ *
+ * ⚠️ **Derivado, não gravado.** A nota já guarda `totais` e a apuração do mês
+ * já guarda a alíquota, então gravar um terceiro campo criaria uma cópia que
+ * pode divergir das duas fontes — e exigiria um backfill próprio sobre todo o
+ * histórico. Uma competência recalculada corrige o passado por consequência,
+ * que é o comportamento certo para uma estimativa.
+ */
+export function impostoEstimadoDaNota(
+  totais: NFeTotais,
+  aliquotaEfetivaDaCompetencia: number,
+): number {
+  return impostoDaReceita(contribuicaoDaNota(totais), aliquotaEfetivaDaCompetencia);
+}
+
 /** A contribuição assinada de uma nota para a receita bruta do mês. */
 export function contribuicaoDaNota(totais: NFeTotais): number {
   return roundReais(receitaBrutaDeNota(totais) * sinalDaReceita(totais));

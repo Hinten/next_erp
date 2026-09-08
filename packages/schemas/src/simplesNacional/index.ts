@@ -24,6 +24,7 @@ export {
   contribuicaoDaNota,
   faixaDoRbt12,
   impostoDaReceita,
+  impostoEstimadoDaNota,
   rbt12Proporcional,
   receitaBrutaDeNota,
   sinalDaReceita,

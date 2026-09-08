@@ -7,6 +7,7 @@ import {
   contribuicaoDaNota,
   faixaDoRbt12,
   impostoDaReceita,
+  impostoEstimadoDaNota,
   rbt12Proporcional,
   receitaBrutaDeNota,
   sinalDaReceita,
@@ -275,5 +276,28 @@ describe('tabelas', () => {
     for (const t of [ANEXO_I, ANEXO_II]) {
       for (let i = 1; i < t.length; i += 1) expect(t[i]!.ate).toBeGreaterThan(t[i - 1]!.ate);
     }
+  });
+});
+
+// ── The per-note figure, derived rather than stored ───────────────────────
+describe('impostoEstimadoDaNota', () => {
+  it('is receita bruta × the competência rate', () => {
+    // 1000 − 100 + 50 = 950 at 6,728% = 63,92
+    const t = totais({ vProd: 1000, vDesc: 100, vFrete: 50 });
+    expect(impostoEstimadoDaNota(t, 0.06728)).toBe(63.92);
+  });
+
+  it('a customer return carries a NEGATIVE figure — it gives tax back', () => {
+    const devolucao = totais({ vProd: 500, tpNF: 0, finNFe: 4 });
+    expect(impostoEstimadoDaNota(devolucao, 0.06728)).toBe(-33.64);
+  });
+
+  it('a neutral note is exactly zero, not its value times the rate', () => {
+    expect(impostoEstimadoDaNota(totais({ vProd: 500, finNFe: 3 }), 0.06728)).toBe(0);
+  });
+
+  it('excludes ICMS-ST and IPI from the base', () => {
+    const comSt = totais({ vProd: 1000, vST: 500, vIPI: 200, vNF: 1700 });
+    expect(impostoEstimadoDaNota(comSt, 0.1)).toBe(100);
   });
 });
