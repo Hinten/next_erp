@@ -1849,10 +1849,22 @@ describe('CI lanes always report', () => {
         }
       }
 
-      // (d) The RED verdict still lives on the far side of the loop.
-      if (!/Refusing to certify/.test(lines.slice(closes + 1).join('\n'))) {
+      // (d) The verdict still lives on the far side of the loop, pinned
+      //     STRUCTURALLY rather than by its wording: what must survive is that a
+      //     read which is not `success` still produces a refusal. Matching the
+      //     sentence instead both fails on a harmless reword and — worse — passes
+      //     on a real deletion, because the "could not list the jobs" bail-out
+      //     above carries the very same words. Not hypothetical: this check was
+      //     written against the text first, and deleting the per-job RED verdict
+      //     out of ci-freight.yml left it green.
+      const after = lines.slice(closes + 1).join('\n');
+      const refuses = gate.includes('$CERTIFY')
+        ? /\[\s*"\$actual"\s*!=\s*"success"\s*\]/.test(after) && /RED="\$\{RED\}/.test(after)
+        : /\[\s*"\$conclusion"\s*=\s*"success"\s*\]\s*\|\|/.test(after) && /\bfail\s+"/.test(after);
+      if (!refuses) {
         bad.push(
-          `${file} → nothing after the loop refuses to certify; the retry swallowed the verdict`,
+          `${file} → after the loop, a read that is not \`success\` no longer produces a refusal; ` +
+            'the retry swallowed the verdict',
         );
       }
 
