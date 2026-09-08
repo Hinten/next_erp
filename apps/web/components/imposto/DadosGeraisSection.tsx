@@ -1,7 +1,7 @@
 'use client';
 
-import { SimpleGrid, Stack, Switch, TextInput } from '@mantine/core';
-import { ORIGEM_PRODUTO_LABELS } from '@delfrance/schemas';
+import { Select, SimpleGrid, Stack, Switch, TagsInput, TextInput } from '@mantine/core';
+import { ORIGEM_PRODUTO_LABELS, indEscalaFromScalar, nveFromScalar } from '@delfrance/schemas';
 import { EnumSelect } from './fields';
 import type { ImpostoConfigValue } from './types';
 
@@ -24,6 +24,23 @@ export function DadosGeraisSection({
   }
   const text = (key: keyof ImpostoConfigValue) => (value[key] as string | null) ?? '';
   const err = (key: string) => errorNode?.[key]?.message;
+
+  // `NVE`/`indEscala` are stored in their real wire shapes (`string[]` / boolean),
+  // but a doc that failed `parseSoftRead` for ANY unrelated reason comes back raw
+  // — and then these two can still be the pre-#466 scalar the old editor wrote.
+  // Fold through the SAME helpers storage uses, so what is displayed and what
+  // would be stored can never disagree.
+  const nve = Array.isArray(value.NVE)
+    ? value.NVE
+    : typeof value.NVE === 'string'
+      ? (nveFromScalar(value.NVE) ?? [])
+      : [];
+  const indEscala =
+    typeof value.indEscala === 'boolean'
+      ? value.indEscala
+      : typeof value.indEscala === 'string'
+        ? indEscalaFromScalar(value.indEscala)
+        : null;
 
   return (
     <Stack gap="sm">
@@ -59,10 +76,12 @@ export function DadosGeraisSection({
           error={err('NCM')}
           disabled={disabled}
         />
-        <TextInput
+        <TagsInput
           label="NVE"
-          value={text('NVE')}
-          onChange={(e) => set('NVE', e.currentTarget.value || null)}
+          description="Até 8 códigos, 2 letras + 4 dígitos (ex.: AB1234). Enter para adicionar."
+          maxTags={8}
+          value={nve}
+          onChange={(v) => set('NVE', v.length > 0 ? v : null)}
           disabled={disabled}
         />
         <TextInput
@@ -74,10 +93,17 @@ export function DadosGeraisSection({
           error={err('CEST')}
           disabled={disabled}
         />
-        <TextInput
+        <Select
           label="Indicador de escala"
-          value={text('indEscala')}
-          onChange={(e) => set('indEscala', e.currentTarget.value || null)}
+          description="Produção em escala relevante (Convênio ICMS 52/2017)."
+          placeholder="Não informado"
+          clearable
+          data={[
+            { value: 'S', label: 'Sim' },
+            { value: 'N', label: 'Não' },
+          ]}
+          value={indEscala === true ? 'S' : indEscala === false ? 'N' : null}
+          onChange={(v) => set('indEscala', v === 'S' ? true : v === 'N' ? false : null)}
           disabled={disabled}
         />
         <TextInput

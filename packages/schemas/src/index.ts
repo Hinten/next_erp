@@ -752,6 +752,10 @@ export {
 // Tributary config schemas (ICMS/IPI/PIS/COFINS/ISSQN/retenção + RTC IBS/CBS/IS).
 // Single source of truth, browser-safe; the NF-e tribute engine re-exports them.
 export {
+  // Dados Gerais folds shared by storage and the imposto editor (#466).
+  nveFromScalar,
+  indEscalaFromScalar,
+  nveCarriesValue,
   // enums
   crtSchema,
   csosnSchema,
