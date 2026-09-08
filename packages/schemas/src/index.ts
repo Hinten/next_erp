@@ -675,6 +675,8 @@ export {
   type Bandeira,
 } from './bandeiraCartao';
 
+export * from './simplesNacional';
+
 export {
   nfe,
   nfeSchema,
