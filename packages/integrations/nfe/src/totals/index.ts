@@ -8,8 +8,10 @@
  *
  * 1. the emitter (`apps/nfe/lib/nfe/orchestrator/audit.ts`), stamping `totais`
  *    in the same write that persists `xml_nfe_proc`;
- * 2. a historical backfill, once one is written and scheduled for the migration
- *    window (#1491) — no such script exists under `tools/migrations` yet;
+ * 2. the historical backfill, `tools/migrations/src/2026-09-nfe-totais`, which
+ *    re-parses every already-authorized note — it imports this function rather
+ *    than re-deriving the fold, which is the whole reason this module has no
+ *    server-only dependency;
  * 3. eventually `apps/web/lib/nfe/export/parseNfeReportRow.ts`, which still
  *    hand-rolls the same parse with `DOMParser` for the CSV report.
  *

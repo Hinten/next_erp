@@ -275,10 +275,11 @@ export const nfeSchema = z.object({
    * Totais do `<ICMSTot>` (+ RTC) — ver {@link nfeTotaisSchema}. Escrito no
    * MESMO write que persiste `xml_nfe_proc`, derivado desses próprios bytes.
    *
-   * ⚠️ `null` em toda nota autorizada ANTES deste campo existir, e assim
-   * permanece: nada preenche o histórico retroativamente hoje. Um backfill é
-   * trabalho da janela de migração (regra 8) e ainda não tem script nem issue
-   * — o #1491 acompanha.
+   * ⚠️ `null` em toda nota autorizada ANTES deste campo existir, e nada o
+   * preenche em produção enquanto a janela de migração não rodar (regra 8): o
+   * script é `tools/migrations/src/2026-09-nfe-totais`, e ele é a CHAVE que liga
+   * a apuração — enquanto não rodar, toda nota anterior conta em
+   * `notasIlegiveis` e nenhuma alíquota é publicada.
    *
    * A alíquota e o imposto rateado NÃO moram aqui ainda: os campos chegam
    * junto do runner que os escreve, e não antes. Um campo que nada escreve é
