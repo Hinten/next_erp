@@ -114,16 +114,24 @@ export function useAvisos(): UseAvisosResult {
   );
 
   const marcarTodosLidos = useCallback(async () => {
-    if (!uid) return;
+    if (!uid || rows.length === 0) return;
     // One write, not N: the watermark covers everything already raised, and
     // clearing `lidos` in the SAME write is what keeps that array bounded.
     // Advancing one without the other either grows it forever or marks nothing.
-    const agoraUs = Date.now() * 1000;
+    //
+    // ⚠️ The watermark is the newest `criadoEm` the operator can SEE, not
+    // `Date.now()`. The rows are stamped by a Cloud Function while this runs in a
+    // browser, so a local clock reading compares two different clocks: a client a
+    // few minutes fast would mark avisos read that have not been raised yet, and
+    // they would arrive already counted as read with the bell never lighting.
+    // Rows are ordered `criadoEm desc` and capped at the same limit, so the newest
+    // visible row is also the newest that exists.
+    const ateCriadoEmUs = rows.reduce((max, r) => Math.max(max, r.aviso.criadoEm), 0);
     await setDoc(
       avisosLeituraCollection.docRef(getFirebaseFirestore(), {}, uid),
-      avisosLeituraSchema.parse(marcarTodosComoLidos(agoraUs)),
+      avisosLeituraSchema.parse(marcarTodosComoLidos(ateCriadoEmUs)),
     );
-  }, [uid]);
+  }, [uid, rows]);
 
   return {
     rows,

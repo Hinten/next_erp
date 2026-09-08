@@ -93,6 +93,17 @@ describe('AvisosPanel', () => {
     expect(link?.getAttribute('rel')).toContain('noopener');
   });
 
+  it('renders NO internal link for a stored route that is not a real in-app path', () => {
+    // `avisos` is serverOwned, so only our producers write this — but the value is
+    // built from provider-supplied ids and outlives the code that wrote it, and
+    // `//evil.com` starts with `/` while navigating off-site.
+    renderPanel([row('a1', { urlInterna: { rota: '//evil.com/x', campo: null } })]);
+    expect(screen.queryByText('Abrir')).toBeNull();
+
+    renderPanel([row('a2', { urlInterna: { rota: 'https://evil.com/x', campo: null } })]);
+    expect(screen.queryByText('Abrir')).toBeNull();
+  });
+
   it('renders NO external link for a hostile or off-allowlist URL', () => {
     // The row is provider-supplied. A `javascript:` URL must degrade to "no
     // button", never reach an href.

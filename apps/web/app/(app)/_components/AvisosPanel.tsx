@@ -2,7 +2,12 @@
 
 import Link from 'next/link';
 import { Anchor, Badge, Button, Group, Loader, Stack, Text, UnstyledButton } from '@mantine/core';
-import { SEVERIDADE_AVISO, urlExternaSegura, type SeveridadeAviso } from '@delfrance/schemas';
+import {
+  SEVERIDADE_AVISO,
+  rotaInternaSegura,
+  urlExternaSegura,
+  type SeveridadeAviso,
+} from '@delfrance/schemas';
 import { HOSTS_EXTERNOS_PERMITIDOS, MENSAGENS_POR_TIPO } from '@/lib/avisos/mensagens';
 import type { AvisoRow } from '@/lib/avisos/useAvisos';
 
@@ -103,6 +108,10 @@ function LinhaAviso({
   // Provider-supplied and therefore untrusted: `null` unless it is https on an
   // expected host, so a hostile value degrades to "no link", never to an href.
   const externa = urlExternaSegura(aviso.urlExterna, HOSTS_EXTERNOS_PERMITIDOS);
+  // The internal route gets the same treatment rather than being trusted because
+  // `avisos` is serverOwned: `rota` is built from provider-supplied ids and, once
+  // stored, outlives the code that wrote it.
+  const interna = rotaInternaSegura(aviso.urlInterna?.rota);
 
   return (
     <Stack
@@ -140,10 +149,10 @@ function LinhaAviso({
       )}
 
       <Group gap="sm">
-        {aviso.urlInterna && (
+        {interna !== null && (
           <Anchor
             component={Link}
-            href={aviso.urlInterna.rota}
+            href={interna}
             size="xs"
             onClick={() => {
               onNavegar?.();

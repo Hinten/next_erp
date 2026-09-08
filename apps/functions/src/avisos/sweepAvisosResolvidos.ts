@@ -51,10 +51,24 @@ export const sweepAvisosResolvidos = onSchedule(
     const db = getDb();
     const corteUs = Date.now() * 1000 - RETENCAO_DIAS * DIA_US;
 
-    // Covered by the same `(resolvidoEm ASC, criadoEm DESC)` composite the bell
-    // uses: the equality-then-inequality shape here is a prefix of it, so this
-    // sweep adds no index of its own. A second inequality would be a POST-filter
-    // that does not reduce entries scanned, which on Enterprise is billed.
+    // Served by the DEDICATED single-field `avisos(resolvidoEm ASC)` entry, not
+    // by the bell's `(resolvidoEm ASC, criadoEm DESC)` composite.
+    //
+    // ⚠️ Declared rather than reasoned about. A composite looks like it should
+    // serve this as a field prefix, but Firestore appends an implicit `__name__`
+    // to a query's ordering while an Enterprise composite carries none (root
+    // `CLAUDE.md` rule 1 — the same asymmetry that makes Standard-edition index
+    // JSON wrong here), and on Enterprise there is no auto-created single-field
+    // index to fall back on. Being wrong is silent: no `FAILED_PRECONDITION`, no
+    // index link, just a full scan billed by data scanned, with `limit()`
+    // shrinking the result rather than the scan. `sweepMarkedForDeletion` has the
+    // identical shape and declares its own `arquivos(markedForDeletionAt ASC)`
+    // for exactly this reason; one JSON entry is cheaper than the planner
+    // question.
+    //
+    // The `< cutoff` range filter also excludes `null`, which is what keeps every
+    // UNRESOLVED aviso out of the sweep — the same behaviour `sweepMarkedForDeletion`
+    // relies on, and it is emulator-tested there.
     const vencidos = await avisoCollection
       .ref(db, {})
       .where('resolvidoEm', '<', corteUs)

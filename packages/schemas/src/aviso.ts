@@ -496,9 +496,37 @@ export function avisoNaoLido(
  * watermark now covers everything those ids referred to. Advancing one without
  * clearing the other grows the array forever; clearing without advancing marks
  * nothing read.
+ *
+ * ⚠️ **Pass the newest `criadoEm` the operator can actually SEE — never a clock
+ * reading.** The rows are stamped by a Cloud Function and the panel runs in a
+ * browser, so a "now" taken here is a DIFFERENT clock from the one the watermark
+ * is compared against. A client running a few minutes fast would mark avisos
+ * read that have not been raised yet: they arrive already counted as read and
+ * the bell never lights for them. The newest visible `criadoEm` is also the
+ * truthful definition of "I have seen everything up to here".
  */
-export function marcarTodosComoLidos(agoraUs: number): AvisosLeitura {
-  return { ultimaVisualizacaoUs: agoraUs, lidos: [] };
+export function marcarTodosComoLidos(ateCriadoEmUs: number): AvisosLeitura {
+  return { ultimaVisualizacaoUs: ateCriadoEmUs, lidos: [] };
+}
+
+/**
+ * A stored internal route is only safe to render as a link if it is genuinely
+ * internal. Returns the route when it is, `null` otherwise.
+ *
+ * `avisos` is `serverOwned`, so only our own producers write `urlInterna` — but
+ * `rota` is built from provider-supplied ids, nothing forces a producer through
+ * {@link ROTAS_AVISO}, and a stored value outlives the code that wrote it. This
+ * makes "internal" true by construction rather than by convention, and it is the
+ * convention that drifts.
+ *
+ * ⚠️ `//evil.com` starts with `/` and is PROTOCOL-RELATIVE — a browser navigates
+ * off-site. A bare `startsWith('/')` is not the check.
+ */
+export function rotaInternaSegura(rota: string | null | undefined): string | null {
+  if (rota == null || rota === '') return null;
+  if (!rota.startsWith('/')) return null;
+  if (rota.startsWith('//')) return null;
+  return rota;
 }
 
 /**

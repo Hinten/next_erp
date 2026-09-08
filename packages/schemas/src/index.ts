@@ -953,6 +953,7 @@ export {
   avisoNaoLido,
   marcarTodosComoLidos,
   urlExternaSegura,
+  rotaInternaSegura,
   type Aviso,
   type AvisosLeitura,
   type UrlInternaAviso,

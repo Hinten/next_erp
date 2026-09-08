@@ -8,6 +8,7 @@ import {
   avisosLeituraSchema,
   chaveDeAviso,
   marcarTodosComoLidos,
+  rotaInternaSegura,
   urlExternaSegura,
   type Aviso,
   type AvisosLeitura,
@@ -228,6 +229,14 @@ describe('avisoNaoLido', () => {
 });
 
 describe('marcarTodosComoLidos', () => {
+  it('takes the value it is GIVEN — the caller passes a seen `criadoEm`, not a clock', () => {
+    // The rows are stamped by a Cloud Function and the panel runs in a browser, so
+    // a "now" read here would compare two different clocks and a fast client would
+    // mark unraised avisos read.
+    const proximo = marcarTodosComoLidos(AGORA_US + 42);
+    expect(proximo.ultimaVisualizacaoUs).toBe(AGORA_US + 42);
+  });
+
   it('advances the watermark AND clears `lidos` in the same value', () => {
     // Advancing without clearing grows the array forever; clearing without
     // advancing marks nothing read. Both halves or neither.
@@ -272,6 +281,33 @@ describe('ROTAS_AVISO', () => {
 
   it('builds a concrete Shopee conta route', () => {
     expect(ROTAS_AVISO.canalShopee.build('abc')).toBe('/canais/shopee/abc');
+  });
+});
+
+describe('rotaInternaSegura', () => {
+  it('accepts a real in-app path', () => {
+    expect(rotaInternaSegura('/canais/shopee/abc')).toBe('/canais/shopee/abc');
+    expect(rotaInternaSegura('/pedidos/1/editar#fiscal')).toBe('/pedidos/1/editar#fiscal');
+  });
+
+  it('refuses a PROTOCOL-RELATIVE path, which starts with `/` but leaves the site', () => {
+    // The reason a bare `startsWith('/')` is not the check.
+    expect(rotaInternaSegura('//evil.com/x')).toBeNull();
+  });
+
+  it('refuses anything that is not a path at all', () => {
+    expect(rotaInternaSegura('javascript:alert(1)')).toBeNull();
+    expect(rotaInternaSegura('https://evil.com/x')).toBeNull();
+    expect(rotaInternaSegura('canais/shopee/abc')).toBeNull();
+    expect(rotaInternaSegura(null)).toBeNull();
+    expect(rotaInternaSegura('')).toBeNull();
+  });
+
+  it('accepts every route the shared builder can emit', () => {
+    for (const [nome, rota] of Object.entries(ROTAS_AVISO)) {
+      const construida = (rota.build as (id?: string) => string)('ID');
+      expect(rotaInternaSegura(construida), nome).toBe(construida);
+    }
   });
 });
 
