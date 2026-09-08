@@ -112,13 +112,26 @@ export const simplesNacionalConfigSchema = z.object({
   estadoApuracao: apuracaoEstadoSchema.nullable().default(null),
   calculadoEm: millisSinceEpoch().nullable().default(null),
   /**
-   * Notas na janela que o parser não conseguiu ler (`totais` ausente).
+   * Notas aprovadas da janela que NÃO entraram nesta RBT12 e deveriam ter
+   * entrado — por qualquer motivo.
    *
    * ⚠️ **É o guarda de segurança do recurso inteiro.** O `sum()` do Firestore
-   * ignora documento sem o campo, EM SILÊNCIO — uma nota ilegível sairia da
-   * RBT12, a receita pareceria menor, a faixa cairia e o imposto sairia
-   * subdeclarado com todo job reportando sucesso. Enquanto isto for > 0 a
-   * apuração é `incompleta` e não vira alíquota vigente.
+   * ignora documento sem o campo, EM SILÊNCIO — uma nota fora da conta faz a
+   * receita parecer menor, a faixa cair e o imposto sair subdeclarado com todo
+   * job reportando sucesso. Enquanto isto for > 0 a apuração é `incompleta` e
+   * não vira alíquota vigente.
+   *
+   * ⚠️ O nome diz "ilegíveis" por causa do primeiro caso, mas o contador é mais
+   * largo do que isso, e essa largura foi comprada caro (revisão do #1546): um
+   * guarda que só olhava o `totais` ausente **entre as linhas que o filtro já
+   * tinha devolvido** não via nada que o próprio filtro derrubasse. Hoje soma
+   * quatro coisas: nota sem `totais.receitaBruta`; nota de filial não
+   * configurada (a RBT12 é da EMPRESA — matriz mais filiais, um DAS só);
+   * nota que o agregado não soube atribuir (sem `filialId`, que o `nfeSchema`
+   * admite por tolerância a documento legado); e a diferença contra um agregado
+   * de CONTROLE, que pega o documento que o índice composto pode nem conter.
+   * Notas neutras (ajuste, devolução de compra) ficam de fora dos três últimos:
+   * não são receita de ninguém, e contá-las seria um bloqueio que nada resolve.
    */
   notasIlegiveis: z.number().int().min(0).nullable().default(null),
   /**

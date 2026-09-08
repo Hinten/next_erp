@@ -1,7 +1,10 @@
 import { logger } from 'firebase-functions';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 
-import { fetchReceitaSimples } from '../../lib/nfe/handlers/fetchReceitaSimples';
+import {
+  fetchReceitaSimples,
+  fetchTotalJanelaSimples,
+} from '../../lib/nfe/handlers/fetchReceitaSimples';
 import { runApuracaoSimples } from '../../lib/nfe/handlers/runApuracaoSimples';
 import { safeErrorShape } from '../../lib/nfe/log';
 import { getDb } from './lib/admin';
@@ -38,6 +41,7 @@ export const apuracaoSimplesNacional = onSchedule(
         fs: getDb(),
         nowMs: Date.now(),
         fetchReceita: fetchReceitaSimples,
+        fetchTotalJanela: fetchTotalJanelaSimples,
       });
     } catch (e) {
       // Falha de configuração (competência inválida, credencial) — sobe, para
