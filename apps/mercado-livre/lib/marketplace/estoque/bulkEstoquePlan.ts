@@ -1635,6 +1635,14 @@ export type SendSkipReason =
    */
   | 'sem-user-product'
   | 'aguardando-migracao'
+  /**
+   * #1226: Mercado Livre REMOVED the listing (`under_review` + `forbidden`), so
+   * the stored item id is dead and no `PUT` can land. Distinct from
+   * `'status-nao-enviavel'`, which is a listing that may become sendable again:
+   * this one never will, and the remedy is an operator action on the produto's
+   * ML tab ("Descartar anúncio removido", or excluir).
+   */
+  | 'anuncio-removido'
   | 'anuncio-em-erro'
   | 'status-nao-enviavel'
   /**
@@ -1979,6 +1987,17 @@ export function buildSendTasks(
     }
     if (link.estado === 'am') {
       skips.push({ produtoId: anchorId, reason: 'aguardando-migracao', itemId, linkDocId });
+      continue;
+    }
+    // #1226: ML removed the listing, so the item id is dead and no send can
+    // land. The produto normally leaves `integracoesComProduto` the moment this
+    // estado is stamped (`linkHasLiveListing`) and never reaches this loop — but
+    // it DOES reach it while another listing on the same conta keeps the produto
+    // in the anchor query, and that is exactly the case that would otherwise pay
+    // a doomed PUT ladder per tick. Its own reason, not `status-nao-enviavel`:
+    // the remedy is an operator action on the produto's ML tab, not waiting.
+    if (link.estado === ESTADO_PUBLICACAO_ML.removidoPorModeracao) {
+      skips.push({ produtoId: anchorId, reason: 'anuncio-removido', itemId, linkDocId });
       continue;
     }
     // #781: the send handler's terminal branch stamps `'E'` when ML confirmed the

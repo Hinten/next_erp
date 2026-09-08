@@ -50,6 +50,21 @@ const CACHES_REMOVIDOS = [
   'valorCustoDevolvidos',
 ];
 
+/**
+ * The four aggregate pass-throughs #1151 removed from `pedidoSchema` — a
+ * SECOND removal pass, for a different reason than the five above: these were
+ * never derived from the pedido at all (a pipeline aggregates `incidentes` /
+ * `orderML` at read time instead), and nothing in this app ever wrote one.
+ * They reach `remotelyChangedFields` by the identical route, so they need the
+ * identical guard.
+ */
+const CAMPOS_REMOVIDOS_1151 = [
+  'valorComissoes',
+  'valorDespesasIncidentes',
+  'valorFretesIncidentes',
+  'impostos',
+];
+
 describe('buildPedidoPatch', () => {
   it('returns only the touched plain field', () => {
     const patch = buildPedidoPatch(VALUES, { numero: true });
@@ -208,6 +223,30 @@ describe('remotelyChangedFields', () => {
     }
     const baseline = { numero: 'A', valorFreteInicial: 7, custoFreteInicial: 5 };
     const current = { numero: 'A', valorFreteInicial: 12.5, custoFreteInicial: 9 };
+    expect(remotelyChangedFields(baseline, current)).toEqual([]);
+  });
+
+  it('ignores the removed aggregate pass-throughs too (#1151)', () => {
+    // Same mechanism as the #796 five above, different reason for removal: no
+    // writer ever existed in this app, and a pipeline now produces the numbers
+    // at read time. The migrated corpus still stores all four, so the
+    // raw-fallback path (`parseSoftRead` failing on one side only) could
+    // otherwise surface a conflict modal naming a field the operator can
+    // neither see nor have authored.
+    //
+    // ⚠️ Deliberately NOT asserted against `PEDIDO_HISTORY_IGNORE_FIELDS`
+    // (`apps/functions`). That list and this one are a PAIR only for fields a
+    // server TRIGGER writes behind the operator's back; these four have no
+    // writer at all, so they are conflict-only — exactly what the pairing test
+    // in `registrarHistoricoPedido.test.ts` says about the removed caches.
+    //
+    // Without this test the four are unpinned: deleting them from
+    // `CONCURRENCY_IGNORE` leaves the whole suite green.
+    for (const field of CAMPOS_REMOVIDOS_1151) {
+      expect(isIgnoredForConcurrency(field)).toBe(true);
+    }
+    const baseline = { numero: 'A', valorComissoes: 12.5, impostos: 7.25 };
+    const current = { numero: 'A', valorComissoes: 40, impostos: 19 };
     expect(remotelyChangedFields(baseline, current)).toEqual([]);
   });
 });

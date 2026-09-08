@@ -44,7 +44,7 @@ const CONTA = {
   expireTime: 1_787_536_000_000,
   diasParaExpirar: 365,
   loja: { shopName: 'Loja Teste', region: 'BR', status: 'NORMAL' },
-  credencial: { expiraEm: 1_756_014_400_000, expirada: false },
+  credencial: { expiraEm: 1_756_014_400_000, expirada: false, renovacaoFalhou: false },
 };
 
 afterEach(() => {

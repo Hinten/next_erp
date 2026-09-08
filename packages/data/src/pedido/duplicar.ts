@@ -24,10 +24,12 @@ import { PedidoConflictError } from './usecases';
  * → `createPedidoWithNumero`'s `tx.set({ ...values, numero })`. Whatever the
  * seed leaves in AND still models, gets written — `pedidoSchema` has no
  * `.passthrough()` (#462), so a genuinely unmodeled key on the origin (in
- * practice, one of the five money caches #796 removed from the schema) is
- * silently dropped by the re-parse rather than carried into the duplicate,
- * same as any other unmodeled key would be. That is a feature here, not a
- * gap: none of those fields describes the new pedido either.
+ * practice, one of the nine money fields #796 and #1151 removed from the
+ * schema) is silently dropped by the re-parse rather than carried into the
+ * duplicate, same as any other unmodeled key would be. That is a feature here,
+ * not a gap: none of those fields describes the new pedido either, and it is
+ * why the four #1151 removed need no strip-list entry — see the test that pins
+ * it.
  *
  * Beyond the legacy Flutter list, this strips:
  *
@@ -41,13 +43,6 @@ import { PedidoConflictError } from './usecases';
  *    {@link import('./devolucao').buildDevolucaoIntegralSeed} nulls its
  *    siblings. `CAMPOS_ESTOQUE_SYNC` is spread rather than hand-listed so the
  *    pedido→estoque sync's write set and this list cannot drift apart.
- *  - `valorComissoes`, `valorDespesasIncidentes`, `valorFretesIncidentes`,
- *    `impostos` — the four legacy money pass-throughs. `derivePedidoTotals`
- *    explicitly leaves them to the caller and NO caller exists, so unlike the
- *    six derived caches they are never recomputed: the origin's marketplace
- *    commission and tax total would land verbatim, and the two incidente
- *    totals would describe an `incidentes` subcollection this seed never
- *    clones — the exact situation that justifies stripping `itensDevolvidos`.
  *  - `dataFinalExpedicao` — deprecated, but still a µs stamp of the origin and
  *    the last top-level date the legacy list missed.
  *  - `bloquearEmissaoNFe` — operator intent scoped to the ORIGIN ("do not emit
@@ -76,10 +71,6 @@ export const DUPLICAR_PEDIDO_STRIP_KEYS = [
   'entradasRelacionadas',
   'saidasRelacionadas',
   'bloquearEmissaoNFe',
-  'valorComissoes',
-  'valorDespesasIncidentes',
-  'valorFretesIncidentes',
-  'impostos',
   ...CAMPOS_ESTOQUE_SYNC,
 ] as const;
 

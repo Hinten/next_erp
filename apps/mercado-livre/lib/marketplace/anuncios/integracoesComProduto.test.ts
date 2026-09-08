@@ -168,7 +168,18 @@ describe('linkHasLiveListing (parent membership rule)', () => {
     expect(linkHasLiveListing({ id: 'MLB1', estado: 'c' })).toBe(false);
   });
 
-  it('still counts paused/erro/aguardando-migracao — only `c` means the listing is gone', () => {
+  it('does NOT count a listing Mercado Livre REMOVED (#1226)', () => {
+    // The `integracoesComProduto` half of #1226: the doc survives the removal
+    // with its now-dead item id, so — exactly as with a cancel — `estado` is the
+    // only signal, and without this the produto stays in the anchor pre-filter
+    // both sweeps open with for a listing ML deleted.
+    expect(linkHasLiveListing({ id: 'MLB1', estado: 'rm' })).toBe(false);
+  });
+
+  it('still counts paused/erro/aguardando-migracao — only `c` and `rm` mean the listing is gone', () => {
+    // ⚠️ The expensive direction: a false negative here is a SILENT stock and
+    // price outage, so only the two ML-TERMINAL estados may drop out. `'v'` is
+    // the near-miss that matters — a listing merely under review is savable.
     for (const estado of ['pa', 'E', 'am', 'a', 'v', 'ep']) {
       expect(linkHasLiveListing({ id: 'MLB1', estado })).toBe(true);
     }

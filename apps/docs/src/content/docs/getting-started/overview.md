@@ -3,7 +3,7 @@ title: Overview
 description: What this project is, what it isn't, and how it's organized.
 ---
 
-Delfrance is an **open-source ERP** for business process automation. The Next.js rewrite delivers feature parity with the original Flutter app while shipping as a contributable, plugin-extensible OSS project.
+Delfrance is an **open-source ERP** for business process automation. The Next.js rewrite delivers feature parity with the original Flutter app while shipping as a contributable OSS project.
 
 ## Apps
 
@@ -12,7 +12,6 @@ Delfrance is an **open-source ERP** for business process automation. The Next.js
 | `apps/web` | Internal ERP UI. Client-first Next.js on Firebase App Hosting. |
 | `apps/integrations` | API-only Next.js for webhooks and OAuth callbacks. App Hosting. |
 | `apps/docs` | This documentation site (Astro Starlight). |
-| `apps/example` | OSS demo using only `packages/core` + plugin stubs. |
 
 ## Stack
 

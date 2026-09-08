@@ -9,9 +9,8 @@
   "updateInternalDependencies": "patch",
   "ignore": [
     "@delfrance/web",
-    "@delfrance/integrations-app",
+    "@delfrance/integrations-app",
     "@delfrance/docs",
-    "@delfrance/example",
     "@delfrance/test-fixtures",
     "@delfrance/config-eslint",
     "@delfrance/config-tsconfig"

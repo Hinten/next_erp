@@ -196,7 +196,8 @@ export async function reverificarAnuncio(
         { nowMs, extra: { ...clearFalha(), moderacoes: [] } },
       );
       return {
-        estado: estadoFromMlStatus('closed'),
+        // Synthesised status, so no sub_status exists to pass.
+        estado: estadoFromMlStatus('closed', null),
         status: 'closed',
         subStatus: [],
         enviavel: false,
@@ -220,7 +221,7 @@ export async function reverificarAnuncio(
   });
 
   return {
-    estado: estadoFromMlStatus(item.status),
+    estado: estadoFromMlStatus(item.status, item.sub_status ?? null),
     status: item.status ?? null,
     subStatus: item.sub_status ?? null,
     enviavel: podeEnviarEstoque(item.status, item.sub_status).enviar,
@@ -326,7 +327,7 @@ async function reverificarFamilia(
     // `linkHasLiveListing` → `integracoesComProduto`, the anchor pre-filter both
     // ML sweeps open with, so a single member's `closed` reaching it here would
     // drop a produto whose siblings are still selling.
-    estado: folded.estado ?? estadoFromMlStatus(folded.status),
+    estado: folded.estado ?? estadoFromMlStatus(folded.status, folded.subStatus),
     status: folded.status,
     subStatus: folded.subStatus,
     enviavel: podeEnviarEstoque(folded.status, folded.subStatus).enviar,

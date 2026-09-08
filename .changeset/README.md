@@ -4,7 +4,7 @@ This folder holds [changesets](https://github.com/changesets/changesets) — fil
 
 ## When to add a changeset
 
-Whenever a PR changes a publishable package (`packages/schemas`, `packages/data`, `packages/auth`, `packages/core`, `packages/ui`, `packages/plugin-sdk`, anything under `packages/integrations/*`), run:
+Whenever a PR changes a publishable package (`packages/schemas`, `packages/data`, `packages/auth`, `packages/core`, `packages/ui`, anything under `packages/integrations/*`), run:
 
 ```bash
 pnpm changeset
@@ -14,7 +14,7 @@ Pick the affected packages, choose the bump type (`patch`/`minor`/`major`), and 
 
 ## Ignored packages
 
-Apps (`apps/web`, `apps/integrations`, `apps/docs`, `apps/example`), tooling (`tools/test-fixtures`), and shared configs (`packages/config-*`) are listed in `config.json` under `ignore` — they are private and never published to npm.
+Apps (`apps/web`, `apps/integrations`, `apps/docs`), tooling (`tools/test-fixtures`), and shared configs (`packages/config-*`) are listed in `config.json` under `ignore` — they are private and never published to npm.
 
 ## Releasing
 

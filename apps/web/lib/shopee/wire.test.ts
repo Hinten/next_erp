@@ -24,7 +24,7 @@ const CONTA = {
   expireTime: 1_787_536_000_000,
   diasParaExpirar: 365,
   loja: { shopName: 'Loja Teste', region: 'BR', status: 'NORMAL' },
-  credencial: { expiraEm: 1_756_014_400_000, expirada: false },
+  credencial: { expiraEm: 1_756_014_400_000, expirada: false, renovacaoFalhou: false },
 };
 
 describe('numbers: tolerant where the value passes THROUGH us, strict where we compute it', () => {
@@ -74,7 +74,7 @@ describe('numbers: tolerant where the value passes THROUGH us, strict where we c
   it('⚠️ NEAR MISS — REJECTS a quoted credencial.expiraEm, ours as well', () => {
     const r = shopeeContaStatusSchema.safeParse({
       ...CONTA,
-      credencial: { expiraEm: '1756014400000', expirada: false },
+      credencial: { expiraEm: '1756014400000', expirada: false, renovacaoFalhou: false },
     });
 
     expect(r.success).toBe(false);
@@ -86,6 +86,49 @@ describe('numbers: tolerant where the value passes THROUGH us, strict where we c
     // `''` as 0 and invent a shop.
     for (const shopId of ['', 'abc', '0x1F', '1e3', {}, true]) {
       expect(shopeeContaStatusSchema.safeParse({ ...CONTA, shopId }).success).toBe(false);
+    }
+  });
+});
+
+describe('credencial.renovacaoFalhou — the field a NEWER browser reads off an OLDER backend', () => {
+  it('⭐ defaults to false when the backend answering this browser predates the field', () => {
+    // Rule 2's maintenance note, exercised: `apps/web` and `apps/shopee` deploy
+    // separately, so a browser carrying this build routinely talks to a backend
+    // that never heard of `renovacaoFalhou`. Required, it would blank the whole
+    // conta screen for the length of that skew; defaulted, it reads as "no
+    // failure known" and the panel shows the healthy copy until the backend
+    // catches up.
+    const r = shopeeContaStatusSchema.parse({
+      ...CONTA,
+      credencial: { expiraEm: 1_756_014_400_000, expirada: true },
+    });
+
+    expect(r.credencial?.renovacaoFalhou).toBe(false);
+  });
+
+  it('⚠️ NEAR MISS — a backend that DOES send `true` keeps it', () => {
+    // The control on the default. A `.catch(false)`, or a default applied over a
+    // present value, would pass the case above and silently paint every dead
+    // grant as healthy — which is the whole state this field exists to surface.
+    const r = shopeeContaStatusSchema.parse({
+      ...CONTA,
+      credencial: { expiraEm: 1_756_014_400_000, expirada: true, renovacaoFalhou: true },
+    });
+
+    expect(r.credencial?.renovacaoFalhou).toBe(true);
+  });
+
+  it('⚠️ REJECTS a non-boolean — the default covers ABSENT, never malformed', () => {
+    // `.default()` fires on `undefined` only. A `'true'` here is our own
+    // serialisation bug on the backend side and must be loud (rule 3), not
+    // quietly folded to `false` — which would read as a healthy conta.
+    for (const renovacaoFalhou of ['true', 1, null]) {
+      const r = shopeeContaStatusSchema.safeParse({
+        ...CONTA,
+        credencial: { expiraEm: 1_756_014_400_000, expirada: true, renovacaoFalhou },
+      });
+
+      expect(r.success).toBe(false);
     }
   });
 });
@@ -179,7 +222,7 @@ describe('the disconnected answer is a STATE, not a failure', () => {
       expireTime: null,
       diasParaExpirar: null,
       loja: null,
-      credencial: { expiraEm: 10, expirada: true },
+      credencial: { expiraEm: 10, expirada: true, renovacaoFalhou: true },
     });
 
     expect(r.shopId).toBe(123);
