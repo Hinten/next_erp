@@ -124,6 +124,26 @@ interface FilterBodyProps {
   onClear: () => void;
 }
 
+/**
+ * ⚠️ Every dropdown in here renders with `comboboxProps={{ withinPortal: false }}`
+ * (or `popoverProps`), and that is load-bearing for TWO independent reasons:
+ *
+ *  1. A portaled dropdown sits outside the FilterPopover, so clicking one of
+ *     its options reads as a click-outside and CLOSES the popover before the
+ *     value is applied.
+ *  2. The e2e helpers scope every filter interaction to
+ *     `getByRole('dialog', { name: `Filtrar <label>` })`
+ *     (`apps/web/e2e/helpers/table-view.ts`). A portaled listbox leaves that
+ *     dialog, so `applySelectFilter` stops finding its options — on every
+ *     screen at once.
+ *
+ * ⚠️ No component test can defend this. `MantineTestProvider` runs Mantine with
+ * `env="test"`, and `OptionalPortal` short-circuits on the env BEFORE it reads
+ * `withinPortal` — so under test NOTHING is ever portaled and a removed opt-out
+ * still passes. `ColumnFilter.a11y.test.tsx` pins the dialog NAME the helpers
+ * rely on; the portal opt-out itself is guarded only by this comment and by the
+ * staging e2e lanes.
+ */
 function FilterBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
   const { kind } = descriptor;
 
@@ -138,6 +158,7 @@ function FilterBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           onChange={(v) => v !== null && onApply({ op: 'eq', value: v })}
           searchable
           clearable
+          // Inline, never portaled — see the note on `FilterBody`.
           comboboxProps={{ withinPortal: false }}
         />
       </FilterShell>
@@ -156,6 +177,7 @@ function FilterBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           value={value === undefined ? null : value.value ? 'true' : 'false'}
           onChange={(v) => v !== null && onApply({ op: 'eq', value: v === 'true' })}
           clearable
+          // Inline, never portaled — see the note on `FilterBody`.
           comboboxProps={{ withinPortal: false }}
         />
       </FilterShell>
