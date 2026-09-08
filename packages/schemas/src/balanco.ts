@@ -128,7 +128,10 @@ export const balancoSchema = z
     finalizacao: finalizacaoBalancoSchema.nullable().default(null),
 
     // System fields — stamped by `saveRecord` on every write.
-    timestamp: millisSinceEpoch('Criação').nullable().optional(),
+    // ⚠️ `.default(null)`, never a bare `.optional()` — this is the list's sort
+    // key and a classic `orderBy` excludes documents missing it. See
+    // `defaultQuery.sortKeyPresence.test.ts`.
+    timestamp: millisSinceEpoch('Criação').nullable().default(null),
     ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
   })
   .passthrough();

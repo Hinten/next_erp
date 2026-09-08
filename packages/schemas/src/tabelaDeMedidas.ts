@@ -33,7 +33,10 @@ export const tabelaDeMedidasSchema = z.object({
   // chained `.describe('…')` would clobber the `{ kind:'datetime', unit:'ms' }`
   // metadata that TableView/ObjectView need to render these as date columns.
   dataCadastro: millisSinceEpoch('Data de cadastro').nullable().optional(),
-  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
+  // ⚠️ `.default(null)`, never a bare `.optional()` — this is the list's sort
+  // key and a classic `orderBy` excludes documents missing it. See
+  // `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
 });
 
 export type TabelaDeMedidas = z.infer<typeof tabelaDeMedidasSchema>;
