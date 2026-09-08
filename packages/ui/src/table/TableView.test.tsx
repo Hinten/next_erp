@@ -522,6 +522,67 @@ describe('TableView', () => {
     expect(screen.getByRole('row', { name: /Alice/ })).toBeTruthy();
   });
 
+  it('names the row link after the id when the linked value is empty', () => {
+    // A nullable primary is ordinary here (`pedido.numero`, `cliente.nome` are
+    // both `.nullable().default(null)`). The default renderer emits `—`, so
+    // without a fallback every such row is an identical em dash in a screen
+    // reader's links list — indistinguishable, on the exact audience this prop
+    // exists for.
+    // `finally`, not a trailing assignment: a failing assertion would otherwise
+    // skip the restore and leave every LATER case rendering null-named rows,
+    // turning one red test into a cascade that hides its own cause.
+    snapState.current = {
+      data: [
+        { id: '1', path: 'x/1', data: { nome: null as unknown as string, tipo: '0' } },
+        { id: '2', path: 'x/2', data: { nome: '', tipo: '1' } },
+      ],
+      loading: false,
+      error: undefined,
+    };
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      // Distinct names, and each still points at its own row.
+      expect(screen.getByRole('link', { name: 'Abrir 1' }).getAttribute('href')).toBe('/tests/1');
+      expect(screen.getByRole('link', { name: 'Abrir 2' }).getAttribute('href')).toBe('/tests/2');
+    } finally {
+      snapState.current = {
+        data: [
+          { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
+          { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
+        ],
+        loading: false,
+        error: undefined,
+      };
+    }
+  });
+
+  it('does not label the row link when the cell has text', () => {
+    // The NEAR-MISS of the case above, and the guard on the rule the prop's
+    // docstring states: an `aria-label` on a cell that HAS text would replace
+    // that text in the row's name-from-contents computation, renaming every row
+    // and breaking the e2e `getByRole('row', { name })` locators. The fallback
+    // must fire ONLY where there is no text to replace.
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Alice' }).hasAttribute('aria-label')).toBe(false);
+    expect(screen.queryByRole('link', { name: 'Abrir 1' })).toBeNull();
+  });
+
   it('wraps a virtual column too', () => {
     // The virtual branch is the only one that can reach `row.id`, which is why
     // /produtos had to hand-roll its link there. Both branches are wrapped so
@@ -555,25 +616,28 @@ describe('TableView', () => {
       loading: false,
       error: undefined,
     };
-    wrap(
-      <TableView
-        schema={testSchema}
-        collection={fakeCollection()}
-        db={{} as never}
-        rowHref={(id) => `/tests/${id}`}
-        rowLinkColumn="nome"
-      />,
-    );
-    expect(screen.queryAllByRole('link')).toHaveLength(0);
-    // Reset for sibling tests.
-    snapState.current = {
-      data: [
-        { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
-        { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
-      ],
-      loading: false,
-      error: undefined,
-    };
+    // `finally` so a failure here cannot cascade into every later case.
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      expect(screen.queryAllByRole('link')).toHaveLength(0);
+    } finally {
+      snapState.current = {
+        data: [
+          { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
+          { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
+        ],
+        loading: false,
+        error: undefined,
+      };
+    }
   });
 
   it('warns and renders no row link when rowLinkColumn names a hidden field', () => {
