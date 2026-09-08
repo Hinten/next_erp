@@ -53,6 +53,7 @@ const KNOWN_ARTIFACT_MANIFESTS = [
   'apps/mercado-livre/functions/package.json',
   'apps/mercado-pago/functions/package.json',
   'apps/nfe/functions/package.json',
+  'apps/shopee/functions/package.json',
   'apps/whatsapp/functions/package.json',
 ];
 

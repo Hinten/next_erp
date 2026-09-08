@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "EMULATOR-ONLY config for the Shopee Cloud Tasks round-trip lane (ci-shopee.yml: `firebase emulators:exec --config firebase.shopee.tasks.json --only firestore,functions,tasks`). ⚠️ NOT a deploy config — `firebase.shopee.deploy.json` is step 22's (#1530) and is the one that will carry `predeploy`. This one points `source` at the generated `.deploy/shopee-functions` artifact, but emulators:exec does NOT run predeploy hooks, so the lane must invoke apps/shopee/functions/scripts/prepare-deploy.mjs itself first. It declares no rules and no indexes, so a stray `firebase deploy` here can push only the functions codebase — never rules; agents never run `firebase deploy` at all (root CLAUDE.md, Critical rules). The tasks port is pinned rather than left to auto-assign: firebase-tools' controller.ts reads `listenForEmulator.eventarc` in the tasks slot on the late-port-assignment path, so an explicit port avoids that. PORT INVENTORY across every emulator config in this repo, so a new one picks free numbers rather than colliding with a lane that only fails when both run at once: firebase.functions.json 8080/5001, firebase.rules.json 8081, firebase.mercado-livre.json 8082, firebase.mercado-livre.tasks.json 8083/5002/9499, firebase.e2e.json 9099/8080/9199/5001 (auth/firestore/storage/functions, the same numbers as firebase.functions.json — the two never run together), and THIS file 8084/5003/9500. `firebase.shopee.json` (firestore only) is step 22's and takes the next free numbers.",
+  "functions": [
+    {
+      "source": ".deploy/shopee-functions",
+      "codebase": "shopee",
+      "runtime": "nodejs22",
+      "ignore": ["node_modules"]
+    }
+  ],
+  "firestore": {},
+  "emulators": {
+    "firestore": { "port": 8084 },
+    "functions": { "port": 5003 },
+    "tasks": { "port": 9500 },
+    "ui": { "enabled": false },
+    "singleProjectMode": true
+  }
+}

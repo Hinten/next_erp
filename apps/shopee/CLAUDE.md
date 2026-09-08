@@ -2,11 +2,12 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Steps 1–2 and 10 of
+Runs on `:3009` in dev. Steps 1–3 and 10 of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
-conta status, the access-token refresh, and the cached taxonomy reads**. Nothing
-is published or written to Shopee yet, and step 10 writes no Firestore document
-at all.
+conta status, the access-token refresh, the cached taxonomy reads, and the
+inbound push receiver with its Cloud Tasks queue, nested functions codebase and
+weekly authorization-expiry sweep**. Nothing is published or written **to**
+Shopee yet: every call this app makes is a read.
 
 ## What lives here
 
@@ -49,14 +50,40 @@ at all.
 - `lib/shopee/core/{shopee,credentialStore,tokenStore,respond,validationIssues}.ts`
   — the context loader (cached `integracao` doc, uncached credential,
   `getAccessToken` / `createShopClient`), the Firestore credential store, the
-  error→HTTP mapper, and the Next-free Zod-path helper (step 3's functions bundle
-  will reuse it).
+  error→HTTP mapper, and the Next-free Zod-path helper (which the step-3
+  functions bundle now reuses — `respond.ts` is NOT Next-free and stays out of
+  it).
 - `lib/shopee/core/tokenStore.ts` — the leased access-token refresh (see **Token
   refresh** below). Its three transactions are inventoried in
   `packages/config-eslint/rules/firestore-transaction-inventory.test.js`, which
   is where the full race analysis lives.
 - `lib/shopee/conta/{oauthState,shops,status}.ts` — the per-attempt record
-  binding, the token-free connection oracle, and the conta wire shape.
+  binding, the token-free connection oracle (`findAuthorizedShop`, plus
+  `listarLojasAutorizadas`, which pages to `MAX_SHOPS_PAGES` and dedups by
+  `shop_id` with FIRST sighting winning), and the conta wire shape.
+- `app/api/webhooks/shopee/route.ts` — the push receiver. No Bearer, out of the
+  `proxy.ts` matcher, **204 with an empty body** on every ack. See **Inbound
+  push** below.
+- `lib/shopee/notificacoes/{pushSignature,notificacao}.ts` — the push HMAC and
+  this channel's `defineNotificationPipeline` binding: `parseNotificationBody`,
+  the derived doc id, the dispatch table on **push code**, and the conta arms.
+- `lib/shopee/shopeeTasks.ts` — the `processShopeeNotification` queue scheduler
+  (`SHOPEE_TASKS_REGION ?? FUNCTIONS_REGION`, no default; the
+  `SHOPEE_TASKS_DISABLED` valve → persist-for-the-sweep).
+- `lib/shopee/core/contaCache.ts` — the two cached integração readers:
+  `readConta` (by integração id, extracted out of `core/shopee.ts`) and
+  `findIntegracaoByShopId`, which is what turns a push's `shop_id` into a conta.
+  Token-free by construction — it touches `integracaoCollection` only.
+- `lib/shopee/avisos/autorizacao.ts` — the ONE module in this app that speaks
+  **microseconds** (`millisToMicros`, two call sites); every other signature is
+  milliseconds. Raises `shopeeAutorizacaoExpirando` / `shopeeDesautorizado` and
+  resolves both.
+- `lib/shopee/conta/expiracaoSweep.ts` — `runShopeeAuthorizationExpirySweep`,
+  driven weekly by the functions codebase and, scoped to named shops, by
+  `push 12`. See **The authorization-expiry sweep** below.
+- `functions/` — the nested Cloud Functions codebase (a deploy-artifact
+  sub-build; see `functions/DEPLOY.md`). Covered by this app's
+  typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
 - `scripts/oauth-url.ts` — dev-only: mints a consent URL without the web UI.
   **Never run by an agent** (root CLAUDE.md rule 8).
 
@@ -153,10 +180,107 @@ under "once only". Narrowing the window further would mean writing before the
 provider answers, which is a worse trade. When it does happen the operator sees
 `credencial.renovacaoFalhou` on the conta screen and reconnects.
 
-**Not here:** the authorization-expiry sweep (the 7–365-day clock, P8) is
-**step 3**, which creates the nested Cloud Functions codebase for the push
-receiver anyway — an API-only App Hosting backend is the wrong place to grow a
-scheduler.
+The authorization-expiry sweep watches the OTHER clock (the 7–365-day one) and
+lives in the nested functions codebase — see below.
+
+## Inbound push (`app/api/webhooks/shopee/`, `lib/shopee/notificacoes/`, step 3)
+
+The receiver reads the raw body **once**, verifies the `Authorization` header —
+a bare lowercase hex HMAC-SHA256 over `SHOPEE_PUSH_CALLBACK_URL + "|" + rawBody`
+— and enqueues onto the `processShopeeNotification` Cloud Tasks queue. It writes
+**no Firestore document on the happy path**. The resilience behaviour itself
+(retry disposition, failures-only persistence to `notificacoesShopee`, the
+durable-cursor sweep) is the SHARED core in `@delfrance/data/admin/notifications`
+— see the `webhook-notifications` skill. Do not re-implement it here.
+
+⚠️⚠️ **The ack shape is not a style choice.** `guide 18` defines a FAILED push
+as "not receiving an HTTP response with a status code of 2xx **and an empty
+body**". The JSON ack every other provider in this repo accepts — `200 {"ok":
+true}` — counts as a FAILURE here, and a sustained failure rate first warns
+(>600 pushes / 6 h, <70 % success) and then **auto-disables the subscription**
+(<30 %), which loses everything not already in the lost-push queue. So every
+answer is `new NextResponse(null, { status })` and a test asserts the body is
+genuinely empty on all three 2xx exits.
+
+The ladder, in order: config missing ⇒ **503** · bad signature ⇒ **401**, before
+any enqueue · unparseable body ⇒ 204 (a retry will not parse either) · no
+integer `code` ⇒ 204 · enqueue failed ⇒ persist `failed` ⇒ 204 · the persist
+failed on a `ZodError` ⇒ 204 (drop) · any other persist failure ⇒ rethrow, 5xx,
+Shopee redelivers.
+
+⚠️ **The HMAC signs the CONFIGURED url byte for byte.** `shopeePushCallbackUrl()`
+does not strip a trailing slash and must not start: a slash, a http/https
+difference or a stray port changes the digest. Shopee's docs never say WHICH url
+string they sign, so the receiver logs configured-vs-received (plus 8-character
+digest prefixes, never a body, a `data`, a full header or a key) for the first
+five deliveries per instance and for every mismatch thereafter. Delete that log
+once live traffic has answered it.
+
+⚠️ **Keyed on the push CODE, never `push_api_id`.** They differ, and not by a
+constant: `shop_penalty_update_push` is code **28** and push_api_id **31**. The
+dispatch table is the only place this is written down — codes 1 / 2 / 12 are the
+conta arms, a listed handful `ack`, everything data-bearing whose owning step is
+unbuilt **parks**, and an unlisted code parks too, which is the only signal a new
+code appeared.
+
+⚠️ **An unbuilt handler PARKS, it never DEFERS.** `defer` means a precondition
+outside this system will clear on its own, and it costs a daily re-drive for
+`MAX_TENTATIVAS_DEFERRED` days. Exactly one thing defers here: a push naming ONE
+shop that maps to no active integração — a seller who has not connected yet.
+
+Shopee ships **no event id**, so the doc id is derived per code from the
+resource key inside `data` (`ordersn`, `item_id`, `return_sn`,
+`package_number`, …), through the same `asDocId` guard ML uses — a missing
+segment becomes `-`, never nothing, and `.`/`..`/`/`/`__x__`/>1500 chars refuse
+into an auto id.
+
+## The authorization-expiry sweep and the avisos inbox (step 3, P8)
+
+`sweepShopeeAuthorizationExpiry` runs Mondays at 04:00 America/Sao_Paulo. It
+enumerates the partner's authorized shops through the **Public-signed**
+`get_shops_by_partner` — so it reads no token and never touches a
+`/credenciais/` path — and for each shop that maps to an active integração:
+`dias <= 30` raises the aviso, anything above resolves it.
+
+**Weekly, not monthly, and that is load-bearing:** a 30-day warning window on a
+monthly cadence can miss an expiry entirely (run on the 1st and see 58 days; the
+next run sees it already expired).
+
+The sink is Lucas's avisos inbox (#1543), reached through
+`escreverAviso`/`resolverAviso` in `@delfrance/data/admin/avisos`. Three things
+about that seam:
+
+- **The chave carries NO `janela`** — one row per (conta, shop), forever. A
+  window keyed on the expiry date would make the resolver compute a key that was
+  never created, because a re-consent MOVES the date, so the row would stand
+  past the 90-day retention sweep. A repeat bumps `ocorrencias` and refreshes
+  `params.dias` without moving `criadoEm` (no nagging); a lapse after a resolve
+  reopens with a fresh `criadoEm`.
+- **The stamps are microseconds** and `lib/shopee/avisos/autorizacao.ts` is the
+  only place that knows it. Everything upstream — the sweep, the push arms, the
+  shops reader — is milliseconds.
+- **The WEEKLY CRON omits `relogioEvento`; the `push 12` arm supplies it.** Both
+  go through the same sweep body, which carries the clock as the optional
+  `ExpiracaoSweepDeps.relogioEventoMs` and spreads it onto the aviso only when it
+  is defined. `camposInformados` reads an absent optional as "I do not know" and
+  a `null` as "set it to null", so passing `null` from the cron would RESET a
+  watermark a real push had already advanced — and a reset watermark is a guard
+  that never rejects anything again.
+
+`push 12` (Shopee's own 7-day warning) runs the **same producer**: it dedups
+`data.shop_expire_soon[]`, intersects with mapped integrações and re-runs the
+sweep scoped to those shop ids. ⚠️ It cannot build the aviso from
+`data.expire_before` — that is a BATCH cutoff, not a per-shop expiry — so the
+scoped run re-reads each shop's real `expire_time`. One producer, two triggers,
+one row.
+
+`push 1` (re-authorization) RESOLVES both Shopee avisos for the shop; `push 2`
+(cancellation) raises `shopeeDesautorizado` with `motivo` = the `authorize_type`
+Shopee sent. Neither writes the conta document — the conta screen derives its
+clocks live.
+
+`shopeePushDegradado` / `shopeePushSuspenso` are declared but have no producer:
+that monitor is step 4.
 
 ## Taxonomy reads (`lib/shopee/taxonomia/`, step 10)
 
@@ -240,16 +364,20 @@ against hardcoded numbers. The only `limites: null` in the layer is the kit
 route's non-leaf short-circuit, which pairs it with `leaf: false`.
 
 `limparTaxonomiaShopee()` clears all seven caches at once, coarse on purpose:
-the primitive has no prefix scan, and step 3's `push 13` is where granularity
-earns its keep.
+the primitive has no prefix scan. ⚠️ **Correction (step 3):** an earlier revision
+said `push 13` was where granularity would earn its keep. It is not — `push 13`
+is the brand-register RESULT and the dispatch table `ack`s it, invalidating
+nothing. Nothing in step 3 clears a taxonomy cache; whichever step first reacts
+to a brand or category change is where the question comes back.
 
 ## Rules specific to this app
 
 1. **No UI code** beyond the placeholder root page. Thin route handlers.
 2. **Auth is per-endpoint**: Firebase ID token (`verifyCaller`) for
-   `/api/marketplace/shopee/*`; the signed OAuth `state` for the callback; (step
-   3) the `Authorization` HMAC over `callback_url` + raw body for the push
-   receiver. No Firebase Auth user sessions.
+   `/api/marketplace/shopee/*`; the signed OAuth `state` for the callback; the
+   `Authorization` HMAC over `callback_url` + raw body for the push receiver. No
+   Firebase Auth user sessions, and no `verifyCaller` on the receiver — it is a
+   server→server call from Shopee.
 3. **All Firestore access via `@delfrance/data/admin/collections` handles** —
    raw `.collection()`/`.doc()`/`.collectionGroup()` is lint-banned (except the
    `lib/firebase/admin.ts` singleton).
@@ -259,14 +387,59 @@ earns its keep.
    A schema failure logs field PATHS, never the body: on the token endpoint that
    body IS the credential (#1015).
 5. **CORS** is handled by `proxy.ts` (Next 16 middleware) for
-   `/api/marketplace/*` only. The callback — and the future receiver — stay OUT
-   of the matcher (no browser preflight).
+   `/api/marketplace/*` only. The callback and the push receiver both sit OUT of
+   the matcher already (no browser preflight) — step 3 needed no `proxy.ts` edit.
 6. **Two apps, ONE code path.** Staging uses the ERP System **test** app against
    the sandbox hosts (`SHOPEE_SANDBOX=1`); production reuses the **live legacy**
    application against the production hosts. The difference is credentials and
    env, never a branch in code. ⚠️ `SHOPEE_SANDBOX` is therefore **opt-in**
    (exactly `'1'`), the OPPOSITE polarity of `MELHOR_ENVIO_SANDBOX`: an unset
    value on a deployed backend must mean production.
+
+## Env added by step 3
+
+Three, all in the repo-root `.env.example` (one root template set, #730) — none
+of them a secret:
+
+- **`SHOPEE_PUSH_CALLBACK_URL`** — the EXACT url registered in the Shopee
+  console, used byte for byte inside the HMAC base string. Unset or blank ⇒ the
+  receiver answers 503. One url per app; registering it is #1534.
+- **`SHOPEE_TASKS_REGION`** — must equal the `FUNCTIONS_REGION` inlined into the
+  functions bundle. No default: an unset value THROWS on the first enqueue
+  rather than resolving to `us-central1` and dropping the task behind a 204
+  (#1108). `apphosting.yaml` ships it blank on purpose until step 22 deploys the
+  codebase — blank reads as unset, so today the enqueue throws and the sweep
+  drains, which is loud and lossless.
+- **`SHOPEE_TASKS_DISABLED`** — `'1'` puts the channel in sweep-only mode: the
+  enqueue throws, the receiver persists each push as `failed`, and the 30-minute
+  reprocess sweep drains it. Never a silent drop, and never a 5xx.
+
+## CI
+
+`ci-shopee.yml` carries exactly ONE suite job, `Shopee Cloud Tasks round trip`,
+behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
+runs `*.tasks.test.ts` against firestore + functions + tasks emulators
+(`firebase.shopee.tasks.json`, ports 8084/5003/9500).
+
+⚠️ **This lane owns no exclusion, and that is the point.** Unlike
+`ci-mercado-livre`, `ci.yml` still runs every `@delfrance/shopee-app` unit test
+in `CI test` — unfiltered, no `if:`. So a skip here loses the emulator round trip
+and nothing else. Do not add a `ci.yml` filter for this workspace without moving
+the offline job into this lane in the same commit; an exclusion is a promise.
+
+⚠️ **The suites are disjoint BY GLOB.** `vitest.config.ts` excludes
+`**/*.tasks.test.ts` and `**/*.firestore.test.ts`; `vitest.tasks.config.ts`
+includes only the first. A file matching NEITHER runs in NO job. The
+`*.firestore.test.ts` half is listed before that lane exists — it is step 22's
+(#1530) — precisely so nobody has to remember it then.
+
+The lane is offline by construction: `vitest.tasks.setup.ts` throws when
+`FIRESTORE_EMULATOR_HOST` or `CLOUD_TASKS_EMULATOR_HOST` is missing under
+`CI`/`REQUIRE_EMULATOR` (a skipped suite exits 0 — vitest counts COLLECTED
+files), and installs a fetch kill-switch on every non-localhost host. That last
+one matters more here than for a channel with no sandbox: Shopee's refresh token
+is single-use and rotating, so one unstubbed refresh burns a real account's
+credential.
 
 ## Dev
 
@@ -296,7 +469,13 @@ or register `localhost`.
 ## Deploy
 
 Firebase App Hosting, own backend, root `apps/shopee`. Env + secrets via the
-Firebase console / Secret Manager.
+Firebase console / Secret Manager. The nested Cloud Functions codebase
+(`functions/`) deploys separately — see **`functions/DEPLOY.md`**, including the
+three IAM roles the receiver needs before it can enqueue.
+`firebase.shopee.deploy.json` shipped with step 3 and is **inert**: a config file
+deploys nothing, running it is a manual coordinated human step (root CLAUDE.md
+rule 8), and the ROLLOUT — plus `firebase.shopee.json`, `vpcAccess`, the real
+`SHOPEE_TASKS_REGION` and flipping `implementado` — is still step 22 / #1530.
 
 ⚠️ An **ERP System** Shopee app has no console "Authorize" button, so
 `oauth/start` (or the script above) is the only way to reach the consent page,
