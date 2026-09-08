@@ -219,6 +219,7 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
             },
           }}
           rowHref={(id) => cfg.editarPath(id)}
+          rowLinkColumn="numero"
           renderNewButton={() => (
             <Button component={Link} href={cfg.novoPath}>
               {cfg.newButtonLabel}

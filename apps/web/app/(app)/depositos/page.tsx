@@ -22,6 +22,7 @@ export default function DepositosPage() {
       db={getFirebaseFirestore()}
       meta={depositoMeta}
       rowHref={(id) => `/depositos/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/depositos/novo">
           Novo depósito

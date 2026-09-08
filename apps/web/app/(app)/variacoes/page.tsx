@@ -22,6 +22,7 @@ export default function VariacoesPage() {
       db={getFirebaseFirestore()}
       meta={grupoDeVariacoesMeta}
       rowHref={(id) => `/variacoes/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/variacoes/novo">
           Novo grupo

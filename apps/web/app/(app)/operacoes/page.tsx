@@ -31,6 +31,7 @@ export default function OperacoesPage() {
         cfopInterestadual: { label: 'CFOP inter.' },
       }}
       rowHref={(id) => `/operacoes/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/operacoes/novo">
           Nova operação

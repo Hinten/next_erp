@@ -178,6 +178,7 @@ export function ComunicacoesNfeScreen() {
           orderBy={{ field: 'timestamp', direction: 'desc' }}
           fields={FIELDS}
           rowHref={(id) => `/nfe/comunicacoes/${filialId}/${id}`}
+          rowLinkColumn="targetsChnfe"
           selectable
           actions={[verificarAction]}
         />
