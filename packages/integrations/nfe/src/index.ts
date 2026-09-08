@@ -17,7 +17,6 @@
  * `CLAUDE.md` ("Subpath exports") for the upgrade playbook when
  * adding new browser-safe surfaces.
  */
-import type { InvoiceProvider } from '@delfrance/core/plugins';
 
 // Cert
 export {
@@ -315,6 +314,7 @@ export {
   NFeRuntimeNotReadyError,
   NFeServerError,
   createNFeHttpClient,
+  extrairTotaisNFe,
   type NFeCartaCorrecaoResult,
   type NFeConsultaCadastroInfCad,
   type NFeConsultaCadastroResult,
@@ -326,47 +326,3 @@ export {
   type NFeInutilizarResult,
   type NFeProcessarPendentesResult,
 } from './http-provider';
-
-import { ESTADO_NFE } from '@delfrance/schemas';
-
-import { NFeRejectedError, createNFeHttpClient } from './http-provider';
-import type { NFeHttpClientConfig } from './http-provider';
-
-/**
- * Adapter that bridges the HTTP client to the legacy
- * `InvoiceProvider` contract (`packages/core/src/plugins/index.ts`).
- * `apps/web` registers this in the PluginRegistry; the rest of the
- * web app stays plugin-agnostic.
- *
- * Estado → InvoiceProvider status mapping:
- *   - `aprovada` → `'authorized'` (cStat=100, document is valid)
- *   - `enviando` / `aguardandoResposta` → `'pending'` (lote in flight)
- *   - `rejeitada` → `'rejected'` (cStat that maps to fiscal rejection)
- *   - anything else → `'pending'` (defensive — caller should re-query)
- */
-export function createNFeProvider(config: NFeHttpClientConfig): InvoiceProvider {
-  const client = createNFeHttpClient(config);
-  return {
-    id: 'nfe',
-    issue: async (orderId: string) => {
-      try {
-        const result = await client.emitir(orderId);
-        if (result.estado === ESTADO_NFE.aprovada) {
-          return { status: 'authorized', protocol: result.nRec ?? undefined };
-        }
-        if (result.estado === ESTADO_NFE.rejeitada) {
-          return { status: 'rejected' };
-        }
-        return { status: 'pending', protocol: result.nRec ?? undefined };
-      } catch (err) {
-        // 422 (NFeRejectedError) is a fiscal outcome, not an error from
-        // the InvoiceProvider's perspective — surface it as 'rejected'.
-        if (err instanceof NFeRejectedError) {
-          return { status: 'rejected' };
-        }
-        // Auth / runtime / network errors propagate; callers handle.
-        throw err;
-      }
-    },
-  };
-}

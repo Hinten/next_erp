@@ -7,8 +7,11 @@
  * No raw template strings — element ordering and text escaping are
  * owned by the serializer.
  *
- * SEFAZ requires at least one `<detPag>` (or a `<vTroco>` for "no
- * payment" NF-e, which Phase A doesn't issue). The `<card>` child is
+ * SEFAZ requires at least one `<detPag>`. `<vTroco>` is emitted only
+ * when the caller supplies one — see `buildPagObject`'s second parameter
+ * and the channel gate in `apps/nfe`'s `generator-input.ts`: `Σ vPag > vNF`
+ * is legal ONLY with a troco, and without one SEFAZ rejects with cStat 866
+ * (YA03-20, "ausência de troco"). The `<card>` child is
  * optional in the XSD; we emit it only when the caller supplies card
  * data, mirroring `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:1812-1849`
  * which emits `<card>` only when `cartao != null`. Attaching an
@@ -118,8 +121,24 @@ function toDetPag(p: Payment): TNFe_infNFe_pag_detPag {
  * for any consumer that wants to plug the result into a larger object
  * (DANFE renderer, fiscal audit, …); use `buildPagXml` to emit the
  * wire XML directly.
+ *
+ * `vTroco` — change handed back, i.e. `Σ vPag − vNF`. It belongs to the
+ * `<pag>` GROUP, not to any one `<detPag>`, which is why it is a parameter
+ * here and not a field on {@link Payment}. Omitted when null or when it
+ * formats to `0.00`: that IS XSD-valid (`TDec_1302` matches it) and would
+ * therefore be caught by nothing downstream, while saying nothing. A NEGATIVE
+ * troco throws — it means `Σ vPag < vNF`, a shortfall (rejection 865, which
+ * has no troco remedy), so it can only be a caller bug.
+ *
+ * ⚠️ The CALLER rounds — same contract as `vPag`. The wire, the
+ * `Σ vPag ↔ vNF` guard and SEFAZ's own YA03 summation must all see the
+ * SAME 2-decimal values; a sub-cent troco rounded here instead of at the
+ * source would let the guard pass a nota the wire mis-sums.
  */
-export function buildPagObject(payments: ReadonlyArray<Payment>): TNFe_infNFe_pag {
+export function buildPagObject(
+  payments: ReadonlyArray<Payment>,
+  vTroco?: number | null,
+): TNFe_infNFe_pag {
   if (payments.length === 0) {
     throw new Error('buildPagObject: at least one payment is required');
   }
@@ -136,7 +155,14 @@ export function buildPagObject(payments: ReadonlyArray<Payment>): TNFe_infNFe_pa
       throw err;
     }
   });
-  return { detPag: validated.map(toDetPag) };
+  const pag: TNFe_infNFe_pag = { detPag: validated.map(toDetPag) };
+  if (vTroco != null) {
+    // fmtMoney THROWS on a negative, deliberately — see the doc block. Dropping
+    // one silently would hide the caller bug that produced it.
+    const formatted = fmtMoney('vTroco', vTroco);
+    if (formatted !== '0.00') pag.vTroco = formatted;
+  }
+  return pag;
 }
 
 /**
@@ -146,11 +172,15 @@ export function buildPagObject(payments: ReadonlyArray<Payment>): TNFe_infNFe_pa
  * block (PSP CNPJ):
  *   buildPagXml([{ tPag: '17', vPag: 1500, card: { tpIntegra: '2', CNPJ: '...' } }])
  *   → <pag><detPag><tPag>17</tPag><vPag>1500.00</vPag><card><tpIntegra>2</tpIntegra><CNPJ>...</CNPJ></card></detPag></pag>
+ *
+ * With change, on a R$ 90 cash sale paid with R$ 100:
+ *   buildPagXml([{ tPag: '01', vPag: 100 }], 10)
+ *   → <pag><detPag><tPag>01</tPag><vPag>100.00</vPag></detPag><vTroco>10.00</vTroco></pag>
  */
-export function buildPagXml(payments: ReadonlyArray<Payment>): string {
+export function buildPagXml(payments: ReadonlyArray<Payment>, vTroco?: number | null): string {
   return serializeFragment(
     'TNFe_infNFe_pag',
     'pag',
-    buildPagObject(payments) as unknown as XmlValue,
+    buildPagObject(payments, vTroco) as unknown as XmlValue,
   );
 }

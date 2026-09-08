@@ -956,6 +956,27 @@ export const impostoSchema = z.object({
     .nullable(),
   unidade: z.string().min(1).max(6).optional().nullable(),
   /**
+   * The remaining `det.prod` children the legacy Flutter emitter carried
+   * (`pedido_nfe_base.dart:938-947`). They are stored on every Imposto-bearing
+   * doc but were absent here, so the resolver's strip-policy parse dropped them
+   * off every resolved tier and they could never reach the XML.
+   *
+   * ⚠️ No format regexes here, unlike `cfop`/`NCM`/`CEST` above. A failed
+   * `impostoSchema` parse makes the resolver fall through to a LOWER tier
+   * silently, so a malformed `NVE` would quietly change which tax config the
+   * item gets — a wrong NF-e. Validated at emit instead, where a bad value
+   * surfaces as a loud SEFAZ rejection.
+   */
+  // `.optional().nullable()` like every sibling above: `nveWire()`'s own target
+  // is already nullable, but `delfrance/no-optional-without-nullable` reads the
+  // chain syntactically and cannot see through the preprocess — and spelling
+  // the tri-state out matches the rest of this schema anyway.
+  NVE: nveWire().optional().nullable(),
+  indEscala: indEscalaWire().optional().nullable(),
+  CNPJFab: z.string().optional().nullable(),
+  cBenef: z.string().optional().nullable(),
+  extipi: z.string().optional().nullable(),
+  /**
    * `det.prod.indTot` source — `false` = the item does NOT compose the NF-e
    * totals (`indTot='0'`; excluded from ICMSTot `vProd`/`vDesc`/`vNF`).
    * `null`/absent = composes (`'1'`, the legacy Flutter default). Stored on
@@ -999,3 +1020,134 @@ export const taxConfigFields = {
   retencao: retencaoSchema.nullable().optional(),
   configuracaoIBSCBS: z.unknown().nullable().optional(),
 } as const;
+
+// ---------------------------------------------------------------------------
+// NVE / indEscala — the two Dados Gerais fields that are NOT scalars on the
+// wire, shared by all three tax collections so they cannot drift apart (#466).
+// ---------------------------------------------------------------------------
+
+/**
+ * The ONE scalar→`NVE` fold. Shared by the storage preprocess below and by the
+ * editor boundary (`apps/web/components/imposto`), so a stored value and a
+ * displayed value can never disagree about what a legacy string means.
+ *
+ * A non-blank string is a single NVE code; blank is "not informed".
+ */
+export function nveFromScalar(raw: string): string[] | null {
+  const trimmed = raw.trim();
+  return trimmed === '' ? null : [trimmed];
+}
+
+/** Text an operator could have typed into the pre-#466 free-text widget. */
+const IND_ESCALA_TRUE_WORDS = new Set(['s', 'sim', 'true', '1']);
+const IND_ESCALA_FALSE_WORDS = new Set(['n', 'nao', 'não', 'false', '0']);
+
+/**
+ * The ONE scalar→`indEscala` fold. See {@link nveFromScalar}.
+ *
+ * ⚠️ Both vocabularies are EXPLICIT and anything outside them is `null`, never
+ * a guess. `indEscala` decides `det.prod.indEscala` (`'S'`/`'N'`) and whether
+ * `CNPJFab` is required, so a wrong value is a fiscal error while an absent one
+ * is a legal omission (the element is `minOccurs="0"`) — silently flipping an
+ * operator's stray word to `true` is strictly worse than dropping it.
+ *
+ * ⚠️ This tightens what `regraImpostoSchema` did between #1305 and #466, where
+ * the fold was `!/^(n|não|nao|false|0)$/i` and therefore mapped *unrecognised*
+ * text to `true`. The narrow reading was already the one `MacrosTab`'s own
+ * bridge used on the way IN; #466 keeps that one and drops the other, so the
+ * two directions can no longer disagree. Near-misses that must stay distinct:
+ * `'N'`/`'Não'` → `false` (never `null`), `''` → `null` (never `false`), and
+ * `'talvez'` → `null` (never `true`).
+ */
+export function indEscalaFromScalar(raw: string): boolean | null {
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === '') return null;
+  if (IND_ESCALA_TRUE_WORDS.has(trimmed)) return true;
+  if (IND_ESCALA_FALSE_WORDS.has(trimmed)) return false;
+  return null;
+}
+
+/**
+ * True when a STORED `NVE` carries at least one code — in either shape.
+ *
+ * ⚠️ This exists because the "does this imposto entry carry anything worth
+ * persisting" checks run on the value as it came off the wire, BEFORE the
+ * schema parse: `impostoCarriesInfo` (`packages/data/src/produto/usecases.ts`)
+ * and `categoriaImpostoCarriesInfo` (`apps/web/lib/categorias/clientPort.ts`)
+ * both decide `set` vs `delete` first and parse second. `parseSoftRead`
+ * (`packages/data/src/zodParse.ts`) hands back the RAW document whenever the
+ * parse failed for ANY unrelated reason, and on such a document `NVE` is still
+ * the pre-#466 scalar — so a plain `Array.isArray` check reads it as empty and
+ * DELETES the doc. Same silent-delete shape as #1279, one door further in.
+ *
+ * Shared rather than duplicated: the two call sites are character-identical
+ * twins whose comments promise they agree, and they have drifted before.
+ */
+export function nveCarriesValue(v: unknown): boolean {
+  const list = typeof v === 'string' ? nveFromScalar(v) : v;
+  return Array.isArray(list) && list.some((c) => typeof c === 'string' && c.trim() !== '');
+}
+
+/**
+ * `det.prod.NVE` — Nomenclatura de Valor aduaneiro e Estatístico.
+ *
+ * The wire type is a LIST on every legacy Flutter tax model (`List<String>?` on
+ * `Imposto`, `ImpostoCategoria` and `RegraImposto` alike) and in the NF-e XSD
+ * (`leiauteNFe_v4.00.xsd`: `minOccurs="0" maxOccurs="8"`, each entry
+ * `[A-Z]{2}[0-9]{4}`).
+ *
+ * ⚠️ The preprocess is READ tolerance, not a convenience. Until #466 the three
+ * collection schemas typed this `z.string()`, and the shared
+ * `ImpostoConfigEditor` faithfully wrote plain strings through that shape — so
+ * an already-stored doc (staging, not just a hypothetical legacy export) can
+ * carry a scalar. A bare type swap would fail the WHOLE-DOCUMENT parse for
+ * those docs, and every reader of these collections drops a doc that fails
+ * `safeParse`, sending an item's tax calculation to the wrong cascade tier —
+ * not a loud failure, a wrong NF-e.
+ *
+ * A value that is neither a string nor a valid array is left ALONE so the parse
+ * still fails: tolerating a legacy shape is not the same as laundering garbage
+ * into `null`. No `[A-Z]{2}[0-9]{4}` regex here on purpose either — a format
+ * error must surface as a SEFAZ rejection at emit, never as a silent tier
+ * fall-through at resolve.
+ */
+export function nveWire() {
+  return z.preprocess(
+    (v) => (typeof v === 'string' ? nveFromScalar(v) : v),
+    z.array(z.string()).nullable(),
+  );
+}
+
+/**
+ * {@link nveWire} in the shape a STORED collection schema wants: an absent key
+ * materialises as `null` (root `CLAUDE.md` — a Firestore field is
+ * `.nullable().default(null)`, never bare `.optional()`). The engine blob
+ * `impostoSchema` uses `nveWire().optional()` instead, so that a resolved tier
+ * simply omits what it does not carry.
+ */
+export function nveField() {
+  return nveWire().default(null);
+}
+
+/**
+ * `det.prod.indEscala` — Indicador de Produção em escala relevante
+ * (Convênio ICMS 52/2017, cláusula 23).
+ *
+ * The wire type is a BOOLEAN on all three legacy Flutter models (`bool?`,
+ * rendered as a checkbox via `@SimpleBoolField()`); the NF-e XSD spells the
+ * same thing `'S' | 'N'`, and that conversion belongs at emit, not in storage.
+ *
+ * ⚠️ Same read-tolerance contract as {@link nveField} — see its note — folding
+ * a stored scalar through {@link indEscalaFromScalar}.
+ */
+export function indEscalaWire() {
+  return z.preprocess(
+    (v) => (typeof v === 'string' ? indEscalaFromScalar(v) : v),
+    z.boolean().nullable(),
+  );
+}
+
+/** {@link indEscalaWire} in the stored-collection shape. See {@link nveField}. */
+export function indEscalaField() {
+  return indEscalaWire().default(null);
+}

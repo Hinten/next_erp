@@ -1816,6 +1816,53 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     ]);
   });
 
+  // #1226: ML REMOVED the listing. Distinct from every rung around it because
+  // the remedy is distinct — no retry, no webhook, no "Reverificar" clears it;
+  // an operator has to discard or delete the anúncio.
+  it("estado 'rm' (removed by ML moderation) → anuncio-removido", () => {
+    expect(
+      run(
+        familyRow({
+          links: [{ estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao }],
+        }),
+      ).skips,
+    ).toEqual([
+      { produtoId: 'PROD', reason: 'anuncio-removido', itemId: 'MLB111', linkDocId: 'link1' },
+    ]);
+  });
+
+  it("estado 'rm' is its OWN reason, never status-nao-enviavel", () => {
+    // The near-miss that matters. `under_review` is already refused by the
+    // whitelist, so a rung placed BELOW it — or omitted entirely — still yields
+    // a skip and still sends nothing: the row looks correct and the produto is
+    // safe. What it loses is the only thing the operator can act on, because
+    // `status-nao-enviavel`'s wording invites waiting for a state that will
+    // never change. Assert the reason, not merely the absence of a task.
+    const res = run(
+      familyRow({
+        links: [
+          {
+            estado: ESTADO_PUBLICACAO_ML.removidoPorModeracao,
+            status: 'under_review',
+            sub_status: ['forbidden'],
+          },
+        ],
+      }),
+    );
+    expect(res.tasks).toEqual([]);
+    expect(res.skips[0]?.reason).toBe('anuncio-removido');
+  });
+
+  it('a listing still under ordinary review keeps status-nao-enviavel (the rung is narrow)', () => {
+    // The other half of the pair: `under_review` WITHOUT `forbidden` is savable,
+    // so it must not inherit the terminal wording.
+    const res = run(
+      familyRow({ links: [{ estado: 'p', status: 'under_review', sub_status: ['held'] }] }),
+    );
+    expect(res.tasks).toEqual([]);
+    expect(res.skips[0]?.reason).toBe('status-nao-enviavel');
+  });
+
   // #781: the send handler stamps 'E' only after ML has CONFIRMED the anúncio is
   // healthy — i.e. it was our payload that was refused. Rebuilding that same
   // payload every tick just re-earns the rejection, 96×/day.

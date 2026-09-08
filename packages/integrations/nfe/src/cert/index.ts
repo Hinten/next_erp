@@ -3,8 +3,8 @@
  *
  * **Server-only.** This module pulls in `node-forge` and exposes the raw
  * private key — it must never be imported from a client bundle. The package
- * `server.ts` entry re-exports it; client code goes through the HTTP
- * `InvoiceProvider` instead.
+ * `server.ts` entry re-exports it; client code goes through the typed
+ * HTTP client (`./http-provider`) instead.
  *
  * Phase A reads the cert via one of two env vars (whichever is set —
  * `NFE_CERT_PATH` wins if both are):

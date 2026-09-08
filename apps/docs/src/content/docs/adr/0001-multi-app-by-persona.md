@@ -15,7 +15,10 @@ Split by **persona/runtime**:
 - `apps/integrations` — webhooks + OAuth callbacks (API-only).
 - `apps/webchat` — embeddable widget (static).
 - `apps/docs` — Astro Starlight.
-- `apps/example` — OSS demo.
+- `apps/example` — OSS demo. ⚠️ **Removed in #1444.** It demoed the plugin registry
+  alongside the schemas, and had drifted out of sync with them — nothing ever ran it,
+  so its `pedidoSchema` call had been throwing for months. A replacement written
+  against the current schemas is planned; the persona split itself is unchanged.
 
 ## Consequences
 

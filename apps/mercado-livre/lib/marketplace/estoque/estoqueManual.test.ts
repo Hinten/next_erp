@@ -4,6 +4,8 @@ import { MercadoLivreError, MercadoLivreHttpError } from '@delfrance/integration
 
 import {
   MANUAL_PUSH_MAX_ATTEMPTS,
+  MENSAGEM_POR_MOTIVO,
+  MOTIVO_POR_SKIP,
   ManualPushGuardError,
   enviarEstoqueManual,
   manualPushConcurrency,
@@ -717,5 +719,58 @@ describe('enviarEstoqueManual — nothing is dropped silently', () => {
     );
     expect(res.listings[0]).toMatchObject({ outcome: 'enviado', motivo: null });
     expect(res.listings[0]!.mensagem).not.toContain('oculto');
+  });
+});
+
+/* ------------------------------ skip vocabulary ---------------------------- */
+
+describe('the skip vocabulary reaches the operator', () => {
+  // ⚠️ The BACKSTOP for the half the compiler cannot see. `MOTIVO_POR_SKIP` is
+  // total over `SendSkipReason`, so a new skip reason is a type error there —
+  // but `MENSAGEM_POR_MOTIVO` is keyed by MOTIVO and stays `Record<string,
+  // string>` (it legitimately holds entries no skip produces:
+  // `produto-nao-encontrado`, `conta-pausada`, `reauth`, `tempo-esgotado`, …).
+  // So satisfying the compiler by adding a pass-through motivo with no message
+  // still lands the operator on `mensagemDe`'s `'Não enviado.'` fallback. That
+  // is exactly what #1226 shipped, and nothing failed.
+  it('every motivo a skip can produce has a pt-BR message', () => {
+    const semMensagem = Object.entries(MOTIVO_POR_SKIP)
+      .filter(([, motivo]) => MENSAGEM_POR_MOTIVO[motivo] == null)
+      .map(([reason, motivo]) => `${reason} → ${motivo}`);
+    expect(semMensagem).toEqual([]);
+  });
+
+  it('each of those messages names a cause AND a remedy, never four bare words', () => {
+    // The docblock on `MENSAGEM_POR_MOTIVO` states the bar; this keeps it from
+    // being satisfied by a message that is merely present. `'Não enviado.'` is
+    // the fallback itself, so a motivo mapped to it would pass the test above.
+    for (const motivo of Object.values(MOTIVO_POR_SKIP)) {
+      const mensagem = MENSAGEM_POR_MOTIVO[motivo]!;
+      expect(mensagem, motivo).not.toBe('Não enviado.');
+      expect(mensagem.length, motivo).toBeGreaterThan(20);
+    }
+  });
+
+  it('a listing ML removed is reported with its own motivo and remedy (#1226)', async () => {
+    // End-to-end through the push, which is the only surface these strings
+    // reach a human on. Before the message existed this row came back
+    // `motivo: 'anuncio-removido'` with the bare fallback — on precisely the
+    // state #1226 exists to make actionable.
+    const row = familyRow();
+    row.links = [{ ...row.links[0], estado: 'rm' }] as never;
+    const deps = baseDeps({ fetchFamilies: vi.fn().mockResolvedValue([row]) });
+    const res = await enviarEstoqueManual(
+      fakeDb({ PROD: { paiId: null, nome: 'Camiseta' } }),
+      { integracaoId: CONTA, produtoIds: ['PROD'] },
+      deps as never,
+    );
+    expect(res.listings[0]).toMatchObject({
+      outcome: 'pulado',
+      motivo: 'anuncio-removido',
+      anuncioId: 'MLB111',
+    });
+    expect(res.listings[0]!.mensagem).toContain('removeu este anúncio');
+    expect(res.listings[0]!.mensagem).toContain('descartá-lo');
+    expect(deps.sendTask).not.toHaveBeenCalled();
   });
 });

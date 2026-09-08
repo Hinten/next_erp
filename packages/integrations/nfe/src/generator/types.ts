@@ -26,6 +26,25 @@ export interface GeneratorItem {
   readonly NCM: string;
   /** CEST classification (7 digits) — when the product is in the CEST list. */
   readonly CEST?: string;
+  /**
+   * NVE — Nomenclatura de Valor aduaneiro e Estatístico. Up to 8 codes, each
+   * `[A-Z]{2}[0-9]{4}` (XSD `minOccurs="0" maxOccurs="8"`).
+   */
+  readonly NVE?: readonly string[];
+  /**
+   * Produção em escala relevante (Convênio ICMS 52/2017). Stored as a boolean
+   * and emitted as `'S'`/`'N'`.
+   *
+   * ⚠️ The XSD nests this with `CNPJFab` in a group whose `CEST` is REQUIRED,
+   * so `buildProd` drops both when `CEST` is absent — see its note.
+   */
+  readonly indEscala?: boolean;
+  /** CNPJ do fabricante, for a product in escala NÃO relevante. */
+  readonly CNPJFab?: string;
+  /** Código de Benefício Fiscal applied to the item. */
+  readonly cBenef?: string;
+  /** Código EX da TIPI. */
+  readonly EXTIPI?: string;
   /** CFOP resolved by the caller against the UF combo + Operacao. */
   readonly CFOP: string;
   /** Unidade comercial (e.g. `'UN'`). */

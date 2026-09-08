@@ -12,7 +12,6 @@
     "@delfrance/integrations-app",
     "@delfrance/webchat",
     "@delfrance/docs",
-    "@delfrance/example",
     "@delfrance/test-fixtures",
     "@delfrance/config-eslint",
     "@delfrance/config-tsconfig"

@@ -46,6 +46,7 @@ import {
   type FetchStockFamiliesByIds,
   type RawStockLinkRow,
   type SendSkip,
+  type SendSkipReason,
   type StockFamilyRow,
   type StockSendTaskDraft,
   STOCK_SEND_MAX_ATTEMPTS,
@@ -208,8 +209,12 @@ export class ManualPushGuardError extends Error {
  * pt-BR for every reason a listing can come back unsent. The manual push is the
  * ONLY surface where these reach a human, so each one names the cause AND the
  * remedy — a bare `'anuncio-em-erro'` is not actionable.
+ *
+ * Exported for the backstop in `estoqueManual.test.ts` only — nothing outside
+ * this module reads it, and {@link MOTIVO_POR_SKIP}'s docblock says why the
+ * compiler cannot cover this half.
  */
-const MENSAGEM_POR_MOTIVO: Record<string, string> = {
+export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   'sem-anuncio': 'Este produto não tem anúncio nesta conta.',
   'sem-id-externo': 'O anúncio ainda não foi publicado no Mercado Livre.',
   'aguardando-migracao': 'Anúncio em migração para User Products — envio suspenso.',
@@ -218,6 +223,14 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
     'saudável, então foi o envio anterior que ele recusou. Marque "Reenviar anúncios com erro" ' +
     'para reverificar e tentar de novo.',
   'status-nao-enviavel': 'O Mercado Livre não aceita envio de estoque para este anúncio agora.',
+  // ⚠️ Distinct from `status-nao-enviavel` above, and the split is the whole
+  // point (#1226): that one is a listing that may become sendable again, so its
+  // wording invites waiting. This one never will — ML removed the anúncio — so
+  // it names the operator action instead. Wording kept in step with
+  // `precoMotivos.ts`'s ANUNCIO_REMOVIDO and `publishModeIssues`.
+  'anuncio-removido':
+    'O Mercado Livre removeu este anúncio e ele não pode ser reativado. Abra a aba Mercado ' +
+    'Livre do produto para descartá-lo e publicar um novo.',
   // ⚠️ This message used to say "o Mercado Livre monta a quantidade a partir dos
   // componentes" — the premise #1087 refuted. It does not: ML derives stock only
   // for its own Virtual Kits, which this port never creates. Virtual kits are
@@ -262,8 +275,25 @@ const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   'erro-canal': 'O Mercado Livre não respondeu. Tente novamente.',
 };
 
-/** Channel-neutral rename of `SendSkipReason` (ML wording must not leak). */
-const MOTIVO_POR_SKIP: Record<string, string> = {
+/**
+ * Channel-neutral rename of `SendSkipReason` (ML wording must not leak).
+ *
+ * ⚠️ **`Record<SendSkipReason, string>`, so it is TOTAL over the union** — a new
+ * skip reason is a compile error here rather than a silent downgrade. It was
+ * `Record<string, string>` with a `?? skip.reason` pass-through at the call
+ * site, and #1226 walked straight into that: a new reason compiled, no test
+ * failed, and the manual push answered `'Não enviado.'` — four words with no
+ * cause and no remedy — on precisely the state that PR exists to make
+ * actionable. Same "adding a member produces zero errors" shape as the
+ * duplicate `ESTADO_PUBLICACAO` that PR deleted.
+ *
+ * ⚠️ {@link MENSAGEM_POR_MOTIVO} deliberately stays `Record<string, string>`:
+ * it is keyed by MOTIVO, not by skip reason, and legitimately carries entries no
+ * skip produces (`produto-nao-encontrado`, `conta-pausada`, `reauth`, …). What
+ * covers its half is `estoqueManual.test.ts`'s backstop, which asserts every
+ * motivo this map can produce has a message.
+ */
+export const MOTIVO_POR_SKIP: Record<SendSkipReason, string> = {
   'sem-link': 'sem-anuncio',
   'sem-item-id': 'sem-id-externo',
   'aguardando-migracao': 'aguardando-migracao',
@@ -275,6 +305,7 @@ const MOTIVO_POR_SKIP: Record<string, string> = {
   // #706: already channel-neutral enough to pass through — the message above
   // carries the ML wording, not the key.
   'sem-user-product': 'sem-user-product',
+  'anuncio-removido': 'anuncio-removido',
 };
 
 function mensagemDe(motivo: string, fallback = 'Não enviado.'): string {

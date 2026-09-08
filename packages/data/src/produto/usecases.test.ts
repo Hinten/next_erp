@@ -311,6 +311,51 @@ describe('produto imposto (per-operação override)', () => {
     expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
   });
 
+  // `NVE` (a list) and `indEscala` (a boolean) are the two Dados Gerais fields
+  // that are NOT strings on the wire (#466). While the carries-info check
+  // tested them with `typeof v === 'string'`, an entry carrying only one of
+  // them read as EMPTY — so a configured doc was deleted instead of written.
+  // That is the defect that forced the revert on #1279; these pin it on the
+  // produto side, mirroring `apps/web/lib/categorias/clientPort.test.ts`.
+  it('keeps an entry whose only value is a populated NVE list', () => {
+    const ops = buildImpostoWriteOps('p1', [imp({ NVE: ['AB1234'] })], 1000);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
+  });
+
+  it.each([true, false])('keeps an entry whose only value is indEscala=%s', (v) => {
+    const ops = buildImpostoWriteOps('p1', [imp({ indEscala: v })], 1000);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
+  });
+
+  it('treats an emptied NVE as no info (deletes rather than writes a blank list)', () => {
+    expect(buildImpostoWriteOps('p1', [imp({ NVE: [] })], 1000)).toEqual([]);
+    expect(buildImpostoWriteOps('p1', [imp({ NVE: ['  '] })], 1000)).toEqual([]);
+  });
+
+  // ⚠️ Every case above goes through `impostoProdutoSchema.parse` first, so
+  // none of them can reach the shape this one does. `parseSoftRead`
+  // (`packages/data/src/zodParse.ts`) returns the RAW document whenever the
+  // parse failed for ANY unrelated reason, and on such a document `NVE` is
+  // still the pre-#466 scalar — while `impostoCarriesInfo` runs BEFORE the
+  // parse in `buildImpostoWriteOps`. A bare `Array.isArray` check reads that as
+  // empty and DELETES a configured doc. Found in review on #1507.
+  it('keeps a RAW (unparsed) entry whose only content is a legacy scalar NVE', () => {
+    const raw = {
+      ...imp({ id: 'op1' }),
+      NVE: 'AB1234' as unknown as string[], // what parseSoftRead hands back
+    };
+    expect(buildImpostoWriteOps('p1', [raw], 1000)).toMatchObject([{ type: 'set' }]);
+  });
+
+  it('still deletes a RAW entry whose legacy scalar NVE is blank', () => {
+    const raw = { ...imp({ id: 'op1' }), NVE: '   ' as unknown as string[] };
+    expect(buildImpostoWriteOps('p1', [raw], 1000)).toEqual([
+      { type: 'delete', path: 'produtos/p1/imposto/op1' },
+    ]);
+  });
+
   it('extracts the operação id from a documents/operacao/<id> ref (resolver tolerance)', () => {
     // The schema is now strict bare `operacao/<id>`, but the runtime resolver
     // still tolerates a legacy `documents/operacao/<id>` value when reading docs.

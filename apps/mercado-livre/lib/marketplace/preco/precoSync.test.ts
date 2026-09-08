@@ -520,7 +520,7 @@ describe('processPriceSyncJob — plan phase', () => {
     });
     expect(db.docs(linkPath('prod-MLB1')).get('lnk-MLB1')).toMatchObject({
       precoPublicado: 50,
-      estado: estadoFromMlStatus('active'),
+      estado: estadoFromMlStatus('active', []),
       status: 'active',
       sub_status: [],
       ultimaModificacao: CLOCK_NOW,

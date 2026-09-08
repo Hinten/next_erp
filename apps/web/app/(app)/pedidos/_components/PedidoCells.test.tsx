@@ -138,6 +138,7 @@ function makeNFe(
     data_autorizacao: null,
     dataContingencia: null,
     justificativaContingencia: null,
+    totais: null,
     error: null,
     ultima_modificacao: null,
     ...overrides,

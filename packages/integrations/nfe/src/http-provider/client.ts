@@ -4,8 +4,12 @@
  * `/api/nfe/processar-pendentes`) with typed results and a Bearer
  * Firebase ID token from the caller's auth context.
  *
- * Replaces the throwing `createNFeProvider()` stub: production
- * `apps/web` registers an `InvoiceProvider` backed by this client.
+ * This is the only NF-e path `apps/web` takes: `useNFeClient()`
+ * (`apps/web/lib/nfe/client.ts`) constructs it directly, wrapped in
+ * `withNFeRetry`. There is no plugin registry and never was — the
+ * `InvoiceProvider` contract this used to be contrasted with was
+ * deleted in #1444, along with the `createNFeProvider()` adapter that
+ * had zero callers.
  */
 import { z } from 'zod';
 

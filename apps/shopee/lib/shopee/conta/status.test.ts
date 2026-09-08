@@ -41,11 +41,40 @@ describe('shopeeContaStatusSchema', () => {
       expireTime: AGORA + 30 * DIA,
       diasParaExpirar: 30,
       loja: { shopName: 'Loja BR', region: 'BR', status: 'NORMAL' },
-      // The OTHER clock: the access token can be dead while the authorization
-      // has a month left.
-      credencial: { expiraEm: AGORA - 1, expirada: true },
+      // The OTHER clock: the access token can be stale while the authorization
+      // has a month left. `renovacaoFalhou` says whether that is transient.
+      credencial: { expiraEm: AGORA - 1, expirada: true, renovacaoFalhou: false },
     };
     expect(shopeeContaStatusSchema.parse(status)).toEqual(status);
+  });
+
+  it('defaults renovacaoFalhou to false for a payload from a pre-step-2 backend', () => {
+    // A deployed backend that predates the field simply omits it, and the panel
+    // must render "the renewal is fine" rather than blowing up on the parse. The
+    // skew is cosmetic and self-correcting.
+    const parsed = shopeeContaStatusSchema.parse({
+      ...CONTA_DESCONECTADA,
+      connected: true,
+      shopId: 111,
+      credencial: { expiraEm: AGORA - 1, expirada: true },
+    });
+    expect(parsed.credencial).toEqual({
+      expiraEm: AGORA - 1,
+      expirada: true,
+      renovacaoFalhou: false,
+    });
+  });
+
+  it('does NOT default away an explicit true — the near-miss of the case above', () => {
+    // The whole point of the field is the red state. A default that swallowed a
+    // sent `true` would silently hide the one case an operator must act on.
+    const parsed = shopeeContaStatusSchema.parse({
+      ...CONTA_DESCONECTADA,
+      connected: true,
+      shopId: 111,
+      credencial: { expiraEm: AGORA - 1, expirada: true, renovacaoFalhou: true },
+    });
+    expect(parsed.credencial?.renovacaoFalhou).toBe(true);
   });
 
   it('rejects a shop lifecycle state Shopee does not document', () => {

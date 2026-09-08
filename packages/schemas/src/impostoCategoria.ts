@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
 import { idRefSchema } from './shared/outerRef';
-import { taxConfigFields } from './imposto/tribute';
+import { indEscalaField, nveField, taxConfigFields } from './imposto/tribute';
 import type { CollectionMetadata } from './types';
 
 // Mirrors PERM.impostoCategoria in packages/auth/src/permissions.ts (byte 12;
@@ -46,22 +46,17 @@ const PERM_IMPOSTO_CATEGORIA_DELETE = 1n << 98n;
  *   - **`NVE`** is a `List<String>?` on the wire, not a scalar string.
  *   - **`indEscala`** is a `bool?` on the wire, not a string.
  *
- * The last two are **deliberately left as lenient strings** rather than
- * retyped to match the wire: `NVE`/`indEscala` are rendered by the shared
- * `ImpostoConfigEditor` (`apps/web/components/imposto/DadosGeraisSection.tsx`)
- * as plain text inputs producing `string | null`, and the same editor also
- * backs `impostoProduto` and `regraImposto`, which keep the identical
- * `z.string()` typing. Retyping only this collection's fields broke the
- * categoria save path two ways — `impostoCategoriaSchema.parse()` throwing on
- * the editor's string value, and `categoriaImpostoCarriesInfo`
- * (`apps/web/lib/categorias/clientPort.ts`) misreading a non-string value as
- * "no info" and silently deleting the doc instead of writing it — caught in
- * review on this issue's own PR (#467). Properly modeling these needs a
- * coordinated change (a multi-value input for `NVE`, a boolean control for
- * `indEscala`, `categoriaImpostoCarriesInfo`'s string-emptiness check, and a
- * decision on whether `impostoProduto`/`regraImposto` retype too, since they
- * share the editor) — left as a follow-up, not bundled into this passthrough
- * removal.
+ * The last two now carry their real wire types through the shared
+ * `nveField()` / `indEscalaField()` (`./imposto/tribute`), whose preprocess
+ * keeps an already-stored scalar readable. Retyping them here ALONE was tried
+ * and reverted on #467's PR (#1279, commit `000ad4d7`): the shared
+ * `ImpostoConfigEditor` wrote free-text strings, and
+ * `categoriaImpostoCarriesInfo` (`apps/web/lib/categorias/clientPort.ts`) read
+ * a non-string value as "no info" and silently DELETED the doc instead of
+ * writing it. #466 is the coordinated change that unblocked it — a `TagsInput`
+ * for `NVE`, a tri-state select for `indEscala`, both emptiness checks fixed,
+ * and all three tax collections sharing one definition so they cannot drift
+ * apart again.
  */
 export const impostoCategoriaSchema = z.object({
   id: z.string().nullable().default(null),
@@ -74,13 +69,11 @@ export const impostoCategoriaSchema = z.object({
   CFOP: z.string().nullable().optional(),
   cfopInterestadual: z.string().nullable().optional(),
   NCM: z.string().nullable().optional(),
-  // Wire is `List<String>?` (see class doc) — kept as a lenient string; the
-  // editor writes a plain string and `categoriaImpostoCarriesInfo` keys off
-  // `typeof v === 'string'` for emptiness.
-  NVE: z.string().nullable().optional(),
+  /** Legacy `List<String>?` wire, read-tolerant of the old scalar. See {@link nveField}. */
+  NVE: nveField(),
   CEST: z.string().nullable().optional(),
-  // Wire is `bool?` (see class doc) — kept as a lenient string, same reason as `NVE`.
-  indEscala: z.string().nullable().optional(),
+  /** Legacy `bool?` wire, read-tolerant of the old scalar. See {@link indEscalaField}. */
+  indEscala: indEscalaField(),
   CNPJFab: z.string().nullable().optional(),
   cBenef: z.string().nullable().optional(),
   extipi: z.string().nullable().optional(),

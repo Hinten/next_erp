@@ -36,6 +36,16 @@ export interface PublishDisabledInput {
   contaDirty: boolean;
   /** The listing has no `category_id`. */
   missingCategoria: boolean;
+  /**
+   * Mercado Livre REMOVED this listing (`estado 'rm'`, #1226).
+   *
+   * ⚠️ Not a client-side re-implementation of a server rule: it is one enum
+   * comparison against the estado the backend itself wrote, and
+   * `publishModeIssues` refuses the same state with the same remedy. Without it
+   * the button stays enabled, the operator waits out a round trip, and the
+   * answer is a 422 — for a listing whose state the page is already rendering.
+   */
+  removidoPorModeracao: boolean;
 }
 
 /**
@@ -67,6 +77,13 @@ export function publishDisabledReason(input: PublishDisabledInput): string | nul
   if (!input.hasClient) return 'Sessão não autenticada — recarregue a página e entre novamente.';
   if (!input.canPublish) return 'Requer permissão de escrita em integrações.';
   if (input.disabled) return 'O formulário do produto não está em modo de edição.';
+  // ⚠️ ABOVE the dirty/categoria rungs, unlike everything else here, and above
+  // them BECAUSE it is not fixable by saving: telling the operator to save their
+  // edits first would send them round a loop that ends at this same refusal. It
+  // is also the one rung whose remedy is a different control entirely.
+  if (input.removidoPorModeracao) {
+    return 'O Mercado Livre removeu este anúncio e ele não pode ser reativado — use "Descartar anúncio removido" para publicar um novo com os mesmos dados.';
+  }
   if (input.publishingThisConta) return 'Publicação em andamento…';
   if (input.publishingOtherConta) return 'Aguarde a publicação em andamento em outra conta.';
   if (input.produtoDirty && input.contaDirty) {
