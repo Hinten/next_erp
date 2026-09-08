@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { pedidoMeta, pedidoSchema } from '@delfrance/schemas';
+import { extractFieldsFromSchema } from '@delfrance/ui';
 
-import { PEDIDO_VIRTUAL_COLUMNS } from './PedidosListView';
+import { PEDIDO_ROW_LINK_COLUMN, PEDIDO_VIRTUAL_COLUMNS } from './PedidosListView';
 
 /**
  * Guards the invariant that let the `disputa` column ship invisible.
  *
- * `disputa` (#1322) was declared in `PEDIDO_VIRTUAL_COLUMNS` with a `renderCell`
+ * `disputa` (#1322) is declared in `PEDIDO_VIRTUAL_COLUMNS` with a `renderCell`
  * and a `dependsOn`, but its key was never added to
  * `pedidoMeta.defaultQuery.columns` — and `TableView` derives the visible set
  * from `defaultQuery.columns`, not from the virtual-column list. So on a fresh
@@ -20,21 +21,31 @@ import { PEDIDO_VIRTUAL_COLUMNS } from './PedidosListView';
 describe('pedidos list column set', () => {
   const declared = pedidoMeta.defaultQuery?.columns ?? [];
   const virtualKeys = PEDIDO_VIRTUAL_COLUMNS.map((c) => c.key);
-  const schemaKeys = Object.keys(pedidoSchema.shape);
+
+  // TableView's OWN visibility rule, not `Object.keys(schema.shape)`: a listed
+  // key whose descriptor is `kind === 'unknown'` is skipped and renders nowhere
+  // (`visibleColumns`). On this schema that is `itens` and `itensDevolvidos` —
+  // both real shape keys — so a looser check would call them "visible" and let
+  // the very defect this file exists to catch back in through the other door.
+  const renderableSchemaKeys = extractFieldsFromSchema(pedidoSchema)
+    .filter((d) => d.kind !== 'unknown')
+    .map((d) => d.key);
 
   it('renders every virtual column it declares', () => {
     const unreachable = virtualKeys.filter((k) => !declared.includes(k));
     expect(
       unreachable,
-      `declared in PEDIDO_VIRTUAL_COLUMNS but missing from pedidoMeta.defaultQuery.columns — they render nowhere`,
+      'declared in PEDIDO_VIRTUAL_COLUMNS but missing from pedidoMeta.defaultQuery.columns — they render nowhere',
     ).toEqual([]);
   });
 
   it('has no dead entry in defaultQuery.columns', () => {
-    const dead = declared.filter((k) => !virtualKeys.includes(k) && !schemaKeys.includes(k));
+    const dead = declared.filter(
+      (k) => !virtualKeys.includes(k) && !renderableSchemaKeys.includes(k),
+    );
     expect(
       dead,
-      'listed in columns but resolves to neither a schema field nor a virtual column',
+      'listed in columns but renders nothing: it is neither a virtual column nor a schema field TableView will draw',
     ).toEqual([]);
   });
 
@@ -52,8 +63,11 @@ describe('pedidos list column set', () => {
   });
 
   it('keeps the row-link column visible', () => {
-    // `rowLinkColumn="numero"` (#1503/#1509) names a column that must stay in
-    // the visible set, or row navigation silently becomes mouse-only again.
-    expect(declared).toContain('numero');
+    // Reads the prop's value rather than restating it, so retargeting
+    // `rowLinkColumn` at a key `columns` never lists fails here. `TableView`
+    // warns about an inert `rowLinkColumn`, but `rowLinkInertReason` only checks
+    // that the key RESOLVES — never that it is among the visible columns, which
+    // is exactly the gap this covers.
+    expect(declared).toContain(PEDIDO_ROW_LINK_COLUMN);
   });
 });

@@ -59,6 +59,17 @@ const FRETE_ESTADO_OPTIONS = Object.entries(ESTADO_FRETE_LABELS).map(([value, la
 // Exported so `PedidosListView.columns.test.ts` can assert every declared column
 // actually reaches the screen. `disputa` was declared here and absent from
 // `pedidoMeta.defaultQuery.columns`, so it rendered on no fresh browser (#1322).
+/**
+ * The column whose cell carries the row link (#1503). Hoisted so
+ * `PedidosListView.columns.test.ts` can assert it is actually in the visible
+ * set — restating the literal on both sides would let the prop change to a key
+ * `columns` never lists while the test still passed. `TableView` warns about an
+ * inert `rowLinkColumn`, but NOT about that case: `rowLinkInertReason` checks
+ * that the key resolves to a descriptor or a virtual column, never that it is
+ * among the visible ones.
+ */
+export const PEDIDO_ROW_LINK_COLUMN = 'numero';
+
 export const PEDIDO_VIRTUAL_COLUMNS: ReadonlyArray<VirtualColumn<Pedido>> = [
   {
     key: 'nf',
@@ -222,7 +233,17 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
             },
           }}
           rowHref={(id) => cfg.editarPath(id)}
-          rowLinkColumn="numero"
+          // The column set is FIXED here, and that is what makes
+          // `defaultQuery.columns` authoritative. Left at the default `true`,
+          // `TableView` reads the per-browser `localStorage` set instead
+          // (`visibleKeysArr = showColumnPicker ? storedKeysArr : …`) — and
+          // Mantine's `useLocalStorage` WRITES `defaultValue` to storage on
+          // mount, with no user interaction at all. So every browser that has
+          // ever opened this list carries a set frozen at that visit, and a
+          // newly declared column (`disputa`) would reach only a browser that
+          // had never been here. Same reasoning as `/produtos`.
+          showColumnPicker={false}
+          rowLinkColumn={PEDIDO_ROW_LINK_COLUMN}
           renderNewButton={() => (
             <Button component={Link} href={cfg.novoPath}>
               {cfg.newButtonLabel}
