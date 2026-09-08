@@ -35,6 +35,7 @@ const ENDERECO: Endereco = {
   email: null,
   telefone: null,
   timestamp: null,
+  ultimaModificacao: null,
 };
 
 function cliente(overrides: Partial<Cliente> = {}): Cliente {

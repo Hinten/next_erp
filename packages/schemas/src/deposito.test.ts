@@ -4,7 +4,9 @@ import { depositoMeta, depositoSchema } from './deposito';
 describe('depositoSchema', () => {
   it('accepts a minimal valid deposito and applies `ativo` default', () => {
     const out = depositoSchema.parse({ nome: 'Galpão Central' });
-    expect(out).toEqual({ nome: 'Galpão Central', ativo: true });
+    // `ultimaModificacao` now materializes as null: the TableView update-monitor
+    // orders by it with a CLASSIC query, which excludes documents missing the key.
+    expect(out).toEqual({ nome: 'Galpão Central', ativo: true, ultimaModificacao: null });
   });
 
   it('rejects empty nome', () => {

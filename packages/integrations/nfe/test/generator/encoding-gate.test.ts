@@ -50,6 +50,7 @@ const ENDERECO: Endereco = {
   email: null,
   telefone: null,
   timestamp: null,
+  ultimaModificacao: null,
 };
 
 const CLIENTE: Cliente = {
@@ -80,6 +81,7 @@ const FILIAL: Filial = {
   iest: null,
   imun: null,
   sede: { ...ENDERECO, logradouro: 'Rua Direita', numero: '100', bairro: 'Centro' },
+  ultimaModificacao: null,
 };
 
 const ITEM: GeneratorItem = {

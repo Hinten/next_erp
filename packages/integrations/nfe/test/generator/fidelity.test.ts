@@ -70,6 +70,7 @@ const SENT_FILIAL: Filial = {
   ie: SENT_IE_EMIT,
   iest: null,
   imun: null,
+  ultimaModificacao: null,
   sede: {
     idExterno: null,
     logradouro: 'Rua Emit',
@@ -90,6 +91,7 @@ const SENT_FILIAL: Filial = {
     email: null,
     telefone: null,
     timestamp: null,
+    ultimaModificacao: null,
   },
 };
 
@@ -132,6 +134,7 @@ const SENT_ENDERECO_DEST: Endereco = {
   email: null,
   telefone: null,
   timestamp: null,
+  ultimaModificacao: null,
 };
 
 const SENT_OPERACAO: Operacao = {
@@ -155,6 +158,7 @@ const SENT_OPERACAO: Operacao = {
   CEST: null,
   unidade: null,
   infCpl: null,
+  ultimaModificacao: null,
 };
 
 const SENT_IMPOSTO_XML_A =
