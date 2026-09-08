@@ -14,11 +14,21 @@
  *    hand-rolls the same parse with `DOMParser` for the CSV report.
  *
  * A second copy of a rule like this drifts *toward plausible* — it keeps
- * looking right while disagreeing — so there is one implementation, and it
- * carries no server-only dependency in order to stay reachable from the
- * browser bundle. It is re-exported from `src/http-provider/index.ts` per the
- * playbook in this package's `CLAUDE.md`; do not reach for `@xmldom/xmldom` or
+ * looking right while disagreeing — so this module carries no server-only
+ * dependency, in order to stay reachable from the browser bundle where copy 3
+ * lives. It is re-exported from `src/http-provider/index.ts` per the playbook
+ * in this package's `CLAUDE.md`; do not reach for `@xmldom/xmldom` or
  * `parseProcNFe` here, both of which drag `node:fs` into Turbopack.
+ *
+ * ⚠️ **Right now there are TWO implementations, not one.** `parseNfeReportRow.ts`
+ * is still live and still DOM-based, and the two already disagree in ways that
+ * would not show up as a failure: it returns `''` where this returns `null` for
+ * a missing field, and its `getElementsByTagName` matches the QUALIFIED name,
+ * so a namespace-prefixed document that this module parses fine comes back
+ * empty there (the prefix test in `test/totals/` is the case). Retiring it is
+ * deliberately out of scope for the slice that introduced this file and is
+ * tracked on #1491 — until that happens, this paragraph is a description of an
+ * intended end state, not of the tree.
  *
  * ## Why regex rather than a DOM
  *
