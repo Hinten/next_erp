@@ -44,7 +44,10 @@ const enumField: FilterableField = {
   key: 'estado',
   kind: 'enum',
   label: 'Pagamento',
-  enumValues: ['pago', 'cancelado'],
+  enumValues: [
+    { value: 'pago', label: 'Pago' },
+    { value: 'cancelado', label: 'Cancelado' },
+  ],
 };
 
 describe('ColumnFilter popover a11y contract', () => {
@@ -79,6 +82,6 @@ describe('ColumnFilter popover a11y contract', () => {
     const combobox = screen.getByRole('combobox', { name: 'Pagamento' });
     expect(dialog.contains(combobox)).toBe(true);
     fireEvent.click(combobox);
-    expect(dialog.contains(screen.getByRole('option', { name: 'pago' }))).toBe(true);
+    expect(dialog.contains(screen.getByRole('option', { name: 'Pago' }))).toBe(true);
   });
 });
