@@ -60,6 +60,13 @@ runConfig:
 #                           Flutter app's registered application.
 #   SHOPEE_API_HOST         OPTIONAL — override the resolved API host
 #   SHOPEE_AUTH_HOST        OPTIONAL — override the resolved consent host
+#   SHOPEE_VARIATIONS_PATH  OPTIONAL — override the `get_variations` API path.
+#                           The doc page's path/url/test_url say
+#                           /api/v2/product/get_variation_tree while all four of
+#                           its samples call /api/v2/product/get_variations; we
+#                           default to the samples. ⚠️ The path is inside the
+#                           HMAC base string, so the wrong one fails as a SIGN
+#                           error, not a 404. Not a secret.
 #   SHOPEE_PUBLIC_URL       this backend's public origin — used to build the
 #                           OAuth redirect_uri (must match the URI registered
 #                           in the Shopee Open Platform application)

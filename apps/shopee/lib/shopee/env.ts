@@ -54,6 +54,11 @@ export interface ShopeeConfig {
   readonly hosts: ShopeeHosts;
   readonly redirectUri: string;
   readonly sandbox: boolean;
+  /**
+   * Override for the `get_variations` path, or `null` for the built-in default.
+   * See {@link shopeeVariationsPath}.
+   */
+  readonly variationsPath: string | null;
 }
 
 /**
@@ -98,6 +103,34 @@ export function shopeeHosts(): ShopeeHosts {
     ...(apiHost !== null ? { apiHost } : {}),
     ...(authHost !== null ? { authHost } : {}),
   });
+}
+
+/**
+ * Override for the taxonomy `get_variations` API path, or `null` when unset.
+ *
+ * ## Why this variable exists at all
+ *
+ * The `get_variations` documentation page contradicts ITSELF: its `path`, `url`
+ * and `test_url` fields all say `/api/v2/product/get_variation_tree`, while all
+ * four of its own samples call `/api/v2/product/get_variations`. The package
+ * defaults to the samples' path.
+ *
+ * ⚠️ The path is INSIDE the HMAC base string, so the wrong one does not fail as
+ * a 404 — it fails as a SIGN error, which reads exactly like a bad partner key.
+ * That is why this is settled by one live call in the sandbox and flipped with
+ * an environment variable rather than a redeploy, the same technique
+ * `hosts.ts` uses for the four open host contradictions.
+ *
+ * ⚠️ Blank-guarded, and SHAPE-agnostic on purpose. This module answers "what
+ * did the operator type"; the package's `normalizeApiPath` decides whether that
+ * is a usable API path (bare path, leading `/`, no host, no query) and raises
+ * `ShopeeConfigError` naming this variable when it is not. Validating it here
+ * as well would be a second, drifting copy of that rule — and the package's is
+ * the one that runs for every caller, not only for callers who came through
+ * `apps/shopee`.
+ */
+export function shopeeVariationsPath(): string | null {
+  return envValue('SHOPEE_VARIATIONS_PATH');
 }
 
 /**
@@ -148,6 +181,7 @@ export function shopeeConfig(): ShopeeConfig {
     hosts: shopeeHosts(),
     redirectUri: shopeeRedirectUri(),
     sandbox: shopeeSandbox(),
+    variationsPath: shopeeVariationsPath(),
   };
 }
 
