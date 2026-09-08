@@ -65,6 +65,7 @@ const CLIENTE: Cliente = {
   telefone_embedding: null,
   userCliente: null,
   idMercadoLivre: null,
+  ultimaModificacao: null,
 };
 
 const ENDERECO_DEST: Endereco = {

@@ -243,6 +243,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       telefone_embedding: null,
       userCliente: null,
       idMercadoLivre: null,
+      ultimaModificacao: null,
     },
     enderecoDest: {
       idExterno: null,

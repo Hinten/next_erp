@@ -109,6 +109,7 @@ const SENT_CLIENTE: Cliente = {
   telefone_embedding: null,
   userCliente: null,
   idMercadoLivre: null,
+  ultimaModificacao: null,
 };
 
 const SENT_ENDERECO_DEST: Endereco = {

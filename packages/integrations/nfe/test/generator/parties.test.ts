@@ -54,6 +54,7 @@ function cliente(overrides: Partial<Cliente> = {}): Cliente {
     telefone_embedding: null,
     userCliente: null,
     idMercadoLivre: null,
+    ultimaModificacao: null,
     ...overrides,
   };
 }
