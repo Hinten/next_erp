@@ -1497,6 +1497,9 @@ importers:
       '@delfrance/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@delfrance/integrations-nfe':
+        specifier: workspace:*
+        version: link:../../packages/integrations/nfe
       '@delfrance/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
