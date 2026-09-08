@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect } from 'react';
-import { ActionIcon, Indicator, Popover, ScrollArea, Stack, Text } from '@mantine/core';
+import { ActionIcon, Indicator, Popover, ScrollArea, Stack } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
+import { IconBell } from '@tabler/icons-react';
 import { useAuth } from '@/lib/auth';
 import { useAvisos } from '@/lib/avisos/useAvisos';
 // Reused, not re-implemented: a second copy of "hidden at zero, 9+ above nine"
@@ -56,10 +57,7 @@ export function AvisosBell() {
             aria-label={naoLidos > 0 ? `Avisos (${String(naoLidos)} não lidos)` : 'Avisos'}
             onClick={toggle}
           >
-            {/* Inline glyph rather than an icon dependency — the shell has none. */}
-            <Text component="span" size="lg" aria-hidden>
-              🔔
-            </Text>
+            <IconBell size={18} />
           </ActionIcon>
         </Indicator>
       </Popover.Target>
