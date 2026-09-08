@@ -56,7 +56,10 @@ const FRETE_ESTADO_OPTIONS = Object.entries(ESTADO_FRETE_LABELS).map(([value, la
 // Cliente are filter-only: NF resolves through the `nfev4` subcollection
 // (collection-group lookup), Cliente matches the stored ref path — neither has
 // a sortable value on the pedido doc.
-const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
+// Exported so `PedidosListView.columns.test.ts` can assert every declared column
+// actually reaches the screen. `disputa` was declared here and absent from
+// `pedidoMeta.defaultQuery.columns`, so it rendered on no fresh browser (#1322).
+export const PEDIDO_VIRTUAL_COLUMNS: ReadonlyArray<VirtualColumn<Pedido>> = [
   {
     key: 'nf',
     label: 'NF',
@@ -209,7 +212,7 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
           db={getFirebaseFirestore()}
           meta={pedidoMeta}
           queryParams={{ ehSaida: cfg.ehSaida }}
-          virtualColumns={virtualColumns}
+          virtualColumns={PEDIDO_VIRTUAL_COLUMNS}
           fields={{
             estado: {
               label: 'Pagamento',
