@@ -137,6 +137,11 @@ describe('TableView', () => {
     // The URL-sync effect mutates the URL via history.replaceState; reset it
     // so one case's query string doesn't bleed into the next.
     window.history.replaceState(null, '', '/clientes');
+    // Same reason, for the MOCKED `useSearchParams`. It sits beside the three
+    // above because it is the same class of leak, and it was the one missing:
+    // a case that sets a filter param left it set for every case after it, so
+    // whether the next one passed depended on the order they ran in.
+    searchParamsRef.current = new URLSearchParams();
     pipelineSupportedRef.current = true;
     monitorRef.current = { stale: false, acknowledge: vi.fn() };
   });
@@ -1013,6 +1018,11 @@ describe('TableView', () => {
 
     it('seeds the pipeline orderBy and limit from meta.defaultQuery', () => {
       buildPipelineSpy.mockClear();
+      // A column filter puts this table on the STATIC transport. The declared
+      // query with no filters now STREAMS (`resolveListMode`), and the pipeline
+      // is not built at all — so the seeding this test is about has to be
+      // observed on the path that still uses it.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
       wrap(
         <TableView
           schema={testSchema}
@@ -1031,6 +1041,50 @@ describe('TableView', () => {
           limit: 25,
         }),
       );
+    });
+
+    it('STREAMS the declared query, and drops to the pipeline for anything else', () => {
+      // The #40 fix, pinned at the seam. The declared query — no filter, no
+      // search, declared sort — is the ONLY shape both index guards already
+      // assert an index for, so it is the only shape allowed to hold an open
+      // listener. Everything else must fall back to the one-shot pipeline.
+      //
+      // Without this case the gate could be deleted and every other test here
+      // would still pass: they assert what the PIPELINE is built with, and
+      // removing the gate simply routes everything back through it.
+      const meta = {
+        ...metaBase,
+        defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+      };
+      buildPipelineSpy.mockClear();
+      buildQuerySpy.mockClear();
+      const { unmount } = wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={meta}
+        />,
+      );
+      expect(
+        buildPipelineSpy,
+        'the declared query must not build a pipeline',
+      ).not.toHaveBeenCalled();
+      expect(buildQuerySpy, 'the declared query must build a classic query').toHaveBeenCalled();
+      unmount();
+
+      // One column filter is enough to leave the live path.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={meta}
+        />,
+      );
+      expect(buildPipelineSpy, 'a filtered query must go back to the pipeline').toHaveBeenCalled();
     });
 
     it('first header click flips the meta-default ascending sort to descending', () => {
@@ -1057,6 +1111,11 @@ describe('TableView', () => {
 
     it('lets the pageSize prop override meta.defaultQuery.limit', () => {
       buildPipelineSpy.mockClear();
+      // A column filter puts this table on the STATIC transport. The declared
+      // query with no filters now STREAMS (`resolveListMode`), and the pipeline
+      // is not built at all — so the seeding this test is about has to be
+      // observed on the path that still uses it.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
       wrap(
         <TableView
           schema={testSchema}
@@ -1077,6 +1136,11 @@ describe('TableView', () => {
 
     it('prepends literal base filters and binds param filters from queryParams', () => {
       buildPipelineSpy.mockClear();
+      // A column filter puts this table on the STATIC transport. The declared
+      // query with no filters now STREAMS (`resolveListMode`), and the pipeline
+      // is not built at all — so the seeding this test is about has to be
+      // observed on the path that still uses it.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
       wrap(
         <TableView
           schema={testSchema}
@@ -1096,7 +1160,12 @@ describe('TableView', () => {
       expect(buildPipelineSpy).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
-          filters: [{ field: 'tipo', op: 'eq', value: '1' }],
+          // Base first, the operator's column filter after — which is the
+          // ordering this test is named for.
+          filters: [
+            { field: 'tipo', op: 'eq', value: '1' },
+            { field: 'observacoes', op: 'contains', value: 'x' },
+          ],
         }),
       );
     });
@@ -1216,6 +1285,11 @@ describe('TableView', () => {
       // The column set IS the `select()` projection — Enterprise bills data
       // scanned, which is why the declaration lives on defaultQuery.
       buildPipelineSpy.mockClear();
+      // A column filter puts this table on the STATIC transport. The declared
+      // query with no filters now STREAMS (`resolveListMode`), and the pipeline
+      // is not built at all — so the seeding this test is about has to be
+      // observed on the path that still uses it.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
       wrap(
         <TableView
           schema={testSchema}
@@ -1341,14 +1415,14 @@ describe('TableView', () => {
           />
         </MantineTestProvider>,
       );
-      expect(buildPipelineSpy).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
-      );
-      expect(buildPipelineSpy).not.toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ orderBy: [{ field: 'tipo', direction: 'asc' }] }),
-      );
+      // Asserted through the TRANSPORT, which is now the stronger form. Only a
+      // query that is byte-for-byte the declared one reaches the live path
+      // (`resolveListMode`), so "no pipeline was built" IS "the sort is the
+      // declared default". Had the click been recorded as `tipo:asc`, the sort
+      // would differ from the declaration, the table would be static, and the
+      // pipeline WOULD have been built — so this negative cannot pass vacuously.
+      expect(buildPipelineSpy).not.toHaveBeenCalled();
+      expect(buildQuerySpy).toHaveBeenCalled();
     });
 
     it('falls back to the declared default once cleared', () => {
@@ -1372,10 +1446,11 @@ describe('TableView', () => {
           />
         </MantineTestProvider>,
       );
-      expect(buildPipelineSpy).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
-      );
+      // Same reasoning as the case above: reaching the LIVE transport is only
+      // possible for the declared query, so this proves the fallback landed on
+      // it — and additionally that clearing a forced sort restores streaming.
+      expect(buildPipelineSpy).not.toHaveBeenCalled();
+      expect(buildQuerySpy).toHaveBeenCalled();
     });
   });
 
