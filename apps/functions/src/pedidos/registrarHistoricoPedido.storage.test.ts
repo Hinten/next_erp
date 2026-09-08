@@ -344,16 +344,43 @@ describe.skipIf(!EMULATED)('onPedidoChanged trigger (emulator, end-to-end)', () 
     //
     // `numero` is not in PEDIDO_HISTORY_IGNORE_FIELDS, so this write DOES produce
     // a modification row. Waiting for THAT row is positive proof the handler ran
-    // for this event — and only then does "neither estado trail grew" mean
-    // anything, because all three writes are issued together by one `Promise.all`.
+    // for this event.
+    //
+    // ⚠️ But that anchor alone does NOT license a one-shot count, and the reason
+    // is the `Promise.all` itself: the three trail writes are issued CONCURRENTLY,
+    // so seeing the modification row proves the handler ran — not that a regressed
+    // fast path's `recordEstadoHistory`/`recordFreteHistory` `set()` has finished
+    // landing. A plain read here could slip between them and pass in exactly the
+    // regressed case, which is the vacuity this test was rewritten to remove.
+    //
+    // The marker hands us the fix for free: all three trails key their row at
+    // `entry.eventId`, so the modification row's DOC ID is this write's CloudEvent
+    // id. Scoping the negatives to that id is strictly stronger than a quiet
+    // window — it can never be satisfied by an unrelated row, and it fails on the
+    // first tick that sees one.
     await ref.update({ numero: 'A-123' });
-    await waitFor(async () => {
+    const modRows = await waitFor(async () => {
       const docs = await modificationRows(db, pedidoId);
       const seen = docs.some((d) =>
         ((d.data().campos as string[] | undefined) ?? []).includes('numero'),
       );
       return seen ? docs : null;
     }, WAIT_LABELS.historicoDeModificacoes);
+
+    const markerEventId = modRows.find((d) =>
+      ((d.data().campos as string[] | undefined) ?? []).includes('numero'),
+    )!.id;
+
+    await expectNoRowForEvent(
+      () => historyRows(db, pedidoId),
+      (d) => d.id,
+      markerEventId,
+    );
+    await expectNoRowForEvent(
+      () => freteHistoryRows(db, pedidoId),
+      (d) => d.id,
+      markerEventId,
+    );
 
     expect(await historyRows(db, pedidoId)).toHaveLength(2);
     expect(await freteHistoryRows(db, pedidoId)).toHaveLength(0);

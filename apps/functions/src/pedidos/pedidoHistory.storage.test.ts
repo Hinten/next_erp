@@ -8,7 +8,7 @@ import {
 } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 
-import { WAIT_LABELS, waitForTrigger } from '../testing/emulatorWaits';
+import { WAIT_LABELS, waitForTrigger, waitForTriggerThenSettle } from '../testing/emulatorWaits';
 
 /**
  * END-TO-END proof for the pedido modification history: write a real document,
@@ -55,8 +55,10 @@ async function waitForRows(
   db: Firestore,
   pedidoId: string,
   minRows: number,
+  { settle = false } = {},
 ): Promise<QueryDocumentSnapshot<DocumentData>[]> {
-  const snap = await waitForTrigger(
+  const wait = settle ? waitForTriggerThenSettle : waitForTrigger;
+  const snap = await wait(
     () => historyRef(db, pedidoId).get(),
     (s) => s.size >= minRows,
     `${minRows} historicoDeModificacoes row(s)`,
@@ -168,13 +170,21 @@ describe.skipIf(!EMULATED)('pedido modification history (emulator, end-to-end)',
     // catch. A longer sleep only lowers the odds; it does not make the claim
     // provable.
     //
-    // Instead, write a marker the trigger MUST record, and wait for it. The
-    // emulator delivers a single document's events in order, so once the
-    // marker's row is visible the ignored write ahead of it has already been
-    // processed — and the count is then a claim about work that has finished
-    // rather than work that may not have started.
+    // Instead, write a marker the trigger MUST record, and wait for it — then
+    // SETTLE before counting.
+    //
+    // ⚠️ The settle is what makes the exact count mean anything, and an earlier
+    // draft of this test got the reasoning wrong. It argued that the emulator
+    // delivers one document's events in order, so the marker's row implies the
+    // ignored write was already processed. But in-order DELIVERY is not in-order
+    // COMPLETION: the ignored write and the marker are two separate invocations
+    // running concurrently, so a regressed ignore-list row can land AFTER the
+    // marker's. A non-settling poller returns at the first snapshot with 2 rows —
+    // the create plus the marker — and the guard goes green while the phantom row
+    // is still in flight. Holding the quiet window and re-reading is what lets
+    // `toHaveLength(2)` and the `campos` assertions below actually fail.
     await ref.update({ numero: 2, ultimaModificacao: 1_700_000_000_000_001 });
-    const rows = await waitForRows(db, pedidoId, 2);
+    const rows = await waitForRows(db, pedidoId, 2, { settle: true });
 
     expect(rows).toHaveLength(2);
     // The second row is the marker's, NOT the estoque write-back's.
