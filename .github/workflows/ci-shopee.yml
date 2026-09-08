@@ -27,9 +27,12 @@ name: CI — Shopee
 # Shopee's `refresh_token` is SINGLE-USE and rotating, so one unstubbed refresh
 # burns the stored credential of whichever account the env points at and only a
 # human re-consenting in a browser gets it back. `vitest.tasks.setup.ts`
-# installs a fetch kill-switch that throws on any non-localhost host, so
-# "offline" is a property of the LANE rather than of the author. The partner id
-# and key below are invented values, not credentials.
+# installs a fetch kill-switch that throws on any non-localhost host — ⚠️ in the
+# VITEST process only; the functions emulator runs the bundle in a sibling
+# process the setup file never reaches. The partner id and key below are
+# invented values, not credentials, and demo-erp holds no real refresh_token, so
+# a call that escapes the kill-switch answers `error_sign` rather than burning
+# anything. Keep the tasks suites on push codes that need no Shopee call.
 #
 # ⚠️ The suites are disjoint BY GLOB. `apps/shopee/vitest.config.ts` EXCLUDES
 # `**/*.tasks.test.ts` (and `**/*.firestore.test.ts`, listed before that lane
@@ -55,8 +58,10 @@ name: CI — Shopee
 #     `reprocessShopeeNotifications` and `sweepShopeeAuthorizationExpiry` as
 #     "ignored because the pubsub emulator does not exist or is not running", so
 #     this lane loads them and never runs them. Their bodies are covered by the
-#     unit suites in `CI test`; their trigger options are not covered anywhere
-#     yet (see the note in functions/DEPLOY.md).
+#     unit suites in `CI test`, and their trigger OPTIONS — cron, timeZone,
+#     timeoutSeconds, the exact `secrets:` set — by
+#     apps/shopee/functions/src/index.test.ts, which asserts over `__endpoint`.
+#     What nothing here proves is that Cloud Scheduler actually fires them.
 #   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
 #   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
 #     exposes db.pipeline(), so feature-probing answers yes then fails at
@@ -226,11 +231,12 @@ jobs:
       # success check counts COLLECTED files, not run tests — and this job is a
       # `required` row in the gate manifest.
       REQUIRE_EMULATOR: '1'
-      # `processShopeeNotification` and `sweepShopeeAuthorizationExpiry` declare
-      # both of these as `secrets:`, and demo-erp has no Secret Manager. Invented
-      # values are safe AND sufficient: the exercised path (an unknown push_code)
-      # parks before any Shopee call, and the lane's fetch kill-switch throws on
-      # any non-localhost host regardless.
+      # All three triggers in the codebase declare both of these as `secrets:`,
+      # and demo-erp has no Secret Manager. Invented values are safe AND
+      # sufficient: the exercised path (an unknown push_code) parks before any
+      # Shopee call, and an invented key cannot sign a call that Shopee would
+      # answer. ⚠️ The vitest fetch kill-switch does NOT cover the emulator's
+      # own process — see the OFFLINE note at the top of this file.
       #
       # ⚠️ EXPECTED NOISE, not a failure: because the two names are declared as
       # `secrets:`, the functions emulator still tries Secret Manager first and

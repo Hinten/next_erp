@@ -227,7 +227,7 @@ describe('shopeePushCallbackUrl — a URL do HMAC do push, sem normalização', 
   });
 
   // ⚠️ O par que importa: a barra final PERMANECE. Ela está dentro da base
-  // string do HMAC, então removê-la aqui mudaria todo dígito computado e faria
+  // string do HMAC, então removê-la aqui mudaria todo digest computado e faria
   // todo push legítimo falhar a verificação. `shopeeRedirectUri` faz o
   // OPOSTO — e é por isso que os dois não compartilham o mesmo reader.
   it('PRESERVA a barra final (ao contrário de shopeeRedirectUri)', () => {

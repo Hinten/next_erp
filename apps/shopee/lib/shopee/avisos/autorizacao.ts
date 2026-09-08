@@ -12,9 +12,11 @@
  * Every other Shopee signature in this app is milliseconds — `expireTime`,
  * `authTime`, the envelope stamp, `diasParaExpirar`. The `avisos` collection is
  * µs (`microsSinceEpoch`), so the conversion happens here and only here, through
- * `millisToMicros`, at exactly two call sites (`agoraUs` and `prazo`). A
- * cross-unit comparison is a guard that never fires; keeping the boundary to one
- * module is what makes it reviewable.
+ * `millisToMicros`, at exactly two call sites: {@link agoraUsDe} — which every
+ * writer AND every resolver funnels through, so the seam cannot multiply — and
+ * `prazo`. A cross-unit comparison is a guard that never fires; keeping the
+ * boundary to one module, and to two call sites inside it, is what makes it
+ * reviewable.
  *
  * ## ⚠️ No `janela`
  *
@@ -110,6 +112,14 @@ export function chaveDesautorizacao(integracaoId: string, shopId: number): strin
   });
 }
 
+/**
+ * The ms → µs seam for "now". Every writer and every resolver in this module
+ * goes through it, so there is exactly one place to review.
+ */
+function agoraUsDe(deps: { nowMs: number }): number {
+  return millisToMicros(deps.nowMs);
+}
+
 /** `escreverAviso`'s deps, from ours. One place, so the µs seam cannot drift. */
 function depsDeEscrita(deps: AvisoDeps): {
   increment: (by: number) => unknown;
@@ -118,7 +128,7 @@ function depsDeEscrita(deps: AvisoDeps): {
 } {
   return {
     increment: deps.increment,
-    agoraUs: millisToMicros(deps.nowMs),
+    agoraUs: agoraUsDe(deps),
     logger: deps.logger,
   };
 }
@@ -204,13 +214,51 @@ export interface ResolucaoAutorizacao {
 }
 
 /**
+ * Close the expiry warning alone. `true` only when a row was actually OPEN and
+ * this call closed it — see {@link resolverAviso}.
+ */
+export function resolverExpiracao(
+  db: Firestore,
+  alvo: { integracaoId: string; shopId: number },
+  deps: { nowMs: number },
+): Promise<boolean> {
+  return resolverAviso(db, chaveExpiracao(alvo.integracaoId, alvo.shopId), MOTIVO_REAUTORIZADA, {
+    agoraUs: agoraUsDe(deps),
+  });
+}
+
+/**
+ * Close "this shop is no longer authorized" alone.
+ *
+ * ⚠️ Exported separately because the sweep resolves it on BOTH branches. Being
+ * enumerated in `get_shops_by_partner` is positive proof the shop IS authorized,
+ * whatever the remaining days are — a de-authorized shop leaves the list
+ * entirely. Tying this row's resolution to the healthy branch left a re-consent
+ * shorter than the sweep's 30-day threshold telling the operator "nenhum
+ * pedido, estoque ou etiqueta será sincronizado" about a shop that is syncing,
+ * on a `serverOwned` collection nobody can dismiss by hand.
+ */
+export function resolverDesautorizacao(
+  db: Firestore,
+  alvo: { integracaoId: string; shopId: number },
+  deps: { nowMs: number },
+): Promise<boolean> {
+  return resolverAviso(
+    db,
+    chaveDesautorizacao(alvo.integracaoId, alvo.shopId),
+    MOTIVO_REAUTORIZADA,
+    { agoraUs: agoraUsDe(deps) },
+  );
+}
+
+/**
  * The machine resolver both tipos name: the shop is authorized again.
  *
- * Called unconditionally by the sweep whenever a shop's `expire_time` is further
- * out than the threshold, and by `push 1` (`shop_authorization_push`). Both rows
- * are resolved because a re-authorization ends both problems at once, and
- * `resolverAviso` is `mergeIfExists` — one write, no read, and it cannot
- * resurrect a row the retention sweep already deleted.
+ * Called by the sweep whenever a shop's `expire_time` is further out than the
+ * threshold, and by `push 1` (`shop_authorization_push`). Both rows are resolved
+ * because a re-authorization ends both problems at once, and `resolverAviso`
+ * reports a TRANSITION — an already-resolved row answers `false`, so a caller's
+ * counter reads "closed" rather than "the document was there".
  *
  * ⚠️ The keys it computes MUST be the keys the producers above created. They are
  * the same two functions, which is the point of exporting them: a resolver that
@@ -221,18 +269,7 @@ export async function resolverAvisosDeAutorizacao(
   alvo: { integracaoId: string; shopId: number },
   deps: { nowMs: number },
 ): Promise<ResolucaoAutorizacao> {
-  const agoraUs = millisToMicros(deps.nowMs);
-  const expiracao = await resolverAviso(
-    db,
-    chaveExpiracao(alvo.integracaoId, alvo.shopId),
-    MOTIVO_REAUTORIZADA,
-    { agoraUs },
-  );
-  const desautorizacao = await resolverAviso(
-    db,
-    chaveDesautorizacao(alvo.integracaoId, alvo.shopId),
-    MOTIVO_REAUTORIZADA,
-    { agoraUs },
-  );
+  const expiracao = await resolverExpiracao(db, alvo, deps);
+  const desautorizacao = await resolverDesautorizacao(db, alvo, deps);
   return { expiracao, desautorizacao };
 }

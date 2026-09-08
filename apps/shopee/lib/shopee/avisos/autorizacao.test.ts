@@ -180,6 +180,25 @@ describe('avisarExpiracaoAutorizacao', () => {
     expect(doc?.prazo).toBe(e.expireTimeMs * 1000);
   });
 
+  // ⚠️ The assertion above reads the CREATED document, which `escreverAviso`
+  // full-parses — and `microsSinceEpoch` tolerantly promotes a ms-magnitude
+  // integer to µs, so it would pass even if this module stopped converting.
+  // The REPEAT path is where the tolerance stops: it is a raw `update`, so the
+  // value goes to Firestore exactly as this module wrote it. This is the
+  // assertion that pins the conversion instead of the schema.
+  it('converte `prazo` no PATCH cru de um repeat, não só na criação', async () => {
+    const { db, patches } = makeDb();
+    const e = evento();
+    await avisarExpiracaoAutorizacao(db, e, deps);
+    await avisarExpiracaoAutorizacao(db, e, { ...deps, nowMs: AGORA_MS + 1000 });
+
+    expect(patches).toHaveLength(1);
+    expect(patches[0]?.patch.prazo).toBe(e.expireTimeMs * 1000);
+    // NEAR-MISS: em milissegundos NÃO pode passar.
+    expect(patches[0]?.patch.prazo).not.toBe(e.expireTimeMs);
+    expect(patches[0]?.patch.atualizadoEm).toBe((AGORA_MS + 1000) * 1000);
+  });
+
   it('falls back to the shop id when the conta has no usable name', async () => {
     // `get_shop_info` is Shop-signed; the sweep reads no token, so the conta
     // document's `nome` is the only name it can reach.
@@ -288,7 +307,7 @@ describe('resolverAvisosDeAutorizacao', () => {
   });
 
   it('answers false per chave rather than resurrecting a swept row', async () => {
-    // `mergeIfExists`, not `merge`: an admin `merge` is an UPSERT and would
+    // Read-then-update, never `merge`: an admin `merge` is an UPSERT and would
     // recreate a document the retention sweep already deleted, as a ghost
     // carrying only the patch keys.
     const { db, store } = makeDb();

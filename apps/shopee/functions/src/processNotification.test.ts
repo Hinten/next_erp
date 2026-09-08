@@ -267,6 +267,19 @@ describe('as opções declaradas do processShopeeNotification', () => {
     expect(serializado).toContain('SHOPEE_PARTNER_KEY');
   });
 
+  // QUASE-FALHA: um `toContain` também casa um SUPERSTRING e não vê um nome a
+  // mais. `secrets:` é uma whitelist que o operador concede um a um; um nome que
+  // entra por cópia sobe no deploy e derruba a FUNÇÃO no startup com 403 do
+  // Secret Manager — e aí toda entrega volta 5xx sem o corpo do handler rodar,
+  // então nada é persistido em `notificacoesShopee`. Mesma asserção exata que
+  // `index.test.ts` faz nos dois agendamentos.
+  it('não vincula um TERCEIRO segredo, nem um nome parecido', () => {
+    const nomes = (endpoint.secretEnvironmentVariables as { key?: string }[] | undefined)?.map(
+      (s) => s.key,
+    );
+    expect(nomes).toEqual(['SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY']);
+  });
+
   it('o nome do export É o nome da fila — um rename pela metade não sobe', () => {
     // `__endpoint.id` é preenchido pela análise de codebase do Firebase a
     // partir do nome do EXPORT, que não está rodando aqui — então fixamos a

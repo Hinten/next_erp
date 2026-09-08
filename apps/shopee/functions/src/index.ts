@@ -45,8 +45,13 @@ import * as notificationHandlers from './processNotification';
 
 /**
  * The Shopee partner credentials, bound to every trigger that can reach a
- * PUBLIC-signed Shopee call. Declared once so a new trigger cannot pick a
- * different subset by accident.
+ * PUBLIC-signed Shopee call.
+ *
+ * ⚠️ It covers the two `onSchedule` triggers in THIS file only.
+ * `processShopeeNotification` is declared in `processNotification.ts` and holds
+ * its own copy of the same two names, pinned by that module's own test — so
+ * this constant does not by itself stop a third trigger picking a different
+ * subset; the exact-set assertions in the two test files do.
  *
  * ⚠️ Without these the sweep and the conta arms of the queue handler throw
  * `ShopeeConfigError` on their first call, which the pipeline treats as

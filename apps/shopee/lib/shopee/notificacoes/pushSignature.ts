@@ -108,9 +108,10 @@ export function verifyShopeePushSignature(
   const esperado = expectedPushSignature(rawBody, config);
 
   if (header == null) return false;
-  // Shopee documents the digest as hex and compares it case-insensitively on
-  // its own side; lowercasing ours is the whole normalization. NOTHING is
-  // stripped — see the module header.
+  // Shopee's demos EMIT lowercase hex and compare it verbatim (`==`), so the
+  // case of the pushed header is inferable from the demos only and never
+  // asserted for the wire. Lowercasing ours is one-sided tolerance, and it is
+  // the whole normalization. NOTHING is stripped — see the module header.
   const recebido = header.trim().toLowerCase();
 
   // ⚠️ Compare the hex TEXT, not decoded bytes. `Buffer.from('zz', 'hex')`

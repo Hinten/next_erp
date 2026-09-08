@@ -7,7 +7,9 @@ Runs on `:3009` in dev. Steps 1–3 and 10 of
 conta status, the access-token refresh, the cached taxonomy reads, and the
 inbound push receiver with its Cloud Tasks queue, nested functions codebase and
 weekly authorization-expiry sweep**. Nothing is published or written **to**
-Shopee yet: every call this app makes is a read.
+Shopee yet — nothing reaches the seller's catálogo, anúncios or pedidos. The
+only state-changing calls the app makes are the OAuth exchange and the token
+refresh, and both matter: the `refresh_token` is single-use and rotating.
 
 ## What lives here
 
@@ -40,9 +42,11 @@ Shopee yet: every call this app makes is a read.
   construction. ⚠️ It is **not** the app's only
   `process.env` reader: Firebase credentials are read in
   `lib/firebase/admin.ts` (a verbatim copy of the same singleton the six sibling
-  channel apps carry, `??`-defaulted `FIREBASE_DATABASE_ID` included) and the
-  CORS allow-list in `proxy.ts`. The blank-guard rule is enforceable precisely
-  because it is scoped to the Shopee values. ⚠️ `SHOPEE_VARIATIONS_PATH`
+  channel apps carry, `??`-defaulted `FIREBASE_DATABASE_ID` included), the CORS
+  allow-list in `proxy.ts`, the Cloud Tasks region/valve in
+  `lib/shopee/shopeeTasks.ts`, and the nested `functions/` codebase. The
+  blank-guard rule is enforceable precisely because it is scoped to the Shopee
+  values. ⚠️ `SHOPEE_VARIATIONS_PATH`
   (optional, **not** a secret) lives here too and is deliberately NOT
   shape-validated: this module answers "what did the operator type", and the
   package's `normalizeApiPath` decides whether that is a usable API path —
@@ -50,9 +54,10 @@ Shopee yet: every call this app makes is a read.
 - `lib/shopee/core/{shopee,credentialStore,tokenStore,respond,validationIssues}.ts`
   — the context loader (cached `integracao` doc, uncached credential,
   `getAccessToken` / `createShopClient`), the Firestore credential store, the
-  error→HTTP mapper, and the Next-free Zod-path helper (which the step-3
-  functions bundle now reuses — `respond.ts` is NOT Next-free and stays out of
-  it).
+  error→HTTP mapper, and the Next-free Zod-path helper (kept Next-free for a
+  future functions-bundle consumer — step 3's bundle does NOT import it: its
+  graph reaches `core/contaCache.ts`, not `core/shopee.ts`/`tokenStore.ts`.
+  `respond.ts` is NOT Next-free and stays out of any bundle).
 - `lib/shopee/core/tokenStore.ts` — the leased access-token refresh (see **Token
   refresh** below). Its three transactions are inventoried in
   `packages/config-eslint/rules/firestore-transaction-inventory.test.js`, which
@@ -225,8 +230,14 @@ code appeared.
 
 ⚠️ **An unbuilt handler PARKS, it never DEFERS.** `defer` means a precondition
 outside this system will clear on its own, and it costs a daily re-drive for
-`MAX_TENTATIVAS_DEFERRED` days. Exactly one thing defers here: a push naming ONE
-shop that maps to no active integração — a seller who has not connected yet.
+`MAX_TENTATIVAS_DEFERRED` days. Exactly one thing defers here: a **code 1**
+naming ONE shop that maps to no active integração — a seller who has not
+connected yet, and a re-drive that only RESOLVES rows. ⚠️ The same shape on a
+**code 2** is ACKED, not deferred: there the defer is inverted, because the
+event that clears the precondition (the operator connecting the shop) is the
+event that makes the news false, and the re-drive would raise
+`shopeeDesautorizado` for a shop that is authorized and syncing — with no stored
+`relogioEvento` to reject it, since nothing was ever written.
 
 Shopee ships **no event id**, so the doc id is derived per code from the
 resource key inside `data` (`ordersn`, `item_id`, `return_sn`,
@@ -240,7 +251,12 @@ into an auto id.
 enumerates the partner's authorized shops through the **Public-signed**
 `get_shops_by_partner` — so it reads no token and never touches a
 `/credenciais/` path — and for each shop that maps to an active integração:
-`dias <= 30` raises the aviso, anything above resolves it.
+`dias <= 30` raises the expiry aviso, anything above resolves it.
+⚠️ `shopeeDesautorizado` is resolved on **both** branches, before that test:
+being enumerated at all is proof the shop is authorized again (a de-authorized
+shop leaves `authed_shop_list` entirely), and tying that row to the healthy
+branch left a re-consent shorter than 30 days standing forever on a
+`serverOwned` collection nobody can dismiss by hand.
 
 **Weekly, not monthly, and that is load-bearing:** a 30-day warning window on a
 monthly cadence can miss an expiry entirely (run on the 1st and see 58 days; the

@@ -66,11 +66,18 @@ export function __resetContadorDeEntregasParaTestes(): void {
 /**
  * The two values the push HMAC needs.
  *
- * ⚠️ A `ShopeeConfigError` (no partner id, a malformed one, no partner key)
- * degrades to `partnerKey: null` rather than propagating: the verifier then
- * raises the ONE error class this route maps to 503, so an unconfigured backend
- * has exactly one exit instead of two that could drift apart. The underlying
- * message rides along for the log — it names the VARIABLE and never a value.
+ * ⚠️ ANY `ShopeeConfigError` degrades to `partnerKey: null` rather than
+ * propagating — no partner id, a malformed one, no partner key, and also a
+ * malformed `SHOPEE_API_HOST`/`SHOPEE_AUTH_HOST` override, which
+ * `shopeeConfig()` validates AFTER the partner key. The verifier then raises
+ * the ONE error class this route maps to 503, so an unconfigured backend has
+ * exactly one exit instead of two that could drift apart.
+ *
+ * ⚠️ Which means `err.variavel` on that 503 always reads `SHOPEE_PARTNER_KEY`
+ * and is NOT necessarily the variable at fault: the caught message rides along
+ * as `detalhe` and is the one that names it. No message raised inside
+ * `shopeeConfig()` itself carries a value; the two host overrides quote theirs,
+ * and neither of those is a credential.
  */
 function lerConfigDeAssinatura(): { config: PushSignatureConfig; detalhe: string | null } {
   let partnerKey: string | null = null;
@@ -111,7 +118,7 @@ function registrarEntrega(
     forwardedHost: req.headers.get('x-forwarded-host'),
     host: req.headers.get('host'),
     contentType: req.headers.get('content-type'),
-    bytes: raw.length,
+    bytes: Buffer.byteLength(raw, 'utf8'),
     assinaturaOk,
     digestRecebido: header == null ? null : header.trim().toLowerCase().slice(0, 8),
     digestEsperado: expectedPushSignature(raw, config).slice(0, 8),
@@ -181,7 +188,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     // Signed by Shopee and unreadable by us — structure only, never the body.
     console.warn('[shopee/webhook] body assinado sem push_code inteiro — ack sem enfileirar', {
       tipo: body === null ? 'null' : Array.isArray(body) ? 'array' : typeof body,
-      bytes: raw.length,
+      bytes: Buffer.byteLength(raw, 'utf8'),
     });
     return new NextResponse(null, { status: 204 });
   }

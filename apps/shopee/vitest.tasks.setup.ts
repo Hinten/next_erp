@@ -96,8 +96,15 @@ if (EMULATED) {
  * re-consenting in a browser. The partner-level calls (`get_shops_by_partner`,
  * the one this codebase's sweep makes) are rate-limited on top of that.
  *
- * This makes "offline" a property of the LANE rather than of each author's
- * diligence.
+ * ⚠️ It covers THIS process only. `setupFiles` are loaded into the vitest
+ * worker; the functions emulator runs `.deploy/shopee-functions` in a SIBLING
+ * process that never imports this file, so a dispatched function's `fetch` is
+ * untouched. What protects that side is different and weaker: the partner
+ * credentials in the job env are invented, and the emulator's `demo-erp`
+ * Firestore holds no real `refresh_token` — so a call that escapes answers
+ * `error_sign` instead of burning anything. A `*.tasks.test.ts` that drives a
+ * conta arm (code 12 signs `get_shops_by_partner`) would make a real outbound
+ * request from the runner; pick a push code that needs no Shopee call.
  *
  * Scoped to non-local hosts so the Admin SDK's own emulator traffic is
  * untouched, and so a test may still stub `fetch` itself (vi.stubGlobal) for a

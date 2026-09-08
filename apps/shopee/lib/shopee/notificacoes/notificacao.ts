@@ -607,6 +607,20 @@ export async function processNotificationPayload(
       // weekly cron omits it for the same reason: it has no delivery clock.
       ...(payload.timestamp == null ? {} : { relogioEventoMs: payload.timestamp }),
     });
+    // ⚠️ The scoped sweep CONTAINS per-shop failures into `erros` and keeps
+    // walking — right for the weekly cron, whose trigger logs `result.erros`.
+    // This arm settles the delivery (`aviso` ⇒ `resolve`), so without this line
+    // a batch whose writes all failed would be reported as done with nothing on
+    // the task's own summary. The counts only; never a body, never a token.
+    if (resultado.erros.length > 0 || resultado.truncado) {
+      console.warn('[shopee] push 12 — varredura de expiração incompleta', {
+        lojas: mapeadas.length,
+        avisados: resultado.avisados,
+        resolvidos: resultado.resolvidos,
+        erros: resultado.erros.length,
+        truncado: resultado.truncado,
+      });
+    }
     return {
       kind: 'aviso',
       lojas: mapeadas.length,
@@ -620,12 +634,23 @@ export async function processNotificationPayload(
   const mapeadas = await mapearLojas(db, candidatas);
 
   if (mapeadas.length === 0) {
-    // Exactly one named shop that maps to nothing is a PRECONDITION a human can
-    // clear by connecting the conta — the one and only defer in this channel.
-    // Zero named shops (a merchant-only authorization) and several unmapped
-    // ones are acked: neither is a state a re-drive can improve, and
-    // `sem-conta` can only name one shop by construction.
-    if (candidatas.length === 1) {
+    // On a code 1, exactly one named shop that maps to nothing is a PRECONDITION
+    // a human can clear by connecting the conta — the one and only defer in this
+    // channel, and harmless because the re-drive only RESOLVES rows.
+    //
+    // ⚠️ For a code 2 the same defer is INVERTED, which is why it is gated on the
+    // code. The event that clears the precondition — an operator connecting the
+    // shop, i.e. a fresh consent — is exactly the event that makes the news
+    // FALSE, so a re-drive up to 7 days later would raise `shopeeDesautorizado`
+    // ("nada será sincronizado") for a shop that is authorized and syncing. No
+    // watermark can reject it either: nothing was written when the shop was
+    // unmapped, so there is no stored `relogioEvento` to compare against. A
+    // de-authorization for a shop this ERP does not track is not work a human
+    // can make actionable later — ack it.
+    //
+    // Several unmapped shops are acked for both codes: `sem-conta` can only name
+    // one shop by construction.
+    if (payload.code === 1 && candidatas.length === 1) {
       const shopId = candidatas[0]!;
       return {
         kind: 'sem-conta',
@@ -641,7 +666,11 @@ export async function processNotificationPayload(
       kind: 'ack',
       reason:
         candidatas.length === 0
-          ? 'push de autorização sem shop_id (autorização de merchant ou main account)'
+          ? // ⚠️ NOT necessarily a merchant/main-account event: Shopee's own
+            // `push 16` sample 1 is a SHOP cancellation whose shop id appears
+            // only in the free-text `data.extra`. The envelope carries no shop
+            // identifier either way, so there is nothing to act on.
+            'push de autorização sem shop_id no envelope (merchant/main account, ou uma loja que a Shopee só cita em data.extra)'
           : 'nenhuma das lojas do push pertence a uma integração ativa',
       detail: 'nenhuma-loja-mapeada',
     };
@@ -658,9 +687,10 @@ export async function processNotificationPayload(
         { nowMs },
       );
       // ⚠️ Count what was actually CLOSED, not how many shops we asked about:
-      // `resolverAviso` is `mergeIfExists`, so a shop with no standing aviso is
-      // a no-op, and reporting it as resolved would make the counter read as
-      // "we fixed four problems" on a re-consent that fixed none.
+      // `resolverAviso` reports a TRANSITION, so a shop with no standing aviso —
+      // or one already resolved — is a no-op, and reporting it as resolved would
+      // make the counter read as "we fixed four problems" on a re-consent that
+      // fixed none.
       if (r.expiracao || r.desautorizacao) resolvidos += 1;
     }
     return { kind: 'aviso', lojas: mapeadas.length, avisados: 0, resolvidos };

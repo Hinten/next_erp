@@ -12,9 +12,13 @@
  *     → a real `parked` doc in notificacoesShopee
  *
  * ⚠️ Why an unknown four-digit code. Every other destino either writes nothing
- * (`ack`) or needs a Shopee call: the three conta arms (1 / 2 / 12) resolve a
- * shop against `integracao` and then sign a Public `get_shops_by_partner`, which
- * this lane's fetch kill-switch refuses on purpose. `desconhecido` reaches
+ * (`ack`) or reaches for a Shopee call: the conta arms resolve a shop against
+ * `integracao`, and code 12 then signs a Public `get_shops_by_partner`. ⚠️ The
+ * lane's fetch kill-switch lives in the VITEST process and does NOT cover the
+ * dispatched function, which runs in the emulator's own process — so that call
+ * would really leave the runner (harmlessly, since the partner key here is
+ * invented, but really). Picking a code with no Shopee call is what keeps this
+ * suite offline. `desconhecido` reaches
  * `motivoDoParque` with no network, no seed and no credential, and it is the one
  * outcome that PERSISTS — so the assertion is about a document the dispatched
  * function wrote, not about the absence of one. Shopee's codes are one and two

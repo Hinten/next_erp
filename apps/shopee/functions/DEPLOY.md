@@ -36,7 +36,7 @@ the bundle, proven before the first deploy.
 - The App Hosting backend for `apps/shopee` created in the Firebase console.
 - Env / secrets on the deployed function: `FIREBASE_PROJECT_ID` + admin creds,
   plus `SHOPEE_PARTNER_ID` and `SHOPEE_PARTNER_KEY` in Secret Manager (see
-  **Secrets** below — both are `secrets:` on two of the three triggers).
+  **Secrets** below — both are `secrets:` on all three triggers).
 - **Region match**: the App Hosting backend must enqueue onto the queue in the
   function's region. The enqueuer resolves it from
   `SHOPEE_TASKS_REGION ?? FUNCTIONS_REGION`, and there is **no default** — an

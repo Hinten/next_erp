@@ -552,26 +552,33 @@ describe('code 2 — desautorização LEVANTA um aviso por loja mapeada', () => 
   });
 });
 
-describe('defer — só para uma loja de push de conta que não mapeia nada', () => {
-  it('code 2 nomeando UMA loja não mapeada ⇒ sem-conta ⇒ defer', async () => {
-    h.find.mockResolvedValue(null);
-    const out = await processNotificationPayload(
-      db,
-      payload({ code: 2, shopId: 987654, data: { shop_id: 987654 } }),
-      deps,
-    );
-    expect(out).toMatchObject({ kind: 'sem-conta', shopId: 987654 });
-    expect(toDisposition(out).kind).toBe('defer');
-  });
-
-  it('code 1 nomeando UMA loja não mapeada ⇒ defer também', async () => {
+describe('defer — só para uma loja de um push code 1 que não mapeia nada', () => {
+  it('code 1 nomeando UMA loja não mapeada ⇒ sem-conta ⇒ defer', async () => {
     h.find.mockResolvedValue(null);
     const out = await processNotificationPayload(
       db,
       payload({ code: 1, shopId: 111, data: { shop_id: 111 } }),
       deps,
     );
-    expect(out.kind).toBe('sem-conta');
+    expect(out).toMatchObject({ kind: 'sem-conta', shopId: 111 });
+    expect(toDisposition(out).kind).toBe('defer');
+  });
+
+  // NEAR-MISS do teste acima — MESMA forma de payload, código diferente. No
+  // code 2 o defer é INVERTIDO: o operador conectar a loja é justamente o que
+  // torna a notícia falsa, e a reentrega diária levantaria `shopeeDesautorizado`
+  // para uma loja autorizada, sem watermark que possa rejeitá-la.
+  it('code 2 nomeando UMA loja não mapeada é ACK, nunca defer', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.find.mockResolvedValue(null);
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 2, shopId: 987654, data: { shop_id: 987654 } }),
+      deps,
+    );
+    expect(out).toMatchObject({ kind: 'ack', detail: 'nenhuma-loja-mapeada' });
+    expect(toDisposition(out).kind).toBe('drop');
+    expect(h.avisarDesautorizacao).not.toHaveBeenCalled();
   });
 
   // NEAR-MISS: um push de conta SEM loja nenhuma (autorização de merchant) é

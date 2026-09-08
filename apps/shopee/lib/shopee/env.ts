@@ -7,18 +7,23 @@
  * the environment becomes a typed config object.
  *
  * ⚠️ Not the app's only `process.env` reader, and the narrower claim is the
- * true one. Four readers sit outside this module, none of which follows the
- * rule below:
+ * true one. In the Next runtime these modules read the environment directly and
+ * none of them follows the rule below:
  *
  *  - `lib/firebase/admin.ts` — the Firebase credentials;
  *  - `proxy.ts` — the CORS allow-list;
- *  - `lib/shopee/shopeeTasks.ts` — `SHOPEE_TASKS_REGION` (handed to
- *    `requireRegion`, which trims and THROWS on a blank value, so a copy of the
- *    guard here would be a second, drifting one) and `SHOPEE_TASKS_DISABLED`
- *    (an `=== '1'` opt-in, blank-safe by construction like `shopeeSandbox`).
+ *  - `lib/shopee/shopeeTasks.ts` — `SHOPEE_TASKS_REGION`/`FUNCTIONS_REGION`
+ *    (handed to `requireRegion`, which trims and THROWS on a blank value, so a
+ *    copy of the guard here would be a second, drifting one) and
+ *    `SHOPEE_TASKS_DISABLED` (an `=== '1'` opt-in, blank-safe by construction
+ *    like `shopeeSandbox`).
+ *
+ * The nested `functions/` codebase reads more of it still (`options.ts`,
+ * `lib/admin.ts`, `tasksInvoker.ts`), which is why no count is stated here: a
+ * number goes stale silently and the list is what a reader needs.
  *
  * Scoping the claim to the Shopee CONFIGURATION values is what makes that rule
- * enforceable here instead of an app-wide invariant four other readers break.
+ * enforceable here instead of an app-wide invariant those readers break.
  *
  * ## Every SHOPEE read is BLANK-GUARDED, never `??`
  *

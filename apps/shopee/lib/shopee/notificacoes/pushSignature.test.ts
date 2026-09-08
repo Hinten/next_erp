@@ -13,7 +13,7 @@ const CHAVE = 'chave-de-teste-nao-e-credencial';
 
 /**
  * O vetor do `guide 18`: a URL e o corpo do exemplo da própria Shopee, com a
- * nossa chave de teste. O dígito abaixo é o valor computado uma vez e fixado —
+ * nossa chave de teste. O digest abaixo é o valor computado uma vez e fixado —
  * é ele que prova que a base string é `url + '|' + corpo` e não qualquer outra
  * concatenação (a assinatura de REQUISIÇÃO, por contraste, não tem separador).
  */
@@ -43,22 +43,22 @@ describe('pushBaseString', () => {
 });
 
 describe('verifyShopeePushSignature — o vetor do guide 18', () => {
-  it('aceita o dígito hex minúsculo do exemplo da Shopee', () => {
+  it('aceita o digest hex minúsculo do exemplo da Shopee', () => {
     expect(expectedPushSignature(CORPO_GUIA, config)).toBe(DIGEST_GUIA);
     expect(verifyShopeePushSignature(CORPO_GUIA, DIGEST_GUIA, config)).toBe(true);
   });
 
-  it('aceita o mesmo dígito em MAIÚSCULAS (a Shopee compara sem case)', () => {
+  it('aceita o mesmo digest em MAIÚSCULAS (tolerância nossa: os demos da Shopee comparam verbatim)', () => {
     expect(verifyShopeePushSignature(CORPO_GUIA, DIGEST_GUIA.toUpperCase(), config)).toBe(true);
   });
 
-  it('aceita o dígito com espaços em volta', () => {
+  it('aceita o digest com espaços em volta', () => {
     expect(verifyShopeePushSignature(CORPO_GUIA, `  ${DIGEST_GUIA}  `, config)).toBe(true);
   });
 
   // NEAR-MISS: o header da Shopee é o hex NU. O esquema `sha256=` é do Meta, e
   // aceitá-lo seria aceitar um valor sob uma regra que a Shopee não aplica.
-  it('REJEITA o mesmo dígito prefixado com "sha256=" (esquema do Meta)', () => {
+  it('REJEITA o mesmo digest prefixado com "sha256=" (esquema do Meta)', () => {
     expect(verifyShopeePushSignature(CORPO_GUIA, `sha256=${DIGEST_GUIA}`, config)).toBe(false);
   });
 
@@ -66,7 +66,7 @@ describe('verifyShopeePushSignature — o vetor do guide 18', () => {
     expect(verifyShopeePushSignature(CORPO_GUIA, null, config)).toBe(false);
   });
 
-  it('rejeita um dígito de outro corpo', () => {
+  it('rejeita um digest de outro corpo', () => {
     expect(verifyShopeePushSignature('{"code":2}', DIGEST_GUIA, config)).toBe(false);
   });
 
@@ -92,9 +92,9 @@ describe('verifyShopeePushSignature — o vetor do guide 18', () => {
 });
 
 describe('a URL entra byte a byte', () => {
-  // Se `env.ts` passar a remover a barra final, este par de dígitos colapsa e o
+  // Se `env.ts` passar a remover a barra final, este par de digests colapsa e o
   // teste fica vermelho — é essa a razão de o reader NÃO normalizar.
-  it('uma barra final muda o dígito', () => {
+  it('uma barra final muda o digest', () => {
     const semBarra = expectedPushSignature(CORPO_GUIA, {
       partnerKey: CHAVE,
       callbackUrl: 'https://erp.example/api/webhooks/shopee',
@@ -106,7 +106,7 @@ describe('a URL entra byte a byte', () => {
     expect(semBarra).not.toBe(comBarra);
   });
 
-  it('o esquema muda o dígito', () => {
+  it('o esquema muda o digest', () => {
     const http = expectedPushSignature(CORPO_GUIA, {
       partnerKey: CHAVE,
       callbackUrl: 'http://erp.example/api/webhooks/shopee',

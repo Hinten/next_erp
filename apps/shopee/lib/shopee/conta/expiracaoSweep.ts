@@ -38,7 +38,11 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { ShopeeError, type ShopeePartnerClient } from '@delfrance/integrations-shopee';
 
-import { avisarExpiracaoAutorizacao, resolverAvisosDeAutorizacao } from '../avisos/autorizacao';
+import {
+  avisarExpiracaoAutorizacao,
+  resolverDesautorizacao,
+  resolverExpiracao,
+} from '../avisos/autorizacao';
 import { findIntegracaoByShopId, readConta } from '../core/contaCache';
 import { listarLojasAutorizadas } from './shops';
 import { diasParaExpirar } from './status';
@@ -135,7 +139,17 @@ function isGrpcCodedError(err: unknown): err is Error {
  * ⚠️ `escreverAviso`'s persistent-contention `Error` is deliberately NOT in the
  * set. It is thrown only after three lost preconditions in a row on ONE aviso
  * row, which its own message calls "a real problem rather than something to spin
- * on" — containing it would turn that signal into a counter nobody reads.
+ * on", and a failed execution is a louder signal than one more entry in `erros`
+ * (which the weekly trigger DOES log — `functions/src/index.ts` warns on
+ * `result.erros`). The trade is explicit: the abort costs the shops after the
+ * contended one their weekly check, which the next Monday tick — and, for a shop
+ * Shopee itself flags, `push 12` — walks again.
+ *
+ * ⚠️ The `ShopeeError` half cannot fire from the loop TODAY:
+ * `listarLojasAutorizadas` runs once, before it, and nothing inside the try
+ * touches the network. It stays because the boundary names a failure FAMILY, not
+ * today's call graph — a provider call moved into the loop must not turn one
+ * shop's 5xx into a lost tick.
  */
 function contidoPorLoja(err: unknown): err is Error {
   return err instanceof ShopeeError || isGrpcCodedError(err);
@@ -155,13 +169,15 @@ function loggerDe(deps: ExpiracaoSweepDeps): SweepLogger {
 /**
  * Walk every authorized shop and keep its expiry aviso in step with reality.
  *
- * Per shop: resolve the integração, read its conta, compare the authorization
- * clock against {@link DIAS_LIMITE_EXPIRACAO}, then either raise the aviso or
- * resolve it. The resolve runs **unconditionally** on the healthy branch rather
- * than only when a row is known to exist: `resolverAviso` is `mergeIfExists`, a
- * single write with no read, and the alternative — remembering whether we raised
- * one — is exactly the kind of state that goes stale across weekly runs on
- * different instances.
+ * Per shop: resolve the integração, read its conta, close
+ * `shopeeDesautorizado` (enumeration IS the proof it is authorized again), then
+ * compare the authorization clock against {@link DIAS_LIMITE_EXPIRACAO} and
+ * either raise the expiry aviso or close it too. Both resolves run
+ * **unconditionally** rather than only when a row is known to exist: the
+ * alternative — remembering whether we raised one — is exactly the kind of state
+ * that goes stale across weekly runs on different instances, and `resolverAviso`
+ * answers `true` only on a real transition, so `resolvidos` cannot inflate on a
+ * quiet week.
  */
 export async function runShopeeAuthorizationExpirySweep(
   db: Firestore,
@@ -207,6 +223,18 @@ export async function runShopeeAuthorizationExpirySweep(
 
       const dias = diasParaExpirar(loja.expireTime, deps.nowMs);
 
+      // ⚠️ Resolved on BOTH branches, and BEFORE the expiry decision. Being
+      // enumerated here is positive proof the shop is authorized again — a
+      // de-authorized shop leaves `authed_shop_list` entirely, so the sweep can
+      // never reach it. Tying this row to the healthy branch left a re-consent
+      // shorter than DIAS_LIMITE_EXPIRACAO standing forever beside a correct
+      // "expirando" row, on a `serverOwned` collection nobody can dismiss.
+      let fechou = await resolverDesautorizacao(
+        db,
+        { integracaoId, shopId: loja.shopId },
+        { nowMs: deps.nowMs },
+      );
+
       if (dias <= DIAS_LIMITE_EXPIRACAO) {
         const { resultado } = await avisarExpiracaoAutorizacao(
           db,
@@ -228,14 +256,13 @@ export async function runShopeeAuthorizationExpirySweep(
         );
         resultados[resultado] += 1;
         if (resultado !== 'ignorado') avisados += 1;
-      } else {
-        const resolucao = await resolverAvisosDeAutorizacao(
-          db,
-          { integracaoId, shopId: loja.shopId },
-          { nowMs: deps.nowMs },
-        );
-        if (resolucao.expiracao || resolucao.desautorizacao) resolvidos += 1;
+      } else if (
+        await resolverExpiracao(db, { integracaoId, shopId: loja.shopId }, { nowMs: deps.nowMs })
+      ) {
+        fechou = true;
       }
+      // One shop, one closure, however many of its two rows were open.
+      if (fechou) resolvidos += 1;
     } catch (err) {
       // Per-shop containment: one shop's Firestore or Shopee failure must not
       // cost every other shop its weekly check. Anything unclassifiable is a

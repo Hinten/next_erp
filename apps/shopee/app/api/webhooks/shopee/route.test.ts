@@ -144,10 +144,10 @@ describe('a porta da assinatura', () => {
   });
 
   // ⚠️ A URL configurada entra byte a byte na base string. Uma barra final a
-  // mais na configuração muda o dígito e reprova um push legítimo — é por isso
+  // mais na configuração muda o digest e reprova um push legítimo — é por isso
   // que `shopeePushCallbackUrl()` não normaliza, e é isso que o log das
   // primeiras entregas existe para revelar em produção.
-  it('uma barra final na URL configurada muda o dígito ⇒ 401', async () => {
+  it('uma barra final na URL configurada muda o digest ⇒ 401', async () => {
     vi.stubEnv('SHOPEE_PUSH_CALLBACK_URL', `${CALLBACK}/`);
     const res = await POST(push(CORPO, assinar(CORPO, CALLBACK)));
     expect(res.status).toBe(401);
@@ -225,7 +225,7 @@ describe('o log das primeiras entregas', () => {
     ) as unknown as [string, Record<string, unknown>][];
   }
 
-  it('registra URL configurada vs recebida e no MÁXIMO 8 caracteres de cada dígito', async () => {
+  it('registra URL configurada vs recebida e no MÁXIMO 8 caracteres de cada digest', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const header = assinar(CORPO);
     await POST(push(CORPO, header));
@@ -235,7 +235,7 @@ describe('o log das primeiras entregas', () => {
     expect(meta.urlConfigurada).toBe(CALLBACK);
     expect(meta.urlRecebida).toBe(CALLBACK);
     expect(meta.assinaturaOk).toBe(true);
-    expect(meta.bytes).toBe(CORPO.length);
+    expect(meta.bytes).toBe(Buffer.byteLength(CORPO, 'utf8'));
     expect(String(meta.digestRecebido)).toHaveLength(8);
     expect(String(meta.digestEsperado)).toHaveLength(8);
 
@@ -244,6 +244,19 @@ describe('o log das primeiras entregas', () => {
     expect(serializado).not.toContain('987654');
     expect(serializado).not.toContain(header);
     expect(serializado).not.toContain(CHAVE);
+  });
+
+  // ⚠️ `bytes` descreve os BYTES que entraram no HMAC (`update(base, 'utf8')`),
+  // não as unidades UTF-16 da string. Um corpo acentuado é o quase-erro: se o
+  // campo voltar a ser `raw.length`, os dois números divergem aqui.
+  it('conta os BYTES UTF-8 do corpo, não os caracteres', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const acentuado = '{"code":1,"timestamp":1660616278,"data":{"nome":"Camisetão"}}';
+    await POST(push(acentuado));
+
+    const [, meta] = entregas(warnSpy)[0]!;
+    expect(meta.bytes).toBe(Buffer.byteLength(acentuado, 'utf8'));
+    expect(meta.bytes).not.toBe(acentuado.length);
   });
 
   it('para de registrar depois de 5 entregas válidas', async () => {

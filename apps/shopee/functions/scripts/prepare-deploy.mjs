@@ -9,9 +9,11 @@ import { copyDeployEnv } from '../../../../tools/deploy-env/env-files.mjs';
 // apps/shopee/functions/scripts/prepare-deploy.mjs`) from the repo root — and
 // DIRECTLY by .github/workflows/ci-shopee.yml, which serves the artifact to the
 // functions emulator (predeploy hooks do not run under `emulators:exec`).
-// ⚠️ `firebase.shopee.deploy.json` does not exist yet: the deploy config is step
-// 22's (#1530). Same mechanics as apps/mercado-pago/functions (esbuild bundle +
-// minimal package.json + node_modules junction).
+// ⚠️ `firebase.shopee.deploy.json` ships INERT with step 3 and already lists
+// this script as its second `predeploy` entry; what is still step 22's (#1530)
+// is RUNNING the deploy, not authoring the config. Same mechanics as
+// apps/mercado-pago/functions (esbuild bundle + minimal package.json +
+// node_modules junction).
 
 // apps/shopee/functions (this script lives in .../functions/scripts/).
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));

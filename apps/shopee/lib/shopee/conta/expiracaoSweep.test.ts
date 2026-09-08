@@ -11,6 +11,7 @@ import {
 
 import { __setShopeeCacheClockForTests } from '../core/contaCache';
 import {
+  avisarDesautorizacao,
   avisarExpiracaoAutorizacao,
   chaveDesautorizacao,
   chaveExpiracao,
@@ -292,7 +293,7 @@ describe('the 30-day boundary', () => {
 
   it('raises NOTHING at 31 days, and resolves both chaves instead', async () => {
     // The near-miss to the two above. The resolve runs unconditionally on the
-    // healthy branch — `mergeIfExists` is one write with no read, and remembering
+    // healthy branch — a single write with no bookkeeping, and remembering
     // whether we ever raised one is exactly the state that goes stale across
     // weekly runs on different instances.
     const db = new FakeDb();
@@ -323,6 +324,54 @@ describe('the 30-day boundary', () => {
       resolvidoEm: (AGORA_MS + DIA_MS) * 1000,
       resolucaoMotivo: 'reautorizada',
     });
+  });
+
+  // ⚠️ The branch the resolve used to be tied to. Enumeração em
+  // `authed_shop_list` já é prova de que a loja está autorizada — uma
+  // reautorização de 15 dias tem de FECHAR `shopeeDesautorizado` mesmo caindo no
+  // ramo do "expirando". Antes, essa linha ficava aberta para sempre numa
+  // coleção `serverOwned` que ninguém dispensa à mão.
+  it('closes shopeeDesautorizado on the ≤30-day branch too, while raising expirando', async () => {
+    const db = new FakeDb();
+    db.seed(`${INTEGRACAO_PATH}/int-1`, contaDoc());
+    await avisarDesautorizacao(
+      db as unknown as Firestore,
+      { integracaoId: 'int-1', shopId: SHOP_A, lojaNome: 'Loja BR', motivo: 'expiry' },
+      { increment: (by: number) => ({ __increment: by }), nowMs: AGORA_MS },
+    );
+    const desautorizado = `avisos/${chaveDesautorizacao('int-1', SHOP_A)}`;
+    expect(db.store[desautorizado]?.data.resolvidoEm).toBeNull();
+
+    getShopsByPartner.mockResolvedValue(pagina([loja(SHOP_A, 15)], false));
+    const out = await sweep(db, { nowMs: AGORA_MS + DIA_MS });
+
+    expect(out).toMatchObject({ avisados: 1, resolvidos: 1 });
+    expect(db.store[desautorizado]?.data).toMatchObject({
+      resolvidoEm: (AGORA_MS + DIA_MS) * 1000,
+      resolucaoMotivo: 'reautorizada',
+    });
+    // A linha de expiração é levantada na MESMA passada.
+    expect(db.store[PATH_A]?.data.resolvidoEm).toBeNull();
+  });
+
+  // NEAR-MISS de `resolvidos`: fechar é uma TRANSIÇÃO, não "o documento existe".
+  // Uma semana calma tem de contar zero, e `resolvidoEm` não pode ser
+  // re-carimbado — senão a linha nunca alcança o corte de 90 dias do
+  // `sweepAvisosResolvidos` e vive para sempre.
+  it('does not re-count (or re-stamp) an aviso that is already resolved', async () => {
+    const db = new FakeDb();
+    db.seed(`${INTEGRACAO_PATH}/int-1`, contaDoc());
+    getShopsByPartner.mockResolvedValue(pagina([loja(SHOP_A, 5)], false));
+    await sweep(db);
+
+    getShopsByPartner.mockResolvedValue(pagina([loja(SHOP_A, 365)], false));
+    const primeira = await sweep(db, { nowMs: AGORA_MS + DIA_MS });
+    const segunda = await sweep(db, { nowMs: AGORA_MS + 8 * DIA_MS });
+
+    expect(primeira.resolvidos).toBe(1);
+    expect(segunda.resolvidos).toBe(0);
+    expect(db.store[PATH_A]?.data.resolvidoEm).toBe((AGORA_MS + DIA_MS) * 1000);
+    expect(db.store[PATH_A]?.data.atualizadoEm).toBe((AGORA_MS + DIA_MS) * 1000);
   });
 
   it('REOPENS with a fresh criadoEm when the authorization lapses again', async () => {
