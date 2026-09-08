@@ -535,12 +535,67 @@ jobs:
           # (4) Positive proof, not merely the absence of failure — the e2e gate's
           #     anti-vacuity lock generalised to N jobs. `needs.<job>.result` reports
           #     what the runner thinks; it does not assert a job of that name ever
-          #     existed. Ask the API, once.
-          if ! gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
-                 --jq '.jobs[] | [.name, (.conclusion // "pending")] | @tsv' > "$RUNNER_TEMP/jobs.tsv"
-          then
+          #     existed. Ask the API.
+          #
+          #     ⚠️ Ask it MORE THAN ONCE. Actions releases this gate the moment
+          #     every `needs:` job has concluded, but this endpoint is only
+          #     eventually consistent with that: for a few seconds afterwards it
+          #     can still serve the pre-conclusion snapshot. On run 34232714671
+          #     both `vendas-1 / e2e` and `vendas-2 / e2e` concluded `success` and
+          #     the gate still went RED in 4s, because `vendas-1 / e2e` read back
+          #     `pending`; `gh run rerun --failed` turned it green with no code
+          #     change at all. So a job that reads back UNSETTLED -- listed but not
+          #     yet concluded (`pending`), or not listed yet at all (`missing`) --
+          #     is re-read, up to POLL_ATTEMPTS times, POLL_SLEEP seconds apart.
+          #
+          #     ⚠️ Nothing is FORGIVEN here, only re-read, and that distinction is
+          #     the whole guard. A real conclusion is terminal in this API and is
+          #     never polled away: `failure`, `cancelled`, `skipped`, `timed_out`
+          #     all go RED on the first pass, as fast as they ever did. A job still
+          #     `pending`, or still absent, after the LAST attempt goes RED with the
+          #     same verdict and the same wording it always had -- a certified job
+          #     this gate cannot find is still a lane this gate will not certify.
+          #     The bound is what keeps this a guard rather than a wait-for-green
+          #     loop: at most 50s, inside a job that already allows 10 minutes.
+          POLL_ATTEMPTS=6
+          POLL_SLEEP=10
+
+          FETCHED=""
+          attempt=1
+          while : ; do
+            # Fetch to a scratch path and promote it only on success. `>` truncates
+            # BEFORE `gh` runs, so writing jobs.tsv directly would let a failed
+            # retry destroy a good snapshot, and every certified job would then
+            # read back `missing` -- a red gate manufactured by the retry itself.
+            if gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+                 --jq '.jobs[] | [.name, (.conclusion // "pending")] | @tsv' > "$RUNNER_TEMP/jobs.attempt.tsv"
+            then
+              mv "$RUNNER_TEMP/jobs.attempt.tsv" "$RUNNER_TEMP/jobs.tsv"
+              FETCHED="yes"
+
+              # Re-derive the unsettled count from THIS attempt's response. Counting
+              # against a snapshot fetched once outside the loop would replay the
+              # same stale answer on every pass -- a retry that cannot change its
+              # own verdict, which is worse than no retry at all. `done < file` is a
+              # redirect and not a pipe, so the count survives the loop (the same
+              # subshell trap the herestring above is commented for).
+              UNSETTLED=0
+              while IFS= read -r check; do
+                [ -n "$check" ] || continue
+                actual=$(awk -F'\t' -v n="$check" '$1 == n { c = $2 } END { print (c == "" ? "missing" : c) }' "$RUNNER_TEMP/jobs.tsv")
+                case "$actual" in
+                  pending|missing) UNSETTLED=$((UNSETTLED + 1)) ;;
+                esac
+              done < "$CERTIFY"
+              [ "$UNSETTLED" -gt 0 ] || break
+            fi
+            [ "$attempt" -lt "$POLL_ATTEMPTS" ] || break
+            attempt=$((attempt + 1))
+            sleep "$POLL_SLEEP"
+          done
+
+          [ -n "$FETCHED" ] || \
             fail "Could not list this run's jobs, so this gate cannot prove the certified jobs actually ran. Refusing to certify on \`needs.*.result\` alone."
-          fi
 
           while IFS= read -r check; do
             [ -n "$check" ] || continue
