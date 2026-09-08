@@ -21,6 +21,7 @@ const {
   whereArrayContainsSpy,
   buildQuerySpy,
   monitorRef,
+  notifyShow,
 } = vi.hoisted(() => ({
   snapState: {
     current: {
@@ -47,6 +48,7 @@ const {
   // The update-monitor drives the only refresh affordance /produtos has
   // left in its header. Stubbed so a test can raise `stale` and click it;
   // `stale: false` is what the real hook reports for every other case.
+  notifyShow: vi.fn(),
   monitorRef: { current: { stale: false, acknowledge: vi.fn() } },
 }));
 
@@ -94,6 +96,12 @@ vi.mock('@delfrance/data', async () => {
     whereOp: whereOpSpy,
     whereArrayContains: whereArrayContainsSpy,
   };
+});
+
+vi.mock('@mantine/notifications', async () => {
+  const actual =
+    await vi.importActual<typeof import('@mantine/notifications')>('@mantine/notifications');
+  return { ...actual, notifications: { show: (...args: unknown[]) => notifyShow(...args) } };
 });
 
 import { StrictMode } from 'react';
@@ -1085,6 +1093,51 @@ describe('TableView', () => {
         />,
       );
       expect(buildPipelineSpy, 'a filtered query must go back to the pipeline').toHaveBeenCalled();
+    });
+
+    it('warns that sorting stops the list updating itself', () => {
+      // The freeze is deliberate but invisible — the rows simply stop moving.
+      // The badge is the standing indicator; this is the one-time explanation
+      // of what just changed.
+      notifyShow.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Nome'));
+      expect(notifyShow).toHaveBeenCalledTimes(1);
+      expect(notifyShow.mock.calls[0]![0]).toMatchObject({ color: 'yellow' });
+    });
+
+    it('does not warn again once the list is already static', () => {
+      // Self-limiting rather than flag-limited: the first departing sort makes
+      // the table static, so every later click fails the `transportIsLive`
+      // guard. Isolated deliberately — the click here lands on `tipo:asc`, which
+      // is NOT the declared order, so the only thing suppressing the toast is
+      // that the table had already left the live path. Remove that guard and
+      // this case fires.
+      searchParamsRef.current = new URLSearchParams('sort=tipo:desc');
+      notifyShow.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Tipo'));
+      expect(notifyShow).not.toHaveBeenCalled();
     });
 
     it('first header click flips the meta-default ascending sort to descending', () => {

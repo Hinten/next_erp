@@ -19,6 +19,7 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import type { Route } from 'next';
 import type { Firestore, Query } from 'firebase/firestore';
 import type { z, ZodObject, ZodRawShape } from 'zod';
@@ -949,7 +950,34 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // non-interactive so it should not be reachable anyway.
     if (forcedSort) return;
     const current = displaySort?.field === fieldKey ? displaySort.direction : undefined;
-    setSort({ field: fieldKey, direction: current === 'asc' ? 'desc' : 'asc' });
+    const next: SortState = {
+      field: fieldKey,
+      direction: current === 'asc' ? 'desc' : 'asc',
+    };
+    // Sorting by anything other than the DECLARED order leaves the streaming
+    // path (`resolveListMode`), so the list stops updating itself. That is a
+    // deliberate cost — a live listener on an unindexed sort is a persistent
+    // watch over a full collection scan — but it is invisible: the rows simply
+    // stop moving. Say it once, the first time it happens on this screen.
+    //
+    // Only on the TRANSITION out of live, which is self-limiting: the first such
+    // sort makes the table static, so every click after it fails this guard and
+    // stays quiet. No "already shown" flag is needed — one was written here
+    // first, and a mutation test proved it could be deleted without changing any
+    // behaviour, because `transportIsLive` had already done its job.
+    const leavesLive =
+      transportIsLive &&
+      JSON.stringify([{ field: next.field, direction: next.direction }]) !== declaredOrderBySerial;
+    if (leavesLive) {
+      notifications.show({
+        color: 'yellow',
+        title: 'Ordenação personalizada',
+        message:
+          'A lista deixa de atualizar sozinha enquanto esta ordenação estiver ativa. ' +
+          'Limpe a ordenação para voltar ao tempo real.',
+      });
+    }
+    setSort(next);
   }
 
   // --- Data source selection ----------------------------------------------
