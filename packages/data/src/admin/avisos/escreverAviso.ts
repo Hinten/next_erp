@@ -72,6 +72,43 @@ export type ResultadoAviso =
 const MAX_TENTATIVAS_PRECONDICAO = 3;
 
 /**
+ * The fields this producer actually stated, and only those.
+ *
+ * ⚠️ **An absent optional means "I do not know", never "set it to null".** One
+ * aviso has several producers by design, and they know different things: the
+ * weekly `sweepShopeeAuthorizationExpiry` knows the expiry window and carries no
+ * delivery clock; Shopee's `push 12` describes the same expiry and does carry
+ * one, plus a provider `motivo` and a deep link. Writing a fixed shape on every
+ * update would let whoever writes second erase what the other stored.
+ *
+ * For {@link PlanoAviso.relogioEvento} that is not merely lossy, it is a
+ * correctness hole: nulling the stored watermark makes the tier-2 guard's
+ * `armazenado.relogioEvento != null` test false forever, so the NEXT stale
+ * redelivery is applied instead of dropped — it bumps `ocorrencias`, re-applies
+ * its outdated payload, and can reopen an aviso a resolver already closed, with
+ * a fresh `criadoEm` that re-alerts the operator about a fixed problem. Root
+ * `CLAUDE.md` rule 7 warns that a watermark never advanced is a guard that never
+ * rejects; a watermark that is RESET is worse.
+ *
+ * To clear a field deliberately, pass `null` explicitly — that is preserved.
+ */
+function camposInformados(plano: PlanoAviso): Record<string, unknown> {
+  const campos: Record<string, unknown> = {
+    tipo: plano.tipo,
+    severidade: plano.severidade,
+  };
+  if (plano.canal !== undefined) campos.canal = plano.canal;
+  if (plano.params !== undefined) campos.params = plano.params;
+  if (plano.motivo !== undefined) campos.motivo = plano.motivo;
+  if (plano.destinatarioUid !== undefined) campos.destinatarioUid = plano.destinatarioUid;
+  if (plano.urlInterna !== undefined) campos.urlInterna = plano.urlInterna;
+  if (plano.urlExterna !== undefined) campos.urlExterna = plano.urlExterna;
+  if (plano.prazo !== undefined) campos.prazo = plano.prazo;
+  if (plano.relogioEvento !== undefined) campos.relogioEvento = plano.relogioEvento;
+  return campos;
+}
+
+/**
  * Raise (or re-raise) an operator notification.
  *
  * ## Why this is not a plain `merge`
@@ -101,21 +138,20 @@ export async function escreverAviso(
   const chave = chaveDeAviso(plano);
   const ref = avisoCollection.docRef(db, {}, chave);
 
-  const base = {
-    tipo: plano.tipo,
-    severidade: plano.severidade,
-    canal: plano.canal ?? null,
-    params: plano.params ?? {},
-    motivo: plano.motivo ?? null,
-    destinatarioUid: plano.destinatarioUid ?? null,
-    urlInterna: plano.urlInterna ?? null,
-    urlExterna: plano.urlExterna ?? null,
-    prazo: plano.prazo ?? null,
-    relogioEvento: plano.relogioEvento ?? null,
-  };
+  const informados = camposInformados(plano);
 
   const novo = avisoCollection.parse({
-    ...base,
+    // A CREATE fills every optional, because the document must be complete and
+    // the Firebase SDK rejects `undefined`.
+    canal: null,
+    params: {},
+    motivo: null,
+    destinatarioUid: null,
+    urlInterna: null,
+    urlExterna: null,
+    prazo: null,
+    relogioEvento: null,
+    ...informados,
     criadoEm: deps.agoraUs,
     atualizadoEm: deps.agoraUs,
     ocorrencias: 1,
@@ -161,7 +197,8 @@ export async function escreverAviso(
 
     const reaberto = armazenado.resolvidoEm != null;
     const patch: Record<string, unknown> = {
-      ...base,
+      // ONLY the fields this producer actually supplied — see `camposInformados`.
+      ...informados,
       atualizadoEm: deps.agoraUs,
       ocorrencias: deps.increment(1),
       resolvidoEm: null,
@@ -174,13 +211,20 @@ export async function escreverAviso(
     try {
       // Raw `update`, deliberately not the handle's `merge()`: the converter
       // full-parses a patch, and `ocorrencias` here is a FieldValue sentinel,
-      // not a number. The shape is otherwise pinned by `base` above.
+      // not a number. `camposInformados` is what constrains the rest of the shape.
+      //
+      // ⚠️ `informados` is computed once, from `plano` — it carries nothing read
+      // from the document, so a precondition retry may reuse it. Everything that
+      // IS derived from the snapshot (`reaberto`, and the `criadoEm` it decides)
+      // is recomputed inside the loop, which is what the retry contract requires.
       await ref.update(patch, { lastUpdateTime: snap.updateTime });
       if (reaberto) {
-        // Validated rather than cast: this is what the row now holds, and a
-        // reopened `critico` must escalate exactly like a fresh one.
+        // Validated rather than cast: this is what the row now holds — the stored
+        // document with this producer's fields laid over it, which is exactly what
+        // the patch just wrote. A reopened `critico` escalates like a fresh one.
         const atual = avisoCollection.parse({
-          ...base,
+          ...armazenado,
+          ...informados,
           criadoEm: deps.agoraUs,
           atualizadoEm: deps.agoraUs,
           ocorrencias: armazenado.ocorrencias + 1,

@@ -149,6 +149,44 @@ describe('chaveDeAviso — what must stay DISTINCT (the near-miss half)', () => 
     expect(expirando).not.toBe(desautorizado);
   });
 
+  it('does not let a colon INSIDE a segment shift the segment boundaries', () => {
+    // The separator is the one character the fold must not leave intact: with `:`
+    // untouched, `conta='loja:123'` and `(conta='loja', entidade='123')` produce
+    // the same document id, so two unrelated operator events silently become one
+    // and `ocorrencias` reads as a plausible repeat. The intended usage already
+    // puts colons in segments (see the violation-type pair above), so this is not
+    // a contrived input.
+    const dentroDeUmSegmento = chaveDeAviso({
+      tipo: TIPO_AVISO.anuncioComViolacao,
+      conta: 'loja:123',
+    });
+    const emDoisSegmentos = chaveDeAviso({
+      tipo: TIPO_AVISO.anuncioComViolacao,
+      conta: 'loja',
+      entidade: '123',
+    });
+    expect(dentroDeUmSegmento).not.toBe(emDoisSegmentos);
+
+    const tresSegmentos = chaveDeAviso({
+      tipo: TIPO_AVISO.pedidoPrecisaDecisao,
+      conta: 'a',
+      entidade: 'b',
+      janela: 'c',
+    });
+    const doisComColon = chaveDeAviso({
+      tipo: TIPO_AVISO.pedidoPrecisaDecisao,
+      conta: 'a:b',
+      entidade: 'c',
+    });
+    expect(tresSegmentos).not.toBe(doisComColon);
+  });
+
+  it('does not let a TRAILING colon alias the same segment without one', () => {
+    const comDoisPontos = chaveDeAviso({ tipo: TIPO_AVISO.pedidoPrecisaDecisao, conta: 'a:' });
+    const sem = chaveDeAviso({ tipo: TIPO_AVISO.pedidoPrecisaDecisao, conta: 'a' });
+    expect(comDoisPontos).not.toBe(sem);
+  });
+
   it('refuses a key too long to be a document id instead of writing a broken one', () => {
     expect(() =>
       chaveDeAviso({ tipo: TIPO_AVISO.anuncioComViolacao, entidade: 'x'.repeat(1600) }),

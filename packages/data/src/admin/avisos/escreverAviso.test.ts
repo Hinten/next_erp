@@ -198,6 +198,45 @@ describe('escreverAviso — concurrency', () => {
     expect(store[PATH]?.data.atualizadoEm).toBe(AGORA_US);
   });
 
+  it('a producer with NO clock does not wipe the stored watermark', async () => {
+    // The two-producer case this module exists for: `push 12` carries a delivery
+    // clock, the weekly sweep does not. If the clock-less writer nulls the stored
+    // watermark, the guard stops rejecting anything and a stale redelivery wins —
+    // rule 7's "a watermark that is never advanced is a guard that never rejects",
+    // except reset rather than merely stale.
+    const { db, store } = makeDb();
+    await escreverAviso(db, { ...PLANO, relogioEvento: 900 }, deps);
+    await escreverAviso(db, PLANO, { ...deps, agoraUs: AGORA_US + 5 });
+
+    expect(store[PATH]?.data.relogioEvento).toBe(900);
+
+    const stale = await escreverAviso(
+      db,
+      { ...PLANO, relogioEvento: 100 },
+      {
+        ...deps,
+        agoraUs: AGORA_US + 10,
+      },
+    );
+    expect(stale.resultado).toBe('ignorado');
+  });
+
+  it('a producer that omits a field does not blank what another one stored', async () => {
+    // An absent optional means "I do not know", never "set it to null". The sweep
+    // knows the expiry window; the push knows the provider reason and its deep
+    // link. Whoever writes second must not erase the other's detail.
+    const { db, store } = makeDb();
+    await escreverAviso(
+      db,
+      { ...PLANO, motivo: 'open_api_authorization_expiry', urlExterna: 'https://x' },
+      deps,
+    );
+    await escreverAviso(db, PLANO, { ...deps, agoraUs: AGORA_US + 5 });
+
+    expect(store[PATH]?.data.motivo).toBe('open_api_authorization_expiry');
+    expect(store[PATH]?.data.urlExterna).toBe('https://x');
+  });
+
   it('advances the watermark on the write that WINS', async () => {
     // A watermark that is never advanced is a guard that never rejects anything.
     const { db, store } = makeDb();

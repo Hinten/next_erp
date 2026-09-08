@@ -408,14 +408,22 @@ const MAX_BYTES_CHAVE = 1500;
  * like `documents/usuarios/abc` would otherwise turn a document id into a nested
  * path — but any control or reserved character is folded for the same reason.
  *
+ * ⚠️ **{@link SEPARADOR_CHAVE} itself is in the set, and that is the whole
+ * point.** Leaving it intact would let a colon inside a segment shift the
+ * segment boundaries: `conta: 'loja:123'` and `(conta: 'loja', entidade: '123')`
+ * would join to the same string, so two unrelated operator events would collapse
+ * onto one document — one aviso lost, silently, with `ocorrencias` reading as a
+ * plausible repeat. Colons in segments are not hypothetical: a violation key is
+ * `item-9:BANNED` and an ISO instant in `janela` carries them too.
+ *
  * ⚠️ This is an equivalence fold: two inputs differing only in folded characters
- * produce the SAME aviso. That is intended for `a/b` vs `a:b` shapes, and pinned
- * both ways in `aviso.test.ts` — a pair that must collapse AND a near-miss that
- * must stay distinct.
+ * produce the SAME aviso — `a/b`, `a:b` and `a_b` are one key. That is the
+ * accepted cost, and `aviso.test.ts` pins it both ways: pairs that must collapse
+ * AND near-misses that must stay distinct.
  */
 function segmentoChave(valor: string | number): string {
   return String(valor)
-    .replace(/[/\\.#[\]]/g, '_')
+    .replace(/[/\\.#[\]:]/g, '_')
     .replace(/\s+/g, '_')
     .trim();
 }
