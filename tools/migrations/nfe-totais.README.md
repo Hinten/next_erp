@@ -69,6 +69,26 @@ does **not** reduce that bill (the document is read either way); it keeps
 `xml_assinado`, `xml_epec_proc` and `infNFe` — three more whole XMLs — off the
 wire and out of the process, which is why the page size is only 100.
 
+## ⚠️ What `--report-only` also measures, and cannot fix
+
+This is the **only** full walk of `collectionGroup('nfev4')` that exists, and
+the projection does not change the Enterprise bill (the document is read either
+way), so the report pass also counts two gaps that decide whether the monthly
+apuração can work at all. It counts them among **approved notes carrying an
+XML** — the population the apuração actually reads — and writes neither field.
+
+| gap                   | what it does                                                                                                                                                                                                                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **no `filialId`**     | Since #1546 these no longer vanish: they land in `notasIndeterminadas` and **block the rate for every filial**. The question is no longer "will they disappear" but "how many are there" — if the count is large, nothing publishes until someone deals with them. |
+| **no `data_emissao`** | A `null` fails any range, so the note is in **no competência at all**, this window or another — and the control aggregate cannot see it either, because the control uses the same range. This is the one gap that is still silent.                                 |
+
+`nfeSchema` marks `filialId` `.nullable().optional()` explicitly for
+read-tolerance of legacy documents, and the imported corpus _is_ those
+documents. **Read this count before scheduling the window**, not after.
+
+Filling either field is a different migration: `filialId` has to come from the
+parent pedido (this sweep never reads one) and `data_emissao` from the XML.
+
 ## Running it
 
 ```bash

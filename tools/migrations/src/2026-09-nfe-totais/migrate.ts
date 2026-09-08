@@ -13,7 +13,12 @@ import {
   type MigrationSummary,
   runMigration,
 } from '../runner';
-import { planejarTotais, type MotivoGravar, type MotivoPular } from './transform';
+import {
+  lacunasDeAtribuicao,
+  planejarTotais,
+  type MotivoGravar,
+  type MotivoPular,
+} from './transform';
 
 /**
  * Backfill: dar a toda NF-e autorizada o bloco `totais` que a emissão passou a
@@ -64,8 +69,13 @@ const PAGE_SIZE = 100;
  * documento é lido de qualquer jeito; o que economiza é rede e memória. E é
  * seguro só porque o write é `update` de UM campo: gravar um documento lido pela
  * metade com `set` apagaria tudo que a projeção deixou de fora.
+ *
+ * ⚠️ `estado`, `filialId` e `data_emissao` não entram na DECISÃO — entram na
+ * MEDIÇÃO (`lacunasDeAtribuicao`). Esta é a única varredura completa do grupo
+ * que existe, e como a projeção não muda a conta, medir as duas lacunas de
+ * atribuição aqui é de graça e não é possível em nenhum outro lugar.
  */
-const CAMPOS = ['xml_nfe_proc', 'totais'] as const;
+const CAMPOS = ['xml_nfe_proc', 'totais', 'estado', 'filialId', 'data_emissao'] as const;
 
 /** Pagina por chave de documento — cursor estável, memória limitada. */
 async function* pagesByDocId(base: Query): AsyncGenerator<QueryDocumentSnapshot<DocumentData>[]> {
@@ -112,15 +122,29 @@ function fonte(ctx: MigrationContext): Query {
 async function runReport(ctx: MigrationContext): Promise<MigrationSummary> {
   const veredito = new Map<Motivo, number>();
   let docsScanned = 0;
+  let semFilial = 0;
+  let semDataEmissao = 0;
 
   for await (const docs of pagesByDocId(fonte(ctx))) {
     for (const doc of docs) {
       docsScanned += 1;
-      conta(veredito, planejarTotais(doc.data(), extrairTotaisNFe).motivo);
+      const dados = doc.data();
+      conta(veredito, planejarTotais(dados, extrairTotaisNFe).motivo);
+      const lacunas = lacunasDeAtribuicao(dados);
+      if (lacunas.semFilial) semFilial += 1;
+      if (lacunas.semDataEmissao) semDataEmissao += 1;
     }
   }
 
-  log([`[nfe-totais] ${docsScanned} NF-e no grupo`, ...notas(veredito)].join('\n'));
+  log(
+    [
+      `[nfe-totais] ${docsScanned} NF-e no grupo`,
+      ...notas(veredito),
+      '  lacunas de atribuição (entre as APROVADAS com XML) — ver o runbook:',
+      `    sem filialId  ${String(semFilial).padStart(8)}  bloqueia a alíquota de TODAS as filiais`,
+      `    sem data_emissao ${String(semDataEmissao).padStart(5)}  fora de toda competência, e sem contador`,
+    ].join('\n'),
+  );
   return { docsScanned, docsChanged: 0 };
 }
 
@@ -135,7 +159,8 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
   for await (const docs of pagesByDocId(fonte(ctx))) {
     for (const doc of docs) {
       docsScanned += 1;
-      const plano = planejarTotais(doc.data(), extrairTotaisNFe);
+      const dados = doc.data();
+      const plano = planejarTotais(dados, extrairTotaisNFe);
       conta(veredito, plano.motivo);
 
       if (plano.acao === 'pular') {
@@ -150,7 +175,14 @@ async function run(ctx: MigrationContext): Promise<MigrationSummary> {
         continue;
       }
 
-      ctx.sink.change(doc.ref.path, 'totais', plano.motivo, plano.totais);
+      // ⚠️ `from` é o valor ANTERIOR — o contrato do `ChangeSink`, e aqui ele é
+      // a única coisa que registra o bloco que está sendo sobrescrito. Num
+      // `divergente` esse bloco NÃO é reproduzível a partir do XML: ele saiu de
+      // um parser mais velho, que é a própria definição de divergente. A
+      // passada autoritativa roda dentro da janela e o write é irreversível,
+      // então o JSONL é o único artefato que responde depois "o que a fatia 1
+      // tinha gravado nestas notas?". O motivo vai no rótulo do campo.
+      ctx.sink.change(doc.ref.path, `totais (${plano.motivo})`, dados.totais ?? null, plano.totais);
       await ctx.writer.update(doc.ref, { totais: plano.totais });
       docsChanged += 1;
     }

@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { extrairTotaisNFe } from '@delfrance/integrations-nfe/http-provider';
 import { nfeTotaisSchema, type NFeTotais } from '@delfrance/schemas';
 
-import { planejarTotais, totaisIguais } from './transform';
+import { lacunasDeAtribuicao, planejarTotais, totaisIguais } from './transform';
 
 /** Um `<nfeProc>` mínimo, mas com a mesma forma do documento real. */
 function nfeProc(opts: { tpNF?: string; finNFe?: string; total?: Record<string, string> }): string {
@@ -157,5 +157,55 @@ describe('totaisIguais', () => {
     expect(totaisIguais(null, TOTAIS)).toBe(false);
     expect(totaisIguais('totais', TOTAIS)).toBe(false);
     expect(totaisIguais(42, TOTAIS)).toBe(false);
+  });
+});
+
+describe('lacunasDeAtribuicao — measured here, fixed nowhere', () => {
+  const aprovada = { estado: 'a', xml_nfe_proc: XML };
+
+  it('an approved note carrying both fields has no gap', () => {
+    expect(
+      lacunasDeAtribuicao({ ...aprovada, filialId: 'f1', data_emissao: 1_757_000_000_000 }),
+    ).toEqual({ semFilial: false, semDataEmissao: false });
+  });
+
+  it('⚠️ no filialId — since #1546 this BLOCKS every filial, so its SIZE decides the window', () => {
+    // `nfeSchema` marks the field `.nullable().optional()` explicitly for
+    // read-tolerance of legacy docs, and the imported corpus is exactly those.
+    // If this count is in the thousands, no rate publishes anywhere until
+    // someone deals with them — far better known before the window than after.
+    const r = lacunasDeAtribuicao({ ...aprovada, data_emissao: 1_757_000_000_000 });
+    expect(r.semFilial).toBe(true);
+    expect(lacunasDeAtribuicao({ ...aprovada, filialId: null }).semFilial).toBe(true);
+    expect(lacunasDeAtribuicao({ ...aprovada, filialId: '' }).semFilial).toBe(true);
+  });
+
+  it('⚠️ no data_emissao — the one gap that is still silent', () => {
+    // A null fails any range, so the note is in no competência at all, and the
+    // control aggregate cannot see it either: the control uses the same range.
+    const r = lacunasDeAtribuicao({ ...aprovada, filialId: 'f1' });
+    expect(r.semDataEmissao).toBe(true);
+    expect(
+      lacunasDeAtribuicao({ ...aprovada, filialId: 'f1', data_emissao: null }).semDataEmissao,
+    ).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: only APPROVED notes with an XML count', () => {
+    // A cancelled or never-authorized note has no revenue to lose. Counting it
+    // would inflate the number someone uses to decide whether the window can
+    // run — the opposite of what this measurement is for.
+    expect(lacunasDeAtribuicao({ estado: 'c', xml_nfe_proc: XML })).toEqual({
+      semFilial: false,
+      semDataEmissao: false,
+    });
+    expect(lacunasDeAtribuicao({ estado: 'a', xml_nfe_proc: null })).toEqual({
+      semFilial: false,
+      semDataEmissao: false,
+    });
+    expect(lacunasDeAtribuicao({})).toEqual({ semFilial: false, semDataEmissao: false });
+  });
+
+  it('both gaps can be true on the same note', () => {
+    expect(lacunasDeAtribuicao(aprovada)).toEqual({ semFilial: true, semDataEmissao: true });
   });
 });

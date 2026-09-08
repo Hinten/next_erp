@@ -12,6 +12,7 @@
  * divergência aqui seria invisível: o número continua saindo, só sai errado.
  */
 import {
+  ESTADO_NFE,
   nfeTotaisRtcSchema,
   nfeTotaisSchema,
   type NFeTotais,
@@ -108,4 +109,53 @@ export function planejarTotais(
   if (armazenado === null) return { acao: 'gravar', motivo: 'ausente', totais: calculado };
   if (totaisIguais(armazenado, calculado)) return { acao: 'pular', motivo: 'ja-igual' };
   return { acao: 'gravar', motivo: 'divergente', totais: calculado };
+}
+
+/**
+ * As duas lacunas que fazem uma nota APROVADA sair da apuração sem que ninguém
+ * a some — medidas, nunca corrigidas, por esta passada.
+ *
+ * A apuração lê a janela com `estado == aprovada` e um range em `data_emissao`,
+ * e atribui o resultado por `filialId`. Os dois campos são tolerantes no
+ * `nfeSchema` — `filialId` é `.nullable().optional()` explicitamente por causa
+ * do documento legado, e `data_emissao` é `.nullable()` — e cada ausência tem
+ * um efeito diferente:
+ *
+ * - **sem `filialId`**: desde o #1546 a nota já não some — ela vira
+ *   `notasIndeterminadas` e BLOQUEIA a publicação da alíquota. O que muda é a
+ *   pergunta: não é mais "vai sumir?", é "quantas são?". Se forem milhares,
+ *   nenhuma filial publica alíquota nenhuma até que alguém as trate, e é muito
+ *   melhor saber disso ANTES da janela de migração do que no dia seguinte.
+ * - **sem `data_emissao`**: um `null` reprova qualquer range, então a nota não
+ *   está em competência nenhuma — nem nesta janela, nem em outra. Ela não é
+ *   contada em lugar algum, e nem o controle a alcança, porque o controle
+ *   também usa o range. É a única lacuna que continua silenciosa.
+ *
+ * ⚠️ Esta passada NÃO escreve nenhum dos dois. Preencher `filialId` exige saber
+ * de qual filial é a nota (o pedido pai sabe; esta varredura não lê pedido), e
+ * `data_emissao` teria de sair do próprio XML — as duas coisas são trabalho de
+ * outra migração. Aqui só se mede, porque esta é a única varredura completa do
+ * grupo que já existe e a medição custa uma projeção a mais.
+ */
+export interface LacunasDeAtribuicao {
+  /** Aprovada, com XML, e sem filial — bloqueia a alíquota de todas as filiais. */
+  readonly semFilial: boolean;
+  /** Aprovada, com XML, e sem data — fora de toda competência, sem contador. */
+  readonly semDataEmissao: boolean;
+}
+
+export function lacunasDeAtribuicao(dados: Record<string, unknown>): LacunasDeAtribuicao {
+  const temXml = typeof dados.xml_nfe_proc === 'string' && dados.xml_nfe_proc !== '';
+  // Só a população que a apuração lê. Uma nota cancelada ou nunca autorizada
+  // não tem receita para perder, e contá-la inflaria o número que alguém vai
+  // usar para decidir se pode rodar a janela.
+  const aprovada = dados.estado === ESTADO_NFE.aprovada;
+  if (!temXml || !aprovada) return { semFilial: false, semDataEmissao: false };
+
+  const filialId = dados.filialId;
+  const dataEmissao = dados.data_emissao;
+  return {
+    semFilial: typeof filialId !== 'string' || filialId === '',
+    semDataEmissao: typeof dataEmissao !== 'number' || !Number.isFinite(dataEmissao),
+  };
 }
