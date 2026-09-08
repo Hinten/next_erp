@@ -1,12 +1,30 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { APURACAO_ESTADO } from '@delfrance/schemas';
+
+import { MantineTestProvider } from '@/lib/testing/mantine';
+
+// The panel reaches Firestore at module scope through the collection handle and
+// the client singleton; this suite is about the three QUERY STATES it renders,
+// so both are stubbed and `getDoc` is the only thing the tests steer.
+vi.mock('@/lib/auth', () => ({ usePermission: () => ({ allowed: true }) }));
+vi.mock('@/lib/firebase/client', () => ({ getFirebaseFirestore: () => ({}) }));
+vi.mock('@/lib/data/simplesNacionalConfigCollection', () => ({
+  SIMPLES_CONFIG_DOC_ID: 'default',
+  simplesNacionalConfigCollection: { docRef: () => ({}) },
+}));
+vi.mock('@/lib/fiscal/simplesConfigPort', () => ({ createSimplesConfigPort: () => ({}) }));
+const getDoc = vi.hoisted(() => vi.fn());
+vi.mock('firebase/firestore', () => ({ getDoc }));
 
 import {
   aliquotaParaCampo,
   campoParaAliquota,
   descreverEstado,
   formatAliquota,
+  SimplesNacionalPanel,
 } from './SimplesNacionalPanel';
 
 describe('formatAliquota', () => {
@@ -138,5 +156,80 @@ describe('aliquotaParaCampo / campoParaAliquota', () => {
     // digit coarser would report a real edit as "nothing changed".
     expect(campoParaAliquota(6.728)).not.toBe(campoParaAliquota(6.7281));
     expect(aliquotaParaCampo(0.06728)).not.toBe(aliquotaParaCampo(0.067281));
+  });
+});
+
+/**
+ * ⚠️ These three replace an e2e assertion that could not survive: the panel's
+ * read needs Firestore rules that this change GENERATES and a human DEPLOYS, so
+ * on staging it is denied and the panel renders its error alert. That made the
+ * old assertion a claim about a deployment state (`apps/web/CLAUDE.md` rule 8) —
+ * green the day the rules ship, red on every PR until then. Here the read is the
+ * test's own to decide, so all three states are reachable deterministically.
+ */
+describe('SimplesNacionalPanel — the three query states stay distinct', () => {
+  function renderPanel() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <MantineTestProvider>
+        <QueryClientProvider client={client}>
+          <SimplesNacionalPanel filialId="f1" />
+        </QueryClientProvider>
+      </MantineTestProvider>,
+    );
+  }
+
+  it('a MISSING document offers to create one, and shows no apuração badge', () => {
+    // Never apurada ⇒ no state alert at all. An invented badge would imply a run
+    // that never happened.
+    getDoc.mockResolvedValueOnce({ exists: () => false });
+    renderPanel();
+    return waitFor(() => {
+      expect(screen.getByText(/simples nacional ainda não configurado/i)).toBeTruthy();
+      expect(screen.getByRole('button', { name: /criar configuração/i })).toBeTruthy();
+      expect(screen.queryByText(/alíquota vigente/i)).toBeNull();
+      expect(screen.queryByText(/apuração incompleta/i)).toBeNull();
+    });
+  });
+
+  it('a DENIED read reads as a load failure, never as "not configured"', () => {
+    // The distinction is the whole point: "no document" invites a create, while
+    // "could not read" must not — creating over a document you were not allowed
+    // to see is how one of two rate configs gets discarded silently.
+    getDoc.mockRejectedValueOnce(new Error('Missing or insufficient permissions.'));
+    renderPanel();
+    return waitFor(() => {
+      expect(
+        screen.getByText(/falha ao carregar a configuração do simples nacional/i),
+      ).toBeTruthy();
+      expect(screen.queryByText(/ainda não configurado/i)).toBeNull();
+      expect(screen.queryByRole('button', { name: /criar configuração/i })).toBeNull();
+    });
+  });
+
+  it('an EXISTING document shows the apuração and offers to save, not to create', async () => {
+    getDoc.mockResolvedValueOnce({
+      exists: () => true,
+      data: () => ({
+        anexo: 'I',
+        aliquotaDeclarada: 0.06728,
+        recalculoAutomatico: true,
+        rbt12: 1_000_000,
+        faixa: 4,
+        aliquotaEfetiva: 0.0891,
+        competencia: '2026-08',
+        estadoApuracao: APURACAO_ESTADO.vigente,
+        notasIlegiveis: 0,
+        calculadoEm: null,
+        filiaisConsolidadas: [],
+      }),
+    });
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^salvar$/i })).toBeTruthy();
+    });
+    expect(screen.queryByText(/ainda não configurado/i)).toBeNull();
+    expect(screen.getByText(/alíquota vigente/i)).toBeTruthy();
+    expect(screen.getByText('2026-08')).toBeTruthy();
   });
 });
