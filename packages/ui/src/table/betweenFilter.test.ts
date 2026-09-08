@@ -76,6 +76,26 @@ describe('between — URL round trip', () => {
     expect(roundTrip({ op: 'between', value: null, valueTo: null }, criacao)).toBeUndefined();
   });
 
+  it('DROPS the filter when either bound is unreadable, rather than widening it', () => {
+    // The failure this rules out is not a crash, it is a SILENT WIDENING:
+    // collapsing "unreadable" onto the same `null` that means "left open" turns
+    // `between:xyz..200` into an unbounded-below "até 200" — more rows than were
+    // asked for, behind a chip that confidently reads `Criação: até <date>`.
+    //
+    // The scalar ladder drops the whole filter on an unreadable value; this
+    // branch has to match it rather than merely claim to.
+    const drop = (raw: string) =>
+      parseFiltersFromParams(new URLSearchParams(`criacao=${raw}`), [criacao]).criacao;
+
+    expect(drop('between:xyz..200'), 'unreadable lower bound').toBeUndefined();
+    expect(drop('between:100..xyz'), 'unreadable upper bound').toBeUndefined();
+    expect(drop('between:xyz..zyx'), 'both unreadable').toBeUndefined();
+
+    // An intentionally OPEN side still round-trips — that is the distinction.
+    expect(drop('between:100..')).toEqual({ op: 'between', value: 100, valueTo: null });
+    expect(drop('between:..200')).toEqual({ op: 'between', value: null, valueTo: 200 });
+  });
+
   it('does not throw on a hand-mangled link', () => {
     // Runs from a useState initializer, so a throw here takes down the whole
     // TableView subtree during render.

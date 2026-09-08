@@ -101,7 +101,15 @@ export function parseFiltersFromParams(
       if (dot < 0) continue;
       const loRaw = rawValue.slice(0, dot);
       const hiRaw = rawValue.slice(dot + 2);
-      const coerce = (s: string): number | string | null => {
+      // ⚠️ `null` and UNREADABLE are different answers and must not share a
+      // representation. `null` means "this side was intentionally left open";
+      // `undefined` means "this side was mangled". Collapsing them — which an
+      // earlier revision did — turns `between:xyz..200` into an unbounded-below
+      // "até 200": MORE rows than were asked for, behind a chip that
+      // confidently reads `Criação: até 08/09/2026`. The scalar ladder below
+      // drops the whole filter on an unreadable value (`Number.isNaN` →
+      // `continue`), and this branch has to match it rather than merely say so.
+      const coerce = (s: string): number | string | null | undefined => {
         if (s === '') return null;
         if (
           descriptor.kind === 'number' ||
@@ -110,13 +118,15 @@ export function parseFiltersFromParams(
           descriptor.kind === 'datetime'
         ) {
           const n = Number(s);
-          return Number.isNaN(n) ? null : n;
+          return Number.isNaN(n) ? undefined : n;
         }
         return s;
       };
       const lo = coerce(loRaw);
       const hi = coerce(hiRaw);
-      // A range with neither bound is not a filter. One bound is legitimate —
+      // Either bound unreadable ⇒ drop the whole filter, like the scalar ladder.
+      if (lo === undefined || hi === undefined) continue;
+      // A range with neither bound is not a filter. ONE bound is legitimate —
       // `expandColumnFilter` emits the single predicate it has.
       if (lo === null && hi === null) continue;
       out[key] = { op, value: lo, valueTo: hi };

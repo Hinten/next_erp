@@ -867,9 +867,32 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [serverFiltersSerial],
   );
   const rangeForcedOrderBy = rangeFilterField
-    ? { field: rangeFilterField, direction: 'desc' as const }
+    ? {
+        field: rangeFilterField,
+        // The range field must LEAD the orderBy; its direction is free, and both
+        // are index-legal. So a header click on that column still flips it —
+        // otherwise the one sort that IS legal here would be the one the
+        // operator could not reach, and the arrow would sit on a control that
+        // does nothing.
+        direction: sort?.field === rangeFilterField ? sort.direction : ('desc' as const),
+      }
     : undefined;
-  const resolvedForcedOrderBy = forcedOrderBy ?? rangeForcedOrderBy ?? searchForcedOrderBy;
+  /**
+   * ⚠️ Search outranks a column range, and the order of these three is the whole
+   * point.
+   *
+   * `/produtos`' search emits a `nome` PREFIX RANGE and forces `nome asc` to
+   * keep it leading — its docstring says that leaving another sort in place
+   * "silently stop[s] using `produtos(paiId, nome)`, turning the seek this
+   * search exists to be into the full scan". A column range on any datetime
+   * column (`ultimaModificacao` is one, and is a declared produtos column) is
+   * therefore the SECOND inequality, and the second one is a post-filter either
+   * way — so the lead belongs to the search, which has an index built for it.
+   *
+   * Ranked the other way round, typing in the search box while a date range was
+   * open silently demoted the search's own range to a post-filter and scanned.
+   */
+  const resolvedForcedOrderBy = forcedOrderBy ?? searchForcedOrderBy ?? rangeForcedOrderBy;
   const forcedSort: SortState | undefined = resolvedForcedOrderBy
     ? {
         field: resolvedForcedOrderBy.field,
