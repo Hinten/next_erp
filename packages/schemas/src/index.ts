@@ -685,6 +685,10 @@ export {
   ESTADOS_FINAIS_NFE,
   isEstadoFinalNFe,
   CHAVE_NFE_REGEX,
+  nfeTotaisSchema,
+  nfeTotaisRtcSchema,
+  type NFeTotais,
+  type NFeTotaisRtc,
   type NotaFiscalEletronica,
   type EstadoNFe,
 } from './nfe';
