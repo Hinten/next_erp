@@ -104,16 +104,19 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expect(page.getByRole('heading', { name: 'Nova filial' })).toBeVisible();
   });
 
-  test('shows the save-first hints on the new-filial NFe + certificado tabs', async ({ page }) => {
+  test('shows the save-first hints on the new-filial id-bound tabs', async ({ page }) => {
     await page.goto('/configuracoes/filiais/novo');
-    // Both the NFe config and the certificado upload need a saved filial; the
-    // create page shows a save-first hint on each. They share the same alert
-    // TITLE ("Salve a filial primeiro"), so assert each tab's UNIQUE body text
-    // to avoid a strict-mode collision across the kept-mounted panels.
+    // The NFe config, the certificado upload and the Simples Nacional config
+    // all need a saved filial; the create page shows a save-first hint on each.
+    // They share the same alert TITLE ("Salve a filial primeiro"), so assert
+    // each tab's UNIQUE body text to avoid a strict-mode collision across the
+    // kept-mounted panels.
     await page.getByRole('tab', { name: 'Configurações NFe' }).click();
     await expect(page.getByText(/a configuração de nf-e/i)).toBeVisible();
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
     await expect(page.getByText(/o envio do certificado digital a1/i)).toBeVisible();
+    await page.getByRole('tab', { name: 'Simples Nacional' }).click();
+    await expect(page.getByText(/a configuração do simples nacional/i)).toBeVisible();
   });
 
   test('creates a new filial with a sede address', async ({ page }) => {
@@ -202,6 +205,12 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
     await expect(page.getByText(/sem certificado/i)).toBeVisible();
     await expect(page.getByText(/formato \.pfx ou \.p12/i)).toBeVisible();
+    // The Simples tab hosts the fiscal-regime config. A fixture filial has no
+    // `simplesnacional/default`, so it offers to create one — and, having never
+    // been apurada, shows no state badge rather than an invented one.
+    await page.getByRole('tab', { name: 'Simples Nacional' }).click();
+    await expect(page.getByText(/simples nacional ainda não configurado/i)).toBeVisible();
+    await expect(page.getByRole('button', { name: /criar configuração/i })).toBeVisible();
   });
 
   test('deletes a filial through the typed-confirm modal', async ({ page }) => {
