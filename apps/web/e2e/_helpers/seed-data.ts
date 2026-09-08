@@ -4106,6 +4106,18 @@ export async function cleanupAvisos(ids: string[]): Promise<void> {
  * already read and every assertion would pass vacuously.
  */
 export async function resetAvisosLeitura(uid: string): Promise<void> {
+  // Refuse an empty uid loudly. Firestore's own error for `.doc('')` is
+  // "Value for argument \"documentPath\" is not a valid resource path", which
+  // says nothing about WHERE the uid went missing — and that is precisely how
+  // this helper first failed, masking the real cause (an unset `E2E_SU_EMAIL`
+  // two frames up).
+  if (!uid) {
+    throw new Error(
+      'resetAvisosLeitura: empty uid. The signed-in identity in the e2e lanes is ' +
+        'the ephemeral test user from `e2eUserEmail()`, not the SU — `E2E_SU_EMAIL` ' +
+        'is only set for the `configuracoes` project.',
+    );
+  }
   await db().collection('avisosLeitura').doc(uid).delete();
 }
 

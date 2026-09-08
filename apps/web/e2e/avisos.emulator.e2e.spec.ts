@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { getAuth } from 'firebase-admin/auth';
 import { getApp } from '@delfrance/test-fixtures';
-import { E2E_SU_EMAIL } from './_helpers/auth';
+import { e2eUserEmail } from './_helpers/run-id';
 import {
   cleanupAvisos,
   e2ePrefix,
@@ -23,22 +23,29 @@ import {
 test.describe.serial('Avisos — a caixa de avisos do operador', () => {
   const prefix = e2ePrefix('avisos');
   let ids: string[] = [];
-  let suUid = '';
+  let e2eUid = '';
 
   test.beforeAll(async () => {
-    const user = await getAuth(getApp()).getUserByEmail(E2E_SU_EMAIL);
-    suUid = user.uid;
+    // The signed-in identity here is the EPHEMERAL test user minted per run by
+    // `global-setup.ts`, not the SU: `E2E_SU_EMAIL` is only set for the
+    // `configuracoes` project and is empty in this lane, which is exactly how the
+    // first run of this spec died. Same idiom as `pedidos-estado.vendas.e2e.spec.ts`.
+    const user = await getAuth(getApp()).getUserByEmail(e2eUserEmail());
+    e2eUid = user.uid;
     // A previous run left this operator's watermark behind; without the reset
     // everything would already read as read and every assertion below would pass
     // for the wrong reason.
-    await resetAvisosLeitura(suUid);
+    await resetAvisosLeitura(e2eUid);
     const seeded = await seedAvisos(prefix);
     ids = seeded.ids;
   });
 
   test.afterAll(async () => {
     await cleanupAvisos(ids);
-    await resetAvisosLeitura(suUid);
+    // Only when `beforeAll` got far enough to resolve it. Without the guard a
+    // failed setup reports TWICE — once for the real cause, once for the empty
+    // uid here — and the second one is the louder, more misleading of the two.
+    if (e2eUid) await resetAvisosLeitura(e2eUid);
   });
 
   test('mostra apenas os avisos endereçados a este operador', async ({ page }) => {
