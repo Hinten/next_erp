@@ -385,7 +385,12 @@ export const metodoPagamentoSchema = z.object({
   user_id: z.number().int().nullable().default(null),
   dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
   // Same µs unit as `dataCadastro` — stamped by `saveRecord` on every write.
-  ultimaModificacao: microsSinceEpoch('Última modificação').nullable().optional(),
+  // `.default(null)`, never a bare `.optional()`: the TableView update-
+  // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+  // which EXCLUDES documents missing the key — so a dropped key hides the
+  // row from the staleness check, silently. Pinned by
+  // `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
 });
 export type MetodoPagamento = z.infer<typeof metodoPagamentoSchema>;
 

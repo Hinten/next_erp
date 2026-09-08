@@ -13,6 +13,7 @@ import {
   shopeeRedirectUri,
   shopeeSandbox,
   shopeeStateSecret,
+  shopeeVariationsPath,
   webBase,
 } from './env';
 
@@ -24,6 +25,7 @@ beforeEach(() => {
   vi.stubEnv('SHOPEE_PUBLIC_URL', '');
   vi.stubEnv('SHOPEE_API_HOST', '');
   vi.stubEnv('SHOPEE_AUTH_HOST', '');
+  vi.stubEnv('SHOPEE_VARIATIONS_PATH', '');
   vi.stubEnv('WEB_APP_URL', '');
 });
 
@@ -125,6 +127,38 @@ describe('shopeeStateSecret', () => {
   });
 });
 
+describe('shopeeVariationsPath', () => {
+  it('is null when the variable is not set at all', () => {
+    vi.stubEnv('SHOPEE_VARIATIONS_PATH', undefined);
+    expect(shopeeVariationsPath()).toBeNull();
+  });
+
+  it('is null for a blank value, so the package keeps its default path', () => {
+    // A `??` here would pass '' to the client as an override, and the path sits
+    // INSIDE the HMAC base string — the symptom would be `error_sign` on every
+    // `get_variations` call, reading exactly like a bad partner key.
+    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '   ');
+    expect(shopeeVariationsPath()).toBeNull();
+  });
+
+  it('passes a configured path through untouched, shape and all', () => {
+    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '  /api/v2/product/get_variation_tree  ');
+    expect(shopeeVariationsPath()).toBe('/api/v2/product/get_variation_tree');
+  });
+
+  it.each(['api/v2/product/get_variations', 'https://partner.shopeemobile.com/api/v2/x', '/x?a=1'])(
+    "does NOT validate the shape of %j — that is the package's job",
+    (raw) => {
+      // The near miss: every one of these is REJECTED downstream by
+      // `normalizeApiPath`, which raises a ShopeeConfigError naming this
+      // variable. Re-checking them here would be a second copy of that rule,
+      // drifting, and only for callers who came through apps/shopee.
+      vi.stubEnv('SHOPEE_VARIATIONS_PATH', raw);
+      expect(shopeeVariationsPath()).toBe(raw);
+    },
+  );
+});
+
 describe('shopeeConfig', () => {
   it('parses a valid partner id and carries the resolved hosts', () => {
     const config = shopeeConfig();
@@ -133,6 +167,15 @@ describe('shopeeConfig', () => {
     expect(config.sandbox).toBe(false);
     expect(config.hosts.apiHost).toBe(SHOPEE_PROD_API_HOST);
     expect(config.redirectUri).toBe('http://localhost:3009/api/oauth/shopee/callback');
+    expect(config.variationsPath).toBeNull();
+  });
+
+  it('carries the variations path override when one is configured', () => {
+    // The pair for the line above: `null` is the default, not the only value —
+    // an assertion that only ever saw `null` could not tell a wired-up field
+    // from one nobody fills.
+    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '/api/v2/product/get_variation_tree');
+    expect(shopeeConfig().variationsPath).toBe('/api/v2/product/get_variation_tree');
   });
 
   it.each([

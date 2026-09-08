@@ -12,7 +12,6 @@ Multi-app Turborepo monorepo split by **persona/runtime**, not by ERP domain:
 | -------------------- | ---------------------------------------------------- | --------------- | -------------------- |
 | `apps/web/`          | Internal staff (auth) + customer-facing public pages | SSR             | Firebase App Hosting |
 | `apps/integrations/` | External systems (webhooks, OAuth callbacks)         | SSR API-only    | Firebase App Hosting |
-| `apps/webchat/`      | End-visitor on tenant's site                         | Static export   | Firebase Hosting     |
 | `apps/docs/`         | Contributors / users                                 | Astro Starlight | external (TBD)       |
 
 Heavy webhook work is dispatched from `apps/integrations` to **Cloud Functions** (Node 22 + the existing Python functions).

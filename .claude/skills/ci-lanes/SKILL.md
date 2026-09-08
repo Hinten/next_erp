@@ -212,6 +212,29 @@ what the runner thinks, not that a job of that name ever existed. It queries
 `repos/{repo}/actions/runs/{run_id}/jobs` and requires every certified job to be
 present with conclusion `success`.
 
+⚠️ **That endpoint is eventually consistent with the run's own dependency graph,
+so the lock RE-READS it.** Actions releases the gate the moment every `needs:` job
+has concluded, and for a few seconds afterwards the jobs list can still serve the
+pre-conclusion snapshot. On run `34232714671` both `vendas-1 / e2e` and
+`vendas-2 / e2e` concluded `success` and `E2E gate (vendas)` went red in **4
+seconds** because `vendas-1 / e2e` read back `pending`; `gh run rerun --failed`
+cleared it with no code change. So an **unsettled** read is retried — `pending`
+(listed, not concluded), `missing` (not listed yet), or `unreachable` (the
+endpoint did not answer) — `POLL_ATTEMPTS=6` times, `POLL_SLEEP=10` seconds apart,
+**re-fetching on every pass**. A snapshot taken once outside the loop would replay
+the same stale answer, which is a retry that cannot change its own verdict.
+
+⚠️ **Nothing is forgiven, only re-read, and that line is the guard.** A real
+conclusion is terminal in this API and is never polled away: `failure`,
+`cancelled`, `skipped`, `timed_out` go red on the **first** pass with zero sleeps.
+A job still unsettled after the last attempt goes red with the verdict it always
+had. Retrying a real conclusion costs 50 silent seconds; retrying `success`, or
+raising the bound until the job times out, converts the lock into a
+wait-for-green loop — the exact vacuous certification it exists to prevent.
+Assertion 17 in `ci-lane-gates.test.js` pins the fetch-inside-the-loop, the sleep,
+the attempt cap, a 120 s ceiling, the retryable vocabulary, the surviving refusal
+and byte-identity within each variant.
+
 Verdict table:
 
 | condition | gate |
@@ -312,7 +335,8 @@ surface further in.
    one required job, no guards) or `ci-storage.yml` (two required jobs, no
    guards). The `run:` body of every gate is **byte-identical**; only the `env:`
    block and the `JOBS:` manifest differ. Copy it from a real file rather than
-   retyping 142 lines of shell, then `diff` the two bodies to prove you did.
+   retyping 200-odd lines of shell, then `diff` the two bodies to prove you did.
+   Assertion 17 already enforces that for the re-read loop specifically.
 2. Give it `--roots`, `--self`, and a unique ASCII gate name.
 3. Add it to `LANES` in `packages/config-eslint/rules/ci-lane-gates.test.js`.
    Every workflow must be in `LANES` **or** `UNGATED` with a written reason — the

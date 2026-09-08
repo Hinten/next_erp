@@ -86,8 +86,8 @@ const KNOWN_NEXT_APPS = [
   'apps/mercado-livre',
   'apps/mercado-pago',
   'apps/nfe',
+  'apps/shopee',
   'apps/web',
-  'apps/webchat',
   'apps/whatsapp',
 ];
 

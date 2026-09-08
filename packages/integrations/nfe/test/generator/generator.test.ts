@@ -23,6 +23,7 @@ const FILIAL: Filial = {
   ie: '111111111111',
   iest: null,
   imun: null,
+  ultimaModificacao: null,
   sede: {
     idExterno: null,
     logradouro: 'Rua Direita',
@@ -43,6 +44,7 @@ const FILIAL: Filial = {
     email: null,
     telefone: null,
     timestamp: null,
+    ultimaModificacao: null,
   },
 };
 
@@ -65,6 +67,7 @@ const CLIENTE: Cliente = {
   telefone_embedding: null,
   userCliente: null,
   idMercadoLivre: null,
+  ultimaModificacao: null,
 };
 
 const ENDERECO_DEST: Endereco = {
@@ -87,6 +90,7 @@ const ENDERECO_DEST: Endereco = {
   email: null,
   telefone: null,
   timestamp: null,
+  ultimaModificacao: null,
 };
 
 const OPERACAO: Operacao = {
@@ -110,6 +114,7 @@ const OPERACAO: Operacao = {
   CEST: null,
   unidade: null,
   infCpl: null,
+  ultimaModificacao: null,
 };
 
 const ITEM: GeneratorItem = {

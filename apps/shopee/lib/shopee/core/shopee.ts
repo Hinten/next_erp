@@ -210,6 +210,20 @@ export async function loadShopeeContext(
         hosts: config.hosts,
         shopId: subject.shopId,
         getAccessToken,
+        // ⚠️ The key is OMITTED when there is no override, never sent as an
+        // explicit `undefined`. Nothing enforces that today — the repo does not
+        // set `exactOptionalPropertyTypes`, and `api.ts` resolves the override
+        // with `config.paths?.getVariations === undefined`, so both spellings
+        // land on the default path. It is a convention, kept so that turning
+        // that flag on later is a compiler change and not a behaviour change.
+        // What the package DOES do with the value it receives is validate it at
+        // CONSTRUCTION: a malformed `SHOPEE_VARIATIONS_PATH` raises
+        // `ShopeeConfigError` before any call, because the path is inside the
+        // HMAC base string and a wrong one comes back as `error_sign` rather
+        // than as a 404.
+        ...(config.variationsPath !== null
+          ? { paths: { getVariations: config.variationsPath } }
+          : {}),
       });
     },
 

@@ -48,17 +48,46 @@ export async function firstRowText(page: Page): Promise<string> {
 }
 
 /**
- * Open a column's filter popover via its `Filtrar <label>` icon, type a
- * substring and apply (string columns → `contains`).
+ * The open filter popover for one column.
+ *
+ * ⚠️ Every control inside a filter popover MUST be located through this, never
+ * through `page`. Mantine's `Popover.Dropdown` carries `role="dialog"` plus
+ * `aria-labelledby` pointing at the `Filtrar <label>` trigger, so each open
+ * popover is a dialog with a UNIQUE accessible name — that is the only thing
+ * distinguishing its "Aplicar" / "Limpar" / `<label> contém` controls from
+ * identically-named controls anywhere else on the page.
+ *
+ * Page-scoped locators worked only while the column header was the sole filter
+ * surface. `ActiveFilters.tsx` already records the sibling rule for chips
+ * ("Nothing here may render a bare column label"); this is the same invariant
+ * one layer up, and it is what lets a screen grow a filter panel without
+ * reopening every call site.
+ *
+ * Every input inside renders with `withinPortal: false` (ColumnFilter.tsx), so
+ * Select listboxes and date pickers live inside this dialog too, not in a portal.
+ */
+function filterPopover(page: Page, columnLabel: string) {
+  return page.getByRole('dialog', { name: `Filtrar ${columnLabel}`, exact: true });
+}
+
+/** Open a column's filter popover via its `Filtrar <label>` icon. */
+async function openColumnFilter(page: Page, columnLabel: string) {
+  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
+  return filterPopover(page, columnLabel);
+}
+
+/**
+ * Open a column's filter popover, type a substring and apply (string columns →
+ * `contains`).
  */
 export async function applyTextFilter(
   page: Page,
   columnLabel: string,
   value: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
-  await page.getByLabel(`${columnLabel} contém`, { exact: true }).fill(value);
-  await page.getByRole('button', { name: 'Aplicar', exact: true }).click();
+  const popover = await openColumnFilter(page, columnLabel);
+  await popover.getByLabel(`${columnLabel} contém`, { exact: true }).fill(value);
+  await popover.getByRole('button', { name: 'Aplicar', exact: true }).click();
 }
 
 /**
@@ -70,26 +99,31 @@ export async function applySelectFilter(
   columnLabel: string,
   optionLabel: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
+  const popover = await openColumnFilter(page, columnLabel);
   // `getByLabel` also matches the Select's `role="listbox"` popup (same
   // `aria-labelledby`); target the combobox input explicitly.
-  await page.getByRole('combobox', { name: columnLabel, exact: true }).click();
-  await page.getByRole('option', { name: optionLabel, exact: true }).click();
+  await popover.getByRole('combobox', { name: columnLabel, exact: true }).click();
+  await popover.getByRole('option', { name: optionLabel, exact: true }).click();
 }
 
 /** Open a column's filter popover and click "Limpar". */
 export async function clearColumnFilter(page: Page, columnLabel: string): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
-  await page.getByRole('button', { name: 'Limpar', exact: true }).click();
+  const popover = await openColumnFilter(page, columnLabel);
+  await popover.getByRole('button', { name: 'Limpar', exact: true }).click();
 }
 
 /**
  * Click a column header to cycle its sort (different col → asc; same → flip).
  * Targets the header's label span by exact text — the sort `onClick` lives on
  * the wrapping group, so the click bubbles up to it.
+ *
+ * ⚠️ Scoped to `thead`. The label text is not unique on the page: a filter
+ * surface listing the same column names would make a page-scoped
+ * `getByText(label, { exact: true })` resolve to several nodes and fail
+ * Playwright strict mode on every sort call site at once.
  */
 export async function clickColumnSort(page: Page, columnLabel: string): Promise<void> {
-  await page.getByText(columnLabel, { exact: true }).click();
+  await page.locator('thead').getByText(columnLabel, { exact: true }).click();
 }
 
 /** Check the selection checkbox of the row containing `text`. */

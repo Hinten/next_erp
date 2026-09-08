@@ -76,7 +76,12 @@ export const grupoDeVariacoesSchema = z.object({
   permiteFotos: z.boolean().default(false),
   // millisecondsSinceEpoch INT (#484/#486, legacy `maybeDateTimeToJson` parity);
   // reads tolerate a stray ISO/µs value via the codec.
-  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  // `.default(null)`, never a bare `.optional()`: the TableView update-
+  // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+  // which EXCLUDES documents missing the key — so a dropped key hides the
+  // row from the staleness check, silently. Pinned by
+  // `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch().nullable().default(null),
   timestamp: millisSinceEpoch().nullable().optional(),
   variacoesIds: z.array(z.string()).default([]),
   variacoes: z.array(varianteSchema).nullable().optional(),

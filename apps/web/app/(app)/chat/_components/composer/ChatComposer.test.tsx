@@ -220,11 +220,14 @@ describe('ChatComposer — "Entrar na conversa" gate', () => {
 
 describe('ChatComposer — send capability (#817)', () => {
   /**
-   * A webchat thread. ⚠️ NOT an ML one: all three ML surfaces gained a sender
-   * (#533, #768), and this fixture has to be an origem that genuinely has none
-   * — the inert-fixture trap #813 named, hit three times in this stack.
+   * A legacy `site` thread — one imported from the old app's webchat, which was
+   * never ported (dropped 2026-09-07). ⚠️ NOT an ML one: all three ML surfaces
+   * gained a sender (#533, #768), and this fixture has to be an origem that
+   * genuinely has none — the inert-fixture trap #813 named, hit three times in
+   * this stack. `site` still qualifies, and now permanently: with no widget there
+   * is no outbound path to build, so this fixture cannot silently go inert.
    */
-  const conversaMlClaims: Conversa = conversaSchema.parse({
+  const conversaSite: Conversa = conversaSchema.parse({
     usuarios: ['op1'],
     estadoConversa: 1,
     origem: 'site',
@@ -238,7 +241,7 @@ describe('ChatComposer — send capability (#817)', () => {
     wrap(
       <ChatComposer
         conversaId="c1"
-        conversa={conversaMlClaims}
+        conversa={conversaSite}
         addOptimistic={vi.fn()}
         markOptimisticError={vi.fn()}
       />,

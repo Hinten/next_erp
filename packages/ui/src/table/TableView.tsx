@@ -269,10 +269,16 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * `getByRole('link', { name })` locator under Playwright strict mode. Adopt
    * this prop OR keep the hand-rolled link, never both.
    *
-   * ⚠️ Never give that anchor an `aria-label`. The row's accessible name is
-   * computed FROM CONTENTS, and a descendant's `aria-label` replaces its text
-   * in that computation — it would rename every row and break the
-   * `getByRole('row', { name })` locators the e2e suite is built on.
+   * ⚠️ Never give that anchor an `aria-label` for a cell that HAS text. The
+   * row's accessible name is computed FROM CONTENTS, and a descendant's
+   * `aria-label` replaces its text in that computation — it would rename every
+   * row and break the `getByRole('row', { name })` locators the e2e suite is
+   * built on. The one exception is built in below and is the inverse case: when
+   * the linked schema value is empty the cell rendered only a `—` placeholder,
+   * so there is no text to replace and the link falls back to `Abrir <id>` —
+   * without it every such row is an identical em dash in a links list. A
+   * VIRTUAL link column gets no fallback: TableView cannot tell an empty render
+   * from a deliberately terse one, so name it yourself.
    *
    * Ignored while `onRowClick` is set (that prop outranks `rowHref`, so a link
    * would navigate where the row does not) and for a row with an empty `id`
@@ -1625,7 +1631,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                   // and lands on a 404), and `onRowClick` outranking `rowHref`
                   // means a link there would go somewhere the row does not.
                   const linkHref = rowLinkColumn && !onRowClick && clickable ? href : undefined;
-                  const wrapRowLink = (key: string, content: ReactNode) =>
+                  // `emptyValue` drives the accessible-name fallback below. Only
+                  // the schema branch can supply it — a virtual column renders
+                  // arbitrary nodes and TableView cannot tell "empty" from
+                  // "deliberately terse", so a virtual link column names itself.
+                  const wrapRowLink = (key: string, content: ReactNode, emptyValue = false) =>
                     linkHref && key === rowLinkColumn ? (
                       // `draggable={false}` is required, not cosmetic: anchors
                       // are draggable by default, so without it a drag across
@@ -1648,6 +1658,20 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                         // from Firestore on mount either way.
                         prefetch={false}
                         draggable={false}
+                        // The ONLY case that may carry an `aria-label`, and it
+                        // is the inverse of the usual danger. Normally a label
+                        // here would REPLACE the cell's text in the row's
+                        // name-from-contents computation and rename every row;
+                        // when the value is empty there is no text to replace —
+                        // the default renderer emitted `—`, so without this the
+                        // link's entire accessible name is an em dash and every
+                        // such row is indistinguishable from the next in a
+                        // screen reader's links list. Nullable primaries are
+                        // ordinary here: `pedido.numero` and `cliente.nome` are
+                        // both `.nullable().default(null)`, and the app already
+                        // falls back to the id elsewhere (as does the selection
+                        // checkbox's own label just below).
+                        aria-label={emptyValue ? `Abrir ${row.id}` : undefined}
                         onClick={handleRowLinkClick}
                         style={ROW_LINK_STYLE}
                       >
@@ -1702,7 +1726,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                         const content = override?.renderCell
                           ? override.renderCell(value as never, row.data)
                           : renderCell(value, d);
-                        return <Table.Td key={d.key}>{wrapRowLink(d.key, content)}</Table.Td>;
+                        // Match what the default renderer treats as empty (it
+                        // emits `—` for null/undefined/''), plus the empty array
+                        // — `targetsChnfe` is `.default([])` and its override
+                        // renders `—` for it, so the placeholder is reached
+                        // through both paths.
+                        const emptyValue =
+                          value === null ||
+                          value === undefined ||
+                          value === '' ||
+                          (Array.isArray(value) && value.length === 0);
+                        return (
+                          <Table.Td key={d.key}>{wrapRowLink(d.key, content, emptyValue)}</Table.Td>
+                        );
                       })}
                     </Table.Tr>
                   );

@@ -205,7 +205,12 @@ export const intFreteSchema = z
     dataCadastro: millisSinceEpoch('Data de cadastro'),
     // System stamp — stamped by `saveRecord` on every write so the TableView
     // update-monitor sees edits.
-    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
+    // `.default(null)`, never a bare `.optional()`: the TableView update-
+    // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+    // which EXCLUDES documents missing the key — so a dropped key hides the
+    // row from the staleness check, silently. Pinned by
+    // `defaultQuery.sortKeyPresence.test.ts`.
+    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
 
     mapa: z.array(mapaDeIntegracoesSchema).nullable().default(null).describe('Mapa de integrações'),
     faixaCep: z.array(faixaDeCepSchema).nullable().default(null).describe('Faixas de CEP'),

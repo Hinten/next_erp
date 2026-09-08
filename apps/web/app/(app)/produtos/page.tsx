@@ -292,6 +292,15 @@ export default function ProdutosPage() {
           },
         }}
         rowHref={(id) => `/produtos/${id}/editar`}
+        // Deliberately NO `rowLinkColumn` — this is the one list screen that
+        // does not set it. `nomeColumn` above already renders its own
+        // `<Anchor component={Link}>`, so naming it here would nest anchors:
+        // invalid HTML, and two links with the same accessible name in one row
+        // break the `getByRole('link', { name, exact: true })` locators in
+        // produtos-lista / produto-variacoes / produtos-enviar-{estoque,precos}.
+        // Removing the hand-rolled anchor instead would pull the variação/kit
+        // badges inside the link and rename it. Either way the row is already
+        // keyboard-reachable, which is all the prop buys.
         selectable
         // All three operations fan out over EVERY channel a produto is listed
         // on, so the list grows with each integration rather than with each

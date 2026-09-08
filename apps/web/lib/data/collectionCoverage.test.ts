@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   ALL_DOMAINS,
+  AVISOS_LEITURA_COLLECTION_PATH,
   PRODUTO_SUBCOLLECTION_NAMES,
+  avisoMeta,
   historicoModificacaoMeta,
   historicoModificacaoPedidoMeta,
 } from '@delfrance/schemas';
@@ -39,11 +41,16 @@ const COVERED = new Set<string>([
   ...ALL_DOMAINS.map((d) => norm(d.meta.collectionPath)),
   // grupoEconomico is a hand-written EXTRA_MATCH_BLOCK in @delfrance/rules-gen.
   norm(GRUPO_ECONOMICO_COLLECTION_PATH),
+  // avisosLeitura likewise — and deliberately so: only an extra block can scope
+  // a document to `request.auth.uid`, which a `*Meta` cannot express.
+  norm(AVISOS_LEITURA_COLLECTION_PATH),
 ]);
 
 /** Identifiers used as `path:` we can't resolve statically — map the known ones. */
 const PATH_IDENTIFIERS: Record<string, string> = {
   GRUPO_ECONOMICO_COLLECTION_PATH,
+  AVISOS_LEITURA_COLLECTION_PATH,
+  'avisoMeta.collectionPath': avisoMeta.collectionPath,
   'historicoModificacaoMeta.collectionPath': historicoModificacaoMeta.collectionPath,
   'historicoModificacaoPedidoMeta.collectionPath': historicoModificacaoPedidoMeta.collectionPath,
 };

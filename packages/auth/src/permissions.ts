@@ -201,6 +201,34 @@ export const PERM = {
     read: 1n << 107n,
     write: 1n << 108n,
   },
+  // Aviso — the in-app operator notification inbox (`avisos`). Byte 14
+  // (112-114); bits 109-111 are the spare tail of byte 13 and cannot hold a
+  // three-bit domain (`incidenteResolucao` took 107-108 of that byte).
+  //
+  // A dedicated domain rather than a reused one: an aviso spans pedido, produto,
+  // integração, NF-e and pure infrastructure, so every existing bit is either
+  // too narrow (an operator holding `pedido.read` alone would miss channel
+  // avisos) or a lie about what it gates (`integracao.read` hiding an NF-e
+  // rejection). Read is the load-bearing one — the bell and the panel.
+  //
+  // ⚠️ `write`/`delete` gate NO client path today and must not: `avisoMeta` is
+  // `serverOwned`, so the generated ruleset denies every client create/update/
+  // delete outright with no `su` bypass. They exist because `resolvePermissions`
+  // requires one single PERM bit per action to emit a match block at all
+  // (`packages/rules-gen/src/claims-map.ts`), which is the same reason
+  // `cmun.write` exists on another `serverOwned` collection.
+  //
+  // ⚠️ Fail-closed for cargo-derived claims: `ALL_PERMS` is derived from `PERM`
+  // at MINT time, so no stored mask carries these bits until a cargo grants them
+  // and claims are re-minted (#173) — an ordinary operator sees an EMPTY bell,
+  // not an error, until then. Superusers hold it immediately: `SUPERUSER_MASK`
+  // is `(1n << 128n) - 1n`, an all-ones sentinel, and `114n < 128n`. That is
+  // `PERM.incidenteResolucao`'s exact shape, and #1234 is what it cost there.
+  aviso: {
+    read: 1n << 112n,
+    write: 1n << 113n,
+    delete: 1n << 114n,
+  },
 } as const;
 
 export function hasPerm(grantedClaim: string | undefined, requiredBit: bigint): boolean {
