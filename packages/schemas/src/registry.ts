@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import type { DomainSchema } from './types';
 import { cliente } from './cliente';
 import { endereco } from './endereco';
+import { historicoModificacaoCliente } from './clienteHistoricoModificacoes';
 import {
   produto,
   produtoExtraData,
@@ -40,6 +41,7 @@ import { grupoDeVariacoes } from './grupoDeVariacoes';
 import { tabelaDeMedidas } from './tabelaDeMedidas';
 import { listaDePrecos } from './listaDePrecos';
 import { operacao } from './operacao';
+import { historicoModificacaoOperacao } from './operacaoHistoricoModificacoes';
 import { motivoIncidente } from './motivoIncidente';
 import { filial } from './filial';
 import { bandeiraCartao } from './bandeiraCartao';
@@ -66,6 +68,7 @@ import { arquivo } from './storage/arquivo';
 export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   cliente,
   endereco,
+  historicoModificacaoCliente,
   produto,
   ...PRODUTO_SUBCOLLECTION_DOMAINS,
   categoria,
@@ -112,6 +115,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   tabelaDeMedidas,
   listaDePrecos,
   operacao,
+  historicoModificacaoOperacao,
   motivoIncidente,
   filial,
   bandeiraCartao,

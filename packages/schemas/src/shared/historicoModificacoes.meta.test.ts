@@ -7,10 +7,18 @@ import {
   historicoModificacaoPedido,
   historicoModificacaoPedidoMeta,
 } from '../pedido/collection/historicoModificacoes';
+import {
+  historicoModificacaoCliente,
+  historicoModificacaoClienteMeta,
+} from '../clienteHistoricoModificacoes';
+import {
+  historicoModificacaoOperacao,
+  historicoModificacaoOperacaoMeta,
+} from '../operacaoHistoricoModificacoes';
 import { historicoModificacaoSchema } from './historicoModificacoes';
 
 /**
- * The two `historicoDeModificacoes` roots share one entry schema and one
+ * The four `historicoDeModificacoes` roots share one entry schema and one
  * trigger factory, so their metas must agree on everything except the path and
  * the permission domain. A meta FACTORY would have guaranteed that — but it
  * would also have switched off `delfrance/default-query-needs-index`, which
@@ -22,6 +30,8 @@ describe('historicoDeModificacoes metas agree across roots', () => {
   const metas = [
     ['produto', historicoModificacaoMeta] as const,
     ['pedido', historicoModificacaoPedidoMeta] as const,
+    ['cliente', historicoModificacaoClienteMeta] as const,
+    ['operacao', historicoModificacaoOperacaoMeta] as const,
   ];
 
   it.each(metas)('%s: is server-owned (an audit trail no client may write)', (_name, meta) => {
@@ -36,34 +46,37 @@ describe('historicoDeModificacoes metas agree across roots', () => {
     expect(meta.noCollectionGroupRead).toBe(true);
   });
 
-  it('declares the SAME defaultQuery, so both derive the same index', () => {
-    expect(historicoModificacaoPedidoMeta.defaultQuery).toEqual(
-      historicoModificacaoMeta.defaultQuery,
-    );
-    expect(historicoModificacaoMeta.defaultQuery).toEqual({
-      orderBy: [{ field: 'timestamp', direction: 'desc' }],
-      limit: 50,
-    });
+  it('declares the SAME defaultQuery, so all four derive the same index', () => {
+    for (const [, meta] of metas) {
+      expect(meta.defaultQuery).toEqual({
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 50,
+      });
+    }
   });
 
-  it('shares one leaf name, which is what makes the single index cover both', () => {
+  it('shares one leaf name, which is what makes the single index cover all four', () => {
     const leaf = (path: string) => path.split('/').at(-1);
-    expect(leaf(historicoModificacaoPedidoMeta.collectionPath)).toBe('historicoDeModificacoes');
-    expect(leaf(historicoModificacaoMeta.collectionPath)).toBe(
-      leaf(historicoModificacaoPedidoMeta.collectionPath),
-    );
+    for (const [, meta] of metas) {
+      expect(leaf(meta.collectionPath)).toBe('historicoDeModificacoes');
+    }
   });
 
-  it('binds both bundles to the one shared entry schema', () => {
+  it('binds every bundle to the one shared entry schema', () => {
     expect(historicoModificacao.schema).toBe(historicoModificacaoSchema);
     expect(historicoModificacaoPedido.schema).toBe(historicoModificacaoSchema);
+    expect(historicoModificacaoCliente.schema).toBe(historicoModificacaoSchema);
+    expect(historicoModificacaoOperacao.schema).toBe(historicoModificacaoSchema);
   });
 
   it('scopes each root to its OWN permission domain', () => {
-    // produto byte 8, pedido byte 16 — reading a pedido's history must not
-    // require a produto claim, and must not be granted by one.
+    // produto byte 8, pedido byte 16, cliente byte 0, operacao (fiscal) byte 9 —
+    // reading one root's history must not require another root's claim, and
+    // must not be granted by one.
     expect(historicoModificacaoMeta.permissions.read).toBe(1n << 8n);
     expect(historicoModificacaoPedidoMeta.permissions.read).toBe(1n << 16n);
+    expect(historicoModificacaoClienteMeta.permissions.read).toBe(1n << 0n);
+    expect(historicoModificacaoOperacaoMeta.permissions.read).toBe(1n << 72n);
   });
 });
 

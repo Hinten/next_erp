@@ -19,6 +19,10 @@ export { onProdutoImpostoChanged } from './produtos/onProdutoImpostoChanged';
 export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
 export { onBalancoDeleted } from './estoques/onBalancoDeleted';
 export { onOperacaoDeleted } from './operacoes/onOperacaoDeleted';
+export { onOperacaoChanged } from './operacoes/registrarHistoricoOperacao';
+// Operação modification history for its covered `regras` subcollection; the
+// operação document's own entry rides `onOperacaoChanged` above.
+export { onRegraImpostoChanged } from './operacoes/onRegraImpostoChanged';
 export { onCategoriaDeleted } from './categorias/onCategoriaDeleted';
 // Same cascade, four collections, one factory — see cascadeCaroGenerico.ts.
 // `onConversaDeleted` is the budgeted one: a conversa's `mensagem` subcollection
@@ -37,6 +41,10 @@ export { onPedidoChanged } from './pedidos/registrarHistoricoPedido';
 export { onPagamentoChanged } from './pedidos/onPagamentoChanged';
 export { onIncidenteChanged } from './pedidos/onIncidenteChanged';
 export { onIncidenteBloqueioSync } from './pedidos/sincronizarBloqueioIncidente';
+export { onClienteChanged } from './clientes/registrarHistoricoCliente';
+// Cliente modification history for its covered `enderecos` subcollection; the
+// cliente document's own entry rides `onClienteChanged` above.
+export { onEnderecoChanged } from './clientes/onEnderecoChanged';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
 export {
   onPedidoEstoqueSync,
