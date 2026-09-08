@@ -21,6 +21,7 @@ const {
   whereArrayContainsSpy,
   buildQuerySpy,
   monitorRef,
+  notifyShow,
 } = vi.hoisted(() => ({
   snapState: {
     current: {
@@ -47,6 +48,7 @@ const {
   // The update-monitor drives the only refresh affordance /produtos has
   // left in its header. Stubbed so a test can raise `stale` and click it;
   // `stale: false` is what the real hook reports for every other case.
+  notifyShow: vi.fn(),
   monitorRef: { current: { stale: false, acknowledge: vi.fn() } },
 }));
 
@@ -94,6 +96,12 @@ vi.mock('@delfrance/data', async () => {
     whereOp: whereOpSpy,
     whereArrayContains: whereArrayContainsSpy,
   };
+});
+
+vi.mock('@mantine/notifications', async () => {
+  const actual =
+    await vi.importActual<typeof import('@mantine/notifications')>('@mantine/notifications');
+  return { ...actual, notifications: { show: (...args: unknown[]) => notifyShow(...args) } };
 });
 
 import { StrictMode } from 'react';
@@ -1085,6 +1093,84 @@ describe('TableView', () => {
         />,
       );
       expect(buildPipelineSpy, 'a filtered query must go back to the pipeline').toHaveBeenCalled();
+    });
+
+    it('warns that sorting stops the list updating itself', () => {
+      // The freeze is deliberate but invisible — the rows simply stop moving.
+      // The badge is the standing indicator; this is the one-time explanation
+      // of what just changed.
+      notifyShow.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Nome'));
+      expect(notifyShow).toHaveBeenCalledTimes(1);
+      expect(notifyShow.mock.calls[0]![0]).toMatchObject({ color: 'yellow' });
+    });
+
+    it('does not warn again once the list is already static', () => {
+      // Self-limiting rather than flag-limited: the first departing sort makes
+      // the table static, so every later click fails the `transportIsLive`
+      // guard. Isolated deliberately — the click here lands on `tipo:asc`, which
+      // is NOT the declared order, so the only thing suppressing the toast is
+      // that the table had already left the live path. Remove that guard and
+      // this case fires.
+      searchParamsRef.current = new URLSearchParams('sort=tipo:desc');
+      notifyShow.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Tipo'));
+      expect(notifyShow).not.toHaveBeenCalled();
+    });
+
+    it('stays silent under a caller-owned query, which is still streaming', () => {
+      // The branch where the POLICY and the TRANSPORT disagree, and it is live
+      // in production: /clientes sets `queryOverride` for a matched endereço
+      // search. `pipeline` is null there, so `transportIsLive` is TRUE and
+      // `fallbackQuery` hands the caller's query to `useSnapshot` — the rows
+      // keep streaming.
+      //
+      // Keyed on the transport, this toast fired on every header click of those
+      // results, announcing that the list had stopped updating itself while the
+      // badge beside it correctly read "Tempo real". Keyed on the policy
+      // (`listMode`, which reports `static/override` here) it stays quiet,
+      // because sorting does not change that transport at all: `fallbackQuery`
+      // returns the override and never consults `effectiveOrderBy`.
+      notifyShow.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          queryOverride={{ __q: 'caller' } as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Nome'));
+      fireEvent.click(screen.getByText('Tipo'));
+      expect(notifyShow, 'sorting an overridden query changes no transport').not.toHaveBeenCalled();
+      // And the badge must still say the truth about that list.
+      expect(screen.getByText('Tempo real')).toBeDefined();
     });
 
     it('lets the SEARCH keep the orderBy lead when a column range is also active', () => {
