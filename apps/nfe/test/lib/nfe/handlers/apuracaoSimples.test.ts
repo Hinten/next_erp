@@ -124,6 +124,17 @@ describe('estadoDaApuracao', () => {
     ).toBe('incompleta');
   });
 
+  it('⚠️ a WHOLLY unreadable window reads as incompleta, never foraDoRegime', () => {
+    // The first state a real project lands in: until the backfill runs every
+    // note is unreadable, so `rbt12` is 0, `aliquotaEfetiva` says `semReceita`
+    // and `aliquotaOk` is false. Reporting that as `foraDoRegime` sends the
+    // operator to check the company's REVENUE — and hides the note count, the
+    // one number that explains it.
+    expect(
+      estadoDaApuracao({ notasIlegiveis: 4200, recalculoAutomatico: true, aliquotaOk: false }),
+    ).toBe('incompleta');
+  });
+
   it('an RBT12 outside the regime never promotes, whatever the flags', () => {
     expect(
       estadoDaApuracao({ notasIlegiveis: 0, recalculoAutomatico: true, aliquotaOk: false }),

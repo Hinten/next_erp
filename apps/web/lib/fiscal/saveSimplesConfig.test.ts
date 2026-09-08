@@ -48,7 +48,7 @@ describe('saveSimplesConfig', () => {
     const { port, escrito } = porta(atual);
     await saveSimplesConfig(port, {
       anexo: ANEXO_SIMPLES.industria,
-      aliquotaDeclarada: null,
+      aliquotaDeclarada: undefined,
       recalculoAutomatico: null,
       baseline: atual,
     });
@@ -69,7 +69,7 @@ describe('saveSimplesConfig', () => {
 
     await saveSimplesConfig(port, {
       anexo: ANEXO_SIMPLES.industria,
-      aliquotaDeclarada: null,
+      aliquotaDeclarada: undefined,
       recalculoAutomatico: null,
       baseline: aberto,
     });
@@ -85,7 +85,7 @@ describe('saveSimplesConfig', () => {
     const { port, escrito } = porta(atual);
     await saveSimplesConfig(port, {
       anexo: null,
-      aliquotaDeclarada: null,
+      aliquotaDeclarada: undefined,
       recalculoAutomatico: true,
       baseline: atual,
     });
@@ -100,7 +100,7 @@ describe('saveSimplesConfig', () => {
       await expect(
         saveSimplesConfig(port, {
           anexo: null,
-          aliquotaDeclarada: null,
+          aliquotaDeclarada: undefined,
           recalculoAutomatico: false,
           baseline: aberto,
         }),
@@ -115,7 +115,7 @@ describe('saveSimplesConfig', () => {
       );
       await saveSimplesConfig(port, {
         anexo: null,
-        aliquotaDeclarada: null,
+        aliquotaDeclarada: undefined,
         recalculoAutomatico: true,
         baseline: aberto,
       });
@@ -150,7 +150,7 @@ describe('saveSimplesConfig', () => {
       const { port, escrito } = porta(revisado);
       await saveSimplesConfig(port, {
         anexo: null,
-        aliquotaDeclarada: null,
+        aliquotaDeclarada: undefined,
         recalculoAutomatico: false,
         baseline: revisado,
       });
@@ -202,7 +202,7 @@ describe('saveSimplesConfig', () => {
       await expect(
         saveSimplesConfig(port, {
           anexo: ANEXO_SIMPLES.comercio,
-          aliquotaDeclarada: null,
+          aliquotaDeclarada: undefined,
           recalculoAutomatico: null,
           baseline: null,
         }),
@@ -214,7 +214,7 @@ describe('saveSimplesConfig', () => {
       const { port, escrito } = porta(null);
       await saveSimplesConfig(port, {
         anexo: ANEXO_SIMPLES.industria,
-        aliquotaDeclarada: null,
+        aliquotaDeclarada: undefined,
         recalculoAutomatico: null,
         baseline: aberto,
       });
@@ -232,11 +232,85 @@ describe('saveSimplesConfig', () => {
       { now: () => AGORA, update },
       {
         anexo: ANEXO_SIMPLES.industria,
-        aliquotaDeclarada: null,
+        aliquotaDeclarada: undefined,
         recalculoAutomatico: null,
         baseline: atual,
       },
     );
     expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Clearing a rate the accountant withdrew ──────────────────────────────
+  describe('⚠️ aliquotaDeclarada is THREE-valued — undefined untouched, null cleared', () => {
+    it('CLEARS a stored rate when the operator empties the field', async () => {
+      // The #1546 review finding. `DecimalInput` emits `null` for an empty
+      // field, and `null` used to also mean "untouched", so a typed rate could
+      // never be withdrawn — the only way off one rate was another rate. The
+      // document has always modelled the absence (`.nullable()`).
+      const atual = cfg({ aliquotaDeclarada: 0.06728 });
+      const { port, escrito } = porta(atual);
+      await saveSimplesConfig(port, {
+        anexo: null,
+        aliquotaDeclarada: null,
+        recalculoAutomatico: null,
+        baseline: atual,
+      });
+      expect(escrito[0]?.aliquotaDeclarada).toBeNull();
+    });
+
+    it('⚠️ NEAR-MISS: an UNTOUCHED field leaves the stored rate exactly where it was', async () => {
+      // The other direction, and the reason the two states cannot be folded:
+      // if untouched also wrote, every save of the anexo alone would blank a
+      // rate nobody edited.
+      const atual = cfg({ aliquotaDeclarada: 0.06728 });
+      const { port, escrito } = porta(atual);
+      await saveSimplesConfig(port, {
+        anexo: ANEXO_SIMPLES.industria,
+        aliquotaDeclarada: undefined,
+        recalculoAutomatico: null,
+        baseline: atual,
+      });
+      expect(escrito[0]?.aliquotaDeclarada).toBe(0.06728);
+    });
+
+    it('a CLEAR conflicts like any other write when the stored rate moved', async () => {
+      // Clearing is an edit, so it must enter the concurrency check — an
+      // untouched field deliberately does not.
+      const aberto = cfg({ aliquotaDeclarada: 0.06728 });
+      const { port } = porta(cfg({ aliquotaDeclarada: 0.071 }));
+      await expect(
+        saveSimplesConfig(port, {
+          anexo: null,
+          aliquotaDeclarada: null,
+          recalculoAutomatico: null,
+          baseline: aberto,
+        }),
+      ).rejects.toBeInstanceOf(SimplesConfigConflictError);
+    });
+
+    it('an UNTOUCHED field raises no conflict even when the stored rate moved', async () => {
+      const aberto = cfg({ aliquotaDeclarada: 0.06728 });
+      const { port, escrito } = porta(cfg({ aliquotaDeclarada: 0.071 }));
+      await saveSimplesConfig(port, {
+        anexo: null,
+        aliquotaDeclarada: undefined,
+        recalculoAutomatico: true,
+        baseline: aberto,
+      });
+      expect(escrito[0]?.aliquotaDeclarada).toBe(0.071);
+    });
+
+    it('a first-time create with a cleared field stores null, not undefined', async () => {
+      // Firestore rejects `undefined`; the create path must land a real null.
+      const { port, escrito } = porta(null);
+      await saveSimplesConfig(port, {
+        anexo: ANEXO_SIMPLES.comercio,
+        aliquotaDeclarada: undefined,
+        recalculoAutomatico: null,
+        baseline: null,
+      });
+      expect(escrito[0]?.aliquotaDeclarada).toBeNull();
+      expect(Object.hasOwn(escrito[0]!, 'aliquotaDeclarada')).toBe(true);
+    });
   });
 });

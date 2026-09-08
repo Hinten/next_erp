@@ -175,13 +175,10 @@ export const simplesNacionalConfig = {
 export const apuracaoSimplesSchema = z.object({
   competencia: competenciaSchema,
   rbt12: z.number(),
-  receitaDoMes: z.number(),
   aliquotaEfetiva: z.number().nullable().default(null),
   faixa: z.number().int().min(1).max(6).nullable().default(null),
   anexo: anexoSimplesSchema,
   estado: apuracaoEstadoSchema,
-  /** `true` quando a RBT12 veio da regra proporcional (empresa < 12 meses). */
-  proporcional: z.boolean().default(false),
   notasContadas: z.number().int().min(0).default(0),
   notasIlegiveis: z.number().int().min(0).default(0),
   notasNeutras: z.number().int().min(0).default(0),
