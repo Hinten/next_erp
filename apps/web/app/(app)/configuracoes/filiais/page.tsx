@@ -29,6 +29,7 @@ export default function FiliaisPage() {
       db={getFirebaseFirestore()}
       meta={filialMeta}
       rowHref={(id) => `/configuracoes/filiais/${id}`}
+      rowLinkColumn="razaoSocial"
       renderNewButton={() => (
         <Button component={Link} href="/configuracoes/filiais/novo">
           Nova filial

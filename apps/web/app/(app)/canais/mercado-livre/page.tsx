@@ -57,6 +57,7 @@ export default function CanalMercadoLivrePage() {
         meta={integracaoMeta}
         queryParams={{ tipo: INTEGRACAO_TIPO.mercadoLivre }}
         rowHref={(id) => `/canais/mercado-livre/${id}`}
+        rowLinkColumn="nome"
         renderNewButton={() => (
           <Button component={Link} href="/canais/mercado-livre/novo">
             Nova conta

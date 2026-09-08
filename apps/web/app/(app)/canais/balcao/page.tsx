@@ -33,6 +33,7 @@ export default function CanalBalcaoPage() {
       meta={integracaoMeta}
       queryParams={{ tipo: INTEGRACAO_TIPO.balcao }}
       rowHref={(id) => `/canais/balcao/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/canais/balcao/novo">
           Novo balcão
