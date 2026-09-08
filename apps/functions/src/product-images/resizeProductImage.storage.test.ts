@@ -180,12 +180,24 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
     // the regressed case it exists to catch, and a longer sleep only lowers the
     // odds rather than making the claim provable.
     //
-    // `markUploadFinalized` runs on EVERY non-derivative finalize, before the
-    // resize branch, and is update-only — so resetting the marker first gives the
-    // re-upload something observable to flip, and waiting for that flip is
-    // positive proof the handler ran for THIS event.
+    // ⚠️ `uploadState` alone is the WRONG anchor here, and a quiet window does not
+    // rescue it. `resizeProductImage.ts:37-41` awaits `markUploadFinalized` and
+    // THEN awaits `processProductOriginal`, so the upload flag flips before the
+    // resize work even begins — and in the regressed case that work is a bucket
+    // download, 3 sharp renders and 6 writes, i.e. seconds under the same load
+    // #1201 measured at p99 7s. A 2s `INTRA_HANDLER_WINDOW_MS` is not a bound on
+    // that; it is also outside that constant's contract, which is the gap between
+    // two `set()`s issued CONCURRENTLY.
+    //
+    // `processProductOriginal` calls `markDone` at the end of BOTH branches
+    // (`processOriginal.ts:59` skip, `:91` write), so `resizeState` flipping back
+    // to 'done' is exact positive proof the resize branch COMPLETED. Reset it with
+    // the upload flag and wait for that instead — no window, nothing sized by guess.
     const origId = productArquivoId(produtoId, hash);
-    await db.collection('arquivos').doc(origId).update({ uploadState: 'pending' });
+    await db
+      .collection('arquivos')
+      .doc(origId)
+      .update({ uploadState: 'pending', resizeState: 'pending' });
 
     // Re-upload the SAME original bytes → onObjectFinalized fires again; the
     // existing-derivative check must skip the write.
@@ -195,14 +207,8 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
 
     await waitFor(async () => {
       const d = await db.collection('arquivos').doc(origId).get();
-      return d.data()?.uploadState === 'finalized' ? d : null;
-    }, WAIT_LABELS.uploadFinalized);
-
-    // The anchor proves the handler STARTED. `processProductOriginal` is awaited
-    // after `markUploadFinalized` in the SAME invocation, so a regressed rewrite
-    // would land a moment later — one bounded intra-invocation window closes
-    // that. It is not delivery-bound and must not scale with the deadline.
-    await sleep(INTRA_HANDLER_WINDOW_MS);
+      return d.data()?.resizeState === 'done' ? d : null;
+    }, WAIT_LABELS.arquivoDoc);
 
     const after = (await db.collection('arquivos').doc(id).get()).data();
     expect(after?.criadoEm).toBe(before?.criadoEm);
@@ -270,7 +276,7 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
     const orig = await waitFor(async () => {
       const d = await db.collection('arquivos').doc(origId).get();
       return d.exists && d.data()?.resizeState === 'done' ? d : null;
-    }, WAIT_LABELS.uploadFinalized);
+    }, WAIT_LABELS.arquivoDoc);
     expect(orig.data()?.resizeState).toBe('done');
     // The same trigger run flips uploadState → 'finalized' (markUploadFinalized
     // runs before the resize), so by the time resizeState is 'done' it is set.
