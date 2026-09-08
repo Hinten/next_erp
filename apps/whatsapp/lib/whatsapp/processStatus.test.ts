@@ -28,6 +28,7 @@ vi.mock('@delfrance/data/admin/collections', () => ({
 }));
 
 const { processStatuses } = await import('./processStatus');
+type StatusesReport = Awaited<ReturnType<typeof processStatuses>>;
 
 const db = {} as Firestore;
 
@@ -86,6 +87,25 @@ function batch(ids: string[], status = 'delivered', timestampSeconds = STATUS_SE
 /** No mensagem at the deterministic id — the S1 soft miss. */
 function missing() {
   h.get.mockResolvedValue({ exists: false, data: () => ({}) });
+}
+
+/**
+ * A complete {@link StatusesReport} with every counter zeroed but the named ones.
+ *
+ * ⚠️ Still an EXACT assertion — `toEqual` against the full object pins all five
+ * keys, so a counter that moves when it should not still fails. The helper only
+ * keeps the zeros from being retyped five times per test; it does not narrow
+ * what is checked (`toMatchObject` would, which is why it is not used).
+ */
+function report(counts: Partial<StatusesReport>): StatusesReport {
+  return {
+    aplicados: 0,
+    naoEncontrados: 0,
+    staleIgnorados: 0,
+    malformados: 0,
+    desconhecidos: 0,
+    ...counts,
+  };
 }
 
 /** The patch `processStatuses` wrote, or undefined if it wrote nothing. */
@@ -169,14 +189,14 @@ describe('processStatuses — reports what the batch did', () => {
   it('an applied status counts as `aplicados`', async () => {
     stored(ESTADO_ENVIO.salva, null);
     const r = await processStatuses(db, 'conta-1', payload('delivered', STATUS_SEC));
-    expect(r).toEqual({ aplicados: 1, naoEncontrados: 0, staleIgnorados: 0 });
+    expect(r).toEqual(report({ aplicados: 1 }));
     expect(h.merge).toHaveBeenCalledTimes(1);
   });
 
   it('a missing mensagem counts as `naoEncontrados`, NOT as a stale skip', async () => {
     missing();
     const r = await processStatuses(db, 'conta-1', payload('delivered', STATUS_SEC));
-    expect(r).toEqual({ aplicados: 0, naoEncontrados: 1, staleIgnorados: 0 });
+    expect(r).toEqual(report({ naoEncontrados: 1 }));
     expect(h.merge).not.toHaveBeenCalled();
   });
 
@@ -185,7 +205,7 @@ describe('processStatuses — reports what the batch did', () => {
     // designed and structurally common, a soft miss may be a real derivation bug.
     stored(ESTADO_ENVIO.recebido, LAST_STALE);
     const r = await processStatuses(db, 'conta-1', payload('deleted', STATUS_SEC));
-    expect(r).toEqual({ aplicados: 0, naoEncontrados: 0, staleIgnorados: 1 });
+    expect(r).toEqual(report({ staleIgnorados: 1 }));
     expect(h.merge).not.toHaveBeenCalled();
   });
 
@@ -208,16 +228,121 @@ describe('processStatuses — reports what the batch did', () => {
     const value = batch(['wamid.A', 'wamid.B', 'wamid.C'], 'deleted', STATUS_SEC);
     const r = await processStatuses(db, 'conta-1', value);
 
-    expect(r).toEqual({ aplicados: 1, naoEncontrados: 1, staleIgnorados: 1 });
-    // ⚠️ The sum invariant is the only thing that catches a FUTURE fourth exit
-    // added to the loop without a counter — the type system cannot.
-    expect(r.aplicados + r.naoEncontrados + r.staleIgnorados).toBe(3);
+    expect(r).toEqual(report({ aplicados: 1, naoEncontrados: 1, staleIgnorados: 1 }));
+    // ⚠️ The sum invariant is the only thing that catches a FUTURE fifth exit
+    // added to the loop without a counter — the type system cannot. `malformados`
+    // is the fourth and joins it; `desconhecidos` deliberately does NOT, being an
+    // OVERLAY on whichever fate the entry then met.
+    expect(r.aplicados + r.naoEncontrados + r.staleIgnorados + r.malformados).toBe(3);
     expect(h.merge).toHaveBeenCalledTimes(1);
   });
 
   it('an EMPTY statuses[] reports all zeros — `[]` is truthy, so this function still runs', async () => {
     const r = await processStatuses(db, 'conta-1', batch([]));
-    expect(r).toEqual({ aplicados: 0, naoEncontrados: 0, staleIgnorados: 0 });
+    expect(r).toEqual(report({}));
     expect(h.get).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The wire schema no longer rejects a `status` it does not model — an enum there
+ * discarded the WHOLE delivery, receiver-side, with no log line at all. So the
+ * value now reaches this processor, which has always been able to handle it: the
+ * `desconhecido` arm was written from the start and merely marked unreachable.
+ *
+ * ⚠️ Tolerance must never be silent, which is why every case below asserts the
+ * REPORT as well as the write.
+ */
+describe('processStatuses — a status this pipeline does not model', () => {
+  it('a FRESH unknown status advances the watermark but NEVER touches estadoEnvio', async () => {
+    stored(ESTADO_ENVIO.enviando, null);
+    const r = await processStatuses(db, 'conta-1', payload('warning', STATUS_SEC));
+
+    // The merge still happens — we DID learn that Meta emitted an event at this
+    // instant, and the watermark is how the out-of-order guard knows.
+    expect(h.merge).toHaveBeenCalledTimes(1);
+    expect(writtenPatch()?.lastExternalUpdateDateTime).toBe(STATUS_MS);
+    // ...but the state is not ours to guess. See the `recebido` test below for
+    // why this is the whole point rather than an omission.
+    expect(writtenPatch()).not.toHaveProperty('estadoEnvio');
+    // ⚠️ `desconhecidos` is an OVERLAY, not a fate: the entry WAS patched, so it
+    // counts in `aplicados` too and the four fates still sum to the batch size.
+    expect(r).toEqual(report({ aplicados: 1, desconhecidos: 1 }));
+    expect(r.aplicados + r.naoEncontrados + r.staleIgnorados + r.malformados).toBe(1);
+  });
+
+  /**
+   * ⚠️ THE PROPERTY, and the one worth the most: an unmodelled status must not
+   * DESTROY a state we do know.
+   *
+   * The out-of-order guard only consults `shouldApplyStale` when the incoming
+   * status is NOT newer, so a status Meta adds LATER in the lifecycle — the
+   * realistic shape, e.g. a post-`read` event — always carries the newest
+   * timestamp and bypasses the guard entirely. Writing `desconhecido` there is
+   * the NORMAL path, not the rare one, and it is unrecoverable: nothing
+   * backfills `estadoEnvio`, so a message the customer demonstrably READ would
+   * permanently read back as "we have no idea".
+   *
+   * It also moves an outbound message OUT of `ESTADO_ENVIO_SAIDA` (which holds
+   * salva/enviando/enviado/erro — not `desconhecido`). `mensagemEhNossa` returns
+   * early for WhatsApp, so the bubble does not flip today; but its documented
+   * fallback for an unknown origem is `ehEstadoDeSaida`, which would then put one
+   * of OUR messages on the contact's side.
+   */
+  it.each([
+    ['recebido (read — the customer demonstrably saw it)', ESTADO_ENVIO.recebido],
+    ['enviado (delivered)', ESTADO_ENVIO.enviado],
+    ['erro', ESTADO_ENVIO.erro],
+  ])('a FRESH unknown status PRESERVES a known %s', async (_label, estadoConhecido) => {
+    stored(estadoConhecido, LAST_FRESH); // stored update is OLDER → the status is fresh
+    const r = await processStatuses(db, 'conta-1', payload('warning', STATUS_SEC));
+
+    // The known state survives — the patch must not carry `estadoEnvio` at all,
+    // since a merge of `undefined` would be a write just the same.
+    expect(writtenPatch()).not.toHaveProperty('estadoEnvio');
+    // And the arrival is still not silent.
+    expect(r.desconhecidos).toBe(1);
+  });
+
+  it('a STALE unknown status is refused by the matrix — the conservative direction', async () => {
+    // We do not know what the status means, so we cannot know it moves the
+    // mensagem forward. It is ignored like a stale `sent`/`deleted`...
+    stored(ESTADO_ENVIO.recebido, LAST_STALE);
+    const r = await processStatuses(db, 'conta-1', payload('warning', STATUS_SEC));
+
+    expect(h.merge).not.toHaveBeenCalled();
+    // ...and STILL counted as unknown: the overlay rides whichever fate it met,
+    // so a batch of stale unknowns cannot hide the fact that Meta shipped one.
+    expect(r).toEqual(report({ staleIgnorados: 1, desconhecidos: 1 }));
+  });
+
+  it('a KNOWN status is never counted as unknown — the fold does not over-reach', async () => {
+    stored(ESTADO_ENVIO.salva, null);
+    const r = await processStatuses(db, 'conta-1', payload('delivered', STATUS_SEC));
+    expect(r).toEqual(report({ aplicados: 1 }));
+  });
+
+  it('a MALFORMED entry is counted and skipped while its siblings still apply', async () => {
+    // ⚠️ THE PROPERTY of element tolerance: the bad entry costs only itself.
+    stored(ESTADO_ENVIO.salva, null);
+    const value = valuePayloadSchema.parse({
+      messaging_product: 'whatsapp',
+      metadata: { display_phone_number: '5511999999999', phone_number_id: 'pn-1' },
+      statuses: [
+        { id: 'wamid.BAD' }, // no recipient_id / status / timestamp
+        {
+          id: 'wamid.GOOD',
+          recipient_id: '5511888888888',
+          status: 'delivered',
+          timestamp: String(STATUS_SEC),
+        },
+      ],
+    });
+    const r = await processStatuses(db, 'conta-1', value);
+
+    expect(h.merge).toHaveBeenCalledTimes(1); // the good sibling still landed
+    expect(r).toEqual(report({ aplicados: 1, malformados: 1 }));
+    // `malformados` is the FOURTH fate and joins the sum.
+    expect(r.aplicados + r.naoEncontrados + r.staleIgnorados + r.malformados).toBe(2);
   });
 });

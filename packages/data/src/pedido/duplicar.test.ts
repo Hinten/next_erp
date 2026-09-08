@@ -53,8 +53,10 @@ describe('buildDuplicarPedidoSeed', () => {
     dataFinalExpedicao: 888,
     foiImpresso: true,
     bloquearEmissaoNFe: true,
-    // The four legacy money pass-throughs — nothing in this app recomputes
-    // them, so an omission from the strip list lands verbatim on the copy.
+    // The four legacy money pass-throughs #1151 removed from `pedidoSchema`.
+    // Kept on the ORIGIN fixture on purpose: the migrated corpus still stores
+    // them, so this is what a real origin doc looks like and what the re-parse
+    // has to drop.
     valorComissoes: 12.5,
     valorDespesasIncidentes: 3.5,
     valorFretesIncidentes: 4.5,
@@ -137,17 +139,18 @@ describe('buildDuplicarPedidoSeed', () => {
     }
   });
 
-  it('strips the four legacy money pass-throughs — nothing recomputes them', async () => {
-    // `derivePedidoTotals` owns only the six item/frete/devolução caches and
-    // leaves these to a caller that does not exist, so unlike `valorCobrado`
-    // they would survive the form resolver untouched: the origin's marketplace
-    // commission, its tax total, and incident costs whose `incidentes`
-    // subcollection this seed never clones.
+  it('drops the four legacy money pass-throughs — they are not modeled at all (#1151)', async () => {
+    // These were strip-list entries until #1151 removed them from
+    // `pedidoSchema`. They need no entry now: `pedidoSchema` has no
+    // `.passthrough()` (#462), so the re-parse drops an unmodeled origin key on
+    // its own. `not.toHaveProperty` rather than `toBeNull` is the point — a
+    // null would mean the field is still declared, and this asserts the
+    // stronger property that the seed cannot carry the key at all.
     const { values } = await seed();
-    expect(values.valorComissoes).toBeNull();
-    expect(values.valorDespesasIncidentes).toBeNull();
-    expect(values.valorFretesIncidentes).toBeNull();
-    expect(values.impostos).toBeNull();
+    expect(values).not.toHaveProperty('valorComissoes');
+    expect(values).not.toHaveProperty('valorDespesasIncidentes');
+    expect(values).not.toHaveProperty('valorFretesIncidentes');
+    expect(values).not.toHaveProperty('impostos');
   });
 
   it('strips dataFinalExpedicao and the origin bloquearEmissaoNFe', async () => {

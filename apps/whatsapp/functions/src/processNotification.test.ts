@@ -111,6 +111,10 @@ describe('processWhatsappNotification log line', () => {
       phoneNumberId: 'PNID1',
       contaId: 'conta-1',
       statuses: { aplicados: 2, naoEncontrados: 1, staleIgnorados: 0 },
+      // The mocked `TaskResult` carries no `mensagens`, and the line still emits
+      // the key as null — Cloud Logging DROPS undefined keys, so `?? null` is
+      // what makes "the change carried no messages[]" readable instead of absent.
+      mensagens: null,
       retryCount: 2,
       readCache: expect.anything(),
     });
@@ -153,9 +157,37 @@ describe('processWhatsappNotification log line', () => {
     // ⚠️ `toHaveProperty(key, null)`, NOT the `toEqual` above: `toEqual` treats an
     // `undefined`-valued key as equal to an absent one, so it cannot catch a
     // dropped `?? null`. This loop is what actually pins the discipline.
-    for (const key of ['kind', 'detail', 'field', 'contaId', 'statuses']) {
+    for (const key of ['kind', 'detail', 'field', 'contaId', 'statuses', 'mensagens']) {
       expect(payload).toHaveProperty(key, null);
     }
+  });
+
+  it('the two batch reports ride out together — element drops are never silent', async () => {
+    // ⚠️ `malformados` on either key is the ONLY trace an element-level drop
+    // leaves. Element tolerance stops one bad entry from discarding the whole
+    // delivery; these counters are what stop that from becoming an invisible
+    // per-entry loss instead.
+    channel.handleNotificationTask.mockResolvedValueOnce({
+      outcome: 'done',
+      kind: 'processed',
+      detail: 'mensagens',
+      field: 'messages',
+      contaId: 'conta-1',
+      statuses: {
+        aplicados: 1,
+        naoEncontrados: 0,
+        staleIgnorados: 0,
+        malformados: 1,
+        desconhecidos: 1,
+      },
+      mensagens: { malformados: 2 },
+    });
+
+    await run({ data: RAW, retryCount: 0 });
+
+    const payload = loggedPayload(info);
+    expect(payload.mensagens).toEqual({ malformados: 2 });
+    expect(payload.statuses).toMatchObject({ malformados: 1, desconhecidos: 1 });
   });
 
   it('the wire ids come off the RAW payload, so they survive a schema-parse drop', async () => {

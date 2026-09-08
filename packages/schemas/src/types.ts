@@ -89,9 +89,13 @@ export interface CollectionMetadata {
    * subcollections (e.g. `'clientes/{clienteId}/enderecos'`). The runtime
    * resolves placeholders using the context passed to the data layer.
    *
-   * Multi-tenancy in Delfrance is enforced via document fields
-   * (`grupoEconomico`, `userCliente`, etc.) inside Firestore rules — not via
-   * path prefixes — to keep parity with the Flutter app's existing data.
+   * ⚠️ No tenant segment belongs in this path. The app is SINGLE-TENANT
+   * (ADR 0016, issue #14 closed won't-fix): tenancy is not modelled by a path
+   * prefix, and it is not modelled by a document field either. This comment
+   * used to claim it was "enforced via document fields (`grupoEconomico`,
+   * `userCliente`, etc.) inside Firestore rules"; that was false — no
+   * generated rule filters access on either field (`userCliente` appears only
+   * in a type-validator whitelist), and access control is permission bits.
    */
   collectionPath: string;
   /**

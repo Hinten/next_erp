@@ -176,12 +176,38 @@ export type DropOutcome =
   | 'campo-nao-suportado' // a field other than `messages`
   | 'value-malformado'; // the `messages` value failed `valuePayloadSchema`
 
+/**
+ * What a `messages[]` batch could not even look at.
+ *
+ * ⚠️ The counterpart to {@link StatusesReport}, and a COUNT for the same reason:
+ * one batch can carry entries with different fates, which a single `detail`
+ * enum value structurally cannot express.
+ *
+ * Only one field, and deliberately so — every OTHER fate a message can meet is
+ * already named by `MessagesFieldOutcome` (`mensagens`, `redelivery`, `spam`,
+ * `echo`). What had no name was the entry that never became an
+ * `InboundMessageOutcome` at all because it failed `incomingMessageSchema` and
+ * arrived as `null` (the `.nullable().catch(null)` on the array element).
+ * Element tolerance without this counter would turn a loud whole-delivery drop
+ * into a silent per-element one — visible data loss traded for invisible.
+ */
+export interface MensagensReport {
+  /** Entries that failed `incomingMessageSchema`. Also `console.warn`ed. */
+  malformados: number;
+}
+
 /** Deterministic result of processing a `messages`-field change. */
 export type ProcessOutcome =
   | {
       kind: 'processed';
       contaId: string;
       detail: MessagesFieldOutcome;
+      /**
+       * What the `messages[]` batch could not read, or null when the change
+       * carried no `messages` key at all. Required-and-nullable for the same
+       * reason as `statuses` below.
+       */
+      mensagens: MensagensReport | null;
       /**
        * What the `statuses[]` batch did, or null when the change carried no
        * `statuses` key at all.
@@ -320,10 +346,24 @@ export async function processMessagesField(
   // Fold the per-message outcomes most-work-first, so the reported value is the
   // strongest claim the change can actually support.
   const seen = new Set<InboundMessageOutcome>();
+  // Null when the change carried no `messages` key at all — a different fact
+  // from "it carried some and none of them was malformed", which is `{ 0 }`.
+  let mensagens: MensagensReport | null = null;
   if (value.messages) {
-    for (const message of value.messages) {
+    const report: MensagensReport = { malformados: 0 };
+    for (let i = 0; i < value.messages.length; i++) {
+      const message = value.messages[i];
+      // The entry failed `incomingMessageSchema`. Scoped to itself by the
+      // array's `.nullable().catch(null)`, so its good siblings — and the
+      // `statuses[]` in the same change — still run. Counted, never silent.
+      if (message == null) {
+        console.warn('[whatsapp] mensagem ignorada — entrada malformada', { indice: i });
+        report.malformados += 1;
+        continue;
+      }
       seen.add(await processInboundMessage(db, deps, { contaId, conta, value, message, incoming }));
     }
+    mensagens = report;
   }
   const statuses = value.statuses ? await processStatuses(db, contaId, value) : null;
 
@@ -347,7 +387,12 @@ export async function processMessagesField(
             ? 'statuses'
             : 'vazio';
 
-  return { kind: 'processed', contaId, detail, statuses };
+  // ⚠️ A change whose `messages[]` were ALL malformed folds to `statuses`/`vazio`
+  // here, because no entry ever produced an `InboundMessageOutcome`. That is not
+  // an overstatement and needs no seventh member: `mensagens.malformados` rides
+  // out beside `detail` and says so — the same division of labour that lets
+  // `statuses` mean "a batch ran" without claiming any of it landed.
+  return { kind: 'processed', contaId, detail, mensagens, statuses };
 }
 
 /* ---------------------------- inbound one message ------------------------- */

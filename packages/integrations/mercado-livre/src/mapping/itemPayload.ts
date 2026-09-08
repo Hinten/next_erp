@@ -55,6 +55,12 @@
  * cannot control picker order at all and `produto.ordem` has nowhere to go.
  * Do not look for one; do not invent a proxy for it.
  */
+import {
+  ESTADO_PUBLICACAO_ML,
+  type EstadoPublicacaoMl,
+  moderacaoRemoveuAnuncio,
+} from '@delfrance/schemas';
+
 import { type MlAttribute, attributeToMercadoLivre, attributesWithValue } from './attributes';
 
 /** An already-uploaded ML picture reference (`pictures: [{ id }]`). */
@@ -446,35 +452,49 @@ export function userProductMemberInputs(
 }
 
 /**
- * ML listing `status` → the link doc's `estado` short code, 1–2 chars (the old
- * `ESTADO_PUBLICACAO.fromMercadoLivre`, models.dart 676–694).
+ * ML listing `status` + `sub_status` → the link doc's `estado` short code, 1–2
+ * chars (the old `ESTADO_PUBLICACAO.fromMercadoLivre`, models.dart 676–694).
+ *
+ * ⚠️ This used to carry its OWN copy of the estado vocabulary — a second
+ * `ESTADO_PUBLICACAO` const, with drifted member names (`underReview` for
+ * `emRevisao`, `error` for `erro`) and a plain `as const` that the compiler
+ * linked to nothing. It existed only because this package had no dependency on
+ * `@delfrance/schemas`, which is exactly the "two copies drift toward plausible"
+ * shape root `CLAUDE.md` names: adding a member to the schema enum produced zero
+ * errors here, in the one function that decides what `estado` every writer
+ * stores. The dependency is cheap (schemas pulls `@delfrance/core` + zod, and
+ * nothing there imports this package back) and the copy is gone.
+ *
+ * ⚠️ **`subStatus` is REQUIRED, not optional**, and that is the whole reason the
+ * terminal-moderation state is safe to add (#1226). A removed listing is
+ * `under_review` + `forbidden` — the STATUS alone cannot tell it from a listing
+ * ML is merely reviewing — so an optional parameter would let a call site that
+ * forgot it keep mapping a dead listing to `emRevisao`, silently, which is the
+ * exact bug. Required makes every one of them a compile error until it decides.
+ * Pass `null` deliberately where there genuinely is no sub_status (a synthetic
+ * `'closed'` from a 404 branch, say).
  */
-export const ESTADO_PUBLICACAO = {
-  rascunho: 'r',
-  aguardando: 'a',
-  emProcessamento: 'ep',
-  underReview: 'v',
-  publicado: 'p',
-  pausado: 'pa',
-  cancelado: 'c',
-  error: 'E',
-  aguardandoMigracao: 'am',
-} as const;
-export type EstadoPublicacao = (typeof ESTADO_PUBLICACAO)[keyof typeof ESTADO_PUBLICACAO];
-
-export function estadoFromMlStatus(status: string | null | undefined): EstadoPublicacao {
+export function estadoFromMlStatus(
+  status: string | null | undefined,
+  subStatus: readonly string[] | null | undefined,
+): EstadoPublicacaoMl {
+  // ⚠️ ABOVE the `under_review` arm, deliberately: a removed listing IS
+  // `under_review`, so the coarse arm below would swallow it.
+  if (moderacaoRemoveuAnuncio(status, subStatus)) {
+    return ESTADO_PUBLICACAO_ML.removidoPorModeracao;
+  }
   switch (status) {
     case 'active':
-      return ESTADO_PUBLICACAO.publicado;
+      return ESTADO_PUBLICACAO_ML.publicado;
     case 'paused':
-      return ESTADO_PUBLICACAO.pausado;
+      return ESTADO_PUBLICACAO_ML.pausado;
     case 'closed':
-      return ESTADO_PUBLICACAO.cancelado;
+      return ESTADO_PUBLICACAO_ML.cancelado;
     case 'under_review':
-      return ESTADO_PUBLICACAO.underReview;
+      return ESTADO_PUBLICACAO_ML.emRevisao;
     case null:
     case undefined:
     default:
-      return ESTADO_PUBLICACAO.error;
+      return ESTADO_PUBLICACAO_ML.erro;
   }
 }

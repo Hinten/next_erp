@@ -99,22 +99,24 @@ export const incomingMessageSchema = z
     from: z.string(),
     id: z.string(),
     timestamp: z.string(),
-    type: z.enum([
-      'text',
-      'image',
-      'video',
-      'audio',
-      'document',
-      'sticker',
-      'reaction',
-      'button',
-      'interactive',
-      'location',
-      'contacts',
-      'order',
-      'system',
-      'unknown',
-    ]),
+    /**
+     * ⚠️ A plain string, NOT an enum, and that is load-bearing rather than lazy.
+     *
+     * Nothing reads this field: `tipoMensagem` derives the mensagem kind from
+     * WHICH media key is present (`processMessages.ts` — `message.audio` →
+     * audio, `message.image ?? .document ?? .sticker` → arquivo, else comum),
+     * never from `type`. So a closed enum here buys nothing and costs the whole
+     * delivery: Meta adds message types (this list is a snapshot), an unlisted
+     * one fails the element, a Zod array fails as a WHOLE when any element
+     * fails, and the failure propagates up `valuePayloadSchema` →
+     * `webhookEnvelopeSchema` → `parseWebhookBody`, which returns null and takes
+     * every other change in the POST with it. Legacy typed it `String` too.
+     *
+     * The documented values are text · image · video · audio · document ·
+     * sticker · reaction · button · interactive · location · contacts · order ·
+     * system · unknown — kept here as prose so the list can never reject one.
+     */
+    type: z.string().min(1),
     text: z.object({ body: z.string() }).optional(),
     image: wamediaSchema.optional(),
     video: wamediaSchema.optional(),
@@ -138,11 +140,60 @@ export const incomingMessageSchema = z
   })
   .passthrough();
 
+/**
+ * The `statuses[].status` values this pipeline KNOWS how to advance a mensagem
+ * with. A snapshot of Meta's documented set — deliberately NOT the wire type.
+ */
+export const WA_STATUS_KNOWN = ['sent', 'delivered', 'read', 'failed', 'deleted'] as const;
+
+/** A `status` Meta shipped after {@link WA_STATUS_KNOWN} was written. */
+export const WA_STATUS_DESCONHECIDO = 'desconhecido';
+
+export type WaKnownStatus = (typeof WA_STATUS_KNOWN)[number];
+export type WaStatus = WaKnownStatus | typeof WA_STATUS_DESCONHECIDO;
+
+/**
+ * Fold a raw wire `status` onto the closed set the processor switches over.
+ *
+ * ⚠️ Pure, total, and EXACT — no trimming, no case folding. `'Sent'` and
+ * `'sent '` are NOT `'sent'`; they fold to `desconhecido`, which is the honest
+ * answer, and the near-miss tests pin exactly that. Meta sends lowercase
+ * tokens, so a case-insensitive match would only ever paper over a value we do
+ * not actually understand — and quietly mapping an unknown token onto a known
+ * one writes the WRONG `estadoEnvio` instead of the honest `desconhecido`.
+ *
+ * The narrowing lives HERE rather than in the schema (as
+ * `z.enum(...).catch(WA_STATUS_DESCONHECIDO)`) for one reason: `.catch()`
+ * ERASES the raw string, and that string — the name of the value Meta just
+ * added — is the single most useful thing an operator can be told. The schema
+ * keeps it; this folds it only at the point of use, which also keeps
+ * `status` a LITERAL UNION at both switches in `processStatus.ts`, so
+ * `switch-exhaustiveness-check` still covers them.
+ */
+export function narrowWaStatus(raw: string): WaStatus {
+  return (WA_STATUS_KNOWN as readonly string[]).includes(raw)
+    ? (raw as WaKnownStatus)
+    : WA_STATUS_DESCONHECIDO;
+}
+
 export const statusUpdateSchema = z
   .object({
     id: z.string(),
     recipient_id: z.string(),
-    status: z.enum(['sent', 'delivered', 'read', 'failed', 'deleted']),
+    /**
+     * ⚠️ The RAW wire string, NOT `z.enum(WA_STATUS_KNOWN)` — narrowed at the
+     * point of use by {@link narrowWaStatus}.
+     *
+     * As an enum this was the single most expensive field in the package: Meta
+     * has added `status` values before, a Zod array fails as a WHOLE when any
+     * element fails, and this schema is embedded transitively in the RECEIVER's
+     * envelope parse. So one unrecognised status made `parseWebhookBody` return
+     * null and the route ack 200 — dropping every `entry[]`, every `changes[]`
+     * and any customer `messages[]` riding in the same POST, with no Cloud
+     * Task, no failure document and no log line at all. Meta saw a 200 and
+     * never retried. Legacy typed it `final String` for exactly this reason.
+     */
+    status: z.string().min(1),
     timestamp: z.string(),
     errors: z
       .array(
@@ -175,12 +226,61 @@ export const valuePayloadSchema = z
           .passthrough(),
       )
       .optional(),
-    messages: z.array(incomingMessageSchema).optional(),
-    statuses: z.array(statusUpdateSchema).optional(),
+    /**
+     * ⚠️ `(IncomingMessage | null)[]` — element-tolerant, and the nulls are KEPT
+     * rather than filtered out.
+     *
+     * A Zod array fails as a WHOLE when any element fails, so a single
+     * malformed message used to discard its good siblings AND the `statuses[]`
+     * beside them. `.nullable().catch(null)` scopes the failure to the one
+     * element it belongs to.
+     *
+     * They are kept rather than filtered because TOLERANCE MUST NEVER BE
+     * SILENT: `processMessagesField` counts the nulls into
+     * `MensagensReport.malformados`, which rides out to the task log. A
+     * `.filter()` here would fix the data loss and hide it in the same line.
+     */
+    messages: z.array(incomingMessageSchema.nullable().catch(null)).optional(),
+    /** Same contract as `messages` above; counted into `StatusesReport.malformados`. */
+    statuses: z.array(statusUpdateSchema.nullable().catch(null)).optional(),
     errors: z.array(z.unknown()).optional(),
   })
   .passthrough();
 
+/**
+ * The webhook envelope, and ONLY the envelope — a structural skeleton.
+ *
+ * ⚠️ `value` is `z.unknown()` ON PURPOSE. It used to be `valuePayloadSchema`,
+ * and that single line was the defect: the RECEIVER validated far more than it
+ * reads. `parseWebhookBody` touches `object`, `entry[].id`, `changes[].field`
+ * and three already-optional-chained strings, then enqueues a payload typed
+ * `value: unknown` which `processMessagesField` re-parses against
+ * `valuePayloadSchema` anyway. Demanding the full value HERE bought nothing and
+ * cost the whole delivery, because a parse failure at the receiver returns null
+ * and the route acks 200 — no task, no failure doc, no log line.
+ *
+ * Two shapes hit that, and both are real:
+ *
+ *  1. an unrecognised `statuses[].status` or `messages[].type` (now widened
+ *     above, but the array-wide failure mode is structural, not enum-specific);
+ *  2. EVERY non-`messages` field. `field` was kept a plain string precisely so
+ *     WhatsApp Business Management events parse — but `value` still demanded
+ *     `messaging_product: 'whatsapp'` plus `metadata.{display_phone_number,
+ *     phone_number_id}`, and those events carry NEITHER. Legacy modelled
+ *     `message_template_status_update`'s value as
+ *     `{event, message_template_id, message_template_name,
+ *     message_template_language, reason, …}` — no metadata anywhere. So the
+ *     tolerance the old comment claimed did not exist: the envelope rejected
+ *     those events, the dispatcher never saw the field, and
+ *     `DropOutcome.'campo-nao-suportado'` was DEAD CODE in production.
+ *
+ * Legacy did exactly what this does now — `WebhookChangeGeneric.value` is
+ * `dynamic`, and only the `messages` change binds the metadata-bearing value
+ * type. The port collapsed every field onto one required shape; this undoes it.
+ *
+ * The structure that REMAINS is what actually distinguishes a WhatsApp webhook
+ * from an arbitrary POST body, so a non-envelope body still parses to null.
+ */
 export const webhookEnvelopeSchema = z.object({
   object: z.literal('whatsapp_business_account'),
   entry: z.array(
@@ -188,13 +288,13 @@ export const webhookEnvelopeSchema = z.object({
       id: z.string(),
       changes: z.array(
         z.object({
-          // WhatsApp Business Management webhooks reuse this same envelope
-          // with other `field` values (e.g. `account_update`,
-          // `phone_number_quality_update`); only `WEBHOOK_FIELD_MESSAGES`
-          // is dispatched today, but the schema stays a plain string so
-          // it doesn't reject those other events at parse time.
+          // WhatsApp Business Management webhooks reuse this same envelope with
+          // other `field` values (`account_update`,
+          // `phone_number_quality_update`, `message_template_status_update`, …);
+          // only `WEBHOOK_FIELD_MESSAGES` is dispatched, and the rest are
+          // dropped — with a LOG — one layer down in `processChangePayload`.
           field: z.string(),
-          value: valuePayloadSchema,
+          value: z.unknown(),
         }),
       ),
     }),

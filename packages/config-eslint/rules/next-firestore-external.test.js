@@ -75,8 +75,8 @@ const HAZARD_PACKAGES = ['@google-cloud/firestore'];
  * adding here; this list exists only as an anchor, so a glob that silently stops
  * matching fails loudly instead of vacuously passing over an empty set.
  *
- * `apps/functions`, `apps/docs` and `apps/example` are deliberately absent — none is a
- * Next app, so none has a `next.config.ts` and none is bundled by `next build`.
+ * `apps/functions` and `apps/docs` are deliberately absent — neither is a Next app, so
+ * neither has a `next.config.ts` and neither is bundled by `next build`.
  * `apps/functions/src/estoques/aplicarBalanco.ts` DOES import the pipelines subpath and
  * is correctly out of scope: its esbuild config externalizes the SDK.
  */

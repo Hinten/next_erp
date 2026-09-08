@@ -110,9 +110,52 @@ describe('foldFamilyStatus — the tie-break among equal-ranked members', () => 
   });
 
   it('is stable when neither tied member is sendable', () => {
-    const a = { status: 'under_review', subStatus: ['forbidden'] };
+    // ⚠️ `held`, deliberately, NOT `forbidden`. Both are unsendable review
+    // sub_statuses, but `forbidden` is the one reading that ranks at the FLOOR
+    // (#1226) — so using it here would be testing the removal rung under the
+    // name of the tie-break, and it would flip the expected winner.
+    const a = { status: 'under_review', subStatus: ['held'] };
     const b = { status: 'under_review', subStatus: null };
     expect(foldFamilyStatus([a, b])).toEqual({ ...a, moderacoes: [] });
+  });
+});
+
+/**
+ * #1226. A listing Mercado Livre has REMOVED (`under_review` + `forbidden`) is
+ * as terminal as `closed`, and reaches the parent's `estado` the same way — so
+ * it needs the same floor. By `status` alone it would rank 2, ABOVE `closed`,
+ * and `prefere`'s moderation rung would then actively favour it over an
+ * equally-ranked sibling: a family with one removed member and one merely under
+ * review would elect the removed one, take the terminal `estado 'rm'`, and drop
+ * the produto out of both sweeps while a savable sibling was still there.
+ */
+describe('foldFamilyStatus — a removed member never speaks for a live family', () => {
+  const removido = { status: 'under_review', subStatus: ['forbidden'] };
+
+  it('loses to any member ML has not ended', () => {
+    for (const vivo of [
+      { status: 'active', subStatus: null },
+      { status: 'paused', subStatus: ['out_of_stock'] },
+      // The one that motivated the rung: same STATUS, so the old ladder tied
+      // them — and the moderation tie-break then picked the removed one.
+      { status: 'under_review', subStatus: ['waiting_for_patch'] },
+    ]) {
+      expect(foldFamilyStatus([removido, vivo])).toEqual({ ...vivo, moderacoes: [] });
+      // Both orders: arrive-order must not decide a family's coverage.
+      expect(foldFamilyStatus([vivo, removido])).toEqual({ ...vivo, moderacoes: [] });
+    }
+  });
+
+  it('decides the family only when every observed member is removed', () => {
+    expect(foldFamilyStatus([removido, removido])).toEqual({ ...removido, moderacoes: [] });
+    // Mixed with the other terminal reading — still terminal, still concluded.
+    expect(foldFamilyStatus([removido, { status: 'closed', subStatus: null }])).not.toBeNull();
+  });
+
+  it('cannot conclude while a member was never observed', () => {
+    // Inherits `closed`'s guard: an unobserved member is unknown, never dead,
+    // and guessing wrong here is the silent sweep outage.
+    expect(foldFamilyStatus([removido, { status: null, subStatus: null }])).toBeNull();
   });
 });
 

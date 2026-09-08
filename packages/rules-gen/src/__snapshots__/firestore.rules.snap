@@ -76,7 +76,6 @@ service cloud.firestore {
         && (!c.hasAny(['foiImpresso']) || d.get('foiImpresso', null) is bool)
         && (!c.hasAny(['freteInicial']) || (d.get('freteInicial', null) == null || d.get('freteInicial', null) is map))
         && (!c.hasAny(['hasUserInteraction']) || (d.get('hasUserInteraction', null) == null || d.get('hasUserInteraction', null) is bool))
-        && (!c.hasAny(['impostos']) || (d.get('impostos', null) == null || d.get('impostos', null) is number))
         && (!c.hasAny(['infCpl']) || (d.get('infCpl', null) == null || d.get('infCpl', null) is string))
         && (!c.hasAny(['integracaoPedidoOuterRef']) || (d.get('integracaoPedidoOuterRef', null) == null || d.get('integracaoPedidoOuterRef', null) is string))
         && (!c.hasAny(['itens']) || d.get('itens', null) is map)
@@ -91,9 +90,6 @@ service cloud.firestore {
         && (!c.hasAny(['timestamp']) || (d.get('timestamp', null) == null || d.get('timestamp', null) is int))
         && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
         && (!c.hasAny(['valorCobrado']) || (d.get('valorCobrado', null) == null || d.get('valorCobrado', null) is number))
-        && (!c.hasAny(['valorComissoes']) || (d.get('valorComissoes', null) == null || d.get('valorComissoes', null) is number))
-        && (!c.hasAny(['valorDespesasIncidentes']) || (d.get('valorDespesasIncidentes', null) == null || d.get('valorDespesasIncidentes', null) is number))
-        && (!c.hasAny(['valorFretesIncidentes']) || (d.get('valorFretesIncidentes', null) == null || d.get('valorFretesIncidentes', null) is number))
         && (!c.hasAny(['vendedorPedidoOuterRef']) || (d.get('vendedorPedidoOuterRef', null) == null || d.get('vendedorPedidoOuterRef', null) is string));
     }
 

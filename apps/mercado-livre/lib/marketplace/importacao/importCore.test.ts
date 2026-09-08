@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MappedMlItem, MappedMlVariation } from '@delfrance/integrations-mercado-livre';
+import { ESTADO_PUBLICACAO_ML } from '@delfrance/schemas';
 import type { TaxonomiaResolution } from './taxonomiaCore';
 
 import {
@@ -35,7 +36,7 @@ function mapped(over: Partial<MappedMlItem> = {}): MappedMlItem {
     categoryId: 'MLB1430',
     listingTypeId: 'gold_special',
     condition: 'new',
-    estado: 'p',
+    estado: ESTADO_PUBLICACAO_ML.publicado,
     status: 'active',
     subStatus: null,
     freteGratis: true,

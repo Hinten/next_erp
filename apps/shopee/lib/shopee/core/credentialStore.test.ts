@@ -6,8 +6,13 @@ import {
   EXPIRY_GUARD_MS,
   SHOPEE_CREDENCIAL_DOC_ID,
   ShopeeCredencialInvalidaError,
+  accessTokenOf,
   createShopeeCredentialStore,
   credentialFromTokenPair,
+  expiryOf,
+  falhaRefreshOf,
+  leaseOf,
+  refreshTokenOf,
 } from './credentialStore';
 
 /**
@@ -85,6 +90,105 @@ describe('credentialFromTokenPair', () => {
     const doc = credentialFromTokenPair(PAIR, MAIN, 1);
     expect(doc.main_account_id).toBe(999);
     expect(doc.shop_id).toBeNull();
+  });
+});
+
+describe('credentialFromTokenPair — the lease and diagnostic keys', () => {
+  const LEASE_KEYS = [
+    'refreshLeaseOwner',
+    'refreshLeaseExpiraEm',
+    'ultimoRefreshEm',
+    'ultimaFalhaRefresh',
+  ] as const;
+
+  it.each(LEASE_KEYS)('emits %s as an explicit null, never as an absent key', (campo) => {
+    // ⚠️ PRESENT and `null`, not merely falsy. `parseMergePatch` drops
+    // undefined-valued keys before writing, so an omitted key clears NOTHING —
+    // a consent would leave a crashed refresher's lease standing until its TTL
+    // elapsed, and the panel would keep rendering a stale failure stamp.
+    const doc = credentialFromTokenPair(PAIR, SHOP, 1);
+    expect(doc).toHaveProperty(campo);
+    expect(doc[campo]).toBeNull();
+  });
+});
+
+describe('the tolerant readers', () => {
+  it('reads the three modelled fields when they are usable', () => {
+    const cred = { access_token: 'at-1', refresh_token: 'rt-1', expirationDate: 42 };
+    expect(accessTokenOf(cred)).toBe('at-1');
+    expect(refreshTokenOf(cred)).toBe('rt-1');
+    expect(expiryOf(cred)).toBe(42);
+  });
+
+  it('refuses an unusable value rather than typing it as usable', () => {
+    // `parseRead` is soft, so a hand-edited or legacy document arrives RAW.
+    expect(accessTokenOf({ access_token: '' })).toBeNull();
+    expect(accessTokenOf({ access_token: 7 })).toBeNull();
+    expect(refreshTokenOf({ refresh_token: null })).toBeNull();
+    expect(expiryOf({ expirationDate: '1700000000000' })).toBeNull();
+    expect(expiryOf({ expirationDate: Number.NaN })).toBeNull();
+  });
+
+  it('never normalises the refresh token — it is an identity, not a value', () => {
+    // The commit guard compares this string against the one it spent. Trimming
+    // would make two DIFFERENT stored pairs read as the same one.
+    expect(refreshTokenOf({ refresh_token: 'rt-1 ' })).toBe('rt-1 ');
+    expect(refreshTokenOf({ refresh_token: 'rt-1 ' })).not.toBe(
+      refreshTokenOf({ refresh_token: 'rt-1' }),
+    );
+  });
+
+  it('reads a well-formed lease', () => {
+    expect(leaseOf({ refreshLeaseOwner: 'owner-a', refreshLeaseExpiraEm: 1_000 })).toEqual({
+      owner: 'owner-a',
+      expiraEm: 1_000,
+    });
+  });
+
+  it('reads a corrupt lease as NO lease (ADR 0011 wrong-way default)', () => {
+    // A document that cannot be understood must not be able to freeze an
+    // account's refresh forever.
+    expect(leaseOf({})).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: 'owner-a', refreshLeaseExpiraEm: '1000' })).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: 'owner-a', refreshLeaseExpiraEm: Number.NaN })).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: 7, refreshLeaseExpiraEm: 1_000 })).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: '', refreshLeaseExpiraEm: 1_000 })).toBeNull();
+    expect(leaseOf({ refreshLeaseOwner: null, refreshLeaseExpiraEm: null })).toBeNull();
+  });
+
+  it('reads a well-formed failure stamp', () => {
+    expect(
+      falhaRefreshOf({
+        ultimaFalhaRefresh: { em: 1_000, codigo: 'refresh_token_expired', terminal: true },
+      }),
+    ).toEqual({ em: 1_000, codigo: 'refresh_token_expired', terminal: true });
+  });
+
+  it('keeps a NON-terminal stamp rather than folding it into "no stamp"', () => {
+    // The two are different facts: a transient failure was recorded, and the
+    // caller is the one that decides only `terminal` drives the red copy.
+    expect(
+      falhaRefreshOf({
+        ultimaFalhaRefresh: { em: 1_000, codigo: 'error_rate_limit', terminal: false },
+      }),
+    ).toEqual({ em: 1_000, codigo: 'error_rate_limit', terminal: false });
+  });
+
+  it.each([
+    ['the STRING "true"', { em: 1_000, codigo: 'refresh_token_expired', terminal: 'true' }],
+    ['the NUMBER 1', { em: 1_000, codigo: 'refresh_token_expired', terminal: 1 }],
+    ['a non-finite `em`', { em: Number.NaN, codigo: 'refresh_token_expired', terminal: true }],
+    ['a string `em`', { em: '1000', codigo: 'refresh_token_expired', terminal: true }],
+    ['a numeric `codigo`', { em: 1_000, codigo: 7, terminal: true }],
+    ['a stamp that is not a map at all', 'refresh_token_expired'],
+    ['an array', [1, 2]],
+    ['no stamp', null],
+    ['no key', undefined],
+  ])('NEAR MISS — reads %s as NO failure', (_caso, ultimaFalhaRefresh) => {
+    // The wrong-way default: telling an operator to reconnect a healthy conta
+    // costs a re-consent, and `parseRead` is soft enough for any of these to
+    // arrive.
+    expect(falhaRefreshOf({ ultimaFalhaRefresh })).toBeNull();
   });
 });
 

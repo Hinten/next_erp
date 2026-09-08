@@ -15,10 +15,11 @@ under `apps/` that holds the stateful half.
 
 ## ⚠️ These are libraries, not plugins
 
-Only `nfe` (`InvoiceProvider`) implements a contract from `@delfrance/core/plugins`.
-The rest implement nothing — their app imports them directly.
+**Not one package here implements a plugin contract** — every app imports its library
+directly. `packages/core` declares none any more: the registry and the last two
+contracts went in #1444.
 
-That is the shape every integration here converged on, and **three** contracts were
+That is the shape every integration here converged on, and **five** contracts were
 deleted on the way:
 
 - **`MarketplaceChannel`** (#815, [ADR 0015](../../apps/docs/src/content/docs/adr/0015-no-marketplace-mega-contract.md)) —
@@ -47,8 +48,17 @@ deleted on the way:
   `@delfrance/schemas`.
 - **`FreightProvider`** (#262) — a three-method shape could not express
   OAuth → quote → cart → checkout → label. Replaced by `FREIGHT_TIPO_CAPS`.
+- **`TaxProvider` + `InvoiceProvider`** (#1444) — the last two, and `PluginRegistry`
+  and `@delfrance/plugin-sdk` with them. `nfe` was the only implementation, and its
+  `createNFeProvider()` adapter had zero callers: `apps/web` always reached
+  `createNFeHttpClient` directly, and an ESLint `no-restricted-imports` rule pins it to
+  the `./http-provider` subpath, which the adapter was never on. Neither contract could
+  describe the real engine anyway — `calculate({ amount, ncm })` carries no CRT, no
+  CST/CSOSN, no origem and no UF pair, while `buildImpostoXml` emits XSD-valid XML per
+  CST; and `issue(orderId)` → three statuses cannot express `aguardandoVinculo`, cStat
+  136 reconciliation, SVC/EPEC contingência, filial, ambiente or série.
 
 Adding a channel: read the `marketplace-integration` skill (marketplaces) or
 `freight-integrations` (carriers). Adding a payment provider:
-`tipoIntegracaoPgtoSchema` in `@delfrance/schemas`. Adding a tax/invoice plugin: the
-`plugin-authoring` guide in `apps/docs`.
+`tipoIntegracaoPgtoSchema` in `@delfrance/schemas`. Adding fiscal behaviour: the `nfe`
+skill and `packages/integrations/nfe` — there is no plugin path.

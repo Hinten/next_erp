@@ -159,8 +159,10 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
    echo/spam returns, so every value except `statuses`/`vazio` implies the conversa was
    touched.
    **The statuses half of that is separately reported.** `processStatuses` returns a
-   `StatusesReport` — `{ aplicados, naoEncontrados, staleIgnorados }` — carried out to
-   the task log beside `detail`. Counts rather than more `detail` members, because one
+   `StatusesReport` — `{ aplicados, naoEncontrados, staleIgnorados, malformados,
+   desconhecidos }` — carried out to the task log beside `detail`. The first FOUR are
+   fates and sum to `statuses.length`; `desconhecidos` is an **overlay** on whichever
+   fate the entry met (see the wire-tolerance section below). Counts rather than more `detail` members, because one
    `statuses[]` can carry entries with DIFFERENT fates, which no single enum value can
    express; and because they ride out whichever arm of the priority chain won, an
    `echo` no longer hides applied statuses and a `statuses` that landed nothing no
@@ -182,6 +184,69 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
    appends `errors[]`.
 5. **`lib/whatsapp/waTasks.ts`** — the enqueue seam (`WHATSAPP_TASKS_DISABLED` valve
    → persist-for-the-sweep; `WHATSAPP_TASKS_REGION` → region-qualified queue path).
+
+### Wire tolerance: one bad element must never cost the delivery
+
+⚠️ **The receiver validates only the ENVELOPE.** `webhookEnvelopeSchema` keeps
+`changes[].value` as `z.unknown()`; the full `valuePayloadSchema` runs one layer
+down, in `processMessagesField`. Do **not** "tighten" it back. A Zod array fails as
+a **whole** when any element fails, so with the value schema mounted at the
+receiver a single unrecognised `statuses[].status`, a new `messages[].type`, or
+**any** non-`messages` event made `parseWebhookBody` return null — and the route
+acked `200` with **no task, no failure document and no log line**. Meta saw a 200
+and never retried, so the entire POST (every entry, every change, any customer
+message riding along) was lost with no replayable record. `parseWebhookBody` reads
+only `object`, `entry[].id`, `changes[].field` and three optional strings, so the
+strictness bought nothing. Legacy agreed: `WebhookChangeGeneric.value` is `dynamic`
+and only the `messages` change binds a metadata-bearing value type.
+
+That also un-killed `DropOutcome.'campo-nao-suportado'`: WhatsApp **Business
+Management** events (`account_update`, `phone_number_quality_update`,
+`message_template_status_update`) carry **no `messaging_product` and no
+`metadata`**, so the old envelope rejected them and the dispatcher never saw the
+field. They now enqueue — one Cloud Task each, low and non-scaling volume — and are
+dropped **with a log** in `processChangePayload`.
+
+Three rules follow, all load-bearing:
+
+1. **`statuses[].status` and `messages[].type` are plain strings on the wire**
+   (legacy typed both `String`). `status` is narrowed at the point of use by
+   `narrowWaStatus`, which keeps the literal union at both `processStatus` switches
+   so `switch-exhaustiveness-check` still covers them. The fold is **exact** — no
+   trim, no case-fold: `'Sent'` is `desconhecido`, never `'sent'`, because writing a
+   confident wrong `estadoEnvio` is worse than the honest one. `type` is read by
+   **nothing** (the mensagem tipo comes from which media key is present).
+2. **`messages[]` and `statuses[]` are element-tolerant** — `.nullable().catch(null)`
+   — and the nulls are **KEPT, not filtered**, so the consumers can count them.
+3. **Tolerance is never silent.** Every coerced or dropped element lands in
+   `StatusesReport.{malformados,desconhecidos}` or `MensagensReport.malformados`,
+   both of which ride out to the single `logger.info` in `processNotification.ts`
+   (`?? null` — Cloud Logging drops `undefined` keys). A `.filter()`, or a counter
+   that stops incrementing, converts visible data loss into invisible data loss.
+
+⚠️ **An unknown `status` NEVER writes `estadoEnvio`** — it advances only the
+`lastExternalUpdateDateTime` watermark and increments `desconhecidos`. The arm used
+to stamp `ESTADO_ENVIO.desconhecido`, whose stated reason ("rather than leaving
+`estadoEnvio` unset") cannot apply: `processStatuses` returns early when the doc does
+not exist, so the mensagem **always** has a state. The sentinel could therefore only
+*destroy* a known one — on the **normal** path, since a status Meta adds later in the
+lifecycle carries the newest timestamp and bypasses the stale guard — and nothing
+backfills `estadoEnvio`. It also moved an outbound mensagem out of
+`ESTADO_ENVIO_SAIDA`, which `mensagemEhNossa`'s unknown-origem fallback reads.
+`processStatus.ts` was the repo's **only** writer of `ESTADO_ENVIO.desconhecido`; the
+value now exists for READING legacy documents only. ⚠️ Consequence for the log:
+`aplicados` means *patched*, not *advanced* — read it together with `desconhecidos`.
+
+⚠️ **The two counters get DIFFERENT dispositions, and that asymmetry is the point.**
+A change whose `mensagens.malformados > 0` returns **`fail`**, so the raw `value` is
+persisted to `notificacoesWhatsapp` and can be re-driven after
+`incomingMessageSchema` is widened; `statuses.malformados` alone still **resolves**.
+A dropped status is re-derivable (the next callback for that wamid re-stamps
+`estadoEnvio`), while a dropped message is a customer message that **exists nowhere
+else** — this channel carries the replay body for exactly that reason, and resolving
+would leave the recovery path unused in the one case it was built for. The messages
+that DID parse are already written and every id is deterministic, so a replay
+converges rather than duplicating.
 
 ### Locating an outbound mensagem for a status callback (PR-3 contract)
 

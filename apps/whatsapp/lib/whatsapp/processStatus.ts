@@ -20,7 +20,12 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { mensagemCollection } from '@delfrance/data/admin/collections';
 import { ESTADO_ENVIO, type EstadoEnvioMensagem } from '@delfrance/schemas';
-import type { valuePayloadSchema } from '@delfrance/integrations-whatsapp-cloud-api';
+import {
+  narrowWaStatus,
+  WA_STATUS_DESCONHECIDO,
+  type valuePayloadSchema,
+  type WaStatus,
+} from '@delfrance/integrations-whatsapp-cloud-api';
 
 import { conversaDocId, mensagemDocId, senderId } from './ids';
 
@@ -49,17 +54,14 @@ function toEpochMs(v: unknown): number | null {
  * (`true` = the legacy `break`) or skipped (`false` = the legacy `continue`). A
  * status strictly newer than the last update bypasses this and always applies.
  *
- * ⚠️ The parameter is the webhook's own literal union, not `string`, so the
- * exhaustiveness check covers this switch — widened to `string` the `deleted`
- * arm below would be indistinguishable from a `default`. Safe at runtime too:
- * `statusUpdateSchema.status` is a `z.enum`, so a value outside the five never
- * reaches here parsed (and an unparsed one would fall out returning `undefined`,
- * which is falsy — the same "skip" the old `default` gave).
+ * ⚠️ The parameter is a literal union, not `string`, so the exhaustiveness check
+ * covers this switch — widened to `string` the `deleted` arm below would be
+ * indistinguishable from a `default`. `statusUpdateSchema.status` is now the RAW
+ * wire string (an enum there discarded whole deliveries), so the union is
+ * restored by `narrowWaStatus` at the one call site instead: every value outside
+ * the documented five arrives here as `desconhecido`.
  */
-function shouldApplyStale(
-  status: 'sent' | 'delivered' | 'read' | 'failed' | 'deleted',
-  estado: EstadoEnvioMensagem,
-): boolean {
+function shouldApplyStale(status: WaStatus, estado: EstadoEnvioMensagem): boolean {
   switch (status) {
     case 'sent':
       return false; // a stale 'sent' is always ignored
@@ -75,6 +77,12 @@ function shouldApplyStale(
       return estado !== ESTADO_ENVIO.erro;
     case 'deleted':
       return false; // a stale 'deleted' is always ignored
+    case WA_STATUS_DESCONHECIDO:
+      // We do not know what this status MEANS, so we cannot know that applying
+      // it moves the mensagem forward. A stale unknown is ignored — the same
+      // conservative direction as 'sent' and 'deleted'. A FRESH one still
+      // applies (it never reaches here) and lands on `desconhecido` below.
+      return false;
   }
 }
 
@@ -100,9 +108,10 @@ function mapError(e: unknown): {
 
 /**
  * What a `statuses[]` batch ACTUALLY did. Every iteration of the loop below hits
- * exactly one of these three, so they sum to `statuses.length` — and a
- * present-but-EMPTY `statuses: []` (truthy, so this function still runs) yields
- * all zeros, which is itself the honest answer and one no enum value could give.
+ * exactly one of the four FATE counters, so they sum to `statuses.length` — and
+ * a present-but-EMPTY `statuses: []` (truthy, so this function still runs)
+ * yields all zeros, which is itself the honest answer and one no enum value
+ * could give. `desconhecidos` is the one exception to that sum; see below.
  *
  * ⚠️ A COUNT, not a `MessagesFieldOutcome` member, and that is the whole point:
  * one batch can carry several entries with DIFFERENT fates, which a single enum
@@ -125,7 +134,13 @@ function mapError(e: unknown): {
  * same ambiguity, one level down, that `detail` was added to remove.
  */
 export interface StatusesReport {
-  /** The mensagem was found and patched — the one `merge()` in the loop. */
+  /**
+   * The mensagem was found and patched — the one `merge()` in the loop.
+   *
+   * ⚠️ "Patched", not "advanced": an entry counted here whose `desconhecidos`
+   * overlay is set moved only the `lastExternalUpdateDateTime` watermark, never
+   * `estadoEnvio`. Read the two counters together.
+   */
   aplicados: number;
   /** Soft miss: no mensagem at the deterministic id. Also `console.warn`ed per status. */
   naoEncontrados: number;
@@ -135,6 +150,35 @@ export interface StatusesReport {
    * same phenomenon — one concept, one vocabulary, across the log family.
    */
   staleIgnorados: number;
+  /**
+   * The entry itself failed `statusUpdateSchema` and arrived as `null` (the
+   * `.nullable().catch(null)` on the array element). The FOURTH fate — it joins
+   * the sum above.
+   *
+   * ⚠️ This counter is the whole reason element tolerance is not a silent
+   * upgrade. Before it, the array-wide failure at least took the delivery down
+   * loudly-ish; scoping the failure per element without counting it would
+   * convert data loss into data loss nobody can see.
+   */
+  malformados: number;
+  /**
+   * The entry parsed, but its `status` is not one of the five this pipeline
+   * models, so its `estadoEnvio` was left EXACTLY as it was — only the
+   * `lastExternalUpdateDateTime` watermark advanced.
+   *
+   * ⚠️ NOT a fate, and deliberately OUTSIDE the sum above — it is a property of
+   * the INPUT that overlaps whichever fate the entry then met (usually
+   * `aplicados`, or `staleIgnorados` when the out-of-order guard refused it).
+   * Folding it into the fates would break the one invariant that makes the other
+   * four readable at a glance.
+   *
+   * A nonzero value here is the signal that Meta has shipped a `status` we do
+   * not model — the event this whole schema change exists to survive. The
+   * per-entry `console.warn` beside it carries the raw token; this carries the
+   * rate, which is what tells an operator whether it is a one-off or the new
+   * normal.
+   */
+  desconhecidos: number;
 }
 
 /**
@@ -160,10 +204,39 @@ export async function processStatuses(
   const displayPhone = value.metadata.display_phone_number;
   const statuses = value.statuses ?? [];
   const valueErrors = value.errors ?? null;
-  const out: StatusesReport = { aplicados: 0, naoEncontrados: 0, staleIgnorados: 0 };
+  const out: StatusesReport = {
+    aplicados: 0,
+    naoEncontrados: 0,
+    staleIgnorados: 0,
+    malformados: 0,
+    desconhecidos: 0,
+  };
 
   for (let i = 0; i < statuses.length; i++) {
-    const status = statuses[i]!;
+    const status = statuses[i];
+    // The element failed `statusUpdateSchema`. Scoped to itself by the array's
+    // `.nullable().catch(null)` — its siblings, and any `messages[]` riding in
+    // the same change, are processed normally. Counted so the drop is visible.
+    if (status == null) {
+      console.warn('[whatsapp] status ignorado — entrada malformada', { indice: i });
+      out.malformados += 1;
+      continue;
+    }
+
+    // The raw wire value folded onto the closed set the switches below cover.
+    // `status.status` stays available for the log: `narrowWaStatus` is EXACT, so
+    // anything Meta added after this pipeline was written reads as `desconhecido`
+    // here while the warn still names what actually arrived.
+    const estadoWa = narrowWaStatus(status.status);
+    if (estadoWa === WA_STATUS_DESCONHECIDO) {
+      console.warn('[whatsapp] status desconhecido — gravando como desconhecido', {
+        mid: status.id,
+        // Meta's own status token, never message content.
+        status: status.status,
+      });
+      out.desconhecidos += 1;
+    }
+
     const sender = senderId(displayPhone, status.recipient_id);
     const conversaId = conversaDocId(contaId, sender);
     const msgId = mensagemDocId(contaId, status.id);
@@ -188,18 +261,14 @@ export async function processStatuses(
 
     // Out-of-order guard: only when the incoming status is NOT newer than the
     // last applied one does the forward-only matrix gate it.
-    if (
-      lastMs != null &&
-      lastMs >= statusTs &&
-      !shouldApplyStale(status.status, mensagem.estadoEnvio)
-    ) {
+    if (lastMs != null && lastMs >= statusTs && !shouldApplyStale(estadoWa, mensagem.estadoEnvio)) {
       out.staleIgnorados += 1;
       continue;
     }
 
     // millisecondsSinceEpoch INT wire format (#484/#486); `statusTs` is already ms.
     const patch: Record<string, unknown> = { lastExternalUpdateDateTime: statusTs };
-    switch (status.status) {
+    switch (estadoWa) {
       case 'sent':
         patch.estadoEnvio = ESTADO_ENVIO.enviando;
         break;
@@ -222,10 +291,36 @@ export async function processStatuses(
         // status update; nothing backfills them.
         patch.estadoEnvio = ESTADO_ENVIO.excluido;
         break;
-      default:
-        // Unreachable through `statusUpdateSchema`'s enum; an unparsed value
-        // still lands somewhere honest rather than leaving `estadoEnvio` unset.
-        patch.estadoEnvio = ESTADO_ENVIO.desconhecido;
+      case WA_STATUS_DESCONHECIDO:
+        // ⚠️ Deliberately writes NO `estadoEnvio`. The watermark above still
+        // advances (we did learn Meta emitted an event at this instant) and
+        // `desconhecidos` still counts it — but the STATE is not ours to guess.
+        //
+        // This arm was a `default` stamping `ESTADO_ENVIO.desconhecido`, and its
+        // stated reason — "rather than leaving `estadoEnvio` unset" — cannot
+        // apply here: `processStatuses` returns early when the doc does not
+        // exist, so the mensagem ALWAYS has a state already. Writing the
+        // sentinel therefore never fills a gap; it can only DESTROY a state we
+        // know, and nothing backfills `estadoEnvio`.
+        //
+        // That would be the NORMAL path, not a rare one. The out-of-order guard
+        // consults `shouldApplyStale` only when the incoming status is NOT
+        // newer, so a status Meta adds LATER in the lifecycle (a post-`read`
+        // event, say) carries the newest timestamp, bypasses the guard, and
+        // would collapse a message the customer demonstrably READ into "we have
+        // no idea" — permanently.
+        //
+        // It also moved an outbound mensagem OUT of `ESTADO_ENVIO_SAIDA`
+        // (salva/enviando/enviado/erro — `desconhecido` is not a member).
+        // `mensagemEhNossa` returns early for WhatsApp so the bubble does not
+        // flip today, but its documented fallback for an unknown origem is
+        // `ehEstadoDeSaida`, which would put one of OUR messages on the
+        // contact's side.
+        //
+        // Same principle as `narrowWaStatus` being exact: a confident wrong
+        // state is worse than an honest unknown — and here the honest answer is
+        // to keep the last state we actually understood and say so in the log.
+        break;
     }
 
     const errors = [...(mensagem.errors ?? [])];

@@ -59,22 +59,22 @@ The e2e suite additionally needs the Firebase env vars in the root
 [Running tests](apps/docs/src/content/docs/getting-started/running-tests.md)
 guide for the full walkthrough.
 
-## Adding a plugin (tax / invoice / payment)
+## Adding an integration (marketplace / payment / freight / fiscal)
 
-See `apps/docs/src/content/docs/guides/plugin-authoring.md`. High level:
+⚠️ **None of them is a plugin — there is no plugin system.** Start at
+`apps/docs/src/content/docs/guides/integration-authoring.md`, which routes each case.
+In short: a marketplace is one App Hosting backend (`apps/<channel>`) declared by a
+row in `MARKETPLACE_TIPO_CAPS` — see ADR 0015 and the `marketplace-integration`
+skill; a freight provider is a `FREIGHT_TIPO_CAPS` row plus a provider module — see
+the `freight-integrations` skill; a payment provider mirrors `apps/mercado-pago`,
+following the procedure on `tipoIntegracaoPgtoSchema`; fiscal behaviour lives in
+`packages/integrations/nfe` paired with `apps/nfe`.
 
-1. Implement the relevant contract from `@delfrance/plugin-sdk`.
-2. Register it through `defineIntegration`.
-
-## Adding a sales channel or a freight provider
-
-⚠️ **Neither is a plugin.** A marketplace is one App Hosting backend
-(`apps/<channel>`) declared by a row in `MARKETPLACE_TIPO_CAPS` — see ADR 0015 and
-the `marketplace-integration` skill. A freight provider is a `FREIGHT_TIPO_CAPS`
-row plus a provider module — see the `freight-integrations` skill. Both had a
-plugin contract once (`MarketplaceChannel`, `FreightProvider`); both had it
-deleted, because a registry interface in `packages/core` cannot express work that
-needs Firestore.
+Five plugin contracts were declared here over time and all five were deleted —
+`FreightProvider` (#262), `MarketplaceChannel` (#815), `PaymentGateway` (#1429),
+`TaxProvider` and `InvoiceProvider` (#1444) — because a registry interface in
+`packages/core` cannot express work that needs Firestore, Storage and a token
+refresher. `@delfrance/plugin-sdk` and `PluginRegistry` went with them.
 
 ## Reporting security issues
 

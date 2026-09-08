@@ -94,6 +94,20 @@ export async function POST(req: Request): Promise<NextResponse> {
   // Not a WhatsApp envelope (or no changes) → ack without enqueuing.
   const payloads = parseWebhookBody(body);
   if (!payloads || payloads.length === 0) {
+    // ⚠️ This branch was the ONE silent exit in the receiver — no enqueue, no
+    // persist, and no log either, unlike the `JSON.parse` branch above it. It
+    // acked 200 (so Meta never retries) leaving the delivery with no record
+    // anywhere. `webhookEnvelopeSchema` is now a structural skeleton, so a
+    // rejection here really does mean "not a WhatsApp envelope" rather than "one
+    // field inside it drifted" — but a body Meta signed and we could not read is
+    // exactly the thing that must not pass unnoticed.
+    console.warn(
+      '[whatsapp/webhook] body assinado sem mudanças processáveis — ack sem enfileirar',
+      {
+        // Structural only. Never the body: it carries customer message content.
+        envelope: payloads ? 'sem changes' : 'não reconhecido',
+      },
+    );
     return NextResponse.json({ received: true });
   }
 

@@ -52,7 +52,7 @@ const CONTA_BASE: ShopeeContaStatus = {
   expireTime: Date.UTC(2026, 11, 10, 12),
   diasParaExpirar: 120,
   loja: { shopName: 'Delfrance BR', region: 'BR', status: 'NORMAL' },
-  credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: false },
+  credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: false, renovacaoFalhou: false },
 };
 
 function renderPanel(conta: ShopeeContaStatus): void {
@@ -81,31 +81,70 @@ describe('ContaShopeePanel — connected', () => {
     expect(screen.getByRole('button', { name: 'Reautenticar' })).toBeTruthy();
   });
 
-  it('falls back to the id when the shop NAME is missing, and says why', async () => {
-    // `loja` is a side read that needs a live ~4 h access token; when it is dead
-    // the panel still knows WHICH shop this is, and the credential line is what
-    // stops the missing name reading as a broken conta.
+  it('falls back to the id when the shop NAME is missing, and calls the expiry harmless', async () => {
+    // `loja` is a side read that needs a live ~4 h access token; a read that
+    // lands while the renewal has not happened yet still knows WHICH shop this
+    // is, and the credential line is what stops the missing name reading as a
+    // broken conta. The renewal is automatic, so this copy asks for nothing.
     renderPanel({
       ...CONTA_BASE,
       loja: null,
-      credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: true },
+      credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: true, renovacaoFalhou: false },
     });
 
     // The id is the whole identity here, shown ONCE — `Loja 220099 · #220099`
     // is the near-miss this pins against.
     expect(await screen.findByText('Loja #220099')).toBeTruthy();
     expect(screen.queryByText(/220099 · #220099/)).toBeNull();
-    expect(screen.getByText(/Token de acesso expirado/)).toBeTruthy();
-    expect(screen.getByText(/renovação automática do token/)).toBeTruthy();
+    expect(screen.getByText(/Token de acesso expirado no momento da leitura/)).toBeTruthy();
+    expect(screen.getByText(/não é preciso fazer nada/)).toBeTruthy();
+    // And it is NOT the alarming one: an expiry alone must never send the
+    // operator to Reautenticar.
+    expect(screen.queryByText(/a Shopee recusou a renovação/)).toBeNull();
   });
 
-  it('does NOT show the credential line while the token is alive', async () => {
-    // The near-miss of the case above: `credencial.expirada === false` is the
-    // healthy state and must stay silent, or the panel cries wolf on every conta.
+  it('⭐ paints a REFUSED renewal red and points at Reautenticar — never the reassuring line', async () => {
+    // The only credential state an operator can act on. Ordering is the whole
+    // assertion: a conta whose renewal was refused is expired too, so a panel
+    // that checked `expirada` first would tell this operator that nothing needs
+    // doing while the integration is dead.
+    renderPanel({
+      ...CONTA_BASE,
+      loja: null,
+      credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: true, renovacaoFalhou: true },
+    });
+
+    const linha = await screen.findByText(/a Shopee recusou a renovação/);
+    // Red, not dimmed: this is the one line on the card that asks for a click,
+    // and `c="dimmed"` would file it beside the four informational ones.
+    expect(linha.getAttribute('style')).toContain('red');
+    expect(screen.getByText(/clique em Reautenticar/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reautenticar' })).toBeTruthy();
+    expect(screen.queryByText(/não é preciso fazer nada/)).toBeNull();
+  });
+
+  it('shows the red line even when the stored token has not lapsed yet', async () => {
+    // `renovacaoFalhou` does not wait for `expirada`: the refusal is the fact
+    // that matters, and the panel must not go quiet for the tail of a token
+    // that can no longer be renewed.
+    renderPanel({
+      ...CONTA_BASE,
+      credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: false, renovacaoFalhou: true },
+    });
+
+    expect(await screen.findByText(/a Shopee recusou a renovação/)).toBeTruthy();
+  });
+
+  it('⚠️ NEAR MISS — says NOTHING while the token is alive and renewing fine', async () => {
+    // The control on both cases above: the healthy state is `expirada: false`
+    // AND `renovacaoFalhou: false`, and it must stay silent, or the panel cries
+    // wolf on every conta. A component that rendered either line unconditionally
+    // would pass every other case in this block.
     renderPanel(CONTA_BASE);
 
     expect(await screen.findByText('Conectada')).toBeTruthy();
     expect(screen.queryByText(/Token de acesso expirado/)).toBeNull();
+    expect(screen.queryByText(/a Shopee recusou a renovação/)).toBeNull();
   });
 
   it('renders a main-account consent, which carries no shop id at all', async () => {
@@ -205,7 +244,7 @@ describe('ContaShopeePanel — disconnected', () => {
       expireTime: null,
       diasParaExpirar: null,
       loja: null,
-      credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: false },
+      credencial: { expiraEm: Date.UTC(2026, 0, 10, 16), expirada: false, renovacaoFalhou: false },
     });
 
     expect(await screen.findByText('Não conectada')).toBeTruthy();

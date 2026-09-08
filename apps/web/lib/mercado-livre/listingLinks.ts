@@ -63,6 +63,26 @@ export function isStockLatched(link: { estado?: string | null; id?: string | nul
 }
 
 /**
+ * Has Mercado Livre REMOVED this listing? (#1226)
+ *
+ * Reads the derived `estado` rather than the raw `status`/`sub_status` pair,
+ * unlike the schemas-level `moderacaoRemoveuAnuncio` the backend maps WITH. That
+ * is deliberate and it is the same split `isStockLatched` above already uses:
+ * the server decides from ML's answer and stores its verdict; every client
+ * surface then reads the one stored value, so the three controls that key on it
+ * — the disabled Republicar, the "Descartar" button, the strip's notice — can
+ * never disagree with each other or with the backend that refuses the publish.
+ *
+ * ⚠️ It does NOT require an `id`, and the asymmetry with `isStockLatched` is the
+ * point: this estado is only ever written onto a link that HAD one, and the
+ * "Descartar" action clears the id while the doc is mid-transition. Requiring it
+ * would blink the notice off at exactly the moment it explains what happened.
+ */
+export function anuncioRemovidoPorModeracao(link: { estado?: string | null }): boolean {
+  return parseEstado(link.estado) === ESTADO_PUBLICACAO_ML.removidoPorModeracao;
+}
+
+/**
  * The public URL of a published listing.
  *
  * Both models resolve to an **item** page — the only ML level that carries a

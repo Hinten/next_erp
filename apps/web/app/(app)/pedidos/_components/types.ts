@@ -134,10 +134,6 @@ export interface PedidoFormState {
   freteInicial: FreteInicialFormState | null;
   valorCobrado: number | null;
   descontoTotal: number;
-  valorDespesasIncidentes: number | null;
-  valorFretesIncidentes: number | null;
-  valorComissoes: number | null;
-  impostos: number | null;
   timestamp: number | null;
   ultimaModificacao: number | null;
   dataFinalExpedicao: number | null;

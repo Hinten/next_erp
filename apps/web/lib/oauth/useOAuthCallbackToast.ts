@@ -41,7 +41,14 @@ export function oauthCallbackMessage(
   reason: string | null,
   mensagens: Readonly<Record<string, string>>,
 ): string {
-  const conhecido = reason ? mensagens[reason] : undefined;
+  // `Object.hasOwn` (not a bare index read) because the maps are plain object
+  // literals: `mensagens.constructor` resolves to an inherited FUNCTION, which is
+  // truthy, so a `?reason=constructor` would be returned as the message and render
+  // an empty red toast instead of the unknown-reason fallback. The slug alphabet
+  // does not save us — the lookup happens before it, and `constructor`/`__proto__`
+  // both match `SLUG_SEGURO` anyway.
+  const conhecido =
+    reason !== null && Object.hasOwn(mensagens, reason) ? mensagens[reason] : undefined;
   if (conhecido) return conhecido;
   return reason && SLUG_SEGURO.test(reason)
     ? `Motivo não reconhecido (${reason}).`

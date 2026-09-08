@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ESTADO_PUBLICACAO_ML } from '@delfrance/schemas';
 import {
   ML_ATTR_SKU_PAI_NOME,
   ML_PRODUTO_DERIVED_ATTRIBUTE_IDS,
@@ -16,7 +17,6 @@ import {
   attributeToMercadoLivre,
 } from '../src/mapping/attributes';
 import {
-  ESTADO_PUBLICACAO,
   buildItemPayload,
   buildUserProductItemPayload,
   estadoFromMlStatus,
@@ -693,12 +693,33 @@ describe('buildItemPayload / buildUserProductItemPayload — shipping mode', () 
 
 describe('estadoFromMlStatus', () => {
   it('maps the ML statuses to the old short-code estados', () => {
-    expect(estadoFromMlStatus('active')).toBe(ESTADO_PUBLICACAO.publicado);
-    expect(estadoFromMlStatus('paused')).toBe(ESTADO_PUBLICACAO.pausado);
-    expect(estadoFromMlStatus('closed')).toBe(ESTADO_PUBLICACAO.cancelado);
-    expect(estadoFromMlStatus('under_review')).toBe(ESTADO_PUBLICACAO.underReview);
-    expect(estadoFromMlStatus('weird_new_status')).toBe(ESTADO_PUBLICACAO.error);
-    expect(estadoFromMlStatus(null)).toBe(ESTADO_PUBLICACAO.error);
+    expect(estadoFromMlStatus('active', null)).toBe(ESTADO_PUBLICACAO_ML.publicado);
+    expect(estadoFromMlStatus('paused', ['out_of_stock'])).toBe(ESTADO_PUBLICACAO_ML.pausado);
+    expect(estadoFromMlStatus('closed', null)).toBe(ESTADO_PUBLICACAO_ML.cancelado);
+    expect(estadoFromMlStatus('under_review', null)).toBe(ESTADO_PUBLICACAO_ML.emRevisao);
+    expect(estadoFromMlStatus('weird_new_status', null)).toBe(ESTADO_PUBLICACAO_ML.erro);
+    expect(estadoFromMlStatus(null, null)).toBe(ESTADO_PUBLICACAO_ML.erro);
+  });
+
+  it('maps under_review + forbidden to the terminal removal state (#1226)', () => {
+    expect(estadoFromMlStatus('under_review', ['forbidden'])).toBe(
+      ESTADO_PUBLICACAO_ML.removidoPorModeracao,
+    );
+  });
+
+  /**
+   * ⚠️ The near-miss, and the reason the removal arm sits ABOVE the coarse
+   * `under_review` case rather than beside it: every OTHER review sub_status
+   * must still land on `emRevisao`, because those listings are savable and
+   * `linkHasLiveListing` has to keep them in both ML sweeps.
+   */
+  it('leaves every other under_review sub_status on emRevisao', () => {
+    for (const sub of ['waiting_for_patch', 'held', 'pending_documentation', 'suspended']) {
+      expect(estadoFromMlStatus('under_review', [sub])).toBe(ESTADO_PUBLICACAO_ML.emRevisao);
+    }
+    // `forbidden` under a status ML has settled is not a removal either.
+    expect(estadoFromMlStatus('paused', ['forbidden'])).toBe(ESTADO_PUBLICACAO_ML.pausado);
+    expect(estadoFromMlStatus('active', ['forbidden'])).toBe(ESTADO_PUBLICACAO_ML.publicado);
   });
 });
 

@@ -16,6 +16,11 @@ export {
 } from './client';
 export {
   WEBHOOK_FIELD_MESSAGES,
+  WA_STATUS_KNOWN,
+  WA_STATUS_DESCONHECIDO,
+  narrowWaStatus,
+  type WaKnownStatus,
+  type WaStatus,
   incomingMessageSchema,
   statusUpdateSchema,
   valuePayloadSchema,
