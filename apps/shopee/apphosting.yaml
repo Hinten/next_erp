@@ -1,9 +1,10 @@
 # Firebase App Hosting backend config for apps/shopee.
 # API-only service for the Shopee Open Platform channel integration: OAuth
-# connect, account status, the access-token refresh and the cached taxonomy
-# reads today (steps 1-2 and 10 of the master plan); the push receiver and
-# heavier async work land in later steps, dispatched to a nested Cloud
-# Functions codebase the way apps/mercado-livre does.
+# connect, account status, the access-token refresh, the cached taxonomy reads
+# (steps 1-2 and 10 of the master plan) and — since step 3 — the push receiver
+# at /api/webhooks/shopee, which acks fast and dispatches the work to the
+# nested Cloud Functions codebase (apps/shopee/functions) the way
+# apps/mercado-livre does.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -14,25 +15,27 @@ runConfig:
   #
   # Shopee's push notification waits roughly 3 s for a 2xx with an EMPTY body,
   # and a cold Next instance has to boot Next.js, load the route module,
-  # initialise firebase-admin and (once the receiver exists) issue an
-  # HTTPS enqueue RPC before it can ack — a 2–6 s cold boot. Shopee's own
-  # retry ladder is +5 min / +30 min / +3 h, and it disables a subscription
-  # after more than 600 pushes in 6 hours with under 30% success — after
-  # which nothing is redelivered.
+  # initialise firebase-admin and issue an HTTPS enqueue RPC before it can ack
+  # — a 2–6 s cold boot. Shopee's own retry ladder is +5 min / +30 min / +3 h,
+  # and it disables a subscription after more than 600 pushes in 6 hours with
+  # under 30% success — after which nothing is redelivered.
   #
   # What was rejected: `minInstances: 1` — one always-on Cloud Run instance at
   # the `cpu: 1` / `memoryMiB: 512` configured below, billed at the idle
   # vCPU-second + GiB-second rates for every channel backend that adopts the
   # same reasoning.
   #
-  # What is accepted instead: this step ships no receiver yet (that is step
-  # 3), so there is nothing here for a cold start to miss today. When the
-  # receiver lands, the accepted backstops are a lost-push sweep plus a
-  # push-health monitor (step 4) — a missed push is recovered on the next
-  # sweep, not lost. That is a LATENCY cost, not a correctness one.
+  # What is accepted instead: the receiver now EXISTS (step 3), so a cold start
+  # can genuinely miss a push — and a missed push is not lost, because every
+  # push that fails to enqueue is persisted as `failed` and drained by
+  # `reprocessShopeeNotifications` (every 30 min). What that backstop cannot
+  # recover is a push we never received at all; the lost-push sweep and the
+  # push-health monitor that close THAT gap are step 4. Until they ship the
+  # exposure is a cold start on a push Shopee then retries three times over
+  # ~3.5 h — a LATENCY cost, not a correctness one.
   #
-  # Revisit if the monitor reports repeated missed pushes or Shopee actually
-  # disables the subscription.
+  # Revisit if the step-4 monitor reports repeated missed pushes or Shopee
+  # actually disables the subscription.
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
 # No `timeoutSeconds` — every route here today is a fast Firestore read/write
@@ -76,12 +79,55 @@ runConfig:
 #   SHOPEE_PUBLIC_URL       this backend's public origin — used to build the
 #                           OAuth redirect_uri (must match the URI registered
 #                           in the Shopee Open Platform application)
+#   SHOPEE_PUSH_CALLBACK_URL  the EXACT push callback URL registered in the
+#                           Shopee Open Platform console. It goes into the HMAC
+#                           base string byte for byte — a trailing slash or a
+#                           http/https difference changes the digest, so every
+#                           push answers 401. Unset/blank ⇒ the receiver answers
+#                           503 rather than accepting unverified pushes.
+#                           Registration itself is #1534.
+#   SHOPEE_TASKS_REGION     region of processShopeeNotification and its Cloud
+#                           Tasks queue. MUST equal the FUNCTIONS_REGION the
+#                           nested codebase was built with: without the
+#                           region-qualified name the Admin SDK targets
+#                           us-central1 and the task is SILENTLY dropped while
+#                           the receiver still answers 204 (#1108). App Hosting
+#                           does not expose its own region as an env var, so
+#                           there is nothing to derive it from.
+#   SHOPEE_TASKS_DISABLED   OPTIONAL — exactly "1" turns the enqueue off; the
+#                           receiver then persists every push as `failed` and
+#                           the 30-minute reprocess sweep drains it (sweep-only
+#                           mode). Use before the functions IAM is granted;
+#                           never a silent drop.
 #   WEB_APP_URL             apps/web origin (the callback redirects back here)
 #   ALLOWED_ADMIN_ORIGINS   CSV of apps/web origins for CORS. ⚠️ REQUIRED in
 #                           prod: localhost is no longer implicitly allowed
 #                           (#821/T5), so an unset value allows NO origin at all.
 
 env:
+  # Region of `processShopeeNotification` and its Cloud Tasks queue, read by the
+  # receiver's enqueuer (lib/shopee/shopeeTasks.ts).
+  #
+  # ⚠️ DELIBERATELY BLANK, and blank is the SAFE state. `requireRegion` treats a
+  # blank as unset and falls through to FUNCTIONS_REGION, which App Hosting does
+  # not set — so today the enqueue THROWS, the receiver persists the push as
+  # `failed`, and the 30-minute sweep drains it. Nothing is lost. Baking a region
+  # here before the functions codebase is actually deployed would buy the
+  # opposite: a well-formed queue path pointing at a queue that does not exist,
+  # which the Admin SDK resolves to us-central1 and DROPS silently while the
+  # route still answers 204 (#1108). A refused enqueue is recoverable; a dropped
+  # one is not even visible.
+  #
+  # Fill it in — here or in the console — in the SAME change that deploys
+  # apps/shopee/functions (step 22, #1530), with the value
+  # `node tools/deploy-env/preflight.mjs shopee` prints for FUNCTIONS_REGION in
+  # the deploying shell. The two must be equal; App Hosting exposes no region
+  # variable of its own, so there is nothing to derive it from.
+  - variable: SHOPEE_TASKS_REGION
+    value: ''
+    availability:
+      - RUNTIME
+
   - variable: SHOPEE_PARTNER_ID
     secret: SHOPEE_PARTNER_ID
     availability:
