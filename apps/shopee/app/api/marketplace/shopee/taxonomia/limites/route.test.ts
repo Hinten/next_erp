@@ -166,13 +166,12 @@ describe('esta rota NÃO tem trava de folha', () => {
 describe('as bandas no corpo', () => {
   it('projeta as chaves camelCase e passa no contrato', async () => {
     const res = await GET(req({ integracaoId: 'int-1' }, AUTORIZADO));
-    const {
-      scope: _scope,
-      categoryId: _categoryId,
-      gtinLimit: _gtin,
-      supportsPreOrder: _pre,
-      ...limites
-    } = (await res.json()) as Record<string, unknown>;
+    const body = (await res.json()) as Record<string, unknown>;
+    // NESTED under `limites`, the kit route's envelope — never spread at the
+    // top level, so one client helper reads both answers.
+    const limites = body.limites as Record<string, unknown>;
+    expect(limites).not.toBeNull();
+    expect(body).not.toHaveProperty('priceLimit');
 
     expect(limites.priceLimit).toEqual({ min: 1.5, max: 9999.99 });
     expect(limites.stockLimit).toEqual({ min: 0, max: 999 });
@@ -216,7 +215,7 @@ describe('as bandas no corpo', () => {
     const body = (await res.json()) as Record<string, unknown>;
 
     expect(body).toHaveProperty('supportsPreOrder', false);
-    expect(body.dtsLimit).toEqual({
+    expect((body.limites as Record<string, unknown>).dtsLimit).toEqual({
       daysToShipLimit: { min: 1, max: -1 },
       nonPreOrderDaysToShip: 2,
     });

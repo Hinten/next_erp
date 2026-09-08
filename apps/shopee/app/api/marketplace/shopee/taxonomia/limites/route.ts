@@ -11,6 +11,10 @@
  * distinctly from every id, so the shop-wide answer can never be served for a
  * category or the other way round.
  *
+ * The bands travel NESTED under `limites`, the same envelope the kit route
+ * uses, so step 21 reads both answers with one client helper; `gtinLimit` and
+ * `supportsPreOrder` sit beside it because they are derived here, not bands.
+ *
  * ⚠️ **A provider failure SURFACES** (502 through `shopeeErrorResponse`); this
  * route never answers `limites: null`. Step 11 composes a publish payload from
  * these numbers, and a `null` here would leave it choosing between stopping and
@@ -50,7 +54,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     return NextResponse.json({
       scope: id === null ? 'shop' : 'category',
       categoryId: id,
-      ...limites,
+      limites,
       gtinLimit,
       // ⚠️ DERIVED from the `-1` sentinel on `days_to_ship_limit` (guide 209 §4),
       // and NOT Shopee's `support_pre_order` — that boolean is declared on the

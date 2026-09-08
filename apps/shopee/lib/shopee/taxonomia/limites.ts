@@ -168,6 +168,17 @@ export function faixa(banda: ShopeeFaixa | null | undefined): FaixaDto | null {
  * ⚠️ BOTH ends are checked. Guide 209 §4 documents `-1` on `days_to_ship_limit`;
  * it does not say which end carries it, and a negative bound is meaningless as a
  * number of days either way.
+ *
+ * ⚠️ `-1` is the ONLY documented signal. Guide 209 §4, verbatim: "If
+ * days_to_ship_limit min_limit and max_limit return a value of -1, it means that
+ * the category does not support pre-sale, when the return value is greater than
+ * 0, this category can fill in the range of pre-sale days. If the category does
+ * not support pre-sales, the non_pre_order_days_to_ship parameter will return
+ * the shipping days set by Shopee for this category." So
+ * `non_pre_order_days_to_ship` is the window used WHEN pre-sale is off, not a
+ * second way of saying it is off; a `max` at or below it is undocumented and is
+ * deliberately not read as "no pre-sale" here — step 11, the consumer, settles
+ * it against a live category if Shopee ever answers that shape.
  */
 export function suportaPreVenda(
   dts: { readonly days_to_ship_limit?: ShopeeFaixa | null } | null | undefined,
