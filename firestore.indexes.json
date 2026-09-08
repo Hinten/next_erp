@@ -964,6 +964,32 @@
       ]
     },
     {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "filialId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_emissao",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.tpNF",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.finNFe",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "cartacorrecao",
       "queryScope": "COLLECTION_GROUP",
       "fields": [

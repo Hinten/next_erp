@@ -1,4 +1,16 @@
 export {
+  FUSO_FISCAL,
+  competenciaAnterior,
+  competenciaDe,
+  formatCompetencia,
+  inicioDaCompetencia,
+  janelaDaCompetencia,
+  janelaRbt12,
+  parseCompetencia,
+  proximaCompetencia,
+  type Competencia,
+} from './competencia';
+export {
   ANEXO_I,
   ANEXO_II,
   TABELAS_SIMPLES,
@@ -15,6 +27,7 @@ export {
   rbt12Proporcional,
   receitaBrutaDeNota,
   sinalDaReceita,
+  sinalDe,
   type ResultadoAliquota,
   type SemAliquota,
 } from './aliquota';

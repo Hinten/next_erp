@@ -131,7 +131,18 @@ export function receitaBrutaDeNota(totais: NFeTotais): number {
  * vez de descobrir a diferença no PGDAS-D.
  */
 export function sinalDaReceita(totais: NFeTotais): -1 | 0 | 1 {
-  const { tpNF, finNFe } = totais;
+  return sinalDe(totais.tpNF, totais.finNFe);
+}
+
+/**
+ * O mesmo julgamento a partir do PAR de códigos, sem a nota inteira.
+ *
+ * Existe porque o agregado mensal recebe do Firestore grupos `(tpNF, finNFe)`
+ * com as somas já feitas — nunca notas individuais. Sem isto a regra seria
+ * reescrita lá, e duas cópias de uma tabela de sinais divergem em silêncio:
+ * a soma continua saindo, só sai errada.
+ */
+export function sinalDe(tpNF: NFeTotais['tpNF'], finNFe: NFeTotais['finNFe']): -1 | 0 | 1 {
   if (tpNF === 1) return finNFe === 1 || finNFe === 2 ? 1 : 0;
   return finNFe === 4 ? -1 : 0;
 }
