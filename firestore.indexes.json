@@ -986,6 +986,10 @@
         {
           "fieldPath": "totais.finNFe",
           "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.receitaBruta",
+          "order": "ASCENDING"
         }
       ]
     },

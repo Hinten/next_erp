@@ -9,13 +9,14 @@ import {
   impostoDaReceita,
   impostoEstimadoDaNota,
   rbt12Proporcional,
+  receitaBrutaDeComponentes,
   receitaBrutaDeNota,
   sinalDaReceita,
 } from './aliquota';
 import { ANEXO_I, ANEXO_II, TABELAS_SIMPLES, TETO_SIMPLES_NACIONAL } from './tabelas';
 
 function totais(over: Partial<NFeTotais> = {}): NFeTotais {
-  return {
+  const base: NFeTotais = {
     vProd: 100,
     vDesc: 0,
     vST: 0,
@@ -26,9 +27,14 @@ function totais(over: Partial<NFeTotais> = {}): NFeTotais {
     vNF: 100,
     tpNF: 1,
     finNFe: 1,
+    receitaBruta: 100,
     rtc: null,
     ...over,
   };
+  // The fixture keeps the stored field consistent with its own components, the
+  // way `extrairTotaisNFe` does — otherwise every test would silently exercise
+  // a document shape that cannot exist.
+  return { ...base, receitaBruta: over.receitaBruta ?? receitaBrutaDeComponentes(base) };
 }
 
 // ── The faixa boundaries ──────────────────────────────────────────────────
@@ -203,6 +209,34 @@ describe('rbt12Proporcional', () => {
 });
 
 // ── NF-e → receita bruta ──────────────────────────────────────────────────
+// ── The stored field vs the definition ────────────────────────────────────
+//
+// `receitaBrutaDeNota` READS `totais.receitaBruta`; `extrairTotaisNFe` WRITES
+// it from `receitaBrutaDeComponentes`. Two functions over the same quantity is
+// exactly the drift this repo warns about, so the agreement is asserted rather
+// than assumed.
+describe('the stored receitaBruta agrees with the definition', () => {
+  it.each([
+    ['plain sale', { vProd: 1000, vDesc: 0, vFrete: 0, vSeg: 0, vOutro: 0 }],
+    ['with discount and freight', { vProd: 1000, vDesc: 100, vFrete: 50, vSeg: 10, vOutro: 5 }],
+    ['discount exceeding products', { vProd: 100, vDesc: 500, vFrete: 0, vSeg: 0, vOutro: 0 }],
+    ['centavo-level', { vProd: 0.07, vDesc: 0.02, vFrete: 0.01, vSeg: 0, vOutro: 0 }],
+  ])('%s', (_label, comp) => {
+    const t = totais(comp);
+    expect(receitaBrutaDeNota(t)).toBe(receitaBrutaDeComponentes(comp));
+  });
+
+  it('reading a note does NOT recompute — a stored value that disagrees is returned as stored', () => {
+    // Deliberately constructing an impossible document: if `receitaBrutaDeNota`
+    // silently recomputed, this would come back 1000 and the drift between the
+    // aggregate (which sums the stored field) and per-note reads would be
+    // invisible. Returning the stored value is what makes a disagreement
+    // detectable at all.
+    const inconsistente = { ...totais({ vProd: 1000 }), receitaBruta: 7 };
+    expect(receitaBrutaDeNota(inconsistente)).toBe(7);
+  });
+});
+
 describe('receitaBrutaDeNota', () => {
   it('produtos − desconto + frete + seguro + outras', () => {
     expect(

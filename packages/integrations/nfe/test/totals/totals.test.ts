@@ -64,6 +64,9 @@ describe('extrairTotaisNFe', () => {
       vNF: 271.5,
       tpNF: 1,
       finNFe: 1,
+      // 250 − 10 + 20 + 1 + 3 = 264. Deliberately NOT 271,50: receita bruta
+      // excludes ICMS-ST (5) and IPI (2,50), which vNF includes.
+      receitaBruta: 264,
       rtc: null,
     });
   });
@@ -208,6 +211,51 @@ describe('extrairTotaisNFe', () => {
       );
       const ausente = extrairTotaisNFe(nfeProc({ total: { vProd: '10.00', vNF: '10.00' } }));
       expect(explicito?.vST).toBe(ausente?.vST);
+    });
+  });
+
+  describe('receitaBruta — derived in the same write', () => {
+    it('is vProd − vDesc + vFrete + vSeg + vOutro', () => {
+      const t = extrairTotaisNFe(
+        nfeProc({
+          total: {
+            vProd: '1000.00',
+            vDesc: '100.00',
+            vFrete: '50.00',
+            vSeg: '10.00',
+            vOutro: '5.00',
+            vNF: '965.00',
+          },
+        }),
+      );
+      expect(t?.receitaBruta).toBe(965);
+    });
+
+    it('EXCLUDES ICMS-ST and IPI, which vNF includes', () => {
+      // This is the pair that makes the field worth storing: `vNF` is 1300 and
+      // receita bruta is 1000, and a report that reached for `vNF` would
+      // over-declare by exactly the ST plus the IPI.
+      const t = extrairTotaisNFe(
+        nfeProc({ total: { vProd: '1000.00', vST: '200.00', vIPI: '100.00', vNF: '1300.00' } }),
+      );
+      expect(t?.receitaBruta).toBe(1000);
+      expect(t?.vNF).toBe(1300);
+    });
+
+    it('EXCLUDES the RTC tributes — they ride por fora', () => {
+      const rtc =
+        '<IBSCBSTot><vBCIBSCBS>1000.00</vBCIBSCBS><gIBS><vIBS>1.50</vIBS></gIBS>' +
+        '<gCBS><vCBS>13.50</vCBS></gCBS></IBSCBSTot><vNFTot>1015.00</vNFTot>';
+      const t = extrairTotaisNFe(nfeProc({ total: { vProd: '1000.00', vNF: '1000.00' }, rtc }));
+      expect(t?.receitaBruta).toBe(1000);
+      expect(t?.rtc?.vNFTot).toBe(1015);
+    });
+
+    it('can be negative when the discount exceeds the products', () => {
+      const t = extrairTotaisNFe(
+        nfeProc({ total: { vProd: '100.00', vDesc: '500.00', vNF: '0.00' } }),
+      );
+      expect(t?.receitaBruta).toBe(-400);
     });
   });
 

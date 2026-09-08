@@ -130,20 +130,9 @@ describe('estadoDaApuracao', () => {
 
 // ── Reading the aggregate back ────────────────────────────────────────────
 describe('interpretarLinhasDoAgregado', () => {
-  it('builds a group per (filial, tpNF, finNFe)', () => {
+  it('builds a group per (filial, tpNF, finNFe) from the server-side sum', () => {
     const r = interpretarLinhasDoAgregado([
-      {
-        filialId: 'f1',
-        tpNF: 1,
-        finNFe: 1,
-        vProd: 1000,
-        vDesc: 100,
-        vFrete: 50,
-        vSeg: 0,
-        vOutro: 0,
-        nNotas: 3,
-        nIlegiveis: 0,
-      },
+      { filialId: 'f1', tpNF: 1, finNFe: 1, receita: 950, nNotas: 3, nIlegiveis: 0 },
     ]);
     expect(r.grupos).toEqual([{ filialId: 'f1', tpNF: 1, finNFe: 1, receita: 950, notas: 3 }]);
     expect(r.notasIlegiveis).toBe(0);
@@ -154,7 +143,7 @@ describe('interpretarLinhasDoAgregado', () => {
     // null-key group that is revenue for nobody. Counting nIlegiveis only from
     // valid rows would lose exactly the notes the counter exists to surface.
     const r = interpretarLinhasDoAgregado([
-      { filialId: 'f1', tpNF: 1, finNFe: 1, vProd: 100, nNotas: 1, nIlegiveis: 0 },
+      { filialId: 'f1', tpNF: 1, finNFe: 1, receita: 100, nNotas: 1, nIlegiveis: 0 },
       { filialId: 'f1', tpNF: null, finNFe: null, nNotas: 0, nIlegiveis: 5 },
     ]);
     expect(r.grupos).toHaveLength(1);
@@ -162,21 +151,26 @@ describe('interpretarLinhasDoAgregado', () => {
   });
 
   it('skips a row with no filialId rather than inventing one', () => {
-    const r = interpretarLinhasDoAgregado([{ tpNF: 1, finNFe: 1, vProd: 100, nIlegiveis: 0 }]);
+    const r = interpretarLinhasDoAgregado([{ tpNF: 1, finNFe: 1, receita: 100, nIlegiveis: 0 }]);
     expect(r.grupos).toHaveLength(0);
   });
 
-  it('treats an absent component as zero, not NaN', () => {
-    const r = interpretarLinhasDoAgregado([
-      { filialId: 'f1', tpNF: 1, finNFe: 1, vProd: 100, nNotas: 1 },
-    ]);
-    expect(r.grupos[0]?.receita).toBe(100);
+  it('a group whose sum came back absent is zero, not NaN', () => {
+    const r = interpretarLinhasDoAgregado([{ filialId: 'f1', tpNF: 1, finNFe: 1, nNotas: 1 }]);
+    expect(r.grupos[0]?.receita).toBe(0);
     expect(Number.isNaN(r.grupos[0]?.receita)).toBe(false);
+  });
+
+  it('carries a NEGATIVE group sum through — returns exceeding sales are real', () => {
+    const r = interpretarLinhasDoAgregado([
+      { filialId: 'f1', tpNF: 0, finNFe: 4, receita: -250, nNotas: 2, nIlegiveis: 0 },
+    ]);
+    expect(r.grupos[0]?.receita).toBe(-250);
   });
 
   it('rejects an out-of-range tpNF instead of coercing it into a group', () => {
     const r = interpretarLinhasDoAgregado([
-      { filialId: 'f1', tpNF: 7, finNFe: 1, vProd: 100, nIlegiveis: 2 },
+      { filialId: 'f1', tpNF: 7, finNFe: 1, receita: 100, nIlegiveis: 2 },
     ]);
     expect(r.grupos).toHaveLength(0);
     // …but its unreadable count still surfaces.

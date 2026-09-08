@@ -43,6 +43,7 @@ describe('swapAnchorForProc', () => {
       vNF: 108,
       tpNF: 1,
       finNFe: 1,
+      receitaBruta: 108, // 100 − 4 + 12
       rtc: null,
     });
   });

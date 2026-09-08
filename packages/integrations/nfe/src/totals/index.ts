@@ -216,6 +216,10 @@ export function extrairTotaisNFe(xml: string): NFeTotais | null {
     vSeg,
     vOutro,
     vNF,
+    // Derivado no mesmo write — ver `nfeTotaisSchema.receitaBruta` para por que
+    // um derivado se justifica aqui. ICMS-ST, IPI e os tributos RTC ficam de
+    // fora por CONSTRUÇÃO (a soma não os menciona), não por subtração.
+    receitaBruta: roundReais(vProd - vDesc + vFrete + vSeg + vOutro),
     tpNF: Number(tpNFbruto) as NFeTotais['tpNF'],
     finNFe: Number(finNFebruto) as NFeTotais['finNFe'],
     rtc,

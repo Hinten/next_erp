@@ -9,10 +9,16 @@
  * {@link interpretarLinhasDoAgregado}, que é onde a leitura pode errar.
  *
  * ⚠️ **Índice obrigatório**, não opcional:
- * `nfev4(filialId, estado, data_emissao, totais.tpNF, totais.finNFe, …)`,
- * COLLECTION_GROUP. Documento `nfev4` carrega o XML inteiro da NF-e, e o
- * Enterprise cobra DADO VARRIDO — um agregado que precise ler os documentos
- * custa o tamanho do corpus inteiro em vez do tamanho do índice.
+ * `nfev4(filialId, estado, data_emissao, totais.tpNF, totais.finNFe,
+ * totais.receitaBruta)`, COLLECTION_GROUP. Documento `nfev4` carrega o XML
+ * inteiro da NF-e, e o Enterprise cobra DADO VARRIDO — um agregado que precise
+ * ler os documentos custa o corpus inteiro em vez do índice. Somar UM escalar
+ * derivado em vez dos cinco componentes é o que mantém esse índice em 6 campos.
+ *
+ * ⚠️ A cobertura é um JULGAMENTO a partir do contrato da API, não uma medição.
+ * Confirmar exige `execute({ explainOptions: { mode: 'analyze' } })` num projeto
+ * real e ler `snapshot.explainStats.text` — e execução sem resultado NÃO traz
+ * `explainStats`, então a janela sondada precisa casar com linhas de verdade.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 // Pipeline expression builders live in the `/pipelines` subpath (admin SDK).
@@ -53,20 +59,13 @@ export function interpretarLinhasDoAgregado(
     if (tpNF !== 0 && tpNF !== 1) continue;
     if (finNFe !== 1 && finNFe !== 2 && finNFe !== 3 && finNFe !== 4) continue;
 
-    // receita bruta = vProd − vDesc + vFrete + vSeg + vOutro — a mesma
-    // definição de `receitaBrutaDeNota`, aplicada às somas do grupo.
-    const receita =
-      (numero(linha.vProd) ?? 0) -
-      (numero(linha.vDesc) ?? 0) +
-      (numero(linha.vFrete) ?? 0) +
-      (numero(linha.vSeg) ?? 0) +
-      (numero(linha.vOutro) ?? 0);
-
     grupos.push({
       filialId,
       tpNF,
       finNFe,
-      receita,
+      // Já somado pelo servidor a partir de `totais.receitaBruta` — a definição
+      // vive em `receitaBrutaDeComponentes` e é aplicada uma vez, na emissão.
+      receita: numero(linha.receita) ?? 0,
       notas: numero(linha.nNotas) ?? 0,
     });
   }
@@ -107,15 +106,17 @@ export const fetchReceitaSimples: FetchReceita = async (fs: Firestore, args) => 
     )
     .aggregate({
       accumulators: [
-        pipelines.sum('totais.vProd').as('vProd'),
-        pipelines.sum('totais.vDesc').as('vDesc'),
-        pipelines.sum('totais.vFrete').as('vFrete'),
-        pipelines.sum('totais.vSeg').as('vSeg'),
-        pipelines.sum('totais.vOutro').as('vOutro'),
-        pipelines.countIf(pipelines.exists('totais.vNF')).as('nNotas'),
-        // O contador que abre a mão: notas que o `sum` ignorou em silêncio.
-        // Mesma varredura, nenhuma query a mais.
-        pipelines.countIf(pipelines.not(pipelines.exists('totais.vNF'))).as('nIlegiveis'),
+        // UMA soma, do escalar derivado — não cinco somas dos componentes. É o
+        // que permite um índice de 6 campos em vez de 10, e o que mantém o
+        // agregado coberto pelo índice: sem cobertura ele leria os DOCUMENTOS,
+        // e um `nfev4` carrega o XML inteiro da nota.
+        pipelines.sum('totais.receitaBruta').as('receita'),
+        pipelines.countIf(pipelines.exists('totais.receitaBruta')).as('nNotas'),
+        // ⚠️ O contador que abre a mão conta a ausência do campo QUE É SOMADO,
+        // não de um campo qualquer do bloco. `sum` ignora em silêncio o
+        // documento sem `receitaBruta`; contar `vNF` no lugar mediria outra
+        // coisa e deixaria justamente a nota perdida fora da conta.
+        pipelines.countIf(pipelines.not(pipelines.exists('totais.receitaBruta'))).as('nIlegiveis'),
       ],
       groups: ['filialId', 'totais.tpNF', 'totais.finNFe'],
     })

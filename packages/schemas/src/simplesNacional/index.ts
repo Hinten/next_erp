@@ -26,6 +26,7 @@ export {
   impostoDaReceita,
   impostoEstimadoDaNota,
   rbt12Proporcional,
+  receitaBrutaDeComponentes,
   receitaBrutaDeNota,
   sinalDaReceita,
   sinalDe,

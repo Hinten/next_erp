@@ -99,12 +99,36 @@ export function rbt12Proporcional(args: {
  * seguro e demais despesas acessórias.
  *
  * ⚠️ **ICMS-ST e IPI ficam de fora** (LC 123 art. 3º §1º), e é por isso que a
- * conta é montada a partir das PARTES em vez de partir do `vNF` — `vNF` já
+ * definição é montada a partir das PARTES em vez de partir do `vNF` — `vNF` já
  * carrega ambos. Pelo mesmo motivo IBS/CBS/IS não entram: são "por fora" e
- * vivem em `totais.rtc`, que esta soma nunca toca.
+ * vivem em `totais.rtc`, que a soma nunca toca.
  */
 export function receitaBrutaDeNota(totais: NFeTotais): number {
-  return roundReais(totais.vProd - totais.vDesc + totais.vFrete + totais.vSeg + totais.vOutro);
+  // ⚠️ LÊ o campo, não recalcula. O agregado mensal soma `totais.receitaBruta`
+  // direto do índice; se esta função recalculasse a partir dos componentes, ler
+  // UMA nota e somar MIL notas passariam a ter fontes diferentes da mesma
+  // grandeza — e duas fontes divergem devagar, sem nada falhar. Quem grava é
+  // `extrairTotaisNFe`; que ele e a definição abaixo concordem é o que o teste
+  // de `receitaBrutaDeComponentes` trava.
+  return totais.receitaBruta;
+}
+
+/**
+ * A DEFINIÇÃO de receita bruta, sobre componentes soltos — o que
+ * `extrairTotaisNFe` grava em `totais.receitaBruta`.
+ *
+ * Separada de {@link receitaBrutaDeNota} de propósito: uma é a definição, a
+ * outra é a leitura do que foi gravado. O teste que compara as duas é o que
+ * impede o campo gravado de se afastar da fórmula.
+ */
+export function receitaBrutaDeComponentes(c: {
+  readonly vProd: number;
+  readonly vDesc: number;
+  readonly vFrete: number;
+  readonly vSeg: number;
+  readonly vOutro: number;
+}): number {
+  return roundReais(c.vProd - c.vDesc + c.vFrete + c.vSeg + c.vOutro);
 }
 
 /**
