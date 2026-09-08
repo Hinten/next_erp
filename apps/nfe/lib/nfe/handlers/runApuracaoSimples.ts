@@ -65,17 +65,36 @@ export interface ReceitaDaJanela {
    * menor — faixa menor, imposto subdeclarado, todo job verde.
    */
   readonly notasIlegiveis: number;
+  /**
+   * Notas que o agregado VIU mas não soube atribuir: sem `filialId`, ou com um
+   * par `(tpNF, finNFe)` fora do schema. Contam como ilegíveis pelo mesmo
+   * motivo — a receita delas não entrou em RBT12 nenhuma.
+   */
+  readonly notasIndeterminadas: number;
 }
 
 /** O seam do agregado — injetável porque Pipelines não roda no emulador. */
 export type FetchReceita = (
   fs: Firestore,
   args: {
-    readonly filialIds: readonly string[];
     readonly inicioMs: number;
     readonly fimMs: number;
   },
 ) => Promise<ReceitaDaJanela>;
+
+/**
+ * O seam do CONTROLE: quantas NF-e aprovadas há na janela, sem olhar `filialId`
+ * nem nenhum campo de `totais`.
+ *
+ * Existe porque o agregado só consegue contar o que o índice dele entrega, e
+ * um índice composto pode não conter o documento a que falta um dos campos
+ * indexados. Este total vem de outro índice, de dois campos que todo documento
+ * tem — ver o cabeçalho de `fetchReceitaSimples.ts`.
+ */
+export type FetchTotalJanela = (
+  fs: Firestore,
+  args: { readonly inicioMs: number; readonly fimMs: number },
+) => Promise<number>;
 
 export interface ApuracaoPorFilial {
   readonly filialId: string;
@@ -143,6 +162,72 @@ export function dobrarGrupos(grupos: readonly GrupoReceita[]): {
 }
 
 /**
+ * Quantas notas da janela NINGUÉM contou — a soma dos três buracos, em um número.
+ *
+ * `total` vem do controle (uma `countAll()` sobre `estado + data_emissao`);
+ * `vistas` é tudo que o agregado enxergou, atribuído ou não. A diferença só
+ * pode ser documento que o agregado não alcançou, e o caso que a motiva é o
+ * índice composto ESPARSO: se o Enterprise, como o Standard, mantém fora do
+ * índice o documento sem um dos campos indexados, então a nota sem
+ * `totais.receitaBruta` não chega nem ao `countIf` que deveria contá-la, e o
+ * guarda seria vazio. Isto o pega de outro ângulo.
+ *
+ * ⚠️ `max(0, …)` não é paranoia de tipo: as duas execuções são consultas
+ * separadas, e uma emissão que aterrisse entre elas pode fazer o agregado ver
+ * uma nota a mais que o controle. Um número negativo aí viraria um CRÉDITO de
+ * ilegíveis, apagando um bloqueio real vindo de outra fonte.
+ */
+export function notasForaDoAgregado(args: {
+  readonly total: number;
+  readonly vistas: number;
+}): number {
+  return Math.max(0, args.total - args.vistas);
+}
+
+/**
+ * Quantas notas da janela **nenhuma RBT12 vai receber** — a soma dos três
+ * buracos por onde a receita saía calada. Pura, porque é a conta que decide se
+ * uma alíquota pode ser publicada.
+ *
+ * 1. **Sem dono** — o grupo tem `filialId`, mas essa filial não está entre as
+ *    configuradas neste run. A receita dela não entra em apuração nenhuma.
+ * 2. **Indeterminadas** — o agregado viu a linha e não soube atribuí-la: sem
+ *    `filialId`, ou com `(tpNF, finNFe)` fora do schema.
+ * 3. **Fora do agregado** — {@link notasForaDoAgregado}, a diferença contra o
+ *    controle, que pega o documento que o índice pode nem conter.
+ *
+ * ⚠️ O resultado é somado à conta de **todas** as filiais, não de uma. Uma nota
+ * que ninguém soube atribuir não é problema de uma empresa — é uma janela que
+ * ninguém conhece, e a regra do recurso é recusar em vez de subdeclarar.
+ *
+ * ⚠️ **Só as notas que MOVEM receita contam.** `dobrarGrupos` já exclui as
+ * neutras de `notasContadas`, e `notasIndeterminadas` já aplicou o mesmo teste
+ * na origem. Contar um ajuste seria um falso positivo permanente: uma nota de
+ * ajuste legada congelaria a alíquota de todo mundo para sempre, e como ela não
+ * é receita nem quando a filial existe, nada a resolveria.
+ */
+export function notasNaoContabilizadas(args: {
+  readonly janela: ReceitaDaJanela;
+  readonly totalNaJanela: number;
+  readonly configuradas: ReadonlySet<string>;
+}): number {
+  const { janela, totalNaJanela, configuradas } = args;
+
+  const semDono = dobrarGrupos(
+    janela.grupos.filter((g) => !configuradas.has(g.filialId)),
+  ).notasContadas;
+
+  const todos = dobrarGrupos(janela.grupos);
+  const fora = notasForaDoAgregado({
+    total: totalNaJanela,
+    vistas:
+      todos.notasContadas + todos.notasNeutras + janela.notasIlegiveis + janela.notasIndeterminadas,
+  });
+
+  return semDono + janela.notasIndeterminadas + fora;
+}
+
+/**
  * Decide o estado de uma apuração. Pura, porque é a regra que não pode errar.
  *
  * ⚠️ `notasIlegiveis > 0` vence TUDO, inclusive autorização. Uma RBT12 lida
@@ -163,6 +248,8 @@ export interface ApuracaoArgs {
   readonly fs: Firestore;
   readonly nowMs: number;
   readonly fetchReceita: FetchReceita;
+  /** O controle da janela — ver {@link FetchTotalJanela}. */
+  readonly fetchTotalJanela: FetchTotalJanela;
   /** Competência a apurar. Omitida, usa o mês ANTERIOR ao de `nowMs`. */
   readonly competencia?: string;
 }
@@ -302,9 +389,20 @@ async function gravarApuracao(args: {
   };
 }
 
-/** Roda a apuração de uma competência para todas as filiais configuradas. */
+/**
+ * Roda a apuração de uma competência para todas as filiais configuradas.
+ *
+ * ⚠️ **Uma leitura da janela para o run inteiro, não uma por empresa.** O
+ * agregado não filtra por filial (ver o cabeçalho de `fetchReceitaSimples.ts`):
+ * ele devolve a janela agrupada por `filialId`, e a atribuição é feita AQUI,
+ * que é o único lugar que sabe quais filiais estão configuradas. Foi o que
+ * fechou o buraco: com o filtro dentro do `where`, toda nota que ele derrubava
+ * — sem `filialId`, ou de filial sem configuração — saía da RBT12 sem ser
+ * contada em lugar nenhum, e a alíquota era promovida sobre uma receita menor
+ * que a real.
+ */
 export async function runApuracaoSimples(args: ApuracaoArgs): Promise<ResultadoApuracao> {
-  const { fs, nowMs, fetchReceita } = args;
+  const { fs, nowMs, fetchReceita, fetchTotalJanela } = args;
   const competencia = args.competencia ?? competenciaAnterior(competenciaDe(nowMs))!;
   const janela = janelaRbt12(competencia);
   if (janela === null) {
@@ -315,15 +413,26 @@ export async function runApuracaoSimples(args: ApuracaoArgs): Promise<ResultadoA
   const porFilial: ApuracaoPorFilial[] = [];
   const erros: { filialId: string; error: string }[] = [];
 
+  const escopo = { inicioMs: janela.inicioMs, fimMs: janela.fimMs };
+  const janelaRec = await fetchReceita(fs, escopo);
+  const totalNaJanela = await fetchTotalJanela(fs, escopo);
+
+  // Toda filial que este run vai apurar. Um grupo cuja filial não esteja aqui é
+  // receita que nenhuma RBT12 vai receber — e isso precisa bloquear, não sumir.
+  const configuradas = new Set<string>();
+  for (const filiais of porRaiz.values()) for (const f of filiais) configuradas.add(f.id);
+
+  const naoContabilizadas = notasNaoContabilizadas({
+    janela: janelaRec,
+    totalNaJanela,
+    configuradas,
+  });
+
   for (const [raiz, filiais] of porRaiz) {
     const filialIds = filiais.map((f) => f.id);
     try {
-      const janelaRec = await fetchReceita(fs, {
-        filialIds,
-        inicioMs: janela.inicioMs,
-        fimMs: janela.fimMs,
-      });
-      const dobrado = dobrarGrupos(janelaRec.grupos);
+      const meus = janelaRec.grupos.filter((g) => filialIds.includes(g.filialId));
+      const dobrado = dobrarGrupos(meus);
 
       for (const filial of filiais) {
         porFilial.push(
@@ -333,7 +442,7 @@ export async function runApuracaoSimples(args: ApuracaoArgs): Promise<ResultadoA
             competencia,
             rbt12: dobrado.receita,
             receitaDoMes: 0,
-            notasIlegiveis: janelaRec.notasIlegiveis,
+            notasIlegiveis: janelaRec.notasIlegiveis + naoContabilizadas,
             notasNeutras: dobrado.notasNeutras,
             notasContadas: dobrado.notasContadas,
             filiaisConsolidadas: filialIds,
@@ -342,9 +451,10 @@ export async function runApuracaoSimples(args: ApuracaoArgs): Promise<ResultadoA
         );
       }
     } catch (e) {
-      // Por-empresa, nunca fatal: uma raiz que falhe não pode impedir as
-      // outras de apurar — é a convenção das varreduras deste repositório
-      // (falha por unidade se coleta e reporta; nunca se engole).
+      // Por-empresa, nunca fatal: uma raiz que falhe a ESCRITA não pode impedir
+      // as outras de apurar — é a convenção das varreduras deste repositório
+      // (falha por unidade se coleta e reporta; nunca se engole). A leitura da
+      // janela é uma só e fica fora daqui: se ela falha, não há o que apurar.
       //
       // `safeErrorShape` em vez de um `instanceof Error` solto: ele já extrai
       // name/message/code sem prometer um narrowing que não faz, e é o que o

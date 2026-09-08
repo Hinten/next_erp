@@ -10,8 +10,11 @@ import { describe, expect, it } from 'vitest';
 import {
   dobrarGrupos,
   estadoDaApuracao,
+  notasForaDoAgregado,
+  notasNaoContabilizadas,
   raizCnpj,
   type GrupoReceita,
+  type ReceitaDaJanela,
 } from '../../../../lib/nfe/handlers/runApuracaoSimples';
 import { interpretarLinhasDoAgregado } from '../../../../lib/nfe/handlers/fetchReceitaSimples';
 
@@ -150,9 +153,28 @@ describe('interpretarLinhasDoAgregado', () => {
     expect(r.notasIlegiveis).toBe(5);
   });
 
-  it('skips a row with no filialId rather than inventing one', () => {
-    const r = interpretarLinhasDoAgregado([{ tpNF: 1, finNFe: 1, receita: 100, nIlegiveis: 0 }]);
+  it('⚠️ a row with no filialId is NOT invented into a group — and NOT dropped either', () => {
+    // The #1546 review finding. `filialId` is `.nullable().optional()` for
+    // read-tolerance of the legacy corpus, so an approved note carrying revenue
+    // and no filial is a shape the first real apuração will meet. It used to be
+    // dropped by the `where` and counted nowhere: RBT12 quietly short, faixa
+    // lower, tax under-declared, `notasIlegiveis === 0`, rate PROMOTED.
+    const r = interpretarLinhasDoAgregado([
+      { tpNF: 1, finNFe: 1, receita: 100, nNotas: 4, nIlegiveis: 0 },
+    ]);
     expect(r.grupos).toHaveLength(0);
+    expect(r.notasIndeterminadas).toBe(4);
+  });
+
+  it('⚠️ NEAR-MISS: an unattributed NEUTRAL note does not block — it is revenue for nobody', () => {
+    // The other direction. A saída+ajuste is not revenue even when its filial
+    // IS configured, so counting it would be a false positive that never
+    // clears: one legacy adjustment note would freeze every rate for ever.
+    const r = interpretarLinhasDoAgregado([
+      { tpNF: 1, finNFe: 3, receita: 100, nNotas: 4, nIlegiveis: 0 },
+    ]);
+    expect(r.grupos).toHaveLength(0);
+    expect(r.notasIndeterminadas).toBe(0);
   });
 
   it('a group whose sum came back absent is zero, not NaN', () => {
@@ -170,10 +192,118 @@ describe('interpretarLinhasDoAgregado', () => {
 
   it('rejects an out-of-range tpNF instead of coercing it into a group', () => {
     const r = interpretarLinhasDoAgregado([
-      { filialId: 'f1', tpNF: 7, finNFe: 1, receita: 100, nIlegiveis: 2 },
+      { filialId: 'f1', tpNF: 7, finNFe: 1, receita: 100, nNotas: 3, nIlegiveis: 2 },
     ]);
     expect(r.grupos).toHaveLength(0);
-    // …but its unreadable count still surfaces.
+    // …but its unreadable count still surfaces, and its notes are counted as
+    // undeterminable: a code the schema does not know could be revenue.
     expect(r.notasIlegiveis).toBe(2);
+    expect(r.notasIndeterminadas).toBe(3);
+  });
+});
+
+// ── The control total ─────────────────────────────────────────────────────
+describe('notasForaDoAgregado — what the aggregate could not even see', () => {
+  it('reports the shortfall between the control count and what was seen', () => {
+    expect(notasForaDoAgregado({ total: 100, vistas: 93 })).toBe(7);
+  });
+
+  it('is zero when the aggregate saw everything', () => {
+    expect(notasForaDoAgregado({ total: 100, vistas: 100 })).toBe(0);
+  });
+
+  it('⚠️ never goes NEGATIVE — a credit of illegible notes would erase a real block', () => {
+    // The two aggregates are separate executions; an emission landing between
+    // them can leave the aggregate one note ahead of the control. Folding a
+    // negative in would cancel a genuine block coming from another source.
+    expect(notasForaDoAgregado({ total: 100, vistas: 104 })).toBe(0);
+  });
+});
+
+// ── Attribution: the notes no RBT12 will receive ──────────────────────────
+describe('notasNaoContabilizadas — the three doors revenue used to leave by', () => {
+  function janela(over: Partial<ReceitaDaJanela> = {}): ReceitaDaJanela {
+    return { grupos: [], notasIlegiveis: 0, notasIndeterminadas: 0, ...over };
+  }
+
+  it('is zero when every group belongs to a configured filial and the control agrees', () => {
+    const n = notasNaoContabilizadas({
+      janela: janela({ grupos: [grupo({ filialId: 'f1', notas: 6 })] }),
+      totalNaJanela: 6,
+      configuradas: new Set(['f1']),
+    });
+    expect(n).toBe(0);
+  });
+
+  it('⚠️ DOOR 1 — a group whose filial is not configured blocks, it does not vanish', () => {
+    // RBT12 is the LEGAL ENTITY's revenue, matriz plus filiais, one DAS. A
+    // sibling establishment with no Simples config still emits notes, and its
+    // revenue belongs in that sum. It used to be dropped by the `where` and
+    // counted nowhere.
+    const n = notasNaoContabilizadas({
+      janela: janela({
+        grupos: [grupo({ filialId: 'f1', notas: 6 }), grupo({ filialId: 'f9', notas: 4 })],
+      }),
+      totalNaJanela: 10,
+      configuradas: new Set(['f1']),
+    });
+    expect(n).toBe(4);
+  });
+
+  it('⚠️ DOOR 2 — notes the aggregate could not attribute at all block', () => {
+    const n = notasNaoContabilizadas({
+      janela: janela({ grupos: [grupo({ notas: 6 })], notasIndeterminadas: 3 }),
+      totalNaJanela: 9,
+      configuradas: new Set(['f1']),
+    });
+    expect(n).toBe(3);
+  });
+
+  it('⚠️ DOOR 3 — notes the aggregate never even saw block', () => {
+    // The sparse-index case: if a document missing `totais.receitaBruta` is not
+    // in the six-field index, the `where` never reaches it and `countIf` counts
+    // zero. The control total is read from a two-field index every document is
+    // in, so the shortfall surfaces here instead of nowhere.
+    const n = notasNaoContabilizadas({
+      janela: janela({ grupos: [grupo({ notas: 6 })] }),
+      totalNaJanela: 11,
+      configuradas: new Set(['f1']),
+    });
+    expect(n).toBe(5);
+  });
+
+  it('⚠️ NEAR-MISS: a NEUTRAL note of an unconfigured filial does NOT block', () => {
+    // A saída+ajuste is revenue for nobody, configured or not. Counting it
+    // would freeze every rate for ever over a note that can never be resolved,
+    // because there is nothing to resolve.
+    const n = notasNaoContabilizadas({
+      janela: janela({ grupos: [grupo({ filialId: 'f9', finNFe: 3, notas: 4 })] }),
+      totalNaJanela: 4,
+      configuradas: new Set(['f1']),
+    });
+    expect(n).toBe(0);
+  });
+
+  it('an ilegível note is not double-counted as missing from the control', () => {
+    // `notasIlegiveis` already blocks on its own; the control must not add it a
+    // second time, or the log would name a number nobody can reconcile.
+    const n = notasNaoContabilizadas({
+      janela: janela({ grupos: [grupo({ notas: 6 })], notasIlegiveis: 2 }),
+      totalNaJanela: 8,
+      configuradas: new Set(['f1']),
+    });
+    expect(n).toBe(0);
+  });
+
+  it('the three doors add up rather than masking one another', () => {
+    const n = notasNaoContabilizadas({
+      janela: janela({
+        grupos: [grupo({ filialId: 'f1', notas: 6 }), grupo({ filialId: 'f9', notas: 4 })],
+        notasIndeterminadas: 3,
+      }),
+      totalNaJanela: 20, // 6 + 4 + 3 seen, so 7 never reached the aggregate
+      configuradas: new Set(['f1']),
+    });
+    expect(n).toBe(4 + 3 + 7);
   });
 });
