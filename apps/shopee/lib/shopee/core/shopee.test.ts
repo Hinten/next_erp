@@ -256,6 +256,30 @@ describe('createShopClient', () => {
     await config.getAccessToken();
     expect(h.getOrRefresh).toHaveBeenCalledTimes(2);
   });
+
+  it('sends NO `paths` key when SHOPEE_VARIATIONS_PATH is unset', async () => {
+    // `exactOptionalPropertyTypes` is on and the package tells "absent" from
+    // "present but undefined": it validates an override at construction, so a
+    // `paths: { getVariations: undefined }` would be a different input from no
+    // override at all.
+    const ctx = await loadShopeeContext(db, 'int-1');
+    ctx.createShopClient();
+
+    const config = h.createShopeeClient.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(config).not.toHaveProperty('paths');
+  });
+
+  it('passes SHOPEE_VARIATIONS_PATH through as the get_variations override', async () => {
+    // The pair to the case above. The path is inside the HMAC base string, so
+    // this override is how the documented-vs-sampled contradiction is settled by
+    // one env var instead of a redeploy.
+    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '/api/v2/product/get_variation_tree');
+    const ctx = await loadShopeeContext(db, 'int-1');
+    ctx.createShopClient();
+
+    const config = h.createShopeeClient.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(config.paths).toEqual({ getVariations: '/api/v2/product/get_variation_tree' });
+  });
 });
 
 describe('exchangeAndPersist', () => {

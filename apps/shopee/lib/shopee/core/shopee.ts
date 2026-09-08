@@ -210,6 +210,15 @@ export async function loadShopeeContext(
         hosts: config.hosts,
         shopId: subject.shopId,
         getAccessToken,
+        // ⚠️ The key is OMITTED when there is no override, never sent as
+        // `undefined`: `exactOptionalPropertyTypes` is on, and the package
+        // distinguishes "no override" from a present-but-undefined value at
+        // CONSTRUCTION — where a malformed `SHOPEE_VARIATIONS_PATH` must fail,
+        // because the path is inside the HMAC base string and a wrong one comes
+        // back as `error_sign` rather than as a 404.
+        ...(config.variationsPath !== null
+          ? { paths: { getVariations: config.variationsPath } }
+          : {}),
       });
     },
 

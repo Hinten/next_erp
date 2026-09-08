@@ -2,9 +2,11 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Steps 1–2 of
+Runs on `:3009` in dev. Steps 1–2 and 10 of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
-conta status and the access-token refresh**. No business call yet.
+conta status, the access-token refresh, and the cached taxonomy reads**. Nothing
+is published or written to Shopee yet, and step 10 writes no Firestore document
+at all.
 
 ## What lives here
 
@@ -21,6 +23,14 @@ conta status and the access-token refresh**. No business call yet.
   that makes it single-use; it runs BEFORE the exchange and fails as `bad_state`.
 - `app/api/marketplace/shopee/conta/route.ts` — `PERM.integracao.read`. Reports
   the **two clocks** separately (see below).
+- `app/api/marketplace/shopee/taxonomia/{categorias,atributos,marcas,limites,limites/kit,variacoes,recomendacao-categoria}/route.ts`
+  — the seven read-only taxonomy routes, all `PERM.integracao.read`, all
+  `integracaoId`-scoped. See **Taxonomy reads** below.
+- `lib/shopee/taxonomia/` — the layer behind those routes: `cache.ts` (seven
+  `createReadCache`s + `taxonomiaCtx`), `categorias.ts` (the tree index and the
+  three-valued leaf gate), `params.ts` (hand-rolled query readers → pt-BR 400s),
+  `dto.ts` (the answer shapes and their projections), and one reader per
+  operation (`atributos`, `marcas`, `limites`, `variacoes`, `recomendacao`).
 - `app/api/health/route.ts` — `{ service: 'shopee' }`.
 - `lib/shopee/env.ts` — the one place this app reads its **Shopee**
   configuration from the environment, and every read there is blank-guarded
@@ -31,7 +41,11 @@ conta status and the access-token refresh**. No business call yet.
   `lib/firebase/admin.ts` (a verbatim copy of the same singleton the six sibling
   channel apps carry, `??`-defaulted `FIREBASE_DATABASE_ID` included) and the
   CORS allow-list in `proxy.ts`. The blank-guard rule is enforceable precisely
-  because it is scoped to the Shopee values.
+  because it is scoped to the Shopee values. ⚠️ `SHOPEE_VARIATIONS_PATH`
+  (optional, **not** a secret) lives here too and is deliberately NOT
+  shape-validated: this module answers "what did the operator type", and the
+  package's `normalizeApiPath` decides whether that is a usable API path —
+  raising `ShopeeConfigError` that NAMES the variable. See **Taxonomy reads**.
 - `lib/shopee/core/{shopee,credentialStore,tokenStore,respond,validationIssues}.ts`
   — the context loader (cached `integracao` doc, uncached credential,
   `getAccessToken` / `createShopClient`), the Firestore credential store, the
@@ -143,6 +157,89 @@ provider answers, which is a worse trade. When it does happen the operator sees
 **step 3**, which creates the nested Cloud Functions codebase for the push
 receiver anyway — an API-only App Hosting backend is the wrong place to grow a
 scheduler.
+
+## Taxonomy reads (`lib/shopee/taxonomia/`, step 10)
+
+Seven Shop-signed GETs on Shopee's `product` module — the category tree,
+attributes, brands, item and kit bands, standardised variations, and category
+suggestions — behind seven `createReadCache`s at `READ_CACHE_TTL.config`
+(15 min). **Step 10 writes nothing**: no Firestore document, no index, no
+ruleset, no migration-window item.
+
+**Every cache key starts with `integracaoId`.** This is the one deliberate
+difference from `apps/mercado-livre`'s `mlMetadataCache`, which keys a category
+by its id alone — correct there, because ML catalog metadata is global. Shopee's
+is not: the tree is served per shop and in the shop's region, and the item bands
+are per shop AND per category (guide 209 §1.1/§6; every number on the page is a
+SAMPLE). A key without the integração would serve one conta's price ceiling, DTS
+band or brand page to another, silently, in the direction that publishes.
+
+**The leaf gate has THREE values** (`ehFolha`): `folha` (`has_children === false`,
+exact), `nao-folha`, and `desconhecida` — the id is not in this shop's tree,
+which is a **404** (`SHOPEE_CATEGORIA_DESCONHECIDA`), never "has children".
+Attributes, brands, variations and the KIT bands gate on it (a non-leaf answers
+200-with-nothing and makes ZERO provider calls); the ITEM bands do **not**,
+because `category_id` is documented optional there and its absence is a real
+read (`scope: 'shop'`).
+
+⚠️ **The whole ~10⁴-node tree never crosses our wire.** `get_category` is unpaged
+and returns everything; it is indexed once per cache window and the categorias
+route answers lookups over that index — roots, or one node with `pathFromRoot`
+and `children`.
+
+**Four contradictions in Shopee's own docs, each instrumented rather than
+guessed** (the `hosts.ts` technique — settled by one live sandbox call, flipped
+by one literal or one env var):
+
+1. **The `get_variations` path.** The page's `path`/`url`/`test_url` say
+   `/api/v2/product/get_variation_tree`; all four of its samples call
+   `/api/v2/product/get_variations`. The package defaults to the samples and
+   `SHOPEE_VARIATIONS_PATH` overrides it. The path is INSIDE the HMAC base
+   string, so the wrong one fails as `error_sign`, which reads like a bad partner
+   key — hence the `variacoes` route echoes `pathUsed`.
+2. **`category_id_list` vs `category_ids`.** The parameter table says the first,
+   the page's own cURL says the second. The app sends ONE category per call,
+   which serialises identically under both, and logs `error_param` raw with the
+   parameter name it sent.
+3. **`gtin_limit`'s position.** The item page renders it as a SIBLING of
+   `response` and ships no response sample. Both positions are declared;
+   `lerLimitesDeItem` merges them (inner wins, both absent stays `null` and never
+   `{}`).
+4. **The language casing.** `get_category` spells it `pt-br`,
+   `get_attribute_tree` spells it `pt-BR`. ONE constant
+   (`SHOPEE_TAXONOMY_LANGUAGE = 'pt-br'`) goes to all three ops, so a wrong guess
+   is one literal to flip and `error_invalid_language` is the signal.
+
+**Values that are data, not absences:** `brand_id: 0` is Shopee's "No Brand"
+(a choice the operator makes), `variation_option_id: 0` is the observed CUSTOM
+option, `parent_category_id: 0` marks a root, and **`-1` on `days_to_ship_limit`
+means "no pre-sale"** (guide 209 §4) — never clamped, and read by
+`suportaPreVenda`, whose wrong-way default is `false`.
+
+**The kit bands are their own.** `get_kit_item_limit` has its own path, its own
+schema and its own numbers; the two pages disagree field by field, and only the
+kit declares `support_pre_order` and `component_count_limit_of_single_model`.
+⚠️ Do not confuse that boolean with the item route's derived `supportsPreOrder`.
+
+**No auto-paging.** `get_brand_list` answers ONE page; `nextOffset` is Shopee's
+cursor, echoed verbatim (it is not `offset + pageSize`), and the caller asks for
+the next one.
+
+**`brandshopee` is untouched, and stays the curated shortlist.** Shopee's brand
+API is extremely slow, so the supported brands are registered once and read from
+our own database — the produto's brand dropdown reads `integracao/{id}/brandshopee`,
+the `marcas` route serves only the REGISTRATION picker, and the shortlist is
+maintained from the conta screen (step 21) and re-validated at publish (step 11).
+
+**Recommendations are OFFERED, never applied** (`applied: false`, #799), and a
+suggested id absent from the tree degrades that ROW (`unresolved`, one log line)
+while a failure of the TREE read surfaces. Limits failures surface too — this
+layer never answers `limites: null`, because step 11 must not publish against
+hardcoded numbers.
+
+`limparTaxonomiaShopee()` clears all seven caches at once, coarse on purpose:
+the primitive has no prefix scan, and step 3's `push 13` is where granularity
+earns its keep.
 
 ## Rules specific to this app
 
