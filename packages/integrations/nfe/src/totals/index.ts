@@ -28,6 +28,15 @@
  * and `@xmldom/xmldom` is not browser-safe, so a regex is what both halves can
  * actually run.
  *
+ * ⚠️ **A silent zero is as bad as a silent miss, and it cuts BOTH ways.** The
+ * block is all-or-nothing precisely because a component that quietly becomes
+ * `0` still leaves the note looking readable, so the apuração's
+ * `notasSemTotais` counter never sees it. Which way the total then moves
+ * depends on the component: losing `vDesc` (subtracted) overstates receita
+ * bruta and over-declares; losing `vFrete`/`vSeg`/`vOutro` (added) understates
+ * it and UNDER-declares. Hence `decimalOpcional` below distinguishes an absent
+ * tag from an unparseable one — the first is zero, the second is `null`.
+ *
  * ⚠️ **Scope before you match.** `vProd` and `vDesc` also appear on EVERY item
  * under `<det><prod>`, and a document-wide match returns the FIRST ITEM's value
  * instead of the note total — a number that is not obviously wrong, on a
@@ -71,9 +80,25 @@ function decimal(escopo: string, tag: string): number | null {
   return Number.isFinite(n) ? roundReais(n) : null;
 }
 
-/** An absent optional `<vXxx>` means the note carries none of that value. */
-function decimalOuZero(escopo: string, tag: string): number {
-  return decimal(escopo, tag) ?? 0;
+/**
+ * An optional `<vXxx>`: **absent** means the note carries none of that value
+ * (`0`); **present but unparseable** means we cannot read this note at all
+ * (`null`).
+ *
+ * ⚠️ The two must not collapse into `0`. A malformed value folded to zero
+ * leaves the block looking COMPLETE, so `notasSemTotais` never counts it — and
+ * the error's DIRECTION depends on which component was lost: a dropped `vDesc`
+ * overstates receita bruta (higher faixa, over-declared), while a dropped
+ * `vFrete`/`vSeg`/`vOutro` understates it (lower faixa, under-declared).
+ * Either way the apuração reports success on a number it silently got wrong,
+ * which is the exact failure the all-or-nothing rule above exists to prevent.
+ */
+function decimalOpcional(escopo: string, tag: string): number | null {
+  const bruto = texto(escopo, tag);
+  // Absent, or an empty `<vST></vST>` — the note simply carries none of it.
+  if (bruto === null || bruto === '') return 0;
+  // Present: it must parse, or this note is not readable.
+  return decimal(escopo, tag);
 }
 
 /**
@@ -95,23 +120,46 @@ export function extrairTotaisNFe(xml: string): NFeTotais | null {
 
   const vProd = decimal(icmsTot, 'vProd');
   const vNF = decimal(icmsTot, 'vNF');
+  const vDesc = decimalOpcional(icmsTot, 'vDesc');
+  const vST = decimalOpcional(icmsTot, 'vST');
+  const vIPI = decimalOpcional(icmsTot, 'vIPI');
+  const vFrete = decimalOpcional(icmsTot, 'vFrete');
+  const vSeg = decimalOpcional(icmsTot, 'vSeg');
+  const vOutro = decimalOpcional(icmsTot, 'vOutro');
   const tpNFbruto = texto(ide, 'tpNF');
   const finNFebruto = texto(ide, 'finNFe');
-  // The four that decide whether this is revenue, and how much. Missing any of
-  // them makes the note uncountable, not zero.
-  if (vProd === null || vNF === null || tpNFbruto === null || finNFebruto === null) return null;
+
+  // ⚠️ ONE all-or-nothing guard, covering EVERY component — not just the two
+  // that decide whether this is revenue. A component that is present and
+  // unreadable makes the whole note uncountable; only an ABSENT one is zero
+  // (see `decimalOpcional`). Splitting this into "important" and "the rest" is
+  // what let a malformed `vST` through while the block still read as complete.
+  if (
+    vProd === null ||
+    vNF === null ||
+    vDesc === null ||
+    vST === null ||
+    vIPI === null ||
+    vFrete === null ||
+    vSeg === null ||
+    vOutro === null ||
+    tpNFbruto === null ||
+    finNFebruto === null
+  ) {
+    return null;
+  }
 
   if (tpNFbruto !== '0' && tpNFbruto !== '1') return null;
   if (!['1', '2', '3', '4'].includes(finNFebruto)) return null;
 
   return {
     vProd,
-    vDesc: decimalOuZero(icmsTot, 'vDesc'),
-    vST: decimalOuZero(icmsTot, 'vST'),
-    vIPI: decimalOuZero(icmsTot, 'vIPI'),
-    vFrete: decimalOuZero(icmsTot, 'vFrete'),
-    vSeg: decimalOuZero(icmsTot, 'vSeg'),
-    vOutro: decimalOuZero(icmsTot, 'vOutro'),
+    vDesc,
+    vST,
+    vIPI,
+    vFrete,
+    vSeg,
+    vOutro,
     vNF,
     tpNF: Number(tpNFbruto) as NFeTotais['tpNF'],
     finNFe: Number(finNFebruto) as NFeTotais['finNFe'],

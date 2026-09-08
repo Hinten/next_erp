@@ -160,6 +160,51 @@ describe('extrairTotaisNFe', () => {
       // and guessing at the separator would invent a value.
       expect(extrairTotaisNFe(nfeProc({ total: { vProd: '1,50', vNF: '1,50' } }))).toBeNull();
     });
+
+    // ── A malformed COMPONENT poisons the block too ──────────────────────
+    //
+    // These six used to fold to 0 on any unparseable value, which left the
+    // block looking complete: `notasSemTotais` never counted the note, and the
+    // total silently moved — up for a lost `vDesc`, DOWN for a lost `vFrete`.
+    it.each([
+      ['vDesc', '1,50'],
+      ['vST', '1,50'],
+      ['vIPI', 'N/A'],
+      ['vFrete', 'grátis'],
+      ['vSeg', '--'],
+      ['vOutro', '1.2.3'],
+    ])('a malformed %s poisons the whole block rather than folding to 0', (tag, lixo) => {
+      const xml = nfeProc({
+        total: { vProd: '1000.00', vDesc: '10.00', [tag]: lixo, vNF: '1000.00' },
+      });
+      expect(extrairTotaisNFe(xml)).toBeNull();
+    });
+  });
+
+  // ── The near-miss the poison rule must NOT break ────────────────────────
+  describe('absent is still zero — only PRESENT-and-unreadable poisons', () => {
+    it('an omitted <vST> reads as 0 and the note stays readable', () => {
+      // `<vFrete>`/`<vST>` are legitimately absent on most notes. If the fix
+      // above had poisoned on absence instead, every ordinary note would come
+      // back null and the apuração would never publish a rate at all.
+      const t = extrairTotaisNFe(nfeProc({ total: { vProd: '10.00', vNF: '10.00' } }));
+      expect(t).not.toBeNull();
+      expect(t?.vST).toBe(0);
+      expect(t?.vFrete).toBe(0);
+    });
+
+    it('an EMPTY <vST></vST> reads as 0, not as garbage', () => {
+      const xml = nfeProc({ total: { vProd: '10.00', vST: '', vNF: '10.00' } });
+      expect(extrairTotaisNFe(xml)?.vST).toBe(0);
+    });
+
+    it('a legitimate 0.00 and an absent tag agree — both mean "none"', () => {
+      const explicito = extrairTotaisNFe(
+        nfeProc({ total: { vProd: '10.00', vST: '0.00', vNF: '10.00' } }),
+      );
+      const ausente = extrairTotaisNFe(nfeProc({ total: { vProd: '10.00', vNF: '10.00' } }));
+      expect(explicito?.vST).toBe(ausente?.vST);
+    });
   });
 
   it('carries tpNF=0 through — an entrada SUBTRACTS from faturamento', () => {
