@@ -77,7 +77,12 @@ export const bandeiraCartaoSchema = z.object({
   maxParcelas: z.number().int().min(1).default(1).describe('Máximo de parcelas'),
   prazoRecebimento: z.number().int().min(0).default(0).describe('Prazo de recebimento (dias)'),
   dataCadastro: millisSinceEpoch().nullable().optional(),
-  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  // `.default(null)`, never a bare `.optional()`: the TableView update-
+  // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+  // which EXCLUDES documents missing the key — so a dropped key hides the
+  // row from the staleness check, silently. Pinned by
+  // `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch().nullable().default(null),
 });
 
 export type BandeiraCartao = z.infer<typeof bandeiraCartaoSchema>;

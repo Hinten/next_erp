@@ -48,7 +48,12 @@ export const filialSchema = z.object({
   // (Flutter-written) docs lack it; pipeline sorts treat the missing field
   // as null (sorted last on desc) instead of excluding the doc, which is
   // what FilialPicker's recency ordering relies on.
-  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  // `.default(null)`, never a bare `.optional()`: the TableView update-
+  // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+  // which EXCLUDES documents missing the key — so a dropped key hides the
+  // row from the staleness check, silently. Pinned by
+  // `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch().nullable().default(null),
 });
 
 export type Filial = z.infer<typeof filialSchema>;

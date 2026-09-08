@@ -172,6 +172,7 @@ describe('logistica create form — freight-origin telefone', () => {
     telefone: '',
     idExterno: null,
     timestamp: null,
+    ultimaModificacao: null,
   };
 
   function renderMelhorEnvios(telefone: string) {

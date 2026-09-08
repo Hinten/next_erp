@@ -68,6 +68,7 @@ export function buildCategoriaChain(detail: MlCategory, now: number): CategoriaC
       categoriaGoogleId: null,
       categoriaPaiOuterRef: i === 0 ? null : toOuterRef(`categorias/${nodes[i - 1]!.id}`),
       timestamp: now,
+      ultimaModificacao: now,
     };
     return { id: node.id, data };
   });

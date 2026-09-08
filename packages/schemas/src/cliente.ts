@@ -205,7 +205,12 @@ export const clienteSchema = z.object({
   // `saveRecord` on every write so the TableView update-monitor sees edits.
   // Labelled so it renders as "Última modificação" in the list (the builder
   // already carries the datetime/ms hint that formats the epoch as a date).
-  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
+  // ⚠️ `.default(null)`, never a bare `.optional()`: this is the list's sort key,
+  // and a classic `orderBy` EXCLUDES documents missing the ordered field. Zod
+  // drops an `.optional()` key the writer omits, so the row would vanish from
+  // the list with no error — the #861/#1213 produtos outage exactly.
+  // Pinned by `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
   // Embeddings are server-managed; treat as opaque on the client.
   nome_embedding: z.unknown().nullable().default(null),
   telefone_embedding: z.unknown().nullable().default(null),
