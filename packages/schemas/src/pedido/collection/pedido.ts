@@ -499,10 +499,27 @@ export const pedidoMeta: CollectionMetadata = {
     // `limit` is the FIRST page only; "Carregar mais" grows it by the same
     // amount per click.
     limit: 50,
-    // Same nine columns legacy showed (`pedidoTableView.dart:2221-2256`).
+    // The nine columns legacy showed, plus `disputa` (#1322).
+    // ⚠️ `disputa` is declared in `PedidosListView` but was never listed HERE,
+    // so it rendered on no fresh browser — the ColumnPicker was its only route
+    // on screen, and that picker is going away. Its own docstring calls this
+    // list "the dispatch surface" and notes every other cell reads healthy
+    // while a mediation is open, so dropping it is a silent regression.
+    // Legacy reference: `pedidoTableView.dart:2221-2256`.
     // Every virtual column declares `dependsOn`, so the Pipelines projection
     // stays on for this heavy collection — see `CollectionDefaultQuery.columns`.
-    columns: ['numero', 'estado', 'nf', 'cliente', 'expedicao', 'vlr', 'frete', 'criacao', 'imp'],
+    columns: [
+      'numero',
+      'estado',
+      'nf',
+      'disputa',
+      'cliente',
+      'expedicao',
+      'vlr',
+      'frete',
+      'criacao',
+      'imp',
+    ],
   },
   // All three estoque-sync fields are written ONLY by the
   // `sincronizarEstoquePedido` Cloud Function, and this list must stay in step
