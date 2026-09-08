@@ -380,10 +380,23 @@ export const avisosLeituraSchema = z
     /** Everything created at or before this instant counts as read. */
     ultimaVisualizacaoUs: microsSinceEpoch('Última visualização').default(0),
     /**
-     * Aviso ids read individually SINCE `ultimaVisualizacaoUs`. Bounded by
-     * construction: {@link marcarTodosComoLidos} advances the watermark and
-     * clears this array in the same write, so it only ever holds avisos raised
-     * since the last "marcar todas como lidas".
+     * Aviso ids read individually SINCE `ultimaVisualizacaoUs`.
+     * {@link marcarTodosComoLidos} advances the watermark and clears this array
+     * in the same write, so it holds only avisos raised since the last "marcar
+     * todas como lidas".
+     *
+     * ⚠️ That is a reset, **not a bound**: an operator who only ever marks rows
+     * individually never triggers it, and the array grows by one per read aviso
+     * — roughly 1.4 years to Firestore's 1 MiB document limit at 50 avisos/day.
+     * Slow, but real, and worth stating rather than implying otherwise.
+     *
+     * Deliberately not pruned client-side. Dropping ids that have left the
+     * visible page would need a read-modify-write, and the write path uses
+     * `arrayUnion` precisely because the client SDK has no `lastUpdateTime`
+     * precondition (`apps/web/CLAUDE.md` rule 3): two tabs marking different
+     * avisos at once would start losing one of the two. Trading a slow, visible
+     * growth for a silent lost update is the wrong direction. If it ever matters,
+     * the server can prune — it has the preconditions the browser lacks.
      */
     lidos: z.array(z.string()).default([]),
   })

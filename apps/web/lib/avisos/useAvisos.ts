@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { arrayUnion, limit, orderBy, query, setDoc, where } from 'firebase/firestore';
 import {
   type Aviso,
@@ -79,6 +79,22 @@ export function useAvisos(): UseAvisosResult {
   // and `avisoNaoLido` treats a null read state as "nothing read", so the bell
   // is correct before the first write rather than empty.
   const estadoLeitura: AvisosLeitura | null = leitura.data?.data ?? null;
+
+  // ⚠️ A failed listener must not read as "no avisos". The most likely failure is
+  // exactly the one this PR ships with: an ordinary operator holds no `d_aviso`
+  // bit until the cargo assignment and #173's claim re-mint, so the listener is
+  // `permission-denied` and the panel renders its empty state — indistinguishable
+  // from a healthy, quiet bell. An empty bell is the CORRECT surface for that (it
+  // is not an error the operator can act on), but a genuinely broken one has to
+  // leave a trace somewhere, or nobody can tell the two apart from a screenshot.
+  useEffect(() => {
+    if (!avisos.error) return;
+    // eslint-disable-next-line no-console
+    console.warn('[avisos] listener failed — the bell is showing empty, not quiet', {
+      code: avisos.error.code,
+      message: avisos.error.message,
+    });
+  }, [avisos.error]);
 
   const rows = useMemo<AvisoRow[]>(() => {
     if (!uid || !avisos.data) return [];
