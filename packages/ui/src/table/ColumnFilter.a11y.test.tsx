@@ -26,8 +26,11 @@ import type { FilterableField } from '../schema/types';
  * would still pass with every opt-out deleted. They pin the NAMES and the
  * structure, not the portal choice. That choice is guarded only by the note on
  * `FilterBody` and by the staging e2e lanes — and `MantineTestProvider` is
- * mandatory (#1150 forbids a bare `<MantineProvider>` in a component test), so
- * there is no portal-enabled env to test in.
+ * mandatory here — #1150 forbids a test module from building a Mantine
+ * provider of its own — so there is no portal-enabled env to test in.
+ *
+ * (That rule is enforced by matching the element name in JSX form, which a
+ * comment can trip just as easily as code. Hence the prose spelling above.)
  */
 function open(descriptor: FilterableField) {
   render(
