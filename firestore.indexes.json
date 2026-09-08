@@ -1752,6 +1752,30 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "avisos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "resolvidoEm",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "criadoEm",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "avisos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "resolvidoEm",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
