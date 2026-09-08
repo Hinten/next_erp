@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { APURACAO_ESTADO } from '@delfrance/schemas';
 
-import { descreverEstado, formatAliquota } from './SimplesNacionalPanel';
+import {
+  aliquotaParaCampo,
+  campoParaAliquota,
+  descreverEstado,
+  formatAliquota,
+} from './SimplesNacionalPanel';
 
 describe('formatAliquota', () => {
   it('renders a fraction as a pt-BR percentage', () => {
@@ -90,5 +95,48 @@ describe('descreverEstado', () => {
     const titulos = estados.map((e) => descreverEstado(e, 0)?.titulo);
     expect(new Set(cores).size).toBe(estados.length);
     expect(new Set(titulos).size).toBe(estados.length);
+  });
+});
+
+describe('aliquotaParaCampo / campoParaAliquota', () => {
+  it('shows a stored fraction as the percentage the accountant says', () => {
+    expect(aliquotaParaCampo(0.06728)).toBe(6.728);
+    expect(campoParaAliquota(6.728)).toBe(0.06728);
+  });
+
+  it('keeps null as "not informed" in both directions — never 0%', () => {
+    expect(aliquotaParaCampo(null)).toBeNull();
+    expect(campoParaAliquota(null)).toBeNull();
+  });
+
+  it('spans the whole schema range: 0 and the 100% ceiling `.max(1)` allows', () => {
+    expect(aliquotaParaCampo(0)).toBe(0);
+    expect(aliquotaParaCampo(1)).toBe(100);
+    expect(campoParaAliquota(100)).toBe(1);
+  });
+
+  it('⚠️ round-trips EXACTLY, which a bare × 100 does not', () => {
+    // The defect this pair exists to prevent, stated as the arithmetic itself:
+    // both raw operations are off by an ulp, and neither is visible at any
+    // scale the field renders — so an untouched form would look identical and
+    // still re-save a different number every time it was opened.
+    expect(0.06728 * 100).not.toBe(6.728);
+    expect(6.728 / 100).not.toBe(0.06728);
+
+    // Every value the input can express: `decimalScale={4}` on a percentage is
+    // six decimals of a fraction. Sampled across the whole 0–1 domain.
+    for (let i = 0; i <= 1_000_000; i += 7) {
+      const fracao = i / 1e6;
+      expect(campoParaAliquota(aliquotaParaCampo(fracao))).toBe(fracao);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: two rates one ten-thousandth of a percent apart stay distinct', () => {
+    // The fold must not reach further than the input's own precision. 6,7280%
+    // and 6,7281% are different rates, and the `dirty` check that enables the
+    // Save button is an equality over exactly these values — a rounding one
+    // digit coarser would report a real edit as "nothing changed".
+    expect(campoParaAliquota(6.728)).not.toBe(campoParaAliquota(6.7281));
+    expect(aliquotaParaCampo(0.06728)).not.toBe(aliquotaParaCampo(0.067281));
   });
 });

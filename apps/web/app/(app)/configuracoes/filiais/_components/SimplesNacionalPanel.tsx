@@ -28,7 +28,6 @@ import {
   Code,
   Group,
   Loader,
-  NumberInput,
   Select,
   Stack,
   Switch,
@@ -50,6 +49,7 @@ import {
   type ApuracaoEstado,
   type SimplesNacionalConfig,
 } from '@delfrance/schemas';
+import { DecimalInput } from '@delfrance/ui';
 
 import { usePermission } from '@/lib/auth';
 import {
@@ -72,6 +72,32 @@ export function formatAliquota(fracao: number | null): string {
     minimumFractionDigits: 3,
     maximumFractionDigits: 3,
   })}%`;
+}
+
+/**
+ * A stored FRACTION → the percentage the input shows, and back.
+ *
+ * The document holds `0.06728`; the accountant thinks in `6,728 %`. The pair
+ * exists as two named functions rather than three inlined `* 100` / `/ 100`
+ * because the conversion feeds an EQUALITY — the `dirty` check that enables the
+ * Save button — and a `× 100` that does not round is not its own inverse:
+ * `0.06728 * 100` is `6.728000000000001`, and `6.728 / 100` is
+ * `0.06727999999999999`. Neither is visible at any scale the field renders, so
+ * a form nobody edited could re-save a rate one ulp away from the stored one,
+ * for ever, with everything on screen identical.
+ *
+ * ⚠️ The rounding is the input's OWN precision, not an approximation of the
+ * rate: `decimalScale={4}` on a percentage IS six decimals of a fraction, so
+ * nothing an operator can type is lost. Verified exact in both directions over
+ * every value at that precision by the round-trip test.
+ */
+export function aliquotaParaCampo(fracao: number | null): number | null {
+  return fracao === null ? null : Math.round(fracao * 1e6) / 1e4;
+}
+
+/** The inverse of {@link aliquotaParaCampo}: the typed percentage → a fraction. */
+export function campoParaAliquota(percentual: number | null): number | null {
+  return percentual === null ? null : Math.round(percentual * 1e4) / 1e6;
 }
 
 /**
@@ -157,16 +183,14 @@ export function SimplesNacionalPanel({ filialId }: { filialId: string }) {
   const anexoValue = anexo ?? base?.anexo ?? 'I';
   // Stored as a FRACTION, typed as a percentage — the input shows 6,728 while
   // the document holds 0.06728.
-  const aliquotaValue =
-    aliquota ?? (base?.aliquotaDeclarada != null ? base.aliquotaDeclarada * 100 : null);
+  const aliquotaValue = aliquota ?? aliquotaParaCampo(base?.aliquotaDeclarada ?? null);
   const recalculoValue = recalculo ?? base?.recalculoAutomatico ?? false;
 
   const dirty =
     base == null ||
     anexoValue !== base.anexo ||
     recalculoValue !== base.recalculoAutomatico ||
-    (aliquotaValue ?? null) !==
-      (base.aliquotaDeclarada != null ? base.aliquotaDeclarada * 100 : null);
+    (aliquotaValue ?? null) !== aliquotaParaCampo(base.aliquotaDeclarada);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -175,7 +199,7 @@ export function SimplesNacionalPanel({ filialId }: { filialId: string }) {
         // render-time doc, and an untouched field must stay unwritten so it
         // cannot lose a race it never entered.
         anexo,
-        aliquotaDeclarada: aliquota === null ? null : aliquota / 100,
+        aliquotaDeclarada: campoParaAliquota(aliquota),
         recalculoAutomatico: recalculo,
         baseline: base,
       });
@@ -302,11 +326,20 @@ export function SimplesNacionalPanel({ filialId }: { filialId: string }) {
           disabled={!canWrite}
           allowDeselect={false}
         />
-        <NumberInput
+        {/*
+          ⚠️ `DecimalInput`, never Mantine's number input directly: an
+          alíquota is a DECIMAL an operator types (6,728 %), and Mantine hands
+          `onChange` a STRING for every in-progress decimal — so a
+          `typeof v === 'number'` coercion answers the keystroke that OPENS the
+          decimal with `null`, and the controlled field wipes itself. This
+          field shipped with exactly that coercion; see
+          `packages/config-eslint/rules/decimal-input-single-reader.test.js`.
+        */}
+        <DecimalInput
           label="Alíquota informada pela contabilidade (%)"
           description="Usada quando ainda não há 12 meses de histórico apurável, e para conferir o valor calculado."
-          value={aliquotaValue ?? ''}
-          onChange={(v) => setAliquota(typeof v === 'number' ? v : null)}
+          value={aliquotaValue}
+          onChange={setAliquota}
           disabled={!canWrite}
           decimalScale={4}
           min={0}

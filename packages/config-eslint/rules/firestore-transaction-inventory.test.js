@@ -141,6 +141,8 @@ const INVENTARIO = {
     'Class A BY CONSTRUCTION: the port hands `nextFor(current)` the `tx.get` snapshot, so the caller cannot compute its patch anywhere else. `nextFor` throws to abort on a detected conflict (tier 3 — the browser SDK has no precondition). #1005.',
   'apps/web/lib/mercado-livre/listingPort.ts':
     'Same port shape — the patch builder runs on the `tx.get` snapshot inside the callback.',
+  'apps/web/lib/fiscal/simplesConfigPort.ts':
+    'Same port shape again (#1491): `nextFor(current)` is handed the `tx.get` snapshot, so class **A** by construction — the patch cannot be computed anywhere else. The second writer is the monthly apuração runner, which publishes `aliquotaEfetiva`/`rbt12`/`estadoApuracao` onto the same document, so `nextFor` spreads the tx-fresh `current` and throws to abort (tier 3) on two distinct losses: a field the operator edited moved under them (`SimplesConfigConflictError`), or the document they were creating now exists (`SimplesConfigJaExisteError` — never a merge, since a create racing a create means one of the two rate configs is about to be silently discarded).',
   'apps/web/lib/mercado-livre/listingDraft.ts':
     "Two sites, both `runTransaction<T>` (generic — invisible to a `runTransaction\\(` pattern). `createListingDraft`\u2019s `'primeiro'` path reads the draft and only writes when it is absent, decided on that read; its `'adicional'` path runs no transaction at all (a fresh auto-id has nothing to check against). `removeListingDraft` re-derives \u201cnever published\u201d from the `tx.get` snapshot rather than from the link the button was rendered with, so a publish landing inside the confirm window aborts the delete instead of orphaning a live listing.",
   'apps/web/lib/pedidos/clientPort.ts':
