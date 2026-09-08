@@ -119,7 +119,7 @@ export function shopeeHosts(): ShopeeHosts {
  * a 404 — it fails as a SIGN error, which reads exactly like a bad partner key.
  * That is why this is settled by one live call in the sandbox and flipped with
  * an environment variable rather than a redeploy, the same technique
- * `hosts.ts` uses for the four open host contradictions.
+ * `hosts.ts` uses for its three open host contradictions.
  *
  * ⚠️ Blank-guarded, and SHAPE-agnostic on purpose. This module answers "what
  * did the operator type"; the package's `normalizeApiPath` decides whether that

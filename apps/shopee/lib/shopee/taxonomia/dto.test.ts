@@ -83,7 +83,7 @@ function medirProfundidade(a: AtributoDto): number {
 }
 
 describe('projetarCategoria', () => {
-  it('espelha os nomes de Shopee em camelCase e resolve isLeaf pela árvore', () => {
+  it('espelha categoryId em camelCase, encurta os dois nomes e resolve isLeaf pela árvore', () => {
     expect(projetarCategoria(INDICE, no(100182, 100100, false, 'Camisetas'))).toEqual({
       categoryId: 100182,
       name: 'Camisetas',

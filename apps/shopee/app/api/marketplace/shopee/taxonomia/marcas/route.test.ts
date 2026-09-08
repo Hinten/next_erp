@@ -199,7 +199,7 @@ describe('GET taxonomia/marcas — autenticação e argumentos', () => {
 });
 
 describe('a trava de folha', () => {
-  it('uma categoria do MEIO responde uma página vazia com ZERO chamadas', async () => {
+  it('uma categoria do MEIO responde uma página vazia com ZERO chamadas a get_brand_list', async () => {
     const res = await GET(req({ integracaoId: 'int-1', categoryId: '100100' }, AUTORIZADO));
     const body = (await res.json()) as Record<string, unknown>;
 

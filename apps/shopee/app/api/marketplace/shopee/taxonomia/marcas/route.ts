@@ -15,8 +15,10 @@
  * cursor and is NOT `offset + pageSize`.
  *
  * ⚠️ Leaf-gated (guide 209 §3), so a mid-tree id answers an EMPTY page with zero
- * provider calls rather than an error — and `brand_id: 0` ("No Brand") comes
- * back as the value it is on the pages that do have brands.
+ * `get_brand_list` calls rather than an error — the gate itself still reads the
+ * category tree, one `get_category` on a cold cache window and none on a warm
+ * one. `brand_id: 0` ("No Brand") comes back as the value it is on the pages
+ * that do have brands.
  *
  * Requires `PERM.integracao.read`.
  */

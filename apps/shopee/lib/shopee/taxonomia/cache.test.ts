@@ -50,8 +50,14 @@ function categoria(category_id: number, parent_category_id = 0, has_children = f
 
 /**
  * A client double that COUNTS every call, so "once per key per TTL window" is
- * assertable. Every method answers something keyed by its argument, which is
- * what makes "int-2 never serves int-1" provable rather than merely plausible.
+ * assertable — and the counters are ALSO what proves "int-2 never serves int-1",
+ * because a conta served from another's entry calls its own client zero times.
+ *
+ * ⚠️ The returned VALUES cannot carry that proof on their own: only
+ * `getAttributeTree` (`warning`) and `getBrandList` (`input_type`) embed
+ * `marca`; the other four answer from their argument alone, which is identical
+ * for both contas. So a cross-conta test must assert BOTH sides' counters —
+ * asserting one side's is a test that a leak leaves green.
  */
 function clienteDuplo(marca: string) {
   const chamadas = {
@@ -272,16 +278,23 @@ describe('toda chave começa pelo integracaoId', () => {
     await ler(um.ctx);
     await ler(dois.ctx);
 
+    // ⚠️ As DUAS pernas são obrigatórias, e a segunda é a que fala do vazamento.
+    // Só a int-1 provaria apenas que o cache está vivo: se a chave perdesse o
+    // integracaoId, a int-1 continuaria com exatamente uma leitura e a int-2
+    // seria servida com a resposta dela — invisível deste lado.
+    const somar = (c: (typeof um)['chamadas']) =>
+      c.getAttributeTree +
+      c.getBrandList +
+      c.getItemLimit +
+      c.getKitItemLimit +
+      c.getVariations +
+      c.categoryRecommend;
+
     // Uma leitura de provedor por conta, e a segunda leitura da int-1 veio do
     // cache — o par positivo que impede que este teste passe com um cache morto.
-    const total =
-      um.chamadas.getAttributeTree +
-      um.chamadas.getBrandList +
-      um.chamadas.getItemLimit +
-      um.chamadas.getKitItemLimit +
-      um.chamadas.getVariations +
-      um.chamadas.categoryRecommend;
-    expect(total).toBe(1);
+    expect(somar(um.chamadas)).toBe(1);
+    // A int-2 pagou a PRÓPRIA leitura: nada da int-1 foi reaproveitado.
+    expect(somar(dois.chamadas)).toBe(1);
   });
 });
 

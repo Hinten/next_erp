@@ -164,7 +164,7 @@ describe('GET taxonomia/atributos — autenticação e argumentos', () => {
 });
 
 describe('a trava de folha', () => {
-  it('uma categoria do MEIO responde 200 vazio e ZERO chamadas ao provedor', async () => {
+  it('uma categoria do MEIO responde 200 vazio e ZERO chamadas a get_attribute_tree', async () => {
     const res = await GET(req({ integracaoId: 'int-1', categoryId: '100100' }, AUTORIZADO));
     const body = (await res.json()) as Record<string, unknown>;
 

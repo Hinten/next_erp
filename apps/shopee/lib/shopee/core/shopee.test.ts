@@ -258,10 +258,11 @@ describe('createShopClient', () => {
   });
 
   it('sends NO `paths` key when SHOPEE_VARIATIONS_PATH is unset', async () => {
-    // `exactOptionalPropertyTypes` is on and the package tells "absent" from
-    // "present but undefined": it validates an override at construction, so a
-    // `paths: { getVariations: undefined }` would be a different input from no
-    // override at all.
+    // A convention, not a behaviour: the repo does not set
+    // `exactOptionalPropertyTypes`, and the package resolves the override with
+    // `=== undefined`, so `paths: { getVariations: undefined }` would reach the
+    // same default path. Pinning the OMISSION keeps that flag a compiler change
+    // rather than a behaviour change if it is ever turned on.
     const ctx = await loadShopeeContext(db, 'int-1');
     ctx.createShopClient();
 

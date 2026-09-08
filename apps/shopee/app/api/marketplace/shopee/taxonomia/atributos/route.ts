@@ -6,10 +6,13 @@
  *
  * ⚠️ **Leaf-gated.** `get_attribute_tree` documents leaf ids; a mid-tree
  * category answers with something useless or an error. A non-leaf id therefore
- * gets `leaf: false` with an empty list at HTTP 200 and **zero provider calls** —
- * the same short-circuit `apps/mercado-livre`'s attributes route makes, and the
- * legacy Flutter app made before it. An id that is not in the tree at all is a
- * 404 instead: see the categorias route.
+ * gets `leaf: false` with an empty list at HTTP 200 and **zero
+ * `get_attribute_tree` calls** — the same short-circuit
+ * `apps/mercado-livre`'s attributes route makes, and the legacy Flutter app
+ * made before it. ⚠️ Not zero provider calls: the gate itself reads the
+ * category tree (`lerIndiceDeCategorias`), which costs one `get_category` on a
+ * cold cache window and nothing at all on a warm one. An id that is not in the
+ * tree at all is a 404 instead: see the categorias route.
  *
  * ⚠️ The `warning` on the body is Shopee's **per-category** warning, which has
  * nothing to do with the envelope's — the envelope's goes to the transport's

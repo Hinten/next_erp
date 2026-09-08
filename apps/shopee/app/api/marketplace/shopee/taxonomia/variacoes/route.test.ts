@@ -189,7 +189,7 @@ describe('pathUsed instrumenta a contradição da página', () => {
 });
 
 describe('a trava de folha e o corpo', () => {
-  it('uma categoria do MEIO responde lista vazia com ZERO chamadas', async () => {
+  it('uma categoria do MEIO responde lista vazia com ZERO chamadas a get_variations', async () => {
     const res = await GET(req({ integracaoId: 'int-1', categoryId: '100100' }, AUTORIZADO));
     const body = (await res.json()) as Record<string, unknown>;
 
@@ -218,6 +218,19 @@ describe('a trava de folha e o corpo', () => {
     );
     expect(h.getVariations).toHaveBeenCalledWith({ categoryId: 100182 });
     expect(() => corpoSchema.parse(body)).not.toThrow();
+  });
+
+  it('o `warning: "success"` do envelope não vira campo nem log', async () => {
+    // O sample de sucesso de `get_variations` carrega `warning: "success"`. Ele
+    // é ruído do ENVELOPE — o transporte o entrega em `onWarning` e este corpo
+    // não tem campo `warning` nenhum. Surfacear isso poria um aviso em TODA
+    // leitura saudável, que é como se ensina um operador a ignorar avisos.
+    const res = await GET(req({ integracaoId: 'int-1', categoryId: '100182' }, AUTORIZADO));
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).not.toHaveProperty('warning');
+    expect(spyWarn).not.toHaveBeenCalled();
   });
 });
 

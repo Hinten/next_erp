@@ -30,12 +30,15 @@
  *
  * Seven of them, all Shop-signed GETs on the `product` module, all read-only and
  * all validation-before-the-wire: a bound that cannot be satisfied REJECTS
- * without spending a provider call. Two of Shopee's own contradictions are
+ * without spending a provider call. Four of Shopee's own contradictions are
  * instrumented rather than guessed — the `get_variations` path (see
- * {@link SHOPEE_GET_VARIATION_TREE_PATH_ALT}) and the language casing (see
- * {@link SHOPEE_TAXONOMY_LANGUAGE}). This package never caches: the TTL cache
- * lives in `apps/shopee`, keyed per integração, because every one of these
- * answers is per shop.
+ * {@link SHOPEE_GET_VARIATION_TREE_PATH_ALT}), the language casing (see
+ * {@link SHOPEE_TAXONOMY_LANGUAGE}), `category_id_list` vs `category_ids` (the
+ * single joined literal in `getAttributeTree`) and `gtin_limit`'s position (see
+ * {@link ShopeeItemLimitRead}, which carries BOTH).
+ *
+ * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
+ * integração, because every one of these answers is per shop.
  */
 import { type ShopeeTransport, type ShopeeWarning, shopeeCall } from './call';
 import { SHOPEE_SURFACE, ShopeeConfigError } from './errors';

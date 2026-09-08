@@ -1,8 +1,9 @@
 # Firebase App Hosting backend config for apps/shopee.
 # API-only service for the Shopee Open Platform channel integration: OAuth
-# connect and account status today (step 1 of the master plan); the push
-# receiver and heavier async work land in later steps, dispatched to a nested
-# Cloud Functions codebase the way apps/mercado-livre does.
+# connect, account status, the access-token refresh and the cached taxonomy
+# reads today (steps 1-2 and 10 of the master plan); the push receiver and
+# heavier async work land in later steps, dispatched to a nested Cloud
+# Functions codebase the way apps/mercado-livre does.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -35,8 +36,13 @@ runConfig:
   minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
   concurrency: 80
 # No `timeoutSeconds` — every route here today is a fast Firestore read/write
-# plus at most one Shopee API call; nothing long-running like ML's manual
-# stock push exists in this channel yet.
+# plus at most TWO Shopee API calls: five taxonomy routes read the category
+# tree (`get_category`, unpaged) as well as their own endpoint — the four
+# leaf-gated ones before the gate, `recomendacao-categoria` to resolve the rows
+# — and both legs are cached for 15 min, so only a cold window pays either. Nothing
+# loops, fans out or runs long the way ML's manual stock push does. Revisit
+# this if a route ever pages a slow endpoint itself (`get_brand_list` is the
+# candidate — the caller loops today, deliberately).
 #
 # No `runConfig.vpcAccess` — Shopee's IP allow-list (master plan P2 option D:
 # a static-egress VPC connector + reserved IP) is migration-window

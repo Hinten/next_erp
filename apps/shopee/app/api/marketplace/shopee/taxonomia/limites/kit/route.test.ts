@@ -178,7 +178,7 @@ describe('o kit tem os SEUS limites', () => {
 });
 
 describe('a trava de folha — aqui ela vale, ao contrário das bandas de item', () => {
-  it('uma categoria do MEIO responde limites null com ZERO chamadas', async () => {
+  it('uma categoria do MEIO responde limites null com ZERO chamadas a get_kit_item_limit', async () => {
     const res = await GET(req({ integracaoId: 'int-1', categoryId: '100100' }, AUTORIZADO));
     const body = (await res.json()) as Record<string, unknown>;
 

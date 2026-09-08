@@ -4,10 +4,19 @@
  *
  * ## camelCase mirrors of Shopee's own names — never a translation
  *
- * `categoryId`, `hasNextPage`, `daysToShipLimit`: every key is Shopee's own
- * field name in camelCase, and the few invented keys (`isLeaf`, `pathFromRoot`,
+ * `categoryId`, `hasNextPage`, `daysToShipLimit`: every FIELD is Shopee's own
+ * name in camelCase, and the invented keys (`isLeaf`, `pathFromRoot`,
  * `children`, `truncated`, `position`, `applied`, `unresolved`, `scope`) are
- * English too. pt-BR lives in messages and in log lines, nowhere in a key.
+ * English too. Two are deliberately SHORTENED rather than mirrored: `name` and
+ * `originalName` on `CategoriaResumoDto` carry `display_category_name` and
+ * `original_category_name`, because the type already says which entity it is
+ * and neither string is ever published. A brand name IS published, which is why
+ * `MarcaDto` keeps `displayBrandName` / `originalBrandName` verbatim.
+ *
+ * pt-BR survives in exactly ONE position: the envelope noun each route invents
+ * for its own collection (`raizes`, `no`, `atributos`, `marcas`, `limites`,
+ * `recomendacoes`). Never inside a row — no field carrying a provider value is
+ * translated. Messages and log lines are pt-BR everywhere.
  *
  * That is not a style preference. Step 11 composes Shopee PUBLISH payloads from
  * these numbers and step 21 mirrors this shape in `apps/web`, so a translated

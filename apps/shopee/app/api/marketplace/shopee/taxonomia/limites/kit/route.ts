@@ -14,7 +14,11 @@
  * documented optional on both pages: the kit page's only error sample is
  * "should use leaf category". With no `categoryId` the read is shop-wide, there
  * is nothing to gate on, and `leaf` is `null` — the same three-valued honesty
- * the rest of the layer keeps.
+ * the rest of the layer keeps. A mid-tree id therefore answers
+ * `{ leaf: false, limites: null }` at 200 without calling `get_kit_item_limit`.
+ * ⚠️ That is the layer's ONLY `limites: null`, and it always carries
+ * `leaf: false`: a limits FAILURE surfaces as an error, it never degrades to a
+ * null band that step 11 could read as "no limit".
  *
  * Requires `PERM.integracao.read`.
  */

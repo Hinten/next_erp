@@ -16,7 +16,10 @@
  *
  *  - `folha` — `has_children === false`, exactly. The read proceeds.
  *  - `nao-folha` — the node exists and has children. The route answers 200 with
- *    nothing and makes ZERO provider calls.
+ *    nothing and makes ZERO calls to the gated operation (`get_attribute_tree`,
+ *    `get_brand_list`, `get_variations`, `get_kit_item_limit`). Reading this
+ *    index is not free on a cold window — it is the one `get_category` above —
+ *    but it is paid once per window for every taxonomy answer, gated or not.
  *  - `desconhecida` — the id is not in the tree at all. That is NOT "has
  *    children": it means the caller sent an id from another region, a stale
  *    picker, or a typo, and the honest answer is a 404. Folding it into

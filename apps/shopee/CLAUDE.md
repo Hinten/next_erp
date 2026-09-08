@@ -178,9 +178,10 @@ band or brand page to another, silently, in the direction that publishes.
 exact), `nao-folha`, and `desconhecida` — the id is not in this shop's tree,
 which is a **404** (`SHOPEE_CATEGORIA_DESCONHECIDA`), never "has children".
 Attributes, brands, variations and the KIT bands gate on it (a non-leaf answers
-200-with-nothing and makes ZERO provider calls); the ITEM bands do **not**,
-because `category_id` is documented optional there and its absence is a real
-read (`scope: 'shop'`).
+200-with-nothing and makes ZERO calls to the gated operation — `get_category`
+itself is still read, once per cache window, because that is what the gate
+consults); the ITEM bands do **not**, because `category_id` is documented
+optional there and its absence is a real read (`scope: 'shop'`).
 
 ⚠️ **The whole ~10⁴-node tree never crosses our wire.** `get_category` is unpaged
 and returns everything; it is indexed once per cache window and the categorias
@@ -233,9 +234,10 @@ maintained from the conta screen (step 21) and re-validated at publish (step 11)
 
 **Recommendations are OFFERED, never applied** (`applied: false`, #799), and a
 suggested id absent from the tree degrades that ROW (`unresolved`, one log line)
-while a failure of the TREE read surfaces. Limits failures surface too — this
-layer never answers `limites: null`, because step 11 must not publish against
-hardcoded numbers.
+while a failure of the TREE read surfaces. Limits failures surface too — a
+FAILURE never degrades to `limites: null`, because step 11 must not publish
+against hardcoded numbers. The only `limites: null` in the layer is the kit
+route's non-leaf short-circuit, which pairs it with `leaf: false`.
 
 `limparTaxonomiaShopee()` clears all seven caches at once, coarse on purpose:
 the primitive has no prefix scan, and step 3's `push 13` is where granularity

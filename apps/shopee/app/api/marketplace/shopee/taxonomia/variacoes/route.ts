@@ -13,7 +13,9 @@
  * signed is what turns one sandbox call into an answer, and flipping it is an
  * env var (`SHOPEE_VARIATIONS_PATH`), not a redeploy.
  *
- * ⚠️ Leaf-gated: a mid-tree id answers an empty list with zero provider calls.
+ * ⚠️ Leaf-gated: a mid-tree id answers an empty list with zero `get_variations`
+ * calls. The gate itself still reads the category tree — one `get_category` on
+ * a cold cache window, none on a warm one.
  * ⚠️ `variation_option_id: 0` is an observed CUSTOM option — a value, not an
  * absence — and it reaches this body intact.
  *

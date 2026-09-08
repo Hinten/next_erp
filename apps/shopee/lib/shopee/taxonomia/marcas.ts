@@ -23,7 +23,13 @@ export interface PaginaDeMarcas {
   readonly pageSize: number;
   readonly marcas: readonly MarcaDto[];
   readonly hasNextPage: boolean;
-  /** Feed this back as the next call's `offset`. `null` when there is no next page. */
+  /**
+   * Shopee's cursor, echoed verbatim — feed it back as the next call's
+   * `offset`. ⚠️ Page on `hasNextPage`, never on this being non-null: Shopee's
+   * page documents the field only as "if `has_next_page` is true, this value
+   * need set to next request.offset" and promises nothing about the last page,
+   * so a loop that stopped on `null` could re-request the same page forever.
+   */
   readonly nextOffset: number | null;
   readonly isMandatory: boolean | null;
   readonly inputType: string | null;
