@@ -961,12 +961,27 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // stop moving. Say it once, the first time it happens on this screen.
     //
     // Only on the TRANSITION out of live, which is self-limiting: the first such
-    // sort makes the table static, so every click after it fails this guard and
-    // stays quiet. No "already shown" flag is needed — one was written here
+    // sort moves `listMode` to static, so every click after it fails this guard
+    // and stays quiet. No "already shown" flag is needed — one was written here
     // first, and a mutation test proved it could be deleted without changing any
-    // behaviour, because `transportIsLive` had already done its job.
+    // behaviour.
+    //
+    // ⚠️ The POLICY (`listMode`), deliberately NOT `transportIsLive` — the exact
+    // inverse of what the badge uses, and for the opposite reason. The badge
+    // describes what the list is doing NOW, so it must read the transport. This
+    // toast claims a click CHANGED that, so it must read the thing that tracks
+    // whether the declared query moved off its declared shape.
+    //
+    // They diverge on `queryOverride`, and that branch is live in production:
+    // `/clientes` sets one for a matched endereço search, `pipeline` is null so
+    // `transportIsLive` is TRUE, and `fallbackQuery` hands the caller's query to
+    // `useSnapshot` — the list keeps streaming. Keyed on the transport, this
+    // fired on every header click of those results, announcing that the list had
+    // stopped updating itself while the badge beside it correctly read "Tempo
+    // real" and the rows kept arriving. It also repeated, because the transport
+    // never became static, so even the self-limiting property was gone.
     const leavesLive =
-      transportIsLive &&
+      listMode.mode === 'live' &&
       JSON.stringify([{ field: next.field, direction: next.direction }]) !== declaredOrderBySerial;
     if (leavesLive) {
       notifications.show({

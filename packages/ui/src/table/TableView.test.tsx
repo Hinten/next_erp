@@ -1140,6 +1140,39 @@ describe('TableView', () => {
       expect(notifyShow).not.toHaveBeenCalled();
     });
 
+    it('stays silent under a caller-owned query, which is still streaming', () => {
+      // The branch where the POLICY and the TRANSPORT disagree, and it is live
+      // in production: /clientes sets `queryOverride` for a matched endereço
+      // search. `pipeline` is null there, so `transportIsLive` is TRUE and
+      // `fallbackQuery` hands the caller's query to `useSnapshot` — the rows
+      // keep streaming.
+      //
+      // Keyed on the transport, this toast fired on every header click of those
+      // results, announcing that the list had stopped updating itself while the
+      // badge beside it correctly read "Tempo real". Keyed on the policy
+      // (`listMode`, which reports `static/override` here) it stays quiet,
+      // because sorting does not change that transport at all: `fallbackQuery`
+      // returns the override and never consults `effectiveOrderBy`.
+      notifyShow.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          queryOverride={{ __q: 'caller' } as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Nome'));
+      fireEvent.click(screen.getByText('Tipo'));
+      expect(notifyShow, 'sorting an overridden query changes no transport').not.toHaveBeenCalled();
+      // And the badge must still say the truth about that list.
+      expect(screen.getByText('Tempo real')).toBeDefined();
+    });
+
     it('first header click flips the meta-default ascending sort to descending', () => {
       // Regression: with the default sort coming from meta (not the legacy
       // orderBy prop), the column shows ascending but `sort` state is still
