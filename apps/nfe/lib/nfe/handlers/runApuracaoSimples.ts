@@ -236,12 +236,13 @@ export function notasNaoContabilizadas(args: {
  * ⚠️ **Inclusive quando ela sai ZERO**, e essa ordem é a correção do #1546: o
  * `!aliquotaOk` vinha primeiro, então uma janela INTEIRAMENTE ilegível — que dá
  * `rbt12 = 0`, logo `semReceita` — era reportada como `foraDoRegime`. É o
- * primeiro estado em que um projeto real cai, porque enquanto o backfill do
- * #1553 não rodar toda nota anterior é ilegível; e a tela então manda o
- * operador conferir o FATURAMENTO ("a receita dos 12 meses está zerada… fale
- * com a contabilidade") quando o que está errado são as notas, sem sequer
- * mostrar quantas. A cópia de `incompleta`, escrita justamente para esse caso,
- * nunca aparecia nele.
+ * primeiro estado em que um projeto real cai, porque enquanto o backfill não
+ * RODAR toda nota anterior é ilegível — e rodar é o **#1561**, o ticket da
+ * janela de migração; o #1553 apenas mergeou o script, o que não muda nenhum
+ * documento. E a tela então manda o operador conferir o FATURAMENTO ("a receita
+ * dos 12 meses está zerada… fale com a contabilidade") quando o que está errado
+ * são as notas, sem sequer mostrar quantas. A cópia de `incompleta`, escrita
+ * justamente para esse caso, nunca aparecia nele.
  */
 export function estadoDaApuracao(args: {
   readonly notasIlegiveis: number;
