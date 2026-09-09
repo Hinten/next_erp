@@ -6,7 +6,31 @@ import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
-import { partitionActionRows } from './resolveActionRows';
+import { partitionActionRows, type RefusedRow } from './resolveActionRows';
+
+/** How many refusal reasons a notification names before it starts counting. */
+const MAX_LISTED_REFUSALS = 3;
+
+/**
+ * Operator-facing summary of the rows an action refused.
+ *
+ * Names the first few outright rather than only counting them: a reason
+ * carries the record's own identifier (`emit-nfe` returns
+ * `"1234: frete cancelado"`), and that is what lets someone go and fix it.
+ * The tail is COUNTED, never dropped — a silent cap would read as "those were
+ * all of them", which is the failure this message exists to prevent.
+ */
+function refusalMessage<T>(
+  label: string,
+  eligibleCount: number,
+  refused: ReadonlyArray<RefusedRow<T>>,
+): string {
+  const total = eligibleCount + refused.length;
+  const shown = refused.slice(0, MAX_LISTED_REFUSALS).map((r) => r.reason);
+  const rest = refused.length - shown.length;
+  const tail = rest > 0 ? ` e mais ${rest}` : '';
+  return `${label}: ${refused.length} de ${total} registros ficaram de fora — ${shown.join('; ')}${tail}`;
+}
 
 /**
  * Shared bulk-action dispatcher for the ActionBar and the ActionSidePanel.
@@ -50,7 +74,23 @@ export function useActionRunner<T>({
    * can leave some rows gone and the list stale.
    */
   async function execute(action: ActionConfig<T>) {
-    const { eligible: rows } = partitionActionRows(action, selectedRows, visibleRows);
+    const { eligible: rows, refused } = partitionActionRows(action, selectedRows, visibleRows);
+    // A `confirm`-less action never opens the modal, so the Alert below that
+    // lists refusals is unreachable and the drop is SILENT: the operator
+    // selects twelve, ten run, and the count quietly disagrees with the
+    // selection — the very problem `rowIneligibleReason` was added to end.
+    //
+    // `actionDisabledReason` does not cover this. It only fires when EVERY row
+    // was refused (the button disables and its title says which); the PARTIAL
+    // case is invisible on this path. No consumer hits it today — `emit-nfe`
+    // declares a `confirm` — but nothing in `ActionConfig` ties the two
+    // together, so the next one would get the silent drop back.
+    if (refused.length > 0 && !action.confirm) {
+      notifications.show({
+        color: 'yellow',
+        message: refusalMessage(action.label, rows.length, refused),
+      });
+    }
     try {
       await action.run(rows);
     } catch (err) {
@@ -107,6 +147,23 @@ export function useActionRunner<T>({
           </Button>
           <Button
             color={pending?.color ?? 'red'}
+            /**
+             * The recompute above found every row refused, so `run` would
+             * receive an empty list. Each `run` opens with a length guard
+             * (`dispatchEmitirNFe`: `if (rows.length === 0) return;`), so the
+             * modal would close and NOTHING would happen, with no
+             * notification — the "nothing happens when I click it" failure
+             * `actionDisabledReason` exists to prevent, reached here because
+             * the button that opened this dialog was enabled back when the
+             * rows were still eligible. The Alert already says why.
+             *
+             * ⚠️ Deliberately NOT `eligible.length === 0` on its own. An
+             * action with no `rowIneligibleReason` refuses nothing ever, so
+             * the broader condition would also disable Confirm for an empty
+             * selection — a case this PR does not touch and which a
+             * `requiresSelection: false` action may legitimately run on.
+             */
+            disabled={pendingSplit.eligible.length === 0 && pendingRefused.length > 0}
             onClick={async () => {
               const action = pending!;
               setPending(null);
