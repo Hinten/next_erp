@@ -80,17 +80,32 @@ function fromCache(id: string, value: number) {
   return { ...fromServer(id, value), fromCache: true };
 }
 
+/** Stands in for the row query object TableView passes as `rowsGeneration`. */
+const ROWS_A = { __rows: 'a' };
+const ROWS_B = { __rows: 'b' };
+
 function mount(field: string | null = FIELD) {
+  let gen: unknown = ROWS_A;
   const view = renderHook(
-    ({ f }: { f: string | null }) => useCollectionMonitor({ db: DB, collection, field: f }),
-    { initialProps: { f: field } },
+    ({ f, g }: { f: string | null; g: unknown }) =>
+      useCollectionMonitor({ db: DB, collection, field: f, rowsGeneration: g }),
+    { initialProps: { f: field, g: gen } },
   );
   /** Emit a snapshot and let the hook see it. */
   const emit = (snap: ReturnType<typeof fromServer>, f: string | null = field) => {
     snapRef.current = snap;
-    view.rerender({ f });
+    view.rerender({ f, g: gen });
   };
-  return { ...view, emit, retarget: (f: string | null) => view.rerender({ f }) };
+  return {
+    ...view,
+    emit,
+    retarget: (f: string | null) => view.rerender({ f, g: gen }),
+    /** The rows were re-read — a filter change, a re-sort, a "Carregar mais". */
+    reread: (g: unknown = ROWS_B) => {
+      gen = g;
+      view.rerender({ f: field, g });
+    },
+  };
 }
 
 describe('useCollectionMonitor', () => {
@@ -145,6 +160,39 @@ describe('useCollectionMonitor', () => {
     // Re-armed, not dead: the next real write still reports.
     emit(fromServer('d', 4));
     expect(result.current.stale).toBe(true);
+  });
+
+  it('takes the notice down when the rows are re-read by anything else', () => {
+    // A frozen list re-executes on a filter change, a re-sort, a "Carregar
+    // mais" and a completed action — none of which go through this monitor's
+    // own button. The re-read already contains the write being reported, so
+    // leaving the notice up says a list that just updated itself is behind.
+    const { result, emit, reread } = mount();
+    emit(fromServer('a', 1));
+    emit(fromServer('b', 2));
+    expect(result.current.stale).toBe(true);
+
+    reread();
+    expect(result.current.stale, 'those rows now include the write').toBe(false);
+
+    // Re-pinned to the CURRENT state in the same pass, not merely muted: the
+    // next write is still reported rather than being swallowed as a baseline.
+    emit(fromServer('c', 3));
+    expect(result.current.stale).toBe(true);
+  });
+
+  it('stays quiet while the rows are not re-read', () => {
+    // The guard against the fix above going too far: `rowsGeneration` must be
+    // a STABLE identity per row query. If TableView ever handed over a value
+    // that churned per render, every render would re-pin and the monitor would
+    // silently never report anything again.
+    const { result, emit } = mount();
+    emit(fromServer('a', 1));
+    emit(fromServer('a', 1));
+    emit(fromServer('a', 1));
+    expect(result.current.stale).toBe(false);
+    emit(fromServer('b', 2));
+    expect(result.current.stale, 'still armed after idle re-renders').toBe(true);
   });
 
   it('clears the notice when the operator acknowledges it', () => {

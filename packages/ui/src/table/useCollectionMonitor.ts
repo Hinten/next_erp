@@ -28,6 +28,11 @@ export interface CollectionMonitorResult {
  * the monitor — no query is built, `useSnapshot` never subscribes, and the
  * baseline is forgotten so a later re-enable pins afresh.
  *
+ * ⚠️ The baseline belongs to the ROWS on screen, not to this listener, so
+ * anything that re-reads those rows re-pins it — see `rowsGeneration`. The
+ * notice reports "what you are looking at is behind the collection", and a
+ * refresh that did not come from its own button answers it just as well.
+ *
  * ⚠️ TableView enables this ONLY on the frozen (Pipelines) transport. A list
  * whose rows stream has nothing to detect: every change is already on screen,
  * so the notice would fire over data it had just applied. What that gate does
@@ -48,8 +53,18 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
   collection: CollectionHandle<S>;
   pathContext?: PathContext;
   field: string | null;
+  /**
+   * Identity of the query the ROWS come from. Any change means they were just
+   * re-read, so the baseline is re-pinned and the notice comes down.
+   *
+   * ⚠️ Pass the query object itself, never a serial recomputed here. The rows
+   * re-read exactly when `usePipelineSnapshot` sees a new identity, so the
+   * object IS the signal; a hand-rolled key would be a second copy of the
+   * pipeline memo's dependency list, free to drift from it in silence.
+   */
+  rowsGeneration?: unknown;
 }): CollectionMonitorResult {
-  const { db, collection, pathContext = {}, field } = opts;
+  const { db, collection, pathContext = {}, field, rowsGeneration } = opts;
 
   const query = useMemo(() => {
     if (!field) return null;
@@ -68,6 +83,7 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
   }, [query, field, snap.data]);
 
   const baselineRef = useRef<string | null>(null);
+  const genRef = useRef(rowsGeneration);
   const [stale, setStale] = useState(false);
 
   useEffect(() => {
@@ -79,9 +95,26 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
     // compares against the previous static session and raises `stale` over rows
     // fetched a millisecond ago.
     if (!query) {
+      genRef.current = rowsGeneration;
       baselineRef.current = null;
       setStale(false);
       return;
+    }
+    // The rows were re-read. Same reasoning as the branch above, reached the
+    // other way: a frozen list re-executes on a filter change, a re-sort, a
+    // "Carregar mais" and a `refreshOnComplete` action, and none of those go
+    // through this monitor's own button. Without this the notice survives its
+    // own cure — it stays up over rows that were just refetched and already
+    // contain the write it is reporting.
+    //
+    // ⚠️ Falls THROUGH rather than returning, so the block below re-pins in
+    // this same run. Nulling the baseline and leaving is not equivalent: the
+    // deps would not change again until the next write, which would then be
+    // absorbed as the new baseline instead of being reported.
+    if (genRef.current !== rowsGeneration) {
+      genRef.current = rowsGeneration;
+      baselineRef.current = null;
+      setStale(false);
     }
     if (signature === null) return;
     // Wait for SERVER truth before pinning the baseline. The IndexedDB cache
@@ -94,7 +127,7 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
       return;
     }
     if (signature !== baselineRef.current) setStale(true);
-  }, [query, signature, snap.fromCache]);
+  }, [query, signature, snap.fromCache, rowsGeneration]);
 
   function acknowledge() {
     baselineRef.current = signature;

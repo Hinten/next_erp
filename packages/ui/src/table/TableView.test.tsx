@@ -22,6 +22,7 @@ const {
   buildQuerySpy,
   monitorRef,
   monitorFieldRef,
+  monitorGenRef,
   widenState,
 } = vi.hoisted(() => ({
   snapState: {
@@ -73,11 +74,16 @@ const {
   // it — a mock that returned `stale: false` for a null field would keep the
   // rendering test green after someone deleted the production gate.
   monitorFieldRef: { current: undefined as string | null | undefined },
+  // The row-query identity handed to the monitor, which re-pins its baseline
+  // whenever it changes. Recorded so a test can prove it moves on a re-read
+  // and holds still otherwise.
+  monitorGenRef: { current: undefined as unknown },
 }));
 
 vi.mock('./useCollectionMonitor', () => ({
-  useCollectionMonitor: (opts: { field: string | null }) => {
+  useCollectionMonitor: (opts: { field: string | null; rowsGeneration?: unknown }) => {
     monitorFieldRef.current = opts.field;
+    monitorGenRef.current = opts.rowsGeneration;
     return monitorRef.current;
   },
 }));
@@ -174,6 +180,7 @@ describe('TableView', () => {
     pipelineSupportedRef.current = true;
     monitorRef.current = { stale: false, acknowledge: vi.fn() };
     monitorFieldRef.current = undefined;
+    monitorGenRef.current = undefined;
     widenState.current = { data: [], loading: false, error: undefined };
   });
 
@@ -1828,6 +1835,48 @@ describe('TableView', () => {
       renderMonitored();
       expect(screen.getByText('Tempo real')).toBeDefined();
       expect(staleIcon(), 'the rows already carry every change').toBeNull();
+    });
+
+    it('hands the monitor a new generation when a re-read happens, and only then', () => {
+      // The hook re-pins its baseline whenever `rowsGeneration` changes, so
+      // the notice comes down on a re-read that did NOT come from its own
+      // button — a review found "Carregar mais" leaving the yellow icon up
+      // over rows that had just been refetched and already contained the write
+      // it was reporting. This is the TableView half of that contract; the
+      // hook's own file covers what it does with the value.
+      //
+      // ⚠️ The second half matters as much as the first. `pipeline` is the
+      // signal precisely because it is STABLE per row query — were it to churn
+      // per render, every render would re-pin and the monitor would silently
+      // stop reporting anything at all.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      // ⚠️ ONE handle across both renders. A fresh one per render is a new
+      // pipeline, which is correct — `collection` really is part of the query —
+      // and would make the stability half of this test pass for the wrong
+      // reason. Real screens hold both this and `pathContext` stable, which is
+      // what the data layer already requires of them.
+      const handle = monitored();
+      const list = (
+        <TableView
+          schema={monitoredSchema}
+          collection={handle}
+          db={{} as never}
+          meta={declared}
+          // 2 rows in the snapshot === pageSize 2 → the page looks full → button.
+          pageSize={2}
+        />
+      );
+      const view = wrap(list);
+      searchParamsRef.current = new URLSearchParams();
+      const first = monitorGenRef.current;
+      expect(first, 'a frozen list is watched, so it has a row query').toBeTruthy();
+
+      // An idle re-render: same props, nothing about the query changed.
+      view.rerender(<MantineTestProvider>{list}</MantineTestProvider>);
+      expect(monitorGenRef.current, 'nothing was re-read').toBe(first);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      expect(monitorGenRef.current, 'the rows were re-read').not.toBe(first);
     });
 
     it('leaves a caller-owned query watching nothing, because it streams', () => {

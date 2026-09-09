@@ -1832,6 +1832,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     collection,
     pathContext,
     field: resolvedMonitorField,
+    // `pipeline` IS the re-read signal: `usePipelineSnapshot` executes once per
+    // identity, so a new object means the rows on screen were just refetched
+    // and the notice must come down with them. Non-null whenever the monitor
+    // runs at all, since the two are gated on the same transport.
+    rowsGeneration: pipeline,
   });
 
   // The top-right toolbar row. Every member is conditional, so without this
