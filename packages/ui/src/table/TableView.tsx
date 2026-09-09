@@ -1316,6 +1316,48 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // on rows actually arriving — not on the widening having been attempted.
   const widenAtivo = !!widenPipeline && (widenRows?.length ?? 0) > 0;
 
+  /**
+   * ⚠️ ONE value, read by BOTH the skeleton branch and the table branch below.
+   *
+   * It was written inline in the skeleton branch only, and the table body then
+   * rendered UNDERNEATH it: while the widening is in flight the primary has
+   * already answered, so `snap.loading` is false and `rows` is `[]` — the
+   * skeletons and the `Nenhum resultado.` row painted at the same time, and the
+   * widened rows still swapped in a beat later. That is precisely the flash the
+   * skeleton was added to prevent, so the duplicated expression did not merely
+   * repeat itself, it silently did nothing.
+   */
+  const widenLoading = !!widenPipeline && fromWiden.loading;
+
+  /**
+   * A failed WIDENING is not the table's error, and must not be rendered as one.
+   *
+   * The operator asked for "names starting with X". The primary query answered
+   * that, successfully, with nothing — so `Nenhum resultado.` is the honest
+   * result and stays. The widening is an extra they never asked for; surfacing
+   * its failure turns a query that WORKED into a red alert carrying a raw
+   * Firestore message.
+   *
+   * ⚠️ Not hypothetical, and this PR is the proof twice over. The index deploy
+   * and the app deploy are separate manual steps in either order, so an app that
+   * ships first meets no text index at all — and the very fault this work exists
+   * to repair (`9 FAILED_PRECONDITION: Found multiple global text search
+   * indexes`) would have been shown to the operator on every empty search.
+   *
+   * So it degrades to "no widening", the same way an empty widened result
+   * already does. Reported to the console rather than swallowed, on the
+   * `rowLinkColumn` precedent above: keyed on the error so a re-render does not
+   * re-warn, and an effect so rendering stays pure.
+   */
+  useEffect(() => {
+    if (!fromWiden.error) return;
+    console.warn(
+      `TableView: the text-search widening failed and was skipped — ` +
+        `${fromWiden.error.message}. The list still shows the primary query's ` +
+        `result, which succeeded.`,
+    );
+  }, [fromWiden.error]);
+
   // Everything below — selection, counts, the table body — reads `rows`, so the
   // widened set has to land HERE rather than at the render site, or a selected
   // row would not be one the actions can act on.
@@ -1767,16 +1809,20 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Text>
           )}
 
-          {(snap.error || fromWiden.error || subLookup.error || searchResolve.error) && (
+          {/* ⚠️ `fromWiden.error` is deliberately NOT here — see the effect that
+              logs it. A failed optional widening must not become the error state
+              of a primary query that succeeded. */}
+          {(snap.error || subLookup.error || searchResolve.error) && (
             <Alert color="red" title="Erro ao carregar">
-              {(snap.error ?? fromWiden.error ?? subLookup.error ?? searchResolve.error)?.message}
+              {(snap.error ?? subLookup.error ?? searchResolve.error)?.message}
             </Alert>
           )}
 
-          {/* ⚠️ The widening counts as loading. Without it the table paints
-              "Nenhum resultado." and then swaps in rows a beat later, which
-              reads as a bug rather than as a second query finishing. */}
-          {(snap.loading || lookupLoading || (!!widenPipeline && fromWiden.loading)) && (
+          {/* ⚠️ The widening counts as loading, in BOTH branches. Without it the
+              table paints "Nenhum resultado." and then swaps in rows a beat
+              later, which reads as a bug rather than as a second query
+              finishing. */}
+          {(snap.loading || lookupLoading || widenLoading) && (
             <Stack>
               <Skeleton height={36} />
               <Skeleton height={36} />
@@ -1784,7 +1830,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Stack>
           )}
 
-          {!snap.loading && !lookupLoading && rows && (
+          {!snap.loading && !lookupLoading && !widenLoading && rows && (
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>

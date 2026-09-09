@@ -2337,6 +2337,56 @@ describe('TableView', () => {
       expect(screen.getByText('boom')).toBeTruthy();
     });
 
+    it('shows skeletons ALONE while the widening is in flight', () => {
+      // ⚠️ Both halves, because the bug was that only one of them knew. The
+      // primary has already answered, so `snap.loading` is false and `rows` is
+      // `[]` — assert the skeletons appear AND that the table body is gone.
+      // Asserting only the skeletons passes with the table rendering
+      // underneath them, which is the flash the skeleton exists to prevent.
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = { data: [], loading: true, error: undefined };
+      const { container } = renderComBusca();
+
+      expect(container.querySelectorAll('.mantine-Skeleton-root').length).toBeGreaterThan(0);
+      expect(screen.queryByText('Nenhum resultado.')).toBeNull();
+      expect(screen.queryByRole('table')).toBeNull();
+    });
+
+    it('does not turn a failed widening into the table error state', () => {
+      // ⚠️ The operator asked for "names starting with X" and got a truthful
+      // answer: nothing. The widening is an extra they never requested, so its
+      // failure must degrade to "no widening" — not to a red alert carrying a
+      // raw Firestore message over a query that WORKED.
+      //
+      // Reachable on this PR's own deploy list: the index deploy and the app
+      // deploy are separate manual steps in either order, so an app that ships
+      // first meets no text index and every empty search would go red.
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = {
+        data: undefined,
+        loading: false,
+        error: new Error('9 FAILED_PRECONDITION: no text index') as never,
+      };
+      renderComBusca();
+
+      expect(screen.queryByText('Erro ao carregar')).toBeNull();
+      expect(screen.queryByText(/FAILED_PRECONDITION/)).toBeNull();
+      // The honest result still renders.
+      expect(screen.getByText('Nenhum resultado.')).toBeTruthy();
+    });
+
+    it('still reports a primary failure, which the widening must not mask', () => {
+      // The control for the case above: dropping `fromWiden.error` from the
+      // alert must not have taken the real error path with it.
+      snapState.current = {
+        data: [],
+        loading: false,
+        error: new Error('primary boom') as never,
+      };
+      renderComBusca();
+      expect(screen.getByText('primary boom')).toBeTruthy();
+    });
+
     it('sanitises the term, so a DSL operator is not read as syntax', () => {
       // `-` negates in the search DSL, so the raw term would ask for
       // "Porta but NOT lápis" and come back empty with nothing to notice.
