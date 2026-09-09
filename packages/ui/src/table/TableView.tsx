@@ -49,6 +49,7 @@ import {
   PipelineUnsupportedError,
   buildPipeline,
   isPipelineSupported,
+  sanitizeSearchDsl,
 } from '@delfrance/data/pipeline-queries';
 import { extractFieldsFromSchema } from '../schema/derive';
 import { expandColumnFilter } from '../schema/types';
@@ -387,6 +388,37 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
     toFilters: (term: string) => ReadonlyArray<PipelineFieldFilter>;
     toForcedOrderBy?: (term: string) => { field: string; direction?: 'asc' | 'desc' } | undefined;
     resolveIds?: SearchIdResolver;
+    /**
+     * Opt into WIDENING an empty result with a Firestore text search, on the
+     * declared text index. Return the term to search for, or `undefined` to
+     * decline this one.
+     *
+     * ⚠️⚠️ A WIDENING, not a replacement, and the difference is measured rather
+     * than stylistic. Text search matches WHOLE WORDS: on staging `Bandeja`
+     * returns 5 rows while `Bandej`, `Bande` and `Band` return zero, with or
+     * without a trailing `*`. Putting it in front of `toFilters` would empty the
+     * table until a whole word was typed, so it runs BEHIND: only once the
+     * primary query has answered, and answered with nothing.
+     *
+     * What that buys is the thing a prefix range structurally cannot do — a word
+     * in the MIDDLE of a name. Measured: `Gatinho` against "Bandeja De Madeira
+     * Enfeitada Gatinho" returns 1 row here and 0 through the range.
+     *
+     * ⚠️ Known gap, accepted on purpose: a term that IS a name prefix never
+     * widens, because the primary query is not empty. `Camiseta` still misses
+     * produtos carrying it mid-name. Closing that means running both on every
+     * search and merging, which costs a second query per search.
+     *
+     * ⚠️ Pipelines path ONLY. There is no classic-query text search, so the
+     * fallback (and therefore the emulator e2e lane) keeps the `toFilters`
+     * behaviour and never widens. Do not write a test that can only pass on one
+     * of the two.
+     *
+     * The returned term is run through `sanitizeSearchDsl` here rather than by
+     * the caller: the string is a search DSL, `-` negates in it, and a caller
+     * that forgot would get a silently empty result instead of an error.
+     */
+    toTextQuery?: (term: string) => string | undefined;
   };
 
   /**
@@ -1201,7 +1233,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // to match (base meta filters are already in the fallback query / owned by
   // the override). Everything below — selection, counts, the table body —
   // reads `rows`, not `snap.data`, so it all stays consistent with the filter.
-  const rows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
+  const primaryRows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
     () => {
       // A subcollection lookup that matched nothing, or an extra filter with
       // an empty candidate list → no rows (no query ran).
@@ -1212,6 +1244,82 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // serverFiltersSerial stands in for the `serverFilters` object content.
     [pipeline, snap.data, serverFiltersSerial, lookupEmpty, extraEmpty],
   );
+
+  // --- Widening: the second query that runs only when the first found nothing
+  //
+  // See `search.toTextQuery` for why it sits BEHIND the primary query and not in
+  // front of it. Everything here is gated on the primary having ANSWERED, so on
+  // the common path this block builds nothing and issues nothing.
+  const textQuerySolicitada =
+    searchConfig?.toTextQuery && searchTerm !== '' && !searchIdsActive && !searchResolving
+      ? searchConfig.toTextQuery(searchTerm)
+      : undefined;
+  // ⚠️ Sanitised HERE, once, rather than trusted from the caller — the string is
+  // a search DSL where `-` negates, and a raw `Porta-lápis` asks for "Porta but
+  // NOT lápis" and comes back empty with no error to notice.
+  const textQuery = textQuerySolicitada ? sanitizeSearchDsl(textQuerySolicitada) : undefined;
+
+  // ⚠️ `snap.loading` AND `snap.error` both have to clear first. Widening on a
+  // still-loading query would fire on every keystroke's empty first frame, and
+  // widening on a FAILED one would answer a question the primary never asked —
+  // an error would render as "nothing starts with this, here is what contains
+  // it", quietly replacing a failure with a plausible result set.
+  const primarioVazio =
+    !!pipeline && !snap.loading && !snap.error && (primaryRows?.length ?? -1) === 0;
+
+  const widenPipeline: Pipeline | null = useMemo(() => {
+    if (!primarioVazio || !textQuery) return null;
+    if (lookupLoading || lookupEmpty || extraEmpty) return null;
+    try {
+      return buildPipeline(db, {
+        collection: collection.resolvePath(pathContext),
+        textSearch: { query: textQuery },
+        // ⚠️ `extraFilters`, NOT `effectiveExtraFilters`. The latter carries the
+        // search's own `toFilters` output — the very prefix range that just
+        // returned nothing — and re-applying it would guarantee this query
+        // returns nothing too, silently, forever.
+        filters: [
+          ...baseFilters,
+          ...(extraFilters ?? []),
+          ...Object.entries(serverFilters).flatMap(([field, v]) => expandColumnFilter(field, v)),
+        ],
+        idIn,
+        select: selectFields,
+        orderBy: effectiveOrderBy,
+        limit: effectiveLimit,
+      });
+    } catch (err) {
+      if (err instanceof PipelineUnsupportedError) return null;
+      throw err;
+    }
+  }, [
+    db,
+    collection,
+    primarioVazio,
+    textQuery,
+    effectiveLimit,
+    effectiveOrderBy,
+    baseFiltersSerial,
+    extraFiltersSerial,
+    extraEmpty,
+    serverFiltersSerial,
+    idInSerial,
+    lookupLoading,
+    lookupEmpty,
+    selectFieldsSerial,
+    refreshKey,
+  ]);
+
+  const fromWiden = usePipelineSnapshot<z.infer<S>>(widenPipeline);
+  const widenRows = widenPipeline ? fromWiden.data : undefined;
+  // The banner claims the list is showing widened results, so it must be keyed
+  // on rows actually arriving — not on the widening having been attempted.
+  const widenAtivo = !!widenPipeline && (widenRows?.length ?? 0) > 0;
+
+  // Everything below — selection, counts, the table body — reads `rows`, so the
+  // widened set has to land HERE rather than at the render site, or a selected
+  // row would not be one the actions can act on.
+  const rows = widenAtivo ? widenRows : primaryRows;
 
   // Collapse "Carregar mais" back to one page whenever the query shape changes
   // (filters, sort, base filters or bound params) — the expanded window only
@@ -1650,13 +1758,25 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Text>
           )}
 
-          {(snap.error || subLookup.error || searchResolve.error) && (
+          {/* The widening has to SAY it widened. Without this the operator reads
+              rows that do not start with what they typed and concludes the
+              search is broken — the results are correct, the surprise is not. */}
+          {widenAtivo && (
+            <Text c="dimmed" size="sm">
+              Nenhum nome começa com “{searchTerm}”. Mostrando nomes que contêm essa palavra.
+            </Text>
+          )}
+
+          {(snap.error || fromWiden.error || subLookup.error || searchResolve.error) && (
             <Alert color="red" title="Erro ao carregar">
-              {(snap.error ?? subLookup.error ?? searchResolve.error)?.message}
+              {(snap.error ?? fromWiden.error ?? subLookup.error ?? searchResolve.error)?.message}
             </Alert>
           )}
 
-          {(snap.loading || lookupLoading) && (
+          {/* ⚠️ The widening counts as loading. Without it the table paints
+              "Nenhum resultado." and then swaps in rows a beat later, which
+              reads as a bug rather than as a second query finishing. */}
+          {(snap.loading || lookupLoading || (!!widenPipeline && fromWiden.loading)) && (
             <Stack>
               <Skeleton height={36} />
               <Skeleton height={36} />

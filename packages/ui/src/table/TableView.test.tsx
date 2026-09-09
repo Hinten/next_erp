@@ -22,6 +22,7 @@ const {
   buildQuerySpy,
   monitorRef,
   notifyShow,
+  widenState,
 } = vi.hoisted(() => ({
   snapState: {
     current: {
@@ -35,7 +36,24 @@ const {
   },
   pushSpy: vi.fn(),
   searchParamsRef: { current: new URLSearchParams() },
-  buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
+  // ⚠️ Tags the built pipeline with `__widen` so the snapshot stub can answer
+  // the two pipelines DIFFERENTLY. Without that, TableView's primary query and
+  // its empty-result widening share one canned response, and a widening test
+  // passes on the primary's rows while asserting nothing about the second
+  // query.
+  buildPipelineSpy: vi.fn((_db: unknown, spec?: { textSearch?: unknown }) => ({
+    __pipeline: true,
+    __widen: !!spec?.textSearch,
+  })),
+  // What the WIDENING query returns. Separate from `snapState` for the reason
+  // above; defaults to "answered, nothing found" so no existing case widens.
+  widenState: {
+    current: {
+      data: [],
+      loading: false,
+      error: undefined,
+    } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
+  },
   // Flip to false in a test to exercise the classic-query fallback path.
   pipelineSupportedRef: { current: true },
   // Spied so the fallback tests can assert which constraint each
@@ -74,7 +92,8 @@ vi.mock('@delfrance/data/hooks', async () => {
   return { ...actual, useSnapshot: () => snapState.current };
 });
 vi.mock('@delfrance/data/hooks/usePipelineSnapshot', () => ({
-  usePipelineSnapshot: () => snapState.current,
+  usePipelineSnapshot: (p: { __widen?: boolean } | null) =>
+    p?.__widen ? widenState.current : snapState.current,
 }));
 vi.mock('@delfrance/data/pipeline-queries', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/data/pipeline-queries')>();
@@ -152,6 +171,7 @@ describe('TableView', () => {
     searchParamsRef.current = new URLSearchParams();
     pipelineSupportedRef.current = true;
     monitorRef.current = { stale: false, acknowledge: vi.fn() };
+    widenState.current = { data: [], loading: false, error: undefined };
   });
 
   it('renders one header per non-unknown field by default', () => {
@@ -2207,6 +2227,139 @@ describe('TableView', () => {
         expect(buildQuerySpy).not.toHaveBeenCalled();
         pipelineSupportedRef.current = true;
       });
+    });
+  });
+
+  describe('search.toTextQuery — widening an empty result', () => {
+    const metaWiden = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+
+    /** The prefix range the widening exists to sit BEHIND. */
+    const searchWiden = {
+      placeholder: 'Buscar',
+      toFilters: (t: string) => [{ field: 'nome', op: 'gte' as const, value: t }],
+      toForcedOrderBy: () => ({ field: 'nome', direction: 'asc' as const }),
+      toTextQuery: (t: string) => t.trim() || undefined,
+    };
+
+    function renderComBusca(termo = 'cami') {
+      searchParamsRef.current = new URLSearchParams(`q=${encodeURIComponent(termo)}`);
+      buildPipelineSpy.mockClear();
+      return wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={metaWiden}
+          search={searchWiden}
+        />,
+      );
+    }
+
+    /** Every spec `buildPipeline` was handed that carried a text search. */
+    function especsDeTexto() {
+      return buildPipelineSpy.mock.calls
+        .map((c) => c[1] as { textSearch?: { query: string }; filters?: unknown[] } | undefined)
+        .filter((spec) => !!spec?.textSearch);
+    }
+
+    it('does not widen while the primary query is returning rows', () => {
+      // The common path, and the one that must cost nothing. `snapState` still
+      // holds Alice and Bob.
+      renderComBusca();
+      expect(especsDeTexto()).toHaveLength(0);
+      expect(screen.queryByText(/Mostrando nomes que contêm/)).toBeNull();
+    });
+
+    it('widens once the primary has answered with nothing, and says so', () => {
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = {
+        data: [{ id: '9', path: 'x/9', data: { nome: 'Bandeja Gatinho', tipo: '0' } }],
+        loading: false,
+        error: undefined,
+      };
+      renderComBusca();
+
+      const especs = especsDeTexto();
+      expect(especs).toHaveLength(1);
+      expect(especs[0]?.textSearch).toEqual({ query: 'cami' });
+      // The rows have to reach the TABLE, not just the query — `rows` is what
+      // selection, counts and the action bar all read.
+      expect(screen.getByText('Bandeja Gatinho')).toBeTruthy();
+      expect(screen.getByText(/Mostrando nomes que contêm/)).toBeTruthy();
+    });
+
+    it('drops the search filters the widening exists to get past', () => {
+      // ⚠️ The mistake this pins is silent and self-confirming: re-applying the
+      // prefix range that JUST returned nothing guarantees the widened query
+      // returns nothing too, so the feature looks implemented, runs a second
+      // billed query, and can never produce a row.
+      snapState.current = { data: [], loading: false, error: undefined };
+      renderComBusca();
+
+      const filtros = (especsDeTexto()[0]?.filters ?? []) as Array<{ field: string; op: string }>;
+      expect(filtros.some((f) => f.field === 'nome' && f.op === 'gte')).toBe(false);
+    });
+
+    it('does not widen while a refetch is in flight over an empty result', () => {
+      // ⚠️ `data: []` WITH `loading: true` is the state that discriminates, and
+      // it is a real one: `usePipelineSnapshot` sets `loading` via
+      // `setState(s => ({ ...s, loading: true }))`, so the PREVIOUS rows survive
+      // into the next fetch. Written with `data: undefined` this test passes
+      // with the `!snap.loading` guard deleted — the `?? -1` below already
+      // rejects undefined — and would have pinned nothing.
+      snapState.current = { data: [], loading: true, error: undefined };
+      renderComBusca();
+      expect(especsDeTexto()).toHaveLength(0);
+    });
+
+    it('does not widen when the primary query FAILED', () => {
+      // ⚠️ An error is not an empty result. Widening past it answers a question
+      // the primary never got to ask: the operator reads "nothing starts with
+      // this, here is what contains it" when the truth is that the first query
+      // broke.
+      //
+      // ⚠️ Same discrimination problem as above, and worth stating because the
+      // state is NOT one today's hooks produce — the catch in
+      // `usePipelineSnapshot` nulls `data`, so the `?? -1` would stop the
+      // widening on its own and a test written that way is vacuous. This pins
+      // the `!snap.error` guard against a hook that keeps the last rows on
+      // failure, which is exactly what it already does while loading.
+      snapState.current = {
+        data: [],
+        loading: false,
+        error: new Error('boom') as never,
+      };
+      renderComBusca();
+      expect(especsDeTexto()).toHaveLength(0);
+      expect(screen.getByText('boom')).toBeTruthy();
+    });
+
+    it('sanitises the term, so a DSL operator is not read as syntax', () => {
+      // `-` negates in the search DSL, so the raw term would ask for
+      // "Porta but NOT lápis" and come back empty with nothing to notice.
+      snapState.current = { data: [], loading: false, error: undefined };
+      renderComBusca('Porta-lápis');
+      expect(especsDeTexto()[0]?.textSearch).toEqual({ query: 'Porta lápis' });
+    });
+
+    it('issues nothing when the term sanitises away entirely', () => {
+      snapState.current = { data: [], loading: false, error: undefined };
+      renderComBusca('---');
+      expect(especsDeTexto()).toHaveLength(0);
+    });
+
+    it('never widens on the classic fallback, which has no text search', () => {
+      // The emulator e2e lane runs this path. A test written against the
+      // widening would pass on staging and fail there, or vice versa.
+      pipelineSupportedRef.current = false;
+      snapState.current = { data: [], loading: false, error: undefined };
+      renderComBusca();
+      expect(especsDeTexto()).toHaveLength(0);
+      expect(screen.queryByText(/Mostrando nomes que contêm/)).toBeNull();
+      pipelineSupportedRef.current = true;
     });
   });
 });

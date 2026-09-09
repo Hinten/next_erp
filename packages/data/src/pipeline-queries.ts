@@ -12,6 +12,7 @@ import {
   ascending,
   descending,
   documentId,
+  documentMatches,
   equal,
   field,
   greaterThan,
@@ -134,9 +135,83 @@ export interface PipelineSpec {
    */
   idIn?: string[];
   limit?: number;
+  /**
+   * Firestore Enterprise TEXT SEARCH, emitted as a `search` stage against the
+   * declared text index. Whole-word matching over an analyzed field — a
+   * different mechanism from {@link PipelineSpec.search}, which is a
+   * `regexContains` substring scan and needs no index.
+   *
+   * ⚠️⚠️ THE STAGE MUST BE FIRST, and that is a cost decision, not a style one.
+   * Firestore requires `search` to be the source-adjacent stage, so every other
+   * constraint becomes a POST-FILTER: on `/produtos` the parents-only
+   * `paiId == null` no longer narrows the retrieval, it discards from it. The
+   * stage pulls every document containing the token and throws most away, so
+   * cost scales with MATCHES, not with the rows the caller wanted. Measured on
+   * staging: 54 read units against the prefix range's 22 for the same term.
+   *
+   * ⚠️ It matches WHOLE WORDS ONLY. Measured, with a trailing `*` as a control:
+   * `Bandeja` returns 5 rows while `Bandej`, `Bande`, `Band` and all three
+   * starred forms return zero. So this can never replace a prefix range in an
+   * as-you-type box — it only widens one that has come back empty.
+   *
+   * `query` is a search-DSL string, not a literal term. Run caller input
+   * through {@link sanitizeSearchDsl} first.
+   */
+  textSearch?: PipelineTextSearchSpec;
+}
+
+export interface PipelineTextSearchSpec {
+  /** A search-DSL string. See {@link sanitizeSearchDsl}. */
+  query: string;
+  /**
+   * How many documents the search stage pulls from the index BEFORE anything
+   * downstream runs. Since every filter here is a post-filter, the depth is
+   * spent on rows that will be discarded too, and a short page then looks
+   * exactly like a small collection.
+   *
+   * Left unset by default: measured on staging, unset / 200 / 1000 all returned
+   * the same rows, so the backend default is not what binds at this catalogue
+   * size. That is a fact about today's data, not a property of the stage.
+   */
+  retrievalDepth?: number;
 }
 
 export type { Pipeline };
+
+/**
+ * Characters the search DSL treats as OPERATORS, replaced with spaces so a term
+ * an operator typed is read as words rather than as syntax.
+ *
+ * ⚠️ The term is PARSED, which is the trap: `-` negates, so `Porta-lápis` asks
+ * the engine for "Porta, but NOT lápis", and the empty result that can follow is
+ * indistinguishable from "nothing matched".
+ *
+ * ⚠️ And the obvious fix is wrong. Quoting the whole term neutralises the
+ * operators, but measured on staging it ALSO suppresses the analyzer: `cerâmicas`
+ * returns 3 rows unquoted and 0 quoted, and `Leao` reaches `Leão` unquoted and
+ * nothing quoted. So quoting trades a parse failure for a matching failure, and
+ * this strips instead.
+ */
+const DSL_OPERATOR_CHARS = /["()+:~^*?-]/g;
+
+/**
+ * Turn raw operator input into a search-DSL string, or `undefined` when nothing
+ * searchable survives.
+ *
+ * Deliberately blunt: every operator character goes, including an INFIX hyphen
+ * that measurement suggests is harmless (`Porta-lápis` reached its document raw
+ * and sanitised alike, 1 row each). One word is not a grammar, and the
+ * conservative strip costs nothing on the evidence available — where a leading
+ * `-` on a token is documented negation and silently empties the result.
+ *
+ * ⚠️ It folds, so it decides which two terms are the SAME query. What it must
+ * NOT fold is the analyzer's job: `Camiseta` and `Camisetas` come out distinct
+ * here, and stemming is what relates them at query time.
+ */
+export function sanitizeSearchDsl(term: string): string | undefined {
+  const limpo = term.replace(DSL_OPERATOR_CHARS, ' ').replace(/\s+/g, ' ').trim();
+  return limpo === '' ? undefined : limpo;
+}
 
 /**
  * Quick predicate so callers (and TableView) can pick fallback paths without
@@ -272,9 +347,33 @@ export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
   // resolved to; otherwise scan the whole collection. `eqAny`/`in` over
   // `__name__` isn't in the Pipelines API of this SDK, so the
   // `documents([...])` source stage is how we constrain to an id set.
+  // Two different matchers over one term is never what a caller meant: `search`
+  // is an unindexed accent-folded SUBSTRING scan, `textSearch` an indexed
+  // whole-word one. AND-ing them would quietly return their intersection, which
+  // is neither mechanism's meaning and reads as "text search found less than it
+  // should".
+  if (spec.textSearch && spec.search) {
+    throw new Error(
+      `buildPipeline: "${spec.collection}" set both search (regexContains substring) ` +
+        `and textSearch (indexed whole-word). Pick one — they are alternatives.`,
+    );
+  }
+
   let pipe: Pipeline = spec.idIn
     ? db.pipeline().documents(spec.idIn.map((id) => `${spec.collection}/${id}`))
     : db.pipeline().collection(spec.collection);
+
+  // ⚠️ FIRST, before every `where` below, because Firestore requires it — see
+  // PipelineSpec.textSearch for what that costs. Moving this after the filters
+  // does not reorder a plan, it makes the pipeline invalid.
+  if (spec.textSearch) {
+    pipe = pipe.search({
+      query: documentMatches(spec.textSearch.query),
+      ...(spec.textSearch.retrievalDepth === undefined
+        ? {}
+        : { retrievalDepth: spec.textSearch.retrievalDepth }),
+    });
+  }
 
   if (spec.search && spec.search.fields.length > 0) {
     const pattern = buildSimilarityPattern(spec.search.term);
