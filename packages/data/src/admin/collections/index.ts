@@ -76,6 +76,7 @@ export { notificacoesWhatsappCollection } from './notificacoesWhatsappCollection
 export { orderMLCollection } from './orderMLCollection';
 export { enderecoCollection } from './enderecoCollection';
 export { backfillPedidosMercadoLivreCollection } from './backfillPedidosMercadoLivreCollection';
+export { backfillPedidosShopeeCollection } from './backfillPedidosShopeeCollection';
 export { missedFeedsMercadoLivreCollection } from './missedFeedsMercadoLivreCollection';
 export { estoqueMercadoLivreSyncCollection } from './estoqueMercadoLivreSyncCollection';
 export {

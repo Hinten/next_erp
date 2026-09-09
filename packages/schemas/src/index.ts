@@ -437,6 +437,18 @@ export {
 } from './backfillPedidosMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // cursor doc for the flag-gated Shopee order-backfill sweep (master-plan
+  // step 4, #1512). Bare schema+meta (perms 0n), not a DomainSchema — see the
+  // NOTE at the bottom of backfillPedidosShopee.ts. ⚠️ Its clocks are
+  // MILLISECONDS, unlike the ML pair above: apps/shopee keeps µs to its one
+  // avisos module.
+  backfillPedidosShopeeSchema,
+  backfillPedidosShopeeMeta,
+  type BackfillPedidosShopee,
+} from './backfillPedidosShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta health doc
   // for the flag-gated `missed_feeds` backstop sweep (#812). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of

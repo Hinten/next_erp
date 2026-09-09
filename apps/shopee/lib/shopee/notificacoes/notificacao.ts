@@ -286,6 +286,11 @@ export function identidadeDoPush(p: ShopeeNotificationPayload): {
     // ⚠️ The two clocks are in different UNITS on purpose and are never
     // compared: `update_time` is the wire's SECONDS, the envelope stamp is our
     // MILLIS. The carimbo is an opaque segment; the magnitudes cannot collide.
+    // ⚠️ A SYNTHESIZED code 3 (`notificacaoSintetica.ts`, the order backfill and
+    // the stuck-reserve sweep) carries NO `update_time` at all, so it lands on
+    // the envelope-stamp fallback by construction — the synthesis clock. Two
+    // synthetic producers of one order therefore share a dedup KEY, and share a
+    // row only when they share a tick's stamp.
     case 3:
       return {
         entidade: `${loja}:${texto(d.ordersn) ?? VAZIO}`,
@@ -406,6 +411,30 @@ export function identidadeDoPush(p: ShopeeNotificationPayload): {
         entidade: `${VAZIO}:${texto(d.expire_before) ?? VAZIO}:${texto(d.page_no) ?? VAZIO}`,
         carimbo: stamp,
       };
+    // CODIGO_AUSENTE (-1) — a lost-push queue entry whose `data` STRING this
+    // channel could not read at all. It has no resource key of any kind, so its
+    // identity is the provider's own POSITION in the queue, which
+    // `lostPushSweep.ts` writes as `data._lostPush.ref` =
+    // `<last_message_id>_<index in the page>`.
+    //
+    // ⚠️ Load-bearing. Without this row two unreadable PARTNER-LEVEL entries
+    // lost in the same second both key `-1:-:-:<carimbo>`; `store.create`
+    // narrows ALREADY_EXISTS and returns SILENTLY, so the sweep would confirm
+    // past an entry whose payload was never stored — the #1488
+    // whole-delivery-drop shape, arriving through the escape hatch that exists
+    // to prevent it.
+    //
+    // ⚠️ The ref is STABLE under a re-read of an UNCONFIRMED page (same
+    // `last_message_id`, same order), so a replay collapses onto one row instead
+    // of duplicating. It is NOT stable if entries ahead of it expire between
+    // ticks — that costs one extra parked row, never a loss.
+    //
+    // A STORED document whose `code` is merely unreadable (`payloadDeDocumento`'s
+    // fallback) carries no `_lostPush`, so `texto(...)` answers null and it keeps
+    // the `${loja}:-` identity the default branch already gave it. This row
+    // changes nothing for that producer.
+    case CODIGO_AUSENTE:
+      return { entidade: `${loja}:${texto(objeto(d._lostPush).ref) ?? VAZIO}`, carimbo: stamp };
     // 28 (`shop_penalty_update_push`) and every code we have never seen.
     default:
       return { entidade: `${loja}:${VAZIO}`, carimbo: stamp };
@@ -914,6 +943,28 @@ function pipelineFor(deps: ShopeeProcessDeps) {
 const basePipeline = pipelineFor(defaultProcessDeps);
 
 /**
+ * The operator-facing message of a failure, read STRUCTURALLY.
+ *
+ * ⚠️ Deliberately not `err instanceof Error`: root CLAUDE.md rule 6 is right
+ * that `Error` narrows nothing, and at the two call sites there is nothing to
+ * narrow TO — both catches are total on purpose (the receiver's enqueue and the
+ * lost-push sweep's, which must never turn a transport failure into a lost
+ * entry). Reading the message off the shape keeps the intent honest instead of
+ * dressing a total catch as a narrow one.
+ *
+ * ⚠️ It lives HERE rather than in the receiver route because the sweep needs the
+ * same reading. A rule duplicated is a rule that drifts, and these two callers
+ * write the same `erro` string onto the same collection.
+ */
+export function mensagemDoErro(err: unknown): string {
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    const m = (err as { message: unknown }).message;
+    if (typeof m === 'string' && m.length > 0) return m;
+  }
+  return String(err);
+}
+
+/**
  * Persist a push as `failed` so the sweep re-drives it. The RECEIVER calls this
  * when the enqueue itself fails, so Shopee never sees a 5xx during an
  * enqueue-path outage — a run of non-2xx answers is what disables the
@@ -925,6 +976,26 @@ export function persistNotificationFailure(
   erro: string,
 ): Promise<void> {
   return basePipeline.persistFailure(db, payload, erro);
+}
+
+/**
+ * Persist a push as `parked` — TERMINAL. Nothing re-drives it, and it is
+ * operator-visible.
+ *
+ * ⚠️ The RECEIVER must not reach for this: an inbound push it cannot read is
+ * ACKED (a retry will not parse either), and parking one would leave a row per
+ * delivery of a body Shopee keeps re-sending. The lost-push sweep is the
+ * opposite case — its entry leaves the provider's queue only through an ACK WE
+ * SEND, so an entry we can never process has to become a durable, terminal row
+ * BEFORE that ack is safe. Without it, one unreadable entry blocks every later
+ * one in a queue ordered "earliest first" for three days.
+ */
+export function persistNotificationParked(
+  db: Firestore,
+  payload: ShopeeNotificationPayload,
+  erro: string,
+): Promise<void> {
+  return basePipeline.persistParked(db, payload, erro);
 }
 
 /**

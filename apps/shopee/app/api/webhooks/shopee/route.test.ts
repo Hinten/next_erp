@@ -20,7 +20,13 @@ vi.mock('@/lib/shopee/shopeeTasks', () => ({
   createShopeeTaskScheduler: () => ({ enqueue: h.enqueue }),
 }));
 
-vi.mock('@/lib/shopee/notificacoes/notificacao', () => ({
+vi.mock('@/lib/shopee/notificacoes/notificacao', async (importOriginal) => ({
+  // ⚠️ Partial, and only for `mensagemDoErro`: the structural read of a
+  // failure's message moved into that module (the lost-push sweep needs the
+  // same one), and it is a pure helper the route's own behaviour depends on —
+  // stubbing it would make the persisted `erro` string this suite asserts a
+  // fiction. The two Firestore-touching exports stay mocked.
+  ...(await importOriginal<typeof import('@/lib/shopee/notificacoes/notificacao')>()),
   parseNotificationBody: (raw: unknown) => h.parse(raw),
   persistNotificationFailure: (...args: unknown[]) => h.persist(...(args as [])),
 }));
