@@ -58,13 +58,36 @@
  * `where('contaVariacaoShopeeOuterRef', '==', …)`. Fixtures therefore set every
  * filtered field explicitly.
  *
- * ⚠️ The write path (#1513 wave 3) adds a transaction runner over the real
- * `OccEngine` here — which is also when this file first joins the
- * `firestore-transaction-inventory` guard's scope, since that guard greps raw
- * TEXT and a doc comment naming the method is enough to pull a file in. Keep
- * every addition additive, for the same reason this file exists at all.
+ * Added by step 5's WRITE path (#1513 wave 3), also strictly additively:
+ *
+ *  - {@link FakeDb.runTransaction}, delegating to the SHARED `OccEngine`
+ *    (`@delfrance/data/testing`) — the one OCC model every transaction double in
+ *    this repo adapts onto, so the retry semantics cannot drift per app. It
+ *    models the three properties a hand-rolled fake does not: snapshot reads,
+ *    buffered writes with a commit-time version check, and a retry that re-runs
+ *    the CALLBACK ONLY, re-applying its closure verbatim. That last one is what
+ *    makes a stale-closure bug visible at all;
+ *  - {@link FakeDb.occ}, exposed so a test can hold one attempt at
+ *    `db.occ.beforeCommit` and read `db.occ.txLog` for the abort;
+ *  - `collection().add()`, the blind create `defineAdminCollection().add()`
+ *    performs — `findOrCreateCliente` has no deterministic cliente id, by
+ *    design, so the order importer reaches it;
+ *  - {@link FakeDb.opLog}, every read and write in CALL order (`get` from the
+ *    doc ref, the writes from the engine at staging time), so a test can assert
+ *    that a byte-identical replay wrote NOTHING and that a create used
+ *    `tx.create` rather than `tx.set`.
+ *
+ * ⚠️ This file is in `firestore-transaction-inventory`'s scope from here on —
+ * that guard greps raw TEXT, so even a doc comment naming the method pulls a
+ * file in. Its entry is the "test harness" one, beside `occTransaction.ts`.
  */
 import type { Firestore } from 'firebase-admin/firestore';
+import {
+  OccEngine,
+  type OccOpKind,
+  type OccTransaction,
+  type OccWriteKind,
+} from '@delfrance/data/testing';
 
 export type DocData = Record<string, unknown>;
 
@@ -123,8 +146,53 @@ export class FakeDb {
   readonly falhas = new Map<number, Error>();
   /** Injected failures for `create`, keyed by the FULL document path. */
   readonly falhasDeCriacao = new Map<string, Error>();
+  /**
+   * Every read and write in CALL order — `get` logged by the doc ref, the writes
+   * logged by the engine when they are STAGED (not at commit).
+   *
+   * ⚠️ Staging-time logging is deliberate: `opLog` is a log of what the callback
+   * DID, so an aborted attempt's write still appears. Logging at commit would
+   * make a `['get', 'create']` assertion vacuous and would hide the staged write
+   * a race test is about.
+   */
+  readonly opLog: { op: OccOpKind; path: string }[] = [];
+  /** Exposed so a test can set `db.occ.beforeCommit` / read `db.occ.txLog`. */
+  readonly occ = new OccEngine({
+    applyWrite: (kind, path, data) => this.aplicarEscritaTransacional(kind, path, data),
+    logWrite: (op, path) => this.opLog.push({ op, path }),
+  });
   private relogio = 100;
   private autoId = 0;
+
+  /**
+   * Commit-time write for the transaction engine. Throws the way the Admin SDK
+   * does — gRPC 6 on `create` over an existing document, gRPC 5 on `update` of
+   * an absent one — because a fake that silently tolerated either would make
+   * every `tx.create` assertion vacuous. It never logs: the engine already
+   * logged this write at staging time.
+   */
+  private aplicarEscritaTransacional(kind: OccWriteKind, path: string, data: DocData): void {
+    const atual = this.store[path];
+    if (kind === 'create' && atual) throw grpc(6, 'ALREADY_EXISTS');
+    if (kind === 'update' && !atual) throw grpc(5, 'NOT_FOUND');
+    this.relogio += 1;
+    if (kind === 'update') this.patches.push({ path, patch: data });
+    this.writes.push({ path, patch: data });
+    this.store[path] = {
+      data: kind === 'update' ? aplicar(atual?.data, data) : aplicar(undefined, data),
+      updateTime: this.relogio,
+    };
+  }
+
+  /**
+   * The Admin-SDK transaction shape, over the SHARED engine.
+   *
+   * ⚠️ A throw from the callback PROPAGATES — the real SDK only retries its own
+   * ABORTED, and a bug in the code under test must not be swallowed by a fake.
+   */
+  runTransaction<T>(fn: (tx: OccTransaction) => Promise<T>): Promise<T> {
+    return this.occ.runTransaction(fn);
+  }
 
   seed(path: string, data: DocData): void {
     this.relogio += 1;
@@ -155,6 +223,7 @@ export class FakeDb {
       },
       get: () => {
         const atual = this.store[path];
+        this.opLog.push({ op: 'get', path });
         return Promise.resolve({
           exists: atual !== undefined,
           updateTime: atual?.updateTime,
@@ -222,6 +291,19 @@ export class FakeDb {
       // ⚠️ The UNLIMITED chain, and it is deliberate: the order backfill
       // enumerates every active conta with `where().where().get()` and no cap.
       get: () => buscar(null),
+      /**
+       * The blind create `defineAdminCollection().add()` performs — a fresh auto
+       * id, no read, nothing to race with. `findOrCreateCliente` is the caller
+       * that needs it: it has no deterministic cliente id, by design.
+       */
+      add: (data: DocData) => {
+        const id = `auto-${String((this.autoId += 1))}`;
+        const caminho = `${colPath}/${id}`;
+        this.relogio += 1;
+        this.writes.push({ path: caminho, patch: data });
+        this.store[caminho] = { data: aplicar(undefined, data), updateTime: this.relogio };
+        return Promise.resolve({ id, path: caminho });
+      },
       // ⚠️ No argument ⇒ an auto id, exactly like `ref.doc().id`: that is how
       // `newDocId` names a document whose derived id `asDocId` refused.
       doc: (id?: string) => {

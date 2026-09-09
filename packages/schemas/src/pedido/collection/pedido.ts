@@ -185,6 +185,126 @@ export const estoqueAplicadoSchema = z.object({
 
 export type EstoqueAplicado = z.infer<typeof estoqueAplicadoSchema>;
 
+/* -------------------------------------------------------------------------- */
+/*        Marketplace lifecycle flag + buyer-capture diary (#1513, step 5)      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Which marketplace's lifecycle `pedido.marketplace` is reporting.
+ *
+ * A closed enum with a companion const, unlike `status` below, because this one
+ * is OURS and it will grow (magalu, amazon…): `delfrance/prefer-schema-enum`
+ * then binds every caller to {@link MARKETPLACE_PEDIDO_TIPO} instead of a bare
+ * string literal.
+ */
+export const marketplacePedidoTipoSchema = z
+  .enum(['shopee'])
+  .meta({ labels: { shopee: 'Shopee' } });
+export type MarketplacePedidoTipo = z.infer<typeof marketplacePedidoTipoSchema>;
+
+/** Named members of {@link marketplacePedidoTipoSchema}. */
+export const MARKETPLACE_PEDIDO_TIPO = {
+  shopee: 'shopee',
+} as const satisfies Record<string, MarketplacePedidoTipo>;
+
+/**
+ * The marketplace's own lifecycle, mirrored beside the ERP `estado` it drives.
+ *
+ * ⚠️ **NOT a guard.** `estado` is what moves stock and what the operator acts
+ * on; this block is the provider's word, kept verbatim so a status the ERP
+ * ladder does not model is still visible (Shopee's `TO_RETURN` is the case that
+ * earned it: `estado` reads `pago` and every other cell reads healthy).
+ *
+ * ⚠️ `status` is `z.string()` and must STAY one. An enum would turn the very
+ * case the ladder exists for — a status the provider invents — into a parse
+ * throw ON WRITE, so the pedido that most needs `estado: error` could not be
+ * written at all. The closed set lives in the channel's own ladder module, where
+ * an unknown value is DATA.
+ *
+ * ⚠️ Deliberately NOT in `serverOwnedFields`: forging it changes nothing (the
+ * next delivery re-derives every field from the wire, and `estado` — which does
+ * gate stock — is not here). It IS in `PEDIDO_HISTORY_IGNORE_FIELDS` and
+ * `CONCURRENCY_IGNORE`, because no interactive editor can author it and a
+ * marketplace re-import would otherwise write a phantom "Sistema" audit row and
+ * raise a phantom conflict in an open editor.
+ */
+export const marketplacePedidoSchema = z
+  .object({
+    tipo: marketplacePedidoTipoSchema,
+    /** The provider's `order_status`, VERBATIM. Never an enum — see above. */
+    status: z.string().nullable().default(null),
+    /**
+     * When the provider stamped that status (µs). Same value as
+     * `pedido.lastMarketplaceUpdate` — that one is the WATERMARK the importer
+     * compares, this one is what a screen renders.
+     */
+    statusEm: microsSinceEpoch('Status do marketplace em').nullable().default(null),
+    /**
+     * `null` = we did not ask (or the provider does not answer); `[]` = we asked
+     * and the order carries none. The distinction is the whole value of the
+     * field, so do not collapse it to an empty array.
+     */
+    pendingTerms: z.array(z.string()).nullable().default(null),
+    completedScenario: z.string().nullable().default(null),
+    cancelReason: z.string().nullable().default(null),
+    cancelBy: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type MarketplacePedido = z.infer<typeof marketplacePedidoSchema>;
+
+/** Where the buyer capture stands for one pedido. */
+export const capturaCompradorEstadoSchema = z.enum(['pendente', 'capturado', 'expirado']).meta({
+  labels: { pendente: 'Pendente', capturado: 'Capturado', expirado: 'Expirado' },
+});
+export type CapturaCompradorEstado = z.infer<typeof capturaCompradorEstadoSchema>;
+
+/**
+ * Named members of {@link capturaCompradorEstadoSchema}.
+ *
+ * ⚠️ `packages/schemas` cannot import an app, so the channel adapter
+ * (`apps/shopee/lib/shopee/pedidos/comprador.ts`) declares the same three
+ * tokens; it `satisfies` THIS type, which is what stops the two vocabularies
+ * drifting.
+ */
+export const CAPTURA_COMPRADOR_ESTADO = {
+  pendente: 'pendente',
+  capturado: 'capturado',
+  expirado: 'expirado',
+} as const satisfies Record<string, CapturaCompradorEstado>;
+
+/**
+ * Why a marketplace order's buyer is (or is not) linked to a cliente.
+ *
+ * Marketplaces redact buyer data outside a bounded "unmask window", per FIELD:
+ * a masked import must write NOTHING, and this block is what says so afterwards
+ * — otherwise a pedido with no `clientePedidoOuterRef` is indistinguishable from
+ * one nobody tried to resolve.
+ *
+ * ⚠️ **A DIARY, never a GUARD.** The capture decision is re-derived from the
+ * FRESH wire payload on every delivery through the shared usable-value
+ * predicate; nothing may branch on the stored block. That is exactly why it can
+ * stay client-writable: forging `capturado` unblocks no NF-e (the orchestrator
+ * refuses on the absent `clientePedidoOuterRef`) and stops no re-attempt. Any
+ * later step that wants to GATE on it must first move the field into
+ * `serverOwnedFields` and pay the ruleset regeneration (rule 2).
+ *
+ * ⚠️ `camposRecusados` carries `<campo>:<veredito>` entries — field NAMES and
+ * verdicts only (`'nome:mascarado'`, `'cpf_cnpj:invalido'`, `'regiao:nao-br'`).
+ * **Never a value**, masked or not, and never a length or a prefix of one.
+ */
+export const capturaCompradorSchema = z
+  .object({
+    estado: capturaCompradorEstadoSchema,
+    /** The provider `order_status` observed at the last attempt. */
+    statusObservado: z.string().nullable().default(null),
+    /** When that attempt ran (µs, wall clock). */
+    em: microsSinceEpoch('Captura do comprador em').nullable().default(null),
+    tentativas: z.number().int().min(0).default(0),
+    camposRecusados: z.array(z.string()).nullable().default(null),
+  })
+  .passthrough();
+export type CapturaComprador = z.infer<typeof capturaCompradorSchema>;
+
 /**
  * Pedido schema — aligned with the legacy Flutter `Pedido` class
  * (`.old/packages/pedido/lib/src/models.dart:2537–3498`). Every field
@@ -338,6 +458,19 @@ export const pedidoSchema = z.object({
   infCpl: z.string().nullable().default(null).describe('Informações complementares'),
   /** Persisted error message from the last failed write / emission. */
   error: z.string().nullable().default(null).describe('Erro'),
+
+  // Marketplace lifecycle + buyer capture (#1513) ---------------------------
+  // Two blocks the marketplace importers own end to end. Both are DIARIES: they
+  // report what the provider said and what the import could do with it, and
+  // nothing in this repo gates on either. `null` on every pedido no marketplace
+  // importer wrote. See the two schemas above for why neither is server-owned
+  // and why `marketplace.status` is a plain string.
+  marketplace: marketplacePedidoSchema.nullable().default(null).describe('Marketplace'),
+  capturaComprador: capturaCompradorSchema
+    .nullable()
+    .default(null)
+    .describe('Captura do comprador'),
+
   // Marketplace dispute overlay (#1322) ------------------------------------
   // Two denormalized markers, µs of the OLDEST still-open blocking incidente
   // of each kind (null = none). Derived state: the source of truth is the

@@ -101,6 +101,19 @@ export const PEDIDO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
   'disputaAbertaEm',
   'devolucaoAbertaEm',
   'bloqueiosLiberados',
+  // The marketplace lifecycle flag and the buyer-capture diary (#1513, step 5)
+  // — the same failure a THIRD trigger-shaped writer later, and the reason is
+  // worth stating because it fires constantly rather than occasionally: the
+  // Shopee order importer re-drives every code-3 push, every Cloud Tasks retry
+  // and every backfill row through the same write, and a masked BR order moves
+  // `capturaComprador.tentativas` on each one. Neither block is authorable in
+  // any editor (they are read-only provider facts), so without these two every
+  // re-import would leave a `historicoDeModificacoes` row attributed to
+  // "Sistema" naming a field no operator can see — plus, through
+  // `CONCURRENCY_IGNORE`, a "Pedido alterado" conflict in whatever editor
+  // happened to be open.
+  'marketplace',
+  'capturaComprador',
 ];
 
 /**

@@ -20,6 +20,7 @@
     "./admin/notifications": "./src/admin/notifications/index.ts",
     "./admin/oauth-state": "./src/admin/oauthState/index.ts",
     "./admin/produtos": "./src/admin/produtos/index.ts",
+    "./admin/enderecos": "./src/admin/enderecos/index.ts",
     "./produto": "./src/produto/index.ts",
     "./balanco": "./src/balanco/index.ts",
     "./pedido": "./src/pedido/index.ts",

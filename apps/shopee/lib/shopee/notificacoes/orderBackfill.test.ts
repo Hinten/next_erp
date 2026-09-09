@@ -921,7 +921,12 @@ describe('runShopeeOrderBackfill — as escritas', () => {
       `${CURSOR_PATH}/${INT_A}`,
       `${CURSOR_PATH}/${INT_B}`,
     ]);
-    // The fake has no `runTransaction` at all: a call would be a TypeError.
-    expect('runTransaction' in c.db).toBe(false);
+    // ⚠️ This used to read `expect('runTransaction' in c.db).toBe(false)` — the
+    // fake HAD no transaction runner, so a call would have been a TypeError.
+    // Step 5's write path added one to the shared double, so the absence of the
+    // METHOD stopped meaning anything; the property being asserted is unchanged
+    // and now checked directly: this sweep opens no transaction, so the engine's
+    // own attempt log is empty.
+    expect(c.db.occ.txLog).toEqual([]);
   });
 });

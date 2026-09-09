@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CAPTURA_COMPRADOR_ESTADO,
   ESTADO_BUCKET_LABELS,
+  MARKETPLACE_PEDIDO_TIPO,
   bucketOf,
   itemDoPedidoSchema,
   itemSubtotal,
+  pedidoMeta,
   pedidoSchema,
   pedidoTotal,
   ESTADO_PEDIDO,
@@ -101,6 +104,109 @@ describe('pedidoSchema', () => {
     expect(() =>
       pedidoSchema.strict().parse({ ...baseInput, someUnknownField: 'whatever' }),
     ).toThrow(/nrecognized/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*      marketplace + capturaComprador — the two step-5 blocks (#1513)         */
+/* -------------------------------------------------------------------------- */
+
+describe('marketplacePedidoSchema', () => {
+  it('defaults to null on a pedido no marketplace importer wrote', () => {
+    const out = pedidoSchema.parse(baseInput);
+    expect(out.marketplace).toBeNull();
+    expect(out.capturaComprador).toBeNull();
+  });
+
+  it('stores an order_status VERBATIM, including one no ladder models', () => {
+    const out = pedidoSchema.parse({
+      ...baseInput,
+      marketplace: { tipo: MARKETPLACE_PEDIDO_TIPO.shopee, status: 'STATUS_QUE_NAO_EXISTE_AINDA' },
+    });
+    expect(out.marketplace?.status).toBe('STATUS_QUE_NAO_EXISTE_AINDA');
+  });
+
+  it('⚠️ NEAR-MISS: `tipo` IS a closed enum — an unknown channel is refused', () => {
+    // The asymmetry is the point: `status` must accept anything Shopee invents
+    // (a parse throw there would make the pedido that most needs `estado: error`
+    // unwritable), while `tipo` is ours and a typo must fail here.
+    expect(
+      pedidoSchema.safeParse({ ...baseInput, marketplace: { tipo: 'shoppe', status: 'UNPAID' } })
+        .success,
+    ).toBe(false);
+  });
+
+  it('keeps pendingTerms null and [] APART — "not asked" is not "asked and none"', () => {
+    const naoPerguntamos = pedidoSchema.parse({
+      ...baseInput,
+      marketplace: { tipo: MARKETPLACE_PEDIDO_TIPO.shopee, pendingTerms: null },
+    });
+    const perguntamos = pedidoSchema.parse({
+      ...baseInput,
+      marketplace: { tipo: MARKETPLACE_PEDIDO_TIPO.shopee, pendingTerms: [] },
+    });
+    expect(naoPerguntamos.marketplace?.pendingTerms).toBeNull();
+    expect(perguntamos.marketplace?.pendingTerms).toEqual([]);
+  });
+
+  it('reads statusEm tolerantly and stores µs (a ms int is coerced, not kept)', () => {
+    const out = pedidoSchema.parse({
+      ...baseInput,
+      marketplace: { tipo: MARKETPLACE_PEDIDO_TIPO.shopee, statusEm: 1_788_973_354_000 },
+    });
+    expect(out.marketplace?.statusEm).toBe(1_788_973_354_000_000);
+  });
+
+  it('is NOT server-owned — the rules must keep letting a client write it', () => {
+    // The reason is in the schema docblock: it gates nothing. If a later step
+    // makes it a guard, it moves into this list and pays the ruleset regen.
+    expect(pedidoMeta.serverOwnedFields).not.toContain('marketplace');
+    expect(pedidoMeta.serverOwnedFields).not.toContain('capturaComprador');
+  });
+});
+
+describe('capturaCompradorSchema', () => {
+  it('accepts the three verdicts and refuses a fourth', () => {
+    for (const estado of Object.values(CAPTURA_COMPRADOR_ESTADO)) {
+      expect(pedidoSchema.safeParse({ ...baseInput, capturaComprador: { estado } }).success).toBe(
+        true,
+      );
+    }
+    expect(
+      pedidoSchema.safeParse({ ...baseInput, capturaComprador: { estado: 'mascarado' } }).success,
+    ).toBe(false);
+  });
+
+  it('carries a FOURTH verdict token in camposRecusados — the array stays z.string()', () => {
+    // `regiao:nao-br` is deliberately not one of `MotivoRecusa`'s three: the
+    // field does not exist for that order and never will, so "ausente" would
+    // read as "wait for the next delivery".
+    const out = pedidoSchema.parse({
+      ...baseInput,
+      capturaComprador: {
+        estado: CAPTURA_COMPRADOR_ESTADO.expirado,
+        camposRecusados: ['regiao:nao-br', 'nome:mascarado', 'cpf_cnpj:invalido'],
+      },
+    });
+    expect(out.capturaComprador?.camposRecusados).toEqual([
+      'regiao:nao-br',
+      'nome:mascarado',
+      'cpf_cnpj:invalido',
+    ]);
+  });
+
+  it('defaults tentativas to 0 and refuses a negative one', () => {
+    const out = pedidoSchema.parse({
+      ...baseInput,
+      capturaComprador: { estado: CAPTURA_COMPRADOR_ESTADO.pendente },
+    });
+    expect(out.capturaComprador?.tentativas).toBe(0);
+    expect(
+      pedidoSchema.safeParse({
+        ...baseInput,
+        capturaComprador: { estado: CAPTURA_COMPRADOR_ESTADO.pendente, tentativas: -1 },
+      }).success,
+    ).toBe(false);
   });
 });
 

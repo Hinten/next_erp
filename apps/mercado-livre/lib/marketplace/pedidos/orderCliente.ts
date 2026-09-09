@@ -90,9 +90,6 @@
  *    first cut of this port, that outcome is now LOGGED at the call site rather
  *    than silently dropping the pedido's endereço.
  */
-import { createHash } from 'node:crypto';
-import type { DocumentData, Firestore } from 'firebase-admin/firestore';
-import { enderecoCollection } from '@delfrance/data/admin/collections';
 import { z } from 'zod';
 import {
   IE_SENTINELA,
@@ -109,7 +106,6 @@ import {
   type MlBillingInfo,
   type MlShipment,
 } from '@delfrance/integrations-mercado-livre';
-import { isAlreadyExists } from '@delfrance/data/admin';
 
 /* --------------------------------- errors ---------------------------------- */
 
@@ -143,16 +139,11 @@ export interface ClienteImportFields extends ClienteResolveFields {
 
 /**
  * Endereço fields mirroring `enderecoSchema`. The shared builder owns this
- * shape now (`EnderecoForcado`); the alias stays because `makeEnderecoId` and
- * `ensureEndereco` are named after it throughout this channel.
+ * shape (`EnderecoForcado`); the alias stays because the mappers below are named
+ * after it throughout this channel, and it is the same type the promoted
+ * `@delfrance/data/admin/enderecos` re-declares.
  */
 export type EnderecoImportFields = EnderecoForcado;
-
-/* ------------------------------ small helpers ------------------------------ */
-
-function sha1Hex(input: string): string {
-  return createHash('sha1').update(input, 'utf8').digest('hex');
-}
 
 /* ------------------------------ cliente mapping ----------------------------- */
 
@@ -361,58 +352,21 @@ export function shipmentToEnderecoFields(shipment: MlShipment): EnderecoBuildOut
   });
 }
 
-/**
- * `Endereco.generateUid` (models.dart:841-866) — sha1 over the exact legacy
- * field concatenation order, nulls → `''`. `estado` uses the UF CODE (Dart's
- * `estado.value`, e.g. `'SP'`) — this schema already stores that code
- * directly, so `fields.estado` needs no further extraction.
- */
-export function makeEnderecoId(fields: EnderecoImportFields): string {
-  const parts = [
-    'endereco',
-    fields.idExterno ?? '',
-    fields.logradouro,
-    fields.numero,
-    fields.complemento ?? '',
-    fields.bairro,
-    fields.cep,
-    fields.codigoMunicipio ?? '',
-    fields.cidade,
-    fields.estado,
-    fields.cPais ?? '',
-    fields.pais ?? '',
-    fields.nome ?? '',
-    fields.cpf_cnpj ?? '',
-    fields.rg ?? '',
-    fields.ie ?? '',
-    fields.imun ?? '',
-    fields.email ?? '',
-    fields.telefone ?? '',
-  ];
-  return sha1Hex(parts.join(''));
-}
-
 /* -------------------------------- endereço IO -------------------------------- */
 
 /**
- * Create-if-absent at the deterministic `makeEnderecoId` doc under
- * `clientes/{clienteId}/enderecos` (legacy's `.save(forceAdd: true,
- * docIdString: generateUid())`, tasks.dart:452-457/472-477). A concurrent
- * create racing to the same id is not an error — both converge on the same
- * doc (`isAlreadyExists`, gRPC ALREADY_EXISTS).
+ * ⚠️ **PROMOTED to `@delfrance/data/admin/enderecos` (#1513, step 5).**
+ *
+ * `makeEnderecoId` (the sha1 over legacy's 19-part concatenation) and
+ * `ensureEndereco` (create-at-that-id, swallowing only `ALREADY_EXISTS`) moved
+ * to `packages/data` when a second marketplace importer needed them: apps have
+ * no dependency edge to one another, so `apps/shopee` could only have shared
+ * these or FORKED a digest — and a forked digest is the worst kind, because both
+ * copies keep working while addressing different documents.
+ *
+ * They are re-exported here rather than merely moved, because this module is
+ * where this channel's readers look for them. `orderCliente.test.ts` imports
+ * them from this path and its golden vectors are byte-unedited, which is what
+ * proves the move changed nothing.
  */
-export async function ensureEndereco(
-  db: Firestore,
-  clienteId: string,
-  fields: EnderecoImportFields,
-): Promise<string> {
-  const id = makeEnderecoId(fields);
-  const data = enderecoCollection.parse(fields) as DocumentData;
-  try {
-    await enderecoCollection.docRef(db, { clienteId }, id).create(data);
-  } catch (err) {
-    if (isAlreadyExists(err)) return id;
-    throw err;
-  }
-  return id;
-}
+export { ensureEndereco, makeEnderecoId } from '@delfrance/data/admin/enderecos';

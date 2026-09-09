@@ -60,12 +60,14 @@
  */
 
 import {
+  CAPTURA_COMPRADOR_ESTADO,
   TIPO_CLIENTE,
   buildEnderecoForcado,
   cpfCnpjUtilizavel,
   motivoDaRecusa,
   nomeUtilizavel,
   valorUtilizavel,
+  type CapturaCompradorEstado,
   type ClienteResolveFields,
   type EnderecoBuildOutcome,
   type MotivoRecusa,
@@ -111,25 +113,28 @@ export interface DetalheCompradorShopee {
 /** The region code that makes an order fiscally Brazilian. */
 export const REGIAO_BR = 'BR';
 
-/** Where the buyer capture stands for one pedido. */
-export type CapturaCompradorEstado = 'pendente' | 'capturado' | 'expirado';
-
 /**
- * Named members of {@link CapturaCompradorEstado}.
+ * Where the buyer capture stands for one pedido — the SAME vocabulary the
+ * pedido's `capturaComprador.estado` stores.
+ *
+ * ⚠️ **Re-exported from `@delfrance/schemas`, never re-declared.** These three
+ * tokens exist in exactly one place (`capturaCompradorEstadoSchema`), so this
+ * adapter and the Zod enum that has to accept its output cannot drift: a fourth
+ * verdict added here without the schema, or vice versa, would otherwise surface
+ * only as a `ZodError` inside the pedido write — i.e. at the one moment the
+ * pedido must not fail. They are re-exported rather than merely imported
+ * because this module is where every reader of the capture rule looks.
  *
  * ⚠️ A DIARY, never a GUARD. The capture decision is re-derived from the fresh
  * wire payload on every delivery; nothing may branch on the stored estado. Any
  * later step that wants to gate on it must first move the field into
  * `serverOwnedFields` and pay the ruleset regeneration.
+ *
+ *  - `pendente` — nothing captured yet, and the window may still open;
+ *  - `capturado` — name and document captured;
+ *  - `expirado` — the window closed (or never existed) with nothing captured.
  */
-export const CAPTURA_COMPRADOR_ESTADO = {
-  /** Nothing captured yet, and the window may still open. */
-  pendente: 'pendente',
-  /** Name and document captured. */
-  capturado: 'capturado',
-  /** The window closed (or never existed) with nothing captured. */
-  expirado: 'expirado',
-} as const satisfies Record<string, CapturaCompradorEstado>;
+export { CAPTURA_COMPRADOR_ESTADO, type CapturaCompradorEstado };
 
 /**
  * The order statuses at which the unmask window is over.
