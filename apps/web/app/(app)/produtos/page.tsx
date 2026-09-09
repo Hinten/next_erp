@@ -99,6 +99,35 @@ const produtoSearch = {
   toForcedOrderBy: (term: string) =>
     term.trim() === '' ? undefined : { field: 'nome', direction: 'asc' as const },
   resolveIds: (term: string) => resolveProdutoIdsPorTermo(getFirebaseFirestore(), term),
+  /**
+   * The third lookup, and the only one that runs AFTER the table has already
+   * answered: a Firestore text search over the `produtos(nome)` text index,
+   * issued only when the prefix range above found nothing.
+   *
+   * ⚠️⚠️ WHY IT IS A WIDENING AND NOT THE SEARCH. Text search matches WHOLE
+   * WORDS. Measured on staging against the pt-BR index: `Bandeja` returns 5
+   * rows, and `Bandej`, `Bande` and `Band` return zero — with a trailing `*`
+   * too, which the DSL accepts as an operator and evidently does not read as a
+   * prefix. Swapping it in would empty this table on every keystroke until a
+   * whole word was finished, replacing narrowing-as-you-type with nothing.
+   *
+   * What it adds is the one thing a prefix range structurally cannot do — a word
+   * in the MIDDLE of a name. `Gatinho` finds "Bandeja De Madeira Enfeitada
+   * Gatinho", which the range above returns 0 rows for. That is the whole
+   * feature, and it costs one extra query only in the case where the operator
+   * was already looking at an empty table.
+   *
+   * ⚠️ Known gap, chosen deliberately: a term that IS a name prefix never
+   * widens, because the primary query is not empty. `Camiseta` still will not
+   * surface a produto carrying it mid-name. Closing that means running both
+   * queries on every search and merging them, at ~2.5x the read units (54 vs
+   * 22, measured) plus a round trip on every search.
+   *
+   * ⚠️ Returns the RAW term — `TableView` runs `sanitizeSearchDsl` on it. Do not
+   * pre-quote: measured, quoting neutralises the DSL operators but also
+   * suppresses the analyzer, so `Leao` stops reaching `Leão`.
+   */
+  toTextQuery: (term: string) => term.trim() || undefined,
 };
 
 /**

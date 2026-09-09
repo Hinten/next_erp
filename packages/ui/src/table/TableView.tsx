@@ -48,6 +48,7 @@ import {
   PipelineUnsupportedError,
   buildPipeline,
   isPipelineSupported,
+  sanitizeSearchDsl,
 } from '@delfrance/data/pipeline-queries';
 import { extractFieldsFromSchema } from '../schema/derive';
 import { expandColumnFilter } from '../schema/types';
@@ -385,6 +386,37 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
     toFilters: (term: string) => ReadonlyArray<PipelineFieldFilter>;
     toForcedOrderBy?: (term: string) => { field: string; direction?: 'asc' | 'desc' } | undefined;
     resolveIds?: SearchIdResolver;
+    /**
+     * Opt into WIDENING an empty result with a Firestore text search, on the
+     * declared text index. Return the term to search for, or `undefined` to
+     * decline this one.
+     *
+     * ⚠️⚠️ A WIDENING, not a replacement, and the difference is measured rather
+     * than stylistic. Text search matches WHOLE WORDS: on staging `Bandeja`
+     * returns 5 rows while `Bandej`, `Bande` and `Band` return zero, with or
+     * without a trailing `*`. Putting it in front of `toFilters` would empty the
+     * table until a whole word was typed, so it runs BEHIND: only once the
+     * primary query has answered, and answered with nothing.
+     *
+     * What that buys is the thing a prefix range structurally cannot do — a word
+     * in the MIDDLE of a name. Measured: `Gatinho` against "Bandeja De Madeira
+     * Enfeitada Gatinho" returns 1 row here and 0 through the range.
+     *
+     * ⚠️ Known gap, accepted on purpose: a term that IS a name prefix never
+     * widens, because the primary query is not empty. `Camiseta` still misses
+     * produtos carrying it mid-name. Closing that means running both on every
+     * search and merging, which costs a second query per search.
+     *
+     * ⚠️ Pipelines path ONLY. There is no classic-query text search, so the
+     * fallback (and therefore the emulator e2e lane) keeps the `toFilters`
+     * behaviour and never widens. Do not write a test that can only pass on one
+     * of the two.
+     *
+     * The returned term is run through `sanitizeSearchDsl` here rather than by
+     * the caller: the string is a search DSL, `-` negates in it, and a caller
+     * that forgot would get a silently empty result instead of an error.
+     */
+    toTextQuery?: (term: string) => string | undefined;
   };
 
   /**
@@ -1170,7 +1202,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // to match (base meta filters are already in the fallback query / owned by
   // the override). Everything below — selection, counts, the table body —
   // reads `rows`, not `snap.data`, so it all stays consistent with the filter.
-  const rows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
+  const primaryRows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
     () => {
       // A subcollection lookup that matched nothing, or an extra filter with
       // an empty candidate list → no rows (no query ran).
@@ -1196,12 +1228,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // `apps/web/next.config.ts` turns on, and read during render because the
   // comparison is a fact about the rows on screen, not about a transition.
   const loadedPagesRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (snap.loading || lookupLoading || !snap.data) return;
-    loadedPagesRef.current = pages;
-    // Waking this effect on `pages` is precisely the bug described above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `pages` is read here, never a trigger
-  }, [snap.loading, lookupLoading, snap.data]);
 
   /**
    * True while a "Carregar mais" re-read is in flight over rows that are still
@@ -1239,8 +1265,180 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const pendingGrowth =
     !!snap.data && loadedPagesRef.current !== null && loadedPagesRef.current < pages;
 
+  // --- Widening: the second query that runs only when the first found nothing
+  //
+  // See `search.toTextQuery` for why it sits BEHIND the primary query and not in
+  // front of it. Everything here is gated on the primary having ANSWERED, so on
+  // the common path this block builds nothing and issues nothing.
+  const textQuerySolicitada =
+    searchConfig?.toTextQuery && searchTerm !== '' && !searchIdsActive && !searchResolving
+      ? searchConfig.toTextQuery(searchTerm)
+      : undefined;
+  // ⚠️ Sanitised HERE, once, rather than trusted from the caller — the string is
+  // a search DSL where `-` negates, and a raw `Porta-lápis` asks for "Porta but
+  // NOT lápis" and comes back empty with no error to notice.
+  const textQuery = textQuerySolicitada ? sanitizeSearchDsl(textQuerySolicitada) : undefined;
+
+  // ⚠️ `snap.loading` AND `snap.error` both have to clear first. Widening on a
+  // still-loading query would fire on every keystroke's empty first frame, and
+  // widening on a FAILED one would answer a question the primary never asked —
+  // an error would render as "nothing starts with this, here is what contains
+  // it", quietly replacing a failure with a plausible result set.
+  // ⚠️ `pendingGrowth` is what lets a "Carregar mais" click SURVIVE here. Growing
+  // the window refetches the primary too, so a bare `!snap.loading` tore the
+  // widening down mid-click: `widenPipeline` went null, the widened rows on
+  // screen vanished, and the table emptied until the primary settled — over a
+  // result the operator was reading. A growth is not a new question, so the
+  // answer "the primary found nothing" still stands while it is in flight.
+  const primarioVazio =
+    !!pipeline &&
+    !snap.error &&
+    (primaryRows?.length ?? -1) === 0 &&
+    (!snap.loading || pendingGrowth);
+
+  const widenPipeline: Pipeline | null = useMemo(() => {
+    if (!primarioVazio || !textQuery) return null;
+    if (lookupLoading || lookupEmpty || extraEmpty) return null;
+    try {
+      return buildPipeline(db, {
+        collection: collection.resolvePath(pathContext),
+        textSearch: { query: textQuery },
+        // ⚠️ `extraFilters`, NOT `effectiveExtraFilters`. The latter carries the
+        // search's own `toFilters` output — the very prefix range that just
+        // returned nothing — and re-applying it would guarantee this query
+        // returns nothing too, silently, forever.
+        filters: [
+          ...baseFilters,
+          ...(extraFilters ?? []),
+          ...Object.entries(serverFilters).flatMap(([field, v]) => expandColumnFilter(field, v)),
+        ],
+        idIn,
+        select: selectFields,
+        orderBy: effectiveOrderBy,
+        limit: effectiveLimit,
+      });
+    } catch (err) {
+      if (err instanceof PipelineUnsupportedError) return null;
+      throw err;
+    }
+  }, [
+    db,
+    collection,
+    primarioVazio,
+    textQuery,
+    effectiveLimit,
+    effectiveOrderBy,
+    baseFiltersSerial,
+    extraFiltersSerial,
+    extraEmpty,
+    serverFiltersSerial,
+    idInSerial,
+    lookupLoading,
+    lookupEmpty,
+    selectFieldsSerial,
+    refreshKey,
+  ]);
+
+  const fromWiden = usePipelineSnapshot<z.infer<S>>(widenPipeline);
+  const widenRows = widenPipeline ? fromWiden.data : undefined;
+  // The banner claims the list is showing widened results, so it must be keyed
+  // on rows actually arriving — not on the widening having been attempted.
+  const widenAtivo = !!widenPipeline && (widenRows?.length ?? 0) > 0;
+
+  /**
+   * ⚠️ ONE value, read by BOTH the skeleton branch and the table branch below.
+   *
+   * It was written inline in the skeleton branch only, and the table body then
+   * rendered UNDERNEATH it: while the widening is in flight the primary has
+   * already answered, so `snap.loading` is false and `rows` is `[]` — the
+   * skeletons and the `Nenhum resultado.` row painted at the same time, and the
+   * widened rows still swapped in a beat later. That is precisely the flash the
+   * skeleton was added to prevent, so the duplicated expression did not merely
+   * repeat itself, it silently did nothing.
+   */
+  const widenLoading = !!widenPipeline && fromWiden.loading;
+
+  /**
+   * The FETCHED window of whichever query produced the rows on screen — what
+   * "Carregar mais" is gauged on, far below.
+   *
+   * ⚠️ It cannot stay `snap.data`. A widening only exists BECAUSE the primary
+   * returned nothing, so while widened rows are on screen `snap.data` is `[]`
+   * and can never equal `effectiveLimit` — the button never appeared, and a
+   * whole-word term matching more than one page showed its first page with no
+   * affordance and no signal that anything was cut. The query side already
+   * works: `widenPipeline` carries `effectiveLimit`, so a click refetches
+   * deeper. Only the gauge did not know which query it was measuring.
+   *
+   * Still the FETCHED window and not `rows`, for the original reason: on the
+   * paths that filter client-side, a full server page can shrink below the
+   * limit and would wrongly hide the button.
+   */
+  const fetchedWindow = widenAtivo ? widenRows : snap.data;
+
+  // ⚠️ Declared beside its ref above but EVALUATED here, after `widenLoading`
+  // exists. A dependency array is read during RENDER, so leaving this where the
+  // ref is declared throws `Cannot access 'widenLoading' before initialization`
+  // on the first paint — the effect BODY would have been fine, which is exactly
+  // what makes the mistake easy to talk yourself into.
+  useEffect(() => {
+    // ⚠️ `widenLoading` belongs here for the same reason the other two do, and
+    // it is easy to miss: under a widening the PRIMARY settles first and
+    // trivially (it returns nothing — that is why the widening exists). Without
+    // this term the window would be recorded against rows the widened query has
+    // not delivered yet, `pendingGrowth` would go false mid-flight, and the
+    // skeletons this whole mechanism removes would come back for the widened
+    // set alone.
+    //
+    // ⚠️⚠️ REASONED, NOT PINNED — recorded rather than dressed up. Removing this
+    // term does not fail any test: the harness could not be driven into the
+    // ordering it defends (primary settled, widening still in flight, a growth
+    // pending), because the effect never re-ran under `rerender`, verified with
+    // a temporary run-counter rather than assumed. A test was written for it and
+    // DELETED once it proved unable to fail, since a green test over an
+    // undefended guard is worse than an honest note. The neighbouring
+    // `primarioVazio` growth term IS mutation-proven; this one is not.
+    if (snap.loading || lookupLoading || widenLoading || !snap.data) return;
+    loadedPagesRef.current = pages;
+    // Waking this effect on `pages` is precisely the bug described above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `pages` is read here, never a trigger
+  }, [snap.loading, lookupLoading, widenLoading, snap.data]);
+
+  /**
+   * A failed WIDENING is not the table's error, and must not be rendered as one.
+   *
+   * The operator asked for "names starting with X". The primary query answered
+   * that, successfully, with nothing — so `Nenhum resultado.` is the honest
+   * result and stays. The widening is an extra they never asked for; surfacing
+   * its failure turns a query that WORKED into a red alert carrying a raw
+   * Firestore message.
+   *
+   * ⚠️ Not hypothetical, and this PR is the proof twice over. The index deploy
+   * and the app deploy are separate manual steps in either order, so an app that
+   * ships first meets no text index at all — and the very fault this work exists
+   * to repair (`9 FAILED_PRECONDITION: Found multiple global text search
+   * indexes`) would have been shown to the operator on every empty search.
+   *
+   * So it degrades to "no widening", the same way an empty widened result
+   * already does. Reported to the console rather than swallowed, on the
+   * `rowLinkColumn` precedent above: keyed on the error so a re-render does not
+   * re-warn, and an effect so rendering stays pure.
+   */
+  useEffect(() => {
+    if (!fromWiden.error) return;
+    console.warn(
+      `TableView: the text-search widening failed and was skipped — ` +
+        `${fromWiden.error.message}. The list still shows the primary query's ` +
+        `result, which succeeded.`,
+    );
+  }, [fromWiden.error]);
+
+  // Everything below — selection, counts, the table body — reads `rows`, so the
+  // widened set has to land HERE rather than at the render site, or a selected
+  // row would not be one the actions can act on.
+  const rows = widenAtivo ? widenRows : primaryRows;
   const growingWindow =
-    (snap.loading || lookupLoading) &&
+    (snap.loading || lookupLoading || widenLoading) &&
     // Rows to KEEP, not merely a defined array: `rows` is `[]` when a lookup or
     // an extra filter resolved to no candidates, and holding an empty table on
     // screen in place of the skeleton says nothing to anyone.
@@ -1249,7 +1447,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     pendingGrowth;
 
   // Skeletons only when there is nothing trustworthy to show. See above.
-  const showSkeleton = (snap.loading || lookupLoading) && !growingWindow;
+  const showSkeleton = (snap.loading || lookupLoading || widenLoading) && !growingWindow;
   // Mirrored for the scroll persister, which has to know whether the table is
   // on screen at the moment a scroll event arrives. Assigned during render
   // rather than from an effect on purpose: the browser clamps and fires that
@@ -1260,7 +1458,13 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   skeletonRef.current = showSkeleton;
 
   // The fetched window came back full, so there may be more behind it.
-  const windowFull = !!snap.data && snap.data.length === effectiveLimit;
+  //
+  // ⚠️ `fetchedWindow`, never `snap.data`. A widening exists BECAUSE the primary
+  // returned nothing, so while widened rows are on screen `snap.data` is `[]`
+  // and can never equal `effectiveLimit` — the footer vanished over every
+  // widened result and a whole-word term matching more than one page showed its
+  // first page with no affordance and no signal that anything was cut.
+  const windowFull = !!fetchedWindow && fetchedWindow.length === effectiveLimit;
 
   // Nothing left to offer: the window is as wide as it is allowed to get. Says
   // so out loud rather than hiding the button, because a limit the operator
@@ -1781,12 +1985,30 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Text>
           )}
 
+          {/* The widening has to SAY it widened. Without this the operator reads
+              rows that do not start with what they typed and concludes the
+              search is broken — the results are correct, the surprise is not. */}
+          {widenAtivo && (
+            <Text c="dimmed" size="sm">
+              Nenhum nome começa com “{searchTerm}”. Mostrando nomes que contêm essa palavra.
+            </Text>
+          )}
+
+          {/* ⚠️ `fromWiden.error` is deliberately NOT here — see the effect that
+              logs it. A failed optional widening must not become the error state
+              of a primary query that succeeded. */}
           {(snap.error || subLookup.error || searchResolve.error) && (
             <Alert color="red" title="Erro ao carregar">
               {(snap.error ?? subLookup.error ?? searchResolve.error)?.message}
             </Alert>
           )}
 
+          {/* ⚠️ The widening counts as loading, and `showSkeleton` is where that
+              lives — one value read by this branch AND the table branch below.
+              Written inline in only one of them, the table body rendered
+              underneath the skeletons: while the widening is in flight the
+              primary has already answered, so its `loading` is false and `rows`
+              is `[]`. */}
           {showSkeleton && (
             <Stack>
               <Skeleton height={36} />
@@ -2045,7 +2267,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           )}
 
           {/* A full page implies there may be more — offer to grow the window.
-              Gauge "page was full" on the *fetched* window (`snap.data`), not
+              Gauge "page was full" on the *fetched* window (`fetchedWindow` —
+              the widened query's rows when one is on screen, `snap.data`
+              otherwise; see its docblock), not
               the post-filter `rows`: client-side column filtering (the fallback
               / queryOverride paths) can shrink `rows` below the limit even when
               the server returned a full page, which would wrongly hide the
