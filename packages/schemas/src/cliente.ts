@@ -140,9 +140,9 @@ export function refineClienteTipoDocumento(
  * the label; JSON objects encode richer hints (kind overrides, reference
  * collection ids, etc.).
  *
- * Vector embeddings were dropped in favour of the Enterprise text index; see
- * server-side code (Functions). They aren't part of the form schema; the
- * runtime treats them as opaque pass-through.
+ * The `nome_embedding` / `telefone_embedding` vectors were DROPPED — nothing
+ * produced or read them. Migrated documents keep the stored keys until the
+ * sweep removes them, and this schema strips them on read.
  */
 export const clienteSchema = z.object({
   tipo: tipoClienteSchema.nullable().default(null).describe('Tipo'),
@@ -211,7 +211,6 @@ export const clienteSchema = z.object({
   // the list with no error — the #861/#1213 produtos outage exactly.
   // Pinned by `defaultQuery.sortKeyPresence.test.ts`.
   ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
-  // Embeddings are server-managed; treat as opaque on the client.
   // userCliente outer reference: stored as a Firestore document path string
   // (`users/<uid>`) on writes from this app. Phase 1 keeps it pass-through.
   userCliente: z.string().nullable().default(null),

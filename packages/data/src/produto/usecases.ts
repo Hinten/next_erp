@@ -806,9 +806,6 @@ const SUFIXO_DUPLICATA = ' (cópia)';
  * and is published explicitly (see that field's own docstring); a clone that
  * arrived already visible in the catalogue would have been published by nobody.
  *
- * **Server-managed** — nothing here; the vector that used to live on a produto
- * parent clone changes below; stale from the moment it is written.
- *
  * ⚠️ What deliberately DOES carry over, because none of it is an identity:
  * `categoriaProdutoOuterRef`; `tabelaDeMedidasModaUid` (a tabela de medidas is
  * a shared document meant to be reused across produtos); `precos`/`custo`; the
