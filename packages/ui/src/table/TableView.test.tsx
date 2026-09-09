@@ -1243,6 +1243,79 @@ describe('TableView', () => {
       );
     });
 
+    it('widens the projection by an action predicate, and disables it when undeclared', () => {
+      // The trap this pins: `row.data` is a `select()` projection on the static
+      // path, so a predicate reading a field nobody projected gets `undefined`
+      // and refuses EVERY row — behind a disabled button with a plausible
+      // tooltip. Three pedido actions already re-read the whole document to
+      // dodge exactly this.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' as const }],
+              columns: ['nome'],
+              limit: 25,
+            },
+          }}
+          selectable
+          actions={[
+            {
+              id: 'g',
+              label: 'Guardada',
+              requiresSelection: true,
+              rowIneligibleReason: () => null,
+              rowEligibilityFields: ['tipo'],
+              run: () => {},
+            },
+          ]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ select: expect.arrayContaining(['nome', 'tipo']) }),
+      );
+
+      // No declaration ⇒ full-document read, the same escape hatch a virtual
+      // column without `dependsOn` gets. `select: undefined` is that read.
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' as const }],
+              columns: ['nome'],
+              limit: 25,
+            },
+          }}
+          selectable
+          actions={[
+            {
+              id: 'g',
+              label: 'Guardada',
+              requiresSelection: true,
+              rowIneligibleReason: () => null,
+              run: () => {},
+            },
+          ]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ select: undefined }),
+      );
+    });
+
     it('first header click flips the meta-default ascending sort to descending', () => {
       // Regression: with the default sort coming from meta (not the legacy
       // orderBy prop), the column shows ascending but `sort` state is still

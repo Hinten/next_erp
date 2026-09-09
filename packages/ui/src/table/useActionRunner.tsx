@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import { Button, Group, Modal, Stack, Text } from '@mantine/core';
+import { Alert, Button, Group, List, Modal, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
-import { resolveActionRows } from './resolveActionRows';
+import { partitionActionRows } from './resolveActionRows';
 
 /**
  * Shared bulk-action dispatcher for the ActionBar and the ActionSidePanel.
@@ -50,7 +50,7 @@ export function useActionRunner<T>({
    * can leave some rows gone and the list stale.
    */
   async function execute(action: ActionConfig<T>) {
-    const rows = resolveActionRows(action, selectedRows, visibleRows);
+    const { eligible: rows } = partitionActionRows(action, selectedRows, visibleRows);
     try {
       await action.run(rows);
     } catch (err) {
@@ -69,6 +69,15 @@ export function useActionRunner<T>({
     await execute(action);
   }
 
+  // Recomputed for the pending action rather than captured at trigger time:
+  // the list streams (#40), so a row can become eligible — or stop being —
+  // while the dialog is open, and the operator must confirm against what will
+  // actually run, not against what was true when they clicked.
+  const pendingSplit = pending
+    ? partitionActionRows(pending, selectedRows, visibleRows)
+    : { eligible: [], refused: [] };
+  const pendingRefused = pendingSplit.refused;
+
   const confirmModal = (
     <Modal
       opened={!!pending}
@@ -78,6 +87,20 @@ export function useActionRunner<T>({
     >
       <Stack>
         <Text>{pending?.confirm?.message}</Text>
+        {pendingRefused.length > 0 && (
+          <Alert color="yellow" variant="light" title="Alguns registros serão ignorados">
+            <Stack gap={4}>
+              <Text size="sm">
+                {`${pendingRefused.length} de ${pendingRefused.length + pendingSplit.eligible.length} registros não aceitam esta ação e ficarão de fora:`}
+              </Text>
+              <List size="sm" withPadding>
+                {pendingRefused.map(({ row, reason }) => (
+                  <List.Item key={row.id}>{reason}</List.Item>
+                ))}
+              </List>
+            </Stack>
+          </Alert>
+        )}
         <Group justify="flex-end">
           <Button variant="default" onClick={() => setPending(null)}>
             Cancelar
