@@ -14,10 +14,12 @@ import {
   shopeeCategoryRecommendSchema,
   shopeeConfirmLostPushSchema,
   shopeeEnvelopeSchema,
+  shopeeEscrowDetailSchema,
   shopeeFaixaSchema,
   shopeeItemLimitSchema,
   shopeeKitItemLimitSchema,
   shopeeLostPushSchema,
+  shopeeOrderDetailSchema,
   shopeeOrderListSchema,
   shopeeProfileSchema,
   shopeeShopInfoSchema,
@@ -780,6 +782,401 @@ describe('a página de get_order_list', () => {
         error: '',
         response: { more: false, next_cursor: '', order_list: [{ order_sn: '' }] },
       }).success,
+    ).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                 O detalhe do pedido e o escrow (passo 5)                    */
+/* -------------------------------------------------------------------------- */
+
+/** ⚠️ Inventado, no formato da Shopee. Nunca um pedido real. */
+const ORDER_SN_DETALHE = '220810QSK8S7BX';
+
+/** O mínimo que uma linha de `order_list` precisa ter para parsear. */
+function linhaDetalhe(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { order_sn: ORDER_SN_DETALHE, order_status: 'READY_TO_SHIP', ...extra };
+}
+
+function corpoDetalhe(...linhas: Record<string, unknown>[]) {
+  return { error: '', response: { order_list: linhas } };
+}
+
+describe('o detalhe do pedido (get_order_detail)', () => {
+  it('um número CITADO continua parseando — uma aspa não pode custar o pedido inteiro', () => {
+    // ⚠️ A forma do #1087: um serializador que cita UM campo derrubava o recurso
+    // todo, e o pedido ficava preso enquanto a fila repetia a mesma chamada.
+    const parsed = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({
+          total_amount: '31.99',
+          update_time: '1788973354',
+          item_list: [{ item_id: '846056136', model_quantity_purchased: '2' }],
+        }),
+      ),
+    );
+    const linha = parsed.response.order_list[0]!;
+    expect(linha.total_amount).toBe(31.99);
+    expect(linha.update_time).toBe(1_788_973_354);
+    expect(linha.item_list?.[0]?.item_id).toBe(846_056_136);
+    expect(linha.item_list?.[0]?.model_quantity_purchased).toBe(2);
+  });
+
+  it('product_location_id parseia STRING e ARRAY — e os dois chegam na MESMA resposta', () => {
+    // ⚠️ Fato medido no pedido de sandbox: array no item do pedido, string no
+    // item do pacote, na mesma resposta. Dobrar um no outro perde metade.
+    const parsed = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({
+          item_list: [{ item_id: 846_056_136, product_location_id: ['SGZ'] }],
+          package_list: [{ package_number: 'OFG1', item_list: [{ product_location_id: 'SGZ' }] }],
+        }),
+      ),
+    );
+    const linha = parsed.response.order_list[0]!;
+    expect(linha.item_list?.[0]?.product_location_id).toEqual(['SGZ']);
+    expect(linha.package_list?.[0]?.item_list?.[0]?.product_location_id).toBe('SGZ');
+  });
+
+  it('⚠️ NEAR-MISS: um product_location_id de NÚMEROS é recusado — o campo é documentado string', () => {
+    expect(
+      shopeeOrderDetailSchema.safeParse(
+        corpoDetalhe(linhaDetalhe({ item_list: [{ item_id: 1, product_location_id: [123] }] })),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('parcel_chargeable_weight e parcel_chargeable_weight_gram sobrevivem SEPARADOS', () => {
+    // ⚠️ A tabela documenta um, o exemplo manda o outro, e a unidade do primeiro
+    // não está escrita em lugar nenhum. Declarar um só e ler como sinônimo é como
+    // o legado escreveu gramas num campo de KG.
+    const parsed = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({
+          package_list: [
+            { package_number: 'A', parcel_chargeable_weight_gram: 500 },
+            { package_number: 'B', parcel_chargeable_weight: 500 },
+          ],
+        }),
+      ),
+    );
+    const pacotes = parsed.response.order_list[0]!.package_list!;
+    expect(pacotes[0]?.parcel_chargeable_weight_gram).toBe(500);
+    expect(pacotes[0]?.parcel_chargeable_weight).toBeNull();
+    expect(pacotes[1]?.parcel_chargeable_weight).toBe(500);
+    expect(pacotes[1]?.parcel_chargeable_weight_gram).toBeNull();
+  });
+
+  it('invoice_data distingue os TRÊS: null (não-BR), {} (sem NF-e) e populado', () => {
+    // ⚠️ Um `.default({})` dobraria os dois primeiros, e é a diferença entre
+    // "este pedido não é do Brasil" e "este pedido ainda não tem nota".
+    const parsed = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({ order_sn: 'A1', invoice_data: null }),
+        linhaDetalhe({ order_sn: 'B2', invoice_data: {} }),
+        linhaDetalhe({
+          order_sn: 'C3',
+          invoice_data: { number: '123', status: 'valid', access_key: '3525' },
+        }),
+      ),
+    );
+    const [naoBr, semNota, comNota] = parsed.response.order_list;
+    expect(naoBr?.invoice_data).toBeNull();
+    expect(semNota?.invoice_data).not.toBeNull();
+    expect(semNota?.invoice_data?.number).toBeNull();
+    expect(comNota?.invoice_data?.number).toBe('123');
+    expect(comNota?.invoice_data?.status).toBe('valid');
+
+    // E o campo AUSENTE cai no mesmo lugar do não-BR: null.
+    expect(
+      shopeeOrderDetailSchema.parse(corpoDetalhe(linhaDetalhe())).response.order_list[0]
+        ?.invoice_data,
+    ).toBeNull();
+  });
+
+  it('um order_status que ninguém viu antes PARSEIA — quem decide a escada é o mapeador', () => {
+    // ⚠️ Um enum estrito transformaria um décimo-segundo status numa falha de
+    // parse do pedido INTEIRO. A resposta certa é importar e deixar o mapeador
+    // dizer "fora da escada" com um estado ENUMERADO.
+    const parsed = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(linhaDetalhe({ order_status: 'SOMETHING_NEW' })),
+    );
+    expect(parsed.response.order_list[0]?.order_status).toBe('SOMETHING_NEW');
+  });
+
+  it('⚠️ NEAR-MISS: um order_sn em branco derruba a página, alto', () => {
+    // Ele é a pré-imagem do id determinístico do pedido: em branco, TODAS as
+    // linhas colapsam num documento só, em silêncio.
+    expect(
+      shopeeOrderDetailSchema.safeParse(corpoDetalhe(linhaDetalhe({ order_sn: '' }))).success,
+    ).toBe(false);
+    // ... e um order_status ausente também, porque a escada não tem o que ler.
+    expect(
+      shopeeOrderDetailSchema.safeParse({
+        error: '',
+        response: { order_list: [{ order_sn: ORDER_SN_DETALHE }] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('os ZEROS da Shopee chegam como zero, nunca como null — quem decide que zero é ausência é o leitor', () => {
+    // ⚠️ Medido no pedido de sandbox: `actual_shipping_fee: 0` com o comprador
+    // tendo pago 1,99. Um `??` nesses campos é um bug — e o schema não pode
+    // esconder o zero, senão o leitor nem tem o que decidir.
+    const parsed = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({
+          actual_shipping_fee: 0,
+          estimated_shipping_fee: 1.99,
+          edt_from: 0,
+          edt_to: 0,
+          pickup_done_time: 0,
+          order_chargeable_weight_gram: 0,
+        }),
+      ),
+    );
+    const linha = parsed.response.order_list[0]!;
+    expect(linha.actual_shipping_fee).toBe(0);
+    expect(linha.estimated_shipping_fee).toBe(1.99);
+    expect(linha.edt_from).toBe(0);
+    expect(linha.edt_to).toBe(0);
+    expect(linha.pickup_done_time).toBe(0);
+    expect(linha.order_chargeable_weight_gram).toBe(0);
+
+    // NEAR-MISS: AUSENTE é null, e é uma leitura diferente de zero.
+    const semNada = shopeeOrderDetailSchema.parse(corpoDetalhe(linhaDetalhe())).response
+      .order_list[0]!;
+    expect(semNada.actual_shipping_fee).toBeNull();
+    expect(semNada.edt_to).toBeNull();
+  });
+
+  it('model_id 0 é um VALOR (item sem variação), e ausente é null — os dois não se misturam', () => {
+    const parsed = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({
+          item_list: [{ item_id: 1, model_id: 0 }, { item_id: 2 }],
+        }),
+      ),
+    );
+    const itens = parsed.response.order_list[0]!.item_list!;
+    expect(itens[0]?.model_id).toBe(0);
+    expect(itens[1]?.model_id).toBeNull();
+  });
+
+  it('`edt` carrega o TIPO que chegou, seja ele qual for — é o que responde o registro', () => {
+    // O request pede o token `edt`; a resposta traz `edt_from`/`edt_to` e nenhum
+    // `edt`. Carregado como `unknown` para que o leitor logue o tipo UMA vez, sem
+    // mudar schema e sem chutar forma.
+    const comObjeto = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(linhaDetalhe({ edt: { from: 1, to: 2 } })),
+    ).response.order_list[0]!;
+    expect(comObjeto.edt).toEqual({ from: 1, to: 2 });
+
+    const comLista = shopeeOrderDetailSchema.parse(corpoDetalhe(linhaDetalhe({ edt: [1, 2] })))
+      .response.order_list[0]!;
+    expect(comLista.edt).toEqual([1, 2]);
+
+    expect(
+      shopeeOrderDetailSchema.parse(corpoDetalhe(linhaDetalhe())).response.order_list[0]?.edt,
+    ).toBeNull();
+  });
+
+  it('pending_terms é lista de string quando pedido, e null quando NÃO foi pedido', () => {
+    // ⚠️ `null` = "não perguntamos" (a flag não foi enviada); `[]` = "perguntamos
+    // e não há". Um `.default([])` afirmaria a segunda coisa sempre.
+    const comFlag = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({ order_status: 'PENDING', pending_terms: ['SYSTEM_PENDING', 'KYC_PENDING'] }),
+      ),
+    ).response.order_list[0]!;
+    expect(comFlag.pending_terms).toEqual(['SYSTEM_PENDING', 'KYC_PENDING']);
+
+    expect(
+      shopeeOrderDetailSchema.parse(corpoDetalhe(linhaDetalhe())).response.order_list[0]
+        ?.pending_terms,
+    ).toBeNull();
+  });
+
+  it('o endereço mascarado PARSEIA — julgar o valor não é papel do schema', () => {
+    // As duas formas de máscara já vistas: as estrelas parciais do exemplo da
+    // página (VN) e o `"****"` inteiro do pedido de sandbox. Nenhuma falha aqui;
+    // quem recusa é `valorUtilizavel`, em packages/schemas.
+    const parsed = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({
+          recipient_address: {
+            name: 'P******n',
+            phone: '******64',
+            town: '',
+            district: '',
+            city: '',
+            state: '',
+            region: 'VN',
+            zipcode: '',
+            full_address: 'Ấp******',
+          },
+        }),
+        linhaDetalhe({
+          order_sn: 'SG1',
+          region: 'SG',
+          recipient_address: { name: '****', phone: '****', region: 'SG', zipcode: '138522' },
+        }),
+      ),
+    );
+    expect(parsed.response.order_list[0]?.recipient_address?.name).toBe('P******n');
+    expect(parsed.response.order_list[1]?.recipient_address?.name).toBe('****');
+    // ⚠️ A region do ENDEREÇO é mascarável; a do PEDIDO é a que se lê.
+    expect(parsed.response.order_list[1]?.region).toBe('SG');
+  });
+
+  it('campos que a Shopee inventar amanhã atravessam pelo passthrough, sem falhar', () => {
+    const parsed = shopeeOrderDetailSchema.parse(
+      corpoDetalhe(
+        linhaDetalhe({ campo_novo_da_shopee: 'x', item_list: [{ item_id: 1, novo: 2 }] }),
+      ),
+    );
+    const linha = parsed.response.order_list[0]!;
+    expect((linha as Record<string, unknown>).campo_novo_da_shopee).toBe('x');
+    expect((linha.item_list![0] as unknown as Record<string, unknown>).novo).toBe(2);
+  });
+});
+
+describe('o escrow do pedido (get_escrow_detail)', () => {
+  function corpoEscrow(income: Record<string, unknown> = {}) {
+    return {
+      error: '',
+      response: {
+        order_sn: ORDER_SN_DETALHE,
+        buyer_user_name: 'comprador-inventado',
+        return_order_sn_list: [],
+        order_income: income,
+      },
+    };
+  }
+
+  it('kit_items parseia como OBJETO singular e como ARRAY — o leitor é quem normaliza', () => {
+    // ⚠️ A página tipa um objeto só; um kit de vários componentes não tem forma
+    // documentada. Um schema só-objeto recusaria o kit real e custaria o dinheiro
+    // do pedido inteiro.
+    const objeto = shopeeEscrowDetailSchema.parse(
+      corpoEscrow({
+        items: [
+          {
+            item_id: 1,
+            is_kit: true,
+            kit_items: { original_product_id: 800062998, total_qty: 2 },
+          },
+        ],
+      }),
+    ).response.order_income!.items![0]!;
+    expect(Array.isArray(objeto.kit_items)).toBe(false);
+    expect((objeto.kit_items as { original_product_id: number | null }).original_product_id).toBe(
+      800_062_998,
+    );
+
+    const lista = shopeeEscrowDetailSchema.parse(
+      corpoEscrow({
+        items: [
+          {
+            item_id: 1,
+            is_kit: true,
+            kit_items: [
+              { original_product_id: 1, original_model_id: 10 },
+              { original_product_id: 2, original_model_id: 20 },
+            ],
+          },
+        ],
+      }),
+    ).response.order_income!.items![0]!;
+    expect(Array.isArray(lista.kit_items)).toBe(true);
+    expect((lista.kit_items as { original_model_id: number | null }[])[1]?.original_model_id).toBe(
+      20,
+    );
+  });
+
+  it('⚠️ NEAR-MISS: um id FRACIONÁRIO em kit_items é recusado — arredondar um id inventa um valor', () => {
+    // O exemplo da página manda `0.1` em TODOS os ids do kit; é o valor de
+    // preenchimento dela para float, não um dado. `wireInt()` recusa alto em vez
+    // de arredondar para um id que ninguém consegue recuperar.
+    const resultado = shopeeEscrowDetailSchema.safeParse(
+      corpoEscrow({ items: [{ item_id: 1, kit_items: { original_product_id: 0.1 } }] }),
+    );
+    expect(resultado.success).toBe(false);
+    expect(JSON.stringify(resultado.error?.issues)).toContain('kit_items');
+
+    // ... e o mesmo id CITADO como inteiro passa, porque a tolerância é sobre a
+    // aspa, nunca sobre o valor.
+    expect(
+      shopeeEscrowDetailSchema.parse(
+        corpoEscrow({ items: [{ item_id: 1, kit_items: { original_product_id: '800062998' } }] }),
+      ).response.order_income!.items![0]!.kit_items,
+    ).toEqual({
+      original_product_id: 800_062_998,
+      original_model_id: null,
+      total_qty: null,
+      original_price: null,
+      proportional_price: null,
+    });
+  });
+
+  it('is_kit ausente é null ("não sabemos"), nunca false', () => {
+    // O campo só existe para vendedor BR local. `false` afirmaria que a linha NÃO
+    // é kit numa resposta que não fala sobre kits.
+    const item = shopeeEscrowDetailSchema.parse(corpoEscrow({ items: [{ item_id: 1 }] })).response
+      .order_income!.items![0]!;
+    expect(item.is_kit).toBeNull();
+    expect(item.kit_items).toBeNull();
+  });
+
+  it('discounted_price e order_discounted_price ficam SEPARADOS', () => {
+    // A página nomeia um, a lista dos "subtotais" nomeia o outro. Dobrar os dois
+    // faria o que a Shopee realmente manda ler `null` para sempre.
+    const income = shopeeEscrowDetailSchema.parse(
+      corpoEscrow({ order_discounted_price: 100, escrow_amount: 90 }),
+    ).response.order_income!;
+    expect(income.order_discounted_price).toBe(100);
+    expect(income.discounted_price).toBeNull();
+    expect(income.escrow_amount).toBe(90);
+  });
+
+  it('buyer_user_name NÃO é dobrado com o buyer_username do detalhe', () => {
+    const parsed = shopeeEscrowDetailSchema.parse(corpoEscrow());
+    expect(parsed.response.buyer_user_name).toBe('comprador-inventado');
+    expect('buyer_username' in parsed.response).toBe(false);
+  });
+
+  it('dinheiro NEGATIVO parseia — a própria página manda final_shipping_fee: -10', () => {
+    const income = shopeeEscrowDetailSchema.parse(
+      corpoEscrow({
+        items: [{ item_id: 1, seller_discount: -1.5, discounted_price: 15 }],
+        buyer_paid_shipping_fee: 1.99,
+      }),
+    ).response.order_income!;
+    expect(income.items![0]?.seller_discount).toBe(-1.5);
+    expect(income.buyer_paid_shipping_fee).toBe(1.99);
+  });
+
+  it('os ~100 campos que o passo 6 vai ler atravessam pelo passthrough', () => {
+    const parsed = shopeeEscrowDetailSchema.parse(
+      corpoEscrow({ commission_fee: 3.5, service_fee: 1, order_adjustment: [{ amount: 10.1 }] }),
+    );
+    const income = parsed.response.order_income as unknown as Record<string, unknown>;
+    expect(income.commission_fee).toBe(3.5);
+    expect(income.service_fee).toBe(1);
+  });
+
+  it('order_income ausente é null — "não veio" não é "zerado"', () => {
+    const parsed = shopeeEscrowDetailSchema.parse({
+      error: '',
+      response: { order_sn: ORDER_SN_DETALHE },
+    });
+    expect(parsed.response.order_income).toBeNull();
+    expect(parsed.response.return_order_sn_list).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: um order_sn em branco na resposta do escrow derruba o parse', () => {
+    expect(
+      shopeeEscrowDetailSchema.safeParse({ error: '', response: { order_sn: '' } }).success,
     ).toBe(false);
   });
 });

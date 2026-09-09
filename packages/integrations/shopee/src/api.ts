@@ -38,6 +38,17 @@
  * there is deliberately no `setAppPushConfig` at all — the absence is the
  * enforcement, and {@link ShopeePartnerClient.getAppPushConfig} says why.
  *
+ * ## The order reads (step 5)
+ *
+ * `getOrderDetail` (≤ 50 `order_sn`, WRAPPED) and `getEscrowDetail` (one
+ * `order_sn`) — the pair the pedido importer runs, in that order. Two Shopee
+ * contradictions are instrumented rather than guessed, and each is ONE literal:
+ * {@link SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS} (an optional field that is not
+ * named comes back ABSENT, so the list is a default rather than a parameter the
+ * caller can forget) and {@link SHOPEE_ESCROW_DETAIL_TRANSPORT} (the escrow page
+ * declares GET while its only sample is a JSON body — one literal flips the verb
+ * AND the placement together, because a GET cannot carry a body at all).
+ *
  * ## The taxonomy reads (step 10)
  *
  * Seven of them, all Shop-signed GETs on the `product` module, all read-only and
@@ -62,10 +73,12 @@ import {
   type ShopeeCategoryList,
   type ShopeeCategoryRecommend,
   type ShopeeConfirmLostPush,
+  type ShopeeEscrowDetail,
   type ShopeeGtinLimit,
   type ShopeeItemLimit,
   type ShopeeKitItemLimit,
   type ShopeeLostPushResponse,
+  type ShopeeOrderDetail,
   type ShopeeOrderList,
   type ShopeeProfile,
   type ShopeeShopInfo,
@@ -77,9 +90,11 @@ import {
   shopeeCategoryListSchema,
   shopeeCategoryRecommendSchema,
   shopeeConfirmLostPushSchema,
+  shopeeEscrowDetailSchema,
   shopeeItemLimitSchema,
   shopeeKitItemLimitSchema,
   shopeeLostPushSchema,
+  shopeeOrderDetailSchema,
   shopeeOrderListSchema,
   shopeeProfileSchema,
   shopeeShopInfoSchema,
@@ -126,6 +141,81 @@ export const SHOPEE_GET_APP_PUSH_CONFIG_PATH = '/api/v2/push/get_app_push_config
 
 /** `GET` — Shop-signed. WRAPPED. ONE page of orders in a ≤ 15-day window. */
 export const SHOPEE_GET_ORDER_LIST_PATH = '/api/v2/order/get_order_list';
+
+/** `GET` — Shop-signed. WRAPPED. Up to 50 `order_sn` per call. */
+export const SHOPEE_GET_ORDER_DETAIL_PATH = '/api/v2/order/get_order_detail';
+/**
+ * Shop-signed. WRAPPED. ONE `order_sn`. The verb and where the parameter rides
+ * are BOTH decided by {@link SHOPEE_ESCROW_DETAIL_TRANSPORT}.
+ */
+export const SHOPEE_GET_ESCROW_DETAIL_PATH = '/api/v2/payment/get_escrow_detail';
+
+/** `get_order_detail`: `order_sn_list` is documented `limit [1,50]`. */
+export const SHOPEE_ORDER_DETAIL_MAX_ORDER_SN = 50;
+
+/**
+ * `response_optional_fields` for `get_order_detail` — 24 tokens, comma-joined,
+ * **NO SPACES**.
+ *
+ * ⚠️ **An optional field that is not NAMED here comes back ABSENT, not empty.**
+ * Only eleven fields return by default (`order_sn, region, currency, cod,
+ * order_status, message_to_seller, create_time, update_time, days_to_ship,
+ * ship_by_date, booking_sn`); everything the importer reads — the items, the
+ * address, the money, the packages — has to be asked for. That is why this is a
+ * DEFAULT rather than a required parameter: forgetting it is silent (a pedido
+ * imports with no items and no buyer), while a default that is wrong is loud.
+ *
+ * Shopee's own list carries 31 tokens (with `buyer_username` printed twice). The
+ * seven left out, and why:
+ *
+ *  - `international_label` — its `is_international` is not step 5's signal; the
+ *    ORDER-level `region` is, and that one is never masking-gated.
+ *  - (`note`, `note_update_time` ARE in: the seller's own Seller Centre note
+ *    feeds `observacoesInternas` on the pedido, as the legacy importer did —
+ *    an unnamed field is absent, so leaving it out would make that field
+ *    silently empty on every order.)
+ *  - `goods_to_declare`, `dropshipper`, `dropshipper_phone`, `split_up`,
+ *    `actual_shipping_fee_confirmed` — cross-border, ID-dropshipping and
+ *    forder-level concerns with no consumer here.
+ *
+ * ⚠️ `edt` IS in the list even though the response carries `edt_from`/`edt_to`
+ * and no `edt` at all: the settle-live register asks whether the token is what
+ * produces those two, and only asking answers it.
+ */
+export const SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS =
+  'item_list,recipient_address,buyer_cpf_id,buyer_username,buyer_user_id,pay_time,' +
+  'payment_method,payment_info,total_amount,package_list,invoice_data,actual_shipping_fee,' +
+  'estimated_shipping_fee,shipping_carrier,order_chargeable_weight_gram,cancel_by,' +
+  'cancel_reason,buyer_cancel_reason,edt,pickup_done_time,fulfillment_flag,' +
+  'return_request_due_date,note,note_update_time';
+
+/** The verb AND the placement of `order_sn` on `get_escrow_detail`, as one value. */
+export type ShopeeEscrowDetailTransport = 'get-query' | 'post-body';
+
+/**
+ * ⚠️ **UNSETTLED — settle-live register item 6, and ONE literal flips both
+ * halves.** The `v2.payment.get_escrow_detail` page declares `method: 2` (GET)
+ * while its ONE request sample is a JSON body (`{"order_sn": "..."}`). A GET
+ * carrying a body is not sendable through `fetch` at all — it throws a
+ * `TypeError` before any network call — so "query vs body" is really "GET+query
+ * vs POST+body", and this constant is the pair.
+ *
+ * Default `'get-query'`: it is what the page's own `method` says and what every
+ * other Shopee GET in this package does. Flip it to `'post-body'` if the console
+ * test tool or the first live call answers `error_param`.
+ *
+ * ⚠️ **Neither half of the pair touches the signature, and that is measured, not
+ * assumed.** The shop base string is `partner_id + path + timestamp +
+ * access_token + shop_id` (`sign.ts`) — the VERB is not in it and neither are the
+ * operation's own parameters, in the query or in the body. So two different
+ * `order_sn` produce the SAME `sign` under BOTH transports, and a wrong guess
+ * here surfaces as `error_param` ("Missing order_sn…", which this page
+ * documents) — never as `error_sign` and never as a 404. `apps/shopee` logs the
+ * code raw. A test pins the identical-sign property, exactly as
+ * `confirmConsumedLostPushMessages` pins it for its own body, because a future
+ * "sign the parameters too" would break this call silently.
+ */
+export const SHOPEE_ESCROW_DETAIL_TRANSPORT: ShopeeEscrowDetailTransport = 'get-query';
 
 /**
  * The OTHER spelling of the `get_variations` path — and the reason the default is
@@ -350,6 +440,41 @@ export interface GetOrderListParams {
   readonly responseOptionalFields?: 'order_status';
 }
 
+/**
+ * `get_order_detail` — 1…50 orders, in ONE call.
+ *
+ * ⚠️ No fan-out loop: the caller chunks, exactly as it pages `getOrderList`. The
+ * bound exists so a future batch caller cannot exceed it by accident.
+ */
+export interface GetOrderDetailParams {
+  /**
+   * 1…50 `order_sn`, joined by commas on the wire.
+   *
+   * ⚠️ Every element must be a non-blank string, and that is refused BEFORE the
+   * fetch: a blank `order_sn` collapses every such row onto ONE identity
+   * downstream, which is the same reason `shopeeOrderDetailRowSchema.order_sn`
+   * is `.min(1)`. Duplicates are ALLOWED — Shopee may then answer with fewer
+   * rows than were asked for, which the caller reconciles by `order_sn`.
+   */
+  readonly orderSnList: readonly string[];
+  /**
+   * Sent as the STRING `'true'` when true, omitted otherwise — Shopee's own
+   * words: "send True will let API support PENDING status and return
+   * pending_terms, send False or don't send will fallback to old logic".
+   */
+  readonly requestOrderStatusPending?: boolean;
+  /**
+   * Overrides {@link SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS} — it REPLACES the
+   * default list, never adds to it. Joined by commas by this client.
+   */
+  readonly responseOptionalFields?: readonly string[];
+}
+
+/** `get_escrow_detail` — ONE order. */
+export interface GetEscrowDetailParams {
+  readonly orderSn: string;
+}
+
 /** `category_recommend` — a non-blank item name, plus an optional cover image id. */
 export interface CategoryRecommendParams {
   readonly itemName: string;
@@ -469,6 +594,33 @@ export interface ShopeeClient {
    * used one would silently skip orders. Ask for everything and filter later.
    */
   getOrderList(p: GetOrderListParams): Promise<ShopeeOrderList>;
+
+  /**
+   * The FULL detail of 1…50 orders.
+   *
+   * ⚠️ It asks for {@link SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS} by default,
+   * because only eleven fields return without being named and an unnamed one
+   * comes back ABSENT — a silent failure whose symptom is a pedido with no items
+   * and no buyer, never an error.
+   *
+   * ⚠️ It does NOT fan out. One call, one page of orders; the caller chunks.
+   *
+   * ⚠️ The response may carry FEWER rows than were asked for. Reconcile by
+   * `order_sn`, never by position.
+   */
+  getOrderDetail(p: GetOrderDetailParams): Promise<ShopeeOrderDetail>;
+
+  /**
+   * ONE order's accounting — the per-item money, including the BR-local
+   * `is_kit`/`kit_items` that the ORDER detail does not carry.
+   *
+   * ⚠️ Its verb and parameter placement are unsettled and live in ONE literal:
+   * {@link SHOPEE_ESCROW_DETAIL_TRANSPORT}.
+   *
+   * ⚠️ `order_not_found` is a documented error of this page, and it classifies as
+   * kind `other` — a permanent refusal about one order, not a transient failure.
+   */
+  getEscrowDetail(p: GetEscrowDetailParams): Promise<ShopeeEscrowDetail>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -554,6 +706,40 @@ function assertOrderListParams(p: GetOrderListParams): void {
   if (p.cursor !== undefined && p.cursor === '') {
     throw new ShopeeConfigError(
       'cursor não pode ser vazio — omita o parâmetro na primeira página.',
+    );
+  }
+}
+
+/**
+ * Every `get_order_detail` bound, checked BEFORE any fetch.
+ *
+ * ⚠️ Every branch is a `ShopeeConfigError` — a caller bug, never a provider
+ * failure — so a sweep's provider-error containment must not swallow it. And the
+ * blank check is the load-bearing one: Shopee would answer a blank `order_sn`
+ * with a plain `error_param`, but a blank one that reached the MAPPER would key
+ * every such order onto a single deterministic pedido id.
+ */
+function assertOrderDetailParams(p: GetOrderDetailParams): void {
+  const quantidade = p.orderSnList.length;
+  if (quantidade < 1 || quantidade > SHOPEE_ORDER_DETAIL_MAX_ORDER_SN) {
+    throw new ShopeeConfigError(
+      `order_sn_list deve conter de 1 a ${String(SHOPEE_ORDER_DETAIL_MAX_ORDER_SN)} pedidos (recebido: ${String(quantidade)}).`,
+    );
+  }
+  p.orderSnList.forEach((orderSn, posicao) => {
+    if (typeof orderSn !== 'string' || orderSn.trim() === '') {
+      throw new ShopeeConfigError(
+        `order_sn não pode ser vazio (posição ${String(posicao)}, recebido: ${JSON.stringify(orderSn)}).`,
+      );
+    }
+  });
+}
+
+/** The same refusal for the single-order reads. Blank is never a value. */
+function assertOrderSn(orderSn: string): void {
+  if (typeof orderSn !== 'string' || orderSn.trim() === '') {
+    throw new ShopeeConfigError(
+      `order_sn não pode ser vazio (recebido: ${JSON.stringify(orderSn)}).`,
     );
   }
 }
@@ -853,6 +1039,50 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
           // ⚠️ No `order_status`: see the interface. Filtering here would drop
           // four documented statuses without saying so.
         },
+      });
+      return res.response;
+    },
+
+    getOrderDetail: async (p) => {
+      assertOrderDetailParams(p);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_ORDER_DETAIL_PATH,
+        call: await signedCall(),
+        schema: shopeeOrderDetailSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: {
+          // ⚠️ ONE joined scalar, commas between: `signedQuery` cannot emit a
+          // repeated key, and the page's own request sample is comma-joined.
+          order_sn_list: p.orderSnList.join(','),
+          // ⚠️ The wire wants the STRING 'true'; `undefined` is dropped by
+          // `signedQuery`, so `false` really sends nothing. Same shape as
+          // `getOrderList`'s.
+          request_order_status_pending: p.requestOrderStatusPending === true ? 'true' : undefined,
+          // ⚠️ The caller's list REPLACES the default; it never merges with it.
+          response_optional_fields:
+            p.responseOptionalFields === undefined
+              ? SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS
+              : p.responseOptionalFields.join(','),
+        },
+      });
+      return res.response;
+    },
+
+    getEscrowDetail: async (p) => {
+      assertOrderSn(p.orderSn);
+      // ⚠️ ONE literal decides both halves — see SHOPEE_ESCROW_DETAIL_TRANSPORT.
+      // `shopeeCall` sets `init.body` for ANY method and `fetch` throws a
+      // TypeError on a GET carrying one, so the verb and the placement can never
+      // be chosen independently.
+      const porQuery = SHOPEE_ESCROW_DETAIL_TRANSPORT === 'get-query';
+      const res = await shopeeCall(transport, {
+        method: porQuery ? 'GET' : 'POST',
+        path: SHOPEE_GET_ESCROW_DETAIL_PATH,
+        call: await signedCall(),
+        schema: shopeeEscrowDetailSchema,
+        surface: SHOPEE_SURFACE.business,
+        ...(porQuery ? { query: { order_sn: p.orderSn } } : { body: { order_sn: p.orderSn } }),
       });
       return res.response;
     },
