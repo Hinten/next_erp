@@ -16,7 +16,14 @@
  *    (handed to `requireRegion`, which trims and THROWS on a blank value, so a
  *    copy of the guard here would be a second, drifting one) and
  *    `SHOPEE_TASKS_DISABLED` (an `=== '1'` opt-in, blank-safe by construction
- *    like `shopeeSandbox`).
+ *    like `shopeeSandbox`);
+ *  - `lib/shopee/notificacoes/orderBackfill.ts` —
+ *    `SHOPEE_ORDER_BACKFILL_ENABLED`, the master flag of the step-4 order
+ *    backfill, read as the sweep's FIRST statement. Same `=== '1'` opt-in, and
+ *    deliberately NOT an `env.ts` export: it is a deploy-time switch read only
+ *    by the nested functions codebase, not Shopee CONFIGURATION this app hands
+ *    to the package, and the blank-guard rule below buys an `=== '1'`
+ *    comparison nothing.
  *
  * The nested `functions/` codebase reads more of it still (`options.ts`,
  * `lib/admin.ts`, `tasksInvoker.ts`), which is why no count is stated here: a

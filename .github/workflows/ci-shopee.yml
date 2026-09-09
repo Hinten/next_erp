@@ -90,6 +90,7 @@ on:
       - 'packages/schemas/src/integracao.ts'
       - 'packages/schemas/src/aviso.ts'
       - 'packages/schemas/src/notificacaoShopee.ts'
+      - 'packages/schemas/src/backfillPedidosShopee.ts'
       - 'packages/schemas/src/shared/notificationResilience.ts'
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
