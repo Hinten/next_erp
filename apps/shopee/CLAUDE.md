@@ -218,8 +218,13 @@ does not strip a trailing slash and must not start: a slash, a http/https
 difference or a stray port changes the digest. Shopee's docs never say WHICH url
 string they sign, so the receiver logs configured-vs-received (plus 8-character
 digest prefixes, never a body, a `data`, a full header or a key) for the first
-five deliveries per instance and for every mismatch thereafter. Delete that log
-once live traffic has answered it.
+five deliveries per instance and for every mismatch thereafter. ✅ **The sandbox
+answered it on 2026-09-09**: Shopee signs the url EXACTLY as configured in the
+console, and every push verified while the request-side url — the app behind a
+tunnel — read as a different string entirely, the real host arriving only in
+`x-forwarded-host`. So a received url is never a substitute for the configured
+one, on any proxy. The log stays until the first App Hosting delivery says the
+same on the real host, and then it goes.
 
 ⚠️ **Keyed on the push CODE, never `push_api_id`.** They differ, and not by a
 constant: `shop_penalty_update_push` is code **28** and push_api_id **31**. The
@@ -227,6 +232,24 @@ dispatch table is the only place this is written down — codes 1 / 2 / 12 are t
 conta arms, a listed handful `ack`, everything data-bearing whose owning step is
 unbuilt **parks**, and an unlisted code parks too, which is the only signal a new
 code appeared.
+
+Three rows were added by the sandbox push test of 2026-09-09. **Code 0** is
+undocumented: it is the console's own "Verify and Save" message (`verify_info`,
+no `shop_id`, no `timestamp`), and it `ack`s and never parks, because otherwise
+every click on that button leaves a row behind; its identity is the default
+branch, `0:-:-:-`. **Codes 24 and 25** are documented — the logistics *booking*
+pushes `booking_trackingno_push` (push_api_id 27) and
+`booking_shipping_document_status_push` (push_api_id 28), both "New Push" of
+2024-07-02 — and were simply missed by the doc survey; the sandbox is what made
+them arrive, unlisted, and park. Both still **park**, keyed on `booking_sn`,
+until steps 7 and 15 own them. They arrived unlisted first, which is that
+signal doing its job.
+
+⚠️ **The app type does not gate what the console can send.** An ERP System app
+cannot receive `webchat_push` (code 10) per `guide 18`, which is why that code
+parks instead of routing to step 16 — and the sandbox console still offered its
+test data to exactly such an app on 2026-09-09. Treat the app-type table as a
+statement about live traffic, never as an input filter.
 
 ⚠️ **An unbuilt handler PARKS, it never DEFERS.** `defer` means a precondition
 outside this system will clear on its own, and it costs a daily re-drive for
