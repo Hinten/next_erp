@@ -1852,6 +1852,76 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "balanco",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "dataFinalizado",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "filiais",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "integracao",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dataCadastro",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "paiId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "publicado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
