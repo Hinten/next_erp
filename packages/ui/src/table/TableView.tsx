@@ -1330,6 +1330,24 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const widenLoading = !!widenPipeline && fromWiden.loading;
 
   /**
+   * The FETCHED window of whichever query produced the rows on screen — what
+   * "Carregar mais" is gauged on, far below.
+   *
+   * ⚠️ It cannot stay `snap.data`. A widening only exists BECAUSE the primary
+   * returned nothing, so while widened rows are on screen `snap.data` is `[]`
+   * and can never equal `effectiveLimit` — the button never appeared, and a
+   * whole-word term matching more than one page showed its first page with no
+   * affordance and no signal that anything was cut. The query side already
+   * works: `widenPipeline` carries `effectiveLimit`, so a click refetches
+   * deeper. Only the gauge did not know which query it was measuring.
+   *
+   * Still the FETCHED window and not `rows`, for the original reason: on the
+   * paths that filter client-side, a full server page can shrink below the
+   * limit and would wrongly hide the button.
+   */
+  const fetchedWindow = widenAtivo ? widenRows : snap.data;
+
+  /**
    * A failed WIDENING is not the table's error, and must not be rendered as one.
    *
    * The operator asked for "names starting with X". The primary query answered
@@ -2080,7 +2098,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           )}
 
           {/* A full page implies there may be more — offer to grow the window.
-              Gauge "page was full" on the *fetched* window (`snap.data`), not
+              Gauge "page was full" on the *fetched* window (`fetchedWindow` —
+              the widened query's rows when one is on screen, `snap.data`
+              otherwise; see its docblock), not
               the post-filter `rows`: client-side column filtering (the fallback
               / queryOverride paths) can shrink `rows` below the limit even when
               the server returned a full page, which would wrongly hide the
@@ -2088,13 +2108,17 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
               over-offers by one click on an exact multiple, which is harmless.
               Hidden entirely under `queryOverride`: that query is caller-owned
               and ignores `effectiveLimit`, so the button couldn't fetch more. */}
-          {!snap.loading && !queryOverride && snap.data && snap.data.length === effectiveLimit && (
-            <Center>
-              <Button variant="subtle" onClick={() => setPages((p) => p + 1)}>
-                Carregar mais
-              </Button>
-            </Center>
-          )}
+          {!snap.loading &&
+            !widenLoading &&
+            !queryOverride &&
+            fetchedWindow &&
+            fetchedWindow.length === effectiveLimit && (
+              <Center>
+                <Button variant="subtle" onClick={() => setPages((p) => p + 1)}>
+                  Carregar mais
+                </Button>
+              </Center>
+            )}
         </Stack>
 
         {panelEnabled && (

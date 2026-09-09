@@ -2244,7 +2244,7 @@ describe('TableView', () => {
       toTextQuery: (t: string) => t.trim() || undefined,
     };
 
-    function renderComBusca(termo = 'cami') {
+    function renderComBusca(termo = 'cami', extra: { pageSize?: number } = {}) {
       searchParamsRef.current = new URLSearchParams(`q=${encodeURIComponent(termo)}`);
       buildPipelineSpy.mockClear();
       return wrap(
@@ -2254,8 +2254,22 @@ describe('TableView', () => {
           db={{} as never}
           meta={metaWiden}
           search={searchWiden}
+          {...extra}
         />,
       );
+    }
+
+    /** `n` widened rows, ids distinct so the table can key them. */
+    function widenComLinhas(n: number) {
+      return {
+        data: Array.from({ length: n }, (_, i) => ({
+          id: `w${i}`,
+          path: `x/w${i}`,
+          data: { nome: `Widened ${i}`, tipo: '0' },
+        })),
+        loading: false,
+        error: undefined,
+      } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>;
     }
 
     /** Every spec `buildPipeline` was handed that carried a text search. */
@@ -2385,6 +2399,26 @@ describe('TableView', () => {
       };
       renderComBusca();
       expect(screen.getByText('primary boom')).toBeTruthy();
+    });
+
+    it('offers "Carregar mais" over a FULL widened page', () => {
+      // ⚠️ The button is gauged on the FETCHED window, and under a widening the
+      // primary's window is `[]` by definition — so gauging it on `snap.data`
+      // hid the button over every widened result, capping a whole-word term at
+      // one page with nothing on screen to say so.
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = widenComLinhas(2);
+      renderComBusca('cami', { pageSize: 2 });
+      expect(screen.getByRole('button', { name: 'Carregar mais' })).toBeTruthy();
+    });
+
+    it('does not offer it over a widened page that was not full', () => {
+      // The control. Without it the test above passes with the condition
+      // dropped altogether, which would offer the button on every result.
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = widenComLinhas(1);
+      renderComBusca('cami', { pageSize: 2 });
+      expect(screen.queryByRole('button', { name: 'Carregar mais' })).toBeNull();
     });
 
     it('sanitises the term, so a DSL operator is not read as syntax', () => {
