@@ -263,6 +263,7 @@
           }
         }
       ],
+      "density": "SPARSE_ANY",
       "searchIndexOptions": {
         "textLanguage": "pt-BR"
       }

@@ -60,7 +60,7 @@ import { gitGrep } from './lib/repo-scan.js';
  * bottom of this file.
  */
 const PATTERN =
-  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico)\\b';
+  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl)\\b';
 
 /**
  * Source only. Tests are excluded deliberately: a test SHOULD exercise a fold
@@ -117,11 +117,18 @@ const INVENTARIO = {
     'Defines `localizarDecimal` / `parseDecimalPtBr` / `parseCentesimos`. Own tests carry both directions, incl. the ambiguous forms each REFUSES to fold (`1.234,5`, three decimals).',
   'packages/ai/src/text.ts':
     'Defines `normalizeLoose` (trim, pt-BR lowercase, NFD, strip diacritics). The one place the fold’s exact reach is specified.',
+  'packages/data/src/pipeline-queries.ts':
+    'Defines `sanitizeSearchDsl`, which turns operator input into a Firestore search-DSL string — so it decides which two terms issue the SAME text query. Equal: the DSL operator characters (`" ( ) + : ~ ^ * ? -`) collapsed to spaces, runs of whitespace collapsed, ends trimmed — `Porta-lápis` ≡ `Porta lápis`, because a raw `-` NEGATES and would ask for "Porta but NOT lápis" and return nothing with no error. Distinct: singular vs plural (`Camiseta` / `Camisetas`), accented vs unaccented (`Leão` / `Leao`), and case — all three are the pt-BR ANALYZER’s business at query time, and folding them here would replace a measured, partial backend behaviour with a total one (accent folding was measured INCONSISTENT: `Leao` reaches `Leão`, `Ceramica` does not reach `Cerâmica`). Also distinct from a match: a term of pure operators returns `undefined`, never the empty DSL string. Near-miss: `pipeline-queries.test.ts` — "folds a term whose operators the DSL would have read as syntax" paired with "keeps NEAR-MISSES distinct — the analyzer relates them, not this".',
+  'packages/ui/src/table/TableView.tsx':
+    'The SOLE caller of `sanitizeSearchDsl`, applied to whatever `search.toTextQuery` returns before it becomes a `textSearch` stage. Sanitising lives here rather than in each page deliberately: a caller that forgot would get a silently empty widened result instead of an error. Not itself a comparison — it produces the query string, and the fold’s reach is specified where it is defined. Near-miss: `TableView.test.tsx` — "sanitises the term, so a DSL operator is not read as syntax" plus "issues nothing when the term sanitises away entirely".',
 
   // ---- Not a comparison ---------------------------------------------------
   'apps/web/app/(app)/medidas/_components/SizeChartGrid.tsx':
     'Uses `localizarDecimal` as an INPUT transform on a numeric cell (typed `10.5` becomes `10,5`), never to compare. Nothing decides sameness here.',
   'packages/ai/src/index.ts': 'Barrel re-export of `normalizeLoose`. No fold.',
+  'packages/data/src/index.ts': 'Barrel re-export of `sanitizeSearchDsl`. No fold.',
+  'apps/web/app/(app)/produtos/page.tsx':
+    'Comment only — `produtoSearch.toTextQuery` returns the RAW term and its docblock names `sanitizeSearchDsl` to say why it must not pre-quote (quoting neutralises the DSL operators but also suppresses the pt-BR analyzer, so `Leao` stops reaching `Leão`). The call itself is in `TableView`, above. Nothing here decides sameness.',
   'packages/ai/src/cells.ts':
     'Comment only — names `normalizeLoose` when explaining a neighbouring trade. No fold.',
   'packages/data/src/produto/usecases.ts':
