@@ -56,6 +56,21 @@ export const PRODUTO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
   // did not (#961). Both are legacy denorms with no query consumers; their churn
   // is never an operator edit.
   'marketplaceIds',
+  // ⚠️ OUTLIVES THE FIELD ON PURPOSE. `nome_embedding` was dropped from
+  // `produtoSchema`, and removing this entry with it looks obvious and is
+  // backwards: this list is what protects the SWEEP that removes the stored key.
+  //
+  // The only way to drop a stored key is `update({ nome_embedding:
+  // FieldValue.delete() })` per document, which fires this trigger across the
+  // whole catalogue. `diffDocumentFields` builds its field set from the UNION of
+  // before/after keys, so a key that disappears is a CHANGE — and
+  // `valuesEqual(null, undefined)` is false (`a === b` fails, and the
+  // object branch is gated on `a !== null`), so even the `null` every prior
+  // write from this app stored counts. Without this entry the sweep writes one
+  // `historicoDeModificacoes` row per produto, each one recording the removal of
+  // a field no operator ever set.
+  //
+  // Delete this entry only AFTER that sweep has run (see the migration issue).
   'nome_embedding',
   'statusProdutosMarketplace',
   'timestamp',
@@ -341,7 +356,7 @@ export async function reapontarKitsQueReferenciam(
       .where('componentesKitKeys', 'array-contains', alvo)
       // ⚠️ `.select()`, because Enterprise bills DATA SCANNED (root rule 1) and
       // this is the only field the rewrite reads. Unprojected, each match pulls
-      // the whole produto — the `nome_embedding` vector, `fotos`, the marketplace
+      // the whole produto — `fotos`, the marketplace
       // denorms — and the cap below fires AFTER the query, so the ADR 0014 ~2 000
       // case would read 2 000 full documents just to log that it wrote nothing.
       // `recalcularDimensoesKit` projects for exactly this reason.

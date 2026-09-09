@@ -92,12 +92,6 @@ describe('clienteSchema', () => {
     const result = clienteSchema.safeParse({ tipo: '9' });
     expect(result.success).toBe(false);
   });
-
-  it('passes embedding fields through unchanged', () => {
-    const embedding = { __vector: [0.1, 0.2, 0.3] };
-    const parsed = clienteSchema.parse({ nome_embedding: embedding });
-    expect(parsed.nome_embedding).toEqual(embedding);
-  });
 });
 
 describe('clienteFormSchema — tipo ↔ documento (CPF/CNPJ)', () => {

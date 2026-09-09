@@ -107,8 +107,6 @@ const SENT_CLIENTE: Cliente = {
   telefone: null,
   observacoesInternas: null,
   timestamp: null,
-  nome_embedding: null,
-  telefone_embedding: null,
   userCliente: null,
   idMercadoLivre: null,
   ultimaModificacao: null,
