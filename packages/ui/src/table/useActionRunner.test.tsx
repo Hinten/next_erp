@@ -171,6 +171,34 @@ describe('useActionRunner eligibility', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('disables Confirm when the selection EMPTIES under an open dialog', async () => {
+    // The sibling of the refusal path, and reachable through machinery
+    // TableView runs deliberately: its effect drops selected ids that left the
+    // row set (TableView.tsx:1327-1339), so another operator moving a pedido
+    // past the list filter — or deleting it — empties `selectedRows` with the
+    // dialog open. Nothing is REFUSED here, so the refusal count stays 0.
+    const run = vi.fn().mockResolvedValue(undefined);
+    const action: ActionConfig<Row> = {
+      id: 'delete',
+      label: 'Excluir',
+      requiresSelection: true,
+      confirm: { title: 'Excluir?', message: 'Tem certeza?' },
+      run,
+    };
+    const { update } = renderWithAction(action, undefined, [ROW]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    expect(confirmarDisabled()).toBe(false);
+
+    update(action, []);
+
+    await waitFor(() => {
+      expect(confirmarDisabled()).toBe(true);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('keeps Confirm enabled when the action refuses nothing', () => {
     // Pins the guard's SCOPE: it must key on "everything was refused", not on
     // "no rows", or an action with no eligibility predicate loses its Confirm.

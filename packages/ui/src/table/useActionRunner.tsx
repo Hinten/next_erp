@@ -6,7 +6,7 @@ import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
-import { partitionActionRows, type RefusedRow } from './resolveActionRows';
+import { actionDisabledReason, partitionActionRows, type RefusedRow } from './resolveActionRows';
 
 /** How many refusal reasons a notification names before it starts counting. */
 const MAX_LISTED_REFUSALS = 3;
@@ -117,6 +117,29 @@ export function useActionRunner<T>({
     ? partitionActionRows(pending, selectedRows, visibleRows)
     : { eligible: [], refused: [] };
   const pendingRefused = pendingSplit.refused;
+  /**
+   * Why Confirm cannot run, or `null` when it can — the SAME predicate that
+   * gates the button which opened this dialog, not a second statement of it.
+   *
+   * There are two ways the rows can vanish underneath an open dialog, and a
+   * hand-written condition kept catching only one. They can be REFUSED (the
+   * eligibility predicate starts returning a reason), or the selection can
+   * simply EMPTY — `TableView`'s own effect prunes selected ids that left the
+   * row set, "so bulk actions and the header checkbox never act on ghost
+   * rows" (TableView.tsx:1327-1339), which fires when another operator moves
+   * a pedido past the list filter or deletes it. Either way `run` receives
+   * `[]`, every `run` opens with a length guard, and the modal closes having
+   * done nothing and said nothing.
+   *
+   * `actionDisabledReason` already distinguishes all of it, including the case
+   * that must STAY enabled: an action with `requiresSelection` unset may
+   * legitimately run on no rows, so an empty selection is only disqualifying
+   * when the action asked for one. Reusing it also puts the operator-facing
+   * reason on the button's `title`, so a greyed-out Confirm explains itself.
+   */
+  const pendingDisabledReason = pending
+    ? actionDisabledReason(pending, selectedRows, visibleRows)
+    : null;
 
   const confirmModal = (
     <Modal
@@ -147,23 +170,8 @@ export function useActionRunner<T>({
           </Button>
           <Button
             color={pending?.color ?? 'red'}
-            /**
-             * The recompute above found every row refused, so `run` would
-             * receive an empty list. Each `run` opens with a length guard
-             * (`dispatchEmitirNFe`: `if (rows.length === 0) return;`), so the
-             * modal would close and NOTHING would happen, with no
-             * notification — the "nothing happens when I click it" failure
-             * `actionDisabledReason` exists to prevent, reached here because
-             * the button that opened this dialog was enabled back when the
-             * rows were still eligible. The Alert already says why.
-             *
-             * ⚠️ Deliberately NOT `eligible.length === 0` on its own. An
-             * action with no `rowIneligibleReason` refuses nothing ever, so
-             * the broader condition would also disable Confirm for an empty
-             * selection — a case this PR does not touch and which a
-             * `requiresSelection: false` action may legitimately run on.
-             */
-            disabled={pendingSplit.eligible.length === 0 && pendingRefused.length > 0}
+            disabled={!!pendingDisabledReason}
+            title={pendingDisabledReason ?? undefined}
             onClick={async () => {
               const action = pending!;
               setPending(null);
