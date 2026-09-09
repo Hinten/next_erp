@@ -1855,24 +1855,33 @@ describe('TableView', () => {
       // and would make the stability half of this test pass for the wrong
       // reason. Real screens hold both this and `pathContext` stable, which is
       // what the data layer already requires of them.
+      // ⚠️ ONE handle and ONE db across both renders. Both are dependencies of
+      // the pipeline memo, so a fresh object per render is a genuinely new
+      // query — correct behaviour, but it would make this test's stability
+      // half fail for a reason that has nothing to do with the monitor.
       const handle = monitored();
-      const list = (
+      const db = {} as never;
+      // ⚠️ A FUNCTION, so each render gets a fresh element carrying the same
+      // prop values. Reusing one element object makes React bail out of the
+      // subtree entirely — the component never re-renders and the stability
+      // half of this test passes without ever exercising anything.
+      const list = () => (
         <TableView
           schema={monitoredSchema}
           collection={handle}
-          db={{} as never}
+          db={db}
           meta={declared}
           // 2 rows in the snapshot === pageSize 2 → the page looks full → button.
           pageSize={2}
         />
       );
-      const view = wrap(list);
+      const view = wrap(list());
       searchParamsRef.current = new URLSearchParams();
       const first = monitorGenRef.current;
       expect(first, 'a frozen list is watched, so it has a row query').toBeTruthy();
 
-      // An idle re-render: same props, nothing about the query changed.
-      view.rerender(<MantineTestProvider>{list}</MantineTestProvider>);
+      // An idle re-render: same prop values, nothing about the query changed.
+      view.rerender(<MantineTestProvider>{list()}</MantineTestProvider>);
       expect(monitorGenRef.current, 'nothing was re-read').toBe(first);
 
       fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
