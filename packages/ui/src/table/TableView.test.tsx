@@ -21,6 +21,8 @@ const {
   whereArrayContainsSpy,
   buildQuerySpy,
   monitorRef,
+  monitorFieldRef,
+  monitorGenRef,
   widenState,
 } = vi.hoisted(() => ({
   snapState: {
@@ -62,14 +64,28 @@ const {
   // Spied so a test can assert the classic fallback built NO query at all —
   // the difference between "renders nothing" and "renders the whole table".
   buildQuerySpy: vi.fn(() => ({ __fakeQuery: true })),
-  // The update-monitor drives the only refresh affordance /produtos has
-  // left in its header. Stubbed so a test can raise `stale` and click it;
+  // The update-monitor drives the only refresh affordance /produtos has left
+  // in its header — on its SEARCHED view, which is where the term puts it on
+  // the frozen transport. Stubbed so a test can raise `stale` and click it;
   // `stale: false` is what the real hook reports for every other case.
   monitorRef: { current: { stale: false, acknowledge: vi.fn() } },
+  // The `field` of the last call, which is how TableView switches the monitor
+  // off: `null` while the rows stream. ⚠️ The mock deliberately does NOT act on
+  // it — a mock that returned `stale: false` for a null field would keep the
+  // rendering test green after someone deleted the production gate.
+  monitorFieldRef: { current: undefined as string | null | undefined },
+  // The row-query identity handed to the monitor, which re-pins its baseline
+  // whenever it changes. Recorded so a test can prove it moves on a re-read
+  // and holds still otherwise.
+  monitorGenRef: { current: undefined as unknown },
 }));
 
 vi.mock('./useCollectionMonitor', () => ({
-  useCollectionMonitor: () => monitorRef.current,
+  useCollectionMonitor: (opts: { field: string | null; rowsGeneration?: unknown }) => {
+    monitorFieldRef.current = opts.field;
+    monitorGenRef.current = opts.rowsGeneration;
+    return monitorRef.current;
+  },
 }));
 
 vi.mock('next/navigation', () => ({
@@ -163,6 +179,8 @@ describe('TableView', () => {
     searchParamsRef.current = new URLSearchParams();
     pipelineSupportedRef.current = true;
     monitorRef.current = { stale: false, acknowledge: vi.fn() };
+    monitorFieldRef.current = undefined;
+    monitorGenRef.current = undefined;
     widenState.current = { data: [], loading: false, error: undefined };
   });
 
@@ -1744,6 +1762,156 @@ describe('TableView', () => {
     });
   });
 
+  describe('update monitor', () => {
+    // The monitor is a SECOND listener, watching for another session's writes
+    // behind the rows. It compensates for a frozen result set, so a list whose
+    // rows stream has nothing for it to find — every change is already on
+    // screen by the time it could report one.
+    const metaBase = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+    const declared = {
+      ...metaBase,
+      defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+    };
+    // ⚠️ `testSchema` carries NEITHER `ultimaModificacao` nor `timestamp`, so
+    // every test here would pass vacuously against it: the field resolution
+    // returns null on the schema alone and the gate under test is never
+    // reached. This schema is what makes the gate the only reason for a null.
+    const monitoredSchema = z.object({
+      nome: z.string(),
+      tipo: z.enum(['0', '1']).describe('Tipo'),
+      ultimaModificacao: z.number().nullable().default(null),
+    });
+    const monitored = () => fakeCollection() as unknown as CollectionHandle<typeof monitoredSchema>;
+    const staleIcon = () =>
+      screen.queryByRole('button', { name: 'Página desatualizada — atualizar' });
+    const renderMonitored = () =>
+      wrap(
+        <TableView
+          schema={monitoredSchema}
+          collection={monitored()}
+          db={{} as never}
+          meta={declared}
+        />,
+      );
+
+    it('watches nothing while the rows are streaming', () => {
+      renderMonitored();
+      expect(screen.getByText('Tempo real')).toBeDefined();
+      expect(
+        monitorFieldRef.current,
+        'a null field is what keeps useSnapshot from subscribing at all',
+      ).toBe(null);
+    });
+
+    it('watches once the rows are frozen', () => {
+      // Pins that this is a GATE and not a deletion. The same list, one column
+      // filter later, cannot see another session's writes by itself and still
+      // owes the operator that signal.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      renderMonitored();
+      searchParamsRef.current = new URLSearchParams();
+      expect(screen.getByText('Resultado fixo')).toBeDefined();
+      expect(monitorFieldRef.current).toBe('ultimaModificacao');
+    });
+
+    it('keeps the notice reachable on a frozen list', () => {
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      monitorRef.current = { stale: true, acknowledge: vi.fn() };
+      renderMonitored();
+      searchParamsRef.current = new URLSearchParams();
+      expect(screen.getByText('Resultado fixo')).toBeDefined();
+      expect(staleIcon(), 'a one-shot result cannot refresh itself').not.toBeNull();
+    });
+
+    it('never shows the stale notice beside a “Tempo real” badge', () => {
+      // The mock reports `stale` whatever field it is handed, so this fails
+      // unless TableView ALSO refuses to render the icon. Two gates, one const:
+      // the field closes the listener, this closes the pixel, and only this one
+      // is visible to a render.
+      monitorRef.current = { stale: true, acknowledge: vi.fn() };
+      renderMonitored();
+      expect(screen.getByText('Tempo real')).toBeDefined();
+      expect(staleIcon(), 'the rows already carry every change').toBeNull();
+    });
+
+    it('hands the monitor a new generation when a re-read happens, and only then', () => {
+      // The hook re-pins its baseline whenever `rowsGeneration` changes, so
+      // the notice comes down on a re-read that did NOT come from its own
+      // button — a review found "Carregar mais" leaving the yellow icon up
+      // over rows that had just been refetched and already contained the write
+      // it was reporting. This is the TableView half of that contract; the
+      // hook's own file covers what it does with the value.
+      //
+      // ⚠️ The second half matters as much as the first. `pipeline` is the
+      // signal precisely because it is STABLE per row query — were it to churn
+      // per render, every render would re-pin and the monitor would silently
+      // stop reporting anything at all.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      // ⚠️ ONE handle across both renders. A fresh one per render is a new
+      // pipeline, which is correct — `collection` really is part of the query —
+      // and would make the stability half of this test pass for the wrong
+      // reason. Real screens hold both this and `pathContext` stable, which is
+      // what the data layer already requires of them.
+      // ⚠️ ONE handle and ONE db across both renders. Both are dependencies of
+      // the pipeline memo, so a fresh object per render is a genuinely new
+      // query — correct behaviour, but it would make this test's stability
+      // half fail for a reason that has nothing to do with the monitor.
+      const handle = monitored();
+      const db = {} as never;
+      // ⚠️ A FUNCTION, so each render gets a fresh element carrying the same
+      // prop values. Reusing one element object makes React bail out of the
+      // subtree entirely — the component never re-renders and the stability
+      // half of this test passes without ever exercising anything.
+      const list = () => (
+        <TableView
+          schema={monitoredSchema}
+          collection={handle}
+          db={db}
+          meta={declared}
+          // 2 rows in the snapshot === pageSize 2 → the page looks full → button.
+          pageSize={2}
+        />
+      );
+      const view = wrap(list());
+      searchParamsRef.current = new URLSearchParams();
+      const first = monitorGenRef.current;
+      expect(first, 'a frozen list is watched, so it has a row query').toBeTruthy();
+
+      // An idle re-render: same prop values, nothing about the query changed.
+      view.rerender(<MantineTestProvider>{list()}</MantineTestProvider>);
+      expect(monitorGenRef.current, 'nothing was re-read').toBe(first);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      expect(monitorGenRef.current, 'the rows were re-read').not.toBe(first);
+    });
+
+    it('leaves a caller-owned query watching nothing, because it streams', () => {
+      // ⚠️ THE case that separates the two variables. `queryOverride` holds the
+      // POLICY on static while `fallbackQuery` hands the caller's query to
+      // `useSnapshot`, which streams it — /clientes' endereço search. Keying
+      // either gate on `listMode.mode`, a very plausible reading of "watch it
+      // when the list is frozen", leaves a pointless listener open here AND
+      // paints "desatualizada" beside a "Tempo real" badge. That exact mix-up
+      // has already shipped twice out of this file.
+      monitorRef.current = { stale: true, acknowledge: vi.fn() };
+      wrap(
+        <TableView
+          schema={monitoredSchema}
+          collection={monitored()}
+          db={{} as never}
+          queryOverride={{ __q: 'caller' } as never}
+          meta={declared}
+        />,
+      );
+      expect(screen.getByText('Tempo real')).toBeDefined();
+      expect(monitorFieldRef.current).toBe(null);
+      expect(staleIcon()).toBeNull();
+    });
+  });
+
   describe('forcedOrderBy', () => {
     const metaBase = {
       collectionPath: 'tests',
@@ -2600,7 +2768,17 @@ describe('TableView', () => {
         renderWithResolver(resolveIds);
         await vi.waitFor(() => expect(resolveIds).toHaveBeenCalledTimes(1));
 
-        fireEvent.click(screen.getByRole('button', { name: 'Página desatualizada — atualizar' }));
+        // ⚠️ Wait for the notice rather than assuming it. It only exists once
+        // the term has RESOLVED: while the resolution is in flight the pipeline
+        // is withheld, so the list is momentarily on the classic transport,
+        // where there is no frozen result to be stale about and TableView
+        // switches the monitor off. Reaching for the button on the call count
+        // alone lands in exactly that window.
+        const refresh = await vi.waitFor(() =>
+          screen.getByRole('button', { name: 'Página desatualizada — atualizar' }),
+        );
+        expect(screen.getByText('Resultado fixo')).toBeDefined();
+        fireEvent.click(refresh);
         await vi.waitFor(() => expect(resolveIds).toHaveBeenCalledTimes(2));
       });
 
