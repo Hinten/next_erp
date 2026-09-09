@@ -26,8 +26,13 @@ describe('notificacaoSinteticaDePedido', () => {
     // A magnitude check, not just an equality: a SECONDS stamp here would be
     // ~1.76e9 and would still pass an `expect.any(Number)`.
     expect(p.timestamp).toBeGreaterThan(1_000_000_000_000);
-    // The code the payload claims really is the one the dispatch table reads.
-    expect(destinoDoCodigo(p.code)).toBe(destinoDoCodigo(3));
+    // ⚠️ Asserted against the LITERAL destination, not against
+    // `destinoDoCodigo(3)`. Comparing the table to itself was a tautology: it
+    // held for any code the builder emitted, because both sides moved together.
+    // Naming `'pedido'` is what makes this prove the synthesized payload really
+    // carries code 3 AND that the code-3 row still routes to the importer — the
+    // row that arms this very sweep.
+    expect(destinoDoCodigo(p.code)).toBe('pedido');
   });
 
   it('a chave é `ordersn` (sem underscore) — é o que identidadeDoPush lê', () => {

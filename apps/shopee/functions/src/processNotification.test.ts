@@ -101,9 +101,46 @@ describe('a linha de log do processShopeeNotification', () => {
       code: 12,
       shopId: null,
       lojas: 2,
+      orderSn: null,
+      itensSemProduto: null,
       retryCount: 1,
       readCache: expect.anything(),
     });
+  });
+
+  it('uma importação de pedido registra o order_sn e as linhas sem produto', async () => {
+    channel.handleNotificationTask.mockResolvedValueOnce({
+      outcome: 'done',
+      kind: 'pedido',
+      detail: 'criado',
+      orderSn: '220810QSK8S7BX',
+      itensSemProduto: 2,
+    } satisfies TaskResultish);
+
+    await run({ data: { code: 3, shopId: 987654 }, retryCount: 0 });
+
+    const payload = loggedPayload(info);
+    // ⚠️ `order_sn` NÃO é dado do comprador: é o `numero` do pedido, a única
+    // alça de busca de um operador, e já está em claro num segmento do id do
+    // documento de `notificacoesShopee`.
+    expect(payload.orderSn).toBe('220810QSK8S7BX');
+    // ⚠️ E este é o campo que separa "importado" de "importado e ninguém
+    // percebeu que 2 linhas ficaram sem produto" — um `done` que ainda exige
+    // ação humana.
+    expect(payload.itensSemProduto).toBe(2);
+  });
+
+  it('zero linhas sem produto é um VALOR — o `?? null` não pode achatá-lo', async () => {
+    channel.handleNotificationTask.mockResolvedValueOnce({
+      outcome: 'done',
+      kind: 'pedido',
+      orderSn: '220810QSK8S7BX',
+      itensSemProduto: 0,
+    } satisfies TaskResultish);
+
+    await run({ data: { code: 3, shopId: 987654 }, retryCount: 0 });
+
+    expect(loggedPayload(info).itensSemProduto).toBe(0);
   });
 
   it('um ack que a Shopee mandou por engano é distinguível de um aviso de verdade', async () => {
@@ -131,7 +168,7 @@ describe('a linha de log do processShopeeNotification', () => {
     await run({ data: { code: 3, shopId: 987654 }, retryCount: 0 });
 
     const payload = loggedPayload(info);
-    for (const key of ['kind', 'detail', 'lojas']) {
+    for (const key of ['kind', 'detail', 'lojas', 'orderSn', 'itensSemProduto']) {
       expect(payload).toHaveProperty(key, null);
     }
   });
@@ -197,6 +234,18 @@ describe('a linha de log do processShopeeNotification', () => {
   it('nunca registra o corpo do push nem os dados da Shopee', async () => {
     // Um push da Shopee carrega ids de recurso do comprador em `data`, e a
     // linha é lida por operadores. `data` (e o payload inteiro) fica de fora.
+    //
+    // ⚠️ O limite exato mudou no passo 5 e vale dizê-lo: o `order_sn` do
+    // RESULTADO é registrado (é o `numero` do pedido), mas o corpo do push
+    // continua não sendo lido — nem quando carrega o mesmo campo. O que prova
+    // isso é o valor: o `data.ordersn` abaixo não aparece em lugar nenhum,
+    // porque a linha lê o `TaskResult`, nunca `req.data.data`.
+    channel.handleNotificationTask.mockResolvedValueOnce({
+      outcome: 'done',
+      kind: 'pedido',
+      orderSn: '220810QSK8S7BX',
+    } satisfies TaskResultish);
+
     await run({
       data: { code: 3, shopId: 987654, data: { ordersn: 'SEGREDO-DO-COMPRADOR' } },
       retryCount: 0,
@@ -204,7 +253,7 @@ describe('a linha de log do processShopeeNotification', () => {
 
     const serializado = JSON.stringify(loggedPayload(info));
     expect(serializado).not.toContain('SEGREDO-DO-COMPRADOR');
-    expect(serializado).not.toContain('ordersn');
+    expect(serializado).toContain('220810QSK8S7BX');
   });
 });
 
@@ -242,6 +291,36 @@ describe('as opções declaradas do processShopeeNotification', () => {
     expect(trigger.retryConfig?.maxDoublings).toBe(2);
     expect(trigger.rateLimits?.maxConcurrentDispatches).toBe(3);
     expect(trigger.rateLimits?.maxDispatchesPerSecond).toBe(5);
+  });
+
+  it('tem timeoutSeconds 300 — o padrão de 60 s não absorve a importação do pedido', () => {
+    // Duas chamadas Shopee, até duas consultas de collectionGroup e até quatro
+    // sondagens de SKU POR LINHA, uma transação e um incidente por linha sem
+    // vínculo. O padrão gen2 de 60 s estoura num pedido de 20 linhas, e um
+    // timeout no meio da importação é a única falha que entrega um pedido
+    // meio-escrito a uma re-tentativa.
+    expect(endpoint.timeoutSeconds).toBe(300);
+  });
+
+  it('⚠️ e NÃO é 540 — a escada inteira cabe em MEIA janela da varredura horária', () => {
+    // O par de quase-falha do teste acima, e a asserção precisa ser uma que
+    // DISTINGA os dois números. ⚠️ "cabe dentro de uma hora" não distingue:
+    // com `TASK_MAX_ATTEMPTS = 3`, 540 s de execução mais 2 backoffs de 300 s
+    // dão ~37 min e passariam igual — uma versão anterior deste comentário
+    // afirmava o contrário e estava aritmeticamente errada. O que separa os
+    // dois é a MARGEM: a escada com 300 s fecha em ~25 min, menos de metade da
+    // janela horária em que a varredura quente re-conduz um `failed`; com 540
+    // sobra metade disso, e um orçamento tão acima do teto real do trabalho não
+    // faz uma importação lenta terminar — faz uma TRAVADA ficar invisível por
+    // mais tempo (o argumento que o `monitorShopeePushConfig` já registra).
+    const trigger = endpoint.taskQueueTrigger as { retryConfig?: { maxBackoffSeconds?: number } };
+    const backoff = trigger.retryConfig?.maxBackoffSeconds ?? 0;
+    const execucao = endpoint.timeoutSeconds as number;
+    // Tentativas rodam N vezes; os backoffs ficam ENTRE elas, logo N-1.
+    const escadaSegundos = TASK_MAX_ATTEMPTS * execucao + (TASK_MAX_ATTEMPTS - 1) * backoff;
+    expect(execucao).not.toBe(540);
+    expect(execucao).not.toBe(60); // nem o padrão gen2, que é o que havia antes
+    expect(escadaSegundos).toBeLessThanOrEqual(1800);
   });
 
   it('declara o invoker, a perna cuja ausência falha invisivelmente (#1133)', () => {

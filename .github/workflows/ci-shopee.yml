@@ -87,10 +87,28 @@ on:
       - 'packages/data/src/admin/avisos/**'
       - 'packages/data/src/admin/defineAdminCollection.ts'
       - 'packages/data/src/admin/grpcErrors.ts'
+      # Step 5 (the order → pedido import) reaches all of these: the cliente and
+      # endereço writers it shares with Mercado Livre, the SKU cascade promoted
+      # out of that app, and the pedido use-cases whose CONCURRENCY_IGNORE list
+      # the two new marketplace fields joined.
+      - 'packages/data/src/admin/clientes/**'
+      - 'packages/data/src/admin/produtos/**'
+      - 'packages/data/src/admin/enderecos/**'
+      - 'packages/data/src/pedido/**'
       - 'packages/schemas/src/integracao.ts'
       - 'packages/schemas/src/aviso.ts'
       - 'packages/schemas/src/notificacaoShopee.ts'
       - 'packages/schemas/src/backfillPedidosShopee.ts'
+      # The pedido schema itself (the two new blocks and the itens shape), the
+      # buyer-capture predicate and the three modules the import writes a cliente
+      # / endereço / prazoDespacho through. Named files where a FILE is meant —
+      # the glob rule above is about naming files where a DIRECTORY is meant.
+      - 'packages/schemas/src/pedido/**'
+      - 'packages/schemas/src/cliente.ts'
+      - 'packages/schemas/src/clienteIdentity.ts'
+      - 'packages/schemas/src/valorMascarado.ts'
+      - 'packages/schemas/src/enderecoBuilder.ts'
+      - 'packages/schemas/src/intFrete.ts'
       - 'packages/schemas/src/shared/notificationResilience.ts'
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'

@@ -2,16 +2,21 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Steps 1–3 and 10 of
+Runs on `:3009` in dev. Steps 1–5 and 10 of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
-conta status, the access-token refresh, the cached taxonomy reads, and the
-inbound push receiver with its Cloud Tasks queue, nested functions codebase,
-weekly authorization-expiry sweep and the three step-4 delivery backstops**.
-Nothing is published or written **to** Shopee yet — nothing reaches the
-seller's catálogo, anúncios or pedidos. The only state-changing calls the app
-makes are the OAuth exchange, the token refresh and the lost-push CONFIRM, and
-all three matter: the `refresh_token` is single-use and rotating, and a confirm
-acks a page of the 3-day queue irreversibly.
+conta status, the access-token refresh, the cached taxonomy reads, the inbound
+push receiver with its Cloud Tasks queue, nested functions codebase, weekly
+authorization-expiry sweep and the three step-4 delivery backstops, and the
+step-5 order → pedido import**.
+
+⚠️ **Step 5 is where this app started writing ERP business data** — `pedidos`,
+`clientes`, `enderecos`, `incidentes` — so the old blanket "this app writes
+nothing" is no longer true and must not be re-asserted. What is still true is
+the direction: **nothing is published or written TO Shopee**, nothing reaches
+the seller's catálogo or anúncios, and the only state-changing calls the app
+makes are the OAuth exchange, the token refresh and the lost-push CONFIRM. All
+three matter: the `refresh_token` is single-use and rotating, and a confirm acks
+a page of the 3-day queue irreversibly.
 
 ## What lives here
 
@@ -86,13 +91,45 @@ acks a page of the 3-day queue irreversibly.
   `readConta` (by integração id, extracted out of `core/shopee.ts`) and
   `findIntegracaoByShopId`, which is what turns a push's `shop_id` into a conta.
   Token-free by construction — it touches `integracaoCollection` only.
-- `lib/shopee/avisos/autorizacao.ts` — the ONE module in this app that speaks
-  **microseconds** (`millisToMicros`, two call sites); every other signature is
-  milliseconds. Raises `shopeeAutorizacaoExpirando` / `shopeeDesautorizado` and
-  resolves both, and since step 4 it also EXPORTS the µs seam
+- `lib/shopee/pedidos/` — the step-5 order import: `importarPedido.ts` (the
+  orchestrator), `orderIds.ts` (the deterministic pedido and item ids),
+  `orderMapping.ts` + `orderFreteMapping.ts` + `orderStatusMaps.ts` (the pure
+  mappers, the estado ladder and the freight seed), `itens.ts` (prices and
+  quantities), `produtoResolve.ts` (the link → SKU cascade), `comprador.ts` (the
+  buyer-capture adapter), `incidentesProduto.ts` (one incidente per unbound
+  line) and `orderPedidoTx.ts` (the ONE transaction). See **Order import**
+  below.
+- `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
+  `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
+  patterns; the redaction's own FIXPOINT is the strong layer) and the typed
+  loaders. **Test-only, imported by no `src` file** — the
+  `lib/shopee/testing/fakeDb.ts` precedent. A body enters the corpus only after
+  `redact`, and a scan finding never carries the value it found.
+- `lib/shopee/avisos/autorizacao.ts` — one of the **three** modules in this app
+  that speak **microseconds**; every other signature is milliseconds. Raises
+  `shopeeAutorizacaoExpirando` / `shopeeDesautorizado` and resolves both, and
+  since step 4 it also EXPORTS the µs seam
   (`agoraUsDe` / `depsDeEscrita` / `AvisoDeps`) so the push-health producer can
-  write avisos without knowing the unit — which is what keeps "exactly two call
-  sites" true rather than merely written down.
+  write avisos without knowing the unit — which is what keeps its own call sites
+  countable rather than merely written down.
+
+  ⚠️ **The other two arrived with step 5, and naming all three is the point** —
+  a "the ONE module that speaks µs" sentence that has quietly become three is
+  worse than no sentence:
+
+  1. `avisos/autorizacao.ts` (above);
+  2. `pedidos/importarPedido.ts` — the single `millisToMicros(nowMs)` per run,
+     handing `nowUs` DOWN as a parameter to the mapper, the transaction and the
+     incidente writer;
+  3. `pedidos/orderMapping.ts`'s `microsDeSegundosShopee` — the ONE
+     seconds → µs conversion, for Shopee's second-resolution stamps, whose
+     docblock carries the `coerceToMicros` trap (that helper classifies by
+     MAGNITUDE and reads a seconds value as MILLIseconds ⇒ 1970 ⇒ a watermark
+     comparison that answers "older" forever).
+
+  **Nothing below those three converts anything.** A `millisToMicros` appearing
+  in `itens.ts`, `orderFreteMapping.ts` or `incidentesProduto.ts` is the drift
+  this list exists to prevent.
 - `lib/shopee/conta/expiracaoSweep.ts` — `runShopeeAuthorizationExpirySweep`,
   driven weekly by the functions codebase and, scoped to named shops, by
   `push 12`. See **The authorization-expiry sweep** below.
@@ -285,21 +322,39 @@ statement about live traffic, never as an input filter.
 
 ⚠️ **An unbuilt handler PARKS, it never DEFERS.** `defer` means a precondition
 outside this system will clear on its own, and it costs a daily re-drive for
-`MAX_TENTATIVAS_DEFERRED` days. Exactly one thing defers here: a **code 1**
-naming ONE shop that maps to no active integração — a seller who has not
-connected yet, and a re-drive that only RESOLVES rows. ⚠️ The same shape on a
-**code 2** is ACKED, not deferred: there the defer is inverted, because the
-event that clears the precondition (the operator connecting the shop) is the
-event that makes the news false, and the re-drive would raise
-`shopeeDesautorizado` for a shop that is authorized and syncing — with no stored
-`relogioEvento` to reject it, since nothing was ever written.
+`MAX_TENTATIVAS_DEFERRED` days; a handler that does not exist is cleared by
+shipping a step. What defers here is a short, closed list — and the code-2 row
+is the counter-example that keeps it from becoming "an unmapped shop always
+defers":
 
-⚠️ **Code 3 parks today, and that is what gates the order backfill.** A
-synthesized code 3 would park one TERMINAL document per order per tick — up to
-1 000 per conta — so `runShopeeOrderBackfill` refuses to run while
-`destinoDoCodigo(3) === 'parado'`, on top of its env flag. The guard READS the
-dispatch table, so step 5 flips it by changing `DISPATCH[3]`; that change and
-the inverted guard test in `orderBackfill.test.ts` land in the SAME commit.
+| what | why it defers |
+| --- | --- |
+| **code 1**, ONE named shop that maps to no active integração | a seller who has not connected yet; the re-drive only RESOLVES rows |
+| **code 3**, a shop that maps to no active integração | ⚠️ the OPPOSITE reading of the same fact — see below |
+| **code 3**, `ShopeeReauthRequiredError` / the three credential classes / a conta that vanished | a human re-consents or fixes the conta; `kind: 'pedido-adiado'` |
+| **code 3**, Shopee's DAILY quota (`error_limit`) | resets 00:00 UTC+8; the daily lane's cadence is what brackets it — a burst limit THROWS instead |
+| ⚠️ **code 2**, the same unmapped shop | **ACKED, not deferred** |
+
+⚠️ **The code-2 inversion, and why code 3 goes the other way.** For a code 2 the
+event that clears the precondition (the operator connecting the shop) is exactly
+the event that makes the news FALSE: a re-drive up to seven days later would
+raise `shopeeDesautorizado` for a shop that is authorized and syncing, with no
+stored `relogioEvento` to reject it, since nothing was ever written. For a code 3
+that same connection makes the order **actionable** — it still exists at Shopee
+and `get_order_detail` will still return it. Acking it would leave every order
+placed before a late connection reachable only through the backfill's initial
+24-hour lookback, so a conta linked more than a day after the first sale would
+lose them in silence.
+
+✅ **Code 3 routes to the order importer (step 5), and that flip ARMED the order
+backfill.** While it parked, a synthesized code 3 would have left one TERMINAL
+document per order per tick — up to 1 000 per conta — so `runShopeeOrderBackfill`
+refuses to run while `destinoDoCodigo(3) === 'parado'`, on top of its env flag.
+That guard READS the dispatch table, so `DISPATCH[3] = 'pedido'` flipped it
+without a line of change in `orderBackfill.ts`. ⚠️ **`SHOPEE_ORDER_BACKFILL_ENABLED=1`
+is now the ONLY remaining gate on the backfill**, and turning it on is a runtime
+env change in the migration window (root CLAUDE.md rule 8) — surface it, do not
+do it.
 
 Shopee ships **no event id**, so the doc id is derived per code from the
 resource key inside `data` (`ordersn`, `item_id`, `return_sn`,
@@ -456,6 +511,123 @@ package — the absence is the enforcement: the config is app-wide with one
 semantics are undocumented, so a read-modify-write would silently drop every
 code above 13.
 
+## Order import (`lib/shopee/pedidos/`, step 5)
+
+One code-3 delivery — a real push or a synthesized one from the backfill —
+becomes one `pedidos` document. **The push body is never trusted**: the handler
+re-fetches `get_order_detail` (and `get_escrow_detail`) and maps THAT, which is
+also what makes it idempotent under the backfill's 5-minute window overlap. The
+envelope's clock is the SYNTHESIS clock and is used only for the doc id; the
+watermark is `get_order_detail.update_time`.
+
+**Two settle-live literals, and they live one search apart on purpose:**
+
+| literal | where | state |
+| --- | --- | --- |
+| `DETALHE_PRECO_E_TOTAL_DA_LINHA` | `lib/shopee/pedidos/itens.ts` | ✅ **settled `false` — the detail price is PER UNIT.** Lucas's SG sandbox order of quantity 2 (2026-09-09) reads `15 × 2 + 1.99 = 31.99`. It survives as the named seam, not as an open question. |
+| `SHOPEE_ESCROW_DETAIL_TRANSPORT` | `packages/integrations/shopee/src/api.ts` (`'get-query'`) | ⏳ **open** — the escrow page renders as GET and samples a JSON body. ONE literal flips the verb AND the placement together, because a GET cannot carry a body through `fetch`. Waiting on Lucas's `get_escrow_detail` paste. |
+
+⚠️ **A wrong transport guess surfaces as `error_param`, never as `error_sign`.**
+The shop base string is `partner_id + path + timestamp + access_token + shop_id`
+— the HTTP verb is NOT in it (measured; do not re-assert the opposite, as an
+earlier draft did). So the signature stays valid and Shopee simply cannot find
+the parameters.
+
+**Identity: a digest, never a query.** `makePedidoIdShopee(contaId, orderSn) =
+sha256("<contaId>-<order_sn>")` — **byte-exact with the legacy Shopee importer's
+preimage**, because the legacy corpus survives the cutover with its ids and a
+different spelling forks every migrated Shopee pedido on its first re-import.
+The transaction `tx.get`s that id and `tx.create`s when absent. There is
+deliberately **no** `pedidos (integracaoPedidoOuterRef, numero)` query and no
+such index: `integracaoPedidoOuterRef` is not a marketplace discriminator (the
+pedido form requires a human-created pedido to set it), so that query can match a
+manual pedido whose `numero` an operator typed. Steps 6/7/8/14/17 derive the same
+id from `(contaId, order_sn)` — there is **no `orderML`-shaped mirror collection
+for Shopee and none is to be invented**.
+
+**ONE transaction, class C** (`orderPedidoTx.ts`, inventoried in
+`firestore-transaction-inventory.test.js`). Two Shopee calls happen before it
+opens, so the mapped body is captured OUTSIDE and re-applied on an OCC retry —
+which is why the guard is a re-read inside the callback: it compares the stored
+`lastMarketplaceUpdate` (through `coerceToMicros`, because the legacy corpus
+holds milliseconds and ISO strings) against the incoming watermark and re-derives
+every written value from that snapshot. ⚠️ **Accept is `>=`, not `>`**: Shopee's
+stamps have 1-second resolution (`UNPAID → PENDING → READY_TO_SHIP` inside one
+second share one), and a strict comparison could never converge after a crash
+between two writes. An equal stamp RE-MAPS; the mapper is pure, so a replay
+produces an empty patch and the named outcome `ignorado-sem-mudanca`.
+
+**The ladder is enumerated in BOTH directions** (`orderStatusMaps.ts`):
+`UNPAID`/`PENDING` → `aguardandoConfirmacaoDePagamento` (⚠️ which RESERVES stock
+— deliberate: overselling across channels is unrecoverable, and a held unit is
+released by the `CANCELLED` push), `READY_TO_SHIP`/`PROCESSED`/`RETRY_SHIP`/
+`SHIPPED`/`TO_CONFIRM_RECEIVE`/`COMPLETED` → `pago` (the ceiling for any
+marketplace path; `finalizado` stays an ERP-side transition), `IN_CANCEL` →
+`processandoCancelamento`, `CANCELLED` → `cancelado`, `TO_RETURN` → keep the
+estado (the marketplace status rides in `pedido.marketplace.status` verbatim),
+anything else → `error` with our own prefix. Monotonicity: an estado outside the
+governable set is never walked back (an operator's `finalizado` stands), and
+`pago → aguardandoConfirmacaoDePagamento` is REFUSED — a late `UNPAID` must not
+un-pay a shipped order. ⚠️ **`cancelado → pago` is ALLOWED** and logged as a
+resurrection: the ladder is driven by a re-fetch of the live order, so an
+absorbing terminal state would strand a live sale as cancelled with its stock
+already released. The importer moves NO stock — `onPedidoEstoqueSync` reacts to
+`estado` and owns that.
+
+**Zero-fill is Shopee's house style, so `??` on a numeric wire field is a bug.**
+The SG sandbox order carried `actual_shipping_fee: 0` while the buyer had paid
+1.99, plus `edt_to: 0`, `pickup_done_time: 0` and a zero chargeable weight. ONE
+reader — `positivoOuNull` — guards every one of those fields; the legacy's
+`actual ?? estimated` is exactly how a `valorCobrado: 0` reaches every unshipped
+order.
+
+**`prazoDespacho`: Shopee's own deadline first, the 14:00 rule as a FALLBACK.**
+`ship_by_date` wins whenever it clears the 2020-01-01 floor (a `0` is the
+zero-fill case, and it reads as 1969 in BRT). Only when it is absent does the
+importer derive the dispatch day from `pay_time` through the ERP's shared cutoff
+helper — `getPrazoDespachoNoFuso(HORARIO_DE_CORTE_PADRAO_SHOPEE, payTimeMs,
+'America/Sao_Paulo')`, an EXPLICIT zone, never the browser-bound
+`getPrazoDespacho` and never the legacy's fixed −3 h (`no-ambient-timezone` says
+why: `apps/nfe` runs on `America/Sao_Paulo` while every other backend is UTC).
+⚠️ It is a fallback, never an override and never a `min()` — a valid
+`ship_by_date` reaches `freteInicial` verbatim.
+
+**Produto resolution, in rungs**: `variashopee.model_id` (skipped when `model_id`
+is null or `0`) → `prodshopee.item_id` — the rung that also answers a KIT line,
+since the ERP kit produto owns its components and `kit_items` is NEVER exploded —
+→ the shared SKU cascade in `@delfrance/data/admin/produtos` → the `'NONE'`
+bucket. An unbound line is kept, never dropped, and raises one non-blocking
+`incidentes` doc at a deterministic id. ⚠️ Both group queries need the composite
+indexes `variashopee (model_id, contaVariacaoShopeeOuterRef)` and
+`prodshopee (item_id, contaProdutoShopeeOuterRef)`; until they deploy (**#1532**,
+migration window) they full-scan, and on Enterprise a missing index does not
+throw — it bills the scan. On staging every line takes the unresolved arm anyway,
+because step 9 has not written a link document yet.
+
+**Buyer capture.** Name and CPF are written only when BOTH pass one shared
+usable-value predicate (`packages/schemas/src/valorMascarado.ts`: non-empty, no
+`*` anywhere, a CPF/CNPJ with valid check digits), and only inside Shopee's
+unmask window. Capture is **fill-once per FIELD** and tx-fresh: a masked or
+absent value is written nowhere, and an already-linked cliente is never unlinked
+by a later masked import. A refused import stamps `pedido.capturaComprador` with
+field NAMES and verdicts — never a value — and that block is a **diary, not a
+gate**: the decision is re-derived from the fresh wire payload on every delivery,
+so nothing reads it to decide anything. The region test is the ORDER-level
+`region`, never `recipient_address.region`, which is masked exactly when it
+matters. No phone is ever stored, and `buyer_username` is never a legal name.
+
+**Errors → dispositions** are one exported pure table,
+`disposicaoDaFalhaDeImportacao` in `notificacoes/notificacao.ts`: burst
+rate-limit, Shopee-side transients, network/HTTP, a held refresh lease, gRPC and
+`ShopeeConfigError` **throw** (the queue's ladder, then the sweep, then a parked
+row ~5 h later); the daily quota and the human preconditions **defer** (the table
+under **Inbound push**); an unreadable schema, a Shopee `error_*` we cannot act
+on, a conta with no `shop_id` and a `ZodError` from the write **park**, with the
+class and Shopee's `code` in the reason and never a value. `order_not_found` is
+the one wire outcome the importer RETURNS instead of throwing, and the arm parks
+it carrying which of the two shapes it was — Shopee's 404, or a backfill list
+that denied a row it had just returned.
+
 ## Taxonomy reads (`lib/shopee/taxonomia/`, step 10)
 
 Seven Shop-signed GETs on Shopee's `product` module — the category tree,
@@ -600,8 +772,11 @@ value set in `apphosting.yaml` would be read by nothing.
 - **`SHOPEE_ORDER_BACKFILL_ENABLED`** — `'1'` and nothing else enables
   `backfillShopeeOrders`; it SHIPS OFF, and while off the function deploys,
   ticks, logs one info line naming the variable and reads nothing at all.
-  ⚠️ It is the weaker of the two gates: the structural guard refuses the sweep
-  while push code 3 still parks, flag or no flag.
+  ⚠️ **Since step 5 it is the ONLY gate.** It used to be the weaker of two — the
+  structural guard refused the sweep while push code 3 parked — and
+  `DISPATCH[3] = 'pedido'` retired that half. Turning this one on is a runtime
+  env change for the migration window (rule 8): the first enabled tick enqueues
+  one task per order in the cursor window, and each of those writes a pedido.
 - **`SHOPEE_LOST_PUSH_CONFIRM_DISABLED`** — `'1'` makes `sweepShopeeLostPushes`
   read, parse and enqueue as usual but SKIP the confirm. It exists for ONE
   rehearsal: the sandbox cannot exercise the lost-push APIs at all, so the first
@@ -617,6 +792,20 @@ value set in `apphosting.yaml` would be read by nothing.
 behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
 runs `*.tasks.test.ts` against firestore + functions + tasks emulators
 (`firebase.shopee.tasks.json`, ports 8084/5003/9500).
+
+Two deliveries go through that hop: an unknown push code (→ `parked`) and, since
+step 5, a **code 3 naming a shop that maps to no integração** (→ `deferred`).
+Both are chosen for the same reason — they are the only outcomes that write a
+document without any Shopee call. ⚠️ The lane's fetch kill-switch lives in the
+VITEST process and does **not** cover the dispatched function, which runs in the
+emulator's own process, so a code-3 case that reached `importarPedidoShopee`
+would really leave the runner. Keep the tasks suites on paths that need no token.
+
+⚠️ The lane's `push: paths:` grew with step 5 (`packages/schemas/src/pedido/**`,
+the cliente/endereço/`intFrete` schemas, `packages/data/src/admin/{clientes,produtos,enderecos}/**`
+and `packages/data/src/pedido/**`) because the importer reaches all of them.
+`pull_request:` still has **no** `paths:` and never may — the `changes` job
+derives that closure from the workspace graph.
 
 ⚠️ **This lane owns no exclusion, and that is the point.** Unlike
 `ci-mercado-livre`, `ci.yml` still runs every `@delfrance/shopee-app` unit test

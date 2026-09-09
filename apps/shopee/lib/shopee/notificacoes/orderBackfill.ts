@@ -12,16 +12,17 @@
  * SYNTHETIC code-3 notification per `order_sn`, so a recovered order takes the
  * same import path a real push takes.
  *
- * ## ⚠️ It is DOUBLY gated, and the second gate is not a human's switch
+ * ## ⚠️ It is DOUBLY gated, and the second gate flipped itself in step 5
  *
  * 1. `SHOPEE_ORDER_BACKFILL_ENABLED === '1'`, read at the use site as the FIRST
  *    statement — off ⇒ nothing is read, from Firestore or from Shopee.
  * 2. A **structural** guard: the sweep refuses while `destinoDoCodigo(3)` is
- *    still `'parado'`. Today a code 3 has no handler, so every synthesized push
- *    would park — a TERMINAL dead-letter row per order per tick, up to
- *    {@link MAX_PAGES_PER_TICK} × {@link PAGE_SIZE} of them per conta, 96 ticks
- *    a day. The guard reads the DISPATCH table rather than a literal, so it
- *    flips itself the moment step 5 gives code 3 a handler.
+ *    still `'parado'`. Before step 5 a code 3 had no handler, so every
+ *    synthesized push would have parked — a TERMINAL dead-letter row per order
+ *    per tick, up to {@link MAX_PAGES_PER_TICK} × {@link PAGE_SIZE} of them per
+ *    conta, 96 ticks a day. The guard reads the DISPATCH table rather than a
+ *    literal, so step 5 flipped it with no change to this file — the flag is
+ *    now the only gate an operator can touch.
  *
  * The two guard different mistakes: the flag is the operator's, the structural
  * one is the machine-checkable precondition.
