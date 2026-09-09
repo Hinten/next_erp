@@ -14,6 +14,17 @@
  * succeed and warn in the same breath. Nothing here may throw on it; `api.ts`
  * hands it to an `onWarning` hook and leaves it on the returned object.
  *
+ * ⚠️ **The `error === ''` invariant has exactly ONE exception, and it is
+ * per-operation.** The two lost-push pages CONTRADICT THEMSELVES: their
+ * parameter tables sample `error` as `""` ("Empty if no error happened") while
+ * their rendered response samples print `"-"` for `error`, `message` AND
+ * `warning`. Every other cached page — `get_app_push_config` included — samples
+ * `""`. So `-` is a doc-authoring placeholder on two pages, not a protocol
+ * variant, and it is tolerated ONLY on those two operations, through
+ * `ShopeeCallParams.emptyErrorAliases` in `call.ts`. The schemas here are
+ * unchanged by it: `error` is still `z.string()` with no default, and `'-'`
+ * still parses as the string `'-'`.
+ *
  * ## Flat vs wrapped vs data
  *
  * Shopee is not consistent about where the payload lives. The auth endpoints,
@@ -702,3 +713,170 @@ export type ShopeeCategoryRecommend = z.infer<typeof shopeeCategoryRecommendPayl
 /** `GET /api/v2/product/category_recommend` — WRAPPED under `response`. */
 export const shopeeCategoryRecommendSchema = wrappedOp(shopeeCategoryRecommendPayloadSchema);
 export type ShopeeCategoryRecommendResponse = z.infer<typeof shopeeCategoryRecommendSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                          The push endpoints (step 4)                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One entry of `get_lost_push_message.response.push_message_list`.
+ *
+ * ⚠️ `data` is a STRING carrying the whole ORIGINAL push envelope re-nested
+ * (`{data, shop_id, code, timestamp}`). This package never `JSON.parse`s it:
+ * that is the app's receiver-shaped concern, and its failure has to become a
+ * durable row — which this package holds no store for.
+ *
+ * ⚠️ `timestamp` is "the message WAS LOST", not the event clock, so it is never
+ * a watermark. SECONDS.
+ *
+ * ⚠️ `shop_id` is ABSENT for a partner-level push ("such as code: 1, 2, 12" —
+ * the page's own "such as" makes that list non-exhaustive, so nothing may derive
+ * partner-level-ness from a code).
+ */
+export const shopeeLostPushEntrySchema = z
+  .object({
+    shop_id: wireInt().nullable().default(null),
+    code: wireInt(),
+    timestamp: wireInt(),
+    data: z.string(),
+  })
+  .passthrough();
+export type ShopeeLostPushEntry = z.infer<typeof shopeeLostPushEntrySchema>;
+
+/**
+ * The inner payload of `get_lost_push_message` — ONE page, "the earliest 100
+ * lost within 3 days and not confirmed".
+ *
+ * ⚠️ `push_message_list` is `.nullable().default(null)` and NOT a bare required
+ * array: an EMPTY queue is the overwhelmingly common case and no sample shows
+ * what Shopee sends for it. A required array would turn the healthy state into a
+ * `ShopeeSchemaError` every two hours.
+ *
+ * ⚠️ `last_message_id` is "the end entry of data returned in the current call" —
+ * the watermark the caller confirms. It is never synthesized.
+ */
+export const shopeeLostPushPayloadSchema = z
+  .object({
+    push_message_list: z.array(shopeeLostPushEntrySchema).nullable().default(null),
+    has_next_page: z.boolean(),
+    last_message_id: wireInt(),
+  })
+  .passthrough();
+export type ShopeeLostPush = z.infer<typeof shopeeLostPushPayloadSchema>;
+
+/** `GET /api/v2/push/get_lost_push_message` — WRAPPED under `response`. */
+export const shopeeLostPushSchema = wrappedOp(shopeeLostPushPayloadSchema);
+/**
+ * The WHOLE parsed operation — envelope fields (`error` / `message` / `warning`
+ * / `request_id`) **and** the `response` payload.
+ *
+ * ⚠️ This is the one operation whose client method hands back the envelope
+ * rather than `res.response`, and the reason is D1: this page is where Shopee
+ * answers `"error": "-"` where every other page answers `""`, so the sweep logs
+ * the GETTER's `error` VERBATIM to settle the contradiction with live traffic.
+ * Unwrapping here would have put that answer out of the caller's reach — see
+ * {@link ShopeeLostPush} for the inner payload alone.
+ */
+export type ShopeeLostPushResponse = z.infer<typeof shopeeLostPushSchema>;
+
+/**
+ * `POST /api/v2/push/confirm_consumed_lost_push_message` — the response is the
+ * BARE envelope, with no `response` object at all.
+ *
+ * ⚠️ `flatOp({})` rather than reusing {@link shopeeEnvelopeSchema}: that one is
+ * the TRANSPORT's stage-1 schema and must not become an operation's, or a change
+ * to stage 1 would silently redefine this operation's contract.
+ */
+export const shopeeConfirmLostPushSchema = flatOp({});
+export type ShopeeConfirmLostPush = z.infer<typeof shopeeConfirmLostPushSchema>;
+
+/**
+ * The inner payload of `get_app_push_config` — the app-wide push configuration
+ * and its live health.
+ *
+ * ⚠️ `live_push_status` is `z.string()`, NOT an enum, and the trade is the
+ * opposite of {@link shopeeShopStatusSchema}'s. There a strict enum is right
+ * because a wrong read says "connected" about a BANNED shop. Here the page
+ * contradicts itself on casing — its description says `Normal/Warning/Suspended`
+ * and its own sample says `"suspended"` — and an enum miss would throw
+ * `ShopeeSchemaError`, so the monitor would learn NOTHING about a status Shopee
+ * added. A tolerant string lets the reader fold the case and LOG the unknown
+ * value. Same reasoning as {@link shopeeBrandListPayloadSchema}'s `input_type`.
+ *
+ * ⚠️ `suspended_time` is SECONDS and is returned "only when live push status is
+ * suspended". It is a suspension START, never a deadline.
+ *
+ * ⚠️ Every field is nullable: the page ships one sample and no statement about
+ * which fields are always present, and this whole payload is a diagnostic — a
+ * missing list must read as "Shopee said nothing", never as "the list is empty".
+ * `blocked_shop_id` is `int[]` HERE and `blocked_shop_id_list` on the setter;
+ * the two never share a type.
+ */
+export const shopeeAppPushConfigPayloadSchema = z
+  .object({
+    callback_url: z.string().nullable().default(null),
+    live_push_status: z.string().nullable().default(null),
+    suspended_time: wireInt().nullable().default(null),
+    blocked_shop_id: z.array(wireInt()).nullable().default(null),
+    push_config_on_list: z.array(wireInt()).nullable().default(null),
+    push_config_off_list: z.array(wireInt()).nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeAppPushConfig = z.infer<typeof shopeeAppPushConfigPayloadSchema>;
+
+/** `GET /api/v2/push/get_app_push_config` — WRAPPED under `response`. */
+export const shopeeAppPushConfigSchema = wrappedOp(shopeeAppPushConfigPayloadSchema);
+export type ShopeeAppPushConfigResponse = z.infer<typeof shopeeAppPushConfigSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                        The order endpoints (step 4/5)                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One row of `get_order_list.response.order_list`.
+ *
+ * ⚠️ `order_sn` is `.min(1)`: a blank one FAILS the whole page, loudly. It is
+ * the only payload this operation carries, and a blank value would collapse
+ * every such row onto ONE synthesized identity downstream — a create-only doc id
+ * that swallows the rest in silence.
+ *
+ * ⚠️ `order_status` and `booking_sn` are nullable EVEN WHEN
+ * `response_optional_fields=order_status` was asked for: the page's own sample
+ * answers bare `{order_sn}` rows regardless. Tolerating both shapes is the only
+ * reading the page supports.
+ */
+export const shopeeOrderListRowSchema = z
+  .object({
+    order_sn: z.string().min(1),
+    order_status: z.string().nullable().default(null),
+    booking_sn: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeOrderListRow = z.infer<typeof shopeeOrderListRowSchema>;
+
+/**
+ * The inner payload of `get_order_list` — ONE page.
+ *
+ * ⚠️ `more` is a STRICT `z.boolean()`. It is the loop's only termination signal
+ * — the page's sample returns 10 rows for `page_size: 20` WITH `more: true`, so
+ * a row count says nothing — and coercing a `"false"` STRING would either spin
+ * the caller forever or truncate a window in silence. Same reasoning as
+ * {@link shopeeCategoriaSchema}'s `has_children`.
+ *
+ * ⚠️ `next_cursor` is `""` when `more` is false ("the value of next_cursor will
+ * be empty string when more is false"), and the cursor is OPAQUE (its format
+ * changed on 2025-04-23). Nothing may synthesize one, and the drained sentinel
+ * is never fed back as a resume cursor.
+ */
+export const shopeeOrderListPayloadSchema = z
+  .object({
+    more: z.boolean(),
+    next_cursor: z.string().nullable().default(null),
+    order_list: z.array(shopeeOrderListRowSchema),
+  })
+  .passthrough();
+export type ShopeeOrderList = z.infer<typeof shopeeOrderListPayloadSchema>;
+
+/** `GET /api/v2/order/get_order_list` — WRAPPED under `response`. */
+export const shopeeOrderListSchema = wrappedOp(shopeeOrderListPayloadSchema);
+export type ShopeeOrderListResponse = z.infer<typeof shopeeOrderListSchema>;
