@@ -97,7 +97,7 @@ vi.mock('@delfrance/data', async () => {
 });
 
 import { StrictMode } from 'react';
-import { MAX_RESTORED_PAGES, SCROLL_PERSIST_DEBOUNCE_MS, TableView } from './TableView';
+import { MAX_PAGES, MAX_RESTORED_PAGES, SCROLL_PERSIST_DEBOUNCE_MS, TableView } from './TableView';
 import { listViewMemoryKey, readListViewMemory, writeListViewMemory } from './listViewMemory';
 
 /** The slot this harness's table uses: pathname '/clientes' + collection 'tests'. */
@@ -1847,7 +1847,7 @@ describe('TableView', () => {
       // The reported bug: filter /produtos, open a record, click Cancelar. The
       // detail page navigates to the BARE list path, so the query string that
       // held the filter is gone by the time the list remounts.
-      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', pages: 1, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', scroll: 0 });
       buildPipelineSpy.mockClear();
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
       expect(buildPipelineSpy).toHaveBeenCalledWith(
@@ -1860,7 +1860,7 @@ describe('TableView', () => {
       // Restoring from an effect would spend one full unfiltered page of
       // scanned data before correcting itself — and this database bills data
       // scanned. Exactly one query, already narrowed.
-      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', pages: 1, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', scroll: 0 });
       buildPipelineSpy.mockClear();
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
       // `buildPipelineSpy` is declared with no parameters, so `mock.calls` is
@@ -1872,7 +1872,7 @@ describe('TableView', () => {
     });
 
     it('lets the URL win over the memory, so a shared link is never overridden', () => {
-      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', pages: 1, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', scroll: 0 });
       searchParamsRef.current = new URLSearchParams('nome=contains:bob');
       buildPipelineSpy.mockClear();
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
@@ -1901,7 +1901,7 @@ describe('TableView', () => {
     });
 
     it('restores the "Carregar mais" window, capped', () => {
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 10, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'pages=10', scroll: 0 });
       buildPipelineSpy.mockClear();
       wrap(
         <TableView
@@ -1923,7 +1923,7 @@ describe('TableView', () => {
       // Every effect runs once on mount, including the one that resets the
       // window whenever the query shape changes. Unguarded, it undoes the
       // restore a beat after it lands and the page count never comes back.
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'pages=2', scroll: 0 });
       buildPipelineSpy.mockClear();
       wrap(
         <TableView
@@ -1947,7 +1947,7 @@ describe('TableView', () => {
       // already armed on the second run, so the reset fires and the restored
       // window vanishes in `next dev` while production is fine. Rendering
       // without StrictMode (as every other case here does) cannot see it.
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'pages=2', scroll: 0 });
       buildPipelineSpy.mockClear();
       render(
         <StrictMode>
@@ -1988,6 +1988,77 @@ describe('TableView', () => {
       vi.useRealTimers();
     });
 
+    it('persists where the operator was, not where a later collapse clamped them', async () => {
+      // The `onScroll` guard ignores the clamp EVENT, but a timer already armed
+      // by a real scroll is not disarmed by it. A callback that read
+      // `window.scrollY` when it fired would therefore read whatever a collapse
+      // landing inside those 150ms clamped it to — a wheel gesture ending on
+      // "Atualizar" or a chip is enough, and `lookupLoading` flipping is not
+      // human-timed at all. The offset is captured in the handler instead.
+      vi.useFakeTimers();
+      vi.stubGlobal('scrollTo', vi.fn());
+      const withRows = snapState.current;
+      // A third value, so "wrote the clamp" and "never wrote" stay tellable
+      // apart from "wrote the right thing".
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 900 });
+      const { rerender } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 640, configurable: true });
+      window.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS - 50);
+
+      // The table collapses inside the debounce window and the browser clamps.
+      snapState.current = { ...withRows, loading: true };
+      rerender(
+        <MantineTestProvider>
+          <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />
+        </MantineTestProvider>,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS + 20);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(640);
+
+      snapState.current = withRows;
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it('ignores the browser clamp that follows a collapsed table', async () => {
+      // Whenever the table is swapped for skeletons the document collapses
+      // below the operator's offset and the browser clamps `scrollY` — which
+      // fires a REAL scroll event. Persisting that would overwrite the
+      // remembered position with 0, and the one-shot restore latch is long
+      // since burned, so the offset is gone for good. A scroll event arriving
+      // while there is no table on screen is never the operator moving.
+      vi.useFakeTimers();
+      vi.stubGlobal('scrollTo', vi.fn());
+      const withRows = snapState.current;
+      const { rerender } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 640, configurable: true });
+      window.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS + 20);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(640);
+
+      snapState.current = { ...withRows, loading: true };
+      rerender(
+        <MantineTestProvider>
+          <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />
+        </MantineTestProvider>,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      window.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS + 20);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(640);
+
+      snapState.current = withRows;
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
     it('flushes a pending scroll when the list unmounts', async () => {
       // Clicking a row within the debounce window of the last scroll is exactly
       // the gesture this feature exists to remember; without the flush it is
@@ -2013,7 +2084,7 @@ describe('TableView', () => {
       // set they never scrolled when their own rows finally land.
       const scrollTo = vi.fn();
       vi.stubGlobal('scrollTo', scrollTo);
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       const withRows = snapState.current;
       snapState.current = { data: [], loading: false, error: undefined };
 
@@ -2041,7 +2112,7 @@ describe('TableView', () => {
       // `scrollY` 0 over the offset the restore is still on its way to
       // putting back.
       vi.stubGlobal('scrollTo', vi.fn());
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       const { unmount } = wrap(
         <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
       );
@@ -2051,7 +2122,7 @@ describe('TableView', () => {
     });
 
     it('still collapses the window when the filter changes afterwards', () => {
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'pages=2', scroll: 0 });
       wrap(
         <TableView
           schema={testSchema}
@@ -2075,7 +2146,7 @@ describe('TableView', () => {
       // yet tall enough for silently lands at the bottom instead.
       const scrollTo = vi.fn();
       vi.stubGlobal('scrollTo', scrollTo);
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
       await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 840));
       vi.unstubAllGlobals();
@@ -2087,7 +2158,7 @@ describe('TableView', () => {
       // try again when the rows actually arrive.
       const scrollTo = vi.fn();
       vi.stubGlobal('scrollTo', scrollTo);
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       const withRows = snapState.current;
       snapState.current = { data: [], loading: false, error: undefined };
 
@@ -2116,7 +2187,7 @@ describe('TableView', () => {
       // and before the restore has landed. Seeded with a zero it would blank the
       // offset that was on its way back, so leaving again right away lost it.
       vi.stubGlobal('scrollTo', vi.fn());
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
       expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(840);
       vi.unstubAllGlobals();
@@ -2145,6 +2216,169 @@ describe('TableView', () => {
       // `copyFrom` belongs to the navigation that carried it, not to this
       // screen's saved position — restoring it later would be nonsense.
       expect(readListViewMemory(MEMORY_KEY)?.qs).toBe('sort=nome%3Aasc');
+    });
+  });
+
+  describe('"Carregar mais"', () => {
+    // The widened read, as the real hooks report it: `data` is KEPT and
+    // `loading` flips (usePipelineSnapshot.ts:31 and useSnapshot.ts:133 both do
+    // exactly this). The shared stub cannot express that — and over a hundred
+    // cases rely on it never reporting `loading` — so these cases drive it by
+    // hand and put it back afterwards.
+    const settled = snapState.current;
+    afterEach(() => {
+      snapState.current = settled;
+    });
+
+    function beginRefetch() {
+      snapState.current = { ...snapState.current, loading: true };
+    }
+    function settle(rows: number) {
+      snapState.current = {
+        data: Array.from({ length: rows }, (_, i) => ({
+          id: String(i + 1),
+          path: `x/${i + 1}`,
+          data: { nome: `Row ${i + 1}`, tipo: '0' },
+        })),
+        loading: false,
+        error: undefined,
+      };
+    }
+    const table = (pageSize: number) => (
+      <MantineTestProvider>
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          pageSize={pageSize}
+        />
+      </MantineTestProvider>
+    );
+
+    it('keeps the loaded rows on screen while the wider read is in flight', () => {
+      // The reported bug. The WINDOW is the scroller, so swapping the table for
+      // three skeletons collapses the document below the operator's offset and
+      // the browser clamps `scrollY` to 0 — the list jumps to the top on every
+      // click. Keeping the rows mounted removes the height change that starts it.
+      //
+      // ⚠️ The order is load-bearing: `loading` must flip AFTER the click, which
+      // is the sequence the real hook produces. Flipping it first passes even
+      // when the mechanism is dead.
+      const view = render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      beginRefetch();
+      view.rerender(table(2));
+      expect(screen.queryByRole('table')).not.toBeNull();
+      expect(screen.getByText('Alice')).toBeTruthy();
+    });
+
+    it('still shows skeletons when the FILTER changes, not just any refetch', () => {
+      // The near miss. Rows that no longer match the chips above them would be
+      // actively misleading, so the previous window may only survive a re-read
+      // that WIDENS it. Without this pair the case above only proves the rows
+      // are kept, never that they stop being kept.
+      const view = render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      settle(4);
+      view.rerender(table(2));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Filtrar Nome' }));
+      fireEvent.change(screen.getByLabelText('Nome contém'), { target: { value: 'ana' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar' }));
+      beginRefetch();
+      view.rerender(table(2));
+      expect(screen.queryByRole('table')).toBeNull();
+    });
+
+    it('still shows skeletons when the SORT changes', () => {
+      const view = render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      settle(4);
+      view.rerender(table(2));
+
+      fireEvent.click(screen.getByText('Nome'));
+      beginRefetch();
+      view.rerender(table(2));
+      expect(screen.queryByRole('table')).toBeNull();
+    });
+
+    it('keeps the button in place, loading, instead of letting it vanish', () => {
+      // During a growth the rows on screen are the PREVIOUS window, so their
+      // count no longer equals the widened limit and the fullness test goes
+      // false. Left at that the footer disappears mid-click and the page jumps
+      // under the cursor — the very shift this change exists to remove.
+      const view = render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      // ⚠️ Asserted BEFORE `beginRefetch()`, and that order is the whole
+      // point. `snap.loading` lags `pages` by one commit, so THIS is the render
+      // where the fullness test has already gone false and nothing has replaced
+      // it yet — the commit the footer used to disappear on. Skipping straight
+      // to the loading commit hides the gap entirely.
+      const onClickRender = screen.queryByRole('button', { name: 'Carregar mais' });
+      expect(onClickRender).not.toBeNull();
+      expect(onClickRender?.hasAttribute('data-loading')).toBe(true);
+
+      beginRefetch();
+      view.rerender(table(2));
+      expect(
+        screen.getByRole('button', { name: 'Carregar mais' }).hasAttribute('data-loading'),
+      ).toBe(true);
+    });
+
+    it('mirrors the window to ?pages= so browser Back can give it back', () => {
+      const replaceState = vi.spyOn(window.history, 'replaceState');
+      render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      expect(replaceState).toHaveBeenLastCalledWith(null, '', '/clientes?pages=2');
+      replaceState.mockRestore();
+    });
+
+    it('drops ?pages= again when the query shape changes', () => {
+      // The window described the result set the operator was looking at and is
+      // meaningless against a different one — and a stale `pages=4` left in the
+      // URL is paid for again on the next reload.
+      const replaceState = vi.spyOn(window.history, 'replaceState');
+      render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Filtrar Nome' }));
+      fireEvent.change(screen.getByLabelText('Nome contém'), { target: { value: 'ana' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar' }));
+      expect(replaceState).toHaveBeenLastCalledWith(null, '', '/clientes?nome=contains%3Aana');
+      replaceState.mockRestore();
+    });
+
+    it('issues a window arriving in the URL as ONE query', () => {
+      // A default page followed by a wider re-read would spend a full page of
+      // scanned data before correcting itself, on a database that bills it.
+      searchParamsRef.current = new URLSearchParams('pages=3');
+      buildPipelineSpy.mockClear();
+      render(table(2));
+      const limits = buildPipelineSpy.mock.calls.map(
+        (call) => (call as unknown as [unknown, { limit: number }])[1].limit,
+      );
+      expect(limits).toEqual([6]);
+    });
+
+    it('clamps a hand-edited window to the ceiling', () => {
+      // `?pages=` is a cost lever anyone can type, and this database bills data
+      // scanned.
+      searchParamsRef.current = new URLSearchParams('pages=999');
+      buildPipelineSpy.mockClear();
+      render(table(2));
+      expect(buildPipelineSpy).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 2 * MAX_PAGES }),
+      );
+    });
+
+    it('says so at the ceiling instead of quietly dropping the button', () => {
+      // A limit the operator cannot see is indistinguishable from a list that
+      // ended, which is how they would conclude the missing rows do not exist.
+      settle(MAX_PAGES);
+      searchParamsRef.current = new URLSearchParams(`pages=${MAX_PAGES}`);
+      render(table(1));
+      expect(screen.queryByRole('button', { name: 'Carregar mais' })).toBeNull();
+      expect(screen.getByText(/Limite de carregamento atingido/)).toBeTruthy();
     });
   });
 
@@ -2235,7 +2469,7 @@ describe('TableView', () => {
     });
 
     it('shows a restored term in the box and as a chip', () => {
-      writeListViewMemory(MEMORY_KEY, { qs: 'q=camiseta', pages: 1, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'q=camiseta', scroll: 0 });
       wrap(
         <TableView
           schema={testSchema}

@@ -83,26 +83,13 @@ import { type SearchIdResolver, useSearchIdResolution } from './useSearchIdResol
 import { SEARCH_CHIP_KEY, buildFilterChips, subcollectionLookupFormatter } from './describeFilter';
 import { applyColumnFilters } from './filterRows';
 import {
+  MAX_PAGES,
   type SortState,
   parseFiltersFromParams,
   parseSortFromParams,
   useTableUrlState,
 } from './useTableUrlState';
 import { renderCell } from './cell-renderers';
-
-/**
- * Ceiling on the "Carregar mais" window recovered from the sticky list memory.
- *
- * Restoring the window costs a re-read of every row in it, and this database is
- * Firestore ENTERPRISE, which bills DATA SCANNED (root `CLAUDE.md` rule 1) — so
- * an operator who once clicked through ten pages would pay for ten pages on
- * every return to that screen, forever. #1216 measured the same quantity from
- * the other side: on `/pedidos` the page size is effectively a concurrent
- * listener count, which is what capped that list at 50 rows in the first place.
- * Three pages restores the useful case (you were a screen or two down) without
- * reopening either wound.
- */
-export const MAX_RESTORED_PAGES = 3;
 
 /**
  * Trailing debounce before a scroll offset is persisted. Long enough that a
@@ -160,6 +147,7 @@ function handleRowLinkClick(event: MouseEvent<HTMLAnchorElement>) {
 // Re-exported for back-compat; the implementations now live in
 // ./useTableUrlState alongside the hook that owns this state.
 export { parseFiltersFromParams, parseSortFromParams };
+export { MAX_PAGES, MAX_RESTORED_PAGES } from './useTableUrlState';
 
 export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   /** Title shown above the table. */
@@ -601,10 +589,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     search: searchTerm,
     setSearch,
     clearAll,
+    pages,
+    setPages,
     resetListState,
     hasOwnState,
     restored,
-    rememberView,
+    rememberScroll,
   } = useTableUrlState(filterableFields, orderBy, {
     collectionPath: collection.resolvePath(pathContext),
     // Only claim `?q=` when this component actually renders the search box;
@@ -616,10 +606,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Each bump re-reads the whole window (the one-shot pipeline has no cursor) —
   // fine for admin lists; true cursor pagination is deliberately deferred.
   //
-  // Seeded from the sticky list memory (capped — see `MAX_RESTORED_PAGES`) in
-  // the initializer rather than an effect, so a restored window is issued as
-  // ONE query instead of a default page followed immediately by a wider re-read.
-  const [pages, setPages] = useState(() => Math.min(restored?.pages ?? 1, MAX_RESTORED_PAGES));
+  // The count itself is owned by `useTableUrlState`, because it belongs in the
+  // URL: mirrored to `?pages=`, browser Back reopens the window the operator had
+  // instead of collapsing the list to one page. That hook also applies the
+  // ceilings — `MAX_PAGES` to the URL, the lower `MAX_RESTORED_PAGES` to what the
+  // sticky memory offers unasked.
   const effectiveLimit = resolvedPageSize * pages;
 
   // A term whose match cannot be expressed as a filter on this collection is
@@ -1191,13 +1182,98 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [pipeline, snap.data, serverFiltersSerial, lookupEmpty, extraEmpty],
   );
 
+  // The window the rows `snap` currently holds were fetched at.
+  //
+  // ⚠️ `pages` is READ here but must never TRIGGER this effect, which is why
+  // it is deliberately absent from the dependency array. `snap.loading` lags
+  // `pages` by exactly one commit: on the click render the widened pipeline has
+  // been built but `usePipelineSnapshot` has not yet flipped `loading`, so an
+  // effect woken by `pages` sees a settled snapshot and records the NEW count
+  // against the OLD rows — after which `loadedPagesRef.current < pages` is false
+  // for the whole refetch and the mechanism below is a silent no-op. Woken only
+  // by the snapshot, it runs when a result actually settles, which is the thing
+  // it means to record. Idempotent under the StrictMode double-invocation
+  // `apps/web/next.config.ts` turns on, and read during render because the
+  // comparison is a fact about the rows on screen, not about a transition.
+  const loadedPagesRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (snap.loading || lookupLoading || !snap.data) return;
+    loadedPagesRef.current = pages;
+    // Waking this effect on `pages` is precisely the bug described above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `pages` is read here, never a trigger
+  }, [snap.loading, lookupLoading, snap.data]);
+
+  /**
+   * True while a "Carregar mais" re-read is in flight over rows that are still
+   * correct — the one refetch whose previous result may stay on screen.
+   *
+   * This is what keeps the scroll position, and it works by removing the height
+   * change rather than by restoring the offset afterwards. The WINDOW is the
+   * scroller here, so swapping a 50-row table for three skeletons collapses the
+   * document below the current offset and the browser clamps `scrollY` to 0 —
+   * and because that clamp fires a real scroll event, the persister below then
+   * writes the 0 over the remembered offset as well.
+   *
+   * ⚠️ Scoped to a growth, never to a refetch in general. Rows that no longer
+   * match the chips above them would be actively misleading, so a filter, sort,
+   * param or refresh re-read still shows skeletons: each of those either leaves
+   * `pages` alone or drops it to 1 through the reset effect below, and only the
+   * button ever raises it.
+   */
+  /**
+   * True from the click that widens the window until the wider result lands.
+   *
+   * ⚠️ Deliberately NOT gated on `snap.loading`, which lags `pages` by the
+   * one commit the effect above describes. Anything keyed on that flag is
+   * ABSENT on the click render: the footer's own fullness test has already gone
+   * false (the held rows no longer fill the widened limit), so a footer admitted
+   * only by `growingWindow` unmounts for exactly one commit — and the two
+   * commits are separated by a passive effect React schedules as its own task,
+   * so the browser is free to lay out and paint a ~36px shrink in between. That
+   * is the height change this whole mechanism exists to remove, and it can fire
+   * a real clamp event while `showSkeleton` is still false.
+   *
+   * `snap.data` still gates it, so a failed read hides the footer rather than
+   * leaving a button spinning forever.
+   */
+  const pendingGrowth =
+    !!snap.data && loadedPagesRef.current !== null && loadedPagesRef.current < pages;
+
+  const growingWindow =
+    (snap.loading || lookupLoading) &&
+    // Rows to KEEP, not merely a defined array: `rows` is `[]` when a lookup or
+    // an extra filter resolved to no candidates, and holding an empty table on
+    // screen in place of the skeleton says nothing to anyone.
+    !!rows &&
+    rows.length > 0 &&
+    pendingGrowth;
+
+  // Skeletons only when there is nothing trustworthy to show. See above.
+  const showSkeleton = (snap.loading || lookupLoading) && !growingWindow;
+  // Mirrored for the scroll persister, which has to know whether the table is
+  // on screen at the moment a scroll event arrives. Assigned during render
+  // rather than from an effect on purpose: the browser clamps and fires that
+  // event during the commit that removes the rows, which is BEFORE any passive
+  // effect runs, so a mirror kept by `useEffect` would still be reporting the
+  // previous frame exactly when it is asked.
+  const skeletonRef = useRef(showSkeleton);
+  skeletonRef.current = showSkeleton;
+
+  // The fetched window came back full, so there may be more behind it.
+  const windowFull = !!snap.data && snap.data.length === effectiveLimit;
+
+  // Nothing left to offer: the window is as wide as it is allowed to get. Says
+  // so out loud rather than hiding the button, because a limit the operator
+  // cannot see is indistinguishable from a list that ended.
+  const atPageCeiling = pages >= MAX_PAGES && windowFull && !pendingGrowth;
+
   // Collapse "Carregar mais" back to one page whenever the query shape changes
   // (filters, sort, base filters or bound params) — the expanded window only
   // makes sense for the result set the user was looking at.
   //
   // ⚠️ Keyed on the query SHAPE, not on "have I run before". The window is now
-  // seeded from the sticky memory in `useState` above, so this effect's mount
-  // run must not collapse it — but a boolean "skip the first run" ref does NOT
+  // seeded from the URL (or the sticky memory) by `useTableUrlState`, so this
+  // effect's mount run must not collapse it — but a "skip the first run" ref does NOT
   // survive contact with React StrictMode, which `apps/web/next.config` turns
   // on: StrictMode mounts, unmounts and remounts on the SAME fiber, so the ref
   // is already armed on the second run, `setPages(1)` fires, and the restored
@@ -1235,6 +1311,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // an operator who types there would otherwise be thrown down a result set
     // they never scrolled the moment their own rows land.
     scrollRestoredRef.current = true;
+    // `setPages` is a `useState` setter reached through the hook's return
+    // object, so its identity is stable and listing it never re-runs this.
   }, [
     filtersSerial,
     baseFiltersSerial,
@@ -1244,14 +1322,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     sort?.direction,
     forcedSort?.field,
     forcedSort?.direction,
+    setPages,
   ]);
 
-  // Remember the window for the next visit.
-  useEffect(() => {
-    rememberView({ pages });
-  }, [pages, rememberView]);
-
-  // Remember where the operator was scrolled to.
+  // Remember where the operator was scrolled to. The window is not persisted
+  // here any more — it rides in the URL, and `useTableUrlState` mirrors that
+  // same string into the memory.
   //
   // The WINDOW is the scroller, not any element here: this component wraps the
   // table in plain `Stack`/`Group` with no overflow, and Mantine's `AppShell`
@@ -1266,13 +1342,27 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   useEffect(() => {
     let handle = 0;
     let moved = false;
+    // Where the operator actually was, as of the last real scroll event.
+    let at = 0;
     const onScroll = () => {
+      // ⚠️ A scroll event fired while the skeletons are up is the BROWSER
+      // clamping the offset to a document that just collapsed, not the operator
+      // moving — persisting it overwrites the remembered position with ~0, and
+      // the one-shot restore latch is long since burned. Every gate that swaps
+      // the table out does this: a filter or sort change, an "Atualizar", a
+      // lookup resolution, a failed read.
+      if (skeletonRef.current) return;
       moved = true;
+      // ⚠️ Sampled HERE, never inside the timeout. The guard above ignores the
+      // clamp EVENT, but a timer armed by a real scroll is not disarmed by it —
+      // so a callback reading `window.scrollY` 150ms later would read whatever
+      // a collapse landing inside that window clamped it to. Needs only a
+      // gesture ending on "Atualizar" or a chip, and `lookupLoading` flipping
+      // is not human-timed at all. Capturing is also simply more accurate: it
+      // persists where the operator was, not where they are 150ms later.
+      at = window.scrollY;
       window.clearTimeout(handle);
-      handle = window.setTimeout(
-        () => rememberView({ scroll: window.scrollY }),
-        SCROLL_PERSIST_DEBOUNCE_MS,
-      );
+      handle = window.setTimeout(() => rememberScroll(at), SCROLL_PERSIST_DEBOUNCE_MS);
     };
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => {
@@ -1286,9 +1376,13 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       // cleans up and remounts immediately, and an unconditional flush there
       // would persist `scrollY` 0 over the offset the restore is still on its
       // way to putting back.
-      if (moved) rememberView({ scroll: window.scrollY });
+      // Flushes the CAPTURED offset for the same reason, which also makes the
+      // skeleton guard unnecessary here: `moved` is only ever set by a real
+      // scroll, so `at` is a genuine position and is worth keeping even when
+      // the table happens to be mid-refetch as the operator leaves.
+      if (moved) rememberScroll(at);
     };
-  }, [rememberView]);
+  }, [rememberScroll]);
 
   // Put it back, once, after the rows that give the page its height exist —
   // scrolling to an offset the document is not yet tall enough for silently
@@ -1693,7 +1787,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Alert>
           )}
 
-          {(snap.loading || lookupLoading) && (
+          {showSkeleton && (
             <Stack>
               <Skeleton height={36} />
               <Skeleton height={36} />
@@ -1701,7 +1795,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Stack>
           )}
 
-          {!snap.loading && !lookupLoading && rows && (
+          {!showSkeleton && rows && (
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
@@ -1958,14 +2052,35 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
               button and strand matches on later pages. The standard heuristic
               over-offers by one click on an exact multiple, which is harmless.
               Hidden entirely under `queryOverride`: that query is caller-owned
-              and ignores `effectiveLimit`, so the button couldn't fetch more. */}
-          {!snap.loading && !queryOverride && snap.data && snap.data.length === effectiveLimit && (
-            <Center>
-              <Button variant="subtle" onClick={() => setPages((p) => p + 1)}>
-                Carregar mais
-              </Button>
-            </Center>
-          )}
+              and ignores `effectiveLimit`, so the button couldn't fetch more.
+
+              ⚠️ `pendingGrowth` is its own admission ticket. During a growth
+              the rows on screen are the PREVIOUS window, so their count no
+              longer equals the widened `effectiveLimit` and the fullness test
+              goes false — the footer would vanish mid-click and the page would
+              jump under the operator's cursor, which is the shift this whole
+              change exists to remove. It is `pendingGrowth` rather than
+              `growingWindow` precisely because the latter waits on
+              `snap.loading`, which arrives one commit too late to cover the
+              click render. */}
+          {!queryOverride &&
+            (pendingGrowth || (!snap.loading && windowFull)) &&
+            (atPageCeiling ? (
+              <Text c="dimmed" size="sm" ta="center">
+                Limite de carregamento atingido ({MAX_PAGES * resolvedPageSize} registros). Refine
+                os filtros ou a busca para ver outros resultados.
+              </Text>
+            ) : (
+              <Center>
+                <Button
+                  variant="subtle"
+                  loading={pendingGrowth}
+                  onClick={() => setPages((p) => Math.min(p + 1, MAX_PAGES))}
+                >
+                  Carregar mais
+                </Button>
+              </Center>
+            ))}
         </Stack>
 
         {panelEnabled && (
