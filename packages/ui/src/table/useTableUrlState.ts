@@ -12,13 +12,45 @@ export type SortState = { field: string; direction: 'asc' | 'desc' };
 export const SEARCH_PARAM = 'q';
 /** Query param holding the sort. */
 export const SORT_PARAM = 'sort';
+/** Query param holding the "Carregar mais" window, counted in pages of `pageSize`. */
+export const PAGES_PARAM = 'pages';
 
 /**
- * Params this hook owns unconditionally. A schema field named `sort` — or `q`
- * on a table that owns the search box — is shadowed by them; both are checked
- * before the descriptor lookup in {@link parseFiltersFromParams}.
+ * Params this hook owns unconditionally. A schema field named `sort`, `pages` —
+ * or `q` on a table that owns the search box — is shadowed by them; all three
+ * are checked before the descriptor lookup in {@link parseFiltersFromParams}.
  */
-const RESERVED_PARAMS = new Set<string>([SORT_PARAM, SEARCH_PARAM]);
+const RESERVED_PARAMS = new Set<string>([SORT_PARAM, SEARCH_PARAM, PAGES_PARAM]);
+
+/**
+ * Ceiling on the "Carregar mais" window, enforced on BOTH the button and any
+ * page count arriving in the URL.
+ *
+ * ⚠️ Visible, not silent: the caller replaces the button with a message once
+ * it is reached, and a larger count arriving in the URL is clamped and then
+ * REWRITTEN by the sync effect, so the address bar always agrees with what was
+ * actually read. A ceiling that only bit on reload would hand an operator back
+ * fewer rows than they had, with nothing on screen saying why.
+ *
+ * What it bounds is money and listeners. This database is Firestore ENTERPRISE,
+ * which bills DATA SCANNED (root `CLAUDE.md` rule 1), so `?pages=` is a cost
+ * lever anyone can type; and on a live-mode list the window is also a concurrent
+ * listener count, which is what capped `/pedidos` at 50 rows to begin with
+ * (#1216). Ten pages is 500 rows at the default page size.
+ */
+export const MAX_PAGES = 10;
+
+/**
+ * Ceiling on the window recovered from the sticky list memory.
+ *
+ * Deliberately lower than {@link MAX_PAGES}, because this tier applies WITHOUT
+ * being asked — a bare URL restores it. Restoring the window costs a re-read of
+ * every row in it, so an operator who once clicked through ten pages would
+ * otherwise pay for ten pages on every return to that screen, forever. Three
+ * restores the useful case (you were a screen or two down); anything deeper is
+ * still reachable from the URL, where it is visible and was asked for.
+ */
+export const MAX_RESTORED_PAGES = 3;
 
 // ⚠️ Typed on the UI op set, not `PipelineFilterOp`: `between` never reaches
 // the query builder, but it MUST round-trip through the URL. An op missing
@@ -193,6 +225,24 @@ export function parseSortFromParams(params: URLSearchParams): SortState | undefi
 }
 
 /**
+ * Parse `?pages=<n>` — the window, counted in pages of the table's `pageSize`.
+ *
+ * ⚠️ Must neither throw nor surprise. It runs from a `useState` initializer
+ * over a hand-editable link, and what it returns becomes a query LIMIT on a
+ * database that bills data scanned: anything that is not a whole number ≥ 1
+ * degrades to one page, and anything above `max` is clamped to it. `Number`
+ * rather than `parseInt`, so `2.5` and `2abc` are rejected outright instead of
+ * quietly becoming 2.
+ */
+export function parsePagesFromParams(params: URLSearchParams, max: number): number {
+  const raw = params.get(PAGES_PARAM);
+  if (raw === null) return 1;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return 1;
+  return Math.min(n, max);
+}
+
+/**
  * Serialize this table's own state into a query string (no leading `?`).
  * Exported so the URL write and the `sessionStorage` write are provably the
  * same string — the restore parses back exactly what the URL showed.
@@ -201,6 +251,7 @@ export function encodeTableState(
   filters: Record<string, ColumnFilterValue>,
   sort: SortState | undefined,
   search: string,
+  pages = 1,
 ): string {
   const params = new URLSearchParams();
   for (const [field, v] of Object.entries(filters)) {
@@ -208,7 +259,28 @@ export function encodeTableState(
   }
   if (sort) params.set(SORT_PARAM, `${sort.field}:${sort.direction}`);
   if (search !== '') params.set(SEARCH_PARAM, search);
+  // Omitted at one page, so every link that was shareable before this param
+  // existed stays byte-identical and the default needs no URL at all.
+  if (pages > 1) params.set(PAGES_PARAM, String(pages));
   return params.toString();
+}
+
+/**
+ * True when two of this table's own query strings describe the same view.
+ *
+ * Compared as a key-sorted param list rather than byte-for-byte: filters are
+ * serialized in the order {@link parseFiltersFromParams} met them in the URL,
+ * and the sync effect merges its own keys into whatever query string is already
+ * on the page, so two strings saying exactly the same thing routinely disagree
+ * on order. A wrong answer only costs a scroll restore, so this fails closed.
+ */
+export function sameTableState(a: string, b: string): boolean {
+  const canonical = (qs: string) => {
+    const params = new URLSearchParams(qs);
+    params.sort();
+    return params.toString();
+  };
+  return canonical(a) === canonical(b);
 }
 
 /**
@@ -223,6 +295,12 @@ export function urlCarriesTableState(
 ): boolean {
   if (Object.keys(parseFiltersFromParams(params, fields)).length > 0) return true;
   if (parseSortFromParams(params) !== undefined) return true;
+  // Parse-gated like the two above, never a presence check. `?pages=0`,
+  // `?pages=abc` and `?pages=1` all hydrate to the default window, so counting
+  // them as state would suppress the memory tier over a param that changes
+  // nothing — dropping the operator's filters, sort, search AND scroll onto a
+  // bare list with no explanation.
+  if (parsePagesFromParams(params, MAX_PAGES) > 1) return true;
   return ownsSearch && params.get(SEARCH_PARAM) !== null;
 }
 
@@ -246,8 +324,10 @@ export interface InitialTableState {
   filters: Record<string, ColumnFilterValue>;
   sort: SortState | undefined;
   search: string;
-  /** From the memory, or null when the URL won / there was nothing stored. */
-  restored: { pages: number; scroll: number } | null;
+  /** Window to open at, already clamped to the ceiling of whichever tier won. */
+  pages: number;
+  /** Offset to put back, or null when there is nothing to restore. */
+  restored: { scroll: number } | null;
 }
 
 /**
@@ -270,24 +350,45 @@ export function resolveInitialTableState(params: {
     : undefined;
 
   if (!memoryKey || urlCarriesTableState(searchParams, fields, ownsSearch)) {
+    const filters = parseFiltersFromParams(searchParams, fields);
+    const sort = parseSortFromParams(searchParams) ?? fallbackSort;
+    const search = ownsSearch ? (searchParams.get(SEARCH_PARAM) ?? '') : '';
+    const pages = parsePagesFromParams(searchParams, MAX_PAGES);
+    // The URL owns WHAT is being looked at, always. The offset is still the
+    // memory's to give back, but only when the URL describes the very view it
+    // was recorded in.
+    //
+    // ⚠️ That case is browser Back, and it is the whole reason this branch
+    // reads the memory at all: the sync effect below has already written this
+    // table's own state into the history entry for the list, so returning to it
+    // ALWAYS carries table state and would otherwise be indistinguishable from
+    // a shared link — which is what threw the operator to the top of the list
+    // every time they came back from a record. A link that says something else
+    // fails the comparison and gets no restore.
+    const memory = memoryKey ? readListViewMemory(memoryKey) : null;
+    const sameView =
+      memory !== null && sameTableState(memory.qs, encodeTableState(filters, sort, search, pages));
     return {
-      filters: parseFiltersFromParams(searchParams, fields),
-      sort: parseSortFromParams(searchParams) ?? fallbackSort,
-      search: ownsSearch ? (searchParams.get(SEARCH_PARAM) ?? '') : '',
-      restored: null,
+      filters,
+      sort,
+      search,
+      pages,
+      restored: memory && sameView && memory.scroll > 0 ? { scroll: memory.scroll } : null,
     };
   }
 
   const memory = readListViewMemory(memoryKey);
   if (!memory) {
-    return { filters: {}, sort: fallbackSort, search: '', restored: null };
+    return { filters: {}, sort: fallbackSort, search: '', pages: 1, restored: null };
   }
   const remembered = new URLSearchParams(memory.qs);
   return {
     filters: parseFiltersFromParams(remembered, fields),
     sort: parseSortFromParams(remembered) ?? fallbackSort,
     search: ownsSearch ? (remembered.get(SEARCH_PARAM) ?? '') : '',
-    restored: { pages: memory.pages, scroll: memory.scroll },
+    // The implicit tier, so the lower ceiling applies.
+    pages: parsePagesFromParams(remembered, MAX_RESTORED_PAGES),
+    restored: { scroll: memory.scroll },
   };
 }
 
@@ -303,10 +404,13 @@ export interface TableUrlState {
   setSearch: (term: string) => void;
   /** Drop every column filter and the search term in one go. */
   clearAll: () => void;
-  /** Page count + scroll recovered from the last visit, or null. */
-  restored: { pages: number; scroll: number } | null;
-  /** Record the page count / scroll for the next visit. */
-  rememberView: (patch: { pages?: number; scroll?: number }) => void;
+  /** The "Carregar mais" window, in pages of `pageSize`. Mirrored to `?pages=`. */
+  pages: number;
+  setPages: React.Dispatch<React.SetStateAction<number>>;
+  /** Scroll offset recovered from the last visit, or null. */
+  restored: { scroll: number } | null;
+  /** Record the scroll offset for the next visit. */
+  rememberScroll: (scroll: number) => void;
 }
 
 /**
@@ -314,11 +418,12 @@ export interface TableUrlState {
  * per-screen `sessionStorage` memory that makes a list reopen where it was
  * left.
  *
- * Two tiers, split by what each piece of state MEANS. Filters, sort and the
- * search term go in the URL, because they say *what you are looking at* and a
- * colleague should be able to receive that in a link. The page count and the
- * scroll offset go in `sessionStorage`, because they say *where you were* —
- * nobody wants `?scroll=840` in a pasted link.
+ * Two tiers, split by what each piece of state MEANS. Filters, sort, the search
+ * term and the "Carregar mais" window go in the URL, because they say *what you
+ * are looking at*: a colleague should be able to receive that in a link, and
+ * browser Back must give it back rather than collapsing the list to one page.
+ * Only the scroll offset goes in `sessionStorage`, because it says *where you
+ * were* — nobody wants `?scroll=840` in a pasted link.
  *
  * Both tiers are resolved SYNCHRONOUSLY, in the `useState` initializers, so the
  * very first render is already filtered and the restore costs no extra query.
@@ -374,6 +479,10 @@ export function useTableUrlState(
   const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>(initial.filters);
   const [sort, setSort] = useState<SortState | undefined>(initial.sort);
   const [search, setSearch] = useState<string>(initial.search);
+  // Seeded in the initializer rather than an effect, so a window arriving in the
+  // URL (or restored from the memory) is issued as ONE query instead of a
+  // default page followed immediately by a wider re-read.
+  const [pages, setPages] = useState<number>(initial.pages);
   const restored = initial.restored;
 
   // filters changes shape per click; bucket it into a deterministic string so
@@ -392,31 +501,29 @@ export function useTableUrlState(
     [filters],
   );
 
-  // The page count / scroll the caller last reported, so any persist writes a
-  // WHOLE record. They change independently of the query string, and a partial
-  // write would silently drop whichever half did not move.
+  // The offset the caller last reported, so any persist writes a WHOLE record.
+  // It changes independently of the query string, and a partial write would
+  // silently drop it.
   //
-  // ⚠️ Seeded from what was just restored, not from `{ pages: 1, scroll: 0 }`.
-  // The sync effect below persists on mount, before the caller has reported
-  // anything and before the scroll is actually put back — a zeroed seed would
-  // therefore erase the remembered offset in the window between arriving on the
-  // screen and the restore landing, so leaving again in that window would lose
-  // the position that was on its way back.
-  const viewRef = useRef<{ pages: number; scroll: number }>({
-    pages: initial.restored?.pages ?? 1,
-    scroll: initial.restored?.scroll ?? 0,
-  });
+  // ⚠️ Seeded from what was just restored, not from 0. The sync effect below
+  // persists on mount, before the caller has reported anything and before the
+  // scroll is actually put back — a zeroed seed would therefore erase the
+  // remembered offset in the window between arriving on the screen and the
+  // restore landing, so leaving again in that window would lose the position
+  // that was on its way back.
+  const scrollRef = useRef<number>(initial.restored?.scroll ?? 0);
 
-  // This table's own query string as of the last sync, so `rememberView` can
+  // This table's own query string as of the last sync, so `rememberScroll` can
   // persist a whole record without taking `filters`/`sort`/`search` as deps —
   // it is handed to the caller, and a callback whose identity churned every
   // keystroke would churn every effect the caller hangs off it.
   //
-  // ⚠️ Seeded from the OPENING state, not `''`. The caller reports its page
-  // count from an effect, and a `rememberView` landing before the sync effect
-  // below would otherwise persist an empty query string — erasing the very
-  // filters that were just restored.
-  const ownQsRef = useRef(encodeTableState(initial.filters, initial.sort, initial.search));
+  // ⚠️ Seeded from the OPENING state, not `''`. A `rememberScroll` landing
+  // before the sync effect below has run would otherwise persist an empty query
+  // string — erasing the very filters that were just restored.
+  const ownQsRef = useRef(
+    encodeTableState(initial.filters, initial.sort, initial.search, initial.pages),
+  );
 
   // The params this table may delete from the URL. A ref so the sync effect
   // does not re-run when `fields` is rebuilt with identical keys — it is a
@@ -440,12 +547,13 @@ export function useTableUrlState(
   // The first run rewrites what was just restored, which is a no-op by
   // construction — the state it serialises IS the state it read.
   useEffect(() => {
-    const ownQs = encodeTableState(filters, sort, search);
+    const ownQs = encodeTableState(filters, sort, search, pages);
     const own = new URLSearchParams(ownQs);
 
     const merged = new URLSearchParams(window.location.search);
     for (const key of fieldKeysRef.current) merged.delete(key);
     merged.delete(SORT_PARAM);
+    merged.delete(PAGES_PARAM);
     if (ownsSearch) merged.delete(SEARCH_PARAM);
     for (const [key, value] of own.entries()) merged.set(key, value);
 
@@ -459,14 +567,14 @@ export function useTableUrlState(
     // Only the OWN keys are remembered — `?copyFrom` and friends belong to the
     // navigation that carried them, not to this screen's saved position.
     ownQsRef.current = ownQs;
-    if (memoryKey) writeListViewMemory(memoryKey, { qs: ownQs, ...viewRef.current });
-  }, [filtersSerial, sort?.field, sort?.direction, search, memoryKey, ownsSearch]);
+    if (memoryKey) writeListViewMemory(memoryKey, { qs: ownQs, scroll: scrollRef.current });
+  }, [filtersSerial, sort?.field, sort?.direction, search, pages, memoryKey, ownsSearch]);
 
-  const rememberView = useCallback(
-    (patch: { pages?: number; scroll?: number }) => {
-      viewRef.current = { ...viewRef.current, ...patch };
+  const rememberScroll = useCallback(
+    (scroll: number) => {
+      scrollRef.current = scroll;
       if (!memoryKey) return;
-      writeListViewMemory(memoryKey, { qs: ownQsRef.current, ...viewRef.current });
+      writeListViewMemory(memoryKey, { qs: ownQsRef.current, scroll });
     },
     [memoryKey],
   );
@@ -480,7 +588,9 @@ export function useTableUrlState(
     search,
     setSearch,
     clearAll,
+    pages,
+    setPages,
     restored,
-    rememberView,
+    rememberScroll,
   };
 }

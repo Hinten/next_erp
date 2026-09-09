@@ -1,12 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { ColumnFilterValue, FilterableField } from '../schema/types';
 import {
+  MAX_PAGES,
+  MAX_RESTORED_PAGES,
   encodeFilterValue,
   encodeTableState,
   parseFiltersFromParams,
+  parsePagesFromParams,
   parseSortFromParams,
+  resolveInitialTableState,
+  sameTableState,
   urlCarriesTableState,
 } from './useTableUrlState';
+import { listViewMemoryKey, writeListViewMemory } from './listViewMemory';
 
 function field(key: string, kind: FilterableField['kind']): FilterableField {
   return { key, kind, label: key };
@@ -137,14 +143,44 @@ describe('parseSortFromParams', () => {
 });
 
 describe('reserved params', () => {
-  it('never reads ?sort= or ?q= as a column filter', () => {
-    // A schema field literally named `sort` or `q` is shadowed by the two
+  it('never reads ?sort=, ?q= or ?pages= as a column filter', () => {
+    // A schema field literally named `sort`, `q` or `pages` is shadowed by the
     // params this hook owns. Checked BEFORE the descriptor lookup, so adding a
-    // descriptor for either cannot resurrect it as a filter.
-    const shadowed = [field('sort', 'string'), field('q', 'string')];
-    expect(parseFiltersFromParams(new URLSearchParams('sort=nome:asc&q=abc'), shadowed)).toEqual(
-      {},
-    );
+    // descriptor for any of them cannot resurrect it as a filter.
+    const shadowed = [field('sort', 'string'), field('q', 'string'), field('pages', 'string')];
+    expect(
+      parseFiltersFromParams(new URLSearchParams('sort=nome:asc&q=abc&pages=3'), shadowed),
+    ).toEqual({});
+  });
+});
+
+describe('parsePagesFromParams', () => {
+  const pages = (qs: string, max = MAX_PAGES) => parsePagesFromParams(new URLSearchParams(qs), max);
+
+  it('reads a whole page count', () => {
+    expect(pages('pages=4')).toBe(4);
+  });
+
+  it('defaults to one page when the param is absent', () => {
+    expect(pages('nome=contains%3Aab')).toBe(1);
+  });
+
+  it('clamps to the ceiling it was given', () => {
+    // The value becomes a query LIMIT on a database that bills data scanned,
+    // and anyone can type it into the address bar.
+    expect(pages('pages=999')).toBe(MAX_PAGES);
+    expect(pages('pages=999', MAX_RESTORED_PAGES)).toBe(MAX_RESTORED_PAGES);
+  });
+
+  it.each([
+    ['a word', 'pages=abc'],
+    ['zero', 'pages=0'],
+    ['a negative count', 'pages=-3'],
+    ['a fraction', 'pages=2.5'],
+    ['a number with a suffix', 'pages=2abc'],
+    ['an empty value', 'pages='],
+  ])('degrades %s to one page', (_label, qs) => {
+    expect(pages(qs)).toBe(1);
   });
 });
 
@@ -163,6 +199,17 @@ describe('encodeTableState', () => {
     // `?q=` present-but-empty would look like state to `urlCarriesTableState`
     // and suppress the sticky restore forever.
     expect(encodeTableState({}, undefined, '')).toBe('');
+  });
+
+  it('omits a single page, so a link that was shareable before stays identical', () => {
+    expect(encodeTableState({}, undefined, '')).toBe('');
+    expect(encodeTableState({}, undefined, '', 1)).toBe('');
+  });
+
+  it('writes the window once it has been grown, and reads back exactly', () => {
+    const qs = encodeTableState({}, { field: 'nome', direction: 'asc' }, '', 3);
+    expect(qs).toBe('sort=nome%3Aasc&pages=3');
+    expect(parsePagesFromParams(new URLSearchParams(qs), MAX_PAGES)).toBe(3);
   });
 
   it('round-trips through the parsers', () => {
@@ -195,6 +242,7 @@ describe('urlCarriesTableState', () => {
   it.each([
     ['a column filter', 'nome=contains%3Aab'],
     ['a sort', 'sort=nome%3Aasc'],
+    ['a window', 'pages=3'],
   ])('is true for %s', (_label, qs) => {
     expect(urlCarriesTableState(new URLSearchParams(qs), FIELDS, true)).toBe(true);
   });
@@ -210,5 +258,93 @@ describe('urlCarriesTableState', () => {
     expect(urlCarriesTableState(new URLSearchParams('nome=bogusop%3Aab'), FIELDS, true)).toBe(
       false,
     );
+  });
+});
+
+describe('sameTableState', () => {
+  it('ignores param order, which is the only reason the scroll restore works', () => {
+    // The sync effect merges its keys into whatever query string is already on
+    // the page, so the URL routinely orders them differently from the string
+    // the memory recorded. A byte comparison would answer "different view" for
+    // two identical views and silently give back no scroll restore at all.
+    expect(
+      sameTableState('sort=nome%3Aasc&nome=contains%3Aab', 'nome=contains%3Aab&sort=nome%3Aasc'),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['an extra param', 'nome=contains%3Aab&sort=nome%3Aasc', 'nome=contains%3Aab'],
+    ['a different value', 'nome=contains%3Aab', 'nome=contains%3Acd'],
+    ['a different window', 'pages=2', 'pages=3'],
+    ['empty against filtered', '', 'nome=contains%3Aab'],
+  ])('says %s is a different view', (_label, a, b) => {
+    expect(sameTableState(a, b)).toBe(false);
+  });
+});
+
+describe('resolveInitialTableState', () => {
+  const MEMORY_KEY = listViewMemoryKey('/produtos', 'produtos');
+
+  afterEach(() => sessionStorage.clear());
+
+  function resolve(qs: string, memoryKey: string | null = MEMORY_KEY) {
+    return resolveInitialTableState({
+      searchParams: new URLSearchParams(qs),
+      fields: FIELDS,
+      initialSort: { field: 'nome', direction: 'asc' },
+      ownsSearch: true,
+      memoryKey,
+    });
+  }
+
+  it('reopens the remembered view, window and offset, when the URL is bare', () => {
+    writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana&pages=2', scroll: 840 });
+    const state = resolve('');
+    expect(state.filters).toEqual({ nome: { op: 'contains', value: 'ana' } });
+    expect(state.pages).toBe(2);
+    expect(state.restored).toEqual({ scroll: 840 });
+  });
+
+  it('caps a remembered window harder than a requested one', () => {
+    // This tier applies without being asked, so a screen an operator once
+    // clicked deep into must not stay expensive on every return to it.
+    writeListViewMemory(MEMORY_KEY, { qs: 'pages=10', scroll: 0 });
+    expect(resolve('').pages).toBe(MAX_RESTORED_PAGES);
+  });
+
+  it('gives the window back when the operator presses Back', () => {
+    // The regression this exists for. The sync effect writes this table's own
+    // state into the history entry for the list, so returning to it ALWAYS
+    // carries table state — which used to be indistinguishable from a shared
+    // link, so both the window and the offset were thrown away every time.
+    writeListViewMemory(MEMORY_KEY, { qs: 'sort=nome%3Aasc&pages=4', scroll: 840 });
+    const state = resolve('sort=nome%3Aasc&pages=4');
+    expect(state.pages).toBe(4);
+    expect(state.restored).toEqual({ scroll: 840 });
+  });
+
+  it('restores the offset even when the URL orders its params differently', () => {
+    writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana&sort=nome%3Aasc', scroll: 640 });
+    expect(resolve('sort=nome%3Aasc&nome=contains%3Aana').restored).toEqual({ scroll: 640 });
+  });
+
+  it('gives NO offset to a link that describes a different view', () => {
+    // The near miss for the case above. A colleague's link, or a hand-edited
+    // one, must not drop the reader 840px into a result set they never saw.
+    writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', scroll: 840 });
+    const state = resolve('nome=contains%3Abob');
+    expect(state.filters).toEqual({ nome: { op: 'contains', value: 'bob' } });
+    expect(state.restored).toBeNull();
+  });
+
+  it('clamps a window that arrived in the URL', () => {
+    expect(resolve('pages=999').pages).toBe(MAX_PAGES);
+  });
+
+  it('opens at one page and restores nothing without a memory key', () => {
+    writeListViewMemory(MEMORY_KEY, { qs: 'pages=4', scroll: 840 });
+    const state = resolve('', null);
+    expect(state.pages).toBe(1);
+    expect(state.restored).toBeNull();
   });
 });
