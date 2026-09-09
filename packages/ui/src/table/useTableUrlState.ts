@@ -303,6 +303,17 @@ export interface TableUrlState {
   setSearch: (term: string) => void;
   /** Drop every column filter and the search term in one go. */
   clearAll: () => void;
+  /**
+   * Drop EVERYTHING this table owns — filters, the search term AND the custom
+   * sort — so the list falls back to `meta.defaultQuery` and can stream again.
+   *
+   * A superset of {@link clearAll}, deliberately kept separate rather than
+   * folded into it. `clearAll` backs the chip row's button, which is named for
+   * the chips beside it, and the chips are built from filters + search only
+   * (`describeFilter.ts`) — never from the sort. A `clearAll` that also
+   * destroyed a sort no chip shows would do more than its own label admits.
+   */
+  resetListState: () => void;
   /** Page count + scroll recovered from the last visit, or null. */
   restored: { pages: number; scroll: number } | null;
   /** Record the page count / scroll for the next visit. */
@@ -429,6 +440,22 @@ export function useTableUrlState(
     setSearch('');
   }, []);
 
+  /**
+   * The three atoms in ONE handler, so they land in one render: the mirror
+   * effect below runs once and writes one `history.replaceState` and one
+   * memory entry, rather than three of each with two intermediate states an
+   * operator could see in the URL.
+   *
+   * `undefined` is what "no user sort" means here — `TableView`'s
+   * `effectiveOrderBy` falls through it to `meta.defaultQuery.orderBy`, which
+   * is the only sort `resolveListMode` will stream.
+   */
+  const resetListState = useCallback(() => {
+    setFilters({});
+    setSearch('');
+    setSort(undefined);
+  }, []);
+
   // Mirror this table's state into the URL and into the memory.
   //
   // ⚠️ Rebuilt from the LIVE query string rather than from scratch. Building a
@@ -480,6 +507,7 @@ export function useTableUrlState(
     search,
     setSearch,
     clearAll,
+    resetListState,
     restored,
     rememberView,
   };

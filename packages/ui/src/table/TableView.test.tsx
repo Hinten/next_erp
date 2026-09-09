@@ -21,7 +21,6 @@ const {
   whereArrayContainsSpy,
   buildQuerySpy,
   monitorRef,
-  notifyShow,
 } = vi.hoisted(() => ({
   snapState: {
     current: {
@@ -48,7 +47,6 @@ const {
   // The update-monitor drives the only refresh affordance /produtos has
   // left in its header. Stubbed so a test can raise `stale` and click it;
   // `stale: false` is what the real hook reports for every other case.
-  notifyShow: vi.fn(),
   monitorRef: { current: { stale: false, acknowledge: vi.fn() } },
 }));
 
@@ -96,12 +94,6 @@ vi.mock('@delfrance/data', async () => {
     whereOp: whereOpSpy,
     whereArrayContains: whereArrayContainsSpy,
   };
-});
-
-vi.mock('@mantine/notifications', async () => {
-  const actual =
-    await vi.importActual<typeof import('@mantine/notifications')>('@mantine/notifications');
-  return { ...actual, notifications: { show: (...args: unknown[]) => notifyShow(...args) } };
 });
 
 import { StrictMode } from 'react';
@@ -1095,65 +1087,22 @@ describe('TableView', () => {
       expect(buildPipelineSpy, 'a filtered query must go back to the pipeline').toHaveBeenCalled();
     });
 
-    it('warns that sorting stops the list updating itself', () => {
-      // The freeze is deliberate but invisible — the rows simply stop moving.
-      // The badge is the standing indicator; this is the one-time explanation
-      // of what just changed.
-      notifyShow.mockClear();
-      wrap(
-        <TableView
-          schema={testSchema}
-          collection={fakeCollection()}
-          db={{} as never}
-          meta={{
-            ...metaBase,
-            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
-          }}
-        />,
-      );
-      fireEvent.click(screen.getByText('Nome'));
-      expect(notifyShow).toHaveBeenCalledTimes(1);
-      expect(notifyShow.mock.calls[0]![0]).toMatchObject({ color: 'yellow' });
-    });
-
-    it('does not warn again once the list is already static', () => {
-      // Self-limiting rather than flag-limited: the first departing sort makes
-      // the table static, so every later click fails the `transportIsLive`
-      // guard. Isolated deliberately — the click here lands on `tipo:asc`, which
-      // is NOT the declared order, so the only thing suppressing the toast is
-      // that the table had already left the live path. Remove that guard and
-      // this case fires.
-      searchParamsRef.current = new URLSearchParams('sort=tipo:desc');
-      notifyShow.mockClear();
-      wrap(
-        <TableView
-          schema={testSchema}
-          collection={fakeCollection()}
-          db={{} as never}
-          meta={{
-            ...metaBase,
-            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
-          }}
-        />,
-      );
-      fireEvent.click(screen.getByText('Tipo'));
-      expect(notifyShow).not.toHaveBeenCalled();
-    });
-
-    it('stays silent under a caller-owned query, which is still streaming', () => {
+    it('keeps a caller-owned query on the live transport, badge included', () => {
       // The branch where the POLICY and the TRANSPORT disagree, and it is live
       // in production: /clientes sets `queryOverride` for a matched endereço
       // search. `pipeline` is null there, so `transportIsLive` is TRUE and
       // `fallbackQuery` hands the caller's query to `useSnapshot` — the rows
-      // keep streaming.
+      // keep streaming, which is what the badge must report even though
+      // `listMode` calls this `static/override`.
       //
-      // Keyed on the transport, this toast fired on every header click of those
-      // results, announcing that the list had stopped updating itself while the
-      // badge beside it correctly read "Tempo real". Keyed on the policy
-      // (`listMode`, which reports `static/override` here) it stays quiet,
-      // because sorting does not change that transport at all: `fallbackQuery`
-      // returns the override and never consults `effectiveOrderBy`.
-      notifyShow.mockClear();
+      // Sorting such a list changes no transport at all: `fallbackQuery`
+      // returns the override and never consults `effectiveOrderBy`. So the
+      // badge must read the same before and after the clicks.
+      //
+      // ⚠️ This is the only assertion on the badge anywhere in the repo. It
+      // outlived the toast whose regression test it arrived with (the toast
+      // was keyed on the transport, so it fired on every header click of these
+      // results while the badge beside it correctly said "Tempo real").
       wrap(
         <TableView
           schema={testSchema}
@@ -1166,11 +1115,13 @@ describe('TableView', () => {
           }}
         />,
       );
+      expect(screen.getByText('Tempo real')).toBeDefined();
       fireEvent.click(screen.getByText('Nome'));
       fireEvent.click(screen.getByText('Tipo'));
-      expect(notifyShow, 'sorting an overridden query changes no transport').not.toHaveBeenCalled();
-      // And the badge must still say the truth about that list.
-      expect(screen.getByText('Tempo real')).toBeDefined();
+      expect(
+        screen.getByText('Tempo real'),
+        'sorting an overridden query changes no transport',
+      ).toBeDefined();
     });
 
     it('lets the SEARCH keep the orderBy lead when a column range is also active', () => {
@@ -1562,6 +1513,156 @@ describe('TableView', () => {
       const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
       expect(headers).toContain('Tipo');
       expect(headers).not.toContain('Nome');
+    });
+  });
+
+  /**
+   * The control beside the mode badge that puts a frozen list back on the
+   * declared query.
+   *
+   * It exists because the app used to ask for something impossible:
+   * `STATIC_REASON_LABEL.sort` says "limpe a ordenação para voltar ao tempo
+   * real", but a sort renders no filter chip, `ActiveFilters` returns null with
+   * no chips, and `clearAll` never touched the sort — so in the one case that
+   * needed an escape hatch, nothing was rendered and nothing could have helped.
+   */
+  describe('reset control', () => {
+    const RESET = 'Limpar ordenação, filtros e busca';
+    // ⚠️ Spread, exactly like every other meta fixture in this file, and not by
+    // style: `delfrance/default-query-needs-index` engages on a `defaultQuery`
+    // whose object has a LITERAL `collectionPath` sibling, and would then
+    // demand a real entry in firestore.indexes.json for a collection called
+    // "tests". The spread leaves no literal sibling, so the rule bails.
+    const metaBase = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+    const declared = {
+      ...metaBase,
+      defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+    };
+    const resetButton = () => screen.getByRole('button', { name: RESET }) as HTMLButtonElement;
+
+    it('brings a sort-only static list back to the live transport', () => {
+      // THE case the control was added for. Nothing is filtered and nothing is
+      // searched — the sort alone is what left the streaming path.
+      searchParamsRef.current = new URLSearchParams('sort=tipo:desc');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+        />,
+      );
+      expect(screen.getByText('Resultado fixo')).toBeDefined();
+
+      searchParamsRef.current = new URLSearchParams();
+      buildPipelineSpy.mockClear();
+      buildQuerySpy.mockClear();
+      fireEvent.click(resetButton());
+
+      expect(
+        buildPipelineSpy,
+        'back on the declared query, so nothing may build a pipeline',
+      ).not.toHaveBeenCalled();
+      expect(
+        buildQuerySpy,
+        'the declared query streams through a classic query',
+      ).toHaveBeenCalled();
+      expect(screen.getByText('Tempo real')).toBeDefined();
+    });
+
+    it('clears the filter, the term and the sort in one click', () => {
+      // One assertion pins all three: `encodeTableState` serialises filters,
+      // sort and search together, so dropping any single setter leaves its own
+      // key behind in the remembered query string. It also pins that the reset
+      // is REMEMBERED as cleared rather than resurrected on the next visit.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana&q=cami&sort=tipo:desc');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+          search={{
+            placeholder: 'Buscar…',
+            toFilters: (term: string) => [{ field: 'nome', op: 'gte' as const, value: term }],
+          }}
+        />,
+      );
+      searchParamsRef.current = new URLSearchParams();
+      fireEvent.click(resetButton());
+
+      expect(readListViewMemory(MEMORY_KEY)?.qs).toBe('');
+    });
+
+    it('does not collide with the chip row’s clear-all locator', () => {
+      // Playwright matches an accessible name by SUBSTRING unless a spec passes
+      // `exact`, and `clientes.cadastros.e2e.spec.ts` does not — it locates
+      // "Limpar filtros" and then asserts the count drops to zero. Naming this
+      // control "Limpar filtros e ordenação" would make that spec ambiguous and
+      // then red, from a file it never imports. The regex mirrors those
+      // semantics so the collision is caught here in milliseconds instead.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+        />,
+      );
+      searchParamsRef.current = new URLSearchParams();
+
+      expect(screen.getAllByRole('button', { name: /Limpar filtros/ })).toHaveLength(1);
+    });
+
+    it('is always mounted, and disabled only when nothing of yours is set', () => {
+      // "Sempre presente" is the decision: an operator should never have to
+      // discover that the way back appears only under some conditions.
+      const render = () =>
+        wrap(
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={declared}
+          />,
+        );
+
+      const pristine = render();
+      expect(resetButton().hasAttribute('disabled'), 'nothing to clear').toBe(true);
+      pristine.unmount();
+
+      searchParamsRef.current = new URLSearchParams('sort=tipo:desc');
+      const sorted = render();
+      expect(resetButton().hasAttribute('disabled'), 'a sort is yours to clear').toBe(false);
+      sorted.unmount();
+
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      render();
+      expect(resetButton().hasAttribute('disabled'), 'a filter is yours to clear').toBe(false);
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('stays offered, and honest, where live is unreachable', () => {
+      // A caller-owned query holds the POLICY on static, but none of it is the
+      // operator's, so the control must not offer to fix what it cannot reach.
+      // Keying the enabled rule on `listMode.mode !== 'live'` — a very
+      // plausible reading of "show it when the list is frozen" — enables a
+      // button here that would do nothing.
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          queryOverride={{ __q: 'caller' } as never}
+          meta={declared}
+        />,
+      );
+      expect(resetButton().hasAttribute('disabled')).toBe(true);
+      expect(screen.getByText('Tempo real')).toBeDefined();
     });
   });
 
