@@ -34,8 +34,7 @@
  * Deviations from the legacy source (see also the Step 9 task's "Approved
  * deviations" list):
  *  - `userPath` dedup + vector-embedding generation are both skipped (approved
- *    deviations #5/#2 — ML buyers carry no `userPath`, and `nome_embedding`/
- *    `telefone_embedding` are server-managed opaque fields in this schema).
+ *    deviations #5/#2 — ML buyers carry no `userPath`).
  *  - Telefone is normalized with this repo's canonical wire-format normalizer
  *    (`@delfrance/core/phone`, reached through `@delfrance/schemas`'
  *    `sanitizeTelefone`) instead of porting legacy's `dlibphonenumber`-based

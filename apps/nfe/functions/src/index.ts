@@ -32,3 +32,6 @@ if (!(RECONCILE_FUNCTION in reconcileHandlers)) {
 
 export { reconciliarNfe } from './reconciliar';
 export { nfeReconcileSweep } from './sweep';
+// Plain `onSchedule` export — nothing enqueues against its name, so no
+// rename-safety assertion is needed (see the note above `reconciliarNfe`).
+export { apuracaoSimplesNacional } from './apuracaoSimples';

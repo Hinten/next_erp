@@ -296,10 +296,30 @@ describe('resolverAviso', () => {
     expect(store[PATH]?.data.resolucaoMotivo).toBe('reautorizado');
   });
 
+  // ⚠️ The near-miss of the assertion above: the first call is a TRANSITION and
+  // answers `true`; the second sees a row that is already resolved, answers
+  // `false` and — the half that matters — leaves `resolvidoEm` where it was.
+  // A resolver that re-stamps it on every weekly run pushes the row out of
+  // `sweepAvisosResolvidos`'s 90-day window forever.
+  it('is a no-op on an already-resolved aviso, and does not move resolvidoEm', async () => {
+    const { db, store } = makeDb();
+    await escreverAviso(db, PLANO, deps);
+
+    await expect(
+      resolverAviso(db, CHAVE, 'reautorizado', { agoraUs: AGORA_US + 10 }),
+    ).resolves.toBe(true);
+    await expect(
+      resolverAviso(db, CHAVE, 'reautorizado', { agoraUs: AGORA_US + 999 }),
+    ).resolves.toBe(false);
+
+    expect(store[PATH]?.data.resolvidoEm).toBe(AGORA_US + 10);
+    expect(store[PATH]?.data.atualizadoEm).toBe(AGORA_US + 10);
+  });
+
   it('does not resurrect a swept aviso as a ghost', async () => {
-    // `merge` on the Admin SDK is an UPSERT; `mergeIfExists` is why a resolver
-    // racing the retention sweep cannot recreate a document holding only the
-    // patch keys.
+    // `merge` on the Admin SDK is an UPSERT; reading first and then `update`ing
+    // is why a resolver racing the retention sweep cannot recreate a document
+    // holding only the patch keys.
     const { db, store } = makeDb();
     await expect(resolverAviso(db, 'nao-existe', 'x', { agoraUs: AGORA_US })).resolves.toBe(false);
     expect(store['avisos/nao-existe']).toBeUndefined();

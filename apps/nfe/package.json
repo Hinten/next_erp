@@ -20,6 +20,7 @@
     "@delfrance/data": "workspace:*",
     "@delfrance/integrations-nfe": "workspace:*",
     "@delfrance/schemas": "workspace:*",
+    "@google-cloud/firestore": "^8.6.0",
     "firebase-admin": "catalog:",
     "google-auth-library": "catalog:",
     "next": "16.2.6",

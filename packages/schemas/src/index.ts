@@ -404,6 +404,15 @@ export {
 } from './notificacaoMercadoPago';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound Shopee push
+  // log, mirrors notificacaoMercadoPago above (Shopee master plan, step 3).
+  notificacaoShopeeStatusSchema,
+  notificacaoShopeeSchema,
+  type NotificacaoShopeeStatus,
+  type NotificacaoShopee,
+} from './notificacaoShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
   // anúncios" mass-import job/checkpoint doc (#621).
   importacaoMercadoLivreStatusSchema,
@@ -674,6 +683,26 @@ export {
   type BandeiraCartao,
   type Bandeira,
 } from './bandeiraCartao';
+
+export * from './simplesNacional';
+export {
+  ANEXO_SIMPLES,
+  ANEXO_SIMPLES_LABELS,
+  APURACAO_ESTADO,
+  SIMPLES_NACIONAL_CONFIG_DOC_ID,
+  anexoSimplesSchema,
+  apuracaoEstadoSchema,
+  apuracaoSimples,
+  apuracaoSimplesMeta,
+  apuracaoSimplesSchema,
+  simplesNacionalConfig,
+  simplesNacionalConfigMeta,
+  simplesNacionalConfigSchema,
+  type AnexoSimplesWire,
+  type ApuracaoEstado,
+  type ApuracaoSimples,
+  type SimplesNacionalConfig,
+} from './simplesNacionalConfig';
 
 export {
   nfe,

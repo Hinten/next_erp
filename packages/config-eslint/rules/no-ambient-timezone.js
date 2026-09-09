@@ -67,11 +67,12 @@
  */
 const SERVER_PATHS = [
   '/apps/functions/',
-  '/functions/src/', // the four nested apps/<channel>/functions codebases
+  '/functions/src/', // the five nested apps/<channel>/functions codebases
   '/apps/nfe/',
   '/apps/melhor-envio/',
   '/apps/mercado-livre/',
   '/apps/mercado-pago/',
+  '/apps/shopee/',
   '/apps/whatsapp/',
   '/apps/integrations/',
   '/packages/integrations/',

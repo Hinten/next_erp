@@ -13,6 +13,10 @@ export { configIaCollection } from './configIaCollection';
 export { nfev4Collection } from './nfev4Collection';
 export { enviNfeMsgCollection } from './enviNfeMsgCollection';
 export { nfeConfigCollection } from './nfeConfigCollection';
+export {
+  apuracaoSimplesCollection,
+  simplesNacionalConfigCollection,
+} from './simplesNacionalConfigCollection';
 export { certificadoSecretoCollection } from './certificadoSecretoCollection';
 export { filialCollection } from './filialCollection';
 export { inutNumeracaoCollection } from './inutNumeracaoCollection';
@@ -63,6 +67,7 @@ export { historicoEstadoPedidoCollection } from './historicoEstadoPedidoCollecti
 export { historicoFreteInicialCollection } from './historicoFreteInicialCollection';
 export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollection';
 export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollection';
+export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
 export { clienteCollection } from './clienteCollection';
 export { conversaCollection } from './conversaCollection';
 export { mensagemCollection } from './mensagemCollection';

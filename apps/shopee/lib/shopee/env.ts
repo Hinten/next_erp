@@ -7,10 +7,23 @@
  * the environment becomes a typed config object.
  *
  * ⚠️ Not the app's only `process.env` reader, and the narrower claim is the
- * true one: Firebase credentials are read by `lib/firebase/admin.ts` and the
- * CORS allow-list by `proxy.ts`, neither of which follows the rule below.
- * Scoping the claim to the Shopee values is what makes that rule enforceable
- * here instead of an app-wide invariant two other modules already break.
+ * true one. In the Next runtime these modules read the environment directly and
+ * none of them follows the rule below:
+ *
+ *  - `lib/firebase/admin.ts` — the Firebase credentials;
+ *  - `proxy.ts` — the CORS allow-list;
+ *  - `lib/shopee/shopeeTasks.ts` — `SHOPEE_TASKS_REGION`/`FUNCTIONS_REGION`
+ *    (handed to `requireRegion`, which trims and THROWS on a blank value, so a
+ *    copy of the guard here would be a second, drifting one) and
+ *    `SHOPEE_TASKS_DISABLED` (an `=== '1'` opt-in, blank-safe by construction
+ *    like `shopeeSandbox`).
+ *
+ * The nested `functions/` codebase reads more of it still (`options.ts`,
+ * `lib/admin.ts`, `tasksInvoker.ts`), which is why no count is stated here: a
+ * number goes stale silently and the list is what a reader needs.
+ *
+ * Scoping the claim to the Shopee CONFIGURATION values is what makes that rule
+ * enforceable here instead of an app-wide invariant those readers break.
  *
  * ## Every SHOPEE read is BLANK-GUARDED, never `??`
  *
@@ -144,6 +157,30 @@ export function shopeeVariationsPath(): string | null {
 export function shopeeRedirectUri(): string {
   const base = stripTrailingSlash(envValue('SHOPEE_PUBLIC_URL') ?? 'http://localhost:3009');
   return `${base}/api/oauth/shopee/callback`;
+}
+
+/**
+ * The push callback URL **exactly as registered with Shopee**, or `null` when
+ * unset/blank (the receiver answers 503 — the verifier never runs unconfigured).
+ *
+ * ⚠️ **Deliberately NOT slash-stripped**, unlike {@link shopeeRedirectUri} and
+ * {@link webBase}. This string goes INSIDE the push HMAC base string
+ * (`callback_url + '|' + raw_body`), so normalizing it here would silently
+ * change every digest we compute and make every genuine push fail
+ * verification — with nothing in the failure pointing at a trailing slash.
+ * `pushSignature.test.ts` pins that a trailing slash changes the digest.
+ *
+ * ⚠️ One URL per backend: `guide 18`'s Push Mechanism page takes a single
+ * scalar `callback_url` per App, with no per-shop addressing. Registering it is
+ * a separate, human step (#1534) — this variable only says what we will sign.
+ *
+ * ⚠️ WHICH url string Shopee actually signs (configured vs received, scheme,
+ * port, trailing slash) is undocumented — `guide 18` says only "URL". The
+ * receiver logs configured-vs-received on its first deliveries so the answer
+ * comes from live traffic rather than from a guess.
+ */
+export function shopeePushCallbackUrl(): string | null {
+  return envValue('SHOPEE_PUSH_CALLBACK_URL');
 }
 
 /**

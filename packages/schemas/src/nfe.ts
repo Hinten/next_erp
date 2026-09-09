@@ -174,6 +174,28 @@ export const nfeTotaisSchema = z.object({
   tpNF: tipoNFeSchema,
   /** `<finNFe>` (B25) — 1 normal, 2 complementar, 3 ajuste, 4 devolução. */
   finNFe: finNFeOperacaoSchema,
+  /**
+   * `vProd − vDesc + vFrete + vSeg + vOutro` — a receita bruta desta nota, SEM
+   * sinal, em reais. Derivado dos componentes acima no mesmo write.
+   *
+   * **Por que um derivado, contra a regra.** Guardar o que já se pode calcular
+   * normalmente é criar uma cópia que diverge. Aqui ele paga uma coisa concreta:
+   * a apuração mensal soma receita sobre uma janela de 12 meses, e um agregado
+   * de UMA soma cabe num índice de 6 campos enquanto um de CINCO precisaria de
+   * 10. Se o agregado não for coberto pelo índice ele lê os DOCUMENTOS — e um
+   * `nfev4` carrega o XML inteiro da NF-e, que no Enterprise é cobrado por dado
+   * varrido. A diferença é varrer um índice ou varrer o corpus.
+   *
+   * ⚠️ O que ele NÃO é: o imposto. A alíquota não entra aqui — ela muda todo mês
+   * e vive na apuração da competência, então o imposto continua derivado
+   * (`impostoEstimadoDaNota`). Guardar o produto dos dois é que criaria a cópia
+   * que diverge.
+   *
+   * ⚠️ Não perde informação: é redundante com os componentes, então uma mudança
+   * na definição de receita bruta o recalcula a partir deles — uma passada só de
+   * campo, nunca um novo parse de XML.
+   */
+  receitaBruta: z.number(),
   /** Totais RTC — ver {@link nfeTotaisRtcSchema}. `null` fora de emissão RTC. */
   rtc: nfeTotaisRtcSchema.nullable().default(null),
 });
@@ -253,10 +275,11 @@ export const nfeSchema = z.object({
    * Totais do `<ICMSTot>` (+ RTC) — ver {@link nfeTotaisSchema}. Escrito no
    * MESMO write que persiste `xml_nfe_proc`, derivado desses próprios bytes.
    *
-   * ⚠️ `null` em toda nota autorizada ANTES deste campo existir, e assim
-   * permanece: nada preenche o histórico retroativamente hoje. Um backfill é
-   * trabalho da janela de migração (regra 8) e ainda não tem script nem issue
-   * — o #1491 acompanha.
+   * ⚠️ `null` em toda nota autorizada ANTES deste campo existir, e nada o
+   * preenche em produção enquanto a janela de migração não rodar (regra 8): o
+   * script é `tools/migrations/src/2026-09-nfe-totais`, e ele é a CHAVE que liga
+   * a apuração — enquanto não rodar, toda nota anterior conta em
+   * `notasIlegiveis` e nenhuma alíquota é publicada.
    *
    * A alíquota e o imposto rateado NÃO moram aqui ainda: os campos chegam
    * junto do runner que os escreve, e não antes. Um campo que nada escreve é

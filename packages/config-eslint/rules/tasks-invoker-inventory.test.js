@@ -47,6 +47,10 @@ const INVENTORY = {
   'apps/mercado-pago/functions/src/processNotification.ts':
     'The Mercado Pago IPN handler. Enqueued by the receiver route only.',
 
+  // ---- codebase `shopee` --------------------------------------------------
+  'apps/shopee/functions/src/processNotification.ts':
+    'The Shopee push notification handler. Enqueued by the receiver route only.',
+
   // ---- codebase `whatsapp` ------------------------------------------------
   'apps/whatsapp/functions/src/processNotification.ts':
     'The WhatsApp Cloud API notification handler. Enqueued by the receiver route only.',
@@ -74,8 +78,8 @@ const PATHSPECS = ['*.ts', ':(exclude)*.test.ts', ':(exclude)packages/config-esl
  * having checked NOTHING — the "green job that ran zero tests" shape. These are
  * a floor, not an inventory: they only ever need raising.
  */
-const MIN_TASK_FILES = 9;
-const MIN_CODEBASES = 5;
+const MIN_TASK_FILES = 10;
+const MIN_CODEBASES = 6;
 
 function read(file) {
   return readFileSync(resolve(REPO_ROOT, file), 'utf8');

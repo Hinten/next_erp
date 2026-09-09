@@ -104,16 +104,19 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expect(page.getByRole('heading', { name: 'Nova filial' })).toBeVisible();
   });
 
-  test('shows the save-first hints on the new-filial NFe + certificado tabs', async ({ page }) => {
+  test('shows the save-first hints on the new-filial id-bound tabs', async ({ page }) => {
     await page.goto('/configuracoes/filiais/novo');
-    // Both the NFe config and the certificado upload need a saved filial; the
-    // create page shows a save-first hint on each. They share the same alert
-    // TITLE ("Salve a filial primeiro"), so assert each tab's UNIQUE body text
-    // to avoid a strict-mode collision across the kept-mounted panels.
+    // The NFe config, the certificado upload and the Simples Nacional config
+    // all need a saved filial; the create page shows a save-first hint on each.
+    // They share the same alert TITLE ("Salve a filial primeiro"), so assert
+    // each tab's UNIQUE body text to avoid a strict-mode collision across the
+    // kept-mounted panels.
     await page.getByRole('tab', { name: 'Configurações NFe' }).click();
     await expect(page.getByText(/a configuração de nf-e/i)).toBeVisible();
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
     await expect(page.getByText(/o envio do certificado digital a1/i)).toBeVisible();
+    await page.getByRole('tab', { name: 'Simples Nacional' }).click();
+    await expect(page.getByText(/a configuração do simples nacional/i)).toBeVisible();
   });
 
   test('creates a new filial with a sede address', async ({ page }) => {
@@ -202,6 +205,18 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
     await expect(page.getByText(/sem certificado/i)).toBeVisible();
     await expect(page.getByText(/formato \.pfx ou \.p12/i)).toBeVisible();
+    // ⚠️ The Simples tab is asserted only as far as the TAB, deliberately.
+    // Its panel reads `filiais/{id}/simplesnacional/default`, and the rules
+    // granting that read are generated in this same change and deployed by a
+    // human — so on staging the read is denied and the panel renders its error
+    // alert instead of the "not configured" one. Asserting the panel's content
+    // here would be asserting a DEPLOYMENT STATE (`apps/web/CLAUDE.md` rule 8):
+    // green the day the rules ship, red on every PR until then. The three query
+    // states are covered deterministically in `SimplesNacionalPanel.test.tsx`,
+    // and the panel's save-first hint has its own test on the create page.
+    const simples = page.getByRole('tab', { name: 'Simples Nacional' });
+    await simples.click();
+    await expect(simples).toHaveAttribute('aria-selected', 'true');
   });
 
   test('deletes a filial through the typed-confirm modal', async ({ page }) => {

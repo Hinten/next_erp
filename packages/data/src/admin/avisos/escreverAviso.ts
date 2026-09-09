@@ -251,9 +251,20 @@ export async function escreverAviso(
  * re-authorization for an expiry warning, `item_status` returning to normal for
  * a violation, `live_push_status` back to `Normal` for push health.
  *
- * `mergeIfExists`, not `merge`: an admin `merge` is an UPSERT and would happily
+ * ⚠️ It reports a **state transition**, not the existence of a document. The
+ * read is what buys that, and it is not optional: the callers are periodic
+ * (a weekly sweep resolves every healthy shop unconditionally), so a plain
+ * `update` would answer `true` every run forever and re-stamp `resolvidoEm`
+ * every run — which both makes the caller's `resolvidos` counter report
+ * closures that never happened AND pushes the stamp forward faster than
+ * `sweepAvisosResolvidos`'s 90-day cutoff can ever reach it, so the row never
+ * ages out. An already-resolved row is therefore a no-op answering `false`.
+ *
+ * Never a plain `merge`: an admin `merge` is an UPSERT and would happily
  * resurrect a document the retention sweep already deleted, as a ghost carrying
- * only the patch keys.
+ * only the patch keys. The read + `lastUpdateTime` precondition (rule 7 tier 1)
+ * keeps that property and adds the transition: a writer that lost the race sees
+ * `FAILED_PRECONDITION` and reports `false` rather than overwriting the winner.
  */
 export async function resolverAviso(
   db: Firestore,
@@ -261,11 +272,28 @@ export async function resolverAviso(
   motivo: string,
   deps: Pick<EscreverAvisoDeps, 'agoraUs'>,
 ): Promise<boolean> {
-  return avisoCollection.mergeIfExists(db, {}, chave, {
+  const ref = avisoCollection.docRef(db, {}, chave);
+  const snap = await ref.get();
+  if (!snap.exists) return false;
+
+  const armazenado = avisoCollection.parseRead(snap.data(), `avisos/${chave}`);
+  if (armazenado.resolvidoEm != null) return false;
+
+  const patch = avisoCollection.parseMerge({
     resolvidoEm: deps.agoraUs,
     resolucaoMotivo: motivo,
     atualizadoEm: deps.agoraUs,
   });
+
+  try {
+    await ref.update(patch as Record<string, unknown>, { lastUpdateTime: snap.updateTime });
+    return true;
+  } catch (err) {
+    // Someone else resolved (or swept) the row between our read and our write:
+    // their write stands, and this call closed nothing.
+    if (isNotFound(err) || isFailedPrecondition(err)) return false;
+    throw err;
+  }
 }
 
 /**

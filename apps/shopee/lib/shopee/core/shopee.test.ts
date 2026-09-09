@@ -58,12 +58,12 @@ vi.mock('@delfrance/integrations-shopee', async (importActual) => {
   return { ...actual, exchangeCode: h.exchangeCode, createShopeeClient: h.createShopeeClient };
 });
 
-const {
-  ShopeeContaNotConfiguredError,
-  __setShopeeCacheClockForTests,
-  invalidateShopeeConta,
-  loadShopeeContext,
-} = await import('./shopee');
+const { ShopeeContaNotConfiguredError, loadShopeeContext } = await import('./shopee');
+// The conta reader moved to `./contaCache` in step 3 (a second reader — the
+// `shop_id` resolver — had to share the same instance). The cache-hit specs
+// below are unchanged on purpose: they assert the CONTEXT LOADER's caching
+// behaviour, which is what the extraction had to preserve.
+const { __setShopeeCacheClockForTests, invalidateShopeeConta } = await import('./contaCache');
 const { ShopeeContaSemShopIdError } = await import('./tokenStore');
 
 const db = {} as never;

@@ -187,6 +187,28 @@ const LANES = {
       },
     ],
   },
+  '.github/workflows/ci-shopee.yml': {
+    gate: 'CI gate (shopee)',
+    scope: 'CI scope (shopee)',
+    // One root. `@delfrance/integrations-shopee`, `@delfrance/data` (the
+    // notification pipeline AND the avisos seam the sweep writes through) and
+    // `@delfrance/schemas` are all in the app's closure, so the graph runs this
+    // lane on a change to any of them without a list to maintain.
+    roots: ['@delfrance/shopee-app'],
+    // ⚠️ ONE certified job, and deliberately so (#1511, decision D7). Unlike
+    // ci-mercado-livre, this lane owns NO exclusion: `ci.yml` still runs every
+    // `@delfrance/shopee-app` unit test in `CI test`, unfiltered and with no
+    // `if:`. So a skip here loses only the emulator round trip, never the unit
+    // suite — the smaller blast radius while step 22 (#1530) is still open.
+    // Step 22 may move the offline job in when it adds the Firestore-only one.
+    jobs: [
+      {
+        id: 'shopee-tasks-roundtrip',
+        check: 'Shopee Cloud Tasks round trip',
+        class: 'required',
+      },
+    ],
+  },
   '.github/workflows/ci-storage.yml': {
     gate: 'CI gate (storage)',
     scope: 'CI scope (storage)',

@@ -7,7 +7,6 @@
  * Shaped on `apps/melhor-envio/lib/freight/melhorEnvio.ts`.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { READ_CACHE_TTL, createCachedDocReader } from '@delfrance/data/admin/cache';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { INTEGRACAO_TIPO, type CredenciaisIntegracao, type Integracao } from '@delfrance/schemas';
 import {
@@ -20,6 +19,7 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import { type ShopeeConfig, shopeeConfig } from '../env';
+import { invalidateShopeeConta, readConta } from './contaCache';
 import { createShopeeCredentialStore, credentialFromTokenPair } from './credentialStore';
 import {
   ShopeeContaSemShopIdError,
@@ -67,72 +67,6 @@ export interface ShopeeContext {
   createShopClient(): ShopeeClient;
 }
 
-/**
- * Injectable clock. `createReadCache` captures `opts.now` ONCE at construction,
- * which for a module-scope cache is import time — so the reader below reads this
- * binding through an arrow rather than handing over the reference, which would
- * freeze it. Production never moves it.
- */
-let cacheClock: () => number = Date.now;
-
-/**
- * The `integracao` document behind every Shopee call.
- *
- * ⚠️ **None of the three forbidden cases applies** (`@delfrance/data/admin/cache`):
- *
- *  - **No `tx.get`.** Nothing here runs inside a transaction.
- *  - **No read-modify-write.** `exchangeAndPersist` does not derive its patch
- *    from this document: `shop_id` / `main_account_id` come from the CALLBACK's
- *    own query parameters, and the cache is evicted immediately after the write.
- *  - **No token.** The OAuth credential lives in the `credenciais`
- *    subcollection and `readCredential()` below is an uncached `get` on every
- *    single call. Caching an OAuth token is the case the primitive names first.
- *
- * `isFresh: conta.shop_id != null` — a conta that has never completed the
- * consent has no `shop_id`, and `exchangeAndPersist` back-fills it on a
- * DIFFERENT instance from the ones that will read it. Refusing such a document
- * on every hit is what makes a 15-minute TTL safe, and it costs nothing once the
- * field is set.
- *
- * ⚠️ It is deliberately NOT `main_account_id != null`: a shop-scoped consent
- * (the normal BR case) never sets that field, so the predicate would refuse
- * every hit forever for a perfectly connected conta.
- *
- * `negativeTtlMs: 0` — an absent document means an operator deleted the
- * integração; caching that wins nothing and only delays the recovery.
- *
- * `sampleEvery: 0` — the built-in sampler logs through `console.warn`, the wrong
- * severity for a metric, and at its default of 500 an instance serving fewer
- * gets logs nothing at all.
- *
- * ℹ️ Inline rather than extracted, ME-style. When step 3 adds a second reader
- * (the receiver resolving a conta by `shop_id`), move both into
- * `lib/shopee/core/contaCache.ts` the way `apps/mercado-livre` did.
- */
-const contaReader = createCachedDocReader(integracaoCollection, {
-  name: 'shopee:integracao',
-  ttlMs: READ_CACHE_TTL.config,
-  maxEntries: 64,
-  isFresh: (conta) => conta.shop_id != null,
-  negativeTtlMs: 0,
-  now: () => cacheClock(),
-  sampleEvery: 0,
-});
-
-/** Drop the cached conta — call after any write that changes it. */
-export function invalidateShopeeConta(integracaoId: string): void {
-  contaReader.invalidate({}, integracaoId);
-}
-
-/**
- * Test-only. The cache is module-scope and captures `now` at construction, so
- * the clock is swapped through this binding rather than passed per call. Pair it
- * with `__resetAllReadCaches()`.
- */
-export function __setShopeeCacheClockForTests(now: () => number = Date.now): void {
-  cacheClock = now;
-}
-
 /** The package's OAuth config, from ours. Kept in one place so it cannot drift. */
 function oauthConfigFrom(config: ShopeeConfig): ShopeeOAuthConfig {
   return { partnerId: config.partnerId, partnerKey: config.partnerKey, hosts: config.hosts };
@@ -143,8 +77,10 @@ export async function loadShopeeContext(
   integracaoId: string,
 ): Promise<ShopeeContext> {
   // The cached reader replaces the READ, not the contract — both throws below
-  // are unchanged, and a `null` stands in for `!snap.exists`.
-  const conta = await contaReader.get(db, {}, integracaoId);
+  // are unchanged, and a `null` stands in for `!snap.exists`. It now lives in
+  // `./contaCache`, shared with the `shop_id` resolver the push receiver and the
+  // authorization-expiry sweep use.
+  const conta = await readConta(db, integracaoId);
   if (conta == null) {
     throw new ShopeeContaNotConfiguredError(`Integração ${integracaoId} não encontrada.`);
   }
