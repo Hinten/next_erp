@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Type-only — erased at compile time, so it does not defeat the mocks below.
 import type { ShopeeNotificationPayload } from './notificacao';
+// The shared fake Firestore — `persistNotificationParked` writes through the
+// REAL store, so the terminal status has to be read back off a document.
+import { FakeDb, asDb } from '../testing/fakeDb';
 
 /**
  * Mocked: the three modules the conta arms lean on — the shop→integração
@@ -53,10 +56,12 @@ const {
   identidadeDoPush,
   lojasDoPushDeConta,
   lojasExpirandoDoPush12,
+  mensagemDoErro,
   motivoDoParque,
   MOTIVO_SEM_AUTHORIZE_TYPE,
   parseNotificationBody,
   payloadDeDocumento,
+  persistNotificationParked,
   processNotificationPayload,
   sanitizarData,
   SHOPEE_NOTIFICATION_QUEUE,
@@ -1154,5 +1159,99 @@ describe('a fiação do pipeline', () => {
     );
     expect(id.entidade).toBe('111:ORD1');
     expect(id.entidade).not.toContain('5000');
+  });
+});
+
+// ── mensagemDoErro ──────────────────────────────────────────────────────────
+
+describe('mensagemDoErro — a leitura ESTRUTURAL da mensagem de uma falha', () => {
+  // ⚠️ Ela mora aqui, e não no receiver, porque a varredura de mensagens
+  // perdidas precisa da MESMA leitura: as duas escrevem o mesmo `erro` na mesma
+  // coleção, e uma regra duplicada é uma regra que deriva.
+  it('lê a message de um Error', () => {
+    expect(mensagemDoErro(new Error('sem fila'))).toBe('sem fila');
+  });
+
+  it('lê a message de um objeto que NÃO é Error — a leitura é estrutural', () => {
+    // O ponto de não usar `err instanceof Error`: ele não estreita nada (é o pai
+    // de toda exceção) e ainda perderia isto.
+    expect(mensagemDoErro({ message: 'rejeição do transporte' })).toBe('rejeição do transporte');
+  });
+
+  it('cai para String(err) quando não há message legível', () => {
+    expect(mensagemDoErro('boom')).toBe('boom');
+    expect(mensagemDoErro({ message: 42 })).toBe('[object Object]');
+    expect(mensagemDoErro(null)).toBe('null');
+  });
+
+  it('uma message VAZIA cai para String(err) — nunca uma string vazia no documento', () => {
+    expect(mensagemDoErro({ message: '' })).toBe('[object Object]');
+  });
+});
+
+// ── a identidade de uma entrada ilegível da fila de mensagens perdidas ───────
+
+describe('identidadeDoPush — CODIGO_AUSENTE chaveia na POSIÇÃO do provedor', () => {
+  const perdida = (ref: string, shopId: number | null = null): ShopeeNotificationPayload => ({
+    code: CODIGO_AUSENTE,
+    shopId,
+    timestamp: 1_760_000_000_000,
+    data: { _lostPush: { ref, code: 3, shopId, timestamp: 1_760_000_000, bruto: 'x' } },
+  });
+
+  it('⚠️ duas entradas ilegíveis de nível de PARCEIRO no mesmo segundo geram ids DISTINTOS', () => {
+    // Sem esta linha as duas chaveiam `-1:-:-:<carimbo>`; `store.create`
+    // estreita ALREADY_EXISTS e retorna em SILÊNCIO, então a varredura
+    // confirmaria passando por uma entrada cujo payload nunca foi gravado — a
+    // forma do #1488 chegando pela escotilha que existe para evitá-la.
+    const a = docIdOf(perdida('176610_0'));
+    const b = docIdOf(perdida('176610_1'));
+
+    expect(a).toBe('-1:-:176610_0:1760000000000');
+    expect(b).toBe('-1:-:176610_1:1760000000000');
+    expect(a).not.toBe(b);
+  });
+
+  it('a loja entra no segmento quando a lista trouxe uma', () => {
+    expect(docIdOf(perdida('176610_0', 987654))).toBe('-1:987654:176610_0:1760000000000');
+  });
+
+  it('a mesma entrada relida numa página NÃO confirmada gera o MESMO id', () => {
+    // `last_message_id` + índice são estáveis enquanto a página não é
+    // confirmada, então uma releitura colapsa numa linha só em vez de duplicar.
+    expect(docIdOf(perdida('176610_0'))).toBe(docIdOf(perdida('176610_0')));
+  });
+
+  it('⚠️ um documento persistido sem `code` legível NÃO carrega _lostPush e mantém a identidade padrão', () => {
+    // `payloadDeDocumento` cai para CODIGO_AUSENTE por outra razão inteiramente
+    // — o documento armazenado é que é ilegível — e essa linha não muda nada
+    // para aquele produtor.
+    const doDocumento = payloadDeDocumento({ shop_id: 987654, timestamp: 1_760_000_000_000 });
+
+    expect(doDocumento.code).toBe(CODIGO_AUSENTE);
+    expect(identidadeDoPush(doDocumento).entidade).toBe('987654:-');
+  });
+});
+
+// ── persistNotificationParked ───────────────────────────────────────────────
+
+describe('persistNotificationParked', () => {
+  it('grava a linha como PARKED — terminal, e nada a re-dirige', async () => {
+    // O receiver não pode alcançar isto: um push de entrada que ele não consegue
+    // ler é ACKADO (uma retentativa também não vai parsear), e parar um deixaria
+    // uma linha por entrega. A varredura de mensagens perdidas é o caso oposto —
+    // a entrada só sai da fila do provedor por um ACK NOSSO.
+    const fake = new FakeDb();
+    await persistNotificationParked(
+      asDb(fake),
+      { code: CODIGO_AUSENTE, shopId: null, timestamp: 1_760_000_000_000, data: null },
+      'entrada ilegível',
+    );
+
+    expect(fake.store['notificacoesShopee/-1:-:-:1760000000000']?.data).toMatchObject({
+      status: 'parked',
+      tentativas: 0,
+      erro: 'entrada ilegível',
+    });
   });
 });

@@ -18,6 +18,12 @@
  * boundary to one module, and to two call sites inside it, is what makes it
  * reviewable.
  *
+ * ⚠️ And it is the seam `avisos/pushSaude.ts` funnels through — that module
+ * holds no conversion of its own, which is why the "exactly two call sites"
+ * count above still stands with a second producer module in the app. Anything
+ * new that writes an aviso here imports {@link agoraUsDe} / {@link depsDeEscrita}
+ * rather than reaching for `millisToMicros`.
+ *
  * ## ⚠️ No `janela`
  *
  * The chave carries `(tipo, conta, entidade)` and deliberately no window. Keying
@@ -116,12 +122,12 @@ export function chaveDesautorizacao(integracaoId: string, shopId: number): strin
  * The ms → µs seam for "now". Every writer and every resolver in this module
  * goes through it, so there is exactly one place to review.
  */
-function agoraUsDe(deps: { nowMs: number }): number {
+export function agoraUsDe(deps: { nowMs: number }): number {
   return millisToMicros(deps.nowMs);
 }
 
 /** `escreverAviso`'s deps, from ours. One place, so the µs seam cannot drift. */
-function depsDeEscrita(deps: AvisoDeps): {
+export function depsDeEscrita(deps: AvisoDeps): {
   increment: (by: number) => unknown;
   agoraUs: number;
   logger?: { warn: (msg: string, meta?: Record<string, unknown>) => void };
