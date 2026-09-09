@@ -28,6 +28,12 @@ import type { CollectionMetadata } from './types';
  *     by `useCollectionMonitor` — which is CLASSIC **today**. Its field is
  *     resolved by `TableView` as: prefer `ultimaModificacao`, else `timestamp`.
  *     A dropped key there hides the row from the staleness check right now.
+ *     ⚠️ That monitor now runs only while a list is on the FROZEN transport,
+ *     which narrows WHEN it runs, never WHICH collections reach it: every list
+ *     goes frozen on a filter, a search or a header sort. So this stays a live
+ *     exclusion over the same set, and for the 15 collections whose
+ *     `defaultQuery` sorts on something else it is the only guard pinning
+ *     `ultimaModificacao` to `.default(null)`.
  *
  * ⚠️ This guards the SCHEMA, i.e. what this app writes from here on. It cannot
  * see documents already on disk, nor the legacy corpus arriving at the cutover

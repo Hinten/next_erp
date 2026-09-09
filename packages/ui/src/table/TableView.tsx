@@ -544,8 +544,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
 
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // Bumped by the update-monitor's "Atualizar" button to force the row query
-  // to re-execute (the Pipelines path is one-shot — see `pipeline` below).
+  // Forces the row query to re-execute (the Pipelines path is one-shot — see
+  // `pipeline` below). Three writers: a completed `refreshOnComplete` action,
+  // from either the bar or the side panel, and the update-monitor's "Atualizar"
+  // button — which now only exists on the frozen transport, where re-executing
+  // is the whole point. The two action ones are load-bearing regardless: a
+  // delete has to make the one-shot pipeline read again.
   const [refreshKey, setRefreshKey] = useState(0);
   // The copy action needs row selection; enabling copy implies `selectable`.
   const selectionEnabled = selectable || !!copyHref;
@@ -617,9 +621,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // resolved to a candidate id list first — see the `search.resolveIds` prop.
   // `undefined` ids means the resolver declined (or there is none), which is
   // what falls the term through to `toFilters` below.
-  // ⚠️ `refreshKey` is passed so the update-monitor's "Atualizar" invalidates
-  // the RESOLUTION too, not just the row query. Without it a refresh re-reads
-  // the documents named by a stale id list — fresh rows, wrong set.
+  // ⚠️ `refreshKey` is passed so a refresh invalidates the RESOLUTION too, not
+  // just the row query. Without it a refresh re-reads the documents named by a
+  // stale id list — fresh rows, wrong set. A resolved term always puts the list
+  // on the frozen transport, so both refresh routes reach here: the monitor's
+  // "Atualizar" and a completed action.
   const searchResolve = useSearchIdResolution(searchConfig?.resolveIds, searchTerm, refreshKey);
   const searchIdsActive = searchResolve.ids !== undefined;
   // While a resolution is in flight we do not yet know WHICH mode the term
@@ -1577,16 +1583,45 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     rowsNotifyRef.current.cb?.(rowsNotifyRef.current.rows);
   }, [rowIdsSerial]);
 
-  // Update-monitor field: explicit prop wins; otherwise prefer a
-  // last-modified field, then the creation timestamp.
+  /**
+   * What the operator is actually looking at.
+   *
+   * ⚠️ Derived from the TRANSPORT that was selected (`pipeline === null` ⇒ the
+   * rows come from `useSnapshot`), never from `listMode`. The two disagree on
+   * `queryOverride`: the policy calls it static, but `fallbackQuery` returns the
+   * caller's query and `useSnapshot` streams it — so `/clientes`' endereço search
+   * is genuinely LIVE while the policy says otherwise. A badge that is wrong on
+   * the one screen reaching that branch is worse than no badge.
+   *
+   * Declared HERE, above the update monitor, because the monitor reads it too:
+   * one const, so the badge and the monitor cannot drift apart.
+   */
+  const transportIsLive = pipeline === null;
+
+  /**
+   * Update-monitor field: explicit prop wins; otherwise prefer a last-modified
+   * field, then the creation timestamp.
+   *
+   * ⚠️ `null` while the rows STREAM, which switches the monitor off entirely
+   * (`useSnapshot(null)` never subscribes). The monitor exists to announce that
+   * a FROZEN result set has fallen behind its collection; on the live transport
+   * the rows already carry every change, so a second `limit(1)` listener could
+   * only raise "desatualizada" over a list that had just updated itself.
+   *
+   * It reads the TRANSPORT and not `listMode.mode` for the reason above: the
+   * policy calls a `queryOverride` static while `useSnapshot` streams it, so the
+   * policy would keep a pointless listener on `/clientes`' endereço search AND
+   * put that flag beside its "Tempo real" badge.
+   */
   const resolvedMonitorField = useMemo<string | null>(() => {
+    if (transportIsLive) return null;
     if (monitorField === false) return null;
     if (typeof monitorField === 'string') return monitorField;
     const keys = new Set(descriptors.map((d) => d.key));
     if (keys.has('ultimaModificacao')) return 'ultimaModificacao';
     if (keys.has('timestamp')) return 'timestamp';
     return null;
-  }, [monitorField, descriptors]);
+  }, [transportIsLive, monitorField, descriptors]);
 
   const monitor = useCollectionMonitor({
     db,
@@ -1601,17 +1636,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // and pays for its vertical space.
   const actionBarShown =
     !panelEnabled && (actions.length > 0 || !!newHref || !!renderNewButton || !!copyHref);
-  /**
-   * What the operator is actually looking at.
-   *
-   * ⚠️ Derived from the TRANSPORT that was selected (`pipeline === null` ⇒ the
-   * rows come from `useSnapshot`), never from `listMode`. The two disagree on
-   * `queryOverride`: the policy calls it static, but `fallbackQuery` returns the
-   * caller's query and `useSnapshot` streams it — so `/clientes`' endereço search
-   * is genuinely LIVE while the policy says otherwise. A badge that is wrong on
-   * the one screen reaching that branch is worse than no badge.
-   */
-  const transportIsLive = pipeline === null;
+  // Reads `transportIsLive`, declared above the update monitor because that
+  // monitor is gated on it too.
   const transportLabel = transportIsLive
     ? LIVE_LABEL
     : STATIC_REASON_LABEL[listMode.reason ?? 'override'];
@@ -1709,7 +1735,18 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                     </ActionIcon>
                   </span>
                 </Tooltip>
-                {monitor.stale && (
+                {/*
+                 * ⚠️ Gated on the TRANSPORT a second time, and the redundancy is
+                 * deliberate: `resolvedMonitorField` closes the LISTENER, this
+                 * closes the PIXEL. Both read the one `transportIsLive` const,
+                 * so there is no second copy of the rule to drift — and a
+                 * rendering test can pin this one, which it could not do
+                 * through the mocked hook.
+                 *
+                 * The invariant it buys: a stale flag can never appear beside a
+                 * "Tempo real" badge, `queryOverride` included.
+                 */}
+                {!transportIsLive && monitor.stale && (
                   <Tooltip
                     label="Os dados desta coleção foram alterados desde que a página carregou. Clique para atualizar."
                     withinPortal

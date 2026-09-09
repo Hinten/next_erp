@@ -25,7 +25,16 @@ export interface CollectionMonitorResult {
  * the top document's identity or `field` value changes from the captured
  * baseline — a new doc changes the id, an edit that bumps `field` changes
  * the value, deleting the top doc changes the id. `field === null` disables
- * the monitor.
+ * the monitor — no query is built, `useSnapshot` never subscribes, and the
+ * baseline is forgotten so a later re-enable pins afresh.
+ *
+ * ⚠️ TableView enables this ONLY on the frozen (Pipelines) transport. A list
+ * whose rows stream has nothing to detect: every change is already on screen,
+ * so the notice would fire over data it had just applied. What that gate does
+ * NOT change is which collections owe the index — any list drops to the frozen
+ * transport on a filter, a search or a header sort, so the query is reachable
+ * on every collection that declares a `defaultQuery` and carries one of these
+ * fields, and `defaultQuery.indexes.test.ts` still requires all of them.
  *
  * Known limitation: deleting a document that is NOT the current top one is
  * invisible here — a hard delete leaves no queryable trace and a `limit(1)`
@@ -62,6 +71,18 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
   const [stale, setStale] = useState(false);
 
   useEffect(() => {
+    // ⚠️ Switched off — forget everything. The baseline and `stale` are pinned
+    // to a result set nobody is looking at any more, and TableView disables the
+    // monitor exactly when its list goes back to STREAMING. Keeping them would
+    // make re-entry lie: on the next filter the rows re-execute and are fresh,
+    // but a surviving non-null baseline skips the server-truth wait below,
+    // compares against the previous static session and raises `stale` over rows
+    // fetched a millisecond ago.
+    if (!query) {
+      baselineRef.current = null;
+      setStale(false);
+      return;
+    }
     if (signature === null) return;
     // Wait for SERVER truth before pinning the baseline. The IndexedDB cache
     // emits first, so pinning that emission made the cache→server correction
@@ -73,7 +94,7 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
       return;
     }
     if (signature !== baselineRef.current) setStale(true);
-  }, [signature, snap.fromCache]);
+  }, [query, signature, snap.fromCache]);
 
   function acknowledge() {
     baselineRef.current = signature;
