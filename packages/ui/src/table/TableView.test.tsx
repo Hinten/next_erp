@@ -1646,6 +1646,64 @@ describe('TableView', () => {
       searchParamsRef.current = new URLSearchParams();
     });
 
+    it('does not count the orderBy prop as the operator’s sort', () => {
+      // `resolveInitialTableState` seeds `sort` from the `orderBy` prop, so
+      // `sort !== undefined` is TRUE on a virgin load of any screen passing it
+      // — /nfe/comunicacoes today. Counting that would arm the control before
+      // the operator touched anything, and clicking it would change nothing
+      // they can see: the "enabled button that does nothing" this control's
+      // own rule exists to prevent.
+      const pristine = wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+          orderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      expect(resetButton().hasAttribute('disabled'), 'the prop is not theirs').toBe(true);
+      pristine.unmount();
+
+      // A real header click on top of that prop IS theirs, and must arm it.
+      searchParamsRef.current = new URLSearchParams('sort=tipo:desc');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+          orderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      expect(resetButton().hasAttribute('disabled'), 'a real sort is theirs').toBe(false);
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('resets to the screen’s own opening order, not past it', () => {
+      // The `orderBy` prop is documented as OVERRIDING meta.defaultQuery.orderBy,
+      // so a screen may legitimately open on a different order. Resetting to
+      // `undefined` would discard that declaration on a click the operator
+      // meant as "undo MY changes", and nothing but a reload would bring it
+      // back — the URL sync has meanwhile dropped `?sort=`.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+          orderBy={{ field: 'tipo', direction: 'desc' }}
+        />,
+      );
+      searchParamsRef.current = new URLSearchParams();
+      fireEvent.click(resetButton());
+
+      // The screen's order survived; only the operator's filter went.
+      expect(readListViewMemory(MEMORY_KEY)?.qs).toBe('sort=tipo%3Adesc');
+      expect(resetButton().hasAttribute('disabled'), 'nothing of theirs is left').toBe(true);
+    });
+
     it('stays offered, and honest, where live is unreachable', () => {
       // A caller-owned query holds the POLICY on static, but none of it is the
       // operator's, so the control must not offer to fix what it cannot reach.

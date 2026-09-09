@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveListMode, type ResolveListModeInput } from './resolveListMode';
+import { resetControlLabel, resolveListMode, type ResolveListModeInput } from './resolveListMode';
 
 /** The one input that yields `live` — every case below perturbs exactly one field. */
 const LIVE: ResolveListModeInput = {
@@ -63,5 +63,28 @@ describe('resolveListMode', () => {
   it('refuses to stream a sort the index guard has not seen', () => {
     expect(mode({ orderBySerial: 'nome:asc' }).mode).toBe('static');
     expect(mode({ columnFilterCount: 1 }).mode).toBe('static');
+  });
+});
+
+describe('resetControlLabel', () => {
+  it('offers to clear whatever is the operator’s', () => {
+    expect(resetControlLabel(true, 'live')).toMatch(/^Limpa a ordenação/);
+    expect(resetControlLabel(true, 'static')).toMatch(/^Limpa a ordenação/);
+  });
+
+  it('separates "already on the declared query" from "this screen froze it"', () => {
+    // ⚠️ The branch keyed on the POLICY, and the reason it must be. The badge
+    // beside this control reads the TRANSPORT, and the two disagree under
+    // `queryOverride`: `pipeline` is null there so the badge correctly says
+    // "Tempo real", while the issued query is the CALLER's, not the declared
+    // one. Keyed on the transport, this told the operator the list was already
+    // on the default query when it was not, and the message written for the
+    // override case was unreachable from the override case.
+    expect(resetControlLabel(false, 'live')).toBe(
+      'Nada para limpar: a lista já está na consulta padrão.',
+    );
+    expect(resetControlLabel(false, 'static')).toBe(
+      'Nada para limpar aqui — o resultado fixo vem desta tela, não de um filtro seu.',
+    );
   });
 });

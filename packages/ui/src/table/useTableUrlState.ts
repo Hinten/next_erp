@@ -304,16 +304,32 @@ export interface TableUrlState {
   /** Drop every column filter and the search term in one go. */
   clearAll: () => void;
   /**
-   * Drop EVERYTHING this table owns — filters, the search term AND the custom
-   * sort — so the list falls back to `meta.defaultQuery` and can stream again.
+   * Drop everything the OPERATOR put on this list — filters, the search term
+   * and their sort — returning it to how the screen opens.
    *
    * A superset of {@link clearAll}, deliberately kept separate rather than
    * folded into it. `clearAll` backs the chip row's button, which is named for
    * the chips beside it, and the chips are built from filters + search only
    * (`describeFilter.ts`) — never from the sort. A `clearAll` that also
    * destroyed a sort no chip shows would do more than its own label admits.
+   *
+   * ⚠️ The sort goes back to `initialSort`, NOT to `undefined`. A caller that
+   * passes one is declaring the order its screen opens in, and that prop is
+   * documented as overriding `meta.defaultQuery.orderBy` — so resetting past it
+   * would discard a screen's own declaration on a click the operator meant as
+   * "undo MY changes". With no `initialSort` the two are identical.
    */
   resetListState: () => void;
+  /**
+   * Is any of this list's state the operator's, rather than the screen's?
+   *
+   * Lives here because it must agree with {@link resetListState} on what
+   * "the operator's" means, and the trap is the sort: `initialSort` seeds it
+   * (see `resolveInitialTableState`), so `sort !== undefined` is TRUE from the
+   * first render on any screen passing that prop, with no interaction at all.
+   * Counting it would offer a reset for state nobody set.
+   */
+  hasOwnState: boolean;
   /** Page count + scroll recovered from the last visit, or null. */
   restored: { pages: number; scroll: number } | null;
   /** Record the page count / scroll for the next visit. */
@@ -441,20 +457,44 @@ export function useTableUrlState(
   }, []);
 
   /**
+   * The order this screen OPENS in — the `initialSort` prop normalized the same
+   * way `resolveInitialTableState` normalizes it, so the two cannot disagree
+   * about what the pristine sort is.
+   *
+   * Held in a ref, and keyed on the VALUES rather than the object: callers pass
+   * this inline (`orderBy={{ field: 'timestamp', direction: 'desc' }}`), so the
+   * object identity changes on every render and a dependency on it would make
+   * `resetListState` a new function each time.
+   */
+  const fallbackSort = useMemo<SortState | undefined>(
+    () =>
+      initialSort
+        ? { field: initialSort.field, direction: initialSort.direction ?? 'asc' }
+        : undefined,
+    [initialSort?.field, initialSort?.direction],
+  );
+  const fallbackSortRef = useRef(fallbackSort);
+  fallbackSortRef.current = fallbackSort;
+
+  /**
    * The three atoms in ONE handler, so they land in one render: the mirror
    * effect below runs once and writes one `history.replaceState` and one
    * memory entry, rather than three of each with two intermediate states an
    * operator could see in the URL.
-   *
-   * `undefined` is what "no user sort" means here — `TableView`'s
-   * `effectiveOrderBy` falls through it to `meta.defaultQuery.orderBy`, which
-   * is the only sort `resolveListMode` will stream.
    */
   const resetListState = useCallback(() => {
     setFilters({});
     setSearch('');
-    setSort(undefined);
+    setSort(fallbackSortRef.current);
   }, []);
+
+  const hasOwnState =
+    Object.keys(filters).length > 0 ||
+    search !== '' ||
+    (sort !== undefined &&
+      (fallbackSort === undefined ||
+        sort.field !== fallbackSort.field ||
+        sort.direction !== fallbackSort.direction));
 
   // Mirror this table's state into the URL and into the memory.
   //
@@ -508,6 +548,7 @@ export function useTableUrlState(
     setSearch,
     clearAll,
     resetListState,
+    hasOwnState,
     restored,
     rememberView,
   };

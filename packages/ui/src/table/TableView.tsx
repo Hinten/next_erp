@@ -63,7 +63,12 @@ import { ActionBar } from './ActionBar';
 import { ActionSidePanel } from './ActionSidePanel';
 import { ActiveFilters } from './ActiveFilters';
 import { useCollectionMonitor } from './useCollectionMonitor';
-import { LIVE_LABEL, STATIC_REASON_LABEL, resolveListMode } from './resolveListMode';
+import {
+  LIVE_LABEL,
+  STATIC_REASON_LABEL,
+  resetControlLabel,
+  resolveListMode,
+} from './resolveListMode';
 import {
   IconArrowDown,
   IconArrowsSort,
@@ -597,6 +602,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     setSearch,
     clearAll,
     resetListState,
+    hasOwnState,
     restored,
     rememberView,
   } = useTableUrlState(filterableFields, orderBy, {
@@ -1517,21 +1523,21 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     : STATIC_REASON_LABEL[listMode.reason ?? 'override'];
 
   /**
-   * Is there anything of the OPERATOR's on this list — exactly the three atoms
+   * Is there anything of the OPERATOR's on this list — exactly what
    * `resetListState` clears, and nothing else?
    *
-   * `queryOverride`, a page's `extraFilters`, a `forcedOrderBy` and a missing
-   * `meta.defaultQuery` all belong to the SCREEN. They can hold a list on the
-   * static path, and no control in this toolbar can clear them, so they must
-   * not enable a button that would then do nothing.
+   * Computed by `useTableUrlState`, not here, because it has to agree with that
+   * reset about what "the operator's" means, and the sort makes that subtle:
+   * the `orderBy` prop SEEDS the sort state, so a naive `sort !== undefined` is
+   * true from the first render on any screen passing it, with no interaction at
+   * all — offering a reset for state nobody set.
    *
-   * ⚠️ `filters`, NOT `serverFilters`. A subcollection-lookup filter (the
-   * pedido NF column) is stripped out of the latter by construction — it
-   * resolves to an id set rather than a `where` — and it is still the
-   * operator's, still clearable, and on its own still enough to freeze the list.
+   * `queryOverride`, a page's `extraFilters`, a `forcedOrderBy` and a missing
+   * `meta.defaultQuery` are screen-owned in the same way. They can hold a list
+   * on the static path, and nothing in this toolbar can clear them, so they too
+   * must not enable a button that would then do nothing.
    */
-  const hasOwnListState =
-    Object.keys(filters).length > 0 || searchTerm !== '' || sort !== undefined;
+  const hasOwnListState = hasOwnState;
 
   // Always shown, because it now carries the transport badge. Two lists that
   // behave differently and look identical is how #40 stayed invisible.
@@ -1583,11 +1589,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                  */}
                 <Tooltip
                   label={
-                    hasOwnListState
-                      ? 'Limpa a ordenação, os filtros de coluna e a busca desta lista.'
-                      : transportIsLive
-                        ? 'Nada para limpar: a lista já está na consulta padrão.'
-                        : 'Nada para limpar aqui — o resultado fixo vem desta tela, não de um filtro seu.'
+                    // Takes the POLICY, and its signature enforces that — see
+                    // the note on `resetControlLabel`. The badge two lines up
+                    // reads the TRANSPORT, deliberately, and the two disagree.
+                    resetControlLabel(hasOwnListState, listMode.mode)
                   }
                   withinPortal
                   multiline

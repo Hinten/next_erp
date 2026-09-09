@@ -109,3 +109,21 @@ export const STATIC_REASON_LABEL: Record<StaticReason, string> = {
 
 /** Badge text for the live mode. */
 export const LIVE_LABEL = 'Tempo real — a lista se atualiza sozinha.';
+
+/**
+ * Tooltip for the reset control beside the badge.
+ *
+ * ⚠️ Takes the POLICY (`ListMode`), and the parameter type is the point: the
+ * badge next to this control reads the TRANSPORT (`pipeline === null`), the two
+ * disagree under `queryOverride`, and the first version of this branch used the
+ * transport by mistake. It then told an operator "a lista já está na consulta
+ * padrão" about a list running the CALLER's query, and the message written for
+ * that very case was unreachable from it. A boolean parameter would have
+ * accepted `transportIsLive` again; `ListMode` cannot.
+ */
+export function resetControlLabel(hasOwnState: boolean, mode: ListMode): string {
+  if (hasOwnState) return 'Limpa a ordenação, os filtros de coluna e a busca desta lista.';
+  return mode === 'live'
+    ? 'Nada para limpar: a lista já está na consulta padrão.'
+    : 'Nada para limpar aqui — o resultado fixo vem desta tela, não de um filtro seu.';
+}
