@@ -46,6 +46,7 @@ vi.mock('../conta/expiracaoSweep', () => ({
 
 const {
   asDocId,
+  CODIGO_AUSENTE,
   dedupKeyOf,
   destinoDoCodigo,
   docIdOf,
@@ -55,6 +56,7 @@ const {
   motivoDoParque,
   MOTIVO_SEM_AUTHORIZE_TYPE,
   parseNotificationBody,
+  payloadDeDocumento,
   processNotificationPayload,
   sanitizarData,
   SHOPEE_NOTIFICATION_QUEUE,
@@ -132,6 +134,17 @@ describe('parseNotificationBody', () => {
 
   it('devolve shopId null quando nenhuma das quatro colocações traz um', () => {
     expect(parseNotificationBody({ code: 12, data: { page_no: 1 } })?.shopId).toBeNull();
+  });
+
+  // ⚠️ A Shopee manda o MESMO campo em dois TIPOS: uma das amostras de code 1
+  // do teste de sandbox de 2026-09-09 trouxe `data.shop_id` como NÚMERO e a
+  // outra como STRING (com `success` também em string). O coercer compartilhado
+  // aceita a string numérica, e o campo levantado é sempre um `number` — se
+  // fosse a string, `findIntegracaoByShopId` não acharia loja nenhuma.
+  it('levanta um data.shop_id em STRING como número', () => {
+    const p = parseNotificationBody({ code: 1, data: { shop_id: '987654', success: '1' } });
+    expect(p?.shopId).toBe(987654);
+    expect(typeof p?.shopId).toBe('number');
   });
 
   // ⚠️ O envelope traz SEGUNDOS; deste lado tudo é MILLIS. `asMillis` trunca
@@ -324,6 +337,23 @@ describe('docIdOf — uma linha por push_code', () => {
     ['5 shopee updates', 5, { video_id: 'V1' }, '5:111:V1:1000'],
     ['11 vídeo', 11, { video_id: 'V1' }, '11:111:V1:1000'],
     ['13 marca', 13, { brand_id: 9 }, '13:111:9:1000'],
+    // ⚠️ 24 / 25 (push_api_id 27 / 28) — o recurso é a RESERVA (`booking_sn`),
+    // não o pedido: é só isso que `data` traz, além do rastreio (24) ou do
+    // status READY/FAILED (25).
+    [
+      '24 rastreio da reserva',
+      24,
+      { booking_sn: 'B1', tracking_number: 'BR2222636885' },
+      '24:111:B1:1000',
+    ],
+    ['24 rastreio da reserva (sem booking_sn)', 24, {}, '24:111:-:1000'],
+    [
+      '25 documento de envio da reserva',
+      25,
+      { booking_sn: 'B1', status: 'READY' },
+      '25:111:B1:1000',
+    ],
+    ['25 documento de envio da reserva (sem booking_sn)', 25, {}, '25:111:-:1000'],
     ['28 penalidade', 28, {}, '28:111:-:1000'],
     ['999 desconhecido', 999, {}, '999:111:-:1000'],
   ])('%s', (_nome, code, data, esperado) => {
@@ -477,6 +507,67 @@ describe('docIdOf — uma linha por push_code', () => {
     expect(dedupKeyOf(a)).not.toBe(dedupKeyOf(b));
   });
 
+  // ⚠️ O corpo REAL do "Verify and Save" do console, byte a byte como ele
+  // chegou em 2026-09-09: só `code` e `data.verify_info` — sem `shop_id` e sem
+  // `timestamp`. A identidade dele é o ramo default, e é a mesma para os dois
+  // envios de cada clique (o console manda duas vezes) — o que é justamente o
+  // que se quer: se algum dia ele PARASSE, os cliques colapsariam numa linha só
+  // em vez de uma por clique.
+  it('0 verificação do console: o corpo real produz 0:-:-:-, sem loja e sem carimbo', () => {
+    const p = parsed({
+      code: 0,
+      data: {
+        verify_info: 'This is a Verification message.Please respond in the certain format.',
+      },
+    });
+    expect(p.shopId).toBeNull();
+    expect(p.timestamp).toBeNull();
+    expect(docIdOf(p)).toBe('0:-:-:-');
+    expect(dedupKeyOf(p)).toBe('0:-:-');
+  });
+
+  // ⚠️ A mesma classe dos pares 4 / 15 / 10 acima, agora para o code 24: duas
+  // reservas de uma mesma loja recebem rastreio no MESMO segundo do envelope
+  // (é assim que a Shopee despacha um lote), e cada linha parada é create-only
+  // — com a reserva fora da identidade a segunda seria engolida
+  // (ALREADY_EXISTS) sem deixar rastro.
+  it('24: duas reservas no mesmo segundo têm ids e chaves DISTINTOS', () => {
+    const a = parsed({
+      code: 24,
+      shop_id: 111,
+      timestamp: 1_660_123_089,
+      data: { booking_sn: '220809MDBFYFT2', tracking_number: 'BR2222636885' },
+    });
+    const b = parsed({
+      code: 24,
+      shop_id: 111,
+      timestamp: 1_660_123_089,
+      data: { booking_sn: '201118BCKPJQQ8', tracking_number: 'BR2222636886' },
+    });
+    expect(docIdOf(a)).toBe('24:111:220809MDBFYFT2:1660123089000');
+    expect(docIdOf(b)).toBe('24:111:201118BCKPJQQ8:1660123089000');
+    expect(dedupKeyOf(a)).not.toBe(dedupKeyOf(b));
+  });
+
+  // …e o fold APLICA onde deve: a reentrega da MESMA reserva é um trabalho só
+  // para a dedup do sweep, e continua distinta no doc id.
+  it('24: a reentrega da MESMA reserva colapsa na dedup, não no doc id', () => {
+    const a = parsed({
+      code: 24,
+      shop_id: 111,
+      timestamp: 1_660_123_089,
+      data: { booking_sn: '220809MDBFYFT2', tracking_number: 'BR2222636885' },
+    });
+    const b = parsed({
+      code: 24,
+      shop_id: 111,
+      timestamp: 1_660_123_389,
+      data: { booking_sn: '220809MDBFYFT2', tracking_number: 'BR2222636885' },
+    });
+    expect(dedupKeyOf(a)).toBe(dedupKeyOf(b));
+    expect(docIdOf(a)).not.toBe(docIdOf(b));
+  });
+
   it('um segmento ausente vira "-", nunca é omitido', () => {
     // Sem shopId, sem ordersn e sem NENHUM relógio (nem `update_time` nem o
     // carimbo do envelope), o code 3 ainda produz quatro segmentos.
@@ -546,6 +637,10 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     [1, 'conta'],
     [2, 'conta'],
     [12, 'conta'],
+    // ⚠️ O code 0 não é evento nenhum: é a mensagem de verificação do callback
+    // URL que o console manda ao clicar "Verify and Save". Ele era
+    // `desconhecido` — ou seja, cada clique do operador estacionava uma linha.
+    [0, 'ack'],
     [5, 'ack'],
     [7, 'ack'],
     [8, 'ack'],
@@ -563,13 +658,40 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     [29, 'parado'],
     [30, 'parado'],
     [47, 'parado'],
+    // ⚠️ 24 e 25 (booking) chegaram no teste de sandbox de 2026-09-09 SEM estar
+    // na tabela — foram exatamente o "único sinal de que um código novo
+    // apareceu" que o parque de um code desconhecido existe para dar.
+    [24, 'parado'],
+    [25, 'parado'],
   ])('push_code %i ⇒ %s', (code, destino) => {
     expect(destinoDoCodigo(code)).toBe(destino);
   });
 
   it('um code jamais visto é "desconhecido" — o único sinal de que apareceu', () => {
     expect(destinoDoCodigo(999)).toBe('desconhecido');
-    expect(destinoDoCodigo(0)).toBe('desconhecido');
+    expect(destinoDoCodigo(4242)).toBe('desconhecido');
+  });
+
+  // ⚠️ O sentinela do `fromDoc`: um documento persistido que perdeu o `code`
+  // (o `parseRead` é tolerante e devolve o cru) entra como CODIGO_AUSENTE.
+  // Enquanto nenhum código da Shopee for negativo, ele PARA — visível, com um
+  // `erro` que aponta para o documento e não para a tabela. Isso passou a
+  // importar no dia em que o zero virou uma linha da tabela: com o antigo
+  // `?? 0` esse documento seria "ack" ⇒ `drop` ⇒ removido do store, em silêncio.
+  it('um documento persistido SEM `code` legível para, nunca vira ack', () => {
+    const semCode = payloadDeDocumento({ shop_id: 111, timestamp: 1000, data: null });
+    expect(semCode.code).toBe(CODIGO_AUSENTE);
+    expect(destinoDoCodigo(semCode.code)).toBe('desconhecido');
+    expect(motivoDoParque(semCode.code)).toContain('sem `code` legível');
+    expect(motivoDoParque(semCode.code)).not.toContain('push_code');
+  });
+
+  // …e o par que tem de continuar DISTINTO: um documento que carrega o code 0
+  // de verdade (a mensagem de verificação do console) continua sendo ack.
+  it('um documento persistido COM code 0 continua sendo ack', () => {
+    const zero = payloadDeDocumento({ code: 0, data: { verify_info: 'x' } });
+    expect(zero.code).toBe(0);
+    expect(destinoDoCodigo(zero.code)).toBe('ack');
   });
 
   // ⚠️ O `push_api_id` da URL da doc NÃO é o `code` do envelope: o
@@ -585,7 +707,20 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     expect(motivoDoParque(3)).toContain('passo 5');
     expect(motivoDoParque(4)).toContain('passo 7');
     expect(motivoDoParque(29)).toContain('passo 17');
+    expect(motivoDoParque(24)).toContain('passo 7');
+    expect(motivoDoParque(25)).toContain('passo 15');
     expect(motivoDoParque(999)).toContain('desconhecido');
+  });
+
+  // ⚠️ O par de quase-falha do de cima: 24 e 25 são a família BOOKING, e o
+  // motivo tem de dizer isso — o passo 7 já é dono do code 4 (rastreio do
+  // PEDIDO) e o passo 15 do code 15 (documento de envio do PACOTE), então o
+  // número do passo sozinho não distingue a linha parada.
+  it('o motivo dos codes de booking nomeia a reserva, não o pedido nem o pacote', () => {
+    expect(motivoDoParque(24)).toContain('reserva');
+    expect(motivoDoParque(25)).toContain('reserva');
+    expect(motivoDoParque(4)).not.toContain('reserva');
+    expect(motivoDoParque(15)).not.toContain('reserva');
   });
 });
 
@@ -620,18 +755,51 @@ describe('toDisposition', () => {
 // ── processNotificationPayload ──────────────────────────────────────────────
 
 describe('processNotificationPayload — a ordem das portas', () => {
-  it.each([5, 7, 8, 9, 11, 13, 22, 28])(
-    'push_code %i é ack e NÃO lê nenhuma conta',
-    async (code) => {
-      const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
-      expect(out.kind).toBe('ack');
-      expect(h.find).not.toHaveBeenCalled();
-      expect(h.readConta).not.toHaveBeenCalled();
-      expect(h.sweep).not.toHaveBeenCalled();
-    },
-  );
+  // ⚠️ O `detail` faz parte da linha porque ele é o token pelo qual se filtra o
+  // log de um braço que NÃO persiste nada. O code 0 tem o seu — um clique em
+  // "Verify and Save" no console não pode ler como um evento de negócio
+  // reconhecido —, e todo o resto continua com o texto de hoje.
+  it.each([
+    [0, 'verificacao-callback'],
+    [5, 'reconhecido'],
+    [7, 'reconhecido'],
+    [8, 'reconhecido'],
+    [9, 'reconhecido'],
+    [11, 'reconhecido'],
+    [13, 'reconhecido'],
+    [22, 'reconhecido'],
+    [28, 'reconhecido'],
+  ])('push_code %i é ack (detail %s) e NÃO lê nenhuma conta', async (code, detail) => {
+    const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
+    expect(out).toMatchObject({ kind: 'ack', detail });
+    expect(h.find).not.toHaveBeenCalled();
+    expect(h.readConta).not.toHaveBeenCalled();
+    expect(h.sweep).not.toHaveBeenCalled();
+  });
 
-  it.each([3, 4, 10, 15, 16, 27, 29, 30, 47, 999])(
+  // O corpo REAL da verificação do console — sem shop_id e sem timestamp —
+  // atravessa o parser e sai como ack, com a razão que o operador lê no log.
+  it('o corpo real do "Verify and Save" é ack, com razão própria e sem parque', async () => {
+    const out = await processNotificationPayload(
+      db,
+      parsed({
+        code: 0,
+        data: {
+          verify_info: 'This is a Verification message.Please respond in the certain format.',
+        },
+      }),
+      deps,
+    );
+    expect(out).toEqual({
+      kind: 'ack',
+      reason: 'mensagem de verificação do callback URL (console)',
+      detail: 'verificacao-callback',
+    });
+    expect(toDisposition(out).kind).toBe('drop');
+    expect(h.find).not.toHaveBeenCalled();
+  });
+
+  it.each([3, 4, 10, 15, 16, 24, 25, 27, 29, 30, 47, 999])(
     'push_code %i PARA antes de qualquer leitura de conta',
     async (code) => {
       const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
@@ -916,6 +1084,50 @@ describe('lojasDoPushDeConta', () => {
 
   it('devolve lista vazia para uma autorização de merchant', () => {
     expect(lojasDoPushDeConta(payload({ code: 1, data: { merchant_id: 600222872 } }))).toEqual([]);
+  });
+
+  // ⚠️ As DUAS formas de code 1 que chegaram no teste de sandbox de 2026-09-09,
+  // do mesmo console e no mesmo dia — e elas discordam no TIPO dos campos. A
+  // primeira traz `shop_id` NUMÉRICO mais um `shop_id_list` com outras lojas;
+  // a segunda traz `shop_id` e `success` em STRING e nenhuma lista. Roteiam
+  // pelo mesmo coercer, e o resultado é 5 lojas contra exatamente 1.
+  // ℹ️ `authorization_expire_time` (segundos) vem junto e NÃO é consumido em
+  // lugar nenhum: quem decide prazo é a varredura, que lê o `expire_time` real
+  // de cada loja em `get_shops_by_partner`.
+  it('forma A (shop_id numérico + shop_id_list): todas as lojas, na ordem de primeira aparição', () => {
+    expect(
+      lojasDoPushDeConta(
+        parsed({
+          code: 1,
+          timestamp: 1_660_616_278,
+          data: {
+            authorization_expire_time: 1_691_366_400,
+            authorize_type: 'p-shop',
+            extra: '',
+            shop_id: 987654,
+            shop_id_list: [111, 222, 333, 444],
+            success: 1,
+          },
+        }),
+      ),
+    ).toEqual([987654, 111, 222, 333, 444]);
+  });
+
+  it('forma B (shop_id e success em STRING, sem lista): exatamente aquela loja', () => {
+    expect(
+      lojasDoPushDeConta(
+        parsed({
+          code: 1,
+          timestamp: 1_660_616_278,
+          data: {
+            authorize_type: 'shop authorization by user',
+            extra: '',
+            shop_id: '111',
+            success: '1',
+          },
+        }),
+      ),
+    ).toEqual([111]);
   });
 });
 

@@ -386,6 +386,18 @@ export function identidadeDoPush(p: ShopeeNotificationPayload): {
         VAZIO;
       return { entidade: `${loja}:${sujeito}`, carimbo: stamp };
     }
+    // 24 / 25 — booking tracking number / booking shipping document status
+    // (push_api_id 27 and 28, both "New Push" of 2024-07-02). The resource is
+    // the BOOKING, never the order: `data` carries only `booking_sn` plus the
+    // tracking number (24) or the READY/FAILED status (25), and `booking_sn` is
+    // what `v2.logistics.get_booking_tracking_number` itself takes. Neither
+    // page documents an `update_time`, so the clock is the envelope stamp.
+    // ⚠️ The codes come from the page HEADER (`push_code`) and from the sandbox
+    // deliveries of 2026-09-09 — NOT from the parameter tables, which sample
+    // `code` as 4 and 15, the codes of their non-booking siblings.
+    case 24:
+    case 25:
+      return { entidade: `${loja}:${texto(d.booking_sn) ?? VAZIO}`, carimbo: stamp };
     // 12 — authorization expiry. Partner-level and PAGINATED: the page number
     // is part of the identity, or page 2 would overwrite page 1's dead-letter
     // row and the shops on it would be lost silently.
@@ -438,7 +450,11 @@ export function dedupKeyOf(p: ShopeeNotificationPayload): string | null {
  * later, with the same outcome.
  *
  * ⚠️ **A code ABSENT from this table still parks, deliberately.** That parked
- * document is the only signal a genuinely new push code appeared.
+ * document is the only signal a genuinely new push code appeared — and it has
+ * already been exactly that: the sandbox push test of **2026-09-09** delivered
+ * codes **24** and **25** (the booking pair, `push_api_id` 27/28), which no
+ * revision of this table had ever listed. They arrived as `desconhecido`,
+ * parked, and are listed below because of it.
  */
 export type DestinoPush = 'conta' | 'ack' | 'parado' | 'desconhecido';
 
@@ -449,6 +465,11 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   12: 'conta', // push_api_id 12 — open_api_authorization_expiry
 
   // ---- recognised, nothing to do -----------------------------------------
+  // ⚠️ Code 0 has no push_api_id and is not an event: it is the console's own
+  // callback-URL verification message (`data.verify_info`), sent SIGNED by
+  // "Verify and Save". It must NEVER park — one operator click would otherwise
+  // leave one dead-letter row per click.
+  0: 'ack',
   5: 'ack', // push_api_id 3  — shopee_updates
   7: 'ack', // promotion updates — step 12 reads get_item_promotion live
   8: 'ack', // reserved stock change
@@ -468,6 +489,8 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   27: 'parado', // scheduled publish failed
   29: 'parado', // push_api_id 32 — return_updates_push
   10: 'parado', // webchat — an ERP System app cannot subscribe to it at all
+  24: 'parado', // push_api_id 27 — booking_trackingno_push
+  25: 'parado', // push_api_id 28 — booking_shipping_document_status_push
 };
 
 /** Why a parked code is parked, naming the step that will build it. */
@@ -481,7 +504,17 @@ const MOTIVO_PARADO: Readonly<Record<number, string>> = {
   27: 'publicação agendada falhou — o handler é o passo 11',
   29: 'atualização de devolução — o handler é o passo 17',
   10: 'chat — o handler é o passo 16, condicionado à liberação da Chat API',
+  24: 'código de rastreio da reserva (booking) — o handler é o passo 7',
+  25: 'status do documento de envio da reserva (booking) — o handler é o passo 15',
 };
+
+/**
+ * The stand-in code for a persisted document that no longer carries a readable
+ * one. Deliberately negative: Shopee's codes are non-negative, so no row of
+ * {@link DISPATCH} can ever claim it and the document parks instead of being
+ * settled by whatever code happens to sit at the fallback.
+ */
+export const CODIGO_AUSENTE = -1;
 
 /** The destination for a push code — `'desconhecido'` for anything unlisted. */
 export function destinoDoCodigo(code: number): DestinoPush {
@@ -490,9 +523,35 @@ export function destinoDoCodigo(code: number): DestinoPush {
 
 /** The operator-facing `erro` written onto a parked document. */
 export function motivoDoParque(code: number): string {
+  // The sentinel is not a push code and nothing new appeared: the stored
+  // document itself is unreadable, and this text is all a human ever sees of it
+  // (a parked row is terminal). Point them at the document, not at the table.
+  if (code === CODIGO_AUSENTE) {
+    return 'documento persistido sem `code` legível — nada a despachar; inspecione o documento';
+  }
   const nota = MOTIVO_PARADO[code];
   if (nota != null) return `push_code ${String(code)}: ${nota}`;
   return `push_code ${String(code)} desconhecido — nenhum handler; primeiro sinal de um código novo`;
+}
+
+/**
+ * The persisted-document → payload mapper behind `fromDoc`, named and exported
+ * so the sweep's re-read is testable without a Firestore.
+ *
+ * ⚠️ `code` falls to {@link CODIGO_AUSENTE}, NOT to `0`. Since 2026-09-09 zero
+ * is a LISTED code (`ack` ⇒ the sweep would DELETE the row), so a stored
+ * document whose `code` is missing or unreadable — `parseRead` is soft and hands
+ * back the raw doc — must fall to something no table row can claim, which parks
+ * it and leaves it visible. Never written back: the park path updates
+ * `status`/`erro`, not `code`.
+ */
+export function payloadDeDocumento(doc: Record<string, unknown>): ShopeeNotificationPayload {
+  return {
+    code: asInt(doc.code) ?? CODIGO_AUSENTE,
+    shopId: asInt(doc.shop_id),
+    timestamp: asMillis(doc.timestamp),
+    data: sanitizarData(doc.data),
+  };
 }
 
 // ── processing ──────────────────────────────────────────────────────────────
@@ -616,6 +675,20 @@ export async function processNotificationPayload(
   const destino = destinoDoCodigo(payload.code);
 
   if (destino === 'ack') {
+    // ⚠️ Code 0 is the ONE ack that is not an event at all: the Shopee console
+    // sends it — signed, twice per click — when an operator presses "Verify and
+    // Save" on the push callback URL. Its whole body is
+    // `{"code":0,"data":{"verify_info":"…"}}`: no `shop_id`, no `timestamp`, so
+    // its identity is the default branch (`0:-:-:-`). Its own reason/detail
+    // keeps a console click distinguishable in the logs from a recognised
+    // BUSINESS event that we deliberately do nothing about.
+    if (payload.code === 0) {
+      return {
+        kind: 'ack',
+        reason: 'mensagem de verificação do callback URL (console)',
+        detail: 'verificacao-callback',
+      };
+    }
     return {
       kind: 'ack',
       reason: `push_code ${String(payload.code)} reconhecido, sem ação`,
@@ -832,15 +905,7 @@ function pipelineFor(deps: ShopeeProcessDeps) {
       timestamp: p.timestamp,
       data: p.data,
     }),
-    fromDoc: (parsed) => {
-      const doc = (parsed ?? {}) as Record<string, unknown>;
-      return {
-        code: asInt(doc.code) ?? 0,
-        shopId: asInt(doc.shop_id),
-        timestamp: asMillis(doc.timestamp),
-        data: sanitizarData(doc.data),
-      };
-    },
+    fromDoc: (parsed) => payloadDeDocumento((parsed ?? {}) as Record<string, unknown>),
     process: (db, payload) => processNotificationPayload(db, payload, deps),
     toDisposition: (outcome) => toDisposition(outcome),
   });
