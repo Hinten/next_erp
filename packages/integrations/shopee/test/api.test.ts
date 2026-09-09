@@ -8,6 +8,8 @@ import {
   SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
   SHOPEE_GET_VARIATION_TREE_PATH_ALT,
+  SHOPEE_ORDER_LIST_MAX_PAGE_SIZE,
+  SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS,
   SHOPEE_TAXONOMY_LANGUAGE,
   type ShopeeClient,
   type ShopeeClientConfig,
@@ -99,7 +101,9 @@ describe('createShopeeClient — shop-signed', () => {
 
     const [rawUrl, init] = fetchMock.mock.calls[0]!;
     const url = new URL(String(rawUrl));
-    // ⚠️ GET, although the reference page is headed POST — every sample uses GET.
+    // GET, per the page's own `method: 2` and every sample on it. The note that
+    // used to stand here — "although the page is headed POST" — came from our
+    // doc reader's `is_get_method` bug, fixed 2026-09-09.
     expect(init?.method).toBe('GET');
     expect(init?.body).toBeUndefined();
     expect(url.pathname).toBe('/api/v2/shop/get_shop_info');
@@ -962,5 +966,415 @@ describe('os erros de módulo do product', () => {
     expect((err as ShopeeApiError).code).toBe('product.error_param');
     expect((err as ShopeeApiError).requestId).toBe('req-erro');
     expect((err as ShopeeApiError).httpStatus).toBe(200);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    A fila de mensagens perdidas (passo 4)                   */
+/* -------------------------------------------------------------------------- */
+
+/** As três chaves comuns de uma chamada PUBLIC — sem access_token, sem shop_id. */
+const CHAVES_PUBLIC = ['partner_id', 'sign', 'timestamp'] as const;
+
+const LOST_PUSH_BODY = {
+  // ⚠️ Verbatim do exemplo da página, `"-"` incluído. Ver `emptyErrorAliases`.
+  error: '-',
+  message: '-',
+  warning: '-',
+  request_id: '1f34a2c99335ffe85744d98e07fe7d41',
+  response: {
+    push_message_list: [
+      {
+        shop_id: 727720655,
+        code: 3,
+        timestamp: 1660123127,
+        data: '{"data":{"items":[],"ordersn":"220810QSK8S7BX","status":"PROCESSED","completed_scenario":"","update_time":1660123127},"shop_id":727720655,"code":3,"timestamp":1660123127}',
+      },
+    ],
+    has_next_page: false,
+    last_message_id: 176610,
+  },
+};
+
+const CONFIRM_BODY = {
+  error: '-',
+  message: '-',
+  warning: '-',
+  request_id: '668ea92da2a19f7d2e72bf98bd530c41',
+};
+
+const APP_PUSH_CONFIG_BODY = {
+  request_id: 'b937c04e554847789cbf3fe33a0ad5f1',
+  error: '',
+  message: '',
+  response: {
+    callback_url: 'https://open.shopee.com/',
+    live_push_status: 'suspended',
+    suspended_time: 1577416181,
+    blocked_shop_id: [10010, 20020, 30030],
+    push_config_on_list: [1, 2, 3],
+    push_config_off_list: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+  },
+};
+
+describe('as operações de push do cliente de parceiro', () => {
+  it('GET sem nenhum parâmetro de requisição — só partner_id, sign, timestamp', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(LOST_PUSH_BODY));
+    const op = await createShopeePartnerClient(partnerConfig(fetchMock)).getLostPushMessages();
+
+    // ⚠️ NÃO desembrulhado — a única operação deste arquivo que devolve o
+    // envelope. É o `error` DESTA página que a primeira tick de produção precisa
+    // registrar verbatim para settlar a contradição do `"-"` (D1); a varredura
+    // pode rodar com o confirm desligado, e aí o envelope do confirm não existe.
+    expect(op.error).toBe('-');
+    expect(op.request_id).toBe('1f34a2c99335ffe85744d98e07fe7d41');
+    expect(op.response.last_message_id).toBe(176610);
+    expect(op.response.push_message_list?.[0]?.code).toBe(3);
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    // ⚠️ GET: `method: 2` na página, e os quatro exemplos dela concordam.
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    expect(url.pathname).toBe('/api/v2/push/get_lost_push_message');
+    // A seção "Request params" da página é VAZIA — nada além dos comuns viaja.
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_PUBLIC].sort());
+    expect(url.searchParams.get('access_token')).toBeNull();
+  });
+
+  it('⚠️ aceita "error": "-" como sucesso — a contradição das duas páginas de lost push', async () => {
+    // As duas páginas se contradizem: a tabela de parâmetros diz `""` e o
+    // exemplo renderizado diz `"-"`. Sem o alias, a primeira chamada de
+    // PRODUÇÃO derrubaria a varredura — e o sandbox não alcança estas APIs.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(LOST_PUSH_BODY));
+    const client = createShopeePartnerClient(partnerConfig(fetchMock));
+    await expect(client.getLostPushMessages()).resolves.toBeDefined();
+
+    const confirmMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(CONFIRM_BODY));
+    await expect(
+      createShopeePartnerClient(partnerConfig(confirmMock)).confirmConsumedLostPushMessages({
+        lastMessageId: 176610,
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('⚠️ " " (um espaço) continua sendo falha — o alias é igualdade exata, não trim', async () => {
+    // NEAR-MISS do teste acima. Um `includes` sobre um valor aparado leria
+    // qualquer coisa com um `-` no meio como sucesso.
+    const espaco = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...LOST_PUSH_BODY, error: ' ' }),
+    );
+    await expect(
+      createShopeePartnerClient(partnerConfig(espaco)).getLostPushMessages(),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
+
+    const quaseAlias = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...LOST_PUSH_BODY, error: ' - ' }),
+    );
+    await expect(
+      createShopeePartnerClient(partnerConfig(quaseAlias)).getLostPushMessages(),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
+  });
+
+  it('⚠️ "error": "-" NÃO é sucesso em get_app_push_config — o alias é por operação', async () => {
+    // A tolerância é por OPERAÇÃO porque a contradição é por PÁGINA: o exemplo
+    // desta aqui diz `""`.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...APP_PUSH_CONFIG_BODY, error: '-' }),
+    );
+    const err = await createShopeePartnerClient(partnerConfig(fetchMock))
+      .getAppPushConfig()
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ShopeeApiError);
+    expect((err as ShopeeApiError).code).toBe('-');
+  });
+
+  it('get_app_push_config vai por GET e desembrulha `response`', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(APP_PUSH_CONFIG_BODY),
+    );
+    const config = await createShopeePartnerClient(partnerConfig(fetchMock)).getAppPushConfig();
+
+    expect(config.live_push_status).toBe('suspended');
+    expect(config.suspended_time).toBe(1577416181);
+    expect(config.push_config_off_list).toContain(13);
+    expect('error' in config).toBe(false);
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    const url = new URL(String(rawUrl));
+    expect(url.pathname).toBe('/api/v2/push/get_app_push_config');
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_PUBLIC].sort());
+  });
+
+  it('POST no confirm com { last_message_id } no CORPO e os comuns na query', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(CONFIRM_BODY));
+    const envelope = await createShopeePartnerClient(
+      partnerConfig(fetchMock),
+    ).confirmConsumedLostPushMessages({ lastMessageId: 176610 });
+
+    // A resposta é o envelope NU: é dela que sai o `request_id` de um chamado de
+    // suporte sobre um watermark que não andou.
+    expect(envelope.request_id).toBe('668ea92da2a19f7d2e72bf98bd530c41');
+    expect('response' in envelope).toBe(false);
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('POST');
+    expect(url.pathname).toBe('/api/v2/push/confirm_consumed_lost_push_message');
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_PUBLIC].sort());
+    // O parâmetro da operação viaja no corpo, os comuns na query assinada.
+    expect(url.searchParams.get('last_message_id')).toBeNull();
+    expect(JSON.parse(String(init?.body))).toEqual({ last_message_id: 176610 });
+    expect((init?.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+  });
+
+  it('⚠️ o corpo não entra na assinatura — dois last_message_id diferentes têm o MESMO sign', async () => {
+    // Propriedade, não coincidência: a base do HMAC é partner_id + caminho +
+    // timestamp. Um "vamos assinar o corpo também" quebraria o ack em silêncio,
+    // e este teste é o que diria.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(CONFIRM_BODY));
+    const client = createShopeePartnerClient(partnerConfig(fetchMock));
+    await client.confirmConsumedLostPushMessages({ lastMessageId: 176610 });
+    await client.confirmConsumedLostPushMessages({ lastMessageId: 999999 });
+
+    const signA = new URL(String(fetchMock.mock.calls[0]![0])).searchParams.get('sign');
+    const signB = new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('sign');
+    expect(signA).toBe(signB);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1]?.body))).toEqual({
+      last_message_id: 999999,
+    });
+  });
+
+  it('recusa um lastMessageId <= 0 ou fracionário ANTES de gastar a chamada', async () => {
+    // `0` é exatamente a cara de um cursor ausente ou inventado, e "nunca
+    // sintetize o cursor" é a regra sobre a qual o ack inteiro se apoia.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(CONFIRM_BODY));
+    const client = createShopeePartnerClient(partnerConfig(fetchMock));
+
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      await expect(
+        client.confirmConsumedLostPushMessages({ lastMessageId: bad }),
+      ).rejects.toBeInstanceOf(ShopeeConfigError);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await expect(
+      client.confirmConsumedLostPushMessages({ lastMessageId: 1 }),
+    ).resolves.toBeDefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('⚠️ o cliente NÃO expõe set_app_push_config — a ausência é o que impede a chamada', async () => {
+    // `set_app_push_config` levaria um único callback_url do APP inteiro, dispara
+    // um push de teste ao vivo, e o enum de códigos dela para em 13 enquanto os
+    // vivos chegam a 47 — um read-modify-write derrubaria tudo acima de 13.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(LOST_PUSH_BODY));
+    const client = createShopeePartnerClient(partnerConfig(fetchMock));
+    expect(Object.keys(client).sort()).toEqual([
+      'confirmConsumedLostPushMessages',
+      'getAppPushConfig',
+      'getLostPushMessages',
+      'getShopsByPartner',
+    ]);
+    expect('setAppPushConfig' in client).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     A listagem de pedidos (passo 4/5)                       */
+/* -------------------------------------------------------------------------- */
+
+const ORDER_LIST_BODY = {
+  request_id: 'req-orders',
+  error: '',
+  response: {
+    more: true,
+    next_cursor: '20',
+    // ⚠️ Verbatim do exemplo: linhas NUAS, e dez delas para `page_size: 20` com
+    // `more: true`. É por isso que a contagem de linhas não decide nada.
+    order_list: [{ order_sn: '201218V2Y6E59M' }, { order_sn: '201218V2W2SG1E' }],
+  },
+};
+
+const PARAMS_PEDIDOS = {
+  timeRangeField: 'update_time',
+  timeFromS: 1_760_000_000,
+  timeToS: 1_760_086_400,
+  pageSize: 50,
+} as const;
+
+describe('get_order_list', () => {
+  it('vai por GET, com os parâmetros comuns na query e sem corpo', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_LIST_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getOrderList({
+      ...PARAMS_PEDIDOS,
+      responseOptionalFields: 'order_status',
+      requestOrderStatusPending: true,
+    });
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    expect(url.pathname).toBe('/api/v2/order/get_order_list');
+    expect([...url.searchParams.keys()].sort()).toEqual(
+      [
+        ...CHAVES_COMUNS,
+        'time_range_field',
+        'time_from',
+        'time_to',
+        'page_size',
+        'request_order_status_pending',
+        'response_optional_fields',
+      ].sort(),
+    );
+    expect(url.searchParams.get('time_range_field')).toBe('update_time');
+    // ⚠️ SEGUNDOS, como vieram: o pacote não converte unidade nenhuma.
+    expect(url.searchParams.get('time_from')).toBe('1760000000');
+    expect(url.searchParams.get('time_to')).toBe('1760086400');
+    expect(url.searchParams.get('page_size')).toBe('50');
+  });
+
+  it('request_order_status_pending vai como "true" e é OMITIDO quando não pedido; nenhum filtro order_status é enviado', async () => {
+    // ⚠️ O filtro `order_status` da Shopee OMITE PENDING/RETRY_SHIP/
+    // TO_CONFIRM_RECEIVE/TO_RETURN, então uma varredura que o usasse pularia
+    // pedidos em silêncio. `response_optional_fields` é outra coisa: pede o
+    // campo de volta, não filtra.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_LIST_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.getOrderList({ ...PARAMS_PEDIDOS, requestOrderStatusPending: true });
+    const comPending = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(comPending.searchParams.get('request_order_status_pending')).toBe('true');
+    expect(comPending.searchParams.get('order_status')).toBeNull();
+
+    await client.getOrderList({ ...PARAMS_PEDIDOS, requestOrderStatusPending: false });
+    const semPending = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(semPending.searchParams.has('request_order_status_pending')).toBe(false);
+
+    await client.getOrderList(PARAMS_PEDIDOS);
+    const omitido = new URL(String(fetchMock.mock.calls[2]![0]));
+    expect(omitido.searchParams.has('request_order_status_pending')).toBe(false);
+    expect(omitido.searchParams.has('response_optional_fields')).toBe(false);
+    expect(omitido.searchParams.get('order_status')).toBeNull();
+  });
+
+  it('os limites são checados ANTES da rede: page_size nas duas bordas, time_from < time_to, e a janela de 15 dias no limite exato e um segundo além', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_LIST_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    // As duas bordas boas de `page_size`.
+    await expect(client.getOrderList({ ...PARAMS_PEDIDOS, pageSize: 1 })).resolves.toBeDefined();
+    await expect(
+      client.getOrderList({ ...PARAMS_PEDIDOS, pageSize: SHOPEE_ORDER_LIST_MAX_PAGE_SIZE }),
+    ).resolves.toBeDefined();
+    // NEAR-MISS em cada uma: um passo além recusa, nunca corta.
+    await expect(client.getOrderList({ ...PARAMS_PEDIDOS, pageSize: 0 })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    await expect(
+      client.getOrderList({ ...PARAMS_PEDIDOS, pageSize: SHOPEE_ORDER_LIST_MAX_PAGE_SIZE + 1 }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(client.getOrderList({ ...PARAMS_PEDIDOS, pageSize: 20.5 })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+
+    // `time_from` tem de ser ANTERIOR a `time_to` — igual já é recusado.
+    await expect(
+      client.getOrderList({ ...PARAMS_PEDIDOS, timeToS: PARAMS_PEDIDOS.timeFromS }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(
+      client.getOrderList({ ...PARAMS_PEDIDOS, timeToS: PARAMS_PEDIDOS.timeFromS - 1 }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(client.getOrderList({ ...PARAMS_PEDIDOS, timeFromS: 0 })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+
+    // ⚠️ 15 dias EXATOS passam; um segundo além é `order.order_list_invalid_time`
+    // na Shopee, e aqui é uma recusa antes de gastar a chamada.
+    await expect(
+      client.getOrderList({
+        ...PARAMS_PEDIDOS,
+        timeToS: PARAMS_PEDIDOS.timeFromS + SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS,
+      }),
+    ).resolves.toBeDefined();
+    await expect(
+      client.getOrderList({
+        ...PARAMS_PEDIDOS,
+        timeToS: PARAMS_PEDIDOS.timeFromS + SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS + 1,
+      }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+
+    expect(SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS).toBe(1_296_000);
+    // Só as TRÊS combinações válidas chegaram à rede; toda recusa é anterior.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('um cursor vazio é RECUSADO — a primeira página omite o parâmetro', async () => {
+    // ⚠️ `next_cursor: ''` é o sentinela de DRENADO da Shopee. Normalizá-lo aqui
+    // transformaria "devolvi o sentinela como cursor" em "recomecei a janela da
+    // página 1", que parece progresso e é um pulo de dados.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_LIST_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await expect(client.getOrderList({ ...PARAMS_PEDIDOS, cursor: '' })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await client.getOrderList(PARAMS_PEDIDOS);
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).searchParams.has('cursor')).toBe(false);
+  });
+
+  it('desembrulha `response` — o envelope não chega ao chamador — e tolera a linha nua', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        ...ORDER_LIST_BODY,
+        response: {
+          more: false,
+          next_cursor: '',
+          order_list: [
+            { order_sn: '201218V2Y6E59M' },
+            { order_sn: '2404098R48U37H', order_status: 'READY_TO_SHIP', booking_sn: '24040' },
+          ],
+        },
+      }),
+    );
+    const page = await createShopeeClient(shopConfig(fetchMock)).getOrderList(PARAMS_PEDIDOS);
+
+    expect('error' in page).toBe(false);
+    expect('request_id' in page).toBe(false);
+    expect(page.more).toBe(false);
+    expect(page.next_cursor).toBe('');
+    expect(page.order_list[0]?.order_status).toBeNull();
+    expect(page.order_list[1]?.order_status).toBe('READY_TO_SHIP');
+    expect(page.order_list[1]?.booking_sn).toBe('24040');
+  });
+
+  it('não pagina sozinho: devolve more/next_cursor e o chamador pede a próxima', async () => {
+    // ⚠️ Duas linhas com `more: true` — a contagem de linhas NÃO termina o laço,
+    // e o exemplo da própria página devolve 10 para `page_size: 20`.
+    const fetchMock = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse(ORDER_LIST_BODY))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ...ORDER_LIST_BODY,
+          response: { more: false, next_cursor: '', order_list: [] },
+        }),
+      );
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const primeira = await client.getOrderList(PARAMS_PEDIDOS);
+    expect(primeira.more).toBe(true);
+    expect(primeira.next_cursor).toBe('20');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const segunda = await client.getOrderList({ ...PARAMS_PEDIDOS, cursor: primeira.next_cursor! });
+    expect(segunda.more).toBe(false);
+    expect(new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('cursor')).toBe('20');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

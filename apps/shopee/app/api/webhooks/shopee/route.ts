@@ -33,6 +33,7 @@ import { ZodError } from 'zod';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { ShopeeConfigError, shopeeConfig, shopeePushCallbackUrl } from '@/lib/shopee/env';
 import {
+  mensagemDoErro,
   parseNotificationBody,
   persistNotificationFailure,
 } from '@/lib/shopee/notificacoes/notificacao';
@@ -125,21 +126,11 @@ function registrarEntrega(
   });
 }
 
-/**
- * The operator-facing message of an enqueue failure, read STRUCTURALLY.
- *
- * ⚠️ Deliberately not `err instanceof Error`: root CLAUDE.md rule 6 is right
- * that `Error` narrows nothing, and here there is nothing to narrow TO — the
- * catch below is total on purpose. Reading the message off the shape keeps the
- * intent honest instead of dressing a total catch as a narrow one.
- */
-function mensagemDoErro(err: unknown): string {
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    const m = (err as { message: unknown }).message;
-    if (typeof m === 'string' && m.length > 0) return m;
-  }
-  return String(err);
-}
+// ⚠️ `mensagemDoErro` — the structural read of a failure's message, and the
+// justification for the total catch below — now lives in
+// `lib/shopee/notificacoes/notificacao.ts`: the lost-push sweep's own total
+// catch writes the same `erro` string onto the same collection, and a rule
+// duplicated is a rule that drifts.
 
 export async function POST(req: Request): Promise<NextResponse> {
   const raw = await req.text();

@@ -19,7 +19,6 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import type { Route } from 'next';
 import type { Firestore, Query } from 'firebase/firestore';
 import type { z, ZodObject, ZodRawShape } from 'zod';
@@ -65,8 +64,19 @@ import { ActionBar } from './ActionBar';
 import { ActionSidePanel } from './ActionSidePanel';
 import { ActiveFilters } from './ActiveFilters';
 import { useCollectionMonitor } from './useCollectionMonitor';
-import { LIVE_LABEL, STATIC_REASON_LABEL, resolveListMode } from './resolveListMode';
-import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@tabler/icons-react';
+import {
+  LIVE_LABEL,
+  STATIC_REASON_LABEL,
+  resetControlLabel,
+  resolveListMode,
+} from './resolveListMode';
+import {
+  IconArrowDown,
+  IconArrowsSort,
+  IconArrowUp,
+  IconRefreshAlert,
+  IconRestore,
+} from '@tabler/icons-react';
 import { ColumnFilter, FilterPopover } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
 import { SearchBar } from './SearchBar';
@@ -623,6 +633,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     search: searchTerm,
     setSearch,
     clearAll,
+    resetListState,
+    hasOwnState,
     restored,
     rememberView,
   } = useTableUrlState(filterableFields, orderBy, {
@@ -1039,44 +1051,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       field: fieldKey,
       direction: current === 'asc' ? 'desc' : 'asc',
     };
-    // Sorting by anything other than the DECLARED order leaves the streaming
-    // path (`resolveListMode`), so the list stops updating itself. That is a
-    // deliberate cost — a live listener on an unindexed sort is a persistent
-    // watch over a full collection scan — but it is invisible: the rows simply
-    // stop moving. Say it once, the first time it happens on this screen.
-    //
-    // Only on the TRANSITION out of live, which is self-limiting: the first such
-    // sort moves `listMode` to static, so every click after it fails this guard
-    // and stays quiet. No "already shown" flag is needed — one was written here
-    // first, and a mutation test proved it could be deleted without changing any
-    // behaviour.
-    //
-    // ⚠️ The POLICY (`listMode`), deliberately NOT `transportIsLive` — the exact
-    // inverse of what the badge uses, and for the opposite reason. The badge
-    // describes what the list is doing NOW, so it must read the transport. This
-    // toast claims a click CHANGED that, so it must read the thing that tracks
-    // whether the declared query moved off its declared shape.
-    //
-    // They diverge on `queryOverride`, and that branch is live in production:
-    // `/clientes` sets one for a matched endereço search, `pipeline` is null so
-    // `transportIsLive` is TRUE, and `fallbackQuery` hands the caller's query to
-    // `useSnapshot` — the list keeps streaming. Keyed on the transport, this
-    // fired on every header click of those results, announcing that the list had
-    // stopped updating itself while the badge beside it correctly read "Tempo
-    // real" and the rows kept arriving. It also repeated, because the transport
-    // never became static, so even the self-limiting property was gone.
-    const leavesLive =
-      listMode.mode === 'live' &&
-      JSON.stringify([{ field: next.field, direction: next.direction }]) !== declaredOrderBySerial;
-    if (leavesLive) {
-      notifications.show({
-        color: 'yellow',
-        title: 'Ordenação personalizada',
-        message:
-          'A lista deixa de atualizar sozinha enquanto esta ordenação estiver ativa. ' +
-          'Limpe a ordenação para voltar ao tempo real.',
-      });
-    }
+    // Sorting off the declared order leaves the streaming path
+    // (`resolveListMode`). A toast used to announce that; the "Resultado fixo"
+    // badge in the toolbar states it standing, and the reset control beside it
+    // is now how you undo it — a notification on top of both is noise.
     setSort(next);
   }
 
@@ -1712,6 +1690,23 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     ? LIVE_LABEL
     : STATIC_REASON_LABEL[listMode.reason ?? 'override'];
 
+  /**
+   * Is there anything of the OPERATOR's on this list — exactly what
+   * `resetListState` clears, and nothing else?
+   *
+   * Computed by `useTableUrlState`, not here, because it has to agree with that
+   * reset about what "the operator's" means, and the sort makes that subtle:
+   * the `orderBy` prop SEEDS the sort state, so a naive `sort !== undefined` is
+   * true from the first render on any screen passing it, with no interaction at
+   * all — offering a reset for state nobody set.
+   *
+   * `queryOverride`, a page's `extraFilters`, a `forcedOrderBy` and a missing
+   * `meta.defaultQuery` are screen-owned in the same way. They can hold a list
+   * on the static path, and nothing in this toolbar can clear them, so they too
+   * must not enable a button that would then do nothing.
+   */
+  const hasOwnListState = hasOwnState;
+
   // Always shown, because it now carries the transport badge. Two lists that
   // behave differently and look identical is how #40 stayed invisible.
   const headerToolbarShown = true;
@@ -1745,6 +1740,48 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                   <Badge variant="light" color={transportIsLive ? 'teal' : 'yellow'}>
                     {transportIsLive ? 'Tempo real' : 'Resultado fixo'}
                   </Badge>
+                </Tooltip>
+                {/*
+                 * The way back to the declared query — and until it existed the
+                 * app asked for something impossible: `STATIC_REASON_LABEL.sort`
+                 * says "limpe a ordenação para voltar ao tempo real", but a sort
+                 * renders no filter chip, so the chip row (and the only
+                 * clear-all in it) was absent in exactly that case.
+                 *
+                 * ⚠️ The name must never contain "Limpar filtros". The chip
+                 * row's own button carries that name, and
+                 * `clientes.cadastros.e2e.spec.ts` locates it WITHOUT `exact`
+                 * before asserting the count drops to zero — Playwright matches
+                 * names by substring, so an always-mounted sibling containing
+                 * that phrase reds a spec that never imports this file.
+                 */}
+                <Tooltip
+                  label={
+                    // Takes the POLICY, and its signature enforces that — see
+                    // the note on `resetControlLabel`. The badge two lines up
+                    // reads the TRANSPORT, deliberately, and the two disagree.
+                    resetControlLabel(hasOwnListState, listMode.mode)
+                  }
+                  withinPortal
+                  multiline
+                  maw={260}
+                >
+                  {/*
+                   * Mantine turns pointer events OFF on a disabled control, so a
+                   * Tooltip wrapping one directly never fires — and disabled is
+                   * exactly when this tooltip has something to explain.
+                   */}
+                  <span style={{ display: 'inline-block' }}>
+                    <ActionIcon
+                      variant="subtle"
+                      color="gray"
+                      aria-label="Limpar ordenação, filtros e busca"
+                      disabled={!hasOwnListState}
+                      onClick={resetListState}
+                    >
+                      <IconRestore size={18} />
+                    </ActionIcon>
+                  </span>
                 </Tooltip>
                 {monitor.stale && (
                   <Tooltip
