@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ShopeePartnerClient, ShopeeShopsByPartner } from '@delfrance/integrations-shopee';
 
-import { MAX_SHOPS_PAGES, SHOPS_PAGE_SIZE, findAuthorizedShop } from './shops';
+import {
+  MAX_SHOPS_PAGES,
+  SHOPS_PAGE_SIZE,
+  findAuthorizedShop,
+  listarLojasAutorizadas,
+} from './shops';
 
 /** One `authed_shop_list` row, with the SECONDS the wire actually carries. */
 function shop(shopId: number) {
@@ -90,6 +95,80 @@ describe('findAuthorizedShop', () => {
   it('does not warn when the walk ended because `more` was false', async () => {
     getShopsByPartner.mockResolvedValue(page([1], false));
     await findAuthorizedShop(client, 111);
+    expect(spyWarn).not.toHaveBeenCalled();
+  });
+});
+
+describe('listarLojasAutorizadas', () => {
+  it('walks every page and converts SECONDS to MILLISECONDS once', async () => {
+    getShopsByPartner
+      .mockResolvedValueOnce(page([1, 2], true))
+      .mockResolvedValueOnce(page([3], false));
+
+    await expect(listarLojasAutorizadas(client)).resolves.toEqual({
+      lojas: [
+        { shopId: 1, authTime: 1_700_000_000_000, expireTime: 1_702_592_000_000, region: 'BR' },
+        { shopId: 2, authTime: 1_700_000_000_000, expireTime: 1_702_592_000_000, region: 'BR' },
+        { shopId: 3, authTime: 1_700_000_000_000, expireTime: 1_702_592_000_000, region: 'BR' },
+      ],
+      paginas: 2,
+      truncado: false,
+    });
+    expect(getShopsByPartner).toHaveBeenCalledTimes(2);
+    expect(spyWarn).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates a shop that appears on two pages, keeping the FIRST sighting', async () => {
+    // Shopee pages a LIVE list: a shop legitimately shows up twice when the
+    // underlying order shifts between two calls. Two sightings of one shop must
+    // not become two avisos — and WHICH one survives has to be pinned, or the
+    // dedup silently becomes "last wins" and the row the sweep acts on depends
+    // on paging order. First wins; a repeat can only differ in an `expire_time`
+    // that moved mid-walk, which the next run corrects onto the same aviso row.
+    const outro = { ...shop(2), expire_time: 1_799_999_999 };
+    getShopsByPartner
+      .mockResolvedValueOnce(page([1, 2], true))
+      .mockResolvedValueOnce({ ...page([3], false), authed_shop_list: [outro, shop(3)] });
+
+    const { lojas } = await listarLojasAutorizadas(client);
+    expect(lojas.map((l) => l.shopId)).toEqual([1, 2, 3]);
+    expect(lojas.find((l) => l.shopId === 2)?.expireTime).toBe(1_702_592_000_000);
+  });
+
+  it('reports `truncado` at the page cap, and the shops it DID see', async () => {
+    // The near-miss to the first test: the walk ended for the other reason.
+    // Reaching the cap is NOT proof the list ended, and the caller would
+    // otherwise report "no shop needs attention" about shops it never read.
+    getShopsByPartner.mockResolvedValue(page([1], true));
+
+    const out = await listarLojasAutorizadas(client);
+    expect(out.truncado).toBe(true);
+    expect(out.paginas).toBe(MAX_SHOPS_PAGES);
+    expect(out.lojas.map((l) => l.shopId)).toEqual([1]);
+    expect(getShopsByPartner).toHaveBeenCalledTimes(MAX_SHOPS_PAGES);
+    expect(spyWarn).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours a caller-supplied page cap', async () => {
+    getShopsByPartner.mockResolvedValue(page([1], true));
+
+    const out = await listarLojasAutorizadas(client, { maxPages: 2 });
+    expect(out).toMatchObject({ paginas: 2, truncado: true });
+    expect(getShopsByPartner).toHaveBeenCalledTimes(2);
+    expect(getShopsByPartner).toHaveBeenNthCalledWith(2, {
+      pageSize: SHOPS_PAGE_SIZE,
+      pageNo: 2,
+    });
+  });
+
+  it('answers an empty list without warning when the partner has no shops', async () => {
+    getShopsByPartner.mockResolvedValue(page([], false));
+
+    await expect(listarLojasAutorizadas(client)).resolves.toEqual({
+      lojas: [],
+      paginas: 1,
+      truncado: false,
+    });
     expect(spyWarn).not.toHaveBeenCalled();
   });
 });

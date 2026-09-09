@@ -1,0 +1,637 @@
+name: CI — Shopee
+
+# The Cloud Tasks round trip for the Shopee backend (#1511, master-plan step 3).
+#
+# ⚠️ THIS LANE OWNS EXACTLY ONE SUITE, and that is deliberate. `ci.yml` still
+# runs every `@delfrance/shopee-app` unit test in `CI test`, unfiltered and with
+# no `if:` — the strongest guarantee in this repo — so nothing was excluded here
+# and nothing was promised in exchange (root CLAUDE.md: "an exclusion is a
+# promise that the owning lane runs them"). What `ci.yml` CANNOT run is the one
+# suite below: it needs a JDK, a pinned firebase-tools, a built functions
+# artifact and three emulators, which is why it lives in its own lane behind its
+# own gate. Step 22 (#1530) may move the offline job in here when it adds the
+# Firestore-only emulator job; until then the smaller blast radius wins.
+#
+# What the single job proves, with nothing mocked:
+#
+#   POST /api/webhooks/shopee            the real route + the real push HMAC
+#     → createShopeeTaskScheduler()      the real region-qualified queue name
+#     → Cloud Tasks emulator → Functions emulator
+#     → processShopeeNotification        the real deployed onTaskDispatched
+#     → handleNotificationTask → processNotificationPayload
+#     → an unknown push_code → `park`
+#     → a real `parked` doc in notificacoesShopee
+#
+# OFFLINE BY CONSTRUCTION — no Shopee credentials, ever. Shopee DOES have a
+# sandbox, so the danger here is not "there is nowhere safe to call": it is that
+# Shopee's `refresh_token` is SINGLE-USE and rotating, so one unstubbed refresh
+# burns the stored credential of whichever account the env points at and only a
+# human re-consenting in a browser gets it back. `vitest.tasks.setup.ts`
+# installs a fetch kill-switch that throws on any non-localhost host — ⚠️ in the
+# VITEST process only; the functions emulator runs the bundle in a sibling
+# process the setup file never reaches. The partner id and key below are
+# invented values, not credentials, and demo-erp holds no real refresh_token, so
+# a call that escapes the kill-switch answers `error_sign` rather than burning
+# anything. Keep the tasks suites on push codes that need no Shopee call.
+#
+# ⚠️ The suites are disjoint BY GLOB. `apps/shopee/vitest.config.ts` EXCLUDES
+# `**/*.tasks.test.ts` (and `**/*.firestore.test.ts`, listed before that lane
+# exists) and `vitest.tasks.config.ts` includes only the first suffix — so a file
+# matching NO glob runs in NO job at all. Read both `include`/`exclude` comments
+# before touching either.
+#
+# ⚠️ What this lane does NOT prove, so nobody reads its green as more than it is:
+#   - Composite INDEX DECLARATION. The emulator auto-creates every composite, and
+#     on Enterprise a missing index does not throw — it silently full-scans and
+#     bills the scan. That is guard C/D in
+#     packages/data/src/admin/notifications/notificationGuardrails.test.ts, and
+#     the two Shopee composites deploy in the migration window (#1532).
+#   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
+#     emulator — dispatch is pure FIFO (firebase-tools#8254, open). This channel
+#     sets no delay, so the test never leans on it. `retryConfig` and
+#     `rateLimits` are asserted off `__endpoint` in processNotification.test.ts.
+#   - The push HMAC against Shopee's own signer. `guide 18`'s vectors are pinned
+#     offline in `pushSignature.test.ts`; here the signature is produced by the
+#     same helper the route verifies with, so this job proves the queue hop, not
+#     the digest.
+#   - The two `onSchedule` functions. MEASURED: the functions emulator logs
+#     `reprocessShopeeNotifications` and `sweepShopeeAuthorizationExpiry` as
+#     "ignored because the pubsub emulator does not exist or is not running", so
+#     this lane loads them and never runs them. Their bodies are covered by the
+#     unit suites in `CI test`, and their trigger OPTIONS — cron, timeZone,
+#     timeoutSeconds, the exact `secrets:` set — by
+#     apps/shopee/functions/src/index.test.ts, which asserts over `__endpoint`.
+#     What nothing here proves is that Cloud Scheduler actually fires them.
+#   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
+#   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still
+#     exposes db.pipeline(), so feature-probing answers yes then fails at
+#     execution.
+#   - The Shopee Open Platform itself. By design — see the kill-switch above.
+
+on:
+  push:
+    branches: [master, main]
+    # ⚠️ `push:` KEEPS its `paths:`; `pull_request:` deliberately has none — see
+    # the note there. Nothing on the push path is a required check, and the
+    # `changes` job short-circuits to run=true on every non-PR event, so this
+    # list only decides whether the post-merge safety net fires at all.
+    paths:
+      # Globs, never named files where a directory is meant: ci-storage.yml:27-35
+      # records that a named-file list silently rots into zero coverage.
+      - 'apps/shopee/**'
+      - 'packages/integrations/shopee/**'
+      - 'packages/data/src/admin/notifications/**'
+      - 'packages/data/src/admin/collections/**'
+      # The sweep writes through the shared avisos seam, so a change there can
+      # break this lane's functions bundle.
+      - 'packages/data/src/admin/avisos/**'
+      - 'packages/data/src/admin/defineAdminCollection.ts'
+      - 'packages/data/src/admin/grpcErrors.ts'
+      - 'packages/schemas/src/integracao.ts'
+      - 'packages/schemas/src/aviso.ts'
+      - 'packages/schemas/src/notificacaoShopee.ts'
+      - 'packages/schemas/src/shared/notificationResilience.ts'
+      - 'firestore.indexes.json'
+      - 'firebase.shopee.tasks.json'
+      - 'pnpm-lock.yaml'
+      # Self-reference: without it, a PR that only edits this workflow never
+      # exercises it.
+      - '.github/workflows/ci-shopee.yml'
+  pull_request:
+    # The prefix entries cover stacked PRs — this key matches the PR's BASE, so
+    # a child based on any other prefix reports zero checks, not failures.
+    # `production` is the release base (main → production): without it this lane
+    # publishes nothing on the PR that actually ships, and a pinned check that
+    # never reports leaves that PR permanently unmergeable.
+    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    # ⚠️ NO `paths:` here, and never add one. A `pull_request: paths:` that does
+    # not match means GitHub never instantiates the workflow, so it publishes NO
+    # check run at all — not a failure, not a skip, nothing. A required status
+    # check that is never reported cannot gate anything. The `changes` job below
+    # derives the real closure from the `workspace:*` graph instead, and still
+    # reports either way.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Same script the other eight lanes use; the only per-lane input is `--roots`,
+  # from which it walks the `workspace:*` graph. `@delfrance/integrations-shopee`
+  # needs no entry of its own — it is in the app's closure, and so are
+  # `@delfrance/data`, `@delfrance/schemas` and `@delfrance/core`, which is what
+  # makes a change to the avisos seam or the notification pipeline run this lane
+  # without anyone maintaining a list.
+  changes:
+    name: CI scope (shopee)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run_e2e: ${{ steps.decide.outputs.run_e2e || steps.collect.outputs.run_e2e }}
+      reason: ${{ steps.decide.outputs.reason || steps.collect.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Collect the changed paths
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          FILES="$RUNNER_TEMP/changed-files.txt"
+          : > "$FILES"
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+          decided() {
+            {
+              echo "decided=true"
+              echo "run_e2e=true"
+              echo "reason=$1"
+            } >> "$GITHUB_OUTPUT"
+            echo "run_e2e=true :: $1"
+          }
+
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            decided "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the lane."
+            exit 0
+          fi
+
+          if ! gh api "repos/$REPO/pulls/$PR/files" --paginate \
+                 --jq '.[] | .filename, (.previous_filename // empty)' > "$FILES"
+          then
+            decided "could not list the PR's files — running the lane (fail safe)."
+            exit 0
+          fi
+
+          n=$(wc -l < "$FILES" | tr -d ' ')
+          if [ "$n" -ge 3000 ]; then
+            decided "the API returned $n path(s) — truncated. Running the lane (fail safe)."
+            exit 0
+          fi
+          echo "Collected $n changed path(s)."
+
+      - name: Decide whether this lane must run
+        id: decide
+        if: steps.collect.outputs.decided != 'true'
+        # ⚠️ The `if !` fallback is load-bearing, not defensive noise. This YAML comes
+        # from the merge ref while the checkout above is the PR head, so on a branch
+        # older than the script node exits 1 (`Cannot find module`) before the
+        # script's own fail-safe can fire — killing `changes` and reddening a gate
+        # that only a rebase could clear. Degrade to RUNNING the lane. See the
+        # VERSION SKEW note in e2e-affected.mjs; enforced by ci-lane-gates.test.js.
+        run: |
+          if ! node .github/scripts/e2e-affected.mjs \
+                 --kind CI \
+                 --lane shopee \
+                 --roots @delfrance/shopee-app \
+                 --self .github/workflows/ci-shopee.yml \
+                 --files "${{ steps.collect.outputs.files }}"
+          then
+            {
+              echo "run_e2e=true"
+              echo "reason=the scope script could not run at this PR's head commit — it is older than the workflow invoking it. Running the lane (fail safe). Merge \`main\` into this branch for a real scope decision."
+            } >> "$GITHUB_OUTPUT"
+            echo "::warning title=CI scope (shopee)::the scope script is missing from this PR's head commit — running the lane (fail safe). Merge main into the branch."
+          fi
+
+  shopee-tasks-roundtrip:
+    name: Shopee Cloud Tasks round trip
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_e2e == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      # ⚠️ These two MUST match, and every value below is invented — none of it
+      # is a credential. FUNCTIONS_REGION is inlined into the functions bundle at
+      # build time; SHOPEE_TASKS_REGION is read by the enqueuer at run time. A
+      # mismatch is exactly the silent drop #1108 is about: the enqueue reports
+      # success and Cloud Tasks never delivers, behind a 204. That is what the
+      # round-trip test's timeout message tells you to check first.
+      FUNCTIONS_REGION: us-east1
+      SHOPEE_TASKS_REGION: us-east1
+      FIREBASE_PROJECT_ID: demo-erp
+      # The database is literally named `default`, not `(default)` (Enterprise).
+      # In the emulator `(default)` silently exists, so a wrong id is invisible
+      # here and fatal in production — hence pinned, and hence the suite carries
+      # a positive existence assertion rather than only "not found" ones.
+      FIREBASE_DATABASE_ID: default
+      # Arms both fail-loud gates in vitest.tasks.setup.ts. Without it an absent
+      # emulator would SKIP every suite and still exit 0, because vitest's
+      # success check counts COLLECTED files, not run tests — and this job is a
+      # `required` row in the gate manifest.
+      REQUIRE_EMULATOR: '1'
+      # All three triggers in the codebase declare both of these as `secrets:`,
+      # and demo-erp has no Secret Manager. Invented values are safe AND
+      # sufficient: the exercised path (an unknown push_code) parks before any
+      # Shopee call, and an invented key cannot sign a call that Shopee would
+      # answer. ⚠️ The vitest fetch kill-switch does NOT cover the emulator's
+      # own process — see the OFFLINE note at the top of this file.
+      #
+      # ⚠️ EXPECTED NOISE, not a failure: because the two names are declared as
+      # `secrets:`, the functions emulator still tries Secret Manager first and
+      # logs a red `!!  functions: Unable to access secret environment
+      # variables … HTTP Error: 403` for each. It then falls back to the process
+      # env below, which is where these values come from. Measured locally; the
+      # run is green either side of those two lines.
+      # ⚠️ Must stay a QUOTED YAML string. Unquoted, YAML types it as an integer
+      # and the runner would hand it to the process as `1000001` anyway — but the
+      # value is an id, not a number, and the repo's other invented ids are
+      # strings. `1000001` is the fixture partner id every Shopee unit test and
+      # every `packages/integrations/shopee` test already uses; keeping ONE
+      # invented value means a log line that shows it is recognisable as a
+      # fixture rather than mistaken for a real partner account.
+      SHOPEE_PARTNER_ID: '1000001'
+      SHOPEE_PARTNER_KEY: dummy-partner-key-not-a-credential
+      # ⚠️ Load-bearing, and its absence has a specific symptom. It is INSIDE the
+      # push HMAC base string (`callback_url + "|" + raw_body`), so an unset
+      # value makes the receiver answer 503 and a wrong one 401 — never a queue
+      # problem, though it would look like one. The test asserts `204` BEFORE it
+      # starts polling Firestore so the failure names itself.
+      SHOPEE_PUSH_CALLBACK_URL: http://localhost:3009/api/webhooks/shopee
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # The Firestore emulator runs on the JVM; firebase-tools >= 15 needs JDK 21+.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          # No version pinned on purpose: corepack takes it from `packageManager`
+          # in package.json — the single source of truth — and overrides any
+          # `corepack prepare` pin.
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install firebase-tools (pinned)
+        run: npm i -g firebase-tools@15.15.0
+
+      # `predeploy` hooks do NOT run under emulators:exec, so the artifact has to
+      # be built explicitly. ⚠️ `build.mjs` alone emits only dist/index.js —
+      # prepare-deploy.mjs is the ONLY path that produces a servable folder
+      # (bundle + package.json with main/type + the node_modules junction that
+      # firebase-tools' trigger analysis needs). Mirrors ci-mercado-livre.yml and
+      # ci-storage.yml, which likewise build immediately before emulators:exec.
+      - name: Build the Shopee functions deploy artifact
+        run: node apps/shopee/functions/scripts/prepare-deploy.mjs
+
+      # ⚠️ `pnpm --filter <name-that-matches-nothing>` prints "No projects
+      # matched the filters" and exits ZERO — verified on the pnpm version
+      # `packageManager` pins. A typo in the run step below would therefore
+      # produce a fully green job that executed no tests, and a near-miss exists
+      # (`@delfrance/integrations-shopee`, plus the `shopee` functions codebase
+      # name and the apps/ directory name).
+      #
+      # ⚠️ This name check is NOT the whole guard, because a renamed SCRIPT exits
+      # 0 too. `--fail-if-no-match` on the run step below is what covers that
+      # half; both are kept, because they fail differently and the message from
+      # this one names the package.
+      - name: Assert the test filter resolves to a real package
+        run: |
+          set -euo pipefail
+          matched=$(pnpm ls --filter @delfrance/shopee-app --depth -1 --parseable | grep -c . || true)
+          echo "packages matched by the filter: $matched"
+          if [ "$matched" != "1" ]; then
+            echo "::error::pnpm --filter matched $matched packages — the emulator step would exit 0 without running anything."
+            exit 1
+          fi
+
+      # firestore + functions + tasks. The tasks emulator only has queues because
+      # the FUNCTIONS emulator registers them from the trigger definitions, so
+      # both are required; emulators:exec exports CLOUD_TASKS_EMULATOR_HOST and
+      # FIRESTORE_EMULATOR_HOST into the child, which is what the Admin SDK
+      # reroutes on AND what arms the setup gates.
+      - name: Run the Cloud Tasks round trip
+        # Keep this a SINGLE command: piping it (`| tee`) or appending `|| true`
+        # would swap the child's exit code for the pipeline's and lose the
+        # failure.
+        run: |
+          firebase emulators:exec \
+            --config firebase.shopee.tasks.json \
+            --project demo-erp \
+            --only firestore,functions,tasks \
+            "pnpm --fail-if-no-match --filter @delfrance/shopee-app run test:tasks"
+
+  report-failure:
+    # A check-run name carries no workflow prefix, so this must not be a generic
+    # string shared with another lane.
+    name: Shopee failure note
+    needs: [changes, shopee-tasks-roundtrip]
+    # Fork guard: this job holds `pull-requests: write`, which a fork run's
+    # read-only token cannot exercise — it would 403 and mask the real failure.
+    if: >-
+      ${{ failure() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.fork == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment failure summary
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const body =
+              `❌ \`ci-shopee.yml\` failed on this PR.\n\n` +
+              `See the Actions tab for full logs: ` +
+              `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber, body,
+            });
+
+  # THE pinnable check for this lane. Everything above can legitimately be
+  # skipped; this cannot.
+  #
+  # ⚠️ `if: always()` and NOTHING else, on purpose. A job skipped by `if:` still
+  # publishes a check run, with conclusion `skipped`, and GitHub's required-
+  # status-check evaluation treats `skipped` as SATISFYING the requirement. A gate
+  # carrying any other condition would go green in exactly the cases it exists to
+  # report on. Do not add one.
+  #
+  # ⚠️ `needs:` lists the CERTIFIABLE jobs only. The report-* jobs are `skipped` on
+  # every green run, so needing them would make this gate permanently red.
+  #
+  # ⚠️ The `run:` body below is BYTE-IDENTICAL to every other manifest gate's —
+  # copied from ci-mercado-livre.yml, not retyped. Only `env:` and the `JOBS:`
+  # manifest differ, and assertion 17 in ci-lane-gates.test.js pins the re-read
+  # loop's byte-equality across all of them.
+  gate:
+    name: CI gate (shopee)
+    needs: [changes, shopee-tasks-roundtrip]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          LANE: CI gate (shopee)
+          SCOPE_JOB: CI scope (shopee)
+          PR: ${{ github.event.pull_request.number }}
+
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_LANE: ${{ needs.changes.outputs.run_e2e }}
+          REASON: ${{ needs.changes.outputs.reason }}
+
+          # --- recorded guards. ONLY these can excuse a skip. ------------------
+          GUARD_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          GUARD_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+
+          # --- per-job results -------------------------------------------------
+          RESULT_TASKS: ${{ needs.shopee-tasks-roundtrip.result }}
+
+          # --- the manifest. One row per certified job:
+          #       <result env var>|required|optional:<guard>[+<guard>]|<published check-run name>
+          #     The check-run name must match the job's `name:` byte for byte — it
+          #     is how the anti-vacuity lock finds the job in the jobs API.
+          JOBS: |
+            RESULT_TASKS|required|Shopee Cloud Tasks round trip
+        run: |
+          set -uo pipefail
+          ROWS="$RUNNER_TEMP/gate-rows.md";        : > "$ROWS"
+          NOTES="$RUNNER_TEMP/gate-notes.md";      : > "$NOTES"
+          CERTIFY="$RUNNER_TEMP/gate-certify.txt"; : > "$CERTIFY"
+
+          row()  { printf '| `%s` | `%s` | %s |\n' "$1" "$2" "$3" >> "$ROWS"; }
+          note() { printf '%s\n\n' "$1" >> "$NOTES"; }
+
+          report() {
+            {
+              echo "### $LANE — $1"
+              echo
+              echo "$2"
+              echo
+              echo "| check run | result | verdict |"
+              echo "| --- | --- | --- |"
+              cat "$ROWS"
+              echo
+              echo "Scope (\`$SCOPE_JOB\`): \`run=${RUN_LANE:-<empty>}\` — ${REASON:-<none recorded>}"
+              echo
+              cat "$NOTES"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          fail() { report "NOT verified" "$1"; echo "::error title=$LANE::$1";  exit 1; }
+          # Mirror a PASS into the log too: otherwise a green gate is visible only
+          # in the step summary, which is not part of what the failure reporters
+          # collect, so a green gate could never be audited from the logs.
+          pass() { report "verified"     "$1"; echo "::notice title=$LANE::$1"; exit 0; }
+
+          # (1) The decider must have concluded. "We do not know" is never green.
+          [ "$CHANGES_RESULT" = "success" ] || \
+            fail "The scope job concluded \`$CHANGES_RESULT\`, so nothing decided whether this lane had to run."
+
+          # (2) ...and it must have produced a verdict.
+          case "$RUN_LANE" in
+            true|false) : ;;
+            *) fail "The scope job produced no verdict (\`run=${RUN_LANE:-<empty>}\`)." ;;
+          esac
+
+          # explain_skip <guard-spec>: 0 + sets WHY when a RECORDED input accounts
+          # for the skip, 1 otherwise. This is the whole trick — the gate re-derives
+          # the predicate that should have caused the skip instead of trusting the
+          # job's declared class. An `if:` clause nobody taught this function about
+          # matches no guard, so the skip goes RED.
+          explain_skip() {
+            WHY=""
+            if [ "$GUARD_DISPATCH" = "true" ]; then return 1; fi
+            local g
+            local IFS='+'
+            for g in $1; do
+              case "$g" in
+                not_fork)
+                  if [ "${GUARD_FORK:-}" = "true" ]; then
+                    WHY="this PR comes from a fork, and fork PRs cannot read repo secrets. A maintainer can verify from an in-repo branch: \`gh pr checkout $PR && git push origin HEAD:fix/pr-$PR-verify\`."
+                    return 0
+                  fi ;;
+                *) return 1 ;;
+              esac
+            done
+            return 1
+          }
+
+          # (3) Walk the manifest.
+          #     `done <<< "$JOBS"` is a HERESTRING, not a pipe: a pipe would run the
+          #     loop in a subshell and every RED/BROKEN assignment would be
+          #     discarded, making this gate unconditionally green.
+          RED=""; BROKEN=""
+          while IFS='|' read -r var class check; do
+            case "${var:-}" in ''|'#'*) continue ;; esac
+            result="${!var:-}"
+
+            case "$class" in
+              required)   guards='' ;;
+              optional:*) guards="${class#optional:}" ;;
+              *) fail "Gate manifest error: \`$check\` declares an unknown class \`$class\`. Refusing to certify a lane whose own manifest this gate cannot parse." ;;
+            esac
+
+            case "$result" in
+              success)
+                printf '%s\n' "$check" >> "$CERTIFY"
+                row "$check" "$result" "ran and passed"
+                ;;
+              skipped)
+                if [ -n "$BROKEN" ]; then
+                  row "$check" "$result" "not reached — \`$BROKEN\` did not succeed"
+                elif [ "$RUN_LANE" = "false" ]; then
+                  row "$check" "$result" "not required — nothing this lane depends on changed"
+                elif [ -n "$guards" ] && explain_skip "$guards"; then
+                  row "$check" "$result" "**DID NOT RUN** — $WHY"
+                  note "**\`$check\` did not run on this PR** — $WHY"
+                  echo "::warning title=$LANE::\`$check\` did not run — $WHY"
+                elif [ -z "$guards" ] && [ "${GUARD_FORK:-}" = "true" ]; then
+                  # A `required` job carries no guards, so `explain_skip` above is
+                  # never consulted for it and the `else` below would blame an
+                  # `if:` nobody added. The verdict stays RED on purpose --
+                  # `required` is how a lane says "unverified is not verified" --
+                  # but a fork skip has a known cause and a remedy, and printing
+                  # the wrong one sends the maintainer hunting.
+                  row "$check" "$result" "**DID NOT RUN** -- fork PR"
+                  RED="${RED}\`$check\` did not run: this PR comes from a fork, and fork PRs cannot read the repo secrets this job needs, so that code has NOT been exercised. It is \`required\`, so this reads RED rather than green. A maintainer can verify it from an in-repo branch -- \`gh pr checkout $PR && git push origin HEAD:fix/pr-$PR-verify\` -- and merge that instead. "
+                else
+                  row "$check" "$result" "**UNEXPLAINED SKIP**"
+                  RED="${RED}\`$check\` was skipped and this gate cannot explain why: the lane is in scope and no recorded guard (${guards:-none, this job is required}) accounts for it. Someone added an \`if:\` without teaching the gate about it. "
+                fi
+                ;;
+              '')
+                row "$check" "$result" "**NO RESULT**"
+                RED="${RED}This gate has no result for \`$check\` — its \`needs:\` list and its manifest disagree. "
+                ;;
+              *)
+                row "$check" "$result" "**NOT a pass**"
+                # `cancelled` covers concurrency cancel-in-progress AND the job
+                # timeout, and is deliberately red: a suite that was killed proved
+                # nothing.
+                RED="${RED}\`$check\` concluded \`$result\`. "
+                BROKEN="$check"
+                ;;
+            esac
+          done <<< "$JOBS"
+
+          # (4) Positive proof, not merely the absence of failure — the e2e gate's
+          #     anti-vacuity lock generalised to N jobs. `needs.<job>.result` reports
+          #     what the runner thinks; it does not assert a job of that name ever
+          #     existed. Ask the API.
+          #
+          #     ⚠️ Ask it MORE THAN ONCE. Actions releases this gate the moment
+          #     every `needs:` job has concluded, but this endpoint is only
+          #     eventually consistent with that: for a few seconds afterwards it
+          #     can still serve the pre-conclusion snapshot. On run 34232714671
+          #     both `vendas-1 / e2e` and `vendas-2 / e2e` concluded `success` and
+          #     the gate still went RED in 4s, because `vendas-1 / e2e` read back
+          #     `pending`; `gh run rerun --failed` turned it green with no code
+          #     change at all. So a job that reads back UNSETTLED -- listed but not
+          #     yet concluded (`pending`), or not listed yet at all (`missing`) --
+          #     is re-read, up to POLL_ATTEMPTS times, POLL_SLEEP seconds apart.
+          #
+          #     ⚠️ Nothing is FORGIVEN here, only re-read, and that distinction is
+          #     the whole guard. A real conclusion is terminal in this API and is
+          #     never polled away: `failure`, `cancelled`, `skipped`, `timed_out`
+          #     all go RED on the first pass, as fast as they ever did. A job still
+          #     `pending`, or still absent, after the LAST attempt goes RED with the
+          #     same verdict and the same wording it always had -- a certified job
+          #     this gate cannot find is still a lane this gate will not certify.
+          #     The bound is what keeps this a guard rather than a wait-for-green
+          #     loop: at most 50s, inside a job that already allows 10 minutes.
+          POLL_ATTEMPTS=6
+          POLL_SLEEP=10
+
+          FETCHED=""
+          attempt=1
+          while : ; do
+            # Fetch to a scratch path and promote it only on success. `>` truncates
+            # BEFORE `gh` runs, so writing jobs.tsv directly would let a failed
+            # retry destroy a good snapshot, and every certified job would then
+            # read back `missing` -- a red gate manufactured by the retry itself.
+            if gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+                 --jq '.jobs[] | [.name, (.conclusion // "pending")] | @tsv' > "$RUNNER_TEMP/jobs.attempt.tsv"
+            then
+              mv "$RUNNER_TEMP/jobs.attempt.tsv" "$RUNNER_TEMP/jobs.tsv"
+              FETCHED="yes"
+
+              # Re-derive the unsettled count from THIS attempt's response. Counting
+              # against a snapshot fetched once outside the loop would replay the
+              # same stale answer on every pass -- a retry that cannot change its
+              # own verdict, which is worse than no retry at all. `done < file` is a
+              # redirect and not a pipe, so the count survives the loop (the same
+              # subshell trap the herestring above is commented for).
+              UNSETTLED=0
+              while IFS= read -r check; do
+                [ -n "$check" ] || continue
+                actual=$(awk -F'\t' -v n="$check" '$1 == n { c = $2 } END { print (c == "" ? "missing" : c) }' "$RUNNER_TEMP/jobs.tsv")
+                case "$actual" in
+                  pending|missing) UNSETTLED=$((UNSETTLED + 1)) ;;
+                esac
+              done < "$CERTIFY"
+              [ "$UNSETTLED" -gt 0 ] || break
+            fi
+            [ "$attempt" -lt "$POLL_ATTEMPTS" ] || break
+            attempt=$((attempt + 1))
+            sleep "$POLL_SLEEP"
+          done
+
+          [ -n "$FETCHED" ] || \
+            fail "Could not list this run's jobs, so this gate cannot prove the certified jobs actually ran. Refusing to certify on \`needs.*.result\` alone."
+
+          while IFS= read -r check; do
+            [ -n "$check" ] || continue
+            # Last match wins, mirroring the e2e gate's `| last`: re-running a single
+            # job appends a second entry under the same name.
+            actual=$(awk -F'\t' -v n="$check" '$1 == n { c = $2 } END { print (c == "" ? "missing" : c) }' "$RUNNER_TEMP/jobs.tsv")
+            if [ "$actual" != "success" ]; then
+              RED="${RED}\`needs\` reported success for \`$check\`, but the job of that name in this run concluded \`$actual\`. Refusing to certify a lane whose job cannot be found. "
+            fi
+          done < "$CERTIFY"
+
+          # (5) No advisory step to surface here: unlike ci-nfe.yml, this lane has
+          #     no `continue-on-error` steps, so every failure inside it is already
+          #     fatal and shows up through the normal result path above.
+
+          [ -z "$RED" ] || fail "$RED"
+
+          if [ ! -s "$CERTIFY" ]; then
+            pass "No run was required — $REASON See the \`$SCOPE_JOB\` job summary for the full path attribution."
+          fi
+          pass "Every required job for this lane concluded \`success\`. Scope: $REASON"

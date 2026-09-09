@@ -404,6 +404,15 @@ export {
 } from './notificacaoMercadoPago';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound Shopee push
+  // log, mirrors notificacaoMercadoPago above (Shopee master plan, step 3).
+  notificacaoShopeeStatusSchema,
+  notificacaoShopeeSchema,
+  type NotificacaoShopeeStatus,
+  type NotificacaoShopee,
+} from './notificacaoShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
   // anúncios" mass-import job/checkpoint doc (#621).
   importacaoMercadoLivreStatusSchema,
