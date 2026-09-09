@@ -73,6 +73,17 @@ function payload(over: Partial<ShopeeNotificationPayload> = {}): ShopeeNotificat
   return { code: 1, shopId: null, timestamp: 1000, data: null, ...over };
 }
 
+/**
+ * The REAL parser, for the rows whose identity depends on what it LIFTS: a
+ * hand-built `payload({ shopId: null, data })` cannot show that a shop id at
+ * the top level of the envelope reaches the doc id.
+ */
+function parsed(body: Record<string, unknown>): ShopeeNotificationPayload {
+  const p = parseNotificationBody(body);
+  if (p == null) throw new Error('parseNotificationBody devolveu null para um envelope válido');
+  return p;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   h.find.mockResolvedValue(null);
@@ -238,16 +249,49 @@ describe('docIdOf — uma linha por push_code', () => {
     // entregas sem relógio sobre o MESMO pedido dividiam uma única linha de
     // dead-letter — a segunda sobrescrevendo a primeira, em silêncio.
     ['3 status do pedido (cai para o timestamp)', 3, { ordersn: 'ORD1' }, '3:111:ORD1:1000'],
-    ['4 rastreio (cai para o timestamp)', 4, { ordersn: 'ORD1' }, '4:111:ORD1:1000'],
-    ['30 fulfillment do pacote', 30, { package_number: 'PKG1' }, '30:111:PKG1:1000'],
-    ['47 informação do pacote', 47, { package_number: 'PKG1' }, '47:111:PKG1:1000'],
+    // ⚠️ push 2 não documenta `update_time` e SEMPRE traz `package_number`: o
+    // pacote é o recurso, então entra na identidade.
     [
-      '15 documento de envio (ordersn primeiro)',
+      '4 rastreio (pedido + pacote, cai para o timestamp)',
+      4,
+      { ordersn: 'ORD1', package_number: 'PKG1' },
+      '4:111:ORD1:PKG1:1000',
+    ],
+    ['4 rastreio (sem pacote)', 4, { ordersn: 'ORD1' }, '4:111:ORD1:-:1000'],
+    [
+      '30 fulfillment do pacote (update_time é o relógio)',
+      30,
+      { package_number: 'PKG1', update_time: 2222 },
+      '30:111:PKG1:2222',
+    ],
+    [
+      '30 fulfillment do pacote (cai para o timestamp)',
+      30,
+      { package_number: 'PKG1' },
+      '30:111:PKG1:1000',
+    ],
+    [
+      '47 informação do pacote (update_time é o relógio)',
+      47,
+      { package_number: 'PKG1', update_time: 2222 },
+      '47:111:PKG1:2222',
+    ],
+    [
+      '47 informação do pacote (cai para o timestamp)',
+      47,
+      { package_number: 'PKG1' },
+      '47:111:PKG1:1000',
+    ],
+    // ⚠️ Um documento de envio é do PACOTE (`create_shipping_document` recebe um
+    // `package_number` por entrada); o pedido é só o fallback, nas duas grafias.
+    [
+      '15 documento de envio (pacote primeiro)',
       15,
       { ordersn: 'ORD1', package_number: 'PKG1' },
-      '15:111:ORD1:1000',
+      '15:111:PKG1:1000',
     ],
-    ['15 documento de envio (package_number)', 15, { package_number: 'PKG1' }, '15:111:PKG1:1000'],
+    ['15 documento de envio (só ordersn)', 15, { ordersn: 'ORD1' }, '15:111:ORD1:1000'],
+    ['15 documento de envio (só order_sn)', 15, { order_sn: 'ORD1' }, '15:111:ORD1:1000'],
     ['29 devolução', 29, { return_sn: 'RET1' }, '29:111:RET1:1000'],
     ['16 violação de anúncio', 16, { item_id: 55 }, '16:111:55:1000'],
     ['22 eco de preço', 22, { item_id: 55 }, '22:111:55:1000'],
@@ -255,8 +299,28 @@ describe('docIdOf — uma linha por push_code', () => {
     ['7 promoção', 7, { item_id: 55 }, '7:111:55:1000'],
     ['8 estoque reservado', 8, { item_id: 55 }, '8:111:55:1000'],
     ['9 promoção/estoque', 9, { item_id: 55 }, '9:111:55:1000'],
-    ['10 chat', 10, { conversation_id: 'C1' }, '10:111:C1:1000'],
-    ['10 chat (só message_id)', 10, { message_id: 'M1' }, '10:111:M1:1000'],
+    // ⚠️ push 10 aninha os ids em `data.content`; `data` só traz `type`, `region`
+    // e `content`. A MENSAGEM lidera (a conversa repete em toda mensagem do
+    // fio), e o `msg_id: 0` da amostra de notificação NÃO é um id.
+    [
+      '10 chat (type=message: message_id)',
+      10,
+      { type: 'message', content: { message_id: 'M1', conversation_id: 'C1' } },
+      '10:111:M1:1000',
+    ],
+    [
+      '10 chat (type=notification: msg_id)',
+      10,
+      { type: 'notification', content: { msg_id: 77, conversation_id: 'C1' } },
+      '10:111:77:1000',
+    ],
+    [
+      '10 chat (type=notification, msg_id 0 cai para a conversa)',
+      10,
+      { type: 'notification', content: { msg_id: 0, conversation_id: 'C1' } },
+      '10:111:C1:1000',
+    ],
+    ['10 chat (ids no nível ERRADO não contam)', 10, { conversation_id: 'C1' }, '10:111:-:1000'],
     ['5 shopee updates', 5, { video_id: 'V1' }, '5:111:V1:1000'],
     ['11 vídeo', 11, { video_id: 'V1' }, '11:111:V1:1000'],
     ['13 marca', 13, { brand_id: 9 }, '13:111:9:1000'],
@@ -266,21 +330,151 @@ describe('docIdOf — uma linha por push_code', () => {
     expect(docIdOf(payload({ code, shopId: 111, data }))).toBe(esperado);
   });
 
+  // ⚠️ Os codes de conta passam pelo parser REAL: `shopId` é o que ele levanta
+  // das quatro colocações, e o segmento da loja vem dele — exatamente como em
+  // toda outra linha. Uma loja levantada de `data` aparece nos dois segmentos
+  // (redundante, nunca ambíguo); uma loja SÓ no topo do envelope aparece só no
+  // primeiro — e é essa colocação que um segmento fixo em `-` apagava.
   it.each([
-    ['1 autorização (shop_id em data)', 1, { shop_id: 987654 }, '1:-:987654:1000'],
-    ['1 autorização (shopid em data)', 1, { shopid: 987654 }, '1:-:987654:1000'],
-    ['1 autorização (merchant)', 1, { merchant_id: 600222872 }, '1:-:600222872:1000'],
-    ['1 autorização (main account)', 1, { main_account_id: 68272 }, '1:-:68272:1000'],
+    [
+      '1 autorização (shop_id em data)',
+      { code: 1, data: { shop_id: 987654 } },
+      '1:987654:987654:1000',
+    ],
+    [
+      '1 autorização (shopid em data)',
+      { code: 1, data: { shopid: 987654 } },
+      '1:987654:987654:1000',
+    ],
+    [
+      '1 autorização (shop_id SÓ no topo)',
+      { code: 1, shop_id: 987654, data: { success: true } },
+      '1:987654:-:1000',
+    ],
+    [
+      '1 autorização (shopid SÓ no topo)',
+      { code: 1, shopid: 987654, data: { success: true } },
+      '1:987654:-:1000',
+    ],
+    [
+      '1 autorização (merchant)',
+      { code: 1, data: { merchant_id: 600222872 } },
+      '1:-:600222872:1000',
+    ],
+    [
+      '1 autorização (main account)',
+      { code: 1, data: { main_account_id: 68272 } },
+      '1:-:68272:1000',
+    ],
     [
       '1 autorização (lista de lojas)',
-      1,
-      { shop_id_list: [62000001, 62000002] },
+      { code: 1, data: { shop_id_list: [62000001, 62000002] } },
       '1:-:62000001_62000002:1000',
     ],
-    ['2 cancelamento', 2, { shop_id: 987654 }, '2:-:987654:1000'],
-    ['2 sem sujeito nenhum', 2, {}, '2:-:-:1000'],
-  ])('%s', (_nome, code, data, esperado) => {
-    expect(docIdOf(payload({ code, shopId: null, data }))).toBe(esperado);
+    [
+      '2 cancelamento (shopid em data)',
+      { code: 2, data: { shopid: 987654, authorize_type: 'expiry' } },
+      '2:987654:987654:1000',
+    ],
+    [
+      '2 cancelamento (shop_id SÓ no topo)',
+      { code: 2, shop_id: 987654, data: { authorize_type: 'expiry' } },
+      '2:987654:-:1000',
+    ],
+    ['2 sem sujeito nenhum', { code: 2, data: {} }, '2:-:-:1000'],
+  ])('%s', (_nome, body, esperado) => {
+    expect(docIdOf(parsed({ ...body, timestamp: 1 }))).toBe(esperado);
+  });
+
+  // ⚠️ O motivo da regra acima: o `timestamp` do envelope é em SEGUNDOS, então
+  // duas lojas autorizadas no mesmo segundo são a norma, não a exceção. Com a
+  // loja fora da identidade, as duas dividiam UM doc id — o create-only ignora
+  // o segundo (ALREADY_EXISTS), a linha `deferred` da segunda loja nunca
+  // existia e a reautorização dela nunca era re-dirigida — e UMA chave de
+  // dedup, então o sweep re-dirigia uma por rodada.
+  it('1: duas lojas com o id SÓ no topo, no mesmo segundo, têm ids e chaves DISTINTOS', () => {
+    const a = parsed({ code: 1, shop_id: 111, timestamp: 1_700_000_000, data: { success: true } });
+    const b = parsed({ code: 1, shop_id: 222, timestamp: 1_700_000_000, data: { success: true } });
+    expect(docIdOf(a)).toBe('1:111:-:1700000000000');
+    expect(docIdOf(b)).toBe('1:222:-:1700000000000');
+    expect(dedupKeyOf(a)).toBe('1:111:-');
+    expect(dedupKeyOf(b)).toBe('1:222:-');
+  });
+
+  // …e o fold ainda APLICA onde deve: a reentrega da mesma loja colapsa na
+  // dedup (o carimbo cai fora) e continua distinta no doc id.
+  it('1: a reentrega da MESMA loja (id só no topo) colapsa na dedup, não no doc id', () => {
+    const a = parsed({ code: 1, shop_id: 111, timestamp: 1_700_000_000, data: { success: true } });
+    const b = parsed({ code: 1, shop_id: 111, timestamp: 1_700_000_005, data: { success: true } });
+    expect(dedupKeyOf(a)).toBe('1:111:-');
+    expect(dedupKeyOf(b)).toBe('1:111:-');
+    expect(docIdOf(a)).not.toBe(docIdOf(b));
+  });
+
+  // ⚠️ A mesma classe do par acima, para os três codes PARADOS cuja identidade
+  // era mais grossa que o recurso: dois pacotes de UM pedido (4 e 15) e duas
+  // mensagens de UMA conversa (10), no mesmo segundo do envelope, precisam de
+  // ids e chaves DISTINTOS — cada linha parada é create-only, e a segunda era
+  // engolida (ALREADY_EXISTS) sem deixar rastro.
+  it.each([
+    [
+      '4 rastreio: dois pacotes do mesmo pedido',
+      {
+        code: 4,
+        shop_id: 111,
+        timestamp: 1_660_123_089,
+        data: { ordersn: 'ORD1', package_number: 'PKG-A', tracking_no: 'T1' },
+      },
+      {
+        code: 4,
+        shop_id: 111,
+        timestamp: 1_660_123_089,
+        data: { ordersn: 'ORD1', package_number: 'PKG-B', tracking_no: 'T2' },
+      },
+    ],
+    [
+      '15 documento de envio: dois pacotes do mesmo pedido',
+      {
+        code: 15,
+        shop_id: 111,
+        timestamp: 1_660_123_089,
+        data: { ordersn: 'ORD1', package_number: 'PKG-A', status: 'READY' },
+      },
+      {
+        code: 15,
+        shop_id: 111,
+        timestamp: 1_660_123_089,
+        data: { ordersn: 'ORD1', package_number: 'PKG-B', status: 'READY' },
+      },
+    ],
+    [
+      '10 chat: duas mensagens da mesma conversa',
+      {
+        code: 10,
+        shop_id: 111,
+        timestamp: 1_726_044_722,
+        data: {
+          type: 'message',
+          region: 'BR',
+          content: { message_id: 'M1', conversation_id: 'C1' },
+        },
+      },
+      {
+        code: 10,
+        shop_id: 111,
+        timestamp: 1_726_044_722,
+        data: {
+          type: 'message',
+          region: 'BR',
+          content: { message_id: 'M2', conversation_id: 'C1' },
+        },
+      },
+    ],
+  ])('%s, no mesmo segundo, têm ids e chaves DISTINTOS', (_nome, corpoA, corpoB) => {
+    const a = parsed(corpoA);
+    const b = parsed(corpoB);
+    expect(docIdOf(a)).not.toBe(docIdOf(b));
+    expect(dedupKeyOf(a)).not.toBe(dedupKeyOf(b));
   });
 
   it('um segmento ausente vira "-", nunca é omitido', () => {

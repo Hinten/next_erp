@@ -246,6 +246,13 @@ function lista(v: unknown): unknown[] {
   return Array.isArray(v) ? v : [];
 }
 
+/** A nested object inside `data`, or `{}` — never a throw on a scalar. */
+function objeto(v: unknown): Record<string, unknown> {
+  return v != null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+}
+
 /**
  * The identity of the WORK a push describes, split into the part that survives
  * a redelivery (`entidade`) and the part that does not (`carimbo`).
@@ -270,29 +277,49 @@ export function identidadeDoPush(p: ShopeeNotificationPayload): {
   const updateTime = texto(asInt(d.update_time));
 
   switch (p.code) {
-    // 3 / 4 — order status and tracking number. `shop_id` is TOP level on both
-    // and `data.update_time` is the event clock, so two status changes of one
-    // order never collide. ⚠️ Same fallback as every other row: when
-    // `update_time` is absent the ENVELOPE stamp stands in, and only a push
-    // carrying neither falls to `-`. Code 3 used to fall straight to `-`, which
-    // made every clock-less delivery about one order share ONE dead-letter row
-    // — the second overwriting the first, silently.
+    // 3 — order status. `shop_id` is TOP level and `data.update_time` (push 1
+    // returns it by default) is the event clock, so two status changes of one
+    // order never collide. When it is absent the ENVELOPE stamp stands in, and
+    // only a push carrying neither falls to `-`. Code 3 used to fall straight
+    // to `-`, which made every clock-less delivery about one order share ONE
+    // dead-letter row — the second overwriting the first, silently.
+    // ⚠️ The two clocks are in different UNITS on purpose and are never
+    // compared: `update_time` is the wire's SECONDS, the envelope stamp is our
+    // MILLIS. The carimbo is an opaque segment; the magnitudes cannot collide.
     case 3:
-    case 4:
       return {
         entidade: `${loja}:${texto(d.ordersn) ?? VAZIO}`,
         carimbo: updateTime ?? stamp,
       };
-    // 30 / 47 — package fulfillment status / package info.
+    // 4 — tracking number. `push 2` documents NO `update_time`, so its clock is
+    // the envelope stamp — SECONDS — and it always carries `package_number`,
+    // which is the resource: two packages of one order arranged in the same
+    // `ship_order` get their tracking numbers in the same second, and an
+    // order-only identity handed them ONE create-only row (the second lost).
+    case 4: {
+      const pedido = texto(d.ordersn) ?? VAZIO;
+      const pacote = texto(d.package_number) ?? VAZIO;
+      return { entidade: `${loja}:${pedido}:${pacote}`, carimbo: updateTime ?? stamp };
+    }
+    // 30 / 47 — package fulfillment status / package info. Both document
+    // `data.update_time` (push 44's sample even differs from the envelope by a
+    // second), so it is the clock, with the same fallback as code 3.
     case 30:
     case 47:
-      return { entidade: `${loja}:${texto(d.package_number) ?? VAZIO}`, carimbo: stamp };
-    // 15 — shipping document status: keyed by whichever of the two it carries.
-    case 15:
       return {
-        entidade: `${loja}:${texto(d.ordersn) ?? texto(d.package_number) ?? VAZIO}`,
-        carimbo: stamp,
+        entidade: `${loja}:${texto(d.package_number) ?? VAZIO}`,
+        carimbo: updateTime ?? stamp,
       };
+    // 15 — shipping document status. A shipping document belongs to a PACKAGE
+    // (`create_shipping_document` takes one `package_number` per entry), so the
+    // package leads and the order id is only the fallback, in both spellings —
+    // `push 17`'s parameter table says `order_sn`, its sample says `ordersn`.
+    // Order-first handed two packages of one order, READY in the same second,
+    // ONE create-only row.
+    case 15: {
+      const pacote = texto(d.package_number) ?? texto(d.ordersn) ?? texto(d.order_sn) ?? VAZIO;
+      return { entidade: `${loja}:${pacote}`, carimbo: stamp };
+    }
     // 29 — return updates.
     case 29:
       return { entidade: `${loja}:${texto(d.return_sn) ?? VAZIO}`, carimbo: stamp };
@@ -306,11 +333,24 @@ export function identidadeDoPush(p: ShopeeNotificationPayload): {
     case 9:
       return { entidade: `${loja}:${texto(d.item_id) ?? VAZIO}`, carimbo: stamp };
     // 10 — webchat (an ERP System app cannot even subscribe to it; parked).
-    case 10:
-      return {
-        entidade: `${loja}:${texto(d.conversation_id) ?? texto(d.message_id) ?? VAZIO}`,
-        carimbo: stamp,
-      };
+    // ⚠️ The ids live one level DOWN, under `data.content` — `data` itself
+    // carries only `type`, `region` and `content`. A flat read answered `-` for
+    // every real message, so every chat push of one shop shared one dedup key
+    // and same-second messages shared one create-only row. The MESSAGE leads
+    // (`message_id` when `type` = message, `msg_id` when it is a notification —
+    // and a `msg_id` of 0, which the notification sample carries, is not an
+    // id): a conversation id repeats across every message in the thread, so
+    // it is only the fallback.
+    case 10: {
+      const c = objeto(d.content);
+      const msgId = asInt(c.msg_id);
+      const mensagem =
+        texto(c.message_id) ??
+        (msgId != null && msgId !== 0 ? String(msgId) : null) ??
+        texto(c.conversation_id) ??
+        VAZIO;
+      return { entidade: `${loja}:${mensagem}`, carimbo: stamp };
+    }
     // 5 / 11 / 13 — shopee updates, video, brand.
     case 5:
     case 11:
@@ -320,9 +360,17 @@ export function identidadeDoPush(p: ShopeeNotificationPayload): {
         carimbo: stamp,
       };
     // 1 / 2 — authorization granted / cancelled. The subject may be a shop, a
-    // merchant, a main account or a LIST of shops, and `p.shopId` is already
-    // the lifted single-shop case — so the id is built from `data` directly and
-    // the leading segment is deliberately empty.
+    // merchant, a main account or a LIST of shops. `p.shopId` carries the
+    // lifted single-shop case — from any of the four placements the parser
+    // accepts, including a TOP-LEVEL `shop_id` the authorization samples have
+    // not shown but `lojasDoPushDeConta` already routes on — so it leads
+    // exactly as on every other row, and `data` supplies the subjects that
+    // have no envelope form. Identity follows routing: with the leading
+    // segment fixed at `-`, two pushes about two different top-level-only
+    // shops in the same SECOND would share one doc id (create-only ⇒ the
+    // second deferred row never exists) and one dedup key (the sweep re-drives
+    // one of them per run). A shop lifted from `data` appears in both
+    // segments; redundant, never ambiguous.
     case 1:
     case 2: {
       const sujeito =
@@ -336,7 +384,7 @@ export function identidadeDoPush(p: ShopeeNotificationPayload): {
               .join('_')
           : null) ??
         VAZIO;
-      return { entidade: `${VAZIO}:${sujeito}`, carimbo: stamp };
+      return { entidade: `${loja}:${sujeito}`, carimbo: stamp };
     }
     // 12 — authorization expiry. Partner-level and PAGINATED: the page number
     // is part of the identity, or page 2 would overwrite page 1's dead-letter
