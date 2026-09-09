@@ -17,7 +17,7 @@ import { Alert, Badge, Code, Group, Paper, Skeleton, Stack } from '@mantine/core
 import { skipToken, useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
 import type { PipelineFieldFilter } from '@delfrance/data';
-import { enviNfeMsgSchema } from '@delfrance/schemas';
+import { enviNfeMsgMeta, enviNfeMsgSchema } from '@delfrance/schemas';
 import { PageHeader, TableView, type FieldConfig } from '@delfrance/ui';
 
 import { enviNfeCollection } from '@/lib/data/enviNfeCollection';
@@ -36,9 +36,18 @@ import { EnviNfeFilterBar } from './EnviNfeFilterBar';
 import { useVerificarEnviNfeAction } from './useVerificarEnviNfeAction';
 import { VerificarResultadosModal } from './VerificarResultadosModal';
 
-// Kept local rather than moved to `defaultQuery.columns`: this screen passes no
-// `meta` — `enviNfe` has no CollectionMetadata — so there is nowhere to declare
-// it. The sort/limit are page-owned for the same reason.
+// Kept local rather than moved to `defaultQuery.columns`. The `defaultColumns`
+// prop WINS over the meta (TableView resolves the prop first), so declaring the
+// set in both places would create a second copy that nothing checks and this
+// one could silently drift from. The sort and limit went the other way — they
+// are now declared on `enviNfeMsgMeta`, because those two ARE the query, and a
+// query no meta declares is skipped by every index guard rather than checked
+// leniently.
+//
+// ⚠️ The note that used to sit here claimed "`enviNfe` has no
+// CollectionMetadata". That was never true — `enviNfeMsgMeta` has existed all
+// along; what it lacked was a `defaultQuery`, which is the thing the guards
+// actually key on.
 const DEFAULT_COLUMNS = [
   'timestamp',
   'estado',
@@ -173,6 +182,16 @@ export function ComunicacoesNfeScreen() {
           collection={enviNfeCollection}
           db={db}
           pathContext={pathContext}
+          // Passing the meta is what makes the declared query REACHABLE:
+          // `resolveListMode` returns `no-declared-query` without it, so this
+          // list could only ever be a one-shot pipeline. With it, the
+          // unfiltered view streams like every other screen since #1555, and
+          // a chave filter still drops to the static path — which is correct,
+          // because a filtered fiscal log is a snapshot the operator asked
+          // for. `defaultQuery.orderBy` matches the `orderBy` prop below
+          // exactly; if they diverge, `resolveListMode` reads it as a custom
+          // sort and silently stops streaming.
+          meta={enviNfeMsgMeta}
           extraFilters={extraFilters}
           defaultColumns={DEFAULT_COLUMNS}
           orderBy={{ field: 'timestamp', direction: 'desc' }}
