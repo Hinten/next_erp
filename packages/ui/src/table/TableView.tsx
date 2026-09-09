@@ -51,6 +51,7 @@ import {
   isPipelineSupported,
 } from '@delfrance/data/pipeline-queries';
 import { extractFieldsFromSchema } from '../schema/derive';
+import { expandColumnFilter } from '../schema/types';
 import type {
   ActionConfig,
   ColumnFilterValue,
@@ -849,7 +850,50 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     searchConfig && searchTerm !== '' && !searchIdsActive && !searchResolving
       ? searchConfig.toForcedOrderBy?.(searchTerm)
       : undefined;
-  const resolvedForcedOrderBy = forcedOrderBy ?? searchForcedOrderBy;
+  /**
+   * A `between` filter makes its field an INEQUALITY, and Firestore requires an
+   * inequality field to lead the `orderBy`. Sorting by anything else silently
+   * stops matching the composite index — no error on Enterprise, just a scan
+   * billed by data read. So an active range takes the sort, exactly as the
+   * legacy app did for its despacho range (`pedidoTableView.dart:210,218`).
+   *
+   * ⚠️ Only the FIRST range wins. A second inequality is a post-filter that,
+   * per Firestore's own docs, "does not reduce the number of index entries
+   * scanned" (root CLAUDE.md, #785) — so a second range cannot be served by
+   * leading the sort with it, and pretending otherwise would just move the scan.
+   * The UI should keep one range active; this makes the query honest either way.
+   */
+  const rangeFilterField = useMemo(
+    () => Object.entries(serverFilters).find(([, v]) => v.op === 'between')?.[0],
+    [serverFiltersSerial],
+  );
+  const rangeForcedOrderBy = rangeFilterField
+    ? {
+        field: rangeFilterField,
+        // The range field must LEAD the orderBy; its direction is free, and both
+        // are index-legal. So a header click on that column still flips it —
+        // otherwise the one sort that IS legal here would be the one the
+        // operator could not reach, and the arrow would sit on a control that
+        // does nothing.
+        direction: sort?.field === rangeFilterField ? sort.direction : ('desc' as const),
+      }
+    : undefined;
+  /**
+   * ⚠️ Search outranks a column range, and the order of these three is the whole
+   * point.
+   *
+   * `/produtos`' search emits a `nome` PREFIX RANGE and forces `nome asc` to
+   * keep it leading — its docstring says that leaving another sort in place
+   * "silently stop[s] using `produtos(paiId, nome)`, turning the seek this
+   * search exists to be into the full scan". A column range on any datetime
+   * column (`ultimaModificacao` is one, and is a declared produtos column) is
+   * therefore the SECOND inequality, and the second one is a post-filter either
+   * way — so the lead belongs to the search, which has an index built for it.
+   *
+   * Ranked the other way round, typing in the search box while a date range was
+   * open silently demoted the search's own range to a post-filter and scanned.
+   */
+  const resolvedForcedOrderBy = forcedOrderBy ?? searchForcedOrderBy ?? rangeForcedOrderBy;
   const forcedSort: SortState | undefined = resolvedForcedOrderBy
     ? {
         field: resolvedForcedOrderBy.field,
@@ -1021,7 +1065,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         filters: [
           ...baseFilters,
           ...(effectiveExtraFilters ?? []),
-          ...Object.entries(serverFilters).map(([field, v]) => ({ field, ...v })),
+          // `flatMap`, not `map`: a `between` filter is ONE piece of UI state
+          // that expands to TWO predicates (`expandColumnFilter`). The query
+          // builder never learns about the UI op.
+          ...Object.entries(serverFilters).flatMap(([field, v]) => expandColumnFilter(field, v)),
         ],
         // Constrain to the parent ids a subcollection lookup resolved (NF
         // by numero/chave). Undefined when no such filter is active.

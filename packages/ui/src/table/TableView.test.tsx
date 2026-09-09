@@ -1173,6 +1173,76 @@ describe('TableView', () => {
       expect(screen.getByText('Tempo real')).toBeDefined();
     });
 
+    it('lets the SEARCH keep the orderBy lead when a column range is also active', () => {
+      // /produtos' search emits a `nome` PREFIX RANGE and forces `nome asc` to
+      // keep it leading; its docstring says another sort "silently stop[s] using
+      // produtos(paiId, nome) — turning the seek this search exists to be into
+      // the full scan". A column range is therefore the SECOND inequality, and
+      // the second one is a post-filter either way, so the lead belongs to the
+      // search — which has an index built for it.
+      //
+      // Ranked the other way round, typing in the search box while a date range
+      // was open silently demoted the search's own range and scanned.
+      searchParamsRef.current = new URLSearchParams('observacoes=between:1..9&q=cami');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={metaBase}
+          search={{
+            placeholder: 'Buscar',
+            toFilters: (t) => [{ field: 'nome', op: 'gte', value: t }],
+            toForcedOrderBy: () => ({ field: 'nome', direction: 'asc' as const }),
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'nome', direction: 'asc' }] }),
+      );
+    });
+
+    it('gives a column range the lead when no search is competing for it', () => {
+      searchParamsRef.current = new URLSearchParams('observacoes=between:1..9');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={metaBase}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
+      );
+    });
+
+    it('lets a header click flip the range column, the one legal sort here', () => {
+      // `forcedSort` outranks the user sort, so without this the range column's
+      // own header is a dead control: the click writes `?sort=` to the URL while
+      // the table stays put. The DIRECTION is free — both are index-legal.
+      searchParamsRef.current = new URLSearchParams(
+        'observacoes=between:1..9&sort=observacoes:asc',
+      );
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={metaBase}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'asc' }] }),
+      );
+    });
+
     it('first header click flips the meta-default ascending sort to descending', () => {
       // Regression: with the default sort coming from meta (not the legacy
       // orderBy prop), the column shows ascending but `sort` state is still

@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
-import type { PipelineFilterOp } from '@delfrance/data';
-import type { FilterableField } from '../schema/types';
+import type { ColumnFilterOp, FilterableField } from '../schema/types';
 import type { ColumnFilterValue } from './ColumnFilter';
 import { listViewMemoryKey, readListViewMemory, writeListViewMemory } from './listViewMemory';
 
@@ -21,7 +20,12 @@ export const SORT_PARAM = 'sort';
  */
 const RESERVED_PARAMS = new Set<string>([SORT_PARAM, SEARCH_PARAM]);
 
-const FILTER_OPS = new Set<PipelineFilterOp>([
+// ⚠️ Typed on the UI op set, not `PipelineFilterOp`: `between` never reaches
+// the query builder, but it MUST round-trip through the URL. An op missing
+// here writes to the URL (the sync effect is op-agnostic) and is then dropped
+// on hydration, so a shared link silently reopens unfiltered — the bug the
+// array-contains note below records.
+const FILTER_OPS = new Set<ColumnFilterOp>([
   'contains',
   'startsWith',
   'eq',
@@ -35,6 +39,8 @@ const FILTER_OPS = new Set<PipelineFilterOp>([
   // dropped on hydration — a shared link silently reopened unfiltered.
   'array-contains',
   'array-contains-any',
+
+  'between',
 ]);
 
 /**
@@ -46,10 +52,16 @@ const FILTER_OPS = new Set<PipelineFilterOp>([
  * percent-encoded before being joined so a separator inside an id cannot split
  * one candidate into two; every other op stringifies its scalar as before.
  */
-export function encodeFilterValue(value: ColumnFilterValue['value']): string {
-  return Array.isArray(value)
-    ? value.map((v) => encodeURIComponent(String(v))).join(',')
-    : String(value);
+export function encodeFilterValue(value: ColumnFilterValue): string {
+  if (value.op === 'between') {
+    // `..` separates the bounds. Both are numbers or plain strings here (a
+    // range is only offered for numeric and datetime kinds), so neither can
+    // contain the separator.
+    return `${value.value ?? ''}..${value.valueTo ?? ''}`;
+  }
+  return Array.isArray(value.value)
+    ? value.value.map((v) => encodeURIComponent(String(v))).join(',')
+    : String(value.value);
 }
 
 /**
@@ -71,10 +83,55 @@ export function parseFiltersFromParams(
     if (!descriptor) continue;
     const sep = raw.indexOf(':');
     if (sep < 0) continue;
-    const op = raw.slice(0, sep) as PipelineFilterOp;
+    const op = raw.slice(0, sep) as ColumnFilterOp;
     if (!FILTER_OPS.has(op)) continue;
     const rawValue = raw.slice(sep + 1);
     let value: ColumnFilterValue['value'];
+    if (op === 'between') {
+      // `<lo>..<hi>`, decoded by the OP like `array-contains-any` below and for
+      // the same reason: the shape is the op's, not the descriptor kind's.
+      // Both bounds are coerced by `kind` because a range is only offered for
+      // numeric and datetime fields, where the stored value is a number.
+      //
+      // ⚠️ Must not throw — this runs from a `useState` initializer, so an
+      // exception here takes down the whole TableView subtree during render,
+      // over a hand-edited link. An unparseable bound drops the filter, exactly
+      // like every other unreadable input in this loop.
+      const dot = rawValue.indexOf('..');
+      if (dot < 0) continue;
+      const loRaw = rawValue.slice(0, dot);
+      const hiRaw = rawValue.slice(dot + 2);
+      // ⚠️ `null` and UNREADABLE are different answers and must not share a
+      // representation. `null` means "this side was intentionally left open";
+      // `undefined` means "this side was mangled". Collapsing them — which an
+      // earlier revision did — turns `between:xyz..200` into an unbounded-below
+      // "até 200": MORE rows than were asked for, behind a chip that
+      // confidently reads `Criação: até 08/09/2026`. The scalar ladder below
+      // drops the whole filter on an unreadable value (`Number.isNaN` →
+      // `continue`), and this branch has to match it rather than merely say so.
+      const coerce = (s: string): number | string | null | undefined => {
+        if (s === '') return null;
+        if (
+          descriptor.kind === 'number' ||
+          descriptor.kind === 'integer' ||
+          descriptor.kind === 'currency' ||
+          descriptor.kind === 'datetime'
+        ) {
+          const n = Number(s);
+          return Number.isNaN(n) ? undefined : n;
+        }
+        return s;
+      };
+      const lo = coerce(loRaw);
+      const hi = coerce(hiRaw);
+      // Either bound unreadable ⇒ drop the whole filter, like the scalar ladder.
+      if (lo === undefined || hi === undefined) continue;
+      // A range with neither bound is not a filter. ONE bound is legitimate —
+      // `expandColumnFilter` emits the single predicate it has.
+      if (lo === null && hi === null) continue;
+      out[key] = { op, value: lo, valueTo: hi };
+      continue;
+    }
     if (op === 'array-contains-any') {
       // A candidate list, not a scalar — so it is decoded by the OP, ahead of
       // the coerce-by-`kind` ladder below (the descriptor's kind describes the
@@ -147,7 +204,7 @@ export function encodeTableState(
 ): string {
   const params = new URLSearchParams();
   for (const [field, v] of Object.entries(filters)) {
-    params.set(field, `${v.op}:${encodeFilterValue(v.value)}`);
+    params.set(field, `${v.op}:${encodeFilterValue(v)}`);
   }
   if (sort) params.set(SORT_PARAM, `${sort.field}:${sort.direction}`);
   if (search !== '') params.set(SEARCH_PARAM, search);
