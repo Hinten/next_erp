@@ -233,7 +233,7 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `renderActionsPanelExtra` | `(ctx: { collapsed }) => ReactNode` — caller content rendered inside `actionsPanel` below the buttons (ignored without it). Unlike the ActionBar the panel can host state that outlives a click, which is what makes it the home for a long-running job's progress (`/canais/mercado-livre`). It renders on the collapsed rail too, so shrink to a badge via `ctx.collapsed` rather than returning `null`. |
 | `onSelectionChange` | `(rows: SnapshotRow<T>[]) => void` — observe the checked rows outside an action (fires once with `[]` on mount, then on every change of the selected **id set**, not on unrelated snapshot ticks). The callback is read through a latest-ref, so an inline arrow is safe. |
 | `copyHref` | Enables the built-in "Copiar" action. Setting it is the on/off toggle; it also implies row selection. Selecting exactly one row + "Copiar" navigates to `${copyHref}?copyFrom=<id>` (the create page pre-fills from that doc). |
-| `monitorField` | Field the update-monitor orders by (`limit(1)`, desc) to flag a stale page. `false` disables; omitted auto-resolves `ultimaModificacao` → `timestamp` → disabled. |
+| `monitorField` | Field the update-monitor orders by (`limit(1)`, desc) to flag a stale page. `false` disables; omitted auto-resolves `ultimaModificacao` → `timestamp` → disabled. ⚠️ It runs only while the list is on the FROZEN transport — a column filter, a search term or a sort other than the declared one. A streaming list has nothing for it to find, so the field resolves to `null` there and no listener opens. The index is still owed on every collection: any list reaches the frozen transport. |
 | `pageSize` | Rows per page (default 50). |
 | `pathContext` | For sub-collections (`{ parentId }`). |
 | `extraFilters` | `ReadonlyArray<PipelineFieldFilter>` — page-owned server-side filters (no filter UI, never in the URL), AND-combined with `meta.defaultQuery` base filters and the user's column filters. An `array-contains-any` entry whose value is an EMPTY array short-circuits to an empty result set without querying (a resolved candidate list that came back empty); an array value on any OTHER op throws (programmer error), never silently renders an empty table. Ignored under `queryOverride`. On the classic fallback path `array-contains-any` is capped at 30 values and `contains`/`startsWith` throw (pipeline-only). |
@@ -394,7 +394,10 @@ before it went green. Check here first when a CRUD test fails.
   in `beforeAll` and keep a generous table-load timeout.
 - **A row you just created is missing from the list.** Under the Pipelines
   path `TableView` runs a *one-shot* query — it does not re-fetch after a
-  create. The update-monitor shows a yellow "Atualizar" banner when the
+  create. ⚠️ Which path you are on depends on the list's own state: an
+  untouched list streams the declared query and the row simply appears, while
+  a filter, a search term or a custom sort freezes it. On the frozen one the
+  update-monitor shows a yellow "Atualizar" banner when the
   collection changes, but the main table won't refresh until that button
   (or `monitorField`-driven reload) fires. The fix belongs in the **test**,
   not the component: after creating, wait for the doc to commit (e.g.
@@ -407,8 +410,9 @@ before it went green. Check here first when a CRUD test fails.
   the delete action keeps the list fresh in the same tab). The update-monitor
   itself only watches the most-recent doc (`limit(1)`), so it does **not**
   detect deletions made in *other* sessions — a hard delete leaves no
-  queryable trace. That cross-session gap is a known limitation tracked in
-  issue #40.
+  queryable trace. A STREAMING list no longer needs it to (the row simply goes),
+  which is what closed the common half of issue #40; on a filtered, searched or
+  custom-sorted list that cross-session gap is still there and still open.
 - **Vitest: Mantine throws under JSDOM** (`ResizeObserver is not defined`,
   `matchMedia`, `document.fonts`, `visualViewport`). `packages/ui/vitest.setup.ts`
   shims all four. Any new package that renders Mantine components in unit
