@@ -965,12 +965,21 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const selectFields = useMemo<string[] | undefined>(() => {
     const schemaKeys = [...visibleKeys].filter((k) => descriptors.some((d) => d.key === k));
     const visibleVirtuals = virtualColumns.filter((v) => visibleKeys.has(v.key));
-    if (visibleVirtuals.length === 0) return schemaKeys;
+    // An action's eligibility predicate reads `row.data` too, so its inputs
+    // must survive the projection. Same contract and same escape hatch as a
+    // virtual column's `dependsOn`: an UNDECLARED predicate forces a
+    // full-document read, because the alternative is a predicate silently
+    // running against fields that arrive `undefined` and refusing every row
+    // behind a plausible tooltip.
+    const eligibilityActions = actions.filter((a) => a.rowIneligibleReason);
+    if (eligibilityActions.some((a) => a.rowEligibilityFields === undefined)) return undefined;
+    if (visibleVirtuals.length === 0 && eligibilityActions.length === 0) return schemaKeys;
     if (visibleVirtuals.some((v) => v.dependsOn === undefined)) return undefined;
     const union = new Set(schemaKeys);
     for (const v of visibleVirtuals) for (const f of v.dependsOn ?? []) union.add(f);
+    for (const a of eligibilityActions) for (const f of a.rowEligibilityFields ?? []) union.add(f);
     return [...union];
-  }, [visibleKeys, descriptors, virtualColumns]);
+  }, [visibleKeys, descriptors, virtualColumns, actions]);
   const selectFieldsSerial = useMemo(
     () => (selectFields ? selectFields.join('|') : '*'),
     [selectFields],

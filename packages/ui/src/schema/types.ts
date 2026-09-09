@@ -271,6 +271,33 @@ export interface ActionConfig<T> {
    */
   maxSelection?: number;
   refreshOnComplete?: boolean;
+  /**
+   * Why THIS row cannot take the action, or `null` when it can.
+   *
+   * A refused row is dropped from the rows `run` receives, and the confirm
+   * dialog names it with this reason — so an operator who selected twelve
+   * pedidos and had two skipped is told which two and why, rather than watching
+   * the count quietly disagree with their selection.
+   *
+   * Returns the REASON, not a boolean: a boolean predicate cannot carry one, and
+   * the pair would drift. `actionDisabledReason` already uses this shape.
+   *
+   * ⚠️ May read ONLY fields listed in {@link rowEligibilityFields}. `row.data` is
+   * a Pipelines `select()` projection on the static path, so an undeclared field
+   * arrives `undefined` and the predicate refuses EVERY row while looking
+   * correct — a disabled button with a plausible tooltip. Three existing pedido
+   * actions re-read the whole document specifically to dodge this
+   * (`useDevolucaoIntegralAction`: "hiding a column strips its `dependsOn`
+   * fields, which would falsely reject every row").
+   */
+  rowIneligibleReason?: (row: SnapshotRow<T>) => string | null;
+  /**
+   * Fields {@link rowIneligibleReason} reads. Unioned into the Pipelines
+   * `select()` exactly like `VirtualColumn.dependsOn`, and with the same escape
+   * hatch: declaring a predicate WITHOUT this forces a full-document read rather
+   * than letting it run against a projection that may be missing its inputs.
+   */
+  rowEligibilityFields?: ReadonlyArray<string>;
   run: (rows: SnapshotRow<T>[]) => Promise<void> | void;
   confirm?: { title: string; message: string };
 }
