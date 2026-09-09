@@ -1242,6 +1242,25 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
    * `pages` alone or drops it to 1 through the reset effect below, and only the
    * button ever raises it.
    */
+  /**
+   * True from the click that widens the window until the wider result lands.
+   *
+   * ⚠️ Deliberately NOT gated on `snap.loading`, which lags `pages` by the
+   * one commit the effect above describes. Anything keyed on that flag is
+   * ABSENT on the click render: the footer's own fullness test has already gone
+   * false (the held rows no longer fill the widened limit), so a footer admitted
+   * only by `growingWindow` unmounts for exactly one commit — and the two
+   * commits are separated by a passive effect React schedules as its own task,
+   * so the browser is free to lay out and paint a ~36px shrink in between. That
+   * is the height change this whole mechanism exists to remove, and it can fire
+   * a real clamp event while `showSkeleton` is still false.
+   *
+   * `snap.data` still gates it, so a failed read hides the footer rather than
+   * leaving a button spinning forever.
+   */
+  const pendingGrowth =
+    !!snap.data && loadedPagesRef.current !== null && loadedPagesRef.current < pages;
+
   const growingWindow =
     (snap.loading || lookupLoading) &&
     // Rows to KEEP, not merely a defined array: `rows` is `[]` when a lookup or
@@ -1249,8 +1268,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // screen in place of the skeleton says nothing to anyone.
     !!rows &&
     rows.length > 0 &&
-    loadedPagesRef.current !== null &&
-    loadedPagesRef.current < pages;
+    pendingGrowth;
 
   // Skeletons only when there is nothing trustworthy to show. See above.
   const showSkeleton = (snap.loading || lookupLoading) && !growingWindow;
@@ -1269,7 +1287,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Nothing left to offer: the window is as wide as it is allowed to get. Says
   // so out loud rather than hiding the button, because a limit the operator
   // cannot see is indistinguishable from a list that ended.
-  const atPageCeiling = pages >= MAX_PAGES && windowFull && !growingWindow;
+  const atPageCeiling = pages >= MAX_PAGES && windowFull && !pendingGrowth;
 
   // Collapse "Carregar mais" back to one page whenever the query shape changes
   // (filters, sort, base filters or bound params) — the expanded window only
@@ -1346,6 +1364,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   useEffect(() => {
     let handle = 0;
     let moved = false;
+    // Where the operator actually was, as of the last real scroll event.
+    let at = 0;
     const onScroll = () => {
       // ⚠️ A scroll event fired while the skeletons are up is the BROWSER
       // clamping the offset to a document that just collapsed, not the operator
@@ -1355,8 +1375,16 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       // lookup resolution, a failed read.
       if (skeletonRef.current) return;
       moved = true;
+      // ⚠️ Sampled HERE, never inside the timeout. The guard above ignores the
+      // clamp EVENT, but a timer armed by a real scroll is not disarmed by it —
+      // so a callback reading `window.scrollY` 150ms later would read whatever
+      // a collapse landing inside that window clamped it to. Needs only a
+      // gesture ending on "Atualizar" or a chip, and `lookupLoading` flipping
+      // is not human-timed at all. Capturing is also simply more accurate: it
+      // persists where the operator was, not where they are 150ms later.
+      at = window.scrollY;
       window.clearTimeout(handle);
-      handle = window.setTimeout(() => rememberScroll(window.scrollY), SCROLL_PERSIST_DEBOUNCE_MS);
+      handle = window.setTimeout(() => rememberScroll(at), SCROLL_PERSIST_DEBOUNCE_MS);
     };
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => {
@@ -1370,7 +1398,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       // cleans up and remounts immediately, and an unconditional flush there
       // would persist `scrollY` 0 over the offset the restore is still on its
       // way to putting back.
-      if (moved && !skeletonRef.current) rememberScroll(window.scrollY);
+      // Flushes the CAPTURED offset for the same reason, which also makes the
+      // skeleton guard unnecessary here: `moved` is only ever set by a real
+      // scroll, so `at` is a genuine position and is worth keeping even when
+      // the table happens to be mid-refetch as the operator leaves.
+      if (moved) rememberScroll(at);
     };
   }, [rememberScroll]);
 
@@ -1985,14 +2017,17 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
               Hidden entirely under `queryOverride`: that query is caller-owned
               and ignores `effectiveLimit`, so the button couldn't fetch more.
 
-              ⚠️ `growingWindow` is its own admission ticket. During a growth
+              ⚠️ `pendingGrowth` is its own admission ticket. During a growth
               the rows on screen are the PREVIOUS window, so their count no
               longer equals the widened `effectiveLimit` and the fullness test
               goes false — the footer would vanish mid-click and the page would
               jump under the operator's cursor, which is the shift this whole
-              change exists to remove. */}
+              change exists to remove. It is `pendingGrowth` rather than
+              `growingWindow` precisely because the latter waits on
+              `snap.loading`, which arrives one commit too late to cover the
+              click render. */}
           {!queryOverride &&
-            (growingWindow || (!snap.loading && windowFull)) &&
+            (pendingGrowth || (!snap.loading && windowFull)) &&
             (atPageCeiling ? (
               <Text c="dimmed" size="sm" ta="center">
                 Limite de carregamento atingido ({MAX_PAGES * resolvedPageSize} registros). Refine
@@ -2002,7 +2037,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
               <Center>
                 <Button
                   variant="subtle"
-                  loading={growingWindow}
+                  loading={pendingGrowth}
                   onClick={() => setPages((p) => Math.min(p + 1, MAX_PAGES))}
                 >
                   Carregar mais

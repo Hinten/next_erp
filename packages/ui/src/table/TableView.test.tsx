@@ -1829,6 +1829,43 @@ describe('TableView', () => {
       vi.useRealTimers();
     });
 
+    it('persists where the operator was, not where a later collapse clamped them', async () => {
+      // The `onScroll` guard ignores the clamp EVENT, but a timer already armed
+      // by a real scroll is not disarmed by it. A callback that read
+      // `window.scrollY` when it fired would therefore read whatever a collapse
+      // landing inside those 150ms clamped it to — a wheel gesture ending on
+      // "Atualizar" or a chip is enough, and `lookupLoading` flipping is not
+      // human-timed at all. The offset is captured in the handler instead.
+      vi.useFakeTimers();
+      vi.stubGlobal('scrollTo', vi.fn());
+      const withRows = snapState.current;
+      // A third value, so "wrote the clamp" and "never wrote" stay tellable
+      // apart from "wrote the right thing".
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 900 });
+      const { rerender } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 640, configurable: true });
+      window.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS - 50);
+
+      // The table collapses inside the debounce window and the browser clamps.
+      snapState.current = { ...withRows, loading: true };
+      rerender(
+        <MantineTestProvider>
+          <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />
+        </MantineTestProvider>,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS + 20);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(640);
+
+      snapState.current = withRows;
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
     it('ignores the browser clamp that follows a collapsed table', async () => {
       // Whenever the table is swapped for skeletons the document collapses
       // below the operator's offset and the browser clamps `scrollY` — which
@@ -2113,6 +2150,15 @@ describe('TableView', () => {
       // under the cursor — the very shift this change exists to remove.
       const view = render(table(2));
       fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      // ⚠️ Asserted BEFORE `beginRefetch()`, and that order is the whole
+      // point. `snap.loading` lags `pages` by one commit, so THIS is the render
+      // where the fullness test has already gone false and nothing has replaced
+      // it yet — the commit the footer used to disappear on. Skipping straight
+      // to the loading commit hides the gap entirely.
+      const onClickRender = screen.queryByRole('button', { name: 'Carregar mais' });
+      expect(onClickRender).not.toBeNull();
+      expect(onClickRender?.hasAttribute('data-loading')).toBe(true);
+
       beginRefetch();
       view.rerender(table(2));
       expect(
