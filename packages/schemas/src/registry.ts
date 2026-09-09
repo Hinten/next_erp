@@ -45,6 +45,7 @@ import { filial } from './filial';
 import { bandeiraCartao } from './bandeiraCartao';
 import { nfe } from './nfe';
 import { nfeConfig } from './nfeConfig';
+import { apuracaoSimples, simplesNacionalConfig } from './simplesNacionalConfig';
 import { enviNfeMsg } from './enviNfeMsg';
 import { inutNumeracao } from './inutilizacaoNumeracao';
 import { cartaCorrecao } from './cartaCorrecao';
@@ -119,6 +120,8 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   bandeiraCartao,
   nfe,
   nfeConfig,
+  simplesNacionalConfig,
+  apuracaoSimples,
   enviNfeMsg,
   inutNumeracao,
   cartaCorrecao,

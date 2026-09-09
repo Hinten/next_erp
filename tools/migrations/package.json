@@ -18,6 +18,7 @@
     "migrate:ml-integracoes-com-produto": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-integracoes-com-produto/migrate.ts",
     "migrate:ml-lastmarketplaceupdate": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-lastmarketplaceupdate/backfill.ts",
     "migrate:ml-precos-ghost-keys": "dotenv -e ../../.env.local -- tsx src/2026-08-ml-precos-ghost-keys/migrate.ts",
+    "migrate:nfe-totais": "dotenv -e ../../.env.local -- tsx src/2026-09-nfe-totais/migrate.ts",
     "migrate:pedido-pagamento-micros": "dotenv -e ../../.env.local -- tsx src/2026-06-pedido-pagamento-micros/migrate.ts",
     "migrate:produto-sem-variacoes": "dotenv -e ../../.env.local -- tsx src/2026-09-produto-sem-variacoes/migrate.ts",
     "migrate:produto-ultima-modificacao": "dotenv -e ../../.env.local -- tsx src/2026-08-produto-ultima-modificacao/migrate.ts",
@@ -27,6 +28,7 @@
   },
   "dependencies": {
     "@delfrance/core": "workspace:*",
+    "@delfrance/integrations-nfe": "workspace:*",
     "@delfrance/schemas": "workspace:*",
     "firebase-admin": "catalog:"
   },

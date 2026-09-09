@@ -675,6 +675,26 @@ export {
   type Bandeira,
 } from './bandeiraCartao';
 
+export * from './simplesNacional';
+export {
+  ANEXO_SIMPLES,
+  ANEXO_SIMPLES_LABELS,
+  APURACAO_ESTADO,
+  SIMPLES_NACIONAL_CONFIG_DOC_ID,
+  anexoSimplesSchema,
+  apuracaoEstadoSchema,
+  apuracaoSimples,
+  apuracaoSimplesMeta,
+  apuracaoSimplesSchema,
+  simplesNacionalConfig,
+  simplesNacionalConfigMeta,
+  simplesNacionalConfigSchema,
+  type AnexoSimplesWire,
+  type ApuracaoEstado,
+  type ApuracaoSimples,
+  type SimplesNacionalConfig,
+} from './simplesNacionalConfig';
+
 export {
   nfe,
   nfeSchema,

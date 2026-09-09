@@ -284,6 +284,18 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_fiscal', 4);
     }
 
+    match /filiais/{filialId}/simplesnacional/{docId} {
+      allow read: if isSuperUser() || p('d_fiscal', 1);
+      allow create, update: if isSuperUser() || p('d_fiscal', 2);
+      allow delete: if isSuperUser() || p('d_fiscal', 4);
+    }
+
+    match /filiais/{filialId}/simplesnacional/default/apuracoes/{docId} {
+      allow read: if isSuperUser() || p('d_fiscal', 1);
+      allow create, update: if isSuperUser() || p('d_fiscal', 2);
+      allow delete: if isSuperUser() || p('d_fiscal', 4);
+    }
+
     match /grupoDeVariacoes/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
@@ -551,6 +563,9 @@ service cloud.firestore {
     // Collection-group reads (client groupQuery / collectionGroup).
     // A leaf shared by several collections carries the UNION of their
     // read claims (see the dedupe note in emitRules).
+    match /{path=**}/apuracoes/{docId} {
+      allow read: if isSuperUser() || p('d_fiscal', 1);
+    }
     match /{path=**}/brandshopee/{docId} {
       allow read: if isSuperUser() || p('d_integracao', 1);
     }
@@ -628,6 +643,9 @@ service cloud.firestore {
     }
     match /{path=**}/regras/{docId} {
       allow read: if isSuperUser() || p('d_regraImposto', 1);
+    }
+    match /{path=**}/simplesnacional/{docId} {
+      allow read: if isSuperUser() || p('d_fiscal', 1);
     }
     match /{path=**}/token6h/{docId} {
       allow read: if isSuperUser() || p('d_integracao', 1);

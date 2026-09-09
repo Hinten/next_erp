@@ -13,6 +13,10 @@ export { configIaCollection } from './configIaCollection';
 export { nfev4Collection } from './nfev4Collection';
 export { enviNfeMsgCollection } from './enviNfeMsgCollection';
 export { nfeConfigCollection } from './nfeConfigCollection';
+export {
+  apuracaoSimplesCollection,
+  simplesNacionalConfigCollection,
+} from './simplesNacionalConfigCollection';
 export { certificadoSecretoCollection } from './certificadoSecretoCollection';
 export { filialCollection } from './filialCollection';
 export { inutNumeracaoCollection } from './inutNumeracaoCollection';

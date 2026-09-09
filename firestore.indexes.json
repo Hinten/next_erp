@@ -964,6 +964,50 @@
       ]
     },
     {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_emissao",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "filialId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.tpNF",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.finNFe",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.receitaBruta",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_emissao",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "cartacorrecao",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
