@@ -17,10 +17,11 @@ import {
   chaveExpiracao,
 } from '../avisos/autorizacao';
 // ⚠️ The fake Firestore is SHARED, not copied: it is the same harness
-// `avisos/pushSaude`, `notificacoes/lostPushSweep` and
-// `notificacoes/pushConfigMonitor` run through, so this suite exercises the REAL
-// `escreverAviso` / `resolverAviso` over the same store those do. A second copy
-// of it would be two files reading as agreeing while drifting apart.
+// `avisos/pushSaude`, `notificacoes/notificacao`, `notificacoes/lostPushSweep`,
+// `notificacoes/pushConfigMonitor` and `notificacoes/orderBackfill` run through,
+// so this suite exercises the REAL `escreverAviso` / `resolverAviso` over the
+// same store those do. A second copy of it would be two files reading as
+// agreeing while drifting apart.
 import { type DocData, FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { DIAS_LIMITE_EXPIRACAO, runShopeeAuthorizationExpirySweep } from './expiracaoSweep';
 

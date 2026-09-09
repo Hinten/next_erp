@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import type { Firestore } from 'firebase-admin/firestore';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import {
@@ -15,8 +14,14 @@ import {
   type ShopeeOrderList,
 } from '@delfrance/integrations-shopee';
 
+import { type DocData, FakeDb, asDb, grpc } from '../testing/fakeDb';
+import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeContaNotConfiguredError } from '../core/shopee';
-import { ShopeeContaSemShopIdError } from '../core/tokenStore';
+import {
+  ShopeeContaSemShopIdError,
+  ShopeeRefreshEmAndamentoError,
+  ShopeeSemCredencialError,
+} from '../core/tokenStore';
 import { ShopeeTasksDisabledError, type ShopeeTaskScheduler } from '../shopeeTasks';
 import {
   dedupKeyOf,
@@ -60,108 +65,6 @@ vi.mock('./notificacao', async () => {
       code === 3 && destinoDoCodigo3 !== null ? destinoDoCodigo3 : real.destinoDoCodigo(code),
   };
 });
-
-/* -------------------------------------------------------------------------- */
-/*  Fake Admin-SDK Firestore                                                  */
-/*                                                                            */
-/*  MODELLED on `conta/expiracaoSweep.test.ts`'s (B is extracting a shared    */
-/*  one into `lib/shopee/testing/fakeDb.ts`; this copy goes away with it).     */
-/*  Two differences from that one, both required here:                        */
-/*   - the chain is `where().where().get()` with NO `limit()` — the           */
-/*     enumeration the sweep runs;                                            */
-/*   - `set(patch, { merge: true })` is recorded per path, so a test can count */
-/*     the writes per conta and read back which fields a patch OMITTED.       */
-/*  EVERY path touched is still recorded, so a test can assert that nothing    */
-/*  under `/credenciais/` is read.                                            */
-/* -------------------------------------------------------------------------- */
-
-type DocData = Record<string, unknown>;
-
-interface Filtro {
-  campo: string;
-  valor: unknown;
-}
-
-function grpc(code: number, message: string): Error {
-  return Object.assign(new Error(message), { code });
-}
-
-class FakeDb {
-  readonly store: Record<string, DocData> = {};
-  /** Every collection and document path this database was asked for. */
-  readonly caminhos: string[] = [];
-  readonly writes: { path: string; patch: DocData }[] = [];
-  /** Injected failures, by document path, for the next `get`. */
-  readonly falhas = new Map<string, Error>();
-
-  seed(path: string, data: DocData): void {
-    this.store[path] = data;
-  }
-
-  private docRef(path: string) {
-    this.caminhos.push(path);
-    return {
-      path,
-      get: () => {
-        const falha = this.falhas.get(path);
-        if (falha) return Promise.reject(falha);
-        const atual = this.store[path];
-        return Promise.resolve({ exists: atual !== undefined, data: () => atual });
-      },
-      set: (data: DocData, opts?: { merge?: boolean }) => {
-        this.writes.push({ path, patch: data });
-        this.store[path] = opts?.merge === true ? { ...this.store[path], ...data } : data;
-        return Promise.resolve();
-      },
-      update: (patch: DocData) => {
-        const atual = this.store[path];
-        if (!atual) return Promise.reject(grpc(5, 'NOT_FOUND'));
-        this.writes.push({ path, patch });
-        this.store[path] = { ...atual, ...patch };
-        return Promise.resolve();
-      },
-      create: (data: DocData) => {
-        if (this.store[path]) return Promise.reject(grpc(6, 'ALREADY_EXISTS'));
-        this.writes.push({ path, patch: data });
-        this.store[path] = data;
-        return Promise.resolve();
-      },
-    };
-  }
-
-  collection(colPath: string) {
-    this.caminhos.push(colPath);
-    const filtros: Filtro[] = [];
-
-    const docsFiltrados = () => {
-      const prefixo = `${colPath}/`;
-      return Object.entries(this.store)
-        .filter(([path]) => path.startsWith(prefixo) && !path.slice(prefixo.length).includes('/'))
-        .filter(([, data]) => filtros.every((f) => data[f.campo] === f.valor))
-        .map(([path, data]) => ({ id: path.slice(prefixo.length), data: () => data }));
-    };
-
-    const consulta = {
-      where: (campo: string, _op: string, valor: unknown) => {
-        filtros.push({ campo, valor });
-        return consulta;
-      },
-      limit: (n: number) => ({
-        get: () => Promise.resolve({ docs: docsFiltrados().slice(0, n) }),
-      }),
-      get: () => Promise.resolve({ docs: docsFiltrados() }),
-      doc: (id: string) => this.docRef(`${colPath}/${id}`),
-    };
-
-    return consulta;
-  }
-
-  doc(path: string) {
-    return this.docRef(path);
-  }
-}
-
-const asDb = (db: FakeDb): Firestore => db as unknown as Firestore;
 
 /* -------------------------------------------------------------------------- */
 /*  Fixtures — invented values only. No real partner id, key or shop id.      */
@@ -759,7 +662,7 @@ describe('runShopeeOrderBackfill — truncagem', () => {
     expect(patchRede).not.toHaveProperty('pendingCursor');
     expect(patchRede).not.toHaveProperty('pendingWindowFromMs');
     expect(patchRede).not.toHaveProperty('cursorMs');
-    expect(rede.db.store[`${CURSOR_PATH}/${INT_A}`]?.pendingCursor).toBe('cur-7');
+    expect(rede.db.store[`${CURSOR_PATH}/${INT_A}`]?.data.pendingCursor).toBe('cur-7');
   });
 });
 
@@ -876,7 +779,7 @@ describe('runShopeeOrderBackfill — contenção por conta', () => {
     const patch = ultimoPatch(c.db, INT_A);
     expect(Object.keys(patch ?? {}).sort()).toEqual(['lastError', 'lastSweepAtMs']);
     expect(patch?.lastSweepAtMs).toBe(AGORA_MS);
-    expect(c.db.store[`${CURSOR_PATH}/${INT_A}`]?.cursorMs).toBe(AGORA_MS - HORA_MS);
+    expect(c.db.store[`${CURSOR_PATH}/${INT_A}`]?.data.cursorMs).toBe(AGORA_MS - HORA_MS);
   });
 
   it('ShopeeContaSemShopIdError e ShopeeContaNotConfiguredError são contidos', async () => {
@@ -892,6 +795,30 @@ describe('runShopeeOrderBackfill — contenção por conta', () => {
 
       expect(r.contas[0]?.error, err.name).toBe(err.message);
       expect(r.contas[1]?.error).toBeNull();
+    }
+  });
+
+  it('as três falhas de CREDENCIAL são contidas — o token é resolvido dentro do getOrderList', async () => {
+    // ⚠️ O client carrega o token como FUNÇÃO: `getOrRefreshAccessToken` roda
+    // DENTRO de `client.getOrderList`, ou seja, dentro deste laço. Sem estas
+    // três linhas, uma conta com o consentimento revogado (ou uma lease de
+    // refresh segurada por outra instância) derrubaria a tick inteira e todas
+    // as contas enumeradas depois dela ficariam sem varredura — sem `lastError`
+    // em nenhuma.
+    for (const err of [
+      new ShopeeSemCredencialError('credencial ausente'),
+      new ShopeeRefreshEmAndamentoError('lease em andamento', AGORA_MS + 30_000),
+      new ShopeeCredencialInvalidaError('par inválido', ['access_token']),
+    ]) {
+      const c = cenario();
+      duasContas(c);
+      falhaEmA(c, err);
+
+      const r = await rodar(c);
+
+      expect(r.contas[0]?.error, err.name).toBe(err.message);
+      expect(r.contas[1]?.error, err.name).toBeNull();
+      expect(ultimoPatch(c.db, INT_A)?.lastError).toBe(err.message);
     }
   });
 

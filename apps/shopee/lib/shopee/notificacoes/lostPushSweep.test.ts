@@ -57,8 +57,10 @@ function envelopeCode3(over: Record<string, unknown> = {}): Record<string, unkno
 
 interface EntradaBruta {
   shop_id: number | null;
-  code: number;
-  timestamp: number;
+  /** ⚠️ Nullable porque o schema do pacote é tolerante POR CAMPO: uma entrada
+   *  malformada não pode derrubar as outras 99 da página. */
+  code: number | null;
+  timestamp: number | null;
   data: string;
 }
 
@@ -429,6 +431,39 @@ describe('entradas ilegíveis — o escape do bloqueio de cabeça de fila', () =
     expect(db.store[idParado(0)]).toBeDefined();
     expect(db.store[idParado(1)]).toBeDefined();
     expect(db.idsEm(NOTIF_PATH)).toHaveLength(2);
+  });
+
+  it('⚠️ code e timestamp ausentes na LISTA não param nada — só `data` decide legibilidade', async () => {
+    // A tolerância por campo do schema existe para NÃO derrubar a página; ela
+    // não pode virar um descarte. Uma entrada perfeitamente legível cujo
+    // metadado de perda faltou é enfileirada como qualquer outra.
+    const db = new FakeDb();
+    getLostPushMessages.mockResolvedValue(pagina([entrada({ code: null, timestamp: null })]));
+
+    const out = await sweep(db);
+
+    expect(out).toMatchObject({ enfileiradas: 1, paradas: 0, confirmadas: 1 });
+    expect(enfileirados[0]).toMatchObject({ code: 3, shopId: SHOP });
+    expect(out.maisAntigaMs).toBeNull();
+    expect(db.idsEm(NOTIF_PATH)).toEqual([]);
+  });
+
+  it('⚠️ uma entrada ilegível SEM timestamp não carimba a época — o carimbo cai para "-"', async () => {
+    // NEAR-MISS do caso acima: `null * 1000` é 0 em JavaScript e 0 é uma data
+    // VÁLIDA, então uma aritmética distraída gravaria 1970 como relógio da
+    // perda. O `ref` continua separando as linhas.
+    const db = new FakeDb();
+    getLostPushMessages.mockResolvedValue(
+      pagina([entrada({ shop_id: null, timestamp: null, data: 'ilegível' })]),
+    );
+
+    const out = await sweep(db);
+
+    expect(out).toMatchObject({ paradas: 1, confirmadas: 1 });
+    expect(db.idsEm(NOTIF_PATH)).toEqual([`-1:-:${String(LAST_ID)}_0:-`]);
+    expect(db.store[`${NOTIF_PATH}/-1:-:${String(LAST_ID)}_0:-`]?.data).toMatchObject({
+      timestamp: null,
+    });
   });
 
   it('a mesma página relida sem confirmação gera o MESMO id — a repetição colapsa', async () => {

@@ -40,8 +40,14 @@ import type { ShopeeNotificationPayload } from './notificacao';
 
 /**
  * Which sweep synthesized the push. It rides inside `data` and is NOT part of
- * the identity, so step 4 and step 8 finding the same order collapse onto ONE
- * dead-letter row and ONE dedup key.
+ * the identity, so step 4 and step 8 finding the same order share ONE dedup key
+ * — and, WITHIN one tick, one create-only document.
+ *
+ * ⚠️ The two producers do NOT collapse onto one row across ticks: the carimbo
+ * is the synthesis clock (`docIdOf` → `3:<shop>:<ordersn>:<nowMs>`), and two
+ * schedules never share a `Date.now()` read. The dedup key is per-RUN only
+ * (each sweep's own `Set`), so step 8 owes its own idempotence; what it gets
+ * from this module is a payload shaped exactly like step 4's.
  */
 export type OrigemSintetica = 'backfill' | 'reserva-travada';
 

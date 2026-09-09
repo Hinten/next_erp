@@ -38,6 +38,15 @@
  * partial-advance trap — do not copy `orderBackfill`'s truncation heuristic into
  * this file.
  *
+ * ⚠️ **The head-of-line rule reaches into the SCHEMA.** The escape hatch below —
+ * an entry whose `data` cannot be read becomes a terminal `parked` row and the
+ * page is confirmed anyway — sits DOWNSTREAM of the response parse, so it can
+ * only fire on a page that parsed. `shopeeLostPushEntrySchema` is per-field
+ * tolerant for exactly that reason: one malformed element under a strict schema
+ * rejects all 100 (a Zod array fails entirely, #1488) and jams the queue for
+ * three days behind a rung that never runs. A missing `code` or `timestamp`
+ * costs nothing here — only `data` decides whether an entry can be processed.
+ *
  * ## ⚠️ What is NOT covered
  *
  * A SUSPENSION. `guide 18` states that notifications missed while the
@@ -272,7 +281,11 @@ function payloadDeEntradaPerdida(
     // The LOSS clock, and it is here only so the doc id is stable across a
     // re-read of an unconfirmed page. `_lostPush.timestamp` keeps the raw value
     // beside its real meaning.
-    timestamp: asMillis(entrada.timestamp * 1000),
+    // ⚠️ NEVER arithmetic on a possibly-null field: `null * 1000` is 0 in
+    // JavaScript, which would stamp the epoch on an entry whose clock Shopee
+    // simply did not send. The identity survives it — the `CODIGO_AUSENTE` row
+    // keys on `_lostPush.ref`, and the carimbo degrades to `-`.
+    timestamp: entrada.timestamp == null ? null : asMillis(entrada.timestamp * 1000),
     data: sanitizarData({
       _lostPush: {
         ref,
@@ -356,8 +369,12 @@ export async function runShopeeLostPushSweep(
     let paginaDuravel = true;
 
     for (const [indice, entrada] of entradas.entries()) {
-      const idade = deps.nowMs - entrada.timestamp * 1000;
-      if (Number.isFinite(idade) && (maisAntigaMs == null || idade > maisAntigaMs)) {
+      const idade = entrada.timestamp == null ? null : deps.nowMs - entrada.timestamp * 1000;
+      if (
+        idade != null &&
+        Number.isFinite(idade) &&
+        (maisAntigaMs == null || idade > maisAntigaMs)
+      ) {
         maisAntigaMs = idade;
       }
       const ref = `${String(page.last_message_id)}_${String(indice)}`;

@@ -104,8 +104,9 @@ acks a page of the 3-day queue irreversibly.
   (an env flag AND a structural guard that reads the dispatch table).
 - `lib/shopee/notificacoes/notificacaoSintetica.ts` —
   `notificacaoSinteticaDePedido`, the ONE builder for a synthesized code-3
-  payload. Shared with step 8's stuck-reservation sweep, so the two collapse
-  onto one row per order rather than racing to create two.
+  payload. Shared with step 8's stuck-reservation sweep, so the two produce the
+  same shape and the same dedup key — the doc id still carries each tick's own
+  clock, so step 8 owes its own idempotence.
 - `lib/shopee/notificacoes/pushConfigMonitor.ts` —
   `runShopeePushConfigMonitor`: the daily `get_app_push_config` reading and the
   three log-only divergence checks.
@@ -114,7 +115,7 @@ acks a page of the 3-day queue irreversibly.
   holds NO `millisToMicros`: it takes the µs helpers from
   `avisos/autorizacao.ts`, which stays the one module that knows the unit.
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double the
-  sweep suites drive. Test-only, imported by no `src` file (the
+  six sweep and producer suites drive. Test-only, imported by no `src` file (the
   `apps/web/lib/testing` precedent); ONE copy, because two copies with a
   comment claiming they agree is the smell the root CLAUDE.md names.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact

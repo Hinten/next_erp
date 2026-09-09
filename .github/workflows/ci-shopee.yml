@@ -54,13 +54,13 @@ name: CI — Shopee
 #     offline in `pushSignature.test.ts`; here the signature is produced by the
 #     same helper the route verifies with, so this job proves the queue hop, not
 #     the digest.
-#   - The two `onSchedule` functions. MEASURED: the functions emulator logs
-#     `reprocessShopeeNotifications` and `sweepShopeeAuthorizationExpiry` as
-#     "ignored because the pubsub emulator does not exist or is not running", so
-#     this lane loads them and never runs them. Their bodies are covered by the
-#     unit suites in `CI test`, and their trigger OPTIONS — cron, timeZone,
-#     timeoutSeconds, the exact `secrets:` set — by
-#     apps/shopee/functions/src/index.test.ts, which asserts over `__endpoint`.
+#   - None of the five `onSchedule` triggers. MEASURED: the functions emulator
+#     logs each of them as "ignored because the pubsub emulator does not exist
+#     or is not running", so this lane loads them and never runs them. Their
+#     bodies are covered by the unit suites in `CI test`, and their trigger
+#     OPTIONS — cron, timeZone, timeoutSeconds, the exact `secrets:` set — by
+#     apps/shopee/functions/src/index.test.ts, whose exhaustiveness test over
+#     `__endpoint` is what keeps that set of five honest as it grows.
 #     What nothing here proves is that Cloud Scheduler actually fires them.
 #   - Firestore rules — the Admin SDK bypasses them; ci-rules.yml owns those.
 #   - The Enterprise Pipelines API. The emulator runs STANDARD edition and still

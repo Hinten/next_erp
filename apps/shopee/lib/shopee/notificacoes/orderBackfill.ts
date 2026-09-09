@@ -36,8 +36,17 @@
  * ⚠️ The 15-day maximum is measured from `from`, NEVER from the cursor:
  * `cursor + 15 d` plus the overlap exceeds Shopee's bound and comes back as
  * `order.order_list_invalid_time`. Both bounds are floored to seconds at the
- * package boundary — flooring both can only shrink the difference, so rounding
- * can never trip the package's `≤ 15 d` assertion.
+ * package boundary.
+ *
+ * ⚠️ Flooring both does NOT only shrink the difference — it can GROW it by up
+ * to 999 ms (`floor(a/1000) − floor(b/1000)` is
+ * `(a − b + (b mod 1000) − (a mod 1000))/1000`). What keeps the package's
+ * `≤ 15 d` assertion from ever tripping is the BOUND, not the direction: with
+ * `ateMs − deMs ≤ MAX_WINDOW_MS`, the floored difference maximises at exactly
+ * 1 296 000 s, and `assertOrderListParams` refuses on `>`, so the widened case
+ * lands ON the bound and passes. (It matters that this reasoning be the true
+ * one: a `ShopeeConfigError` from that assertion RETHROWS and costs every
+ * remaining conta its tick.)
  *
  * At 15 days per window per 15-minute tick a conta closes 1 440 days of gap per
  * day, and with a 24-hour initial lookback the only way to be more than 15 days
@@ -76,9 +85,14 @@
  * would demand an inventory line for a module that runs no transaction.)
  * Two overlapping ticks of the same schedule interleave to a
  * MONOTONE cursor (`Math.max` on the advance), so the worst case is re-covering
- * a window, never skipping one. Re-covering is harmless: the synthesized code 3
- * dedups on a create-only doc id, and step 5's handler re-fetches
- * `get_order_detail` and watermarks on ITS `update_time`.
+ * a window, never skipping one.
+ *
+ * ⚠️ Re-covering costs a REPEATED ENQUEUE, and nothing here deduplicates it
+ * across ticks: the synthesized code 3 carries the tick's own clock, so
+ * `docIdOf` differs per tick and the in-tick `Set` (keyed on `dedupKeyOf`)
+ * collapses only what one tick found twice. Idempotence across ticks is
+ * entirely step 5's obligation — its handler re-fetches `get_order_detail` and
+ * watermarks on ITS `update_time`.
  *
  * ⚠️ An enqueue failure writes NO failure document. The cursor did not advance,
  * so the next tick re-enumerates the order anyway — and a `notificacoesShopee`
@@ -101,8 +115,13 @@ import {
   type ShopeeClient,
 } from '@delfrance/integrations-shopee';
 
+import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeContaNotConfiguredError, loadShopeeContext } from '../core/shopee';
-import { ShopeeContaSemShopIdError } from '../core/tokenStore';
+import {
+  ShopeeContaSemShopIdError,
+  ShopeeRefreshEmAndamentoError,
+  ShopeeSemCredencialError,
+} from '../core/tokenStore';
 import { ShopeeTasksDisabledError, type ShopeeTaskScheduler } from '../shopeeTasks';
 import { dedupKeyOf, destinoDoCodigo } from './notificacao';
 import { notificacaoSinteticaDePedido } from './notificacaoSintetica';
@@ -117,8 +136,8 @@ const MS_POR_SEGUNDO = 1000;
  *
  * Shopee's `update_time` has 1-second resolution, our clock skews against
  * theirs, and an order updated DURING a tick can land just under `time_to`.
- * Re-covering is harmless (see the module header), so the overlap is pure
- * insurance.
+ * The band's cost is a repeated enqueue per tick, absorbed by step 5's own
+ * watermark and by nothing else (see the module header).
  */
 export const OVERLAP_MS = 5 * 60 * 1000;
 
@@ -240,6 +259,17 @@ function isGrpcCodedError(err: unknown): err is Error {
  * FAMILY, not today's call graph: a conta whose `shop_id` is cleared between
  * the enumeration and `loadShopeeContext` must not cost every other conta its
  * tick.
+ *
+ * ⚠️ The three CREDENTIAL classes are here for that same reason, and they are
+ * the ones this sweep can actually raise: the client carries the token as a
+ * FUNCTION, so `getOrRefreshAccessToken` runs INSIDE `client.getOrderList` —
+ * inside this loop. `ShopeeRefreshEmAndamentoError` is another instance holding
+ * the refresh lease past the poll budget (transient by construction, and the
+ * route answers it 503 + Retry-After); `ShopeeSemCredencialError` and
+ * `ShopeeCredencialInvalidaError` are per-conta STATES the conta route already
+ * renders. All three are about ONE conta's grant, never about our deployment,
+ * so each belongs on that conta's `lastError` rather than costing every other
+ * conta its tick. `ShopeeConfigError` still rethrows: that one IS ours.
  */
 function contidoPorConta(err: unknown): err is Error {
   return (
@@ -249,6 +279,9 @@ function contidoPorConta(err: unknown): err is Error {
     err instanceof ShopeeSchemaError ||
     err instanceof ShopeeContaNotConfiguredError ||
     err instanceof ShopeeContaSemShopIdError ||
+    err instanceof ShopeeSemCredencialError ||
+    err instanceof ShopeeRefreshEmAndamentoError ||
+    err instanceof ShopeeCredencialInvalidaError ||
     err instanceof ShopeeTasksDisabledError ||
     isGrpcCodedError(err)
   );

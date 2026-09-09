@@ -582,6 +582,69 @@ describe('a fila de mensagens perdidas', () => {
     expect(parsed.response.has_next_page).toBe(true);
   });
 
+  it('UMA entrada malformada não derruba a página — as outras 99 continuam legíveis', () => {
+    // ⚠️ Um array Zod falha INTEIRO (#1488) e esta fila pagina por
+    // CONFIRMAÇÃO: com um elemento estrito, uma entrada ruim rejeitaria a
+    // página toda e esconderia tudo que está atrás dela por três dias.
+    const parsed = shopeeLostPushSchema.parse({
+      error: '',
+      response: {
+        push_message_list: [
+          ENTRADA_PERDIDA,
+          { shop_id: 727720655, code: 3, data: '{"code":3}' }, // sem timestamp
+          { shop_id: 727720655, timestamp: 1660123127, data: '{"code":3}' }, // sem code
+          { shop_id: 727720655, code: 3, timestamp: 1660123127 }, // sem data
+          ENTRADA_PERDIDA,
+        ],
+        has_next_page: false,
+        last_message_id: 176610,
+      },
+    });
+    const lista = parsed.response.push_message_list ?? [];
+    expect(lista).toHaveLength(5);
+    expect(lista[0]?.data).toBe(ENTRADA_PERDIDA.data);
+    expect(lista[4]?.data).toBe(ENTRADA_PERDIDA.data);
+    expect(lista[1]?.timestamp).toBeNull();
+    expect(lista[2]?.code).toBeNull();
+    // `data` ausente vira o texto JSON de `undefined`, que o leitor do app
+    // parseia como `null` e para numa linha terminal — nunca um silêncio.
+    expect(lista[3]?.data).toBe('null');
+  });
+
+  it('a tolerância NÃO engole um valor real — a coerção do wire vem antes dela', () => {
+    // NEAR-MISS do teste acima: `'0'` e `'-3'` são valores LEGÍTIMOS que
+    // `wireInt()` coage; se o `.catch` estivesse no lugar do parse, os dois
+    // voltariam como null e a entrada perderia o código que a identifica.
+    const parsed = shopeeLostPushSchema.parse({
+      error: '',
+      response: {
+        push_message_list: [{ ...ENTRADA_PERDIDA, code: '0', timestamp: '-3' }],
+        has_next_page: false,
+        last_message_id: 1,
+      },
+    });
+    expect(parsed.response.push_message_list?.[0]?.code).toBe(0);
+    expect(parsed.response.push_message_list?.[0]?.timestamp).toBe(-3);
+  });
+
+  it('`data` que chega como OBJETO é preservada em texto, nunca descartada', () => {
+    // A forma "envelope inteiro numa string" é evidenciada só pelo exemplo. Se
+    // a página um dia responder o objeto, o app recebe os MESMOS bytes que
+    // teria parseado — e a leitura segue normal, sem linha parada.
+    const envelope = { data: { ordersn: 'SN1' }, shop_id: 727720655, code: 3, timestamp: 1 };
+    const parsed = shopeeLostPushSchema.parse({
+      error: '',
+      response: {
+        push_message_list: [{ shop_id: 727720655, code: 3, timestamp: 1, data: envelope }],
+        has_next_page: false,
+        last_message_id: 1,
+      },
+    });
+    const bruto = parsed.response.push_message_list?.[0]?.data;
+    expect(typeof bruto).toBe('string');
+    expect(JSON.parse(String(bruto))).toEqual(envelope);
+  });
+
   it('has_next_page é um boolean ESTRITO — a string "false" falha', () => {
     // NEAR-MISS: uma string coagida é truthy, e este é o sinal que diz se
     // sobraram mensagens atrás das 100 desta página.

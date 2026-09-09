@@ -732,13 +732,29 @@ export type ShopeeCategoryRecommendResponse = z.infer<typeof shopeeCategoryRecom
  * ⚠️ `shop_id` is ABSENT for a partner-level push ("such as code: 1, 2, 12" —
  * the page's own "such as" makes that list non-exhaustive, so nothing may derive
  * partner-level-ness from a code).
+ *
+ * ⚠️ **Every field is per-field tolerant, and that is the whole point** — the
+ * `mlMissedFeedSchema` reasoning one channel over, which applies harder here.
+ * A Zod array fails ENTIRELY when one element fails (#1488), and this queue is
+ * paged by ACKNOWLEDGEMENT: one malformed entry under a strict element would
+ * reject the whole page, so the 99 readable entries behind it — and everything
+ * queued after them — would be unreachable until the 3-day window expired them.
+ * This feed IS the recovery path; a strict field here blocks every OTHER push's
+ * recovery because of one bad neighbour.
+ *
+ * ⚠️ `data`'s catch STRINGIFIES rather than dropping: the "whole envelope as a
+ * string" shape is evidenced by the sample only, so a page that ever answers
+ * the envelope OBJECT itself hands the app the same bytes it would have parsed
+ * instead of an unreadable row. Nothing is ever discarded — a value that is
+ * neither becomes its own JSON text and the app's reader parks it with the
+ * bytes intact.
  */
 export const shopeeLostPushEntrySchema = z
   .object({
     shop_id: wireInt().nullable().default(null),
-    code: wireInt(),
-    timestamp: wireInt(),
-    data: z.string(),
+    code: wireInt().nullable().catch(null),
+    timestamp: wireInt().nullable().catch(null),
+    data: z.string().catch((ctx) => JSON.stringify(ctx.value) ?? 'null'),
   })
   .passthrough();
 export type ShopeeLostPushEntry = z.infer<typeof shopeeLostPushEntrySchema>;

@@ -38,19 +38,29 @@ import type { CollectionMetadata } from './types';
  *    never to `nowMs`: `[windowTo, nowMs]` was never queried, and claiming it
  *    would skip whatever landed in that gap.
  *  - **truncated** (the per-tick page cap) ⇒ merge the pending triple
- *    `{ pendingCursor, pendingWindowFromMs, pendingWindowToMs, lastSweepAtMs }`
- *    and advance NOTHING. Partial advance is INEXPRESSIBLE here:
+ *    `{ pendingCursor, pendingWindowFromMs, pendingWindowToMs, lastSweepAtMs,
+ *       lastError }` and advance NOTHING (`lastError` names the provider
+ *    contradiction when there is one, and is `null` on a plain page-cap
+ *    truncation — a stale message never survives a tick). Partial advance is
+ *    INEXPRESSIBLE here:
  *    `get_order_list` rows carry no timestamp of any kind, so there is no
  *    `max(update_time)` to advance to, and the row ordering is undocumented so
  *    position is not a resume key either. Without the pending triple a conta
  *    whose window exceeds the page cap would re-read the same first pages
  *    forever, silently.
- *  - **contained error** ⇒ merge `{ lastSweepAtMs, lastError }` only — no
- *    cursor, and the pending triple is left exactly as it was.
+ *  - **contained error** ⇒ merge `{ lastSweepAtMs, lastError }` — never the
+ *    cursor. The pending triple is left exactly as it was, with ONE narrow
+ *    exception keyed on the class: a conta that was RESUMING and failed with a
+ *    `ShopeeApiError` has had Shopee look at the stored cursor and refuse it,
+ *    so the triple is CLEARED and the next tick restarts the window from page
+ *    1. A network / HTTP / schema failure preserves it — we never got an
+ *    opinion about the cursor, and dropping a good one on every tick of a
+ *    provider outage is how a truncated conta starves.
  *
- * Re-covering is harmless: the window starts one OVERLAP before the cursor and
- * the synthesized code 3 is deduped by the notification pipeline's create-only
- * doc id.
+ * The window starts one OVERLAP before the cursor, so every tick re-covers that
+ * band. Nothing deduplicates the repeat across ticks — the synthesized code 3
+ * carries the tick's own clock, so its doc id differs — and the cost is one
+ * extra enqueue that step 5's `get_order_detail` watermark absorbs.
  *
  * ## Admin-only / default-deny
  *

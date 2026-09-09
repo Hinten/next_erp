@@ -3,9 +3,10 @@
  *
  * ⚠️ Nothing under `lib/shopee/**` outside a `*.test.ts` may import this module,
  * and nothing does — the precedent is `apps/web/lib/testing`. It ships in the
- * app tree rather than beside one suite because four suites need it
- * (`conta/expiracaoSweep`, `avisos/pushSaude`, `notificacoes/lostPushSweep`,
- * `notificacoes/pushConfigMonitor`), and a second copy is exactly the shape the
+ * app tree rather than beside one suite because SIX suites need it
+ * (`conta/expiracaoSweep`, `avisos/pushSaude`, `notificacoes/notificacao`,
+ * `notificacoes/lostPushSweep`, `notificacoes/pushConfigMonitor`,
+ * `notificacoes/orderBackfill`), and a second copy is exactly the shape the
  * root `CLAUDE.md` names: two files that read as agreeing while drifting toward
  * plausible.
  *
@@ -14,11 +15,15 @@
  * mock of them. The property under test is the plano (or the document) the
  * producer hands over, and a mocked writer cannot show that.
  *
- * Five deliberate extensions over the original in
+ * Seven deliberate extensions over the original in
  * `packages/data/src/admin/avisos/escreverAviso.test.ts`:
  *
  *  - the `collection().where().where().where().limit().get()` chain that
- *    `findIntegracaoByShopId` runs;
+ *    `findIntegracaoByShopId` runs — and the same chain WITHOUT `limit()`,
+ *    which is how the order backfill enumerates every active conta;
+ *  - EVERY write is recorded in order ({@link FakeDb.writes}), whatever its
+ *    verb, so a test can assert that a sweep wrote once per conta and NOWHERE
+ *    else (`patches` stays the update-only view several suites read);
  *  - EVERY path touched is recorded ({@link FakeDb.caminhos}), so a test can
  *    assert that nothing under `/credenciais/` is ever read;
  *  - every `update` patch is recorded ({@link FakeDb.patches}), so a test can
@@ -78,6 +83,8 @@ export class FakeDb {
   /** Every collection and document path this database was asked for. */
   readonly caminhos: string[] = [];
   readonly patches: { path: string; patch: DocData }[] = [];
+  /** Every write, in order, whatever the verb — `create`, `set` and `update`. */
+  readonly writes: { path: string; patch: DocData }[] = [];
   /** Injected failures for the `shop_id` query, keyed by the shop it asks for. */
   readonly falhas = new Map<number, Error>();
   /** Injected failures for `create`, keyed by the FULL document path. */
@@ -108,6 +115,7 @@ export class FakeDb {
         if (falha) return Promise.reject(falha);
         if (this.store[path]) return Promise.reject(grpc(6, 'ALREADY_EXISTS'));
         this.relogio += 1;
+        this.writes.push({ path, patch: data });
         this.store[path] = { data: aplicar(undefined, data), updateTime: this.relogio };
         return Promise.resolve();
       },
@@ -127,12 +135,14 @@ export class FakeDb {
         }
         this.relogio += 1;
         this.patches.push({ path, patch });
+        this.writes.push({ path, patch });
         this.store[path] = { data: aplicar(atual.data, patch), updateTime: this.relogio };
         return Promise.resolve();
       },
       set: (data: DocData, opts?: { merge?: boolean }) => {
         const atual = this.store[path];
         this.relogio += 1;
+        this.writes.push({ path, patch: data });
         this.store[path] = {
           data: opts?.merge === true ? aplicar(atual?.data, data) : data,
           updateTime: this.relogio,
@@ -150,27 +160,29 @@ export class FakeDb {
     this.caminhos.push(colPath);
     const filtros: Filtro[] = [];
 
+    const buscar = async (
+      n: number | null,
+    ): Promise<{ docs: { id: string; data: () => DocData }[] }> => {
+      const alvo = filtros.find((f) => f.campo === 'shop_id')?.valor;
+      const falha = typeof alvo === 'number' ? this.falhas.get(alvo) : undefined;
+      if (falha) throw falha;
+      const prefixo = `${colPath}/`;
+      const encontrados = Object.entries(this.store)
+        .filter(([path]) => path.startsWith(prefixo) && !path.slice(prefixo.length).includes('/'))
+        .filter(([, stored]) => filtros.every((f) => stored.data[f.campo] === f.valor))
+        .map(([path, stored]) => ({ id: path.slice(prefixo.length), data: () => stored.data }));
+      return { docs: n == null ? encontrados : encontrados.slice(0, n) };
+    };
+
     const consulta = {
       where: (campo: string, _op: string, valor: unknown) => {
         filtros.push({ campo, valor });
         return consulta;
       },
-      limit: (n: number) => ({
-        get: async (): Promise<{ docs: { id: string; data: () => DocData }[] }> => {
-          const alvo = filtros.find((f) => f.campo === 'shop_id')?.valor;
-          const falha = typeof alvo === 'number' ? this.falhas.get(alvo) : undefined;
-          if (falha) throw falha;
-          const prefixo = `${colPath}/`;
-          const docs = Object.entries(this.store)
-            .filter(
-              ([path]) => path.startsWith(prefixo) && !path.slice(prefixo.length).includes('/'),
-            )
-            .filter(([, stored]) => filtros.every((f) => stored.data[f.campo] === f.valor))
-            .slice(0, n)
-            .map(([path, stored]) => ({ id: path.slice(prefixo.length), data: () => stored.data }));
-          return { docs };
-        },
-      }),
+      limit: (n: number) => ({ get: () => buscar(n) }),
+      // ⚠️ The UNLIMITED chain, and it is deliberate: the order backfill
+      // enumerates every active conta with `where().where().get()` and no cap.
+      get: () => buscar(null),
       // ⚠️ No argument ⇒ an auto id, exactly like `ref.doc().id`: that is how
       // `newDocId` names a document whose derived id `asDocId` refused.
       doc: (id?: string) => {

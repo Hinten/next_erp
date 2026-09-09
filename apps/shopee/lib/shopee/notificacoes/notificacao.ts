@@ -288,8 +288,9 @@ export function identidadeDoPush(p: ShopeeNotificationPayload): {
     // MILLIS. The carimbo is an opaque segment; the magnitudes cannot collide.
     // ⚠️ A SYNTHESIZED code 3 (`notificacaoSintetica.ts`, the order backfill and
     // the stuck-reserve sweep) carries NO `update_time` at all, so it lands on
-    // the envelope-stamp fallback by construction — which is what collapses the
-    // two synthetic producers of one order onto one row.
+    // the envelope-stamp fallback by construction — the synthesis clock. Two
+    // synthetic producers of one order therefore share a dedup KEY, and share a
+    // row only when they share a tick's stamp.
     case 3:
       return {
         entidade: `${loja}:${texto(d.ordersn) ?? VAZIO}`,

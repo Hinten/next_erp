@@ -83,7 +83,7 @@ describe('notificacaoSinteticaDePedido', () => {
     expect(chaves.sort()).toEqual(['ordersn', 'origem', 'status']);
   });
 
-  it('origem viaja em data e NÃO entra na identidade: backfill e reserva-travada colapsam no MESMO documento', () => {
+  it('origem viaja em data e NÃO entra na identidade: no MESMO carimbo, backfill e reserva-travada colapsam', () => {
     const backfill = notificacaoSinteticaDePedido({
       shopId: SHOP,
       orderSn: ORDER_SN,
@@ -99,6 +99,9 @@ describe('notificacaoSinteticaDePedido', () => {
 
     expect(backfill.data).toHaveProperty('origem', 'backfill');
     expect(reserva.data).toHaveProperty('origem', 'reserva-travada');
+    // ⚠️ As duas chamadas recebem o MESMO `nowMs` de propósito: é a condição
+    // que isola a variável sob teste (`origem`). Dois AGENDAMENTOS nunca leem o
+    // mesmo relógio — o teste "dois TICKS" abaixo é o que descreve a produção.
     expect(docIdOf(backfill)).toBe(docIdOf(reserva));
     expect(dedupKeyOf(backfill)).toBe(dedupKeyOf(reserva));
   });
