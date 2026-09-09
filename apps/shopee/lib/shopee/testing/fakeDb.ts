@@ -36,6 +36,33 @@
  *  - `collection().doc()` with NO id mints an auto id, which is what
  *    `newDocId` does for a notification payload whose derived doc id was
  *    refused by `asDocId`.
+ *
+ * Added by step 5 (#1513), strictly ADDITIVELY — no existing behaviour changed,
+ * so the six suites above are untouched:
+ *
+ *  - {@link FakeDb.collectionGroup}, the chain `defineAdminCollection`'s
+ *    `groupQuery(db)` runs (`where().where().limit().get()`), whose rows expose
+ *    `ref.parent.parent.id` — the OWNING document's id, which is how the Shopee
+ *    produto cascade recovers a produto from a `prodshopee`/`variashopee` link
+ *    doc. Same shape as the double in
+ *    `apps/mercado-livre/.../orderProdutoResolve.test.ts`;
+ *  - {@link FakeDb.consultas}, every query issued through either entry point
+ *    with its clauses and limit, in order — so a test can assert that a rung was
+ *    SKIPPED (zero queries), that the conta filter really was sent to the
+ *    server, and that a memoised resolution costs ONE query set for two lines.
+ *
+ * ⚠️ Clause matching is STRICT equality on the stored value, in both entry
+ * points. That is deliberate and it differs from the Mercado Livre double, which
+ * folds an absent field into `null`: real Firestore does not index a document
+ * that lacks the field, so a link doc missing its conta ref must NOT match
+ * `where('contaVariacaoShopeeOuterRef', '==', …)`. Fixtures therefore set every
+ * filtered field explicitly.
+ *
+ * ⚠️ The write path (#1513 wave 3) adds a transaction runner over the real
+ * `OccEngine` here — which is also when this file first joins the
+ * `firestore-transaction-inventory` guard's scope, since that guard greps raw
+ * TEXT and a doc comment naming the method is enough to pull a file in. Keep
+ * every addition additive, for the same reason this file exists at all.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
@@ -83,6 +110,13 @@ export class FakeDb {
   /** Every collection and document path this database was asked for. */
   readonly caminhos: string[] = [];
   readonly patches: { path: string; patch: DocData }[] = [];
+  /**
+   * Every query issued, in order: its source (a collection path, or
+   * `group:<leaf>`), its `where` clauses as `[campo, valor]` pairs, and its
+   * limit (`null` when uncapped).
+   */
+  readonly consultas: { fonte: string; clausulas: [string, unknown][]; limite: number | null }[] =
+    [];
   /** Every write, in order, whatever the verb — `create`, `set` and `update`. */
   readonly writes: { path: string; patch: DocData }[] = [];
   /** Injected failures for the `shop_id` query, keyed by the shop it asks for. */
@@ -166,6 +200,11 @@ export class FakeDb {
       const alvo = filtros.find((f) => f.campo === 'shop_id')?.valor;
       const falha = typeof alvo === 'number' ? this.falhas.get(alvo) : undefined;
       if (falha) throw falha;
+      this.consultas.push({
+        fonte: colPath,
+        clausulas: filtros.map((f) => [f.campo, f.valor]),
+        limite: n,
+      });
       const prefixo = `${colPath}/`;
       const encontrados = Object.entries(this.store)
         .filter(([path]) => path.startsWith(prefixo) && !path.slice(prefixo.length).includes('/'))
@@ -191,6 +230,52 @@ export class FakeDb {
       },
     };
 
+    return consulta;
+  }
+
+  /**
+   * The collection-group chain `defineAdminCollection().groupQuery(db)` runs.
+   * A row's `ref.parent.parent.id` is the OWNING document's id — for
+   * `produtos/{produtoId}/variashopee/{docId}` that is the produto, which is
+   * what the Shopee cascade binds the order line to.
+   */
+  collectionGroup(nome: string) {
+    const fonte = `group:${nome}`;
+    this.caminhos.push(fonte);
+    const filtros: Filtro[] = [];
+    let limite: number | null = null;
+
+    const buscar = () => {
+      this.consultas.push({
+        fonte,
+        clausulas: filtros.map((f) => [f.campo, f.valor]),
+        limite,
+      });
+      const linhas = Object.entries(this.store)
+        .map(([path, stored]) => ({ segs: path.split('/').filter(Boolean), stored }))
+        .filter(({ segs }) => segs.length >= 3 && segs[segs.length - 2] === nome)
+        .filter(({ stored }) => filtros.every((f) => stored.data[f.campo] === f.valor))
+        .map(({ segs, stored }) => ({
+          id: segs[segs.length - 1]!,
+          exists: true,
+          data: () => stored.data,
+          ref: { parent: { parent: { id: segs[segs.length - 3]! } } },
+        }));
+      const achados = limite == null ? linhas : linhas.slice(0, limite);
+      return Promise.resolve({ docs: achados, empty: achados.length === 0 });
+    };
+
+    const consulta = {
+      where: (campo: string, _op: string, valor: unknown) => {
+        filtros.push({ campo, valor });
+        return consulta;
+      },
+      limit: (n: number) => {
+        limite = n;
+        return consulta;
+      },
+      get: buscar,
+    };
     return consulta;
   }
 
