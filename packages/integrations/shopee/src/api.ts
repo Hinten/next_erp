@@ -20,11 +20,23 @@
  * (`'burst'` vs `'daily'`, which want opposite responses) and
  * `retryAfterSeconds`; durable retry belongs to the Cloud Tasks pipeline.
  *
- * ⚠️ **No paging loop anywhere.** `getShopsByPartner` and `getBrandList` each
- * fetch ONE page and surface the cursor; the caller loops. Auto-paging inside a
- * client hides an unbounded number of provider calls behind one innocuous
- * `await`, and Shopee's brand API is slow enough that the difference is visible
- * to an operator.
+ * ⚠️ **No paging loop anywhere.** `getShopsByPartner`, `getBrandList`,
+ * `getOrderList` and `getLostPushMessages` each fetch ONE page and surface the
+ * cursor; the caller loops. Auto-paging inside a client hides an unbounded
+ * number of provider calls behind one innocuous `await`, and Shopee's brand API
+ * is slow enough that the difference is visible to an operator.
+ *
+ * ## The push and order reads (step 4)
+ *
+ * Three Public-signed push operations — `getLostPushMessages`,
+ * `confirmConsumedLostPushMessages`, `getAppPushConfig` — plus the Shop-signed
+ * `getOrderList`. The first two carry the `emptyErrorAliases` exception to the
+ * `error === ''` invariant (see `call.ts`) — and `getLostPushMessages` is the
+ * ONE read here that hands back the whole parsed operation instead of
+ * `res.response`, because that exception is what its caller has to observe on
+ * live traffic; the third deliberately does NOT, and
+ * there is deliberately no `setAppPushConfig` at all — the absence is the
+ * enforcement, and {@link ShopeePartnerClient.getAppPushConfig} says why.
  *
  * ## The taxonomy reads (step 10)
  *
@@ -44,23 +56,31 @@ import { type ShopeeTransport, type ShopeeWarning, shopeeCall } from './call';
 import { SHOPEE_SURFACE, ShopeeConfigError } from './errors';
 import type { ShopeeHosts } from './hosts';
 import {
+  type ShopeeAppPushConfig,
   type ShopeeAttributeTree,
   type ShopeeBrandList,
   type ShopeeCategoryList,
   type ShopeeCategoryRecommend,
+  type ShopeeConfirmLostPush,
   type ShopeeGtinLimit,
   type ShopeeItemLimit,
   type ShopeeKitItemLimit,
+  type ShopeeLostPushResponse,
+  type ShopeeOrderList,
   type ShopeeProfile,
   type ShopeeShopInfo,
   type ShopeeShopsByPartner,
   type ShopeeVariations,
+  shopeeAppPushConfigSchema,
   shopeeAttributeTreeSchema,
   shopeeBrandListSchema,
   shopeeCategoryListSchema,
   shopeeCategoryRecommendSchema,
+  shopeeConfirmLostPushSchema,
   shopeeItemLimitSchema,
   shopeeKitItemLimitSchema,
+  shopeeLostPushSchema,
+  shopeeOrderListSchema,
   shopeeProfileSchema,
   shopeeShopInfoSchema,
   shopeeShopsByPartnerSchema,
@@ -97,6 +117,16 @@ export const SHOPEE_GET_VARIATIONS_PATH = '/api/v2/product/get_variations';
 /** `GET` — Shop-signed. WRAPPED. Offered, never applied automatically. */
 export const SHOPEE_CATEGORY_RECOMMEND_PATH = '/api/v2/product/category_recommend';
 
+/** `GET` — Public-signed. ONE page of the 3-day lost-push queue (the earliest 100). */
+export const SHOPEE_GET_LOST_PUSH_PATH = '/api/v2/push/get_lost_push_message';
+/** `POST` — Public-signed. The batch watermark ack. Envelope-only response. */
+export const SHOPEE_CONFIRM_LOST_PUSH_PATH = '/api/v2/push/confirm_consumed_lost_push_message';
+/** `GET` — Public-signed. The app-wide push configuration. READ ONLY. */
+export const SHOPEE_GET_APP_PUSH_CONFIG_PATH = '/api/v2/push/get_app_push_config';
+
+/** `GET` — Shop-signed. WRAPPED. ONE page of orders in a ≤ 15-day window. */
+export const SHOPEE_GET_ORDER_LIST_PATH = '/api/v2/order/get_order_list';
+
 /**
  * The OTHER spelling of the `get_variations` path — and the reason the default is
  * overridable rather than settled here.
@@ -124,6 +154,26 @@ export const SHOPEE_ATTRIBUTE_TREE_MAX_CATEGORIES = 20;
 
 /** `get_brand_list`: `page_size` is documented `[1,100]`. */
 export const SHOPEE_BRAND_MAX_PAGE_SIZE = 100;
+
+/**
+ * The envelope `error` value the two lost-push pages print where every other
+ * page prints `""` — a doc-authoring placeholder, tolerated on those two
+ * operations only. See `ShopeeCallParams.emptyErrorAliases` in `call.ts`.
+ */
+export const SHOPEE_LOST_PUSH_ERROR_ALIASES = ['-'] as const;
+
+/** `get_order_list`: `page_size` is documented `[1,100]` and is REQUIRED. */
+export const SHOPEE_ORDER_LIST_MAX_PAGE_SIZE = 100;
+
+/**
+ * `get_order_list`: "The maximum date range that may be specified with the
+ * time_from and time_to fields is 15 days" — 1 296 000 SECONDS.
+ *
+ * ⚠️ Measured between the two bounds actually sent, so a caller that widens a
+ * window backwards must move `time_to` with it. One second past this is
+ * `order.order_list_invalid_time`, not a truncated answer.
+ */
+export const SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS = 15 * 24 * 60 * 60;
 
 /** `get_brand_list.status` — the only two values the page accepts. */
 export const SHOPEE_BRAND_STATUS = { normal: 1, pending: 2 } as const;
@@ -249,6 +299,57 @@ export interface GetVariationsParams {
   readonly categoryId: number;
 }
 
+/** `confirm_consumed_lost_push_message` — the ONE parameter, and it rides in the BODY. */
+export interface ConfirmConsumedLostPushParams {
+  /**
+   * The `last_message_id` of the page being confirmed, VERBATIM.
+   *
+   * ⚠️ Never synthesized and never derived. `0` is what an absent-or-invented
+   * cursor looks like, so it rejects before the call is spent.
+   */
+  readonly lastMessageId: number;
+}
+
+/** `get_order_list.time_range_field` — REQUIRED, and the two values are not interchangeable. */
+export type ShopeeOrderTimeRangeField = 'create_time' | 'update_time';
+
+/**
+ * `get_order_list` — one page of a ≤ 15-day window.
+ *
+ * ⚠️ The bounds are wire-shaped **SECONDS**, and the unit lives in the field
+ * name. The package converts nothing: `apps/shopee` is the single place the
+ * s↔ms conversion happens (the `conta/shops.ts` precedent), and a package that
+ * accepted milliseconds here would describe seconds in `types.ts` and take
+ * milliseconds in `api.ts` — two sources of truth for one unit.
+ */
+export interface GetOrderListParams {
+  readonly timeRangeField: ShopeeOrderTimeRangeField;
+  /** Unix SECONDS, inclusive lower bound. */
+  readonly timeFromS: number;
+  /** Unix SECONDS. `timeToS - timeFromS` may not exceed 15 days. */
+  readonly timeToS: number;
+  /** 1…100, REQUIRED by Shopee. */
+  readonly pageSize: number;
+  /**
+   * The previous page's `next_cursor`, VERBATIM and OPAQUE.
+   *
+   * ⚠️ OMIT it for the first page. An empty string is REFUSED rather than
+   * normalized away: `next_cursor: ''` is Shopee's DRAINED sentinel, and a
+   * package that quietly dropped it would turn "feed the drained sentinel back"
+   * into "silently restart the window from page 1" — which looks like progress
+   * and is a data skip.
+   */
+  readonly cursor?: string;
+  /**
+   * Sent as the string `'true'` when true, omitted otherwise. Shopee's own
+   * words: "send True will let API support PENDING status, send False or don't
+   * send will fallback to old logic".
+   */
+  readonly requestOrderStatusPending?: boolean;
+  /** `'order_status'` is the ONLY documented value. */
+  readonly responseOptionalFields?: 'order_status';
+}
+
 /** `category_recommend` — a non-blank item name, plus an optional cover image id. */
 export interface CategoryRecommendParams {
   readonly itemName: string;
@@ -276,6 +377,58 @@ export interface ShopeePartnerClient {
    * behind a single innocuous-looking `await`.
    */
   getShopsByPartner(p?: GetShopsByPartnerParams): Promise<ShopeeShopsByPartner>;
+
+  /**
+   * ONE page of the lost-push queue — always "the earliest 100 lost within 3
+   * days and not confirmed to have been consumed".
+   *
+   * ⚠️ Paging is cursor-by-ACKNOWLEDGEMENT: there is no `page_no`, no `cursor`
+   * and no offset INPUT. The only way to advance is
+   * {@link ShopeePartnerClient.confirmConsumedLostPushMessages}. `has_next_page`
+   * says whether more than 100 are waiting; it does NOT let you skip ahead, so
+   * one entry the caller never makes durable blocks every later one until it
+   * expires.
+   *
+   * ⚠️ Each entry's `data` is a STRING, and this package leaves it that way.
+   *
+   * ⚠️ **The WHOLE parsed operation comes back — envelope AND `response` — and
+   * this is the only read in this file that does not unwrap.** The reason is
+   * D1: both lost-push pages sample `"error": "-"` where every other page
+   * samples `""`, which is why {@link SHOPEE_LOST_PUSH_ERROR_ALIASES} exists at
+   * all. The caller logs `error` VERBATIM so the first production tick settles
+   * the contradiction with evidence instead of with the sample. Unwrapping to
+   * `res.response` here would leave that field unreachable — and reachable only
+   * through the CONFIRM's envelope, which is exactly the field a rehearsal tick
+   * under `SHOPEE_LOST_PUSH_CONFIRM_DISABLED` never produces. Read the page
+   * itself off `.response`.
+   */
+  getLostPushMessages(): Promise<ShopeeLostPushResponse>;
+
+  /**
+   * Acknowledge the page whose `last_message_id` this is.
+   *
+   * ⚠️ **The batch reading is INFERRED, not documented.** No page says that
+   * confirming id N acks everything ≤ N, whether it is idempotent, or what a
+   * stale id does — and no error code covers any of it. The consequence is the
+   * caller's ordering rule, not this method's: make every entry durable FIRST,
+   * then confirm once per page, and never confirm an empty page.
+   *
+   * Returns the parsed envelope so the caller can log `request_id` — the one
+   * thing a support ticket about a watermark that did not advance needs.
+   */
+  confirmConsumedLostPushMessages(p: ConfirmConsumedLostPushParams): Promise<ShopeeConfirmLostPush>;
+
+  /**
+   * The app-wide push configuration and its live health (`live_push_status`).
+   *
+   * ⚠️ There is deliberately NO `setAppPushConfig` in this package, and adding
+   * one is a decision rather than an omission: `set_app_push_config` takes a
+   * single app-wide `callback_url`, FIRES A LIVE TEST PUSH, has undocumented
+   * partial-body semantics, and its own push-code enum stops at 13 while live
+   * codes reach 47 — so a read-modify-write would silently drop every code above
+   * 13. Registration and recovery from a suspension are human Console steps.
+   */
+  getAppPushConfig(): Promise<ShopeeAppPushConfig>;
 }
 
 export interface ShopeeClient {
@@ -302,6 +455,20 @@ export interface ShopeeClient {
   getVariations(p: GetVariationsParams): Promise<ShopeeVariations>;
   /** Category ids Shopee suggests for an item name. Offered, never applied. */
   categoryRecommend(p: CategoryRecommendParams): Promise<ShopeeCategoryRecommend>;
+
+  /**
+   * ONE page of this shop's orders in a ≤ 15-day window.
+   *
+   * ⚠️ It does NOT auto-page, like every other read here: `more` and
+   * `next_cursor` come back on the payload and the caller asks for the next
+   * page. Terminate on `more === false` and NEVER on the row count — the page's
+   * own sample answers 10 rows for `page_size: 20` with `more: true`.
+   *
+   * ⚠️ No `order_status` filter is offered, deliberately: Shopee's filter omits
+   * `PENDING`/`RETRY_SHIP`/`TO_CONFIRM_RECEIVE`/`TO_RETURN`, so a sweep that
+   * used one would silently skip orders. Ask for everything and filter later.
+   */
+  getOrderList(p: GetOrderListParams): Promise<ShopeeOrderList>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -352,6 +519,54 @@ function assertBrandListParams(p: GetBrandListParams): void {
   }
 }
 
+/**
+ * Every `get_order_list` bound, checked BEFORE any fetch.
+ *
+ * ⚠️ Each branch is a `ShopeeConfigError` — a caller bug or a misconfiguration,
+ * never a provider failure — so it must not be swallowed by a sweep's
+ * provider-error containment. A window one second too wide would come back as
+ * `order.order_list_invalid_time` and read like a Shopee outage.
+ */
+function assertOrderListParams(p: GetOrderListParams): void {
+  if (
+    !Number.isSafeInteger(p.pageSize) ||
+    p.pageSize < 1 ||
+    p.pageSize > SHOPEE_ORDER_LIST_MAX_PAGE_SIZE
+  ) {
+    throw new ShopeeConfigError(
+      `page_size deve estar entre 1 e ${String(SHOPEE_ORDER_LIST_MAX_PAGE_SIZE)} (recebido: ${JSON.stringify(p.pageSize)}).`,
+    );
+  }
+  assertSegundosPositivos('time_from', p.timeFromS);
+  assertSegundosPositivos('time_to', p.timeToS);
+  if (p.timeFromS >= p.timeToS) {
+    throw new ShopeeConfigError(
+      `time_from deve ser anterior a time_to (recebido: ${JSON.stringify(p.timeFromS)} e ${JSON.stringify(p.timeToS)}).`,
+    );
+  }
+  const janela = p.timeToS - p.timeFromS;
+  if (janela > SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS) {
+    throw new ShopeeConfigError(
+      `a janela não pode passar de 15 dias (${String(SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS)} s); recebido: ${String(janela)} s.`,
+    );
+  }
+  // ⚠️ Refused, never normalized away. See `GetOrderListParams.cursor`.
+  if (p.cursor !== undefined && p.cursor === '') {
+    throw new ShopeeConfigError(
+      'cursor não pode ser vazio — omita o parâmetro na primeira página.',
+    );
+  }
+}
+
+/** A wire timestamp in SECONDS: a positive safe integer, never a millisecond value by accident. */
+function assertSegundosPositivos(nome: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new ShopeeConfigError(
+      `${nome} deve ser um inteiro positivo em segundos (recebido: ${JSON.stringify(value)}).`,
+    );
+  }
+}
+
 export function createShopeePartnerClient(config: ShopeePartnerConfig): ShopeePartnerClient {
   const transport = transportFrom(config);
 
@@ -380,6 +595,55 @@ export function createShopeePartnerClient(config: ShopeePartnerConfig): ShopeePa
         surface: SHOPEE_SURFACE.business,
         query: { page_size: pageSize, page_no: pageNo },
       });
+    },
+
+    getLostPushMessages: async () =>
+      // ⚠️ Returned WHOLE — no `res.response`. The envelope's `error` is the
+      // evidence D1 waits on; see the method's docblock above.
+      shopeeCall(transport, {
+        // ⚠️ GET — the page's own `method: 2`, and its four samples agree. See
+        // the doc-reader fix at `.master_plans/shopee/shopee-doc.mjs`.
+        method: 'GET',
+        path: SHOPEE_GET_LOST_PUSH_PATH,
+        // Public: the queue is partner-level, so it answers even when every
+        // conta's token is dead — which is exactly when it matters.
+        call: { class: 'public' },
+        schema: shopeeLostPushSchema,
+        surface: SHOPEE_SURFACE.business,
+        emptyErrorAliases: SHOPEE_LOST_PUSH_ERROR_ALIASES,
+        // ⚠️ No `query` key at all: the page's Request params section is EMPTY,
+        // and only the common ones (partner_id, timestamp, sign) travel.
+      }),
+
+    confirmConsumedLostPushMessages: async (p) => {
+      assertIdPositivo('last_message_id', p.lastMessageId);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_CONFIRM_LOST_PUSH_PATH,
+        call: { class: 'public' },
+        // The BARE envelope — this operation has no `response` object.
+        schema: shopeeConfirmLostPushSchema,
+        surface: SHOPEE_SURFACE.business,
+        emptyErrorAliases: SHOPEE_LOST_PUSH_ERROR_ALIASES,
+        // ⚠️ The body carries the operation parameter; the common ones stay in
+        // the SIGNED query. The body is NOT signed (`call.ts`), so two different
+        // `last_message_id`s produce the SAME `sign` — a test pins that, because
+        // a future "sign the body too" would break the ack silently.
+        body: { last_message_id: p.lastMessageId },
+      });
+    },
+
+    getAppPushConfig: async () => {
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_APP_PUSH_CONFIG_PATH,
+        call: { class: 'public' },
+        schema: shopeeAppPushConfigSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ NO alias here, deliberately: THIS page's response sample says `""`.
+        // The tolerance is per OPERATION because the contradiction is per PAGE.
+      });
+      return res.response;
     },
   };
 }
@@ -411,9 +675,13 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
   return {
     getShopInfo: async () =>
       shopeeCall(transport, {
-        // ⚠️ GET, although the reference page is headed POST: every generated
-        // sample on that page uses GET with everything in the query, and the
-        // legacy Flutter app called it with GET in production for years.
+        // GET, per the page's own `method: 2` and every one of its samples. An
+        // earlier note here claimed the page was headed POST — that came from
+        // our doc reader's `is_get_method` bug (that field is `0` on all 20
+        // cached pages, so it printed POST for every one), fixed 2026-09-09 at
+        // `.master_plans/shopee/shopee-doc.mjs`. The verb was always right; only
+        // the reason was a fiction, and a fiction attached to a verb is what
+        // gets "corrected" later.
         method: 'GET',
         path: SHOPEE_SHOP_INFO_PATH,
         call: await signedCall(),
@@ -554,6 +822,37 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         schema: shopeeCategoryRecommendSchema,
         surface: SHOPEE_SURFACE.business,
         query: { item_name: p.itemName, product_cover_image: p.productCoverImage },
+      });
+      return res.response;
+    },
+
+    /* ------------------------------- orders -------------------------------- */
+
+    getOrderList: async (p) => {
+      assertOrderListParams(p);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_ORDER_LIST_PATH,
+        call: await signedCall(),
+        schema: shopeeOrderListSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: {
+          time_range_field: p.timeRangeField,
+          time_from: p.timeFromS,
+          time_to: p.timeToS,
+          page_size: p.pageSize,
+          // `undefined` is dropped by `signedQuery`, so the first page really
+          // sends no `cursor` — the literal `''` of the samples is never sent.
+          cursor: p.cursor,
+          // ⚠️ The wire wants a STRING here. `signedQuery` takes
+          // `string | number | undefined`, and `String(true) === 'true'` makes
+          // the two shapes wire-identical — widening the query type to accept a
+          // boolean would have been a transport change for one parameter.
+          request_order_status_pending: p.requestOrderStatusPending === true ? 'true' : undefined,
+          response_optional_fields: p.responseOptionalFields,
+          // ⚠️ No `order_status`: see the interface. Filtering here would drop
+          // four documented statuses without saying so.
+        },
       });
       return res.response;
     },

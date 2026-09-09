@@ -5,11 +5,13 @@ Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
 Runs on `:3009` in dev. Steps 1–3 and 10 of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
 conta status, the access-token refresh, the cached taxonomy reads, and the
-inbound push receiver with its Cloud Tasks queue, nested functions codebase and
-weekly authorization-expiry sweep**. Nothing is published or written **to**
-Shopee yet — nothing reaches the seller's catálogo, anúncios or pedidos. The
-only state-changing calls the app makes are the OAuth exchange and the token
-refresh, and both matter: the `refresh_token` is single-use and rotating.
+inbound push receiver with its Cloud Tasks queue, nested functions codebase,
+weekly authorization-expiry sweep and the three step-4 delivery backstops**.
+Nothing is published or written **to** Shopee yet — nothing reaches the
+seller's catálogo, anúncios or pedidos. The only state-changing calls the app
+makes are the OAuth exchange, the token refresh and the lost-push CONFIRM, and
+all three matter: the `refresh_token` is single-use and rotating, and a confirm
+acks a page of the 3-day queue irreversibly.
 
 ## What lives here
 
@@ -54,10 +56,15 @@ refresh, and both matter: the `refresh_token` is single-use and rotating.
 - `lib/shopee/core/{shopee,credentialStore,tokenStore,respond,validationIssues}.ts`
   — the context loader (cached `integracao` doc, uncached credential,
   `getAccessToken` / `createShopClient`), the Firestore credential store, the
-  error→HTTP mapper, and the Next-free Zod-path helper (kept Next-free for a
-  future functions-bundle consumer — step 3's bundle does NOT import it: its
-  graph reaches `core/contaCache.ts`, not `core/shopee.ts`/`tokenStore.ts`.
-  `respond.ts` is NOT Next-free and stays out of any bundle).
+  error→HTTP mapper, and the Next-free Zod-path helper. ⚠️ **Step 4 is the
+  functions-bundle consumer `core/shopee.ts` was kept Next-free for**: the
+  order backfill loads a conta context per integração, so the artifact's graph
+  now reaches `core/shopee.ts`, `tokenStore.ts` and `credentialStore.ts` on top
+  of step 3's `core/contaCache.ts`, and both enqueuing sweeps pull
+  `shopeeTasks.ts` → `lib/firebase/admin.ts`. `respond.ts` is still NOT
+  Next-free and stays out of any bundle;
+  `tools/deploy-env/bundle-inlining.test.js` builds the bundle in `CI test`, so
+  the growth is proven offline.
 - `lib/shopee/core/tokenStore.ts` — the leased access-token refresh (see **Token
   refresh** below). Its three transactions are inventoried in
   `packages/config-eslint/rules/firestore-transaction-inventory.test.js`, which
@@ -82,10 +89,35 @@ refresh, and both matter: the `refresh_token` is single-use and rotating.
 - `lib/shopee/avisos/autorizacao.ts` — the ONE module in this app that speaks
   **microseconds** (`millisToMicros`, two call sites); every other signature is
   milliseconds. Raises `shopeeAutorizacaoExpirando` / `shopeeDesautorizado` and
-  resolves both.
+  resolves both, and since step 4 it also EXPORTS the µs seam
+  (`agoraUsDe` / `depsDeEscrita` / `AvisoDeps`) so the push-health producer can
+  write avisos without knowing the unit — which is what keeps "exactly two call
+  sites" true rather than merely written down.
 - `lib/shopee/conta/expiracaoSweep.ts` — `runShopeeAuthorizationExpirySweep`,
   driven weekly by the functions codebase and, scoped to named shops, by
   `push 12`. See **The authorization-expiry sweep** below.
+- `lib/shopee/notificacoes/lostPushSweep.ts` — `runShopeeLostPushSweep`: the
+  2-hourly replay of Shopee's 3-day lost-push queue. Enqueue-then-confirm, one
+  ack per page, never on an empty page. See **Delivery backstops** below.
+- `lib/shopee/notificacoes/orderBackfill.ts` — `runShopeeOrderBackfill`: the
+  15-minute per-conta `get_order_list` walk on a durable cursor, DOUBLY gated
+  (an env flag AND a structural guard that reads the dispatch table).
+- `lib/shopee/notificacoes/notificacaoSintetica.ts` —
+  `notificacaoSinteticaDePedido`, the ONE builder for a synthesized code-3
+  payload. Shared with step 8's stuck-reservation sweep, so the two produce the
+  same shape and the same dedup key — the doc id still carries each tick's own
+  clock, so step 8 owes its own idempotence.
+- `lib/shopee/notificacoes/pushConfigMonitor.ts` —
+  `runShopeePushConfigMonitor`: the daily `get_app_push_config` reading and the
+  three log-only divergence checks.
+- `lib/shopee/avisos/pushSaude.ts` — the producer for the two push-health
+  avisos, and the second module in this app that writes to the avisos inbox. It
+  holds NO `millisToMicros`: it takes the µs helpers from
+  `avisos/autorizacao.ts`, which stays the one module that knows the unit.
+- `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double the
+  six sweep and producer suites drive. Test-only, imported by no `src` file (the
+  `apps/web/lib/testing` precedent); ONE copy, because two copies with a
+  comment claiming they agree is the smell the root CLAUDE.md names.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
@@ -262,6 +294,13 @@ event that makes the news false, and the re-drive would raise
 `shopeeDesautorizado` for a shop that is authorized and syncing — with no stored
 `relogioEvento` to reject it, since nothing was ever written.
 
+⚠️ **Code 3 parks today, and that is what gates the order backfill.** A
+synthesized code 3 would park one TERMINAL document per order per tick — up to
+1 000 per conta — so `runShopeeOrderBackfill` refuses to run while
+`destinoDoCodigo(3) === 'parado'`, on top of its env flag. The guard READS the
+dispatch table, so step 5 flips it by changing `DISPATCH[3]`; that change and
+the inverted guard test in `orderBackfill.test.ts` land in the SAME commit.
+
 Shopee ships **no event id**, so the doc id is derived per code from the
 resource key inside `data` (`ordersn`, `item_id`, `return_sn`,
 `package_number`, …), through the same `asDocId` guard ML uses — a missing
@@ -318,8 +357,104 @@ one row.
 Shopee sent. Neither writes the conta document — the conta screen derives its
 clocks live.
 
-`shopeePushDegradado` / `shopeePushSuspenso` are declared but have no producer:
-that monitor is step 4.
+`shopeePushDegradado` / `shopeePushSuspenso` got their producer in **step 4**:
+`lib/shopee/avisos/pushSaude.ts`, driven by the daily `monitorShopeePushConfig`.
+Both chaves are `chaveDeAviso({ tipo })` with **no conta** — the config is
+app-wide, so there is exactly ONE global row per tipo, and `ROTAS_AVISO.inicio`
+is the only conta-free route there is.
+
+| `live_push_status` | degradado         | suspenso                          |
+| ------------------ | ----------------- | --------------------------------- |
+| `Normal`           | resolve           | resolve                           |
+| `Warning`          | RAISE (`atencao`) | resolve                           |
+| `Suspended`        | untouched         | RAISE (**`critico`**)             |
+| unknown / absent   | untouched         | untouched (one `warn`, raw value) |
+
+Four things that table encodes:
+
+- **`Suspended` does not touch degradado at all.** Resolving it would read as
+  "the degradation cleared" on the day it got worse, and raising it would
+  duplicate the news. Only `Normal` closes rows, and `resolverAviso` reports a
+  TRANSITION — so `resolvidos` counts rows actually closed, never "we asked
+  about two rows".
+- **Suspenso is `critico`** — the one Shopee state whose loss is irrecoverable:
+  a disabled subscription is never queued, so the lost-push sweep cannot help
+  and `backfillShopeeOrders` is the only recovery.
+- **The fold is trim + lowercase then an EXACT match**, never `startsWith`:
+  Shopee's page documents `Normal`/`Warning`/`Suspended` while its own sample
+  answers lowercase `suspended`, and `'normalizado'` starts with `'normal'`. An
+  unrecognised value raises nothing, resolves nothing and logs the string
+  verbatim — the only record of a value we do not know.
+- **`suspended_time` is the aviso's `relogioEvento`, spread-or-nothing, and
+  never its `prazo`.** It is a START, not a deadline; and an absent one must
+  leave a stored watermark alone rather than reset it (`camposInformados` reads
+  an absent optional as "I do not know" and a `null` as "set it to null").
+
+## Delivery backstops (step 4, `functions/` + `lib/shopee/notificacoes/`)
+
+Three `onSchedule`s in the nested codebase, each covering a different way a push
+never arrives. They are what decision P3 spends the receiver's scale-to-zero
+cold start on.
+
+**`sweepShopeeLostPushes` — every 2 h at :20.** Shopee queues a push that
+exhausted its ladder (+5 min / +30 min / +3 h) for **3 days**, "the earliest 100
+lost and not confirmed". Paging is cursor-by-ACKNOWLEDGEMENT: the only way to
+advance is to confirm, so ONE entry we never make durable blocks every later one
+until it expires. Hence the ordering rule — **every entry enqueued, persisted
+`failed` or parked FIRST, then one confirm per page** — and hence "never confirm
+an empty page" (`last_message_id` is documented as the END ENTRY of the current
+call; with no entries there is no end entry, and the watermark's semantics are
+nowhere written down).
+
+- An entry's `data` is a **STRING** holding the whole original envelope, so it
+  is `JSON.parse`d as `unknown` and re-read through the receiver's own
+  `parseNotificationBody`. The list-level `timestamp` is the LOSS clock, never
+  the event clock — an envelope is never synthesized from the list fields.
+- An **unreadable** entry (not JSON, not an object, no integer `code`) becomes a
+  terminal `parked` row and the page IS confirmed: refusing would jam a
+  100-entry page for three days to satisfy one entry nothing can ever handle.
+  Its identity is keyed on `_lostPush.ref` (`<last_message_id>_<index>`),
+  because two bad partner-level entries in the same second would otherwise share
+  one derived id and the second would vanish into a swallowed `create`.
+- In-tick dedup is on **`docIdOf`, not `dedupKeyOf`**: the doc id keeps the
+  carimbo, so two events about one order with different `update_time` stay two
+  jobs. Dropping the carimbo would confirm the second away.
+- ⚠️ **No `*_ENABLED` flag** — a backstop that ships OFF is #778's failure, and
+  this sweep publishes nothing to Shopee. The one valve is
+  `SHOPEE_LOST_PUSH_CONFIRM_DISABLED`, below.
+
+**`backfillShopeeOrders` — every 15 min, per conta, DOUBLY gated.** Pages
+`get_order_list` on `update_time` from a durable per-conta cursor and enqueues
+one **synthetic code-3** per `order_sn`, so the step-5 arms stay the single
+writer. It is the only way to reach `PENDING` / `RETRY_SHIP` /
+`TO_CONFIRM_RECEIVE` / `TO_RETURN` orders (the `order_status` filter cannot list
+them, so the sweep sends no filter at all) and the only documented recovery from
+a suspended subscription.
+
+- The window is `from = cursor − 5 min` (or `now − 24 h` on a cold cursor) and
+  **`to = min(from + 15 d, now)`** — measured from `from`, never from the
+  cursor: `cursor + 15 d` plus the overlap exceeds Shopee's own bound and comes
+  back as `order.order_list_invalid_time`.
+- Paging terminates on **`more === false` only**, never on a row count: the
+  page's own sample returns 10 rows for `page_size=20` with `more: true`.
+- A drained window advances the cursor to `to` (never to `now` — `[to, now]` was
+  not queried); a **truncated** one advances NOTHING and persists a pending
+  triple the next tick replays, because the rows carry no timestamp and a
+  partial advance is inexpressible.
+- The cursor doc (`packages/schemas/src/backfillPedidosShopee.ts`, a bare const
+  outside `ALL_DOMAINS`) is in **milliseconds** and this sweep is its only
+  writer — one `merge` per conta per tick, no transaction.
+
+**`monitorShopeePushConfig` — daily at 05:45.** One Public GET; the table above
+is its whole decision. Three further findings are **log-only**, because no aviso
+tipo covers them: a `callback_url` that differs from `shopeePushCallbackUrl()`
+BYTE FOR BYTE (it is inside the HMAC base string, so a "cosmetic" slash IS the
+defect), our codes 1/2/3/12 appearing in `push_config_off_list`, and a non-empty
+`blocked_shop_id`. ⚠️ `set_app_push_config` is **never** implemented in the
+package — the absence is the enforcement: the config is app-wide with one
+`callback_url`, setting it fires a live test push, and its partial-body
+semantics are undocumented, so a read-modify-write would silently drop every
+code above 13.
 
 ## Taxonomy reads (`lib/shopee/taxonomia/`, step 10)
 
@@ -451,7 +586,30 @@ of them a secret:
   drains, which is loud and lossless.
 - **`SHOPEE_TASKS_DISABLED`** — `'1'` puts the channel in sweep-only mode: the
   enqueue throws, the receiver persists each push as `failed`, and the 30-minute
-  reprocess sweep drains it. Never a silent drop, and never a 5xx.
+  reprocess sweep drains it. Never a silent drop, and never a 5xx. The lost-push
+  sweep degrades the same way: its enqueue failure is persisted `failed`, which
+  COUNTS as durable, so the page is still confirmed.
+
+## Env added by step 4
+
+Two more, both in the root `.env.example`, neither a secret, and **both read
+only by the nested functions codebase** — their real home is
+`apps/shopee/functions/.env.deploy` (gitignored; see `functions/DEPLOY.md`). A
+value set in `apphosting.yaml` would be read by nothing.
+
+- **`SHOPEE_ORDER_BACKFILL_ENABLED`** — `'1'` and nothing else enables
+  `backfillShopeeOrders`; it SHIPS OFF, and while off the function deploys,
+  ticks, logs one info line naming the variable and reads nothing at all.
+  ⚠️ It is the weaker of the two gates: the structural guard refuses the sweep
+  while push code 3 still parks, flag or no flag.
+- **`SHOPEE_LOST_PUSH_CONFIRM_DISABLED`** — `'1'` makes `sweepShopeeLostPushes`
+  read, parse and enqueue as usual but SKIP the confirm. It exists for ONE
+  rehearsal: the sandbox cannot exercise the lost-push APIs at all, so the first
+  call is production, and this proves the whole path without sending an
+  irreversible ack. ⚠️ Opt-in-to-DISABLE, so an unset or blank value can never
+  leave the sweep inert — the opposite polarity to every `*_ENABLED` here. While
+  it is on, the tick stops after page 1: the queue did not advance, so the next
+  read would return the same entries.
 
 ## CI
 

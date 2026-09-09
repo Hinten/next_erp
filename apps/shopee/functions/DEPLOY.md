@@ -36,7 +36,7 @@ the bundle, proven before the first deploy.
 - The App Hosting backend for `apps/shopee` created in the Firebase console.
 - Env / secrets on the deployed function: `FIREBASE_PROJECT_ID` + admin creds,
   plus `SHOPEE_PARTNER_ID` and `SHOPEE_PARTNER_KEY` in Secret Manager (see
-  **Secrets** below — both are `secrets:` on all three triggers).
+  **Secrets** below — both are `secrets:` on all six triggers).
 - **Region match**: the App Hosting backend must enqueue onto the queue in the
   function's region. The enqueuer resolves it from
   `SHOPEE_TASKS_REGION ?? FUNCTIONS_REGION`, and there is **no default** — an
@@ -77,23 +77,32 @@ the full servable folder at `.deploy/shopee-functions`. Both need
 
 ## Functions in this codebase
 
-| Export                           | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                 |
-| -------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `processShopeeNotification`      | `onTaskDispatched` (Cloud Tasks queue) | #1511 — process one queued Shopee push: dispatch on the **push code**, run the conta arms (1 / 2 / 12), park a code whose handler is not built yet. Rate-limited + retry-with-backoff; the receiver enqueues and answers 204. Persists to `notificacoesShopee` only on retry-exhaustion / park / defer. |
-| `reprocessShopeeNotifications`   | `onSchedule('every 30 minutes')`       | #1511 — the backstop, draining BOTH lanes on one tick: `failed` pushes older than 1 h (hot) and pushes whose `shop_id` matches no active integração (deferred, 24 h window). Logged separately — summing them would hide a growing deferred backlog inside a healthy `processed`.                       |
-| `sweepShopeeAuthorizationExpiry` | `onSchedule('0 4 * * 1')`              | #1511 / master-plan P8 — the WEEKLY authorization-expiry sweep. Walks `get_shops_by_partner` (PUBLIC-signed, reads no token anywhere) and raises the `shopeeAutorizacaoExpirando` aviso at ≤ 30 days, resolving it once a re-consent pushes the clock back out.                                         |
+| Export                           | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `processShopeeNotification`      | `onTaskDispatched` (Cloud Tasks queue) | #1511 — process one queued Shopee push: dispatch on the **push code**, run the conta arms (1 / 2 / 12), park a code whose handler is not built yet. Rate-limited + retry-with-backoff; the receiver enqueues and answers 204. Persists to `notificacoesShopee` only on retry-exhaustion / park / defer.                                                                                                                                                                                                                                                                                                                                                                                  |
+| `reprocessShopeeNotifications`   | `onSchedule('every 30 minutes')`       | #1511 — the backstop, draining BOTH lanes on one tick: `failed` pushes older than 1 h (hot) and pushes whose `shop_id` matches no active integração (deferred, 24 h window). Logged separately — summing them would hide a growing deferred backlog inside a healthy `processed`.                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `sweepShopeeAuthorizationExpiry` | `onSchedule('0 4 * * 1')`              | #1511 / master-plan P8 — the WEEKLY authorization-expiry sweep. Walks `get_shops_by_partner` (PUBLIC-signed, reads no token anywhere) and raises the `shopeeAutorizacaoExpirando` aviso at ≤ 30 days, resolving it once a re-consent pushes the clock back out.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `sweepShopeeLostPushes`          | `onSchedule('20 */2 * * *')`           | #1512 — the LOST-PUSH sweep. Reads `get_lost_push_message` (PUBLIC-signed; the earliest 100 lost within 3 days and not confirmed), re-parses each entry's `data` string into the receiver's payload, **enqueues every entry onto `processShopeeNotification` first**, and only then acks the page with `confirm_consumed_lost_push_message`. Paging is cursor-by-ACK, so one undurable entry blocks every later one for 3 days — hence the ordering, and hence "never confirm an empty page". `timeoutSeconds 540`; binds both secrets; **ENQUEUES** (see the IAM note). `SHOPEE_LOST_PUSH_CONFIRM_DISABLED=1` skips only the confirm.                                                   |
+| `monitorShopeePushConfig`        | `onSchedule('45 5 * * *')`             | #1512 — the DAILY push-health monitor. One PUBLIC GET of `get_app_push_config`; folds `live_push_status` and raises `shopeePushDegradado` (Warning, `atencao`) or `shopeePushSuspenso` (Suspended, **`critico`** — a suspension loses everything not already in the lost-push queue), resolving both on `Normal`. Also logs three divergences no aviso tipo covers: a `callback_url` that is not ours byte for byte, our push codes present in `push_config_off_list`, and a non-empty `blocked_shop_id`. `timeoutSeconds 120` — deliberately NOT 540: one call, so a longer budget would only hide a hang. It never calls `set_app_push_config`; the package exposes no such operation. |
+| `backfillShopeeOrders`           | `onSchedule('every 15 minutes')`       | #1512 — the ORDER BACKFILL: pages `get_order_list` by `update_time` per active conta from its durable cursor and enqueues one SYNTHETIC code-3 notification per `order_sn`, i.e. the same import path a real push takes. The only way to reach `PENDING` / `RETRY_SHIP` / `TO_CONFIRM_RECEIVE` / `TO_RETURN` orders, which the status filter cannot list, and the only documented recovery from a suspended subscription. **No-op until `SHOPEE_ORDER_BACKFILL_ENABLED=1`** (see "Runtime env" below) **and** additionally inert while push code 3 has no handler (step 5) — see the second gate there. `timeoutSeconds 540`; binds both secrets; **ENQUEUES**.                          |
 
 ### Secrets: `SHOPEE_PARTNER_ID` + `SHOPEE_PARTNER_KEY`
 
-Both are declared as `secrets:` on the **queue handler** and on the **weekly
-sweep**, because both can reach a PUBLIC-signed Shopee call (`shopeeConfig()` →
-`createShopeePartnerClient`). Without the bindings neither fails at startup:
+Both are declared as `secrets:` on the **queue handler** and on **every one of
+the five schedules**, because all of them can reach a PUBLIC-signed Shopee call
+(`shopeeConfig()` → `createShopeePartnerClient`) — and the order backfill needs
+them for its Shop-signed calls too, since the access token rides in the query
+while the HMAC is always partner-keyed. Without the bindings none of them fails
+at startup:
 `ShopeeConfigError` is raised on the first call, the pipeline treats it as
 transient, and the symptom is retries and parked documents rather than anything
 that names the missing secret. Grant them before the first real push.
 
 `reprocessShopeeNotifications` carries them too — a re-drive runs the same conta
-arms as the original delivery.
+arms as the original delivery. `src/index.test.ts` asserts the EXACT set on
+every schedule (a third name that drifts in deploys fine and then 403s the
+function at startup) and, since step 4, that no exported schedule escapes that
+loop at all.
 
 ### Durability & the residual loss window
 
@@ -106,15 +115,89 @@ for the sweep. Two narrow windows remain:
   fails. It logs and re-throws so the failed final attempt shows in Cloud Tasks'
   error metrics, but the push is lost and Shopee already got its 204.
 - Shopee's own retry ladder (+5 min / +30 min / +3 h) ends in the **lost-push
-  queue**, which `get_lost_push_message` can replay for 3 days — that sweep is
-  step 4, not built yet. Until it is, a push that fails every one of Shopee's
-  retries AND our persist is gone.
+  queue**, which `get_lost_push_message` can replay for 3 days —
+  `sweepShopeeLostPushes` (step 4) is that replay, so a push that fails every
+  one of Shopee's retries AND our persist now comes back on the next 2-hourly
+  tick. What is left is what the queue itself drops: an entry unconfirmed for
+  more than 3 days expires, and a SUSPENDED subscription is never queued at all
+  ("you will not receive Push Mechanism notifications missed during the period
+  where your subscription was disabled"). `backfillShopeeOrders` is the only
+  recovery for the second case, and it is flag-gated — see "Runtime env".
 
 ⚠️ A sustained non-2xx rate is worse than a lost push: >600 pushes / 6 h with
 <30 % success **auto-disables the subscription**, and a disabled subscription
 loses everything not already in the lost-push queue. That is why the receiver
 answers 204 on every path it can and never converts an enqueue failure into a
 5xx.
+
+## Runtime env (step 4's two valves)
+
+Neither is a secret and neither belongs in Secret Manager: they are operator
+switches read with `process.env.X === '1'` at the use site, exactly like
+`SHOPEE_SANDBOX` and `SHOPEE_TASKS_DISABLED`. They are read **only by this
+nested Cloud Functions codebase**, never by Next — the App Hosting backend hosts
+the receiver, which acks and enqueues without ever reaching a sweep — so a value
+set in `apphosting.yaml` or the console would be read by nothing and fail
+silently. The root `.env.example` names both anyway, so the one file operators
+consult lists every var the channel reads; their real home is here.
+
+firebase-tools' documented lane for gen2 runtime env vars is a `.env` /
+`.env.<project-id>` file in the functions **source** directory. Here that
+directory is the generated `.deploy/shopee-functions`, and
+`scripts/prepare-deploy.mjs` opens with
+`rmSync(deployDir, { recursive: true, force: true })` — it **wipes and
+regenerates the whole folder** as the `predeploy` hook, i.e. after you would
+have dropped a file in it and before firebase reads the source. So a hand-placed
+`.env` **there** does not survive, and there is no `--no-predeploy` escape
+hatch.
+
+Instead, put it in the **package** directory and let the hook carry it across
+the wipe. Create `apps/shopee/functions/.env.deploy` (gitignored):
+
+```bash
+# The ORDER BACKFILL (#1512). SHIPS OFF; only the literal `1` enables it. While
+# off, backfillShopeeOrders deploys, ticks, logs one info line and reads
+# nothing — not Firestore, not Shopee.
+# ⚠️ There is a SECOND, STRUCTURAL gate this flag cannot override: while the
+# dispatch table still routes push code 3 to `parado` (step 5 unbuilt), the
+# sweep refuses to run even with the flag on, because a synthesized code 3
+# parks one terminal document per order, per tick — up to 1 000 per conta. The
+# guard reads that table, so it flips itself when step 5 lands. Setting this to
+# 1 before then is harmless and does nothing.
+SHOPEE_ORDER_BACKFILL_ENABLED=1
+# The LOST-PUSH CONFIRM valve (#1512) — leave it COMMENTED OUT except for the
+# one rehearsal it exists for. `1` makes sweepShopeeLostPushes read, parse and
+# enqueue as usual but SKIP `confirm_consumed_lost_push_message`, so the first
+# production tick proves the whole path without sending an irreversible ack
+# (the sandbox cannot exercise these APIs at all). It is opt-in-to-DISABLE, so
+# an unset or blank value can never leave the sweep inert. While it is on the
+# tick stops after the first page — the queue did not advance, and the next
+# read would return the same entries.
+# SHOPEE_LOST_PUSH_CONFIRM_DISABLED=1
+```
+
+⚠️ The scheduled function is deployed either way — a flag only decides whether a
+firing does any work. Flipping one is therefore a redeploy, not a code change.
+
+`prepare-deploy.mjs` copies the file into the artifact **as `.env`** after the
+wipe, and firebase-tools applies it at deploy. It survives redeploys — no
+`gcloud run services update` to re-apply, and no Secret Manager entry for a
+non-secret tunable.
+
+**Per-project targeting.** `.env.deploy` applies to whatever project you deploy
+to, so a staging file deployed to produção takes its values with it. For values
+that belong to ONE project, name the file `.env.deploy.<project-id>`: it lands
+as `.env.<project-id>`, which firebase-tools applies only for that `--project`.
+Both can coexist; firebase-tools layers the project-specific file over `.env`.
+
+⚠️ The allowlist is anchored and shared by all five `prepare-deploy.mjs` scripts
+(`tools/deploy-env/env-files.mjs`). Exactly two source names are copied —
+`.env.deploy` and `.env.deploy.<project-id>`. A **`.env.secrets*` fails the
+hook**, and so does a bare `.env` (with a rename instruction): everything that
+reaches the artifact is uploaded to the project's `gcf-sources-*` bucket and
+baked in plaintext into the Cloud Run revision, so real secrets stay in Secret
+Manager (`firebase functions:secrets:set` + the `secrets: [...]` option, which
+is how `SHOPEE_PARTNER_ID` / `SHOPEE_PARTNER_KEY` travel).
 
 ## ⚠️ One-time IAM — the App Hosting backend enqueues Cloud Tasks
 
@@ -208,10 +291,37 @@ all. That silent case is what this variable exists for.
 Verify it took, with nobody having run gcloud:
 `gcloud run services get-iam-policy processShopeeNotification --region=<region>`.
 
+### ⚠️ Since step 4 the SCHEDULED functions enqueue too (#1512)
+
+`sweepShopeeLostPushes` and `backfillShopeeOrders` both enqueue onto
+`processShopeeNotification`, so the **functions runtime service account** — not
+just the App Hosting one — now needs `roles/cloudtasks.enqueuer` on the queue
+and `roles/run.invoker` on the function's Cloud Run service. `TASKS_INVOKER_SA`
+already applies both roles at deploy time and it is **authoritative**: a deploy
+REPLACES the members of both bindings, so an identity left out of that list
+LOSES the role it had. Name **both** identities, comma-separated:
+
+```bash
+export TASKS_INVOKER_SA="<apphosting-runtime-sa>,<functions-runtime-sa>"
+```
+
+The prose above already told you to list the functions SA "because a handler
+that re-enqueues makes it one". Two schedules now do. ⚠️ Granting this is
+**step 22's action** (#1530) — nothing here has been deployed, and an agent
+never runs it (root `CLAUDE.md` rule 8). The failure it prevents is silent in
+the worst direction: the enqueue succeeds, Cloud Tasks dispatches with an OIDC
+token the service refuses (`403 run.routes.invoke`), and no failure document is
+written anywhere — a lost-push tick would then CONFIRM a page whose entries
+never arrived, and the queue only holds them for 3 days.
+
 Until this is granted the enqueue fails; the receiver then **falls back** to
 persisting the push as `failed` (the reprocess sweep drains it) and still answers
 204 — so pushes are not lost, but the intended rate-limited queue path is
-inactive. Verify the queue exists after the first deploy:
+inactive. ⚠️ The lost-push sweep degrades the same way and stays lossless: an
+enqueue that throws is persisted `failed`, which COUNTS as durable, so the page
+is still confirmed and the 30-minute reprocess sweep drains it. A page is left
+unconfirmed only when an entry could not be made durable at all — not even
+persisted. Verify the queue exists after the first deploy:
 `gcloud tasks queues describe processShopeeNotification --location=<region>`.
 
 ## What CI proves, and what it does not
@@ -223,14 +333,18 @@ runs every unit suite in this app, this codebase included.
 
 Two gaps to know about:
 
-- **The two `onSchedule` triggers never execute in CI.** The functions emulator
-  logs them as "ignored because the pubsub emulator does not exist or is not
-  running", so the lane loads them and nothing drives them. Their bodies are
-  covered by unit tests and their _options_ — the `'0 4 * * 1'` cron, the
-  `America/Sao_Paulo` zone, `timeoutSeconds: 540` and the exact `secrets:` set —
-  by `src/index.test.ts`, which asserts over `__endpoint` exactly as
+- **None of the five `onSchedule` triggers ever executes in CI.** The functions
+  emulator logs them as "ignored because the pubsub emulator does not exist or
+  is not running", so the lane loads them and nothing drives them. Their bodies
+  are covered by unit tests and their _options_ — each cron, the
+  `America/Sao_Paulo` zone, the timeout and the exact `secrets:` set — by
+  `src/index.test.ts`, which asserts over `__endpoint` exactly as
   `processNotification.test.ts` does for the queue handler (#778 is the worked
-  example of that gap costing a silently inert sweep). What no test can show is
+  example of that gap costing a silently inert sweep). ⚠️ That file's coverage
+  is itself asserted: an exhaustiveness test enumerates every export whose
+  `__endpoint` carries a `scheduleTrigger` and fails if one is missing from its
+  map, because between step 3 and step 4 three schedules arrived at once and
+  "remember to grow the test file" is not a mechanism. What no test can show is
   that Cloud Scheduler actually fires them; the first real proof is the deploy.
 - **Nothing here proves the composite indexes are declared.** The emulator
   auto-creates every composite and on Enterprise a missing one does not throw —

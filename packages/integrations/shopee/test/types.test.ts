@@ -5,16 +5,20 @@ import {
   SHOPEE_SHOP_STATUS,
   dataOp,
   flatOp,
+  shopeeAppPushConfigSchema,
   shopeeAtributoSchema,
   shopeeAttributeTreeSchema,
   shopeeBrandListSchema,
   shopeeCategoriaSchema,
   shopeeCategoryListSchema,
   shopeeCategoryRecommendSchema,
+  shopeeConfirmLostPushSchema,
   shopeeEnvelopeSchema,
   shopeeFaixaSchema,
   shopeeItemLimitSchema,
   shopeeKitItemLimitSchema,
+  shopeeLostPushSchema,
+  shopeeOrderListSchema,
   shopeeProfileSchema,
   shopeeShopInfoSchema,
   shopeeShopStatusSchema,
@@ -494,5 +498,288 @@ describe('o invólucro de cada operação de taxonomia', () => {
     const parsed = shopeeItemLimitSchema.parse({ error: '', response: {}, campo_novo: 1 });
     expect(parsed.gtin_limit).toBeNull();
     expect((parsed as Record<string, unknown>).campo_novo).toBe(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     As páginas de push perdido (passo 4)                    */
+/* -------------------------------------------------------------------------- */
+
+const ENTRADA_PERDIDA = {
+  shop_id: 727720655,
+  code: 3,
+  timestamp: 1660123127,
+  data: '{"data":{"items":[],"ordersn":"220810QSK8S7BX","status":"PROCESSED","completed_scenario":"","update_time":1660123127},"shop_id":727720655,"code":3,"timestamp":1660123127}',
+};
+
+describe('a fila de mensagens perdidas', () => {
+  it('push_message_list ausente ou null vira null — a fila vazia é o caso comum', () => {
+    // ⚠️ Uma fila vazia é o estado SAUDÁVEL e nenhum exemplo mostra o que a
+    // Shopee manda para ela. Um array obrigatório transformaria a saúde numa
+    // falha de schema a cada duas horas.
+    const ausente = shopeeLostPushSchema.parse({
+      error: '',
+      response: { has_next_page: false, last_message_id: 176610 },
+    });
+    expect(ausente.response.push_message_list).toBeNull();
+
+    const nula = shopeeLostPushSchema.parse({
+      error: '',
+      response: { push_message_list: null, has_next_page: false, last_message_id: 176610 },
+    });
+    expect(nula.response.push_message_list).toBeNull();
+  });
+
+  it('lê shop_id, code, timestamp e last_message_id em STRING', () => {
+    const parsed = shopeeLostPushSchema.parse({
+      error: '',
+      response: {
+        push_message_list: [
+          { ...ENTRADA_PERDIDA, shop_id: '727720655', code: '3', timestamp: '1660123127' },
+        ],
+        has_next_page: false,
+        last_message_id: '176610',
+      },
+    });
+    const entrada = parsed.response.push_message_list?.[0];
+    expect(entrada?.shop_id).toBe(727720655);
+    expect(entrada?.code).toBe(3);
+    expect(entrada?.timestamp).toBe(1660123127);
+    expect(parsed.response.last_message_id).toBe(176610);
+  });
+
+  it('uma entrada sem shop_id parseia — o push de nível de parceiro não traz loja', () => {
+    // A própria página: "If it's a partner level push (such as code: 1, 2, 12),
+    // shop_id will not be returned." O "such as" é o que impede derivar
+    // nível-de-parceiro a partir do código.
+    const parsed = shopeeLostPushSchema.parse({
+      error: '',
+      response: {
+        push_message_list: [{ code: 12, timestamp: 1660123127, data: '{}' }],
+        has_next_page: false,
+        last_message_id: 1,
+      },
+    });
+    expect(parsed.response.push_message_list?.[0]?.shop_id).toBeNull();
+    expect(parsed.response.push_message_list?.[0]?.code).toBe(12);
+  });
+
+  it('`data` continua uma STRING — o pacote nunca faz JSON.parse dela', () => {
+    // ⚠️ Ler a string aqui seria decidir, dentro do pacote, o que fazer quando
+    // ela não é legível — e essa decisão precisa virar uma linha durável, que
+    // este pacote não tem onde escrever.
+    const parsed = shopeeLostPushSchema.parse({
+      error: '',
+      response: {
+        push_message_list: [ENTRADA_PERDIDA],
+        has_next_page: true,
+        last_message_id: 176610,
+      },
+    });
+    const bruto = parsed.response.push_message_list?.[0]?.data;
+    expect(typeof bruto).toBe('string');
+    expect(bruto).toBe(ENTRADA_PERDIDA.data);
+    expect(parsed.response.has_next_page).toBe(true);
+  });
+
+  it('UMA entrada malformada não derruba a página — as outras 99 continuam legíveis', () => {
+    // ⚠️ Um array Zod falha INTEIRO (#1488) e esta fila pagina por
+    // CONFIRMAÇÃO: com um elemento estrito, uma entrada ruim rejeitaria a
+    // página toda e esconderia tudo que está atrás dela por três dias.
+    const parsed = shopeeLostPushSchema.parse({
+      error: '',
+      response: {
+        push_message_list: [
+          ENTRADA_PERDIDA,
+          { shop_id: 727720655, code: 3, data: '{"code":3}' }, // sem timestamp
+          { shop_id: 727720655, timestamp: 1660123127, data: '{"code":3}' }, // sem code
+          { shop_id: 727720655, code: 3, timestamp: 1660123127 }, // sem data
+          ENTRADA_PERDIDA,
+        ],
+        has_next_page: false,
+        last_message_id: 176610,
+      },
+    });
+    const lista = parsed.response.push_message_list ?? [];
+    expect(lista).toHaveLength(5);
+    expect(lista[0]?.data).toBe(ENTRADA_PERDIDA.data);
+    expect(lista[4]?.data).toBe(ENTRADA_PERDIDA.data);
+    expect(lista[1]?.timestamp).toBeNull();
+    expect(lista[2]?.code).toBeNull();
+    // `data` ausente vira o texto JSON de `undefined`, que o leitor do app
+    // parseia como `null` e para numa linha terminal — nunca um silêncio.
+    expect(lista[3]?.data).toBe('null');
+  });
+
+  it('a tolerância NÃO engole um valor real — a coerção do wire vem antes dela', () => {
+    // NEAR-MISS do teste acima: `'0'` e `'-3'` são valores LEGÍTIMOS que
+    // `wireInt()` coage; se o `.catch` estivesse no lugar do parse, os dois
+    // voltariam como null e a entrada perderia o código que a identifica.
+    const parsed = shopeeLostPushSchema.parse({
+      error: '',
+      response: {
+        push_message_list: [{ ...ENTRADA_PERDIDA, code: '0', timestamp: '-3' }],
+        has_next_page: false,
+        last_message_id: 1,
+      },
+    });
+    expect(parsed.response.push_message_list?.[0]?.code).toBe(0);
+    expect(parsed.response.push_message_list?.[0]?.timestamp).toBe(-3);
+  });
+
+  it('`data` que chega como OBJETO é preservada em texto, nunca descartada', () => {
+    // A forma "envelope inteiro numa string" é evidenciada só pelo exemplo. Se
+    // a página um dia responder o objeto, o app recebe os MESMOS bytes que
+    // teria parseado — e a leitura segue normal, sem linha parada.
+    const envelope = { data: { ordersn: 'SN1' }, shop_id: 727720655, code: 3, timestamp: 1 };
+    const parsed = shopeeLostPushSchema.parse({
+      error: '',
+      response: {
+        push_message_list: [{ shop_id: 727720655, code: 3, timestamp: 1, data: envelope }],
+        has_next_page: false,
+        last_message_id: 1,
+      },
+    });
+    const bruto = parsed.response.push_message_list?.[0]?.data;
+    expect(typeof bruto).toBe('string');
+    expect(JSON.parse(String(bruto))).toEqual(envelope);
+  });
+
+  it('has_next_page é um boolean ESTRITO — a string "false" falha', () => {
+    // NEAR-MISS: uma string coagida é truthy, e este é o sinal que diz se
+    // sobraram mensagens atrás das 100 desta página.
+    expect(
+      shopeeLostPushSchema.safeParse({
+        error: '',
+        response: { push_message_list: [], has_next_page: 'false', last_message_id: 1 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('a resposta do confirm é o envelope NU — não existe objeto response', () => {
+    const parsed = shopeeConfirmLostPushSchema.parse({
+      error: '',
+      message: '',
+      warning: '',
+      request_id: '668ea92da2a19f7d2e72bf98bd530c41',
+    });
+    expect(parsed.request_id).toBe('668ea92da2a19f7d2e72bf98bd530c41');
+    expect('response' in parsed).toBe(false);
+    // E um envelope sem `error` continua sendo recusado, como em toda operação.
+    expect(shopeeConfirmLostPushSchema.safeParse({ request_id: 'x' }).success).toBe(false);
+  });
+});
+
+describe('a configuração de push do app', () => {
+  it('lê o exemplo minúsculo "suspended" sem enum nenhum', () => {
+    // ⚠️ A página se contradiz: a descrição diz `Normal/Warning/Suspended` e o
+    // exemplo dela mesma diz `"suspended"`. Um enum estrito jogaria fora
+    // justamente a leitura que o monitor precisa registrar.
+    const parsed = shopeeAppPushConfigSchema.parse({
+      error: '',
+      response: {
+        callback_url: 'https://open.shopee.com/',
+        live_push_status: 'suspended',
+        suspended_time: 1577416181,
+        blocked_shop_id: [10010, 20020, 30030],
+        push_config_on_list: [1, 2, 3],
+        push_config_off_list: [4, 5, 6],
+      },
+    });
+    expect(parsed.response.live_push_status).toBe('suspended');
+    expect(parsed.response.suspended_time).toBe(1577416181);
+    expect(parsed.response.blocked_shop_id).toEqual([10010, 20020, 30030]);
+  });
+
+  it('um live_push_status que ninguém viu antes PARSEIA — quem decide é o leitor', () => {
+    const parsed = shopeeAppPushConfigSchema.parse({
+      error: '',
+      response: { live_push_status: 'Throttled' },
+    });
+    expect(parsed.response.live_push_status).toBe('Throttled');
+  });
+
+  it('as listas ausentes viram null, NUNCA [] — "a Shopee não disse" não é "está vazia"', () => {
+    // NEAR-MISS que importa: `[]` afirmaria que nenhum código está desligado, e
+    // o monitor leria uma configuração que ninguém verificou como saudável.
+    const parsed = shopeeAppPushConfigSchema.parse({ error: '', response: {} });
+    expect(parsed.response.blocked_shop_id).toBeNull();
+    expect(parsed.response.push_config_on_list).toBeNull();
+    expect(parsed.response.push_config_off_list).toBeNull();
+    expect(parsed.response.suspended_time).toBeNull();
+    expect(parsed.response.callback_url).toBeNull();
+    expect(parsed.response.live_push_status).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                      A listagem de pedidos (passo 4/5)                      */
+/* -------------------------------------------------------------------------- */
+
+describe('a página de get_order_list', () => {
+  it('`more` é um boolean ESTRITO — "false" em string FALHA, nunca vira "drenado"', () => {
+    // ⚠️ `more` é o ÚNICO sinal de término do laço: uma string coagida é truthy,
+    // então o erro numa direção pagina para sempre e, na outra, trunca uma
+    // janela em silêncio.
+    expect(
+      shopeeOrderListSchema.safeParse({
+        error: '',
+        response: { more: 'false', next_cursor: '', order_list: [] },
+      }).success,
+    ).toBe(false);
+    expect(
+      shopeeOrderListSchema.parse({
+        error: '',
+        response: { more: false, next_cursor: '', order_list: [] },
+      }).response.more,
+    ).toBe(false);
+  });
+
+  it('next_cursor "" e ausente são ambos aceitos', () => {
+    // `""` é o sentinela de drenado da própria Shopee; ausente é o que uma
+    // página pode simplesmente não mandar. Quem decide o que fazer com os dois é
+    // a app — aqui os dois têm de PARSEAR.
+    expect(
+      shopeeOrderListSchema.parse({
+        error: '',
+        response: { more: false, next_cursor: '', order_list: [] },
+      }).response.next_cursor,
+    ).toBe('');
+    expect(
+      shopeeOrderListSchema.parse({ error: '', response: { more: false, order_list: [] } }).response
+        .next_cursor,
+    ).toBeNull();
+  });
+
+  it('tolera a linha nua {order_sn} e a linha completa, mas RECUSA um order_sn vazio', () => {
+    // NEAR-MISS: a página devolve linhas nuas mesmo quando se pede
+    // `response_optional_fields=order_status`, então os opcionais são nulos. Já
+    // um `order_sn` em branco não é uma linha tolerável — ele é o único dado
+    // desta operação, e todas as linhas em branco colapsariam numa identidade só.
+    const parsed = shopeeOrderListSchema.parse({
+      error: '',
+      response: {
+        more: true,
+        next_cursor: '20',
+        order_list: [
+          { order_sn: '201218V2Y6E59M' },
+          {
+            order_sn: '2404098R48U37H',
+            order_status: 'READY_TO_SHIP',
+            booking_sn: '2404098R48U37H',
+          },
+        ],
+      },
+    });
+    expect(parsed.response.order_list[0]?.order_status).toBeNull();
+    expect(parsed.response.order_list[0]?.booking_sn).toBeNull();
+    expect(parsed.response.order_list[1]?.order_status).toBe('READY_TO_SHIP');
+
+    expect(
+      shopeeOrderListSchema.safeParse({
+        error: '',
+        response: { more: false, next_cursor: '', order_list: [{ order_sn: '' }] },
+      }).success,
+    ).toBe(false);
   });
 });
