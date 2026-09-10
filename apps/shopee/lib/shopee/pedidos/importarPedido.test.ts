@@ -314,6 +314,44 @@ describe('importarPedidoShopee — o comprador', () => {
     expect(c.db.idsEm('clientes')).toHaveLength(clientesAntes);
   });
 
+  it('⚠️ o diário é um DIÁRIO, não um portão: um EXPIRADO armazenado não impede a captura seguinte', async () => {
+    // W4/R4's load-bearing sentence, and the one mutation that survived every
+    // other assertion in this file: gating `resolverComprador` on the stored
+    // `capturaComprador.estado === 'expirado'` would make a pedido whose first
+    // delivery arrived masked and out of the window NEVER capture its buyer —
+    // no cliente, no endereço, no NF-e — even when a later `get_order_detail`
+    // returns the name and the CPF in the clear. Silent and permanent.
+    //
+    // Delivery 1: masked AND `SHIPPED` (a status in STATUS_SHOPEE_FORA_DA_JANELA),
+    // so the stored diary really says `expirado` and there is a real latch to
+    // survive.
+    const c = cenario({
+      detalhe: { ...detalheBRMascarado(), order_status: 'SHIPPED' } as ShopeeOrderDetailRow,
+    });
+    await importar(c);
+    expect(c.db.store[PEDIDO_PATH]!.data.capturaComprador).toMatchObject({
+      estado: 'expirado',
+    });
+    expect(c.db.store[PEDIDO_PATH]!.data.clientePedidoOuterRef).toBeNull();
+    expect(c.db.idsEm('clientes')).toEqual([]);
+
+    // Delivery 2: the SAME order, newer, with the buyer UNMASKED.
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [{ ...detalheBR(), update_time: UPDATE_TIME_S + 60, order_status: 'SHIPPED' }],
+    });
+    await importar(c);
+
+    const depois = c.db.store[PEDIDO_PATH]!.data;
+    expect(depois.clientePedidoOuterRef).not.toBeNull();
+    expect(depois.enderecoFiscalOuterRef).not.toBeNull();
+    expect(c.db.idsEm('clientes')).toHaveLength(1);
+    // ⚠️ And the diary is the OTHER fact, pinned separately: the record moves to
+    // `capturado` because something WAS captured. The two are independent —
+    // `orderPedidoTx.test.ts` pins the latch, this pins that the latch never
+    // decides whether an attempt happens.
+    expect(depois.capturaComprador).toMatchObject({ estado: 'capturado' });
+  });
+
   it('um comprador MASCARADO num pedido novo escreve NADA e só carimba o diário', async () => {
     const c = cenario({ detalhe: detalheBRMascarado() });
     await importar(c);

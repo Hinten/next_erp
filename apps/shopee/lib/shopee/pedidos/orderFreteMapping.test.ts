@@ -5,6 +5,7 @@ import {
   INTEGRACAO_FRETE,
   MODALIDADE_FRETE,
   freteDoPedidoSchema,
+  getPrazoDespachoNoFuso,
   type FreteDoPedido,
 } from '@delfrance/schemas';
 import type { ShopeeEscrowDetail, ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
@@ -157,10 +158,15 @@ describe('prazoDespachoShopee', () => {
 
   it('⚠️ NEAR-MISS: o fallback NUNCA se aplica sobre um ship_by_date válido', () => {
     // A mutation that ran the 14:00 rule unconditionally — which is exactly what
-    // the legacy did — answers the Monday midnight below instead of Shopee's own
-    // deadline. The two must not be equal.
+    // the legacy did — answers what the FALLBACK computes for this fixture's own
+    // `pay_time`, and the two must not be equal. That value is measured here,
+    // not asserted from memory: `pay_time` 1788973353 is 2026-09-09T17:02:33Z =
+    // Wednesday 14:02 in São Paulo, PAST the 14:00 cut-off, so the rule answers
+    // THURSDAY 2026-09-10 at 00:00 São Paulo (03:00Z). A constant the fallback
+    // cannot produce would make this line unfalsifiable.
     const detalhe = detalheSG();
-    const pelaRegra = millisToMicros(Date.UTC(2026, 6, 6, 3, 0));
+    const pelaRegra = millisToMicros(Date.UTC(2026, 8, 10, 3, 0));
+    expect(prazoDespachoShopee(linha({ ship_by_date: 0 }))).toBe(pelaRegra);
     expect(prazoDespachoShopee(detalhe)).not.toBe(pelaRegra);
     expect(prazoDespachoShopee(detalhe)).toBe(microsDeSegundosShopee(detalhe.ship_by_date!));
   });
@@ -184,6 +190,35 @@ describe('prazoDespachoShopee', () => {
     const payTime = Math.floor(Date.UTC(2021, 0, 8, 17, 1) / 1000);
     const prazo = prazoDespachoShopee(linha({ ship_by_date: 0, pay_time: payTime }));
     expect(prazo).toBe(millisToMicros(Date.UTC(2021, 0, 11, 3, 0)));
+  });
+
+  it('⚠️ o fallback usa o FUSO EXPLÍCITO, não o do processo — e um fuso diferente responde outro dia', () => {
+    // The mutation this kills is the ambient-zone binding: swapping
+    // `getPrazoDespachoNoFuso(..., FUSO_PRAZO_DESPACHO_SHOPEE)` for
+    // `getPrazoDespacho(...)` reads the PROCESS's zone, which agrees on a
+    // developer machine set to America/Sao_Paulo and on `apps/nfe`
+    // (`TZ=America/Sao_Paulo`) while disagreeing everywhere else — the exact
+    // failure `delfrance/no-ambient-timezone` exists to name, and one the
+    // runner's own zone can hide.
+    //
+    // Neither assertion depends on the runner: both recompute through the
+    // shared helper with the zone NAMED, mirroring `intFrete.test.ts`'s "the
+    // SAME instant under timeZone 'UTC' answers a DIFFERENT day".
+    const payTimeMs = Date.UTC(2021, 0, 4, 17, 1);
+    const detalhe = linha({ ship_by_date: 0, pay_time: Math.floor(payTimeMs / 1000) });
+
+    const emSaoPaulo = getPrazoDespachoNoFuso(
+      HORARIO_DE_CORTE_PADRAO_SHOPEE,
+      payTimeMs,
+      FUSO_PRAZO_DESPACHO_SHOPEE,
+    );
+    const emUtc = getPrazoDespachoNoFuso(HORARIO_DE_CORTE_PADRAO_SHOPEE, payTimeMs, 'UTC');
+
+    expect(prazoDespachoShopee(detalhe)).toBe(millisToMicros(emSaoPaulo!));
+    // The near-miss that gives the line above its teeth: at 17:01Z the two zones
+    // land on different sides of the cut-off, so they answer different days.
+    expect(emUtc).not.toBe(emSaoPaulo);
+    expect(prazoDespachoShopee(detalhe)).not.toBe(millisToMicros(emUtc!));
   });
 
   it('sem ship_by_date e sem pay_time (pedido não pago) ⇒ null', () => {

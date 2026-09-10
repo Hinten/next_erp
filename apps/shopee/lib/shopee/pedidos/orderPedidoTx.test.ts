@@ -352,6 +352,24 @@ describe('salvarPedidoShopee — o estado', () => {
     expect((doc.marketplace as Record<string, unknown>).status).toBe('UNPAID');
   });
 
+  it('⚠️ PAR: o MESMO UNPAID que um pago recusa, um cancelado aceita — o veredito sai do ARMAZENADO', async () => {
+    // The near-miss twin of the test above: identical incoming payload, opposite
+    // verdict, decided only by what the snapshot holds. `UNPAID` is the one rung
+    // that is regressive from every on-ladder state and writable only out of an
+    // off-ladder one, so this is what proves the off-ladder branch is evaluated
+    // BEFORE the monotonic comparison — and that the verdict is computed inside
+    // the callback, from `tx.get`, rather than from the mapped body's own idea of
+    // the estado. (The RACE that makes a re-derivation necessary is pinned once,
+    // in the concurrency describe below; here the same verdict is driven
+    // sequentially.)
+    const db = comEstado(ESTADO_PEDIDO.cancelado);
+    const r = await salvar(db, mapear({ detalhe: linha({ order_status: 'UNPAID' }) }));
+
+    expect(r.estadoEscrito).toBe(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento);
+    expect(r.estadoRessuscitado).toBe(true);
+    expect(db.store[PEDIDO_PATH]!.data.estado).toBe(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento);
+  });
+
   it('⚠️ cancelado → pago é ACEITO e registrado como ressuscitado', async () => {
     const db = comEstado(ESTADO_PEDIDO.cancelado);
     const r = await salvar(db);
@@ -434,8 +452,8 @@ describe('salvarPedidoShopee — os grupos de campos', () => {
     expect((doc.marketplace as Record<string, unknown>).status).toBe('CANCELLED');
   });
 
-  it('sem congelamento, os itens são MESCLADOS (append-only) e não substituídos', async () => {
-    const jaGravado = { ...itemDe(0, 'prod-antigo'), precoDeVenda: 99 };
+  it('o CONJUNTO de linhas é append-only: a identidade da linha armazenada sobrevive', async () => {
+    const jaGravado = { ...itemDe(0, 'prod-antigo'), precoDeVenda: 99, custo: 7, imposto: 3 };
     const db = pedidoArmazenado({
       itens: { 'prod-antigo': [jaGravado] },
       itensIds: ['prod-antigo'],
@@ -444,13 +462,86 @@ describe('salvarPedidoShopee — os grupos de campos', () => {
     await salvar(db, mapear({ itens: [itemDe(0), itemDe(1)] }));
 
     const doc = db.store[PEDIDO_PATH]!.data as Record<string, Record<string, ItemDoPedido[]>>;
-    // The stored line keeps its produto AND its price — the merge appends, it
-    // never rewrites — and only the genuinely new line lands.
-    expect(doc.itens!['prod-antigo']![0]!.precoDeVenda).toBe(99);
+    // ⚠️ The produto binding an operator may have made by hand is what the merge
+    // must never touch, together with the line's identity and the ERP-side
+    // money. The incoming line carries `produtoUid: null` and would land in
+    // 'NONE' if the row had been replaced.
+    expect(doc.itens!['prod-antigo']).toHaveLength(1);
+    expect(doc.itens!['prod-antigo']![0]).toMatchObject({
+      produtoUid: 'prod-antigo',
+      ordem: 0,
+      ensureUniqueId: jaGravado.ensureUniqueId,
+      custo: 7,
+      imposto: 3,
+      timestamp: jaGravado.timestamp,
+    });
+    // …no line is removed, and only the genuinely new one is appended.
     expect(doc.itens!['NONE']).toHaveLength(1);
     expect(doc.itens!['NONE']![0]!.ordem).toBe(1);
-    // …and the divergence is REPORTED rather than silently absorbed.
-    expect(avisos.some((c) => String(c[0]).includes('append-only'))).toBe(true);
+  });
+
+  it('⚠️ o DINHEIRO da linha é REFRESCADO — o escrow chega tarde e a refinação tem de pousar', async () => {
+    // The escrow is the authority for the five discounts and for a bundle line's
+    // real money, and it is routinely absent on the FIRST delivery (an unpaid
+    // order has none; a contained escrow failure and a refused kit parse look the
+    // same). If the re-priced line were dropped, the pedido would keep a
+    // provisional price for ever WHILE the same `tx.update` refreshes
+    // `valorCobrado`/`descontoTotal` from the escrow — a header and a line set
+    // that contradict each other permanently, and `pedidoTotal` reads the LINES.
+    const jaGravado = { ...itemDe(0, 'prod-antigo'), precoDeVenda: 0, descontoUnitario: 0 };
+    const db = pedidoArmazenado({
+      itens: { 'prod-antigo': [jaGravado] },
+      itensIds: ['prod-antigo'],
+    });
+
+    const reprecificado = { ...itemDe(0), precoDeVenda: 90, descontoUnitario: 10, quantidade: 3 };
+    await salvar(db, mapear({ itens: [reprecificado] }));
+
+    const doc = db.store[PEDIDO_PATH]!.data as Record<string, Record<string, ItemDoPedido[]>>;
+    expect(doc.itens!['prod-antigo']![0]).toMatchObject({
+      precoDeVenda: 90,
+      descontoUnitario: 10,
+      quantidade: 3,
+      // …still ours, still in the same bucket.
+      produtoUid: 'prod-antigo',
+      ensureUniqueId: jaGravado.ensureUniqueId,
+    });
+    expect(doc.itens!['NONE']).toBeUndefined();
+    // …and the refresh is REPORTED rather than silently absorbed.
+    expect(avisos.some((c) => String(c[0]).includes('campos atualizados'))).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: uma linha IDÊNTICA não reescreve itens nem avisa', async () => {
+    // The refresh must be driven by a real difference, not by the re-import
+    // itself — otherwise every replay would rewrite the whole `itens` map and
+    // no equal-stamp delivery could ever be `ignorado-sem-mudanca`.
+    const armazenado = { ...itemDe(0, 'prod-antigo') };
+    const db = pedidoArmazenado({
+      itens: { 'prod-antigo': [armazenado] },
+      itensIds: ['prod-antigo'],
+    });
+
+    await salvar(db, mapear({ itens: [itemDe(0)] }));
+
+    const doc = db.store[PEDIDO_PATH]!.data as Record<string, Record<string, ItemDoPedido[]>>;
+    expect(doc.itens).toEqual({ 'prod-antigo': [armazenado] });
+    expect(avisos.some((c) => String(c[0]).includes('campos atualizados'))).toBe(false);
+  });
+
+  it('hasUserInteraction ainda congela o dinheiro da linha', async () => {
+    // The refresh lives INSIDE the `!congelado` block, so an operator who edited
+    // the pedido keeps their numbers.
+    const jaGravado = { ...itemDe(0, 'prod-antigo'), precoDeVenda: 99 };
+    const db = pedidoArmazenado({
+      hasUserInteraction: true,
+      itens: { 'prod-antigo': [jaGravado] },
+      itensIds: ['prod-antigo'],
+    });
+
+    await salvar(db, mapear({ itens: [{ ...itemDe(0), precoDeVenda: 90 }] }));
+
+    const doc = db.store[PEDIDO_PATH]!.data as Record<string, Record<string, ItemDoPedido[]>>;
+    expect(doc.itens!['prod-antigo']![0]!.precoDeVenda).toBe(99);
   });
 
   it('o frete é mesclado sem tocar estado nem codRastreio', async () => {
@@ -558,6 +649,134 @@ describe('salvarPedidoShopee — os grupos de campos', () => {
     const captura = db.store[PEDIDO_PATH]!.data.capturaComprador as Record<string, unknown>;
     expect(captura.estado).toBe(CAPTURA_COMPRADOR_ESTADO.expirado);
     expect(captura.tentativas).toBe(5);
+  });
+
+  it('⚠️ NEAR-MISS: uma entrega que REALMENTE captura levanta um expirado armazenado', async () => {
+    // The precedence, stated as a pair with the test above: `expirado` latches
+    // against a payload that captured NOTHING (`pendente` there), and loses to
+    // one that captured something. Otherwise a pedido masked out of the window
+    // on its first delivery and unmasked later would end up with a linked
+    // cliente and a diary saying nothing was ever captured.
+    const db = pedidoArmazenado({
+      capturaComprador: {
+        estado: CAPTURA_COMPRADOR_ESTADO.expirado,
+        statusObservado: 'SHIPPED',
+        em: NOW_US - 1_000,
+        tentativas: 2,
+        camposRecusados: ['nome:mascarado'],
+      },
+    });
+    await salvar(
+      db,
+      mapear({
+        detalhe: linha({ region: 'BR', order_status: 'SHIPPED' }),
+        clientePedidoOuterRef: 'documents/clientes/cli-real',
+        captura: { estado: CAPTURA_COMPRADOR_ESTADO.capturado, camposRecusados: [] },
+      }),
+    );
+    const captura = db.store[PEDIDO_PATH]!.data.capturaComprador as Record<string, unknown>;
+    expect(captura.estado).toBe(CAPTURA_COMPRADOR_ESTADO.capturado);
+    expect(captura.camposRecusados).toEqual([]);
+  });
+
+  it('⚠️ capturaComprador: uma vez CAPTURADO, uma entrega MASCARADA não o rebaixa a expirado', async () => {
+    // Shopee re-masks the buyer once the order leaves the unmask window, and
+    // `SHIPPED`/`COMPLETED` is where every finished BR order ends — so without
+    // the latch this is the TERMINAL record of every successfully captured BR
+    // order, saying "the window closed with NO capture" while the cliente is
+    // linked. The buyer refusals go with the latch: a field that was captured
+    // was not refused.
+    const db = pedidoArmazenado({
+      clientePedidoOuterRef: 'documents/clientes/cli-real',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-real/enderecos/end-1',
+      capturaComprador: {
+        estado: CAPTURA_COMPRADOR_ESTADO.capturado,
+        statusObservado: 'READY_TO_SHIP',
+        em: NOW_US - 1_000,
+        tentativas: 1,
+        camposRecusados: [],
+      },
+    });
+    await salvar(
+      db,
+      mapear({
+        detalhe: linha({ region: 'BR', order_status: 'SHIPPED' }),
+        clientePedidoOuterRef: null,
+        enderecoFiscalOuterRef: null,
+        captura: {
+          estado: CAPTURA_COMPRADOR_ESTADO.expirado,
+          camposRecusados: ['nome:mascarado', 'cpf_cnpj:mascarado'],
+        },
+      }),
+    );
+    const captura = db.store[PEDIDO_PATH]!.data.capturaComprador as Record<string, unknown>;
+    expect(captura.estado).toBe(CAPTURA_COMPRADOR_ESTADO.capturado);
+    expect(captura.camposRecusados).toEqual([]);
+    expect(captura.statusObservado).toBe('SHIPPED');
+    expect(db.store[PEDIDO_PATH]!.data.clientePedidoOuterRef).toBe('documents/clientes/cli-real');
+  });
+
+  it('⚠️ NEAR-MISS: o mesmo payload mascarado sobre um PENDENTE vira expirado', async () => {
+    // The half that gives the latch its meaning — the state is decided by what
+    // is STORED, not by the payload, and a pedido that captured nothing still
+    // expires on the same delivery that leaves a captured one alone.
+    const db = pedidoArmazenado({
+      capturaComprador: {
+        estado: CAPTURA_COMPRADOR_ESTADO.pendente,
+        statusObservado: 'READY_TO_SHIP',
+        em: NOW_US - 1_000,
+        tentativas: 1,
+        camposRecusados: ['nome:mascarado'],
+      },
+    });
+    await salvar(
+      db,
+      mapear({
+        detalhe: linha({ region: 'BR', order_status: 'SHIPPED' }),
+        captura: {
+          estado: CAPTURA_COMPRADOR_ESTADO.expirado,
+          camposRecusados: ['nome:mascarado', 'cpf_cnpj:mascarado'],
+        },
+      }),
+    );
+    const captura = db.store[PEDIDO_PATH]!.data.capturaComprador as Record<string, unknown>;
+    expect(captura.estado).toBe(CAPTURA_COMPRADOR_ESTADO.expirado);
+    expect(captura.camposRecusados).toEqual(['nome:mascarado', 'cpf_cnpj:mascarado']);
+  });
+
+  it('⚠️ o latch CAPTURADO não engole um `endereco:*` — o pedido segue sem endereço fiscal', async () => {
+    // The `endereco:sem-cep` half is IO-observed, not a buyer-field verdict, and
+    // it is reachable exactly here: a pedido whose cliente is linked but whose
+    // endereço is not re-runs the endereço step on every delivery. Dropping it
+    // with the buyer refusals would silence the only record that this pedido can
+    // never be fiscalizado.
+    const db = pedidoArmazenado({
+      clientePedidoOuterRef: 'documents/clientes/cli-real',
+      enderecoFiscalOuterRef: null,
+      capturaComprador: {
+        estado: CAPTURA_COMPRADOR_ESTADO.capturado,
+        statusObservado: 'READY_TO_SHIP',
+        em: NOW_US - 1_000,
+        tentativas: 1,
+        camposRecusados: ['endereco:sem-cep'],
+      },
+    });
+    await salvar(
+      db,
+      mapear({
+        detalhe: linha({ region: 'BR', order_status: 'SHIPPED' }),
+        clientePedidoOuterRef: null,
+        enderecoFiscalOuterRef: null,
+        captura: {
+          estado: CAPTURA_COMPRADOR_ESTADO.expirado,
+          camposRecusados: ['nome:mascarado'],
+        },
+        camposRecusadosExtra: ['endereco:sem-cep'],
+      }),
+    );
+    const captura = db.store[PEDIDO_PATH]!.data.capturaComprador as Record<string, unknown>;
+    expect(captura.estado).toBe(CAPTURA_COMPRADOR_ESTADO.capturado);
+    expect(captura.camposRecusados).toEqual(['endereco:sem-cep']);
   });
 
   it('tentativas conta ENTREGAS NOVAS, não redeliveries do mesmo carimbo', async () => {
@@ -731,25 +950,5 @@ describe('salvarPedidoShopee — duas tarefas code-3 concorrentes', () => {
     expect([a.acao, b.acao].sort()).toEqual(['atualizado', 'criado']);
     // The winner's watermark is the NEWER of the two, whichever ran second.
     expect(db.store[PEDIDO_PATH]!.data.lastMarketplaceUpdate).toBe(novo);
-  });
-
-  it('o perdedor RE-DERIVA do snapshot — um estado escrito pelo vencedor é respeitado', async () => {
-    // The retry re-runs the callback with its closure intact, so everything that
-    // must not be replayed verbatim has to come off the fresh `tx.get`. Here the
-    // winner cancels the order and the loser arrives with an older UNPAID: its
-    // estado verdict has to be recomputed against `cancelado`, not against the
-    // `pago` it read the first time.
-    const db = new FakeDb();
-    await salvar(db, mapear({ detalhe: linha({ order_status: 'CANCELLED' }) }));
-
-    const r = await salvar(
-      db,
-      mapear({ detalhe: linha({ order_status: 'UNPAID' }), watermarkUs: WATERMARK_US + 1 }),
-      WATERMARK_US + 1,
-    );
-    // `cancelado` is off the ordered ladder, so leaving it is allowed — and the
-    // verdict is the RESURRECTION one, computed from the stored value.
-    expect(r.estadoEscrito).toBe(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento);
-    expect(r.estadoRessuscitado).toBe(true);
   });
 });

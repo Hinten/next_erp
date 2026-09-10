@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FakeDb, asDb } from '../testing/fakeDb';
 import {
+  INDICES_COMPOSTOS_SHOPEE,
   criarResolvedorDeLinhasShopee,
   resolverProdutoDaLinhaShopee,
   type ResolvedShopeeLineProduto,
@@ -308,5 +310,62 @@ describe('a memoização por (item_id, model_id)', () => {
       produtoId: 'pai-1',
       via: 'prodshopee',
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     os índices compostos, no arquivo REAL                   */
+/* -------------------------------------------------------------------------- */
+
+describe('os dois índices compostos existem em firestore.indexes.json', () => {
+  interface CampoDeIndice {
+    readonly fieldPath: string;
+    readonly order?: string;
+  }
+  interface IndiceDeclarado {
+    readonly collectionGroup: string;
+    readonly queryScope: string;
+    readonly fields: readonly CampoDeIndice[];
+  }
+
+  function declarados(): readonly IndiceDeclarado[] {
+    const url = new URL('../../../../../firestore.indexes.json', import.meta.url);
+    return (JSON.parse(readFileSync(url, 'utf8')) as { indexes: IndiceDeclarado[] }).indexes;
+  }
+
+  // ⚠️ This test exists because DELETING either entry breaks nothing that runs.
+  // On Enterprise an undeclared composite does not throw and offers no one-click
+  // link — it silently full-scans the collection group and is billed by data
+  // scanned (rule 1), so the loss shows up on the invoice and nowhere else. The
+  // suite above drives a FakeDb, which has no index concept at all, and
+  // `delfrance/default-query-needs-index` never sees an ad-hoc group query.
+  it.each(INDICES_COMPOSTOS_SHOPEE)(
+    '$collectionGroup: COLLECTION_GROUP, na ORDEM em que a query filtra',
+    (esperado) => {
+      expect(declarados()).toContainEqual({
+        collectionGroup: esperado.collectionGroup,
+        queryScope: 'COLLECTION_GROUP',
+        fields: esperado.campos.map((fieldPath) => ({ fieldPath, order: 'ASCENDING' })),
+      });
+    },
+  );
+
+  it('⚠️ NEAR-MISS: um índice de COLLECTION só, ou com os campos trocados, não serve', () => {
+    // Both halves are real ways to have an entry that reads right and answers
+    // nothing: the queries are `groupQuery`, so a `COLLECTION` scope indexes the
+    // wrong thing; and the field ORDER is part of the index identity.
+    for (const esperado of INDICES_COMPOSTOS_SHOPEE) {
+      const campos = esperado.campos.map((fieldPath) => ({ fieldPath, order: 'ASCENDING' }));
+      expect(declarados()).not.toContainEqual({
+        collectionGroup: esperado.collectionGroup,
+        queryScope: 'COLLECTION',
+        fields: campos,
+      });
+      expect(declarados()).not.toContainEqual({
+        collectionGroup: esperado.collectionGroup,
+        queryScope: 'COLLECTION_GROUP',
+        fields: [...campos].reverse(),
+      });
+    }
   });
 });

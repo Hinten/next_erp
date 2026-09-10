@@ -233,36 +233,54 @@ const CAMPOS_ITEM_DA_SHOPEE = [
 ] as const satisfies ReadonlyArray<keyof ItemDoPedido>;
 
 /**
- * OBSERVABILITY ONLY — changes nothing.
+ * Refresh the fields Shopee owns on a line we already stored, and report it.
  *
- * `ensureUniqueId` is `sha256(order_sn, mktplaceId, index)`: it carries no
- * quantity and no price, so the merge is APPEND-ONLY and a line already stored
- * is never rewritten. That is the Mercado Livre trade taken deliberately — the
- * alternative, replacing the line set on every delivery, would overwrite a
- * produto binding an operator made by hand and would make a partially cancelled
- * line indistinguishable from a re-priced one. This log turns the assumption
- * into data: if it never fires, append-only is provably right for Shopee too; if
- * it does, the follow-up has its evidence and its exact field list.
+ * ⚠️ **The LINE SET is append-only; the MONEY on a line is not.** `ensureUniqueId`
+ * is `sha256(order_sn, mktplaceId, index)` and carries no price and no quantity,
+ * so a re-priced line collides with itself. Mercado Livre answers that by
+ * dropping the second reading entirely, and its reason does not transfer: ML
+ * prices a line from ONE always-present document (`order_items[].unit_price`),
+ * whereas here the authority is the ESCROW — the only carrier of the five
+ * discounts and of a bundle line's real money — and it is routinely absent on
+ * the first delivery (an unpaid order has none; a contained escrow failure or a
+ * refused kit parse produce the same). A first import therefore stores a
+ * provisional detail-or-zero price, and dropping the refinement would freeze it
+ * for ever WHILE the same `tx.update` refreshes `valorCobrado` and
+ * `descontoTotal` from the escrow — a pedido whose header and lines contradict
+ * each other permanently, behind one `console.warn`. Since `pedidoTotal` derives
+ * the sale value from the LINES, that disagreement is what the revenue report
+ * and the NF-e read.
+ *
+ * So the identity fields stay untouched — `produtoUid` (an operator's hand-made
+ * binding), `ordem`, `ensureUniqueId`, `custo`, `imposto`, `timestamp` — and
+ * only {@link CAMPOS_ITEM_DA_SHOPEE} is re-taken from the fresh payload. Nothing
+ * is ever REMOVED: a partially cancelled line still keeps its row, and the
+ * `console.warn` still records every refresh, which is what turns the assumption
+ * into data.
  *
  * Ids, field NAMES and numbers only — never a `nomeDeVenda` on the diverging
  * side, which would put a product title in a log for no gain.
+ *
+ * @returns the SAME object when nothing Shopee owns changed, so the caller can
+ * use identity to decide whether the patch has to be written at all.
  */
-function reportarDivergenciaItem(
+function refrescarLinhaDaShopee(
   orderSn: string,
-  armazenado: ItemDoPedido | undefined,
+  armazenado: ItemDoPedido,
   recebido: ItemDoPedido,
-): void {
-  if (armazenado == null) return;
+): ItemDoPedido {
   const divergentes = CAMPOS_ITEM_DA_SHOPEE.filter((c) => armazenado[c] !== recebido[c]);
-  if (divergentes.length === 0) return;
-  console.warn(
-    '[shopee/pedidos] linha já importada difere do payload atual — merge é append-only',
-    {
-      orderSn,
-      ensureUniqueId: recebido.ensureUniqueId,
-      campos: divergentes,
-    },
-  );
+  if (divergentes.length === 0) return armazenado;
+  console.warn('[shopee/pedidos] linha já importada mudou no payload atual — campos atualizados', {
+    orderSn,
+    ensureUniqueId: recebido.ensureUniqueId,
+    campos: divergentes,
+  });
+  const atualizado: ItemDoPedido = { ...armazenado };
+  for (const campo of divergentes) {
+    (atualizado as Record<string, unknown>)[campo] = recebido[campo];
+  }
+  return atualizado;
 }
 
 /** `Record<produtoUid | 'NONE', ItemDoPedido[]>` + its `itensIds` projection. */
@@ -281,11 +299,27 @@ function agruparItens(itens: readonly ItemDoPedido[]): {
 /**
  * The capture diary as stored, read tolerantly.
  *
- * ⚠️ A DIARY, never a GUARD — nothing here branches on the stored verdict. The
- * only thing read back is `tentativas` (a counter) and whether the record
- * already says `expirado`, which is a LATCH: once the unmask window closed with
- * nothing captured, a later delivery must not reopen it as `pendente` and invite
- * an operator to wait for something that will never arrive.
+ * ⚠️ A DIARY, never a GUARD — nothing here decides whether a capture is
+ * ATTEMPTED. `resolverComprador` re-derives that from the fresh wire payload on
+ * every delivery and never reads this block, so a stored verdict can never stop
+ * a later unmasked delivery from linking the cliente.
+ *
+ * What IS read back is `tentativas` (a counter) and the stored `estado`, which
+ * LATCHES in both directions — the record has to stay true about the pedido, not
+ * merely about the last delivery:
+ *
+ * - `expirado` — the window closed with nothing captured, so a later delivery
+ *   must not reopen it as `pendente` and invite an operator to wait for
+ *   something that will never arrive;
+ * - `capturado` — the buyer WAS captured, so a later masked delivery (every
+ *   `SHIPPED`/`COMPLETED` one, by construction) must not restate it as
+ *   `expirado`, whose own vocabulary says "with no capture".
+ *
+ * ⚠️ `capturado` OUTRANKS `expirado`, so a delivery that really captures also
+ * lifts a stored `expirado` — otherwise a pedido masked out of the window on its
+ * first delivery and unmasked on a later one would end up with a linked cliente
+ * and a diary saying nothing was ever captured, which is the same falsehood in
+ * the other direction.
  */
 function capturaArmazenada(raw: Record<string, unknown>): Partial<CapturaComprador> | null {
   const bruto = raw.capturaComprador;
@@ -351,7 +385,11 @@ export async function salvarPedidoShopee(
         bloquearEmissaoNFe: mapeado.criacao.bloquearEmissaoNFe,
         marketplace: mapeado.sempre.marketplace,
         capturaComprador: {
-          ...mapeado.sempre.capturaComprador,
+          // ⚠️ Named field by field, never spread: `camposRecusadosExtra` is a
+          // MAPPER field the latch reads and the schema does not declare, and a
+          // spread would store it.
+          estado: mapeado.sempre.capturaComprador.estado,
+          statusObservado: mapeado.sempre.capturaComprador.statusObservado,
           camposRecusados: [...mapeado.sempre.capturaComprador.camposRecusados],
           em: nowUs,
           tentativas: 1,
@@ -441,12 +479,38 @@ export async function salvarPedidoShopee(
       grupos.add('sempre');
     }
 
+    // ⚠️ The latch runs in BOTH directions, and the `capturado` half is the one
+    // whose absence lied. `avaliarCapturaComprador` re-derives its verdict from
+    // THIS payload alone, and Shopee re-masks the buyer once the order leaves the
+    // unmask window — which is where every completed BR order ends. Without this
+    // arm the first `SHIPPED`/`COMPLETED` delivery after a successful capture
+    // rewrote the diary to `expirado` (`'the window closed with NO capture'`)
+    // while `clientePedidoOuterRef` still pointed at a real cliente, making that
+    // the TERMINAL record of every captured BR order rather than an edge case.
+    //
+    // The stored estado is the only evidence used — never `clientePedidoOuterRef`,
+    // which an operator can set by hand on the pedido form and which would then
+    // report a capture Shopee never made.
     const capturaAnterior = capturaArmazenada(raw);
-    const capturaEstado =
-      capturaAnterior?.estado === CAPTURA_COMPRADOR_ESTADO.expirado
+    // ⚠️ `capturado` OUTRANKS `expirado` in both directions, and the order of
+    // these three arms is the whole rule: `capturado` is evidence that a capture
+    // HAPPENED, which is strictly stronger than either "the window closed with
+    // nothing captured" (the stored `expirado`) or "this delivery captured
+    // nothing" (the incoming one). Whichever side says `capturado` wins.
+    const jaCapturado =
+      capturaAnterior?.estado === CAPTURA_COMPRADOR_ESTADO.capturado ||
+      mapeado.sempre.capturaComprador.estado === CAPTURA_COMPRADOR_ESTADO.capturado;
+    const capturaEstado = jaCapturado
+      ? CAPTURA_COMPRADOR_ESTADO.capturado
+      : capturaAnterior?.estado === CAPTURA_COMPRADOR_ESTADO.expirado
         ? CAPTURA_COMPRADOR_ESTADO.expirado
         : mapeado.sempre.capturaComprador.estado;
-    const camposRecusados = [...mapeado.sempre.capturaComprador.camposRecusados];
+    // …and on the latched arm the BUYER refusals go with it: a field that was
+    // captured was not refused. The `endereco:*` half survives — a linked cliente
+    // with no endereço still cannot be fiscalizado.
+    const camposRecusados = jaCapturado
+      ? [...mapeado.sempre.capturaComprador.camposRecusadosExtra]
+      : [...mapeado.sempre.capturaComprador.camposRecusados];
     const vereditoMudou =
       capturaAnterior == null ||
       capturaAnterior.estado !== capturaEstado ||
@@ -493,7 +557,18 @@ export async function salvarPedidoShopee(
       let itensMudaram = false;
       for (const item of mapeado.dados.itens) {
         if (item.ensureUniqueId != null && vistos.has(item.ensureUniqueId)) {
-          reportarDivergenciaItem(orderSn, porId.get(item.ensureUniqueId), item);
+          // The line SET is append-only — nothing is added and nothing removed —
+          // but the money Shopee owns is re-taken, because the escrow that
+          // carries it is routinely absent on the first delivery. See
+          // `refrescarLinhaDaShopee`.
+          const armazenado = porId.get(item.ensureUniqueId);
+          if (armazenado == null) continue;
+          const atualizado = refrescarLinhaDaShopee(orderSn, armazenado, item);
+          if (atualizado !== armazenado) {
+            const posicao = merged.indexOf(armazenado);
+            if (posicao >= 0) merged[posicao] = atualizado;
+            itensMudaram = true;
+          }
           continue;
         }
         if (item.ensureUniqueId != null) vistos.add(item.ensureUniqueId);

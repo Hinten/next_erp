@@ -93,6 +93,38 @@ export type ResolvedShopeeLineProduto =
   | { produtoId: string; via: ShopeeLineMatchKind }
   | { produtoId: null; via: ShopeeLineMissKind };
 
+/**
+ * The two COMPOSITE collectionGroup indexes the cascade's first two rungs need,
+ * declared here so the query and the expectation cannot drift apart.
+ *
+ * ⚠️ On Firestore Enterprise an undeclared composite does NOT throw and offers
+ * no one-click link — it silently full-scans the collection group and is billed
+ * by data scanned (root CLAUDE.md rule 1), so deleting either entry from
+ * `firestore.indexes.json` fails nothing and shows up only on the invoice.
+ * `delfrance/default-query-needs-index` cannot see these: it covers
+ * `meta.defaultQuery` / `meta.pickerRecencySort` / TableView queries, never an
+ * ad-hoc group query. `produtoResolve.test.ts` is the backstop, and it reads
+ * these constants — the SAME objects the `.where()` calls below are built from —
+ * against the real file, so renaming a link field breaks both sides together.
+ *
+ * The ORDER of the fields is part of the index, not decoration: it is the order
+ * the equality filters are declared in.
+ *
+ * DEPLOYING them is migration-window work (#1532); agents never run it.
+ */
+export const INDICES_COMPOSTOS_SHOPEE = [
+  {
+    collectionGroup: 'variashopee',
+    campos: ['model_id', 'contaVariacaoShopeeOuterRef'],
+  },
+  {
+    collectionGroup: 'prodshopee',
+    campos: ['item_id', 'contaProdutoShopeeOuterRef'],
+  },
+] as const;
+
+const [INDICE_VARIACAO, INDICE_LISTAGEM] = INDICES_COMPOSTOS_SHOPEE;
+
 export interface ShopeeLineProdutoQuery {
   /** The `integracao` document id — the Shopee conta that owns the links. */
   readonly integracaoId: string;
@@ -124,8 +156,8 @@ export async function resolverProdutoDaLinhaShopee(
   if (modelId != null && modelId !== 0) {
     const snap = await variacaoShopeeLinkCollection
       .groupQuery(db)
-      .where('model_id', '==', modelId)
-      .where('contaVariacaoShopeeOuterRef', '==', contaRef)
+      .where(INDICE_VARIACAO.campos[0], '==', modelId)
+      .where(INDICE_VARIACAO.campos[1], '==', contaRef)
       .limit(1)
       .get();
     const filhoId = snap.docs[0]?.ref.parent?.parent?.id;
@@ -136,8 +168,8 @@ export async function resolverProdutoDaLinhaShopee(
   // for the scoped SKU rung even when it must not bind on it.
   const snapItem = await produtoShopeeLinkCollection
     .groupQuery(db)
-    .where('item_id', '==', itemId)
-    .where('contaProdutoShopeeOuterRef', '==', contaRef)
+    .where(INDICE_LISTAGEM.campos[0], '==', itemId)
+    .where(INDICE_LISTAGEM.campos[1], '==', contaRef)
     .limit(1)
     .get();
   const paiId = snapItem.docs[0]?.ref.parent?.parent?.id ?? null;

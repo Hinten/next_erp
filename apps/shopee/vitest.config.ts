@@ -5,6 +5,14 @@ export default defineConfig({
   test: {
     name: '@delfrance/shopee-app',
     environment: 'node',
+    // ⚠️ The cut-off tests must never be evaluated in the zone they assert.
+    // `prazoDespachoShopee` derives a São Paulo civil day through an EXPLICIT
+    // `timeZone`, and the mutation that matters is swapping that for the
+    // process-bound `getPrazoDespacho` — which is invisible on a machine (or an
+    // `apps/nfe` runtime) already set to `America/Sao_Paulo`. Pinning the runner
+    // to UTC makes the ambient-zone binding disagree by three hours instead of
+    // agreeing by luck.
+    env: { TZ: 'UTC' },
     // `functions/` holds the deploy-artifact-only Cloud Functions codebase (not a
     // pnpm workspace package). The parent app's tasks (tsconfig `**/*.ts`, `eslint .`,
     // this vitest config) cover it, so include its tests here too.

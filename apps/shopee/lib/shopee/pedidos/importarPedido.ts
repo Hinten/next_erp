@@ -347,8 +347,12 @@ export async function importarPedidoShopee(
   deps: ShopeeImportarPedidoDeps = {},
 ): Promise<ResultadoImportacaoPedidoShopee> {
   const { integracaoId, shopId, orderSn, nowMs } = alvo;
-  // ⚠️ The ONE conversion in this channel's pedido path, done ONCE and handed
-  // down. Nothing below re-reads a clock or re-converts a unit.
+  // ⚠️ The ONE CLOCK read in this channel's pedido path, converted once and
+  // handed down — nothing below re-reads a clock. It is not the only unit
+  // conversion: `orderMapping.ts` converts Shopee's SECONDS and
+  // `orderFreteMapping.ts` the cutoff helper's MILLISECONDS, both from wire
+  // values rather than from a clock. The four seams are listed in
+  // `apps/shopee/CLAUDE.md`.
   const nowUs = millisToMicros(nowMs);
 
   const client = await clienteShopee(db, integracaoId, deps);

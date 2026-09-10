@@ -108,19 +108,22 @@ describe('estadoPedidoDeOrderStatus — a escada', () => {
     });
   });
 
-  it('⚠️ ESCOPO: pending_terms NÃO entram na escada — o veredito é o mesmo com e sem', () => {
-    // The terms are recorded verbatim on `marketplace.pendingTerms`
-    // (`orderMapping.ts`), which is where a reader looks for the reason. The
-    // ladder is a function of the STATUS alone, and this pins that a future
-    // `ARRANGE_SHIPMENT_PENDING` rung would be a deliberate change here rather
-    // than a silent one somewhere else.
-    expect(estadoPedidoDeOrderStatus(SHOPEE_ORDER_STATUS.pending)).toEqual({
+  it('a constante `pending` É o literal do wire — a escada casa pelo valor, não pelo nome', () => {
+    // Every other assertion in this file routes through the constant on BOTH
+    // sides, so it cannot see the constant drifting off the string Shopee sends.
+    // Naming the literal once is what makes the drift visible; comparing the
+    // function against ITSELF (`f('PENDING')` vs `f(SHOPEE_ORDER_STATUS.pending)`)
+    // is a tautology as long as the two are equal, which is what it asserts.
+    expect(SHOPEE_ORDER_STATUS.pending).toBe('PENDING');
+    expect(estadoPedidoDeOrderStatus('PENDING')).toEqual({
       tipo: ALVO_ESTADO_SHOPEE.estado,
       estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
     });
-    expect(estadoPedidoDeOrderStatus('PENDING')).toEqual(
-      estadoPedidoDeOrderStatus(SHOPEE_ORDER_STATUS.pending),
-    );
+    // ⚠️ The SCOPE property this test used to claim — "pending_terms do not
+    // enter the ladder" — cannot be pinned here: `estadoPedidoDeOrderStatus`
+    // takes one argument, so the compiler already carries it. Where the terms
+    // ARE read is `orderMapping.ts`, and `orderMapping.test.ts` pins the
+    // invariance there (same `alvo`, different `marketplace.pendingTerms`).
   });
 
   it('COMPLETED continua em pago e NUNCA escreve finalizado', () => {

@@ -224,10 +224,22 @@ export function clienteDeShopee(detalhe: DetalheCompradorShopee): ClienteResolve
  * The shipping address as {@link buildEnderecoForcado}'s outcome, or `null` when
  * the block is masked or incomplete.
  *
- * `null` unless the name, the `full_address` and the `zipcode` all pass — the
- * name because the endereço row carries it (and feeds the content-addressed
- * endereço id), the other two because an address without a street or a CEP is
- * not an address.
+ * `null` unless the name, the `full_address` and the `zipcode` all pass. The
+ * last two because an address without a street or a CEP is not an address; the
+ * NAME because it is R4's capture policy — an unusable recipient name means this
+ * delivery captured nothing, address included.
+ *
+ * ⚠️ The name gate does INDEPENDENT work, and the reason is the module header's
+ * own sandbox finding: masking is per FIELD. The SG order came back with `name`
+ * and `phone` as `"****"` while `full_address` and `zipcode` were CLEAR in the
+ * same object, so on that observed shape the name is the ONLY field that refuses.
+ *
+ * ⚠️ It is NOT because the row stores the name. It does not:
+ * `buildEnderecoForcado` has no `nome` input (`rawEnderecoInputSchema` declares
+ * eight keys and none is a name) and hardcodes `nome: null`, so the stored
+ * endereço's name is always null and `makeEnderecoId`'s name slot is always the
+ * empty string. Storing it would change the content-addressed id for every
+ * marketplace and needs its own decision.
  *
  * ⚠️ `full_address` goes in WHOLE as `logradouro` (trimmed, nothing else).
  * **Never re-split it on `', '`**: the legacy did, assumed four parts, and

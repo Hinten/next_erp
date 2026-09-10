@@ -284,6 +284,59 @@ describe('o casamento das linhas do escrow', () => {
     expect(diagnosticos[0]!.escrowAmbiguo).toBe(true);
   });
 
+  it('⚠️ a ambiguidade CHEGA a um observável — warn na linha e flag no log', () => {
+    // A flag that reaches no log, no store and no warn is a report nobody can
+    // read: `diagnosticos` is in-memory and `importarPedido.ts` keeps only
+    // `itemId`/`modelId`/`via`. And the order-level cross-check cannot cover
+    // this: with two same-pair lines of equal quantity BOTH escrow rows are
+    // consumed, so `diferenca` stays 0 while the per-line attribution permuted.
+    const warn = vi.spyOn(console, 'warn');
+    const info = vi.spyOn(console, 'info');
+    mapear({
+      itens: [item({ item_id: 100, model_id: 5, model_quantity_purchased: 1 })],
+      escrow: escrow([
+        escrowItem({ item_id: 100, model_id: 5, discounted_price: 11, quantity_purchased: 1 }),
+        escrowItem({ item_id: 100, model_id: 5, discounted_price: 22, quantity_purchased: 1 }),
+      ]),
+    });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('AMBÍGUA'))).toBe(true);
+    const linhas = (info.mock.calls[0]![1] as Record<string, unknown>).linhas as Record<
+      string,
+      unknown
+    >[];
+    expect(linhas[0]!.escrowAmbiguo).toBe(true);
+  });
+
+  it('⚠️ NEAR-MISS: um desempate por line_item_id não avisa nem marca', () => {
+    const warn = vi.spyOn(console, 'warn');
+    const info = vi.spyOn(console, 'info');
+    mapear({
+      itens: [item({ item_id: 100, model_id: 5, line_item_id: 22 })],
+      escrow: escrow([
+        escrowItem({
+          item_id: 100,
+          model_id: 5,
+          line_item_id: 21,
+          discounted_price: 11,
+          quantity_purchased: 2,
+        }),
+        escrowItem({
+          item_id: 100,
+          model_id: 5,
+          line_item_id: 22,
+          discounted_price: 44,
+          quantity_purchased: 2,
+        }),
+      ]),
+    });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('AMBÍGUA'))).toBe(false);
+    const linhas = (info.mock.calls[0]![1] as Record<string, unknown>).linhas as Record<
+      string,
+      unknown
+    >[];
+    expect(linhas[0]!.escrowAmbiguo).toBe(false);
+  });
+
   it('uma linha do escrow sem item_id não entra na fila (não casaria com nada)', () => {
     const { diagnosticos } = mapear({
       itens: [item({ item_id: 100, model_id: null, model_discounted_price: 9 })],
@@ -499,6 +552,50 @@ describe('o braço de kit', () => {
     });
     expect(itens).toHaveLength(1);
     expect(diagnosticos[0]).toMatchObject({ ehKit: true, componentesDoKit: 2 });
+  });
+
+  it('⚠️ a contagem do kit CHEGA ao log — é o que responde a cardinalidade ao vivo', () => {
+    // `kit_items` is declared `obj | obj[]`, so BOTH cardinalities parse in
+    // silence and the escrow containment never fires on them. §5 says the first
+    // real BR kit order settles the question, and this line is the only thing
+    // that can answer it: `diagnosticos` is in-memory and nothing stores it.
+    const info = vi.spyOn(console, 'info');
+    mapear({
+      itens: [item({ item_id: 100, model_id: 0, model_quantity_purchased: 1 })],
+      escrow: escrow([
+        escrowItem({
+          item_id: 100,
+          model_id: 0,
+          discounted_price: 90,
+          quantity_purchased: 1,
+          is_kit: true,
+          kit_items: [
+            componenteDeKit(),
+            componenteDeKit({ original_product_id: 9, original_model_id: 10, total_qty: 2 }),
+          ],
+        }),
+      ]),
+    });
+    const linhas = (info.mock.calls[0]![1] as Record<string, unknown>).linhas as Record<
+      string,
+      unknown
+    >[];
+    expect(linhas[0]).toMatchObject({ ehKit: true, componentesDoKit: 2 });
+  });
+
+  it('⚠️ NEAR-MISS: uma linha SEM kit sai como ehKit false e contagem 0 no log', () => {
+    const info = vi.spyOn(console, 'info');
+    mapear({
+      itens: [item({ item_id: 100, model_id: 5, model_quantity_purchased: 1 })],
+      escrow: escrow([
+        escrowItem({ item_id: 100, model_id: 5, discounted_price: 9, quantity_purchased: 1 }),
+      ]),
+    });
+    const linhas = (info.mock.calls[0]![1] as Record<string, unknown>).linhas as Record<
+      string,
+      unknown
+    >[];
+    expect(linhas[0]).toMatchObject({ ehKit: false, componentesDoKit: 0 });
   });
 
   it('sem kit_items a contagem é 0 e ehKitShopee é false', () => {

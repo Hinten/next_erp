@@ -50,7 +50,14 @@ export type WireValue =
 
 /**
  * Path **suffixes** whose leaf is redacted, matched against the last N segments
- * of a value's path. Array indices collapse to `*` and never appear here.
+ * of a value's path.
+ *
+ * ⚠️ Array indices collapse to `*`, and an entry whose PARENT is an array must
+ * spell that `*` out — matching is segment-by-segment with no wildcard
+ * semantics, so `['payment_info', 'transaction_id']` matches nothing at all when
+ * `payment_info` is a `z.array(...)`. Every entry below whose parent is an
+ * object (`recipient_address`, `invoice_data`, `image_info`) is correct without
+ * one; `payment_info` is the array, and carries the index.
  *
  * ⚠️ **Suffixes, not bare key names, and that distinction is the whole design.**
  * `name` is `recipient_address.name` (a person) and it is also the neighbour of
@@ -87,8 +94,16 @@ export const REDACTED_PATH_SUFFIXES: readonly (readonly string[])[] = [
   ['buyer_user_id'],
 
   // — payment identifiers. `payment_processor_register` is a CNPJ.
-  ['payment_info', 'payment_processor_register'],
-  ['payment_info', 'transaction_id'],
+  // ⚠️ **`payment_info` is an ARRAY on the wire** (`z.array(shopeePaymentInfoSchema)`),
+  // so `walk` puts an index `*` between the parent and the leaf and the
+  // two-segment spelling `['payment_info', <leaf>]` can NEVER match a real path.
+  // These entries are spelled with the index for that reason, and the anchor
+  // test builds an array-parented path so a two-segment respelling reds instead
+  // of silently matching nothing. BR-only fields: today's corpus carries
+  // `payment_info: null` (a Singapore order), so the first real BR body is the
+  // first time either of these runs.
+  ['payment_info', '*', 'payment_processor_register'],
+  ['payment_info', '*', 'transaction_id'],
 
   // — free text a buyer or an operator typed: no denylist can anticipate what
   //   ends up in prose, so the whole field goes.

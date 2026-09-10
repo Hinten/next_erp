@@ -158,13 +158,16 @@ the wipe. Create `apps/shopee/functions/.env.deploy` (gitignored):
 # The ORDER BACKFILL (#1512). SHIPS OFF; only the literal `1` enables it. While
 # off, backfillShopeeOrders deploys, ticks, logs one info line and reads
 # nothing — not Firestore, not Shopee.
-# ⚠️ This USED to be the weaker of two gates — the sweep also refused while push
-# code 3 had no handler. Step 5 flipped that (`DISPATCH[3] = 'pedido'`), so this
-# flag is now the only thing standing between a deploy and live order imports:
-# the first enabled tick enqueues one task per order in the cursor window, and
-# each one writes a pedido. Setting it to 1 is a migration-window decision, not
-# a default.
-SHOPEE_ORDER_BACKFILL_ENABLED=1
+# ⚠️ **Leave it COMMENTED OUT.** This USED to be the weaker of two gates — the
+# sweep also refused while push code 3 had no handler — and step 5 flipped that
+# (`DISPATCH[3] = 'pedido'`). Since then, uncommenting this line IS the switch
+# that starts live order imports: the first enabled tick enqueues one task per
+# order in the cursor window (up to 1 000 per conta), and each one writes a
+# pedido plus its clientes/enderecos/incidentes. That makes it a
+# migration-window decision (#1208 / root CLAUDE.md rule 8), never part of a
+# first deploy — same shape as the lost-push valve below, and for a bigger
+# reason.
+# SHOPEE_ORDER_BACKFILL_ENABLED=1
 # The LOST-PUSH CONFIRM valve (#1512) — leave it COMMENTED OUT except for the
 # one rehearsal it exists for. `1` makes sweepShopeeLostPushes read, parse and
 # enqueue as usual but SKIP `confirm_consumed_lost_push_message`, so the first

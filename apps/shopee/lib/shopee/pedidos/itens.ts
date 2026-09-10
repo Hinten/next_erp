@@ -275,6 +275,16 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
       quantidadeDetalhe: preco.quantidadeDetalhe,
       quantidadeEscrow: preco.quantidadeEscrow,
       fonte: preco.fonte,
+      // ⚠️ These three are the ONLY record these flags get. `diagnosticos` is
+      // returned in memory and nothing stores it — `importarPedido.ts` reads
+      // `itemId`/`modelId`/`via` and discards the rest — so without them here
+      // the `kit_items` cardinality question §5 says the first real BR order
+      // settles would be answered by nothing (both cardinalities parse
+      // silently), and an ambiguous escrow match would be a money guess with no
+      // trace at all. Booleans and a count: no PII.
+      ehKit: ehKitShopee(linhaEscrow),
+      componentesDoKit: componentesDoKit(linhaEscrow).length,
+      escrowAmbiguo: ambiguo,
     });
 
     somaDosItens += preco.unitario * quantidade;
@@ -296,6 +306,21 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
         orderSn,
         mktplaceId,
         descontoBruto: desconto.bruto,
+      });
+    }
+    if (ambiguo) {
+      // ⚠️ `warn`, not `info`: an ambiguous match is a MONEY GUESS. Two escrow
+      // rows shared this line's `(item_id, model_id)` with no `line_item_id` to
+      // break the tie, so the first row's money was taken. When both lines have
+      // the same quantity the order total still reconciles and `diferenca` stays
+      // 0 — so the running cross-check cannot see the permutation, and this is
+      // the only signal that the attribution was arbitrary.
+      console.warn('[shopee/pedidos] linha do escrow AMBÍGUA — preço tomado da primeira', {
+        orderSn,
+        mktplaceId,
+        itemId: linha.item_id,
+        modelId: linha.model_id ?? null,
+        precoEscrowUnitario: preco.precoEscrowUnitario,
       });
     }
   }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { coerceToMicros, millisToMicros } from '@delfrance/core/datetime';
 import {
   CAPTURA_COMPRADOR_ESTADO,
+  ESTADO_PEDIDO,
   capturaCompradorEstadoSchema,
   marketplacePedidoSchema,
 } from '@delfrance/schemas';
@@ -152,6 +153,29 @@ describe('mapearPedidoShopee — o grupo SEMPRE', () => {
     ).toEqual(['KYC_PENDING']);
   });
 
+  it('⚠️ ESCOPO: pending_terms mudam o FLAG e nunca o veredito da escada', () => {
+    // This is where the terms are actually READ, so this is where the scope
+    // property lives. `estadoPedidoDeOrderStatus` takes one argument, so the
+    // ladder itself cannot see them — what this pins is that the MAPPER does
+    // not sneak them into `alvo` on the way past. The pair is deliberate: the
+    // two must agree on `alvo` and DISAGREE on the flag, so a mutant that drops
+    // the terms entirely fails the second half.
+    const semTermos = mapearPedidoShopee(
+      argsBase({ detalhe: linha({ order_status: 'PENDING', pending_terms: null }) }),
+    );
+    const comTermos = mapearPedidoShopee(
+      argsBase({ detalhe: linha({ order_status: 'PENDING', pending_terms: ['KYC_PENDING'] }) }),
+    );
+    expect(comTermos.alvo).toEqual(semTermos.alvo);
+    expect(comTermos.alvo).toEqual({
+      tipo: ALVO_ESTADO_SHOPEE.estado,
+      estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+    });
+    expect(comTermos.sempre.marketplace.pendingTerms).not.toEqual(
+      semTermos.sempre.marketplace.pendingTerms,
+    );
+  });
+
   it('cancelReason/cancelBy vazios ("" na fixture SG) viram null, não string vazia', () => {
     const m = mapearPedidoShopee(argsBase());
     expect(detalheSG().cancel_reason).toBe('');
@@ -191,6 +215,11 @@ describe('mapearPedidoShopee — o grupo SEMPRE', () => {
       estado: CAPTURA_COMPRADOR_ESTADO.pendente,
       statusObservado: 'READY_TO_SHIP',
       camposRecusados: ['nome:mascarado', 'cpf_cnpj:invalido', 'endereco:sem-cep'],
+      // ⚠️ The IO-observed half kept on its own: the transaction's `capturado`
+      // latch drops the BUYER refusals (a captured field was not refused) and
+      // must NOT drop an endereço refusal with them — a linked cliente with no
+      // endereço can never be fiscalizado.
+      camposRecusadosExtra: ['endereco:sem-cep'],
     });
     // Anti-leak: the SG fixture's masked buyer values must appear nowhere.
     const serializado = JSON.stringify(m);
@@ -233,6 +262,24 @@ describe('mapearPedidoShopee — o grupo DADOS', () => {
       argsBase({ detalhe: linha({ note: null, message_to_seller: 'J******n' }) }),
     );
     expect(m.dados.observacoesInternas).toBeNull();
+  });
+
+  it('⚠️ PAR: o `note` do VENDEDOR sobrevive com asterisco; a mensagem do COMPRADOR não', () => {
+    // The two halves have different authors, so they get different predicates.
+    // `note` is the seller's own Seller Centre note — Shopee does not mask a
+    // field it returns to its author — so an asterisk in it is punctuation, not
+    // a mask, and the masking predicate would silently drop a dispatch
+    // instruction (nothing logs it and `camposRecusados` carries buyer fields
+    // only). `message_to_seller` is buyer-authored and stays refused.
+    const soNota = mapearPedidoShopee(
+      argsBase({ detalhe: linha({ note: 'URGENTE *frágil*', message_to_seller: '' }) }),
+    );
+    expect(soNota.dados.observacoesInternas).toBe('URGENTE *frágil*');
+
+    const ambos = mapearPedidoShopee(
+      argsBase({ detalhe: linha({ note: 'URGENTE *frágil*', message_to_seller: 'J******n' }) }),
+    );
+    expect(ambos.dados.observacoesInternas).toBe('URGENTE *frágil*');
   });
 
   it('valorCobrado: o escrow ganha do total_amount, que ganha da soma calculada', () => {

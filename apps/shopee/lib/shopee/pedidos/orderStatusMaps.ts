@@ -122,8 +122,11 @@ export const ALVO_ESTADO_SHOPEE = {
  * ⚠️ **The `pending_terms` are NOT an argument.** They never change the verdict,
  * and a parameter a function ignores is the "comment asserting what the other
  * copy does" smell — so they are read where they are USED, in `orderMapping.ts`,
- * which writes them verbatim onto the flag. `orderStatusMaps.test.ts` pins that
- * `PENDING` maps identically whether or not the order carries any.
+ * which writes them verbatim onto the flag. ⚠️ The SCOPE property is pinned
+ * THERE, not here: a test in this file could only compare this one-argument
+ * function against itself, which is a tautology — `orderMapping.test.ts` drives
+ * two details differing only in `pending_terms` and asserts the same `alvo`
+ * with a different `marketplace.pendingTerms`.
  *
  * ⚠️ `TO_RETURN` answers `manter` rather than an estado (Lucas, 2026-09-09):
  * `estado` stays where it was and `marketplace.status` carries the truth. The

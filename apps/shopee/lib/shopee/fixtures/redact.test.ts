@@ -10,6 +10,21 @@ import {
 } from './redact';
 
 /**
+ * The smallest body whose WALK path ends with `sufixo` — an `*` segment becomes
+ * a real one-element array, which is the whole point: the walker pushes `'*'`
+ * for every array level, so a suffix whose parent is an array can only be
+ * exercised through a body that actually has one.
+ */
+function corpoParaSufixo(sufixo: readonly string[], folha: WireValue): WireValue {
+  let atual: WireValue = folha;
+  for (let i = sufixo.length - 1; i >= 0; i -= 1) {
+    const segmento = sufixo[i]!;
+    atual = segmento === '*' ? [atual] : { [segmento]: atual };
+  }
+  return { response: { order_list: [atual] } };
+}
+
+/**
  * An UNREDACTED body, in the shape `get_order_detail` really answers. Every
  * personal value here is invented — see the ⚠️ on each one.
  */
@@ -82,6 +97,21 @@ describe('redactWireBody', () => {
     expect((linha as unknown as Record<string, unknown>).message_to_seller).toBe('REDACTED');
     expect((linha as unknown as Record<string, unknown>).note).toBe('REDACTED');
     expect((linha as unknown as Record<string, unknown>).cancel_reason).toBe('REDACTED');
+
+    // ⚠️ `payment_info` is an ARRAY, so the walker's path carries an index and a
+    // two-segment `['payment_info', <leaf>]` entry matches NOTHING. Asserting the
+    // VALUE (not the type) is what catches that: a `typeof === 'string'` check
+    // passes on the leaked CNPJ just as happily as on the placeholder.
+    const pagamento = (linha as unknown as { payment_info: Record<string, unknown>[] })
+      .payment_info[0]!;
+    expect(pagamento.payment_processor_register).toBe('00000000000000');
+    expect(pagamento.transaction_id).toBe('000000');
+    // …and the near-miss: the two siblings that are NOT on the denylist keep
+    // their values verbatim, so this is a suffix match and not a blanket wipe of
+    // the block. (`payment_amount`/`payment_method` are asserted again in the
+    // TYPE test below.)
+    expect(pagamento.payment_amount).toBe(31.99);
+    expect(pagamento.payment_method).toBe('Pix');
 
     // ⚠️ NEAR-MISS, e é o desenho inteiro: o denylist é por SUFIXO de caminho.
     // `recipient_address.name` some; `item_name`, `model_name`, `state` e
@@ -185,15 +215,55 @@ describe('redactWireBody', () => {
     expect(isRedactedPath(['recipient_address', 'name'])).toBe(true);
   });
 
-  it('todo sufixo do denylist é um caminho que ele mesmo reconhece', () => {
+  it('⚠️ toda entrada do denylist REDIGE de verdade um corpo montado no seu próprio caminho', () => {
     // Âncora anti-vacuidade: sem ela, uma entrada com erro de digitação ficaria
     // no denylist para sempre sem nunca casar com nada.
+    //
+    // ⚠️ Ela pergunta ao CONSUMIDOR — `redactWireBody` — e não ao matcher: cada
+    // entrada vira o menor corpo cujo caminho de walk termina naquele sufixo,
+    // com um ARRAY de verdade onde o sufixo diz `*`, e a folha tem de sair
+    // diferente. A versão anterior comparava o sufixo consigo mesmo através do
+    // `isRedactedPath` e por isso não conseguia dizer NADA sobre um pai que é
+    // array; quem cobre esse eixo é o par de testes abaixo (a grafia curta) e a
+    // asserção de VALOR sobre `payment_info` no primeiro teste deste arquivo,
+    // que roda sobre o corpo real.
+    const SENTINELA = 'VALOR-QUE-NAO-PODE-SOBREVIVER';
     for (const sufixo of REDACTED_PATH_SUFFIXES) {
+      const corpo = corpoParaSufixo(sufixo, SENTINELA);
+      expect(JSON.stringify(redactWireBody(corpo)), sufixo.join('.')).not.toContain(SENTINELA);
+      // …e o caminho que o walk realmente produz é reconhecido pelo matcher.
       expect(isRedactedPath(['response', 'order_list', '*', ...sufixo]), sufixo.join('.')).toBe(
         true,
       );
     }
     expect(REDACTED_PATH_SUFFIXES.length).toBeGreaterThanOrEqual(18);
+  });
+
+  it('⚠️ NEAR-MISS: a grafia CURTA de um sufixo de array não casa com nada', () => {
+    // O casamento é segmento a segmento, sem semântica de curinga: um `*` no
+    // sufixo é um segmento literal, e é exatamente o que o `walk` empilha para
+    // cada nível de array. `payment_info` é `z.array(...)`, então a grafia de
+    // dois segmentos — a que estava no denylist — não podia casar com o caminho
+    // que o corpo real produz.
+    expect(isRedactedPath(['payment_info', 'payment_processor_register'])).toBe(false);
+    expect(isRedactedPath(['payment_info', 'transaction_id'])).toBe(false);
+    expect(
+      isRedactedPath([
+        'response',
+        'order_list',
+        '*',
+        'payment_info',
+        '*',
+        'payment_processor_register',
+      ]),
+    ).toBe(true);
+    expect(
+      isRedactedPath(['response', 'order_list', '*', 'payment_info', '*', 'transaction_id']),
+    ).toBe(true);
+    // …e o inverso, que é o que mantém os outros sufixos honestos: um pai que é
+    // OBJETO não leva índice, e ganhar um passaria a não casar.
+    expect(isRedactedPath(['recipient_address', '*', 'name'])).toBe(false);
+    expect(isRedactedPath(['recipient_address', 'name'])).toBe(true);
   });
 
   it('o placeholder sai da CHAVE e do TIPO, nunca do valor — é isso que dá a idempotência', () => {

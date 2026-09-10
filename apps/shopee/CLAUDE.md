@@ -105,7 +105,7 @@ a page of the 3-day queue irreversibly.
   loaders. **Test-only, imported by no `src` file** — the
   `lib/shopee/testing/fakeDb.ts` precedent. A body enters the corpus only after
   `redact`, and a scan finding never carries the value it found.
-- `lib/shopee/avisos/autorizacao.ts` — one of the **three** modules in this app
+- `lib/shopee/avisos/autorizacao.ts` — one of the **four** modules in this app
   that speak **microseconds**; every other signature is milliseconds. Raises
   `shopeeAutorizacaoExpirando` / `shopeeDesautorizado` and resolves both, and
   since step 4 it also EXPORTS the µs seam
@@ -113,23 +113,34 @@ a page of the 3-day queue irreversibly.
   write avisos without knowing the unit — which is what keeps its own call sites
   countable rather than merely written down.
 
-  ⚠️ **The other two arrived with step 5, and naming all three is the point** —
-  a "the ONE module that speaks µs" sentence that has quietly become three is
-  worse than no sentence:
+  ⚠️ **The other three arrived with step 5, and naming all four is the point** —
+  a "the ONE module that speaks µs" sentence that has quietly become four is
+  worse than no sentence. Each one converts a DIFFERENT unit, which is why none
+  of them collapses into another:
 
   1. `avisos/autorizacao.ts` (above);
   2. `pedidos/importarPedido.ts` — the single `millisToMicros(nowMs)` per run,
      handing `nowUs` DOWN as a parameter to the mapper, the transaction and the
-     incidente writer;
+     incidente writer. It is also the ONLY clock read on the pedido path: there
+     is no `Date.now()` anywhere under `pedidos/`;
   3. `pedidos/orderMapping.ts`'s `microsDeSegundosShopee` — the ONE
      seconds → µs conversion, for Shopee's second-resolution stamps, whose
      docblock carries the `coerceToMicros` trap (that helper classifies by
      MAGNITUDE and reads a seconds value as MILLIseconds ⇒ 1970 ⇒ a watermark
-     comparison that answers "older" forever).
+     comparison that answers "older" forever);
+  4. `pedidos/orderFreteMapping.ts`'s `prazoDespachoShopee` — the ONE ms → µs
+     conversion, because the shared `getPrazoDespachoNoFuso` answers
+     MILLISECONDS while `freteInicial.prazoDespacho` is µs. `millisToMicros`,
+     never `coerceToMicros`.
 
-  **Nothing below those three converts anything.** A `millisToMicros` appearing
-  in `itens.ts`, `orderFreteMapping.ts` or `incidentesProduto.ts` is the drift
-  this list exists to prevent.
+  Plus one READER, which converts nothing new but has to know the unit:
+  `pedidos/orderPedidoTx.ts` coerces the STORED `lastMarketplaceUpdate` and
+  `ultimaModificacao` through `coerceToMicros` — correct there and only there,
+  because the legacy corpus holds ms ints and ISO strings.
+
+  **Nothing else converts anything.** A `millisToMicros` or a `coerceToMicros`
+  appearing in `itens.ts`, `produtoResolve.ts`, `incidentesProduto.ts` or
+  `comprador.ts` is the drift this list exists to prevent.
 - `lib/shopee/conta/expiracaoSweep.ts` — `runShopeeAuthorizationExpirySweep`,
   driven weekly by the functions codebase and, scoped to named shops, by
   `push 12`. See **The authorization-expiry sweep** below.
@@ -150,7 +161,8 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/avisos/pushSaude.ts` — the producer for the two push-health
   avisos, and the second module in this app that writes to the avisos inbox. It
   holds NO `millisToMicros`: it takes the µs helpers from
-  `avisos/autorizacao.ts`, which stays the one module that knows the unit.
+  `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
+  knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double the
   six sweep and producer suites drive. Test-only, imported by no `src` file (the
   `apps/web/lib/testing` precedent); ONE copy, because two copies with a

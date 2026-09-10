@@ -167,6 +167,16 @@ export interface GrupoSempreShopee {
     readonly estado: CapturaCompradorEstado;
     readonly statusObservado: string;
     readonly camposRecusados: readonly string[];
+    /**
+     * The IO-observed half of `camposRecusados` (`endereco:*`) on its own.
+     *
+     * ⚠️ Kept SEPARATE because the transaction's `capturado` latch has to drop
+     * the BUYER refusals — a field that was captured was not refused — while an
+     * endereço refusal survives the latch: a pedido whose cliente is linked but
+     * whose endereço is not can never be fiscalizado, and that warning must not
+     * be swallowed by a state it has nothing to do with.
+     */
+    readonly camposRecusadosExtra: readonly string[];
   };
   readonly erro: AcaoErroShopee;
 }
@@ -260,9 +270,20 @@ export interface MapearPedidoShopeeArgs {
  *
  * ⚠️ `observacoesInternas` is COMPOSED, never interpolated: the legacy's
  * `"${note}\n${message_to_seller}"` wrote the literal string `"null"` into the
- * field. Here the two are filtered through `valorUtilizavel` (which also refuses
- * a MASKED note — `message_to_seller` is buyer-authored) and joined, so
- * `"null"`, `"null\nnull"` and a bare `"\n"` are impossible by construction.
+ * field. Here the two halves are filtered and joined, so `"null"`,
+ * `"null\nnull"` and a bare `"\n"` are impossible by construction.
+ *
+ * ⚠️ The two halves have DIFFERENT authors and therefore different predicates —
+ * plan W9 spells the pair as one `.filter(usable)`, and a single predicate is
+ * what that spelling cannot express. `message_to_seller` is BUYER-authored, so
+ * it goes through `valorUtilizavel` and a masked value is refused. `note` is the
+ * SELLER's own Seller Centre note, returned to its own author and never masked
+ * by Shopee; running it through the masking predicate would silently drop a
+ * dispatch instruction like `"URGENTE *frágil*"` — the same argument
+ * `textoOuNull`'s docblock makes for `cancel_reason`, and the same silence:
+ * `camposRecusados` carries buyer field names only. Worse on a re-import, where
+ * `orderPedidoTx` patches the field on any difference, so editing a stored note
+ * to add an asterisk would overwrite it with `null`.
  */
 export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoShopee {
   const { detalhe, itens, conferencia, frete, conta, captura, watermarkUs } = args;
@@ -287,8 +308,10 @@ export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoS
     cancelBy: textoOuNull(detalhe.cancel_by),
   };
 
-  const observacoes = [detalhe.note, detalhe.message_to_seller]
-    .map((t) => valorUtilizavel(t))
+  // Split by AUTHORSHIP, not by convenience — see the docblock above.
+  const notaDoVendedor = textoOuNull(detalhe.note);
+  const mensagemDoComprador = valorUtilizavel(detalhe.message_to_seller);
+  const observacoes = [notaDoVendedor, mensagemDoComprador]
     .filter((t): t is string => t !== null)
     .join('\n');
 
@@ -302,6 +325,7 @@ export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoS
         estado: captura.estado,
         statusObservado: detalhe.order_status,
         camposRecusados: [...captura.camposRecusados, ...(args.camposRecusadosExtra ?? [])],
+        camposRecusadosExtra: [...(args.camposRecusadosExtra ?? [])],
       },
       erro:
         alvo.tipo === 'erro'
