@@ -115,8 +115,11 @@ function EstoqueSyncView({ pedidoId }: { pedidoId: string }) {
   // the id stays the honest fallback for them at the two call sites.
   const nomePorProduto = useMemo(() => {
     const nomes = new Map<string, string>();
-    // `flattenPedidoItens` resolves each line's produtoUid from its MAP KEY when
-    // the item itself omits it — the key is authoritative in the legacy corpus.
+    // `flattenPedidoItens` fills a MISSING `item.produtoUid` from the map key
+    // (`item.produtoUid ?? keyUid`) — the item wins where it has one. ⚠️ Not the
+    // same rule as `reports/aggregations.ts`, which reports on the KEY and
+    // ignores `item.produtoUid` entirely; the two sites resolve the uid
+    // differently on purpose, so neither comment is the repo-wide rule.
     for (const item of flattenPedidoItens(pedido?.itens ?? {})) {
       if (item.produtoUid) nomes.set(item.produtoUid, nomeDoItem(item, null));
     }
