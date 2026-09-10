@@ -3,6 +3,7 @@ import {
   type EstadoPedido,
   type Pedido,
   bucketOf,
+  nivelDoNomeDoItem,
   nomeDoItem,
   pedidoTotal,
   type EstadoBucket,
@@ -34,7 +35,7 @@ export interface ProdutoSalesRow {
   pedidos: number;
 }
 
-type Acumulador = ProdutoSalesRow & { _orderIds: Set<string>; _temNomeDeVenda: boolean };
+type Acumulador = ProdutoSalesRow & { _orderIds: Set<string>; _nivelDoRotulo: 0 | 1 | 2 };
 
 /**
  * Aggregate every ItemDoPedido across the supplied pedidos and rank by
@@ -51,26 +52,33 @@ export function topProdutos(pedidos: PedidoLite[], topN = 10): ProdutoSalesRow[]
       for (const item of list) {
         const existing: Acumulador = byUid.get(produtoUid) ?? {
           produtoUid,
-          label: produtoUid,
+          // What level 0 resolves to. Seeded through the resolver rather than
+          // spelled out, so the seed cannot disagree with the chain's tail.
+          label: nomeDoItem({ produtoUid }, null),
           quantidade: 0,
           receita: 0,
           pedidos: 0,
           _orderIds: new Set<string>(),
-          _temNomeDeVenda: false,
+          _nivelDoRotulo: 0,
         };
         existing.quantidade += item.quantidade;
         existing.receita += (item.precoDeVenda - (item.descontoUnitario ?? 0)) * item.quantidade;
         // A produto repeats across pedidos and only some lines carry a
-        // `nomeDeVenda`; keep upgrading the label until a real sale name lands,
-        // then leave it (first name wins, as it always did).
+        // `nomeDeVenda`, so the row's label is the best any of them can offer.
+        // ⚠️ The fold is MONOTONIC — strictly `>` — for two reasons: the first
+        // line of a tier wins, and a later line carrying LESS cannot walk the
+        // label back down. A latch on the name tier alone did the second: a
+        // group whose first line had a sku and whose second had neither fell
+        // from the sku to the raw id, leaving the row worse than its data.
         // ⚠️ The uid comes from the MAP KEY, not `item.produtoUid` — the two can
         // disagree in the legacy corpus, and the key is what this row reports on.
-        if (!existing._temNomeDeVenda) {
+        const nivel = nivelDoNomeDoItem(item);
+        if (nivel > existing._nivelDoRotulo) {
+          existing._nivelDoRotulo = nivel;
           existing.label = nomeDoItem(
             { produtoUid, nomeDeVenda: item.nomeDeVenda, sku: item.sku },
             null,
           );
-          existing._temNomeDeVenda = (item.nomeDeVenda ?? '').trim() !== '';
         }
         existing._orderIds.add(pedidoId);
         byUid.set(produtoUid, existing);
@@ -78,7 +86,7 @@ export function topProdutos(pedidos: PedidoLite[], topN = 10): ProdutoSalesRow[]
     }
   }
 
-  const rows = [...byUid.values()].map(({ _orderIds, _temNomeDeVenda: _n, ...row }) => ({
+  const rows = [...byUid.values()].map(({ _orderIds, _nivelDoRotulo: _n, ...row }) => ({
     ...row,
     pedidos: _orderIds.size,
   }));

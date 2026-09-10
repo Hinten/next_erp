@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PRODUTO_SEM_NOME, nomeDoItem } from './nomeDoItem';
+import { PRODUTO_SEM_NOME, nivelDoNomeDoItem, nomeDoItem } from './nomeDoItem';
 
 const item = {
   produtoUid: 'p1',
@@ -114,6 +114,37 @@ describe('nomeDoItem — totality', () => {
             expect(out.trim()).toBe(out);
           }
         }
+      }
+    }
+  });
+});
+
+describe('nivelDoNomeDoItem — the tier a line reaches on its own', () => {
+  it('ranks a sale name above a sku above the bare id', () => {
+    expect(nivelDoNomeDoItem({ nomeDeVenda: 'Camiseta', sku: 'CAM-1' })).toBe(2);
+    expect(nivelDoNomeDoItem({ nomeDeVenda: null, sku: 'CAM-1' })).toBe(1);
+    expect(nivelDoNomeDoItem({ produtoUid: 'p1', nomeDeVenda: null, sku: null })).toBe(0);
+    expect(nivelDoNomeDoItem(null)).toBe(0);
+  });
+
+  it('reads blank the same way the chain does', () => {
+    expect(nivelDoNomeDoItem({ nomeDeVenda: '   ', sku: 'CAM-1' })).toBe(1);
+    expect(nivelDoNomeDoItem({ nomeDeVenda: '', sku: '	' })).toBe(0);
+  });
+
+  // The rank exists to make a fold over many lines monotonic, and it can only do
+  // that while it AGREES with the chain: the tier it reports must be the step
+  // `nomeDoItem` actually stops on.
+  it('agrees with the step nomeDoItem lands on, for every combination', () => {
+    const valores = [null, '', '  ', 'x'] as const;
+    for (const nomeDeVenda of valores) {
+      for (const sku of valores) {
+        const item = { produtoUid: 'p1', nomeDeVenda, sku };
+        const nivel = nivelDoNomeDoItem(item);
+        const nome = nomeDoItem(item, null);
+        if (nivel === 2) expect(nome).toBe(nomeDeVenda?.trim());
+        else if (nivel === 1) expect(nome).toBe(sku?.trim());
+        else expect(nome).toBe('p1');
       }
     }
   });

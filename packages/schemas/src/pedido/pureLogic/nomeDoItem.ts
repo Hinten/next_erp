@@ -97,3 +97,23 @@ export function nomeDoItem(
     PRODUTO_SEM_NOME
   );
 }
+
+/**
+ * How far up the chain a line can get ON ITS OWN, with no produto doc:
+ * `2` it carries a sale name · `1` only a sku · `0` nothing but the id.
+ *
+ * ⚠️ This lives beside the chain because it IS the chain's order. A caller that
+ * folds MANY lines of the same produto into ONE label — `topProdutos` over a
+ * report's worth of pedidos — has to decide which line wins, and the fold must
+ * be MONOTONIC: a later line carrying less may not walk the label back down.
+ * Compare with `>` (never `>=`) to keep the first line of a tier.
+ *
+ * Ranking by hand at the call site is what makes that silently wrong later: the
+ * two orders agree until a step is inserted here, and nothing fails when they
+ * stop agreeing.
+ */
+export function nivelDoNomeDoItem(item: ItemNomeavel | null | undefined): 0 | 1 | 2 {
+  if (textoUtil(item?.nomeDeVenda) !== null) return 2;
+  if (textoUtil(item?.sku) !== null) return 1;
+  return 0;
+}
