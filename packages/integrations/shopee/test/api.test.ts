@@ -4,10 +4,13 @@ import {
   SHOPEE_ATTRIBUTE_TREE_MAX_CATEGORIES,
   SHOPEE_BRAND_MAX_PAGE_SIZE,
   SHOPEE_BRAND_STATUS,
+  SHOPEE_ESCROW_DETAIL_TRANSPORT,
   SHOPEE_GET_ITEM_LIMIT_PATH,
   SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
   SHOPEE_GET_VARIATION_TREE_PATH_ALT,
+  SHOPEE_ORDER_DETAIL_MAX_ORDER_SN,
+  SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS,
   SHOPEE_ORDER_LIST_MAX_PAGE_SIZE,
   SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS,
   SHOPEE_TAXONOMY_LANGUAGE,
@@ -19,6 +22,7 @@ import {
   normalizeApiPath,
 } from '../src/api';
 import {
+  SHOPEE_ERROR_KIND,
   ShopeeApiError,
   ShopeeConfigError,
   ShopeeHttpError,
@@ -1376,5 +1380,372 @@ describe('get_order_list', () => {
     expect(segunda.more).toBe(false);
     expect(new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('cursor')).toBe('20');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                  O detalhe do pedido e o escrow (passo 5)                   */
+/* -------------------------------------------------------------------------- */
+
+/** ⚠️ `order_sn` inventado, no formato da própria Shopee. Nunca um pedido real. */
+const ORDER_SN = '220810QSK8S7BX';
+const ORDER_SN_2 = '220810QSK8S7BY';
+
+const ORDER_DETAIL_BODY = {
+  request_id: 'req-detail',
+  error: '',
+  response: {
+    order_list: [
+      {
+        order_sn: ORDER_SN,
+        region: 'BR',
+        currency: 'BRL',
+        cod: false,
+        order_status: 'READY_TO_SHIP',
+        create_time: 1_760_000_000,
+        update_time: 1_760_000_100,
+        item_list: [
+          {
+            item_id: 846056136,
+            model_id: 12984093,
+            model_quantity_purchased: 2,
+            model_discounted_price: 15,
+          },
+        ],
+      },
+    ],
+  },
+};
+
+const ESCROW_DETAIL_BODY = {
+  request_id: 'req-escrow',
+  error: '',
+  response: {
+    order_sn: ORDER_SN,
+    buyer_user_name: 'comprador-inventado',
+    return_order_sn_list: [],
+    order_income: { escrow_amount: 29.99, items: [] },
+  },
+};
+
+/**
+ * A lista COMPLETA de `response_optional_fields` que a página da Shopee aceita —
+ * transcrita da própria página (31 entradas, com `buyer_username` repetido).
+ *
+ * ⚠️ É o que torna o teste do literal não-vacuoso: um token com erro de digitação
+ * é IGNORADO em silêncio pela Shopee, e o campo volta ausente — que é
+ * indistinguível de "a Shopee não mandou".
+ */
+const CAMPOS_OPCIONAIS_ACEITOS = [
+  'buyer_user_id',
+  'buyer_username',
+  'estimated_shipping_fee',
+  'recipient_address',
+  'actual_shipping_fee',
+  'goods_to_declare',
+  'note',
+  'note_update_time',
+  'item_list',
+  'pay_time',
+  'dropshipper',
+  'dropshipper_phone',
+  'split_up',
+  'buyer_cancel_reason',
+  'cancel_by',
+  'cancel_reason',
+  'actual_shipping_fee_confirmed',
+  'buyer_cpf_id',
+  'fulfillment_flag',
+  'pickup_done_time',
+  'package_list',
+  'shipping_carrier',
+  'payment_method',
+  'total_amount',
+  'invoice_data',
+  'order_chargeable_weight_gram',
+  'return_request_due_date',
+  'edt',
+  'payment_info',
+  'international_label',
+] as const;
+
+describe('get_order_detail', () => {
+  it('vai por GET, junta os order_sn por vírgula e não repete a chave', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_DETAIL_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getOrderDetail({
+      orderSnList: [ORDER_SN, ORDER_SN_2],
+    });
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    expect(url.pathname).toBe('/api/v2/order/get_order_detail');
+    expect([...url.searchParams.keys()].sort()).toEqual(
+      [...CHAVES_COMUNS, 'order_sn_list', 'response_optional_fields'].sort(),
+    );
+    // Uma chave só, os dois valores dentro dela.
+    expect(url.searchParams.getAll('order_sn_list')).toEqual([`${ORDER_SN},${ORDER_SN_2}`]);
+  });
+
+  it('manda os 22 campos opcionais juntos por vírgula, SEM espaço — o literal, caractere a caractere', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_DETAIL_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getOrderDetail({ orderSnList: [ORDER_SN] });
+
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.get('response_optional_fields')).toBe(
+      SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS,
+    );
+    expect(SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS).toBe(
+      'item_list,recipient_address,buyer_cpf_id,buyer_username,buyer_user_id,pay_time,' +
+        'payment_method,payment_info,total_amount,package_list,invoice_data,actual_shipping_fee,' +
+        'estimated_shipping_fee,shipping_carrier,order_chargeable_weight_gram,cancel_by,' +
+        'cancel_reason,buyer_cancel_reason,edt,pickup_done_time,fulfillment_flag,' +
+        'return_request_due_date,note,note_update_time',
+    );
+
+    const tokens = SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS.split(',');
+    expect(tokens).toHaveLength(24);
+    // ⚠️ Sem espaço em lugar nenhum: a própria página imprime `actual_shipping_fee `
+    // com um espaço sobrando na lista dela, e um token com espaço não casa.
+    expect(SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS).not.toMatch(/\s/);
+    expect(new Set(tokens).size).toBe(tokens.length);
+    // Todo token nosso EXISTE na lista que a Shopee aceita — um typo volta como
+    // campo ausente, nunca como erro.
+    for (const token of tokens) {
+      expect(CAMPOS_OPCIONAIS_ACEITOS, `token desconhecido: ${token}`).toContain(token);
+    }
+  });
+
+  it('⚠️ NEAR-MISS: `international_label` ficou DE FORA de propósito; `note` ENTRA', () => {
+    // `international_label` é aceito pela Shopee (está em CAMPOS_OPCIONAIS_ACEITOS)
+    // e ficou de fora por decisão: o sinal do passo 5 é o `region` do PEDIDO.
+    // `note`/`note_update_time` ENTRAM porque alimentam `observacoesInternas`:
+    // um campo não nomeado volta AUSENTE, e o importador não passa lista própria.
+    const tokens = SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS.split(',');
+    expect(tokens).toContain('note');
+    expect(tokens).toContain('note_update_time');
+    expect(tokens).not.toContain('international_label');
+    expect(CAMPOS_OPCIONAIS_ACEITOS).toContain('note');
+    expect(CAMPOS_OPCIONAIS_ACEITOS).toContain('international_label');
+  });
+
+  it('⚠️ NEAR-MISS: uma lista informada pelo chamador SUBSTITUI a padrão, não soma', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_DETAIL_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getOrderDetail({
+      orderSnList: [ORDER_SN],
+      responseOptionalFields: ['item_list', 'note'],
+    });
+
+    const enviado = new URL(String(fetchMock.mock.calls[0]![0])).searchParams.get(
+      'response_optional_fields',
+    );
+    expect(enviado).toBe('item_list,note');
+    expect(enviado).not.toContain('recipient_address');
+  });
+
+  it('request_order_status_pending vai como a STRING "true" e é OMITIDO quando false', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.getOrderDetail({ orderSnList: [ORDER_SN], requestOrderStatusPending: true });
+    expect(
+      new URL(String(fetchMock.mock.calls[0]![0])).searchParams.get('request_order_status_pending'),
+    ).toBe('true');
+
+    await client.getOrderDetail({ orderSnList: [ORDER_SN], requestOrderStatusPending: false });
+    expect(
+      new URL(String(fetchMock.mock.calls[1]![0])).searchParams.has('request_order_status_pending'),
+    ).toBe(false);
+
+    await client.getOrderDetail({ orderSnList: [ORDER_SN] });
+    expect(
+      new URL(String(fetchMock.mock.calls[2]![0])).searchParams.has('request_order_status_pending'),
+    ).toBe(false);
+  });
+
+  it('recusa 0 e 51 order_sn ANTES de gastar uma chamada, e aceita as duas bordas boas', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const lista = (n: number): string[] =>
+      Array.from({ length: n }, (_, i) => `2208${String(i).padStart(10, '0')}`);
+
+    await expect(client.getOrderDetail({ orderSnList: [] })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    await expect(
+      client.getOrderDetail({ orderSnList: lista(SHOPEE_ORDER_DETAIL_MAX_ORDER_SN + 1) }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await expect(client.getOrderDetail({ orderSnList: lista(1) })).resolves.toBeDefined();
+    await expect(
+      client.getOrderDetail({ orderSnList: lista(SHOPEE_ORDER_DETAIL_MAX_ORDER_SN) }),
+    ).resolves.toBeDefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(SHOPEE_ORDER_DETAIL_MAX_ORDER_SN).toBe(50);
+  });
+
+  it('recusa um order_sn em branco — ele viraria uma identidade só lá na frente', async () => {
+    // ⚠️ A recusa não é sobre a Shopee (que responderia `error_param`): é sobre o
+    // id determinístico do pedido, que colapsaria TODOS os brancos num documento.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await expect(client.getOrderDetail({ orderSnList: [''] })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    await expect(client.getOrderDetail({ orderSnList: [ORDER_SN, '  '] })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // NEAR-MISS: o espaço é recusado, mas o order_sn de verdade PASSA inteiro —
+    // nada é aparado antes de ir para o fio.
+    await client.getOrderDetail({ orderSnList: [ORDER_SN] });
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).searchParams.get('order_sn_list')).toBe(
+      ORDER_SN,
+    );
+  });
+
+  it('desembrulha `response` — o envelope não chega ao chamador', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_DETAIL_BODY));
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getOrderDetail({
+      orderSnList: [ORDER_SN],
+    });
+
+    expect('error' in payload).toBe(false);
+    expect('request_id' in payload).toBe(false);
+    expect(payload.order_list[0]?.order_sn).toBe(ORDER_SN);
+    expect(payload.order_list[0]?.order_status).toBe('READY_TO_SHIP');
+    // Os opcionais que a Shopee não mandou chegam NULOS, nunca ausentes.
+    expect(payload.order_list[0]?.recipient_address).toBeNull();
+    expect(payload.order_list[0]?.invoice_data).toBeNull();
+  });
+
+  it('menos linhas do que order_sn pedidos é uma resposta VÁLIDA — quem reconcilia é o chamador', async () => {
+    // ⚠️ Um order_sn que não é desta loja simplesmente não volta. Casar por
+    // POSIÇÃO daria o pedido errado; o pacote não casa nada, só entrega a página.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ORDER_DETAIL_BODY));
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getOrderDetail({
+      orderSnList: [ORDER_SN, ORDER_SN_2],
+    });
+    expect(payload.order_list).toHaveLength(1);
+    expect(payload.order_list[0]?.order_sn).toBe(ORDER_SN);
+  });
+
+  it('um erro no envelope vira ShopeeApiError mesmo com HTTP 200', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ request_id: 'req', error: 'error_param', message: 'Invalid order_sn_list' }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(fetchMock)).getOrderDetail({ orderSnList: [ORDER_SN] }),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
+  });
+});
+
+describe('get_escrow_detail', () => {
+  it('o literal decide VERBO e POSIÇÃO juntos — hoje é get-query', async () => {
+    // ⚠️ A página declara `method: 2` (GET) e traz UM exemplo de requisição que é
+    // um corpo JSON. Um GET com corpo nem sai do `fetch`, então "query ou corpo"
+    // é na verdade "GET+query ou POST+corpo": UM literal, as duas metades.
+    expect(SHOPEE_ESCROW_DETAIL_TRANSPORT).toBe('get-query');
+
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_DETAIL_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getEscrowDetail({ orderSn: ORDER_SN });
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    expect(url.pathname).toBe('/api/v2/payment/get_escrow_detail');
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS, 'order_sn'].sort());
+    expect(url.searchParams.get('order_sn')).toBe(ORDER_SN);
+  });
+
+  it('o order_sn fica FORA da assinatura nas DUAS metades do par — virar o literal não pode dar error_sign', async () => {
+    // ⚠️ MEDIDO, não suposto: a base string de loja é
+    // `partner_id + path + timestamp + access_token + shop_id` (`sign.ts`) — sem
+    // o verbo e sem os parâmetros da operação, na query ou no corpo. Então dois
+    // order_sn diferentes dão o MESMO `sign` hoje (get-query) e dariam o mesmo
+    // em post-body: um palpite errado do par aparece como `error_param`
+    // ("Missing order_sn", que esta página documenta), nunca como `error_sign`.
+    // É a mesma propriedade que `confirmConsumedLostPushMessages` fixa para o
+    // corpo dele, e um "vamos assinar os parâmetros também" quebraria as duas.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.getEscrowDetail({ orderSn: ORDER_SN });
+    await client.getEscrowDetail({ orderSn: ORDER_SN_2 });
+
+    const primeira = new URL(String(fetchMock.mock.calls[0]![0]));
+    const segunda = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(primeira.searchParams.get('order_sn')).not.toBe(segunda.searchParams.get('order_sn'));
+    expect(primeira.searchParams.get('sign')).toBe(segunda.searchParams.get('sign'));
+
+    // NEAR-MISS na direção oposta: o que MUDA a assinatura é o que está na base
+    // string. Trocar o access_token muda o `sign` do mesmo order_sn.
+    const outro = createShopeeClient(
+      shopConfig(fetchMock, () => Promise.resolve('outro-access-inventado')),
+    );
+    await outro.getEscrowDetail({ orderSn: ORDER_SN });
+    expect(new URL(String(fetchMock.mock.calls[2]![0])).searchParams.get('sign')).not.toBe(
+      primeira.searchParams.get('sign'),
+    );
+  });
+
+  it('recusa um order_sn em branco ANTES da rede', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await expect(client.getEscrowDetail({ orderSn: '' })).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(client.getEscrowDetail({ orderSn: '   ' })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('desembrulha `response` e entrega o order_income', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_DETAIL_BODY));
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getEscrowDetail({
+      orderSn: ORDER_SN,
+    });
+
+    expect('error' in payload).toBe(false);
+    expect(payload.order_sn).toBe(ORDER_SN);
+    expect(payload.order_income?.escrow_amount).toBe(29.99);
+    expect(payload.buyer_payment_info).toBeNull();
+  });
+
+  it('`order_not_found` é um ShopeeApiError de kind `other` — permanente, não transitório', async () => {
+    // ⚠️ É o erro específico DESTA página: o pedido não é desta loja ou não
+    // existe. Classificar como transitório faria a fila repetir para sempre.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        request_id: 'req',
+        error: 'order_not_found',
+        message: 'Order SN provided is invalid or does not belong to you.',
+      }),
+    );
+
+    const erro = await createShopeeClient(shopConfig(fetchMock))
+      .getEscrowDetail({ orderSn: ORDER_SN })
+      .catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('order_not_found');
+    expect((erro as ShopeeApiError).kind).toBe(SHOPEE_ERROR_KIND.other);
+  });
+
+  it('⚠️ NEAR-MISS: um `error` com espaço continua sendo FALHA, como em toda operação sem alias', async () => {
+    // A própria página imprime `"error": " "` no exemplo de resposta dela. Sem
+    // `emptyErrorAliases`, só a string vazia é sucesso — e esta operação não tem
+    // alias nenhum.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ESCROW_DETAIL_BODY, error: ' ' }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(fetchMock)).getEscrowDetail({ orderSn: ORDER_SN }),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
   });
 });

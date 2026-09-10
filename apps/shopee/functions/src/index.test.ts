@@ -57,6 +57,7 @@ const modulo = await import('./index');
 const {
   backfillShopeeOrders,
   monitorShopeePushConfig,
+  processShopeeNotification,
   reprocessShopeeNotifications,
   sweepShopeeAuthorizationExpiry,
   sweepShopeeLostPushes,
@@ -82,6 +83,24 @@ const AGENDAMENTOS = {
   monitorShopeePushConfig,
   backfillShopeeOrders,
 } as const;
+
+/**
+ * Every TASK-QUEUE trigger this codebase exports — the sibling map of
+ * {@link AGENDAMENTOS}, and it exists for the same reason.
+ *
+ * ⚠️ The exhaustiveness test below walks `scheduleTrigger` ONLY, so before this
+ * map a `taskQueueTrigger` export was invisible to it: `processShopeeNotification`
+ * has run every Shopee delivery since step 3 while nothing in this file could
+ * see it, and its `timeoutSeconds` went from an implicit 60 to an explicit 300
+ * in step 5 with the whole assertion living in one sibling file. A second task
+ * function (step 9's mass import is the likely one) would arrive uncovered the
+ * same way three schedules nearly did.
+ *
+ * Its per-option assertions stay in `processNotification.test.ts`, which mocks
+ * the channel; what lives HERE is the cross-cutting set — the exact secrets,
+ * the retry cap, the timeout — plus the completeness check.
+ */
+const FILAS = { processShopeeNotification } as const;
 
 function endpointOf(fn: unknown): Record<string, unknown> {
   return (fn as { __endpoint: Record<string, unknown> }).__endpoint;
@@ -277,6 +296,64 @@ describe('as quase-falhas que um `toContain` sozinho não pega', () => {
     // never ran at all.
     const crons = Object.values(AGENDAMENTOS).map((fn) => gatilhoDe(fn).schedule);
     expect(new Set(crons).size).toBe(crons.length);
+  });
+
+  it('nenhuma FILA vincula um terceiro segredo — a mesma whitelist dos agendamentos', () => {
+    for (const [nome, fn] of Object.entries(FILAS)) {
+      const nomes = (
+        endpointOf(fn).secretEnvironmentVariables as { key?: string }[] | undefined
+      )?.map((s) => s.key);
+      expect(nomes, nome).toEqual(SEGREDOS);
+    }
+  });
+
+  it('toda FILA declara retry, vazão e um timeout explícito', () => {
+    // Um `onTaskDispatched` sem `timeoutSeconds` roda com o padrão gen2 de 60 s
+    // — o que já foi o caso desta função, e o que a importação de pedido do
+    // passo 5 estoura. Nada aqui afirma QUAL é o número (isso é de
+    // `processNotification.test.ts`); o que se afirma é que existe um, junto
+    // com as duas metades da escada de re-tentativa.
+    for (const [nome, fn] of Object.entries(FILAS)) {
+      const endpoint = endpointOf(fn);
+      const trigger = endpoint.taskQueueTrigger as {
+        retryConfig?: { maxAttempts?: number; maxBackoffSeconds?: number };
+        rateLimits?: { maxConcurrentDispatches?: number };
+      };
+      expect(typeof endpoint.timeoutSeconds, nome).toBe('number');
+      expect(trigger.retryConfig?.maxAttempts, nome).toBeGreaterThan(0);
+      expect(trigger.rateLimits?.maxConcurrentDispatches, nome).toBeGreaterThan(0);
+      // ⚠️ A invariante que liga os três: a escada inteira — N execuções e os
+      // N-1 backoffs ENTRE elas — tem de fechar em no máximo meia janela da
+      // varredura quente (que re-conduz um `failed` de mais de 1 h). É a
+      // margem, não o "cabe numa hora", que distingue um orçamento honesto de
+      // um que só esconde um travamento por mais tempo.
+      const tentativas = trigger.retryConfig?.maxAttempts ?? 0;
+      const escadaSegundos =
+        tentativas * (endpoint.timeoutSeconds as number) +
+        Math.max(tentativas - 1, 0) * (trigger.retryConfig?.maxBackoffSeconds ?? 0);
+      expect(escadaSegundos, nome).toBeLessThanOrEqual(1800);
+    }
+  });
+
+  it('todo onTaskDispatched exportado está coberto por FILAS', () => {
+    // A gêmea da asserção de exaustividade abaixo, para o outro tipo de
+    // gatilho. Sem ela, uma função de fila nova sobe, recebe entregas e nenhum
+    // teste jamais lê as suas opções — que é exatamente o buraco em que
+    // `processShopeeNotification` viveu do passo 3 ao 5.
+    const exportados = Object.entries(modulo as unknown as Record<string, unknown>)
+      .filter(([, valor]) => {
+        const endpoint = (valor as { __endpoint?: Record<string, unknown> } | null)?.__endpoint;
+        return endpoint !== undefined && endpoint.taskQueueTrigger !== undefined;
+      })
+      .map(([nome]) => nome);
+    expect(exportados.sort()).toEqual(Object.keys(FILAS).sort());
+  });
+
+  it('as duas famílias são DISJUNTAS — nada é agendamento e fila ao mesmo tempo', () => {
+    // Um export que aparecesse nos dois mapas satisfaria as duas asserções de
+    // exaustividade e teria as suas opções lidas pelo conjunto errado.
+    const agendamentos = new Set(Object.keys(AGENDAMENTOS));
+    for (const nome of Object.keys(FILAS)) expect(agendamentos.has(nome)).toBe(false);
   });
 
   it('todo onSchedule exportado está coberto por um describe acima', () => {

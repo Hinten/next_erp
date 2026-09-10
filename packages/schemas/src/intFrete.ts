@@ -314,10 +314,53 @@ export const tokenMelEnv = { schema: tokenMelEnvSchema, meta: tokenMelEnvMeta };
 /* -------------------------------------------------------------------------- */
 
 /**
- * Compute the dispatch deadline from a cut-off schedule. Characterization
- * port of `IntegracaoFrete.getPrazoDespacho` at
- * `.old/packages/integracao_frete/lib/src/models.dart:147-197`, preserving
- * its quirks:
+ * The wall-clock components the cut-off rule actually reads — the input to
+ * {@link calcularPrazoDespachoCivil}, and the seam that makes the rule usable
+ * OFF the caller's own timezone.
+ *
+ * A "civil" date-time is a calendar reading with no zone attached: `2021-01-04
+ * 13:59, a Monday`. Which INSTANT that is depends on the zone, and that
+ * conversion is the caller's half (see {@link getPrazoDespacho} for the local
+ * one and {@link getPrazoDespachoNoFuso} for an explicit zone).
+ */
+export interface PartesCivis {
+  /** Dart's weekday: 1 = segunda … 7 = domingo. */
+  readonly diaDaSemana: number;
+  /** Full year, e.g. `2021`. */
+  readonly ano: number;
+  /** ZERO-BASED month, like `Date#getMonth` — the arithmetic below feeds `Date.UTC`. */
+  readonly mes: number;
+  readonly dia: number;
+  /** 0–23. */
+  readonly hora: number;
+  readonly minuto: number;
+}
+
+/**
+ * The dispatch deadline as civil components.
+ *
+ * ⚠️ `dia` is deliberately **NOT normalised**: it is literally
+ * `agora.dia + c + prazoDePostagem` and may overflow its month (`2021-01-33`).
+ * Both bindings feed it to a `Date` constructor, which normalises exactly as
+ * Dart's `DateTime(...)` does — that overflow IS the ported behaviour, so
+ * normalising here would silently change it.
+ */
+export interface PrazoDespachoCivil {
+  readonly ano: number;
+  /** Zero-based, like {@link PartesCivis.mes}. */
+  readonly mes: number;
+  /** May exceed the month's length — see the note above. */
+  readonly dia: number;
+  readonly hora: number;
+  readonly minuto: number;
+}
+
+/**
+ * The cut-off rule itself: pure, zone-free, over civil components.
+ *
+ * Characterization port of `IntegracaoFrete.getPrazoDespacho` at
+ * `.old/packages/integracao_frete/lib/src/models.dart:147-197`, preserving its
+ * quirks:
  *
  *   - `prazoDePostagem` is read **once** from *today's* entry (0 when today
  *     has no entry) and applied to every candidate day.
@@ -327,27 +370,24 @@ export const tokenMelEnv = { schema: tokenMelEnvSchema, meta: tokenMelEnvMeta };
  *   - The target weekday wraps once past 7 (`targetDia -= 7`), so a
  *     `prazoDePostagem > 7` is undefined behavior, same as Dart.
  *   - The result is `agora + (c + prazoDePostagem) days` at
- *     `horaPostagem:minutosPostagem` (defaulting 00:00); JS `new Date(y, m,
- *     d + n)` overflows months exactly like Dart's `DateTime(...)`.
+ *     `horaPostagem:minutosPostagem` (defaulting 00:00).
  *
- * Times are interpreted in the caller's local timezone — identical to the
- * legacy Flutter client, which computed this on the user's machine
- * (America/Sao_Paulo in production). Pass an explicit `agora` for
- * determinism; the function never reads the wall clock.
+ * ⚠️ Extracted from {@link getPrazoDespacho} rather than copied. The rule now
+ * runs on two surfaces — an operator's browser (their own zone, correct) and a
+ * server importing a marketplace order (`America/Sao_Paulo`, explicit) — and a
+ * rule written twice is a rule that drifts, silently, toward two plausible
+ * answers three hours apart.
  */
-export function getPrazoDespacho(
+export function calcularPrazoDespachoCivil(
   horarios: ReadonlyArray<HorarioDeCorte> | null | undefined,
-  agora: Date,
-): Date | null {
+  agora: PartesCivis,
+): PrazoDespachoCivil | null {
   if (!horarios || horarios.length === 0) return null;
-
-  // Dart weekday: Mon=1 … Sun=7. JS getDay: Sun=0 … Sat=6.
-  const weekdayOf = (d: Date): number => (d.getDay() === 0 ? 7 : d.getDay());
 
   let encontrado: HorarioDeCorte | null = null;
   let c = 0;
   const max = 7;
-  let currentDia = weekdayOf(agora);
+  let currentDia = agora.diaDaSemana;
   const diaDeHoje = horarios.find((h) => h.diaDaSemana === currentDia);
   const prazoDePostagem = diaDeHoje?.prazoDePostagem ?? 0;
 
@@ -361,9 +401,8 @@ export function getPrazoDespacho(
         return (
           h.diaDaSemana === targetDia &&
           (cIter > 0 ||
-            agora.getHours() < (h.horaDeCorte ?? 0) ||
-            (agora.getHours() === (h.horaDeCorte ?? 0) &&
-              agora.getMinutes() <= (h.minutosDeCorte ?? 0)))
+            agora.hora < (h.horaDeCorte ?? 0) ||
+            (agora.hora === (h.horaDeCorte ?? 0) && agora.minuto <= (h.minutosDeCorte ?? 0)))
         );
       }) ?? null;
     if (encontrado !== null) break;
@@ -374,11 +413,165 @@ export function getPrazoDespacho(
 
   if (encontrado === null) return null;
 
-  return new Date(
-    agora.getFullYear(),
-    agora.getMonth(),
-    agora.getDate() + c + prazoDePostagem,
-    encontrado.horaPostagem ?? 0,
-    encontrado.minutosPostagem ?? 0,
-  );
+  return {
+    ano: agora.ano,
+    mes: agora.mes,
+    dia: agora.dia + c + prazoDePostagem,
+    hora: encontrado.horaPostagem ?? 0,
+    minuto: encontrado.minutosPostagem ?? 0,
+  };
+}
+
+/**
+ * Compute the dispatch deadline from a cut-off schedule, in the caller's LOCAL
+ * timezone.
+ *
+ * The rule lives in {@link calcularPrazoDespachoCivil}; this function is the
+ * local-zone binding of it — it reads `agora`'s components with the local
+ * getters and rebuilds the answer with the local `Date` constructor, so
+ * `new Date(y, m, d + n)` overflows months exactly like Dart's `DateTime(...)`.
+ *
+ * Times are interpreted in the caller's local timezone — identical to the
+ * legacy Flutter client, which computed this on the user's machine
+ * (America/Sao_Paulo in production). Pass an explicit `agora` for
+ * determinism; the function never reads the wall clock.
+ *
+ * ⚠️ **This binding is for the BROWSER.** On a server the ambient zone is
+ * whichever container happened to run the code — `apps/nfe` runs
+ * `TZ=America/Sao_Paulo` while every other backend is UTC, and the test runner
+ * has a third zone — so a server surface must call
+ * {@link getPrazoDespachoNoFuso} with the zone named out loud.
+ */
+export function getPrazoDespacho(
+  horarios: ReadonlyArray<HorarioDeCorte> | null | undefined,
+  agora: Date,
+): Date | null {
+  const alvo = calcularPrazoDespachoCivil(horarios, {
+    // Dart weekday: Mon=1 … Sun=7. JS getDay: Sun=0 … Sat=6.
+    diaDaSemana: agora.getDay() === 0 ? 7 : agora.getDay(),
+    ano: agora.getFullYear(),
+    mes: agora.getMonth(),
+    dia: agora.getDate(),
+    hora: agora.getHours(),
+    minuto: agora.getMinutes(),
+  });
+  if (alvo === null) return null;
+  return new Date(alvo.ano, alvo.mes, alvo.dia, alvo.hora, alvo.minuto);
+}
+
+/* ----------------------------- zoned binding ------------------------------ */
+
+/**
+ * The civil components of an instant in a NAMED timezone, plus the seconds the
+ * offset arithmetic needs.
+ *
+ * `weekday` is derived from the civil DATE rather than parsed from the locale's
+ * weekday name: `Date.UTC(ano, mes, dia)` names the same calendar day and
+ * `getUTCDay()` is exact, whereas a `weekday: 'short'` part is an ICU string
+ * whose spelling is not part of any contract we control.
+ */
+function partesCivisNoFuso(
+  instanteMs: number,
+  timeZone: string,
+): PartesCivis & { segundo: number } {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+  }).formatToParts(new Date(instanteMs));
+  const get = (type: string): number =>
+    Number(partes.find((p) => p.type === type)?.value ?? Number.NaN);
+
+  const ano = get('year');
+  const mes = get('month') - 1;
+  const dia = get('day');
+  // ⚠️ Some ICU versions emit hour '24' for midnight under `hour12: false`.
+  // The same normalisation `estoqueSweep.ts` carries, and here it is
+  // load-bearing: hour 24 would sail past every `horaDeCorte` comparison.
+  const hora = get('hour') % 24;
+  const diaSemanaJs = new Date(Date.UTC(ano, mes, dia)).getUTCDay();
+
+  return {
+    diaDaSemana: diaSemanaJs === 0 ? 7 : diaSemanaJs,
+    ano,
+    mes,
+    dia,
+    hora,
+    minuto: get('minute'),
+    segundo: get('second'),
+  };
+}
+
+/** The zone's offset from UTC, in ms, AT the given instant (negative west of Greenwich). */
+function deslocamentoDoFusoMs(instanteMs: number, timeZone: string): number {
+  const p = partesCivisNoFuso(instanteMs, timeZone);
+  const comoUtc = Date.UTC(p.ano, p.mes, p.dia, p.hora, p.minuto, p.segundo);
+  // Drop sub-second precision on both sides: the formatter has none.
+  return comoUtc - Math.floor(instanteMs / 1000) * 1000;
+}
+
+/**
+ * A civil date-time in a named zone → the instant, in ms.
+ *
+ * Two passes, the same shape `simplesNacional/competencia.ts` uses for the
+ * fiscal-month boundary: the first guesses the offset by reading the civil time
+ * as if it were UTC, the second re-measures it AT the instant that guess lands
+ * on and corrects once.
+ *
+ * ⚠️ The offset is asked of `Intl`, never assumed. São Paulo has been a fixed
+ * UTC−3 since Brazil abolished DST in 2019, but a hardcoded −3 h is exactly the
+ * legacy Shopee importer's defect, it is wrong for any pre-2019 instant, and it
+ * would be wrong again the day the rule changes. On a zone that DOES observe
+ * DST the second pass is what lands the answer on the right side of the
+ * transition; inside a spring-forward gap (a civil time that does not exist)
+ * the result is the instant one offset-step away, which is defined and stable
+ * rather than correct — nothing here needs more.
+ */
+function instanteDoCivilNoFuso(civil: PrazoDespachoCivil, timeZone: string): number {
+  // `Date.UTC` normalises the deliberately-unnormalised `dia` (see
+  // {@link PrazoDespachoCivil}) exactly as the local `Date` constructor does.
+  const comoUtc = Date.UTC(civil.ano, civil.mes, civil.dia, civil.hora, civil.minuto);
+  const primeiroChute = comoUtc - deslocamentoDoFusoMs(comoUtc, timeZone);
+  return comoUtc - deslocamentoDoFusoMs(primeiroChute, timeZone);
+}
+
+/**
+ * Compute the dispatch deadline from a cut-off schedule in an EXPLICIT
+ * timezone, returning the resulting instant in ms since epoch.
+ *
+ * Same rule, same quirks and the same schedule shape as
+ * {@link getPrazoDespacho} — it is the same {@link calcularPrazoDespachoCivil}
+ * core — with the two zone-dependent halves named out loud instead of inherited
+ * from the process:
+ *
+ *   1. `agoraMs` → civil components in `timeZone` (`Intl.DateTimeFormat` with
+ *      the zone in the options, the `estoqueSweep.ts` shape);
+ *   2. the civil answer → an instant in `timeZone` (two-pass offset).
+ *
+ * This is the binding a SERVER must use. The ambient process zone differs
+ * across this repo's own backends — `apps/nfe` runs `TZ=America/Sao_Paulo`,
+ * every other backend is UTC, and the test runner has a third one — so the same
+ * cut-off answers different days depending on which service ran it, which is
+ * what `delfrance/no-ambient-timezone` exists to say. An explicit `timeZone`
+ * option is that rule's documented escape.
+ *
+ * @param agoraMs  the reference instant (a marketplace `pay_time`, a clock read)
+ * @param timeZone an IANA zone id, e.g. `'America/Sao_Paulo'`
+ * @returns the deadline as ms since epoch, or `null` when the schedule answers
+ *          nothing (empty, or no weekday matched inside the 7-day scan)
+ */
+export function getPrazoDespachoNoFuso(
+  horarios: ReadonlyArray<HorarioDeCorte> | null | undefined,
+  agoraMs: number,
+  timeZone: string,
+): number | null {
+  if (!horarios || horarios.length === 0) return null;
+  const alvo = calcularPrazoDespachoCivil(horarios, partesCivisNoFuso(agoraMs, timeZone));
+  if (alvo === null) return null;
+  return instanteDoCivilNoFuso(alvo, timeZone);
 }

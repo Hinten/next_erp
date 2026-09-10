@@ -148,6 +148,22 @@ const CONCURRENCY_IGNORE = new Set<string>([
   'disputaAbertaEm',
   'devolucaoAbertaEm',
   'bloqueiosLiberados',
+  // The marketplace lifecycle flag + the buyer-capture diary (#1513, step 5) —
+  // the same failure as the three above, one importer later. `marketplace`
+  // mirrors the provider's own `order_status` and `capturaComprador` records
+  // what a masked buyer refused; neither is authorable in the pedido editor
+  // (`buildPedidoPatch` has no control that emits either key), and the Shopee
+  // importer writes them on EVERY delivery of an order — a push, a Cloud Tasks
+  // retry, the sweep, the backfill. Without these two, an operator with the
+  // pedido open gets a conflict modal naming a field they can neither see nor
+  // edit, several times per order.
+  //
+  // ⚠️ Unlike the three above, these are NOT in `pedidoMeta.serverOwnedFields`
+  // — the rules DO let a client write them (they gate nothing; see the schema
+  // docblocks). The ignore is therefore about authorship, exactly as the rule
+  // at the top of this list states it: no interactive editor authors them.
+  'marketplace',
+  'capturaComprador',
   // Removed money fields — the five derived caches (#796) below, then the four
   // aggregate pass-throughs (#1151) after them. `baseline`/`current` are NOT raw
   // `snap.data()` — `PedidoDocData`'s contract (`port.ts`) requires the

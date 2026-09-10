@@ -46,11 +46,13 @@ import {
 /* -------------------------------------------------------------------------- */
 /*  The structural gate is MOCKED, not neutralised                            */
 /*                                                                            */
-/*  `runShopeeOrderBackfill` refuses while `destinoDoCodigo(3) === 'parado'`,  */
-/*  which is the table's state TODAY — so almost every test here has to say    */
-/*  "pretend step 5 landed". The mock is PARTIAL: `dedupKeyOf`/`docIdOf` and   */
-/*  every other export stay the real ones, because the identity of the         */
-/*  synthesized push is exactly what several tests assert.                    */
+/*  `runShopeeOrderBackfill` refuses while `destinoDoCodigo(3) === 'parado'`.  */
+/*  Since step 5 the real table answers `'pedido'`, so the default below only  */
+/*  MIRRORS it — the mock survives because the guard's REFUSING branch still   */
+/*  has to be drivable, and a test cannot make the real table park code 3.     */
+/*  The mock is PARTIAL: `dedupKeyOf`/`docIdOf` and every other export stay    */
+/*  the real ones, because the identity of the synthesized push is exactly     */
+/*  what several tests assert.                                                 */
 /*                                                                            */
 /*  ⚠️ ONE test deliberately does NOT override it and reads the REAL table.   */
 /* -------------------------------------------------------------------------- */
@@ -169,7 +171,7 @@ function ultimoPatch(db: FakeDb, integracaoId: string): DocData | undefined {
 }
 
 beforeEach(() => {
-  destinoDoCodigo3 = 'conta'; // "pretend step 5 landed" — see the block above.
+  destinoDoCodigo3 = 'pedido'; // what the REAL table answers since step 5 — see the block above.
   process.env[SHOPEE_ORDER_BACKFILL_FLAG_ENV] = '1';
 });
 
@@ -222,22 +224,30 @@ describe('runShopeeOrderBackfill — o guarda estrutural do code 3', () => {
     expect(c.getOrderList).not.toHaveBeenCalled();
   });
 
-  it('⚠️ o guarda É o DISPATCH: hoje destinoDoCodigo(3) === "parado" — ESTE TESTE VIRA NO PASSO 5', async () => {
-    // ⚠️ When step 5 gives push code 3 a handler, `DISPATCH[3]` stops being
-    // `'parado'` and this assertion INVERTS — the sweep starts running on the
-    // real table. Flip it (and `MOTIVO_PARADO[3]`) in that same commit; do NOT
-    // delete this test: it is the only thing that reads the REAL dispatch
-    // table here, and without it the mock above would let the guard rot into a
-    // constant `false`.
+  it('⚠️ o guarda É o DISPATCH: com o handler do passo 5, a tabela REAL libera a varredura', async () => {
+    // ⚠️ THIS TEST VIROU NO PASSO 5, e continua sendo o único aqui que lê a
+    // tabela REAL — sem ele o mock acima deixaria o guarda apodrecer num
+    // `false` constante. Até o passo 5 ele afirmava o oposto (`enabled: false`,
+    // `MOTIVO_CODE3_PARADO`), porque `DISPATCH[3]` era `'parado'`; agora que a
+    // linha diz `'pedido'` o guarda passa SOZINHO, que é exatamente o que o
+    // docblock de `runShopeeOrderBackfill` promete ("o guarda lê a tabela de
+    // despacho em vez de um literal, então ele vira sozinho").
+    //
+    // ⚠️ Depois desta virada, `SHOPEE_ORDER_BACKFILL_ENABLED=1` é o ÚNICO
+    // portão que resta — ligá-lo é trabalho da janela de migração (regra 8).
     const c = cenario();
     c.db.seed(`${INTEGRACAO_PATH}/${INT_A}`, contaDoc());
+    c.getOrderList.mockResolvedValue(pagina(['SN1'], false));
     destinoDoCodigo3 = null; // the real table, unmocked
 
     const r = await rodar(c);
 
-    expect(r.enabled).toBe(false);
-    expect(r.motivo).toBe(MOTIVO_CODE3_PARADO);
-    expect(c.getOrderList).not.toHaveBeenCalled();
+    expect(r.enabled).toBe(true);
+    expect(r.motivo).toBeNull();
+    // …e a varredura realmente ANDOU: um `enabled: true` que não lê nada seria
+    // verde do mesmo jeito.
+    expect(c.getOrderList).toHaveBeenCalledTimes(1);
+    expect(c.enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('com um handler para o code 3, a varredura roda normalmente', async () => {
@@ -921,7 +931,12 @@ describe('runShopeeOrderBackfill — as escritas', () => {
       `${CURSOR_PATH}/${INT_A}`,
       `${CURSOR_PATH}/${INT_B}`,
     ]);
-    // The fake has no `runTransaction` at all: a call would be a TypeError.
-    expect('runTransaction' in c.db).toBe(false);
+    // ⚠️ This used to read `expect('runTransaction' in c.db).toBe(false)` — the
+    // fake HAD no transaction runner, so a call would have been a TypeError.
+    // Step 5's write path added one to the shared double, so the absence of the
+    // METHOD stopped meaning anything; the property being asserted is unchanged
+    // and now checked directly: this sweep opens no transaction, so the engine's
+    // own attempt log is empty.
+    expect(c.db.occ.txLog).toEqual([]);
   });
 });

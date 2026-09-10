@@ -11,6 +11,12 @@
  *     → an UNKNOWN push_code → `park`
  *     → a real `parked` doc in notificacoesShopee
  *
+ * …and, since step 5, the same hop for a **code 3 naming a shop that maps to no
+ * integração** → `sem-conta` → `defer` → a real `deferred` doc. That is the one
+ * code-3 path that reaches no Shopee call (the shop is refused before the
+ * importer), so it stays offline while still proving the dispatched bundle
+ * carries the order-import arm.
+ *
  * ⚠️ Why an unknown four-digit code. Every other destino either writes nothing
  * (`ack`) or reaches for a Shopee call: the conta arms resolve a shop against
  * `integracao`, and code 12 then signs a Public `get_shops_by_partner`. ⚠️ The
@@ -178,6 +184,72 @@ describe.skipIf(!EMULATED || !TASKS)('webhook Shopee → Cloud Tasks → onTaskD
     // row learns which push_code appeared.
     expect(String(doc.erro)).toContain(String(CODIGO_DESCONHECIDO));
     // Stamped by the handler inside the emulator, not by this process.
+    expect(doc.processedAt).toBeGreaterThan(0);
+  });
+
+  /**
+   * The step-5 arm, through the same hop — and the ONE code-3 case that stays
+   * offline.
+   *
+   * ⚠️ Why an unmapped shop specifically. Every other code-3 path reaches
+   * `importarPedidoShopee`, which loads a conta context and calls Shopee twice;
+   * the lane's fetch kill-switch lives in the VITEST process and does not cover
+   * the dispatched function, so that call would really leave the runner. A shop
+   * that maps to no active integração is refused by `findIntegracaoByShopId`
+   * BEFORE the importer is reached: no token, no secret, no Shopee call — and it
+   * is still a REAL write by the dispatched function, which is what makes it
+   * worth a round trip rather than a unit test.
+   *
+   * What it proves that the parked case above cannot: the dispatched bundle
+   * really carries the code-3 arm (a bundle built before step 5, or one whose
+   * dynamic `import('../pedidos/importarPedido')` failed to inline, parks this
+   * delivery instead of deferring it), and `defer` survives the queue hop as a
+   * `deferred` row rather than a `failed` one.
+   */
+  it('um code 3 de loja não mapeada ADIA — a função despachada grava `deferred`, sem chamar a Shopee', async () => {
+    const shopId = 900_000 + Math.floor(Math.random() * 90_000);
+    const timestampSegundos = Math.floor(Date.now() / 1000);
+    // Shopee's own doc-sample shape for an `order_sn`; no real order exists.
+    const orderSn = `2601010${randomUUID().slice(0, 6).toUpperCase()}`;
+    // ⚠️ NO `update_time`: that is what a SYNTHESIZED backfill push looks like,
+    // so the carimbo falls to the envelope stamp — and the doc id below has to
+    // agree with `identidadeDoPush`'s fallback or nothing is found.
+    const raw = JSON.stringify({
+      code: 3,
+      shop_id: shopId,
+      timestamp: timestampSegundos,
+      data: { ordersn: orderSn, status: 'READY_TO_SHIP' },
+    });
+
+    const assinatura = expectedPushSignature(raw, {
+      partnerKey: shopeeConfig().partnerKey,
+      callbackUrl: shopeePushCallbackUrl(),
+    });
+
+    const res = await POST(
+      new Request('http://localhost:3009/api/webhooks/shopee', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: assinatura },
+        body: raw,
+      }),
+    );
+    expect(res.status).toBe(204);
+
+    const docId = `3:${String(shopId)}:${orderSn}:${String(timestampSegundos * 1000)}`;
+    const doc = await waitForDoc(docId);
+
+    expect(doc).toMatchObject({
+      code: 3,
+      shop_id: shopId,
+      // ⚠️ `deferred`, not `parked` and not `failed`. `parked` would mean the
+      // dispatched bundle still routes code 3 to the unbuilt-handler arm (a
+      // stale artifact); `failed` would mean the receiver took its own enqueue
+      // fallback and the queue hop never happened at all.
+      status: 'deferred',
+      tentativas: 0,
+    });
+    // The reason names the shop, which is what an operator acts on: connect it.
+    expect(String(doc.erro)).toContain(String(shopId));
     expect(doc.processedAt).toBeGreaterThan(0);
   });
 });

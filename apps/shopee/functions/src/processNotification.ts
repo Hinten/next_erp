@@ -40,6 +40,24 @@ export const processShopeeNotification = onTaskDispatched(
     // queue, applied at deploy time from TASKS_INVOKER_SA. Absent when unset.
     ...tasksInvokerOptions(),
     secrets: ['SHOPEE_PARTNER_ID', 'SHOPEE_PARTNER_KEY'],
+    // ⚠️ NOT the gen2 default of 60 s, and not this codebase's `onSchedule`
+    // value of 540 either. Since step 5 a code-3 delivery runs the order
+    // import: two Shopee calls (`get_order_detail` + `get_escrow_detail`), up to
+    // two collectionGroup queries and up to four SKU probes PER LINE, one
+    // transaction and one incidente create per unbound line. On a 20-line order
+    // that is comfortably past 60 s, and a timeout mid-import is the one failure
+    // that hands a half-written pedido to a retry.
+    //
+    // ⚠️ Why not simply take 540, the value every `onSchedule` here carries. A
+    // budget far above the work's real ceiling does not make a slow import
+    // succeed — it makes a HUNG one invisible for that much longer, which is
+    // exactly the argument `monitorShopeePushConfig` records for its 120 s
+    // (`shopeeCall` carries no timeout of its own). The retry ladder is the
+    // second half: 3 attempts of 300 s plus 2 backoffs of ≤ 300 s is ~25 min, so
+    // a delivery is durable as `failed` well inside the hot reprocess sweep's
+    // hourly window. At 540 it would be ~37 min — still inside the hour, but
+    // with half the slack, and claiming a nine-minute import is legitimate.
+    timeoutSeconds: 300,
     retryConfig: {
       maxAttempts: TASK_MAX_ATTEMPTS,
       minBackoffSeconds: 30,
@@ -73,6 +91,13 @@ export const processShopeeNotification = onTaskDispatched(
     //
     // Never the push BODY, `data`, or any credential: this line is read by
     // operators and Shopee payloads carry buyer-facing resource ids.
+    //
+    // ⚠️ `orderSn` is the ONE exception to that last sentence, and it is not a
+    // relaxation: `order_sn` is the pedido's `numero`, an operator's only search
+    // handle, and it already sits in the clear as a segment of the
+    // `notificacoesShopee` doc id (`3:<shop>:<ordersn>:<carimbo>`). It names no
+    // buyer. `itensSemProduto` rides beside it because a successful import that
+    // bound no produto is the one "done" an operator must still act on.
     logger.info('[shopee] processed notification task', {
       queue: SHOPEE_NOTIFICATION_QUEUE,
       outcome: result.outcome,
@@ -81,6 +106,8 @@ export const processShopeeNotification = onTaskDispatched(
       code: typeof payload?.code === 'number' ? payload.code : null,
       shopId: typeof payload?.shopId === 'number' ? payload.shopId : null,
       lojas: result.lojas ?? null,
+      orderSn: result.orderSn ?? null,
+      itensSemProduto: result.itensSemProduto ?? null,
       retryCount: req.retryCount ?? 0,
       // CUMULATIVE for this instance — a notification has no tick to bracket
       // (the sweeps in `index.ts` bracket their own with mark/delta instead).

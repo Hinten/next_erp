@@ -95,6 +95,22 @@ export {
   type ClienteResolveFields,
 } from './clienteIdentity';
 
+// The shared "is this provider value usable, or is it a redaction?" rule.
+// Provider-neutral on purpose: every marketplace that hides buyer data outside
+// an unmask window redacts IN PLACE, so the value arrives non-empty and every
+// truthiness check passes. Sits beside the cliente-identity block because the
+// two are used together on every unattended buyer capture.
+export {
+  MOTIVO_RECUSA,
+  TIPO_DE_VALOR,
+  cpfCnpjUtilizavel,
+  motivoDaRecusa,
+  nomeUtilizavel,
+  valorUtilizavel,
+  type MotivoRecusa,
+  type TipoDeValor,
+} from './valorMascarado';
+
 export {
   endereco,
   enderecoSchema,
@@ -180,10 +196,15 @@ export {
 
 export {
   DIA_DA_SEMANA_LABELS,
+  calcularPrazoDespachoCivil,
   diaDaSemanaSchema,
   faixaCepOptionString,
   faixaDeCepSchema,
   getPrazoDespacho,
+  // The zoned binding of the SAME cut-off rule. A server surface must use this
+  // one: the ambient process zone differs across this repo's backends, so
+  // `getPrazoDespacho` answers a different day depending on which service ran it.
+  getPrazoDespachoNoFuso,
   horarioDeCorteSchema,
   intFrete,
   intFreteMeta,
@@ -197,6 +218,8 @@ export {
   type HorarioDeCorte,
   type IntFrete,
   type MapaDeIntegracoes,
+  type PartesCivis,
+  type PrazoDespachoCivil,
   type TokenMelEnv,
 } from './intFrete';
 

@@ -58,6 +58,7 @@ service cloud.firestore {
     function v_pedidos(d, c) {
       return (!c.hasAny(['bloquearEmissaoNFe']) || (d.get('bloquearEmissaoNFe', null) == null || d.get('bloquearEmissaoNFe', null) is bool))
         && (!c.hasAny(['bloqueiosLiberados']) || (d.get('bloqueiosLiberados', null) == null || d.get('bloqueiosLiberados', null) is list))
+        && (!c.hasAny(['capturaComprador']) || (d.get('capturaComprador', null) == null || d.get('capturaComprador', null) is map))
         && (!c.hasAny(['chNFeReferenciadas']) || (d.get('chNFeReferenciadas', null) == null || d.get('chNFeReferenciadas', null) is list))
         && (!c.hasAny(['clientePedidoOuterRef']) || (d.get('clientePedidoOuterRef', null) == null || d.get('clientePedidoOuterRef', null) is string))
         && (!c.hasAny(['dataFinalExpedicao']) || (d.get('dataFinalExpedicao', null) == null || d.get('dataFinalExpedicao', null) is int))
@@ -83,6 +84,7 @@ service cloud.firestore {
         && (!c.hasAny(['itensIds']) || d.get('itensIds', null) is list)
         && (!c.hasAny(['lastMarketplaceUpdate']) || (d.get('lastMarketplaceUpdate', null) == null || d.get('lastMarketplaceUpdate', null) is int))
         && (!c.hasAny(['listaDePrecosOuterRef']) || (d.get('listaDePrecosOuterRef', null) == null || d.get('listaDePrecosOuterRef', null) is string))
+        && (!c.hasAny(['marketplace']) || (d.get('marketplace', null) == null || d.get('marketplace', null) is map))
         && (!c.hasAny(['numero']) || (d.get('numero', null) == null || d.get('numero', null) is string))
         && (!c.hasAny(['observacoesInternas']) || (d.get('observacoesInternas', null) == null || d.get('observacoesInternas', null) is string))
         && (!c.hasAny(['operacaoPedidoOuterRef']) || (d.get('operacaoPedidoOuterRef', null) == null || d.get('operacaoPedidoOuterRef', null) is string))

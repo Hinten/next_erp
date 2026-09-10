@@ -3,8 +3,31 @@ import { fileURLToPath } from 'node:url';
 import type { Firestore } from 'firebase-admin/firestore';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  SHOPEE_ERROR_KIND,
+  ShopeeApiError,
+  ShopeeConfigError,
+  ShopeeHttpError,
+  ShopeeNetworkError,
+  ShopeeRateLimitError,
+  ShopeeReauthRequiredError,
+  ShopeeSchemaError,
+} from '@delfrance/integrations-shopee';
+import { z } from 'zod';
+
 // Type-only — erased at compile time, so it does not defeat the mocks below.
 import type { ShopeeNotificationPayload } from './notificacao';
+import type {
+  AlvoDeImportacaoShopee,
+  ResultadoImportacaoPedidoShopee,
+} from '../pedidos/importarPedido';
+import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
+import { ShopeeContaNotConfiguredError } from '../core/shopee';
+import {
+  ShopeeContaSemShopIdError,
+  ShopeeRefreshEmAndamentoError,
+  ShopeeSemCredencialError,
+} from '../core/tokenStore';
 // The shared fake Firestore — `persistNotificationParked` writes through the
 // REAL store, so the terminal status has to be read back off a document.
 import { FakeDb, asDb } from '../testing/fakeDb';
@@ -51,7 +74,9 @@ const {
   asDocId,
   CODIGO_AUSENTE,
   dedupKeyOf,
+  defaultProcessDeps,
   destinoDoCodigo,
+  disposicaoDaFalhaDeImportacao,
   docIdOf,
   identidadeDoPush,
   lojasDoPushDeConta,
@@ -70,10 +95,47 @@ const {
 
 const db = {} as unknown as Firestore;
 
+/* -------------------------------------------------------------------------- */
+/*  Fixtures — invented values only. No real shop id, partner id or order.     */
+/* -------------------------------------------------------------------------- */
+
+const SHOP_ID = 987654;
+const INTEGRACAO_ID = 'int-1';
+/** Shopee's own doc-sample shape for an `order_sn` — not a real order. */
+const ORDER_SN = '220810QSK8S7BX';
+const AGORA_MS = 1_700_000_000_000;
+
+function resultadoDeImportacao(
+  over: Partial<ResultadoImportacaoPedidoShopee> = {},
+): ResultadoImportacaoPedidoShopee {
+  return {
+    kind: 'pedido',
+    acao: 'criado',
+    orderSn: ORDER_SN,
+    pedidoId: 'ped-abc',
+    orderStatus: 'READY_TO_SHIP',
+    itensSemProduto: 0,
+    detail: 'criado',
+    ...over,
+  };
+}
+
+/**
+ * The code-3 seam. Injected on EVERY call in this file — including the arms
+ * that have nothing to do with it — so a routing bug that reaches the importer
+ * from another code is caught here instead of dynamically importing the real
+ * pedido tree (which would open a Firestore and a Shopee client).
+ */
+const importarPedido = vi.fn(
+  async (_db: Firestore, _alvo: AlvoDeImportacaoShopee): Promise<ResultadoImportacaoPedidoShopee> =>
+    resultadoDeImportacao(),
+);
+
 const deps = {
   partnerClient: () => ({ getShopsByPartner: async () => ({}) }) as never,
   increment: (by: number) => by,
-  nowMs: () => 1_700_000_000_000,
+  nowMs: () => AGORA_MS,
+  importarPedido,
 };
 
 function payload(over: Partial<ShopeeNotificationPayload> = {}): ShopeeNotificationPayload {
@@ -93,6 +155,8 @@ function parsed(body: Record<string, unknown>): ShopeeNotificationPayload {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  importarPedido.mockReset();
+  importarPedido.mockImplementation(async () => resultadoDeImportacao());
   h.find.mockResolvedValue(null);
   h.readConta.mockResolvedValue(null);
   h.resolverAvisos.mockResolvedValue({ expiracao: true, desautorizacao: false });
@@ -654,7 +718,10 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     [13, 'ack'],
     [22, 'ack'],
     [28, 'ack'],
-    [3, 'parado'],
+    // ⚠️ O passo 5 tirou o 3 do bloco parado: ele é o ÚNICO destino `pedido`, e
+    // essa linha é o que ARMA a varredura de pedidos (`orderBackfill.ts` lê a
+    // tabela, não um literal).
+    [3, 'pedido'],
     [4, 'parado'],
     [10, 'parado'],
     [15, 'parado'],
@@ -708,8 +775,17 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     expect(destinoDoCodigo(1)).toBe('conta');
   });
 
+  // ⚠️ O par que substituiu `expect(motivoDoParque(3)).toContain('passo 5')`:
+  // com o handler construído, `MOTIVO_PARADO[3]` foi APAGADO, então aquela
+  // asserção só poderia passar sobre o texto de fallback ("código novo") — uma
+  // frase falsa a respeito do code que este canal mais processa. O que precisa
+  // valer agora é que o 3 não passa nem perto do parque.
+  it('o code 3 tem handler — vai para o importador, não para o parque', () => {
+    expect(destinoDoCodigo(3)).toBe('pedido');
+    expect(motivoDoParque(3)).not.toContain('passo 5');
+  });
+
   it('o motivo do parque nomeia o passo dono do handler', () => {
-    expect(motivoDoParque(3)).toContain('passo 5');
     expect(motivoDoParque(4)).toContain('passo 7');
     expect(motivoDoParque(29)).toContain('passo 17');
     expect(motivoDoParque(24)).toContain('passo 7');
@@ -745,11 +821,31 @@ describe('toDisposition', () => {
     });
   });
 
-  it('sem-conta ⇒ defer (a ÚNICA saída defer do canal)', () => {
+  it('sem-conta ⇒ defer', () => {
     expect(toDisposition({ kind: 'sem-conta', shopId: 1, reason: 'r' })).toEqual({
       kind: 'defer',
       reason: 'r',
     });
+  });
+
+  it('pedido ⇒ resolve rotulado "pedido" — o mapa `outcomes` da varredura separa import de aviso', () => {
+    expect(
+      toDisposition({
+        kind: 'pedido',
+        acao: 'criado',
+        orderSn: ORDER_SN,
+        pedidoId: 'ped-1',
+        orderStatus: 'READY_TO_SHIP',
+        itensSemProduto: 0,
+        detail: 'criado',
+      }),
+    ).toEqual({ kind: 'resolve', label: 'pedido' });
+  });
+
+  it('pedido-adiado ⇒ defer, com a razão que nomeia a classe', () => {
+    expect(
+      toDisposition({ kind: 'pedido-adiado', shopId: 1, orderSn: ORDER_SN, reason: 'r' }),
+    ).toEqual({ kind: 'defer', reason: 'r' });
   });
 
   it('parado ⇒ park, nunca defer', () => {
@@ -804,7 +900,10 @@ describe('processNotificationPayload — a ordem das portas', () => {
     expect(h.find).not.toHaveBeenCalled();
   });
 
-  it.each([3, 4, 10, 15, 16, 24, 25, 27, 29, 30, 47, 999])(
+  // ⚠️ O 3 SAIU desta lista no passo 5 — ele agora resolve a conta de propósito.
+  // Todo o resto continua tendo de parar antes de qualquer leitura: um code sem
+  // handler não pode custar uma consulta ao Firestore por entrega.
+  it.each([4, 10, 15, 16, 24, 25, 27, 29, 30, 47, 999])(
     'push_code %i PARA antes de qualquer leitura de conta',
     async (code) => {
       const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
@@ -819,6 +918,424 @@ describe('processNotificationPayload — a ordem das portas', () => {
   it('um code desconhecido para com um motivo que diz que ele é novo', async () => {
     const out = await processNotificationPayload(db, payload({ code: 4242 }), deps);
     expect(out).toEqual({ kind: 'parado', motivo: motivoDoParque(4242) });
+  });
+});
+
+// ── code 3 — o braço do pedido (passo 5) ────────────────────────────────────
+
+describe('code 3 — importação do pedido', () => {
+  function push3(data: Record<string, unknown>, over: Partial<ShopeeNotificationPayload> = {}) {
+    return payload({ code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data, ...over });
+  }
+
+  it('chama importarPedido com o integracaoId da loja, o ordersn do push e UM relógio', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+
+    const out = await processNotificationPayload(
+      db,
+      push3({ ordersn: ORDER_SN, status: 'READY_TO_SHIP', update_time: 1_760_000_000 }),
+      deps,
+    );
+
+    expect(h.find).toHaveBeenCalledWith(db, SHOP_ID);
+    expect(importarPedido).toHaveBeenCalledTimes(1);
+    expect(importarPedido).toHaveBeenCalledWith(db, {
+      integracaoId: INTEGRACAO_ID,
+      shopId: SHOP_ID,
+      orderSn: ORDER_SN,
+      // ⚠️ MILISSEGUNDOS, e o relógio é o do handler (`deps.nowMs()`), nunca o
+      // `update_time` do push: o do envelope é síntese, o do pedido vem do
+      // `get_order_detail` que o importador re-busca (marca d'água, regra 7).
+      nowMs: AGORA_MS,
+    });
+    expect(out).toEqual({
+      kind: 'pedido',
+      acao: 'criado',
+      orderSn: ORDER_SN,
+      pedidoId: 'ped-abc',
+      orderStatus: 'READY_TO_SHIP',
+      itensSemProduto: 0,
+      detail: 'criado',
+    });
+    expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'pedido' });
+  });
+
+  it('aceita as DUAS grafias: `ordersn` (push 1) e `order_sn` (get_order_list)', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+
+    await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+    await processNotificationPayload(db, push3({ order_sn: ORDER_SN }), deps);
+
+    const alvos = importarPedido.mock.calls.map(([, alvo]) => alvo.orderSn);
+    expect(alvos).toEqual([ORDER_SN, ORDER_SN]);
+  });
+
+  // …e o par que tem de continuar DISTINTO: `ordersn` ganha quando as duas
+  // grafias chegam com valores diferentes, porque é a que `identidadeDoPush` lê
+  // — o documento de dead-letter e o alvo da importação têm de falar do MESMO
+  // pedido.
+  it('⚠️ quase-falha: com as duas grafias presentes, `ordersn` é quem manda', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+
+    await processNotificationPayload(db, push3({ ordersn: ORDER_SN, order_sn: 'OUTRO' }), deps);
+
+    expect(importarPedido.mock.calls[0]![1].orderSn).toBe(ORDER_SN);
+  });
+
+  it('sem shop_id PARA — não há o que um humano resolva, e não se adia o inexistente', async () => {
+    const out = await processNotificationPayload(
+      db,
+      push3({ ordersn: ORDER_SN }, { shopId: null }),
+      deps,
+    );
+
+    expect(out.kind).toBe('parado');
+    expect(toDisposition(out).kind).toBe('park');
+    // Nem a conta é consultada: não há loja para consultar.
+    expect(h.find).not.toHaveBeenCalled();
+    expect(importarPedido).not.toHaveBeenCalled();
+  });
+
+  it('sem ordersn PARA', async () => {
+    const out = await processNotificationPayload(db, push3({ status: 'CANCELLED' }), deps);
+
+    expect(out).toEqual({ kind: 'parado', motivo: expect.stringContaining('sem ordersn') });
+    expect(h.find).not.toHaveBeenCalled();
+    expect(importarPedido).not.toHaveBeenCalled();
+  });
+
+  it('de uma loja não mapeada ADIA (sem-conta) — ao contrário do code 2, que faz ack', async () => {
+    h.find.mockResolvedValue(null);
+
+    const pedido = await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+    const conta2 = await processNotificationPayload(
+      db,
+      payload({ code: 2, shopId: SHOP_ID, data: { shop_id: SHOP_ID, authorize_type: 'expiry' } }),
+      deps,
+    );
+
+    // ⚠️ A INVERSÃO, num par: para o code 2 o evento que limpa a precondição (o
+    // operador conectando a loja) é o que torna a notícia FALSA — por isso ack.
+    // Para o code 3 ele torna o pedido ACIONÁVEL: a order continua na Shopee e
+    // `get_order_detail` continua respondendo. Sem o adiamento, os pedidos
+    // feitos antes de uma conexão tardia só seriam alcançáveis pela janela de
+    // 24 h da varredura inicial.
+    expect(pedido).toEqual({
+      kind: 'sem-conta',
+      shopId: SHOP_ID,
+      reason: expect.stringContaining(String(SHOP_ID)),
+    });
+    expect(toDisposition(pedido).kind).toBe('defer');
+    expect(conta2.kind).toBe('ack');
+    expect(toDisposition(conta2).kind).toBe('drop');
+    expect(importarPedido).not.toHaveBeenCalled();
+  });
+
+  it('⚠️ `ignorado-inexistente` PARA com o detail do importador — os DOIS motivos ficam legíveis', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+
+    importarPedido.mockResolvedValueOnce(
+      resultadoDeImportacao({
+        acao: 'ignorado-inexistente',
+        pedidoId: null,
+        orderStatus: null,
+        detail: 'ignorado-inexistente:order_not_found',
+      }),
+    );
+    const shopee404 = await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+
+    importarPedido.mockResolvedValueOnce(
+      resultadoDeImportacao({
+        acao: 'ignorado-inexistente',
+        pedidoId: null,
+        orderStatus: null,
+        detail: 'ignorado-inexistente:ausente-no-order_list',
+      }),
+    );
+    const listaNegou = await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+
+    // ⚠️ Um 404 da Shopee e uma lista que negou a linha que ela mesma devolveu
+    // (uma contradição do provedor, só alcançável por um push sintético da
+    // varredura) são fatos DIFERENTES sobre o mesmo pedido. Os dois param, e a
+    // linha parada tem de distinguir qual foi.
+    const motivo404 = shopee404.kind === 'parado' ? shopee404.motivo : '';
+    const motivoLista = listaNegou.kind === 'parado' ? listaNegou.motivo : '';
+    expect(shopee404.kind).toBe('parado');
+    expect(listaNegou.kind).toBe('parado');
+    expect(motivo404).toContain('order_not_found');
+    expect(motivoLista).toContain('ausente-no-order_list');
+    expect(motivo404).not.toBe(motivoLista);
+    // …e os dois carregam o `order_sn`, que é o que um operador procura.
+    expect(motivo404).toContain(ORDER_SN);
+    expect(toDisposition(shopee404).kind).toBe('park');
+  });
+
+  it.each([
+    ['criado', 'ped-1'],
+    ['atualizado', 'ped-1'],
+    ['ignorado-obsoleto', 'ped-1'],
+    ['ignorado-sem-mudanca', 'ped-1'],
+  ] as const)('a ação %s resolve com label "pedido"', async (acao, pedidoId) => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    importarPedido.mockResolvedValueOnce(resultadoDeImportacao({ acao, pedidoId, detail: acao }));
+
+    const out = await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+
+    expect(out).toMatchObject({ kind: 'pedido', acao, pedidoId });
+    expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'pedido' });
+  });
+
+  it('um resultado sem pedidoId numa ação que promete um PARA — contrato violado, visível', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    importarPedido.mockResolvedValueOnce(
+      resultadoDeImportacao({ acao: 'criado', pedidoId: null, orderStatus: null }),
+    );
+
+    const out = await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+
+    expect(out).toEqual({
+      kind: 'parado',
+      motivo: expect.stringContaining('contrato do importador'),
+    });
+  });
+
+  it('a ordem das portas continua: o braço só resolve a conta DEPOIS do portão do parque', async () => {
+    // Um code parado nunca consulta a conta (a asserção original), e o code 3
+    // agora consulta — é a única diferença que a virada do passo 5 introduziu.
+    await processNotificationPayload(db, payload({ code: 4, shopId: SHOP_ID }), deps);
+    expect(h.find).not.toHaveBeenCalled();
+
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+    expect(h.find).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── a tabela erro → disposição ──────────────────────────────────────────────
+
+/** Um envelope de erro da Shopee, com os campos que a classificação lê. */
+function initApi(code: string, kind: (typeof SHOPEE_ERROR_KIND)[keyof typeof SHOPEE_ERROR_KIND]) {
+  return { code, kind, httpStatus: 200, path: '/api/v2/order/get_order_detail' };
+}
+
+function grpcErro(code: number): Error {
+  const err = new Error('firestore indisponível');
+  (err as { code?: number }).code = code;
+  return err;
+}
+
+describe('disposicaoDaFalhaDeImportacao — a tabela, classe por classe', () => {
+  const burst = new ShopeeRateLimitError('limite curto', {
+    ...initApi('error_rate_limit', SHOPEE_ERROR_KIND.burst),
+    kind: SHOPEE_ERROR_KIND.burst,
+    retryAfterSeconds: 60,
+  });
+  const diario = new ShopeeRateLimitError('cota diária', {
+    ...initApi('error_limit', SHOPEE_ERROR_KIND.daily),
+    kind: SHOPEE_ERROR_KIND.daily,
+  });
+  const reauth = new ShopeeReauthRequiredError(
+    'autorização morta',
+    initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+  );
+  const transitorio = new ShopeeApiError(
+    'servidor da Shopee',
+    initApi('error_server', SHOPEE_ERROR_KIND.transient),
+  );
+  const outro = new ShopeeApiError('assinatura', initApi('error_sign', SHOPEE_ERROR_KIND.other));
+  const naoAchou = new ShopeeApiError(
+    'pedido inexistente',
+    initApi('order_not_found', SHOPEE_ERROR_KIND.other),
+  );
+  const schema = new ShopeeSchemaError('resposta fora do schema', {
+    campos: ['response.order_list[].item_list'],
+    httpStatus: 200,
+    path: '/api/v2/order/get_order_detail',
+  });
+  const rede = new ShopeeNetworkError('ECONNRESET');
+  const http = new ShopeeHttpError('a borda respondeu HTML', {
+    httpStatus: 403,
+    path: '/api/v2/order/get_order_detail',
+  });
+  const config = new ShopeeConfigError('SHOPEE_PARTNER_KEY ausente');
+  const semShopId = new ShopeeContaSemShopIdError('conta de main account');
+  const semCredencial = new ShopeeSemCredencialError('nenhuma credencial');
+  const credencialInvalida = new ShopeeCredencialInvalidaError('credencial ilegível', [
+    'access_token',
+  ]);
+  const contaSumiu = new ShopeeContaNotConfiguredError('integração não encontrada');
+  const refresh = new ShopeeRefreshEmAndamentoError('outra instância renova', 1_700_000_030_000);
+  // `safeParse`, não `try/catch`: um catch aqui seria genérico (não há classe a
+  // narrar), e o `.error` é o mesmo `ZodError` que uma escrita recusada levanta.
+  const parse = z.object({ numero: z.string() }).safeParse({ numero: 42 });
+  const zod: unknown = parse.success ? new Error('o parse deveria ter falhado') : parse.error;
+
+  it.each([
+    ['ShopeeRateLimitError burst', burst, 'throw'],
+    ['ShopeeRateLimitError daily', diario, 'defer'],
+    ['ShopeeReauthRequiredError', reauth, 'defer'],
+    ['ShopeeApiError transient', transitorio, 'throw'],
+    ['ShopeeApiError other (error_sign)', outro, 'park'],
+    ['ShopeeApiError order_not_found', naoAchou, 'park'],
+    ['ShopeeSchemaError', schema, 'park'],
+    ['ShopeeNetworkError', rede, 'throw'],
+    ['ShopeeHttpError', http, 'throw'],
+    ['ShopeeConfigError', config, 'throw'],
+    ['ShopeeRefreshEmAndamentoError', refresh, 'throw'],
+    ['ShopeeContaSemShopIdError', semShopId, 'park'],
+    ['ShopeeSemCredencialError', semCredencial, 'defer'],
+    ['ShopeeCredencialInvalidaError', credencialInvalida, 'defer'],
+    ['ShopeeContaNotConfiguredError', contaSumiu, 'defer'],
+    ['erro gRPC (14 UNAVAILABLE)', grpcErro(14), 'throw'],
+    ['ZodError na escrita', zod, 'park'],
+  ])('%s ⇒ %s', (_nome, err, tipo) => {
+    expect(disposicaoDaFalhaDeImportacao(err).tipo).toBe(tipo);
+  });
+
+  it('⚠️ NEAR-MISS: burst LANÇA e daily ADIA — duas subclasses de uma classe, respostas opostas', () => {
+    // As duas são `ShopeeRateLimitError`, e um `instanceof` sozinho as trata
+    // igual. Um `burst` adiado custaria um DIA por um problema de 60 s; uma cota
+    // `daily` lançada gastaria as 3 tentativas em ~10 min e as 5 re-conduções
+    // horárias dentro da MESMA cota esgotada, parqueando um pedido perfeitamente
+    // importável. A cadência da fila diária (× 7) é o que envolve uma cota
+    // diária.
+    expect(disposicaoDaFalhaDeImportacao(burst).tipo).toBe('throw');
+    expect(disposicaoDaFalhaDeImportacao(diario).tipo).toBe('defer');
+  });
+
+  it('⚠️ NEAR-MISS: reauth e rate-limit ESTENDEM ShopeeApiError e não caem no braço base', () => {
+    // A ordem dos `instanceof` é o que separa as três: com o braço da base
+    // primeiro, um grant morto parqueria (nenhuma re-condução) e uma cota diária
+    // também.
+    expect(reauth).toBeInstanceOf(ShopeeApiError);
+    expect(diario).toBeInstanceOf(ShopeeApiError);
+    expect(disposicaoDaFalhaDeImportacao(reauth).tipo).not.toBe(
+      disposicaoDaFalhaDeImportacao(outro).tipo,
+    );
+    expect(disposicaoDaFalhaDeImportacao(diario).tipo).not.toBe(
+      disposicaoDaFalhaDeImportacao(outro).tipo,
+    );
+  });
+
+  it('um erro que a tabela não conhece é RELANÇADO — regra 6, um bug de código falha alto', () => {
+    expect(disposicaoDaFalhaDeImportacao(new Error('bug qualquer')).tipo).toBe('throw');
+    expect(disposicaoDaFalhaDeImportacao(new TypeError('undefined não é função')).tipo).toBe(
+      'throw',
+    );
+    expect(disposicaoDaFalhaDeImportacao('uma string').tipo).toBe('throw');
+    expect(disposicaoDaFalhaDeImportacao(null).tipo).toBe('throw');
+    // …e um `Error` com um `code` numérico FORA da faixa gRPC não é contido.
+    expect(disposicaoDaFalhaDeImportacao(grpcErro(999)).tipo).toBe('throw');
+  });
+
+  it('o motivo do parque carrega o CODE da Shopee e o path, nunca o corpo', () => {
+    const d = disposicaoDaFalhaDeImportacao(outro);
+    expect(d.tipo).toBe('park');
+    const motivo = d.tipo === 'park' ? d.reason : '';
+    expect(motivo).toContain('push_code 3:');
+    expect(motivo).toContain('error_sign');
+    expect(motivo).toContain('/api/v2/order/get_order_detail');
+    expect(motivo).not.toContain('assinatura'); // a `message` da Shopee fica fora
+  });
+
+  it('ShopeeSchemaError parqueia com os CAMINHOS dos campos, sem valores (#1015)', () => {
+    const d = disposicaoDaFalhaDeImportacao(schema);
+    const motivo = d.tipo === 'park' ? d.reason : '';
+    expect(motivo).toContain('response.order_list[].item_list');
+    expect(motivo).not.toContain('resposta fora do schema');
+  });
+
+  it('o ZodError da escrita parqueia com o CAMINHO do campo, não com o valor', () => {
+    const d = disposicaoDaFalhaDeImportacao(zod);
+    const motivo = d.tipo === 'park' ? d.reason : '';
+    expect(motivo).toContain('numero');
+    expect(motivo).not.toContain('42');
+  });
+
+  it('toda razão de parque/adiamento começa com o mesmo prefixo filtrável', () => {
+    for (const err of [outro, schema, semShopId, diario, reauth, semCredencial, contaSumiu, zod]) {
+      const d = disposicaoDaFalhaDeImportacao(err);
+      const motivo = d.tipo === 'throw' ? '' : d.reason;
+      expect(motivo, String(err)).toMatch(/^push_code 3:/);
+    }
+  });
+});
+
+describe('code 3 — a falha da importação vira disposição no braço', () => {
+  function push3(data: Record<string, unknown>) {
+    return payload({ code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data });
+  }
+
+  beforeEach(() => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+  });
+
+  it('uma falha transitória SOBE (a fila re-tenta), e sobe o erro ORIGINAL', async () => {
+    const err = new ShopeeNetworkError('ECONNRESET');
+    importarPedido.mockRejectedValueOnce(err);
+
+    await expect(processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps)).rejects.toBe(
+      err,
+    );
+  });
+
+  it('uma falha permanente vira `parado`, com o code da Shopee no motivo', async () => {
+    importarPedido.mockRejectedValueOnce(
+      new ShopeeApiError('parâmetro', initApi('error_param', SHOPEE_ERROR_KIND.other)),
+    );
+
+    const out = await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+
+    expect(out).toEqual({ kind: 'parado', motivo: expect.stringContaining('error_param') });
+    expect(toDisposition(out).kind).toBe('park');
+  });
+
+  it('uma precondição humana ADIA com kind PRÓPRIO — nunca "sem-conta", que é outro fato', async () => {
+    importarPedido.mockRejectedValueOnce(
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+    );
+
+    const out = await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+
+    // ⚠️ `kind` é o que o log da task imprime. Reportar um grant morto como
+    // "esta loja não mapeia integração" seria a forma do #1087: um rótulo só
+    // cobrindo dois fatos.
+    expect(out).toEqual({
+      kind: 'pedido-adiado',
+      shopId: SHOP_ID,
+      orderSn: ORDER_SN,
+      reason: expect.stringContaining('ShopeeReauthRequiredError'),
+    });
+    expect(toDisposition(out).kind).toBe('defer');
+  });
+
+  it('⚠️ o adiamento por reauth NÃO levanta aviso — o produtor é avisos/autorizacao.ts', async () => {
+    importarPedido.mockRejectedValueOnce(
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+    );
+
+    await processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps);
+
+    // Um segundo produtor de `shopeeDesautorizado` forkaria a linha do inbox: a
+    // chave é (conta, loja) e a de cá teria outro `criadoEm`. O operador já é
+    // avisado pelo braço do code 2 e pela varredura semanal.
+    expect(h.avisarDesautorizacao).not.toHaveBeenCalled();
+    expect(h.resolverAvisos).not.toHaveBeenCalled();
+  });
+
+  it('um erro fora da tabela SOBE — o braço não engole bug de código (regra 6)', async () => {
+    const bug = new TypeError('cannot read properties of undefined');
+    importarPedido.mockRejectedValueOnce(bug);
+
+    await expect(processNotificationPayload(db, push3({ ordersn: ORDER_SN }), deps)).rejects.toBe(
+      bug,
+    );
   });
 });
 
@@ -1141,6 +1658,24 @@ describe('lojasDoPushDeConta', () => {
 describe('a fiação do pipeline', () => {
   it('o nome da fila é o nome da função exportada em functions/src', () => {
     expect(SHOPEE_NOTIFICATION_QUEUE).toBe('processShopeeNotification');
+  });
+
+  it('o default de importarPedido existe e é PREGUIÇOSO — nada de `import` estático do pedido', () => {
+    // O default tem de existir: sem ele o braço do code 3 não teria importador
+    // em produção e a fiação inteira seria letra morta.
+    expect(typeof defaultProcessDeps.importarPedido).toBe('function');
+
+    // ⚠️ E tem de continuar preguiçoso. Este módulo é importado pela ROTA do
+    // receiver, então um `import { importarPedidoShopee } from '../pedidos/…'`
+    // no topo arrastaria a árvore inteira de pedidos (mappers, cascata de
+    // produto, captura do comprador e todo schema que eles alcançam) para o
+    // bundle Next de um endpoint que só enfileira. O `import type` é apagado na
+    // compilação e não conta; o que não pode aparecer é um import de VALOR.
+    const fonte = readFileSync(fileURLToPath(new URL('./notificacao.ts', import.meta.url)), 'utf8');
+    expect(fonte).toContain("await import('../pedidos/importarPedido')");
+    // Um import estático de valor tem esta forma (`import {` … `} from`), e o
+    // de tipo carrega o `type` logo depois do `import` — a distinção é o teste.
+    expect(fonte).not.toMatch(/^import\s+(?!type\b)[^;]*from\s+'\.\.\/pedidos\//m);
   });
 
   // ⚠️ `notificationGuardrails.test.ts` (guarda B) IGNORA a forma abreviada

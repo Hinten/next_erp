@@ -125,16 +125,13 @@ export function avisarPushDegradado(
  * ⚠️ **No `params`** — the rendered message reads none, and a param nothing
  * renders is a field that drifts silently.
  *
- * ⚠️ **The rendered wording is DEFERRED on purpose, and it disagrees with this
- * module.** `apps/web/lib/avisos/mensagens.ts` sends the operator to the
- * lost-push sweep ("só a fila de 3 dias pode recuperá-las") when a suspension
- * is precisely what that queue does not cover. Correcting it today would point
- * at `SHOPEE_ORDER_BACKFILL_ENABLED`, which the structural guard still refuses
- * while code 3 parks — worse advice than the current text. The wording is
- * rewritten in the SAME commit that flips `DISPATCH[3]` (step 5), alongside
- * `.master_plans/shopee/shopee-marketplace-integration.md`, which says the same
- * thing. Until then the runbook's first instruction (re-enable in the Console,
- * faq 446) is the one that matters, and the row escalates nowhere anyway.
+ * ✅ **The rendered wording was corrected in step 5.**
+ * `apps/web/lib/avisos/mensagens.ts` used to send the operator to the lost-push
+ * sweep ("só a fila de 3 dias pode recuperá-las") when a suspension is precisely
+ * what that queue does not cover; it now names the order backfill ("varredura
+ * de pedidos"), the only documented recovery, which `DISPATCH[3] = 'pedido'`
+ * armed in the same change. The runbook's first instruction (re-enable in the
+ * Console, faq 446) still leads, and the row escalates nowhere anyway.
  *
  * ⚠️ **No `prazo`, ever.** `suspended_time` is when the suspension STARTED;
  * `prazo` is a provider-supplied DEADLINE and renders as one, so putting a start

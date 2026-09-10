@@ -51,6 +51,14 @@ import {
   TASK_MAX_ATTEMPTS,
 } from '@delfrance/data/admin/notifications';
 import {
+  SHOPEE_ERROR_KIND,
+  ShopeeApiError,
+  ShopeeConfigError,
+  ShopeeHttpError,
+  ShopeeNetworkError,
+  ShopeeRateLimitError,
+  ShopeeReauthRequiredError,
+  ShopeeSchemaError,
   type ShopeePartnerClient,
   createShopeePartnerClient,
 } from '@delfrance/integrations-shopee';
@@ -58,7 +66,23 @@ import {
 import { shopeeConfig } from '../env';
 import { avisarDesautorizacao, resolverAvisosDeAutorizacao } from '../avisos/autorizacao';
 import { findIntegracaoByShopId, readConta } from '../core/contaCache';
+import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
+import { ShopeeContaNotConfiguredError } from '../core/shopee';
+import {
+  ShopeeContaSemShopIdError,
+  ShopeeRefreshEmAndamentoError,
+  ShopeeSemCredencialError,
+} from '../core/tokenStore';
+import { describeValidationFailure } from '../core/validationIssues';
 import { runShopeeAuthorizationExpirySweep } from '../conta/expiracaoSweep';
+// ⚠️ TYPE-ONLY, and it has to stay that way: `import type` is erased at compile
+// time, so naming the importer's shapes here costs the Next bundle nothing. The
+// VALUE arrives through the dynamic import in `defaultProcessDeps`.
+import type {
+  AcaoImportacaoPedidoShopee,
+  AlvoDeImportacaoShopee,
+  ResultadoImportacaoPedidoShopee,
+} from '../pedidos/importarPedido';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -466,6 +490,7 @@ export function dedupKeyOf(p: ShopeeNotificationPayload): string | null {
  * |---|---|---|
  * | `conta` | maybe an aviso | an authorization event: codes 1, 2 and 12 |
  * | `ack`   | nothing | recognised, and there is genuinely nothing to do |
+ * | `pedido`| a pedido | the order import (step 5) — code 3, the only one |
  * | `parado`| one doc | data-bearing, the owning step is not built yet |
  *
  * ⚠️ **Keyed on the push code, never on `push_api_id`.** The comment beside
@@ -485,7 +510,7 @@ export function dedupKeyOf(p: ShopeeNotificationPayload): string | null {
  * revision of this table had ever listed. They arrived as `desconhecido`,
  * parked, and are listed below because of it.
  */
-export type DestinoPush = 'conta' | 'ack' | 'parado' | 'desconhecido';
+export type DestinoPush = 'conta' | 'ack' | 'pedido' | 'parado' | 'desconhecido';
 
 const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   // ---- authorization (the conta arms) ------------------------------------
@@ -508,8 +533,15 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   22: 'ack', // push_api_id 25 — item_price_update_push, the ERP's OWN echo
   28: 'ack', // push_api_id 31 — shop_penalty_update_push (no ERP surface yet)
 
+  // ---- the pedido arm (step 5) -------------------------------------------
+  // ⚠️ This row is what ARMS `runShopeeOrderBackfill`: its structural guard
+  // reads this table (`destinoDoCodigo(3) === 'parado'`) rather than a literal,
+  // so flipping the row here is what lets the sweep synthesize code-3 pushes.
+  // After the flip `SHOPEE_ORDER_BACKFILL_ENABLED=1` is the ONLY remaining gate,
+  // and turning it on is migration-window work (root CLAUDE.md rule 8).
+  3: 'pedido', // push_api_id 1  — order_status_push
+
   // ---- data-bearing, handler pending -------------------------------------
-  3: 'parado', // push_api_id 1  — order_status_push
   4: 'parado', // push_api_id 2  — order_trackingno_push
   30: 'parado', // push_api_id 33 — package_fulfillment_status_push
   47: 'parado', // package info
@@ -522,9 +554,15 @@ const DISPATCH: Readonly<Record<number, DestinoPush>> = {
   25: 'parado', // push_api_id 28 — booking_shipping_document_status_push
 };
 
-/** Why a parked code is parked, naming the step that will build it. */
+/**
+ * Why a parked code is parked, naming the step that will build it.
+ *
+ * ⚠️ There is deliberately no row for **3** any more: the order import IS built
+ * (step 5), so a `motivoDoParque(3)` could only answer the "código novo"
+ * fallback — a sentence that would be false about the one code this channel
+ * handles most.
+ */
 const MOTIVO_PARADO: Readonly<Record<number, string>> = {
-  3: 'status do pedido — o handler é o passo 5',
   4: 'código de rastreio — o handler é o passo 7',
   30: 'status de fulfillment do pacote — o handler é o passo 7',
   47: 'informação do pacote — o handler é o passo 7',
@@ -591,9 +629,32 @@ export type ShopeeProcessOutcome =
   | { kind: 'ack'; reason: string; detail: string }
   /** An authorization arm ran. The counts are what an operator reads. */
   | { kind: 'aviso'; lojas: number; avisados: number; resolvidos: number }
-  /** Exactly one named shop maps to no active integração YET — the only defer. */
+  /**
+   * The order import ran (step 5). `pedidoId`/`orderStatus` are non-null HERE
+   * although the importer declares them nullable: the one action that answers
+   * `null` for both is `ignorado-inexistente`, and the arm turns that into a
+   * `parado` before building this outcome. Narrowing at the arm is what keeps
+   * the importer honest instead of making it promise a pedido it never wrote.
+   */
+  | {
+      kind: 'pedido';
+      acao: AcaoImportacaoPedidoShopee;
+      orderSn: string;
+      pedidoId: string;
+      orderStatus: string;
+      itensSemProduto: number;
+      detail: string;
+    }
+  /**
+   * The order import hit a PRECONDITION (a dead grant, an unreadable or absent
+   * credential, a conta that vanished, an exhausted daily quota). Deferred —
+   * daily × 7, then park. Its own kind rather than `sem-conta`, because `kind`
+   * is what the task log prints.
+   */
+  | { kind: 'pedido-adiado'; shopId: number; orderSn: string; reason: string }
+  /** Exactly one named shop maps to no active integração YET — a defer. */
   | { kind: 'sem-conta'; shopId: number; reason: string }
-  /** Terminal: no handler for this code yet. */
+  /** Terminal: no handler for this code yet, or a permanent import failure. */
   | { kind: 'parado'; motivo: string };
 
 export interface ShopeeProcessDeps {
@@ -606,6 +667,15 @@ export interface ShopeeProcessDeps {
   increment: (by: number) => unknown;
   /** Injectable clock, MILLIS. */
   nowMs: () => number;
+  /**
+   * The code-3 arm (step 5). OPTIONAL so every conta-arm test stays drivable
+   * without a shop-scoped client, and so the default can stay LAZY — see
+   * {@link defaultProcessDeps}.
+   */
+  importarPedido?: (
+    db: Firestore,
+    alvo: AlvoDeImportacaoShopee,
+  ) => Promise<ResultadoImportacaoPedidoShopee>;
 }
 
 export const defaultProcessDeps: ShopeeProcessDeps = {
@@ -617,7 +687,191 @@ export const defaultProcessDeps: ShopeeProcessDeps = {
   // tests and for the functions codebase.
   increment: (by) => FieldValue.increment(by),
   nowMs: () => Date.now(),
+  // ⚠️ A LAZY arrow over a DYNAMIC import, not a module-scope reference, and the
+  // laziness is the point. This module is imported by the push receiver ROUTE,
+  // so a static `import { importarPedidoShopee }` would pull the whole pedido
+  // tree — the mappers, the produto cascade, the buyer capture, every schema
+  // they reach — into the Next bundle of an endpoint that only enqueues. The
+  // functions bundle pays for it (it dispatches the task, and the `grep` in
+  // `apps/shopee/functions/DEPLOY.md` proves the importer is inlined there);
+  // the receiver does not.
+  importarPedido: async (db, alvo) => {
+    const { importarPedidoShopee } = await import('../pedidos/importarPedido');
+    return importarPedidoShopee(db, alvo);
+  },
 };
+
+// ── the code-3 arm: a failure → a disposition ───────────────────────────────
+
+/**
+ * The one action the importer answers instead of throwing. Typed against the
+ * union rather than written as a bare literal, so the day that member is
+ * renamed this file fails to compile instead of silently never matching.
+ */
+const ACAO_INEXISTENTE: AcaoImportacaoPedidoShopee = 'ignorado-inexistente';
+
+/** Every park/defer reason from this arm starts here, so one log filter finds them all. */
+const PREFIXO_MOTIVO_CODE3 = 'push_code 3:';
+
+/**
+ * Admin-SDK Firestore and Cloud Tasks failures surface as `Error`s carrying a
+ * numeric gRPC status `code`. Narrowed to the real status range (1–16; 0 = OK
+ * never rides an error) so a coding-bug `Error` that happens to expose some
+ * other numeric `code` is NOT swallowed as transient. Verbatim from
+ * `orderBackfill.ts`, which took it from `conta/expiracaoSweep.ts`.
+ */
+function isGrpcCodedError(err: unknown): err is Error {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'number' && Number.isInteger(code) && code >= 1 && code <= 16;
+}
+
+/** Field PATHS only, capped — never a value, never a body (#1015). */
+const MAX_CAMPOS_NO_MOTIVO = 6;
+function resumirCampos(err: unknown): string {
+  const campos = describeValidationFailure(err);
+  if (campos == null || campos.length === 0) return 'sem campos legíveis';
+  const mostrados = campos.slice(0, MAX_CAMPOS_NO_MOTIVO).join(', ');
+  return campos.length > MAX_CAMPOS_NO_MOTIVO
+    ? `${mostrados} (+${String(campos.length - MAX_CAMPOS_NO_MOTIVO)})`
+    : mostrados;
+}
+
+/** What the arm does about a failure raised inside {@link ShopeeProcessDeps.importarPedido}. */
+export type DisposicaoDaFalha =
+  | { tipo: 'throw' }
+  | { tipo: 'defer'; reason: string }
+  | { tipo: 'park'; reason: string };
+
+/**
+ * Classify a failure of the order import. Pure, exported and table-shaped so it
+ * is testable without a Firestore and without a Shopee.
+ *
+ * ⚠️ **`throw` is not "give up" — it is the TRANSIENT path**, and it costs about
+ * five hours before anything is visible: Cloud Tasks retries
+ * {@link TASK_MAX_ATTEMPTS} times with backoff, the final attempt persists the
+ * delivery as `failed`, the hourly sweep re-drives it up to
+ * {@link MAX_TENTATIVAS} times and only then parks it. `defer` is the DAILY
+ * lane (`MAX_TENTATIVAS_DEFERRED` days, then park) and `park` is terminal and
+ * immediate.
+ *
+ * ⚠️ **Order matters here in a way `instanceof` hides.**
+ * `ShopeeReauthRequiredError` and `ShopeeRateLimitError` both EXTEND
+ * `ShopeeApiError`, so the base-class arm has to come last or it would answer
+ * for all three. The same trap is written down in `orderBackfill.ts`'s
+ * containment boundary.
+ *
+ * ⚠️ **No aviso is raised on this path, deliberately.** `avisos/autorizacao.ts`
+ * is the ONE producer of `shopeeDesautorizado`; a second producer forks the row,
+ * and the operator is already told by the code-2 arm and the weekly sweep.
+ */
+export function disposicaoDaFalhaDeImportacao(err: unknown): DisposicaoDaFalha {
+  // --- the queue's own ladder: retry, and only then become visible ---------
+  if (err instanceof ShopeeRateLimitError) {
+    // ⚠️ The two rate limits want OPPOSITE answers. `burst` is a short window,
+    // and the queue's 30–300 s backoff is exactly the right instrument;
+    // `retryAfterSeconds` is advisory, and deferring a 60-second problem would
+    // cost a day. `daily` (`error_limit`) resets at 00:00 UTC+8 = 13:00 BRT, so
+    // three attempts in ~10 minutes plus five hourly re-drives all land inside
+    // the same exhausted quota and park a perfectly importable order. The
+    // deferred lane's cadence — daily × 7 — brackets a DAILY quota exactly.
+    // ⚠️ The pipeline documents `defer` as "a precondition a human can clear";
+    // a quota clears itself. The load-bearing property is the CADENCE, not who
+    // clears it, and this comment says so rather than pretending otherwise.
+    if (err.kind === SHOPEE_ERROR_KIND.daily) {
+      return {
+        tipo: 'defer',
+        reason: `${PREFIXO_MOTIVO_CODE3} cota diária da Shopee (${err.code}) — reinicia 00:00 UTC+8`,
+      };
+    }
+    return { tipo: 'throw' };
+  }
+  // A dead grant is a PRECONDITION: only a human re-consenting clears it, and a
+  // week of daily re-drives is the grace period before a terminal row.
+  if (err instanceof ShopeeReauthRequiredError) {
+    return {
+      tipo: 'defer',
+      reason: `${PREFIXO_MOTIVO_CODE3} ShopeeReauthRequiredError (${err.code}) — a conta precisa de novo consentimento`,
+    };
+  }
+  if (err instanceof ShopeeSchemaError) {
+    // A shape we cannot read does not become readable by retrying. PATHS only.
+    return {
+      tipo: 'park',
+      reason: `${PREFIXO_MOTIVO_CODE3} ShopeeSchemaError em ${err.path} — campos: ${resumirCampos(err)}`,
+    };
+  }
+  if (err instanceof ShopeeApiError) {
+    // `transient` is Shopee's own side (`error_server`, `error_network`).
+    if (err.kind === SHOPEE_ERROR_KIND.transient) return { tipo: 'throw' };
+    // Everything else Shopee named — `error_sign` (OUR signing/clock bug; a
+    // retry re-sends the same bad signature), `error_param`, `error_data`, and
+    // `order_not_found` when it arrives as a THROW rather than as the
+    // importer's outcome. Terminal, and the row carries the code so a Cloud
+    // Logging filter separates "Shopee denied the order" from "our schema
+    // drifted" without opening a document.
+    return {
+      tipo: 'park',
+      reason: `${PREFIXO_MOTIVO_CODE3} ShopeeApiError ${err.code} em ${err.path}`,
+    };
+  }
+  // No response at all, or an edge that answered something other than a Shopee
+  // envelope — the IP-whitelist shape once P2 lands. Retryable if the whitelist
+  // is right and the edge blipped; if it is wrong, the retries park it, and a
+  // parked row naming the path is what says "we are calling from an undeclared
+  // address".
+  if (err instanceof ShopeeNetworkError || err instanceof ShopeeHttpError) return { tipo: 'throw' };
+  // Another instance holds the refresh lease past our poll budget. Transient by
+  // construction — the conta route answers this one 503 + Retry-After.
+  if (err instanceof ShopeeRefreshEmAndamentoError) return { tipo: 'throw' };
+  // ⚠️ OURS (#778). The execution that names a missing binding is the one that
+  // has to fail; the honest observable is log lines plus accumulating `failed`
+  // rows, not an aborted deploy.
+  if (err instanceof ShopeeConfigError) return { tipo: 'throw' };
+  // A main-account conta cannot sign a shop call, and nothing about THIS order
+  // will change that. Terminal.
+  if (err instanceof ShopeeContaSemShopIdError) {
+    return {
+      tipo: 'park',
+      reason: `${PREFIXO_MOTIVO_CODE3} ShopeeContaSemShopIdError — a conta não tem shop_id para assinar a chamada`,
+    };
+  }
+  // The three per-conta credential states the conta route already renders, plus
+  // the genuine race where `findIntegracaoByShopId` named an id and
+  // `loadShopeeContext` then found nothing. All four are cleared by a human (or
+  // by the very next delivery), never by a retry inside ten minutes.
+  if (err instanceof ShopeeSemCredencialError) {
+    return {
+      tipo: 'defer',
+      reason: `${PREFIXO_MOTIVO_CODE3} ShopeeSemCredencialError — a conta nunca foi conectada, ou a credencial foi apagada`,
+    };
+  }
+  if (err instanceof ShopeeCredencialInvalidaError) {
+    return {
+      tipo: 'defer',
+      reason: `${PREFIXO_MOTIVO_CODE3} ShopeeCredencialInvalidaError — credencial ilegível: ${err.campos.join(', ') || 'sem campos legíveis'}`,
+    };
+  }
+  if (err instanceof ShopeeContaNotConfiguredError) {
+    return {
+      tipo: 'defer',
+      reason: `${PREFIXO_MOTIVO_CODE3} ShopeeContaNotConfiguredError — a integração sumiu entre a resolução da loja e a leitura da conta`,
+    };
+  }
+  // Firestore / Cloud Tasks, transient by construction.
+  if (isGrpcCodedError(err)) return { tipo: 'throw' };
+  // A pedido the write refused. ⚠️ #1087 one channel over: a `ZodError` inside a
+  // write reads as transient and retries forever. It is a MAPPER bug — park it
+  // with the paths, values stripped.
+  if (err instanceof z.ZodError) {
+    return {
+      tipo: 'park',
+      reason: `${PREFIXO_MOTIVO_CODE3} ZodError na escrita do pedido — campos: ${resumirCampos(err)}`,
+    };
+  }
+  // Rule 6: anything unrecognised is a coding bug and deserves to fail loudly.
+  return { tipo: 'throw' };
+}
 
 /**
  * What lands on the aviso's `motivo` when a `code 2` push carries no
@@ -729,6 +983,112 @@ export async function processNotificationPayload(
   }
 
   const nowMs = deps.nowMs();
+
+  // ---- code 3 — the order import (step 5) --------------------------------
+  if (destino === 'pedido') {
+    const shopId = payload.shopId;
+    if (shopId == null) {
+      // ⚠️ PARK, never defer. A push that names no shop is not a precondition a
+      // human can clear — there is nothing to look up and nothing to wait for.
+      // `push 1` documents `shop_id` at the TOP level and every synthetic code 3
+      // carries it by construction, so this is a provider or a producer defect
+      // and the parked row is the only thing that says so.
+      return {
+        kind: 'parado',
+        motivo: `${PREFIXO_MOTIVO_CODE3} push de pedido sem shop_id — nada a resolver`,
+      };
+    }
+    // ⚠️ BOTH spellings. `push 1`'s own sample says `ordersn`, while
+    // `get_order_list` — and therefore anyone writing a payload by hand — says
+    // `order_sn`. `identidadeDoPush` reads only `ordersn`, so a payload carrying
+    // the other spelling already arrives with a `-` in its identity; accepting
+    // both HERE is what stops it from being unprocessable as well as
+    // unidentifiable.
+    const d = payload.data ?? {};
+    const orderSn = texto(d.ordersn) ?? texto(d.order_sn);
+    if (orderSn == null) {
+      return {
+        kind: 'parado',
+        motivo: `${PREFIXO_MOTIVO_CODE3} push de pedido sem ordersn — nada a importar`,
+      };
+    }
+
+    const integracaoId = await findIntegracaoByShopId(db, shopId);
+    if (integracaoId == null) {
+      // DEFER — and the code-2 inversion does NOT apply here, which is the whole
+      // reason this branch is written out instead of shared. For a code 2 the
+      // event that clears the precondition (an operator connecting the shop) is
+      // the event that makes the news FALSE. For a code 3 it makes the order
+      // ACTIONABLE: it still exists at Shopee and `get_order_detail` will still
+      // return it. Without the defer, every order placed before a late
+      // connection is reachable only through the backfill's initial 24-hour
+      // lookback — so a conta linked more than a day after the first sale would
+      // lose those orders in silence. Daily × 7, then a visible terminal row.
+      return {
+        kind: 'sem-conta',
+        shopId,
+        reason: `loja ${String(shopId)} não mapeia nenhuma integração Shopee ativa`,
+      };
+    }
+
+    let resultado: ResultadoImportacaoPedidoShopee;
+    try {
+      // `deps.importarPedido` is optional in the interface so the conta arms stay
+      // drivable without it; on this arm it is always present (the default is
+      // the real importer) and a caller that removed it should fail loudly.
+      const importar = deps.importarPedido ?? defaultProcessDeps.importarPedido!;
+      resultado = await importar(db, { integracaoId, shopId, orderSn, nowMs });
+    } catch (err) {
+      // ⚠️ ONE narrow catch, and it narrows in `disposicaoDaFalhaDeImportacao`
+      // (rule 6): every class it does not name is RETHROWN from there, so this
+      // block cannot swallow a coding bug.
+      const disposicao = disposicaoDaFalhaDeImportacao(err);
+      if (disposicao.tipo === 'throw') throw err;
+      if (disposicao.tipo === 'park') return { kind: 'parado', motivo: disposicao.reason };
+      // ⚠️ Its OWN kind, not `sem-conta`. Both defer, but `kind` is what the
+      // task log prints and what an operator filters on: reporting a dead grant
+      // or an exhausted daily quota as "this shop maps to no integração" is the
+      // #1087 shape — one label covering two different facts. The reason string
+      // names the class either way.
+      return { kind: 'pedido-adiado', shopId, orderSn, reason: disposicao.reason };
+    }
+
+    if (resultado.acao === ACAO_INEXISTENTE) {
+      // ⚠️ The importer RETURNS this rather than throwing, because "this shop has
+      // no such order" is a permanent fact about ONE order — and the disposition
+      // is ours. `detail` distinguishes the two ways it happens
+      // (`order_not_found` = Shopee's own 404; `ausente-no-order_list` = the list
+      // denied a row it had just returned, a provider self-contradiction that
+      // only a synthetic backfill push can produce), so BOTH stay readable on
+      // the parked row.
+      return {
+        kind: 'parado',
+        motivo: `${PREFIXO_MOTIVO_CODE3} pedido ${orderSn} inexistente na Shopee (${resultado.detail})`,
+      };
+    }
+
+    if (resultado.pedidoId == null || resultado.orderStatus == null) {
+      // The narrowing, done HERE rather than by widening the outcome or by
+      // making the importer promise a pedido it may not have written. Its
+      // contract is "null only on `ignorado-inexistente`" — which the branch
+      // above already took — so this park is unreachable while that holds, and
+      // is a visible terminal row the day it stops holding.
+      return {
+        kind: 'parado',
+        motivo: `${PREFIXO_MOTIVO_CODE3} importação devolveu "${resultado.acao}" sem pedidoId/orderStatus — contrato do importador violado`,
+      };
+    }
+
+    return {
+      kind: 'pedido',
+      acao: resultado.acao,
+      orderSn,
+      pedidoId: resultado.pedidoId,
+      orderStatus: resultado.orderStatus,
+      itensSemProduto: resultado.itensSemProduto,
+      detail: resultado.detail,
+    };
+  }
 
   // ---- code 12 — the partner-level expiry batch --------------------------
   if (payload.code === 12) {
@@ -890,9 +1250,18 @@ export function toDisposition(outcome: ShopeeProcessOutcome): NotificationDispos
       return { kind: 'drop', reason: outcome.reason, label: 'ack' };
     case 'aviso':
       return { kind: 'resolve', label: 'aviso' };
-    // The only defer: a human connecting the conta clears it, and that may be
-    // tomorrow — the hourly lane would park it ~6 h in (#808).
+    // ⚠️ Its own LABEL, so the sweep's `outcomes` map separates an imported
+    // order from an aviso — the same reason the aviso arm carries one, and the
+    // #1087 lesson that one label over two meanings reports success for work
+    // that never happened.
+    case 'pedido':
+      return { kind: 'resolve', label: 'pedido' };
+    // The defers: a human connecting the conta (or re-consenting, or fixing a
+    // credential) clears it, and that may be tomorrow — the hourly lane would
+    // park it ~6 h in (#808). A daily Shopee quota rides the same lane because
+    // its CADENCE matches, not because a human clears it.
     case 'sem-conta':
+    case 'pedido-adiado':
       return { kind: 'defer', reason: outcome.reason };
     case 'parado':
       return { kind: 'park', reason: outcome.motivo };
@@ -910,6 +1279,17 @@ export interface TaskResult {
   /** Filterable token for the arms that persist NOTHING. */
   detail?: string;
   lojas?: number;
+  /**
+   * The Shopee `order_sn` of a code-3 delivery.
+   *
+   * ⚠️ It is NOT buyer data, which is why it may be logged while the push body
+   * may not: it is the pedido's `numero`, an operator's only search handle, and
+   * it is already stored in the clear as a segment of the `notificacoesShopee`
+   * doc id (`3:<shop>:<ordersn>:<carimbo>`).
+   */
+  orderSn?: string;
+  /** Lines the import could not bind to a produto — the number an operator acts on. */
+  itensSemProduto?: number;
 }
 
 /**
@@ -1016,6 +1396,9 @@ export async function handleNotificationTask(
   const detail = r.result && 'detail' in r.result ? r.result.detail : null;
   const lojas = r.result && 'lojas' in r.result ? r.result.lojas : null;
   const shopId = r.payload?.shopId ?? (r.result && 'shopId' in r.result ? r.result.shopId : null);
+  const orderSn = r.result && 'orderSn' in r.result ? r.result.orderSn : null;
+  const itensSemProduto =
+    r.result && 'itensSemProduto' in r.result ? r.result.itensSemProduto : null;
   return {
     outcome: r.outcome,
     ...(r.payload ? { code: r.payload.code } : {}),
@@ -1023,6 +1406,8 @@ export async function handleNotificationTask(
     ...(r.result ? { kind: r.result.kind } : {}),
     ...(detail != null ? { detail } : {}),
     ...(lojas != null ? { lojas } : {}),
+    ...(orderSn != null ? { orderSn } : {}),
+    ...(itensSemProduto != null ? { itensSemProduto } : {}),
   };
 }
 

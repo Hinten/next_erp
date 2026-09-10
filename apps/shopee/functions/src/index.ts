@@ -400,12 +400,12 @@ export const monitorShopeePushConfig = onSchedule(
  * `RETRY_SHIP`, `TO_CONFIRM_RECEIVE` and `TO_RETURN` orders, which Shopee's
  * `order_status` filter cannot list (hence: no status filter, ever).
  *
- * ⚠️ DOUBLY GATED, and the flag is not the important half.
- * `SHOPEE_ORDER_BACKFILL_ENABLED === '1'` ships OFF; on top of it a STRUCTURAL
- * guard refuses to run while the dispatch table still routes push code 3 to
- * `parado`, because a synthesized code 3 today parks one terminal document per
- * order per tick — up to 1 000 per conta. The guard reads that table, so it
- * flips itself when step 5 gives code 3 a handler.
+ * ⚠️ SINGLY GATED since step 5. `SHOPEE_ORDER_BACKFILL_ENABLED === '1'` ships
+ * OFF and is now the ONLY gate: the structural guard (the sweep refuses while
+ * `destinoDoCodigo(3) === 'parado'`) flipped itself the moment `DISPATCH[3]`
+ * became `'pedido'`, exactly as designed. Turning the flag on is a runtime env
+ * change for the migration window — the first enabled tick enqueues one task
+ * per order in the cursor window, and each one writes a pedido.
  *
  * ⚠️ This function ENQUEUES and it is Shop-signed: the same `TASKS_INVOKER_SA`
  * requirement as the lost-push sweep above, plus a live access token per conta.

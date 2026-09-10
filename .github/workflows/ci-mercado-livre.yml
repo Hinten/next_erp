@@ -89,6 +89,16 @@ on:
       - 'packages/integrations/mercado-livre/**'
       - 'packages/data/src/admin/notifications/**'
       - 'packages/data/src/admin/collections/**'
+      # The ML order import reaches both of these through a re-export since the
+      # Shopee step-5 promotion (#1513): `resolverProdutoPorSku` moved out of
+      # `orderProdutoResolve.ts` and `makeEnderecoId`/`ensureEndereco` out of
+      # `orderCliente.ts`, which are now thin callers. Without these entries a
+      # post-merge push touching only the promoted helper — a fold that decides
+      # which produto a sold line binds to — would not fire this lane's safety
+      # net. (`pull_request:` needs nothing: the `changes` job derives the
+      # closure from the workspace graph, and `packages/data` is in it.)
+      - 'packages/data/src/admin/produtos/**'
+      - 'packages/data/src/admin/enderecos/**'
       - 'packages/data/src/admin/defineAdminCollection.ts'
       - 'packages/data/src/admin/grpcErrors.ts'
       - 'packages/schemas/src/integracao.ts'

@@ -54,6 +54,10 @@ export {
   produtoMercadoLivreLinkCollection,
   variacaoMercadoLivreLinkCollection,
 } from './produtoMercadoLivreLinkCollection';
+export {
+  produtoShopeeLinkCollection,
+  variacaoShopeeLinkCollection,
+} from './produtoShopeeLinkCollection';
 export { grupoDeVariacoesCollection } from './grupoDeVariacoesCollection';
 export { produtoExtraDataCollection } from './produtoExtraDataCollection';
 export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreCollection';

@@ -53,12 +53,16 @@ export const MENSAGENS_POR_TIPO: Record<TipoAviso, MensagemAviso> = {
   },
   [TIPO_AVISO.shopeePushSuspenso]: {
     titulo: 'Assinatura de notificações Shopee suspensa',
+    // ⚠️ A fila de 3 dias NÃO cobre uma suspensão: ela guarda o que a Shopee
+    // tentou entregar e não conseguiu, e uma assinatura desativada não gera
+    // entrega nenhuma. Quem recupera os pedidos desse período é a varredura de
+    // pedidos, que relê as orders por `update_time`.
     corpo: () =>
-      'A Shopee suspendeu o envio de notificações. As mensagens perdidas NÃO são reenviadas ' +
-      'depois da reativação — só a fila de 3 dias pode recuperá-las.',
+      'A Shopee suspendeu o envio de notificações. O que não foi entregue nesse período não ' +
+      'entra na fila de 3 dias — quem recupera os pedidos é a varredura de pedidos.',
     runbook:
-      'Reative a assinatura no Console da Shopee e confira a varredura de mensagens perdidas ' +
-      'antes que a janela de 3 dias feche.',
+      'Reative a assinatura no Console da Shopee e confirme que a varredura de pedidos está ' +
+      'ligada — é a única recuperação documentada para o período suspenso.',
   },
   [TIPO_AVISO.canalSemCredencial]: {
     titulo: 'Canal sem credencial válida',
