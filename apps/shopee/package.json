@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:tasks": "vitest run --config vitest.tasks.config.ts",
     "oauth:url": "dotenv -e ../../.env.local -- tsx scripts/oauth-url.ts",
+    "importar:pedido": "dotenv -e ../../.env.local -- tsx scripts/importar-pedido.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {

@@ -25,6 +25,15 @@
  *  8. the per-line incidentes, AFTER the write, so a line the stored pedido
  *     already binds raises nothing.
  *
+ * ## The split: steps 1–5 + the conta read are a SEPARATE, read-only function
+ *
+ * `prepararImportacaoPedidoShopee` does everything above that only READS, and
+ * `mapearPreparoPedidoShopee` turns its output plus the buyer refs into the four
+ * write groups. `importarPedidoShopee` is the composition of the two plus the
+ * writes (6, 7, 8) — so the dev rehearsal script can print what an import would
+ * store without a second copy of the sequence. See
+ * {@link PreparoPedidoShopee} for why that copy is the thing to avoid.
+ *
  * ## Errors (rule 6 — narrow `instanceof`, rethrow the rest)
  *
  * ⚠️ **This module converts NO error into a disposition.** A throw is the
@@ -57,6 +66,7 @@ import {
   recoverEnderecoFromCep,
   toOuterRef,
   type EnderecoForcado,
+  type FreteDoPedido,
   type Pedido,
 } from '@delfrance/schemas';
 import {
@@ -74,15 +84,22 @@ import {
 
 import { readConta } from '../core/contaCache';
 import { loadShopeeContext } from '../core/shopee';
-import { avaliarCapturaComprador, clienteDeShopee, enderecoDeShopee } from './comprador';
+import {
+  avaliarCapturaComprador,
+  clienteDeShopee,
+  enderecoDeShopee,
+  type CapturaComprador,
+} from './comprador';
 import { registrarLinhasSemProduto, type LinhaSemProdutoShopee } from './incidentesProduto';
-import { mapearItensShopee } from './itens';
-import { mapearFreteInicialShopee } from './orderFreteMapping';
+import { mapearItensShopee, type ItensMapeadosShopee } from './itens';
+import { mapearFreteInicialShopee, type PesoBrutoObservado } from './orderFreteMapping';
 import { makePedidoIdShopee } from './orderIds';
 import {
   mapearPedidoShopee,
   microsDeSegundosShopee,
   segundosShopeeUtilizaveis,
+  type ContaBagShopee,
+  type PedidoMapeadoShopee,
 } from './orderMapping';
 import { criarResolvedorDeLinhasShopee } from './produtoResolve';
 import { salvarPedidoShopee, type AcaoPedidoShopee } from './orderPedidoTx';
@@ -226,7 +243,7 @@ function naoVazio(v: string | null | undefined): string | null {
 /*                                  the buyer                                  */
 /* -------------------------------------------------------------------------- */
 
-interface CompradorResolvido {
+export interface CompradorResolvido {
   readonly clienteOuterRef: string | null;
   readonly enderecoOuterRef: string | null;
   readonly camposRecusadosExtra: readonly string[];
@@ -338,15 +355,61 @@ async function resolverComprador(
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                 the importer                                */
+/*                        the READ-ONLY half of an import                      */
 /* -------------------------------------------------------------------------- */
 
-export async function importarPedidoShopee(
+/**
+ * Everything one import READS from Shopee and from Firestore, plus everything
+ * the pure mappers derive from it — and **not one write**.
+ *
+ * ⚠️ It exists so the dev rehearsal script (`scripts/importar-pedido.ts`, root
+ * CLAUDE.md rule 8) can show what an import WOULD store without a second copy of
+ * this composition. The root CLAUDE.md names that copy by its failure: #1369
+ * shipped a panel whose header called itself a "line-for-line mirror" of a
+ * resolver and which had already drifted in two places, both green, both
+ * commented. Reviewers cannot diff two files by eye; the compiler can, once
+ * there is only one — so the script calls THIS function and
+ * {@link mapearPreparoPedidoShopee}, exactly as {@link importarPedidoShopee}
+ * does, and a change here reaches both callers or neither.
+ *
+ * ⚠️ **The no-write property is STRUCTURAL, not a promise in a comment**: the
+ * four writers on the pedido path (`findOrCreateCliente`, `ensureEndereco`,
+ * `salvarPedidoShopee`, `registrarLinhasSemProduto`) are all called from
+ * {@link importarPedidoShopee} and none of them appears in this body. The
+ * `pedidoCollection` read below is a `.get()`; the produto cascade and
+ * `readConta` are reads. Keep it that way — a write added here would silently
+ * make `--dry-run` write.
+ */
+export interface PreparoPedidoShopee {
+  /** The reconciled `get_order_detail` row — the authority for every field. */
+  readonly linha: ShopeeOrderDetailRow;
+  /** `null` when the escrow call was CONTAINED, or the order is unpaid. */
+  readonly escrow: ShopeeEscrowDetail | null;
+  readonly pedidoId: string;
+  /** The stored pedido as it was read BEFORE the write, or `null`. */
+  readonly armazenado: Record<string, unknown> | null;
+  /** The order-clock watermark, µs. */
+  readonly watermarkUs: number;
+  /** The caller's ONE clock read, µs. */
+  readonly nowUs: number;
+  readonly frete: FreteDoPedido;
+  readonly pesosObservados: readonly PesoBrutoObservado[];
+  readonly mapeados: ItensMapeadosShopee;
+  readonly captura: CapturaComprador;
+  readonly conta: ContaBagShopee;
+}
+
+export type PreparoImportacaoPedidoShopee =
+  | { readonly kind: 'preparo'; readonly preparo: PreparoPedidoShopee }
+  /** Shopee denies the order — the importer's own `ignorado-inexistente`. */
+  | { readonly kind: 'inexistente'; readonly resultado: ResultadoImportacaoPedidoShopee };
+
+export async function prepararImportacaoPedidoShopee(
   db: Firestore,
   alvo: AlvoDeImportacaoShopee,
   deps: ShopeeImportarPedidoDeps = {},
-): Promise<ResultadoImportacaoPedidoShopee> {
-  const { integracaoId, shopId, orderSn, nowMs } = alvo;
+): Promise<PreparoImportacaoPedidoShopee> {
+  const { integracaoId, orderSn, nowMs } = alvo;
   // ⚠️ The ONE CLOCK read in this channel's pedido path, converted once and
   // handed down — nothing below re-reads a clock. It is not the only unit
   // conversion: `orderMapping.ts` converts Shopee's SECONDS and
@@ -370,7 +433,7 @@ export async function importarPedidoShopee(
     // subclass can carry that code — but the check is on the CODE, so widening
     // this catch later cannot silently absorb one.
     if (err instanceof ShopeeApiError && err.code === SHOPEE_ERRO_ORDER_NOT_FOUND) {
-      return inexistente(orderSn, 'order_not_found');
+      return { kind: 'inexistente', resultado: inexistente(orderSn, 'order_not_found') };
     }
     throw err;
   }
@@ -379,7 +442,7 @@ export async function importarPedidoShopee(
   // `order_sn`, never by position.
   const linha = detalhe.order_list.find((r) => r.order_sn === orderSn);
   if (linha === undefined) {
-    return inexistente(orderSn, 'ausente-no-order_list');
+    return { kind: 'inexistente', resultado: inexistente(orderSn, 'ausente-no-order_list') };
   }
 
   // The order clock, in µs — ONE named conversion from SECONDS. A zero-filled
@@ -418,6 +481,79 @@ export async function importarPedidoShopee(
   const snapshot = await pedidoCollection.docRef(db, {}, pedidoId).get();
   const armazenado = snapshot.exists ? ((snapshot.data() ?? {}) as Record<string, unknown>) : null;
 
+  const conta = await readConta(db, integracaoId);
+
+  return {
+    kind: 'preparo',
+    preparo: {
+      linha,
+      escrow,
+      pedidoId,
+      armazenado,
+      watermarkUs,
+      nowUs,
+      frete,
+      pesosObservados,
+      mapeados,
+      captura: avaliarCapturaComprador({ detail: linha, statusObservado: linha.order_status }),
+      conta: {
+        integracaoPedidoOuterRef: toOuterRef(integracaoCollection.docPath({}, integracaoId)),
+        // ⚠️ A conta with no tabela/operação writes NULL rather than a guess — and
+        // a pedido with no operação reserves no stock, which is the honest
+        // consequence of an unconfigured conta rather than a hidden one.
+        listaDePrecosOuterRef: conta?.tabelaNormalOuterRef ?? null,
+        operacaoPedidoOuterRef: conta?.operacaoOuterRef ?? null,
+      },
+    },
+  };
+}
+
+/**
+ * The four write groups for one prepared order, given the buyer refs the CALLER
+ * resolved. Pure.
+ *
+ * ⚠️ The dry-run passes all-null: it resolves no buyer, because resolving one
+ * means `findOrCreateCliente`, which is a write. So a dry-run's
+ * `clientePedidoOuterRef` is `null` for an order the live run WOULD link, and
+ * the script says so rather than letting the reader infer a refusal. The capture
+ * VERDICT is not affected — it is derived from the wire payload alone.
+ */
+export function mapearPreparoPedidoShopee(
+  preparo: PreparoPedidoShopee,
+  comprador: CompradorResolvido,
+): PedidoMapeadoShopee {
+  return mapearPedidoShopee({
+    detalhe: preparo.linha,
+    escrow: preparo.escrow,
+    itens: preparo.mapeados.itens,
+    conferencia: preparo.mapeados.conferencia,
+    frete: preparo.frete,
+    conta: preparo.conta,
+    captura: preparo.captura,
+    camposRecusadosExtra: comprador.camposRecusadosExtra,
+    clientePedidoOuterRef: comprador.clienteOuterRef,
+    enderecoFiscalOuterRef: comprador.enderecoOuterRef,
+    watermarkUs: preparo.watermarkUs,
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                 the importer                                */
+/* -------------------------------------------------------------------------- */
+
+export async function importarPedidoShopee(
+  db: Firestore,
+  alvo: AlvoDeImportacaoShopee,
+  deps: ShopeeImportarPedidoDeps = {},
+): Promise<ResultadoImportacaoPedidoShopee> {
+  const { integracaoId, shopId, orderSn, nowMs } = alvo;
+
+  const preparado = await prepararImportacaoPedidoShopee(db, alvo, deps);
+  if (preparado.kind === 'inexistente') return preparado.resultado;
+  const { linha, escrow, pedidoId, armazenado, watermarkUs, nowUs, frete, pesosObservados } =
+    preparado.preparo;
+  const mapeados = preparado.preparo.mapeados;
+
   const comprador = await resolverComprador(db, {
     detalhe: linha,
     armazenado,
@@ -425,27 +561,7 @@ export async function importarPedidoShopee(
     viaCep: deps.viaCep ?? (viaCepPadrao ??= createViaCepClient()),
   });
 
-  const conta = await readConta(db, integracaoId);
-  const mapeado = mapearPedidoShopee({
-    detalhe: linha,
-    escrow,
-    itens: mapeados.itens,
-    conferencia: mapeados.conferencia,
-    frete,
-    conta: {
-      integracaoPedidoOuterRef: toOuterRef(integracaoCollection.docPath({}, integracaoId)),
-      // ⚠️ A conta with no tabela/operação writes NULL rather than a guess — and
-      // a pedido with no operação reserves no stock, which is the honest
-      // consequence of an unconfigured conta rather than a hidden one.
-      listaDePrecosOuterRef: conta?.tabelaNormalOuterRef ?? null,
-      operacaoPedidoOuterRef: conta?.operacaoOuterRef ?? null,
-    },
-    captura: avaliarCapturaComprador({ detail: linha, statusObservado: linha.order_status }),
-    camposRecusadosExtra: comprador.camposRecusadosExtra,
-    clientePedidoOuterRef: comprador.clienteOuterRef,
-    enderecoFiscalOuterRef: comprador.enderecoOuterRef,
-    watermarkUs,
-  });
+  const mapeado = mapearPreparoPedidoShopee(preparado.preparo, comprador);
 
   const resultado = await salvarPedidoShopee(db, { pedidoId, mapeado, watermarkUs, nowUs });
 
