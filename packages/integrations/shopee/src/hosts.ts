@@ -3,8 +3,9 @@
  *
  * ## The doc contradictions this module takes a side on
  *
- * Three of them, all still open, all overridable from the environment so that a
- * single live redirect settles each one without a code change:
+ * Three of them — the third settled by the first real consent attempt — all
+ * overridable from the environment so that a single live redirect settles each
+ * one without a code change:
  *
  *  1. **Production API host.** Shopee's docs pick the API host by SERVER
  *     location ("near US" → one host, "near SG" → another) and name no Brazilian
@@ -16,10 +17,14 @@
  *  2. **Sandbox API host.** Every API reference page's `test_url` names
  *     `partner.test-stable.shopeemobile.com`, while `guide 644` — newer — gives
  *     `openplatform.sandbox.test-stable.shopee.sg`. We default to `guide 644`.
- *  3. **Sandbox consent host.** The Brazilian row in `guide 20` is corrupted;
- *     `guide 644` shows `open.sandbox.test-stable.shopee.com`. We default to
- *     `open.sandbox.test-stable.shopee.com.br`, matching the production host's
- *     `.com.br` shape, and expect the first sandbox round trip to correct it.
+ *  3. **Sandbox consent host — SETTLED 2026-09-10.** The Brazilian row in
+ *     `guide 20` is corrupted and `guide 644` shows
+ *     `open.sandbox.test-stable.shopee.com`. The first default guessed a
+ *     `.com.br` sibling by analogy with the production host; the first real
+ *     consent attempt answered `DNS_PROBE_FINISHED_NXDOMAIN` — that host does
+ *     not exist. The default is `guide 644`'s host: the sandbox is ONE global
+ *     environment (its API host is `.sg` for every region too), so the region
+ *     suffix never applied to it.
  *
  * ⚠️ Pick one API host and STAY on it. Whether a token minted against one host
  * is honoured by another is undocumented, so switching hosts mid-life is an
@@ -34,7 +39,7 @@ export const SHOPEE_SANDBOX_API_HOST = 'https://openplatform.sandbox.test-stable
 /** Production consent host. */
 export const SHOPEE_PROD_AUTH_HOST = 'https://open.shopee.com.br';
 /** Sandbox consent host — see contradiction 3. */
-export const SHOPEE_SANDBOX_AUTH_HOST = 'https://open.sandbox.test-stable.shopee.com.br';
+export const SHOPEE_SANDBOX_AUTH_HOST = 'https://open.sandbox.test-stable.shopee.com';
 
 export interface ShopeeHosts {
   /** Origin the signed API calls go to, with no trailing slash. */

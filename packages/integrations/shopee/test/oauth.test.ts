@@ -128,7 +128,7 @@ describe('buildAuthorizeUrl', () => {
         state: 's',
         hosts,
       }),
-    ).toContain('https://open.sandbox.test-stable.shopee.com.br/auth?');
+    ).toContain('https://open.sandbox.test-stable.shopee.com/auth?');
     expect(
       new URL(
         buildCancelAuthUrl({
