@@ -185,6 +185,10 @@ export interface GrupoSempreShopee {
 export interface GrupoDadosShopee {
   readonly itens: readonly ItemDoPedido[];
   readonly valorCobrado: number | null;
+  /**
+   * The pedido's ORDER-level discount slot. Shopee fills it with `0` — see
+   * {@link mapearPedidoShopee}.
+   */
   readonly descontoTotal: number;
   readonly observacoesInternas: string | null;
   readonly freteInicial: FreteDoPedido;
@@ -232,7 +236,7 @@ export interface MapearPedidoShopeeArgs {
   readonly escrow: ShopeeEscrowDetail | null;
   /** The flat rows from `mapearItensShopee`; the grouping is the transaction's. */
   readonly itens: readonly ItemDoPedido[];
-  /** `mapearItensShopee`'s reconciliation — `descontoTotal` and the item sum. */
+  /** `mapearItensShopee`'s reconciliation — the item sum and the cross-check. */
   readonly conferencia: ConferenciaDoPedido;
   /** The already-mapped freight block (`mapearFreteInicialShopee`). */
   readonly frete: FreteDoPedido;
@@ -335,7 +339,21 @@ export function mapearPedidoShopee(args: MapearPedidoShopeeArgs): PedidoMapeadoS
     dados: {
       itens,
       valorCobrado: valorCobradoDoPedido(detalhe, args.escrow, conferencia, frete),
-      descontoTotal: conferencia.descontoTotal,
+      // ⚠️ ZERO, and it is not a stub. Shopee's five escrow discounts are
+      // ITEM-level: each rides its own line's `descontoUnitario`, which
+      // `itemSubtotal` already NETS out of `precoDeVenda` before summing. The
+      // pedido's `descontoTotal` is the ORDER-level slot — the footer's
+      // "Desconto", which Mercado Livre fills with `Σ coupon_amount` while
+      // writing `descontoUnitario: 0` per line — and `derivePedidoFreteTotals`
+      // subtracts it a SECOND time, after the item sum. Writing
+      // `conferencia.descontoDasLinhas` here therefore short-changed
+      // `valorCobrado` by Σ discounts on the operator's first save
+      // (`packages/data/src/pedido/usecases.ts` recomputes it), in the footer
+      // and in the print — while the value stored at IMPORT was right, because
+      // `valorCobradoDoPedido` sums NET units. Shopee carries no order-level
+      // discount field at all; `totais.test.ts` crosses the two modules and
+      // pins it.
+      descontoTotal: 0,
       observacoesInternas: observacoes.length === 0 ? null : observacoes,
       freteInicial: frete,
     },

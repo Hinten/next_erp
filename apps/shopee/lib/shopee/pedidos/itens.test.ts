@@ -24,7 +24,12 @@ import {
 } from './itens';
 import { chaveDaLinhaShopee } from './orderIds';
 import type { ResolvedShopeeLineProduto } from './produtoResolve';
-import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
+import {
+  FIXTURE_ESCROW_DETAIL_QTY2_SG,
+  FIXTURE_ORDER_DETAIL_QTY2_SG,
+  lerEscrowDetalhe,
+  lerPedidoDetalhe,
+} from '../fixtures/wireCorpus';
 
 /* -------------------------------------------------------------------------- */
 /*  Fixturas — todas sintéticas; ids inventados, nenhum dado de comprador.     */
@@ -128,6 +133,36 @@ describe('precoUnitario', () => {
     expect(leitura.unitario).not.toBe(7.5);
     expect(leitura.quantidadeEscrow).toBe(2);
     expect(leitura.quantidadeDetalhe).toBe(4);
+  });
+
+  it('⚠️ com os DOIS corpos REAIS do pedido de sandbox: escrow 30 ÷ 2 = 15 = o detalhe', () => {
+    // ⚠️ O par que fecha o item 1 do registro de "resolver ao vivo", e nenhum
+    // dos dois lados sozinho o fecha: a linha do ESCROW traz o TOTAL DA LINHA
+    // (`discounted_price: 30` com `quantity_purchased: 2`) enquanto o MESMO
+    // pedido no DETALHE traz o preço POR UNIDADE (`model_discounted_price: 15`).
+    // A quantidade 2 é o que torna as duas leituras distinguíveis.
+    const detalheReal = lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list[0]!;
+    const escrowReal = lerEscrowDetalhe(FIXTURE_ESCROW_DETAIL_QTY2_SG).response;
+    const linhaDetalhe = detalheReal.item_list![0]!;
+    const linhaEscrow = escrowReal.order_income!.items![0]!;
+    // As duas linhas são a MESMA linha — o par (item_id, model_id) casa.
+    expect(chaveDaLinhaShopee(linhaEscrow.item_id!, linhaEscrow.model_id)).toBe(
+      chaveDaLinhaShopee(linhaDetalhe.item_id, linhaDetalhe.model_id),
+    );
+
+    const leitura = precoUnitario(linhaDetalhe, linhaEscrow);
+    expect(leitura.fonte).toBe('escrow');
+    expect(leitura.unitario).toBe(15);
+    expect(leitura.precoEscrowUnitario).toBe(15);
+    expect(leitura.precoDetalhe).toBe(15);
+    expect(leitura.quantidadeEscrow).toBe(2);
+    expect(leitura.quantidadeDetalhe).toBe(2);
+    // NEAR-MISS: NÃO é 30 (o total da linha lido como unitário) nem 7,5.
+    expect(leitura.unitario).not.toBe(linhaEscrow.discounted_price);
+    // …e o escrow deste pedido não traz desconto nenhum, então o preço de venda
+    // e o unitário líquido coincidem — é por isso que o vetor com desconto do
+    // `totais.test.ts` tem de ser inline.
+    expect(descontoUnitario(linhaEscrow).unitario).toBe(0);
   });
 
   it('sem linha no escrow cai no detalhe e o lê POR UNIDADE (o interruptor está em false)', () => {
@@ -654,8 +689,8 @@ describe('a conferência e o log', () => {
     });
   });
 
-  it('descontoTotal é a soma de desconto × quantidade', () => {
-    const { conferencia } = mapear({
+  it('descontoDasLinhas é a soma de desconto × quantidade — e JÁ está dentro dos itens', () => {
+    const { conferencia, itens } = mapear({
       itens: [item({ item_id: 100, model_id: 1, model_quantity_purchased: 2 })],
       escrow: escrow([
         escrowItem({
@@ -667,7 +702,18 @@ describe('a conferência e o log', () => {
         }),
       ]),
     });
-    expect(conferencia.descontoTotal).toBe(4);
+    expect(conferencia.descontoDasLinhas).toBe(4);
+    // ⚠️ O nome carrega o achado: cada linha já traz o seu `descontoUnitario`, e
+    // `itemSubtotal` o desconta de `precoDeVenda` ANTES de somar. Este número
+    // é um diagnóstico — nunca o `descontoTotal` do pedido, que é o campo do
+    // RODAPÉ e que `derivePedidoFreteTotals` subtrai uma SEGUNDA vez.
+    // `totais.test.ts` cruza os dois módulos.
+    const linha = itens[0]!;
+    expect(linha.descontoUnitario).toBe(2);
+    expect(linha.precoDeVenda).toBe(17);
+    expect((linha.precoDeVenda - linha.descontoUnitario!) * linha.quantidade).toBe(
+      conferencia.somaDosItens,
+    );
   });
 
   it('sai UM console.info por importação, com as duas leituras e o interruptor', () => {

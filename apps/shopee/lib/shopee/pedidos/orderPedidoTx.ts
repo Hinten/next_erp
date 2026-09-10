@@ -245,8 +245,8 @@ const CAMPOS_ITEM_DA_SHOPEE = [
  * the first delivery (an unpaid order has none; a contained escrow failure or a
  * refused kit parse produce the same). A first import therefore stores a
  * provisional detail-or-zero price, and dropping the refinement would freeze it
- * for ever WHILE the same `tx.update` refreshes `valorCobrado` and
- * `descontoTotal` from the escrow — a pedido whose header and lines contradict
+ * for ever WHILE the same `tx.update` refreshes `valorCobrado` from the escrow
+ * — a pedido whose header and lines contradict
  * each other permanently, behind one `console.warn`. Since `pedidoTotal` derives
  * the sale value from the LINES, that disagreement is what the revenue report
  * and the NF-e read.

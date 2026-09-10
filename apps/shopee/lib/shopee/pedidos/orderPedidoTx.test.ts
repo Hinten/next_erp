@@ -66,7 +66,7 @@ function mapear(patch: Partial<MapearPedidoShopeeArgs> = {}): PedidoMapeadoShope
     conferencia: {
       orderSn: ORDER_SN,
       somaDosItens: 30,
-      descontoTotal: 0,
+      descontoDasLinhas: 0,
       freteCobrado: 1.99,
       totalConferido: 31.99,
       totalDoPedido: 31.99,
@@ -486,8 +486,8 @@ describe('salvarPedidoShopee — os grupos de campos', () => {
     // order has none; a contained escrow failure and a refused kit parse look the
     // same). If the re-priced line were dropped, the pedido would keep a
     // provisional price for ever WHILE the same `tx.update` refreshes
-    // `valorCobrado`/`descontoTotal` from the escrow — a header and a line set
-    // that contradict each other permanently, and `pedidoTotal` reads the LINES.
+    // `valorCobrado` from the escrow — a header and a line set that contradict
+    // each other permanently, and `pedidoTotal` reads the LINES.
     const jaGravado = { ...itemDe(0, 'prod-antigo'), precoDeVenda: 0, descontoUnitario: 0 };
     const db = pedidoArmazenado({
       itens: { 'prod-antigo': [jaGravado] },

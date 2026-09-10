@@ -193,16 +193,22 @@ export const SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS =
 export type ShopeeEscrowDetailTransport = 'get-query' | 'post-body';
 
 /**
- * ⚠️ **UNSETTLED — settle-live register item 6, and ONE literal flips both
- * halves.** The `v2.payment.get_escrow_detail` page declares `method: 2` (GET)
- * while its ONE request sample is a JSON body (`{"order_sn": "..."}`). A GET
- * carrying a body is not sendable through `fetch` at all — it throws a
- * `TypeError` before any network call — so "query vs body" is really "GET+query
- * vs POST+body", and this constant is the pair.
+ * ✅ **SETTLED 2026-09-10 — `'get-query'`** (settle-live register item 6). ONE
+ * literal still flips both halves. The `v2.payment.get_escrow_detail` page
+ * declares `method: 2` (GET) while its ONE request sample is a JSON body
+ * (`{"order_sn": "..."}`). A GET carrying a body is not sendable through `fetch`
+ * at all — it throws a `TypeError` before any network call — so "query vs body"
+ * is really "GET+query vs POST+body", and this constant is the pair.
  *
- * Default `'get-query'`: it is what the page's own `method` says and what every
- * other Shopee GET in this package does. Flip it to `'post-body'` if the console
- * test tool or the first live call answers `error_param`.
+ * The Shopee console's own test tool sent
+ * `GET …/api/v2/payment/get_escrow_detail?…&order_sn=<order_sn>` with an EMPTY
+ * body and Shopee answered, so the page's `method` was right and its request
+ * sample was misleading. The body Shopee returned is committed as
+ * `apps/shopee/lib/shopee/fixtures/__wire__/get_escrow_detail.qty2-sg.json`.
+ *
+ * ⚠️ The literal SURVIVES the answer, deliberately: it is the named seam, and
+ * one live `error_param` is all it would take to flip it to `'post-body'` —
+ * which is precisely the failure mode described below.
  *
  * ⚠️ **Neither half of the pair touches the signature, and that is measured, not
  * assumed.** The shop base string is `partner_id + path + timestamp +

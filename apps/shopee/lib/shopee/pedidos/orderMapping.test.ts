@@ -35,7 +35,7 @@ function linha(patch: Record<string, unknown>): ShopeeOrderDetailRow {
 const CONFERENCIA: ConferenciaDoPedido = {
   orderSn: '260910KJBHUJDM',
   somaDosItens: 30,
-  descontoTotal: 0,
+  descontoDasLinhas: 0,
   freteCobrado: 1.99,
   totalConferido: 31.99,
   totalDoPedido: 31.99,
@@ -300,11 +300,17 @@ describe('mapearPedidoShopee — o grupo DADOS', () => {
     expect(m.dados.valorCobrado).toBe(31.99);
   });
 
-  it('descontoTotal vem da conferência do mapeador de itens, não de um novo somatório', () => {
+  it('⚠️ descontoTotal é SEMPRE 0 — os descontos da Shopee são por LINHA e já estão nos itens', () => {
+    // O campo do pedido é o slot de ORDEM (o "Desconto" do rodapé) e
+    // `derivePedidoFreteTotals` o subtrai DEPOIS da soma dos itens, cujo
+    // `itemSubtotal` já desconta o `descontoUnitario` de cada linha. Copiar a
+    // conferência para cá subtraía o mesmo dinheiro duas vezes.
+    expect(mapearPedidoShopee(argsBase()).dados.descontoTotal).toBe(0);
     const m = mapearPedidoShopee(
-      argsBase({ conferencia: { ...CONFERENCIA, descontoTotal: 3.75 } }),
+      argsBase({ conferencia: { ...CONFERENCIA, descontoDasLinhas: 3.75 } }),
     );
-    expect(m.dados.descontoTotal).toBe(3.75);
+    expect(m.dados.descontoTotal).toBe(0);
+    expect(m.dados.descontoTotal).not.toBe(3.75);
   });
 });
 

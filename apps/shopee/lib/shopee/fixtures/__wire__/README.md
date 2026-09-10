@@ -1,18 +1,22 @@
 # `__wire__` — Shopee response bodies, redacted
 
-Three bodies today, for the step-5 order import (#1513). Two provenances, and they
+Five bodies today, for the step-5 order import (#1513). Two provenances, and they
 are **not equally strong**:
 
-| file                                  | endpoint            | provenance                                                                                   | verified against the live API?                                                  |
-| ------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `get_order_detail.qty2-sg.json`       | `get_order_detail`  | a **real call** against the Singapore SANDBOX shop, quantity 2, `READY_TO_SHIP` (2026-09-09) | ✅ Shopee sent this                                                             |
-| `get_order_detail.doc-masked-vn.json` | `get_order_detail`  | the sample printed on the `v2.order.get_order_detail` reference page (a **VN** order)        | ❌ doc only — ⚠️ **unverified for BR**                                          |
-| `get_escrow_detail.doc-kit.json`      | `get_escrow_detail` | the sample printed on the `v2.payment.get_escrow_detail` reference page                      | ❌ doc only — and one field is demonstrably a doc artefact, see “kit ids” below |
+| file                                      | endpoint            | provenance                                                                                   | verified against the live API?                                                  |
+| ----------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `get_order_detail.qty2-sg.json`           | `get_order_detail`  | a **real call** against the Singapore SANDBOX shop, quantity 2, `READY_TO_SHIP` (2026-09-09) | ✅ Shopee sent this                                                             |
+| `get_escrow_detail.qty2-sg.json`          | `get_escrow_detail` | the **escrow twin of that same order**, SG sandbox (2026-09-10)                              | ✅ Shopee sent this                                                             |
+| `get_order_detail.qty2-sg-processed.json` | `get_order_detail`  | the **same order re-read after arrange-shipment**, `PROCESSED`, SG sandbox (2026-09-10)      | ✅ Shopee sent this                                                             |
+| `get_order_detail.doc-masked-vn.json`     | `get_order_detail`  | the sample printed on the `v2.order.get_order_detail` reference page (a **VN** order)        | ❌ doc only — ⚠️ **unverified for BR**                                          |
+| `get_escrow_detail.doc-kit.json`          | `get_escrow_detail` | the sample printed on the `v2.payment.get_escrow_detail` reference page                      | ❌ doc only — and one field is demonstrably a doc artefact, see “kit ids” below |
 
-Pulled with `.master_plans/shopee/shopee-doc.mjs` (`api v2.order.get_order_detail`,
-`api v2.payment.get_escrow_detail`), then run through `redactWireBody`
-(`../redact.ts`) before being written. `../piiScan.test.ts` re-checks every file
-here independently on every run.
+The two doc samples were pulled with `.master_plans/shopee/shopee-doc.mjs`
+(`api v2.order.get_order_detail`, `api v2.payment.get_escrow_detail`); the three
+sandbox bodies were pasted from the Shopee console's own test tool. All five went
+through `redactWireBody` (`../redact.ts`) — with `request_id` dropped — before
+being written. `../piiScan.test.ts` re-checks every file here independently on
+every run.
 
 ## Rules
 
@@ -103,17 +107,51 @@ rounded id is an invented id. The consequence to know is that if the LIVE API ev
 sends a fractional id there, the escrow read throws `ShopeeSchemaError` and the
 importer falls back to detail-only prices for that order.
 
-## The slot that is empty on purpose
+## What the escrow twin settled (2026-09-10)
 
-`get_escrow_detail.qty2-sg.json` — the SG sandbox order's escrow twin, pending from
-Lucas. It is the body that settles two things at once, and nothing else can:
+`get_escrow_detail.qty2-sg.json` was the slot this file used to name as empty. It
+arrived, and it closed the two questions nothing else could:
 
-1. **`SHOPEE_ESCROW_DETAIL_TRANSPORT`** — the page declares GET while its only
-   request sample is a JSON body; the constant flips the verb and the placement
-   together.
-2. **The escrow reading of a quantity-2 line** — whether `items[].discounted_price`
-   comes back `15` (per unit) or `30` (the subtotal the nine documented fields
-   promise). The detail side is settled; the escrow side is not, and the price
-   mapping divides by `quantity_purchased` on the strength of that sentence.
+1. **`SHOPEE_ESCROW_DETAIL_TRANSPORT` = `'get-query'`.** The console's test tool
+   sent a **GET** with `order_sn` in the QUERY STRING and an empty body, and Shopee
+   answered. The page's `method: 2` was right and its JSON request sample was
+   misleading. The constant stays as the named seam.
+2. **The escrow's per-item money is a LINE TOTAL.** `discounted_price: 30`,
+   `original_price: 30`, `selling_price: 30` beside `quantity_purchased: 2`, while
+   the SAME order's detail says `model_discounted_price: 15`. So the page's
+   "subtotal if quantity exceeds 1" sentence holds, `precoUnitario`'s escrow-first
+   `discounted_price ÷ quantity_purchased` is right, and the pair
+   (**detail per unit, escrow per line**) is now a wire fact rather than an
+   inference. Quantity 1 could not have distinguished either reading.
 
-Do not invent it. An invented body answers neither question and reads like evidence.
+Three more facts from that body, each asserted in `wireCorpus.test.ts`:
+
+- `order_income.buyer_total_amount: 31.99` = `buyer_paid_shipping_fee: 1.99` +
+  `order_discounted_price: 30` — the first rung of `valorCobradoDoPedido`, and it
+  agrees with the detail's `total_amount`.
+- The escrow line on a **non-BR** order carries **no `is_kit` and no `kit_items`
+  key at all** — absent, not `null`. The schema's `.nullable().default(null)` is
+  what answers `null`, and `ehKitShopee` reads that as "unknown", never "not a kit".
+- Zero-fill again (`order_chargeable_weight: 0`), plus the settlement columns step 6
+  will read: `escrow_amount: 30.7`, `commission_fee: 0.65`,
+  `credit_card_transaction_fee: 0.64`, `seller_transaction_fee: 0.64`.
+
+## What the PROCESSED re-read settled
+
+`get_order_detail.qty2-sg-processed.json` is the same order after
+arrange-shipment. One order at two points in its lifecycle is the only body that
+can separate what MOVES from what does not:
+
+- **Moves**: `order_status` `READY_TO_SHIP` → `PROCESSED`, the package's
+  `logistics_status` → `LOGISTICS_REQUEST_CREATED`, `update_time`
+  `1788973354` → `1789042568`. Both statuses map to `pago`, so this delivery moves
+  the watermark and not the estado.
+- **Arrives**: `note: ""` and `note_update_time: 0` — the two tokens added to
+  `SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS` after the first capture. An unnamed
+  optional field comes back ABSENT (they are missing from the 2026-09-09 body
+  entirely), which is why leaving them out would blank `observacoesInternas`.
+- **Does not move**: the recipient is STILL `"****"` in `PROCESSED`. There is no
+  whitelist on the sandbox, so "masked" and "not permitted to unmask" remain
+  indistinguishable — settle-live register item 5 stands. `actual_shipping_fee` is
+  still `0` (the real freight is known only after pickup) and `pickup_done_time`
+  is still `0`.

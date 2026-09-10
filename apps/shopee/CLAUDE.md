@@ -537,7 +537,25 @@ watermark is `get_order_detail.update_time`.
 | literal | where | state |
 | --- | --- | --- |
 | `DETALHE_PRECO_E_TOTAL_DA_LINHA` | `lib/shopee/pedidos/itens.ts` | ✅ **settled `false` — the detail price is PER UNIT.** Lucas's SG sandbox order of quantity 2 (2026-09-09) reads `15 × 2 + 1.99 = 31.99`. It survives as the named seam, not as an open question. |
-| `SHOPEE_ESCROW_DETAIL_TRANSPORT` | `packages/integrations/shopee/src/api.ts` (`'get-query'`) | ⏳ **open** — the escrow page renders as GET and samples a JSON body. ONE literal flips the verb AND the placement together, because a GET cannot carry a body through `fetch`. Waiting on Lucas's `get_escrow_detail` paste. |
+| `SHOPEE_ESCROW_DETAIL_TRANSPORT` | `packages/integrations/shopee/src/api.ts` (`'get-query'`) | ✅ **settled `'get-query'`** (2026-09-10). The console test tool sent a **GET with `order_sn` in the QUERY STRING** and an empty body, and Shopee answered — so the page's `method: 2` was right and its JSON request sample was misleading. ONE literal still flips the verb AND the placement together, because a GET cannot carry a body through `fetch`, and it survives as the named seam. |
+
+⚠️ **The escrow's per-item money is a LINE TOTAL; the detail's is PER UNIT.**
+The same SG sandbox order settled both halves at once: the escrow says
+`discounted_price: 30` beside `quantity_purchased: 2` while the detail says
+`model_discounted_price: 15`. So `precoUnitario` divides the escrow figure by
+the escrow's OWN `quantity_purchased` and does not divide the detail's — the two
+committed bodies (`__wire__/get_escrow_detail.qty2-sg.json` and
+`__wire__/get_order_detail.qty2-sg.json`) are what pins the pair.
+
+⚠️ **Shopee has no ORDER-level discount, so the pedido's `descontoTotal` is
+always `0`.** The five escrow discounts are ITEM-level and each rides its line's
+`descontoUnitario`, which `itemSubtotal` already nets out of `precoDeVenda`.
+`derivePedidoFreteTotals` subtracts `descontoTotal` a SECOND time, after the item
+sum, so copying `conferencia.descontoDasLinhas` into it short-changed
+`valorCobrado` by Σ discounts on the operator's first save — the value stored at
+import was right and the recomputed one was not. `pedidos/totais.test.ts` crosses
+the two modules and pins it; the conferência field is named `descontoDasLinhas`
+so the two can never be confused again.
 
 ⚠️ **A wrong transport guess surfaces as `error_param`, never as `error_sign`.**
 The shop base string is `partner_id + path + timestamp + access_token + shop_id`

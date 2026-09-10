@@ -133,8 +133,22 @@ export interface ConferenciaDoPedido {
   readonly orderSn: string;
   /** Σ `unitario × quantidade`, rounded. */
   readonly somaDosItens: number;
-  /** Σ `descontoUnitario × quantidade`, rounded — the pedido's `descontoTotal`. */
-  readonly descontoTotal: number;
+  /**
+   * Σ `descontoUnitario × quantidade`, rounded — a DIAGNOSTIC, and **never the
+   * pedido's `descontoTotal`**.
+   *
+   * ⚠️ The renaming is the fix for a real double-count. Each line already
+   * carries its own `descontoUnitario`, and `itemSubtotal`
+   * (`packages/schemas/src/pedido/pureLogic/totals.ts`) nets it out of
+   * `precoDeVenda` before summing — so this figure is ALREADY inside
+   * `Σ itemSubtotal`. The pedido's `descontoTotal` is the ORDER-level slot (the
+   * footer's "Desconto", which Mercado Livre fills with `Σ coupon_amount` while
+   * writing `descontoUnitario: 0` per line), and
+   * `derivePedidoFreteTotals` subtracts it a SECOND time. Writing this value
+   * there made `valorCobrado` short by Σ discounts on the operator's first save.
+   * See `totais.test.ts`.
+   */
+  readonly descontoDasLinhas: number;
   /** What the caller computed for freight (W7's `valorCobrado`). */
   readonly freteCobrado: number | null;
   /** `somaDosItens + freteCobrado`, or `null` when the freight is unknown. */
@@ -206,7 +220,7 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
   const diagnosticos: DiagnosticoDaLinha[] = [];
   const linhasDoLog: Record<string, unknown>[] = [];
   let somaDosItens = 0;
-  let descontoTotal = 0;
+  let descontoDasLinhas = 0;
 
   const linhas = detalhe.item_list ?? [];
   for (let index = 0; index < linhas.length; index += 1) {
@@ -288,7 +302,7 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
     });
 
     somaDosItens += preco.unitario * quantidade;
-    descontoTotal += desconto.unitario * quantidade;
+    descontoDasLinhas += desconto.unitario * quantidade;
 
     if (conferencia.completa === false) {
       console.warn(
@@ -331,7 +345,7 @@ export function mapearItensShopee(args: MapearItensShopeeArgs): ItensMapeadosSho
   const conferencia: ConferenciaDoPedido = {
     orderSn,
     somaDosItens: soma,
-    descontoTotal: roundReais(descontoTotal),
+    descontoDasLinhas: roundReais(descontoDasLinhas),
     freteCobrado,
     totalConferido,
     totalDoPedido,
