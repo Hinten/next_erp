@@ -1278,15 +1278,57 @@ export const shopeeEscrowItemSchema = z
 export type ShopeeEscrowItem = z.infer<typeof shopeeEscrowItemSchema>;
 
 /**
- * `order_income` — declared ONLY for what step 5 reads; `.passthrough()` carries
- * the other ~100 floats (fees, taxes, adjustments, settlement), which are step 6's.
+ * One entry of `order_income.tenure_info_list` — the instalment plan, as the
+ * payment channel reported it.
+ *
+ * ⚠️ **THREE shapes are on record and all three parse**, which is why this exists
+ * at all: the reference page types ONE object (singular) with a STRING
+ * `instalment_plan`; announcement 1080 renders an ARRAY whose `instalment_plan`
+ * is an INT (`1`, `3`); and the SG sandbox body is an array of ONE
+ * `{ instalment_plan: "N/A" }` with no `payment_channel_name`. An object-only
+ * schema rejects two of them, an array-only schema rejects the first, and a
+ * strict `z.string()` rejects the announcement's ints — and each rejection costs
+ * the WHOLE escrow parse, which is this order's money.
+ *
+ * ⚠️ `z.string()` comes FIRST in the union deliberately. `"N/A"` is a real VALUE,
+ * not a missing one, and putting `wireInt()` first would hand it a string to
+ * coerce. The FOLD (`"N/A"` ⇒ 1 parcela, `"3"` ⇒ 3) belongs to the ONE reader in
+ * `apps/shopee`, never here: the package records what arrived.
+ *
+ * ⚠️ NAMED rather than inlined, for the {@link shopeeEscrowKitItemSchema} reason:
+ * `integration-response-numbers-tolerant` is LINE-based and cannot see inside a
+ * `z.union([...])`, so inlining these fields would take them out of its sight.
+ */
+export const shopeeTenureInfoSchema = z
+  .object({
+    payment_channel_name: z.string().nullable().default(null),
+    /** `"N/A"` is a value; `1` and `3` are values. See the union order above. */
+    instalment_plan: z.union([z.string(), wireInt()]).nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeTenureInfo = z.infer<typeof shopeeTenureInfoSchema>;
+
+/**
+ * `order_income` — the order-level money. `.passthrough()` still carries the
+ * ~70 floats nothing reads (the SG body alone sends 88 keys).
  *
  * ⚠️ `discounted_price` AND `order_discounted_price` are both declared: the page
  * names one and the subtotal list names the other, and folding them would make
  * whichever Shopee actually sends read as `null` for ever.
+ *
+ * ⚠️ **The three FEE columns are `commission_fee`, `service_fee` and
+ * `seller_transaction_fee`** — the exact three Shopee's own Income Report maps
+ * (FAQ 479), and what the pagamento's `tarifas` is built from.
+ * `credit_card_transaction_fee` is a ROLLUP the page defines as
+ * `buyer_transaction_fee + seller_transaction_fee`, so summing it beside them
+ * double-counts. Both are declared; neither is folded into the other.
+ *
+ * ⚠️ Money here is FLOAT and negatives are legal (`final_shipping_fee: -10` is
+ * the page's own sample), so no bound is declared on any of these.
  */
 export const shopeeOrderIncomeSchema = z
   .object({
+    /** ⚠️ "will change before order is completed" — the escrow has no clock. */
     escrow_amount: wireNumber().nullable().default(null),
     buyer_total_amount: wireNumber().nullable().default(null),
     original_price: wireNumber().nullable().default(null),
@@ -1297,12 +1339,79 @@ export const shopeeOrderIncomeSchema = z
     buyer_paid_shipping_fee: wireNumber().nullable().default(null),
     actual_shipping_fee: wireNumber().nullable().default(null),
     estimated_shipping_fee: wireNumber().nullable().default(null),
+    escrow_amount_after_adjustment: wireNumber().nullable().default(null),
+    /** FAQ 479 column 1. */
+    commission_fee: wireNumber().nullable().default(null),
+    /** FAQ 479 column 2. */
+    service_fee: wireNumber().nullable().default(null),
+    /** FAQ 479 column 3. */
+    seller_transaction_fee: wireNumber().nullable().default(null),
+    /** ⚠️ The page's own words: `= buyer_transaction_fee + seller_transaction_fee`. A ROLLUP — never summed beside its own parts. */
+    credit_card_transaction_fee: wireNumber().nullable().default(null),
+    buyer_transaction_fee: wireNumber().nullable().default(null),
+    campaign_fee: wireNumber().nullable().default(null),
+    /** BR only (announcement 1451) — ABSENT on the SG sandbox body, so `null` here means "not sent", never "zero". */
+    net_commission_fee: wireNumber().nullable().default(null),
+    /** BR only (announcement 1451). Same reading as `net_commission_fee`. */
+    net_service_fee: wireNumber().nullable().default(null),
+    /** ⚠️ NOT `buyer_payment_info.discount_pix`. Two spellings, two clocks, two values — never folded. */
+    pix_discount: wireNumber().nullable().default(null),
+    /** Declared for the refund step (17); step 6 records it and reads nothing from it. */
+    seller_return_refund: wireNumber().nullable().default(null),
+    /** Declared for the refund step (17). */
+    drc_adjustable_refund: wireNumber().nullable().default(null),
+    total_adjustment_amount: wireNumber().nullable().default(null),
+    shipping_seller_protection_fee_amount: wireNumber().nullable().default(null),
+    /** ⚠️ "could be negative or positive" — the page's own sample is `-10`. No bound. */
+    final_shipping_fee: wireNumber().nullable().default(null),
+    /** ⚠️ ORDER level only. The item-level twin of the same name keeps riding `.passthrough()`: it has no reader, and declaring both invites summing them twice. */
+    seller_order_processing_fee: wireNumber().nullable().default(null),
+    order_ams_commission_fee: wireNumber().nullable().default(null),
+    escrow_tax: wireNumber().nullable().default(null),
     instalment_plan: z.string().nullable().default(null),
     buyer_payment_method: z.string().nullable().default(null),
+    /** ⚠️ An ARRAY in reality and an OBJECT on the page. See {@link shopeeTenureInfoSchema}. */
+    tenure_info_list: z
+      .union([shopeeTenureInfoSchema, z.array(shopeeTenureInfoSchema)])
+      .nullable()
+      .default(null),
     items: z.array(shopeeEscrowItemSchema).nullable().default(null),
   })
   .passthrough();
 export type ShopeeOrderIncome = z.infer<typeof shopeeOrderIncomeSchema>;
+
+/**
+ * `buyer_payment_info` — the checkout snapshot, and it is a DIFFERENT CLOCK from
+ * `order_income`.
+ *
+ * ⚠️ **These are INITIAL values.** The page says they are "not updated after
+ * return/refund or cancellation", while `order_income` keeps moving until the
+ * order completes. So a namesake here is never folded onto its `order_income`
+ * twin: `buyer_total_amount` appears in both and they may legitimately DISAGREE,
+ * and reading whichever one happened to be handy would produce a figure that is
+ * right on a quiet order and silently stale on a refunded one.
+ *
+ * ⚠️ **`discount_pix` here is NOT `order_income.pix_discount`.** Two spellings,
+ * two clocks. Neither defaults from the other.
+ *
+ * Six fields are typed because a reader names them; the SG sandbox body carries
+ * 33 keys and the rest ride `.passthrough()`.
+ */
+export const shopeeBuyerPaymentInfoSchema = z
+  .object({
+    is_paid_by_credit_card: z.boolean().nullable().default(null),
+    buyer_payment_method: z.string().nullable().default(null),
+    /** The checkout snapshot. See the clock warning above. */
+    buyer_total_amount: wireNumber().nullable().default(null),
+    /** [BR] */
+    icms_tax_amount: wireNumber().nullable().default(null),
+    /** [BR] */
+    iof_tax_amount: wireNumber().nullable().default(null),
+    /** ⚠️ [BR] NOT `order_income.pix_discount`. */
+    discount_pix: wireNumber().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeBuyerPaymentInfo = z.infer<typeof shopeeBuyerPaymentInfoSchema>;
 
 /**
  * The inner payload of `get_escrow_detail` — ONE order's accounting.
@@ -1318,7 +1427,12 @@ export const shopeeEscrowDetailPayloadSchema = z
     buyer_user_name: z.string().nullable().default(null),
     return_order_sn_list: z.array(z.string()).nullable().default(null),
     order_income: shopeeOrderIncomeSchema.nullable().default(null),
-    buyer_payment_info: z.record(z.string(), z.unknown()).nullable().default(null),
+    /**
+     * ⚠️ `null` on a non-BR order (the SG sandbox sends the KEY with `null`),
+     * and a different CLOCK from `order_income`. See
+     * {@link shopeeBuyerPaymentInfoSchema}.
+     */
+    buyer_payment_info: shopeeBuyerPaymentInfoSchema.nullable().default(null),
   })
   .passthrough();
 export type ShopeeEscrowDetail = z.infer<typeof shopeeEscrowDetailPayloadSchema>;
@@ -1326,3 +1440,70 @@ export type ShopeeEscrowDetail = z.infer<typeof shopeeEscrowDetailPayloadSchema>
 /** `GET /api/v2/payment/get_escrow_detail` — WRAPPED under `response`. */
 export const shopeeEscrowDetailSchema = wrappedOp(shopeeEscrowDetailPayloadSchema);
 export type ShopeeEscrowDetailResponse = z.infer<typeof shopeeEscrowDetailSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                    The settlement listing (step 6)                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One row of `get_escrow_list.response.escrow_list`.
+ *
+ * ⚠️ `order_sn` is `.min(1)` — STRICT, exactly as it is on the two order pages.
+ * It is the preimage of a deterministic document id, so a blank one would key
+ * every such row onto ONE pagamento.
+ *
+ * ⚠️ `payout_amount` is stored VERBATIM and converted NOWHERE, because its unit
+ * is unresolved: the page's own parameter table types it as a float and prints
+ * `"5733.04"`, while the rendered response sample on the SAME page prints
+ * `57334`. Units or cents cannot be told apart from one field, so the reader
+ * logs it beside `escrow_amount` and their ratio, and the answer arrives as
+ * data instead of as a guess baked into a schema.
+ *
+ * ⚠️ `escrow_release_time` is SECONDS and this page is the ONLY Shopee surface
+ * that exposes it at all — `get_escrow_detail` does not carry it.
+ */
+export const shopeeEscrowListRowSchema = z
+  .object({
+    order_sn: z.string().min(1),
+    payout_amount: wireNumber().nullable().default(null),
+    escrow_release_time: wireInt().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeEscrowListRow = z.infer<typeof shopeeEscrowListRowSchema>;
+
+/**
+ * The inner payload of `get_escrow_list` — ONE page of released orders.
+ *
+ * ⚠️ **Per-ELEMENT tolerance with a `null` sentinel.** An unreadable row becomes
+ * `null` in place; it never fails the page. This page IS the settlement's only
+ * feed, so one malformed row must not head-of-line-block a whole week of money
+ * for every other order in the window — and the sentinel is `null`, which no
+ * real row can be, so the reader counts it instead of mistaking it for data.
+ *
+ * ⚠️ This is deliberately NOT `mlMissedFeedSchema`'s idiom. Mercado Livre
+ * catches per FIELD and its docblock bans an outer object catch precisely
+ * because that would manufacture `{}` — an object that looks like a row. Here a
+ * per-field catch would be worse still: it would manufacture a NULL IDENTITY on
+ * `order_sn`, and a null identity is the one thing a settlement cannot recover
+ * from.
+ *
+ * ⚠️ `.default([])` because a quiet weekly window is the ORDINARY state — a
+ * response with `more: false` and no `escrow_list` key is "nothing was released",
+ * not a malformed body.
+ *
+ * ⚠️ `more` is a STRICT `z.boolean()`, for {@link shopeeOrderListPayloadSchema}'s
+ * reason: it is the loop's only termination signal, and a coerced `"false"`
+ * either spins the caller forever or truncates a window in silence. The row
+ * count decides nothing.
+ */
+export const shopeeEscrowListPayloadSchema = z
+  .object({
+    escrow_list: z.array(shopeeEscrowListRowSchema.nullable().catch(null)).default([]),
+    more: z.boolean(),
+  })
+  .passthrough();
+export type ShopeeEscrowList = z.infer<typeof shopeeEscrowListPayloadSchema>;
+
+/** `GET /api/v2/payment/get_escrow_list` — WRAPPED under `response`. */
+export const shopeeEscrowListSchema = wrappedOp(shopeeEscrowListPayloadSchema);
+export type ShopeeEscrowListResponse = z.infer<typeof shopeeEscrowListSchema>;

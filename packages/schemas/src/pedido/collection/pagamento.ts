@@ -4,7 +4,7 @@ import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../shared/datetime';
 import { bandeiraSchema } from '../../bandeiraCartao';
 import { outerRefSchema } from '../../shared/outerRef';
-import { ESTADO_PEDIDO } from './pedido';
+import { ESTADO_PEDIDO, marketplacePedidoTipoSchema } from './pedido';
 import type { EstadoPedido } from './pedido';
 
 const PERM_PAGAMENTO_READ = 1n << 24n;
@@ -210,6 +210,155 @@ export function sumPagamentosPagos(
   );
 }
 
+/* -------------------------------------------------------------------------- */
+/*        Marketplace money diary + settlement stamp (#1514, step 6)           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where a {@link liquidacaoPagamentoSchema} stamp came from.
+ *
+ * One member today, and a closed enum on purpose: Shopee exposes
+ * `escrow_release_time` through exactly ONE endpoint (`get_escrow_list`), so a
+ * stamp that did not come from there came from somewhere nobody has designed
+ * yet. A second channel adds a member here rather than writing a free string.
+ */
+export const liquidacaoFonteSchema = z.enum(['escrow_list']);
+export type LiquidacaoFonte = z.infer<typeof liquidacaoFonteSchema>;
+
+/**
+ * Named members of {@link liquidacaoFonteSchema} — the ONE settlement-source
+ * vocabulary in the repo, deliberately NOT re-declared beside the sweep's own
+ * cursor doc (`liquidacaoShopee.ts`). Two consts holding the same wire token in
+ * two files is the drift shape root `CLAUDE.md` warns about; the sweep imports
+ * this one.
+ */
+export const LIQUIDACAO_FONTE = {
+  escrowList: 'escrow_list',
+} as const satisfies Record<string, LiquidacaoFonte>;
+
+/**
+ * `pagamento.liquidacao` — what the marketplace ACTUALLY released for this
+ * payment, and when.
+ *
+ * ⚠️ **The settlement sweep is this block's ONLY writer.** It is a top-level
+ * field rather than a member of {@link marketplacePagamentoSchema} precisely so
+ * the two Shopee writers hold DISJOINT update masks: a `tx.update` masks at a
+ * top-level key, so the weekly sweep can stamp `liquidacao` without re-writing
+ * the order-task's diary, and the order task — which never names `liquidacao` in
+ * any patch — can re-import an order without erasing money that has already been
+ * released. Nested inside `marketplace` the two would overwrite each other on
+ * every delivery.
+ *
+ * ⚠️ **A DIARY, never a GUARD**, and deliberately NOT in
+ * `pagamentoMeta.serverOwnedFields` (there is none) — the same argument
+ * `capturaComprador` carries on the pedido: forging it unblocks nothing. Every
+ * settlement decision is re-derived inside the transaction from the FRESH
+ * `get_escrow_list` row plus the stored `escrowReleaseTimeUs` it compares
+ * against; a later step that wants to GATE on this block must first move the
+ * field into `serverOwnedFields` and pay the ruleset regeneration (root
+ * `CLAUDE.md` rule 2).
+ *
+ * ⚠️ `escrowReleaseTimeUs` is MICROseconds. The wire carries SECONDS
+ * (`escrow_release_time`) and the conversion happens ONCE, at the write, through
+ * the channel's seconds helper — never `coerceToMicros`, whose magnitude
+ * heuristic reads a seconds value as 1970 and would make every stored stamp look
+ * older than every incoming one for ever.
+ */
+export const liquidacaoPagamentoSchema = z
+  .object({
+    /**
+     * `get_escrow_list.payout_amount` VERBATIM — the unit (cents vs units) is
+     * unresolved on Shopee's own page, so nothing converts it. The sweep logs
+     * it beside `escrowAmount` and their ratio; that is what will answer it.
+     */
+    payoutAmount: z.number().nullable().default(null),
+    /** `escrow_release_time` (wire SECONDS) converted ONCE at the write (µs). */
+    escrowReleaseTimeUs: microsSinceEpoch('Liberação do escrow').nullable().default(null),
+    /** When OUR sweep stamped it (µs) — excluded from the no-change comparison. */
+    liquidadoEmUs: microsSinceEpoch('Liquidado em').nullable().default(null),
+    fonte: liquidacaoFonteSchema.nullable().default(null),
+  })
+  .passthrough();
+export type LiquidacaoPagamento = z.infer<typeof liquidacaoPagamentoSchema>;
+
+/**
+ * The marketplace's own named fee columns for ONE payment — RAW, with **no
+ * arithmetic of any kind**.
+ *
+ * `pagamento.tarifas` is the single clamped number the ERP charges against; this
+ * block is the breakdown it was folded from, kept verbatim so the composition
+ * can be re-argued from stored data instead of from a live re-read. Whichever
+ * fee columns a future step decides to sum, the answer is already on disk.
+ */
+export const marketplacePagamentoTaxasSchema = z
+  .object({
+    /** Shopee `net_commission_fee ?? commission_fee`. */
+    comissao: z.number().nullable().default(null),
+    /** Shopee `net_service_fee ?? service_fee`. */
+    servico: z.number().nullable().default(null),
+    /** Shopee `seller_transaction_fee` — NEVER `credit_card_transaction_fee`, which is a rollup. */
+    transacaoVendedor: z.number().nullable().default(null),
+    /** Shopee `campaign_fee`. */
+    campanha: z.number().nullable().default(null),
+    /** Shopee `shipping_seller_protection_fee_amount`. */
+    protecaoFrete: z.number().nullable().default(null),
+    /** Shopee `seller_order_processing_fee` (ORDER level, not the item-level twin). */
+    processamento: z.number().nullable().default(null),
+    /** Shopee `total_adjustment_amount`. */
+    ajustes: z.number().nullable().default(null),
+    /** Shopee `seller_return_refund`. */
+    devolucoes: z.number().nullable().default(null),
+  })
+  .passthrough();
+export type MarketplacePagamentoTaxas = z.infer<typeof marketplacePagamentoTaxasSchema>;
+
+/**
+ * `pagamento.marketplace` — the marketplace's own money for ONE payment,
+ * mirroring what `pedido.marketplace` does for the order's lifecycle.
+ *
+ * ⚠️ **A DIARY, never a GUARD** (same rule as `pedido.marketplace`, and
+ * deliberately NOT `serverOwnedFields`): `valor` is the buyer-facing figure the
+ * NF-e sums and `tarifas` is what the ERP charges — both live at the top level
+ * and neither is derived from this block at read time. Everything here is
+ * re-derived from the FRESH escrow payload on every write.
+ *
+ * ⚠️ **Written by BOTH Shopee writers, from the SAME pure functions.** The
+ * order-import task builds it when it maps the payment; the weekly settlement
+ * sweep rebuilds the escrow half of it from a fresher `get_escrow_detail`. That
+ * is safe *because* they share one implementation — the freshest escrow wins and
+ * the two converge — and it is why the sweep may never re-derive these numbers
+ * on its own. `escrow_amount` is documented to move until the order completes,
+ * so a stale copy here is expected and is exactly what `atualizadoEm` dates.
+ *
+ * ⚠️ `tarifasBrutas` is the PRE-CLAMP raw of `tarifas`: `tarifas` is
+ * `max(0, roundReais(bruto))` because a negative fee is not a thing the ERP can
+ * charge, and the unclamped value is kept here so a negative — which would mean
+ * Shopee credited the seller — is visible as data instead of vanishing into a 0.
+ *
+ * ⚠️ `atualizadoEm` is the ORDER clock (the delivery's watermark), never
+ * `nowUs`. That is the single choice that lets a byte-identical redelivery
+ * produce an EMPTY patch instead of a write, which is what keeps
+ * `onPagamentoChanged` from filing a history row per redelivery.
+ */
+export const marketplacePagamentoSchema = z
+  .object({
+    tipo: marketplacePedidoTipoSchema,
+    /** The provider's order identifier, VERBATIM (Shopee `order_sn`). */
+    orderSn: z.string().nullable().default(null),
+    /** The buyer's checkout total — the figure `valor` is taken from. */
+    buyerTotalAmount: z.number().nullable().default(null),
+    /** Escrow as of this read; documented to MOVE until the order completes. */
+    escrowAmount: z.number().nullable().default(null),
+    escrowAmountAfterAdjustment: z.number().nullable().default(null),
+    /** Pre-clamp `tarifas` — see the header. */
+    tarifasBrutas: z.number().nullable().default(null),
+    taxas: marketplacePagamentoTaxasSchema.nullable().default(null),
+    /** The ORDER clock of the delivery that wrote this block (µs) — never `nowUs`. */
+    atualizadoEm: microsSinceEpoch('Marketplace atualizado em').nullable().default(null),
+  })
+  .passthrough();
+export type MarketplacePagamento = z.infer<typeof marketplacePagamentoSchema>;
+
 /**
  * Pagamento — subcoleção `pedidos/{pedidoId}/pagamentos` (plural, matching the
  * Flutter ERP's `PAGAMENTO_COLLECTION` constant,
@@ -218,6 +367,11 @@ export function sumPagamentosPagos(
  * (`.old` `models.dart:1802-1993`, confirmed against every producer by the
  * #463 parity audit) are enumerated below. `cartao` / `cheque` stay
  * `z.unknown()`: they round-trip an opaque embedded map, not a reference.
+ *
+ * Two fields are NOT legacy — `marketplace` and `liquidacao` (#1514, step 6):
+ * the marketplace's own money for this payment, and what it actually released.
+ * Both are nullable diaries and both are `null` on every pagamento whose pedido
+ * did not come from a marketplace. See their headers above.
  *
  * No `.passthrough()` — this is a plain (strip-policy) `z.object`. On READ,
  * `parseSoftRead` (`@delfrance/data`) still tolerates an unmodeled key: it
@@ -248,6 +402,15 @@ export const pagamentoSchema = z.object({
   aVista: z.boolean().default(true),
   duplicata: z.boolean().default(false),
   nFat: z.string().max(60).nullable().default(null),
+  // Marketplace money, #1514 step 6 — the 20th and 21st fields, and the only
+  // two the 19 legacy ones are joined by. Both are DIARIES (see their
+  // headers), both are `null` on every non-marketplace pagamento, and their
+  // writers own DISJOINT masks: the order-import task owns `marketplace` (and
+  // never names `liquidacao`), the weekly settlement sweep owns `liquidacao`
+  // (and only merges the escrow half of `marketplace`, from the same pure
+  // function the task uses).
+  marketplace: marketplacePagamentoSchema.nullable().default(null),
+  liquidacao: liquidacaoPagamentoSchema.nullable().default(null),
   // Datetime fields — microseconds since epoch (`microsSinceEpoch()`), the
   // project standard. Migrated from the legacy ISO-8601 strings; the builder
   // reads both during rollout (see tools/migrations/pedido-pagamento-micros).
