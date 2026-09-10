@@ -98,7 +98,14 @@ a page of the 3-day queue irreversibly.
   quantities), `produtoResolve.ts` (the link → SKU cascade), `comprador.ts` (the
   buyer-capture adapter), `incidentesProduto.ts` (one incidente per unbound
   line) and `orderPedidoTx.ts` (the ONE transaction). See **Order import**
-  below.
+  below. ⚠️ `importarPedido.ts` is split in two on purpose:
+  `prepararImportacaoPedidoShopee` is the READ-ONLY half (the two Shopee calls,
+  the produto cascade, the mappers, the stored-pedido read) and
+  `mapearPreparoPedidoShopee` turns it into the four write groups;
+  `importarPedidoShopee` is that pair plus the writes. The rehearsal script's
+  dry-run calls the same two functions, so there is no second copy of the
+  sequence to drift — and its "writes nothing" is structural, since no writer
+  appears in the read-only body.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -170,8 +177,15 @@ a page of the 3-day queue irreversibly.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/oauth-url.ts` — dev-only: mints a consent URL without the web UI.
-  **Never run by an agent** (root CLAUDE.md rule 8).
+- `scripts/` — two dev-only CLIs, **never run by an agent** (root CLAUDE.md
+  rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
+  consent URL without the web UI, and `importar-pedido.ts` imports ONE named
+  order through the real step-5 path — **dry-run by default**, `--live` to
+  write. Its pure half (arg parsing, the redacted summary, the renderer, the
+  error describer) lives in `lib/shopee/pedidos/importarPedidoCli.ts` **because
+  `scripts/` is outside this app's vitest `include`**, so logic written in a
+  script file can never be tested (the `pedidoMoneyAudit.ts` precedent in
+  `apps/mercado-livre`). Script-only, imported by no route and no bundle.
 
 The platform-neutral Shopee core (signer, hosts, typed clients, wire schemas,
 error taxonomy) lives in `@delfrance/integrations-shopee`. It holds no Firestore
