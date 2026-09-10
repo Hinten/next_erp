@@ -15,15 +15,18 @@ name: E2E — Emulator (callables + triggers)
 # e2e-reusable.yml (production build + Playwright webServer + failure comment).
 
 on:
+  # Codex branches run the complete emulator suite before a PR exists.
+  push:
+    branches: ['codex/**']
   pull_request:
     # The prefix entries cover stacked PRs — see ci.yml. `production` is the
     # release base (main → production); without it the PR that actually ships
     # would run no e2e at all.
-    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

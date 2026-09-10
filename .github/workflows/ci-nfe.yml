@@ -6,7 +6,7 @@ name: CI — NFe
 # turbo filter to avoid double-running.
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, 'codex/**']
     # NF-e-relevant paths only — this workflow runs the expensive live
     # SEFAZ pipeline (~10 min). Broad globs on `packages/schemas/**` or
     # `packages/core/**` would re-trigger live emissions on edits that
@@ -34,7 +34,7 @@ on:
     # release base (main → production); without it this lane reports no check at
     # all on the PR that actually ships, and a required check that never reports
     # blocks the merge forever.
-    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
     # ⚠️ NO `paths:` here, deliberately. A `paths:` that does not match means
     # GitHub never instantiates the workflow, so it publishes NO check run at all
     # — not a failure, not a skip, nothing — and a required status check that is
@@ -54,7 +54,7 @@ on:
     # `push:` above KEEPS its `paths:` on purpose: nothing on the push path is a
     # required check, and the `changes` job short-circuits to run=true on non-PR
     # events, so removing it would run the full live SEFAZ pipeline on every merge
-    # to main for no gating benefit.
+    # to main and every Codex push for no gating benefit.
   workflow_dispatch:
   # No cron here on purpose: the scheduled (weekly) FATAL run of the SVC
   # live suite lives in nfe-epec-scheduled.yml's `svc-live` job instead,
@@ -63,7 +63,7 @@ on:
   # is fatal only on workflow_dispatch.
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

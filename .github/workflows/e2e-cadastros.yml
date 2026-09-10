@@ -14,15 +14,18 @@ name: E2E — Cadastros
 # still reports. See .github/scripts/e2e-affected.mjs for why the old hand-written
 # path list was wrong as well as invisible.
 on:
+  # Codex branches run the complete staging suite before a PR exists.
+  push:
+    branches: ['codex/**']
   pull_request:
     # The prefix entries cover stacked PRs — see ci.yml. `production` is the
     # release base (main → production); without it the PR that actually ships
     # would run no e2e at all.
-    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
   workflow_dispatch:
 
 concurrency:
-  group: e2e-cadastros-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 # Grant the union of what the reusable workflow's jobs request. A reusable
@@ -130,11 +133,11 @@ jobs:
     needs: [changes]
     # Fork PRs can't see repo secrets, so the run would only fail noisily at
     # the Firebase steps — skip it. The gate below reports that skip as RED:
-    # unverified is not the same as verified. Manual dispatch always runs
-    # (same-repo).
+    # unverified is not the same as verified. Push and manual dispatch are
+    # trusted in-repo events and always run.
     if: >-
       ${{ needs.changes.outputs.run_e2e == 'true' &&
-          (github.event_name == 'workflow_dispatch' ||
+          (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.fork == false) }}
     uses: ./.github/workflows/e2e-reusable.yml
     with:

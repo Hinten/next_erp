@@ -12,7 +12,7 @@ name: CI — Rules
 #                           emulator does NOT enforce.
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, 'codex/**']
     paths:
       - 'packages/rules-gen/**'
       - 'packages/schemas/**'
@@ -31,7 +31,7 @@ on:
     # The prefix entries cover stacked PRs — see ci.yml. `production` is the
     # release base (main → production); without it this lane reports no check at
     # all on the PR that actually ships.
-    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
     # ⚠️ NO `paths:` here, deliberately — a non-matching `paths:` publishes NO
     # check run at all, so nothing can be pinned to this lane. Scope lives in the
     # `changes` job below. This list was the closest to correct of the four, but
@@ -45,7 +45,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

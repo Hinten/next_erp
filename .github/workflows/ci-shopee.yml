@@ -70,11 +70,11 @@ name: CI — Shopee
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, 'codex/**']
     # ⚠️ `push:` KEEPS its `paths:`; `pull_request:` deliberately has none — see
     # the note there. Nothing on the push path is a required check, and the
     # `changes` job short-circuits to run=true on every non-PR event, so this
-    # list only decides whether the post-merge safety net fires at all.
+    # list decides whether the main safety net or a pre-PR Codex run fires.
     paths:
       # Globs, never named files where a directory is meant: ci-storage.yml:27-35
       # records that a named-file list silently rots into zero coverage.
@@ -122,7 +122,7 @@ on:
     # `production` is the release base (main → production): without it this lane
     # publishes nothing on the PR that actually ships, and a pinned check that
     # never reports leaves that PR permanently unmergeable.
-    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
     # ⚠️ NO `paths:` here, and never add one. A `pull_request: paths:` that does
     # not match means GitHub never instantiates the workflow, so it publishes NO
     # check run at all — not a failure, not a skip, nothing. A required status
@@ -132,7 +132,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

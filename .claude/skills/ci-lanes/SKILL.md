@@ -274,7 +274,7 @@ Prettier-formatted and its indentation is not machine-guaranteed.
 
 ## Triggers
 
-- `pull_request: branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']`
+- `pull_request: branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']`
   on every lane. `branches:` matches the PR's **base**, so a stacked PR must sit
   on one of those prefixes. `production` is the release base — omit it and the PR
   that actually ships reports no check, which for a required check means
@@ -283,7 +283,15 @@ Prettier-formatted and its indentation is not machine-guaranteed.
 - The domain lanes **keep** `paths:` on `push:`. Nothing on the push path is a
   required check, and `changes` short-circuits to run=true on non-PR events, so
   removing it would run the full live SEFAZ pipeline on every merge to `main` for
-  no gating benefit. The e2e lanes have no `push:` at all.
+  no gating benefit. Their push branches are `[master, main, 'codex/**']`.
+- The three E2E lanes have an unfiltered `push:` only for `codex/**`. This is
+  intentionally expensive: every published Codex branch runs the full staging
+  and emulator suites before a PR exists.
+- Every lane groups concurrency by workflow + source repository + source branch,
+  using the PR head repository/ref on `pull_request` and the current repository/
+  `ref_name` otherwise. This deduplicates overlapping push and PR runs without
+  colliding with an equally named fork branch. `cancel-in-progress: true` means
+  the newest event wins; ordering is not guaranteed and completed runs remain.
 - `timeout-minutes` on every job. 14 jobs once had none, leaving GitHub's 6-hour
   default as the only bound on a hung SEFAZ call. Derive values from observed
   maxima, not guesses: a too-tight timeout turns "slow" into a red required check.
