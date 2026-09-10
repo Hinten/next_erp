@@ -12,7 +12,6 @@ import {
   Table,
   Text,
   Textarea,
-  TextInput,
   Title,
   Tooltip,
 } from '@mantine/core';
@@ -46,6 +45,7 @@ import { makeRowId } from '../flattenItens';
 import { precoFromProduto } from '../precoLookup';
 import { ProdutoThumbnail } from '@/components/ProdutoThumbnail';
 import { ProdutoVariacaoLabel } from '../ProdutoVariacaoLabel';
+import { VendedorField } from '../VendedorField';
 import { useEstoqueDisponivel } from '../useEstoqueDisponivel';
 import { DecimalInput } from '@delfrance/ui';
 
@@ -64,18 +64,15 @@ export interface PrincipalTabProps {
    * bare write-permission gate instead of `disabled`.
    */
   observacoesDisabled?: boolean;
-  /** The current user's uid; surfaced as the read-only "Vendedor" line. */
-  vendedorLabel?: string;
 }
 
-export function PrincipalTab({
-  form,
-  db,
-  disabled,
-  observacoesDisabled,
-  vendedorLabel,
-}: PrincipalTabProps) {
+export function PrincipalTab({ form, db, disabled, observacoesDisabled }: PrincipalTabProps) {
   const ehSaida = form.watch('ehSaida') ?? true;
+  // ⚠️ Read from the FORM, not from `useAuth`. This line used to render the
+  // logged-in user unconditionally, so a colleague's pedido was attributed to
+  // whoever opened it. `PedidoForm` seeds the field on create, so the value
+  // displayed here is the value that gets saved.
+  const vendedorOuterRef = form.watch('vendedorPedidoOuterRef');
   const listaDePrecosOuterRef = form.watch('listaDePrecosOuterRef');
   const integracaoOuterRef = form.watch('integracaoPedidoOuterRef');
 
@@ -239,7 +236,7 @@ export function PrincipalTab({
       />
 
       <Group grow align="flex-start">
-        <TextInput label="Vendedor" value={vendedorLabel ?? '—'} readOnly disabled />
+        <VendedorField db={db} outerRef={vendedorOuterRef} />
         <Controller
           control={form.control}
           name="operacaoPedidoOuterRef"
@@ -398,6 +395,25 @@ function ItemRow({
   );
   const { data: produtoDoc } = useDocSnapshot(produtoRef);
   const produto: Produto | null = produtoDoc?.data ?? null;
+  // ⚠️ `useDocSnapshot` reports THREE states and the badge below may only fire
+  // on one of them: `undefined` is "still loading, or the read failed", `null`
+  // is "the document is confirmed absent" (packages/data/src/hooks/useSnapshot.ts).
+  // Collapsing them would flash "Produto removido" over every row during the
+  // load window, and claim a deletion on a permission error.
+  const produtoAusente = produtoDoc === null;
+  // The item's own denormalised identity, written at pick time and by every
+  // marketplace importer. It OUTLIVES the produto, which is the whole point:
+  // it is what still names the line when the produto was deleted or was never
+  // registered here at all.
+  //
+  // ⚠️ `mktplaceId` is deliberately NOT part of this test. `clearProduto` nulls
+  // the other three but keeps the marketplace linkage, so including it would
+  // make "Trocar produto" on an imported row render an unresolved-item panel
+  // with nothing in it.
+  const temIdentidade = !!(item?.nomeDeVenda || item?.sku || item?.gtin);
+  // The live produto wins, but a line whose produto is gone still knows its own
+  // SKU. Reading `produto?.sku` alone printed "Sem SKU" over a stored one.
+  const skuDoItem = produto?.sku ?? item?.sku ?? null;
 
   // `id: produtoUid` immediately (own-badge starts before the doc lands); kit
   // fields fill in from the produto doc, so kits become kit-aware a beat later.
@@ -535,6 +551,16 @@ function ItemRow({
                 <Text size="sm" fw={500} td={marked ? 'line-through' : undefined} truncate>
                   {produto?.nome || item?.nomeDeVenda || produtoUid}
                 </Text>
+                {produtoAusente && (
+                  <Tooltip
+                    label="O produto vinculado não existe mais no cadastro. O nome e o SKU abaixo são os gravados no pedido."
+                    withArrow
+                  >
+                    <Badge size="xs" color="orange" variant="light">
+                      Produto removido
+                    </Badge>
+                  </Tooltip>
+                )}
                 {estoque !== null && (
                   <Badge size="xs" color={estoque > 0 ? 'green' : 'red'}>
                     {estoque} em estoque
@@ -547,16 +573,24 @@ function ItemRow({
                 )}
               </Group>
               <ProdutoVariacaoLabel db={db} produto={produto} />
-              <Anchor
-                component={Link}
-                href={`/produtos/${produtoUid}/editar`}
-                target="_blank"
-                rel="noopener noreferrer"
-                size="xs"
-                c="dimmed"
-              >
-                {produto?.sku ? `SKU: ${produto.sku}` : 'Sem SKU'}
-              </Anchor>
+              {/* A deleted produto has no page to open — render the SKU as plain
+                  text rather than a link into a 404. */}
+              {produtoAusente ? (
+                <Text size="xs" c="dimmed">
+                  {skuDoItem ? `SKU: ${skuDoItem}` : 'Sem SKU'}
+                </Text>
+              ) : (
+                <Anchor
+                  component={Link}
+                  href={`/produtos/${produtoUid}/editar`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  size="xs"
+                  c="dimmed"
+                >
+                  {skuDoItem ? `SKU: ${skuDoItem}` : 'Sem SKU'}
+                </Anchor>
+              )}
             </Stack>
             <Tooltip label="Trocar produto" withArrow>
               <ActionIcon
@@ -570,6 +604,56 @@ function ItemRow({
               </ActionIcon>
             </Tooltip>
           </Group>
+        ) : temIdentidade ? (
+          // Bound to NOTHING, but the line knows what was sold: a marketplace
+          // import that matched no ERP produto (`produtoUid: null` is an
+          // explicit, supported state — orderMapping.ts, shopee/itens.ts).
+          //
+          // ⚠️ This used to render the bare picker below, and nothing else. The
+          // stored name, SKU, GTIN and anúncio id were all on the document and
+          // none of them reached the screen, so the operator saw a blank line
+          // carrying a quantity and a price with no way to tell what it was.
+          <Stack gap={4}>
+            <Group gap={6} align="center" wrap="nowrap">
+              <Text size="sm" fw={500} td={marked ? 'line-through' : undefined} truncate>
+                {item?.nomeDeVenda || 'Produto sem nome'}
+              </Text>
+              <Tooltip
+                label="Este item veio de um canal externo e não corresponde a nenhum produto cadastrado. Vincule um produto para movimentar estoque."
+                withArrow
+              >
+                <Badge size="xs" color="yellow" variant="light">
+                  Não cadastrado
+                </Badge>
+              </Tooltip>
+              {marked && (
+                <Badge size="xs" color="gray" variant="light">
+                  Será excluída
+                </Badge>
+              )}
+            </Group>
+            {(item?.sku || item?.gtin || item?.mktplaceId) && (
+              <Text size="xs" c="dimmed">
+                {[
+                  item?.sku && `SKU: ${item.sku}`,
+                  item?.gtin && `GTIN: ${item.gtin}`,
+                  item?.mktplaceId && `Anúncio: ${item.mktplaceId}`,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+            )}
+            <ProdutoPicker
+              db={db}
+              value={null}
+              onChange={(r) => {
+                if (r) void handlePick(r.data, r.id);
+              }}
+              label=""
+              placeholder="Vincular produto…"
+              disabled={disabled || marked}
+            />
+          </Stack>
         ) : (
           // Empty row: the search picker.
           <ProdutoPicker
