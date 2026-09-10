@@ -11,6 +11,7 @@
  * waves.
  */
 import { getDoc, type DocumentReference, type Firestore } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 import { roundReais } from '@delfrance/core/money';
 import {
   ESTADO_PEDIDO_LABELS,
@@ -145,6 +146,38 @@ async function readRef<T>(db: Firestore, outerRef: unknown): Promise<T | null> {
   return snap.exists() ? (snap.data() as T) : null;
 }
 
+/**
+ * The vendedor is the ONE header ref whose read may legitimately be refused.
+ *
+ * ⚠️ `usuarios` is `allow read: if isSuperUser() || p('d_configuracoes', 1)`, a
+ * bit a plain operator does not hold — the same reason `VendedorField` answers
+ * the common case from the auth session instead of reading. That was harmless
+ * while the field was null on the plain-create path, because the read never
+ * happened. Now that `PedidoForm` stamps every new pedido it does, and an
+ * unguarded rejection inside the `Promise.all` below takes the WHOLE print model
+ * down: a "Missing or insufficient permissions" toast on share, or a `failures`
+ * entry in the batch waves.
+ *
+ * `vendedorNome` is `string | null` in the model and the sheet omits the line
+ * when it is null, so degrading to "no seller line" is the same output those
+ * pedidos had before. Only `permission-denied` degrades — every other
+ * FirebaseError (unavailable, not-found on a malformed path) still throws, and a
+ * non-Firebase error is rethrown untouched (CLAUDE.md rule 6). Exported for
+ * `assemble.vendedor.test.ts`, which pins both halves — what it swallows and
+ * what it must still let through.
+ */
+export async function readVendedor(
+  db: Firestore,
+  outerRef: unknown,
+): Promise<{ displayName?: string; nome?: string; email?: string } | null> {
+  try {
+    return await readRef<{ displayName?: string; nome?: string; email?: string }>(db, outerRef);
+  } catch (err) {
+    if (err instanceof FirebaseError && err.code === 'permission-denied') return null;
+    throw err;
+  }
+}
+
 /** Flatten the grouped `pedido.itens` record, deriving produtoUid from the map key. */
 function flattenItens(grouped: Pedido['itens']): ItemDoPedido[] {
   const out: ItemDoPedido[] = [];
@@ -184,10 +217,7 @@ export async function buildPrintModel(
       readRef<Endereco>(db, pedido.enderecoFiscalOuterRef),
       frete ? readRef<{ nome?: string; tipo?: string }>(db, frete.integracaoFreteOuterRef) : null,
       frete ? readRef<Endereco>(db, frete.enderecoFreteOuterReference) : null,
-      readRef<{ displayName?: string; nome?: string; email?: string }>(
-        db,
-        pedido.vendedorPedidoOuterRef,
-      ),
+      readVendedor(db, pedido.vendedorPedidoOuterRef),
     ]);
 
   const filial = integracao

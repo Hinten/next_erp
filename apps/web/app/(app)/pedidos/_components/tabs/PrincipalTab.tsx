@@ -393,14 +393,21 @@ function ItemRow({
     () => (produtoUid ? produtoCollection.docRef(db, {}, produtoUid) : null),
     [db, produtoUid],
   );
-  const { data: produtoDoc } = useDocSnapshot(produtoRef);
+  const { data: produtoDoc, fromCache: produtoFromCache } = useDocSnapshot(produtoRef);
   const produto: Produto | null = produtoDoc?.data ?? null;
-  // ⚠️ `useDocSnapshot` reports THREE states and the badge below may only fire
-  // on one of them: `undefined` is "still loading, or the read failed", `null`
-  // is "the document is confirmed absent" (packages/data/src/hooks/useSnapshot.ts).
-  // Collapsing them would flash "Produto removido" over every row during the
-  // load window, and claim a deletion on a permission error.
-  const produtoAusente = produtoDoc === null;
+  // ⚠️ FOUR states, and the badge below may fire on exactly one of them.
+  // `undefined` is "still loading, or the read failed"; `null` is "the latest
+  // emission carried no document" (packages/data/src/hooks/useSnapshot.ts) — and
+  // that is NOT the same as "the server says it is gone". This app runs
+  // `persistentLocalCache` (lib/firebase/client.ts), so a listener offline, or
+  // after the online state flips on a dropped stream, raises an EMPTY snapshot
+  // for a doc that merely is not in the local cache — a produto that is
+  // perfectly alive. Badging on `null` alone would paint "Produto removido"
+  // across the whole item table on a flaky connection.
+  //
+  // `useSnapshot` passes `includeMetadataChanges: true` precisely so the
+  // cache→server transition is delivered, so require the server emission.
+  const produtoAusente = produtoDoc === null && produtoFromCache === false;
   // The item's own denormalised identity, written at pick time and by every
   // marketplace importer. It OUTLIVES the produto, which is the whole point:
   // it is what still names the line when the produto was deleted or was never

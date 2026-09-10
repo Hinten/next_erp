@@ -20,7 +20,15 @@ vi.mock('@/lib/data/produtoCollection', () => ({
   },
 }));
 
-let produtoSnapshot: { data: unknown; loading: boolean; error: undefined } = {
+// `fromCache` is part of the state on purpose: an empty emission served from the
+// IndexedDB cache is not evidence of a deletion, and a stub that cannot express
+// the difference cannot pin the badge.
+let produtoSnapshot: {
+  data: unknown;
+  loading: boolean;
+  error: undefined;
+  fromCache?: boolean;
+} = {
   data: undefined,
   loading: true,
   error: undefined,
@@ -152,7 +160,7 @@ describe('item row — the produto is not registered here (produtoUid: null)', (
 
 describe('item row — the produto was deleted (produtoUid set, doc absent)', () => {
   it('keeps the stored name and SKU, marks it, and drops the dead link', () => {
-    produtoSnapshot = { data: null, loading: false, error: undefined };
+    produtoSnapshot = { data: null, loading: false, error: undefined, fromCache: false };
     renderLinha([item({ produtoUid: 'p1', nomeDeVenda: 'Bandeja Antiga', sku: 'BAN-1' })]);
 
     expect(screen.getByText('Bandeja Antiga')).toBeTruthy();
@@ -172,6 +180,19 @@ describe('item row — the produto was deleted (produtoUid set, doc absent)', ()
 
     expect(screen.queryByText('Produto removido')).toBeNull();
     expect(screen.getByText('Bandeja')).toBeTruthy();
+  });
+
+  // The fourth state, and the one that lies. With `persistentLocalCache` an
+  // offline listener raises an EMPTY snapshot for a doc that is simply not in
+  // the local cache — a produto that is alive on the server. Without the
+  // `fromCache` gate this paints "Produto removido" across every row of a
+  // pedido opened on a flaky connection, and takes each row's link with it.
+  it('claims no deletion when the empty emission came from the local cache', () => {
+    produtoSnapshot = { data: null, loading: false, error: undefined, fromCache: true };
+    renderLinha([item({ produtoUid: 'p1', nomeDeVenda: 'Bandeja', sku: 'BAN-1' })]);
+
+    expect(screen.queryByText('Produto removido')).toBeNull();
+    expect(screen.getByRole('link', { name: 'SKU: BAN-1' })).toBeTruthy();
   });
 
   it('prefers the live produto and keeps the link when the doc is there', () => {
