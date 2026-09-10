@@ -17,6 +17,7 @@ import {
   ESTADO_PEDIDO_LABELS,
   MODALIDADE_FRETE_LABELS,
   estoqueDisponivel,
+  flattenPedidoItens,
   itemSubtotal,
   makeEstoqueUid,
   nomeDoItem,
@@ -28,8 +29,6 @@ import {
   type Filial,
   type GrupoDeVariacoes,
   type Integracao,
-  type ItemDoPedido,
-  type Pedido,
   type Produto,
 } from '@delfrance/schemas';
 import { arquivoCollection } from '@delfrance/storage';
@@ -179,19 +178,6 @@ export async function readVendedor(
   }
 }
 
-/** Flatten the grouped `pedido.itens` record, deriving produtoUid from the map key. */
-function flattenItens(grouped: Pedido['itens']): ItemDoPedido[] {
-  const out: ItemDoPedido[] = [];
-  for (const [key, list] of Object.entries(grouped)) {
-    const keyUid = key && key !== 'NONE' ? key : null;
-    for (const item of list) {
-      out.push({ ...item, produtoUid: item.produtoUid ?? keyUid });
-    }
-  }
-  out.sort((a, b) => a.ordem - b.ordem);
-  return out;
-}
-
 /* -------------------------------------------------------------------------- */
 /*                              buildPrintModel                               */
 /* -------------------------------------------------------------------------- */
@@ -207,7 +193,10 @@ export async function buildPrintModel(
   const pedidoSnap = await getDoc(pedidoCollection.docRef(db, {}, pedidoId));
   if (!pedidoSnap.exists()) throw new PedidoNotFoundError(pedidoId);
   const pedido = pedidoSnap.data();
-  const items = flattenItens(pedido.itens);
+  // ⚠️ `flattenPedidoItens` was lifted OUT of this file so the assembler and the
+  // checkout engine would share one implementation, and the local copy it left
+  // behind was never deleted — two identical bodies, nothing keeping them equal.
+  const items = flattenPedidoItens(pedido.itens);
   const frete = pedido.freteInicial;
 
   // 2. Header references (parallel) -----------------------------------------

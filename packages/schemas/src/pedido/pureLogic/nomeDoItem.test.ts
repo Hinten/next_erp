@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SEM_NOME, nomeDoItem } from './nomeDoItem';
+import { PRODUTO_SEM_NOME, nomeDoItem } from './nomeDoItem';
 
 const item = {
   produtoUid: 'p1',
@@ -32,10 +32,12 @@ describe('nomeDoItem — priority', () => {
     expect(nomeDoItem({ produtoUid: 'p1', nomeDeVenda: null, sku: null }, null)).toBe('p1');
   });
 
-  it('falls back to SEM_NOME when the line carries nothing at all', () => {
-    expect(nomeDoItem({ produtoUid: null, nomeDeVenda: null, sku: null }, null)).toBe(SEM_NOME);
-    expect(nomeDoItem(null, null)).toBe(SEM_NOME);
-    expect(nomeDoItem(undefined, undefined)).toBe(SEM_NOME);
+  it('falls back to PRODUTO_SEM_NOME when the line carries nothing at all', () => {
+    expect(nomeDoItem({ produtoUid: null, nomeDeVenda: null, sku: null }, null)).toBe(
+      PRODUTO_SEM_NOME,
+    );
+    expect(nomeDoItem(null, null)).toBe(PRODUTO_SEM_NOME);
+    expect(nomeDoItem(undefined, undefined)).toBe(PRODUTO_SEM_NOME);
   });
 
   it('reads a produto whose own nome is null (EngineProduto) as no produto name', () => {
@@ -64,8 +66,10 @@ describe('nomeDoItem — blank is not a name', () => {
     expect(nomeDoItem({ produtoUid: 'p1', nomeDeVenda: '', sku: '\t' }, null)).toBe('p1');
   });
 
-  it('falls through a whitespace-only produtoUid to SEM_NOME', () => {
-    expect(nomeDoItem({ produtoUid: ' ', nomeDeVenda: null, sku: null }, null)).toBe(SEM_NOME);
+  it('falls through a whitespace-only produtoUid to PRODUTO_SEM_NOME', () => {
+    expect(nomeDoItem({ produtoUid: ' ', nomeDeVenda: null, sku: null }, null)).toBe(
+      PRODUTO_SEM_NOME,
+    );
   });
 
   it('trims the value it returns', () => {

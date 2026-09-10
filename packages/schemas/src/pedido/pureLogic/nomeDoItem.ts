@@ -36,8 +36,13 @@ export interface ProdutoNomeavel {
   nome?: string | null;
 }
 
-/** Last resort: no produto, no sale name, no sku, no id. */
-export const SEM_NOME = 'Sem nome';
+/**
+ * Last resort: no produto, no sale name, no sku, no id. The wording is
+ * deliberate — "Sem nome" alone reads like a missing field on the SCREEN, while
+ * this says which thing is unnamed. It is what PrincipalTab's unresolved-import
+ * panel already shipped, and it is now the only copy of it.
+ */
+export const PRODUTO_SEM_NOME = 'Produto sem nome';
 
 /** Trim, and treat a blank or whitespace-only string as absent. */
 function textoUtil(valor: string | null | undefined): string | null {
@@ -69,7 +74,7 @@ function textoUtil(valor: string | null | undefined): string | null {
  *  4. **`produtoUid`** — the raw doc id. Ugly, but ACTIONABLE: `/produtos`
  *     searches by document id (#1395) and PrincipalTab links the row straight
  *     to `/produtos/{id}/editar`.
- *  5. {@link SEM_NOME}.
+ *  5. {@link PRODUTO_SEM_NOME}.
  *
  * ⚠️ Blank is not a name. A stored `''` or `'   '` at any step falls through to
  * the next — the `||`-vs-`??` split across the old call sites meant a
@@ -78,7 +83,7 @@ function textoUtil(valor: string | null | undefined): string | null {
  *
  * ⚠️ This resolves a name for DISPLAY. Do not feed the result into a field that
  * gets persisted: steps 3-5 are placeholders, and writing one back would store
- * a doc id (or the literal "Sem nome") as the line's sale name.
+ * a doc id (or the literal "Produto sem nome") as the line's sale name.
  */
 export function nomeDoItem(
   item: ItemNomeavel | null | undefined,
@@ -89,6 +94,6 @@ export function nomeDoItem(
     textoUtil(item?.nomeDeVenda) ??
     textoUtil(item?.sku) ??
     textoUtil(item?.produtoUid) ??
-    SEM_NOME
+    PRODUTO_SEM_NOME
   );
 }

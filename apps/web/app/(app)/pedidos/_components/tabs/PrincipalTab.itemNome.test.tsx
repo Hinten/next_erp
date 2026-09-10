@@ -137,6 +137,20 @@ describe('item row — the produto is not registered here (produtoUid: null)', (
     expect(screen.getByText(/GTIN: 7891234567895/)).toBeTruthy();
   });
 
+  // The title and the identifier line are resolved by the SAME chain, so a line
+  // whose only human-readable field is the SKU titles itself with it rather than
+  // with the placeholder. Redundant with the line below, and still the better
+  // read: the operator scanning the column gets an identifier instead of a
+  // sentence that says nothing.
+  it('titles a nameless line with its SKU', () => {
+    renderLinha([item({ sku: 'MLB-4471', mktplaceId: 'MLB999' })]);
+
+    expect(screen.queryByText('Produto sem nome')).toBeNull();
+    expect(screen.getByText('MLB-4471')).toBeTruthy();
+    expect(screen.getByText(/SKU: MLB-4471/)).toBeTruthy();
+    expect(screen.getByText('Não cadastrado')).toBeTruthy();
+  });
+
   // The near-miss. A row the operator just added is also `produtoUid: null`, and
   // it must NOT be dressed up as a failed import.
   it('leaves a freshly added empty row alone', () => {
