@@ -118,6 +118,31 @@ describe('file tools', () => {
   });
 });
 
+describe('Codex apply_patch', () => {
+  const dir = ['.', 'old'].join('');
+
+  for (const [label, patch] of [
+    ['Add File', `*** Begin Patch\n*** Add File: ${dir}/new.dart\n+x\n*** End Patch`],
+    ['Update File', `*** Begin Patch\n*** Update File: ${dir}/a.dart\n@@\n-a\n+b\n*** End Patch`],
+    ['Delete File', `*** Begin Patch\n*** Delete File: ${dir}/a.dart\n*** End Patch`],
+    [
+      'Move to',
+      `*** Begin Patch\n*** Update File: src/a.dart\n*** Move to: ${dir}/a.dart\n@@\n-a\n+b\n*** End Patch`,
+    ],
+  ]) {
+    it(`blocks ${label} inside the directory`, () => {
+      ok(run({ tool_name: 'apply_patch', tool_input: { command: patch } }));
+    });
+  }
+
+  it('allows a patch whose content merely mentions the directory', () => {
+    const patch =
+      `*** Begin Patch\n*** Update File: docs/policy.md\n@@\n` +
+      `+Never write to ${dir}/.\n*** End Patch`;
+    deepStrictEqual(run({ tool_name: 'apply_patch', tool_input: { command: patch } }), null);
+  });
+});
+
 describe('never blocks on its own bug', () => {
   it('passes an unparseable payload through', () => {
     const out = execFileSync(process.execPath, [HOOK], { input: 'not json', encoding: 'utf8' });

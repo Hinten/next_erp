@@ -1,0 +1,62 @@
+{
+  "description": "Codex reuses the repository hooks maintained under .claude/hooks.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git -c 'safe.directory=*' rev-parse --show-toplevel)/.claude/hooks/enforce-claude-branch-prefix.mjs\"",
+            "timeout": 30,
+            "statusMessage": "Checking branch name"
+          }
+        ]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git -c 'safe.directory=*' rev-parse --show-toplevel)/.claude/hooks/block-firebase-deploy.mjs\"",
+            "timeout": 30,
+            "statusMessage": "Checking for firebase deploy"
+          }
+        ]
+      },
+      {
+        "matcher": "^(Bash|apply_patch)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git -c 'safe.directory=*' rev-parse --show-toplevel)/.claude/hooks/protect-old-reference.mjs\"",
+            "timeout": 30,
+            "statusMessage": "Protecting the .old reference"
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git -c 'safe.directory=*' rev-parse --show-toplevel)/.claude/hooks/block-ignore-dir-access.mjs\"",
+            "timeout": 30,
+            "statusMessage": "Checking for .ignore/ access"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git -c 'safe.directory=*' rev-parse --show-toplevel)/.claude/hooks/english-practice.mjs\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

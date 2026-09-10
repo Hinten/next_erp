@@ -17,6 +17,8 @@
 // Reads the hook payload on stdin, prints a PreToolUse deny decision on stdout
 // when it finds a hit, and stays silent otherwise.
 
+import { applyPatchPaths } from './apply-patch-paths.mjs';
+
 /** `.ignore` as a whole path segment, in a path or inside a shell command. */
 const IGNORE_SEGMENT = /(^|[/\\'"`\s=:(])\.ignore($|[/\\'"`\s),;])/i;
 
@@ -78,6 +80,36 @@ function strings(value) {
   return [];
 }
 
+function isPathField(key) {
+  const normalized = key.toLowerCase();
+  return (
+    normalized === 'path' ||
+    normalized === 'paths' ||
+    normalized === 'file' ||
+    normalized === 'files' ||
+    normalized === 'glob' ||
+    normalized === 'cwd' ||
+    normalized === 'workdir' ||
+    normalized === 'directory' ||
+    normalized === 'directories' ||
+    normalized === 'folder' ||
+    normalized === 'folders' ||
+    normalized === 'root' ||
+    normalized.endsWith('_path') ||
+    normalized.endsWith('_paths')
+  );
+}
+
+/** Path values from Codex/MCP tools that do not have a Claude-specific map. */
+function genericPathCandidates(value) {
+  if (!value || typeof value !== 'object') return [];
+  if (Array.isArray(value)) return value.flatMap(genericPathCandidates);
+
+  return Object.entries(value).flatMap(([key, field]) =>
+    isPathField(key) ? strings(field) : genericPathCandidates(field),
+  );
+}
+
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (c) => (raw += c));
@@ -93,10 +125,14 @@ process.stdin.on('end', () => {
   const input = payload?.tool_input ?? {};
   let candidates = [];
 
-  if (tool === 'Bash' || tool === 'PowerShell') {
+  if (tool === 'apply_patch') {
+    candidates = applyPatchPaths(input.command ?? '');
+  } else if (tool === 'Bash' || tool === 'PowerShell') {
     candidates = [stripMessageFlagValues(stripHeredocs(String(input.command ?? '')))];
   } else if (PATH_FIELDS[tool]) {
     candidates = PATH_FIELDS[tool].flatMap((field) => strings(input[field]));
+  } else {
+    candidates = genericPathCandidates(input);
   }
 
   if (!candidates.some((c) => IGNORE_SEGMENT.test(c))) process.exit(0);

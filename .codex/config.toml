@@ -1,0 +1,5 @@
+# CLAUDE.md is the single source of truth for repository instructions.
+project_doc_fallback_filenames = ["CLAUDE.md"]
+
+# Covers the root instructions plus the largest current nested CLAUDE.md chain.
+project_doc_max_bytes = 196608

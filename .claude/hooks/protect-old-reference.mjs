@@ -22,6 +22,8 @@
 // Reads the hook payload on stdin, prints a PreToolUse deny decision on stdout
 // when it finds a write reaching `.old/`, and stays silent otherwise.
 
+import { applyPatchPaths } from './apply-patch-paths.mjs';
+
 /** Tools whose payload names a file path directly. */
 const PATH_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 
@@ -231,6 +233,14 @@ process.stdin.on('end', () => {
 
   const tool = payload?.tool_name ?? '';
   const input = payload?.tool_input ?? {};
+
+  if (tool === 'apply_patch') {
+    const targets = applyPatchPaths(input.command ?? '');
+    if (targets.some(touchesOld)) {
+      deny('`apply_patch` targets a file inside `.old/`.');
+    }
+    process.exit(0);
+  }
 
   if (PATH_TOOLS.has(tool)) {
     const target = input.file_path ?? input.notebook_path ?? '';
