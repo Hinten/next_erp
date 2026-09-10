@@ -67,6 +67,30 @@ describe('topProdutos', () => {
     expect(rows[1]?.produtoUid).toBe('b');
   });
 
+  it('upgrades the label from a later line that carries the nomeDeVenda', () => {
+    const rows = topProdutos([
+      p(ESTADO_PEDIDO.pago, {
+        a: [
+          i({ ordem: 1, quantidade: 1 }),
+          i({ ordem: 2, quantidade: 1, nomeDeVenda: 'Camiseta' }),
+          i({ ordem: 3, quantidade: 1, nomeDeVenda: 'Camiseta renomeada' }),
+        ],
+      }),
+    ]);
+    // First real name wins; a later, different one does not overwrite it.
+    expect(rows[0]?.label).toBe('Camiseta');
+  });
+
+  it('labels with the sku, then the produtoUid, when no line has a nomeDeVenda', () => {
+    const comSku = topProdutos([
+      p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1, sku: 'CAM-1' })] }),
+    ]);
+    expect(comSku[0]?.label).toBe('CAM-1');
+
+    const semNada = topProdutos([p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1 })] })]);
+    expect(semNada[0]?.label).toBe('a');
+  });
+
   it('drops items without produtoUid (NONE bucket and empty key)', () => {
     const rows = topProdutos([
       p(ESTADO_PEDIDO.pago, {

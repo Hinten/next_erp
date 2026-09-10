@@ -3,6 +3,7 @@ import {
   type EstadoPedido,
   type Pedido,
   bucketOf,
+  nomeDoItem,
   pedidoTotal,
   type EstadoBucket,
 } from '@delfrance/schemas';
@@ -23,8 +24,9 @@ export interface PedidoLite {
 export interface ProdutoSalesRow {
   produtoUid: string;
   /**
-   * Best human-friendly label we have. Falls back to produtoUid when
-   * none of the `nomeDeVenda` values are populated.
+   * Best human-friendly label we have — the best `nomeDoItem` can make of ANY
+   * line in the group. No produto docs are loaded here, so it resolves from the
+   * denormalised fields alone and falls back to the sku, then the produtoUid.
    */
   label: string;
   quantidade: number;
@@ -32,31 +34,43 @@ export interface ProdutoSalesRow {
   pedidos: number;
 }
 
+type Acumulador = ProdutoSalesRow & { _orderIds: Set<string>; _temNomeDeVenda: boolean };
+
 /**
  * Aggregate every ItemDoPedido across the supplied pedidos and rank by
  * total quantity sold. Items without a `produtoUid` (or with the literal
  * 'NONE' bucket) are dropped — there's no produto to report on.
  */
 export function topProdutos(pedidos: PedidoLite[], topN = 10): ProdutoSalesRow[] {
-  const byUid = new Map<string, ProdutoSalesRow & { _orderIds: Set<string> }>();
+  const byUid = new Map<string, Acumulador>();
 
   for (const { id: pedidoId, data } of pedidos) {
     for (const [groupKey, list] of Object.entries(data.itens)) {
       const produtoUid = groupKey && groupKey !== 'NONE' ? groupKey : null;
       if (!produtoUid) continue;
       for (const item of list) {
-        const existing: ProdutoSalesRow & { _orderIds: Set<string> } = byUid.get(produtoUid) ?? {
+        const existing: Acumulador = byUid.get(produtoUid) ?? {
           produtoUid,
-          label: item.nomeDeVenda ?? produtoUid,
+          label: produtoUid,
           quantidade: 0,
           receita: 0,
           pedidos: 0,
           _orderIds: new Set<string>(),
+          _temNomeDeVenda: false,
         };
         existing.quantidade += item.quantidade;
         existing.receita += (item.precoDeVenda - (item.descontoUnitario ?? 0)) * item.quantidade;
-        if (item.nomeDeVenda && existing.label === produtoUid) {
-          existing.label = item.nomeDeVenda;
+        // A produto repeats across pedidos and only some lines carry a
+        // `nomeDeVenda`; keep upgrading the label until a real sale name lands,
+        // then leave it (first name wins, as it always did).
+        // ⚠️ The uid comes from the MAP KEY, not `item.produtoUid` — the two can
+        // disagree in the legacy corpus, and the key is what this row reports on.
+        if (!existing._temNomeDeVenda) {
+          existing.label = nomeDoItem(
+            { produtoUid, nomeDeVenda: item.nomeDeVenda, sku: item.sku },
+            null,
+          );
+          existing._temNomeDeVenda = (item.nomeDeVenda ?? '').trim() !== '';
         }
         existing._orderIds.add(pedidoId);
         byUid.set(produtoUid, existing);
@@ -64,7 +78,7 @@ export function topProdutos(pedidos: PedidoLite[], topN = 10): ProdutoSalesRow[]
     }
   }
 
-  const rows = [...byUid.values()].map(({ _orderIds, ...row }) => ({
+  const rows = [...byUid.values()].map(({ _orderIds, _temNomeDeVenda: _n, ...row }) => ({
     ...row,
     pedidos: _orderIds.size,
   }));

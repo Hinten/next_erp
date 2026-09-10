@@ -20,6 +20,7 @@ import {
   flattenItensDevolvidos,
   itemCusto,
   itemSubtotal,
+  nomeDoItem,
   valuesEqual,
   type Pedido,
 } from '@delfrance/schemas';
@@ -233,7 +234,10 @@ function DevolucaoRowEditor({
               if (r) {
                 onUpdate(row.rowId, {
                   produtoUid: r.id,
-                  nome: r.data?.nome ?? r.id,
+                  // `nome` is PERSISTED as `nomeDeVenda` — a doc id here would
+                  // be stored as the sale name. Blank is the honest value; the
+                  // display falls back through `nomeDoItem`.
+                  nome: r.data?.nome ?? '',
                   sku: r.data?.sku ?? null,
                 });
               }
@@ -243,7 +247,9 @@ function DevolucaoRowEditor({
             disabled={disabled || row._delete}
           />
         ) : (
-          <Text size="sm">{row.nome || row.produtoUid}</Text>
+          <Text size="sm">
+            {nomeDoItem({ produtoUid: row.produtoUid, nomeDeVenda: row.nome, sku: row.sku }, null)}
+          </Text>
         )}
       </Table.Td>
       <Table.Td>

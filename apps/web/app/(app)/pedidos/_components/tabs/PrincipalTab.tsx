@@ -27,6 +27,7 @@ import {
   estoqueDisponivel,
   itemSubtotal,
   makeEstoqueUid,
+  nomeDoItem,
   unidadeVendavel,
 } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
@@ -533,7 +534,7 @@ function ItemRow({
             <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
               <Group gap={6} align="center">
                 <Text size="sm" fw={500} td={marked ? 'line-through' : undefined} truncate>
-                  {produto?.nome || item?.nomeDeVenda || produtoUid}
+                  {nomeDoItem(item, produto)}
                 </Text>
                 {estoque !== null && (
                   <Badge size="xs" color={estoque > 0 ? 'green' : 'red'}>

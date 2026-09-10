@@ -18,6 +18,7 @@ import {
   estoqueDisponivel,
   itemSubtotal,
   makeEstoqueUid,
+  nomeDoItem,
   parseFakePath,
   unidadeVendavel,
   type Cliente,
@@ -249,7 +250,7 @@ export async function buildPrintModel(
     return {
       produtoId: item.produtoUid,
       sku: produto?.sku ?? item.sku,
-      nome: produto?.nome ?? item.nomeDeVenda,
+      nome: nomeDoItem(item, produto),
       variacoesText: variacoesTextOf(item.produtoUid),
       fotoUrl: fotoUrlOf(item.produtoUid),
       quantidade: item.quantidade,
