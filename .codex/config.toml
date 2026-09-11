@@ -3,6 +3,8 @@
 default_permissions = "next-erp"
 
 developer_instructions = """
+Create task branches under `claude/*` in this repository, not the Codex default `codex/*`. This matches the repository branch-prefix hook and keeps stacked pull requests inside the CI base-branch filters.
+
 After finishing repository changes, create or update a pull request in draft mode unless the user explicitly requests a different state.
 
 Monitor the pull request until every required CI check passes. If CI finds a bug or failure caused by the pull request, diagnose it, plan and implement the fix, verify it locally, push the update, and resume monitoring. If a CI failure is unrelated to the pull request, report the failing check and the evidence that it is unrelated instead of changing unrelated code.
@@ -23,7 +25,8 @@ project_doc_fallback_filenames = ["CLAUDE.md"]
 project_doc_max_bytes = 196608
 
 # Keep repository work writable while denying credential-bearing local files.
-# Command-level destructive operations are covered by .codex/rules/default.rules.
+# Command-level destructive operations are covered by .codex/rules/default.rules
+# and the shared PreToolUse hooks registered in .codex/hooks.json.
 [permissions.next-erp]
 description = "Edit this repository without reading local secrets."
 extends = ":workspace"
@@ -48,3 +51,15 @@ glob_scan_max_depth = 8
 "**/secrets/**" = "deny"
 "**/.ignore" = "deny"
 "**/.ignore/**" = "deny"
+
+# Reuse the repository-pinned Playwright MCP package. `.mcp.json` invokes the
+# same installed entry point for Claude, so package.json remains the version
+# source and neither agent depends on the machine-wide pnpm version.
+[mcp_servers.playwright]
+command = "node"
+args = ["node_modules/@playwright/mcp/cli.js"]
+cwd = ".."
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+required = false
+default_tools_approval_mode = "writes"

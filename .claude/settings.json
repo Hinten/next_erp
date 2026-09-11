@@ -133,6 +133,16 @@
         ]
       },
       {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-destructive-vcs.mjs\"",
+            "statusMessage": "Checking destructive Git operations"
+          }
+        ]
+      },
+      {
         "matcher": "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
           {

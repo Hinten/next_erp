@@ -1,5 +1,6 @@
 packages:
   - '.claude/hooks'
+  - '.codex'
   - 'apps/*'
   - 'packages/*'
   - 'packages/integrations/*'

@@ -21,16 +21,23 @@ const ROOT = process.cwd();
 //
 // Sorted longest-first so a nested workspace (`packages/integrations/nfe`)
 // matches before any shorter prefix (`packages/integrations`).
-const WORKSPACE_GLOBS = ['.claude', 'apps', 'packages', 'packages/integrations', 'tools'];
+const WORKSPACE_GLOBS = ['.claude', '.codex', 'apps', 'packages', 'packages/integrations', 'tools'];
 
-const ESLINT_WORKSPACES = WORKSPACE_GLOBS.flatMap((dir) => {
-  const abs = path.join(ROOT, dir);
-  if (!existsSync(abs)) return [];
-  return readdirSync(abs, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => `${dir}/${e.name}`)
-    .filter((ws) => existsSync(path.join(ROOT, ws, 'eslint.config.mjs')));
-}).sort((a, b) => b.length - a.length);
+const ESLINT_WORKSPACES = [
+  ...new Set(
+    WORKSPACE_GLOBS.flatMap((dir) => {
+      const abs = path.join(ROOT, dir);
+      if (!existsSync(abs)) return [];
+      const candidates = [
+        dir,
+        ...readdirSync(abs, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => `${dir}/${e.name}`),
+      ];
+      return candidates.filter((ws) => existsSync(path.join(ROOT, ws, 'eslint.config.mjs')));
+    }),
+  ),
+].sort((a, b) => b.length - a.length);
 
 // ⚠️ `.js`/`.mjs`/`.cjs` are included deliberately. They used to be absent, so
 // every custom rule and backstop under `packages/config-eslint/rules` and the
