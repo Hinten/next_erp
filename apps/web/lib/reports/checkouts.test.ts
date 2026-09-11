@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -133,6 +134,72 @@ describe('checkout pipeline', () => {
       rows: [{ userId: 'a', label: 'a', count: 5 }],
     });
     expect(mocks.getDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an offboarded former collaborator named in historical reports', async () => {
+    mocks.execute.mockResolvedValue({
+      results: [{ data: () => ({ userRef: 'usuarios/former', count: 7 }) }],
+    });
+    mocks.getDoc.mockResolvedValue({
+      data: () => ({
+        nome: 'Former operator',
+        colaborador: false,
+        jaFoiColaborador: true,
+        ativo: false,
+      }),
+    });
+    expect(await loadCheckoutReport(database().db, { startMs: 1, endExclusiveMs: 2 })).toEqual({
+      total: 7,
+      rows: [{ userId: 'former', label: 'Former operator', count: 7 }],
+    });
+  });
+
+  it.each([false, true])(
+    'preserves totals when name permissions are denied (all denied: %s)',
+    async (allDenied) => {
+      mocks.execute.mockResolvedValue({
+        results: [
+          { data: () => ({ userRef: 'usuarios/allowed', count: 3 }) },
+          { data: () => ({ userRef: 'usuarios/denied', count: 5 }) },
+        ],
+      });
+      mocks.getDoc.mockImplementation(async ({ id }: { id: string }) => {
+        if (allDenied || id === 'denied')
+          throw new FirebaseError('permission-denied', 'Names denied');
+        return { data: () => ({ nome: 'Ana', colaborador: true }) };
+      });
+      expect(await loadCheckoutReport(database().db, { startMs: 1, endExclusiveMs: 2 })).toEqual({
+        total: 8,
+        rows: allDenied
+          ? [{ userId: null, label: 'Outros usuários', count: 8 }]
+          : [
+              { userId: 'allowed', label: 'Ana', count: 3 },
+              { userId: null, label: 'Outros usuários', count: 5 },
+            ],
+      });
+      expect(mocks.getDoc).toHaveBeenCalledTimes(2);
+      expect(mocks.execute).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('still propagates non-permission Firebase lookup failures', async () => {
+    mocks.execute.mockResolvedValue({
+      results: [{ data: () => ({ userRef: 'usuarios/a', count: 1 }) }],
+    });
+    const error = new FirebaseError('unavailable', 'Network unavailable');
+    mocks.getDoc.mockRejectedValue(error);
+    await expect(loadCheckoutReport(database().db, { startMs: 1, endExclusiveMs: 2 })).rejects.toBe(
+      error,
+    );
+  });
+
+  it('does not mask permission failures from the checkout aggregate itself', async () => {
+    const error = new FirebaseError('permission-denied', 'Checkouts denied');
+    mocks.execute.mockRejectedValue(error);
+    await expect(loadCheckoutReport(database().db, { startMs: 1, endExclusiveMs: 2 })).rejects.toBe(
+      error,
+    );
+    expect(mocks.getDoc).not.toHaveBeenCalled();
   });
 
   it('does not read users for an empty result and propagates lookup failures', async () => {

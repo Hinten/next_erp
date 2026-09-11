@@ -23,8 +23,8 @@ export function CheckoutResults({ report }: { report: CheckoutReport }) {
             Checkouts por Usuário
           </Title>
           <Text size="sm" c="dimmed">
-            Até 20 colaboradores entre os usuários com mais checkouts. Os demais e os não
-            identificados entram em Outros usuários.
+            Até 20 colaboradores atuais ou antigos entre os usuários com mais checkouts. Os demais e
+            os não identificados entram em Outros usuários.
           </Text>
           <BarChart
             h={Math.max(300, report.rows.length * 36)}

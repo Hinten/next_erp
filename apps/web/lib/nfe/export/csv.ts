@@ -6,12 +6,12 @@
  * incomplete report is visibly detectable.
  */
 import { ESTADO_NFE_LABELS } from '@delfrance/schemas';
+import { csvRow } from '@/lib/csv';
 
 import type { NfeReportRow } from './parseNfeReportRow';
 import type { NfeNote } from './types';
 
-/** Byte-order mark (U+FEFF) so Excel reads the file as UTF-8 (accents intact). */
-export const CSV_BOM = String.fromCharCode(0xfeff);
+export { CSV_BOM, csvRow } from '@/lib/csv';
 
 export const REPORT_HEADER = [
   'Série',
@@ -28,32 +28,6 @@ export const REPORT_HEADER = [
   'Desconto',
   'Total Nota',
 ] as const;
-
-type Cell = string | number | null | undefined;
-
-// A cell whose value starts with one of these can be evaluated as a formula by
-// Excel/Sheets (CSV/Excel formula injection); a genuine number — including a
-// negative total like "-5,50" — must NOT be neutralized so it stays numeric.
-const FORMULA_LEAD = /^[=+\-@\t\r]/;
-const NUMERIC = /^-?[\d.,]+$/;
-
-/** Escape one CSV cell: neutralize formula-injection leads (`=`/`+`/`-`/`@`/tab/CR
- * on non-numeric text → prefix `'`), then quote (and double inner quotes) when it
- * contains the delimiter, a quote, or a line break. */
-export function csvCell(value: Cell): string {
-  let s = value == null ? '' : String(value);
-  if (FORMULA_LEAD.test(s) && !NUMERIC.test(s)) {
-    s = `'${s}`;
-  }
-  if (s.includes(';') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
-
-export function csvRow(cells: readonly Cell[]): string {
-  return cells.map(csvCell).join(';');
-}
 
 /** `'1234.56'` (XML, dot decimal) → `'1234,56'` (Excel pt-BR). Empty stays empty. */
 export function brNum(raw: string): string {
@@ -96,21 +70,24 @@ export function formatDateBr(ms: number | null): string {
 /** One report row. `row` is null when the note has no procNFe (rejected/error):
  * the XML-derived columns stay blank, mirroring the old Flutter report. */
 export function reportRowCsv(note: NfeNote, row: NfeReportRow | null): string {
-  return csvRow([
-    note.serie,
-    note.numeracao,
-    ESTADO_NFE_LABELS[note.estado] ?? note.estado,
-    row ? tipoLabel(row.tpNF) : '',
-    row?.natOp ?? '',
-    row?.finNFe ?? '',
-    row?.destNome ?? '',
-    row?.destUF ?? '',
-    formatDateBr(note.dataEmissao),
-    brNum(row?.vProd ?? ''),
-    brNum(row?.vFrete ?? ''),
-    brNum(row?.vDesc ?? ''),
-    brNum(row?.vNF ?? ''),
-  ]);
+  return csvRow(
+    [
+      note.serie,
+      note.numeracao,
+      ESTADO_NFE_LABELS[note.estado] ?? note.estado,
+      row ? tipoLabel(row.tpNF) : '',
+      row?.natOp ?? '',
+      row?.finNFe ?? '',
+      row?.destNome ?? '',
+      row?.destUF ?? '',
+      formatDateBr(note.dataEmissao),
+      brNum(row?.vProd ?? ''),
+      brNum(row?.vFrete ?? ''),
+      brNum(row?.vDesc ?? ''),
+      brNum(row?.vNF ?? ''),
+    ],
+    { numericStrings: true },
+  );
 }
 
 const EMPTY_LEADING = ['', '', '', '', '', '', '', '', '', '', ''] as const;
@@ -125,9 +102,15 @@ export function reportTotalsTrailer(input: {
   return [
     '',
     '',
-    csvRow(['Total Entradas', ...EMPTY_LEADING, centsToBr(input.entradasCents)]),
-    csvRow(['Total Saídas', ...EMPTY_LEADING, centsToBr(input.saidasCents)]),
-    csvRow(['Faturamento Total (Saídas - Entradas)', ...EMPTY_LEADING, centsToBr(fat)]),
+    csvRow(['Total Entradas', ...EMPTY_LEADING, centsToBr(input.entradasCents)], {
+      numericStrings: true,
+    }),
+    csvRow(['Total Saídas', ...EMPTY_LEADING, centsToBr(input.saidasCents)], {
+      numericStrings: true,
+    }),
+    csvRow(['Faturamento Total (Saídas - Entradas)', ...EMPTY_LEADING, centsToBr(fat)], {
+      numericStrings: true,
+    }),
     csvRow([`Total de notas: ${input.count}`]),
   ];
 }

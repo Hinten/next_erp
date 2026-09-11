@@ -1,26 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { checkoutCsvCell, checkoutsCsv } from './checkoutsCsv';
+import { checkoutsCsv } from './checkoutsCsv';
 
 describe('checkout CSV', () => {
-  it.each([
-    '=SUM(A1)',
-    '+cmd',
-    '-cmd',
-    '@cmd',
-    '\t=cmd',
-    '\r=cmd',
-    '\n=cmd',
-    '  =cmd',
-    '\u0000=cmd',
-    '-10',
-  ])('neutralizes spreadsheet formula label %j', (label) => {
-    expect(checkoutCsvCell(label)).toContain(`'${label}`);
-  });
-  it('preserves ordinary labels and counts and escapes semicolons, quotes and multiline cells', () => {
-    expect(checkoutCsvCell('Ana')).toBe('Ana');
-    expect(checkoutCsvCell('001')).toBe('001');
-    expect(checkoutCsvCell(10)).toBe('10');
-    expect(checkoutCsvCell('Ana; "B"\nSilva')).toBe('"Ana; ""B""\nSilva"');
+  it('treats a numeric-looking user name as text', () => {
+    expect(
+      checkoutsCsv(
+        { total: 3, rows: [{ userId: 'a', label: '-10', count: 3 }] },
+        '2026-09-01',
+        '2026-09-11',
+      ),
+    ).toContain("\r\n'-10;3\r\n");
   });
   it('exports the displayed buckets, dates and total using BOM, semicolon and CRLF', () => {
     expect(

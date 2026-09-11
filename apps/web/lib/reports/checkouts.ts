@@ -1,4 +1,5 @@
 import { getDoc, type Firestore } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 import {
   and,
   countAll,
@@ -75,12 +76,23 @@ export async function loadCheckoutReport(db: Firestore, range: CheckoutDateRange
   // Direct document reads need no user query/index. Never enumerate all usuarios.
   const names = await Promise.all(
     candidates.map(async ({ userId }) => {
-      const snap = await getDoc(usuarioCollection.docRef(db, {}, userId!));
-      const user = snap.data();
-      return [
-        userId!,
-        user?.colaborador === true && typeof user.nome === 'string' ? user.nome : '',
-      ] as const;
+      try {
+        const snap = await getDoc(usuarioCollection.docRef(db, {}, userId!));
+        const user = snap.data();
+        // Offboarding must not erase an operator's named historical checkouts.
+        const wasCollaborator = user?.colaborador === true || user?.jaFoiColaborador === true;
+        return [
+          userId!,
+          wasCollaborator && typeof user?.nome === 'string' ? user.nome : '',
+        ] as const;
+      } catch (error) {
+        // Checkout reads use pedido permissions; names use configuracoes permissions.
+        // A denied name is unresolved decoration, not a failed checkout aggregate.
+        if (error instanceof FirebaseError && error.code === 'permission-denied') {
+          return [userId!, ''] as const;
+        }
+        throw error;
+      }
     }),
   );
   return checkoutsPorUsuario(groups, new Map(names));
