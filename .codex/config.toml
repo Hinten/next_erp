@@ -1,3 +1,17 @@
+# Codex-only delivery workflow. Keep this separate from CLAUDE.md because Claude
+# does not need to follow the Codex pull-request lifecycle.
+developer_instructions = """
+After finishing repository changes, create or update a pull request in draft mode unless the user explicitly requests a different state.
+
+Monitor the pull request until every required CI check passes. If CI finds a bug or failure caused by the pull request, diagnose it, plan and implement the fix, verify it locally, push the update, and resume monitoring. If a CI failure is unrelated to the pull request, report the failing check and the evidence that it is unrelated instead of changing unrelated code.
+
+If a failure appears flaky, rerun the failing test or check to confirm it and report the observed flakiness, including the original failure and rerun result.
+
+Read and respond to actionable code-review feedback. For valid findings, plan and implement the solution, verify it, push the update, and continue monitoring CI and reviews. Report feedback that is invalid, ambiguous, or outside the pull request scope with supporting evidence.
+
+Do not mark the pull request ready for review or merge it unless the user explicitly asks.
+"""
+
 # CLAUDE.md is the single source of truth for repository instructions.
 project_doc_fallback_filenames = ["CLAUDE.md"]
 
