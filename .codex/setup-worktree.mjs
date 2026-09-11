@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // Shared Codex Local Environment setup command. Configure the desktop app to
 // run `node .codex/setup-worktree.mjs` for new worktrees. The package-manager
 // version comes from package.json so this file cannot drift from CI.
