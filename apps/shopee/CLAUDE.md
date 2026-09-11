@@ -194,10 +194,14 @@ a page of the 3-day queue irreversibly.
   `comprador.ts`, `pagamentoMapping.ts`, `liquidacaoSweep.ts` or
   `liquidarPagamentosCli.ts` is the drift this list exists to prevent.
   ⚠️ `pagamentoMapping.ts` holds no converter of its own — it CALLS site (3) for
-  `pay_time`, the same way item 5 does — and **`liquidacaoSweep.ts` and
-  `liquidarPagamentosCli.ts` hold no microsecond at all**: the sweep is pure
-  epoch MILLISECONDS end to end, and an inline `* 1000` there would be an
-  undeclared sixth site. `orderMapping.ts` additionally exports `maiorUs` and
+  `pay_time`, the same way item 5 does — and **`liquidacaoSweep.ts` holds no
+  microsecond at all**: the sweep is pure epoch MILLISECONDS end to end, and an
+  inline `* 1000` there would be an undeclared sixth site.
+  `liquidarPagamentosCli.ts` holds µs only as DISPLAY: it carries
+  `escrowReleaseTimeUs` verbatim out of the prediction and renders it through
+  `microsToMillis`, converting nothing that is written — so it is not a site
+  either, but it is not µs-free and a reader must not be told it is.
+  `orderMapping.ts` additionally exports `maiorUs` and
   `vazio` (moved out of `orderPedidoTx.ts` by step 6 so both transactions can
   share them) — patch primitives that compare and test, unit-agnostic, and not
   a conversion.
@@ -788,11 +792,24 @@ BUYER-facing figure (the pedido's own `valorCobrado`, from
 `escrow_amount`**, which moves until the order completes. A non-pagante status
 makes a payment invisible to the NF-e rather than merely unpaid.
 ⚠️ A later delivery carrying FEWER entries never deletes, never neutralises and
-never re-takes the primary's `valor`: Shopee stops returning `payment_info`
-after `READY_TO_SHIP`, and re-taking it would nearly double Σ pagante against
-the siblings an earlier, richer delivery wrote. That is the "degraded delivery"
-freeze, and a stored document is never deleted — one the operator removed is
-recreated on the next delivery, because the money really did move.
+never re-takes the primary's `valor` — whether `payment_info` survives past
+`READY_TO_SHIP` is settle-live register item 22 and is **NOT yet known**, so a
+shrinking payload is read as lost detail either way — and re-taking it would
+nearly double Σ pagante against the siblings an earlier, richer delivery wrote.
+That is the "degraded delivery" freeze, and a stored document is never
+deleted — one the operator removed is recreated on the next delivery, because
+the money really did move.
+⚠️ **The freeze has a second direction, and it costs the same.** While the DATA
+group is frozen — by `degradado` or by a human's `hasUserInteraction` — a
+delivery that maps MORE documents than we own does not CREATE the extra ones
+either: the stored primary is still standing at whatever a poorer earlier
+delivery gave it (often the WHOLE `valorCobrado`, because that delivery carried
+no `payment_info` at all), so a new sibling at its own leg amount lands Σ
+pagante ABOVE the nota. `hasUserInteraction` is a LATCH, so nothing later
+repairs it. One `console.info` says the set could not grow. The gate needs at
+least one document of OURS already stored: a pedido a human touched before its
+first pagamento arrived still gets the whole set created, and so does one the
+operator deleted.
 
 **The status ladder is driven by the ORDER status, never by a payment event.**
 No usable `pay_time` ⇒ no pagamento is CREATED (⚠️ the gate is creation-only: a
@@ -812,13 +829,18 @@ live order); a stored value outside the governable set — an operator's
 Report columns), with the BR `net_*` variants preferred where they arrive.
 ⚠️ `credit_card_transaction_fee` is a ROLLUP of the buyer and seller halves and
 is **never** summed with them. The value is clamped at 0 (`pagamentoSchema`
-declares `.min(0)`, and a raw negative is a ZodError the pipeline reads as
-transient — #794); the pre-clamp raw and the named fees ride the new
+declares `.min(0)`; an unclamped negative is a ZodError that PARKS the code-3
+delivery terminally — `disposicaoDaFalhaDeImportacao` in
+`notificacoes/notificacao.ts` — and, on the weekly sweep, is not in
+`erroContidoPorConta` at all, so it aborts the WHOLE tick rather than one
+conta — #794); the pre-clamp raw and the named fees ride the new
 `pagamento.marketplace` block, a DIARY nothing gates on. The legacy composition
 (`buyer_total_amount − escrow_amount_after_adjustment`) survives as the named
-seam `COMPOSICAO_TARIFAS_SHOPEE`, both readings are logged, and the first live
-BR orders compare them as data rather than as an argument. On N documents the
-fee rides the PRIMARY and the secondaries carry a real `0`.
+seam `COMPOSICAO_TARIFAS_SHOPEE`. ⚠️ `tarifas` and `tarifasBrutas` are NOT the
+two readings — they are the shipped composition clamped and unclamped, i.e. one
+number twice — so the import log carries a third, `tarifasSpread`, and that is
+what the first live BR orders compare as data rather than as an argument. On N
+documents the fee rides the PRIMARY and the secondaries carry a real `0`.
 
 **`cartao` is written only for formas 3/4/17 and is NEVER cleared.** It comes
 from a `payment_info` entry (`tpIntegra '2'`, the processor's CNPJ, the brand,
@@ -876,15 +898,23 @@ ordering**.
   cursor moves past it the row never comes back and the parked copy is the only
   place its payout still exists. A row that settles leaves the list; one still
   missing a pedido four weeks later is dropped with a warning, because that is a
-  human question and not a retry.
+  human question and not a retry. ⚠️ The same is true of a row whose escrow
+  answers `order_not_found`: it is counted in `puladas` and skipped for ever, and
+  `--order-sn` can only CONFIRM that answer, because the flag is dry-run only —
+  there is no CLI path that settles such a row.
 - **Budgets per tick**: 100 rows per page, 20 pages, 300 settlements, 50
   synthetic pushes. A contained conta error leaves the cursor untouched and
   records `lastError` — a 30-second outage must never skip 300 orders and then
   advance past them.
 - **The rehearsal CLI `liquidar:pagamentos`** runs the same window derivation
   and the same pure decision function a live tick runs, so a dry run prints the
-  exact patch rather than a second implementation's opinion of it. ⚠️ Two
-  behaviours an operator will notice: `--order-sn` is **dry-run only** (the
+  exact patch rather than a second implementation's opinion of it. ⚠️ Sharing
+  the DECISION is not enough — the ROW SET has to match too, so the dry run also
+  REPLAYS the parked list before it pages, and tags every row with its source
+  (`pendente` / `listagem`). Without that it would print "nothing to do" for
+  exactly the rows the parked list exists for, and `--live` would then write
+  them. ⚠️ Two behaviours an operator will notice: `--order-sn` is
+  **dry-run only** (the
   escrow listing is queried BY WINDOW and has no by-id form, so that path never
   learns `payout_amount` or `escrow_release_time`, and writing through it would
   put a null release stamp over a real one), and a `--de`/`--ate` window

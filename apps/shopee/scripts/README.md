@@ -188,11 +188,22 @@ pnpm --filter @delfrance/shopee-app liquidar:pagamentos --integracao int-1
 
 With no window it uses **the window the next tick would use**: the stored cursor
 minus a one-day overlap, or 30 days back on a conta that has never drained one.
-It pages `get_escrow_list`, calls `get_escrow_detail` for every row, reads each
-row's pagamento and prints what a live tick **would** change. It writes nothing —
-the function it calls (`simularLiquidacaoShopee`) contains no writer at all, and
-its verdict comes from the very same `preverLiquidacaoShopee` the transaction
-uses, so the rehearsal cannot disagree with the run it rehearses.
+It replays the conta's parked list (`pendentes`) FIRST — exactly as a live tick
+does, and for the same reason: a parked row does not come back from the listing
+once the cursor moved past its release time, so a rehearsal that only paged would
+print "nothing to do" for precisely the rows the parked list exists for. Then it
+pages `get_escrow_list`, calls `get_escrow_detail` for every row, reads each row's
+pagamento and prints what a live tick **would** change. Every row says which
+source it came from (`[pendente]` or `[listagem]`). It writes nothing — the
+function it calls (`simularLiquidacaoShopee`) contains no writer at all, and its
+verdict comes from the very same `preverLiquidacaoShopee` the transaction uses, so
+the rehearsal cannot disagree with the run it rehearses.
+
+⚠️ One honest difference, and it is a COST not a disagreement: a live tick parks
+an absent pagamento WITHOUT calling `get_escrow_detail`, while the rehearsal reads
+the escrow for every row so it can show what the settlement would look like once
+the pedido arrives. A rehearsal over a long parked list therefore spends one
+rate-limited call per parked row.
 
 A fixed window:
 
@@ -221,19 +232,20 @@ preamble on stderr.
 
 ### 8.3 What to read in the output
 
-| line                       | what it tells you                                                                                                                                                                                                                            |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `janela`                   | the release-time window actually asked for, as ms + ISO UTC.                                                                                                                                                                                 |
-| `janela drenada?`          | `sim` means `more: false` — the window finished. `NÃO` means a page or budget cap stopped it and the cursor would not move.                                                                                                                  |
-| `pedidoId` / `pagamentoId` | both are DIGESTS of `(integracaoId, order_sn)`; `AUSENTE` on either is what parks the row and sends a synthetic code 3.                                                                                                                      |
-| `payout / escrow`          | ⚠️ the open question of step 6. `payout_amount`'s unit is unresolved on Shopee's own page (the table prints a float, the sample prints an integer 100× larger), so the sweep logs the RATIO beside it: **~1 means units, ~100 means cents.** |
-| `tarifas`                  | the clamped figure `pagamento.tarifas` would take — commission + service + seller transaction, BR net variants preferred.                                                                                                                    |
-| `ação`                     | `liquidado`, `ignorado-sem-mudanca` (the idempotent overlap — writes nothing), `ignorado-obsoleto` (the stored release stamp is newer) or `ignorado-sem-pagamento`.                                                                          |
-| `campos que mudariam`      | the exact dotted field names a live run would write. `(nenhum)` beside `ignorado-sem-mudanca` is the healthy steady state.                                                                                                                   |
+| line                        | what it tells you                                                                                                                                                                                                                            |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `janela`                    | the release-time window actually asked for, as ms + ISO UTC.                                                                                                                                                                                 |
+| `janela drenada?`           | `sim` means `more: false` — the window finished. `NÃO` means a page or budget cap stopped it and the cursor would not move.                                                                                                                  |
+| `[pendente]` / `[listagem]` | which of the live tick's two row sources produced the row — a replayed `pendentes` entry, or a `get_escrow_list` page. A parked row is invisible to the listing once the cursor passed its release time.                                     |
+| `pedidoId` / `pagamentoId`  | both are DIGESTS of `(integracaoId, order_sn)`; `AUSENTE` on either is what parks the row and sends a synthetic code 3.                                                                                                                      |
+| `payout / escrow`           | ⚠️ the open question of step 6. `payout_amount`'s unit is unresolved on Shopee's own page (the table prints a float, the sample prints an integer 100× larger), so the sweep logs the RATIO beside it: **~1 means units, ~100 means cents.** |
+| `tarifas`                   | the clamped figure `pagamento.tarifas` would take — commission + service + seller transaction, BR net variants preferred.                                                                                                                    |
+| `ação`                      | `liquidado`, `ignorado-sem-mudanca` (the idempotent overlap — writes nothing), `ignorado-obsoleto` (the stored release stamp is newer) or `ignorado-sem-pagamento`.                                                                          |
+| `campos que mudariam`       | the exact dotted field names a live run would write. `(nenhum)` beside `ignorado-sem-mudanca` is the healthy steady state.                                                                                                                   |
 
 ⚠️ **The output carries no buyer data by construction.** The escrow body it is
 built from has ~100 money fields plus `buyer_payment_info`; the summary is an
-allow-list of thirteen, and a buyer field has nowhere to travel. It is safe to
+allow-list of fourteen, and a buyer field has nowhere to travel. It is safe to
 paste into an issue. Keep it that way if you extend it.
 
 ### 8.4 The live run
@@ -274,8 +286,10 @@ effect, and it is why the run prints `sintéticas` separately from `liquidados`.
 - **`ignorado-sem-mudanca` on a second run is the idempotence working**, and it
   writes _nothing at all_ — not even `ultimaModificacao`. Any write would file a
   `historicoDeModificacoes` row per conta per week for ever.
-- **The sandbox has no released escrow.** `get_escrow_list` over any window will
-  answer an empty page there; the endpoint is exercised, the settlement is not.
+- **The sandbox may answer an empty page.** Whether a sandbox order's escrow is
+  ever released is settle-live **register item 27** and is UNMEASURED — nobody
+  has called this endpoint yet. An empty page exercises the endpoint and settles
+  nothing; a row that DOES come back is the answer to item 27, so record it.
 - **`janela drenada? NÃO` on a first run over a wide window is normal** — the page
   cap (20) and the per-tick settlement budget (300) both truncate deliberately,
   and the next tick resumes at the persisted page.

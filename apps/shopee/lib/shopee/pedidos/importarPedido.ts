@@ -109,8 +109,10 @@ import {
 import { criarResolvedorDeLinhasShopee } from './produtoResolve';
 import { salvarPedidoShopee, type AcaoPedidoShopee } from './orderPedidoTx';
 import {
+  COMPOSICAO_TARIFAS,
   mapearPagamentosShopee,
   statusPagamentoDeOrderStatus,
+  tarifasDeShopee,
   type PagamentosMapeadosShopee,
 } from './pagamentoMapping';
 import {
@@ -675,11 +677,17 @@ export async function importarPedidoShopee(
     // ⚠️ Must be 0: on a marketplace `canalDevolveTroco` is false, so an excess
     // is cStat 866 and a shortfall 865 — no nota at all, for ever.
     divergenciaDeSoma: pagamentos?.divergenciaDeSoma ?? null,
-    // Both readings side by side, so the first real BR orders settle the
-    // composition as DATA: `tarifas` is the clamped figure the ERP charges,
-    // `tarifasBrutas` its pre-clamp raw.
+    // ⚠️ THREE numbers, and only the third settles anything. `tarifas` is the
+    // clamped figure the ERP charges and `tarifasBrutas` its pre-clamp raw —
+    // both from the SHIPPED composition, so on an ordinary order they are one
+    // reading printed twice (what they do show is whether the `.min(0)` clamp
+    // fired). `tarifasSpread` is the OTHER composition's raw, the one the SG
+    // sandbox body cannot tell apart from the named fees, so the first real BR
+    // orders settle the question as DATA. One extra call to a pure function,
+    // numbers only.
     tarifas: mapeadosPag?.docs[0]?.sempre.tarifas ?? null,
     tarifasBrutas: mapeadosPag?.diagnosticos.tarifasBrutas ?? null,
+    tarifasSpread: tarifasDeShopee(escrow, COMPOSICAO_TARIFAS.spreadEscrow).bruto ?? null,
     // ⚠️ BR only, and a COUNT — settle-live register item 22 asks whether
     // `payment_info` is really provided from READY_TO_SHIP and whether it
     // survives past it. On any other region the key is absent rather than 0,

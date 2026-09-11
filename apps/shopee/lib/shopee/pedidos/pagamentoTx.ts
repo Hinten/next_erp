@@ -40,11 +40,13 @@
  *
  * `tx.get(pagamentoCollection.ref(db, { pedidoId }))` — the atomic query read the
  * client SDK cannot do (`packages/data/src/admin/pedidoReconcile.ts` is the
- * precedent). A BR combined payment fans out to N documents and Shopee stops
- * returning `payment_info` after `READY_TO_SHIP`; a later delivery that re-took
- * the primary's `valor` while an earlier delivery's siblings still stood would
- * put Σ pagante at nearly twice the nota. On a marketplace `canalDevolveTroco` is
- * FALSE, so that is a hard SEFAZ 865/866 for ever, not a warning.
+ * precedent). A BR combined payment fans out to N documents and a later delivery
+ * may carry FEWER entries — whether `payment_info` survives past `READY_TO_SHIP`
+ * is settle-live register item 22 and is NOT yet known; a later delivery that
+ * re-took the primary's `valor` while an earlier delivery's siblings still stood
+ * would put Σ pagante at nearly twice the nota. On a marketplace
+ * `canalDevolveTroco` is FALSE, so that is a hard SEFAZ 865/866 for ever, not a
+ * warning.
  *
  * Which stored documents are OURS is decided by RECOMPUTING
  * `makePagamentoIdShopee(contaId, orderSn, sufixoPagamentoShopee(i))` — never by
@@ -53,11 +55,21 @@
  * `<order_sn>-desconto` sibling out of this transaction entirely: it is read as
  * part of the Σ diagnostic and patched by nothing.
  *
- * ## Nothing is ever deleted
+ * ## Nothing is ever deleted, and while DATA is frozen nothing is ADDED either
  *
  * A pagamento the operator removed is RECREATED on the next delivery (the money
  * really moved), and a surplus document from a richer earlier delivery keeps its
  * own `valor`. Deleting would be the one irreversible thing this path could do.
+ *
+ * ⚠️ The freeze has TWO directions and they cost the same. A delivery that maps
+ * FEWER documents than we own is `degradado` and must not re-take the primary's
+ * `valor`; a delivery that maps MORE of them while the DATA group is frozen must
+ * not CREATE the extra ones — the stored primary is still standing at whatever a
+ * poorer earlier delivery gave it (often the whole `valorCobrado`, because that
+ * delivery carried no `payment_info`), so a new sibling at its own leg amount
+ * lands Σ pagante ABOVE the nota. Both are the same arithmetic, and the growing
+ * one is the worse of the two: `hasUserInteraction` is a LATCH, so no later
+ * delivery ever repairs it.
  *
  * ## Empty patch means empty write
  *
@@ -330,9 +342,17 @@ function registrarGrupos(chaves: readonly string[], destino: Set<GrupoPagamentoS
   }
 }
 
-/** What {@link construirPatch} needs from the transaction's own reads. */
+/**
+ * What {@link construirPatch} needs from the transaction's own reads.
+ *
+ * ⚠️ The ladder TARGET is deliberately absent: both builders take the already
+ * decided `veredito` as an argument, so the target reaches them through exactly
+ * one path. A copy here would read as if the patch builder still re-consulted
+ * the ladder, and nothing would fail when the two disagreed (neither
+ * `noUnusedLocals` nor `@typescript-eslint/no-unused-vars` sees an unread
+ * interface member).
+ */
 interface ContextoPatch {
-  readonly alvoStatus: AlvoStatusPagamentoShopee;
   readonly watermarkUs: number;
   readonly congelado: boolean;
   readonly degradado: boolean;
@@ -410,7 +430,8 @@ function construirPatch(
     patch.descricaoPagamento = mapeado.dados.descricaoPagamento;
   }
   // ⚠️ Take-new only when LEARNED, and NEVER cleared: a delivery carrying no
-  // `payment_info` (every one past READY_TO_SHIP) supplies `undefined`, and a
+  // `payment_info` supplies `undefined` (whether Shopee keeps sending the block
+  // past READY_TO_SHIP is settle-live register item 22, still open), and a
   // `cartao: null` there would destroy the block PIX needs — SEFAZ rejects a PIX
   // leg with no `<card>` as cStat 391, on a pedido still awaiting emission.
   if (mapeado.dados.cartao !== undefined && !mesmoCartao(raw.cartao, mapeado.dados.cartao)) {
@@ -551,9 +572,11 @@ export async function salvarPagamentosShopee(
 
     /* -------------------------- the degraded delivery ----------------------- */
     // ⚠️ A later delivery carrying FEWER legs never deletes, never neutralises and
-    // never re-takes the primary's `valor`: Shopee stops returning `payment_info`
-    // after READY_TO_SHIP, so "one leg now" is a payload that lost detail, not a
-    // payment that changed. Re-taking would double-count against the siblings.
+    // never re-takes the primary's `valor`: "one leg now" is a payload that lost
+    // detail, not a payment that changed — whether `payment_info` survives past
+    // READY_TO_SHIP is settle-live register item 22 and is NOT yet known, so the
+    // shrink has to be read as detail loss either way. Re-taking would
+    // double-count against the siblings.
     const degradado = nossos.length >= 2 && mapeados.docs.length < 2;
     if (degradado) {
       // eslint-disable-next-line no-console -- counts only; the fact that a delivery lost detail is the finding
@@ -565,7 +588,27 @@ export async function salvarPagamentosShopee(
       });
     }
 
-    const ctx: ContextoPatch = { alvoStatus, watermarkUs, congelado, degradado };
+    /* ------------------- the doc SET grows while DATA is frozen ------------- */
+    // ⚠️ The MIRROR image of `degradado`, and the same arithmetic. While the DATA
+    // group is frozen every stored document keeps the `valor` a poorer earlier
+    // delivery gave it — above all a primary that stands at the WHOLE
+    // `valorCobrado` because that delivery carried no `payment_info` at all — so
+    // ADDING a sibling at its own leg amount puts Σ pagante ABOVE the nota. On a
+    // marketplace `canalDevolveTroco` is false, so that is cStat 866 for ever,
+    // and `hasUserInteraction` is a LATCH: no later delivery ever re-takes the
+    // primary's `valor` to repair it. `degradado` alone guards only the
+    // SHRINKING direction, which is why this is a second condition and not a
+    // wider one.
+    //
+    // The gate is deliberately narrow: it needs at least one document of ours
+    // already stored. A pedido a human touched before its FIRST pagamento
+    // arrived still gets the whole set created (Σ is established by those
+    // creates, not endangered by them), and so does the operator-deleted doc of
+    // test 21 — nothing of ours is left to disagree with.
+    const conjuntoCongelado = (congelado || degradado) && nossos.length > 0;
+    let naoCriados = 0;
+
+    const ctx: ContextoPatch = { watermarkUs, congelado, degradado };
     const porId = new Map(nossos.map((d) => [d.id, d.raw]));
     const grupos = new Set<GrupoPagamentoShopee>();
     const escritos: { docId: string; idCampo: string }[] = [];
@@ -600,6 +643,15 @@ export async function salvarPagamentosShopee(
     for (const mapeado of mapeados.docs) {
       const ref = pagamentoCollection.docRef(db, { pedidoId }, mapeado.docId);
       const raw = porId.get(mapeado.docId);
+
+      // ⚠️ Skipped BEFORE `avaliar`: a document this delivery does not create has
+      // no status written and must not report one (nor raise a `ressuscitado`
+      // warn about a document that does not exist).
+      if (raw === undefined && conjuntoCongelado) {
+        naoCriados += 1;
+        continue;
+      }
+
       const veredito = avaliar(raw ?? null);
       if (mapeado.indice === 0) vereditoDoPrimario = veredito;
 
@@ -633,6 +685,19 @@ export async function salvarPagamentosShopee(
       });
       projecao.set(mapeado.docId, aplicarNaProjecao(projecao.get(mapeado.docId), patch));
       atualizados += 1;
+    }
+
+    if (naoCriados > 0) {
+      // eslint-disable-next-line no-console -- counts only; the fact that a delivery could not GROW the set is the finding
+      console.info('[shopee/pagamentos] conjunto congelado — documento novo NÃO criado', {
+        orderSn,
+        pedidoId,
+        armazenados: nossos.length,
+        recebidos: mapeados.docs.length,
+        naoCriados,
+        congelado,
+        degradado,
+      });
     }
 
     /* ---- documents of ours this delivery did NOT map (degraded / gated) ---- */

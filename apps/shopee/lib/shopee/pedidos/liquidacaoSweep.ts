@@ -106,6 +106,7 @@ import { notificacaoSinteticaDePedido } from '../notificacoes/notificacaoSinteti
 import type { ShopeeTaskScheduler } from '../shopeeTasks';
 import { SHOPEE_ERRO_ORDER_NOT_FOUND } from './importarPedido';
 import { makePagamentoIdShopee, makePedidoIdShopee } from './orderIds';
+import { tarifasDeShopee } from './pagamentoMapping';
 import {
   liquidarPagamentoShopee,
   preverLiquidacaoShopee,
@@ -476,6 +477,17 @@ async function varrerConta(
   // In-tick dedup, shared by the replay and the paging: the same order twice in
   // one tick is one settlement. STRICT `===` on the raw `order_sn`, no fold.
   const vistos = new Set<string>();
+  // ⚠️ The rows the REPLAY stage consumed, and the ONLY thing this set is for.
+  // `vistos` has to stay shared — one settlement per order per tick — but the
+  // page-repeat guard below measures PAGING progress, and a page whose every row
+  // the replay already handled is a page Shopee served correctly. Counting those
+  // as "zero new" trips the guard: the window truncates at page 1, `pendingPageNo`
+  // is cleared, the cursor never advances, and the next tick replays the same
+  // parked rows and stalls again — for as many weekly ticks as those rows survive
+  // (up to `MAX_TENTATIVAS`) — while `lastError` blames Shopee for ignoring
+  // `page_no`. The overlap band and a re-read truncated window both put parked
+  // rows back on the list routinely, so this is the ordinary case, not a corner.
+  const reposicionados = new Set<string>();
 
   /** Park (or re-park) one row; `true` when it stayed on the list. */
   const registrarPendente = (
@@ -573,8 +585,14 @@ async function varrerConta(
       if (err instanceof ShopeeReauthRequiredError) throw err;
       if (err instanceof ShopeeRateLimitError) throw err;
       if (err instanceof ShopeeApiError && err.code === SHOPEE_ERRO_ORDER_NOT_FOUND) {
-        // A permanent provider fact about ONE order, and never retried: the
-        // remedy is the CLI's `--order-sn`, not another week of the same answer.
+        // A permanent provider fact about ONE order, and never retried — it is
+        // counted in `puladas` and skipped for ever. ⚠️ `liquidar:pagamentos
+        // --order-sn` can only CONFIRM the same answer: the flag is DRY-RUN
+        // only (the listing has no by-id form, so that mode cannot learn
+        // `payout_amount` or `escrow_release_time`), so there is no CLI path
+        // that settles this row. If the provider answer ever changes, the thing
+        // that would write it is `--live --de/--ate` over the release window; a
+        // row that keeps answering this is a human question, not a retry.
         puladas += 1;
         logger.warn('[shopee/liquidacao] escrow negado — order_not_found', {
           integracaoId,
@@ -623,7 +641,14 @@ async function varrerConta(
           payoutAmount,
           escrowAmount: escrow.order_income?.escrow_amount ?? null,
           escrowAmountAfterAdjustment: escrow.order_income?.escrow_amount_after_adjustment ?? null,
-          tarifas: r.campos.includes('tarifas'),
+          // ⚠️ The FIGURE, the same way `tarifas` means the figure everywhere
+          // else in this channel (the import log line, the rehearsal summary,
+          // the runbook). A boolean under this key would be a second meaning for
+          // one name on a line whose every other key is money — and it conflates
+          // "the fee was already correct" with "no `order_income` arrived, so
+          // nothing was computable". Whether it MOVED has its own key.
+          tarifas: tarifasDeShopee(escrow).tarifas ?? null,
+          tarifasMudou: r.campos.includes('tarifas'),
           razaoPayoutSobreEscrow: razao,
         });
       }
@@ -733,6 +758,7 @@ async function varrerConta(
       orcamentoEstourado = true;
       break;
     }
+    reposicionados.add(parado.orderSn);
   }
 
   /* ------------------------------ (2) the window ---------------------------- */
@@ -770,6 +796,12 @@ async function varrerConta(
       );
       if (r === 'duplicada') {
         duplicadas += 1;
+        // ⚠️ …but a duplicate of a row the REPLAY stage consumed is still PAGING
+        // progress: Shopee served a row this window genuinely contains, and the
+        // only reason we had nothing left to do with it is that the parked list
+        // got there first. Only a duplicate of a row an EARLIER PAGE of this
+        // same tick produced is the page repeat the guard below is looking for.
+        if (reposicionados.has(bruto.order_sn)) novos += 1;
         continue;
       }
       if (r === 'orcamento') {
@@ -962,9 +994,23 @@ export async function runShopeeEscrowSettlement(
 /*                     the DRY-RUN path (the rehearsal CLI)                    */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Where a simulated row came from — the live tick handles two sources and a
+ * rehearsal that showed only one would under-report exactly the rows the parked
+ * list exists for.
+ */
+export type OrigemLinhaSimuladaShopee =
+  /** Replayed from the cursor document's `pendentes`, before any paging. */
+  | 'pendente'
+  /** A `get_escrow_list` row inside the window. */
+  | 'listagem'
+  /** The CLI's single-order inspection mode; no listing was queried. */
+  | 'order-sn';
+
 /** What a live tick WOULD do with one row. */
 export interface LinhaSimuladaShopee {
   readonly orderSn: string;
+  readonly origem: OrigemLinhaSimuladaShopee;
   readonly pedidoId: string;
   readonly pagamentoId: string;
   readonly existePedido: boolean;
@@ -1013,9 +1059,24 @@ export interface SimularLiquidacaoShopeeArgs {
  * SAME `preverLiquidacaoShopee` the transaction calls, on the same shape of
  * input, so a dry run cannot disagree with the live run it rehearses.
  *
- * It reads: the cursor document (for the window), one `get_escrow_list` page at
- * a time, and per row the pagamento plus — only when the pagamento is absent —
- * the pedido.
+ * ⚠️ Sharing the DECISION is not enough — the ROW SET has to match too, and the
+ * live tick has TWO sources: it REPLAYS the cursor document's `pendentes` before
+ * it pages anything, precisely because a parked row does not come back from the
+ * listing once the cursor moved past its `escrow_release_time`. A rehearsal that
+ * paged only would print "nothing to do" for exactly the rows the parked list
+ * exists for, and `--live` would then write them. So the parked list is replayed
+ * here too, in the same order, sharing the same in-tick dedup, and each row says
+ * which source it came from through {@link LinhaSimuladaShopee.origem}.
+ *
+ * ⚠️ One honest difference remains, and it is a COST not a disagreement: the live
+ * tick parks an absent pagamento WITHOUT calling `get_escrow_detail`, while this
+ * function reads the escrow for every row so the report can show what the
+ * settlement would look like once the pedido arrives. A rehearsal over a long
+ * parked list therefore spends one rate-limited call per parked row.
+ *
+ * It reads: the cursor document (for the window AND the parked list), one
+ * `get_escrow_list` page at a time, and per row the pagamento plus — only when
+ * the pagamento is absent — the pedido.
  */
 export async function simularLiquidacaoShopee(
   db: Firestore,
@@ -1027,6 +1088,7 @@ export async function simularLiquidacaoShopee(
     sn: string,
     payoutAmount: number | null,
     escrowReleaseTimeS: number | null,
+    origem: OrigemLinhaSimuladaShopee,
   ): Promise<LinhaSimuladaShopee> => {
     const pedidoId = makePedidoIdShopee(integracaoId, sn);
     const pagamentoId = makePagamentoIdShopee(integracaoId, sn);
@@ -1037,6 +1099,7 @@ export async function simularLiquidacaoShopee(
 
     const base = {
       orderSn: sn,
+      origem,
       pedidoId,
       pagamentoId,
       existePedido,
@@ -1089,7 +1152,7 @@ export async function simularLiquidacaoShopee(
     return {
       janela: null,
       paginas: 0,
-      linhas: [await lerLinha(orderSn, null, null)],
+      linhas: [await lerLinha(orderSn, null, null, 'order-sn')],
       ilegiveis: 0,
       drenada: true,
     };
@@ -1110,7 +1173,23 @@ export async function simularLiquidacaoShopee(
   let drenada = false;
   let pageNo = primeiraPagina;
 
-  for (;;) {
+  /* ------- (1) the parked list, exactly as the live tick replays it --------- */
+  // ⚠️ Same split as the live tick: `vistos` dedups the ROWS, `reposicionados`
+  // keeps the page-repeat guard below from reading "every row on this page was
+  // already replayed" as "Shopee ignored `page_no`".
+  const reposicionados = new Set<string>();
+  for (const parado of pendentesArmazenados(st)) {
+    if (linhas.length >= MAX_LIQUIDACOES_POR_TICK) break;
+    if (vistos.has(parado.orderSn)) continue;
+    vistos.add(parado.orderSn);
+    reposicionados.add(parado.orderSn);
+    linhas.push(
+      await lerLinha(parado.orderSn, parado.payoutAmount, parado.escrowReleaseTimeS, 'pendente'),
+    );
+  }
+
+  /* ---------------------------- (2) the window ----------------------------- */
+  while (linhas.length < MAX_LIQUIDACOES_POR_TICK) {
     const page = await client.getEscrowList({
       releaseTimeFromS: timeFromS,
       releaseTimeToS: timeToS,
@@ -1124,10 +1203,17 @@ export async function simularLiquidacaoShopee(
         ilegiveis += 1;
         continue;
       }
-      if (vistos.has(bruto.order_sn)) continue;
+      if (vistos.has(bruto.order_sn)) {
+        // A row the REPLAY stage already produced is paging PROGRESS, not a
+        // repeated page — the same distinction the live tick draws.
+        if (reposicionados.has(bruto.order_sn)) novos += 1;
+        continue;
+      }
       vistos.add(bruto.order_sn);
       novos += 1;
-      linhas.push(await lerLinha(bruto.order_sn, bruto.payout_amount, bruto.escrow_release_time));
+      linhas.push(
+        await lerLinha(bruto.order_sn, bruto.payout_amount, bruto.escrow_release_time, 'listagem'),
+      );
       if (linhas.length >= MAX_LIQUIDACOES_POR_TICK) break;
     }
     if (linhas.length >= MAX_LIQUIDACOES_POR_TICK) break;

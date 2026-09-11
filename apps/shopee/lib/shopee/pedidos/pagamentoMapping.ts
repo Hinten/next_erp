@@ -19,16 +19,22 @@
  *     against `derivePedidoFreteTotals`, because neither side can see the
  *     defect alone.
  *  2. **`tarifas` is the marketplace's cut, clamped at 0** (`pagamentoSchema`
- *     declares `.min(0)`, and a raw negative is a `ZodError` the pipeline reads
- *     as transient — #794). Its pre-clamp value and the raw named fee columns
- *     ride `pagamento.marketplace`, a DIARY nothing gates on.
+ *     declares `.min(0)`; an unclamped negative is a `ZodError` that PARKS the
+ *     code-3 delivery terminally — `disposicaoDaFalhaDeImportacao` in
+ *     `notificacoes/notificacao.ts` has an explicit `ZodError` arm precisely so
+ *     it does NOT retry for ever the way it does one channel over — and, on the
+ *     weekly settlement sweep, is not in `erroContidoPorConta` at all, so it
+ *     aborts the whole tick rather than one conta — #794). Its pre-clamp value
+ *     and the raw named fee columns ride `pagamento.marketplace`, a DIARY
+ *     nothing gates on.
  *  3. **`undefined` means "we did not learn it" and the patch builder OMITS the
- *     key; `null` means "there is none" and is written.** Shopee stops sending
- *     `payment_info` after `READY_TO_SHIP` and an escrow read can fail on its
- *     own, so a `cartao: null` or a `tarifas: null` written from a degraded
- *     delivery would ERASE what an earlier, richer one already learned — and
- *     for `cartao` that destroys the block PIX needs (cStat 391) on a pedido
- *     still awaiting emission.
+ *     key; `null` means "there is none" and is written.** A later delivery may
+ *     carry FEWER `payment_info` entries (whether the block survives past
+ *     `READY_TO_SHIP` is settle-live register item 22 and is NOT yet known) and
+ *     an escrow read can fail on its own, so a `cartao: null` or a
+ *     `tarifas: null` written from a degraded delivery would ERASE what an
+ *     earlier, richer one already learned — and for `cartao` that destroys the
+ *     block PIX needs (cStat 391) on a pedido still awaiting emission.
  *
  * ## ⚠️ The status ladder is driven by the ORDER status, never by a payment event
  *
@@ -132,9 +138,16 @@ export const COMPOSICAO_TARIFAS = {
  * cut the named fees, or the spread between what the buyer paid and what the
  * escrow releases?" is answerable from real BR data and from nothing else: the
  * SG sandbox order answers **1.29 under either**, so that body cannot tell them
- * apart and a single-arm implementation would have quietly decided it. The
- * import log carries both readings so the first real BR orders settle it as
- * data.
+ * apart and a single-arm implementation would have quietly decided it.
+ *
+ * ⚠️ `tarifas` and `tarifasBrutas` are NOT the two readings — they are the
+ * shipped composition's clamped and pre-clamp values, i.e. one composition
+ * twice. The per-import log therefore carries a THIRD number, `tarifasSpread`
+ * (this function called with {@link COMPOSICAO_TARIFAS.spreadEscrow}), and that
+ * is the one the first real BR orders settle the question with. It is also
+ * re-derivable per document from the stored diary
+ * (`marketplace.buyerTotalAmount − marketplace.escrowAmountAfterAdjustment`
+ * against `marketplace.tarifasBrutas`).
  */
 export const COMPOSICAO_TARIFAS_SHOPEE: ComposicaoTarifasShopee = COMPOSICAO_TARIFAS.taxasNomeadas;
 
@@ -177,8 +190,14 @@ export interface TarifasShopee {
  * mandatory**, not defensive — `pagamentoSchema.tarifas` is `.min(0)`, and
  * `final_shipping_fee` is legitimately negative on Shopee's own sample
  * (`-10`), so the spread really can come out below zero. Unclamped that is a
- * `ZodError` inside the transaction, which the notification pipeline reads as a
- * transient failure and retries for ever (#794). The unclamped number is not
+ * `ZodError` inside the transaction, and on BOTH writers it is terminal rather
+ * than transient (#794): on the code-3 task
+ * `disposicaoDaFalhaDeImportacao` (`notificacoes/notificacao.ts`) has an
+ * explicit `ZodError` arm that PARKS the delivery — no retry at all, which is
+ * the whole point of that arm, since one channel over the same error DOES retry
+ * for ever — and on the weekly settlement sweep `erroContidoPorConta` does not
+ * name `ZodError`, so it is rethrown past the per-conta boundary and the whole
+ * tick dies with every remaining conta unswept. The unclamped number is not
  * lost: it rides `marketplace.tarifasBrutas`, where a negative means "Shopee
  * credited the seller" and stays visible as data.
  *

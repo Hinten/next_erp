@@ -119,6 +119,30 @@ function linhaCombinadaBR(overrides: { paymentInfo?: unknown; orderStatus?: stri
   });
 }
 
+/**
+ * UMA perna BR — o caso COMUM, e o que a entrega degradada NUNCA cobre:
+ * `degradado` exige `nossos >= 2`, então num pedido de perna única ele é
+ * sempre `false` e o grupo DADOS realmente roda.
+ */
+function linhaUmaPernaBR(overrides: { paymentInfo?: unknown; orderStatus?: string } = {}) {
+  const cartao = {
+    payment_method: 'credit_card',
+    payment_amount: 31.99,
+    card_brand: 'visa',
+    transaction_id: 'AUT-CC',
+    payment_processor_register: CNPJ_FALSO,
+  };
+  return shopeeOrderDetailRowSchema.parse({
+    order_sn: ORDER_SN,
+    order_status: overrides.orderStatus ?? SHOPEE_ORDER_STATUS.readyToShip,
+    region: 'BR',
+    pay_time: PAY_TIME_S,
+    total_amount: 31.99,
+    payment_method: 'Credit Card',
+    payment_info: 'paymentInfo' in overrides ? overrides.paymentInfo : [cartao],
+  });
+}
+
 function mapear(
   args: {
     linha?: ShopeeOrderDetailRow;
@@ -505,6 +529,47 @@ describe('salvarPagamentosShopee — a tabela de grupos de campos', () => {
       expect(Object.prototype.hasOwnProperty.call(patch, 'cartao')).toBe(false);
     }
   });
+
+  it('12b. ⚠️ UMA perna, SEM degradado: o cartao aprendido não é apagado — e o patch prova a escrita', async () => {
+    // ⚠️ O teste 12 usa o vetor COMBINADO, então a segunda entrega é
+    // `degradado` e `construirPatch` retorna ANTES do bloco do cartao: a guarda
+    // que ele nomeia nunca executa ali, e o laço sobre `db.patches` iteraria um
+    // array VAZIO. Aqui há um doc nosso e um doc mapeado — `degradado` é false,
+    // o grupo DADOS roda, e a ÚNICA coisa que impede um `cartao: null` é o
+    // `!== undefined` da guarda. Um `cartao: null` aqui destrói o que o PIX/
+    // cartão precisa (cStat 391) num pedido que ainda não emitiu.
+    const db = new FakeDb();
+    semearPedido(db);
+    const primeira = linhaUmaPernaBR();
+    await salvar(db, { linha: primeira, mapeados: mapear({ linha: primeira }) });
+    const cartaoAntes = doc(db, PRIMARIO).cartao;
+    expect(cartaoAntes).not.toBeNull();
+    expect(doc(db, PRIMARIO).tarifas).toBeNull();
+
+    // A entrega seguinte PERDE o `payment_info` e GANHA o escrow: assim o patch
+    // é provadamente não-vazio, que é o que torna o negativo abaixo uma prova.
+    const depois = linhaUmaPernaBR({
+      orderStatus: SHOPEE_ORDER_STATUS.shipped,
+      paymentInfo: null,
+    });
+    const r = await salvar(db, {
+      linha: depois,
+      mapeados: mapear({ linha: depois, escrow: escrowSG() }),
+    });
+
+    expect(r.congelado).toBe(false);
+    expect(doc(db, PRIMARIO).cartao).toEqual(cartaoAntes);
+    // ⚠️ A ÂNCORA: sem isto o laço abaixo é um laço sobre array vazio.
+    expect(db.patches).toHaveLength(1);
+    expect(Object.keys(db.patches[0]!.patch).sort()).toEqual([
+      'marketplace',
+      'tarifas',
+      'ultimaModificacao',
+    ]);
+    for (const { patch } of db.patches) {
+      expect(Object.prototype.hasOwnProperty.call(patch, 'cartao')).toBe(false);
+    }
+  });
 });
 
 /* ========================================================================== */
@@ -701,6 +766,78 @@ describe('salvarPagamentosShopee — combinado e entrega degradada', () => {
     expect(
       infoSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes('entrega degradada')),
     ).toHaveLength(1);
+  });
+
+  it('18b. ⚠️ CONJUNTO CONGELADO: com o pedido congelado, uma entrega mais RICA não cria o irmão', async () => {
+    // ⚠️ O espelho do 18, e a direção PIOR. A primeira entrega não trouxe
+    // `payment_info`, então o primário nasceu com o `valorCobrado` INTEIRO. Um
+    // humano então toca o cabeçalho do pedido (`hasUserInteraction`), o que
+    // congela o grupo DADOS. Se a entrega seguinte — agora com as duas pernas
+    // — criasse o secundário, o primário ficaria em 31,99 e o irmão em 10:
+    // Σ pagante 41,99 contra uma nota de 31,99, que é cStat 866 PARA SEMPRE,
+    // porque `hasUserInteraction` é um latch e nenhuma entrega futura re-toma
+    // o `valor` do primário.
+    const db = new FakeDb();
+    semearPedido(db);
+    const pobre = linhaCombinadaBR({ paymentInfo: null });
+    await salvar(db, { linha: pobre, mapeados: mapear({ linha: pobre }) });
+    expect(db.idsEm(PAGAMENTOS_PATH)).toEqual([PRIMARIO]);
+    expect(doc(db, PRIMARIO).valor).toBe(31.99);
+
+    // O operador salva o formulário do pedido.
+    db.store[PEDIDO_PATH]!.data.hasUserInteraction = true;
+    infoSpy.mockClear();
+
+    const rica = linhaCombinadaBR();
+    const r = await salvar(db, { linha: rica, mapeados: mapear({ linha: rica }) });
+
+    expect(r.congelado).toBe(true);
+    expect(r.criados).toBe(0);
+    expect(db.idsEm(PAGAMENTOS_PATH)).toEqual([PRIMARIO]);
+    expect(doc(db, PRIMARIO).valor).toBe(31.99);
+    // ⚠️ O par que importa: Σ continua igual ao `valorCobrado`.
+    expect(r.somaPagante).toBe(31.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+    expect(
+      infoSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes('conjunto congelado')),
+    ).toHaveLength(1);
+  });
+
+  it('18c. ⚠️ NEAR-MISS de 18b: SEM o congelamento a mesma entrega cria o irmão e Σ continua certa', async () => {
+    // A âncora do negativo acima: o portao é o congelamento, não o crescimento.
+    const db = new FakeDb();
+    semearPedido(db);
+    const pobre = linhaCombinadaBR({ paymentInfo: null });
+    await salvar(db, { linha: pobre, mapeados: mapear({ linha: pobre }) });
+
+    const rica = linhaCombinadaBR();
+    const r = await salvar(db, { linha: rica, mapeados: mapear({ linha: rica }) });
+
+    expect(r.congelado).toBe(false);
+    expect(r.criados).toBe(1);
+    expect(db.idsEm(PAGAMENTOS_PATH).sort()).toEqual([PRIMARIO, SECUNDARIO].sort());
+    // O primário foi RE-TOMADO para a sua perna, e é por isso que Σ fecha.
+    expect(doc(db, PRIMARIO).valor).toBe(21.99);
+    expect(doc(db, SECUNDARIO).valor).toBe(10);
+    expect(r.somaPagante).toBe(31.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+  });
+
+  it('18d. ⚠️ o portao exige um doc NOSSO já gravado: num pedido congelado SEM pagamento nenhum, cria tudo', async () => {
+    // ⚠️ A direção oposta, e ela também é dinheiro: se o congelamento
+    // bloqueasse TODA criação, um pedido que um humano tocou antes da primeira
+    // entrega ficaria com Σ pagante ZERO — cStat 865. Aqui as criações são o
+    // que TORNA Σ certa, e nenhum doc nosso existe para discordar delas.
+    const db = new FakeDb();
+    semearPedido(db, { hasUserInteraction: true });
+    const rica = linhaCombinadaBR();
+
+    const r = await salvar(db, { linha: rica, mapeados: mapear({ linha: rica }) });
+
+    expect(r.congelado).toBe(true);
+    expect(r.criados).toBe(2);
+    expect(r.somaPagante).toBe(31.99);
+    expect(r.divergenciaDeSoma).toBe(0);
   });
 
   it('19. ⚠️ o irmão LEGADO `-desconto` não é nosso: nem lido como nosso, nem escrito', async () => {

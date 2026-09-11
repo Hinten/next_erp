@@ -186,6 +186,13 @@ export function mpPaymentToPagamento(
     duplicata: false,
     nFat: null,
     vencimento: null,
+    // Both blocks belong to a marketplace order's payment diary and its
+    // settlement stamp (`pagamentoSchema`'s own docblock): the Shopee order
+    // import writes `marketplace`, the weekly escrow sweep writes
+    // `liquidacao`. A Mercado Pago gateway payment is written by neither, so
+    // `null` is the value, not merely what compiles.
+    marketplace: null,
+    liquidacao: null,
     ultimaModificacao,
     dataCancelamento: null,
     dataAprovacao: isoToMicros(payment.date_approved),

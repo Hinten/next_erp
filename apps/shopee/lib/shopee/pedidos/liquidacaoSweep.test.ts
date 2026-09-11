@@ -30,6 +30,7 @@ import {
   ShopeeHttpError,
   ShopeeNetworkError,
   ShopeeRateLimitError,
+  ShopeeReauthRequiredError,
   ShopeeSchemaError,
   type GetEscrowDetailParams,
   type GetEscrowListParams,
@@ -62,6 +63,7 @@ import {
   PAGE_SIZE,
   esquecerLogsDeLiquidacaoShopee,
   runShopeeEscrowSettlement,
+  simularLiquidacaoShopee,
 } from './liquidacaoSweep';
 
 /* -------------------------------------------------------------------------- */
@@ -461,6 +463,44 @@ describe('runShopeeEscrowSettlement — a linha sem pagamento', () => {
     expect(JSON.stringify(warn![1])).not.toContain('999.99');
   });
 
+  it('7b. ⚠️ NEAR-MISS de 7: na PENÚLTIMA tentativa a linha ainda ganha a sua quarta e FICA', async () => {
+    // ⚠️ O teste 7 semeia `tentativas: MAX_TENTATIVAS` — que vira 5, e 5 > 4 e
+    // 5 >= 4 são ambos verdade, então a FRONTEIRA em si fica sem ninguém a
+    // fixar: um `>=` no lugar do `>` descartaria na QUARTA tentativa e a
+    // promessa de "quatro tentativas semanais" passaria a valer três, com o
+    // arquivo inteiro verde.
+    const c = cenario();
+    c.db.seed(`${INTEGRACAO_PATH}/${INT_A}`, contaDoc());
+    c.db.seed(`${CURSOR_PATH}/${INT_A}`, {
+      cursorMs: AGORA_MS - 10 * DIA_MS,
+      pendentes: [
+        {
+          orderSn: ORDER,
+          payoutAmount: 12.5,
+          escrowReleaseTimeS: 1_759_111_111,
+          motivo: MOTIVO_PENDENTE_SHOPEE.semPedido,
+          tentativas: MAX_TENTATIVAS - 1,
+        },
+      ],
+    });
+
+    const r = await rodar(c);
+
+    expect(r.contas[0]!.pendentesDescartados).toBe(0);
+    expect(c.warn.mock.calls.filter(([msg]) => msg.includes('pendente descartado'))).toEqual([]);
+    // A linha SOBREVIVE, exatamente em MAX_TENTATIVAS — é esta igualdade que
+    // mata o mutante.
+    expect(ultimoPatch(c.db, INT_A)!.pendentes).toEqual([
+      {
+        orderSn: ORDER,
+        payoutAmount: 12.5,
+        escrowReleaseTimeS: 1_759_111_111,
+        motivo: MOTIVO_PENDENTE_SHOPEE.semPedido,
+        tentativas: MAX_TENTATIVAS,
+      },
+    ]);
+  });
+
   it('8. a lista é LIMITADA: 250 guardados saem 200, com os 50 mais antigos contados', async () => {
     // Um array sem teto dentro de um documento é o penhasco de 1 MiB. O schema
     // deliberadamente NÃO declara o teto — um documento que já o excede tem de
@@ -704,6 +744,69 @@ describe('runShopeeEscrowSettlement — contenção por conta', () => {
     expect(c.db.store[pagamentoPath(sn(5))]!.data.liquidacao).toBeUndefined();
   });
 
+  const NAO_PULAM: readonly [string, () => unknown][] = [
+    [
+      'ShopeeRateLimitError',
+      () =>
+        new ShopeeRateLimitError('estourou', {
+          code: 'error_rate_limit',
+          kind: 'burst',
+          httpStatus: 200,
+          path: PATH_ESCROW,
+        }),
+    ],
+    [
+      'ShopeeReauthRequiredError',
+      () =>
+        new ShopeeReauthRequiredError('grant morto', {
+          code: 'error_auth',
+          kind: SHOPEE_ERROR_KIND.reauth,
+          httpStatus: 200,
+          path: PATH_ESCROW,
+        }),
+    ],
+    ['ShopeeApiError(income_not_found)', () => apiError('income_not_found')],
+  ];
+
+  it.each(NAO_PULAM)(
+    '14b. ⚠️ NEAR-MISS de 15/16: um %s no get_escrow_detail CONTÉM a conta',
+    async (_nome, mk) => {
+      // ⚠️ O conjunto que pula UMA linha tem exatamente DUAS classes:
+      // `order_not_found` e um escrow ilegível. O teste 14 injeta um
+      // `ShopeeNetworkError`, que NÃO é um `ShopeeApiError` — então ele continua
+      // relançando mesmo se as duas guardas de cima forem apagadas e o braço do
+      // `order_not_found` for afrouxado para um `ShopeeApiError` qualquer. Sob
+      // esse mutante um grant morto ou um estouro de cota viram `puladas`, a
+      // página drena e o cursor AVANÇA por cima de uma semana inteira de
+      // dinheiro, com o arquivo todo verde.
+      const c = cenario();
+      c.db.seed(`${INTEGRACAO_PATH}/${INT_A}`, contaDoc());
+      c.db.seed(`${CURSOR_PATH}/${INT_A}`, { cursorMs: AGORA_MS - 10 * DIA_MS });
+      for (let i = 1; i <= 5; i += 1) c.db.seed(pagamentoPath(sn(i)), { id: sn(i) });
+      c.getEscrowList.mockResolvedValueOnce(
+        pagina(
+          Array.from({ length: 5 }, (_, k) => ({ order_sn: sn(k + 1) })),
+          false,
+        ),
+      );
+      let n = 0;
+      c.getEscrowDetail.mockImplementation(() => {
+        n += 1;
+        if (n === 3) return Promise.reject(mk());
+        return Promise.resolve(ESCROW_SG);
+      });
+
+      const r = await rodar(c);
+
+      expect(r.contas[0]!.error).not.toBeNull();
+      expect(r.contas[0]!.puladas).toBe(0);
+      // ⚠️ O par que mata o mutante: a janela NÃO drenou e o cursor NÃO andou.
+      expect(r.contas[0]!.drenada).toBe(false);
+      expect(ultimoPatch(c.db, INT_A)!.cursorMs).toBeUndefined();
+      expect(c.db.store[pagamentoPath(sn(5))]!.data.liquidacao).toBeUndefined();
+    },
+  );
+
   it('15. `order_not_found` pula a LINHA e a janela ainda drena', async () => {
     const c = cenario();
     c.db.seed(`${INTEGRACAO_PATH}/${INT_A}`, contaDoc());
@@ -798,6 +901,52 @@ describe('runShopeeEscrowSettlement — a paginação', () => {
     expect(r.contas[0]!.drenada).toBe(true);
     expect(chamada(c, 2).pageNo).toBe(3);
     expect(ultimoPatch(c.db, INT_A)!.lastError).toBeNull();
+  });
+
+  it('18b. ⚠️ NEAR-MISS de 17: uma página cujas linhas vieram todas do REPLAY CONTINUA paginando', async () => {
+    // ⚠️ `vistos` é compartilhado entre o replay dos estacionados e a
+    // paginação — tem de ser, porque a mesma order liquida UMA vez por tick.
+    // Mas a guarda de página repetida mede PROGRESSO DE PAGINAÇÃO: se um
+    // `duplicada` vindo do replay contasse como "zero novos", uma página que a
+    // Shopee serviu corretamente truncaria a janela, limparia o `pendingPageNo`
+    // e o cursor nunca andaria — por tantos ticks semanais quantos os
+    // estacionados sobrevivessem — enquanto o `lastError` culpava a Shopee.
+    const c = cenario();
+    c.db.seed(`${INTEGRACAO_PATH}/${INT_A}`, contaDoc());
+    c.db.seed(`${CURSOR_PATH}/${INT_A}`, {
+      cursorMs: AGORA_MS - 10 * DIA_MS,
+      pendentes: [sn(1), sn(2)].map((orderSn) => ({
+        orderSn,
+        payoutAmount: 30.7,
+        escrowReleaseTimeS: 1_759_000_000,
+        motivo: MOTIVO_PENDENTE_SHOPEE.semPedido,
+        tentativas: 1,
+      })),
+    });
+    // A página 1 traz exatamente as duas linhas que o replay acabou de tratar;
+    // a página 2 tem a order que realmente liquida.
+    c.db.seed(pagamentoPath(sn(3)), { id: sn(3) });
+    const paginas = [
+      pagina([{ order_sn: sn(1) }, { order_sn: sn(2) }], true),
+      pagina([{ order_sn: sn(3) }], false),
+    ];
+    let i = 0;
+    c.getEscrowList.mockImplementation(() => Promise.resolve(paginas[i++]!));
+
+    const r = await rodar(c);
+
+    const conta = r.contas[0]!;
+    expect(conta.paginas).toBe(2);
+    expect(conta.truncada).toBe(false);
+    expect(conta.drenada).toBe(true);
+    expect(conta.duplicadas).toBe(2);
+    // A página 2 foi pedida, a order dela liquidou e o cursor ANDOU.
+    expect(chamada(c, 1).pageNo).toBe(2);
+    expect(conta.liquidados).toBe(1);
+    const patch = ultimoPatch(c.db, INT_A)!;
+    expect(patch.cursorMs).toBe(conta.janela!.ateMs);
+    expect(patch.lastError).toBeNull();
+    expect(c.warn.mock.calls.filter(([msg]) => msg.includes('página repetida'))).toEqual([]);
   });
 
   it('19. uma linha `null` (o sentinela por-ELEMENTO do schema) é contada e pulada', async () => {
@@ -993,6 +1142,13 @@ describe('runShopeeEscrowSettlement — os logs', () => {
     expect(detalhadas.at(-1)![1]!.razaoPayoutSobreEscrow).toBe(100);
     // A linha detalhada carrega o `payout_amount` CRU, sem conversão nenhuma.
     expect(detalhadas.at(-1)![1]!.payoutAmount).toBe(3070);
+    // ⚠️ `tarifas` é a FIGURA, como em toda parte deste canal (o log da
+    // importação, o resumo da rehearsal, o runbook) — não um booleano "mudou?".
+    // Um booleano sob esta chave seria um segundo significado para um nome só,
+    // numa linha cujas outras chaves são todas dinheiro, e confundiria "a tarifa
+    // já estava certa" com "não veio `order_income`". O "mudou" tem chave própria.
+    expect(detalhadas[0]![1]!.tarifas).toBe(1.29);
+    expect(detalhadas[0]![1]!.tarifasMudou).toBe(true);
   });
 
   it('25c. ⚠️ nenhum log desta varredura carrega um CNPJ, um cAut ou um campo do comprador', async () => {
@@ -1016,5 +1172,94 @@ describe('runShopeeEscrowSettlement — os logs', () => {
     expect(texto).not.toContain('AUT-');
     expect(texto).not.toContain('buyer_');
     expect(texto).not.toContain('REDACTED');
+  });
+});
+
+/* ========================================================================== */
+/*  26 · a ENSAIO (dry-run) vê o mesmo conjunto de linhas que o tick           */
+/* ========================================================================== */
+
+describe('simularLiquidacaoShopee — paridade com o tick vivo', () => {
+  const ORDER = '260910KJBHUJDM';
+
+  function clienteDe(c: Cenario): ShopeeClient {
+    return {
+      getEscrowList: c.getEscrowList,
+      getEscrowDetail: c.getEscrowDetail,
+    } as unknown as ShopeeClient;
+  }
+
+  /** O mesmo estado semeado nos dois caminhos: um estacionado FORA da janela. */
+  function semear(c: Cenario): void {
+    c.db.seed(`${INTEGRACAO_PATH}/${INT_A}`, contaDoc());
+    c.db.seed(`${CURSOR_PATH}/${INT_A}`, {
+      cursorMs: AGORA_MS - 10 * DIA_MS,
+      pendentes: [
+        {
+          orderSn: ORDER,
+          payoutAmount: 30.7,
+          // ⚠️ ABAIXO da janela que este cursor produz: a listagem é consultada
+          // POR faixa de `escrow_release_time`, então esta linha nunca mais
+          // volta por ali. É exatamente por isso que a lista estacionada guarda
+          // a linha inteira — e exatamente o que uma rehearsal que só pagina
+          // não teria como mostrar.
+          escrowReleaseTimeS: 1_700_000_000,
+          motivo: MOTIVO_PENDENTE_SHOPEE.semPedido,
+          tentativas: 1,
+        },
+      ],
+    });
+    // O pedido chegou pela importação entre um tick e o outro.
+    c.db.seed(pagamentoPath(ORDER), { id: ORDER });
+  }
+
+  it('26. o ensaio REPLAYA os estacionados — e o que ele prevê é o que o `--live` escreve', async () => {
+    const seco = cenario();
+    semear(seco);
+
+    const sim = await simularLiquidacaoShopee(asDb(seco.db), {
+      integracaoId: INT_A,
+      client: clienteDe(seco),
+      nowMs: AGORA_MS,
+    });
+
+    // A listagem respondeu VAZIA (o default do cenário) e ainda assim há uma
+    // linha — a estacionada, marcada como tal.
+    expect(sim.linhas.map((l) => [l.orderSn, l.origem])).toEqual([[ORDER, 'pendente']]);
+    expect(sim.linhas[0]!.previsao?.acao).toBe('liquidado');
+    // ⚠️ E nada foi escrito: não existe escritora no corpo do ensaio.
+    expect(seco.db.writes).toEqual([]);
+    expect(seco.db.occ.txLog).toEqual([]);
+
+    // O MESMO estado, agora no tick vivo.
+    const vivo = cenario();
+    semear(vivo);
+    const r = await rodar(vivo);
+
+    expect(r.contas[0]!.liquidados).toBe(1);
+    expect(vivo.db.store[pagamentoPath(ORDER)]!.data.liquidacao).toBeDefined();
+    // A paridade que importa: o ensaio previu exatamente a mesma ORDER que o
+    // `--live` liquidou, e não um conjunto vazio.
+    expect(sim.linhas).toHaveLength(r.contas[0]!.liquidados);
+  });
+
+  it('26b. ⚠️ NEAR-MISS: sem nada estacionado o ensaio vê só a listagem', async () => {
+    // A âncora do negativo acima: a linha extra vem da lista estacionada, não
+    // de qualquer linha que o ensaio invente.
+    const c = cenario();
+    c.db.seed(`${INTEGRACAO_PATH}/${INT_A}`, contaDoc());
+    c.db.seed(`${CURSOR_PATH}/${INT_A}`, { cursorMs: AGORA_MS - 10 * DIA_MS });
+    c.db.seed(pagamentoPath(sn(1)), { id: sn(1) });
+    c.getEscrowList.mockResolvedValueOnce(pagina([{ order_sn: sn(1) }], false));
+
+    const sim = await simularLiquidacaoShopee(asDb(c.db), {
+      integracaoId: INT_A,
+      client: clienteDe(c),
+      nowMs: AGORA_MS,
+    });
+
+    expect(sim.linhas.map((l) => [l.orderSn, l.origem])).toEqual([[sn(1), 'listagem']]);
+    expect(sim.drenada).toBe(true);
+    expect(c.db.writes).toEqual([]);
   });
 });

@@ -197,6 +197,7 @@ describe('resumoDaLinhaSimulada', () => {
     const pedidoId = makePedidoIdShopee(CONTA, ORDER_SN);
     return {
       orderSn: ORDER_SN,
+      origem: 'listagem',
       pedidoId,
       pagamentoId: makePagamentoIdShopee(CONTA, ORDER_SN),
       existePedido: true,
@@ -224,7 +225,7 @@ describe('resumoDaLinhaSimulada', () => {
     // (a) a lista de permissão é FECHADA — e o número é fixado, para que um
     // campo novo tenha de ser olhado em vez de entrar de carona.
     expect(Object.keys(r).sort()).toEqual([...CAMPOS_RESUMO_LIQUIDACAO].sort());
-    expect(CAMPOS_RESUMO_LIQUIDACAO).toHaveLength(13);
+    expect(CAMPOS_RESUMO_LIQUIDACAO).toHaveLength(14);
 
     // (b) nem o objeto…
     const serializado = JSON.stringify(r);

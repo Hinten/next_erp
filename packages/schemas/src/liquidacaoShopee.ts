@@ -57,8 +57,11 @@ export type LiquidacaoPendente = z.infer<typeof liquidacaoPendenteSchema>;
  * ## ⚠️ MILLISECONDS at rest — with ONE deliberate exception
  *
  * Every clock in this document is ms and says so in its name, matching
- * `backfillPedidosShopee` and `apps/shopee/CLAUDE.md`'s rule that this channel
- * keeps µs to its one avisos module. The exception is
+ * `backfillPedidosShopee`, and keeping this document OFF the µs SITE list
+ * `apps/shopee/CLAUDE.md` maintains (five sites plus two readers — the
+ * "one module that speaks µs" sentence that file used to carry was retired
+ * precisely because it had quietly become five). The settlement write is the
+ * only place this channel's µs and this document's ms meet. The exception is
  * {@link liquidacaoPendenteSchema}'s `escrowReleaseTimeS`, which is **SECONDS**:
  * it is the wire value held verbatim for replay. It is converted exactly ONCE,
  * at the settlement write, through the channel's seconds helper — **never

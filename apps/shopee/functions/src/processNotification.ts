@@ -60,9 +60,11 @@ export const processShopeeNotification = onTaskDispatched(
     //
     // ⚠️ Step 6 adds writes to this path but NO new Shopee call: the same
     // `get_escrow_detail` the import already makes now also produces the
-    // pagamento, so the delivery gains one `tx.get` + one `tx.update` on a
-    // subcollection document and nothing that touches the network — the budget
-    // above is unchanged, and the ladder invariant `index.test.ts` pins
+    // pagamento, so the delivery gains a SECOND transaction — two reads (the
+    // pedido, then the WHOLE `pagamentos` subcollection, which a combined
+    // payment makes load-bearing) and one `create`/`update` per mapped
+    // document — and nothing that touches the network. The budget above is
+    // unchanged, and the ladder invariant `index.test.ts` pins
     // (3 × 300 + 2 × 300 = 1 500 ≤ 1 800) is untouched.
     timeoutSeconds: 300,
     retryConfig: {

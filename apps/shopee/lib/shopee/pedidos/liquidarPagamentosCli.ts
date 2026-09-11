@@ -30,7 +30,7 @@ import type { MarketplacePagamentoTaxas } from '@delfrance/schemas';
 
 import { ArgumentoInvalidoError, descreverErro } from './importarPedidoCli';
 import type { AcaoLiquidacaoShopee } from './liquidarPagamento';
-import type { LinhaSimuladaShopee } from './liquidacaoSweep';
+import type { LinhaSimuladaShopee, OrigemLinhaSimuladaShopee } from './liquidacaoSweep';
 
 export { ArgumentoInvalidoError };
 
@@ -258,7 +258,7 @@ export function parseArgsLiquidarPagamentos(argv: readonly string[]): ComandoLiq
 /**
  * ONE escrow row, reduced to what a rehearsal needs and nothing else.
  *
- * ⚠️ **Thirteen fields, and the count is pinned by a test.** Three of them are
+ * ⚠️ **Fourteen fields, and the count is pinned by a test.** Three of them are
  * the reason the type exists at all:
  *
  *  - **`camposQueMudariam`** carries field NAMES, never their old or new values;
@@ -269,6 +269,13 @@ export function parseArgsLiquidarPagamentos(argv: readonly string[]): ComandoLiq
  */
 export interface ResumoLiquidacaoShopee {
   readonly orderSn: string;
+  /**
+   * Which of the live tick's TWO row sources produced this row — a replayed
+   * `pendentes` entry or a `get_escrow_list` page. A parked row is invisible to
+   * the listing once the cursor moved past its release time, so without this an
+   * operator cannot tell a rehearsal that covered them from one that did not.
+   */
+  readonly origem: OrigemLinhaSimuladaShopee;
   readonly pedidoId: string;
   readonly pagamentoId: string;
   readonly existePedido: boolean;
@@ -289,6 +296,7 @@ export interface ResumoLiquidacaoShopee {
 /** The allow-list itself, exported so a test can pin the field COUNT. */
 export const CAMPOS_RESUMO_LIQUIDACAO = [
   'orderSn',
+  'origem',
   'pedidoId',
   'pagamentoId',
   'existePedido',
@@ -322,6 +330,7 @@ export function resumoDaLinhaSimulada(linha: LinhaSimuladaShopee): ResumoLiquida
   const tarifas = patch === null ? null : patch.tarifas;
   return {
     orderSn: linha.orderSn,
+    origem: linha.origem,
     pedidoId: linha.pedidoId,
     pagamentoId: linha.pagamentoId,
     existePedido: linha.existePedido,
@@ -372,7 +381,7 @@ export function carimboMs(ms: number | null): string {
 /** The human rendering of one row's summary. */
 export function renderResumoLiquidacao(r: ResumoLiquidacaoShopee, motivo: string | null): string[] {
   const linhas: string[] = [];
-  linhas.push(`  order_sn ................ ${r.orderSn}`);
+  linhas.push(`  order_sn ................ ${r.orderSn}  [${r.origem}]`);
   linhas.push(
     `    pedidoId .............. ${r.pedidoId}  (${r.existePedido ? 'existe' : 'AUSENTE'})`,
   );
