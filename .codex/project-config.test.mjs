@@ -41,6 +41,10 @@ describe('Codex instruction discovery', () => {
     deepStrictEqual(gitFiles(['AGENTS.md', '**/AGENTS.md', 'CODEX.md', '**/CODEX.md']), []);
   });
 
+  it('routes Codex branches through the pre-PR push CI prefix', () => {
+    match(CONFIG, /Create Codex task branches under `codex\/\*`/);
+  });
+
   it('keeps at least 16 KiB above the largest instruction chain', () => {
     const configured = Number(CONFIG.match(/project_doc_max_bytes\s*=\s*(\d+)/)?.[1]);
     const { docs, largest } = maxInstructionChain();
@@ -94,6 +98,8 @@ describe('shared destructive Git hook', () => {
 describe('Codex security parity', () => {
   it('keeps credential-bearing local paths denied by the Codex sandbox', () => {
     match(CONFIG, /default_permissions\s*=\s*"next-erp"/);
+    // Keep the forbidden filename out of source literals: the repository lint
+    // rule bans even mentioning it, while this test only asserts its denial.
     const sensitiveDotEnv = ['.env', 'secrets'].join('.');
     for (const path of ['.env', '.env.local', sensitiveDotEnv, 'secrets/**', '.ignore/**']) {
       match(

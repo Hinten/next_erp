@@ -17,7 +17,9 @@ const SHELLS = new Set([
   'powershell',
   'powershell.exe',
 ]);
-const WRAPPERS = new Set(['&', 'command', 'sudo']);
+const COMMAND_SEPARATORS = new Set(['&&', '||', ';', '|', '\n', '(', ')']);
+const SIMPLE_WRAPPERS = new Set(['&', 'command', 'nohup']);
+const PROTECTED_BRANCHES = new Set(['main', 'master']);
 const GIT_GLOBAL_VALUE_FLAGS = new Set([
   '-C',
   '-c',
@@ -45,30 +47,107 @@ function stripHeredocs(command) {
   return kept.join('\n');
 }
 
-function splitCommands(command) {
-  return command.split(/\|\||&&|[;\n|]/g);
-}
-
 function tokenize(command) {
   const tokens = [];
-  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let match;
-  while ((match = pattern.exec(command)) !== null) {
-    tokens.push(match[1] ?? match[2] ?? match[3]);
+  let current = '';
+  let quote = null;
+
+  const pushCurrent = () => {
+    if (!current) return;
+    tokens.push(current);
+    current = '';
+  };
+
+  for (let index = 0; index < command.length; index++) {
+    const character = command[index];
+
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      else current += character;
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '\r') continue;
+    if (character === '\n') {
+      pushCurrent();
+      tokens.push('\n');
+      continue;
+    }
+    if (/\s/.test(character)) {
+      pushCurrent();
+      continue;
+    }
+
+    const pair = command.slice(index, index + 2);
+    if (pair === '&&' || pair === '||') {
+      pushCurrent();
+      tokens.push(pair);
+      index++;
+      continue;
+    }
+    if ([';', '|', '(', ')'].includes(character)) {
+      pushCurrent();
+      tokens.push(character);
+      continue;
+    }
+    current += character;
   }
+
+  pushCurrent();
   return tokens;
 }
 
-function commandIndex(tokens) {
-  let index = 0;
-  while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) index++;
-  while (WRAPPERS.has(tokens[index])) {
-    const wrapper = tokens[index++];
-    if (wrapper !== 'sudo') continue;
-    while (tokens[index]?.startsWith('-')) {
-      if (['-C', '-g', '-h', '-p', '-R', '-T', '-u'].includes(tokens[index])) index++;
-      index++;
+function splitCommands(command) {
+  const commands = [];
+  let current = [];
+  for (const token of tokenize(command)) {
+    if (COMMAND_SEPARATORS.has(token)) {
+      if (current.length > 0) commands.push(current);
+      current = [];
+    } else {
+      current.push(token);
     }
+  }
+  if (current.length > 0) commands.push(current);
+  return commands;
+}
+
+function skipAssignments(tokens, index) {
+  while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) index++;
+  return index;
+}
+
+function commandIndex(tokens) {
+  let index = skipAssignments(tokens, 0);
+  while (index < tokens.length) {
+    const wrapper = tokens[index]?.toLowerCase();
+    if (SIMPLE_WRAPPERS.has(wrapper)) {
+      index++;
+      while (tokens[index] === '--' || tokens[index] === '-p') index++;
+      continue;
+    }
+    if (wrapper === 'env') {
+      index++;
+      while (tokens[index]?.startsWith('-')) {
+        const option = tokens[index++];
+        if (['-C', '--chdir', '-S', '--split-string', '-u', '--unset'].includes(option)) index++;
+      }
+      index = skipAssignments(tokens, index);
+      continue;
+    }
+    if (wrapper === 'sudo') {
+      index++;
+      while (tokens[index]?.startsWith('-')) {
+        const option = tokens[index++];
+        if (['-C', '-g', '-h', '-p', '-R', '-T', '-u'].includes(option)) index++;
+      }
+      continue;
+    }
+    break;
   }
   return index;
 }
@@ -85,20 +164,31 @@ function skipOptions(tokens, index, valueFlags) {
 function hasForcePush(args) {
   return args.some(
     (arg) =>
+      (arg.startsWith('+') && arg.length > 1) ||
       arg === '-f' ||
       /^-[^-]*f/.test(arg) ||
       /^--force(?:$|=|-with-lease(?:$|=)|-if-includes(?:$|=))/.test(arg),
   );
 }
 
-function targetsMain(args) {
+function targetsProtectedBranch(args) {
   return args.some(
-    (arg) =>
-      arg === 'main' ||
-      arg === 'refs/heads/main' ||
-      arg.endsWith(':main') ||
-      arg.endsWith(':refs/heads/main'),
+    (arg) => {
+      const destination = arg.split(':').at(-1)?.replace(/^\+/, '');
+      return (
+        PROTECTED_BRANCHES.has(destination) ||
+        [...PROTECTED_BRANCHES].some((branch) => destination === `refs/heads/${branch}`)
+      );
+    },
   );
+}
+
+function isHelp(args) {
+  return args.includes('--help') || args.includes('-h');
+}
+
+function isDryRun(args) {
+  return args.includes('--dry-run') || args.some((arg) => /^-[^-]*n/.test(arg));
 }
 
 function dangerousGit(tokens, start) {
@@ -106,14 +196,24 @@ function dangerousGit(tokens, start) {
   const subcommand = tokens[index++];
   const args = tokens.slice(index);
 
+  if (isHelp(args)) return null;
+
   if (subcommand === 'push') {
+    if (isDryRun(args)) return null;
     if (hasForcePush(args))
       return 'Force-pushing is forbidden; push an ordinary follow-up commit instead.';
-    if (targetsMain(args))
-      return 'Direct pushes to `main` are forbidden; push the task branch instead.';
+    if (targetsProtectedBranch(args))
+      return 'Direct pushes to `main` or `master` are forbidden; push the task branch instead.';
   }
   if (subcommand === 'rebase') {
+    if (args.some((arg) => ['--abort', '--continue', '--quit', '--skip'].includes(arg))) return null;
     return 'Rebasing is forbidden on shared task branches; merge the base branch or ask the repository owner.';
+  }
+  if (
+    subcommand === 'pull' &&
+    args.some((arg) => arg === '-r' || /^--rebase(?:$|=)/.test(arg))
+  ) {
+    return '`git pull --rebase` is forbidden on shared task branches; pull without rebasing.';
   }
   if (subcommand === 'reset' && args.includes('--hard')) {
     return '`git reset --hard` is forbidden because it can discard workspace changes.';
@@ -129,23 +229,25 @@ function dangerousGit(tokens, start) {
     if (forcesBranch) {
       return 'Force-moving or replacing branches is forbidden.';
     }
-    if (deletesBranch && targetsMain(args)) {
-      return 'Deleting `main` is forbidden.';
+    if (deletesBranch && targetsProtectedBranch(args)) {
+      return 'Deleting `main` or `master` is forbidden.';
     }
   }
   if (subcommand === 'checkout' || subcommand === 'switch') {
     const createsBranch = args.some((arg) =>
       ['-b', '-B', '-c', '-C', '--create', '--force-create'].includes(arg),
     );
-    if (!createsBranch && targetsMain(args))
-      return 'Switching this task checkout to `main` is forbidden.';
+    if (!createsBranch && targetsProtectedBranch(args))
+      return 'Switching this task checkout to `main` or `master` is forbidden.';
   }
   return null;
 }
 
 function dangerousGh(tokens, start) {
   let index = skipOptions(tokens, start + 1, GH_GLOBAL_VALUE_FLAGS);
-  if (tokens[index] === 'pr' && tokens[index + 1] === 'merge') {
+  const args = tokens.slice(index);
+  if (args.includes('--help') || args.includes('-h')) return null;
+  if (args[0] === 'pr' && args[1] === 'merge') {
     return 'Agents must not merge pull requests; leave the final merge to the repository owner.';
   }
   return null;
@@ -153,7 +255,7 @@ function dangerousGh(tokens, start) {
 
 function dangerousCommand(command) {
   for (const part of splitCommands(stripHeredocs(command))) {
-    const tokens = tokenize(part);
+    const tokens = part;
     const start = commandIndex(tokens);
     const executable = tokens[start]?.toLowerCase();
     if (!executable) continue;

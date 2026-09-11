@@ -3,7 +3,7 @@
 default_permissions = "next-erp"
 
 developer_instructions = """
-Create task branches under `claude/*` in this repository, not the Codex default `codex/*`. This matches the repository branch-prefix hook and keeps stacked pull requests inside the CI base-branch filters.
+Create Codex task branches under `codex/*`. Published `codex/**` branches receive the repository's pre-PR push CI, including all three E2E lanes, and the prefix is also accepted by every pull-request base filter for stacked work.
 
 After finishing repository changes, create or update a pull request in draft mode unless the user explicitly requests a different state.
 
@@ -54,7 +54,9 @@ glob_scan_max_depth = 8
 
 # Reuse the repository-pinned Playwright MCP package. `.mcp.json` invokes the
 # same installed entry point for Claude, so package.json remains the version
-# source and neither agent depends on the machine-wide pnpm version.
+# source and neither agent depends on the machine-wide pnpm version. Stable
+# @playwright/mcp releases pin their own alpha Playwright runtime; keep that
+# exact upstream pairing rather than overriding it with an untested combination.
 [mcp_servers.playwright]
 command = "node"
 args = ["node_modules/@playwright/mcp/cli.js"]
