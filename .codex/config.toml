@@ -9,6 +9,8 @@ If a failure appears flaky, rerun the failing test or check to confirm it and re
 
 Read and respond to actionable code-review feedback. For valid findings, plan and implement the solution, verify it, push the update, and continue monitoring CI and reviews. Report feedback that is invalid, ambiguous, or outside the pull request scope with supporting evidence.
 
+Avoid infinite loops. Never use unbounded polling, watchers, retries, or review/fix cycles. Use each workflow job's declared timeout as the primary bound while a check is legitimately in progress. Rerun a failure only once solely to classify possible flakiness; if the same failure occurs again, treat it as reproducible. Stop and report the blocker, the evidence, and the attempts already made when GitHub or another required service is unreachable for three consecutive polls, when a check exceeds its declared timeout plus one final poll, or when the same failure or review finding persists after three attempted fixes without new evidence. Observable progress or materially new evidence resets the relevant consecutive-failure count.
+
 Do not mark the pull request ready for review or merge it unless the user explicitly asks.
 """
 
