@@ -156,10 +156,85 @@ function foldWithOffsets(text: string): FoldedWithOffsets {
   return { text: folded, starts, ends };
 }
 
-function executableRegex(regex: RegExp, global: boolean, foldSource: boolean): RegExp {
+function executableRegex(regex: RegExp, global: boolean): RegExp {
   const flags = regex.flags.replace(/g/g, '');
-  const source = foldSource ? foldSearchText(regex.source) : regex.source;
-  return new RegExp(source, global ? `${flags}g` : flags);
+  return new RegExp(regex.source, global ? `${flags}g` : flags);
+}
+
+/**
+ * Fold only literal regex text. Character classes, escapes and named-group
+ * identifiers keep their exact source so folding cannot change their grammar
+ * or range semantics (`[à-ÿ]` must never become `[a-y]`).
+ */
+function foldRegexSourceLiterals(source: string): string {
+  let folded = '';
+
+  for (let index = 0; index < source.length; ) {
+    const current = source[index]!;
+
+    if (current === '\\') {
+      const escaped = source[index + 1];
+      if (escaped == null) return `${folded}\\`;
+
+      const delimitedEnd =
+        (escaped === 'k' && source[index + 2] === '<') ||
+        ((escaped === 'p' || escaped === 'P') && source[index + 2] === '{')
+          ? source.indexOf(escaped === 'k' ? '>' : '}', index + 3)
+          : -1;
+      const end = delimitedEnd >= 0 ? delimitedEnd + 1 : index + 2;
+      folded += source.slice(index, end);
+      index = end;
+      continue;
+    }
+
+    if (current === '[') {
+      let end = index + 1;
+      let escaped = false;
+      while (end < source.length) {
+        const part = source[end]!;
+        end += 1;
+        if (escaped) {
+          escaped = false;
+        } else if (part === '\\') {
+          escaped = true;
+        } else if (part === ']') {
+          break;
+        }
+      }
+      folded += source.slice(index, end);
+      index = end;
+      continue;
+    }
+
+    if (source.startsWith('(?<', index) && source[index + 3] !== '=' && source[index + 3] !== '!') {
+      const end = source.indexOf('>', index + 3);
+      if (end >= 0) {
+        folded += source.slice(index, end + 1);
+        index = end + 1;
+        continue;
+      }
+    }
+
+    const codePoint = source.codePointAt(index);
+    if (codePoint == null) break;
+    const literal = String.fromCodePoint(codePoint);
+    folded += foldSearchText(literal);
+    index += literal.length;
+  }
+
+  return folded;
+}
+
+function foldedExecutableRegex(regex: RegExp, global: boolean): RegExp | null {
+  const flags = regex.flags.replace(/g/g, '');
+  try {
+    return new RegExp(foldRegexSourceLiterals(regex.source), global ? `${flags}g` : flags);
+  } catch (err) {
+    // Removing a standalone combining mark can expose invalid syntax (`́+` →
+    // `+`). The exact pass remains valid and authoritative in that case.
+    if (!(err instanceof SyntaxError)) throw err;
+    return null;
+  }
 }
 
 function advancePastEmpty(text: string, index: number): number {
@@ -180,11 +255,11 @@ export function findSearchRegexMatches(
   if (text === '' || maxMatches <= 0) return [];
   const originalMatches = findOriginalMatches(text, regex, maxMatches);
   const folded = foldWithOffsets(text);
-  const re = executableRegex(regex, true, true);
+  const re = foldedExecutableRegex(regex, true);
   // Folding a pattern made only of combining marks can turn it into an empty
   // regex. The original pass above still preserves that pattern's old matches;
   // the folded pass must add no zero-width storm.
-  if (re.test('')) return originalMatches;
+  if (re == null || re.test('')) return originalMatches;
   re.lastIndex = 0;
   const foldedMatches: SearchMatchSpan[] = [];
   let match: RegExpExecArray | null;
@@ -207,13 +282,26 @@ export function findSearchRegexMatches(
     const overlaps = merged.some(
       (existing) => candidate.start < existing.end && candidate.end > existing.start,
     );
-    if (!overlaps) merged.push(candidate);
+    if (overlaps) continue;
+
+    // A folded-only occurrence can touch an exact one (`áa` searched with
+    // `/a/iu`). Join that visual run so it consumes one mark/DOM node. Exact
+    // adjacent matches remain separate, preserving the regex's occurrences.
+    const adjacent = merged.find(
+      (existing) => candidate.end === existing.start || candidate.start === existing.end,
+    );
+    if (adjacent) {
+      adjacent.start = Math.min(adjacent.start, candidate.start);
+      adjacent.end = Math.max(adjacent.end, candidate.end);
+    } else {
+      merged.push(candidate);
+    }
   }
   return merged.sort((a, b) => a.start - b.start || a.end - b.end).slice(0, maxMatches);
 }
 
 function findOriginalMatches(text: string, regex: RegExp, maxMatches: number): SearchMatchSpan[] {
-  const re = executableRegex(regex, true, false);
+  const re = executableRegex(regex, true);
   const matches: SearchMatchSpan[] = [];
   let match: RegExpExecArray | null;
   while (matches.length < maxMatches && (match = re.exec(text)) !== null) {
@@ -228,7 +316,13 @@ function findOriginalMatches(text: string, regex: RegExp, maxMatches: number): S
 
 /** A stateless accent-insensitive `.test()` for repeated message scans. */
 export function searchRegexMatches(regex: RegExp, text: string): boolean {
-  return findSearchRegexMatches(text, regex, 1).length === 1;
+  if (text === '') return false;
+  if (executableRegex(regex, false).test(text)) return true;
+
+  const folded = foldedExecutableRegex(regex, false);
+  if (folded == null || folded.test('')) return false;
+  folded.lastIndex = 0;
+  return folded.test(foldSearchText(text));
 }
 
 /** The first original-text span matched by the effective regex, if any. */

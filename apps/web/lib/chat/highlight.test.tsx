@@ -44,6 +44,10 @@ describe('splitHighlight', () => {
     ]);
   });
 
+  it('coalesces a folded-only match touching an exact match', () => {
+    expect(splitHighlight('áa', /a/iu)).toEqual([{ text: 'áa', match: true }]);
+  });
+
   it('guards a zero-width pattern (empty match) instead of looping forever', () => {
     // `a*` can match the empty string between characters — must not hang.
     const segs = splitHighlight('xbx', /a*/g);

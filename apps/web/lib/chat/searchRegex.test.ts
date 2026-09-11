@@ -3,6 +3,7 @@ import { TIPO_MENSAGEM } from '@delfrance/schemas';
 
 import {
   buildSearchRegex,
+  findSearchRegexMatches,
   foldSearchText,
   searchableText,
   searchRegexMatches,
@@ -101,6 +102,24 @@ describe('searchRegexMatches', () => {
     expect(searchRegexMatches(/\p{M}/u, 'a\u0303')).toBe(true);
     // The folded pass adds the ordinary unaccented search.
     expect(searchRegexMatches(/^a$/u, 'a\u0303')).toBe(true);
+  });
+
+  it('falls back to the exact pass when folding would make the regex invalid', () => {
+    // This regex source starts with a literal U+0301 combining acute accent.
+    // Folding it naively produces the invalid source `+`.
+    const regex = /́+/u;
+
+    expect(searchRegexMatches(regex, 'a\u0301')).toBe(true);
+    expect(searchRegexMatches(regex, 'acao')).toBe(false);
+    expect(findSearchRegexMatches('a\u0301', regex)).toEqual([{ start: 1, end: 2 }]);
+  });
+
+  it('preserves character-class ranges instead of folding their source', () => {
+    const latinOneSupplement = /^[à-ÿ]$/u;
+
+    expect(searchRegexMatches(latinOneSupplement, 'ç')).toBe(true);
+    expect(searchRegexMatches(latinOneSupplement, 'x')).toBe(false);
+    expect(searchRegexMatches(latinOneSupplement, 'y')).toBe(false);
   });
 });
 
