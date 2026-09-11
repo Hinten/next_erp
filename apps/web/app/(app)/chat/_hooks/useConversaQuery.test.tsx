@@ -32,6 +32,7 @@ import { useConversaQuery, type UseConversaQueryInput } from './useConversaQuery
 
 interface Listener {
   next: (snapshot: QuerySnapshot<Conversa>) => void;
+  error: (error: FirebaseError) => void;
   unsubscribe: ReturnType<typeof vi.fn>;
 }
 let listeners: Listener[];
@@ -41,9 +42,14 @@ beforeEach(() => {
   getDocsMock.mockReset();
   onSnapshotMock.mockReset();
   onSnapshotMock.mockImplementation(
-    (_query: Query<Conversa>, _options: unknown, next: Listener['next']) => {
+    (
+      _query: Query<Conversa>,
+      _options: unknown,
+      next: Listener['next'],
+      error: Listener['error'],
+    ) => {
       const unsubscribe = vi.fn();
-      listeners.push({ next, unsubscribe });
+      listeners.push({ next, error, unsubscribe });
       return unsubscribe;
     },
   );
@@ -125,6 +131,24 @@ describe('cliente filter empty-result transitions', () => {
     rerender(emptyCliente);
     emit([]);
     expect(result.current).toMatchObject({ rows: [], loading: false, hasMore: false });
+  });
+
+  it('clears the previous live query error while loading but still reports current failures', () => {
+    const { result, rerender } = renderHook(useConversaQuery, { initialProps: todas });
+    const previousError = new FirebaseError('permission-denied', 'Previous query denied');
+    act(() => listeners.at(-1)!.error(previousError));
+    expect(result.current.error).toBe(previousError);
+    expect(result.current.loading).toBe(false);
+
+    rerender(emptyCliente);
+    expect(result.current).toMatchObject({ rows: [], loading: true, error: undefined });
+    emit([]);
+    expect(result.current).toMatchObject({ rows: [], loading: false, error: undefined });
+
+    const currentError = new FirebaseError('unavailable', 'Current query failed');
+    act(() => listeners.at(-1)!.error(currentError));
+    expect(result.current.error).toBe(currentError);
+    expect(result.current.loading).toBe(false);
   });
 
   it('keeps the empty result when a previous query page arrives after selecting the cliente', async () => {

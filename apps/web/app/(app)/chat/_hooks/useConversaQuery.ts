@@ -186,7 +186,7 @@ export function useConversaQuery(input: UseConversaQueryInput): UseConversaQuery
   return {
     rows,
     loading: live.loading,
-    error: live.error ?? moreError,
+    error: live.loading ? undefined : (live.error ?? moreError),
     hasMore,
     loadingMore,
     loadMore,
