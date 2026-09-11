@@ -26,7 +26,11 @@
  *     NEWER stored ⇒ `ignorado-obsoleto`; EQUAL falls through to (2) (that is
  *     what makes the sweep's one-day window overlap idempotent), and a `null` on
  *     either side falls through too, because an absent release time is not
- *     evidence of order.
+ *     evidence of order. ⚠️ Falling through is NOT the same as winning: the
+ *     incoming stamp and payout are FILL-OR-KEEP, so a `null` on the incoming
+ *     side leaves the stored value standing and never reaches the document —
+ *     `liquidacao` being set is this channel's strongest "money is final"
+ *     signal, and a row that failed to carry it must not un-settle a pagamento.
  *  2. **Field-by-field content equality** over the sweep-owned money keys.
  *     Identical ⇒ `ignorado-sem-mudanca` with ZERO writes. That is not an
  *     optimisation: `onPagamentoChanged` ignores only `id` and
@@ -240,10 +244,19 @@ export function preverLiquidacaoShopee(
 
   const campos: string[] = [];
 
-  if (numeroFinito(liquidacaoArmazenada?.payoutAmount) !== payoutAmount) {
-    campos.push('liquidacao.payoutAmount');
-  }
-  if (armazenadoUs !== incomingUs) campos.push('liquidacao.escrowReleaseTimeUs');
+  // ⚠️ FILL-OR-KEEP, never fill-or-null. An incoming `null` falls through
+  // guard (1) because it is not evidence of ORDER — and it is not evidence of
+  // anything else either: a row that did not carry a release time or a payout
+  // must never ERASE the stamp an earlier tick learned. `liquidacao` being set
+  // is this channel's strongest "money is final" signal, so the incoming half
+  // wins only when it is present; absent, the stored value stands and the key
+  // simply does not change.
+  const payoutArmazenado = numeroFinito(liquidacaoArmazenada?.payoutAmount);
+  const payoutFinal = payoutAmount ?? payoutArmazenado;
+  const releaseFinalUs = incomingUs ?? armazenadoUs;
+
+  if (payoutArmazenado !== payoutFinal) campos.push('liquidacao.payoutAmount');
+  if (armazenadoUs !== releaseFinalUs) campos.push('liquidacao.escrowReleaseTimeUs');
   if (textoDe(liquidacaoArmazenada?.fonte) !== LIQUIDACAO_FONTE.escrowList) {
     campos.push('liquidacao.fonte');
   }
@@ -284,7 +297,7 @@ export function preverLiquidacaoShopee(
   if (campos.length === 0) {
     return {
       acao: 'ignorado-sem-mudanca',
-      escrowReleaseTimeUs: incomingUs,
+      escrowReleaseTimeUs: releaseFinalUs,
       campos: [],
       patch: null,
     };
@@ -293,9 +306,11 @@ export function preverLiquidacaoShopee(
   /* --------------------------------- the patch ------------------------------ */
 
   const patch: Record<string, unknown> = {
+    // The KEPT halves (see fill-or-keep above): a `null` from the row never
+    // reaches the document over a stored stamp.
     liquidacao: {
-      payoutAmount,
-      escrowReleaseTimeUs: incomingUs,
+      payoutAmount: payoutFinal,
+      escrowReleaseTimeUs: releaseFinalUs,
       liquidadoEmUs: nowUs,
       fonte: LIQUIDACAO_FONTE.escrowList,
     },
@@ -324,7 +339,7 @@ export function preverLiquidacaoShopee(
   }
   if (tarifas !== undefined) patch.tarifas = tarifas;
 
-  return { acao: 'liquidado', escrowReleaseTimeUs: incomingUs, campos, patch };
+  return { acao: 'liquidado', escrowReleaseTimeUs: releaseFinalUs, campos, patch };
 }
 
 /**

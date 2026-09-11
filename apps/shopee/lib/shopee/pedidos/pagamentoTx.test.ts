@@ -121,8 +121,9 @@ function linhaCombinadaBR(overrides: { paymentInfo?: unknown; orderStatus?: stri
 
 /**
  * UMA perna BR — o caso COMUM, e o que a entrega degradada NUNCA cobre:
- * `degradado` exige `nossos >= 2`, então num pedido de perna única ele é
- * sempre `false` e o grupo DADOS realmente roda.
+ * `degradado` é "mapeou MENOS documentos do que os nossos", então num pedido de
+ * perna única (um guardado, um mapeado) ele é sempre `false` e o grupo DADOS
+ * realmente roda.
  */
 function linhaUmaPernaBR(overrides: { paymentInfo?: unknown; orderStatus?: string } = {}) {
   const cartao = {
@@ -766,6 +767,109 @@ describe('salvarPagamentosShopee — combinado e entrega degradada', () => {
     expect(
       infoSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes('entrega degradada')),
     ).toHaveLength(1);
+  });
+
+  it('18e. ⚠️ encolhimento PARCIAL (3 legs → 2): o grupo DADOS congela e o órfão não dobra a Σ', async () => {
+    // O vetor do claude[bot] na PR #1582: três legs 10 / 15 / 6,99 e depois dois
+    // legs 10 / 21,99, ambos somando 31,99. Um `degradado` preso ao número DOIS
+    // deixava os dois legs mapeados re-tomarem os seus valores enquanto o terceiro
+    // documento guardava os 6,99 (ou 10) que uma entrega mais rica lhe deu — e o
+    // NF-e soma um órfão pagante. O predicado é RELATIVO ao que é nosso.
+    const tresLegs = linhaCombinadaBR({
+      paymentInfo: [
+        {
+          payment_method: 'pix',
+          payment_amount: 10,
+          card_brand: '',
+          transaction_id: 'AUT-PIX',
+          payment_processor_register: CNPJ_FALSO,
+        },
+        {
+          payment_method: 'credit_card',
+          payment_amount: 15,
+          card_brand: 'visa',
+          transaction_id: 'AUT-CC',
+          payment_processor_register: CNPJ_FALSO,
+        },
+        {
+          payment_method: 'credit_card',
+          payment_amount: 6.99,
+          card_brand: 'master',
+          transaction_id: 'AUT-CC2',
+          payment_processor_register: CNPJ_FALSO,
+        },
+      ],
+    });
+    const db = new FakeDb();
+    semearPedido(db);
+    const r1 = await salvar(db, { linha: tresLegs, mapeados: mapear({ linha: tresLegs }) });
+    const TERCEIRO = makePagamentoIdShopee(CONTA, ORDER_SN, '-2');
+    expect(r1.acao).toBe('criado');
+    expect(db.idsEm(PAGAMENTOS_PATH).sort()).toEqual([PRIMARIO, SECUNDARIO, TERCEIRO].sort());
+    expect(r1.somaPagante).toBe(31.99);
+    const antes = {
+      primario: doc(db, PRIMARIO).valor,
+      secundario: doc(db, SECUNDARIO).valor,
+      terceiro: doc(db, TERCEIRO).valor,
+    };
+    infoSpy.mockClear();
+
+    // Dois legs que também somam 31,99 — a entrega default de `linhaCombinadaBR`.
+    const doisLegs = linhaCombinadaBR({ orderStatus: SHOPEE_ORDER_STATUS.processed });
+    const r2 = await salvar(db, { linha: doisLegs, mapeados: mapear({ linha: doisLegs }) });
+
+    expect(doc(db, PRIMARIO).valor).toBe(antes.primario);
+    expect(doc(db, SECUNDARIO).valor).toBe(antes.secundario);
+    expect(doc(db, TERCEIRO).valor).toBe(antes.terceiro);
+    expect(db.idsEm(PAGAMENTOS_PATH)).toHaveLength(3);
+    expect(r2.somaPagante).toBe(31.99);
+    expect(r2.divergenciaDeSoma).toBe(0);
+    // A ÂNCORA do outro lado: o que NÃO está congelado ainda anda — o status.
+    expect(doc(db, TERCEIRO).status_pagamento).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(
+      infoSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes('entrega degradada')),
+    ).toHaveLength(1);
+  });
+
+  it('18f. ⚠️ NEAR-MISS de 18e: o MESMO número de legs com valores diferentes NÃO é degradado', async () => {
+    // Dois guardados, dois mapeados: a entrega não perdeu detalhe, o dinheiro
+    // mudou. O grupo DADOS roda, os dois documentos re-tomam os novos valores e a
+    // Σ continua igual à nota — sem nenhuma linha de "entrega degradada".
+    const db = await comDoisDocs();
+    infoSpy.mockClear();
+    const outrosValores = linhaCombinadaBR({
+      orderStatus: SHOPEE_ORDER_STATUS.processed,
+      paymentInfo: [
+        {
+          payment_method: 'pix',
+          payment_amount: 11.99,
+          card_brand: '',
+          transaction_id: 'AUT-PIX',
+          payment_processor_register: CNPJ_FALSO,
+        },
+        {
+          payment_method: 'credit_card',
+          payment_amount: 20,
+          card_brand: 'visa',
+          transaction_id: 'AUT-CC',
+          payment_processor_register: CNPJ_FALSO,
+        },
+      ],
+    });
+    const r = await salvar(db, {
+      linha: outrosValores,
+      mapeados: mapear({ linha: outrosValores }),
+    });
+
+    expect(r.acao).toBe('atualizado');
+    expect(doc(db, PRIMARIO).valor).toBe(20);
+    expect(doc(db, SECUNDARIO).valor).toBe(11.99);
+    expect(db.idsEm(PAGAMENTOS_PATH)).toHaveLength(2);
+    expect(r.somaPagante).toBe(31.99);
+    expect(r.divergenciaDeSoma).toBe(0);
+    expect(
+      infoSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes('entrega degradada')),
+    ).toHaveLength(0);
   });
 
   it('18b. ⚠️ CONJUNTO CONGELADO: com o pedido congelado, uma entrega mais RICA não cria o irmão', async () => {

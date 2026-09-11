@@ -577,7 +577,16 @@ export async function salvarPagamentosShopee(
     // READY_TO_SHIP is settle-live register item 22 and is NOT yet known, so the
     // shrink has to be read as detail loss either way. Re-taking would
     // double-count against the siblings.
-    const degradado = nossos.length >= 2 && mapeados.docs.length < 2;
+    //
+    // ⚠️ RELATIVE to what we OWN, never to the number two. A shrink from N legs
+    // to any count in `[2, N)` is the same defect by a different route: the
+    // mapped legs re-take their own `payment_amount` (which sums to
+    // `valorCobrado` by the combined gate) while the leg that was NOT mapped
+    // keeps the `valor` a richer delivery gave it, and Σ pagante exceeds the
+    // nota by exactly that orphan — which stays pagante, so the NF-e sums it.
+    // A delivery that maps NOTHING (the creation gate, an unusable `pay_time`)
+    // is not degraded: there is no DATA group to run and nothing to freeze.
+    const degradado = mapeados.docs.length > 0 && mapeados.docs.length < nossos.length;
     if (degradado) {
       // eslint-disable-next-line no-console -- counts only; the fact that a delivery lost detail is the finding
       console.info('[shopee/pagamentos] entrega degradada — grupo `dados` congelado', {

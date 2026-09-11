@@ -353,13 +353,47 @@ describe('liquidarPagamentoShopee — a marca d’água de liberação', () => {
     const semGuardado = semear({ liquidacao: liquidacaoCom(null) });
     expect((await liquidar(semGuardado)).acao).toBe('liquidado');
 
-    // (d) recebido `null` com guardado presente ⇒ TAMBÉM passa, e o campo muda
-    // para null: é por isso que a CLI recusa `--order-sn --live`, que é o único
-    // caminho capaz de chegar aqui com um `null` por ignorância.
+    // (d) ⚠️ recebido `null` com guardado presente ⇒ passa pela guarda (1) MAS
+    // NÃO apaga nada: o carimbo e o payout são "preenche-ou-mantém". Com o
+    // dinheiro idêntico, o resultado é `ignorado-sem-mudanca` e ZERO escritas —
+    // uma linha que não trouxe o `escrow_release_time` não pode DES-liquidar um
+    // pagamento (a CLI recusar `--order-sn --live` é defesa em profundidade, não
+    // a única barreira).
     const semRecebido = semear({ liquidacao: liquidacaoCom(RELEASE_US) });
-    const r = await liquidar(semRecebido, { escrowReleaseTimeS: null });
-    expect(r.acao).toBe('liquidado');
-    expect(r.campos).toContain('liquidacao.escrowReleaseTimeUs');
+    const r = await liquidar(semRecebido, { escrowReleaseTimeS: null, payoutAmount: null });
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(r.campos).toEqual([]);
+    expect(r.escrowReleaseTimeUs).toBe(RELEASE_US);
+    expect(semRecebido.writes).toEqual([]);
+    expect(doc(semRecebido).liquidacao).toMatchObject({
+      payoutAmount: PAYOUT,
+      escrowReleaseTimeUs: RELEASE_US,
+    });
+
+    // (e) ⚠️ NEAR-MISS de (d): o mesmo `null` recebido, mas o DINHEIRO mudou ⇒
+    // `liquidado`, e o patch carrega o carimbo e o payout GUARDADOS, nunca null.
+    const semRecebidoComMudanca = semear({
+      liquidacao: liquidacaoCom(RELEASE_US),
+      tarifas: 0.01,
+    });
+    const r2 = await liquidar(semRecebidoComMudanca, {
+      escrowReleaseTimeS: null,
+      payoutAmount: null,
+    });
+    expect(r2.acao).toBe('liquidado');
+    expect(r2.campos).not.toContain('liquidacao.escrowReleaseTimeUs');
+    expect(r2.campos).not.toContain('liquidacao.payoutAmount');
+    expect(doc(semRecebidoComMudanca).liquidacao).toMatchObject({
+      payoutAmount: PAYOUT,
+      escrowReleaseTimeUs: RELEASE_US,
+    });
+
+    // (f) a ÂNCORA da direção contrária: um carimbo recebido MAIS NOVO substitui.
+    const maisNovoRecebido = semear({ liquidacao: liquidacaoCom(RELEASE_US - 1_000_000) });
+    const r3 = await liquidar(maisNovoRecebido);
+    expect(r3.acao).toBe('liquidado');
+    expect(r3.campos).toContain('liquidacao.escrowReleaseTimeUs');
+    expect(doc(maisNovoRecebido).liquidacao).toMatchObject({ escrowReleaseTimeUs: RELEASE_US });
   });
 
   it('31. `ignorado-sem-mudanca` com um RELÓGIO DIFERENTE — `liquidadoEmUs` não é comparado', async () => {

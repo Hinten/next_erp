@@ -916,8 +916,10 @@ ordering**.
   them. ⚠️ Two behaviours an operator will notice: `--order-sn` is
   **dry-run only** (the
   escrow listing is queried BY WINDOW and has no by-id form, so that path never
-  learns `payout_amount` or `escrow_release_time`, and writing through it would
-  put a null release stamp over a real one), and a `--de`/`--ate` window
+  learns `payout_amount` or `escrow_release_time`; the settlement itself is
+  FILL-OR-KEEP, so a null incoming stamp never overwrites a stored one, and the
+  refusal is defence in depth against a write that could never learn anything),
+  and a `--de`/`--ate` window
   override **never advances the cursor** (an operator-chosen window would
   otherwise claim the unqueried ground between the cursor and that window).
 
