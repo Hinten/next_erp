@@ -26,6 +26,7 @@ import {
   estoqueDisponivel,
   itemSubtotal,
   makeEstoqueUid,
+  nomeDoItem,
   unidadeVendavel,
 } from '@delfrance/schemas';
 import { formatReais } from '@delfrance/core/money';
@@ -556,7 +557,7 @@ function ItemRow({
             <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
               <Group gap={6} align="center">
                 <Text size="sm" fw={500} td={marked ? 'line-through' : undefined} truncate>
-                  {produto?.nome || item?.nomeDeVenda || produtoUid}
+                  {nomeDoItem(item, produto)}
                 </Text>
                 {produtoAusente && (
                   <Tooltip
@@ -622,8 +623,11 @@ function ItemRow({
           // carrying a quantity and a price with no way to tell what it was.
           <Stack gap={4}>
             <Group gap={6} align="center" wrap="nowrap">
+              {/* Same resolver as the bound row above — there is no produto doc
+                  to read here, so it resolves from the item's own snapshot and
+                  ends on the shared placeholder. */}
               <Text size="sm" fw={500} td={marked ? 'line-through' : undefined} truncate>
-                {item?.nomeDeVenda || 'Produto sem nome'}
+                {nomeDoItem(item, null)}
               </Text>
               <Tooltip
                 label="Este item veio de um canal externo e não corresponde a nenhum produto cadastrado. Vincule um produto para movimentar estoque."

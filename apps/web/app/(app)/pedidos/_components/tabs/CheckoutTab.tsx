@@ -9,6 +9,7 @@ import { PERM } from '@delfrance/auth';
 import {
   ESTADO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
+  nomeDoItem,
   type CheckoutFretePedido,
   type FreteDoPedido,
   type ItemCheckoutPedido,
@@ -222,8 +223,13 @@ function ItemCheckoutRow({
     <Group justify="space-between" wrap="nowrap" style={{ opacity: isExcluded ? 0.5 : 1 }}>
       <Stack gap={0}>
         <Group gap="xs">
+          {/* ⚠️ A scan row has NO denormalised name to fall back on: the wire
+              shape is exactly five keys and `toItemCheckoutPedido` drops the
+              scan's `produtoNome` (see `collection/checkout.ts`). So when the
+              produto doc is gone this legitimately reaches the id/`Sem nome`
+              tail of the chain — the fix is on the WRITER, not here. */}
           <Text size="sm" c={hasError ? 'red' : undefined}>
-            {loading ? '…' : (produto?.nome ?? produtoId ?? '—')}
+            {loading ? '…' : nomeDoItem({ produtoUid: produtoId }, produto)}
           </Text>
           {produto?.sku && (
             <Text size="xs" c="dimmed">

@@ -67,6 +67,58 @@ describe('topProdutos', () => {
     expect(rows[1]?.produtoUid).toBe('b');
   });
 
+  it('upgrades the label from a later line that carries the nomeDeVenda', () => {
+    const rows = topProdutos([
+      p(ESTADO_PEDIDO.pago, {
+        a: [
+          i({ ordem: 1, quantidade: 1 }),
+          i({ ordem: 2, quantidade: 1, nomeDeVenda: 'Camiseta' }),
+          i({ ordem: 3, quantidade: 1, nomeDeVenda: 'Camiseta renomeada' }),
+        ],
+      }),
+    ]);
+    // First real name wins; a later, different one does not overwrite it.
+    expect(rows[0]?.label).toBe('Camiseta');
+  });
+
+  it('labels with the sku, then the produtoUid, when no line has a nomeDeVenda', () => {
+    const comSku = topProdutos([
+      p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1, sku: 'CAM-1' })] }),
+    ]);
+    expect(comSku[0]?.label).toBe('CAM-1');
+
+    const semNada = topProdutos([p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1 })] })]);
+    expect(semNada[0]?.label).toBe('a');
+  });
+
+  // The label may only move UP the chain. `topProdutos` folds many pedidos into
+  // one row, so "an older line carries the sku, a newer one carries nothing" is
+  // an ordinary corpus shape — and a fold that walks the label back down leaves
+  // the row worse than the data it was built from.
+  it('never downgrades the label when a later line carries less', () => {
+    const rows = topProdutos([
+      p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1, sku: 'CAM-1' })] }),
+      p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1 })] }),
+    ]);
+    expect(rows[0]?.label).toBe('CAM-1');
+  });
+
+  it('still upgrades from a sku to a name that arrives later', () => {
+    const rows = topProdutos([
+      p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1, sku: 'CAM-1' })] }),
+      p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1, nomeDeVenda: 'Camiseta' })] }),
+    ]);
+    expect(rows[0]?.label).toBe('Camiseta');
+  });
+
+  it('upgrades from the raw id to a sku that arrives later', () => {
+    const rows = topProdutos([
+      p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1 })] }),
+      p(ESTADO_PEDIDO.pago, { a: [i({ quantidade: 1, sku: 'CAM-1' })] }),
+    ]);
+    expect(rows[0]?.label).toBe('CAM-1');
+  });
+
   it('drops items without produtoUid (NONE bucket and empty key)', () => {
     const rows = topProdutos([
       p(ESTADO_PEDIDO.pago, {

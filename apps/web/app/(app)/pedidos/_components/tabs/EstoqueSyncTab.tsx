@@ -16,6 +16,8 @@ import {
 import { IconAlertTriangle } from '@tabler/icons-react';
 import {
   TIPO_MOVIMENTO_ESTOQUE_LABELS,
+  flattenPedidoItens,
+  nomeDoItem,
   type EstoqueAplicado,
   type HistoricoEstoque,
   type TipoMovimentoEstoque,
@@ -107,14 +109,19 @@ function EstoqueSyncView({ pedidoId }: { pedidoId: string }) {
   const pedido = pedidoSnap.data?.data ?? null;
   const aplicado: EstoqueAplicado | null = pedido?.estoqueAplicado ?? null;
 
-  // Produto display names from the pedido's own items (kit components may not
-  // be items — the id is the honest fallback there).
+  // Produto display names from the pedido's own items. No produto doc is read
+  // here, so `nomeDoItem` resolves from the denormalised fields alone. Kit
+  // COMPONENTS are moved but are not items, so they never land in this map —
+  // the id stays the honest fallback for them at the two call sites.
   const nomePorProduto = useMemo(() => {
     const nomes = new Map<string, string>();
-    for (const itens of Object.values(pedido?.itens ?? {})) {
-      for (const item of itens) {
-        if (item.produtoUid && item.nomeDeVenda) nomes.set(item.produtoUid, item.nomeDeVenda);
-      }
+    // `flattenPedidoItens` fills a MISSING `item.produtoUid` from the map key
+    // (`item.produtoUid ?? keyUid`) — the item wins where it has one. ⚠️ Not the
+    // same rule as `reports/aggregations.ts`, which reports on the KEY and
+    // ignores `item.produtoUid` entirely; the two sites resolve the uid
+    // differently on purpose, so neither comment is the repo-wide rule.
+    for (const item of flattenPedidoItens(pedido?.itens ?? {})) {
+      if (item.produtoUid) nomes.set(item.produtoUid, nomeDoItem(item, null));
     }
     return nomes;
   }, [pedido?.itens]);
