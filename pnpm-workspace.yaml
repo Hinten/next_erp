@@ -1,4 +1,5 @@
 packages:
+  - '.claude/hooks'
   - 'apps/*'
   - 'packages/*'
   - 'packages/integrations/*'

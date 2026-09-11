@@ -1,0 +1,50 @@
+# Codex-only delivery workflow. Keep this separate from CLAUDE.md because Claude
+# does not need to follow the Codex pull-request lifecycle.
+default_permissions = "next-erp"
+
+developer_instructions = """
+After finishing repository changes, create or update a pull request in draft mode unless the user explicitly requests a different state.
+
+Monitor the pull request until every required CI check passes. If CI finds a bug or failure caused by the pull request, diagnose it, plan and implement the fix, verify it locally, push the update, and resume monitoring. If a CI failure is unrelated to the pull request, report the failing check and the evidence that it is unrelated instead of changing unrelated code.
+
+If a failure appears flaky, rerun the failing test or check to confirm it and report the observed flakiness, including the original failure and rerun result.
+
+Read and respond to actionable code-review feedback. For valid findings, plan and implement the solution, verify it, push the update, and continue monitoring CI and reviews. Report feedback that is invalid, ambiguous, or outside the pull request scope with supporting evidence.
+
+Avoid infinite loops. Never use unbounded polling, watchers, retries, or review/fix cycles. Use each workflow job's declared timeout as the primary bound while a check is legitimately in progress. Rerun a failure only once solely to classify possible flakiness; if the same failure occurs again, treat it as reproducible. Stop and report the blocker, the evidence, and the attempts already made when GitHub or another required service is unreachable for three consecutive polls, when a check exceeds its declared timeout plus one final poll, or when the same failure or review finding persists after three attempted fixes without new evidence. Observable progress or materially new evidence resets the relevant consecutive-failure count.
+
+Do not mark the pull request ready for review or merge it unless the user explicitly asks.
+"""
+
+# CLAUDE.md is the single source of truth for repository instructions.
+project_doc_fallback_filenames = ["CLAUDE.md"]
+
+# Covers the root instructions plus the largest current nested CLAUDE.md chain.
+project_doc_max_bytes = 196608
+
+# Keep repository work writable while denying credential-bearing local files.
+# Command-level destructive operations are covered by .codex/rules/default.rules.
+[permissions.next-erp]
+description = "Edit this repository without reading local secrets."
+extends = ":workspace"
+
+[permissions.next-erp.filesystem]
+glob_scan_max_depth = 8
+
+[permissions.next-erp.filesystem.":workspace_roots"]
+".env" = "deny"
+".env.local" = "deny"
+".env.secrets" = "deny"
+".env.secrets.example" = "deny"
+"secrets" = "deny"
+"secrets/**" = "deny"
+".ignore" = "deny"
+".ignore/**" = "deny"
+"**/.env" = "deny"
+"**/.env.local" = "deny"
+"**/.env.secrets" = "deny"
+"**/.env.secrets.example" = "deny"
+"**/secrets" = "deny"
+"**/secrets/**" = "deny"
+"**/.ignore" = "deny"
+"**/.ignore/**" = "deny"
