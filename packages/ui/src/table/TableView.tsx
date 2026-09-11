@@ -1902,6 +1902,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                     variant="light"
                     color={transportIsLive ? 'teal' : 'yellow'}
                     data-list-mode={transportIsLive ? 'live' : 'static'}
+                    data-list-policy={listMode.mode}
                     data-list-reason={listMode.reason ?? ''}
                   >
                     {transportIsLive ? 'Tempo real' : 'Resultado fixo'}

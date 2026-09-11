@@ -1155,6 +1155,7 @@ describe('TableView', () => {
       );
       const badge = screen.getByText('Tempo real').closest('[data-list-mode]');
       expect(badge?.getAttribute('data-list-mode')).toBe('live');
+      expect(badge?.getAttribute('data-list-policy')).toBe('static');
       expect(badge?.getAttribute('data-list-reason')).toBe('override');
       fireEvent.click(screen.getByText('Nome'));
       fireEvent.click(screen.getByText('Tipo'));

@@ -60,18 +60,26 @@ test.describe.serial('Motivos de incidente e2e — TableView / ObjectView', () =
     await page.goto('/motivos-incidente');
     await expect(page.getByRole('heading', { name: 'Motivos de incidente' })).toBeVisible();
     await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
-    await expectListMode(page, 'live');
+    await expectListMode(page, 'live', null, 'live');
     await expect(page.getByText('Erro ao carregar')).toHaveCount(0);
   });
 
   test('filters rows by the Nome (text) and Ativo (boolean) columns', async ({ page }) => {
     await page.goto('/motivos-incidente');
-    await expectListMode(page, 'live');
-    await transitionListMode(page, 'static', () => applyTextFilter(page, 'Nome', row(3)));
-    await expectListMode(page, 'static', 'filter');
+    await transitionListMode(
+      page,
+      { mode: 'live', policy: 'live', reason: null },
+      { mode: 'static', policy: 'static', reason: 'filter' },
+      () => applyTextFilter(page, 'Nome', row(3)),
+    );
     await expectRowVisible(page, row(3));
     await expectRowHidden(page, row(1));
-    await clearColumnFilter(page, 'Nome');
+    await transitionListMode(
+      page,
+      { mode: 'static', policy: 'static', reason: 'filter' },
+      { mode: 'live', policy: 'live', reason: null },
+      () => clearColumnFilter(page, 'Nome'),
+    );
 
     // Seeded ativo = (i % 2 === 0) → true at i=2,4,6.
     await applyTextFilter(page, 'Nome', prefix);

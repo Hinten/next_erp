@@ -1,39 +1,55 @@
-import { type Page, expect } from '@playwright/test';
+import { type Locator, type Page, expect } from '@playwright/test';
 
 export type ListMode = 'live' | 'static';
 
-type ListModeReason = 'override' | 'no-declared-query' | 'filter' | 'search' | 'ids' | 'sort';
+export type ListModeReason =
+  | 'override'
+  | 'no-declared-query'
+  | 'filter'
+  | 'search'
+  | 'ids'
+  | 'sort';
 
-/** The TableView indicator exposes the transport without coupling specs to its visible copy. */
-function listModeIndicator(page: Page) {
-  return page.locator('[data-list-mode]');
+export interface ListModeExpectation {
+  mode: ListMode;
+  policy: ListMode;
+  reason: ListModeReason | null;
 }
 
-/** Assert the transport serving the TableView rows, with an optional policy reason. */
+type ListModeScope = Page | Locator;
+
+/** The TableView indicator exposes the transport without coupling specs to its visible copy. */
+function listModeIndicator(scope: ListModeScope) {
+  return scope.locator('[data-list-mode]');
+}
+
+/** Assert the TableView transport, plus its policy state when supplied. */
 export async function expectListMode(
-  page: Page,
+  scope: ListModeScope,
   mode: ListMode,
-  reason?: ListModeReason,
+  reason?: ListModeReason | null,
+  policy?: ListMode,
 ): Promise<void> {
-  const indicator = listModeIndicator(page);
+  const indicator = listModeIndicator(scope);
   await expect(indicator).toHaveAttribute('data-list-mode', mode, { timeout: 15_000 });
   if (reason !== undefined) {
-    await expect(indicator).toHaveAttribute('data-list-reason', reason);
+    await expect(indicator).toHaveAttribute('data-list-reason', reason ?? '');
+  }
+  if (policy !== undefined) {
+    await expect(indicator).toHaveAttribute('data-list-policy', policy);
   }
 }
 
-/**
- * Run a list-changing gesture while waiting for its next transport to render.
- *
- * TableView swaps its data hook after filters, search, ids, or sorting change;
- * awaiting only the click can therefore observe the previous indicator.
- */
+/** Verify both sides of a list-mode transition around one completed gesture. */
 export async function transitionListMode(
-  page: Page,
-  mode: ListMode,
+  scope: ListModeScope,
+  before: ListModeExpectation,
+  after: ListModeExpectation,
   gesture: () => Promise<unknown>,
 ): Promise<void> {
-  await Promise.all([expectListMode(page, mode), gesture()]);
+  await expectListMode(scope, before.mode, before.reason, before.policy);
+  await gesture();
+  await expectListMode(scope, after.mode, after.reason, after.policy);
 }
 
 /**
