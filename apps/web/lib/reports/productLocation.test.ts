@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildProductLocationReport,
   depositoOuterRefVariants,
+  productLocationStockReadConverter,
   produtoIdFromEstoquePath,
   shapeProductLocationRows,
   type ProductLocationReader,
@@ -53,6 +54,20 @@ describe('produtoIdFromEstoquePath', () => {
 });
 
 describe('shapeProductLocationRows', () => {
+  it('keeps schema defaults when a legacy bare depósito ref is normalized on read', () => {
+    const parsed = productLocationStockReadConverter.fromFirestore({
+      data: () => ({ depositoOuterRef: 'depositos/dep-1', localizacao: 'A-1' }),
+    } as never);
+
+    const [row] = shapeProductLocationRows(
+      [{ path: 'produtos/p1/estoques/e1', data: parsed }],
+      new Map(),
+    );
+
+    expect(parsed.depositoOuterRef).toBe('documents/depositos/dep-1');
+    expect(row).toMatchObject({ total: 0, reservado: 0, disponivel: 0 });
+  });
+
   it('drops empty locations, joins produto details, and uses shared availability math', () => {
     const rows = shapeProductLocationRows(
       [
@@ -100,14 +115,15 @@ describe('shapeProductLocationRows', () => {
 });
 
 describe('buildProductLocationReport', () => {
-  it('deduplicates the two ref queries and loads produto details in bounded batches', async () => {
+  it('loads both ref shapes in one stock scan and produto details in bounded batches', async () => {
     const located = Array.from({ length: 31 }, (_, index) =>
       stock(`produtos/p${index}/estoques/e${index}`, `A-${index}`),
     );
-    const readStocks = vi
-      .fn<ProductLocationReader['readStocks']>()
-      .mockResolvedValueOnce(located)
-      .mockResolvedValueOnce([located[0]!]);
+    const readStocks = vi.fn<ProductLocationReader['readStocks']>(async (_refs, onPage) => {
+      onPage(30);
+      onPage(31);
+      return located;
+    });
     const readProducts = vi.fn<ProductLocationReader['readProducts']>(
       async (ids) => new Map(ids.map((id) => [id, { sku: `SKU-${id}`, nome: `Produto ${id}` }])),
     );
@@ -119,13 +135,13 @@ describe('buildProductLocationReport', () => {
       progress,
     );
 
-    expect(readStocks.mock.calls.map(([ref]) => ref).sort()).toEqual([
-      'depositos/dep-1',
-      'documents/depositos/dep-1',
-    ]);
+    expect(readStocks).toHaveBeenCalledOnce();
+    expect(readStocks.mock.calls[0]?.[0]).toEqual(['documents/depositos/dep-1', 'depositos/dep-1']);
     expect(readProducts).toHaveBeenCalledTimes(2);
     expect(readProducts.mock.calls.map(([ids]) => ids.length)).toEqual([30, 1]);
     expect(rows).toHaveLength(31);
+    expect(progress).toHaveBeenCalledWith({ phase: 'estoques', loaded: 30 });
+    expect(progress).toHaveBeenCalledWith({ phase: 'estoques', loaded: 31 });
     expect(progress).toHaveBeenLastCalledWith({ phase: 'produtos', done: 31, total: 31 });
   });
 });

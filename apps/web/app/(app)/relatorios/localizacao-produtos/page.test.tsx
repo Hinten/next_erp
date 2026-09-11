@@ -65,21 +65,27 @@ describe('ProductLocationReportScreen', () => {
 
   it('shows progress while loading and the required empty state afterwards', async () => {
     const pending = deferred<ProductLocationRow[]>();
-    const loader = vi.fn<ProductLocationLoader>(() => pending.promise);
+    const loader = vi.fn<ProductLocationLoader>((_db, _deposito, onProgress) => {
+      onProgress?.({ phase: 'estoques', loaded: 500 });
+      return pending.promise;
+    });
     renderReport(loader);
 
     fireEvent.click(screen.getByRole('button', { name: 'Selecionar depósito Central' }));
     fireEvent.click(screen.getByRole('button', { name: 'Gerar relatório' }));
 
-    expect(screen.getByRole('progressbar', { name: 'Progresso do relatório' })).toBeTruthy();
-    expect(screen.getByText('Consultando estoques… 0 de 2')).toBeTruthy();
+    expect(screen.getByLabelText('Progresso do relatório')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByText('Consultando estoques… 500 carregados')).toBeTruthy(),
+    );
 
     await act(async () => pending.resolve([]));
 
     await waitFor(() =>
       expect(screen.getByText('Nenhum estoque com localização encontrado')).toBeTruthy(),
     );
-    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.queryByLabelText('Progresso do relatório')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Baixar CSV' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('renders the six report columns and availability result', async () => {

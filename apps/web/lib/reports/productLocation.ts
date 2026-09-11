@@ -1,7 +1,19 @@
-import { documentId, getDocs, orderBy, query, where, type Firestore } from 'firebase/firestore';
+import {
+  documentId,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  startAfter,
+  where,
+  type Firestore,
+  type FirestoreDataConverter,
+  type QueryDocumentSnapshot,
+} from 'firebase/firestore';
 import { groupQuery } from '@delfrance/data';
 import {
   estoqueDisponivel,
+  estoqueProdutoSchema,
   idFromRef,
   parseRef,
   toOuterRefOrNull,
@@ -13,6 +25,7 @@ import { getDocsByIds } from '@/lib/data/getDocsByIds';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 
 const PRODUTO_BATCH_SIZE = 30;
+const ESTOQUE_PAGE_SIZE = 500;
 
 export interface ProductLocationStock {
   /** Full Firestore path. The produto identity is derived from this, never `parentId`. */
@@ -37,13 +50,34 @@ export interface ProductLocationRow {
 }
 
 export type ProductLocationProgress =
-  | { phase: 'estoques'; done: number; total: number }
+  | { phase: 'estoques'; loaded: number }
   | { phase: 'produtos'; done: number; total: number };
 
 export interface ProductLocationReader {
-  readStocks(depositoOuterRef: string): Promise<ProductLocationStock[]>;
+  readStocks(
+    depositoOuterRefs: readonly [string, string],
+    onPage: (loaded: number) => void,
+  ): Promise<ProductLocationStock[]>;
   readProducts(ids: readonly string[]): Promise<Map<string, ProductLocationProduct>>;
 }
+
+/**
+ * Report-only read converter. The migrated corpus carries bare outer refs, but
+ * the shared schema intentionally accepts only the canonical wire shape. Make
+ * that tolerated encoding canonical before parsing so all schema defaults are
+ * still applied instead of falling through `parseSoftRead` as raw data.
+ */
+export const productLocationStockReadConverter: FirestoreDataConverter<EstoqueProduto> = {
+  toFirestore: estoqueProdutoCollection.converter.toFirestore,
+  fromFirestore(snapshot: QueryDocumentSnapshot, options) {
+    const raw = snapshot.data(options);
+    const depositoOuterRef = toOuterRefOrNull(raw['depositoOuterRef']);
+    return estoqueProdutoSchema.parse({
+      ...raw,
+      depositoOuterRef: depositoOuterRef ?? raw['depositoOuterRef'],
+    });
+  },
+};
 
 /** Both string encodings present in the migrated corpus, canonical first. */
 export function depositoOuterRefVariants(raw: unknown): readonly [string, string] {
@@ -101,9 +135,9 @@ export function shapeProductLocationRows(
 }
 
 /**
- * Run the report through a small data-source seam. The two estoque lookups run
- * together; produto details then load in sequential 30-id batches so both the
- * Firestore `in` cap and the progress total remain explicit.
+ * Run the report through a small data-source seam. Estoques load page by page;
+ * produto details then load in sequential 30-id batches so both the Firestore
+ * `in` cap and progress remain explicit.
  */
 export async function buildProductLocationReport(
   reader: ProductLocationReader,
@@ -111,26 +145,12 @@ export async function buildProductLocationReport(
   onProgress: (progress: ProductLocationProgress) => void = () => undefined,
 ): Promise<ProductLocationRow[]> {
   const variants = depositoOuterRefVariants(depositoOuterRef);
-  let stockQueriesDone = 0;
-  onProgress({ phase: 'estoques', done: 0, total: variants.length });
-
-  const stockGroups = await Promise.all(
-    variants.map(async (variant) => {
-      const stocks = await reader.readStocks(variant);
-      stockQueriesDone += 1;
-      onProgress({ phase: 'estoques', done: stockQueriesDone, total: variants.length });
-      return stocks;
-    }),
+  onProgress({ phase: 'estoques', loaded: 0 });
+  const stocks = await reader.readStocks(variants, (loaded) =>
+    onProgress({ phase: 'estoques', loaded }),
   );
 
-  const byPath = new Map<string, ProductLocationStock>();
-  for (const stocks of stockGroups) {
-    for (const stock of stocks) byPath.set(stock.path, stock);
-  }
-
-  const locatedStocks = [...byPath.values()].filter(
-    (stock) => (stock.data.localizacao?.trim() ?? '') !== '',
-  );
+  const locatedStocks = stocks.filter((stock) => (stock.data.localizacao?.trim() ?? '') !== '');
   const produtoIds = [
     ...new Set(
       locatedStocks
@@ -157,12 +177,32 @@ export async function buildProductLocationReport(
 
 function firestoreReader(db: Firestore): ProductLocationReader {
   return {
-    async readStocks(depositoOuterRef) {
-      const base = groupQuery(db, 'estoques', estoqueProdutoCollection.converter);
-      const snapshot = await getDocs(
-        query(base, where('depositoOuterRef', '==', depositoOuterRef), orderBy(documentId())),
+    async readStocks(depositoOuterRefs, onPage) {
+      const base = query(
+        groupQuery(db, 'estoques', productLocationStockReadConverter),
+        where('depositoOuterRef', 'in', [...depositoOuterRefs]),
+        orderBy(documentId()),
       );
-      return snapshot.docs.map((stock) => ({ path: stock.ref.path, data: stock.data() }));
+      const stocks: ProductLocationStock[] = [];
+      let cursor: QueryDocumentSnapshot<EstoqueProduto> | undefined;
+
+      for (;;) {
+        const page = await getDocs(
+          cursor
+            ? query(base, limit(ESTOQUE_PAGE_SIZE), startAfter(cursor))
+            : query(base, limit(ESTOQUE_PAGE_SIZE)),
+        );
+        if (page.empty) break;
+        for (const stock of page.docs) {
+          stocks.push({ path: stock.ref.path, data: stock.data() });
+        }
+        onPage(stocks.length);
+        if (page.size < ESTOQUE_PAGE_SIZE) break;
+        cursor = page.docs[page.size - 1];
+        if (cursor === undefined) break;
+      }
+
+      return stocks;
     },
     async readProducts(ids) {
       const products = await getDocsByIds(db, produtoCollection, ids);

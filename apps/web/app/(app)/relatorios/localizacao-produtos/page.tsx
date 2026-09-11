@@ -2,7 +2,18 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Alert, Anchor, Button, Group, Paper, Progress, Stack, Table, Text } from '@mantine/core';
+import {
+  Alert,
+  Anchor,
+  Button,
+  Group,
+  Loader,
+  Paper,
+  Progress,
+  Stack,
+  Table,
+  Text,
+} from '@mantine/core';
 import { useMutation } from '@tanstack/react-query';
 import { PageHeader } from '@delfrance/ui';
 import { FirebaseError } from 'firebase/app';
@@ -21,15 +32,14 @@ function formatQuantity(value: number): string {
   return new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 6 }).format(value);
 }
 
-function progressValue(progress: ProductLocationProgress): number {
-  if (progress.phase === 'estoques') return (progress.done / progress.total) * 40;
+function progressValue(progress: Extract<ProductLocationProgress, { phase: 'produtos' }>): number {
   if (progress.total === 0) return 100;
-  return 40 + (progress.done / progress.total) * 60;
+  return (progress.done / progress.total) * 100;
 }
 
 function progressLabel(progress: ProductLocationProgress): string {
   return progress.phase === 'estoques'
-    ? `Consultando estoques… ${progress.done} de ${progress.total}`
+    ? `Consultando estoques… ${progress.loaded} carregados`
     : `Carregando produtos… ${progress.done} de ${progress.total}`;
 }
 
@@ -76,7 +86,7 @@ export function ProductLocationReportScreen({
     }
     setValidationError(null);
     setRows(null);
-    setProgress({ phase: 'estoques', done: 0, total: 2 });
+    setProgress({ phase: 'estoques', loaded: 0 });
     report.mutate(depositoOuterRef);
   }
 
@@ -104,7 +114,7 @@ export function ProductLocationReportScreen({
             </Button>
             <Button
               variant="default"
-              disabled={rows === null || report.isPending}
+              disabled={rows === null || rows.length === 0 || report.isPending}
               onClick={() => downloadProductLocationCsv(rows ?? [], depositoOuterRef)}
             >
               Baixar CSV
@@ -112,14 +122,21 @@ export function ProductLocationReportScreen({
           </Group>
 
           {progress !== null && report.isPending ? (
-            <Stack gap={6}>
-              <Text size="sm">{progressLabel(progress)}</Text>
-              <Progress
-                aria-label="Progresso do relatório"
-                value={progressValue(progress)}
-                animated
-              />
-            </Stack>
+            progress.phase === 'estoques' ? (
+              <Group gap="xs">
+                <Loader aria-label="Progresso do relatório" size="sm" />
+                <Text size="sm">{progressLabel(progress)}</Text>
+              </Group>
+            ) : (
+              <Stack gap={6}>
+                <Text size="sm">{progressLabel(progress)}</Text>
+                <Progress
+                  aria-label="Progresso do relatório"
+                  value={progressValue(progress)}
+                  animated
+                />
+              </Stack>
+            )
           ) : null}
         </Stack>
       </Paper>
