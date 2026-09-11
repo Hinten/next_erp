@@ -2,15 +2,17 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Steps 1–5 and 10 of
+Runs on `:3009` in dev. Steps 1–6 and 10 of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
 conta status, the access-token refresh, the cached taxonomy reads, the inbound
 push receiver with its Cloud Tasks queue, nested functions codebase, weekly
-authorization-expiry sweep and the three step-4 delivery backstops, and the
-step-5 order → pedido import**.
+authorization-expiry sweep and the three step-4 delivery backstops, the
+step-5 order → pedido import, and the step-6 pagamentos with their weekly
+escrow settlement sweep**.
 
 ⚠️ **Step 5 is where this app started writing ERP business data** — `pedidos`,
-`clientes`, `enderecos`, `incidentes` — so the old blanket "this app writes
+`clientes`, `enderecos`, `incidentes`, and since step 6 the
+`pedidos/{id}/pagamentos` subcollection — so the old blanket "this app writes
 nothing" is no longer true and must not be re-asserted. What is still true is
 the direction: **nothing is published or written TO Shopee**, nothing reaches
 the seller's catálogo or anúncios, and the only state-changing calls the app
@@ -91,13 +93,24 @@ a page of the 3-day queue irreversibly.
   `readConta` (by integração id, extracted out of `core/shopee.ts`) and
   `findIntegracaoByShopId`, which is what turns a push's `shop_id` into a conta.
   Token-free by construction — it touches `integracaoCollection` only.
+- `lib/shopee/core/contas.ts` — `listarContasShopeeAtivas`, the ONE
+  `integracao (tipo, ativo)` enumeration every per-conta sweep walks. Promoted
+  out of `orderBackfill.ts` by step 6, verbatim and with its docblock; the
+  backfill became a caller and its test file is byte-unedited.
+- `lib/shopee/core/containment.ts` — `erroContidoPorConta` (+ `isGrpcCodedError`),
+  the per-conta error boundary the order backfill and the settlement sweep now
+  share. It names the classes and **never** the `ShopeeError` base:
+  `ShopeeConfigError` extends that base directly, so catching the base would
+  swallow our own misconfiguration and turn #778 into N identical log lines and
+  a green tick.
 - `lib/shopee/pedidos/` — the step-5 order import: `importarPedido.ts` (the
   orchestrator), `orderIds.ts` (the deterministic pedido and item ids),
   `orderMapping.ts` + `orderFreteMapping.ts` + `orderStatusMaps.ts` (the pure
   mappers, the estado ladder and the freight seed), `itens.ts` (prices and
   quantities), `produtoResolve.ts` (the link → SKU cascade), `comprador.ts` (the
   buyer-capture adapter), `incidentesProduto.ts` (one incidente per unbound
-  line) and `orderPedidoTx.ts` (the ONE transaction). See **Order import**
+  line) and `orderPedidoTx.ts` (the import's ONE transaction — step 6 adds two
+  more under this same folder, see the two bullets below). See **Order import**
   below. ⚠️ `importarPedido.ts` is split in two on purpose:
   `prepararImportacaoPedidoShopee` is the READ-ONLY half (the two Shopee calls,
   the produto cascade, the mappers, the stored-pedido read) and
@@ -106,13 +119,27 @@ a page of the 3-day queue irreversibly.
   dry-run calls the same two functions, so there is no second copy of the
   sequence to drift — and its "writes nothing" is structural, since no writer
   appears in the read-only body.
+- `lib/shopee/pedidos/pagamentoMapping.ts` + `pagamentoTx.ts` — the step-6
+  payment half of that same task: the pure mapper (identity, the N-docs rule,
+  the forma/bandeira/parcelas folds, `valor`, `tarifas`, the status ladder, the
+  dates and `cartao`) and the SECOND transaction that writes
+  `pedidos/{id}/pagamentos`. ⚠️ `tarifasDeShopee` / `diarioMarketplaceDeEscrow`
+  live here and are the ONE fee computation in this app — the settlement sweep
+  IMPORTS them rather than re-deriving, so the two writers agree by
+  construction instead of by a comparison. See **Payments and settlement**.
+- `lib/shopee/pedidos/liquidacaoSweep.ts` + `liquidarPagamento.ts` — the weekly
+  escrow settlement: the runner (contas, window, `page_no` paging, the per-row
+  state machine, the cursor document, the parked rows) and the class-B
+  transaction that stamps the pagamento's top-level `liquidacao`.
+  ⚠️ `liquidarPagamentosCli.ts` is the pure CLI half, for the same
+  `scripts/`-is-outside-vitest reason as `importarPedidoCli.ts`.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
   loaders. **Test-only, imported by no `src` file** — the
   `lib/shopee/testing/fakeDb.ts` precedent. A body enters the corpus only after
   `redact`, and a scan finding never carries the value it found.
-- `lib/shopee/avisos/autorizacao.ts` — one of the **four** modules in this app
+- `lib/shopee/avisos/autorizacao.ts` — one of the **five** modules in this app
   that speak **microseconds**; every other signature is milliseconds. Raises
   `shopeeAutorizacaoExpirando` / `shopeeDesautorizado` and resolves both, and
   since step 4 it also EXPORTS the µs seam
@@ -120,10 +147,12 @@ a page of the 3-day queue irreversibly.
   write avisos without knowing the unit — which is what keeps its own call sites
   countable rather than merely written down.
 
-  ⚠️ **The other three arrived with step 5, and naming all four is the point** —
-  a "the ONE module that speaks µs" sentence that has quietly become four is
-  worse than no sentence. Each one converts a DIFFERENT unit, which is why none
-  of them collapses into another:
+  ⚠️ **Three arrived with step 5, a fifth with step 6, and naming all of them
+  is the point** — a "the ONE module that speaks µs" sentence that has quietly
+  become five is worse than no sentence. This is a list of SITES, not of
+  helpers: there are still only the three conversions below (seconds → µs,
+  ms → µs, and the tolerant coercion of a stored value), and a site earns a
+  number here by being a place where the unit changes at all:
 
   1. `avisos/autorizacao.ts` (above);
   2. `pedidos/importarPedido.ts` — the single `millisToMicros(nowMs)` per run,
@@ -139,15 +168,43 @@ a page of the 3-day queue irreversibly.
      conversion, because the shared `getPrazoDespachoNoFuso` answers
      MILLISECONDS while `freteInicial.prazoDespacho` is µs. `millisToMicros`,
      never `coerceToMicros`.
+  5. `pedidos/liquidarPagamento.ts` (step 6) — the settlement transaction, and
+     the ONLY place the weekly sweep crosses into microseconds. It performs the
+     single `millisToMicros(nowMs)` of that path — item 2's pattern exactly, one
+     clock read handed DOWN, because the sweep passes `nowMs` in and holds no µs
+     of its own — and it converts the INCOMING
+     `get_escrow_list.escrow_release_time`, which is **SECONDS**, by CALLING
+     site (3), `microsDeSegundosShopee`. ⚠️ Never `coerceToMicros` on that value:
+     it classifies by magnitude, reads `1.65e9` as MILLIseconds and answers
+     1970, which is a settlement watermark that says "older" for ever. It also
+     coerces the STORED `ultimaModificacao` the way the readers below do.
 
-  Plus one READER, which converts nothing new but has to know the unit:
-  `pedidos/orderPedidoTx.ts` coerces the STORED `lastMarketplaceUpdate` and
-  `ultimaModificacao` through `coerceToMicros` — correct there and only there,
-  because the legacy corpus holds ms ints and ISO strings.
+  Plus **two** READERS, which declare no new conversion but have to know the
+  unit:
+  - `pedidos/orderPedidoTx.ts` coerces the STORED `lastMarketplaceUpdate` and
+    `ultimaModificacao` through `coerceToMicros` — correct there, because the
+    legacy corpus holds ms ints and ISO strings;
+  - `pedidos/pagamentoTx.ts` (step 6) does the same on its own two stored values
+    (the pedido's `lastMarketplaceUpdate` watermark and the pagamento's
+    `ultimaModificacao`) and converts **nothing** new — every µs it writes
+    arrives as a parameter.
 
   **Nothing else converts anything.** A `millisToMicros` or a `coerceToMicros`
-  appearing in `itens.ts`, `produtoResolve.ts`, `incidentesProduto.ts` or
-  `comprador.ts` is the drift this list exists to prevent.
+  appearing in `itens.ts`, `produtoResolve.ts`, `incidentesProduto.ts`,
+  `comprador.ts`, `pagamentoMapping.ts`, `liquidacaoSweep.ts` or
+  `liquidarPagamentosCli.ts` is the drift this list exists to prevent.
+  ⚠️ `pagamentoMapping.ts` holds no converter of its own — it CALLS site (3) for
+  `pay_time`, the same way item 5 does — and **`liquidacaoSweep.ts` holds no
+  microsecond at all**: the sweep is pure epoch MILLISECONDS end to end, and an
+  inline `* 1000` there would be an undeclared sixth site.
+  `liquidarPagamentosCli.ts` holds µs only as DISPLAY: it carries
+  `escrowReleaseTimeUs` verbatim out of the prediction and renders it through
+  `microsToMillis`, converting nothing that is written — so it is not a site
+  either, but it is not µs-free and a reader must not be told it is.
+  `orderMapping.ts` additionally exports `maiorUs` and
+  `vazio` (moved out of `orderPedidoTx.ts` by step 6 so both transactions can
+  share them) — patch primitives that compare and test, unit-agnostic, and not
+  a conversion.
 - `lib/shopee/conta/expiracaoSweep.ts` — `runShopeeAuthorizationExpirySweep`,
   driven weekly by the functions codebase and, scoped to named shops, by
   `push 12`. See **The authorization-expiry sweep** below.
@@ -173,19 +230,26 @@ a page of the 3-day queue irreversibly.
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double the
   six sweep and producer suites drive. Test-only, imported by no `src` file (the
   `apps/web/lib/testing` precedent); ONE copy, because two copies with a
-  comment claiming they agree is the smell the root CLAUDE.md names.
+  comment claiming they agree is the smell the root CLAUDE.md names. Since
+  step 6 it also serves an in-transaction COLLECTION read (the pagamento
+  transaction reads the whole subcollection), so its collection chain carries a
+  `path` and logs that `get` into `opLog` — a test asserting an exact `opLog`
+  over a path that reads a collection sees one more entry than it used to.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — two dev-only CLIs, **never run by an agent** (root CLAUDE.md
+- `scripts/` — three dev-only CLIs, **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
-  consent URL without the web UI, and `importar-pedido.ts` imports ONE named
-  order through the real step-5 path — **dry-run by default**, `--live` to
-  write. Its pure half (arg parsing, the redacted summary, the renderer, the
-  error describer) lives in `lib/shopee/pedidos/importarPedidoCli.ts` **because
-  `scripts/` is outside this app's vitest `include`**, so logic written in a
-  script file can never be tested (the `pedidoMoneyAudit.ts` precedent in
-  `apps/mercado-livre`). Script-only, imported by no route and no bundle.
+  consent URL without the web UI, `importar-pedido.ts` imports ONE named
+  order through the real step-5 path, and `liquidar-pagamentos.ts` (step 6)
+  rehearses the weekly settlement sweep for ONE integração — the last two
+  **dry-run by default**, `--live` to write. Their pure halves (arg parsing,
+  the redacted summary, the renderer, the error describer) live in
+  `lib/shopee/pedidos/importarPedidoCli.ts` and
+  `lib/shopee/pedidos/liquidarPagamentosCli.ts` **because `scripts/` is outside
+  this app's vitest `include`**, so logic written in a script file can never be
+  tested (the `pedidoMoneyAudit.ts` precedent in `apps/mercado-livre`).
+  Script-only, imported by no route and no bundle.
 
 The platform-neutral Shopee core (signer, hosts, typed clients, wire schemas,
 error taxonomy) lives in `@delfrance/integrations-shopee`. It holds no Firestore
@@ -477,6 +541,15 @@ Three `onSchedule`s in the nested codebase, each covering a different way a push
 never arrives. They are what decision P3 spends the receiver's scale-to-zero
 cold start on.
 
+⚠️ **The codebase holds more schedules than these three, and only these three are
+backstops.** The weekly authorization-expiry sweep watches a clock (above), and
+step 6's `sweepShopeeEscrowSettlement` reads money that Shopee exposes only once
+the escrow is RELEASED — no push was ever sent for it, so none was ever missed.
+It is documented under **Payments and settlement**, not here; filing it as a
+fourth backstop would make "a way a push never arrives" mean nothing. The honest
+count is six `onSchedule` triggers in `functions/src/index.ts`, with
+`index.test.ts` pinning six distinct crons.
+
 **`sweepShopeeLostPushes` — every 2 h at :20.** Shopee queues a push that
 exhausted its ladder (+5 min / +30 min / +3 h) for **3 days**, "the earliest 100
 lost and not confirmed". Paging is cursor-by-ACKNOWLEDGEMENT: the only way to
@@ -672,6 +745,201 @@ the one wire outcome the importer RETURNS instead of throwing, and the arm parks
 it carrying which of the two shapes it was — Shopee's 404, or a backfill list
 that denied a row it had just returned.
 
+## Payments and settlement (`lib/shopee/pedidos/pagamento*.ts` + `liquida*.ts`, step 6)
+
+**There is no payment event.** Shopee ships no payment push and no payment
+resource of its own, so a pagamento is written on the SAME code-3 task that
+writes the pedido, from the SAME two calls (`get_order_detail` +
+`get_escrow_detail`), in a SECOND transaction (`pagamentoTx.ts`) that runs after
+`salvarPedidoShopee` and before the incidentes. **Nothing new is fetched on the
+task path**, which is why `processShopeeNotification`'s 300 s budget is
+unchanged. ⚠️ A pedido that came out `ignorado-sem-mudanca` does **not** skip the
+pagamento path — the escrow carries no clock of its own, so the money can move
+while the order row does not. Only `ignorado-obsoleto` skips it.
+
+**Identity: a digest, and a DIFFERENT preimage from the pedido's.**
+`makePagamentoIdShopee(contaId, orderSn, sufixo?) =
+sha256("integracao/<contaId>-<order_sn><sufixo>")` — the LEGACY Flutter
+preimage, which built it from `pathNoDocuments`. ⚠️ It is **not** Mercado
+Livre's `sha256("/documents/integracao/…")` — the leading slash and the
+`documents/` segment are exactly what differ — and it is **not** the pedido's
+bare `sha256("<contaId>-<order_sn>")` one collection up. The legacy corpus
+survives the cutover with its ids, so a different spelling forks every migrated
+Shopee pagamento on its first re-import. The `id` FIELD is `order_sn` on the
+primary and `<order_sn>-<n>` on a secondary, but **ownership inside the
+transaction is decided by RECOMPUTING the doc id**, never by reading that field:
+it rides `...base` through the operator's form and is therefore reachable by an
+edit. That is also what keeps the legacy `<order_sn>-desconto` sibling out of
+this transaction entirely — a numeric suffix can never collide with it, and
+step 6 never reads, writes or deletes it.
+
+**N documents, not one.** A BR order's `get_order_detail.payment_info[]` is a
+LIST (NT 2025.001) and a combined payment really does carry two rows — one
+`credit_card`, one `pix`, each with its own `payment_amount`. The fan-out
+happens only when `2 ≤ N ≤ 8` **and** `Σ payment_amount` equals the pedido's
+`valorCobrado` to the centavo; anything else collapses to ONE primary document
+with a named reason (`soma-divergente` / `excede-maximo`) and one `console.warn`
+carrying numbers only. Entries are ordered DETERMINISTICALLY by content (method,
+authorization code, amount, joined on a NUL) so the wire order can never decide
+which document takes which id.
+
+**⚠️ Σ pagante `valor` MUST equal `valorCobrado` to the centavo.** The NF-e
+bundle sums `vPag` over `isPagamentoPagante` and throws (cStat 866 for an
+excess, 865 for a shortfall), and `<vTroco>` is not available to us —
+`canalDevolveTroco` is FALSE for every marketplace. So `valor` is the
+BUYER-facing figure (the pedido's own `valorCobrado`, from
+`buyer_total_amount` → `total_amount` → Σ items + frete), **never
+`escrow_amount`**, which moves until the order completes. A non-pagante status
+makes a payment invisible to the NF-e rather than merely unpaid.
+⚠️ A later delivery carrying FEWER entries never deletes, never neutralises and
+never re-takes the primary's `valor` — whether `payment_info` survives past
+`READY_TO_SHIP` is settle-live register item 22 and is **NOT yet known**, so a
+shrinking payload is read as lost detail either way — and re-taking it would
+nearly double Σ pagante against the siblings an earlier, richer delivery wrote.
+That is the "degraded delivery" freeze, and a stored document is never
+deleted — one the operator removed is recreated on the next delivery, because
+the money really did move.
+⚠️ **The freeze has a second direction, and it costs the same.** While the DATA
+group is frozen — by `degradado` or by a human's `hasUserInteraction` — a
+delivery that maps MORE documents than we own does not CREATE the extra ones
+either: the stored primary is still standing at whatever a poorer earlier
+delivery gave it (often the WHOLE `valorCobrado`, because that delivery carried
+no `payment_info` at all), so a new sibling at its own leg amount lands Σ
+pagante ABOVE the nota. `hasUserInteraction` is a LATCH, so nothing later
+repairs it. One `console.info` says the set could not grow. The gate needs at
+least one document of OURS already stored: a pedido a human touched before its
+first pagamento arrived still gets the whole set created, and so does one the
+operator deleted.
+
+**The status ladder is driven by the ORDER status, never by a payment event.**
+No usable `pay_time` ⇒ no pagamento is CREATED (⚠️ the gate is creation-only: a
+document of ours that already exists still gets the ladder and the dates, so a
+`CANCELLED` re-read whose `pay_time` came back `0` still moves a stored
+`aprovado` to `estornado`). `PENDING` + `pay_time` ⇒ `em_processo_aprovacao`;
+the five shipping statuses + `COMPLETED` ⇒ `aprovado`; `IN_CANCEL` / `TO_RETURN`
+⇒ `em_disputa`, which **STILL COUNTS AS PAID** (`isPagamentoPagante`'s own
+docblock: a mediation is a hold, not a reversal); `CANCELLED` ⇒ `estornado`.
+`aprovado` never regresses to `em_processo_aprovacao`; `estornado → aprovado` is
+allowed and logged as a resurrection (the ladder is driven by a re-fetch of the
+live order); a stored value outside the governable set — an operator's
+`recusado` or `devolvido` — is never walked back.
+
+**`tarifas` is the marketplace's cut, and it is Shopee's own fee columns**:
+`commission_fee + service_fee + seller_transaction_fee` (FAQ 479's three Income
+Report columns), with the BR `net_*` variants preferred where they arrive.
+⚠️ `credit_card_transaction_fee` is a ROLLUP of the buyer and seller halves and
+is **never** summed with them. The value is clamped at 0 (`pagamentoSchema`
+declares `.min(0)`; an unclamped negative is a ZodError that PARKS the code-3
+delivery terminally — `disposicaoDaFalhaDeImportacao` in
+`notificacoes/notificacao.ts` — and, on the weekly sweep, is not in
+`erroContidoPorConta` at all, so it aborts the WHOLE tick rather than one
+conta — #794); the pre-clamp raw and the named fees ride the new
+`pagamento.marketplace` block, a DIARY nothing gates on. The legacy composition
+(`buyer_total_amount − escrow_amount_after_adjustment`) survives as the named
+seam `COMPOSICAO_TARIFAS_SHOPEE`. ⚠️ `tarifas` and `tarifasBrutas` are NOT the
+two readings — they are the shipped composition clamped and unclamped, i.e. one
+number twice — so the import log carries a third, `tarifasSpread`, and that is
+what the first live BR orders compare as data rather than as an argument. On N
+documents the fee rides the PRIMARY and the secondaries carry a real `0`.
+
+**`cartao` is written only for formas 3/4/17 and is NEVER cleared.** It comes
+from a `payment_info` entry (`tpIntegra '2'`, the processor's CNPJ, the brand,
+`transaction_id` as `cAut`) and is OMITTED — not `null` — when no entry supplies
+it: PIX needs a `<card>` block or SEFAZ rejects with cStat 391, and a `null`
+would mean "there is none" where the truth is "we did not learn". A masked or
+CPF-shaped register is written nowhere, and `payment_processor_register` /
+`transaction_id` never reach a log line.
+
+**Two writers, DISJOINT masks.** The task path owns `valor`,
+`forma_de_pagamento`, `status_pagamento`, `parcelas`, `aVista`, `cartao`, `id`,
+`descricaoPagamento` and the date stamps, and it never names `liquidacao` in a
+patch. The weekly sweep owns the **top-level `liquidacao`** — top level, not
+nested inside `marketplace`, precisely because an `update()` masks at a
+top-level key, and that is what makes the two masks genuinely disjoint — and it
+REFRESHES the marketplace-owned money (`tarifas` and the `marketplace` escrow
+diary). Both compute that money with the SAME pure `tarifasDeShopee` /
+`diarioMarketplaceDeEscrow`, imported by each and re-derived by neither, so two
+writers racing one document agree by construction instead of by a comparison.
+⚠️ `onPagamentoChanged` ignores only `id` and `ultimaModificacao`, so a replay
+that re-stamps anything else files a `historicoDeModificacoes` row: both writers
+compare field by field (no `deepEqual`, no `stripNullsDeep`) and a byte-identical
+delivery produces an EMPTY patch and no write at all. That is also why
+`marketplace.atualizadoEm` carries the ORDER clock and never `now`.
+
+**The sweep: `sweepShopeeEscrowSettlement`, Mondays 05:10 America/Sao_Paulo.**
+Per active conta it pages `get_escrow_list` on `escrow_release_time` — the ONLY
+Shopee surface that exposes that field at all — from a durable per-conta cursor
+(`liquidacaoShopee/{integracaoId}`, MILLISECONDS, this sweep its only writer,
+ONE merge per conta per tick, no transaction) with a one-day overlap, a 30-day
+initial lookback and a 15-day self-imposed maximum window (the page documents
+none). Paging is by `page_no`, not a cursor, and Shopee documents **no
+ordering**.
+
+- **Drained** (`more === false`) ⇒ the cursor advances to the WINDOW's upper
+  bound, never to `now`: `[ateMs, now]` was not queried. **Truncated** by the
+  page cap or the per-tick liquidation budget ⇒ nothing advances and the window
+  plus the next page number are persisted for the next tick.
+- ⚠️ **A cold conta takes two ticks to reach the present, and that is not a
+  bug.** `ateMs` is measured from `deMs`, so the first window of a conta with no
+  cursor is `[now − 30 d, now − 15 d]`; the following week's tick covers the
+  rest. The alternative — measuring the bound from `now` — would claim ground
+  the query never covered.
+- **The page-repeat guard.** A non-empty page with `more: true` that contributes
+  ZERO new `order_sn` means `page_no` is being ignored: the tick stops, names
+  it, CLEARS the stored page number and restarts from page 1 next week. An
+  EMPTY page with `more: true` keeps paging (bounded by the page cap) — the two
+  cases read identically and are deliberately tested as a near-miss pair.
+- **Parked rows (`pendentes`, ≤ 200, ≤ 4 attempts).** A row whose pagamento does
+  not exist yet is stored WHOLE (not as an id) and gets ONE synthetic code 3
+  with `origem: 'liquidacao'`, so the pedido and its pagamento arrive by the
+  normal import path. ⚠️ **Every tick REPLAYS that list before it pages
+  anything**, and that replay is what `MAX_TENTATIVAS = 4` counts: a released
+  row is visible only in the windows covering its release time, so once the
+  cursor moves past it the row never comes back and the parked copy is the only
+  place its payout still exists. A row that settles leaves the list; one still
+  missing a pedido four weeks later is dropped with a warning, because that is a
+  human question and not a retry. ⚠️ The same is true of a row whose escrow
+  answers `order_not_found`: it is counted in `puladas` and skipped for ever, and
+  `--order-sn` can only CONFIRM that answer, because the flag is dry-run only —
+  there is no CLI path that settles such a row.
+- **Budgets per tick**: 100 rows per page, 20 pages, 300 settlements, 50
+  synthetic pushes. A contained conta error leaves the cursor untouched and
+  records `lastError` — a 30-second outage must never skip 300 orders and then
+  advance past them.
+- **The rehearsal CLI `liquidar:pagamentos`** runs the same window derivation
+  and the same pure decision function a live tick runs, so a dry run prints the
+  exact patch rather than a second implementation's opinion of it. ⚠️ Sharing
+  the DECISION is not enough — the ROW SET has to match too, so the dry run also
+  REPLAYS the parked list before it pages, and tags every row with its source
+  (`pendente` / `listagem`). Without that it would print "nothing to do" for
+  exactly the rows the parked list exists for, and `--live` would then write
+  them. ⚠️ Two behaviours an operator will notice: `--order-sn` is
+  **dry-run only** (the
+  escrow listing is queried BY WINDOW and has no by-id form, so that path never
+  learns `payout_amount` or `escrow_release_time`; the settlement itself is
+  FILL-OR-KEEP, so a null incoming stamp never overwrites a stored one, and the
+  refusal is defence in depth against a write that could never learn anything),
+  and a `--de`/`--ate` window
+  override **never advances the cursor** (an operator-chosen window would
+  otherwise claim the unqueried ground between the cursor and that window).
+
+**Not built, and not a shortcut anybody may add later: `get_escrow_detail_batch`.**
+Its response drops eleven fields the single call carries — including
+`buyer_total_amount`, `escrow_amount_after_adjustment`, `total_adjustment_amount`
+and `tenure_info_list` — so it can produce neither the pagamento's `valor` nor
+its `tarifas`, and it carries **no per-order `error`**, so a batch of 50 in which
+one order fails is indistinguishable from a batch in which none did.
+
+**The settle-live register for step 6** — four questions the docs cannot answer,
+each instrumented rather than guessed:
+
+| question | state, and what settles it |
+| --- | --- |
+| `payout_amount`: cents or units? | ⏳ the page contradicts itself INSIDE one document (table `"5733.04"`, rendered JSON `57334`). The per-order settlement log prints `payoutAmount` beside `escrowAmount` / `escrowAmountAfterAdjustment` **and their ratio** — ~1 is units, ~100 is cents. Nothing in the package or the sweep converts it. |
+| BR `payment_info[]`: present, and masking-gated? | ⏳ the SG sandbox answered `payment_info: null` (key present); announcement 1240 says `READY_TO_SHIP`. The import log carries `entradasPaymentInfo` — a COUNT, never a value — so the first live BR orders answer both halves without a field ever reaching a log line. |
+| `instalment_plan` format beyond `"N/A"` | ⏳ three shapes on record (the `"N/A"` sentinel, a quoted number, an int), so the package schema is a union and ONE reader owns the fold; an unparsable raw is logged once, by the parser. |
+| when is the escrow READABLE, and when FINAL? | ⏳ undocumented. The escrow read stays CONTAINED on the task path (an absent one omits the fee keys rather than erasing them), and the sweep is what stamps final — `liquidacao.escrowReleaseTimeUs` being set is the strongest "money is final" signal this channel has. |
+
 ## Taxonomy reads (`lib/shopee/taxonomia/`, step 10)
 
 Seven Shop-signed GETs on Shopee's `product` module — the category tree,
@@ -847,9 +1115,13 @@ would really leave the runner. Keep the tasks suites on paths that need no token
 
 ⚠️ The lane's `push: paths:` grew with step 5 (`packages/schemas/src/pedido/**`,
 the cliente/endereço/`intFrete` schemas, `packages/data/src/admin/{clientes,produtos,enderecos}/**`
-and `packages/data/src/pedido/**`) because the importer reaches all of them.
-`pull_request:` still has **no** `paths:` and never may — the `changes` job
-derives that closure from the workspace graph.
+and `packages/data/src/pedido/**`) because the importer reaches all of them, and
+again with step 6 by exactly two FILES — `packages/schemas/src/liquidacaoShopee.ts`
+(the settlement cursor) and `packages/schemas/src/bandeiraCartao.ts` (the card
+brand catalogue the `cartao` block folds into). Everything else step 6 added
+lives under `apps/shopee/**` or `packages/schemas/src/pedido/**`, both already
+listed. `pull_request:` still has **no** `paths:` and never may — the `changes`
+job derives that closure from the workspace graph.
 
 ⚠️ **This lane owns no exclusion, and that is the point.** Unlike
 `ci-mercado-livre`, `ci.yml` still runs every `@delfrance/shopee-app` unit test
@@ -895,6 +1167,20 @@ Open the printed URL, log in with the sandbox shop, and the browser lands on
 `reason=bad_state` — that is the single-use attempt doing its job. On the test
 app, leave the sandbox redirect-URL domain EMPTY (Shopee then validates nothing)
 or register `localhost`.
+
+The other two CLIs are **dry-run by default** and, like `oauth:url`, are **never
+run by an agent** (root CLAUDE.md rule 8) — the flags, the expected output and
+the runbook for each live in `scripts/README.md`:
+
+```bash
+pnpm --filter @delfrance/shopee-app importar:pedido --integracao <integracaoId> --order-sn <orderSn>
+pnpm --filter @delfrance/shopee-app liquidar:pagamentos --integracao <integracaoId>
+```
+
+The first imports ONE named order through the real step-5 path; the second
+(step 6) rehearses the weekly settlement sweep for one conta, printing the exact
+patch a live tick would write. Both still CALL Shopee in dry-run — what they do
+not do is write.
 
 ## Deploy
 

@@ -111,6 +111,38 @@ describe('notificacaoSinteticaDePedido', () => {
     expect(dedupKeyOf(backfill)).toBe(dedupKeyOf(reserva));
   });
 
+  it('origem `liquidacao` (passo 6) produz o MESMO code 3 e a MESMA identidade que o backfill', () => {
+    // The settlement sweep is the third producer, and it is the only one that
+    // synthesizes from the MONEY side: `get_escrow_list` named an order whose
+    // pedido/pagamento is not here yet. Its payload must be indistinguishable
+    // from the backfill's for everything that decides identity — otherwise a
+    // week in which both sweeps find the same order would enqueue two jobs and
+    // write two dead-letter rows for one order.
+    const liquidacao = notificacaoSinteticaDePedido({
+      shopId: SHOP,
+      orderSn: ORDER_SN,
+      nowMs: AGORA_MS,
+      origem: 'liquidacao',
+    });
+    const backfill = notificacaoSinteticaDePedido({
+      shopId: SHOP,
+      orderSn: ORDER_SN,
+      nowMs: AGORA_MS,
+      origem: 'backfill',
+    });
+
+    expect(liquidacao.code).toBe(3);
+    expect(destinoDoCodigo(liquidacao.code)).toBe('pedido');
+    expect(liquidacao.data).toHaveProperty('origem', 'liquidacao');
+    expect(docIdOf(liquidacao)).toBe(docIdOf(backfill));
+    expect(dedupKeyOf(liquidacao)).toBe(dedupKeyOf(backfill));
+    // ⚠️ NEAR-MISS: the settlement listing carries no `order_status` at all, so
+    // the key must be ABSENT rather than present-and-null — a null would claim
+    // the sweep read a status and got none, and `identidadeDoPush` would then
+    // be reading a field nothing wrote.
+    expect(Object.keys(liquidacao.data ?? {}).sort()).toEqual(['ordersn', 'origem']);
+  });
+
   it('docIdOf/dedupKeyOf batem com o contrato escrito no docblock', () => {
     const p = notificacaoSinteticaDePedido({
       shopId: SHOP,

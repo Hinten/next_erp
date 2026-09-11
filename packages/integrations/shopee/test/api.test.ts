@@ -5,6 +5,9 @@ import {
   SHOPEE_BRAND_MAX_PAGE_SIZE,
   SHOPEE_BRAND_STATUS,
   SHOPEE_ESCROW_DETAIL_TRANSPORT,
+  SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE,
+  SHOPEE_ESCROW_LIST_MAX_PAGE_SIZE,
+  SHOPEE_GET_ESCROW_LIST_PATH,
   SHOPEE_GET_ITEM_LIMIT_PATH,
   SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
@@ -1747,5 +1750,312 @@ describe('get_escrow_detail', () => {
     await expect(
       createShopeeClient(shopConfig(fetchMock)).getEscrowDetail({ orderSn: ORDER_SN }),
     ).rejects.toBeInstanceOf(ShopeeApiError);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     A liquidação do escrow (passo 6)                        */
+/* -------------------------------------------------------------------------- */
+
+/** ⚠️ SEGUNDOS, como a página manda. Nada aqui converte unidade. */
+const LIBERADO_DE_S = 1_651_680_000;
+const LIBERADO_ATE_S = 1_651_939_200;
+
+const PARAMS_LIQUIDACAO = {
+  releaseTimeFromS: LIBERADO_DE_S,
+  releaseTimeToS: LIBERADO_ATE_S,
+} as const;
+
+const ESCROW_LIST_BODY = {
+  request_id: 'req-escrow-list',
+  error: '',
+  response: {
+    escrow_list: [
+      { order_sn: ORDER_SN, payout_amount: 30.7, escrow_release_time: 1_651_849_648 },
+      { order_sn: ORDER_SN_2, payout_amount: 12.5, escrow_release_time: 1_651_849_700 },
+    ],
+    more: false,
+  },
+};
+
+describe('get_escrow_list', () => {
+  it('1 — vai por GET, sem corpo, no caminho da página e com as quatro chaves próprias na query', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_LIST_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getEscrowList(PARAMS_LIQUIDACAO);
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    expect(url.pathname).toBe('/api/v2/payment/get_escrow_list');
+    expect(url.pathname).toBe(SHOPEE_GET_ESCROW_LIST_PATH);
+    expect([...url.searchParams.keys()].sort()).toEqual(
+      [...CHAVES_COMUNS, 'release_time_from', 'release_time_to', 'page_size', 'page_no'].sort(),
+    );
+  });
+
+  it('2 — os dois limites vão em SEGUNDOS, verbatim', async () => {
+    // ⚠️ O pacote não converte unidade nenhuma: `apps/shopee` é o único lugar
+    // onde s↔ms acontece. Um milissegundo chegando aqui viraria uma janela no
+    // ano 54 000, e a Shopee devolveria uma página vazia — não um erro.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_LIST_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getEscrowList(PARAMS_LIQUIDACAO);
+
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.get('release_time_from')).toBe('1651680000');
+    expect(url.searchParams.get('release_time_to')).toBe('1651939200');
+  });
+
+  it('3 — os dois limites são OBRIGATÓRIOS e positivos: zero recusa ANTES da rede', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_LIST_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, releaseTimeFromS: 0 }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, releaseTimeToS: 0 }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, releaseTimeFromS: 1_651_680_000.5 }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('4 — ⚠️ NEAR-MISS: `from === to` é ACEITO aqui e RECUSADO no get_order_list — a mesma forma, duas páginas', async () => {
+    // ⚠️ A divergência é da PÁGINA, não uma preferência: `get_order_list`
+    // documenta uma janela (e o cliente recusa `time_from >= time_to`), enquanto
+    // esta página só recusa "start date cannot be later than the end date". Uma
+    // janela de largura zero é legal aqui — é o que a varredura semanal pede
+    // quando já drenou até agora. Copiar o operador do vizinho a recusaria, e a
+    // varredura simplesmente pararia de progredir sem erro nenhum.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_LIST_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, releaseTimeToS: LIBERADO_DE_S }),
+    ).resolves.toBeDefined();
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).searchParams.get('release_time_to')).toBe(
+      '1651680000',
+    );
+
+    // O vizinho, com a forma IDÊNTICA, recusa.
+    await expect(
+      client.getOrderList({ ...PARAMS_PEDIDOS, timeToS: PARAMS_PEDIDOS.timeFromS }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+
+    // E um segundo INVERTIDO recusa aqui também: `>` não é `>=`.
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, releaseTimeToS: LIBERADO_DE_S - 1 }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('5 — as bordas de page_size e page_no são checadas ANTES da rede', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_LIST_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    // As duas bordas boas.
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageSize: 1 }),
+    ).resolves.toBeDefined();
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageSize: SHOPEE_ESCROW_LIST_MAX_PAGE_SIZE }),
+    ).resolves.toBeDefined();
+    // NEAR-MISS em cada uma: um passo além recusa, nunca corta.
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageSize: 0 }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(
+      client.getEscrowList({
+        ...PARAMS_LIQUIDACAO,
+        pageSize: SHOPEE_ESCROW_LIST_MAX_PAGE_SIZE + 1,
+      }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageSize: 20.5 }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+
+    await expect(client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageNo: 1 })).resolves.toBeDefined();
+    await expect(client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageNo: 0 })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    await expect(
+      client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageNo: 1.5 }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+
+    // Só as TRÊS combinações válidas chegaram à rede; toda recusa é anterior.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('6 — os defaults são APLICADOS aqui e SEMPRE ENVIADOS', async () => {
+    // ⚠️ Enviados, não omitidos: retomar na página 7 quer dizer "linhas 601–700"
+    // com página de 100 e "241–280" com página de 40. Deixar a Shopee escolher o
+    // tamanho faria um ponto de retomada guardado significar coisas diferentes
+    // de um tick para o outro, sem nada dizer.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_LIST_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getEscrowList(PARAMS_LIQUIDACAO);
+
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.get('page_size')).toBe('40');
+    expect(url.searchParams.get('page_no')).toBe('1');
+    expect(SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE).toBe(40);
+    expect(SHOPEE_ESCROW_LIST_MAX_PAGE_SIZE).toBe(100);
+  });
+
+  it('7 — desembrulha `response`: o envelope não chega ao chamador', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_LIST_BODY));
+    const page = await createShopeeClient(shopConfig(fetchMock)).getEscrowList(PARAMS_LIQUIDACAO);
+
+    expect('error' in page).toBe(false);
+    expect('request_id' in page).toBe(false);
+    expect(page.more).toBe(false);
+    expect(page.escrow_list).toHaveLength(2);
+    expect(page.escrow_list[0]?.order_sn).toBe(ORDER_SN);
+    // ⚠️ RAW: a unidade de `payout_amount` está em aberto (a tabela da página diz
+    // float `"5733.04"`, o exemplo renderizado da MESMA página diz `57334`).
+    expect(page.escrow_list[0]?.payout_amount).toBe(30.7);
+    expect(page.escrow_list[0]?.escrow_release_time).toBe(1_651_849_648);
+  });
+
+  it('8 — uma linha ilegível vira `null` NO LUGAR e a chamada RESOLVE — as boas passam intactas', async () => {
+    // ⚠️ Esta página é a ÚNICA fonte da liquidação. Uma linha malformada não pode
+    // bloquear a semana inteira de dinheiro de todos os outros pedidos.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        ...ESCROW_LIST_BODY,
+        response: {
+          more: false,
+          escrow_list: [
+            { order_sn: ORDER_SN, payout_amount: 30.7, escrow_release_time: 1_651_849_648 },
+            // `order_sn` em branco: sem identidade, não é linha.
+            { order_sn: '', payout_amount: 1, escrow_release_time: 1_651_849_649 },
+            { order_sn: ORDER_SN_2, payout_amount: 12.5, escrow_release_time: 1_651_849_700 },
+          ],
+        },
+      }),
+    );
+    const page = await createShopeeClient(shopConfig(fetchMock)).getEscrowList(PARAMS_LIQUIDACAO);
+
+    expect(page.escrow_list).toHaveLength(3);
+    expect(page.escrow_list[1]).toBeNull();
+    expect(page.escrow_list[0]?.order_sn).toBe(ORDER_SN);
+    expect(page.escrow_list[2]?.order_sn).toBe(ORDER_SN_2);
+    expect(page.escrow_list[2]?.payout_amount).toBe(12.5);
+  });
+
+  it('9 — ⚠️ NEAR-MISS: a sentinela é `null`, NUNCA `{}` — um objeto vazio pareceria uma linha', async () => {
+    // A tolerância por ELEMENTO existe para ser CONTADA. Um `{}` teria a forma de
+    // uma linha com todo campo em `null`, e o leitor a trataria como dado.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        ...ESCROW_LIST_BODY,
+        response: { more: false, escrow_list: [{ order_sn: 42 }] },
+      }),
+    );
+    const page = await createShopeeClient(shopConfig(fetchMock)).getEscrowList(PARAMS_LIQUIDACAO);
+
+    expect(page.escrow_list[0]).toBeNull();
+    expect(page.escrow_list[0]).not.toEqual({});
+    expect(page.escrow_list.filter((linha) => linha === null)).toHaveLength(1);
+  });
+
+  it('10 — `more` é ESTRITO: a string "true" derruba o parse, o booleano passa', async () => {
+    // ⚠️ É o ÚNICO sinal de término do laço. Coagir `"false"` ou giraria para
+    // sempre ou truncaria uma janela em silêncio. A contagem de linhas não decide
+    // nada — a página irmã devolve 10 linhas para `page_size: 20` com `more: true`.
+    const comString = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ESCROW_LIST_BODY, response: { escrow_list: [], more: 'true' } }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(comString)).getEscrowList(PARAMS_LIQUIDACAO),
+    ).rejects.toBeInstanceOf(ShopeeSchemaError);
+
+    const comBooleano = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ESCROW_LIST_BODY, response: { escrow_list: [], more: false } }),
+    );
+    expect(
+      (await createShopeeClient(shopConfig(comBooleano)).getEscrowList(PARAMS_LIQUIDACAO)).more,
+    ).toBe(false);
+  });
+
+  it('11 — uma semana calada é o estado ORDINÁRIO: sem `escrow_list`, zero linhas', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ESCROW_LIST_BODY, response: { more: false } }),
+    );
+    const page = await createShopeeClient(shopConfig(fetchMock)).getEscrowList(PARAMS_LIQUIDACAO);
+
+    expect(page.escrow_list).toEqual([]);
+    expect(page.more).toBe(false);
+  });
+
+  it('12 — ⚠️ NEAR-MISS: um `error` com espaço continua sendo FALHA — esta operação não tem alias', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ESCROW_LIST_BODY, error: ' ' }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(fetchMock)).getEscrowList(PARAMS_LIQUIDACAO),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
+  });
+
+  it('13 — `order_not_found` e `income_not_found` são ShopeeApiError de kind `other` — permanentes', async () => {
+    // ⚠️ Classificar como transitório faria a varredura repetir a mesma janela
+    // para sempre por causa de um pedido que nunca vai existir.
+    for (const code of ['order_not_found', 'income_not_found'] as const) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        jsonResponse({ request_id: 'req', error: code, message: 'nao encontrado' }),
+      );
+      const erro = await createShopeeClient(shopConfig(fetchMock))
+        .getEscrowList(PARAMS_LIQUIDACAO)
+        .catch((e: unknown) => e);
+
+      expect(erro).toBeInstanceOf(ShopeeApiError);
+      expect((erro as ShopeeApiError).code).toBe(code);
+      expect((erro as ShopeeApiError).kind).toBe(SHOPEE_ERROR_KIND.other);
+    }
+  });
+
+  it('14 — a assinatura NÃO depende dos parâmetros da operação; o access_token muda', async () => {
+    // ⚠️ MEDIDO: a base string de loja é `partner_id + path + timestamp +
+    // access_token + shop_id` (`sign.ts`) — sem verbo e sem os parâmetros. Duas
+    // páginas diferentes dão o MESMO `sign`, então um parâmetro errado aparece
+    // como `error_param`, nunca como `error_sign`.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ESCROW_LIST_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.getEscrowList(PARAMS_LIQUIDACAO);
+    await client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageNo: 3, pageSize: 100 });
+
+    const primeira = new URL(String(fetchMock.mock.calls[0]![0]));
+    const segunda = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(primeira.searchParams.get('page_no')).not.toBe(segunda.searchParams.get('page_no'));
+    expect(primeira.searchParams.get('sign')).toBe(segunda.searchParams.get('sign'));
+
+    // NEAR-MISS na direção oposta: o que ESTÁ na base string muda a assinatura.
+    const outro = createShopeeClient(
+      shopConfig(fetchMock, () => Promise.resolve('outro-access-inventado')),
+    );
+    await outro.getEscrowList(PARAMS_LIQUIDACAO);
+    expect(new URL(String(fetchMock.mock.calls[2]![0])).searchParams.get('sign')).not.toBe(
+      primeira.searchParams.get('sign'),
+    );
+  });
+
+  it('15 — não pagina sozinho: `more: true` gasta UMA chamada e o chamador pede a próxima página', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        ...ESCROW_LIST_BODY,
+        response: { ...ESCROW_LIST_BODY.response, more: true },
+      }),
+    );
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const primeira = await client.getEscrowList(PARAMS_LIQUIDACAO);
+    expect(primeira.more).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageNo: 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('page_no')).toBe('2');
   });
 });

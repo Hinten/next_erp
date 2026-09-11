@@ -12,7 +12,12 @@
  * discount applied?" cannot say whether it was applied TWICE.
  */
 import { roundReais } from '@delfrance/core/money';
-import { derivePedidoFreteTotals } from '@delfrance/schemas';
+import {
+  STATUS_PAGAMENTO,
+  derivePedidoFreteTotals,
+  isPagamentoPagante,
+  sumPagamentosPagos,
+} from '@delfrance/schemas';
 import {
   shopeeEscrowDetailPayloadSchema,
   shopeeOrderDetailRowSchema,
@@ -31,6 +36,12 @@ import { CAPTURA_COMPRADOR_ESTADO } from './comprador';
 import { mapearItensShopee } from './itens';
 import { mapearFreteInicialShopee } from './orderFreteMapping';
 import { mapearPedidoShopee, microsDeSegundosShopee } from './orderMapping';
+import {
+  ALVO_STATUS_PAGAMENTO_SHOPEE,
+  esquecerLogsDePagamentoShopee,
+  mapearPagamentosShopee,
+  type PagamentoMapeadoShopee,
+} from './pagamentoMapping';
 import type { ResolvedShopeeLineProduto } from './produtoResolve';
 
 const ORDER_SN = '260910KJBHUJDM';
@@ -202,5 +213,151 @@ describe('⚠️ o desconto da Shopee entra UMA vez — o cruzamento dos dois m�
     expect(pedido.dados.valorCobrado).toBe(escrow.order_income!.buyer_total_amount);
     expect(pedido.dados.valorCobrado).toBe(31.99);
     expect(derivado.valorCobrado).toBe(31.99);
+  });
+});
+
+/* ========================================================================== */
+/*  Σ pagante == valorCobrado — a identidade fiscal (#1514, passo 6, W3)       */
+/* ========================================================================== */
+
+/** As linhas que `sumPagamentosPagos` consome, a partir dos docs mapeados. */
+function linhasDePagamento(
+  docs: readonly PagamentoMapeadoShopee[],
+): { valor: number; status_pagamento: number | null }[] {
+  return docs.map((d) => ({
+    valor: d.dados.valor,
+    status_pagamento:
+      d.sempre.alvoStatus.tipo === ALVO_STATUS_PAGAMENTO_SHOPEE.status
+        ? d.sempre.alvoStatus.status
+        : null,
+  }));
+}
+
+/**
+ * ⚠️ **Nenhum dos dois módulos vê este defeito sozinho.** `pagamentoMapping`
+ * prova que `valor` é o que o mapper decidiu; `orderMapping` prova que
+ * `valorCobrado` é o que a Shopee cobrou. O que a NF-e exige é que os DOIS deem
+ * o mesmo número — e num marketplace `canalDevolveTroco` é FALSE, então um
+ * excesso é cStat 866 e uma falta é 865: a nota simplesmente não sai.
+ *
+ * A costura em que a identidade pode legitimamente abrir é
+ * `conferencia.diferenca` — se a soma dos itens + frete divergir do total que a
+ * Shopee mandou, o `vNF` (Σ itens + frete − desconto) e o `valorCobrado`
+ * (`buyer_total_amount`) deixam de ser o mesmo número, e é o passo 5 que já
+ * registra essa diferença.
+ */
+describe('⚠️ Σ pagante == valorCobrado == derivePedidoFreteTotals — os dois módulos', () => {
+  beforeEach(() => {
+    esquecerLogsDePagamentoShopee();
+  });
+
+  it('pedido SG com o escrow real: um pagamento, e os TRÊS caminhos dão 31,99', () => {
+    const detalhe = lerPedidoDetalhe(FIXTURE_ORDER_DETAIL_QTY2_SG).response.order_list[0]!;
+    const escrow = lerEscrowDetalhe(FIXTURE_ESCROW_DETAIL_QTY2_SG).response;
+    const { pedido, derivado } = importar(detalhe, escrow);
+
+    const { docs } = mapearPagamentosShopee({
+      linha: detalhe,
+      escrow,
+      valorCobrado: pedido.dados.valorCobrado,
+      watermarkUs: WATERMARK_US,
+      nowUs: AGORA_US,
+      contaId: 'int-1',
+      orderSn: ORDER_SN,
+    });
+
+    expect(docs).toHaveLength(1);
+    const soma = sumPagamentosPagos(linhasDePagamento(docs));
+    expect(soma).toBe(31.99);
+    expect(soma).toBe(pedido.dados.valorCobrado);
+    expect(soma).toBe(derivado.valorCobrado);
+    // ⛔ MUTANTE: ler `escrow_amount` (30,70) quebraria as três igualdades ao
+    // mesmo tempo — e é a única coisa que o teste de um módulo só não vê.
+    expect(soma).not.toBe(escrow.order_income!.escrow_amount);
+  });
+
+  it('pagamento combinado BR: DOIS docs, e a soma continua fechando com o pedido', () => {
+    // ⚠️ Inline: o corpo SG não tem `payment_info`, e o leque de N docs é
+    // exatamente onde a identidade pode quebrar sem ninguém ver — dois
+    // documentos com valores plausíveis somando errado ainda parecem certos um
+    // a um.
+    const detalhe = shopeeOrderDetailRowSchema.parse({
+      order_sn: ORDER_SN,
+      order_status: 'READY_TO_SHIP',
+      region: 'BR',
+      pay_time: 1_788_973_353,
+      total_amount: 31.99,
+      estimated_shipping_fee: 1.99,
+      payment_method: 'Combined Payment',
+      payment_info: [
+        {
+          payment_method: 'pix',
+          payment_amount: 10,
+          card_brand: '',
+          transaction_id: 'AUT-PIX',
+          payment_processor_register: '11222333000181',
+        },
+        {
+          payment_method: 'credit_card',
+          payment_amount: 21.99,
+          card_brand: 'visa',
+          transaction_id: 'AUT-CC',
+          payment_processor_register: '11222333000181',
+        },
+      ],
+      item_list: [
+        {
+          item_id: 100,
+          model_id: 1,
+          model_quantity_purchased: 2,
+          model_discounted_price: 15,
+        },
+      ],
+    });
+    const { pedido, derivado } = importar(detalhe, null);
+
+    const { docs, diagnosticos } = mapearPagamentosShopee({
+      linha: detalhe,
+      escrow: null,
+      valorCobrado: pedido.dados.valorCobrado,
+      watermarkUs: WATERMARK_US,
+      nowUs: AGORA_US,
+      contaId: 'int-1',
+      orderSn: ORDER_SN,
+    });
+
+    expect(diagnosticos.combinado).toBe(true);
+    expect(docs).toHaveLength(2);
+    expect(docs.map((d) => d.dados.valor)).toEqual([21.99, 10]);
+    const soma = sumPagamentosPagos(linhasDePagamento(docs));
+    expect(soma).toBe(31.99);
+    expect(soma).toBe(pedido.dados.valorCobrado);
+    expect(soma).toBe(derivado.valorCobrado);
+  });
+
+  it('⚠️ quem CONTA e quem não conta: em_disputa conta, em_processo e estornado não', () => {
+    // A regra é `isPagamentoPagante`, e o alvo que a escada escolhe decide se a
+    // perna entra na nota. `em_disputa` é uma RETENÇÃO, não uma reversão: o
+    // dinheiro não se moveu, e tirá-la da soma quebraria a identidade de centavo
+    // justamente nos pedidos em que um humano já está envolvido.
+    const linhas = [{ valor: 31.99, status_pagamento: STATUS_PAGAMENTO.em_disputa }];
+    expect(isPagamentoPagante(STATUS_PAGAMENTO.em_disputa)).toBe(true);
+    expect(sumPagamentosPagos(linhas)).toBe(31.99);
+
+    for (const status of [
+      STATUS_PAGAMENTO.em_processo_aprovacao,
+      STATUS_PAGAMENTO.estornado,
+      STATUS_PAGAMENTO.cancelado,
+    ]) {
+      expect(isPagamentoPagante(status)).toBe(false);
+      expect(sumPagamentosPagos([{ valor: 31.99, status_pagamento: status }])).toBe(0);
+    }
+
+    // …e `aprovado` e `null` (o legado sem status) contam, senão o negativo
+    // acima não teria âncora nenhuma.
+    expect(
+      sumPagamentosPagos([{ valor: 31.99, status_pagamento: STATUS_PAGAMENTO.aprovado }]),
+    ).toBe(31.99);
+    expect(sumPagamentosPagos([{ valor: 31.99, status_pagamento: null }])).toBe(31.99);
   });
 });

@@ -20,6 +20,7 @@ import { createShopeePartnerClient } from '@delfrance/integrations-shopee';
 
 import { runShopeeAuthorizationExpirySweep } from '../../lib/shopee/conta/expiracaoSweep';
 import { shopeeConfig } from '../../lib/shopee/env';
+import { runShopeeEscrowSettlement } from '../../lib/shopee/pedidos/liquidacaoSweep';
 import { runShopeeLostPushSweep } from '../../lib/shopee/notificacoes/lostPushSweep';
 import {
   SHOPEE_NOTIFICATION_QUEUE,
@@ -54,13 +55,18 @@ import * as notificationHandlers from './processNotification';
  * are what decision P3 spends the receiver's cold-start cost on: everything
  * Shopee's own retry ladder fails to deliver is recovered by a schedule here,
  * never by the receiver.
+ *
+ * Master plan step 6 (#1514) adds the WEEKLY settlement sweep. ⚠️ It is not a
+ * backstop: nothing failed to arrive, because Shopee never sends a payment event
+ * at all — the final money exists only behind `get_escrow_list`, and a schedule
+ * is the only thing that can go and read it.
  */
 
 /**
  * The Shopee partner credentials, bound to every trigger that can reach a
  * PUBLIC-signed Shopee call.
  *
- * ⚠️ It covers the five `onSchedule` triggers in THIS file only.
+ * ⚠️ It covers the six `onSchedule` triggers in THIS file only.
  * `processShopeeNotification` is declared in `processNotification.ts` and holds
  * its own copy of the same two names, pinned by that module's own test — so
  * this constant does not by itself stop a NEW trigger picking a different
@@ -462,6 +468,104 @@ export const backfillShopeeOrders = onSchedule(
     });
     if (erros.length > 0) {
       logger.warn('[shopee] order backfill com falhas por conta', {
+        erros: erros.slice(0, 10),
+      });
+    }
+  },
+);
+
+/**
+ * The WEEKLY SETTLEMENT SWEEP (master plan step 6, #1514) — the only thing in
+ * this channel that ever learns what the marketplace actually PAID.
+ *
+ * Shopee ships no payment push and no payment resource of its own: the order
+ * import writes a pagamento from `get_order_detail` + `get_escrow_detail` on the
+ * code-3 task, but `escrow_amount` is documented to MOVE until the order
+ * completes, and `escrow_release_time` — the field that says the money really
+ * left — is exposed by exactly ONE endpoint, `get_escrow_list`. So the final
+ * figure cannot arrive by event; it has to be fetched, and this is the schedule
+ * that fetches it.
+ *
+ * Per active conta it pages that listing over a release-time window from a
+ * durable cursor (`liquidacaoShopee/{integracaoId}`, MILLISECONDS, this sweep
+ * its only writer, one merge per conta per tick, no transaction), reads the
+ * fresh escrow of every row whose pagamento exists and stamps the top-level
+ * `pagamento.liquidacao`. A row whose pagamento is not here yet is PARKED and
+ * re-driven through the normal import path with a synthetic code 3, capped at
+ * 50 per tick.
+ *
+ * Mondays 05:10 America/Sao_Paulo. Weekly because an escrow release is weekly
+ * business — it lags delivery by 7–15 days — and the minute keeps it clear of
+ * every sibling schedule's :00/:15/:20/:30/:45, between the 04:00 expiry walk
+ * and the 05:45 push monitor, all of which draw on one undocumented partner
+ * rate-limit budget. A daily cadence would be `'10 5 * * *'`, one character
+ * away, which is why `index.test.ts` pins the near-miss explicitly.
+ *
+ * ⚠️ It ships **ON, with no `*_ENABLED` flag** — deliberately, and unlike the
+ * order backfill. A backstop that ships off is #778's failure; the fan-out here
+ * is bounded on every axis (300 settlements and 50 synthetic pushes per tick),
+ * and the only pedido-CREATING side effect is that synthetic code 3, which lands
+ * on a deterministic id a migrated pedido already occupies.
+ *
+ * ⚠️ This function ENQUEUES and it is Shop-signed: the same `TASKS_INVOKER_SA`
+ * requirement as the lost-push sweep and the backfill, plus a live access token
+ * per conta.
+ */
+export const sweepShopeeEscrowSettlement = onSchedule(
+  {
+    schedule: '10 5 * * 1',
+    timeZone: 'America/Sao_Paulo',
+    secrets: SHOPEE_SECRETS,
+    // Up to MAX_LIQUIDACOES_POR_TICK (300) `get_escrow_detail` calls, each
+    // followed by one transaction, plus up to 20 list pages per conta. 540 is
+    // the gen2 ceiling and the per-tick budget is sized against it (≈ 370 s), so
+    // the ceiling is margin rather than a claim that nine minutes is normal.
+    timeoutSeconds: 540,
+    // No `region:` anywhere in this file — `options.ts` sets it globally.
+  },
+  async () => {
+    const mark = readCacheMark();
+    // ⚠️ `getDb()` is evaluated FIRST (arguments left to right), so the admin app
+    // exists before the scheduler asks for one; both resolve `getApps()[0]`.
+    const result = await runShopeeEscrowSettlement(getDb(), {
+      nowMs: Date.now(),
+      scheduler: createShopeeTaskScheduler(),
+      logger,
+    });
+    const erros = result.contas
+      .filter((conta) => conta.error !== null)
+      .map((conta) => ({ integracaoId: conta.integracaoId, erro: conta.error }));
+    logger.info('[shopee] escrow settlement sweep', {
+      contas: result.contas.length,
+      // ⚠️ Never summed with `processadas`: it counts contas connected by main
+      // account only, which cannot be shop-signed at all, and adding the two
+      // would read as coverage.
+      semShopId: result.semShopId,
+      processadas: result.contas.filter((conta) => conta.pulada === null).length,
+      paginasLidas: result.contas.reduce((total, conta) => total + conta.paginas, 0),
+      linhas: result.contas.reduce((total, conta) => total + conta.linhas, 0),
+      liquidados: result.contas.reduce((total, conta) => total + conta.liquidados, 0),
+      // The idempotent steady state: a re-covered overlap row writes NOTHING, so
+      // a high `semMudanca` beside a low `liquidados` is the healthy week.
+      semMudanca: result.contas.reduce((total, conta) => total + conta.semMudanca, 0),
+      obsoletos: result.contas.reduce((total, conta) => total + conta.obsoletos, 0),
+      pendentes: result.contas.reduce((total, conta) => total + conta.pendentes, 0),
+      sinteticas: result.contas.reduce((total, conta) => total + conta.sinteticas, 0),
+      puladas: result.contas.reduce((total, conta) => total + conta.puladas, 0),
+      janelasDrenadas: result.contas.filter((conta) => conta.drenada).length,
+      // A truncated window advances NOTHING and persists its page number — the
+      // next tick replays it. A count that stays high week after week is a conta
+      // that can no longer keep up, and that is invisible in every other counter
+      // here.
+      janelasTruncadas: result.contas.filter((conta) => conta.truncada).length,
+      janelasRetomadas: result.contas.filter((conta) => conta.retomada).length,
+      errorCount: erros.length,
+      // Read-cache hits/misses accrued by THIS lane, not by the task consumer's
+      // process — they are separate deployments.
+      readCache: readCacheDelta(mark),
+    });
+    if (erros.length > 0) {
+      logger.warn('[shopee] escrow settlement sweep com falhas por conta', {
         erros: erros.slice(0, 10),
       });
     }

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -15,6 +17,7 @@ import {
   shopeeConfirmLostPushSchema,
   shopeeEnvelopeSchema,
   shopeeEscrowDetailSchema,
+  shopeeEscrowListSchema,
   shopeeFaixaSchema,
   shopeeItemLimitSchema,
   shopeeKitItemLimitSchema,
@@ -1156,13 +1159,18 @@ describe('o escrow do pedido (get_escrow_detail)', () => {
     expect(income.buyer_paid_shipping_fee).toBe(1.99);
   });
 
-  it('os ~100 campos que o passo 6 vai ler atravessam pelo passthrough', () => {
+  it('os campos que NINGUÉM declarou atravessam pelo passthrough', () => {
+    // ⚠️ `commission_fee` e `service_fee` estavam AQUI enquanto eram só passageiros;
+    // o passo 6 os DECLAROU (com mais dezesseis), e a asserção deles mudou de casa
+    // para `describe('os campos de tarifa do escrow (passo 6)')`. O que sobra aqui
+    // é o que continua sem leitor: `order_adjustment` só existe quando há ajuste, e
+    // a Shopee manda ~70 floats que ninguém nomeia.
     const parsed = shopeeEscrowDetailSchema.parse(
-      corpoEscrow({ commission_fee: 3.5, service_fee: 1, order_adjustment: [{ amount: 10.1 }] }),
+      corpoEscrow({ order_adjustment: [{ amount: 10.1 }], withholding_tax: 2.5 }),
     );
     const income = parsed.response.order_income as unknown as Record<string, unknown>;
-    expect(income.commission_fee).toBe(3.5);
-    expect(income.service_fee).toBe(1);
+    expect(income.order_adjustment).toEqual([{ amount: 10.1 }]);
+    expect(income.withholding_tax).toBe(2.5);
   });
 
   it('order_income ausente é null — "não veio" não é "zerado"', () => {
@@ -1178,5 +1186,251 @@ describe('o escrow do pedido (get_escrow_detail)', () => {
     expect(
       shopeeEscrowDetailSchema.safeParse({ error: '', response: { order_sn: '' } }).success,
     ).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*         O dinheiro do escrow e a liquidação (passo 6)                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * O corpo REAL que a Shopee devolveu para o pedido do sandbox de Singapura,
+ * commitado em `apps/shopee/lib/shopee/fixtures/__wire__/`.
+ *
+ * ⚠️ Lido do arquivo, não copiado para cá. Uma cópia dos números seria o espelho
+ * que a CLAUDE.md da raiz descreve: dois lugares afirmando o mesmo fato do wire,
+ * livres para divergir devagar e ficarem os dois verdes. O arquivo é a
+ * autoridade; se ele mudar de lugar, este teste QUEBRA, que é o sinal certo.
+ */
+const CORPO_ESCROW_SG: unknown = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../../../apps/shopee/lib/shopee/fixtures/__wire__/get_escrow_detail.qty2-sg.json',
+      import.meta.url,
+    ),
+    'utf8',
+  ),
+);
+
+function rendaEscrow(income: Record<string, unknown> = {}, resto: Record<string, unknown> = {}) {
+  return {
+    error: '',
+    response: { order_sn: ORDER_SN_DETALHE, order_income: income, ...resto },
+  };
+}
+
+describe('os campos de tarifa do escrow (passo 6)', () => {
+  it('16 — os 18 campos declarados leem o corpo REAL do sandbox SG: 16 valores e o par BR `net_*` em null', () => {
+    const income = shopeeEscrowDetailSchema.parse(CORPO_ESCROW_SG).response.order_income!;
+
+    // Os três da FAQ 479 — o que vira `tarifas` no pagamento.
+    expect(income.commission_fee).toBe(0.65);
+    expect(income.service_fee).toBe(0);
+    expect(income.seller_transaction_fee).toBe(0.64);
+    // O rollup e a metade dele que a Shopee também manda.
+    expect(income.credit_card_transaction_fee).toBe(0.64);
+    expect(income.buyer_transaction_fee).toBe(0);
+    // O resto do bloco declarado.
+    expect(income.escrow_amount).toBe(30.7);
+    expect(income.escrow_amount_after_adjustment).toBe(30.7);
+    expect(income.buyer_total_amount).toBe(31.99);
+    expect(income.campaign_fee).toBe(0);
+    expect(income.pix_discount).toBe(0);
+    expect(income.seller_return_refund).toBe(0);
+    expect(income.drc_adjustable_refund).toBe(0);
+    expect(income.total_adjustment_amount).toBe(0);
+    expect(income.shipping_seller_protection_fee_amount).toBe(0);
+    expect(income.final_shipping_fee).toBe(0);
+    expect(income.seller_order_processing_fee).toBe(0);
+    expect(income.order_ams_commission_fee).toBe(0);
+    expect(income.escrow_tax).toBe(0);
+
+    // ⚠️ O par BR está AUSENTE deste corpo (é de Singapura), e ausente lê `null`
+    // — "não veio", nunca "zero". Um `.default(0)` aqui faria uma tarifa líquida
+    // BR não enviada parecer uma tarifa de verdade valendo nada.
+    expect(income.net_commission_fee).toBeNull();
+    expect(income.net_service_fee).toBeNull();
+    expect(income.net_commission_fee).not.toBe(0);
+  });
+
+  it('16b — ⚠️ NEAR-MISS: `credit_card_transaction_fee` e `seller_transaction_fee` são campos SEPARADOS', () => {
+    // ⚠️ No corpo SG os dois valem 0.64, porque `buyer_transaction_fee` é 0 e o
+    // primeiro é definido pela página como a SOMA dos dois. Ou seja: naquele
+    // corpo, trocar um pelo outro não muda nada. É por isso que a separação
+    // precisa de um vetor onde eles DIFEREM.
+    const income = shopeeEscrowDetailSchema.parse(
+      rendaEscrow({
+        seller_transaction_fee: 0.64,
+        buyer_transaction_fee: 0.1,
+        credit_card_transaction_fee: 0.74,
+      }),
+    ).response.order_income!;
+
+    expect(income.seller_transaction_fee).toBe(0.64);
+    expect(income.buyer_transaction_fee).toBe(0.1);
+    expect(income.credit_card_transaction_fee).toBe(0.74);
+    expect(income.credit_card_transaction_fee).not.toBe(income.seller_transaction_fee);
+  });
+
+  it('17 — `tenure_info_list` parseia nas TRÊS formas observadas, e `"N/A"` continua STRING', () => {
+    // (1) A forma da página: UM objeto, `instalment_plan` string.
+    const objeto = shopeeEscrowDetailSchema.parse(
+      rendaEscrow({
+        tenure_info_list: { payment_channel_name: 'Banco Inventado', instalment_plan: '3' },
+      }),
+    ).response.order_income!.tenure_info_list!;
+    expect(Array.isArray(objeto)).toBe(false);
+    const singular = objeto as { payment_channel_name: string | null; instalment_plan: unknown };
+    expect(singular.payment_channel_name).toBe('Banco Inventado');
+    // ⚠️ `z.string()` vem PRIMEIRO na união: `'3'` continua a STRING '3'.
+    expect(singular.instalment_plan).toBe('3');
+    expect(typeof singular.instalment_plan).toBe('string');
+    expect(singular.instalment_plan).not.toBe(3);
+
+    // (2) O anúncio 1080: ARRAY, `instalment_plan` INTEIRO.
+    const lista = shopeeEscrowDetailSchema.parse(
+      rendaEscrow({
+        tenure_info_list: [
+          { payment_channel_name: 'Banco Inventado', instalment_plan: 1 },
+          { payment_channel_name: 'Outro Banco', instalment_plan: 3 },
+        ],
+      }),
+    ).response.order_income!.tenure_info_list!;
+    expect(Array.isArray(lista)).toBe(true);
+    const entradas = lista as { instalment_plan: unknown }[];
+    expect(entradas[0]?.instalment_plan).toBe(1);
+    expect(entradas[1]?.instalment_plan).toBe(3);
+    expect(typeof entradas[1]?.instalment_plan).toBe('number');
+
+    // (3) O corpo REAL do sandbox: array de UM, `"N/A"`, sem canal.
+    const real =
+      shopeeEscrowDetailSchema.parse(CORPO_ESCROW_SG).response.order_income!.tenure_info_list!;
+    expect(Array.isArray(real)).toBe(true);
+    const doSandbox = real as { payment_channel_name: string | null; instalment_plan: unknown }[];
+    expect(doSandbox).toHaveLength(1);
+    // ⚠️ `"N/A"` é um VALOR, não um ausente. Quem dobra isso para 1 parcela é o
+    // leitor em `apps/shopee`; o pacote registra o que chegou.
+    expect(doSandbox[0]?.instalment_plan).toBe('N/A');
+    expect(doSandbox[0]?.payment_channel_name).toBeNull();
+
+    // E ausente é `null`, nunca uma lista vazia inventada.
+    expect(
+      shopeeEscrowDetailSchema.parse(rendaEscrow()).response.order_income!.tenure_info_list,
+    ).toBeNull();
+  });
+
+  it('18 — ⚠️ `order_income.pix_discount` e `buyer_payment_info.discount_pix` NÃO são dobrados', () => {
+    // Duas grafias, dois relógios: um se move até o pedido completar, o outro é
+    // o instantâneo do checkout. Ler um pelo outro daria um número certo num
+    // pedido calado e silenciosamente velho num pedido com reembolso.
+    const parsed = shopeeEscrowDetailSchema.parse(
+      rendaEscrow({ pix_discount: 5 }, { buyer_payment_info: { discount_pix: 0 } }),
+    );
+    expect(parsed.response.order_income!.pix_discount).toBe(5);
+    expect(parsed.response.buyer_payment_info!.discount_pix).toBe(0);
+
+    // NEAR-MISS na direção oposta: trocar os valores troca as leituras, então
+    // nenhum dos dois está lendo o outro por acidente.
+    const trocado = shopeeEscrowDetailSchema.parse(
+      rendaEscrow({ pix_discount: 0 }, { buyer_payment_info: { discount_pix: 5 } }),
+    );
+    expect(trocado.response.order_income!.pix_discount).toBe(0);
+    expect(trocado.response.buyer_payment_info!.discount_pix).toBe(5);
+
+    // E o campo do outro lado não vaza para cá: `discount_pix` não existe em
+    // `order_income` neste corpo, e continua indefinido em vez de virar 5.
+    expect((trocado.response.order_income as unknown as Record<string, unknown>).discount_pix).toBe(
+      undefined,
+    );
+  });
+
+  it('19 — `buyer_payment_info` tem seis campos TIPADOS e o resto atravessa pelo passthrough', () => {
+    const info = shopeeEscrowDetailSchema.parse(CORPO_ESCROW_SG).response.buyer_payment_info!;
+
+    expect(info.is_paid_by_credit_card).toBe(false);
+    expect(info.buyer_payment_method).toBe('Apple Pay');
+    expect(info.buyer_total_amount).toBe(31.99);
+    expect(info.icms_tax_amount).toBe(0);
+    expect(info.iof_tax_amount).toBe(0);
+    expect(info.discount_pix).toBe(0);
+    // 33 chaves no corpo real; as outras 27 continuam chegando.
+    expect((info as unknown as Record<string, unknown>).vat).toBe(0);
+    expect((info as unknown as Record<string, unknown>).merchant_subtotal).toBe(30);
+
+    // ⚠️ `null` num pedido não-BR: a CHAVE vem, o valor é nulo. Distinto de
+    // "não veio chave nenhuma", e as duas leituras dão `null` sem inventar `{}`.
+    expect(
+      shopeeEscrowDetailSchema.parse(rendaEscrow({}, { buyer_payment_info: null })).response
+        .buyer_payment_info,
+    ).toBeNull();
+    expect(shopeeEscrowDetailSchema.parse(rendaEscrow()).response.buyer_payment_info).toBeNull();
+  });
+
+  it('19b — ⚠️ NEAR-MISS: os dois `buyer_total_amount` podem DISCORDAR e cada um continua legível', () => {
+    // O de `buyer_payment_info` é o instantâneo INICIAL do checkout ("not updated
+    // after return/refund"); o de `order_income` se move. Dobrá-los faria um
+    // pedido reembolsado ler o número errado sem nada dizer.
+    const parsed = shopeeEscrowDetailSchema.parse(
+      rendaEscrow(
+        { buyer_total_amount: 20 },
+        { buyer_payment_info: { buyer_total_amount: 31.99 } },
+      ),
+    );
+    expect(parsed.response.order_income!.buyer_total_amount).toBe(20);
+    expect(parsed.response.buyer_payment_info!.buyer_total_amount).toBe(31.99);
+  });
+
+  it('20 — números CITADOS parseiam nos dois schemas novos; um id fracionário NÃO é arredondado', () => {
+    // A tolerância do #1087: um serializador que cita UM campo não pode custar o
+    // dinheiro do pedido nem a semana inteira de liquidação.
+    const income = shopeeEscrowDetailSchema.parse(
+      rendaEscrow({ escrow_amount: '30.7', commission_fee: '0.65', escrow_tax: '0' }),
+    ).response.order_income!;
+    expect(income.escrow_amount).toBe(30.7);
+    expect(income.commission_fee).toBe(0.65);
+    expect(income.escrow_tax).toBe(0);
+
+    const page = shopeeEscrowListSchema.parse({
+      error: '',
+      response: {
+        more: false,
+        escrow_list: [
+          { order_sn: ORDER_SN_DETALHE, payout_amount: '30.7', escrow_release_time: '1651849648' },
+        ],
+      },
+    }).response;
+    expect(page.escrow_list[0]?.payout_amount).toBe(30.7);
+    expect(page.escrow_list[0]?.escrow_release_time).toBe(1_651_849_648);
+
+    // ⚠️ NEAR-MISS: a tolerância é sobre a ASPA, nunca sobre o valor. Um
+    // `escrow_release_time` fracionário é recusado por `wireInt()` e a linha
+    // inteira vira a sentinela `null` — arredondar um instante de liberação
+    // inventaria a marca-d'água da liquidação.
+    const comFracao = shopeeEscrowListSchema.parse({
+      error: '',
+      response: {
+        more: false,
+        escrow_list: [
+          { order_sn: ORDER_SN_DETALHE, payout_amount: 1, escrow_release_time: '1651849648.5' },
+        ],
+      },
+    }).response;
+    expect(comFracao.escrow_list[0]).toBeNull();
+  });
+
+  it('21 — dinheiro NEGATIVO parseia: a própria página manda `final_shipping_fee: -10`', () => {
+    // Nenhum limite é declarado em campo nenhum deste bloco, e é deliberado: um
+    // `.min(0)` faria a página recusar o exemplo dela mesma.
+    const income = shopeeEscrowDetailSchema.parse(
+      rendaEscrow({ final_shipping_fee: -10, total_adjustment_amount: -2.5 }),
+    ).response.order_income!;
+    expect(income.final_shipping_fee).toBe(-10);
+    expect(income.total_adjustment_amount).toBe(-2.5);
+
+    // E citado também, pela mesma razão do teste 20.
+    expect(
+      shopeeEscrowDetailSchema.parse(rendaEscrow({ final_shipping_fee: '-10' })).response
+        .order_income!.final_shipping_fee,
+    ).toBe(-10);
   });
 });

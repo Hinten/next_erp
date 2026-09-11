@@ -105,6 +105,41 @@ export function microsDeSegundosShopee(segundos: number): number {
 }
 
 /* -------------------------------------------------------------------------- */
+/*                    patch primitives shared by both writers                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The larger of two µs stamps (either may be absent).
+ *
+ * ⚠️ **Both arguments must already be microseconds.** It compares numbers and
+ * has no idea what unit they carry, so feeding it a seconds value picks the
+ * other one for ever — see {@link microsDeSegundosShopee}'s `coerceToMicros`
+ * warning for the same trap one level down.
+ *
+ * It lives HERE rather than in either transaction because BOTH of them stamp
+ * `ultimaModificacao` the same way (`orderPedidoTx.ts` on the pedido,
+ * `pagamentoTx.ts` on the pagamento) and a second copy is exactly the shape the
+ * root `CLAUDE.md` names: two files, one comment claiming they agree.
+ */
+export function maiorUs(a: number | null, b: number): number {
+  return a == null || b > a ? b : a;
+}
+
+/**
+ * A stored value that counts as "nothing here yet" for a FILL-ONCE field.
+ *
+ * ⚠️ `0` and `false` are NOT empty. A fill-once field holding `0` was filled
+ * with a zero by somebody, and a truthiness test would re-stamp it on every
+ * redelivery — which on `dataCadastro` means a `historicoDeModificacoes` row per
+ * push, since `onPagamentoChanged` ignores only `id` and `ultimaModificacao`.
+ *
+ * Shared by both transactions for the {@link maiorUs} reason.
+ */
+export function vazio(valor: unknown): boolean {
+  return valor === null || valor === undefined || valor === '';
+}
+
+/* -------------------------------------------------------------------------- */
 /*                            small tolerant readers                           */
 /* -------------------------------------------------------------------------- */
 
