@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FirebaseError } from 'firebase/app';
 import { type Query, type QueryConstraint, getDocs } from 'firebase/firestore';
 import {
@@ -114,12 +114,10 @@ export function useConversaQuery(input: UseConversaQueryInput): UseConversaQuery
   const [loadingMore, setLoadingMore] = useState(false);
   const [exhausted, setExhausted] = useState(false);
   const [moreError, setMoreError] = useState<Error | undefined>();
+  const pageGeneration = useRef(0);
 
-  // Reset the paginated tail whenever the query identity changes. Setting
-  // state in an effect is the sanctioned reset shape here: the reset must
-  // also discard in-flight loadMore results, and an in-render "derive from
-  // key" swap can't cancel those.
-
+  // Reset the tail and invalidate pending pages on query change/unmount. A late
+  // page from the previous filter must not repopulate an empty cliente result.
   useEffect(() => {
     // ⚠️ The directive must sit on the line the rule REPORTS — the first
     // setState — not on the `useEffect` line above it, where it lived until
@@ -130,23 +128,30 @@ export function useConversaQuery(input: UseConversaQueryInput): UseConversaQuery
     setExhausted(false);
     setLoadingMore(false);
     setMoreError(undefined);
-  }, [resetKey]);
+    return () => {
+      pageGeneration.current += 1;
+    };
+  }, [liveQuery]);
 
   // Merge: live page first (authoritative + fresh), then the one-shot tail with
   // any id already surfaced live dropped. `live.data` is dereferenced inside
   // the memo (a `?? []` binding outside would mint a fresh array per render
   // and defeat the memo).
   const rows = useMemo(() => {
+    // The shared snapshot hook retains its previous data while subscribing to
+    // the new query. Those rows do not belong to the newly selected cliente.
+    if (live.loading) return [];
     const liveRows = live.data ?? [];
     const seen = new Set(liveRows.map((r) => r.id));
     const tail = extraRows.filter((r) => !seen.has(r.id));
     return [...liveRows, ...tail];
-  }, [live.data, extraRows]);
+  }, [live.data, live.loading, extraRows]);
 
   const loadMore = useCallback(() => {
-    if (loadingMore || exhausted) return;
+    if (live.loading || loadingMore || exhausted) return;
     const cursor = rows[rows.length - 1]?.snap;
     if (!cursor) return;
+    const generation = pageGeneration.current;
 
     setLoadingMore(true);
     setMoreError(undefined);
@@ -157,6 +162,7 @@ export function useConversaQuery(input: UseConversaQueryInput): UseConversaQuery
           ...paginate({ after: cursor, pageSize: CONVERSA_PAGE_SIZE }),
         ]);
         const snap = await getDocs(pageQuery);
+        if (generation !== pageGeneration.current) return;
         const newRows = mapSnapshotRows(snap, true);
         setExtraRows((prev) => {
           const seen = new Set(prev.map((r) => r.id));
@@ -165,15 +171,15 @@ export function useConversaQuery(input: UseConversaQueryInput): UseConversaQuery
         if (newRows.length < CONVERSA_PAGE_SIZE) setExhausted(true);
       } catch (err) {
         if (err instanceof FirebaseError) {
-          setMoreError(err);
+          if (generation === pageGeneration.current) setMoreError(err);
         } else {
           throw err;
         }
       } finally {
-        setLoadingMore(false);
+        if (generation === pageGeneration.current) setLoadingMore(false);
       }
     })();
-  }, [loadingMore, exhausted, rows, db, baseConstraints]);
+  }, [live.loading, loadingMore, exhausted, rows, db, baseConstraints]);
 
   const hasMore = !exhausted && rows.length >= CONVERSA_PAGE_SIZE;
 

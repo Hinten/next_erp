@@ -1,8 +1,10 @@
 import { expect, test } from '@playwright/test';
 import {
   CHAT_ETIQUETA_RED,
+  cleanupByNamePrefix,
   cleanupConversas,
   e2ePrefix,
+  seedClientes,
   seedConversas,
   seedSearchMessages,
   type SeededChat,
@@ -22,12 +24,16 @@ import { warmRoutes } from './helpers/warmup';
  */
 test.describe.serial('Chat inbox — list pane', () => {
   const prefix = e2ePrefix('chat');
+  const clientePrefix = `${prefix}-sem-conversas`;
+  const clienteNome = `${clientePrefix}-001`;
   let seeded: SeededChat;
   let searchSeed: SeededSearchMessages;
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
     seeded = await seedConversas(prefix);
+    // userCliente is null; no conversa references this run/worker-scoped cliente.
+    await seedClientes(clientePrefix, 1);
     // Two token-bearing messages (old in BLUE, recent in RED) for global search.
     searchSeed = await seedSearchMessages(prefix, seeded);
     await warmRoutes(browser, ['/chat', '/chat/__aquecimento__', '/whatsapp']);
@@ -35,6 +41,7 @@ test.describe.serial('Chat inbox — list pane', () => {
 
   test.afterAll(async () => {
     await cleanupConversas(prefix);
+    await cleanupByNamePrefix('clientes', clientePrefix);
   });
 
   test('renders the three tabs and lists seeded conversas on Todas', async ({ page }) => {
@@ -54,6 +61,41 @@ test.describe.serial('Chat inbox — list pane', () => {
     await expect(page.getByText(seeded.vermelha.nome)).toBeVisible({ timeout: 20_000 });
     // The preview is fetched one-shot per tile (orderBy timestamp desc, limit 1).
     await expect(page.getByText(seeded.vermelha.previewText)).toBeVisible({ timeout: 20_000 });
+  });
+
+  test('selecting a cliente without conversations clears the inbox and finishes loading', async ({
+    page,
+  }) => {
+    await page.goto('/chat?tab=todas');
+    for (const conversa of [seeded.vermelha, seeded.azul, seeded.pendente]) {
+      await expect(page.getByText(conversa.nome)).toBeVisible({ timeout: 20_000 });
+    }
+
+    await page.getByRole('button', { name: 'Filtrar por cliente', exact: true }).click();
+    const picker = page.getByRole('dialog', { name: 'Filtrar por cliente' });
+    await picker.getByPlaceholder('Nome ou telefone…').fill(clienteNome);
+    await picker.getByRole('button', { name: `${clienteNome} sem telefone` }).click();
+    await expect(picker).toHaveCount(0);
+    await expect(page).toHaveURL(
+      (url) =>
+        url.searchParams.get('tab') === 'todas' &&
+        url.searchParams.get('cliente') === `documents/clientes/${clienteNome}`,
+    );
+
+    // This message is only rendered after loading is false and every row is gone.
+    await expect(page.getByText('Nenhuma conversa.', { exact: true })).toBeVisible({
+      timeout: 20_000,
+    });
+    for (const conversa of [seeded.vermelha, seeded.azul, seeded.pendente]) {
+      await expect(page.getByText(conversa.nome)).toHaveCount(0);
+    }
+    await expect(page.getByRole('button', { name: 'Carregar mais' })).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Remover filtro de cliente' }).click();
+    await expect(page).toHaveURL((url) => !url.searchParams.has('cliente'));
+    await expect(page.getByText(seeded.vermelha.nome)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('Nenhuma conversa.', { exact: true })).toHaveCount(0);
   });
 
   test('the Pendentes tab surfaces a badge and the pendente conversa', async ({ page }) => {
