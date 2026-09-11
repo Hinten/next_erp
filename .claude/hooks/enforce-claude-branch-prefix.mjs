@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 // PreToolUse/Bash hook: refuse to create a git branch whose name does not start
-// with `claude/`.
+// with `claude/` or `codex/`.
 //
 // Why: every workflow's `pull_request` trigger filters on the PR's BASE branch
 // (`.github/workflows/ci.yml`). A PR stacked onto a branch outside that list
 // reports *zero* checks — silently, as "no checks reported" rather than a
-// failure — so it can be merged untested. Keeping every branch under `claude/`
-// keeps stacked PRs inside the filter.
+// failure — so it can be merged untested. Keeping agent branches under `claude/`
+// or `codex/` keeps stacked PRs inside the filter.
 //
 // Reads the hook payload on stdin, prints a PreToolUse deny decision on stdout
 // when it finds a violation, and stays silent otherwise.
 
-const PREFIX = 'claude/';
+const PREFIXES = ['claude/', 'codex/'];
 
 /** Flags that consume the following token, so it is not a branch name. */
 const VALUE_FLAGS = new Set(['-t', '--track', '--set-upstream-to', '-u', '--orphan']);
@@ -125,7 +125,7 @@ process.stdin.on('end', () => {
   const offenders = [];
   for (const part of splitCommands(stripHeredocs(command))) {
     for (const name of branchNamesCreated(tokenize(part))) {
-      if (!name.startsWith(PREFIX)) offenders.push(name);
+      if (!PREFIXES.some((prefix) => name.startsWith(prefix))) offenders.push(name);
     }
   }
   if (offenders.length === 0) process.exit(0);
@@ -138,7 +138,7 @@ process.stdin.on('end', () => {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason:
-          `Branch name ${list} does not start with \`${PREFIX}\`. Every workflow's ` +
+          `Branch name ${list} must start with \`claude/\` or \`codex/\`. Every workflow's ` +
           "`pull_request` trigger filters on the PR's BASE branch, so a PR stacked onto a " +
           'branch outside that list reports zero checks and can be merged untested. ' +
           `Re-run with \`${suggestion}\` instead.`,
