@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// PreToolUse/Bash hook: refuse to create a git branch whose name does not start
-// with `claude/` or `codex/`.
+// PreToolUse/Bash hook: refuse to create a git branch outside the two agent
+// prefixes: `claude/` for Claude and `codex/` for Codex.
 //
 // Why: every workflow's `pull_request` trigger filters on the PR's BASE branch
 // (`.github/workflows/ci.yml`). A PR stacked onto a branch outside that list
 // reports *zero* checks — silently, as "no checks reported" rather than a
-// failure — so it can be merged untested. Keeping agent branches under `claude/`
-// or `codex/` keeps stacked PRs inside the filter.
+// failure — so it can be merged untested. Both agent prefixes are accepted by
+// that filter, while `codex/**` additionally receives the pre-PR push CI.
 //
 // Reads the hook payload on stdin, prints a PreToolUse deny decision on stdout
 // when it finds a violation, and stays silent otherwise.
@@ -131,7 +131,8 @@ process.stdin.on('end', () => {
   if (offenders.length === 0) process.exit(0);
 
   const list = offenders.map((n) => `\`${n}\``).join(', ');
-  const suggestion = `claude/${offenders[0].replace(/^[^/]+\//, '')}`;
+  const suffix = offenders[0].replace(/^[^/]+\//, '');
+  const suggestions = PREFIXES.map((prefix) => `\`${prefix}${suffix}\``).join(' or ');
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
@@ -141,7 +142,7 @@ process.stdin.on('end', () => {
           `Branch name ${list} must start with \`claude/\` or \`codex/\`. Every workflow's ` +
           "`pull_request` trigger filters on the PR's BASE branch, so a PR stacked onto a " +
           'branch outside that list reports zero checks and can be merged untested. ' +
-          `Re-run with \`${suggestion}\` instead.`,
+          `Re-run with ${suggestions} instead.`,
       },
     }),
   );

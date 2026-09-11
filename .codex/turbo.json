@@ -1,0 +1,11 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "description": "NOT CACHEABLE. This suite reads repository files outside .codex, including .claude/settings.json, .mcp.json and every CLAUDE.md. A package-scoped hash would replay a stale green after those inputs change. The suite is small, and CI already runs without a persistent or remote turbo cache. dependsOn is restated because a Package Configuration overrides the root task per key.",
+      "dependsOn": ["^build"],
+      "cache": false
+    }
+  }
+}

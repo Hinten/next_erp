@@ -25,6 +25,17 @@
         ]
       },
       {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git -c 'safe.directory=*' rev-parse --show-toplevel)/.claude/hooks/block-destructive-vcs.mjs\"",
+            "timeout": 30,
+            "statusMessage": "Checking destructive Git operations"
+          }
+        ]
+      },
+      {
         "matcher": "^(Bash|apply_patch)$",
         "hooks": [
           {
