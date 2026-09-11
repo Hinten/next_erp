@@ -1898,7 +1898,13 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             <Group justify="flex-end" wrap="nowrap" align="flex-end">
               <Group gap="xs">
                 <Tooltip label={transportLabel} withinPortal multiline maw={280}>
-                  <Badge variant="light" color={transportIsLive ? 'teal' : 'yellow'}>
+                  <Badge
+                    variant="light"
+                    color={transportIsLive ? 'teal' : 'yellow'}
+                    data-list-mode={transportIsLive ? 'live' : 'static'}
+                    data-list-policy={listMode.mode}
+                    data-list-reason={listMode.reason ?? ''}
+                  >
                     {transportIsLive ? 'Tempo real' : 'Resultado fixo'}
                   </Badge>
                 </Tooltip>
