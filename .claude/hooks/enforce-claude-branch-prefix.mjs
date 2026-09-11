@@ -131,17 +131,18 @@ process.stdin.on('end', () => {
   if (offenders.length === 0) process.exit(0);
 
   const list = offenders.map((n) => `\`${n}\``).join(', ');
-  const suggestion = `codex/${offenders[0].replace(/^[^/]+\//, '')}`;
+  const suffix = offenders[0].replace(/^[^/]+\//, '');
+  const suggestions = PREFIXES.map((prefix) => `\`${prefix}${suffix}\``).join(' or ');
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason:
-          `Branch name ${list} does not start with \`claude/\` or \`codex/\`. Every workflow's ` +
+          `Branch name ${list} must start with \`claude/\` or \`codex/\`. Every workflow's ` +
           "`pull_request` trigger filters on the PR's BASE branch, so a PR stacked onto a " +
           'branch outside that list reports zero checks and can be merged untested. ' +
-          `For Codex, re-run with \`${suggestion}\` instead.`,
+          `Re-run with ${suggestions} instead.`,
       },
     }),
   );
