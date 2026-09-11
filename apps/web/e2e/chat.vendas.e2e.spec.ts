@@ -90,7 +90,8 @@ test.describe.serial('Chat inbox — list pane', () => {
       await expect(page.getByText(conversa.nome)).toHaveCount(0);
     }
     await expect(page.getByRole('button', { name: 'Carregar mais' })).toHaveCount(0);
-    await expect(page.getByRole('alert')).toHaveCount(0);
+    // Next's screen-reader route announcer also has role="alert", outside main.
+    await expect(page.getByRole('main').getByRole('alert')).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Remover filtro de cliente' }).click();
     await expect(page).toHaveURL((url) => !url.searchParams.has('cliente'));
