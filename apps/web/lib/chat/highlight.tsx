@@ -1,4 +1,7 @@
 import { Fragment, type ReactNode } from 'react';
+import { findSearchRegexMatches } from './searchRegex';
+
+export { escapeRegExp } from './searchRegex';
 
 /**
  * In-thread search highlighting — the pure splitter + a thin renderer used by
@@ -18,16 +21,6 @@ export interface HighlightSegment {
 /** Hard cap on marks per message — a pathological pattern never floods the DOM. */
 export const MAX_MATCHES_PER_MESSAGE = 50;
 
-/** Escape a literal string for safe embedding in a `RegExp` (the search fallback). */
-export function escapeRegExp(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** Force the global flag on so `exec` iterates every occurrence (dedupe 'g'). */
-function withGlobal(re: RegExp): RegExp {
-  return re.flags.includes('g') ? re : new RegExp(re.source, `${re.flags}g`);
-}
-
 /**
  * Split `text` into literal/matched segments against `regex`. Pure + allocation-
  * bounded:
@@ -43,26 +36,12 @@ export function splitHighlight(
   maxMatches: number = MAX_MATCHES_PER_MESSAGE,
 ): HighlightSegment[] {
   if (text === '') return [];
-  const re = withGlobal(regex);
-  re.lastIndex = 0;
-
   const segments: HighlightSegment[] = [];
   let cursor = 0;
-  let count = 0;
-  let m: RegExpExecArray | null;
-
-  while (count < maxMatches && (m = re.exec(text)) !== null) {
-    // Zero-width match: skip it and advance, otherwise `exec` loops forever.
-    if (m[0] === '') {
-      re.lastIndex += 1;
-      continue;
-    }
-    const start = m.index;
-    const end = start + m[0].length;
+  for (const { start, end } of findSearchRegexMatches(text, regex, maxMatches)) {
     if (start > cursor) segments.push({ text: text.slice(cursor, start), match: false });
-    segments.push({ text: m[0], match: true });
+    segments.push({ text: text.slice(start, end), match: true });
     cursor = end;
-    count += 1;
   }
 
   if (cursor < text.length) segments.push({ text: text.slice(cursor), match: false });
