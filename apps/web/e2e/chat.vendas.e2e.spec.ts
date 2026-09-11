@@ -66,28 +66,6 @@ test.describe.serial('Chat inbox — list pane', () => {
   test('selecting a cliente without conversations clears the inbox and finishes loading', async ({
     page,
   }) => {
-    page.on('console', (message) => {
-      if (message.text().startsWith('[cliente-transition]')) console.log(message.text());
-    });
-    await page.addInitScript(() => {
-      const originalSet = URLSearchParams.prototype.set;
-      URLSearchParams.prototype.set = function (key, value) {
-        if (key === 'cliente') console.log('[cliente-transition] set', value, new Error().stack);
-        return originalSet.call(this, key, value);
-      };
-      const originalDelete = URLSearchParams.prototype.delete;
-      URLSearchParams.prototype.delete = function (key) {
-        if (key === 'cliente') console.log('[cliente-transition] delete', new Error().stack);
-        return originalDelete.call(this, key);
-      };
-      for (const method of ['replaceState', 'pushState'] as const) {
-        const original = history[method];
-        history[method] = function (...args) {
-          console.log('[cliente-transition] history', method, String(args[2]));
-          return original.apply(this, args);
-        };
-      }
-    });
     await page.goto('/chat?tab=todas');
     for (const conversa of [seeded.vermelha, seeded.azul, seeded.pendente]) {
       await expect(page.getByText(conversa.nome)).toBeVisible({ timeout: 20_000 });
