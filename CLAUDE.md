@@ -43,8 +43,14 @@ Five rules you must not break without reading it first:
 3. ⚠️ **A job-level `if:` replaces the implicit `success()`** — putting one on a
    downstream job makes it run even after its upstream failed. Let `needs:` carry
    the skip instead.
-4. ⚠️ The `push:` triggers **keep** their `paths:` deliberately; only
-   `pull_request:` goes without.
+4. ⚠️ Domain-lane `push:` triggers **keep** their `paths:` deliberately;
+   `pull_request:` never has them. The three E2E lanes deliberately have an
+   unfiltered `push:` only for `codex/**`, so every published Codex branch gets
+   the complete staging/emulator suite before a PR exists. The NFe domain lane is
+   intentionally asymmetric: a `codex/**` push runs its offline suite only;
+   `nfe-live` is forced for `workflow_dispatch` and main/master pushes, while a PR
+   reaches it only through the narrow `--only-paths` decision. Never make an
+   agent's per-commit push an unconditional SEFAZ emission.
 5. ⚠️ **The workflow YAML comes from the MERGE REF, the checkout from the PR
    HEAD — so a scope step must degrade to running the lane, never to failing
    the job.** The caller is always at least as new as
@@ -63,9 +69,19 @@ must be a registered lane or an explicitly excused one, and no scope invocation
 may go unguarded.
 
 Every `pull_request` base filter is
-`[master, main, production, 'claude/**', 'feat/**', 'fix/**']`. That key matches
-the PR's **base**, so a **stacked PR** must sit on one of those prefixes — on
-anything else (`chore/`, `docs/`, …) it reports zero checks, not failures.
+`[master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']`. That
+key matches the PR's **base**, so a **stacked PR** must sit on one of those
+prefixes — on anything else (`chore/`, `docs/`, …) it reports zero checks, not
+failures.
+
+A push to a published `codex/**` branch runs `ci.yml`, every path-matched domain
+lane, and all three E2E lanes. A local-only worktree cannot trigger Actions. The
+workflow concurrency key normalises push and PR refs to repository + source
+branch, but includes the event name: push and PR runs must not cancel each other,
+because their checks share one SHA and a cancelled required check blocks the PR
+even when the other event passes. Newer runs still cancel older runs of the same
+event and branch. This deliberately pays for two batches while a PR is open; do
+not "deduplicate" them without changing how required checks are published.
 
 ## Critical rules
 

@@ -12,15 +12,18 @@ name: E2E — Vendas
 # in e2e-cadastros.yml. The skip decision lives in the `changes` job below, where
 # the lane still reports.
 on:
+  # Codex branches run the complete staging suite before a PR exists.
+  push:
+    branches: ['codex/**']
   pull_request:
     # The prefix entries cover stacked PRs — see ci.yml. `production` is the
     # release base (main → production); without it the PR that actually ships
     # would run no e2e at all.
-    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
   workflow_dispatch:
 
 concurrency:
-  group: e2e-vendas-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 # Grant the union of what the reusable workflow's jobs request. A reusable
@@ -131,12 +134,12 @@ jobs:
     needs: [changes]
     # Fork PRs can't see repo secrets, so the run would only fail noisily at
     # the Firebase steps — skip it. The gate below reports that skip as RED:
-    # unverified is not the same as verified. Manual dispatch always runs
-    # (same-repo). ⚠️ A maintainer verifying a fork PR re-runs it from an
+    # unverified is not the same as verified. Push and manual dispatch are
+    # trusted in-repo events. ⚠️ A maintainer verifying a fork PR re-runs it from an
     # in-repo branch: `gh pr checkout <n> && git push origin HEAD:fix/pr-<n>-verify`.
     if: >-
       ${{ needs.changes.outputs.run_e2e == 'true' &&
-          (github.event_name == 'workflow_dispatch' ||
+          (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.fork == false) }}
     uses: ./.github/workflows/e2e-reusable.yml
     with:
@@ -160,12 +163,12 @@ jobs:
     needs: [changes]
     # Fork PRs can't see repo secrets, so the run would only fail noisily at
     # the Firebase steps — skip it. The gate below reports that skip as RED:
-    # unverified is not the same as verified. Manual dispatch always runs
-    # (same-repo). ⚠️ A maintainer verifying a fork PR re-runs it from an
+    # unverified is not the same as verified. Push and manual dispatch are
+    # trusted in-repo events. ⚠️ A maintainer verifying a fork PR re-runs it from an
     # in-repo branch: `gh pr checkout <n> && git push origin HEAD:fix/pr-<n>-verify`.
     if: >-
       ${{ needs.changes.outputs.run_e2e == 'true' &&
-          (github.event_name == 'workflow_dispatch' ||
+          (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.fork == false) }}
     uses: ./.github/workflows/e2e-reusable.yml
     with:

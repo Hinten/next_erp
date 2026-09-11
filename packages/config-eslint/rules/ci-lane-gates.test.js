@@ -1389,43 +1389,131 @@ describe('CI lanes always report', () => {
   // ------------------------------------------------------------------
   // 11. Triggers.
   // ------------------------------------------------------------------
-  it('every lane accepts the production base, and the domain lanes keep push paths', () => {
+  it('every lane implements the complete codex push and PR trigger contract', () => {
+    const CI = '.github/workflows/ci.yml';
+    const workflows = [CI, ...Object.keys(LANES)];
+    const e2e = new Set([
+      '.github/workflows/e2e-cadastros.yml',
+      '.github/workflows/e2e-vendas.yml',
+      '.github/workflows/e2e-emulator.yml',
+    ]);
+    const expectedPrBranches = [
+      'master',
+      'main',
+      'production',
+      'claude/**',
+      'codex/**',
+      'feat/**',
+      'fix/**',
+    ];
+    const expectedPushBranches = ['master', 'main', 'codex/**'];
+    const expectedConcurrency =
+      'group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}';
     const offenders = [];
-    for (const file of Object.keys(LANES)) {
+    for (const file of workflows) {
       const source = read(file);
-      const pr = (onSubBlock(source, 'pull_request') ?? []).join('\n');
-      if (!/branches:\s*\[[^\]]*\bproduction\b/.test(pr)) {
-        offenders.push(`${file} → \`production\` missing from \`pull_request: branches:\``);
+      const pr = onSubBlock(source, 'pull_request');
+      const prBranches = yamlListUnder(pr ?? [], 'branches');
+      if (JSON.stringify(prBranches) !== JSON.stringify(expectedPrBranches)) {
+        offenders.push(
+          `${file} → pull_request branches are ${JSON.stringify(prBranches)}, expected ${JSON.stringify(expectedPrBranches)}`,
+        );
       }
+
       const push = onSubBlock(source, 'push');
-      const isDomain = file.includes('/ci-');
-      if (isDomain) {
-        if (push === null) offenders.push(`${file} → domain lane lost its \`push:\` trigger`);
-        else if (!push.some((l) => /^\s+paths\s*:/.test(l))) {
-          offenders.push(`${file} → domain lane's \`push:\` lost its \`paths:\``);
+      const pushBranches = yamlListUnder(push ?? [], 'branches');
+      if (e2e.has(file)) {
+        if (JSON.stringify(pushBranches) !== JSON.stringify(['codex/**'])) {
+          offenders.push(
+            `${file} → E2E push branches are ${JSON.stringify(pushBranches)}, expected ["codex/**"]`,
+          );
         }
-      } else if (push !== null) {
-        offenders.push(`${file} → e2e lane gained a \`push:\` trigger`);
+        if ((push ?? []).some((l) => /^\s+paths(-ignore)?\s*:/.test(l))) {
+          offenders.push(`${file} → Codex E2E push must stay unfiltered`);
+        }
+      } else if (JSON.stringify(pushBranches) !== JSON.stringify(expectedPushBranches)) {
+        offenders.push(
+          `${file} → push branches are ${JSON.stringify(pushBranches)}, expected ${JSON.stringify(expectedPushBranches)}`,
+        );
+      }
+
+      const isDomain = file !== CI && file.includes('/ci-');
+      if (isDomain && !(push ?? []).some((l) => /^\s+paths\s*:/.test(l))) {
+        offenders.push(`${file} → domain lane's \`push:\` lost its \`paths:\``);
+      }
+      if (file === CI && (push ?? []).some((l) => /^\s+paths(-ignore)?\s*:/.test(l))) {
+        offenders.push(`${file} → full-graph CI push gained a path filter`);
+      }
+
+      const concurrency = topBlock(source, 'concurrency').body.map((line) => line.trim());
+      if (!concurrency.includes(expectedConcurrency)) {
+        offenders.push(
+          `${file} → concurrency does not isolate event while grouping by source repo + branch`,
+        );
+      }
+      if (!concurrency.includes('cancel-in-progress: true')) {
+        offenders.push(`${file} → concurrency no longer makes the newest event win`);
+      }
+
+      if (e2e.has(file) && file !== '.github/workflows/e2e-emulator.yml') {
+        const jobs = jobBlocks(source);
+        for (const job of LANES[file].jobs) {
+          const body = jobs[job.id] ?? '';
+          if (!body.includes("github.event_name != 'pull_request'")) {
+            offenders.push(`${file} → \`${job.id}\` does not explicitly allow push/dispatch`);
+          }
+          if (!body.includes('github.event.pull_request.head.repo.fork == false')) {
+            offenders.push(`${file} → \`${job.id}\` lost its fork-PR guard`);
+          }
+        }
       }
     }
 
     expect(
       offenders,
       [
-        'A lane trigger changed in a way the design depends on.',
+        'A lane trigger or concurrency key changed in a way the design depends on.',
         '',
-        '`production` is the release base (main → production). Without it the lane',
-        'publishes no check on the PR that actually ships, and a required check that',
-        'never reports leaves that PR permanently unmergeable.',
+        'Every lane accepts the complete PR-base list, including codex/** for stacked',
+        'PRs. CI and domain lanes run on main/master/codex pushes; domain paths remain',
+        'the pre-run cost boundary. E2E runs unfiltered on codex pushes only.',
         '',
-        'The domain lanes KEEP `push: paths:` deliberately: nothing on the push path',
-        'is a required check, and the `changes` job short-circuits to run=true on',
-        'non-PR events — so removing it would run the full live SEFAZ pipeline on',
-        'every merge to main for no gating benefit.',
+        'Concurrency keeps push and PR separate because cancelled checks on their',
+        'shared SHA block the PR even when the other event passes. Newer runs still',
+        'cancel older runs of the same event and branch, while forks remain distinct.',
+        'The staging E2E jobs explicitly allow non-PR events but must continue',
+        'rejecting fork PRs that cannot read secrets.',
         '',
         ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),
     ).toEqual([]);
+  });
+
+  it('a codex push cannot force the live NFe suite', () => {
+    const NFE = '.github/workflows/ci-nfe.yml';
+    const changes = jobBlocks(read(NFE)).changes ?? '';
+
+    expect(changes, `${NFE} no longer has an explicit non-PR decision for the live suite.`).toMatch(
+      /if \[ "\$GITHUB_EVENT_NAME" != "pull_request" \]; then/,
+    );
+    expect(
+      changes,
+      `${NFE} must force live only for workflow_dispatch and main/master pushes.`,
+    ).toMatch(/workflow_dispatch:\*\|push:main\|push:master\)[\s\S]*?FORCE_LIVE=true[\s\S]*?;;/);
+    expect(
+      changes,
+      [
+        `${NFE} must keep codex pushes on the offline lane.`,
+        '',
+        'A codex push has no PR file list for `--only-paths`. Forcing live here',
+        'emits at rate-limited SEFAZ homologação for workflow and lockfile changes',
+        'that the PR path deliberately excludes.',
+      ].join('\n'),
+    ).toMatch(/push:codex\/\*\)[\s\S]*?FORCE_LIVE=false[\s\S]*?LIVE_WHY=[\s\S]*?;;/);
+    expect(
+      changes.match(/push:codex\/\*\)[\s\S]*?;;/)?.[0] ?? '',
+      `${NFE}'s codex-push branch must never set FORCE_LIVE=true.`,
+    ).not.toContain('FORCE_LIVE=true');
   });
 
   // ------------------------------------------------------------------

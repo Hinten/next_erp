@@ -6,9 +6,10 @@ name: CI — NFe
 # turbo filter to avoid double-running.
 on:
   push:
-    branches: [master, main]
-    # NF-e-relevant paths only — this workflow runs the expensive live
-    # SEFAZ pipeline (~10 min). Broad globs on `packages/schemas/**` or
+    branches: [master, main, 'codex/**']
+    # NF-e-relevant paths only — pushes to main/master can run the expensive live
+    # SEFAZ pipeline (~10 min); `codex/**` pushes run the offline lane only. Broad
+    # globs on `packages/schemas/**` or
     # `packages/core/**` would re-trigger live emissions on edits that
     # have nothing to do with NF-e. Cross-package typecheck protection
     # is covered by `ci.yml`'s `pnpm turbo run typecheck` over the full
@@ -34,7 +35,7 @@ on:
     # release base (main → production); without it this lane reports no check at
     # all on the PR that actually ships, and a required check that never reports
     # blocks the merge forever.
-    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
     # ⚠️ NO `paths:` here, deliberately. A `paths:` that does not match means
     # GitHub never instantiates the workflow, so it publishes NO check run at all
     # — not a failure, not a skip, nothing — and a required status check that is
@@ -54,7 +55,7 @@ on:
     # `push:` above KEEPS its `paths:` on purpose: nothing on the push path is a
     # required check, and the `changes` job short-circuits to run=true on non-PR
     # events, so removing it would run the full live SEFAZ pipeline on every merge
-    # to main for no gating benefit.
+    # to main and every Codex push for no gating benefit.
   workflow_dispatch:
   # No cron here on purpose: the scheduled (weekly) FATAL run of the SVC
   # live suite lives in nfe-epec-scheduled.yml's `svc-live` job instead,
@@ -63,7 +64,7 @@ on:
   # is fatal only on workflow_dispatch.
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -118,8 +119,10 @@ jobs:
           # falling back to `run_e2e` — otherwise a transient `gh api` hiccup or a
           # 3000-path truncation on an unrelated PR would emit at SEFAZ.
           #
-          # `workflow_dispatch` / `push` genuinely should force live: a human asked,
-          # or main moved. Those pass `true`; the two fail-safes pass `false`.
+          # `workflow_dispatch` and main/master pushes genuinely should force live:
+          # a human asked, or the trunk moved. A `codex/**` push is a per-commit
+          # agent run; forcing live there bypasses `--only-paths` and spends SEFAZ
+          # quota even when nothing that changes the emitted document moved.
           decided() {
             {
               echo "decided=true"
@@ -131,12 +134,26 @@ jobs:
             echo "run_e2e=true run_live=$2 :: $1"
           }
 
-          # A human asked for this run, or main moved; there is no diff to narrow
-          # it with, so the live suite runs too.
+          # Non-PR events have no PR file list for `--only-paths`. Force the live
+          # suite only when a human explicitly dispatches it or main/master moves.
+          # Published Codex branches still run the complete OFFLINE lane; their PR
+          # run remains responsible for the path-scoped live decision.
           if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            FORCE_LIVE=false
+            LIVE_WHY="event is \`$GITHUB_EVENT_NAME\` on \`$GITHUB_REF_NAME\`; the live suite was not forced."
+            case "$GITHUB_EVENT_NAME:$GITHUB_REF_NAME" in
+              workflow_dispatch:*|push:main|push:master)
+                FORCE_LIVE=true
+                LIVE_WHY="event is \`$GITHUB_EVENT_NAME\` on \`$GITHUB_REF_NAME\` — running the live suite."
+                ;;
+              push:codex/*)
+                FORCE_LIVE=false
+                LIVE_WHY="a \`codex/**\` push runs the offline lane only — the live suite emits at rate-limited SEFAZ homologação, and the PR for this branch scopes it with \`--only-paths\`. Re-run via \`workflow_dispatch\` if live coverage is needed."
+                ;;
+            esac
             decided "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the lane." \
-                    true \
-                    "event is \`$GITHUB_EVENT_NAME\`, not a pull request — running the live suite."
+                    "$FORCE_LIVE" \
+                    "$LIVE_WHY"
             exit 0
           fi
 

@@ -274,16 +274,32 @@ Prettier-formatted and its indentation is not machine-guaranteed.
 
 ## Triggers
 
-- `pull_request: branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']`
+- `pull_request: branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']`
   on every lane. `branches:` matches the PR's **base**, so a stacked PR must sit
   on one of those prefixes. `production` is the release base — omit it and the PR
   that actually ships reports no check, which for a required check means
   permanently unmergeable.
 - **Never** a `paths:` on `pull_request:`.
 - The domain lanes **keep** `paths:` on `push:`. Nothing on the push path is a
-  required check, and `changes` short-circuits to run=true on non-PR events, so
-  removing it would run the full live SEFAZ pipeline on every merge to `main` for
-  no gating benefit. The e2e lanes have no `push:` at all.
+  required check, and `changes` short-circuits the offline lane to run=true on
+  non-PR events. Removing it would run domain suites on unrelated pushes for no
+  gating benefit. Their push branches are `[master, main, 'codex/**']`.
+- `ci-nfe.yml` deliberately does **not** force `nfe-live` on a `codex/**` push.
+  That event has no PR file list to feed `--only-paths`, so forcing it would emit
+  at rate-limited SEFAZ homologação for every matching agent commit, including
+  lockfile and workflow-only changes the PR path correctly excludes. Only
+  `workflow_dispatch` and pushes to main/master force live; the Codex push runs
+  offline, and its PR applies the narrow live scope.
+- The three E2E lanes have an unfiltered `push:` only for `codex/**`. This is
+  intentionally expensive: every published Codex branch runs the full staging
+  and emulator suites before a PR exists.
+- Every lane groups concurrency by workflow + event + source repository + source
+  branch, using the PR head repository/ref on `pull_request` and the current
+  repository/`ref_name` otherwise. Including the event is load-bearing: push and
+  PR checks share the same SHA, and a cancelled required check leaves the PR
+  blocked even when the other event's check passes. The two event batches therefore
+  run independently while newer runs still cancel older runs of the same event and
+  branch; the repository component keeps equally named fork branches distinct.
 - `timeout-minutes` on every job. 14 jobs once had none, leaving GitHub's 6-hour
   default as the only bound on a hung SEFAZ call. Derive values from observed
   maxima, not guesses: a too-tight timeout turns "slow" into a red required check.
