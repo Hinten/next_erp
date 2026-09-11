@@ -6,6 +6,7 @@ import {
   enderecoCount,
   seedClientes,
 } from './_helpers/seed-data';
+import { expectListMode } from './helpers/table-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -93,6 +94,10 @@ test.describe.serial('Endereços e2e — cliente sub-table + address search', ()
 
     // The collection-group Pipelines search can lag the default expect budget.
     await expect(page.getByRole('table')).toBeVisible({ timeout: 30_000 });
+    // The address lookup owns a document-id query override. Its policy reason
+    // is override, but TableView serves that classic query through its live
+    // snapshot transport rather than falling back to a one-shot result.
+    await expectListMode(page, 'live', 'override');
     await expect(page.getByRole('cell', { name: clienteId, exact: true })).toBeVisible({
       timeout: 15_000,
     });

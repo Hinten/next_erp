@@ -1,5 +1,41 @@
 import { type Page, expect } from '@playwright/test';
 
+export type ListMode = 'live' | 'static';
+
+type ListModeReason = 'override' | 'no-declared-query' | 'filter' | 'search' | 'ids' | 'sort';
+
+/** The TableView indicator exposes the transport without coupling specs to its visible copy. */
+function listModeIndicator(page: Page) {
+  return page.locator('[data-list-mode]');
+}
+
+/** Assert the transport serving the TableView rows, with an optional policy reason. */
+export async function expectListMode(
+  page: Page,
+  mode: ListMode,
+  reason?: ListModeReason,
+): Promise<void> {
+  const indicator = listModeIndicator(page);
+  await expect(indicator).toHaveAttribute('data-list-mode', mode, { timeout: 15_000 });
+  if (reason !== undefined) {
+    await expect(indicator).toHaveAttribute('data-list-reason', reason);
+  }
+}
+
+/**
+ * Run a list-changing gesture while waiting for its next transport to render.
+ *
+ * TableView swaps its data hook after filters, search, ids, or sorting change;
+ * awaiting only the click can therefore observe the previous indicator.
+ */
+export async function transitionListMode(
+  page: Page,
+  mode: ListMode,
+  gesture: () => Promise<unknown>,
+): Promise<void> {
+  await Promise.all([expectListMode(page, mode), gesture()]);
+}
+
 /**
  * Helpers for driving the generic `TableView` (`@delfrance/ui`): per-column
  * filters, header sorting, row selection and ActionBar actions.
