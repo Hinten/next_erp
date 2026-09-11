@@ -1408,7 +1408,7 @@ describe('CI lanes always report', () => {
     ];
     const expectedPushBranches = ['master', 'main', 'codex/**'];
     const expectedConcurrency =
-      'group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}';
+      'group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}';
     const offenders = [];
     for (const file of workflows) {
       const source = read(file);
@@ -1447,7 +1447,9 @@ describe('CI lanes always report', () => {
 
       const concurrency = topBlock(source, 'concurrency').body.map((line) => line.trim());
       if (!concurrency.includes(expectedConcurrency)) {
-        offenders.push(`${file} → concurrency does not group push and PR by source repo + branch`);
+        offenders.push(
+          `${file} → concurrency does not isolate event while grouping by source repo + branch`,
+        );
       }
       if (!concurrency.includes('cancel-in-progress: true')) {
         offenders.push(`${file} → concurrency no longer makes the newest event win`);
@@ -1476,9 +1478,11 @@ describe('CI lanes always report', () => {
         'PRs. CI and domain lanes run on main/master/codex pushes; domain paths remain',
         'the pre-run cost boundary. E2E runs unfiltered on codex pushes only.',
         '',
-        'Concurrency must map a same-repo push and PR to the same key while keeping',
-        'fork repositories distinct. The staging E2E jobs explicitly allow non-PR',
-        'events but must continue rejecting fork PRs that cannot read secrets.',
+        'Concurrency keeps push and PR separate because cancelled checks on their',
+        'shared SHA block the PR even when the other event passes. Newer runs still',
+        'cancel older runs of the same event and branch, while forks remain distinct.',
+        'The staging E2E jobs explicitly allow non-PR events but must continue',
+        'rejecting fork PRs that cannot read secrets.',
         '',
         ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),

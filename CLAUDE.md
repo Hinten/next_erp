@@ -77,11 +77,11 @@ failures.
 A push to a published `codex/**` branch runs `ci.yml`, every path-matched domain
 lane, and all three E2E lanes. A local-only worktree cannot trigger Actions. The
 workflow concurrency key normalises push and PR refs to repository + source
-branch, so initially overlapping runs cancel and the newest event wins; a completed
-run is not retroactively deduplicated, and GitHub does not guarantee event ordering.
-A manual rerun creates another attempt: its completed checks remain beside the
-other event's checks and must not be read as evidence that the original overlap
-escaped cancellation.
+branch, but includes the event name: push and PR runs must not cancel each other,
+because their checks share one SHA and a cancelled required check blocks the PR
+even when the other event passes. Newer runs still cancel older runs of the same
+event and branch. This deliberately pays for two batches while a PR is open; do
+not "deduplicate" them without changing how required checks are published.
 
 ## Critical rules
 

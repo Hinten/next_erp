@@ -293,14 +293,13 @@ Prettier-formatted and its indentation is not machine-guaranteed.
 - The three E2E lanes have an unfiltered `push:` only for `codex/**`. This is
   intentionally expensive: every published Codex branch runs the full staging
   and emulator suites before a PR exists.
-- Every lane groups concurrency by workflow + source repository + source branch,
-  using the PR head repository/ref on `pull_request` and the current repository/
-  `ref_name` otherwise. This deduplicates overlapping push and PR runs without
-  colliding with an equally named fork branch. `cancel-in-progress: true` means
-  the newest event wins; ordering is not guaranteed and completed runs remain.
-  This describes the original event attempts. Manually rerunning a cancelled run
-  creates another attempt after the overlap, so both event batches can later show
-  completed checks for the same SHA without disproving the cancellation.
+- Every lane groups concurrency by workflow + event + source repository + source
+  branch, using the PR head repository/ref on `pull_request` and the current
+  repository/`ref_name` otherwise. Including the event is load-bearing: push and
+  PR checks share the same SHA, and a cancelled required check leaves the PR
+  blocked even when the other event's check passes. The two event batches therefore
+  run independently while newer runs still cancel older runs of the same event and
+  branch; the repository component keeps equally named fork branches distinct.
 - `timeout-minutes` on every job. 14 jobs once had none, leaving GitHub's 6-hour
   default as the only bound on a hung SEFAZ call. Derive values from observed
   maxima, not guesses: a too-tight timeout turns "slow" into a red required check.

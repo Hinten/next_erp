@@ -17,9 +17,10 @@ on:
     branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
 
 concurrency:
-  # Collapse push + PR runs for the same source branch without colliding with a
-  # fork that happens to use the same branch name. The newest event wins.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  # Keep push and PR runs separate: cancelling one leaves failed/cancelled check
+  # rows on the shared SHA and can block the PR even when the other run passes.
+  # Newer runs still replace older ones within the same event and source branch.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 # ---------------------------------------------------------------------------
