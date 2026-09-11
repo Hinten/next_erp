@@ -39,6 +39,15 @@ describe('Codex apply_patch', () => {
       `+Agents cannot access ${dir}/.\n*** End Patch`;
     deepStrictEqual(run({ tool_name: 'apply_patch', tool_input: { command: patch } }), null);
   });
+
+  it('blocks CRLF patch headers', () => {
+    const patch = `*** Begin Patch\r\n*** Add File: ${dir}/secret.txt\r\n+x\r\n*** End Patch`;
+    ok(run({ tool_name: 'apply_patch', tool_input: { command: patch } }));
+  });
+
+  it('fails closed when apply_patch has no documented command field', () => {
+    ok(run({ tool_name: 'apply_patch', tool_input: { patch: 'uninspectable' } }));
+  });
 });
 
 describe('existing Claude tool payloads', () => {
@@ -61,6 +70,26 @@ describe('existing Claude tool payloads', () => {
       run({
         tool_name: 'Bash',
         tool_input: { command: `gh pr create --title "block access to ${dir}/"` },
+      }),
+      null,
+    );
+  });
+
+  it('blocks apply_patch delivered through a shell heredoc', () => {
+    const patch = `*** Begin Patch\n*** Add File: ${dir}/secret.txt\n+x\n*** End Patch`;
+    ok(run({ tool_name: 'Bash', tool_input: { command: `apply_patch <<'PATCH'\n${patch}\nPATCH` } }));
+  });
+
+  it('blocks apply_patch delivered through a PowerShell here-string', () => {
+    const patch = `*** Begin Patch\n*** Add File: ${dir}/secret.txt\n+x\n*** End Patch`;
+    ok(run({ tool_name: 'Bash', tool_input: { command: `@'\n${patch}\n'@ | apply_patch` } }));
+  });
+
+  it('allows a prose-only heredoc that merely names the directory', () => {
+    deepStrictEqual(
+      run({
+        tool_name: 'Bash',
+        tool_input: { command: `git commit -F- <<'EOF'\nNever read ${dir}/secret.txt\nEOF` },
       }),
       null,
     );

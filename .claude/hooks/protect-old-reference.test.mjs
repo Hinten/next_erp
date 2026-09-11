@@ -141,6 +141,25 @@ describe('Codex apply_patch', () => {
       `+Never write to ${dir}/.\n*** End Patch`;
     deepStrictEqual(run({ tool_name: 'apply_patch', tool_input: { command: patch } }), null);
   });
+
+  it('blocks CRLF patch headers', () => {
+    const patch = `*** Begin Patch\r\n*** Delete File: ${dir}/a.dart\r\n*** End Patch`;
+    ok(run({ tool_name: 'apply_patch', tool_input: { command: patch } }));
+  });
+
+  it('blocks apply_patch delivered through a shell heredoc', () => {
+    const patch = `*** Begin Patch\n*** Delete File: ${dir}/a.dart\n*** End Patch`;
+    ok(bash(`apply_patch <<'PATCH'\n${patch}\nPATCH`));
+  });
+
+  it('blocks apply_patch delivered through a PowerShell here-string', () => {
+    const patch = `*** Begin Patch\n*** Delete File: ${dir}/a.dart\n*** End Patch`;
+    ok(bash(`@'\n${patch}\n'@ | apply_patch`));
+  });
+
+  it('fails closed when apply_patch has no documented command field', () => {
+    ok(run({ tool_name: 'apply_patch', tool_input: { patch: 'uninspectable' } }));
+  });
 });
 
 describe('never blocks on its own bug', () => {

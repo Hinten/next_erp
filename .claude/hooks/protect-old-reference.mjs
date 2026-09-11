@@ -22,7 +22,7 @@
 // Reads the hook payload on stdin, prints a PreToolUse deny decision on stdout
 // when it finds a write reaching `.old/`, and stays silent otherwise.
 
-import { applyPatchPaths } from './apply-patch-paths.mjs';
+import { applyPatchPaths, shellApplyPatchPaths } from './apply-patch-paths.mjs';
 
 /** Tools whose payload names a file path directly. */
 const PATH_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -76,7 +76,7 @@ const FIND_MUTATORS = /(^|\s)-(delete|exec\b|execdir\b)/;
 function stripHeredocs(command) {
   const kept = [];
   let delim = null;
-  for (const line of command.split('\n')) {
+  for (const line of command.split(/\r?\n/)) {
     if (delim !== null) {
       if (line.trim() === delim) delim = null;
       continue;
@@ -227,15 +227,19 @@ process.stdin.on('end', () => {
   let payload;
   try {
     payload = JSON.parse(raw);
-  } catch {
-    process.exit(0); // Unparseable payload: never block on our own bug.
+  } catch (err) {
+    if (err instanceof SyntaxError) process.exit(0); // Unparseable payload: never block on our own bug.
+    throw err;
   }
 
   const tool = payload?.tool_name ?? '';
   const input = payload?.tool_input ?? {};
 
   if (tool === 'apply_patch') {
-    const targets = applyPatchPaths(input.command ?? '');
+    if (typeof input.command !== 'string') {
+      deny('Codex sent `apply_patch` without its documented `tool_input.command`; refusing an uninspectable patch.');
+    }
+    const targets = applyPatchPaths(input.command);
     if (targets.some(touchesOld)) {
       deny('`apply_patch` targets a file inside `.old/`.');
     }
@@ -252,6 +256,10 @@ process.stdin.on('end', () => {
 
   const command = input.command ?? '';
   if (!command) process.exit(0);
+
+  if (shellApplyPatchPaths(command).some(touchesOld)) {
+    deny('A shell-delivered `apply_patch` targets a file inside `.old/`.');
+  }
 
   const script = stripHeredocs(command);
 

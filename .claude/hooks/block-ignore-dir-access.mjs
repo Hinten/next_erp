@@ -17,7 +17,7 @@
 // Reads the hook payload on stdin, prints a PreToolUse deny decision on stdout
 // when it finds a hit, and stays silent otherwise.
 
-import { applyPatchPaths } from './apply-patch-paths.mjs';
+import { applyPatchPaths, shellApplyPatchPaths } from './apply-patch-paths.mjs';
 
 /** `.ignore` as a whole path segment, in a path or inside a shell command. */
 const IGNORE_SEGMENT = /(^|[/\\'"`\s=:(])\.ignore($|[/\\'"`\s),;])/i;
@@ -61,7 +61,7 @@ function stripMessageFlagValues(command) {
 function stripHeredocs(command) {
   const kept = [];
   let delim = null;
-  for (const line of command.split('\n')) {
+  for (const line of command.split(/\r?\n/)) {
     if (delim !== null) {
       if (line.trim() === delim) delim = null;
       continue;
@@ -110,6 +110,25 @@ function genericPathCandidates(value) {
   );
 }
 
+function deny(reason) {
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+      },
+    }),
+  );
+  process.exit(0);
+}
+
+const IGNORE_REASON =
+  'Blocked: `.ignore/` holds local-only files that agents must not access. This hook ' +
+  'was added deliberately. Do not read, write, list or reference that directory, and ' +
+  'do not look for another route to its contents — ask the repo owner to run anything ' +
+  'that needs them.';
+
 let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (c) => (raw += c));
@@ -117,8 +136,9 @@ process.stdin.on('end', () => {
   let payload;
   try {
     payload = JSON.parse(raw);
-  } catch {
-    process.exit(0); // Unparseable payload: never block on our own bug.
+  } catch (err) {
+    if (err instanceof SyntaxError) process.exit(0); // Unparseable payload: never block on our own bug.
+    throw err;
   }
 
   const tool = payload?.tool_name ?? '';
@@ -126,9 +146,20 @@ process.stdin.on('end', () => {
   let candidates = [];
 
   if (tool === 'apply_patch') {
-    candidates = applyPatchPaths(input.command ?? '');
+    if (typeof input.command !== 'string') {
+      deny(
+        'Blocked: Codex sent `apply_patch` without its documented `tool_input.command`; ' +
+          'the hook cannot prove that the patch avoids `.ignore/`.',
+      );
+    } else {
+      candidates = applyPatchPaths(input.command);
+    }
   } else if (tool === 'Bash' || tool === 'PowerShell') {
-    candidates = [stripMessageFlagValues(stripHeredocs(String(input.command ?? '')))];
+    const command = String(input.command ?? '');
+    candidates = [
+      stripMessageFlagValues(stripHeredocs(command)),
+      ...shellApplyPatchPaths(command),
+    ];
   } else if (PATH_FIELDS[tool]) {
     candidates = PATH_FIELDS[tool].flatMap((field) => strings(input[field]));
   } else {
@@ -136,19 +167,5 @@ process.stdin.on('end', () => {
   }
 
   if (!candidates.some((c) => IGNORE_SEGMENT.test(c))) process.exit(0);
-
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason:
-          'Blocked: `.ignore/` holds local-only files that agents must not access. This hook ' +
-          'was added deliberately. Do not read, write, list or reference that directory, and ' +
-          'do not look for another route to its contents — ask the repo owner to run anything ' +
-          'that needs them.',
-      },
-    }),
-  );
-  process.exit(0);
+  deny(IGNORE_REASON);
 });

@@ -116,8 +116,9 @@ process.stdin.on('end', () => {
   let command = '';
   try {
     command = JSON.parse(raw)?.tool_input?.command ?? '';
-  } catch {
-    process.exit(0); // Unparseable payload: never block on our own bug.
+  } catch (err) {
+    if (err instanceof SyntaxError) process.exit(0); // Unparseable payload: never block on our own bug.
+    throw err;
   }
   if (!command) process.exit(0);
 
