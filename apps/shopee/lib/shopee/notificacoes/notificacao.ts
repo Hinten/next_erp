@@ -83,6 +83,7 @@ import type {
   AlvoDeImportacaoShopee,
   ResultadoImportacaoPedidoShopee,
 } from '../pedidos/importarPedido';
+import type { AcaoPagamentosShopee } from '../pedidos/pagamentoTx';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -643,6 +644,13 @@ export type ShopeeProcessOutcome =
       pedidoId: string;
       orderStatus: string;
       itensSemProduto: number;
+      /**
+       * The pagamento transaction's own outcome (#1514, step 6). OPTIONAL and
+       * nullable: it is `null` whenever that transaction did not run (a pedido
+       * write that came out `ignorado-obsoleto`), and the field is absent on
+       * every outcome built before step 6 shipped.
+       */
+      acaoPagamentos?: AcaoPagamentosShopee | null;
       detail: string;
     }
   /**
@@ -1086,6 +1094,7 @@ export async function processNotificationPayload(
       pedidoId: resultado.pedidoId,
       orderStatus: resultado.orderStatus,
       itensSemProduto: resultado.itensSemProduto,
+      acaoPagamentos: resultado.acaoPagamentos,
       detail: resultado.detail,
     };
   }
@@ -1290,6 +1299,12 @@ export interface TaskResult {
   orderSn?: string;
   /** Lines the import could not bind to a produto — the number an operator acts on. */
   itensSemProduto?: number;
+  /**
+   * The pagamento transaction's outcome on a code-3 delivery (#1514, step 6) —
+   * an enum token, so `criado` / `ignorado-sem-mudanca` / `ignorado-obsoleto` are
+   * filterable in the task log without opening a document.
+   */
+  acaoPagamentos?: AcaoPagamentosShopee;
 }
 
 /**
@@ -1399,6 +1414,8 @@ export async function handleNotificationTask(
   const orderSn = r.result && 'orderSn' in r.result ? r.result.orderSn : null;
   const itensSemProduto =
     r.result && 'itensSemProduto' in r.result ? r.result.itensSemProduto : null;
+  const acaoPagamentos =
+    r.result && 'acaoPagamentos' in r.result ? (r.result.acaoPagamentos ?? null) : null;
   return {
     outcome: r.outcome,
     ...(r.payload ? { code: r.payload.code } : {}),
@@ -1408,6 +1425,7 @@ export async function handleNotificationTask(
     ...(lojas != null ? { lojas } : {}),
     ...(orderSn != null ? { orderSn } : {}),
     ...(itensSemProduto != null ? { itensSemProduto } : {}),
+    ...(acaoPagamentos != null ? { acaoPagamentos } : {}),
   };
 }
 

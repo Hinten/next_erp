@@ -21,8 +21,12 @@
  *     transaction, so the cliente and the endereço are resolved HERE and only
  *     their outer-refs ride the pedido write, as fill-once fields the
  *     transaction re-checks against its own snapshot;
- *  7. the ONE transaction;
- *  8. the per-line incidentes, AFTER the write, so a line the stored pedido
+ *  7. the pedido transaction;
+ *  8. the PAGAMENTO transaction (#1514, step 6) — a second, separate one, run
+ *     unless the pedido write came out `ignorado-obsoleto`. ⚠️ It is NOT skipped
+ *     by `ignorado-sem-mudanca`: the escrow has no clock of its own, so the fees
+ *     can move while the order row does not;
+ *  9. the per-line incidentes, AFTER the writes, so a line the stored pedido
  *     already binds raises nothing.
  *
  * ## The split: steps 1–5 + the conta read are a SEPARATE, read-only function
@@ -95,6 +99,7 @@ import { mapearItensShopee, type ItensMapeadosShopee } from './itens';
 import { mapearFreteInicialShopee, type PesoBrutoObservado } from './orderFreteMapping';
 import { makePedidoIdShopee } from './orderIds';
 import {
+  REGIAO_BR_PEDIDO,
   mapearPedidoShopee,
   microsDeSegundosShopee,
   segundosShopeeUtilizaveis,
@@ -103,6 +108,16 @@ import {
 } from './orderMapping';
 import { criarResolvedorDeLinhasShopee } from './produtoResolve';
 import { salvarPedidoShopee, type AcaoPedidoShopee } from './orderPedidoTx';
+import {
+  mapearPagamentosShopee,
+  statusPagamentoDeOrderStatus,
+  type PagamentosMapeadosShopee,
+} from './pagamentoMapping';
+import {
+  salvarPagamentosShopee,
+  type AcaoPagamentosShopee,
+  type ResultadoPagamentosShopee,
+} from './pagamentoTx';
 
 /* -------------------------------------------------------------------------- */
 /*                                  contract                                   */
@@ -139,6 +154,14 @@ export interface ResultadoImportacaoPedidoShopee {
   readonly orderStatus: string | null;
   /** Lines that resolved to no produto AND were not already stored bound. */
   readonly itensSemProduto: number;
+  /**
+   * The pagamento transaction's own outcome (#1514, step 6), or `null` when it
+   * did not run — `ignorado-inexistente`, and a pedido write that came out
+   * `ignorado-obsoleto`.
+   */
+  readonly acaoPagamentos: AcaoPagamentosShopee | null;
+  /** Pagamento documents created or updated by this import. */
+  readonly pagamentosGravados: number;
   /**
    * A short machine-readable tail for the log filter — the action, so a Cloud
    * Logging query separates "we created a pedido" from "Shopee denied the
@@ -565,6 +588,40 @@ export async function importarPedidoShopee(
 
   const resultado = await salvarPedidoShopee(db, { pedidoId, mapeado, watermarkUs, nowUs });
 
+  // Step 6 (#1514) — the SECOND transaction, gated on the pedido write's own
+  // outcome. `ignorado-obsoleto` means a NEWER delivery already landed, so this
+  // payload's money is stale too; `ignorado-inexistente` never reaches here.
+  // ⚠️ `ignorado-sem-mudanca` does NOT skip: the escrow carries no clock of its
+  // own and `escrow_amount` is documented to move until the order completes, so
+  // the fees change while the order row does not.
+  let mapeadosPag: PagamentosMapeadosShopee | null = null;
+  let pagamentos: ResultadoPagamentosShopee | null = null;
+  if (resultado.acao !== 'ignorado-obsoleto') {
+    mapeadosPag = mapearPagamentosShopee({
+      linha,
+      escrow,
+      // The PEDIDO's own figure, never recomputed and never `escrow_amount`.
+      valorCobrado: mapeado.dados.valorCobrado,
+      watermarkUs,
+      nowUs,
+      contaId: integracaoId,
+      orderSn,
+    });
+    pagamentos = await salvarPagamentosShopee(db, {
+      pedidoId,
+      contaId: integracaoId,
+      orderSn,
+      watermarkUs,
+      nowUs,
+      mapeados: mapeadosPag,
+      // ⚠️ Supplied separately because the mapper's creation gate empties `docs`
+      // whenever `pay_time` is unusable, and a `CANCELLED` re-read whose
+      // `pay_time` came back `0` must still reverse a stored `aprovado`. Same
+      // pure function the mapper calls — one implementation, two callers.
+      alvoStatus: statusPagamentoDeOrderStatus(linha.order_status),
+    });
+  }
+
   // AFTER the write, and driven by the snapshot the transaction actually saw: a
   // line already stored WITH a produto — bound by an operator, or by the legacy
   // importer before the cutover — is not a problem and must not raise a row.
@@ -608,6 +665,28 @@ export async function importarPedidoShopee(
     // beside the converted kilos for the first deliveries.
     pesos: pesosObservados,
     diferencaDeTotais: mapeados.conferencia.diferenca,
+    // ── step 6: the pagamentos. Counts, enum tokens and money only — never a
+    // `payment_processor_register` (a CNPJ), never a `transaction_id` (an
+    // authorization code), never a buyer field.
+    acaoPagamentos: pagamentos?.acao ?? null,
+    pagamentos: pagamentos == null ? 0 : pagamentos.criados + pagamentos.atualizados,
+    gruposPagamento: pagamentos?.gruposAplicados ?? null,
+    somaPagante: pagamentos?.somaPagante ?? null,
+    // ⚠️ Must be 0: on a marketplace `canalDevolveTroco` is false, so an excess
+    // is cStat 866 and a shortfall 865 — no nota at all, for ever.
+    divergenciaDeSoma: pagamentos?.divergenciaDeSoma ?? null,
+    // Both readings side by side, so the first real BR orders settle the
+    // composition as DATA: `tarifas` is the clamped figure the ERP charges,
+    // `tarifasBrutas` its pre-clamp raw.
+    tarifas: mapeadosPag?.docs[0]?.sempre.tarifas ?? null,
+    tarifasBrutas: mapeadosPag?.diagnosticos.tarifasBrutas ?? null,
+    // ⚠️ BR only, and a COUNT — settle-live register item 22 asks whether
+    // `payment_info` is really provided from READY_TO_SHIP and whether it
+    // survives past it. On any other region the key is absent rather than 0,
+    // because "not applicable" and "none arrived" are different facts.
+    ...(linha.region === REGIAO_BR_PEDIDO
+      ? { entradasPaymentInfo: mapeadosPag?.diagnosticos.entradasPaymentInfo ?? 0 }
+      : {}),
   });
 
   return {
@@ -617,6 +696,8 @@ export async function importarPedidoShopee(
     pedidoId,
     orderStatus: linha.order_status,
     itensSemProduto: semProduto.length,
+    acaoPagamentos: pagamentos?.acao ?? null,
+    pagamentosGravados: pagamentos == null ? 0 : pagamentos.criados + pagamentos.atualizados,
     detail: resultado.acao,
   };
 }
@@ -630,6 +711,8 @@ function inexistente(orderSn: string, motivo: string): ResultadoImportacaoPedido
     pedidoId: null,
     orderStatus: null,
     itensSemProduto: 0,
+    acaoPagamentos: null,
+    pagamentosGravados: 0,
     detail: `ignorado-inexistente:${motivo}`,
   };
 }

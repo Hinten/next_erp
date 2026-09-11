@@ -1,10 +1,13 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
   chaveDaLinhaShopee,
   makeItemEnsureUniqueId,
+  makePagamentoIdShopee,
   makePedidoIdShopee,
   mktplaceIdDe,
+  sufixoPagamentoShopee,
 } from './orderIds';
 import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
 
@@ -14,6 +17,16 @@ import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wire
 
 const CONTA = 'int-1';
 const ORDER_SN = '220810QSK8S7BX';
+/** The SG sandbox order — the one the committed `__wire__` bodies carry. */
+const ORDER_SN_SG = '260910KJBHUJDM';
+
+/**
+ * The same digest the module computes, spelled out here so a test can compare
+ * PREIMAGES rather than re-assert the module against itself.
+ */
+function sha256Hex(input: string): string {
+  return createHash('sha256').update(input, 'utf8').digest('hex');
+}
 
 describe('makePedidoIdShopee', () => {
   it('é sha256("<contaId>-<order_sn>") — o preimage do importador LEGADO, byte a byte', () => {
@@ -38,6 +51,88 @@ describe('makePedidoIdShopee', () => {
   it('é estável entre duas leituras e muda com a conta', () => {
     expect(makePedidoIdShopee(CONTA, ORDER_SN)).toBe(makePedidoIdShopee(CONTA, ORDER_SN));
     expect(makePedidoIdShopee('int-2', ORDER_SN)).not.toBe(makePedidoIdShopee(CONTA, ORDER_SN));
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  makePagamentoIdShopee / sufixoPagamentoShopee (#1514, passo 6, W1)          */
+/* -------------------------------------------------------------------------- */
+
+describe('makePagamentoIdShopee', () => {
+  it('1. é sha256("integracao/<contaId>-<order_sn>") — o preimage LEGADO, byte a byte', () => {
+    // ⚠️ Fixado de propósito, como o do pedido. Um pedido Shopee migrado já
+    // chega com seus pagamentos NESTE digest (regra 8): outra grafia forka todos
+    // eles na primeira reimportação — dois pagamentos para uma venda, e Σ pagante
+    // no DOBRO da nota. Num marketplace `canalDevolveTroco` é false, então isso é
+    // cStat 866 para sempre, não um aviso.
+    expect(makePagamentoIdShopee(CONTA, ORDER_SN_SG)).toBe(
+      'cea5f74069da0280ff4926cd91204f58aa5efaedb538a56698a8a45e8c6a4be9',
+    );
+    expect(makePagamentoIdShopee(CONTA, ORDER_SN_SG)).toBe(
+      sha256Hex(`integracao/${CONTA}-${ORDER_SN_SG}`),
+    );
+  });
+
+  it('2. ⚠️ NEAR-MISS: as TRÊS outras grafias em registro dão OUTRO id', () => {
+    const pagamento = makePagamentoIdShopee(CONTA, ORDER_SN_SG);
+    // (a) o preimage do PEDIDO — o par cru, sem o nome da coleção.
+    expect(pagamento).not.toBe(makePedidoIdShopee(CONTA, ORDER_SN_SG));
+    expect(makePedidoIdShopee(CONTA, ORDER_SN_SG)).toBe(sha256Hex(`${CONTA}-${ORDER_SN_SG}`));
+    // (b) o do Mercado Livre — BARRA INICIAL e o literal `documents/`.
+    expect(pagamento).not.toBe(sha256Hex(`/documents/integracao/${CONTA}-${ORDER_SN_SG}`));
+    // (c) a mesma coisa sem a barra, que é o erro "óbvio" ao copiar do ML.
+    expect(pagamento).not.toBe(sha256Hex(`documents/integracao/${CONTA}-${ORDER_SN_SG}`));
+  });
+
+  it('3. o sufixo entra no PREIMAGE, não só no id', () => {
+    expect(makePagamentoIdShopee(CONTA, ORDER_SN_SG, '-1')).toBe(
+      sha256Hex(`integracao/${CONTA}-${ORDER_SN_SG}-1`),
+    );
+    expect(makePagamentoIdShopee(CONTA, ORDER_SN_SG, '-1')).toBe(
+      '0a212b8804e837a24d7f179ff54b07875855d09c78b7c6e386b5fadf52c9f5d2',
+    );
+    // `undefined` é o primário e NÃO acrescenta nada — nem a string "undefined".
+    expect(makePagamentoIdShopee(CONTA, ORDER_SN_SG, undefined)).toBe(
+      makePagamentoIdShopee(CONTA, ORDER_SN_SG),
+    );
+  });
+
+  it('4. é estável entre duas leituras e muda com a conta', () => {
+    expect(makePagamentoIdShopee(CONTA, ORDER_SN_SG)).toBe(
+      makePagamentoIdShopee(CONTA, ORDER_SN_SG),
+    );
+    expect(makePagamentoIdShopee('int-2', ORDER_SN_SG)).not.toBe(
+      makePagamentoIdShopee(CONTA, ORDER_SN_SG),
+    );
+  });
+
+  it('5. ⚠️ o irmão LEGADO `-desconto` é disjunto de TODO sufixo numérico', () => {
+    // O passo 6 nunca escreve, lê nem apaga esse doc — e a transação decide o que
+    // é "nosso" recomputando estes ids, então a disjunção é o que o mantém fora.
+    const desconto = makePagamentoIdShopee(CONTA, ORDER_SN_SG, '-desconto');
+    expect(desconto).toBe(sha256Hex(`integracao/${CONTA}-${ORDER_SN_SG}-desconto`));
+    const nossos = new Set(
+      Array.from({ length: 9 }, (_, i) =>
+        makePagamentoIdShopee(CONTA, ORDER_SN_SG, sufixoPagamentoShopee(i)),
+      ),
+    );
+    expect(nossos.size).toBe(9);
+    expect(nossos.has(desconto)).toBe(false);
+  });
+});
+
+describe('sufixoPagamentoShopee', () => {
+  it('6. 0 é o PRIMÁRIO (undefined) e n de 1 em diante é "-n"', () => {
+    expect(sufixoPagamentoShopee(0)).toBeUndefined();
+    expect(sufixoPagamentoShopee(1)).toBe('-1');
+    expect(sufixoPagamentoShopee(2)).toBe('-2');
+  });
+
+  it('7. ⚠️ NEAR-MISS: 0 não é "-0" — o primário não tem sufixo nenhum', () => {
+    expect(sufixoPagamentoShopee(0)).not.toBe('-0');
+    expect(makePagamentoIdShopee(CONTA, ORDER_SN_SG, sufixoPagamentoShopee(0))).not.toBe(
+      sha256Hex(`integracao/${CONTA}-${ORDER_SN_SG}-0`),
+    );
   });
 });
 

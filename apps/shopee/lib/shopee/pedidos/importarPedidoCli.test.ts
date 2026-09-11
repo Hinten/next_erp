@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { ShopeeOrderDetailRow } from '@delfrance/integrations-shopee';
+import {
+  FORMA_PAGAMENTO,
+  FORMA_PAGAMENTO_LABELS,
+  STATUS_PAGAMENTO,
+  STATUS_PAGAMENTO_LABELS,
+} from '@delfrance/schemas';
+import {
+  shopeeOrderDetailRowSchema,
+  type ShopeeOrderDetailRow,
+} from '@delfrance/integrations-shopee';
 
 import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
 import { avaliarCapturaComprador } from './comprador';
@@ -10,10 +19,13 @@ import {
   renderResumoPedido,
   resumoDoPedidoArmazenado,
   resumoDoPedidoMapeado,
+  resumoDosPagamentosArmazenados,
+  resumoDosPagamentosMapeados,
 } from './importarPedidoCli';
 import { mapearItensShopee } from './itens';
 import { mapearFreteInicialShopee } from './orderFreteMapping';
 import { mapearPedidoShopee } from './orderMapping';
+import { mapearPagamentosShopee } from './pagamentoMapping';
 
 const INT = 'int-1';
 const ORDER_SN = '220810QSK8S7BX';
@@ -426,5 +438,174 @@ describe('descreverErro', () => {
   it('nomeia a CLASSE de um erro qualquer, nunca só a mensagem', () => {
     expect(descreverErro(new TypeError('x is not a function'))[0]).toContain('TypeError');
     expect(descreverErro('caiu')[0]).toContain('caiu');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     os pagamentos (#1514, step 6)                           */
+/* -------------------------------------------------------------------------- */
+
+/** O CNPJ FICTÍCIO canônico do repo, e um código de autorização inventado. */
+const CNPJ_FALSO = '11222333000181';
+const CAUT_FALSO = 'AUT-CC-0001';
+
+function linhaCombinadaBR(): ShopeeOrderDetailRow {
+  return shopeeOrderDetailRowSchema.parse({
+    order_sn: ORDER_SN,
+    order_status: 'READY_TO_SHIP',
+    region: 'BR',
+    pay_time: 1_788_973_353,
+    total_amount: 31.99,
+    payment_method: 'Combined Payment',
+    payment_info: [
+      {
+        payment_method: 'pix',
+        payment_amount: 10,
+        card_brand: '',
+        transaction_id: 'AUT-PIX-0002',
+        payment_processor_register: CNPJ_FALSO,
+      },
+      {
+        payment_method: 'credit_card',
+        payment_amount: 21.99,
+        card_brand: 'visa',
+        transaction_id: CAUT_FALSO,
+        payment_processor_register: CNPJ_FALSO,
+      },
+    ],
+  });
+}
+
+function mapeadosBR() {
+  return mapearPagamentosShopee({
+    linha: linhaCombinadaBR(),
+    escrow: null,
+    valorCobrado: 31.99,
+    watermarkUs: 1_789_000_000_000_000,
+    nowUs: 1_789_000_000_000_000,
+    contaId: INT,
+    orderSn: ORDER_SN,
+  });
+}
+
+describe('resumoDosPagamentosMapeados', () => {
+  it('traz rótulo, valores e o ALVO de status — nunca um veredito', () => {
+    const resumos = resumoDosPagamentosMapeados(mapeadosBR());
+    expect(resumos).toHaveLength(2);
+
+    const cartao = resumos[0]!;
+    expect(cartao.idCampo).toBe(ORDER_SN);
+    expect(cartao.formaCodigo).toBe(FORMA_PAGAMENTO.cartao_credito);
+    expect(cartao.formaLabel).toBe(FORMA_PAGAMENTO_LABELS[FORMA_PAGAMENTO.cartao_credito]);
+    expect(cartao.statusCodigo).toBe(STATUS_PAGAMENTO.aprovado);
+    expect(cartao.statusLabel).toBe(STATUS_PAGAMENTO_LABELS[STATUS_PAGAMENTO.aprovado]);
+    expect(cartao.valor).toBe(21.99);
+    expect(cartao.aVista).toBe(true);
+    expect(cartao.bandeira).toBe('01');
+    // ⚠️ BOOLEANOS. O CNPJ do processador e o código de autorização NUNCA saem.
+    expect(cartao.temCartao).toBe(true);
+    expect(cartao.temCnpjInstituicao).toBe(true);
+    expect(cartao.temCAut).toBe(true);
+    // Nada disto é conhecido antes da escrita.
+    expect(cartao.dataCancelamentoUs).toBeNull();
+    expect(cartao.temLiquidacao).toBe(false);
+
+    const pix = resumos[1]!;
+    expect(pix.idCampo).toBe(`${ORDER_SN}-1`);
+    expect(pix.formaCodigo).toBe(FORMA_PAGAMENTO.pix);
+    // Pix chega com `card_brand: ''` — que é "nenhuma bandeira", não "desconhecida".
+    expect(pix.bandeira).toBeNull();
+    expect(pix.temCartao).toBe(true);
+  });
+
+  it('⚠️ nem o CNPJ nem o cAut aparecem — nem no objeto, nem nas linhas renderizadas', () => {
+    const resumos = resumoDosPagamentosMapeados(mapeadosBR());
+    const json = JSON.stringify(resumos);
+    expect(json).not.toContain(CNPJ_FALSO);
+    expect(json).not.toContain(CAUT_FALSO);
+    expect(json).not.toContain('AUT-');
+
+    const texto = renderResumoPedido(
+      resumoDoPedidoArmazenado('ped-sha256', { numero: ORDER_SN }),
+      resumos,
+    ).join('\n');
+    expect(texto).toContain('### pagamentos (2)');
+    expect(texto).not.toContain(CNPJ_FALSO);
+    expect(texto).not.toContain(CAUT_FALSO);
+    // …e a âncora: o bloco realmente foi renderizado, senão o negativo é vácuo.
+    expect(texto).toContain('cnpj_instituicao=presente');
+    expect(texto).toContain('cAut=presente');
+  });
+});
+
+describe('resumoDosPagamentosArmazenados', () => {
+  it('lê o documento gravado, inclusive a liquidação da varredura semanal', () => {
+    const [r] = resumoDosPagamentosArmazenados([
+      {
+        id: 'doc-1',
+        data: {
+          id: ORDER_SN,
+          valor: 31.99,
+          forma_de_pagamento: FORMA_PAGAMENTO.pix,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          parcelas: 1,
+          aVista: true,
+          tarifas: 1.29,
+          cartao: { bandeira: '01', cnpj_instituicao: CNPJ_FALSO, cAut: CAUT_FALSO },
+          marketplace: { tarifasBrutas: 1.29 },
+          liquidacao: { payoutAmount: 30.7, fonte: 'escrow_list' },
+          dataAprovacao: 1_788_973_353_000_000,
+        },
+      },
+    ]);
+    expect(r!.docId).toBe('doc-1');
+    expect(r!.valor).toBe(31.99);
+    expect(r!.tarifas).toBe(1.29);
+    expect(r!.tarifasBrutas).toBe(1.29);
+    expect(r!.temLiquidacao).toBe(true);
+    expect(r!.temCnpjInstituicao).toBe(true);
+    expect(r!.temCAut).toBe(true);
+    expect(JSON.stringify(r)).not.toContain(CNPJ_FALSO);
+    expect(JSON.stringify(r)).not.toContain(CAUT_FALSO);
+  });
+
+  it('sobrevive a um documento cru SEM chave nenhuma, sem inventar valores', () => {
+    const [r] = resumoDosPagamentosArmazenados([{ id: 'doc-vazio', data: {} }]);
+    expect(r).toEqual({
+      docId: 'doc-vazio',
+      idCampo: null,
+      formaCodigo: null,
+      formaLabel: null,
+      statusCodigo: null,
+      statusLabel: null,
+      valor: null,
+      parcelas: null,
+      aVista: null,
+      tarifas: null,
+      descricaoPagamento: null,
+      temCartao: false,
+      bandeira: null,
+      temCnpjInstituicao: false,
+      temCAut: false,
+      dataAprovacaoUs: null,
+      dataCancelamentoUs: null,
+      temLiquidacao: false,
+      tarifasBrutas: null,
+    });
+  });
+
+  it('⚠️ um `forma_de_pagamento` fora do catálogo vira rótulo NULO, nunca um chute', () => {
+    const [r] = resumoDosPagamentosArmazenados([{ id: 'x', data: { forma_de_pagamento: 4242 } }]);
+    expect(r!.formaCodigo).toBe(4242);
+    expect(r!.formaLabel).toBeNull();
+  });
+});
+
+describe('renderResumoPedido — a seção de pagamentos', () => {
+  it('⚠️ OMITIR o argumento não renderiza a seção; um array VAZIO renderiza "(0)"', () => {
+    const resumo = resumoDoPedidoArmazenado('ped-sha256', { numero: ORDER_SN });
+    // Duas verdades diferentes: "não perguntei" e "perguntei, e não há nenhum".
+    expect(renderResumoPedido(resumo).join('\n')).not.toContain('### pagamentos');
+    expect(renderResumoPedido(resumo, []).join('\n')).toContain('### pagamentos (0)');
   });
 });
