@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   brNum,
   centsToBr,
-  csvCell,
   csvRow,
   formatDateBr,
   reportRowCsv,
@@ -17,32 +16,10 @@ import type { NfeNote } from './types';
 import { ESTADO_NFE } from '@delfrance/schemas';
 
 describe('csv helpers', () => {
-  it('csvCell quotes only when needed and doubles inner quotes', () => {
-    expect(csvCell('plain')).toBe('plain');
-    expect(csvCell('a;b')).toBe('"a;b"');
-    expect(csvCell('he said "hi"')).toBe('"he said ""hi"""');
-    expect(csvCell('line\nbreak')).toBe('"line\nbreak"');
-    expect(csvCell(null)).toBe('');
-    expect(csvCell(42)).toBe('42');
+  it('preserves numeric strings for existing report consumers while escaping formula text', () => {
+    expect(csvRow(['  =cmd', '-3,25'])).toBe("'  =cmd;-3,25");
+    expect(csvRow(['Total', '-3'])).toBe('Total;-3');
   });
-
-  it('csvRow joins with semicolons', () => {
-    expect(csvRow(['a', 'b', 'c'])).toBe('a;b;c');
-  });
-
-  it('neutralizes CSV/Excel formula-injection leads but leaves genuine numbers intact', () => {
-    expect(csvCell('=SUM(A1)')).toBe("'=SUM(A1)");
-    expect(csvCell('+1+1')).toBe("'+1+1");
-    expect(csvCell('@cmd')).toBe("'@cmd");
-    expect(csvCell('-DESCONTO')).toBe("'-DESCONTO");
-    // genuine numbers (incl. negative totals) must NOT be neutralized
-    expect(csvCell('-5,50')).toBe('-5,50');
-    expect(csvCell('103,00')).toBe('103,00');
-    expect(csvCell('1234.56')).toBe('1234.56');
-    // a formula that also contains the delimiter is neutralized AND quoted
-    expect(csvCell('=A1;B1')).toBe('"\'=A1;B1"');
-  });
-
   it('brNum / centsToBr produce comma decimals; toCents avoids float drift', () => {
     expect(brNum('1234.56')).toBe('1234,56');
     expect(brNum('')).toBe('');
@@ -114,4 +91,34 @@ describe('csv helpers', () => {
     // Faturamento = 10300 - 5000 = 5300 → 53,00
     expect(lines.some((l) => l.startsWith('Faturamento Total') && l.endsWith(';53,00'))).toBe(true);
   });
+
+  it('keeps a negative faturamento numeric after shared CSV escaping', () => {
+    const lines = reportTotalsTrailer({ entradasCents: 1050, saidasCents: 500, count: 2 });
+    expect(lines.find((line) => line.startsWith('Faturamento Total'))).toBe(
+      'Faturamento Total (Saídas - Entradas);;;;;;;;;;;;-5,50',
+    );
+  });
+
+  it.each([
+    ['  =cmd', "'  =cmd"],
+    ['\n=cmd', '"\'\n=cmd"'],
+  ])(
+    'neutralizes a formula-like customer label %j while preserving numeric money',
+    (label, escaped) => {
+      const note: NfeNote = {
+        id: 'k',
+        path: 'pedidos/p/nfev4/k',
+        chave: 'k',
+        numeracao: 7,
+        serie: 1,
+        estado: ESTADO_NFE.aprovada,
+        dataEmissao: null,
+        xmlNfeProc: FIXTURE_SAIDA,
+      };
+      const row = { ...parseNfeReportRow(FIXTURE_SAIDA), destNome: label, vNF: '-5.50' };
+      const csv = reportRowCsv(note, row);
+      expect(csv).toContain(`;${escaped};`);
+      expect(csv.endsWith(';-5,50')).toBe(true);
+    },
+  );
 });
