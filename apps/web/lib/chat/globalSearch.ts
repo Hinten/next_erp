@@ -1,5 +1,5 @@
 import type { Mensagem } from '@delfrance/schemas';
-import { searchableText, testRegex } from './searchRegex';
+import { firstSearchRegexMatch, searchableText, searchRegexMatches } from './searchRegex';
 
 /**
  * Pure core for CROSS-CONVERSATION search (PR-C5). The impure hook
@@ -44,11 +44,10 @@ export interface ConversaGroup {
  * (`tipo 'e'`) and text-less media are dropped by `searchableText`.
  */
 export function matchFetched(docs: FetchedMensagem[], regex: RegExp): GlobalMatchRow[] {
-  const test = testRegex(regex);
   const rows: GlobalMatchRow[] = [];
   for (const d of docs) {
     const text = searchableText(d.mensagem);
-    if (text != null && test.test(text)) {
+    if (text != null && searchRegexMatches(regex, text)) {
       rows.push({
         conversaId: d.conversaId,
         mensagemId: d.mensagemId,
@@ -114,10 +113,9 @@ export function buildSnippet(
   regex: RegExp,
   radius: number = SNIPPET_RADIUS,
 ): Snippet {
-  const re = testRegex(regex);
-  const m = re.exec(text);
-  const matchStart = m ? m.index : 0;
-  const matchEnd = m ? m.index + m[0].length : 0;
+  const match = firstSearchRegexMatch(text, regex);
+  const matchStart = match?.start ?? 0;
+  const matchEnd = match?.end ?? 0;
   const start = Math.max(0, matchStart - radius);
   const end = Math.min(text.length, matchEnd + radius);
   return {

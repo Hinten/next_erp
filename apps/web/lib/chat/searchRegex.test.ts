@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { TIPO_MENSAGEM } from '@delfrance/schemas';
 
-import { buildSearchRegex, searchableText, testRegex } from './searchRegex';
+import {
+  buildSearchRegex,
+  foldSearchText,
+  searchableText,
+  searchRegexMatches,
+} from './searchRegex';
 
 type SearchableInput = Parameters<typeof searchableText>[0];
 
@@ -33,28 +38,48 @@ describe('buildSearchRegex', () => {
     expect(regex!.flags).toContain('i');
     expect(regex!.flags).toContain('u');
     // Case-insensitive match.
-    expect(testRegex(regex!).test('bem, OLÁ mundo')).toBe(true);
+    expect(searchRegexMatches(regex!, 'bem, OLÁ mundo')).toBe(true);
   });
 
   it('supports unicode / accented regex patterns', () => {
     const { regex } = buildSearchRegex('reação');
-    expect(testRegex(regex!).test('ação e reação')).toBe(true);
+    expect(searchRegexMatches(regex!, 'ação e reação')).toBe(true);
+  });
+
+  it('matches accents in either direction while preserving regex syntax', () => {
+    const plain = buildSearchRegex('^a(c|ç)ao$').regex!;
+    const accented = buildSearchRegex('^ação$').regex!;
+
+    expect(searchRegexMatches(plain, 'AÇÃO')).toBe(true);
+    expect(searchRegexMatches(accented, 'acao')).toBe(true);
+    expect(searchRegexMatches(/^\p{L}+(cao|ção)$/iu, 'reação')).toBe(true);
+    // The exact pass remains active, so a specialized regex that targets the
+    // decomposed mark itself keeps its pre-fold semantics.
+    expect(searchRegexMatches(/\p{M}/u, 'a\u0301')).toBe(true);
+  });
+
+  it('folds accents only and keeps near-miss punctuation and letters distinct', () => {
+    const { regex } = buildSearchRegex('^acao$');
+
+    expect(searchRegexMatches(regex!, 'ação')).toBe(true);
+    expect(searchRegexMatches(regex!, 'a-ção')).toBe(false);
+    expect(searchRegexMatches(regex!, 'acaso')).toBe(false);
   });
 
   it('falls back to a LITERAL search on an invalid (SyntaxError) pattern', () => {
     const { regex, isLiteral } = buildSearchRegex('(');
     expect(isLiteral).toBe(true);
     // The literal '(' is escaped, so it matches a real paren and nothing else.
-    expect(testRegex(regex!).test('a(b')).toBe(true);
-    expect(testRegex(regex!).test('abc')).toBe(false);
+    expect(searchRegexMatches(regex!, 'a(b')).toBe(true);
+    expect(searchRegexMatches(regex!, 'abc')).toBe(false);
   });
 
   it('falls back to LITERAL for a zero-width pattern that would match empty', () => {
     const { regex, isLiteral } = buildSearchRegex('.*');
     expect(isLiteral).toBe(true);
     // Literal '.*' matches the exact substring only — never the empty string.
-    expect(testRegex(regex!).test('a.*b')).toBe(true);
-    expect(testRegex(regex!).test('anything')).toBe(false);
+    expect(searchRegexMatches(regex!, 'a.*b')).toBe(true);
+    expect(searchRegexMatches(regex!, 'anything')).toBe(false);
   });
 
   it('caps the term length so a pathological pattern still compiles', () => {
@@ -63,14 +88,27 @@ describe('buildSearchRegex', () => {
   });
 });
 
-describe('testRegex', () => {
-  it('strips the global flag so repeated .test() calls do not skip', () => {
+describe('searchRegexMatches', () => {
+  it('is stateless when repeated with a global regex', () => {
     const g = /a/giu;
-    const stateless = testRegex(g);
-    expect(stateless.flags).not.toContain('g');
     // A global regex's stateful lastIndex would make the 2nd test miss.
-    expect(stateless.test('a')).toBe(true);
-    expect(stateless.test('a')).toBe(true);
+    expect(searchRegexMatches(g, 'á')).toBe(true);
+    expect(searchRegexMatches(g, 'á')).toBe(true);
+  });
+
+  it('preserves a specialized original-regex match while adding the fold', () => {
+    // The original pass still sees a separately encoded combining mark.
+    expect(searchRegexMatches(/\p{M}/u, 'a\u0303')).toBe(true);
+    // The folded pass adds the ordinary unaccented search.
+    expect(searchRegexMatches(/^a$/u, 'a\u0303')).toBe(true);
+  });
+});
+
+describe('foldSearchText', () => {
+  it('treats precomposed and decomposed accents alike without folding punctuation', () => {
+    expect(foldSearchText('AÇÃO')).toBe('ACAO');
+    expect(foldSearchText('ac\u0327a\u0303o')).toBe('acao');
+    expect(foldSearchText('a-ção')).toBe('a-cao');
   });
 });
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { buildSearchRegex, searchableText, testRegex } from '@/lib/chat/searchRegex';
+import { buildSearchRegex, searchableText, searchRegexMatches } from '@/lib/chat/searchRegex';
 import { type AnyMensagem, mensagemKey } from './useMensagensWindow';
 
 export interface ThreadSearch {
@@ -23,11 +23,12 @@ export interface ThreadSearch {
 /**
  * In-thread regex search over the loaded window — a regex-capable port of the
  * legacy substring search (`conversaManager.dart:136-226`). Builds a case-
- * insensitive, unicode `RegExp` from `term`; on a `SyntaxError` (or a zero-width
- * pattern that would match the empty string) it falls back to a LITERAL search
- * (`escapeRegExp`) and flags `isLiteral` so the UI can show a "busca literal"
- * hint. Matches are message-level and chronological (legacy navigated between
- * whole matching messages); `next`/`prev` cycle with wraparound.
+ * insensitive, accent-insensitive unicode `RegExp` search from `term`; on a
+ * `SyntaxError` (or a zero-width pattern that would match the empty string) it
+ * falls back to a LITERAL search (`escapeRegExp`) and flags `isLiteral` so the
+ * UI can show a "busca literal" hint. Matches are message-level and
+ * chronological (legacy navigated between whole matching messages);
+ * `next`/`prev` cycle with wraparound.
  */
 export function useThreadSearch(term: string, messages: AnyMensagem[]): ThreadSearch {
   // The active match is tracked by a STABLE key (the mensagem doc id), not by a
@@ -44,13 +45,10 @@ export function useThreadSearch(term: string, messages: AnyMensagem[]): ThreadSe
 
   const matches = useMemo(() => {
     if (!regex) return [];
-    // A fresh, non-global copy for `.test()` — a global regex's stateful
-    // `lastIndex` would make repeated tests skip messages.
-    const test = testRegex(regex);
     const ids: string[] = [];
     for (const m of messages) {
       const text = searchableText(m);
-      if (text != null && test.test(text)) ids.push(mensagemKey(m));
+      if (text != null && searchRegexMatches(regex, text)) ids.push(mensagemKey(m));
     }
     return ids;
   }, [regex, messages]);

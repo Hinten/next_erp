@@ -60,7 +60,7 @@ import { gitGrep } from './lib/repo-scan.js';
  * bottom of this file.
  */
 const PATTERN =
-  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl)\\b';
+  '\\b(normalizeLoose|parseDecimalPtBr|parseCentesimos|localizarDecimal|deepEqual|stripNullsDeep|skuDoMembroUnico|skuPaiDoMembroUnico|sanitizeSearchDsl|foldSearchText|findSearchRegexMatches|firstSearchRegexMatch|searchRegexMatches)\\b';
 
 /**
  * Source only. Tests are excluded deliberately: a test SHOULD exercise a fold
@@ -103,6 +103,14 @@ const INVENTARIO = {
     '`normalizeLoose` resolves a model answer onto ML’s option list. Equal: case + diacritics. Distinct: a sibling one letter away, and a bare PREFIX — a same-length pair alone kills a TRUNCATING fold but not a `.startsWith` one, so the test carries both. Near-miss: "picks the option that matches, not a sibling differing by one letter".',
   'packages/integrations/mercado-livre/src/ai/medidasSchema.ts':
     '`normalizeLoose` is the DEDUPE key for row labels — a collision drops a row and sets `truncated`, so it must fold exactly what `applyAiMedidas` resolves with and no more. Near-miss: "keeps two size labels that differ by more than case and accents".',
+  'apps/web/lib/chat/searchRegex.ts':
+    'Defines the chat regex fold and its mapped-range readers. Equal: canonical accent variants (precomposed or decomposed), with case still owned by the regex `i` flag. Distinct: punctuation, whitespace, different base letters and stems; exact regex matches are retained before folded matches are added. Near-miss: `searchRegex.test.ts` — "matches accents in either direction while preserving regex syntax" paired with the thread/global/highlight tests that refuse `acaso`, `a-ção`, `orcamen-to` and `orcamenta`.',
+  'apps/web/app/(app)/chat/_hooks/useThreadSearch.ts':
+    '`searchRegexMatches` decides which loaded mensagens enter the stable-key navigation list. Equal: canonical accent variants. Distinct: punctuation and different base letters. Near-miss: `useThreadSearch.test.tsx` — "does not fold a different base letter or punctuation into a match".',
+  'apps/web/lib/chat/globalSearch.ts':
+    '`searchRegexMatches` filters collection-group rows and `firstSearchRegexMatch` locates the snippet window. Equal: canonical accent variants. Distinct: punctuation and different base letters. Near-miss: `globalSearch.test.ts` — "keeps accent-only folding narrower than punctuation and letter changes".',
+  'apps/web/lib/chat/highlight.tsx':
+    '`findSearchRegexMatches` maps folded matches back to original UTF-16 spans. Equal: canonical accent variants, including decomposed marks. Distinct: punctuation and different base letters. Near-miss: `highlight.test.tsx` — "does not highlight accent-fold near misses"; the paired decomposed test proves the original bytes reconstruct exactly.',
 
   // ---- The helpers themselves --------------------------------------------
   'packages/schemas/src/produto/pureLogic/familia.ts':
