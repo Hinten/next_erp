@@ -1485,6 +1485,33 @@ describe('CI lanes always report', () => {
     ).toEqual([]);
   });
 
+  it('a codex push cannot force the live NFe suite', () => {
+    const NFE = '.github/workflows/ci-nfe.yml';
+    const changes = jobBlocks(read(NFE)).changes ?? '';
+
+    expect(changes, `${NFE} no longer has an explicit non-PR decision for the live suite.`).toMatch(
+      /if \[ "\$GITHUB_EVENT_NAME" != "pull_request" \]; then/,
+    );
+    expect(
+      changes,
+      `${NFE} must force live only for workflow_dispatch and main/master pushes.`,
+    ).toMatch(/workflow_dispatch:\*\|push:main\|push:master\)[\s\S]*?FORCE_LIVE=true[\s\S]*?;;/);
+    expect(
+      changes,
+      [
+        `${NFE} must keep codex pushes on the offline lane.`,
+        '',
+        'A codex push has no PR file list for `--only-paths`. Forcing live here',
+        'emits at rate-limited SEFAZ homologação for workflow and lockfile changes',
+        'that the PR path deliberately excludes.',
+      ].join('\n'),
+    ).toMatch(/push:codex\/\*\)[\s\S]*?FORCE_LIVE=false[\s\S]*?LIVE_WHY=[\s\S]*?;;/);
+    expect(
+      changes.match(/push:codex\/\*\)[\s\S]*?;;/)?.[0] ?? '',
+      `${NFE}'s codex-push branch must never set FORCE_LIVE=true.`,
+    ).not.toContain('FORCE_LIVE=true');
+  });
+
   // ------------------------------------------------------------------
   // 12. The gate never certifies a reporter.
   // ------------------------------------------------------------------

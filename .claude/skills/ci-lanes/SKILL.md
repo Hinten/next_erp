@@ -281,9 +281,15 @@ Prettier-formatted and its indentation is not machine-guaranteed.
   permanently unmergeable.
 - **Never** a `paths:` on `pull_request:`.
 - The domain lanes **keep** `paths:` on `push:`. Nothing on the push path is a
-  required check, and `changes` short-circuits to run=true on non-PR events, so
-  removing it would run the full live SEFAZ pipeline on every merge to `main` for
-  no gating benefit. Their push branches are `[master, main, 'codex/**']`.
+  required check, and `changes` short-circuits the offline lane to run=true on
+  non-PR events. Removing it would run domain suites on unrelated pushes for no
+  gating benefit. Their push branches are `[master, main, 'codex/**']`.
+- `ci-nfe.yml` deliberately does **not** force `nfe-live` on a `codex/**` push.
+  That event has no PR file list to feed `--only-paths`, so forcing it would emit
+  at rate-limited SEFAZ homologação for every matching agent commit, including
+  lockfile and workflow-only changes the PR path correctly excludes. Only
+  `workflow_dispatch` and pushes to main/master force live; the Codex push runs
+  offline, and its PR applies the narrow live scope.
 - The three E2E lanes have an unfiltered `push:` only for `codex/**`. This is
   intentionally expensive: every published Codex branch runs the full staging
   and emulator suites before a PR exists.
@@ -292,6 +298,9 @@ Prettier-formatted and its indentation is not machine-guaranteed.
   `ref_name` otherwise. This deduplicates overlapping push and PR runs without
   colliding with an equally named fork branch. `cancel-in-progress: true` means
   the newest event wins; ordering is not guaranteed and completed runs remain.
+  This describes the original event attempts. Manually rerunning a cancelled run
+  creates another attempt after the overlap, so both event batches can later show
+  completed checks for the same SHA without disproving the cancellation.
 - `timeout-minutes` on every job. 14 jobs once had none, leaving GitHub's 6-hour
   default as the only bound on a hung SEFAZ call. Derive values from observed
   maxima, not guesses: a too-tight timeout turns "slow" into a red required check.
