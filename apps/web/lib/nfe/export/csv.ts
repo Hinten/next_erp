@@ -6,12 +6,17 @@
  * incomplete report is visibly detectable.
  */
 import { ESTADO_NFE_LABELS } from '@delfrance/schemas';
-import { csvRow } from '@/lib/csv';
+import { csvRow as sharedCsvRow, type CsvCell } from '@/lib/csv';
 
 import type { NfeReportRow } from './parseNfeReportRow';
 import type { NfeNote } from './types';
 
-export { CSV_BOM, csvRow } from '@/lib/csv';
+export { CSV_BOM } from '@/lib/csv';
+
+/** Existing report consumers pass pt-BR decimal strings, including negative quantities. */
+export function csvRow(cells: readonly CsvCell[]): string {
+  return sharedCsvRow(cells, { numericStrings: true });
+}
 
 export const REPORT_HEADER = [
   'Série',
@@ -70,24 +75,21 @@ export function formatDateBr(ms: number | null): string {
 /** One report row. `row` is null when the note has no procNFe (rejected/error):
  * the XML-derived columns stay blank, mirroring the old Flutter report. */
 export function reportRowCsv(note: NfeNote, row: NfeReportRow | null): string {
-  return csvRow(
-    [
-      note.serie,
-      note.numeracao,
-      ESTADO_NFE_LABELS[note.estado] ?? note.estado,
-      row ? tipoLabel(row.tpNF) : '',
-      row?.natOp ?? '',
-      row?.finNFe ?? '',
-      row?.destNome ?? '',
-      row?.destUF ?? '',
-      formatDateBr(note.dataEmissao),
-      brNum(row?.vProd ?? ''),
-      brNum(row?.vFrete ?? ''),
-      brNum(row?.vDesc ?? ''),
-      brNum(row?.vNF ?? ''),
-    ],
-    { numericStrings: true },
-  );
+  return csvRow([
+    note.serie,
+    note.numeracao,
+    ESTADO_NFE_LABELS[note.estado] ?? note.estado,
+    row ? tipoLabel(row.tpNF) : '',
+    row?.natOp ?? '',
+    row?.finNFe ?? '',
+    row?.destNome ?? '',
+    row?.destUF ?? '',
+    formatDateBr(note.dataEmissao),
+    brNum(row?.vProd ?? ''),
+    brNum(row?.vFrete ?? ''),
+    brNum(row?.vDesc ?? ''),
+    brNum(row?.vNF ?? ''),
+  ]);
 }
 
 const EMPTY_LEADING = ['', '', '', '', '', '', '', '', '', '', ''] as const;
@@ -102,15 +104,9 @@ export function reportTotalsTrailer(input: {
   return [
     '',
     '',
-    csvRow(['Total Entradas', ...EMPTY_LEADING, centsToBr(input.entradasCents)], {
-      numericStrings: true,
-    }),
-    csvRow(['Total Saídas', ...EMPTY_LEADING, centsToBr(input.saidasCents)], {
-      numericStrings: true,
-    }),
-    csvRow(['Faturamento Total (Saídas - Entradas)', ...EMPTY_LEADING, centsToBr(fat)], {
-      numericStrings: true,
-    }),
+    csvRow(['Total Entradas', ...EMPTY_LEADING, centsToBr(input.entradasCents)]),
+    csvRow(['Total Saídas', ...EMPTY_LEADING, centsToBr(input.saidasCents)]),
+    csvRow(['Faturamento Total (Saídas - Entradas)', ...EMPTY_LEADING, centsToBr(fat)]),
     csvRow([`Total de notas: ${input.count}`]),
   ];
 }

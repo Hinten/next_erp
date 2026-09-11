@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   brNum,
   centsToBr,
+  csvRow,
   formatDateBr,
   reportRowCsv,
   reportTotalsTrailer,
@@ -15,6 +16,10 @@ import type { NfeNote } from './types';
 import { ESTADO_NFE } from '@delfrance/schemas';
 
 describe('csv helpers', () => {
+  it('preserves numeric strings for existing report consumers while escaping formula text', () => {
+    expect(csvRow(['  =cmd', '-3,25'])).toBe("'  =cmd;-3,25");
+    expect(csvRow(['Total', '-3'])).toBe('Total;-3');
+  });
   it('brNum / centsToBr produce comma decimals; toCents avoids float drift', () => {
     expect(brNum('1234.56')).toBe('1234,56');
     expect(brNum('')).toBe('');
