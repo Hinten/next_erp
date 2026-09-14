@@ -1,6 +1,11 @@
 import { expect, test } from '@playwright/test';
 import { PERM } from '@delfrance/auth';
-import { requireSuAuthEnv } from './_helpers/auth';
+import {
+  createAccessTestActor,
+  cleanupAccessTestActor,
+  type AccessTestActor,
+} from '@delfrance/test-fixtures';
+import { submitAccessOperation } from './_helpers/access-operations';
 import {
   deleteAuthUserByEmail,
   deleteCargoById,
@@ -11,45 +16,17 @@ import { getRunId, workerIndex } from './_helpers/run-id';
 import { e2ePrefix } from './_helpers/seed-data';
 
 /**
- * End-to-end coverage for the User+Cargo CRUD flow against Firebase staging.
- *
- * Pre-reqs (one-time per test Firebase project):
- *   1. Create a test superuser: e.g. `e2e-su@delfrance.test` with known password.
- *   2. Grant ALL_PERMS:
- *        pnpm --filter @delfrance/test-fixtures \
- *          exec tsx src/grant-all-perms.ts e2e-su@delfrance.test
- *   3. Set env vars when running tests:
- *        E2E_SU_EMAIL, E2E_SU_PASSWORD,
- *        FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT (or *_PATH),
- *        NEXT_PUBLIC_INTEGRATIONS_URL (defaults to http://localhost:3001 in dev)
- *
- * The mutation tests call the coordinated admin endpoints, which live in
- * `apps/integrations` (:3001) — NOT in apps/web, which has no route handlers at
- * all. Locally, root `pnpm dev` brings that app up alongside web. In CI the
- * vendas lane builds and serves it too (`integrations: true` in
- * e2e-vendas.yml); without it the calls 404 against :3000.
- *
- * Tests run serially (`describe.serial`): later steps consume entities created
- * in earlier steps. `afterAll` cleans up every doc/user it touched.
- *
- * The cargo/usuario `[id]/editar` routes were collapsed into `[id]` by
- * c034a7b — the detail page IS the edit form. So each `[id]` page shows the
- * static entity heading ("Cargo" / "Usuário"), saving displays a durable operation,
- * and granted permission bits read back as ticked checkboxes rather than a text
- * summary. This suite could not observe that drift for two months: it skipped
- * itself while E2E_SU_EMAIL/E2E_SU_PASSWORD went unset (#674).
- *
- * #31: E2E_SU_EMAIL/E2E_SU_PASSWORD missing is a hard failure here
- * (`requireSuAuthEnv()`), not a silent skip — this is the one suite that
- * actually needs the SU session, so a misconfigured secret should fail loud.
+ * Real HTTP + staging Firestore/Auth coverage of coordinated access changes.
+ * Each worker owns an ephemeral actor with both source authorization and claims.
+ * The test runner delivers accepted operations to the real worker core; task
+ * dispatch/retry transport is independently covered in the Functions suite.
+ * This avoids coupling a PR's UI to whichever worker revision staging runs.
+ * Parallel push/PR runs exercise the global reservation and retry only 409 busy.
+ * No authorization guard or production handler is bypassed.
  */
-
 test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
   test.setTimeout(180_000);
-  test.beforeAll(() => {
-    requireSuAuthEnv();
-  });
-  test.use({ storageState: 'e2e/.auth/su.json' });
+  test.use({ storageState: { cookies: [], origins: [] } });
 
   const runId = getRunId();
   // Names carry the standard `e2e-<runId>-` prefix so the orphan sweep can find
@@ -69,6 +46,20 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
   // does NOT go through `e2ePrefix`.
   const userEmail = `e2e-user-${runId}-w${workerIndex()}@delfrance.test`;
   const userPassword = 'E2EpasswordTest!1';
+  let actor: AccessTestActor;
+  test.beforeAll(async () => {
+    actor = await createAccessTestActor(
+      `e2e-user-${runId}-access-w${workerIndex()}@delfrance.test`,
+      userPassword,
+    );
+  });
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/login');
+    await page.getByLabel('E-mail').fill(actor.email);
+    await page.getByLabel('Senha').fill(userPassword);
+    await page.getByRole('button', { name: 'Entrar' }).click();
+    await page.waitForURL('**/inicio');
+  });
 
   // bits we'll grant to the cargo: cliente.read | cliente.write
   const initialBits = PERM.cliente.read | PERM.cliente.write;
@@ -79,6 +70,7 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
   let userUid = '';
 
   test.afterAll(async () => {
+    if (actor) await cleanupAccessTestActor(actor);
     if (userUid) {
       await deleteUsuarioDoc(userUid).catch(() => {});
     }
@@ -99,7 +91,8 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     await clientesCard.getByLabel('Ler').check();
     await clientesCard.getByLabel('Editar').check();
 
-    await page.getByRole('button', { name: 'Criar' }).click();
+    const receipt = await submitAccessOperation(page, actor, '/api/admin/cargos', 'POST', 'Criar');
+    cargoId = receipt.targetId;
 
     await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({
       timeout: 120_000,
@@ -140,7 +133,7 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     const clientesCard = page.locator('.mantine-Card-root').filter({ hasText: 'Clientes' }).first();
     await clientesCard.getByLabel('Excluir').check();
 
-    await page.getByRole('button', { name: /Salvar/i }).click();
+    await submitAccessOperation(page, actor, `/api/admin/cargos/${cargoId}`, 'PATCH', /Salvar/i);
     // Completion means the server finished applying the claims, not just accepted the command.
     await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({
       timeout: 120_000,
@@ -170,14 +163,14 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     await page.getByRole('option', { name: cargoNome }).click();
     await page.keyboard.press('Escape');
 
-    const createResp = page.waitForResponse(
-      (r) => r.url().endsWith('/api/admin/users') && r.request().method() === 'POST',
+    const receipt = await submitAccessOperation(
+      page,
+      actor,
+      '/api/admin/users',
+      'POST',
+      'Criar usuário',
     );
-    await page.getByRole('button', { name: 'Criar usuário' }).click();
-    const response = await createResp;
-    expect(response.status()).toBe(201);
-    const body = (await response.json()) as { uid: string };
-    userUid = body.uid;
+    userUid = receipt.targetId;
     expect(userUid).not.toBe('');
 
     await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({
@@ -197,7 +190,7 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     const card = page.locator('.mantine-Card-root').filter({ hasText: 'Clientes' }).first();
     await card.getByLabel('Editar').uncheck();
     await card.getByLabel('Excluir').uncheck();
-    await page.getByRole('button', { name: /Salvar/i }).click();
+    await submitAccessOperation(page, actor, `/api/admin/cargos/${cargoId}`, 'PATCH', /Salvar/i);
     await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({
       timeout: 120_000,
     });
@@ -219,12 +212,7 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     await page.getByRole('option', { name: cargoNome }).click();
     await page.keyboard.press('Escape');
 
-    const refreshResp = page.waitForResponse(
-      (r) => r.url().endsWith(`/api/admin/users/${userUid}`) && r.request().method() === 'PATCH',
-    );
-    await page.getByRole('button', { name: /Salvar/i }).click();
-    const response = await refreshResp;
-    expect(response.status()).toBe(202);
+    await submitAccessOperation(page, actor, `/api/admin/users/${userUid}`, 'PATCH', /Salvar/i);
 
     // Completion means the server finished applying the claims, not just accepted the command.
     await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({

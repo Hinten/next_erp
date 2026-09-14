@@ -118,5 +118,5 @@ transport remain test seams (there is no Cloud Tasks emulator in that lane).
 Emulated creation triggers deliberately do not enqueue real Cloud Tasks. Generated
 rules are tested separately in the existing rules emulator lane, including denied
 superuser writes. Browser component tests cover operation states and token renewal;
-the updated staging Playwright flow needs the coordinated backends activated.
+the staging Playwright flow runs the branch HTTP backend and delivers only its own accepted operations to the real worker core from the test runner, using staging Auth and Firestore. Its actor fixture has both source authorization and claims; parallel runs honor the global reservation and retry only explicit busy conflicts. Production task scheduling has no test mode.
 The emulator cannot verify Enterprise index billing or production IAM/deployment.
