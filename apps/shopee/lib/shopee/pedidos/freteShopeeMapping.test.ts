@@ -1329,15 +1329,41 @@ describe('o diário: nada é apagado, e os tokens ilegíveis são reportados', (
     expect(dobrarPacotesShopee(pacotes, null).estado).toBeNull();
   });
 
-  it('um token ilegível não impede os OUTROS pacotes de dobrarem', () => {
+  it('um token ilegível BLOQUEIA o estado do bloco — e NÃO impede os outros CAMPOS de dobrarem', () => {
+    // ⚠️ A reprodução do defeito, agora com o veredito invertido. Antes a linha
+    // ilegível era simplesmente INVISÍVEL ao fold, então os pacotes restantes
+    // decidiam sozinhos — e a única direção em que eles podem mover a resposta é
+    // PARA CIMA na escada, direto para dentro de `ESTADOS_FRETE_REMOVE_ESTOQUE`.
+    // O estoque saía da prateleira por um pacote cujo estado ninguém consegue ler.
     const { pacotes } = mesclarPacotesShopee(
       [],
       [
-        obs({ numero: PKG_A, estadoMarketplace: 'LOGISTICS_TELEPORTED', relogioUs: T1 }),
-        obs({ numero: PKG_B, estadoMarketplace: 'LOGISTICS_PICKUP_DONE', relogioUs: T1 }),
+        obs({
+          numero: PKG_A,
+          estadoMarketplace: 'LOGISTICS_PICKUP_DONE',
+          codRastreio: 'BR000000001XY',
+          canalId: '90021',
+          prazoDespachoUs: T2,
+          relogioUs: T1,
+        }),
+        obs({ numero: PKG_B, estadoMarketplace: 'LOGISTICS_TELEPORTED', relogioUs: T1 }),
       ],
     );
-    expect(dobrarPacotesShopee(pacotes, null).estado).toBe(ESTADO_FRETE.postado);
+    const dobra = dobrarPacotesShopee(pacotes, null);
+
+    expect(dobra.estado).toBeNull();
+    expect(dobra.estadoBloqueadoPorPacoteSemEstado).toBe(true);
+    // ÂNCORA: o pacote legível REALMENTE dobraria para `postado`, e `postado`
+    // REALMENTE tira estoque — sem isto o `toBeNull()` acima passaria sobre um
+    // diário que não tinha resposta nenhuma para dar.
+    expect(dobrarPacotesShopee([pacotes[0]!], null).estado).toBe(ESTADO_FRETE.postado);
+    expect(removeEstoqueCompartilhado(ESTADO_FRETE.postado)).toBe(true);
+
+    // …e os OUTROS três campos respondem na mesma dobra: o custo é a casa do
+    // estado, nunca a entrega.
+    expect(dobra.codRastreio).toBe('BR000000001XY');
+    expect(dobra.prazoDespachoUs).toBe(T2);
+    expect(dobra.externalOptionId).toBe('90021');
   });
 
   it('um diário vazio dobra para null em tudo', () => {
@@ -1348,6 +1374,101 @@ describe('o diário: nada é apagado, e os tokens ilegíveis são reportados', (
       externalOptionId: null,
       canaisDivergentes: false,
       codRastreioTruncado: false,
+      // Sem linha nenhuma não há nada a recusar: o estado é null por falta de
+      // dado, e a bandeira diz exatamente isso.
+      estadoBloqueadoPorPacoteSemEstado: false,
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          19 — o invariante para N pacotes: quem não é legível bloqueia      */
+/* -------------------------------------------------------------------------- */
+
+describe('19 — um pacote sem estado BLOQUEIA o estado do bloco', () => {
+  it('19 — QUASE-ERRO: um pacote FALHO (mapeado) continua sendo IGNORADO — E3 intacto', () => {
+    // ⚠️ O par que separa as duas coisas que "não contam" no fold. `faq 510`
+    // manda IGNORAR o pacote que falhou — ele é um fato lido, e o pedido segue o
+    // pacote vivo. Um pacote ILEGÍVEL não é um fato lido: nada na Shopee nos
+    // disse onde ele está. Dobrar os dois no mesmo balde é exatamente o erro que
+    // o caso acima reproduz, em qualquer das duas direções.
+    const { pacotes } = mesclarPacotesShopee(
+      [],
+      [
+        obs({ numero: PKG_A, estadoMarketplace: 'LOGISTICS_PICKUP_DONE', relogioUs: T1 }),
+        obs({ numero: PKG_B, estadoMarketplace: 'LOGISTICS_REQUEST_CANCELED', relogioUs: T1 }),
+      ],
+    );
+    const dobra = dobrarPacotesShopee(pacotes, null);
+
+    expect(dobra.estado).toBe(ESTADO_FRETE.postado);
+    expect(dobra.estadoBloqueadoPorPacoteSemEstado).toBe(false);
+    // …e o token cancelado É um token MAPEADO, senão este teste seria o mesmo
+    // caso do anterior com outro nome.
+    expect(estadoFreteDeTokenShopee('LOGISTICS_REQUEST_CANCELED').estado).toBe(
+      ESTADO_FRETE.cancelado,
+    );
+  });
+
+  it('19 — UM pacote só, token desconhecido: null, como sempre foi (a metade original)', () => {
+    const { pacotes } = mesclarPacotesShopee(
+      [],
+      [obs({ numero: PKG_B, estadoMarketplace: 'LOGISTICS_TELEPORTED', relogioUs: T1 })],
+    );
+    const dobra = dobrarPacotesShopee(pacotes, null);
+
+    expect(dobra.estado).toBeNull();
+    expect(dobra.estadoBloqueadoPorPacoteSemEstado).toBe(true);
+    // O token cru fica GRAVADO: a correção da tabela de amanhã se aplica sem
+    // nenhum evento de fio.
+    expect(pacotes[0]?.estadoMarketplace).toBe('LOGISTICS_TELEPORTED');
+  });
+
+  it('19 — um token de RETORNO num de dois pacotes bloqueia igual (o efeito, não o motivo)', () => {
+    // `LOGISTICS_PENDING_ARRANGE` é um token que ENTENDEMOS — é do passo 17 — e
+    // continua distinto no log (`tokensDeRetorno`, nunca `tokensDesconhecidos`).
+    // O que ele NÃO pode fazer é deixar o outro pacote decidir por ele.
+    const { pacotes, tokensDeRetorno, tokensDesconhecidos } = mesclarPacotesShopee(
+      [],
+      [
+        obs({ numero: PKG_A, estadoMarketplace: 'LOGISTICS_PICKUP_DONE', relogioUs: T1 }),
+        obs({ numero: PKG_B, estadoMarketplace: 'LOGISTICS_PENDING_ARRANGE', relogioUs: T1 }),
+      ],
+    );
+    const dobra = dobrarPacotesShopee(pacotes, null);
+
+    expect(dobra.estado).toBeNull();
+    expect(dobra.estadoBloqueadoPorPacoteSemEstado).toBe(true);
+    expect(tokensDeRetorno).toEqual(['LOGISTICS_PENDING_ARRANGE']);
+    expect(tokensDesconhecidos).toEqual([]);
+  });
+
+  it('19 — uma linha SEM token nenhum também bloqueia, e é a terceira causa', () => {
+    // A causa que NENHUMA das duas listas de token nomeia:
+    // `get_order_detail.package_list[]` pode vir sem `logistics_status`. A
+    // bandeira é o único lugar em que esse caso aparece.
+    const { pacotes, tokensDesconhecidos, tokensDeRetorno } = mesclarPacotesShopee(
+      [],
+      [
+        obs({ numero: PKG_A, estadoMarketplace: 'LOGISTICS_PICKUP_DONE', relogioUs: T1 }),
+        obs({ numero: PKG_B, estadoMarketplace: null, relogioUs: T1 }),
+      ],
+    );
+    const dobra = dobrarPacotesShopee(pacotes, null);
+
+    expect(dobra.estado).toBeNull();
+    expect(dobra.estadoBloqueadoPorPacoteSemEstado).toBe(true);
+    expect(tokensDesconhecidos).toEqual([]);
+    expect(tokensDeRetorno).toEqual([]);
+  });
+
+  it('19 — a imagem da tabela nunca cai na fenda "mapeado mas fora da escada"', () => {
+    // A ÂNCORA da ramificação que o fold ainda pula (`indice < 0` sem ser
+    // falha): enquanto isto valer, ela é inalcançável — e no dia em que não
+    // valer, este teste cai antes que um estado mapeado volte a ficar invisível.
+    for (const estado of Object.values(ESTADO_FRETE_DE_TOKEN_SHOPEE)) {
+      const naEscada = (ESCADA_FRETE_SHOPEE as readonly EstadoFrete[]).includes(estado);
+      expect(naEscada || FALHA_FRETE_SHOPEE.has(estado)).toBe(true);
+    }
   });
 });

@@ -165,6 +165,18 @@ export interface DiagnosticosFreteShopee {
   readonly estadoRessuscitado: boolean;
   readonly canaisDivergentes: boolean;
   readonly codRastreioTruncado: boolean;
+  /**
+   * The fold REFUSED an estado because some package has none — an unmapped
+   * token, a return-only one, or a row carrying no token at all.
+   *
+   * ⚠️ Without it the one log line cannot tell the two `estadoAlvo: null` cases
+   * apart: "this delivery understood nothing" and "one package of N is
+   * unreadable, so the readable ones were not allowed to answer". Paired with
+   * {@link DiagnosticosFreteShopee.tokensDesconhecidos} /
+   * {@link DiagnosticosFreteShopee.tokensDeRetorno} it names the cause; `true`
+   * with both lists empty means a package carried no status at all.
+   */
+  readonly estadoBloqueadoPorPacoteSemEstado: boolean;
 }
 
 /**
@@ -325,6 +337,7 @@ const SEM_DIAGNOSTICO: DiagnosticosFreteShopee = {
   estadoRessuscitado: false,
   canaisDivergentes: false,
   codRastreioTruncado: false,
+  estadoBloqueadoPorPacoteSemEstado: false,
 };
 
 /**
@@ -405,6 +418,11 @@ export function preverFreteShopee(
   // document says it would be inventing a stored fact. The honest reading is
   // "there is nothing to preserve", so the fold's estado is written whenever it
   // has one, and the refusal keeps the same motivo an unreadable token gets.
+  // ⚠️ `dobra.estado` is ALSO null when the fold REFUSED one — a package with no
+  // readable estado blocks the slot for the whole pedido
+  // (`estadoBloqueadoPorPacoteSemEstado`). Both roads answer `token-desconhecido`
+  // here, and neither stops `codRastreio`, `prazoDespacho`, `externalOptionId` or
+  // the diary from being written below.
   const estadoDoBloco = estadoArmazenadoShopee(armazenado.estado);
   const veredito: VereditoFreteShopee =
     estadoDoBloco !== null
@@ -424,6 +442,7 @@ export function preverFreteShopee(
     estadoRessuscitado: veredito.escrever && veredito.ressuscitado,
     canaisDivergentes: dobra.canaisDivergentes,
     codRastreioTruncado: dobra.codRastreioTruncado,
+    estadoBloqueadoPorPacoteSemEstado: dobra.estadoBloqueadoPorPacoteSemEstado,
   };
 
   /* ---------------------------- the whole-map rebuild ----------------------- */
@@ -589,6 +608,10 @@ export async function salvarFreteShopee(
     tokensDeRetorno: diagnosticos.tokensDeRetorno,
     canaisDivergentes: diagnosticos.canaisDivergentes,
     codRastreioTruncado: diagnosticos.codRastreioTruncado,
+    // ⚠️ WHY no estado was written when one was refused: a package with no
+    // readable estado blocks the slot for the whole pedido, so the readable
+    // packages' `estadoAlvo: null` is a refusal and not an absence of news.
+    estadoBloqueadoPorPacoteSemEstado: diagnosticos.estadoBloqueadoPorPacoteSemEstado,
   });
 
   return resultado;

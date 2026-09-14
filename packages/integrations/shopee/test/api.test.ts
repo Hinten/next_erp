@@ -2218,6 +2218,56 @@ describe('get_package_detail', () => {
     ).toBe('A-');
   });
 
+  it('6 — ⚠️ o elemento vai TRIMADO para a query: quem julga e quem envia leem a MESMA string', async () => {
+    // ⚠️ As recusas julgam o elemento APARADO (`numero.trim() === ''`,
+    // `=== '-'`), então enviar o cru seria recusar sobre uma string e pedir
+    // outra: ` OFG…937 ` passa por todas elas e sairia como `%20OFG…937%20` —
+    // uma chave que a Shopee não tem. E a resposta não é erro nenhum: vêm as
+    // linhas dos pacotes que ela reconheceu, uma a menos, sem sinal em lugar
+    // nenhum.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [` ${PACKAGE_NUMBER} `, `\t${PACKAGE_NUMBER_2}`],
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.get('package_number_list')).toBe(
+      `${PACKAGE_NUMBER},${PACKAGE_NUMBER_2}`,
+    );
+    // ⚠️ O valor CODIFICADO, porque é ele que viaja — e `URLSearchParams`
+    // escreve espaço como `+`, nunca como `%20`, então é `+` que não pode
+    // aparecer (a tabulação vira `%09`). Um teste que procurasse `%20` passaria
+    // verde sobre a query errada.
+    expect(url.search).toContain(`package_number_list=${PACKAGE_NUMBER}%2C${PACKAGE_NUMBER_2}`);
+    expect(url.search).not.toContain('+');
+    expect(url.search).not.toContain('%09');
+
+    // ⚠️ QUASE-ERRO: o aparo é SÓ nas pontas. Um espaço NO MEIO do valor é parte
+    // do valor e viaja verbatim — aparar por dentro seria inventar um pacote.
+    await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [' OFG 111 '],
+    });
+    expect(
+      new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('package_number_list'),
+    ).toBe('OFG 111');
+  });
+
+  it('6 — QUASE-ERRO: um elemento SÓ de espaços continua recusado ANTES da rede', async () => {
+    // A âncora do caso acima: o aparo no envio não pode ter virado uma forma de
+    // um elemento em branco chegar à query como string vazia — e nem de a
+    // SENTINELA espaçada chegar como `-`.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await expect(
+      client.getPackageDetail({ packageNumbers: [PACKAGE_NUMBER, ' \t '] }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(client.getPackageDetail({ packageNumbers: [' - '] })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('7 — recusa um elemento com VÍRGULA antes da rede: ela é o separador', async () => {
     // Um elemento com vírgula viraria DOIS parâmetros em silêncio, e a resposta
     // traria uma linha que ninguém pediu no lugar da que se pediu.

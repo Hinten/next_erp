@@ -1150,6 +1150,24 @@ inventory; one that never answers leaves a delivered order reserving them. That
 is why an **unknown token writes nothing at all** and is logged once per
 delivery, rather than defaulting to anything.
 
+⚠️ **"Nothing" is the BLOCK estado, and the rule is about N packages.** An
+unknown token — or a return-only one, or a `package_list[]` row carrying no
+`logistics_status` at all — on **ANY** package blocks the block-estado write for
+the whole pedido: `dobrarPacotesShopee` answers `estado: null` and raises
+`estadoBloqueadoPorPacoteSemEstado`, which rides `diagnosticos` into the one log
+line, and `preverFreteShopee` then refuses with `token-desconhecido` (the outcome
+is `ignorado-desconhecido` when nothing else changed). The diary still records
+the raw token, so **a table fix retro-applies on the next delivery**, with no
+wire event. Read as "an unreadable row is simply invisible to the fold" the
+sentence was true for ONE package and false for two: the remaining packages
+decided alone, and the only direction they can move the answer is UP the ladder,
+into the removal set, for a parcel nobody could read. The other three fold
+outputs (`codRastreio`, `prazoDespacho`, `externalOptionId`) and the diary merge
+are untouched — an unreadable token costs the estado slot, never the delivery.
+⚠️ A FAILED package is NOT this case: `faq 510` says to ignore it and the fold
+still does (a `cancelado` beside a `postado` folds to `postado`), because a
+failure is a state we READ.
+
 **The diary is `freteInicial.pacotes`** — an array of typed rows sorted ASC by
 `numero` (plain code-unit comparison, never `localeCompare`), nested inside a
 block the rulesets emit one `is map` clause for, so it regenerated no ruleset and

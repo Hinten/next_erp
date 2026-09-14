@@ -43,6 +43,18 @@
  * spelling (`LOGISTICS_REQUEST_CANCELLED`, double L) that `guide 31` does not
  * use, so "the docs enumerate the set" is not a premise this code may hold.
  *
+ * ⚠️ **"Writes nothing" is a statement about N packages, not about one.** An
+ * unknown token on **ANY** package BLOCKS the block-estado write for the whole
+ * pedido — {@link dobrarPacotesShopee} answers `estado: null` and raises
+ * {@link DobraFreteShopee.estadoBloqueadoPorPacoteSemEstado} — and the diary
+ * still records the raw token, so a table fix retro-applies on the next
+ * delivery. Read as "this row is simply invisible to the fold" the sentence was
+ * TRUE for one package and FALSE for two: rows `A = LOGISTICS_PICKUP_DONE`
+ * (`postado`) and `B = <unmapped>` left the remaining packages to decide, and
+ * the only direction they can move the answer is UP the ladder — straight into
+ * `ESTADOS_FRETE_REMOVE_ESTOQUE`, taking physical stock out for a parcel whose
+ * state nothing in this repo can read.
+ *
  * ## ⚠️ The estado moves PHYSICAL STOCK
  *
  * `sincronizarEstoquePedido` observes the dot-path `freteInicial.estado` and
@@ -66,7 +78,11 @@
  *
  * `faq 207`: "This state is only available for Return objects", corroborated by
  * `push 32`'s own sample. Returns are step 17's (code 29). It is recorded raw
- * and never reaches the pedido's single `estado` slot.
+ * and never reaches the pedido's single `estado` slot — and on an N-package
+ * order it BLOCKS that slot exactly like an unknown token, for the same reason:
+ * the fold cannot read that package's ERP state, so the others may not decide
+ * for it. The two facts stay distinguishable in the log (`tokensDeRetorno` vs
+ * `tokensDesconhecidos`); only their effect on the estado is the same.
  *
  * ## ⚠️ Channel identity is `logistics_channel_id`, never the carrier string
  *
@@ -681,6 +697,22 @@ export interface DobraFreteShopee {
   readonly canaisDivergentes: boolean;
   /** Not even ONE tracking number fitted the cap — the pathological slice. */
   readonly codRastreioTruncado: boolean;
+  /**
+   * At least one diary row has NO ERP `estado`, so {@link DobraFreteShopee.estado}
+   * is `null` BY REFUSAL rather than for want of data.
+   *
+   * ⚠️ Three causes, one effect: an UNMAPPED token, a RETURN-only token
+   * ({@link TOKENS_DE_RETORNO_SHOPEE}, step 17's), and a row that carries no
+   * token at all (`get_order_detail.package_list[]` may omit
+   * `logistics_status`). The caller's token lists separate the first two; a
+   * `true` here with BOTH lists empty is the third.
+   *
+   * It is the honest predicate "some package has no estado", not "the fold had
+   * an answer and dropped it": a single unmapped package answers `true` too, and
+   * there the estado would have been `null` anyway. `false` on an EMPTY diary —
+   * no row, nothing refused.
+   */
+  readonly estadoBloqueadoPorPacoteSemEstado: boolean;
 }
 
 /** The joined tracking numbers, and whether a single number had to be cut. */
@@ -715,15 +747,30 @@ function juntarCodRastreio(numeros: readonly string[]): {
  * and it reads each row's `estado`, which {@link mesclarPacotesShopee} keeps a
  * projection of `estadoMarketplace`.
  *
- * **`estado`: the LEAST-ADVANCED live package.** Live = mapped, on the ladder,
- * and not a failure. When none is live the answer is the first member of
- * {@link ORDEM_FALHA_SHOPEE} present — a DECLARED precedence, never "the latest
- * by clock", because a clock-ordered answer is not idempotent under out-of-order
- * pushes. This reproduces `faq 510` (Shopee's own order status follows "the
- * package that is fulfilled the earliest", ignores failed packages, and reaches
- * `COMPLETED` only when all are delivered) in one expression, and it is the only
- * stock-safe direction: a pedido's stock leaves as a WHOLE, so folding to the
- * most-advanced package would empty the shelf while a parcel is still on it.
+ * **`estado`: the LEAST-ADVANCED live package — and only when EVERY package is
+ * readable.** Live = mapped, on the ladder, and not a failure. When none is live
+ * the answer is the first member of {@link ORDEM_FALHA_SHOPEE} present — a
+ * DECLARED precedence, never "the latest by clock", because a clock-ordered
+ * answer is not idempotent under out-of-order pushes. This reproduces `faq 510`
+ * (Shopee's own order status follows "the package that is fulfilled the
+ * earliest", ignores failed packages, and reaches `COMPLETED` only when all are
+ * delivered) in one expression, and it is the only stock-safe direction: a
+ * pedido's stock leaves as a WHOLE, so folding to the most-advanced package
+ * would empty the shelf while a parcel is still on it.
+ *
+ * ⚠️ **A row whose `estado` is `null` REFUSES the answer; it is not skipped.**
+ * That is the module header's "an unknown token writes nothing", stated for N
+ * packages: an unreadable row makes the least-advanced-live answer a claim about
+ * the packages we happen to understand, and every such claim is ≥ the truth. The
+ * refusal is reported as
+ * {@link DobraFreteShopee.estadoBloqueadoPorPacoteSemEstado} so the caller's one
+ * log line can say WHY nothing was written, and it is the one place where a
+ * FAILED package and an UNREADABLE one part company: `faq 510` says to ignore
+ * the failed one (E3) and says nothing about a state nobody can read.
+ *
+ * ⚠️ The other three outputs do NOT stop: `codRastreio`, `prazoDespachoUs` and
+ * `externalOptionId` still fold over every row, and the diary still merges. An
+ * unreadable token costs the estado slot, never the delivery.
  *
  * **`codRastreio`**: the distinct numbers of the packages sorted ASC by `numero`
  * and joined by `', '`, capped at {@link LIMITE_COD_RASTREIO_SHOPEE} (a naive
@@ -750,21 +797,35 @@ export function dobrarPacotesShopee(
 ): DobraFreteShopee {
   let vivo: { estado: EstadoFrete; indice: number } | null = null;
   const falhos = new Set<EstadoFrete>();
+  let semEstado = false;
   for (const pacote of pacotes) {
     const estado = pacote.estado;
-    if (estado == null) continue;
+    // ⚠️ NOT `continue`-and-forget: a row nobody can read REFUSES the whole
+    // answer below. The loop still runs to the end so the other outputs and the
+    // diagnostics are computed over the same single pass.
+    if (estado == null) {
+      semEstado = true;
+      continue;
+    }
     if (FALHA_FRETE_SHOPEE.has(estado)) {
       falhos.add(estado);
       continue;
     }
     const indice = indiceEscada(estado);
-    // An off-ladder non-failure estado is unreachable from the token table; it
-    // is skipped exactly like a null one rather than compared against Infinity.
+    // An off-ladder non-failure estado is unreachable from the token table (every
+    // value of `ESTADO_FRETE_DE_TOKEN_SHOPEE` is either a rung or a failure), so
+    // it is skipped rather than compared against Infinity — and deliberately does
+    // NOT raise `semEstado`, which is about a row with no estado at all.
     if (indice < 0) continue;
     if (vivo == null || indice < vivo.indice) vivo = { estado, indice };
   }
-  const estado =
-    vivo != null ? vivo.estado : (ORDEM_FALHA_SHOPEE.find((e) => falhos.has(e)) ?? null);
+  // The refusal comes FIRST: a live or failed package may not answer for a
+  // sibling whose state this channel cannot read.
+  const estado = semEstado
+    ? null
+    : vivo != null
+      ? vivo.estado
+      : (ORDEM_FALHA_SHOPEE.find((e) => falhos.has(e)) ?? null);
 
   const ordenados = [...pacotes].sort(compararNumeroPacote);
 
@@ -799,5 +860,6 @@ export function dobrarPacotesShopee(
     externalOptionId: canais.length === 1 ? (canais[0] ?? null) : null,
     canaisDivergentes: canais.length > 1,
     codRastreioTruncado,
+    estadoBloqueadoPorPacoteSemEstado: semEstado,
   };
 }

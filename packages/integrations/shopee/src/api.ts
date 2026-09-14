@@ -635,7 +635,8 @@ export interface GetEscrowListParams {
  */
 export interface GetPackageDetailParams {
   /**
-   * 1…50 `package_number`, joined by commas on the wire.
+   * 1…50 `package_number`, TRIMMED element by element and joined by commas on
+   * the wire.
    *
    * ⚠️ Three per-element refusals BEFORE the fetch, and the second is this
    * page's own: a blank element (it would collapse rows onto one identity
@@ -646,6 +647,14 @@ export interface GetPackageDetailParams {
    * one element would silently become two parameters). The last two have no twin
    * on `assertOrderDetailParams` deliberately: an `order_sn` is alphanumeric by
    * construction and widening that sibling is not this step's change.
+   *
+   * ⚠️ **The trim is what makes those refusals mean anything.** Two of the three
+   * judge the TRIMMED element (`' '` is blank, `' - '` is the sentinel), so
+   * sending the untrimmed one would refuse on one string and request another:
+   * `' OFG…937 '` clears every check and would go out as `+OFG…937+` (a query
+   * string spells a space `+`, never `%20`), which Shopee answers by returning
+   * the rows it recognised — one short, and with no error to read. Only the
+   * surrounding whitespace is dropped; nothing INSIDE the value is touched.
    */
   readonly packageNumbers: readonly string[];
 }
@@ -974,6 +983,10 @@ function assertOrderDetailParams(p: GetOrderDetailParams): void {
  * `virtual_contact_number`; a caller that read one of those and fed it straight
  * back would be asking for "no package", and Shopee would answer with a row set
  * nobody asked for rather than with an error.
+ *
+ * ⚠️ Two branches judge the element TRIMMED, so the SENDER trims too — see
+ * {@link GetPackageDetailParams.packageNumbers}. Judging one string and sending
+ * another is how a refusal passes over the value that actually goes out.
  */
 function assertPackageDetailParams(p: GetPackageDetailParams): void {
   const quantidade = p.packageNumbers.length;
@@ -1438,7 +1451,14 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
           // ⚠️ ONE joined scalar, commas and NO spaces: `signedQuery` cannot emit
           // a repeated key, and the page's own request sample is comma-joined
           // (`…OFG1156498731071468%2COFG199593509207187…`).
-          package_number_list: p.packageNumbers.join(','),
+          // ⚠️ TRIMMED, element by element, because that is what
+          // `assertPackageDetailParams` JUDGED: it refuses on `numero.trim()`, so
+          // an untrimmed join would send the very bytes every refusal had already
+          // read as something else — ` OFG…937 ` passes all three checks and goes
+          // out as `+OFG…937+`, a key Shopee simply does not have. The answer is
+          // not an error: it is the row set for the packages it DID recognise,
+          // which is one row short with no signal anywhere.
+          package_number_list: p.packageNumbers.map((numero) => numero.trim()).join(','),
         },
       });
       // ONE page, no auto-paging: this op has no cursor and no `more`.

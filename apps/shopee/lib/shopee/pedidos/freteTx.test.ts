@@ -809,6 +809,87 @@ describe('salvarFreteShopee — os logs e as operações', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*              um pacote ILEGÍVEL entre N: o estado não é escrito             */
+/* -------------------------------------------------------------------------- */
+
+describe('salvarFreteShopee — um pacote ilegível entre N', () => {
+  it('grava o diário e o codRastreio e NUNCA o estado; o token é nomeado no log', async () => {
+    // ⚠️ O defeito reproduzido no nível da TRANSAÇÃO. O pacote A dobra para
+    // `postado` — que está em `ESTADOS_FRETE_REMOVE_ESTOQUE` — e o B traz um
+    // token que a tabela não conhece. Deixar A decidir sozinho tiraria o estoque
+    // da prateleira por um pacote cujo estado ninguém leu.
+    const db = pedidoComFrete(blocoDeFrete());
+    const estadoAntes = freteGravado(db).estado;
+    expect(estadoAntes).toBe(ESTADO_FRETE.iniciado);
+
+    const r = await salvar(db, [
+      obs({
+        packageNumber: PKG_A,
+        fulfillmentStatus: 'LOGISTICS_PICKUP_DONE',
+        trackingNumber: 'BR000000001BR',
+      }),
+      obs({ packageNumber: PKG_B, fulfillmentStatus: 'LOGISTICS_SOMETHING_NEW' }),
+    ]);
+
+    expect(r.acao).toBe('atualizado');
+    // ⚠️ As CHAVES do patch: `freteInicial.estado` não está entre elas.
+    expect(r.campos).toEqual(['freteInicial.codRastreio', 'freteInicial.pacotes']);
+    expect(r.estadoEscrito).toBeNull();
+    expect(r.motivoEstado).toBe(MOTIVO_FRETE_SHOPEE.tokenDesconhecido);
+    expect(r.pacotes).toBe(2);
+    expect(r.tokensDesconhecidos).toEqual(['LOGISTICS_SOMETHING_NEW']);
+
+    const patch = db.patches.at(-1)!.patch;
+    expect(Object.keys(patch).sort()).toEqual(['freteInicial', 'ultimaModificacao']);
+    // O estado gravado é BYTE-IDÊNTICO ao armazenado: ele viaja pelo spread do
+    // mapa inteiro e não é ATRIBUÍDO por esta entrega.
+    expect((patch.freteInicial as Record<string, unknown>).estado).toBe(estadoAntes);
+    expect(freteGravado(db).estado).toBe(estadoAntes);
+    // …e o resto da entrega chegou: o diário tem as duas linhas e o número de
+    // rastreio do pacote legível foi gravado.
+    expect(diarioGravado(db)).toHaveLength(2);
+    expect(freteGravado(db).codRastreio).toBe('BR000000001BR');
+
+    // A linha de log do token desconhecido continua NOMEANDO o token…
+    const linhasToken = infos.filter((args) =>
+      String(args[0]).includes('token de frete desconhecido'),
+    );
+    expect(linhasToken).toHaveLength(1);
+    expect((linhasToken[0]![1] as Record<string, unknown>).tokens).toEqual([
+      'LOGISTICS_SOMETHING_NEW',
+    ]);
+    // …e a linha da entrega diz POR QUE nenhum estado foi escrito.
+    const linhaDaEntrega = infos.find((args) =>
+      String(args[0]).includes('frete do pacote aplicado'),
+    );
+    expect((linhaDaEntrega![1] as Record<string, unknown>).estadoBloqueadoPorPacoteSemEstado).toBe(
+      true,
+    );
+
+    // ⚠️ ÂNCORA: a MESMA entrega com o token MAPEADO escreve o estado — sem ela
+    // as asserções acima passariam sobre um escritor que nunca escreve estado.
+    const db2 = pedidoComFrete(blocoDeFrete());
+    const r2 = await salvar(db2, [
+      obs({
+        packageNumber: PKG_A,
+        fulfillmentStatus: 'LOGISTICS_PICKUP_DONE',
+        trackingNumber: 'BR000000001BR',
+      }),
+      obs({ packageNumber: PKG_B, fulfillmentStatus: 'LOGISTICS_REQUEST_CREATED' }),
+    ]);
+
+    expect(r2.campos).toEqual([
+      'freteInicial.estado',
+      'freteInicial.codRastreio',
+      'freteInicial.pacotes',
+    ]);
+    expect(r2.estadoEscrito).toBe(ESTADO_FRETE.aguardandoPostagem);
+    expect(r2.motivoEstado).toBeNull();
+    expect(freteGravado(db2).estado).toBe(ESTADO_FRETE.aguardandoPostagem);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                    the unit, and the scope of the comparison                */
 /* -------------------------------------------------------------------------- */
 
