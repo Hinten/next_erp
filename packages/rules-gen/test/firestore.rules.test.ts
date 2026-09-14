@@ -118,11 +118,12 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
   });
 
   describe('action-bit reuse metas', () => {
-    it('cargos delete requires the configuracoes WRITE bit', async () => {
+    it('cargos writes require the admin endpoint even with configuracoes.write', async () => {
       await seed('cargos/cg1', { nome: 'admin' });
       await seed('cargos/cg2', { nome: 'op' });
       await assertFails(deleteDoc(doc(db({ d_configuracoes: 1 }), 'cargos/cg1')));
-      await assertSucceeds(deleteDoc(doc(db({ d_configuracoes: 2 }), 'cargos/cg2')));
+      await assertFails(deleteDoc(doc(db({ d_configuracoes: 2 }), 'cargos/cg2')));
+      await assertFails(deleteDoc(doc(db({ su: true }), 'cargos/cg2')));
     });
 
     it('tokenMelEnv reads require the frete WRITE bit', async () => {

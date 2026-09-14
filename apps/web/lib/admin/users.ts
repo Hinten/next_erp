@@ -31,6 +31,7 @@ export class AdminClientHttpError extends Error {
     message: string,
     readonly status: number,
     readonly code: string | null,
+    readonly operationId: string | null = null,
   ) {
     super(message);
     this.name = 'AdminClientHttpError';
@@ -68,6 +69,7 @@ export class AdminClientRespostaInvalidaError extends AdminClientHttpError {
 }
 
 export interface CreateUserPayload {
+  operationId?: string;
   email: string;
   nome: string;
   senha: string;
@@ -76,13 +78,18 @@ export interface CreateUserPayload {
   isSuperUser?: boolean;
 }
 
-export const createUserResultSchema = z.object({ uid: z.string() });
+export const createUserResultSchema = z.object({
+  uid: z.string(),
+  operationId: z.string(),
+  targetId: z.string(),
+});
 export type CreateUserResult = z.infer<typeof createUserResultSchema>;
 
 export const refreshClaimsResultSchema = z.object({
   uid: z.string(),
-  /** BigInt-encoded permission bits — a STRING, to dodge the JS 53-bit limit. */
-  permissions: z.string(),
+  /** Durable operation whose completion confirms the claims update. */
+  operationId: z.string(),
+  targetId: z.string(),
 });
 export type RefreshClaimsResult = z.infer<typeof refreshClaimsResultSchema>;
 
@@ -98,7 +105,7 @@ export type RefreshClaimsResult = z.infer<typeof refreshClaimsResultSchema>;
  * All three now match the channel clients: read the text once, narrow, and
  * validate the success body against the schema that describes it.
  */
-async function call<S extends z.ZodType>(
+export async function call<S extends z.ZodType>(
   path: string,
   schema: S,
   init: RequestInit,
@@ -132,6 +139,7 @@ async function call<S extends z.ZodType>(
       }
     }
     const errBody = envelopeDeErro(parsed);
+    const operation = z.object({ operationId: z.string().nullable() }).safeParse(parsed);
     throw new AdminClientHttpError(
       // ⚠️ Not `${status} ${statusText}`: the reason phrase was removed from
       // HTTP/2, so `res.statusText` is EMPTY for anything served by App
@@ -144,6 +152,7 @@ async function call<S extends z.ZodType>(
         `Falha na comunicação com o serviço de administração (HTTP ${String(res.status)}).`,
       res.status,
       errBody?.code ?? null,
+      operation.success ? operation.data.operationId : null,
     );
   }
 
@@ -192,7 +201,10 @@ export function createUser(payload: CreateUserPayload, idToken: string): Promise
   return call(
     '/api/admin/users',
     createUserResultSchema,
-    { method: 'POST', body: JSON.stringify(payload) },
+    {
+      method: 'POST',
+      body: JSON.stringify({ ...payload, operationId: payload.operationId ?? crypto.randomUUID() }),
+    },
     idToken,
   );
 }
@@ -201,7 +213,7 @@ export function refreshClaims(uid: string, idToken: string): Promise<RefreshClai
   return call(
     `/api/admin/users/${encodeURIComponent(uid)}/claims`,
     refreshClaimsResultSchema,
-    { method: 'POST' },
+    { method: 'POST', body: JSON.stringify({ operationId: crypto.randomUUID() }) },
     idToken,
   );
 }

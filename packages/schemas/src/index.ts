@@ -25,6 +25,9 @@ export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
 // The four LOCAL resilience fields shared by every failures-only inbound-webhook
 // notification collection. Exported so a NEW channel's schema can spread the same
 // block the pipeline in `@delfrance/data/admin/notifications` writes/reads blind.
+export * from './accessOperation';
+export * from './shared/accessRead';
+
 export {
   notificacaoResilienciaStatusSchema,
   NOTIFICACAO_RESILIENCIA_STATUS,
@@ -591,6 +594,7 @@ export {
 export {
   usuario,
   usuarioSchema,
+  effectiveUsuarioPermissoes,
   usuarioMeta,
   aggregatePermissoes,
   isSuperUserBits,

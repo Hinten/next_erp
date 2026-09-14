@@ -12,6 +12,7 @@
     "./pipeline-queries": "./src/pipeline-queries.ts",
     "./server": "./src/server/index.ts",
     "./admin": "./src/admin/index.ts",
+    "./admin/cargo-claims": "./src/admin/cargoClaims/index.ts",
     "./admin/cache": "./src/admin/cache/index.ts",
     "./admin/avisos": "./src/admin/avisos/index.ts",
     "./admin/clientes": "./src/admin/clientes/index.ts",
@@ -33,6 +34,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
+    "@delfrance/auth": "workspace:*",
     "@delfrance/core": "workspace:*",
     "@delfrance/schemas": "workspace:*",
     "firebase": "catalog:",
