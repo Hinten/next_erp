@@ -87,9 +87,13 @@
  * reacts to the `estado` this transaction writes.
  *
  * ⚠️ Nothing is ever DELETED. A package row the latest call did not name keeps
- * its stored state: `consolidaPacote: 'nao'` means Shopee can SPLIT an order, so
- * a number disappearing from one list is not evidence the parcel stopped
- * existing. The ONE exception is forced and is not a decision of this module: a
+ * its stored state: Shopee splits ONE order into N packages
+ * (`get_order_detail.package_list[]`, and `get_package_detail.is_split_up` /
+ * `can_split_order`), so a number disappearing from one list is not evidence the
+ * parcel stopped existing. (The caps row says the OTHER direction —
+ * `consolidaPacote: 'nao'` means several orders are never consolidated into one
+ * parcel here — which is why a package number is the only identity a row has.)
+ * The ONE exception is forced and is not a decision of this module: a
  * stored row that does not parse at all is read as `null` by the per-ELEMENT
  * tolerant parse and cannot be re-serialised, because the block's own schema
  * validates every row on the way back in.
@@ -243,8 +247,18 @@ function diarioArmazenadoShopee(valor: unknown): PacoteFrete[] {
   );
 }
 
-/** The stored block estado, or `null` when it is absent or not a member. */
-function estadoArmazenadoShopee(valor: unknown): EstadoFrete | null {
+/**
+ * The stored block estado, or `null` when it is absent or not a member.
+ *
+ * ⚠️ `null` and not `ESTADO_FRETE.desconhecido`: that value is a REAL member with
+ * its own meaning (`ESTADOS_FRETE_IGNORAR_REMOCAO` names it), so returning it for
+ * an illegible document would invent a fact the document does not carry. Today
+ * the two readings behave identically — `desconhecido` sits outside the ladder
+ * and outside every guard set — which is why only a UNIT assertion separates
+ * them, and why `freteTx.test.ts` also anchors the day that stops being true.
+ * EXPORTED for exactly that assertion; nothing else imports it.
+ */
+export function estadoArmazenadoShopee(valor: unknown): EstadoFrete | null {
   const lido = estadoFreteSchema.safeParse(valor);
   return lido.success ? lido.data : null;
 }

@@ -24,8 +24,8 @@ import {
   observadosDoDetalheDoPedido,
   type PacoteObservadoShopee,
 } from './fretePushShopee';
-import { MOTIVO_FRETE_SHOPEE } from './freteShopeeMapping';
-import { preverFreteShopee, salvarFreteShopee } from './freteTx';
+import { ESTADO_FRETE_DE_TOKEN_SHOPEE, MOTIVO_FRETE_SHOPEE } from './freteShopeeMapping';
+import { estadoArmazenadoShopee, preverFreteShopee, salvarFreteShopee } from './freteTx';
 import { makeItemEnsureUniqueId, makePedidoIdShopee } from './orderIds';
 import { mapearFreteInicialShopee } from './orderFreteMapping';
 import {
@@ -854,6 +854,34 @@ describe('salvarFreteShopee — a unidade É a guarda', () => {
     );
   });
 
+  it('QUASE-ERRO do caso acima: um prazo de pacote MAIS TARDE que o armazenado SUBSTITUI o do BLOCO — nunca `min(armazenado, dobrado)`', async () => {
+    // ⚠️ O par que faltava. O caso acima dobra um prazo ANTERIOR ao armazenado
+    // (T2_S < 1_789_405_354), e todo fixture de prazo deste arquivo faz o mesmo
+    // — então um `Math.min(armazenado, dobrado)` no escritor do BLOCO daria
+    // exatamente o mesmo resultado em todos eles e passaria verde.
+    //
+    // A Shopee ESTENDE prazo de despacho como rotina: é o que um `package_info_push`
+    // (code 47) com `new.ship_by_date` maior que `old.ship_by_date` existe para
+    // anunciar. Sob o `min` o bloco ficaria preso ao prazo mais ANTIGO já visto
+    // e nunca andaria para a frente — o operador veria um prazo vencido num
+    // pacote a que a Shopee deu mais tempo. A direção por PACOTE já está fixada
+    // (`freteShopeeMapping.test.ts` caso 14, sobre `aplicarNaLinha`); esta é a
+    // mesma direção no nível do BLOCO, em `preverFreteShopee`.
+    const TARDE_S = 1_789_405_354 + 86_400;
+    const db = pedidoComFrete(blocoDeFrete());
+
+    const r = await salvar(db, [obs({ shipByDateS: TARDE_S })]);
+
+    expect(r.campos).toContain('freteInicial.prazoDespacho');
+    expect(freteGravado(db).prazoDespacho).toBe(microsDeSegundosShopee(TARDE_S));
+    expect(diarioGravado(db)[0]!.prazoDespacho).toBe(microsDeSegundosShopee(TARDE_S));
+    // ÂNCORA: e é ESTRITAMENTE maior que o armazenado, senão a asserção acima
+    // seria satisfeita por um `min` também.
+    expect(freteGravado(db).prazoDespacho as number).toBeGreaterThan(
+      microsDeSegundosShopee(1_789_405_354),
+    );
+  });
+
   it('um `estado` armazenado ILEGÍVEL não é substituído por `desconhecido`', async () => {
     // ⚠️ A escolha, documentada no módulo: `desconhecido` é um membro REAL do
     // enum, com significado próprio (`ESTADOS_FRETE_IGNORAR_REMOCAO` o nomeia),
@@ -894,6 +922,25 @@ describe('salvarFreteShopee — a unidade É a guarda', () => {
     const r3 = await salvar(db3, [obs({ fulfillmentStatus: 'LOGISTICS_PENDING_ARRANGE' })]);
     expect(r3.motivoEstado).toBe(MOTIVO_FRETE_SHOPEE.tokenDesconhecido);
     expect(freteGravado(db3).estado).toBe(ESTADO_FRETE.iniciado);
+  });
+
+  it('o estado armazenado ilegível lê como AUSENTE, e a tabela do canal nunca produz `desconhecido`', () => {
+    // A metade UNITÁRIA do caso acima. Hoje as duas leituras (`null` vs
+    // `desconhecido`) dão o MESMO comportamento — `desconhecido` está fora da
+    // escada e fora de todo conjunto de guarda —, então NENHUMA asserção de
+    // integração consegue separá-las: só uma asserção sobre o VALOR LIDO
+    // consegue, e ela é aqui.
+    expect(estadoArmazenadoShopee('ESTADO_QUE_NAO_EXISTE')).toBeNull();
+    expect(estadoArmazenadoShopee(undefined)).toBeNull();
+    // QUASE-ERRO: um `desconhecido` ARMAZENADO é um membro legível e é lido como
+    // ele mesmo — a leitura não dobra os dois casos num só.
+    expect(estadoArmazenadoShopee(ESTADO_FRETE.desconhecido)).toBe(ESTADO_FRETE.desconhecido);
+
+    // ÂNCORA DE DERIVA: enquanto a tabela do canal não puder PRODUZIR
+    // `desconhecido`, ler `desconhecido` no lugar de `null` é indistinguível no
+    // comportamento; no dia em que puder, este teste cai primeiro e a escolha
+    // volta a ser uma decisão, não uma preferência de estilo.
+    expect(Object.values(ESTADO_FRETE_DE_TOKEN_SHOPEE)).not.toContain(ESTADO_FRETE.desconhecido);
   });
 
   it('a comparação de linha cobre TODOS os campos declarados do schema', () => {

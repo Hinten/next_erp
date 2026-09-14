@@ -228,9 +228,10 @@ export interface FreteMapeadoShopee {
  * The `freteInicial` block for one Shopee order.
  *
  * ⚠️ `externalId` / `externalOptionId` are written only when the order has
- * EXACTLY ONE package. `consolidaPacote: 'nao'` means one order can produce N
- * parcels and there is one id slot: writing parcel 1's number as "the" external
- * id is a claim the block cannot support and step 7 would have to un-learn.
+ * EXACTLY ONE package. Shopee splits ONE order into N packages
+ * (`get_order_detail.package_list[]`) and the block has one id slot: writing
+ * parcel 1's number as "the" external id is a claim the block cannot support and
+ * step 7 would have to un-learn.
  * Every package's number survives in `volume.numero`. (The legacy threw
  * `UnimplementedError` here; degrading one field is the cheaper answer.)
  *
@@ -288,8 +289,12 @@ export function mapearFreteInicialShopee(args: MapearFreteShopeeArgs): FreteMape
  * The fields a re-import may REFRESH on an existing `freteInicial`.
  *
  * Enumerated deliberately: everything not named here belongs to somebody else —
- * `estado` to step 7 (it moves physical stock), `codRastreio`/`printLabelId` to
- * the label flow, `modalidade`/`transportadora`/`veiculo` to the operator.
+ * `estado` and `codRastreio` to step 7 (both written by the shipment merge, and
+ * the estado moves physical stock), `printLabelId` to the label flow (step 15),
+ * `modalidade`/`transportadora`/`veiculo` to the operator. ⚠️ The two fields
+ * that clause used to pair are no longer one owner's: on a Shopee block step 7
+ * OVERWRITES a `codRastreio` the label flow wrote, and leaves `printLabelId`
+ * alone.
  *
  * ⚠️ **`prazoDespacho` left this list with step 7 (#1515).** The block now has
  * ONE deadline slot and TWO sources for it: this mapper's ORDER-level

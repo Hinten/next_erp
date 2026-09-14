@@ -12,8 +12,8 @@
  * lost-push queue and `v2.order.get_package_detail` — print `"-"` where the
  * others print `""`, and the alias exists so those three operations can read it
  * as success. It is never a global widening: the default stays exact equality
- * with `''`, each operation passes its own constant, and a `' '` is a failure
- * everywhere, aliases included.
+ * with `''`, the opt-in is per CALL SITE — three of them, over TWO constants —
+ * and a `' '` is a failure everywhere, aliases included.
  *
  * ## Why the body is parsed TWICE
  *
@@ -81,16 +81,21 @@ export interface ShopeeCallParams<S extends z.ZodType> {
   /**
    * Envelope `error` values THIS OPERATION accepts as success, beyond `''`.
    *
-   * ⚠️ Exactly THREE call sites — the two lost-push pages
-   * (`get_lost_push_message`, `confirm_consumed_lost_push_message`) and
-   * `v2.order.get_package_detail` (step 7) — each passing its OWN `['-']`
-   * constant, and every one of them because the page CONTRADICTS ITSELF: its
+   * ⚠️ Exactly THREE call sites over TWO `['-']` constants — the two lost-push
+   * pages (`get_lost_push_message`, `confirm_consumed_lost_push_message`) SHARE
+   * `SHOPEE_LOST_PUSH_ERROR_ALIASES`, and `v2.order.get_package_detail` (step 7)
+   * carries its own `SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES` — and every one of
+   * them is here because the page CONTRADICTS ITSELF: its
    * parameter table samples `error` as `""` ("Empty if no error happened") while
    * its rendered response sample prints `"-"` for `error`, `message` AND
    * `warning`. Other cached pages, `get_app_push_config` and `get_order_detail`
-   * included, sample `""` — so the tolerance is per OPERATION because the
-   * contradiction is per PAGE, and a third page is a third constant rather than
-   * a shared one. The sandbox cannot exercise the two push APIs, so their first
+   * included, sample `""` — so the tolerance is opt-in per CALL SITE because the
+   * contradiction is per PAGE: the order op carries a SECOND constant rather
+   * than reusing a lost-push-named one, while the two lost-push pages share
+   * theirs because they are one queue, one page family, one observation.
+   * ⚠️ That sharing is the edit hazard: narrowing ONE of those two pages means
+   * splitting the constant first, or the other page moves with it. The sandbox
+   * cannot exercise the two push APIs, so their first
    * call is PRODUCTION; `get_package_detail` is rehearsable on the sandbox shop.
    *
    * ⚠️ EXACT equality against each alias — never a trim, never a
@@ -244,7 +249,7 @@ export async function shopeeCall<S extends z.ZodType>(
 
   // ⚠️ EXACT equality with the empty string, and EXACT equality with each alias.
   // `' '` is a failure — trimming here, on either side, would read a padded
-  // value as a success. See `emptyErrorAliases` for the two operations that
+  // value as a success. See `emptyErrorAliases` for the three operations that
   // carry one and why the tolerance is per operation.
   const sucesso = envelope.error === '' || (p.emptyErrorAliases?.includes(envelope.error) ?? false);
   if (!sucesso) {

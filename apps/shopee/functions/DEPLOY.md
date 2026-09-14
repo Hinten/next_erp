@@ -83,12 +83,20 @@ something any test asserts. Check it after a build:
 
 ```bash
 FUNCTIONS_REGION=us-east1 node apps/shopee/functions/scripts/prepare-deploy.mjs
-grep -c -e importarPedidoShopee -e rastrearPedidoShopee .deploy/shopee-functions/index.js
+for n in importarPedidoShopee rastrearPedidoShopee; do
+  grep -q "$n" .deploy/shopee-functions/index.js || echo "AUSENTE $n"
+done
 ```
 
-Both names must appear. A zero means the dispatched function would park (step 5)
-or never reach the shipment merge (step 7) instead of running it — green
-everywhere else, because nothing but this grep looks.
+Silence is the pass: both names are in the bundle. An `AUSENTE <nome>` line says
+the dispatched function would park (step 5) or never reach the shipment merge
+(step 7) instead of running it — green everywhere else, because nothing but this
+check looks.
+
+⚠️ **One check PER NAME, never a combined `grep -c -e A -e B`.** That form prints
+one SUM, so a bundle carrying only `importarPedidoShopee` still prints a non-zero
+number and exits 0 — it reports green over exactly the step-7 regression this
+block exists to catch. Only `grep -q` per name has a per-name exit status.
 
 ## Functions in this codebase
 

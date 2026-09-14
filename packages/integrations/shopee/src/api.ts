@@ -319,6 +319,10 @@ export const SHOPEE_BRAND_MAX_PAGE_SIZE = 100;
  * The envelope `error` value the two lost-push pages print where every other
  * page prints `""` — a doc-authoring placeholder, tolerated on those two
  * operations only. See `ShopeeCallParams.emptyErrorAliases` in `call.ts`.
+ *
+ * ⚠️ SHARED by BOTH lost-push call sites — the one constant over two operations.
+ * Narrowing one of them (Shopee fixes `get_lost_push_message` and not the
+ * confirm) means SPLITTING this constant first: emptying it here moves both.
  */
 export const SHOPEE_LOST_PUSH_ERROR_ALIASES = ['-'] as const;
 
@@ -327,13 +331,14 @@ export const SHOPEE_LOST_PUSH_ERROR_ALIASES = ['-'] as const;
  * its own parameter table says "Empty if no error happened" — the same
  * doc-authoring placeholder the two lost-push pages carry, on a third page.
  *
- * ⚠️ A THIRD constant rather than a reuse of
- * {@link SHOPEE_LOST_PUSH_ERROR_ALIASES}: the tolerance is per OPERATION because
- * the contradiction is per PAGE (`get_app_push_config` samples `""` and carries
- * no alias, one method over), and a lost-push-named constant on an order op
- * would read as a copy rather than as a second observation. If Shopee ever fixes
- * one page and not the other, two constants are two edits and one constant is a
- * decision nobody can make.
+ * ⚠️ The SECOND constant — three call sites carry an alias, and this is the only
+ * one that is not shared — rather than a reuse of
+ * {@link SHOPEE_LOST_PUSH_ERROR_ALIASES}: the tolerance is opt-in per CALL SITE
+ * because the contradiction is per PAGE (`get_app_push_config` samples `""` and
+ * carries no alias, one method over), and a lost-push-named constant on an order
+ * op would read as a copy rather than as a second observation. If Shopee ever
+ * fixes this page and not the lost-push ones, two constants are two edits and
+ * one constant is a decision nobody can make.
  *
  * ⚠️ This page prints `"-"` for `message` and `warning` too, and its
  * `tracking_number` sample is `"-"` as well — the sentinel is on the PAYLOAD as

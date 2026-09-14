@@ -518,9 +518,13 @@ defers":
 | **codes 4 / 30 / 47**, the pedido does not exist yet | no page states an ordering between push codes, so a package event can precede the code 3 that creates the pedido; `kind: 'frete-adiado'`, and it enqueues ONE synthetic code 3 (`origem: 'rastreio'`) |
 | ⚠️ **code 2**, the same unmapped shop | **ACKED, not deferred** |
 
-⚠️ **Every reason string is prefixed by its arm**, so a parked or deferred row
-says which one wrote it: `push_code 3:` for the order import, **`rastreio:`**
-for the shipment merge. The two error→disposition readers
+⚠️ **Every reason string an arm BUILDS is prefixed by it**, so a parked or
+deferred row says which one wrote it: `push_code 3:` for the order import,
+**`rastreio:`** for the shipment merge. ⚠️ The ONE exception is the shared
+`sem-conta` defer — the two unmapped-shop rows in the table above and their
+code-1 twin: all three arms emit the same UNPREFIXED `loja <id> não mapeia…`
+template, so there the discriminator is the row's `kind` + `code`, never the
+string. The two error→disposition readers
 (`disposicaoDaFalhaDeImportacao`, `disposicaoDaFalhaDeRastreio`) are one private
 class table with two prefixes — step 5's behaviour is byte-identical and its
 tests are unedited, which is the proof that the refactor changed nothing.
@@ -1156,8 +1160,12 @@ delivery (#1369), so a correction to the table retro-applies with no wire event.
 fields changed — never because we looked, never on a change to the derived
 estado — which is what makes a replay an empty patch and stops the backstop
 re-stamping every row on every import. Rows the delivery did not name are left
-exactly as stored: `consolidaPacote: 'nao'` means Shopee can SPLIT an order, so a
-number missing from one answer is not evidence the parcel stopped existing.
+exactly as stored: Shopee splits ONE order into N packages (`package_list[]`, and
+`get_package_detail.is_split_up` / `can_split_order`), so a number missing from
+one answer is not evidence the parcel stopped existing. ⚠️ That is NOT what
+`consolidaPacote: 'nao'` says — that row says the other direction, several orders
+are never consolidated into one parcel here (`orderPedidoTx.ts` reads it that
+way), and it carries no split claim at all.
 
 **The block's single `estado` is a FOLD over the diary**, not the latest event:
 the LEAST-ADVANCED live package by ladder index, and when none is live the first

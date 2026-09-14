@@ -818,10 +818,23 @@ const ACAO_FRETE_SEM_PEDIDO: AcaoFreteShopee = 'ignorado-sem-pedido';
 const ACAO_FRETE_PACOTE_AUSENTE: Exclude<ResultadoRastreioShopee['acao'], AcaoFreteShopee> =
   'ignorado-pacote-ausente';
 
-/** Every park/defer reason from this arm starts here, so one log filter finds them all. */
+/**
+ * Every park/defer reason this arm BUILDS starts here, so one log filter finds
+ * them all.
+ *
+ * ⚠️ "BUILDS" is the whole qualifier, and there is exactly ONE exception: the
+ * `sem-conta` defer reason is a SHARED template emitted verbatim by all three
+ * arms (conta, code 3, frete) — unprefixed, byte-identical — so a deferred row
+ * of that kind is told apart by its `kind` + `code`, never by its reason string.
+ * Prefixing two of the three would make the third the odd one out instead.
+ */
 const PREFIXO_MOTIVO_CODE3 = 'push_code 3:';
 
-/** Every park/defer reason from the SHIPMENT arm (codes 4/30/47) starts here. */
+/**
+ * Every park/defer reason the SHIPMENT arm (codes 4/30/47) BUILDS starts here.
+ * Same one exception as {@link PREFIXO_MOTIVO_CODE3}: the shared `sem-conta`
+ * reason carries no prefix on any arm.
+ */
 const PREFIXO_MOTIVO_FRETE = 'rastreio:';
 
 /**

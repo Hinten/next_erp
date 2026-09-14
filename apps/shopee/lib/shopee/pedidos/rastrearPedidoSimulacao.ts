@@ -49,9 +49,19 @@
  * computed (`prazoDespachoShopee`, µs site 4, including the 14:00 fallback);
  * this rehearsal passes `null`. Reproducing it would mean running the whole
  * freight mapper here — a second caller of a µs site, for a value the fold
- * consults ONLY when no package carries a deadline of its own, which for a
- * one-package order it always does (plan resolution R2). The CLOCK, which is
- * consulted on every row, IS reproduced exactly.
+ * consults ONLY when no package carries a deadline of its own, which a
+ * one-package order carries whenever its `ship_by_date` clears the 2020 floor
+ * (plan resolution R2).
+ *
+ * ⚠️ So the difference is not always ZERO, and the one case where it bites is
+ * named here rather than discovered later: an order whose `ship_by_date` is
+ * ABSENT or zero-filled has `shipByDateS: null` on every row, and the live
+ * code-3 import then folds the mapper's 14:00-on-`pay_time` fallback. On such an
+ * order — and only when that fallback differs from the STORED deadline, which a
+ * re-import no longer refreshes — the BACKSTOP block can omit a
+ * `freteInicial.prazoDespacho` a live import would write. The PUSH half is exact
+ * either way: production passes `prazoDaOrdemUs: null` there too. The CLOCK,
+ * which is consulted on every row, IS reproduced exactly.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { pedidoCollection } from '@delfrance/data/admin/collections';
@@ -308,6 +318,8 @@ export async function simularRastreioShopee(
       observados,
       relogioDaOrdemUs,
       // The push path folds no order-level deadline: the package carries its own.
+      // ⚠️ The BACKSTOP half passes the same `null` while production passes the
+      // mapped deadline — the one honest difference, bounded in the header.
       prazoDaOrdemUs: null,
       nowUs,
     });

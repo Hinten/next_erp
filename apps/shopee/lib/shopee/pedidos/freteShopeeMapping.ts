@@ -582,9 +582,10 @@ function empurrarDistinto(destino: string[], valor: string): void {
  * ⚠️ **Nothing is ever deleted.** Rows this delivery did not name are returned
  * exactly as stored (only their projected `estado` is re-derived, which is a
  * no-op unless the token table itself changed — that is the anti-drift property
- * #1369 asks for). `consolidaPacote: 'nao'` means Shopee can SPLIT an order, so
- * a package number missing from one call's list is not evidence that the parcel
- * stopped existing.
+ * #1369 asks for). Shopee splits ONE order into N packages
+ * (`get_order_detail.package_list[]`, and `get_package_detail.is_split_up` /
+ * `can_split_order`), so a package number missing from one call's list is not
+ * evidence that the parcel stopped existing.
  *
  * ⚠️ A stored diary holding two rows with the same `numero` is not repaired by
  * dropping one — both are merged and both are returned. Deleting a row is the

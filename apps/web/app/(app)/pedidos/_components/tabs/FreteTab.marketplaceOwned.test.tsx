@@ -1,12 +1,19 @@
 import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import { useForm } from 'react-hook-form';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
 import type { IntegracaoFrete, Pedido } from '@delfrance/schemas';
-import { INTEGRACAO_FRETE, MODALIDADE_FRETE, seedFreteInicial } from '@delfrance/schemas';
+import {
+  INTEGRACAO_FRETE,
+  INTEGRACAO_FRETE_LABELS,
+  MODALIDADE_FRETE,
+  integracoesFreteSchema,
+  isFreteMarketplaceOwned,
+  seedFreteInicial,
+} from '@delfrance/schemas';
 import type { FreteInicialFormState, PedidoFormState } from '../types';
 
 import { FreteTab } from './FreteTab';
@@ -194,5 +201,30 @@ describe('FreteTab — marketplace ownership is read off the BLOCK too (#1515)',
     expect(campoPrazoDespacho()).toBeNull();
     expect(inputRastreio().readOnly).toBe(true);
     expect(selectStatus().disabled).toBe(true);
+  });
+
+  it('6: a TRAVA NÃO TEM DESFAZER, então o Select editável não oferece tipo marketplace nenhum', () => {
+    // O pedido manual do caso 3, agora pela outra ponta. `externalOptionIntegracao`
+    // é o campo que a trava lê, e a trava REMOVE da tela o Select que o escreve:
+    // uma escolha marketplace feita à mão aqui fecharia a aba para sempre — sem
+    // caminho de volta nesta aba nem fora dela (os outros dois escritores do
+    // campo, `onIntegracaoChange` e `MelhorEnvioFields`, ficam inalcançáveis pelo
+    // mesmo bloqueio). Por isso os cinco valores marketplace saíram da lista.
+    renderTab(freteWith({ externalOptionIntegracao: null, integracaoFreteOuterRef: null }));
+    fireEvent.click(screen.getAllByLabelText('Integração da opção externa')[0]!);
+
+    const oferecidos = screen.getAllByRole('option').map((o) => o.textContent);
+    const marketplace = integracoesFreteSchema.options.filter(isFreteMarketplaceOwned);
+    const proprios = integracoesFreteSchema.options.filter((t) => !isFreteMarketplaceOwned(t));
+
+    // O PAR. Os cinco donos-marketplace não aparecem…
+    expect(marketplace.length).toBeGreaterThan(0);
+    for (const tipo of marketplace) {
+      expect(oferecidos).not.toContain(INTEGRACAO_FRETE_LABELS[tipo]);
+    }
+    // …e o QUASE-ERRO: os não-marketplace continuam todos lá, um a um, então o
+    // filtro não dobrou demais nem esvaziou o Select.
+    expect(oferecidos).toEqual(proprios.map((tipo) => INTEGRACAO_FRETE_LABELS[tipo]));
+    expect(oferecidos).toContain(INTEGRACAO_FRETE_LABELS[INTEGRACAO_FRETE.melhorEnvios]);
   });
 });

@@ -228,6 +228,13 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   // still treats as the importer's — recreating the very disagreement above.
   // The two spellings differ ONLY when a resolved tipo is not marketplace-owned;
   // everywhere else they are the same value.
+  //
+  // ⚠️ This lock has NO UNDO — it removes from the screen every control that
+  // could clear either declaration — so the block half must never be reachable
+  // by hand. That is why `GenericFreteFields`'s `externalOptionIntegracao` Select
+  // offers no marketplace tipo: an operator picking one would lock the tab for
+  // good on a manual pedido. Pinned by case 6 of
+  // `FreteTab.marketplaceOwned.test.tsx`, not by this comment.
   const tipoDono = (isFreteMarketplaceOwned(tipo) ? tipo : tipoDoBloco) ?? null;
   // Marketplace-managed freight (importer owns the whole block): lock the
   // common header fields too — modalidade, endereço, recebedor, status and

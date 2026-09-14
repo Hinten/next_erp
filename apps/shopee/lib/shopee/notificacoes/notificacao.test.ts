@@ -1813,6 +1813,38 @@ describe('codes 4/30/47 — o braço do frete (passo 7)', () => {
     );
   });
 
+  it('(12c) ⚠️ a EXCEÇÃO que os dois docblocks nomeiam: o `sem-conta` não leva prefixo em braço nenhum', async () => {
+    h.find.mockResolvedValue(null);
+
+    const doFrete = await processNotificationPayload(db, push4(), deps);
+    const doCode3 = await processNotificationPayload(
+      db,
+      payload({ code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } }),
+      deps,
+    );
+
+    expect(doFrete.kind).toBe('sem-conta');
+    expect(doCode3.kind).toBe('sem-conta');
+    const razaoFrete = doFrete.kind === 'sem-conta' ? doFrete.reason : '';
+    const razaoCode3 = doCode3.kind === 'sem-conta' ? doCode3.reason : '';
+    // O template é COMPARTILHADO: as duas razões são a mesma string, e nenhuma
+    // começa por um prefixo de braço. Quem responde "qual braço escreveu esta
+    // linha adiada" é o `kind` + o `code` da linha, nunca o texto dela — que é
+    // exatamente o que os docblocks de PREFIXO_MOTIVO_* passaram a dizer.
+    expect(razaoFrete).toBe(razaoCode3);
+    expect(razaoFrete.startsWith('rastreio: ')).toBe(false);
+    expect(razaoFrete.startsWith('push_code 3: ')).toBe(false);
+    // ÂNCORA: a razão não é vazia — ela nomeia a loja, que é o que a task grava
+    // em `erro`; sem isto as duas negativas acima passariam com `''`.
+    expect(razaoFrete).toContain(String(SHOP_ID));
+
+    // QUASE-ERRO: o que SOBROU do universal continua valendo no mesmo cenário —
+    // uma razão que este braço CONSTRÓI leva o prefixo mesmo com a loja não
+    // mapeada, porque ela é decidida antes da busca da conta.
+    const construida = await processNotificationPayload(db, push4({ package_number: '-' }), deps);
+    expect(construida).toEqual({ kind: 'parado', motivo: 'rastreio: sem package_number' });
+  });
+
   // 13
   it('(13) uma fusão bem-sucedida ⇒ kind `frete` ⇒ resolve rotulado "frete", com os campos no TaskResult', async () => {
     const out = await processNotificationPayload(db, push30(), deps);

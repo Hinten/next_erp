@@ -21,8 +21,10 @@
  * print `"-"` for `error`, `message` AND `warning`. Other cached pages —
  * `get_app_push_config` and `get_order_detail` included — sample `""`. So `-` is
  * a doc-authoring placeholder on those pages, not a protocol variant, and it is
- * tolerated ONLY on those three operations, each passing its own constant
- * through `ShopeeCallParams.emptyErrorAliases` in `call.ts`. The schemas here are
+ * tolerated ONLY on those three operations, through
+ * `ShopeeCallParams.emptyErrorAliases` in `call.ts` — three call sites over TWO
+ * constants, the lost-push pair sharing one and `get_package_detail` carrying
+ * its own. The schemas here are
  * unchanged by it: `error` is still `z.string()` with no default, and `'-'`
  * still parses as the string `'-'`.
  *

@@ -476,6 +476,14 @@ not failures. Exit `1` only on a throw (reported by error CLASS plus Shopee's
 - **More than 50 resolved packages are truncated** to the batch's own limit, with
   a printed warning — `get_package_detail` refuses a longer list before it
   fetches.
+- **The BACKSTOP block can omit `freteInicial.prazoDespacho` on an order whose
+  `ship_by_date` is absent or zero-filled.** The rehearsal hands the fold
+  `prazoDaOrdemUs: null`; a live code-3 import hands it the mapped deadline,
+  which on such an order comes from the mapper's 14:00-on-`pay_time` fallback. So
+  when that fallback differs from the STORED deadline, the live import writes one
+  more field than the rehearsal predicts. The per-package half and the PUSH half
+  are exact — production passes `null` there too — and the divergence is named in
+  `rastrearPedidoSimulacao.ts`'s header.
 - **A live run can move stock, indirectly.** The transaction moves none itself,
   but `onPedidoEstoqueSync` reacts to the `estado` it writes, so wherever that
   trigger is deployed, writing the freight state is what sets it off.
