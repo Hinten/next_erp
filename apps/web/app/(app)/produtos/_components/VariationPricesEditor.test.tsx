@@ -63,15 +63,35 @@ describe('VariationPricesEditor', () => {
     expect(screen.getByText('nova')).toBeTruthy();
     expect(screen.getByText('inativa')).toBeTruthy();
 
-    expect(screen.getByLabelText('Varejo — Camiseta P')).toBeTruthy();
-    expect(screen.getByLabelText('Preço legado — Camiseta P')).toBeTruthy();
-    expect(screen.queryByLabelText('Sem preço — Camiseta P')).toBeNull();
-    expect(screen.queryByLabelText('Preço legado — Camiseta G')).toBeNull();
+    expect(screen.getByLabelText('Varejo — CAM-P')).toBeTruthy();
+    expect(screen.getByLabelText('Preço legado — CAM-P')).toBeTruthy();
+    expect(screen.queryByLabelText('Sem preço — CAM-P')).toBeNull();
+    expect(screen.queryByLabelText('Preço legado — CAM-G')).toBeNull();
 
-    fireEvent.change(screen.getByLabelText('Varejo — Camiseta P'), {
+    fireEvent.change(screen.getByLabelText('Varejo — CAM-P'), {
       target: { value: '35' },
     });
     expect(onPriceChange).toHaveBeenLastCalledWith('c1', 'varejo', 35);
+  });
+
+  it('uses the unique SKU in accessible names when sibling names match', () => {
+    const sameNameRows = rows.slice(0, 2).map((row) => ({
+      ...row,
+      nome: 'Camiseta',
+    }));
+
+    render(
+      <MantineTestProvider>
+        <VariationPricesEditor
+          rows={sameNameRows}
+          listas={listas}
+          onPriceChange={() => undefined}
+        />
+      </MantineTestProvider>,
+    );
+
+    expect(screen.getByLabelText('Varejo — CAM-P')).toBeTruthy();
+    expect(screen.getByLabelText('Varejo — CAM-G')).toBeTruthy();
   });
 
   it('keeps the editor beside the toggle and reveals it only after opt-out', () => {

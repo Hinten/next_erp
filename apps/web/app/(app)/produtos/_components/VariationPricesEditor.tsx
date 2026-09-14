@@ -65,6 +65,7 @@ export function VariationPricesEditor({
           {visibleRows.map((row, index) => {
             const priceRows = variationPriceListRows(listas, row.precos);
             const displayName = row.nome.trim() || row.sku.trim() || 'Variação sem nome';
+            const accessibleName = row.sku.trim() || displayName;
             return (
               <Fragment key={row.key}>
                 {index > 0 && <Divider />}
@@ -109,7 +110,7 @@ export function VariationPricesEditor({
                         <Stack key={lista.id} gap={4} style={{ flex: '1 1 180px', maxWidth: 240 }}>
                           <CurrencyInput
                             label={lista.data.nome}
-                            ariaLabel={`${lista.data.nome} — ${displayName}`}
+                            ariaLabel={`${lista.data.nome} — ${accessibleName}`}
                             value={row.precos?.[lista.id]?.valor ?? null}
                             onChange={(valor) => onPriceChange(row.key, lista.id, valor)}
                             disabled={disabled}

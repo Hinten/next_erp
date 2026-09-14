@@ -124,7 +124,9 @@ export const produtoObjectViewSchema = produtoPageBaseSchema.extend({
  *  - **Variações** — `VariationManager` kept a closure over a snapshot whose
  *    listener had already been unsubscribed, so the flush rewrote `nome`/`sku`/
  *    `variacoesUid`/`ordem` from frozen data and a second save re-issued the
- *    whole batch.
+ *    whole batch. Its `priceEditsRef` also bridges the Preço e custo tab back
+ *    to that mounted manager; without this persistence the null ref would
+ *    silently discard the operator's independent-price keystroke.
  *
  * ⚠️ Persisting a section is NOT free, and the listener argument only covers
  * half of it. The snapshot side is genuinely free here — the edit page already
