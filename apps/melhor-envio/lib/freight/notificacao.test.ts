@@ -285,6 +285,12 @@ describe('processMelhorEnvioNotification', () => {
     ).resolves.toMatchObject({ kind: 'deferred', detail: 'integracao-ausente-ou-invalida' });
     expect(invalid.loadCurrentLabel).not.toHaveBeenCalled();
 
+    const wrongCollection = deps(pedido('postado', null, 'documents/integracoes/int-1'));
+    await expect(
+      processMelhorEnvioNotification(db, payload(), wrongCollection.value),
+    ).resolves.toMatchObject({ kind: 'deferred', detail: 'integracao-ausente-ou-invalida' });
+    expect(wrongCollection.loadCurrentLabel).not.toHaveBeenCalled();
+
     for (const error of [
       new MelhorEnvioContaNotConfiguredError('missing'),
       new MelhorEnvioReauthRequiredError('no_token', 'reconnect'),
