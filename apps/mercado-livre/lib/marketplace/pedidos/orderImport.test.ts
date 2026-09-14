@@ -41,7 +41,8 @@ vi.mock('./orderPedidoTx', () => ({
   discoverPedidoMercadoLivre: vi.fn(),
   embeddedPayments: vi.fn((order: { payments?: unknown[] | null }) => order.payments ?? []),
 }));
-vi.mock('./orderPrazoDespacho', () => ({
+vi.mock('./orderPrazoDespacho', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./orderPrazoDespacho')>()),
   resolvePrazoDespacho: vi.fn(async () => ({ prazoDespachoUs: null, fonte: 'indisponivel' })),
 }));
 

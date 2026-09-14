@@ -157,8 +157,13 @@ import {
   embeddedPayments,
   type DiscoverPedidoArgs,
 } from './orderPedidoTx';
-import { resolvePrazoDespacho, type PrazoDespachoResolvido } from './orderPrazoDespacho';
+import {
+  resolvePrazoDespacho,
+  selectPrazoDespachoAgainstFresh,
+  type PrazoDespachoResolvido,
+} from './orderPrazoDespacho';
 import { resolveShipmentSellerCost } from './shipmentSellerCost';
+import { loadShipmentPaymentDetails, shipmentPaymentId } from './shipmentPayments';
 
 /**
  * Re-exported for the callers that already import them from here
@@ -333,11 +338,6 @@ function orderSellerId(order: MlOrder): number | string | null {
   return (order as unknown as MlOrderSellerPassthrough).seller?.id ?? null;
 }
 
-/** One `shipment/payments[]` entry's `payment_id` — not a named `MlShipmentPayment` field (plugin `types.ts`). */
-interface MlShipmentPaymentIdPassthrough {
-  payment_id?: number | string | null;
-}
-
 /**
  * Strict `status_pagamento === aprovado` sum (tasks.dart:721-722/756-762) —
  * deliberately NOT `sumPagamentosPagos` (which also treats a null status as
@@ -465,7 +465,15 @@ export async function resolveMercadoEnviosIntFrete(
   return readMercadoEnviosIntFreteDaConta(integracaoId, async () => {
     const encontrado = await buscarIntFreteDaConta(db, integracaoId, { apenasAtivo: true });
     if (encontrado == null) return null;
-    const horarioResult = horarioDeCorteSchema.array().safeParse(encontrado.data.horarioDeCorte);
+    const rawHorarioDeCorte = encontrado.data.horarioDeCorte;
+    const horarioResult = horarioDeCorteSchema.array().safeParse(rawHorarioDeCorte);
+    if (rawHorarioDeCorte != null && !horarioResult.success) {
+      console.warn('[mercado-livre] int_frete com horarioDeCorte invalido', {
+        integracaoId,
+        intFreteId: encontrado.id,
+        issues: horarioResult.error.issues,
+      });
+    }
     return {
       outerRef: toOuterRef(intFreteCollection.docPath({}, encontrado.id)),
       horarioDeCorte: horarioResult.success ? horarioResult.data : null,
@@ -939,18 +947,6 @@ async function applyEnderecoStep(args: {
 /* -------------------------------------------------------------------------- */
 /*                                   Frete                                    */
 /* -------------------------------------------------------------------------- */
-
-async function fetchFullShippingPayments(
-  api: MercadoLivreApi,
-  shippingPayments: readonly MlShipmentPayment[],
-): Promise<MlPayment[]> {
-  // `payment_id` rides in the plugin schema's passthrough (only `status`/
-  // `amount` are promoted) — same local-cast pattern as `orderMapping.ts`.
-  const ids = shippingPayments
-    .map((p) => (p as MlShipmentPaymentIdPassthrough).payment_id)
-    .filter((id): id is number | string => id != null);
-  return Promise.all(ids.map((id) => api.getPayment(id)));
-}
 
 /** Writes every `fullPayments` entry not already present in `alreadyRegisteredExternalIds`; returns the newly-written summaries (for the caller's own paid-sum). MUST be called AFTER every tx read (it only writes). */
 function registerMissingPagamentos(
@@ -1504,14 +1500,6 @@ function advanceFreteSemEnvioParaEntregue(args: {
   );
 }
 
-function selectPrazoDespachoAgainstFresh(
-  resolved: PrazoDespachoResolvido,
-  freshFrete: FreteDoPedido | null | undefined,
-): number | null {
-  if (resolved.fonte === 'sla') return resolved.prazoDespachoUs;
-  return coerceToMicros(freshFrete?.prazoDespacho ?? null) ?? resolved.prazoDespachoUs;
-}
-
 /** Builds the two repairs historically owned by the stale-shipment branch. */
 function buildFreteParadoPatch(
   freshPedido: Pedido,
@@ -1741,7 +1729,10 @@ async function applyFreteStep(args: {
 
     const mappedFrete: MappedFreteInicialFields = {
       ...mappedBase,
-      prazoDespacho: selectPrazoDespachoAgainstFresh(prazoResolvido, freshFrete),
+      prazoDespacho: selectPrazoDespachoAgainstFresh(
+        prazoResolvido,
+        coerceToMicros(freshFrete?.prazoDespacho ?? null),
+      ),
       enderecoFreteOuterReference: freshPedido.enderecoFiscalOuterRef,
     };
     const targetFrete = mergeFreteInicial(freshFrete, mappedFrete);
@@ -2301,10 +2292,13 @@ export async function importPedidoMercadoLivre(
           .filter((id): id is string => typeof id === 'string'),
       );
       const faltantes = resumos.filter((p) => {
-        const id = (p as MlShipmentPaymentIdPassthrough).payment_id;
+        const id = shipmentPaymentId(p);
         return id != null && !ids.has(String(id));
       });
-      fullShipmentPaymentsCache = await fetchFullShippingPayments(api, faltantes);
+      fullShipmentPaymentsCache = await loadShipmentPaymentDetails(api, faltantes, {
+        approvedOnly: false,
+        tolerateNotFound: false,
+      });
     }
     return fullShipmentPaymentsCache;
   };

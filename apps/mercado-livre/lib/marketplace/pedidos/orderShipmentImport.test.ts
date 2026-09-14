@@ -10,7 +10,8 @@ import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrat
 // `resolveMercadoEnviosIntFrete`, `orderShipmentMapping.ts`'s real
 // mapper + `mergeEstadoFretePreservando`) runs FOR REAL against the FakeDb
 // below, since several cases here assert on their actual merge output.
-vi.mock('./orderPrazoDespacho', () => ({
+vi.mock('./orderPrazoDespacho', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./orderPrazoDespacho')>()),
   resolvePrazoDespacho: vi.fn(async () => ({ prazoDespachoUs: null, fonte: 'indisponivel' })),
 }));
 
@@ -758,6 +759,7 @@ describe('importShipmentMercadoLivre — happy path write', () => {
   });
 
   it('degrades an invalid horarioDeCorte to null without losing the freight outer ref', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const db = new FakeDb();
     seedConta(db);
     seedIntFrete(db, 'if-1', { horarioDeCorte: [{ diaDaSemana: 'monday' }] });
@@ -782,10 +784,15 @@ describe('importShipmentMercadoLivre — happy path write', () => {
     await importShipmentMercadoLivre(deps(db, api), 777);
 
     expect(horario).toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      '[mercado-livre] int_frete com horarioDeCorte invalido',
+      expect.objectContaining({ integracaoId: INTEGRACAO_ID, intFreteId: 'if-1' }),
+    );
     expect(getPayment).not.toHaveBeenCalled();
     expect(
       (db.lastPatch('pedidos', 'pedido-1')!.freteInicial as DocData).integracaoFreteOuterRef,
     ).toBe('documents/int_frete/if-1');
+    warn.mockRestore();
   });
 
   it('keeps the transaction-fresh stored deadline over a lower-precedence fallback', async () => {

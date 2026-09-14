@@ -96,9 +96,7 @@ import type { Firestore, Transaction } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
   type MercadoLivreApi,
-  type MlPayment,
   type MlShipment,
-  type MlShipmentPayment,
 } from '@delfrance/integrations-mercado-livre';
 import { coerceToMicros } from '@delfrance/core/datetime';
 import { pedidoCollection } from '@delfrance/data/admin/collections';
@@ -112,7 +110,8 @@ import {
   mergeFreteInicialSeMaisNovo,
   mlShipmentToFreteInicial,
 } from './orderShipmentMapping';
-import { resolvePrazoDespacho, type PrazoDespachoResolvido } from './orderPrazoDespacho';
+import { resolvePrazoDespacho, selectPrazoDespachoAgainstFresh } from './orderPrazoDespacho';
+import { loadShipmentPaymentDetails } from './shipmentPayments';
 
 /* -------------------------------------------------------------------------- */
 /*                                  Contract                                  */
@@ -141,45 +140,6 @@ export interface ShipmentImportResult {
     | 'sem-frete-inicial'
     | 'stale'
     | null;
-}
-
-interface MlShipmentPaymentIdPassthrough extends MlShipmentPayment {
-  payment_id?: number | string | null;
-}
-
-async function loadApprovedShipmentPayments(
-  api: MercadoLivreApi,
-  summaries: readonly MlShipmentPayment[],
-): Promise<MlPayment[]> {
-  const ids = [
-    ...new Set(
-      summaries
-        .filter((payment) => payment.status === 'approved')
-        .map((payment) => (payment as MlShipmentPaymentIdPassthrough).payment_id)
-        .filter((id): id is number | string => id != null)
-        .map(String),
-    ),
-  ];
-  const payments = await Promise.all(
-    ids.map(async (id): Promise<MlPayment | null> => {
-      try {
-        return await api.getPayment(id);
-      } catch (err) {
-        if (err instanceof MercadoLivreHttpError && err.status === 404) return null;
-        throw err;
-      }
-    }),
-  );
-  return payments.filter((payment): payment is MlPayment => payment != null);
-}
-
-function selectPrazoDespachoAgainstFresh(
-  resolved: PrazoDespachoResolvido,
-  storedPrazoUs: number | null,
-): number | null {
-  return resolved.fonte === 'sla'
-    ? resolved.prazoDespachoUs
-    : (storedPrazoUs ?? resolved.prazoDespachoUs);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -255,7 +215,11 @@ export async function importShipmentMercadoLivre(
     sellerId: contaBag.sellerUserId ?? 0,
     loadStoredPrazoUs,
     loadHorarioDeCorte: async () => (await loadIntFrete())?.horarioDeCorte ?? null,
-    loadPayments: () => loadApprovedShipmentPayments(api, shippingPayments),
+    loadPayments: () =>
+      loadShipmentPaymentDetails(api, shippingPayments, {
+        approvedOnly: true,
+        tolerateNotFound: true,
+      }),
   });
   const integracaoFreteOuterRef = (await loadIntFrete())?.outerRef ?? null;
   // `GET /shipments/{id}/costs` — the seller's share, replacing the `base_cost`

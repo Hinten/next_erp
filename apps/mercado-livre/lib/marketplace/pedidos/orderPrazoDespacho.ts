@@ -303,6 +303,19 @@ export interface PrazoDespachoResolvido {
 }
 
 /**
+ * Applies a resolved deadline against the transaction-fresh stored value.
+ * Only SLA is authoritative enough to replace an existing deadline.
+ */
+export function selectPrazoDespachoAgainstFresh(
+  resolved: PrazoDespachoResolvido,
+  storedPrazoUs: number | null,
+): number | null {
+  return resolved.fonte === 'sla'
+    ? resolved.prazoDespachoUs
+    : (storedPrazoUs ?? resolved.prazoDespachoUs);
+}
+
+/**
  * The last approved payment is the instant when a partial-payment order or
  * pack became fully dispatchable. Invalid/missing dates never displace a
  * valid approval.

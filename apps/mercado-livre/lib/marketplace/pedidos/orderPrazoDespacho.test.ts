@@ -15,6 +15,7 @@ import {
   MlPrazoDespachoNotFoundError,
   latestApprovedPaymentMs,
   resolvePrazoDespacho,
+  selectPrazoDespachoAgainstFresh,
   type ResolvePrazoDespachoArgs,
 } from './orderPrazoDespacho';
 
@@ -275,5 +276,25 @@ describe('resolvePrazoDespacho', () => {
   it('recognizes HTTP and network errors as the tolerated SLA family', () => {
     expect(new MercadoLivreHttpError('x', 404, null)).toBeInstanceOf(MercadoLivreError);
     expect(new MercadoLivreNetworkError('x')).toBeInstanceOf(MercadoLivreError);
+  });
+});
+
+describe('selectPrazoDespachoAgainstFresh', () => {
+  const resolvedUs = Date.parse('2026-07-20T18:00:00-03:00') * 1000;
+  const storedUs = Date.parse('2026-07-21T18:00:00-03:00') * 1000;
+
+  it('keeps the transaction-fresh stored deadline over a lower-precedence source', () => {
+    expect(
+      selectPrazoDespachoAgainstFresh(
+        { prazoDespachoUs: resolvedUs, fonte: 'pagamento-corte' },
+        storedUs,
+      ),
+    ).toBe(storedUs);
+  });
+
+  it('keeps SLA authoritative over the transaction-fresh stored deadline', () => {
+    expect(
+      selectPrazoDespachoAgainstFresh({ prazoDespachoUs: resolvedUs, fonte: 'sla' }, storedUs),
+    ).toBe(resolvedUs);
   });
 });
