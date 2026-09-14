@@ -472,6 +472,24 @@ export {
 } from './backfillPedidosShopee';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // cursor doc for the WEEKLY Shopee settlement sweep (master-plan step 6,
+  // #1514), which pages `get_escrow_list` and stamps `pagamento.liquidacao`.
+  // Bare schema+meta (perms 0n), not a DomainSchema — see the NOTE at the
+  // bottom of liquidacaoShopee.ts. ⚠️ Its clocks are MILLISECONDS like the
+  // Shopee backfill cursor above, with ONE exception that names its unit:
+  // `pendentes[].escrowReleaseTimeS` is the wire value in SECONDS.
+  liquidacaoShopeeSchema,
+  liquidacaoShopeeMeta,
+  liquidacaoPendenteSchema,
+  motivoPendenteShopeeSchema,
+  MOTIVO_PENDENTE_SHOPEE,
+  type LiquidacaoShopee,
+  type LiquidacaoPendente,
+  type MotivoPendenteShopee,
+} from './liquidacaoShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta health doc
   // for the flag-gated `missed_feeds` backstop sweep (#812). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of

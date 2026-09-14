@@ -76,7 +76,7 @@ import {
 } from '@delfrance/schemas';
 
 import { mesclarFreteInicialShopee } from './orderFreteMapping';
-import type { PedidoMapeadoShopee } from './orderMapping';
+import { maiorUs, vazio, type PedidoMapeadoShopee } from './orderMapping';
 import {
   ALVO_ESTADO_SHOPEE,
   PREFIXO_ERRO_SHOPEE,
@@ -218,11 +218,6 @@ function mesmoFrete(armazenado: FreteDoPedido | null | undefined, novo: FreteDoP
   );
 }
 
-/** The larger of two µs stamps (either may be absent). */
-function maiorUs(a: number | null, b: number): number {
-  return a == null || b > a ? b : a;
-}
-
 /** The item fields Shopee owns — the ones a re-read could disagree on. */
 const CAMPOS_ITEM_DA_SHOPEE = [
   'quantidade',
@@ -324,11 +319,6 @@ function agruparItens(itens: readonly ItemDoPedido[]): {
 function capturaArmazenada(raw: Record<string, unknown>): Partial<CapturaComprador> | null {
   const bruto = raw.capturaComprador;
   return typeof bruto === 'object' && bruto !== null ? (bruto as Partial<CapturaComprador>) : null;
-}
-
-/** A stored value that counts as "nothing here yet" for a fill-once field. */
-function vazio(valor: unknown): boolean {
-  return valor === null || valor === undefined || valor === '';
 }
 
 /**

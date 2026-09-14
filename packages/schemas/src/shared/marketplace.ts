@@ -279,9 +279,15 @@ export const MARKETPLACE_TIPO_CAPS: Record<MarketplaceTipo, MarketplaceCapabilit
     },
     enviarPreco: 'sim', // update_price, one item ≤50 models, 2 decimals in BR, LOCKED during a promotion
     importarPedido: 'sim',
-    // No payment resource and no payment push: payment = pay_time != null on
-    // get_order_detail, fees/settlement = get_escrow_detail (floats, one order
-    // per call). survey B §3.
+    // No payment push, and no gateway-shaped payment resource — but a BR
+    // per-order one DOES exist: get_order_detail.payment_info[] (per NT
+    // 2025.001; provided "for orders with status READY_TO_SHIP", must be named
+    // in response_optional_fields). pay_time/payment_method/total_amount are
+    // OPTIONAL fields: an absent one means "not asked for", never "unpaid".
+    // Fees = get_escrow_detail (floats, ONE order per call; the batch lacks
+    // buyer_total_amount and has no per-order error, so it cannot replace it).
+    // Settlement = get_escrow_list on escrow_release_time, page_no paging.
+    // survey B §3.
     importarPagamento: 'sim',
     // One order → N packages (package_list). Many orders → one parcel exists only
     // as a read-only group_shipment_id with no seller action; split_order is not

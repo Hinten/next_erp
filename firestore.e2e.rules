@@ -105,6 +105,8 @@ service cloud.firestore {
         && (!c.hasAny(['duplicata']) || d.get('duplicata', null) is bool)
         && (!c.hasAny(['id']) || (d.get('id', null) == null || d.get('id', null) is string))
         && (!c.hasAny(['juros']) || (d.get('juros', null) == null || (d.get('juros', null) is number && d.get('juros', null) >= 0)))
+        && (!c.hasAny(['liquidacao']) || (d.get('liquidacao', null) == null || d.get('liquidacao', null) is map))
+        && (!c.hasAny(['marketplace']) || (d.get('marketplace', null) == null || d.get('marketplace', null) is map))
         && (!c.hasAny(['metodoPagamentoOuterRef']) || (d.get('metodoPagamentoOuterRef', null) == null || d.get('metodoPagamentoOuterRef', null) is string))
         && (!c.hasAny(['nFat']) || (d.get('nFat', null) == null || d.get('nFat', null) is string && d.get('nFat', null).size() <= 60))
         && (!c.hasAny(['parcelas']) || (d.get('parcelas', null) is int && d.get('parcelas', null) >= 1))

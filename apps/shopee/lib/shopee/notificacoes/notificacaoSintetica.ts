@@ -2,11 +2,13 @@
  * The SYNTHETIC code-3 contract — one builder, shared by every producer that
  * discovers an order without a push having arrived.
  *
- * Two of them exist: master-plan **step 4**'s `orderBackfill` (`get_order_list`
- * by `update_time`, the 15-minute backstop behind the receiver) and, when it
- * lands, **step 8**'s stuck-reservation sweep. Both hand the notification
- * pipeline a payload shaped exactly like a parsed `push 1`, so an order found
- * by a sweep takes the SAME import path as one Shopee pushed.
+ * Three of them exist: master-plan **step 4**'s `orderBackfill` (`get_order_list`
+ * by `update_time`, the 15-minute backstop behind the receiver), **step 6**'s
+ * weekly settlement sweep (`get_escrow_list` named an order whose pedido or
+ * pagamento is not here yet) and, when it lands, **step 8**'s stuck-reservation
+ * sweep. All of them hand the notification pipeline a payload shaped exactly
+ * like a parsed `push 1`, so an order found by a sweep takes the SAME import
+ * path as one Shopee pushed.
  *
  * ## Why it is a sibling file and not a function inside `notificacao.ts`
  *
@@ -40,16 +42,23 @@ import type { ShopeeNotificationPayload } from './notificacao';
 
 /**
  * Which sweep synthesized the push. It rides inside `data` and is NOT part of
- * the identity, so step 4 and step 8 finding the same order share ONE dedup key
- * — and, WITHIN one tick, one create-only document.
+ * the identity, so two sweeps finding the same order share ONE dedup key — and,
+ * WITHIN one tick, one create-only document.
  *
- * ⚠️ The two producers do NOT collapse onto one row across ticks: the carimbo
- * is the synthesis clock (`docIdOf` → `3:<shop>:<ordersn>:<nowMs>`), and two
+ * ⚠️ The producers do NOT collapse onto one row across ticks: the carimbo is
+ * the synthesis clock (`docIdOf` → `3:<shop>:<ordersn>:<nowMs>`), and two
  * schedules never share a `Date.now()` read. The dedup key is per-RUN only
- * (each sweep's own `Set`), so step 8 owes its own idempotence; what it gets
- * from this module is a payload shaped exactly like step 4's.
+ * (each sweep's own `Set`), so every producer owes its own idempotence; what it
+ * gets from this module is a payload shaped exactly like step 4's.
+ *
+ * ⚠️ `'liquidacao'` (#1514, step 6) is the WEEKLY settlement sweep, and it is
+ * the one producer that synthesizes from the MONEY side rather than from an
+ * order walk: `get_escrow_list` named an order whose released escrow we can see
+ * and whose pedido (or pagamento) does not exist here yet. It carries no
+ * `orderStatus` — the settlement listing has no such field — so the importer
+ * re-reads `get_order_detail` for it exactly as it does for every other code 3.
  */
-export type OrigemSintetica = 'backfill' | 'reserva-travada';
+export type OrigemSintetica = 'backfill' | 'reserva-travada' | 'liquidacao';
 
 export interface NotificacaoSinteticaDePedidoParams {
   /** The conta's `shop_id` — top level on a real code 3. */

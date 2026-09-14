@@ -239,6 +239,45 @@ describe('pagamentoDataFromForm — card / cheque detail', () => {
     expect(data.cartao).toBeNull();
     expect(data.cheque).toBeNull();
   });
+
+  it('⚠️ PIX has no card group but IS card-like to the NF-e: a stored cartao SURVIVES the round trip', () => {
+    // A marketplace importer (Shopee) writes a `cartao` on a forma-17 leg:
+    // `tpIntegra '2'` + the processor's CNPJ + the authorization code. The form
+    // hides the group — there is no card DETAIL to edit — but `savePagamento`
+    // is a full `set`, so nulling it here would destroy the block and the NF-e
+    // would refuse the nota with cStat 391.
+    const cartao = {
+      tpIntegra: '2',
+      bandeira: null,
+      numeroCartao: null,
+      cAut: 'AUT-PIX',
+      cnpj_instituicao: '11222333000181',
+    };
+    const base = { cartao, cheque: null } as unknown as Pagamento;
+
+    const data = pagamentoDataFromForm(
+      form({ forma: String(FORMA_PAGAMENTO.pix), valor: 31.99 }),
+      base,
+    );
+
+    expect(data.cartao).toEqual(cartao);
+    expect(data.cheque).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: switching AWAY from PIX to a non-card-like forma still clears the stored cartao', () => {
+    // The preserve rule is scoped to the NF-e's card-like set {03, 04, 17}. A
+    // switch to Dinheiro/Boleto/… is a real forma change and a stale card there
+    // would reach `<card>` on a tPag that must not carry one.
+    const base = {
+      cartao: { tpIntegra: '2', cAut: 'AUT-PIX', cnpj_instituicao: '11222333000181' },
+      cheque: null,
+    } as unknown as Pagamento;
+
+    for (const forma of [FORMA_PAGAMENTO.dinheiro, FORMA_PAGAMENTO.boleto_bancario]) {
+      const data = pagamentoDataFromForm(form({ forma: String(forma), valor: 31.99 }), base);
+      expect(data.cartao).toBeNull();
+    }
+  });
 });
 
 describe('pagamentoFieldVisibility — card / cheque groups', () => {

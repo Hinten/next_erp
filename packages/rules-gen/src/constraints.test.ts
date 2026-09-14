@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { pagamentoSchema } from '@delfrance/schemas';
 import { clausesForSchema } from './constraints';
 
 function exprOf(schema: z.ZodTypeAny, field: string): string | undefined {
@@ -81,5 +82,44 @@ describe('clausesForSchema', () => {
 
   it('rejects non-object schemas', () => {
     expect(() => clausesForSchema(z.string())).toThrow(/object schemas/);
+  });
+});
+
+/**
+ * `pedidos/{pedidoId}/pagamentos` is one of the five `VALIDATOR_WHITELIST`
+ * entries, so every nullable field added to `pagamentoSchema` costs one clause
+ * in BOTH rulesets and both committed snapshots (#1533's class). Step 6 (#1514)
+ * added exactly two — asserted here, at the generator, so the cost of a third is
+ * visible where it is incurred rather than only in a snapshot diff.
+ */
+describe('clausesForSchema(pagamentoSchema) — the step-6 marketplace fields', () => {
+  const mapClauses = clausesForSchema(pagamentoSchema).filter((cl) => cl.expr.includes('is map'));
+
+  it('emits ONE `is map` clause for `liquidacao` and one for `marketplace`, and no others', () => {
+    // Exhaustive, not `toContain`: `cartao` and `cheque` are `z.unknown()` and
+    // must stay unconstrained (they round-trip opaque legacy maps), so a third
+    // `is map` here would mean a field silently changed shape.
+    expect(mapClauses.map((cl) => cl.field)).toEqual(['liquidacao', 'marketplace']);
+  });
+
+  it('guards each one behind hasAny and lets null through (both are nullable)', () => {
+    expect(exprOf(pagamentoSchema, 'liquidacao')).toBe(
+      "(!c.hasAny(['liquidacao']) || (d.get('liquidacao', null) == null || d.get('liquidacao', null) is map))",
+    );
+    expect(exprOf(pagamentoSchema, 'marketplace')).toBe(
+      "(!c.hasAny(['marketplace']) || (d.get('marketplace', null) == null || d.get('marketplace', null) is map))",
+    );
+  });
+
+  it('does not recurse: the nested escrow fields emit nothing of their own', () => {
+    // The generator is shape-only by design (expression budget). The near-miss
+    // that would prove otherwise — a clause naming a field that exists ONLY
+    // inside the nested block — must be absent.
+    const fields = clausesForSchema(pagamentoSchema).map((cl) => cl.field);
+    expect(fields).not.toContain('escrowReleaseTimeUs');
+    expect(fields).not.toContain('tarifasBrutas');
+    // The anchor: the top-level namesake IS there, so the two absences above
+    // are recursion not happening, not the scan finding nothing.
+    expect(fields).toContain('tarifas');
   });
 });

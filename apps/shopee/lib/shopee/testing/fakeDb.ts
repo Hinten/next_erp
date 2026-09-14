@@ -274,6 +274,11 @@ export class FakeDb {
         clausulas: filtros.map((f) => [f.campo, f.valor]),
         limite: n,
       });
+      // ⚠️ A query read is logged as a `get` too (step 6, #1514), so a
+      // transaction that reads a whole subcollection before writing shows the
+      // real `['get', 'get', 'create']` shape. Only the doc ref logged before,
+      // which would have made that assertion silently one entry short.
+      this.opLog.push({ op: 'get', path: colPath });
       const prefixo = `${colPath}/`;
       const encontrados = Object.entries(this.store)
         .filter(([path]) => path.startsWith(prefixo) && !path.slice(prefixo.length).includes('/'))
@@ -283,6 +288,15 @@ export class FakeDb {
     };
 
     const consulta = {
+      /**
+       * Added by step 6 (#1514), additively: the SHARED `OccEngine` identifies
+       * every readable by its Firestore path and refuses one without it, and a
+       * collection path is exactly how it tells a query read from a document
+       * read (ODD segment count). Without this `tx.get(X.ref(db, ctx))` — the
+       * whole-subcollection read `pagamentoTx.ts` and `pedidoReconcile.ts` both
+       * need — cannot be expressed against this double at all.
+       */
+      path: colPath,
       where: (campo: string, _op: string, valor: unknown) => {
         filtros.push({ campo, valor });
         return consulta;

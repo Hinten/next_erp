@@ -81,6 +81,7 @@ export { orderMLCollection } from './orderMLCollection';
 export { enderecoCollection } from './enderecoCollection';
 export { backfillPedidosMercadoLivreCollection } from './backfillPedidosMercadoLivreCollection';
 export { backfillPedidosShopeeCollection } from './backfillPedidosShopeeCollection';
+export { liquidacaoShopeeCollection } from './liquidacaoShopeeCollection';
 export { missedFeedsMercadoLivreCollection } from './missedFeedsMercadoLivreCollection';
 export { estoqueMercadoLivreSyncCollection } from './estoqueMercadoLivreSyncCollection';
 export {

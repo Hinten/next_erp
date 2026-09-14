@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetAllReadCaches } from '@delfrance/data/admin/cache';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
-import { ESTADO_FRETE, ESTADO_PEDIDO, INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { ESTADO_FRETE, ESTADO_PEDIDO, INTEGRACAO_TIPO, pagamentoSchema } from '@delfrance/schemas';
+import type { ZodError } from 'zod';
 import {
   ShopeeApiError,
   ShopeeNetworkError,
@@ -17,8 +18,32 @@ import {
 import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
 import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
 import { mapearItensShopee } from './itens';
-import { makePedidoIdShopee } from './orderIds';
+import { makePagamentoIdShopee, makePedidoIdShopee } from './orderIds';
 import { microsDeSegundosShopee } from './orderMapping';
+
+/**
+ * The step-6 write is reached through a seam (#1514) so ONE test can inject a
+ * real `ZodError` at exactly the place `pagamentoCollection.parse` raises one.
+ *
+ * ⚠️ Every other test in this file still runs through the REAL transaction: the
+ * factory delegates to the original module unless `pag.erro` is set, so the
+ * call-order, skip-matrix and log assertions below are about production code and
+ * not about a double.
+ */
+const pag = vi.hoisted(() => ({ erro: null as unknown }));
+vi.mock('./pagamentoTx', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./pagamentoTx')>();
+  return {
+    ...real,
+    salvarPagamentosShopee: async (
+      ...args: Parameters<typeof real.salvarPagamentosShopee>
+    ): ReturnType<typeof real.salvarPagamentosShopee> => {
+      if (pag.erro != null) throw pag.erro;
+      return real.salvarPagamentosShopee(...args);
+    },
+  };
+});
+
 import { SHOPEE_ERRO_ORDER_NOT_FOUND, importarPedidoShopee } from './importarPedido';
 
 const INT = 'int-1';
@@ -146,6 +171,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   avisos.length = 0;
   infos.length = 0;
+  pag.erro = null;
 });
 
 /* -------------------------------------------------------------------------- */
@@ -594,5 +620,158 @@ describe('importarPedidoShopee — a conta', () => {
     expect(doc.operacaoPedidoOuterRef).toBeNull();
     // The integração ref itself is derived from the id, never from the document.
     expect(doc.integracaoPedidoOuterRef).toBe(`documents/integracao/${INT}`);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    os pagamentos (#1514, step 6)                            */
+/* -------------------------------------------------------------------------- */
+
+const PAGAMENTOS_PATH = `${PEDIDO_PATH}/pagamentos`;
+const PAGAMENTO_ID = makePagamentoIdShopee(INT, ORDER_SN);
+
+/**
+ * Um `ZodError` DE VERDADE, vindo do schema de verdade — nunca um `Error`
+ * qualquer com o nome trocado, que provaria só que um `throw` propaga.
+ */
+function zodErrorReal(): ZodError {
+  const r = pagamentoSchema.safeParse({ valor: -1 });
+  if (r.success) {
+    throw new Error('o schema aceitou um valor negativo — este teste perdeu a âncora');
+  }
+  return r.error;
+}
+
+describe('importarPedidoShopee — os pagamentos', () => {
+  it('grava o pagamento DEPOIS do pedido e ANTES dos incidentes', async () => {
+    const c = cenario();
+    const r = await importar(c);
+
+    expect(r.acaoPagamentos).toBe('criado');
+    expect(r.pagamentosGravados).toBe(1);
+    expect(c.db.idsEm(PAGAMENTOS_PATH)).toEqual([PAGAMENTO_ID]);
+
+    // ⚠️ A ORDEM é a asserção: o pedido tem de existir antes (a transação de
+    // pagamento recusa um ancestral ausente) e os incidentes vêm depois, porque
+    // eles leem o snapshot que a transação do pedido enxergou.
+    const ordem = c.db.caminhos;
+    const iPedido = ordem.indexOf(PEDIDO_PATH);
+    const iPagamento = ordem.indexOf(PAGAMENTOS_PATH);
+    const iIncidente = ordem.findIndex((p) => p.includes('/incidentes'));
+    expect(iPedido).toBeGreaterThanOrEqual(0);
+    expect(iPagamento).toBeGreaterThan(iPedido);
+    expect(iIncidente).toBeGreaterThan(iPagamento);
+  });
+
+  it('⚠️ `ignorado-sem-mudanca` no pedido NÃO pula o pagamento', async () => {
+    const c = cenario();
+    await importar(c);
+    c.db.caminhos.length = 0;
+
+    const r = await importar(c);
+
+    // O escrow não tem relógio próprio: as tarifas podem andar enquanto a linha
+    // da order não anda, então a segunda entrega TEM de entrar.
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(c.db.caminhos).toContain(PAGAMENTOS_PATH);
+    expect(r.acaoPagamentos).toBe('ignorado-sem-mudanca');
+    expect(r.pagamentosGravados).toBe(0);
+  });
+
+  it('`ignorado-obsoleto` no pedido PULA o pagamento inteiro', async () => {
+    const c = cenario();
+    await importar(c);
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [linha({ order_status: 'UNPAID', update_time: UPDATE_TIME_S - 60 })],
+    });
+    c.db.caminhos.length = 0;
+
+    const r = await importar(c);
+
+    expect(r.acao).toBe('ignorado-obsoleto');
+    expect(r.acaoPagamentos).toBeNull();
+    expect(r.pagamentosGravados).toBe(0);
+    expect(c.db.caminhos).not.toContain(PAGAMENTOS_PATH);
+  });
+
+  it('`ignorado-inexistente` nunca chega no pagamento', async () => {
+    const c = cenario();
+    c.getOrderDetail.mockRejectedValue(erroApi(SHOPEE_ERRO_ORDER_NOT_FOUND));
+
+    const r = await importar(c);
+
+    expect(r.acao).toBe('ignorado-inexistente');
+    expect(r.acaoPagamentos).toBeNull();
+    expect(r.pagamentosGravados).toBe(0);
+    expect(c.db.caminhos).not.toContain(PAGAMENTOS_PATH);
+  });
+
+  it('⚠️ um ZodError da escrita do pagamento PROPAGA — este módulo não converte erro nenhum', async () => {
+    const c = cenario();
+    const erro = zodErrorReal();
+    // Âncora: o objeto injetado é mesmo o que o schema de escrita produz.
+    expect(erro.name).toBe('ZodError');
+    expect(erro.issues.length).toBeGreaterThan(0);
+    pag.erro = erro;
+
+    // Regra 6: nada é capturado aqui. Quem decide a disposição é o braço da
+    // notificação (`disposicaoDaFalhaDeImportacao` PARQUEIA um ZodError).
+    await expect(importar(c)).rejects.toBe(erro);
+    // O pedido já tinha sido gravado — o parque é sobre a notificação, não um
+    // rollback que o Firestore não tem.
+    expect(c.db.store[PEDIDO_PATH]).toBeDefined();
+  });
+
+  it('a linha de log do import carrega os números do pagamento e NENHUM dado sensível', async () => {
+    const c = cenario({ detalhe: detalheBR() });
+    await importar(c);
+
+    const linhaDoImport = infos.find((args) => String(args[0]).includes('pedido importado'));
+    expect(linhaDoImport).toBeDefined();
+    const campos = linhaDoImport![1] as Record<string, unknown>;
+    expect(campos.acaoPagamentos).toBe('criado');
+    expect(campos.pagamentos).toBe(1);
+    expect(campos.gruposPagamento).toEqual(expect.arrayContaining(['dados']));
+    expect(campos.somaPagante).toBe(31.99);
+    expect(campos.divergenciaDeSoma).toBe(0);
+    expect(campos).toHaveProperty('tarifas');
+    expect(campos).toHaveProperty('tarifasBrutas');
+    // BR ⇒ a contagem de `payment_info` viaja (item 22 do registro settle-live).
+    expect(campos.entradasPaymentInfo).toBe(0);
+
+    // …e num pedido SG a chave nem aparece: "não se aplica" e "não veio nenhuma"
+    // são fatos diferentes.
+    const d = cenario();
+    infos.length = 0;
+    await importar(d);
+    const sg = infos.find((args) => String(args[0]).includes('pedido importado'))![1] as Record<
+      string,
+      unknown
+    >;
+    expect(Object.prototype.hasOwnProperty.call(sg, 'entradasPaymentInfo')).toBe(false);
+
+    // Nenhum log desta suíte carrega um CNPJ, um código de autorização ou um
+    // campo do comprador.
+    const tudo = [...infos, ...avisos]
+      .map((args) => args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
+      .join('\n');
+    expect(tudo.length).toBeGreaterThan(0);
+    // ⚠️ As âncoras da borda são obrigatórias e são a parte interessante: esta
+    // linha de log carrega carimbos em MICROssegundos (16 dígitos), e um
+    // `/\d{14}/` solto casaria dentro de qualquer um deles — um teste vermelho
+    // por um µs legítimo é um teste que alguém desliga. O alvo é um CNPJ, que
+    // tem exatamente 14 dígitos e não vive dentro de um número maior.
+    expect(tudo).not.toMatch(/(?<!\d)\d{14}(?!\d)/);
+    expect(tudo).not.toContain(CPF_FALSO);
+    expect(tudo).not.toContain('AUT-');
+    expect(tudo).not.toContain('buyer_');
+  });
+
+  it('Σ pagante do resultado bate com o `valorCobrado` que o pedido guardou', async () => {
+    const c = cenario();
+    await importar(c);
+    const pedido = c.db.store[PEDIDO_PATH]!.data;
+    const pagamento = c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data;
+    expect(pagamento.valor).toBe(pedido.valorCobrado);
   });
 });

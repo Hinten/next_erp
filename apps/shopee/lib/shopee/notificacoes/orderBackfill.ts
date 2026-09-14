@@ -102,28 +102,17 @@
  * prevent.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import {
-  backfillPedidosShopeeCollection,
-  integracaoCollection,
-} from '@delfrance/data/admin/collections';
-import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { backfillPedidosShopeeCollection } from '@delfrance/data/admin/collections';
 import {
   SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS,
   ShopeeApiError,
-  ShopeeHttpError,
-  ShopeeNetworkError,
-  ShopeeSchemaError,
   type ShopeeClient,
 } from '@delfrance/integrations-shopee';
 
-import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
-import { ShopeeContaNotConfiguredError, loadShopeeContext } from '../core/shopee';
-import {
-  ShopeeContaSemShopIdError,
-  ShopeeRefreshEmAndamentoError,
-  ShopeeSemCredencialError,
-} from '../core/tokenStore';
-import { ShopeeTasksDisabledError, type ShopeeTaskScheduler } from '../shopeeTasks';
+import { listarContasShopeeAtivas } from '../core/contas';
+import { erroContidoPorConta } from '../core/containment';
+import { loadShopeeContext } from '../core/shopee';
+import type { ShopeeTaskScheduler } from '../shopeeTasks';
 import { dedupKeyOf, destinoDoCodigo } from './notificacao';
 import { notificacaoSinteticaDePedido } from './notificacaoSintetica';
 
@@ -222,70 +211,6 @@ export interface OrderBackfillResult {
   /** Active contas skipped for having no `shop_id` — counted, never written. */
   readonly semShopId: number;
   readonly contas: readonly BackfillContaResult[];
-}
-
-/**
- * Admin-SDK Firestore and Cloud Tasks enqueue failures surface as `Error`s
- * carrying a numeric gRPC status `code`. Narrowed to the actual status range
- * (integers 1–16; 0 = OK never rides an error) so a coding-bug `Error` that
- * happens to expose some other numeric `code` is NOT contained. Verbatim from
- * `conta/expiracaoSweep.ts`.
- */
-function isGrpcCodedError(err: unknown): err is Error {
-  if (!(err instanceof Error)) return false;
-  const code = (err as { code?: unknown }).code;
-  return typeof code === 'number' && Number.isInteger(code) && code >= 1 && code <= 16;
-}
-
-/**
- * The per-conta containment boundary: an expected failure family is recorded on
- * the conta's cursor document and the loop moves on; anything else rethrows and
- * fails the tick loudly.
- *
- * ⚠️ It names the five classes, NOT the `ShopeeError` base — because
- * `ShopeeConfigError` extends that base and must RETHROW. A missing partner id
- * or key is OUR misconfiguration, and the execution that names the missing
- * binding is the one that has to fail (#778); containing it would turn a broken
- * deploy into N identical `lastError` strings and a green tick.
- * `conta/expiracaoSweep.ts` can safely catch the base class only because
- * nothing inside its loop can raise a config error.
- *
- * `ShopeeReauthRequiredError` and `ShopeeRateLimitError` extend
- * `ShopeeApiError`, so they are contained by that arm. Reauth is deliberately
- * NOT escalated into an aviso here: the dead-grant aviso has exactly one
- * producer (`avisos/autorizacao.ts`), and a second one would fork the row.
- *
- * `ShopeeContaSemShopIdError` cannot fire today — the raw `shop_id` guard
- * already skipped those contas — and it stays because the boundary names a
- * FAMILY, not today's call graph: a conta whose `shop_id` is cleared between
- * the enumeration and `loadShopeeContext` must not cost every other conta its
- * tick.
- *
- * ⚠️ The three CREDENTIAL classes are here for that same reason, and they are
- * the ones this sweep can actually raise: the client carries the token as a
- * FUNCTION, so `getOrRefreshAccessToken` runs INSIDE `client.getOrderList` —
- * inside this loop. `ShopeeRefreshEmAndamentoError` is another instance holding
- * the refresh lease past the poll budget (transient by construction, and the
- * route answers it 503 + Retry-After); `ShopeeSemCredencialError` and
- * `ShopeeCredencialInvalidaError` are per-conta STATES the conta route already
- * renders. All three are about ONE conta's grant, never about our deployment,
- * so each belongs on that conta's `lastError` rather than costing every other
- * conta its tick. `ShopeeConfigError` still rethrows: that one IS ours.
- */
-function contidoPorConta(err: unknown): err is Error {
-  return (
-    err instanceof ShopeeApiError ||
-    err instanceof ShopeeNetworkError ||
-    err instanceof ShopeeHttpError ||
-    err instanceof ShopeeSchemaError ||
-    err instanceof ShopeeContaNotConfiguredError ||
-    err instanceof ShopeeContaSemShopIdError ||
-    err instanceof ShopeeSemCredencialError ||
-    err instanceof ShopeeRefreshEmAndamentoError ||
-    err instanceof ShopeeCredencialInvalidaError ||
-    err instanceof ShopeeTasksDisabledError ||
-    isGrpcCodedError(err)
-  );
 }
 
 function loggerDe(deps: OrderBackfillDeps): BackfillLogger {
@@ -562,24 +487,16 @@ export async function runShopeeOrderBackfill(
   }
 
   const logger = loggerDe(deps);
-  // The `(tipo, ativo)` composite already exists in `firestore.indexes.json`
+  // The ONE `(tipo, ativo)` enumeration, shared with the weekly settlement
+  // sweep — clauses, order and the raw `shop_id` read all live in `core/contas.ts`
   // (root rule 1: an unindexed query does not throw on Enterprise, it
   // full-scans and bills the scan).
-  const snap = await integracaoCollection
-    .ref(db, {})
-    .where('tipo', '==', INTEGRACAO_TIPO.shopee)
-    .where('ativo', '==', true)
-    .get();
+  const ativas = await listarContasShopeeAtivas(db);
 
   const contas: BackfillContaResult[] = [];
   let semShopId = 0;
 
-  for (const doc of snap.docs) {
-    const integracaoId = doc.id;
-    // Read RAW off the enumerated document: only this one field is needed, and
-    // a soft `parseRead` of every conta would warn-spam each tick on legacy
-    // partial documents.
-    const shopId = numericField(doc.data() as Record<string, unknown>, 'shop_id');
+  for (const { integracaoId, shopId } of ativas) {
     if (shopId == null) {
       // A main-account-only conta is a DOCUMENTED, renderable state in this
       // channel (the conta route answers 200 `connected: false`), not a
@@ -613,10 +530,10 @@ export async function runShopeeOrderBackfill(
       const r = await varrerConta(db, deps, logger, integracaoId, shopId, st);
       contas.push({ integracaoId, shopId, ...r, error: null });
     } catch (err) {
-      // The per-conta containment boundary (see `contidoPorConta`): one conta's
-      // Shopee or Firestore failure must not cost every other conta its tick;
-      // anything unclassifiable is a coding bug and fails the tick loudly.
-      if (!contidoPorConta(err)) throw err;
+      // The per-conta containment boundary (see `core/containment.ts`): one
+      // conta's Shopee or Firestore failure must not cost every other conta its
+      // tick; anything unclassifiable is a coding bug and fails the tick loudly.
+      if (!erroContidoPorConta(err)) throw err;
       await registrarErro(db, logger, integracaoId, deps.nowMs, err, retomada);
       contas.push({
         integracaoId,

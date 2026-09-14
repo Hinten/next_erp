@@ -21,10 +21,11 @@
  * `retryAfterSeconds`; durable retry belongs to the Cloud Tasks pipeline.
  *
  * ⚠️ **No paging loop anywhere.** `getShopsByPartner`, `getBrandList`,
- * `getOrderList` and `getLostPushMessages` each fetch ONE page and surface the
- * cursor; the caller loops. Auto-paging inside a client hides an unbounded
- * number of provider calls behind one innocuous `await`, and Shopee's brand API
- * is slow enough that the difference is visible to an operator.
+ * `getOrderList`, `getLostPushMessages` and `getEscrowList` each fetch ONE page
+ * and surface the cursor (or the page number); the caller loops. Auto-paging
+ * inside a client hides an unbounded number of provider calls behind one
+ * innocuous `await`, and Shopee's brand API is slow enough that the difference is
+ * visible to an operator.
  *
  * ## The push and order reads (step 4)
  *
@@ -48,6 +49,23 @@
  * caller can forget) and {@link SHOPEE_ESCROW_DETAIL_TRANSPORT} (the escrow page
  * declares GET while its only sample is a JSON body — one literal flips the verb
  * AND the placement together, because a GET cannot carry a body at all).
+ *
+ * ## The settlement read (step 6)
+ *
+ * ONE more: `getEscrowList`, the only surface that exposes
+ * `escrow_release_time`. It diverges from `getOrderList` in two ways that are
+ * both the PAGE's doing rather than a preference — `release_time_from ===
+ * release_time_to` is legal here (see {@link GetEscrowListParams}) and no
+ * maximum window is documented at all (see
+ * {@link SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE}).
+ *
+ * ⚠️ **`get_escrow_detail_batch` is deliberately NOT built, and it is not a
+ * shortcut anybody may add later.** Its response drops eleven fields the single
+ * call carries — including `buyer_total_amount`, `escrow_amount_after_adjustment`,
+ * `total_adjustment_amount` and `tenure_info_list` — so it can produce neither
+ * the pagamento's `valor` nor its `tarifas`, and it carries **no per-order
+ * `error`**, so a batch of 50 in which one order failed is indistinguishable
+ * from a batch in which none did.
  *
  * ## The taxonomy reads (step 10)
  *
@@ -74,6 +92,7 @@ import {
   type ShopeeCategoryRecommend,
   type ShopeeConfirmLostPush,
   type ShopeeEscrowDetail,
+  type ShopeeEscrowList,
   type ShopeeGtinLimit,
   type ShopeeItemLimit,
   type ShopeeKitItemLimit,
@@ -91,6 +110,7 @@ import {
   shopeeCategoryRecommendSchema,
   shopeeConfirmLostPushSchema,
   shopeeEscrowDetailSchema,
+  shopeeEscrowListSchema,
   shopeeItemLimitSchema,
   shopeeKitItemLimitSchema,
   shopeeLostPushSchema,
@@ -149,6 +169,15 @@ export const SHOPEE_GET_ORDER_DETAIL_PATH = '/api/v2/order/get_order_detail';
  * are BOTH decided by {@link SHOPEE_ESCROW_DETAIL_TRANSPORT}.
  */
 export const SHOPEE_GET_ESCROW_DETAIL_PATH = '/api/v2/payment/get_escrow_detail';
+
+/**
+ * `GET` — Shop-signed. WRAPPED. ONE page of RELEASED orders, by
+ * `escrow_release_time`.
+ *
+ * ⚠️ The only Shopee surface that exposes `escrow_release_time` at all; the
+ * escrow DETAIL does not carry it.
+ */
+export const SHOPEE_GET_ESCROW_LIST_PATH = '/api/v2/payment/get_escrow_list';
 
 /** `get_order_detail`: `order_sn_list` is documented `limit [1,50]`. */
 export const SHOPEE_ORDER_DETAIL_MAX_ORDER_SN = 50;
@@ -270,6 +299,30 @@ export const SHOPEE_ORDER_LIST_MAX_PAGE_SIZE = 100;
  * `order.order_list_invalid_time`, not a truncated answer.
  */
 export const SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS = 15 * 24 * 60 * 60;
+
+/** `get_escrow_list`: `page_size` is documented `[1,100]`. */
+export const SHOPEE_ESCROW_LIST_MAX_PAGE_SIZE = 100;
+
+/**
+ * `get_escrow_list`: Shopee's own documented default for `page_size`, applied
+ * HERE and **always SENT**.
+ *
+ * ⚠️ Sent rather than omitted because `page_no` paging is only meaningful against
+ * a KNOWN page size: a caller that resumes at page 7 is asking for rows 601–700
+ * under a 100-row page and rows 241–280 under a 40-row one. Letting Shopee pick
+ * the size would make a stored resume point mean something different from one
+ * tick to the next, and nothing would say so.
+ */
+export const SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE = 40;
+
+/*
+ * ⚠️ There is deliberately **no** `SHOPEE_ESCROW_LIST_MAX_WINDOW_SECONDS`, and
+ * the absence is the statement: `get_escrow_list` documents NO maximum window,
+ * unlike `get_order_list` (see {@link SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS}).
+ * The 15-day cap the settlement sweep applies is the SWEEP's own budget, self
+ * imposed and living with it in `apps/shopee`; a constant here would read as a
+ * provider fact and would be one more thing to keep true.
+ */
 
 /** `get_brand_list.status` — the only two values the page accepts. */
 export const SHOPEE_BRAND_STATUS = { normal: 1, pending: 2 } as const;
@@ -481,6 +534,39 @@ export interface GetEscrowDetailParams {
   readonly orderSn: string;
 }
 
+/**
+ * `get_escrow_list` — ONE page of orders whose escrow was RELEASED inside a
+ * window on `escrow_release_time`.
+ *
+ * ⚠️ Both bounds are REQUIRED by the page, and both are wire-shaped **SECONDS**
+ * with the unit in the field name. The package converts nothing: `apps/shopee`
+ * is the single place the s↔ms conversion happens
+ * (the {@link GetOrderListParams} precedent).
+ *
+ * ⚠️ **`releaseTimeFromS === releaseTimeToS` is ACCEPTED here, and that is a
+ * deliberate DIVERGENCE from `getOrderList`.** The two pages refuse different
+ * things: `get_order_list` documents a window and this client refuses
+ * `time_from >= time_to`, while `get_escrow_list`'s only documented refusal is
+ * "start date cannot be later than the end date" — so a zero-width window is
+ * legal on this page and a sweep that has already drained up to `now` must be
+ * able to ask for it rather than being told it made a caller error. The
+ * divergence is pinned side by side in `api.test.ts`, because copying the
+ * neighbouring assertion is exactly how it would be "fixed" back.
+ *
+ * ⚠️ No maximum window is documented for this page. See the note beside
+ * {@link SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE}.
+ */
+export interface GetEscrowListParams {
+  /** Unix SECONDS, inclusive lower bound. */
+  readonly releaseTimeFromS: number;
+  /** Unix SECONDS. ⚠️ May EQUAL `releaseTimeFromS` — see the interface note. */
+  readonly releaseTimeToS: number;
+  /** 1…100. Omitted ⇒ {@link SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE}, and SENT either way. */
+  readonly pageSize?: number;
+  /** ≥ 1. Omitted ⇒ 1, and SENT either way. This page pages by NUMBER; it has no cursor. */
+  readonly pageNo?: number;
+}
+
 /** `category_recommend` — a non-blank item name, plus an optional cover image id. */
 export interface CategoryRecommendParams {
   readonly itemName: string;
@@ -627,6 +713,32 @@ export interface ShopeeClient {
    * kind `other` — a permanent refusal about one order, not a transient failure.
    */
   getEscrowDetail(p: GetEscrowDetailParams): Promise<ShopeeEscrowDetail>;
+
+  /**
+   * ONE page of orders whose escrow was RELEASED inside a window — the
+   * settlement feed.
+   *
+   * ⚠️ **It does NOT auto-page.** One call, one page; the caller loops on
+   * `more`, exactly as it does for `getOrderList`. Terminate on `more === false`
+   * and NEVER on the row count: Shopee's sibling order page returns ten rows for
+   * `page_size: 20` with `more: true`, so a short page proves nothing.
+   *
+   * ⚠️ Paging is by `page_no`, and there is no cursor. The page also documents
+   * **no ordering** of the rows, so nothing may be inferred from their sequence
+   * — not the window's high-water mark, not whether a page was skipped.
+   *
+   * ⚠️ `payout_amount` reaches the caller RAW, because the page contradicts
+   * itself about its unit. See {@link shopeeEscrowListRowSchema}.
+   *
+   * ⚠️ An unreadable row arrives as `null` in place rather than failing the
+   * page — see {@link shopeeEscrowListPayloadSchema}. A caller counts those; it
+   * never treats one as a row.
+   *
+   * ⚠️ `income_not_found` and `decoded_failed_error` are documented errors of
+   * this page and both classify as kind `other` — permanent refusals, not
+   * transient failures.
+   */
+  getEscrowList(p: GetEscrowListParams): Promise<ShopeeEscrowList>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -746,6 +858,47 @@ function assertOrderSn(orderSn: string): void {
   if (typeof orderSn !== 'string' || orderSn.trim() === '') {
     throw new ShopeeConfigError(
       `order_sn não pode ser vazio (recebido: ${JSON.stringify(orderSn)}).`,
+    );
+  }
+}
+
+/**
+ * Every `get_escrow_list` bound, checked BEFORE any fetch.
+ *
+ * ⚠️ Every branch is a `ShopeeConfigError` — a caller bug or a misconfiguration,
+ * never a provider failure — so a sweep's provider-error containment must not
+ * swallow it. That matters more here than on the order pages: this call runs
+ * inside a scheduled settlement whose whole design is to CONTAIN provider errors
+ * per conta and carry on, and a window it computed wrongly must be loud.
+ *
+ * ⚠️ **`from === to` is ACCEPTED, and the `>` is not a typo for `>=`.** The
+ * neighbouring `assertOrderListParams` refuses `time_from >= time_to`, because
+ * that page documents a window; this page's only documented refusal is "start
+ * date cannot be later than the end date". Two pages, two rules — copying the
+ * sibling's operator here would refuse a legal zero-width window and there would
+ * be no error to see, only a sweep that stops making progress once it catches up
+ * with `now`. See {@link GetEscrowListParams}.
+ */
+function assertEscrowListParams(pageSize: number, pageNo: number, p: GetEscrowListParams): void {
+  assertSegundosPositivos('release_time_from', p.releaseTimeFromS);
+  assertSegundosPositivos('release_time_to', p.releaseTimeToS);
+  if (p.releaseTimeFromS > p.releaseTimeToS) {
+    throw new ShopeeConfigError(
+      `release_time_from não pode ser posterior a release_time_to (recebido: ${JSON.stringify(p.releaseTimeFromS)} e ${JSON.stringify(p.releaseTimeToS)}).`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(pageSize) ||
+    pageSize < 1 ||
+    pageSize > SHOPEE_ESCROW_LIST_MAX_PAGE_SIZE
+  ) {
+    throw new ShopeeConfigError(
+      `page_size deve estar entre 1 e ${String(SHOPEE_ESCROW_LIST_MAX_PAGE_SIZE)} (recebido: ${JSON.stringify(pageSize)}).`,
+    );
+  }
+  if (!Number.isSafeInteger(pageNo) || pageNo < 1) {
+    throw new ShopeeConfigError(
+      `page_no deve ser um inteiro >= 1 (recebido: ${JSON.stringify(pageNo)}).`,
     );
   }
 }
@@ -1090,6 +1243,34 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         surface: SHOPEE_SURFACE.business,
         ...(porQuery ? { query: { order_sn: p.orderSn } } : { body: { order_sn: p.orderSn } }),
       });
+      return res.response;
+    },
+
+    getEscrowList: async (p) => {
+      // Resolved BEFORE the assertion so the bound is checked against the value
+      // that will actually be sent — a default that skipped validation would be
+      // a second, unchecked way to reach the wire.
+      const pageSize = p.pageSize ?? SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE;
+      const pageNo = p.pageNo ?? 1;
+      assertEscrowListParams(pageSize, pageNo, p);
+      const res = await shopeeCall(transport, {
+        // GET — the page's own `method: 2`, and its samples agree.
+        method: 'GET',
+        path: SHOPEE_GET_ESCROW_LIST_PATH,
+        call: await signedCall(),
+        schema: shopeeEscrowListSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: {
+          // ⚠️ SECONDS, verbatim. The package converts no unit.
+          release_time_from: p.releaseTimeFromS,
+          release_time_to: p.releaseTimeToS,
+          // ⚠️ BOTH always sent, defaults included — see
+          // SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE.
+          page_size: pageSize,
+          page_no: pageNo,
+        },
+      });
+      // ONE page. `more` travels on the payload and the caller decides.
       return res.response;
     },
   };

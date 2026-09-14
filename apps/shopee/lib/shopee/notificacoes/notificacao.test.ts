@@ -78,6 +78,7 @@ const {
   destinoDoCodigo,
   disposicaoDaFalhaDeImportacao,
   docIdOf,
+  handleNotificationTask,
   identidadeDoPush,
   lojasDoPushDeConta,
   lojasExpirandoDoPush12,
@@ -115,6 +116,11 @@ function resultadoDeImportacao(
     pedidoId: 'ped-abc',
     orderStatus: 'READY_TO_SHIP',
     itensSemProduto: 0,
+    // Step 6 (#1514): the default is the ordinary happy path — the pagamento
+    // transaction ran and created the payment. `null` is the "it did not run"
+    // case and every test that wants it says so.
+    acaoPagamentos: 'criado',
+    pagamentosGravados: 1,
     detail: 'criado',
     ...over,
   };
@@ -955,6 +961,8 @@ describe('code 3 — importação do pedido', () => {
       pedidoId: 'ped-abc',
       orderStatus: 'READY_TO_SHIP',
       itensSemProduto: 0,
+      // Step 6 (#1514): o veredito da transação de pagamento viaja no outcome.
+      acaoPagamentos: 'criado',
       detail: 'criado',
     });
     expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'pedido' });
@@ -1788,5 +1796,52 @@ describe('persistNotificationParked', () => {
       tentativas: 0,
       erro: 'entrada ilegível',
     });
+  });
+});
+
+// ── handleNotificationTask — o TaskResult do code 3 (#1514, step 6) ─────────
+
+describe('handleNotificationTask — `acaoPagamentos` no TaskResult', () => {
+  it('⚠️ o veredito da transação de pagamento chega ao log da tarefa', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    importarPedido.mockResolvedValue(
+      resultadoDeImportacao({ acao: 'ignorado-sem-mudanca', acaoPagamentos: 'atualizado' }),
+    );
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(
+      asDb(fake),
+      { code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } },
+      0,
+      deps,
+    );
+
+    expect(r.outcome).toBe('done');
+    expect(r.kind).toBe('pedido');
+    // O token do PAGAMENTO viaja junto com o do pedido: `criado` numa entrega que
+    // não mexeu no pedido é exatamente o sinal de que o escrow andou sozinho.
+    expect(r.acaoPagamentos).toBe('atualizado');
+    expect(r.orderSn).toBe(ORDER_SN);
+  });
+
+  it('⚠️ quando a transação de pagamento NÃO roda, a chave fica AUSENTE — não `null`', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    importarPedido.mockResolvedValue(
+      resultadoDeImportacao({ acao: 'ignorado-obsoleto', acaoPagamentos: null }),
+    );
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(
+      asDb(fake),
+      { code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } },
+      0,
+      deps,
+    );
+
+    // "não rodou" e "rodou e não mudou nada" são fatos diferentes, e uma chave
+    // ausente é como este repo escreve o primeiro (regra 7, `camposInformados`).
+    expect(Object.prototype.hasOwnProperty.call(r, 'acaoPagamentos')).toBe(false);
+    // …e a âncora: o resto do TaskResult chegou, então o negativo não é vácuo.
+    expect(r.kind).toBe('pedido');
   });
 });

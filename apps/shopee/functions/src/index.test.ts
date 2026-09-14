@@ -60,6 +60,7 @@ const {
   processShopeeNotification,
   reprocessShopeeNotifications,
   sweepShopeeAuthorizationExpiry,
+  sweepShopeeEscrowSettlement,
   sweepShopeeLostPushes,
 } = modulo;
 
@@ -82,6 +83,7 @@ const AGENDAMENTOS = {
   sweepShopeeLostPushes,
   monitorShopeePushConfig,
   backfillShopeeOrders,
+  sweepShopeeEscrowSettlement,
 } as const;
 
 /**
@@ -274,6 +276,45 @@ describe('backfillShopeeOrders', () => {
   });
 });
 
+describe('sweepShopeeEscrowSettlement', () => {
+  it('roda SEMANALMENTE, segunda 05:10 America/Sao_Paulo', () => {
+    // Weekly is the cadence of the thing being read: an escrow release lags
+    // delivery by 7–15 days, so a daily walk would spend six days out of seven
+    // re-reading a window whose every row answers `ignorado-sem-mudanca`. The
+    // MINUTE is the other half — :10 keeps the sweep clear of :00/:15/:30/:45
+    // (backfill + reprocess) and :20 (lost push), and it sits between the 04:00
+    // expiry walk and the 05:45 push monitor, all of which draw on ONE
+    // undocumented partner rate-limit budget.
+    expect(gatilhoDe(sweepShopeeEscrowSettlement).schedule).toBe('10 5 * * 1');
+    expect(gatilhoDe(sweepShopeeEscrowSettlement).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('⚠️ NÃO é um cron diário — a quase-colisão que um `toContain` deixaria passar', () => {
+    // `'10 5 * * *'` is ONE character away, reads identically at a glance, and is
+    // a real design alternative that was considered and rejected — which is
+    // exactly what makes it dangerous. It would multiply `get_escrow_list` and
+    // `get_escrow_detail` by seven against an endpoint whose published rate
+    // limit is an empty string.
+    expect(gatilhoDe(sweepShopeeEscrowSettlement).schedule).not.toBe('10 5 * * *');
+  });
+
+  it('tem timeoutSeconds 540 — 300 liquidações sequenciais mais 20 páginas', () => {
+    // Each settlement is one `get_escrow_detail` plus one transaction (~1.2 s),
+    // so the per-tick budget is ≈ 370 s and 540 is the gen2 ceiling it is sized
+    // against. The gen2 60s default cannot absorb it, and a timeout mid-window
+    // advances NOTHING — the tick simply repeats.
+    expect(endpointOf(sweepShopeeEscrowSettlement).timeoutSeconds).toBe(540);
+  });
+
+  it('vincula exatamente as duas credenciais de parceiro', () => {
+    // Every `get_escrow_list`/`get_escrow_detail` is HMAC-signed with the partner
+    // key even though it is Shop-signed: the token rides in the query, the
+    // signature does not.
+    const serializado = JSON.stringify(endpointOf(sweepShopeeEscrowSettlement));
+    for (const segredo of SEGREDOS) expect(serializado).toContain(segredo);
+  });
+});
+
 describe('as quase-falhas que um `toContain` sozinho não pega', () => {
   it('nenhum dos agendamentos vincula um TERCEIRO segredo', () => {
     // `secrets:` is a whitelist an operator has to grant one by one. A name that
@@ -291,7 +332,7 @@ describe('as quase-falhas que um `toContain` sozinho não pega', () => {
 
   it('os agendamentos são DISTINTOS — nenhum PAR compartilha um cron', () => {
     // All-pairs, not "the first two differ": a copy-paste that left two of the
-    // five on the same cron would satisfy every per-function assertion above
+    // six on the same cron would satisfy every per-function assertion above
     // taken one at a time, and would run one of them twice while the other
     // never ran at all.
     const crons = Object.values(AGENDAMENTOS).map((fn) => gatilhoDe(fn).schedule);

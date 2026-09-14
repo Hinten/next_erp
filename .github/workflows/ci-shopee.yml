@@ -99,6 +99,8 @@ on:
       - 'packages/schemas/src/aviso.ts'
       - 'packages/schemas/src/notificacaoShopee.ts'
       - 'packages/schemas/src/backfillPedidosShopee.ts'
+      - 'packages/schemas/src/liquidacaoShopee.ts'
+      - 'packages/schemas/src/bandeiraCartao.ts'
       # The pedido schema itself (the two new blocks and the itens shape), the
       # buyer-capture predicate and the three modules the import writes a cliente
       # / endereço / prazoDespacho through. Named files where a FILE is meant —

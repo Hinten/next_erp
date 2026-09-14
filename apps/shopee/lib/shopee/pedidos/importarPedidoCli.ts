@@ -40,6 +40,12 @@
 import { formatReais } from '@delfrance/core/money';
 import { microsToMillis } from '@delfrance/core/datetime';
 import {
+  FORMA_PAGAMENTO_LABELS,
+  STATUS_PAGAMENTO_LABELS,
+  type FormaPagamento,
+  type StatusPagamento,
+} from '@delfrance/schemas';
+import {
   ShopeeApiError,
   ShopeeError,
   ShopeeHttpError,
@@ -50,6 +56,7 @@ import {
 } from '@delfrance/integrations-shopee';
 
 import type { PedidoMapeadoShopee } from './orderMapping';
+import { ALVO_STATUS_PAGAMENTO_SHOPEE, type PagamentosMapeadosShopee } from './pagamentoMapping';
 
 /* -------------------------------------------------------------------------- */
 /*                                  arguments                                  */
@@ -270,6 +277,51 @@ export interface ResumoPedidoShopee {
   readonly itens: readonly LinhaResumoShopee[];
 }
 
+/**
+ * One pagamento, reduced the same ALLOW-LIST way (#1514, step 6).
+ *
+ * ⚠️ Three fields of the `cartao` block are the reason this type exists at all,
+ * and all three are BOOLEANS:
+ *
+ *  - **`temCnpjInstituicao`, never the digits.** It is
+ *    `payment_info[].payment_processor_register` — the payment processor's CNPJ.
+ *    The importer's own log excludes it and a terminal transcript is pasted into
+ *    issues exactly like a log stream is.
+ *  - **`temCAut`, never the code.** `transaction_id` is the card authorization
+ *    code; it reaches the signed XML and nowhere else.
+ *  - **`temCartao`, never the block** — printing the map would carry both of the
+ *    above by accident, which is the failure mode an allow-list exists to make
+ *    impossible.
+ *
+ * `bandeira` DOES ride verbatim: it is a two-character CATALOGUE code
+ * (`'01'`…`'99'`) from a closed enum, not a value anybody authored.
+ */
+export interface PagamentoResumoShopee {
+  readonly docId: string;
+  /** The `id` FIELD — `order_sn` on the primary, `<order_sn>-<n>` on a sibling. */
+  readonly idCampo: string | null;
+  readonly formaCodigo: number | null;
+  readonly formaLabel: string | null;
+  readonly statusCodigo: number | null;
+  readonly statusLabel: string | null;
+  readonly valor: number | null;
+  readonly parcelas: number | null;
+  readonly aVista: boolean | null;
+  readonly tarifas: number | null;
+  /** Forma 99 only — `Shopee: <método>`, and the NF-e's `xPag`. */
+  readonly descricaoPagamento: string | null;
+  readonly temCartao: boolean;
+  readonly bandeira: string | null;
+  readonly temCnpjInstituicao: boolean;
+  readonly temCAut: boolean;
+  readonly dataAprovacaoUs: number | null;
+  readonly dataCancelamentoUs: number | null;
+  /** Whether the weekly settlement sweep has already stamped this payment. */
+  readonly temLiquidacao: boolean;
+  /** The PRE-CLAMP `tarifas`, out of the `marketplace` diary. */
+  readonly tarifasBrutas: number | null;
+}
+
 /* ------------------------------ raw readers ------------------------------- */
 
 function texto(v: unknown): string | null {
@@ -369,6 +421,87 @@ export function resumoDoPedidoMapeado(
       quantidade: item.quantidade,
     })),
   };
+}
+
+/**
+ * The pagamento set a live run WOULD write, straight off the pure mapper.
+ *
+ * ⚠️ `statusCodigo` is the LADDER'S TARGET, not a verdict: what actually lands
+ * depends on what the document already holds, and only the transaction knows
+ * that. `dataCancelamentoUs` and `temLiquidacao` are therefore always `null` /
+ * `false` here — neither is knowable before the write.
+ */
+export function resumoDosPagamentosMapeados(
+  mapeados: PagamentosMapeadosShopee,
+): PagamentoResumoShopee[] {
+  return mapeados.docs.map((m) => {
+    const alvo = m.sempre.alvoStatus;
+    const status = alvo.tipo === ALVO_STATUS_PAGAMENTO_SHOPEE.status ? alvo.status : null;
+    return {
+      docId: m.docId,
+      idCampo: m.preencherUmaVez.id,
+      formaCodigo: m.dados.forma_de_pagamento,
+      formaLabel: FORMA_PAGAMENTO_LABELS[m.dados.forma_de_pagamento] ?? null,
+      statusCodigo: status,
+      statusLabel: status == null ? null : (STATUS_PAGAMENTO_LABELS[status] ?? null),
+      valor: m.dados.valor,
+      parcelas: m.dados.parcelas,
+      aVista: m.dados.aVista,
+      tarifas: m.sempre.tarifas ?? null,
+      descricaoPagamento: m.dados.descricaoPagamento,
+      temCartao: m.dados.cartao !== undefined,
+      bandeira: m.dados.cartao?.bandeira ?? null,
+      temCnpjInstituicao: m.dados.cartao?.cnpj_instituicao != null,
+      temCAut: m.dados.cartao?.cAut != null,
+      dataAprovacaoUs: m.datas.dataAprovacao ?? null,
+      dataCancelamentoUs: null,
+      temLiquidacao: false,
+      tarifasBrutas: m.sempre.marketplace?.tarifasBrutas ?? null,
+    };
+  });
+}
+
+/**
+ * The same summary read back from what Firestore actually holds — raw data, so
+ * every field goes through a defensive reader and a document missing every key
+ * still renders.
+ *
+ * ⚠️ It lists EVERY document in the subcollection, including a migrated legacy
+ * `<order_sn>-desconto` sibling this importer never writes: the NF-e sums the
+ * whole collection, so a rehearsal that hid the siblings would hide the only
+ * thing that can put Σ pagante off the nota.
+ */
+export function resumoDosPagamentosArmazenados(
+  docs: readonly { readonly id: string; readonly data: Record<string, unknown> }[],
+): PagamentoResumoShopee[] {
+  return docs.map(({ id, data }) => {
+    const cartao = objeto(data.cartao);
+    const marketplace = objeto(data.marketplace);
+    const forma = numero(data.forma_de_pagamento);
+    const status = numero(data.status_pagamento);
+    return {
+      docId: id,
+      idCampo: texto(data.id),
+      formaCodigo: forma,
+      formaLabel: forma == null ? null : (FORMA_PAGAMENTO_LABELS[forma as FormaPagamento] ?? null),
+      statusCodigo: status,
+      statusLabel:
+        status == null ? null : (STATUS_PAGAMENTO_LABELS[status as StatusPagamento] ?? null),
+      valor: numero(data.valor),
+      parcelas: numero(data.parcelas),
+      aVista: booleano(data.aVista),
+      tarifas: numero(data.tarifas),
+      descricaoPagamento: texto(data.descricaoPagamento),
+      temCartao: cartao !== null,
+      bandeira: cartao === null ? null : texto(cartao.bandeira),
+      temCnpjInstituicao: cartao !== null && texto(cartao.cnpj_instituicao) !== null,
+      temCAut: cartao !== null && texto(cartao.cAut) !== null,
+      dataAprovacaoUs: numero(data.dataAprovacao),
+      dataCancelamentoUs: numero(data.dataCancelamento),
+      temLiquidacao: objeto(data.liquidacao) !== null,
+      tarifasBrutas: marketplace === null ? null : numero(marketplace.tarifasBrutas),
+    };
+  });
 }
 
 /* --------------------------- from the stored doc --------------------------- */
@@ -509,7 +642,15 @@ function carimbo(us: number | null): string {
  * field belongs to, which is true of the stored document as well — those groups
  * are what wrote it.
  */
-export function renderResumoPedido(r: ResumoPedidoShopee): string[] {
+export function renderResumoPedido(
+  r: ResumoPedidoShopee,
+  /**
+   * The pagamentos (#1514, step 6). OMIT it and no `### pagamentos` section is
+   * rendered at all — an empty ARRAY is a different fact (this order maps to no
+   * payment) and does get its own section saying so.
+   */
+  pagamentos?: readonly PagamentoResumoShopee[],
+): string[] {
   const linhas: string[] = [];
   linhas.push(
     r.origem === 'mapeado'
@@ -603,6 +744,46 @@ export function renderResumoPedido(r: ResumoPedidoShopee): string[] {
       );
     }
     linhas.push('  (o nome de venda é omitido de propósito — ver o cabeçalho do módulo)');
+  }
+
+  if (pagamentos !== undefined) {
+    linhas.push('');
+    linhas.push(`### pagamentos (${String(pagamentos.length)})`);
+    if (pagamentos.length === 0) {
+      linhas.push(
+        r.origem === 'mapeado'
+          ? '  (nenhum — a order não tem `pay_time` utilizável, então nada seria criado)'
+          : '  (nenhum gravado)',
+      );
+    } else {
+      for (const p of pagamentos) {
+        linhas.push(`  docId ................... ${p.docId}`);
+        linhas.push(`    id (campo) ............ ${txt(p.idCampo)}`);
+        linhas.push(
+          `    forma ................. ${p.formaCodigo == null ? '—' : String(p.formaCodigo)} ${txt(p.formaLabel)}`,
+        );
+        linhas.push(
+          `    status ................ ${p.statusCodigo == null ? '—' : String(p.statusCodigo)} ${txt(p.statusLabel)}` +
+            (r.origem === 'mapeado' ? '   (ALVO — a escada decide contra o gravado)' : ''),
+        );
+        linhas.push(
+          `    valor ................. ${dinheiro(p.valor)}   parcelas=${qtd(p.parcelas)} aVista=${p.aVista == null ? '—' : String(p.aVista)}`,
+        );
+        linhas.push(
+          `    tarifas ............... ${dinheiro(p.tarifas)}   bruto=${dinheiro(p.tarifasBrutas)}`,
+        );
+        linhas.push(`    descricaoPagamento .... ${txt(p.descricaoPagamento)}`);
+        // ⚠️ Booleans, never the CNPJ and never the authorization code.
+        linhas.push(
+          `    cartao ................ ${p.temCartao ? 'sim' : 'não'}  bandeira=${txt(p.bandeira)}` +
+            `  cnpj_instituicao=${p.temCnpjInstituicao ? 'presente' : '—'}  cAut=${p.temCAut ? 'presente' : '—'}`,
+        );
+        linhas.push(`    dataAprovacao ......... ${carimbo(p.dataAprovacaoUs)}`);
+        linhas.push(`    dataCancelamento ...... ${carimbo(p.dataCancelamentoUs)}`);
+        linhas.push(`    liquidação ............ ${p.temLiquidacao ? 'já liquidado' : 'pendente'}`);
+      }
+      linhas.push('  (o CNPJ do processador e o código de autorização são omitidos de propósito)');
+    }
   }
 
   linhas.push('');

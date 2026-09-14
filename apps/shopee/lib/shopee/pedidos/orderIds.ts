@@ -23,6 +23,12 @@
  * pair character for character, so a "harmless" reformat of the template
  * literal fails there instead of in the migration window.
  *
+ * ⚠️ **The PAGAMENTO preimage is a DIFFERENT string** —
+ * `integracao/<contaId>-<order_sn>`, with the collection name in front — and
+ * that is not an inconsistency to tidy up: it is what the legacy wrote, one
+ * document down. See {@link makePagamentoIdShopee}, which spells out why the
+ * two (and Mercado Livre's third spelling) each ended up where they are.
+ *
  * ⚠️ There is no shared `sha256Hex` in `@delfrance/core` (checked). Mercado
  * Livre declares its own the same way, from `node:crypto`; a third copy would be
  * the one to promote, not the second.
@@ -44,6 +50,57 @@ function sha256Hex(input: string): string {
  */
 export function makePedidoIdShopee(contaId: string, orderSn: string): string {
   return sha256Hex(`${contaId}-${orderSn}`);
+}
+
+/**
+ * Deterministic `pedidos/{pedidoId}/pagamentos/{id}` doc id — the LEGACY
+ * preimage `sha256(utf8("integracao/${contaId}-${orderSn}${sufixo ?? ''}"))`,
+ * byte for byte (#1514, step 6, plan W1).
+ *
+ * ⚠️ **The preimage differs from {@link makePedidoIdShopee}'s AND from Mercado
+ * Livre's, and all three differences are load-bearing:**
+ *
+ *  - the PEDIDO's is `"${contaId}-${orderSn}"`, with **no collection prefix**,
+ *    because the legacy Flutter `Pedido.generateUid` took the bare pair;
+ *  - Mercado Livre's is `"/documents/integracao/${contaId}-${paymentId}"` — a
+ *    **LEADING SLASH** and the literal `documents/`, because that app never
+ *    normalised the ref through `pathNoDocuments`;
+ *  - the legacy Shopee importer built THIS one from `conta.docId.pathNoDocuments`,
+ *    which STRIPS a leading `documents/`, so the preimage starts at the
+ *    collection name: `integracao/<contaId>-<order_sn>`.
+ *
+ * A migrated Shopee pedido already carries its pagamentos at THIS digest (root
+ * `CLAUDE.md` rule 8), so a different spelling forks every one of them on the
+ * first re-import — a second payment for one sale, and Σ pagante double the
+ * nota. On a marketplace `canalDevolveTroco` is false, so that is a hard SEFAZ
+ * 865/866 for ever, not a warning. `orderIds.test.ts` pins the digest character
+ * for character and asserts the three near-miss spellings UNEQUAL.
+ *
+ * ⚠️ The legacy also wrote a `-desconto` SIBLING at
+ * `sha256("integracao/<contaId>-<order_sn>-desconto")` (the extreme-coupon
+ * workaround). Step 6 NEVER writes it, NEVER reads it and NEVER deletes it —
+ * it is not one of ours. A NUMERIC suffix from {@link sufixoPagamentoShopee}
+ * can never collide with it: the two id spaces are disjoint by construction,
+ * because `-desconto` is not `-<n>` for any `n`.
+ */
+export function makePagamentoIdShopee(contaId: string, orderSn: string, sufixo?: string): string {
+  return sha256Hex(`integracao/${contaId}-${orderSn}${sufixo ?? ''}`);
+}
+
+/**
+ * The suffix for the `indice`-th pagamento of one Shopee order: `0 → undefined`
+ * (the PRIMARY, whose preimage and `id` field carry no suffix at all),
+ * `n → "-n"`.
+ *
+ * ⚠️ **ONE producer for BOTH the doc id and the `id` FIELD**, so the two can
+ * never disagree about what "the second leg" is spelled like. The transaction
+ * decides which stored docs are OURS by recomputing this for every `indice` up
+ * to the combined-payment maximum — never by reading the `id` field back, which
+ * rides the operator's form through a `...base` spread and is therefore
+ * reachable by a human edit.
+ */
+export function sufixoPagamentoShopee(indice: number): string | undefined {
+  return indice === 0 ? undefined : `-${indice}`;
 }
 
 /**

@@ -3,10 +3,11 @@
 Dev-only CLIs. **Never run by an agent** (root `CLAUDE.md` rule 8) — a human
 runs them, from this worktree, against the project the environment points at.
 
-| script               | what it does                                   | writes?                   |
-| -------------------- | ---------------------------------------------- | ------------------------- |
-| `oauth-url.ts`       | mints a Shopee consent URL without the web UI  | one `oauthState` document |
-| `importar-pedido.ts` | imports ONE order through the real step-5 path | only with `--live`        |
+| script                   | what it does                                    | writes?                   |
+| ------------------------ | ----------------------------------------------- | ------------------------- |
+| `oauth-url.ts`           | mints a Shopee consent URL without the web UI   | one `oauthState` document |
+| `importar-pedido.ts`     | imports ONE order through the real step-5 path  | only with `--live`        |
+| `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6) | only with `--live`        |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -157,3 +158,140 @@ contaProdutoShopeeOuterRef)`, which is **#1532**, migration-window work. On
   `onPedidoEstoqueSync` reserves against — so wherever that trigger is deployed,
   writing the pedido is what sets it off. Deleting the pedido afterwards is not a
   clean undo.
+
+---
+
+## `liquidar:pagamentos` — rehearsing the weekly settlement
+
+`sweepShopeeEscrowSettlement` runs unattended, **once a week** (Mondays 05:10
+America/Sao_Paulo), and it is the only thing in this channel that ever writes
+what the marketplace actually PAID. Shopee sends no payment event of any kind:
+`escrow_release_time` — the field that says the money really left — is exposed by
+exactly ONE endpoint, `get_escrow_list`, so the final figure has to be fetched.
+This script drives that same code from a terminal, against one named integração,
+so the channel's first settlement write is deliberate and observable instead of
+arriving on a Monday morning.
+
+### 8.1 Environment
+
+Identical to `importar:pedido` — same `.env.local`, same five lines printed
+before anything happens (project, database, raw `SHOPEE_SANDBOX`, resolved Shopee
+environment, shop id). Read them before you let it continue.
+
+The integração must already be connected and carry a `shop_id` (see §2 above).
+
+### 8.2 Dry run first — always
+
+```bash
+pnpm --filter @delfrance/shopee-app liquidar:pagamentos --integracao int-1
+```
+
+With no window it uses **the window the next tick would use**: the stored cursor
+minus a one-day overlap, or 30 days back on a conta that has never drained one.
+It replays the conta's parked list (`pendentes`) FIRST — exactly as a live tick
+does, and for the same reason: a parked row does not come back from the listing
+once the cursor moved past its release time, so a rehearsal that only paged would
+print "nothing to do" for precisely the rows the parked list exists for. Then it
+pages `get_escrow_list`, calls `get_escrow_detail` for every row, reads each row's
+pagamento and prints what a live tick **would** change. Every row says which
+source it came from (`[pendente]` or `[listagem]`). It writes nothing — the
+function it calls (`simularLiquidacaoShopee`) contains no writer at all, and its
+verdict comes from the very same `preverLiquidacaoShopee` the transaction uses, so
+the rehearsal cannot disagree with the run it rehearses.
+
+⚠️ One honest difference, and it is a COST not a disagreement: a live tick parks
+an absent pagamento WITHOUT calling `get_escrow_detail`, while the rehearsal reads
+the escrow for every row so it can show what the settlement would look like once
+the pedido arrives. A rehearsal over a long parked list therefore spends one
+rate-limited call per parked row.
+
+A fixed window:
+
+```bash
+pnpm --filter @delfrance/shopee-app liquidar:pagamentos --integracao int-1 --de 2026-09-01 --ate 2026-09-08
+```
+
+⚠️ **Both dates are read as midnight UTC**, never in the machine's zone, so
+`--ate 2026-09-08` does **not** include the 8th. Pass both or neither.
+
+One order, inspect-only:
+
+```bash
+pnpm --filter @delfrance/shopee-app liquidar:pagamentos --integracao int-1 --order-sn 220810QSK8S7BX
+```
+
+⚠️ `--order-sn` is refused together with `--live`, and that is a fact about
+Shopee rather than a missing feature: the escrow LISTING is queried by
+release-time window and has no by-id form, so a single-order path never learns
+`payout_amount` or `escrow_release_time`. Writing through it would stamp both as
+null **over a release time an earlier tick had already recorded**. Use it to look;
+use `--live --de/--ate` to write.
+
+Add `--json` for the machine-readable form — the same redacted summary on stdout,
+preamble on stderr.
+
+### 8.3 What to read in the output
+
+| line                        | what it tells you                                                                                                                                                                                                                            |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `janela`                    | the release-time window actually asked for, as ms + ISO UTC.                                                                                                                                                                                 |
+| `janela drenada?`           | `sim` means `more: false` — the window finished. `NÃO` means a page or budget cap stopped it and the cursor would not move.                                                                                                                  |
+| `[pendente]` / `[listagem]` | which of the live tick's two row sources produced the row — a replayed `pendentes` entry, or a `get_escrow_list` page. A parked row is invisible to the listing once the cursor passed its release time.                                     |
+| `pedidoId` / `pagamentoId`  | both are DIGESTS of `(integracaoId, order_sn)`; `AUSENTE` on either is what parks the row and sends a synthetic code 3.                                                                                                                      |
+| `payout / escrow`           | ⚠️ the open question of step 6. `payout_amount`'s unit is unresolved on Shopee's own page (the table prints a float, the sample prints an integer 100× larger), so the sweep logs the RATIO beside it: **~1 means units, ~100 means cents.** |
+| `tarifas`                   | the clamped figure `pagamento.tarifas` would take — commission + service + seller transaction, BR net variants preferred.                                                                                                                    |
+| `ação`                      | `liquidado`, `ignorado-sem-mudanca` (the idempotent overlap — writes nothing), `ignorado-obsoleto` (the stored release stamp is newer) or `ignorado-sem-pagamento`.                                                                          |
+| `campos que mudariam`       | the exact dotted field names a live run would write. `(nenhum)` beside `ignorado-sem-mudanca` is the healthy steady state.                                                                                                                   |
+
+⚠️ **The output carries no buyer data by construction.** The escrow body it is
+built from has ~100 money fields plus `buyer_payment_info`; the summary is an
+allow-list of fourteen, and a buyer field has nowhere to travel. It is safe to
+paste into an issue. Keep it that way if you extend it.
+
+### 8.4 The live run
+
+```bash
+pnpm --filter @delfrance/shopee-app liquidar:pagamentos --integracao int-1 --live --de 2026-09-01 --ate 2026-09-08
+```
+
+This calls `runShopeeEscrowSettlement` exactly as the schedule does, scoped to
+one integração. ⚠️ **The cursor document is NOT written unless you add
+`--cursor`**, so a rehearsal cannot silently advance a conta's week; and even
+with `--cursor`, a run that carried `--de/--ate` never advances `cursorMs` — a
+hand-picked window says nothing about the ground between the cursor and it.
+
+What a live run can change:
+
+- `pagamento.liquidacao` — `payoutAmount`, `escrowReleaseTimeUs`, `liquidadoEmUs`,
+  `fonte`. The sweep is this block's only writer.
+- `pagamento.marketplace` and `pagamento.tarifas` — refreshed from a fresher
+  escrow, through the same pure functions the order import uses.
+- `pagamento.ultimaModificacao` — only when something above actually changed.
+
+What it can **never** change: `valor`, `forma_de_pagamento`, `status_pagamento`,
+`parcelas`, `aVista`, `cartao`, the date stamps, the pedido, the `estado` or any
+stock. So `Σ pagante valor == valorCobrado` (and therefore `Σ vPag == vNF` on the
+nota) cannot move from here.
+
+It can also enqueue **synthetic code-3 notifications** — up to 50 per run, one per
+released order whose pedido or pagamento is missing — and each of those imports a
+pedido through the normal step-5 path. That is the one pedido-creating side
+effect, and it is why the run prints `sintéticas` separately from `liquidados`.
+
+### 8.5 Caveats you should expect to see (none of these is a bug)
+
+- **Every row answers `ignorado-sem-pagamento` on a fresh staging project.** Step
+  5 has to have imported the order first; until then the rows are parked in
+  `liquidacaoShopee/<integracaoId>.pendentes` and re-driven by a synthetic push.
+- **`ignorado-sem-mudanca` on a second run is the idempotence working**, and it
+  writes _nothing at all_ — not even `ultimaModificacao`. Any write would file a
+  `historicoDeModificacoes` row per conta per week for ever.
+- **The sandbox may answer an empty page.** Whether a sandbox order's escrow is
+  ever released is settle-live **register item 27** and is UNMEASURED — nobody
+  has called this endpoint yet. An empty page exercises the endpoint and settles
+  nothing; a row that DOES come back is the answer to item 27, so record it.
+- **`janela drenada? NÃO` on a first run over a wide window is normal** — the page
+  cap (20) and the per-tick settlement budget (300) both truncate deliberately,
+  and the next tick resumes at the persisted page.
+- **`payout / escrow` may look 100× apart.** That is the open question, not a
+  defect; record the ratio you see.

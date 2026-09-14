@@ -62,6 +62,8 @@ import {
   renderResumoPedido,
   resumoDoPedidoArmazenado,
   resumoDoPedidoMapeado,
+  resumoDosPagamentosArmazenados,
+  resumoDosPagamentosMapeados,
 } from '../lib/shopee/pedidos/importarPedidoCli';
 
 /** stdout — the report. */
@@ -102,7 +104,9 @@ async function main(): Promise<void> {
   const { makePedidoIdShopee } = await import('../lib/shopee/pedidos/orderIds');
   const { importarPedidoShopee, mapearPreparoPedidoShopee, prepararImportacaoPedidoShopee } =
     await import('../lib/shopee/pedidos/importarPedido');
-  const { pedidoCollection } = await import('@delfrance/data/admin/collections');
+  const { mapearPagamentosShopee } = await import('../lib/shopee/pedidos/pagamentoMapping');
+  const { pagamentoCollection, pedidoCollection } =
+    await import('@delfrance/data/admin/collections');
 
   /* ------------------------------ the preamble ----------------------------- */
 
@@ -173,6 +177,18 @@ async function main(): Promise<void> {
       camposRecusadosExtra: [],
     });
     const resumo = resumoDoPedidoMapeado(preparo.pedidoId, mapeado);
+    // Step 6: the SAME pure mapper the importer runs, on the SAME inputs — the
+    // dry-run has no second copy of it to drift from.
+    const mapeadosPag = mapearPagamentosShopee({
+      linha: preparo.linha,
+      escrow: preparo.escrow,
+      valorCobrado: mapeado.dados.valorCobrado,
+      watermarkUs: preparo.watermarkUs,
+      nowUs: preparo.nowUs,
+      contaId: integracaoId,
+      orderSn,
+    });
+    const pagamentos = resumoDosPagamentosMapeados(mapeadosPag);
 
     if (json) {
       log(
@@ -187,6 +203,8 @@ async function main(): Promise<void> {
             conferencia: preparo.mapeados.conferencia,
             itensSemProduto: preparo.mapeados.itens.filter((i) => i.produtoUid == null).length,
             resumo,
+            pagamentos,
+            diagnosticosPagamento: mapeadosPag.diagnosticos,
           },
           null,
           2,
@@ -215,7 +233,7 @@ async function main(): Promise<void> {
     log('');
     logConferencia(preparo.mapeados.conferencia);
     log('');
-    for (const linha of renderResumoPedido(resumo)) log(linha);
+    for (const linha of renderResumoPedido(resumo, pagamentos)) log(linha);
     return;
   }
 
@@ -239,13 +257,19 @@ async function main(): Promise<void> {
 
   const resultado = await importarPedidoShopee(db, { integracaoId, shopId, orderSn, nowMs });
 
-  const depois = await pedidoCollection.docRef(db, {}, resultado.pedidoId ?? pedidoId).get();
+  const pedidoIdFinal = resultado.pedidoId ?? pedidoId;
+  const depois = await pedidoCollection.docRef(db, {}, pedidoIdFinal).get();
   const resumoDepois = depois.exists
-    ? resumoDoPedidoArmazenado(
-        resultado.pedidoId ?? pedidoId,
-        (depois.data() ?? {}) as Record<string, unknown>,
-      )
+    ? resumoDoPedidoArmazenado(pedidoIdFinal, (depois.data() ?? {}) as Record<string, unknown>)
     : null;
+
+  // Step 6 — the pagamentos as Firestore holds them AFTER the import. Read back
+  // rather than reported from the transaction's own result: what an operator
+  // needs to see is the document set, siblings and all.
+  const pagsSnap = await pagamentoCollection.ref(db, { pedidoId: pedidoIdFinal }).get();
+  const pagamentosDepois = resumoDosPagamentosArmazenados(
+    pagsSnap.docs.map((d) => ({ id: d.id, data: (d.data() ?? {}) as Record<string, unknown> })),
+  );
 
   if (json) {
     log(
@@ -259,8 +283,11 @@ async function main(): Promise<void> {
           detail: resultado.detail,
           orderStatus: resultado.orderStatus,
           itensSemProduto: resultado.itensSemProduto,
+          acaoPagamentos: resultado.acaoPagamentos,
+          pagamentosGravados: resultado.pagamentosGravados,
           antes: resumoAntes,
           resumo: resumoDepois,
+          pagamentos: pagamentosDepois,
         },
         null,
         2,
@@ -272,6 +299,9 @@ async function main(): Promise<void> {
   log(`  resultado ............... ${resultado.acao}   (${resultado.detail})`);
   log(`  order_status ............ ${resultado.orderStatus ?? '—'}`);
   log(`  linhas sem produto ...... ${resultado.itensSemProduto}`);
+  log(
+    `  pagamentos .............. ${resultado.acaoPagamentos ?? '(não rodou)'}   gravados=${String(resultado.pagamentosGravados)}`,
+  );
   log('');
   if (resumoDepois === null) {
     log(
@@ -281,7 +311,7 @@ async function main(): Promise<void> {
     );
     return;
   }
-  for (const linha of renderResumoPedido(resumoDepois)) log(linha);
+  for (const linha of renderResumoPedido(resumoDepois, pagamentosDepois)) log(linha);
 }
 
 /** `ignorado-inexistente` in either mode — an ANSWER, so the exit code stays 0. */
