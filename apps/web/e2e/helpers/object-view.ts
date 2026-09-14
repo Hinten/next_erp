@@ -109,9 +109,17 @@ export async function expectMoneyValue(
  *
  * Verification is on the number the field HOLDS, never on the keystrokes sent —
  * the append case sends exactly the right keystrokes.
+ *
+ * `exact` is opt-in for screens that deliberately repeat a list label in a
+ * more specific accessible name (for example parent and variation prices).
  */
-export async function typeMoney(page: Page, name: string, value: string): Promise<void> {
-  const input = page.getByRole('textbox', { name });
+export async function typeMoney(
+  page: Page,
+  name: string,
+  value: string,
+  options: { exact?: boolean } = {},
+): Promise<void> {
+  const input = page.getByRole('textbox', { name, exact: options.exact });
   const wanted = parseBrlText(value);
   await expect(input).toBeEnabled();
 
