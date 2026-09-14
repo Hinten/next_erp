@@ -106,6 +106,32 @@ afterEach(() => {
 });
 
 describe('ChatComposer — attachment upload + audio caption hint', () => {
+  it('preserves a WhatsApp JPEG and uploads the original bytes through uploadFile', async () => {
+    uploadFileMock.mockResolvedValueOnce({ id: 'jpeg-1', arquivo: { filetype: 'image' } });
+    const { container } = wrap(
+      <ChatComposer
+        conversaId="c1"
+        conversa={conversaFull}
+        addOptimistic={vi.fn()}
+        markOptimisticError={vi.fn()}
+      />,
+    );
+    const jpeg = new File(['jpeg-bytes'], 'foto.jpg', { type: 'image/jpeg' });
+
+    selectFile(container, jpeg);
+
+    await waitFor(() =>
+      expect(uploadFileMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bytes: jpeg,
+          contentType: 'image/jpeg',
+          filepath: 'chat',
+          originalFilename: 'foto.jpg',
+        }),
+      ),
+    );
+  });
+
   it('flags an attachment as errored when the upload rejects (StorageUploadError)', async () => {
     uploadFileMock.mockRejectedValueOnce(new StorageUploadError('Falha no upload do arquivo'));
     const { container } = wrap(
