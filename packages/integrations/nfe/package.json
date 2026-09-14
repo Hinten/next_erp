@@ -18,7 +18,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "gen:nfe-types": "node src/codegen/generate.mjs",
+    "gen:nfe-types": "node src/codegen/generate.mjs && node src/codegen/generate.mjs --pack conscad",
     "render:danfe-samples": "tsx scripts/render-danfe-samples.ts",
     "fetch:sefaz-ca": "node scripts/fetch-sefaz-chain.mjs",
     "gen:test-cert": "node scripts/gen-test-cert.mjs",

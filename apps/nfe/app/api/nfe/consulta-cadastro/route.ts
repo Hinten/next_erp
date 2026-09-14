@@ -24,9 +24,9 @@
  *   500  our bug (malformed request XML / parse failure)
  *   503  runtime not ready
  *
- * The request `consCad` XML is hand-built and the `retConsCad` response is
- * hand-parsed in `consultarCadastro` (the consCad v2.00 XSDs aren't in the
- * codegen — issue #251). The request is still **XSD-validated before sending**
+ * `consultarCadastro` serializes the `ConsCad` request and parses the
+ * `retConsCad` response through the layout 2.00 codegen pack
+ * (`generated/conscad/`). The request is **XSD-validated before sending**
  * (`validateConsCad`) — SEFAZ rule: never POST schema-invalid XML, since
  * repeated `cStat=215/225` trips `cStat=656` (Consumo Indevido). A schema-
  * invalid request throws before the POST and surfaces here as a 500.

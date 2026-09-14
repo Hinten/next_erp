@@ -158,10 +158,10 @@ export function supportedRoots(): ReadonlyArray<XsdRootKey> {
 
 // --- Consulta Cadastro (consCad v2.00) ---------------------------------------
 // The consCad request schema is layout v2.00, a separate pack from the v4.00
-// MOC. It lives in its OWN dir (`generated/conscad/`, NOT `moc7.0/schemas/`) so
-// the codegen never scans it — adding it to the codegen dir renumbers the
-// emission types' choiceGroups (see issue #251). Same `NFE_SCHEMA_DIR`-style
-// override for esbuild-bundled consumers.
+// MOC. It lives in its OWN dir (`generated/conscad/`, NOT `moc7.0/schemas/`),
+// which is also its own codegen pack: both leiautes declare a `TEndereco`, so
+// they must never share a codegen run (`generated/conscad/README.md`, issue
+// #251). Same `NFE_SCHEMA_DIR`-style override for esbuild-bundled consumers.
 const CONSCAD_DIR = join(HERE, '..', '..', 'generated', 'conscad');
 const CONSCAD_ROOT_FILE = 'consCad_v2.00.xsd';
 
@@ -179,8 +179,8 @@ function loadConsCadPreload(): ReadonlyArray<XMLFileInfo> {
 
 /**
  * Validate a `consCad` (Consulta Cadastro request) against the v2.00 schema
- * **before** sending it to SEFAZ. The consulta-cadastro operation hand-builds
- * its XML (the consCad XSDs aren't in the codegen), so this is its pre-send
+ * **before** sending it to SEFAZ. Consulta Cadastro doesn't go through
+ * `postSoapValidated` (layout 2.00 isn't in `XSD_BY_ROOT`), so this is its pre-send
  * gate — **mandatory**: repeated `cStat=215/225` schema rejections trip
  * `cStat=656` (Consumo Indevido) → throttling → CNPJ/certificate ban. Throws
  * `NFeXsdValidationError` (with line numbers) on failure; returns on success.

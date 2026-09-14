@@ -1,13 +1,24 @@
-# Consulta Cadastro (consCad) v2.00 XSDs
+# Consulta Cadastro (consCad) layout 2.00 — XSDs + codegen pack
 
-Schemas for **pre-send validation** of the SEFAZ Consulta Cadastro request
-(`consCad`, layout 2.00), used by `validateConsCad` in `src/xsd/index.ts`.
+The SEFAZ Consulta Cadastro service speaks message layout **2.00**, a separate
+pack from the v4.00 MOC. This directory holds its XSDs and is its **own codegen
+pack**:
 
-They live here — **not** under `generated/moc7.0/schemas/` — on purpose: the
-codegen (`gen:nfe-types`) scans `moc7.0/schemas/` and would renumber the v4.00
-**emission** types' `choiceGroup`s if these v2.00 files were added there (see
-issue #251). Keeping them in a separate dir lets `validateConsCad` mount them
-for validation without touching the codegen.
+- `gen:nfe-types` runs `src/codegen/generate.mjs --pack conscad` over the `.xsd`
+  files here and writes `types/conscad-schema.ts` (interfaces + `META` +
+  `ROOTS`; no Zod mirror). `consultarCadastro` builds the request and reads the
+  response through it (`serializeConsCad` / `parseConsCad` in `src/xml`).
+- `validateConsCad` (`src/xsd/index.ts`) validates the request against
+  `consCad_v2.00.xsd` before it is sent.
+
+## ⚠️ Never move these XSDs into `generated/moc7.0/schemas/`
+
+The generator keeps ONE registry of type names per run, and
+`leiauteConsultaCadastro_v2.00.xsd` declares a `TEndereco` that the NF-e
+`leiauteNFe_v4.00.xsd` declares too. In a shared run that name resolves to
+whichever file sorts last, so either this layout's `ender` or the emission
+`enderDest` silently takes the other's shape (issue #251). A separate pack,
+generated in a separate process, keeps both.
 
 ## ⚠️ The request root element is `ConsCad` with a CAPITAL C
 
@@ -23,9 +34,11 @@ which emits `<ConsCad …>`. The response root, by contrast, is `retConsCad`.)
 
 | File | Source |
 |---|---|
-| `consCad_v2.00.xsd` | Vendored verbatim from nfephp `schemes/NFe/PL_006u/`. Declares the request root `<xs:element name="ConsCad" type="TConsCad">` (capital C — see warning above) + `xs:include`s the leiaute. |
-| `leiauteConsultaCadastro_v2.00.xsd` | Vendored verbatim from nfephp `schemes/NFe/PL_006u/`. Defines `TConsCad` / `infCons`. |
-| `tiposBasico_v1.03.xsd` | The base types `leiauteConsultaCadastro_v2.00.xsd` `xs:include`s (TUfCons, TCnpjVar, …). Same file already vendored under `moc7.0/schemas/`. |
+| `consCad_v2.00.xsd` | Vendored verbatim from nfephp `schemes/NFe/PL_006u/` (byte-identical to `sped-nfe/schemes/PL_009_V4/`, checked 2026-09-14). Declares the request root `<xs:element name="ConsCad" type="TConsCad">` (capital C — see warning above) + `xs:include`s the leiaute. |
+| `retConsCad_v2.00.xsd` | Vendored verbatim from nfephp `sped-nfe/schemes/PL_009_V4/` (2026-09-14). Declares the response root `<xs:element name="retConsCad" type="TRetConsCad">` + `xs:include`s the leiaute. Read by the codegen; responses are not XSD-validated. |
+| `leiauteConsultaCadastro_v2.00.xsd` | Vendored verbatim from nfephp `schemes/NFe/PL_006u/` (byte-identical to `sped-nfe/schemes/PL_009_V4/`, checked 2026-09-14). Defines `TConsCad`, `TRetConsCad` and this layout's `TEndereco`. |
+| `tiposBasico_v1.03.xsd` | The base types `leiauteConsultaCadastro_v2.00.xsd` `xs:include`s (TUf, TCnpjVar, …). Same file already vendored under `moc7.0/schemas/`. |
+| `types/conscad-schema.ts` | **Generated** — never hand-edit; re-run `gen:nfe-types`. |
 
 The XSDs are read at runtime via `readFileSync`; for esbuild-bundled consumers
 that lose the dir layout, override with `NFE_CONSCAD_SCHEMA_DIR` (mirrors

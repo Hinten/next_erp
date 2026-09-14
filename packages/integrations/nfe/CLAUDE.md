@@ -51,13 +51,22 @@ packages/integrations/nfe/
       schemas/     # 28 XSDs (vendored from SEFAZ for MOC 7.0)
                    #   + MANIFEST.json — provenance for THIS MOC's packs
       types/       # codegen output (interfaces + META + Zod mirrors)
+    conscad/       # Consulta Cadastro layout 2.00 — its OWN codegen pack:
+                   #   *.xsd + README.md (provenance), types/conscad-schema.ts
   src/
     types/
       nfe-schema.ts      # SHIM — re-exports generated/moc7.0/types/nfe-schema
       nfe-schema-zod.ts  # SHIM — re-exports generated/moc7.0/types/nfe-schema-zod
-    codegen/generate.mjs # reads MOC_DIR/schemas, writes MOC_DIR/types
+      conscad-schema.ts  # SHIM — re-exports generated/conscad/types/conscad-schema
+    codegen/generate.mjs # one pack per run (--pack moc|conscad): its XSDs → its types/
     xsd/index.ts         # reads MOC_DIR/schemas for validateXsd()
 ```
+
+⚠️ `generated/conscad/` must never move into `moc7.0/schemas/`. Both
+leiautes declare a `TEndereco`, and one codegen run resolves a shared type
+name by file order, so one pack's address would silently take the other's
+shape (#251). `gen:nfe-types` runs both packs, each in its own process;
+`test/xml/xml.test.ts` pins that each `META` kept its own.
 
 Internal consumers import `'../types/nfe-schema'` (the shim), never
 the versioned path directly. Four places know the active MOC

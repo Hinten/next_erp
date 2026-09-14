@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { serialize, parse, NFeXmlError, type XmlValue } from '../../src/xml/index';
+import { serialize, parse, parseConsCad, NFeXmlError, type XmlValue } from '../../src/xml/index';
+import { META as CONSCAD_META } from '../../src/types/conscad-schema';
+import { META as NFE_META } from '../../src/types/nfe-schema';
 
 describe('serialize', () => {
   it('builds an element in xs:sequence order with the NF-e namespace', () => {
@@ -71,6 +73,59 @@ describe('parse', () => {
 
   it('throws NFeXmlError when the root element is missing', () => {
     expect(() => parse('retConsStatServ', '<other/>')).toThrow(NFeXmlError);
+  });
+});
+
+describe('parse on truncated input', () => {
+  // Each case leaves a terminator unmatched. The parser used to add the -1 from
+  // the failed scan to the cursor, move BACKWARDS and re-read earlier tags
+  // forever — a synchronous spin, so no test timeout could even fire. Now it
+  // stops and returns the tree it has.
+  const OPEN = '<retConsStatServ xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">';
+  it.each([
+    ['comment', `${OPEN}<cStat>107</cStat><!-- truncado`],
+    ['processing instruction', `${OPEN}<cStat>107</cStat><?pi truncado`],
+    ['CDATA section', `${OPEN}<cStat>107</cStat><xMotivo><![CDATA[truncado`],
+    ['markup declaration', `${OPEN}<cStat>107</cStat><!DOCTYPE truncado`],
+  ])('stops at an unterminated %s and keeps what it read', (_label, xml) => {
+    expect(parse<XmlValue>('retConsStatServ', xml).cStat).toBe('107');
+  });
+});
+
+describe('Consulta Cadastro is a separate codegen pack', () => {
+  // Both leiautes declare a `TEndereco`. One shared codegen run resolves that
+  // name by file order, so one pack's address would silently become the
+  // other's (issue #251). Pin that each pack kept its own.
+  it('keeps the NF-e TEndereco in the NF-e META and the layout 2.00 one in its own', () => {
+    expect(NFE_META.TEndereco?.map((d) => d.name)).toEqual(expect.arrayContaining(['UF', 'cPais']));
+    expect(CONSCAD_META.TEndereco?.map((d) => d.name)).toEqual([
+      'xLgr',
+      'nro',
+      'xCpl',
+      'xBairro',
+      'cMun',
+      'xMun',
+      'CEP',
+    ]);
+  });
+
+  it('never registers one pack’s types in the other', () => {
+    expect(Object.keys(NFE_META)).not.toContain('TRetConsCad');
+    expect(Object.keys(CONSCAD_META)).not.toContain('TNFe');
+  });
+
+  it('parses only the elements layout 2.00 declares', () => {
+    // `indCredNFCe` is not in the XSD (the real indicator is `indCredCTe`); a
+    // tolerant walker would surface it, the META-driven parse must not.
+    const ret = parseConsCad<XmlValue>(
+      'retConsCad',
+      '<retConsCad versao="2.00" xmlns="http://www.portalfiscal.inf.br/nfe"><infCons>' +
+        '<cStat>111</cStat><infCad><IE>1</IE><indCredCTe>0</indCredCTe>' +
+        '<indCredNFCe>1</indCredNFCe></infCad></infCons></retConsCad>',
+    );
+    const infCons = ret.infCons as XmlValue;
+    const [cad] = infCons.infCad as XmlValue[];
+    expect(cad).toEqual({ IE: '1', indCredCTe: '0' });
   });
 });
 

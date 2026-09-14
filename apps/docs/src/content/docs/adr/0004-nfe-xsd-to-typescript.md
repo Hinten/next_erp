@@ -76,6 +76,16 @@ previous one's manifest. The decision recorded above is unchanged — only the
 layout moved. See the package `CLAUDE.md` for the current version-pinning
 playbook.
 
+**Note — a second, isolated pack.** Consulta Cadastro speaks message layout
+2.00, outside the v4.00 MOC. Its XSDs live in
+`packages/integrations/nfe/generated/conscad/` with their own output
+(`types/conscad-schema.ts`), and `gen:nfe-types` runs the generator once per
+pack, each in its own process (#251). They cannot join the MOC pack: both
+leiautes declare a `TEndereco`, and one run resolves a shared type name by file
+order, so whichever XSD sorts last would silently define the other's address.
+(The `choiceGroup` renumbering first blamed for blocking the merge is inert —
+nothing reads the number.)
+
 ## Status
 
 Accepted.
