@@ -14,7 +14,7 @@ import { REPO_ROOT, gitGrep } from './lib/repo-scan.js';
  * region fall-through from `mlTasks.ts` and left the four copy-pasted siblings
  * alone, and because each sibling had its own test pinning its own stale
  * default, four queues aimed at a region with no Cloud Tasks and CI stayed
- * green. A per-file lint rule cannot express "these five agree"; that IS the
+ * green. A per-file lint rule cannot express "these seven agree"; that IS the
  * defect. Same shape as `runtime-deps-pinned.test.js` (six manifests must agree)
  * and `reserva-arithmetic-inventory.test.js`.
  *
@@ -49,6 +49,10 @@ const INVENTORY = {
   'apps/mercado-pago/functions/src/processNotification.ts':
     'The Mercado Pago IPN handler. Enqueued by the receiver route only.',
 
+  // ---- codebase `melhor-envio` -------------------------------------------
+  'apps/melhor-envio/functions/src/processNotification.ts':
+    'The Melhor Envio order-status webhook handler. Enqueued by the receiver route only.',
+
   // ---- codebase `shopee` --------------------------------------------------
   'apps/shopee/functions/src/processNotification.ts':
     'The Shopee push notification handler. Enqueued by the receiver route only.',
@@ -80,8 +84,8 @@ const PATHSPECS = ['*.ts', ':(exclude)*.test.ts', ':(exclude)packages/config-esl
  * having checked NOTHING — the "green job that ran zero tests" shape. These are
  * a floor, not an inventory: they only ever need raising.
  */
-const MIN_TASK_FILES = 10;
-const MIN_CODEBASES = 6;
+const MIN_TASK_FILES = 11;
+const MIN_CODEBASES = 7;
 
 function read(file) {
   return readFileSync(resolve(REPO_ROOT, file), 'utf8');
@@ -101,7 +105,7 @@ function taskFunctionFiles() {
 /**
  * The functions codebases, DISCOVERED from the task files rather than listed.
  *
- * ⚠️ This is the whole point. Enumerating the five `build.mjs` and the five
+ * ⚠️ This is the whole point. Enumerating the seven `build.mjs` and the seven
  * `tasksInvoker.ts` would leave a SIXTH codebase checked by `INVENTORY` (its
  * task function is forced into the list, and forced to spread the helper) while
  * nothing asserted its build carries the `define`. That state passes every

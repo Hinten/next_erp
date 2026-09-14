@@ -17,6 +17,8 @@ deploys to its own Firebase App Hosting backend.
   billed to — a stranger's account. `melhorEnvioOauthState.consume` is the anchor
   that makes it single-use; it runs BEFORE the exchange and fails as `bad_state`.
 - `app/api/webhooks/melhor-envio/route.ts` — ME status webhook (HMAC-signed; no Bearer).
+- `functions/` — isolated task processor + 30-minute resilience sweep for the
+  enqueue-first notification pipeline. See `functions/DEPLOY.md`.
 - `lib/freight/*` — `loadMelhorEnvioContext`, the Firestore token store, the
   signed-state HMAC, and the error→HTTP mapper.
 - `lib/freight/{state,oauthState}.ts` — **#1034**, thin bindings to the SHARED OAuth
@@ -66,3 +68,9 @@ Firebase App Hosting, own backend (e.g. `melhor-envio-<org>`), root
 `apps/melhor-envio`. Env + secrets via the Firebase console. The OAuth
 `redirect_uri` registered in the Melhor Envio dashboard must point at this
 backend: `https://<this-app>/api/oauth/melhor-envio/callback`.
+
+The notification receiver also requires `MELHOR_ENVIO_TASKS_REGION` (or the
+shared `FUNCTIONS_REGION`). Use `MELHOR_ENVIO_TASKS_DISABLED=1` only as a
+rollout valve while enqueueing is unavailable; the fallback rows remain for
+the sweep. Index, IAM, and Functions rollout are manual and are documented in
+`functions/DEPLOY.md`.
