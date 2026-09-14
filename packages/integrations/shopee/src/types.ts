@@ -15,13 +15,14 @@
  * hands it to an `onWarning` hook and leaves it on the returned object.
  *
  * ⚠️ **The `error === ''` invariant has exactly ONE exception, and it is
- * per-operation.** The two lost-push pages CONTRADICT THEMSELVES: their
- * parameter tables sample `error` as `""` ("Empty if no error happened") while
- * their rendered response samples print `"-"` for `error`, `message` AND
- * `warning`. Every other cached page — `get_app_push_config` included — samples
- * `""`. So `-` is a doc-authoring placeholder on two pages, not a protocol
- * variant, and it is tolerated ONLY on those two operations, through
- * `ShopeeCallParams.emptyErrorAliases` in `call.ts`. The schemas here are
+ * per-operation.** Three pages CONTRADICT THEMSELVES — the two on the lost-push
+ * queue and `v2.order.get_package_detail`: their parameter tables sample `error`
+ * as `""` ("Empty if no error happened") while their rendered response samples
+ * print `"-"` for `error`, `message` AND `warning`. Other cached pages —
+ * `get_app_push_config` and `get_order_detail` included — sample `""`. So `-` is
+ * a doc-authoring placeholder on those pages, not a protocol variant, and it is
+ * tolerated ONLY on those three operations, each passing its own constant
+ * through `ShopeeCallParams.emptyErrorAliases` in `call.ts`. The schemas here are
  * unchanged by it: `error` is still `z.string()` with no default, and `'-'`
  * still parses as the string `'-'`.
  *
@@ -1507,3 +1508,276 @@ export type ShopeeEscrowList = z.infer<typeof shopeeEscrowListPayloadSchema>;
 /** `GET /api/v2/payment/get_escrow_list` — WRAPPED under `response`. */
 export const shopeeEscrowListSchema = wrappedOp(shopeeEscrowListPayloadSchema);
 export type ShopeeEscrowListResponse = z.infer<typeof shopeeEscrowListSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                      The package detail (step 7)                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `PackageFulfillmentStatus` — the ELEVEN values a PACKAGE's
+ * `fulfillment_status` takes (`guide 31`, corroborated verbatim in `guide 229`
+ * under the heading "Package Fulfillment Status / Logistics Status").
+ *
+ * ⚠️ **A named array, never a `z.enum`.** The schemas that carry this field
+ * declare `z.string()`: a token Shopee adds tomorrow must PARSE and be folded by
+ * the reader (which logs it once), not fail a whole order's shipment read. The
+ * array exists so the fold can be checked against it and so a test can assert
+ * the count.
+ *
+ * ⚠️ **Never shared with {@link SHOPEE_LOGISTICS_STATUS}.** They differ by
+ * exactly two legacy values, and `guide 229` says so in its own words: "Due to
+ * legacy logic, the package logistics status in get_order_detail will return 2
+ * additional values".
+ *
+ * ⚠️ Spelling tolerance is the READER's, not this array's: `faq 207` writes
+ * `LOGISTICS_NOT_STARTED` and `LOGISTICS_REQUEST_CANCELLED` (double L) against
+ * this page's `LOGISTICS_NOT_START` / `LOGISTICS_REQUEST_CANCELED`. This array
+ * is what Shopee's DATA DEFINITION page says; the aliases live with the fold, in
+ * `apps/shopee`.
+ */
+export const SHOPEE_PACKAGE_FULFILLMENT_STATUS = [
+  'LOGISTICS_NOT_START',
+  'LOGISTICS_READY',
+  'LOGISTICS_REQUEST_CREATED',
+  'LOGISTICS_PICKUP_DONE',
+  'LOGISTICS_DELIVERY_DONE',
+  'LOGISTICS_INVALID',
+  'LOGISTICS_REQUEST_CANCELED',
+  'LOGISTICS_PICKUP_FAILED',
+  'LOGISTICS_PICKUP_RETRY',
+  'LOGISTICS_DELIVERY_FAILED',
+  'LOGISTICS_LOST',
+] as const;
+export type ShopeePackageFulfillmentStatus = (typeof SHOPEE_PACKAGE_FULFILLMENT_STATUS)[number];
+
+/**
+ * `LogisticsStatus` — the THIRTEEN values
+ * `get_order_detail.package_list[].logistics_status` and
+ * `get_tracking_info.response.logistics_status` take: the eleven above plus
+ * `LOGISTICS_PENDING_ARRANGE` and `LOGISTICS_COD_REJECTED`.
+ *
+ * ⚠️ Spread from {@link SHOPEE_PACKAGE_FULFILLMENT_STATUS} so the shared eleven
+ * can never drift — and never the other way round: the package page carries only
+ * the eleven, so folding the two lists into one would offer a package reader two
+ * values that page cannot send.
+ *
+ * ⚠️ `LOGISTICS_PENDING_ARRANGE` is a RETURN-object value — `faq 207`: "This
+ * state is only available for Return objects" — and `push 32`
+ * (`return_updates_push`, code 29, step 17's) is where it is actually observed.
+ * It should never appear on a forward package; tolerating it costs nothing and
+ * refusing it would fail an order read over a value Shopee documents.
+ */
+export const SHOPEE_LOGISTICS_STATUS = [
+  ...SHOPEE_PACKAGE_FULFILLMENT_STATUS,
+  'LOGISTICS_PENDING_ARRANGE',
+  'LOGISTICS_COD_REJECTED',
+] as const;
+export type ShopeeLogisticsStatus = (typeof SHOPEE_LOGISTICS_STATUS)[number];
+
+/**
+ * `TrackingLogisticsStatus` — the THIRTY-SIX values `get_tracking_info`'s
+ * PER-EVENT `tracking_info[].logistics_status` takes.
+ *
+ * ⚠️ **Declared here although nothing in this repo consumes it, and that is the
+ * point.** The `get_tracking_info` page says "See Data Definition -
+ * LogisticsStatus" for BOTH of its fields named `logistics_status`; that is a
+ * documentation bug, and its own sample value `FAILED_DELIVERED` is not a member
+ * of the 13-value list. `guide 229` prints this list under the explicit heading
+ * "Package logistics track status" followed by "(for get_tracking_info api)" —
+ * that is the page to cite. Parsing a per-event value against `LogisticsStatus`
+ * rejects every one of them; this array is what stops the next reader from
+ * trying.
+ */
+export const SHOPEE_TRACKING_LOGISTICS_STATUS = [
+  'INITIAL',
+  'ORDER_INIT',
+  'ORDER_SUBMITTED',
+  'ORDER_FINALIZED',
+  'ORDER_CREATED',
+  'PICKUP_REQUESTED',
+  'PICKUP_PENDING',
+  'PICKED_UP',
+  'DELIVERY_PENDING',
+  'DELIVERED',
+  'PICKUP_RETRY',
+  'TIMEOUT',
+  'LOST',
+  'UPDATE',
+  'UPDATE_SUBMITTED',
+  'UPDATE_CREATED',
+  'RETURN_STARTED',
+  'RETURNED',
+  'RETURN_PENDING',
+  'RETURN_INITIATED',
+  'EXPIRED',
+  'CANCEL',
+  'CANCEL_CREATED',
+  'CANCELED',
+  'FAILED_ORDER_INIT',
+  'FAILED_ORDER_SUBMITTED',
+  'FAILED_ORDER_CREATED',
+  'FAILED_PICKUP_REQUESTED',
+  'FAILED_PICKED_UP',
+  'FAILED_DELIVERED',
+  'FAILED_UPDATE_SUBMITTED',
+  'FAILED_UPDATE_CREATED',
+  'FAILED_RETURN_STARTED',
+  'FAILED_RETURNED',
+  'FAILED_CANCEL_CREATED',
+  'FAILED_CANCELED',
+] as const;
+export type ShopeeTrackingLogisticsStatus = (typeof SHOPEE_TRACKING_LOGISTICS_STATUS)[number];
+
+/**
+ * `get_package_detail.package_list[].item_list[]` — the ORDER detail's
+ * {@link shopeePackageItemSchema} PLUS the two SKUs.
+ *
+ * ⚠️ Extended rather than re-declared, so the six shared keys can never drift
+ * (`types.test.ts` asserts the shared key set). The two SKUs are declared
+ * because they are the only fields this page adds that a future package↔line
+ * reconciliation would want — `get_order_detail.package_list[].item_list[]`
+ * carries the ids but no SKU (survey B §1.4). The FFM block
+ * (`is_fulfillment_mapping`, `bundle_sku_id`, `components[]`) and the item-level
+ * prescription block (`consultation_id`, `is_prescription_item`,
+ * `prescription_check_status`, `prescription_reject_reason`) stay in
+ * `.passthrough()`: both are whitelist-gated and neither is BR.
+ *
+ * ⚠️ This page samples BOTH SKUs as `"-"` — its absence sentinel. They arrive
+ * VERBATIM here, for {@link shopeePackageDetailRowSchema}'s reason.
+ */
+export const shopeePackageDetailItemSchema = shopeePackageItemSchema.extend({
+  item_sku: z.string().nullable().default(null),
+  model_sku: z.string().nullable().default(null),
+});
+export type ShopeePackageDetailItem = z.infer<typeof shopeePackageDetailItemSchema>;
+
+/**
+ * One row of `get_package_detail.package_list` — the per-package twin of
+ * {@link shopeePackageSchema}, which is the ORDER detail's poorer version of the
+ * same parcel (no `fulfillment_status`, no `tracking_number`, no `update_time`,
+ * no `ship_by_date`).
+ *
+ * ⚠️ `order_sn` and `package_number` are `.min(1)` STRICT, exactly as
+ * {@link shopeeEscrowListRowSchema}'s `order_sn` is: the first is the preimage of
+ * a deterministic pedido id and the second is the identity the caller reconciles
+ * on, so a blank one would key every such row onto ONE package.
+ *
+ * ⚠️ `fulfillment_status` is a FREE STRING with the enum declared SEPARATELY
+ * ({@link SHOPEE_PACKAGE_FULFILLMENT_STATUS}) — the reader folds, the schema
+ * does not judge. It is the same rule {@link shopeePackageSchema}'s
+ * `logistics_status` follows.
+ *
+ * ⚠️ `tracking_number` arrives VERBATIM, `"-"` included. This page samples `"-"`
+ * as an absence on it, on `item_sku`, on `model_sku`, on `product_location_id`,
+ * on `consultation_id` and on `virtual_contact_number`; normalising here would
+ * hide from a captured fixture the one wire fact the fixture exists to record.
+ * The app normalises, in ONE function.
+ *
+ * ⚠️ **DELIBERATELY UNDECLARED, and the absence is the enforcement:**
+ * `recipient_address` (with its `geolocation`), `driver_info`
+ * (`driver_name`/`driver_phone`/`vehicle_type`/`license_plate`/`courier_photo`),
+ * `virtual_contact_number`, `package_query_number`, `prescription_images`,
+ * `pharmacist_name`, `buyer_proof_of_collection` and — on the ITEM, one level
+ * down — `prescription_reject_reason`. They ride through `.passthrough()`, so a
+ * CAPTURED fixture still records them and `redact.ts` still scrubs them (it
+ * walks the JSON, not the schema), but nothing in this repo can reach them off a
+ * TYPE. Step 7 reads shipment state; it has no consumer for a recipient, a
+ * driver or a prescription, and a typed field is an invitation.
+ * `types.test.ts` pins that none of these is a key of this schema's `.shape`.
+ */
+export const shopeePackageDetailRowSchema = z
+  .object({
+    order_sn: z.string().min(1),
+    package_number: z.string().min(1),
+    fulfillment_status: z.string().nullable().default(null),
+    /** SECONDS. "the last time that there was a change in value of package". */
+    update_time: wireInt().nullable().default(null),
+    logistics_channel_id: wireInt().nullable().default(null),
+    /**
+     * ⚠️ Never key channel logic on this — Shopee renames carriers, and on
+     * 90021/90025/90026 it appends a service code ("Entrega Turbo - M1020").
+     */
+    shipping_carrier: z.string().nullable().default(null),
+    allow_self_design_awb: z.boolean().nullable().default(null),
+    days_to_ship: wireInt().nullable().default(null),
+    /** SECONDS. The PER-PACKAGE deadline — `get_order_detail`'s is order-level. */
+    ship_by_date: wireInt().nullable().default(null),
+    tracking_number: z.string().nullable().default(null),
+    /** [TW only]. */
+    tracking_number_expiration_date: wireInt().nullable().default(null),
+    pickup_done_time: wireInt().nullable().default(null),
+    is_split_up: z.boolean().nullable().default(null),
+    item_list: z.array(shopeePackageDetailItemSchema).nullable().default(null),
+    parcel_chargeable_weight_gram: wireNumber().nullable().default(null),
+    /** `0`, `null` and absent all mean "not combined" — never a truthiness read. */
+    group_shipment_id: wireInt().nullable().default(null),
+    /**
+     * ⚠️ STEP 15's duplicate-call guard, not a shipped signal: it is "only
+     * effective when the package's logistics_status/fulfillment_status is
+     * LOGISTICS_READY". Declared so the label flow needs no package change;
+     * step 7 never reads it.
+     */
+    is_shipment_arranged: z.boolean().nullable().default(null),
+    pending_terms: z.array(z.string()).nullable().default(null),
+    pending_description: z.array(z.string()).nullable().default(null),
+    /**
+     * SECONDS. ⚠️ A SECOND deadline, and never folded into the shipping one: on
+     * channels with Auto Call Driver it is when Shopee arranges the shipment
+     * ITSELF and flips `LOGISTICS_READY` to `LOGISTICS_REQUEST_CREATED` with no
+     * call from us. A step-15 signal.
+     */
+    preparation_end_time: wireInt().nullable().default(null),
+    can_split_order: z.boolean().nullable().default(null),
+    can_unsplit_order: z.boolean().nullable().default(null),
+    is_pre_order: z.boolean().nullable().default(null),
+    /** [TW 30029 only]. */
+    sorting_group: z.string().nullable().default(null),
+    status_info_tag: z
+      .object({
+        tag_id: wireInt().nullable().default(null),
+        timestamp: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    invoice_pending: z
+      .object({
+        status: z.string().nullable().default(null),
+        pending_reason: z.string().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeePackageDetailRow = z.infer<typeof shopeePackageDetailRowSchema>;
+
+/**
+ * The inner payload of `get_package_detail` — 1…50 packages.
+ *
+ * ⚠️ **Per-ELEMENT tolerance with a `null` sentinel**, the
+ * {@link shopeeEscrowListPayloadSchema} precedent and for its reason: this op is
+ * batched to 50, and one malformed parcel must not cost the other 49. The
+ * sentinel is `null`, which no real row can be, so the reader COUNTS it instead
+ * of mistaking it for data — and the step-7 arm puts that count in its park
+ * reason, which is the only diagnosis a `.catch` costs.
+ *
+ * ⚠️ Deliberately NOT per FIELD: `order_sn` and `package_number` are identities,
+ * and a per-field catch would manufacture a NULL identity (the argument written
+ * out at {@link shopeeEscrowListPayloadSchema}).
+ *
+ * ⚠️ `.default([])` because a caller that asked for a package Shopee no longer
+ * knows gets an empty list, not a malformed body. The caller reconciles by
+ * `package_number` and never by position, so FEWER rows than were asked for is a
+ * valid answer.
+ */
+export const shopeePackageDetailPayloadSchema = z
+  .object({
+    package_list: z.array(shopeePackageDetailRowSchema.nullable().catch(null)).default([]),
+  })
+  .passthrough();
+export type ShopeePackageDetail = z.infer<typeof shopeePackageDetailPayloadSchema>;
+
+/** `GET /api/v2/order/get_package_detail` — WRAPPED under `response`. */
+export const shopeePackageDetailSchema = wrappedOp(shopeePackageDetailPayloadSchema);
+export type ShopeePackageDetailResponse = z.infer<typeof shopeePackageDetailSchema>;

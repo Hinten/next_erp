@@ -8,11 +8,12 @@
  * `res.ok`.
  *
  * ⚠️ That invariant has exactly ONE exception, and it is opt-in PER OPERATION:
- * {@link ShopeeCallParams.emptyErrorAliases}. Two pages — and only two, both on
- * the lost-push queue — print `"-"` where every other page prints `""`, and the
- * alias exists so those two operations can read it as success. It is never a
- * global widening: the default stays exact equality with `''`, and a `' '` is a
- * failure everywhere, aliases included.
+ * {@link ShopeeCallParams.emptyErrorAliases}. Three pages — the two on the
+ * lost-push queue and `v2.order.get_package_detail` — print `"-"` where the
+ * others print `""`, and the alias exists so those three operations can read it
+ * as success. It is never a global widening: the default stays exact equality
+ * with `''`, each operation passes its own constant, and a `' '` is a failure
+ * everywhere, aliases included.
  *
  * ## Why the body is parsed TWICE
  *
@@ -80,13 +81,17 @@ export interface ShopeeCallParams<S extends z.ZodType> {
   /**
    * Envelope `error` values THIS OPERATION accepts as success, beyond `''`.
    *
-   * ⚠️ Exactly two call sites, both on the lost-push pages, both `['-']`, and
-   * both because those two pages CONTRADICT THEMSELVES: their parameter tables
-   * sample `error` as `""` ("Empty if no error happened") while their rendered
-   * response samples print `"-"` for `error`, `message` AND `warning`. Every
-   * other cached page, `get_app_push_config` included, samples `""` — so the
-   * tolerance is per OPERATION because the contradiction is per PAGE. The
-   * sandbox cannot exercise those two APIs, so the first call is PRODUCTION.
+   * ⚠️ Exactly THREE call sites — the two lost-push pages
+   * (`get_lost_push_message`, `confirm_consumed_lost_push_message`) and
+   * `v2.order.get_package_detail` (step 7) — each passing its OWN `['-']`
+   * constant, and every one of them because the page CONTRADICTS ITSELF: its
+   * parameter table samples `error` as `""` ("Empty if no error happened") while
+   * its rendered response sample prints `"-"` for `error`, `message` AND
+   * `warning`. Other cached pages, `get_app_push_config` and `get_order_detail`
+   * included, sample `""` — so the tolerance is per OPERATION because the
+   * contradiction is per PAGE, and a third page is a third constant rather than
+   * a shared one. The sandbox cannot exercise the two push APIs, so their first
+   * call is PRODUCTION; `get_package_detail` is rehearsable on the sandbox shop.
    *
    * ⚠️ EXACT equality against each alias — never a trim, never a
    * `.length === 0` fold. `' '` stays a failure on these operations too, and a
@@ -102,8 +107,9 @@ export interface ShopeeCallParams<S extends z.ZodType> {
    * expiry clock running.
    *
    * ⚠️ `warning: "-"` is NOT filtered here: no config in this repo sets
-   * `onWarning` today, and if one ever does it will see `-` as noise on these
-   * two operations.
+   * `onWarning` today (grepped 2026-09-14 — `apps/shopee` wires none), and if one
+   * ever does it will see `-` as noise on these three operations,
+   * `get_package_detail` included: that page samples `"warning": "-"` as well.
    */
   readonly emptyErrorAliases?: readonly string[];
 }

@@ -646,6 +646,61 @@ export const volumeSchema = z
   .passthrough();
 export type Volume = z.infer<typeof volumeSchema>;
 
+/**
+ * One parcel of a marketplace shipment — the per-package diary the pedido's
+ * SINGLE `estado` / `codRastreio` / `prazoDespacho` slots are folded from.
+ *
+ * Declared here rather than beside the `pacotes` key it serves because a `const`
+ * cannot be referenced before its initializer runs, and `freteDoPedidoSchema`
+ * evaluates `z.object({…})` at module load.
+ *
+ * ⚠️ `estadoMarketplace` is the SOURCE OF TRUTH and `estado` is a PROJECTION of
+ * it. The channel re-derives `estado` from the raw token on every delivery and
+ * rewrites the row when the derivation moves, so a correction to the channel's
+ * token table retro-applies to every stored package with no wire event. Storing
+ * only the derived value would freeze a mis-mapping until the next push; storing
+ * only the raw token would make the diary unreadable without the table. Two
+ * fields, ONE fact, one direction of derivation (#1369).
+ *
+ * ⚠️ `fonte` is a FREE STRING, and must stay one. The set of sources is
+ * per-channel (Shopee's are `get_package_detail` / `get_order_detail`; a later
+ * channel's are its own), so the closed set lives in the channel's own module
+ * and `satisfies` this type — the same argument `marketplacePedidoSchema.status`
+ * makes one level up.
+ *
+ * ⚠️ NO carrier string. Channel identity is `canalId` (the provider's logistics
+ * channel id) and nothing else: Shopee renames carriers and appends a
+ * `service_code` to `shipping_carrier` on the BR channels 90021/90025/90026, so
+ * the display label is a value the provider mutates under us.
+ */
+export const pacoteFreteSchema = z
+  .object({
+    /** The provider's package identifier — the ROW IDENTITY. Never empty. */
+    numero: z.string().min(1).max(60).describe('Número do pacote'),
+    /** DERIVED from `estadoMarketplace`; never authored. */
+    estado: estadoFreteSchema.nullable().default(null).describe('Estado do pacote'),
+    /** The provider's own status token, VERBATIM — never normalized. */
+    estadoMarketplace: z
+      .string()
+      .max(120)
+      .nullable()
+      .default(null)
+      .describe('Estado no marketplace'),
+    codRastreio: z.string().max(200).nullable().default(null).describe('Código de rastreio'),
+    /** The provider's logistics channel id, as a string — NEVER the carrier name. */
+    canalId: z.string().max(60).nullable().default(null).describe('Canal logístico (ID)'),
+    prazoDespacho: microsSinceEpoch('Prazo de despacho do pacote').nullable().default(null),
+    /**
+     * The PACKAGE clock (µs) — the provider's "last time a value of this package
+     * changed". It advances ONLY on a delivery that changed a wire field of this
+     * row, never merely because we looked.
+     */
+    atualizadoEm: microsSinceEpoch('Atualizado em').nullable().default(null),
+    fonte: z.string().max(40).nullable().default(null).describe('Fonte da observação'),
+  })
+  .passthrough();
+export type PacoteFrete = z.infer<typeof pacoteFreteSchema>;
+
 /* -------------------------------------------------------------------------- */
 /*                          FreteDoPedido — main schema                       */
 /* -------------------------------------------------------------------------- */
@@ -735,6 +790,41 @@ export const freteDoPedidoSchema = z
     volumes: z.array(volumeSchema).nullable().default(null).describe('Volumes'),
     /** Tracking code (max 200 per Flutter constraint). */
     codRastreio: z.string().max(200).nullable().default(null).describe('Código de rastreio'),
+    /**
+     * Per-package shipment diary, SORTED ASCENDING by `numero`, written only by
+     * the importing marketplace channel.
+     *
+     * ⚠️ `.nullable().optional()`, NOT `.nullable().default(null)`. A default
+     * would materialise `pacotes: null` on the FIRST rewrite of every stored
+     * `freteInicial` by every writer of this block (the Mercado Livre shipment
+     * import, the Melhor Envio webhook, `pedidoReconcile`,
+     * `confirmarEntregaPedido`), because `parseMergePatch` calls `.partial()` on
+     * the TOP-LEVEL pedido schema only — this nested block is validated in full,
+     * so nested defaults do apply. And `freteInicial` is deliberately absent from
+     * both `PEDIDO_HISTORY_IGNORE_FIELDS` and `CONCURRENCY_IGNORE`, so each of
+     * those first writes would file one phantom "Sistema" audit row and raise one
+     * phantom editor conflict, over a field no operator can see — fleet-wide,
+     * once, for data that belongs to one channel.
+     *
+     * ⚠️ NOT the "it breaks the object literals" reason: that one is REFUTED.
+     * Every `FreteDoPedido` object literal in this repo spreads
+     * `seedFreteInicial()` or a `freteDoPedidoSchema.parse()`, so the key arrives
+     * through the spread and neither shape breaks a literal. The audit noise is
+     * the whole of the argument.
+     *
+     * ⚠️ Nested under `freteInicial`, so it regenerates NO ruleset:
+     * `clausesForSchema` iterates only the TOP-LEVEL properties of the pedido
+     * schema and `exprForProperty` answers `is map` for an object without
+     * recursing (`packages/rules-gen/src/constraints.ts:33-49,56-120`).
+     *
+     * ⚠️ The order is part of the value. Sorting by `numero` is what makes a
+     * replay produce a byte-identical array regardless of the order the
+     * provider's pushes arrived in.
+     *
+     * ⚠️ Never write `undefined` — the Firebase SDK rejects it. Omit the key
+     * (leaving a stored block byte-identical) or write `null`.
+     */
+    pacotes: z.array(pacoteFreteSchema).nullable().optional().describe('Pacotes'),
 
     // Costs -----------------------------------------------------------------
     valorCobrado: z.number().nullable().default(null).describe('Valor cobrado do frete'),

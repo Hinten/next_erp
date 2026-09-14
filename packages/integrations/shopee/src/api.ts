@@ -59,6 +59,17 @@
  * maximum window is documented at all (see
  * {@link SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE}).
  *
+ * ## The package read (step 7)
+ *
+ * ONE more: `getPackageDetail`, the only Shopee surface that carries a package's
+ * `fulfillment_status`, `tracking_number`, `ship_by_date`, `logistics_channel_id`
+ * and its own `update_time` together. It is a `v2.order.*` path and NOT
+ * `v2.logistics.get_tracking_info` — see
+ * {@link SHOPEE_GET_PACKAGE_DETAIL_PATH}, which records why. It carries the
+ * THIRD `emptyErrorAliases` call site (see
+ * {@link SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES}) and four refusals that all land
+ * BEFORE the fetch.
+ *
  * ⚠️ **`get_escrow_detail_batch` is deliberately NOT built, and it is not a
  * shortcut anybody may add later.** Its response drops eleven fields the single
  * call carries — including `buyer_total_amount`, `escrow_amount_after_adjustment`,
@@ -99,6 +110,7 @@ import {
   type ShopeeLostPushResponse,
   type ShopeeOrderDetail,
   type ShopeeOrderList,
+  type ShopeePackageDetail,
   type ShopeeProfile,
   type ShopeeShopInfo,
   type ShopeeShopsByPartner,
@@ -116,6 +128,7 @@ import {
   shopeeLostPushSchema,
   shopeeOrderDetailSchema,
   shopeeOrderListSchema,
+  shopeePackageDetailSchema,
   shopeeProfileSchema,
   shopeeShopInfoSchema,
   shopeeShopsByPartnerSchema,
@@ -179,8 +192,30 @@ export const SHOPEE_GET_ESCROW_DETAIL_PATH = '/api/v2/payment/get_escrow_detail'
  */
 export const SHOPEE_GET_ESCROW_LIST_PATH = '/api/v2/payment/get_escrow_list';
 
+/**
+ * `GET` — Shop-signed. WRAPPED. Up to 50 `package_number` per call.
+ *
+ * ⚠️ It is a **`v2.order.*`** path, not `v2.logistics.*`. `announcement 1169`
+ * introduced it together with `package_fulfillment_status_push` (code 30) "for
+ * multi-package order scenarios", and the same note warns that
+ * `v2.order.get_shipment_list` "will be sunset soon".
+ *
+ * ⚠️ **It is not `get_tracking_info`, and that is a decision.** That page is
+ * per-ORDER, returns no tracking number, types its package-level status against
+ * the 13-value `LogisticsStatus` (while `push 33` sends the 11-value
+ * `PackageFulfillmentStatus`), and is the ONLY page in the cached corpus that
+ * documents `logistics.error_status_limit` — an undocumented status gate whose
+ * passing statuses no page names. This page has no such error: its whole
+ * api-specific list is `error_not_found`, `error_param`, `error_permission`,
+ * `error_server`, `error_data` and `error_shop`.
+ */
+export const SHOPEE_GET_PACKAGE_DETAIL_PATH = '/api/v2/order/get_package_detail';
+
 /** `get_order_detail`: `order_sn_list` is documented `limit [1,50]`. */
 export const SHOPEE_ORDER_DETAIL_MAX_ORDER_SN = 50;
+
+/** `get_package_detail`: `package_number_list` is documented `limit [1,50]`. */
+export const SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES = 50;
 
 /**
  * `response_optional_fields` for `get_order_detail` — 24 tokens, comma-joined,
@@ -286,6 +321,26 @@ export const SHOPEE_BRAND_MAX_PAGE_SIZE = 100;
  * operations only. See `ShopeeCallParams.emptyErrorAliases` in `call.ts`.
  */
 export const SHOPEE_LOST_PUSH_ERROR_ALIASES = ['-'] as const;
+
+/**
+ * The envelope `error` value the `v2.order.get_package_detail` page prints where
+ * its own parameter table says "Empty if no error happened" — the same
+ * doc-authoring placeholder the two lost-push pages carry, on a third page.
+ *
+ * ⚠️ A THIRD constant rather than a reuse of
+ * {@link SHOPEE_LOST_PUSH_ERROR_ALIASES}: the tolerance is per OPERATION because
+ * the contradiction is per PAGE (`get_app_push_config` samples `""` and carries
+ * no alias, one method over), and a lost-push-named constant on an order op
+ * would read as a copy rather than as a second observation. If Shopee ever fixes
+ * one page and not the other, two constants are two edits and one constant is a
+ * decision nobody can make.
+ *
+ * ⚠️ This page prints `"-"` for `message` and `warning` too, and its
+ * `tracking_number` sample is `"-"` as well — the sentinel is on the PAYLOAD as
+ * much as on the envelope. Only the envelope's `error` is handled here; the
+ * payload's `-` is the app's to normalise, in one function.
+ */
+export const SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES = ['-'] as const;
 
 /** `get_order_list`: `page_size` is documented `[1,100]` and is REQUIRED. */
 export const SHOPEE_ORDER_LIST_MAX_PAGE_SIZE = 100;
@@ -567,6 +622,29 @@ export interface GetEscrowListParams {
   readonly pageNo?: number;
 }
 
+/**
+ * `get_package_detail` — 1…50 packages, in ONE call.
+ *
+ * ⚠️ No fan-out loop: the caller chunks, exactly as it does for
+ * {@link GetOrderDetailParams}.
+ */
+export interface GetPackageDetailParams {
+  /**
+   * 1…50 `package_number`, joined by commas on the wire.
+   *
+   * ⚠️ Three per-element refusals BEFORE the fetch, and the second is this
+   * page's own: a blank element (it would collapse rows onto one identity
+   * downstream — {@link GetOrderDetailParams}'s reason), the `-` SENTINEL (this
+   * page samples `"-"` as an ABSENCE on `tracking_number`, `item_sku` and
+   * `virtual_contact_number`, so a caller that let one through would be asking
+   * for "no package"), and a comma INSIDE an element (the join is by comma, so
+   * one element would silently become two parameters). The last two have no twin
+   * on `assertOrderDetailParams` deliberately: an `order_sn` is alphanumeric by
+   * construction and widening that sibling is not this step's change.
+   */
+  readonly packageNumbers: readonly string[];
+}
+
 /** `category_recommend` — a non-blank item name, plus an optional cover image id. */
 export interface CategoryRecommendParams {
   readonly itemName: string;
@@ -739,6 +817,30 @@ export interface ShopeeClient {
    * transient failures.
    */
   getEscrowList(p: GetEscrowListParams): Promise<ShopeeEscrowList>;
+
+  /**
+   * The FULL detail of 1…50 packages — the per-package twin of
+   * {@link ShopeeClient.getOrderDetail}, and the only Shopee surface that carries
+   * `fulfillment_status`, `tracking_number`, `ship_by_date`,
+   * `logistics_channel_id` and a package `update_time` together.
+   *
+   * ⚠️ The response may carry FEWER rows than were asked for, and an unreadable
+   * row arrives as a `null` in place. Reconcile by `package_number`, never by
+   * position, and count the nulls.
+   *
+   * ⚠️ It does NOT fan out and does NOT page: this page has no cursor and no
+   * `more`. One call, one list; the caller chunks at
+   * {@link SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES}.
+   *
+   * ⚠️ `is_shipment_arranged` rides on this response and is **step 15's** guard,
+   * not a shipped signal: it is "only effective when the package's
+   * logistics_status/fulfillment_status is LOGISTICS_READY".
+   *
+   * ⚠️ `error: "-"` is SUCCESS on this operation — see
+   * {@link SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES}. On every other order page it is
+   * still a failure.
+   */
+  getPackageDetail(p: GetPackageDetailParams): Promise<ShopeePackageDetail>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -848,6 +950,47 @@ function assertOrderDetailParams(p: GetOrderDetailParams): void {
     if (typeof orderSn !== 'string' || orderSn.trim() === '') {
       throw new ShopeeConfigError(
         `order_sn não pode ser vazio (posição ${String(posicao)}, recebido: ${JSON.stringify(orderSn)}).`,
+      );
+    }
+  });
+}
+
+/**
+ * Every `get_package_detail` bound, checked BEFORE any fetch.
+ *
+ * ⚠️ Every branch is a `ShopeeConfigError` — a caller bug, never a provider
+ * failure — so the shipment arm's provider-error containment must not swallow
+ * it. Each refusal is its own message naming the POSITION, because the wire
+ * parameter is ONE joined scalar: Shopee's own `error_param` could only say that
+ * `package_number_list` was wrong, never which element.
+ *
+ * ⚠️ The `-` branch is this page's own contradiction reaching the request side.
+ * `-` is the page's ABSENCE sentinel on `tracking_number`, `item_sku` and
+ * `virtual_contact_number`; a caller that read one of those and fed it straight
+ * back would be asking for "no package", and Shopee would answer with a row set
+ * nobody asked for rather than with an error.
+ */
+function assertPackageDetailParams(p: GetPackageDetailParams): void {
+  const quantidade = p.packageNumbers.length;
+  if (quantidade < 1 || quantidade > SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES) {
+    throw new ShopeeConfigError(
+      `package_number_list deve conter de 1 a ${String(SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES)} pacotes (recebido: ${String(quantidade)}).`,
+    );
+  }
+  p.packageNumbers.forEach((numero, posicao) => {
+    if (typeof numero !== 'string' || numero.trim() === '') {
+      throw new ShopeeConfigError(
+        `package_number não pode ser vazio (posição ${String(posicao)}, recebido: ${JSON.stringify(numero)}).`,
+      );
+    }
+    if (numero.trim() === '-') {
+      throw new ShopeeConfigError(
+        `package_number "-" é a SENTINELA de ausência desta página, nunca uma chave (posição ${String(posicao)}).`,
+      );
+    }
+    if (numero.includes(',')) {
+      throw new ShopeeConfigError(
+        `package_number não pode conter vírgula — ela é o separador da lista (posição ${String(posicao)}).`,
       );
     }
   });
@@ -1271,6 +1414,29 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         },
       });
       // ONE page. `more` travels on the payload and the caller decides.
+      return res.response;
+    },
+
+    getPackageDetail: async (p) => {
+      assertPackageDetailParams(p);
+      const res = await shopeeCall(transport, {
+        // GET — the page's own `method: 2`, and its four request samples agree.
+        method: 'GET',
+        path: SHOPEE_GET_PACKAGE_DETAIL_PATH,
+        call: await signedCall(),
+        schema: shopeePackageDetailSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ THIS page's own contradiction — see the constant. The tolerance is
+        // per OPERATION, never global.
+        emptyErrorAliases: SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES,
+        query: {
+          // ⚠️ ONE joined scalar, commas and NO spaces: `signedQuery` cannot emit
+          // a repeated key, and the page's own request sample is comma-joined
+          // (`…OFG1156498731071468%2COFG199593509207187…`).
+          package_number_list: p.packageNumbers.join(','),
+        },
+      });
+      // ONE page, no auto-paging: this op has no cursor and no `more`.
       return res.response;
     },
   };
