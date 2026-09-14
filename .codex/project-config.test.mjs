@@ -45,6 +45,12 @@ describe('Codex instruction discovery', () => {
     match(CONFIG, /Create Codex task branches under `codex\/\*`/);
   });
 
+  it('records the outcome of every addressed GitHub review comment in its thread', () => {
+    match(CONFIG, /reply in its thread with the disposition/);
+    match(CONFIG, /mark the thread resolved once the finding is fully addressed/);
+    match(CONFIG, /Do not rely only on a turn summary or pull-request description/);
+  });
+
   it('keeps at least 16 KiB above the largest instruction chain', () => {
     const configured = Number(CONFIG.match(/project_doc_max_bytes\s*=\s*(\d+)/)?.[1]);
     const { docs, largest } = maxInstructionChain();
