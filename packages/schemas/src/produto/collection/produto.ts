@@ -201,8 +201,7 @@ export const produtoSchema = z.object({
   // variation children (the `onProdutoPrecoCustoChanged` Cloud Function,
   // apps/functions). Default true = every parent price edit cascades to the
   // children, matching the legacy Flutter behavior. false = the user
-  // maintains each variation's prices manually — a future UI toggle exposes
-  // this; the field has no editor yet.
+  // maintains each variation's prices manually through the product editor.
   propagatePriceToChildren: z.boolean().default(true),
 
   // Variations.

@@ -20,6 +20,7 @@ import {
   normalizeVariacoesUid,
   parseFakePath,
   produtoPageIssues,
+  samePrecos,
   sortGrupoUids,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField, whereArrayContains, whereEqual } from '@delfrance/data';
@@ -49,6 +50,7 @@ import { KitManager, stripKitForSave } from '../../_components/KitManager';
 import { KitVariacoesManager, type KitVariacoesFlush } from '../../_components/KitVariacoesManager';
 import { ModificacoesManager } from '../../_components/ModificacoesManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
+import { PropagatePriceToChildrenField } from '../../_components/PropagatePriceToChildrenField';
 import { VideoManager } from '../../_components/VideoManager';
 import {
   VariationManager,
@@ -156,6 +158,7 @@ export default function EditarProdutoPage() {
           nome: r.data.nome,
           sku: r.data.sku ?? '',
           variacoesUid: r.data.variacoesUid ?? [],
+          precos: r.data.precos ?? null,
           deleteMark: false,
         })),
     [childrenSnap.data],
@@ -178,6 +181,13 @@ export default function EditarProdutoPage() {
   // see `lastSavedKitStatus` below).
   const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
   const produtoSnap = useDocSnapshot(produtoDocRef);
+  const divergentVariationCount = useMemo(
+    () =>
+      effectiveVariationRows.filter(
+        (row) => !samePrecos(row.precos, produtoSnap.data?.data.precos ?? null),
+      ).length,
+    [effectiveVariationRows, produtoSnap.data?.data.precos],
+  );
   // Parent kit-status (#298): when this produto is a variation child (`paiId`
   // set), read its parent once so the page model can enforce "a kit parent ⟹
   // its children are kits" on the CHILD-edit direction. Null ref (a parent
@@ -256,6 +266,17 @@ export default function EditarProdutoPage() {
   const fields = useMemo<Record<string, FieldConfig>>(
     () => ({
       ...produtoFieldOverrides,
+      propagatePriceToChildren: {
+        ...produtoFieldOverrides.propagatePriceToChildren,
+        renderInput: (p) => (
+          <PropagatePriceToChildrenField
+            value={p.value !== false}
+            onChange={p.onChange}
+            disabled={p.disabled}
+            divergentChildren={divergentVariationCount}
+          />
+        ),
+      },
       // "É kit" with the kit-of-kit promotion warning (#246) — editar-only, since
       // it needs the referenced-by snapshot (a new produto can't be referenced).
       ehKit: {
@@ -344,6 +365,8 @@ export default function EditarProdutoPage() {
             db={db}
             grupos={grupos}
             gruposError={gruposSnap.error?.message}
+            listas={listas}
+            propagatePriceToChildren={produtoSnap.data?.data.propagatePriceToChildren !== false}
             value={(p.value as string[] | null) ?? null}
             onChange={p.onChange}
             onGroupsChange={(ids) => {
@@ -490,6 +513,7 @@ export default function EditarProdutoPage() {
       listas,
       listasSnap.error?.message,
       effectiveVariationRows,
+      divergentVariationCount,
       kitExcludeIds,
       referencedByKits,
       referencedByMore,

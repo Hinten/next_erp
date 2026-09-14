@@ -246,6 +246,34 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     expect(child.precos).toEqual({ l1: { valor: 5 } }); // untouched
   });
 
+  it('re-enabling propagation synchronizes independent child prices even when the parent map is unchanged', async () => {
+    const db = getDb();
+    const parentId = freshId('parent-reenable');
+    const childId = freshId('child-reenable');
+    const parentPrecos = { l1: { valor: 30 } };
+    await db
+      .collection('produtos')
+      .doc(parentId)
+      .set({ nome: 'Pai', paiId: null, precos: parentPrecos, propagatePriceToChildren: false });
+    await db
+      .collection('produtos')
+      .doc(childId)
+      .set({ nome: 'Filho independente', paiId: parentId, precos: { l1: { valor: 5 } } });
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      parentId,
+      { nome: 'Pai', paiId: null, precos: parentPrecos, propagatePriceToChildren: false },
+      { nome: 'Pai', paiId: null, precos: parentPrecos, propagatePriceToChildren: true },
+      freshId('evt'),
+      EVENT_TIME_MICROS,
+    );
+
+    expect((await db.collection('produtos').doc(childId).get()).data()?.precos).toEqual(
+      parentPrecos,
+    );
+  });
+
   it('a child write changing ONLY precos records no entry (echo suppressed)', async () => {
     const db = getDb();
     const childId = freshId('echo');

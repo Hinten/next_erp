@@ -537,8 +537,11 @@ export async function recordProdutoModificationAndPropagate(
   if (entry !== null) {
     await recordModification(db, PRODUTO_HISTORY_ROOT, produtoId, entry);
 
-    // Propagation is gated on the entry's `campos` — never on custo alone, a
-    // custo edit never touches a child's precos — AND on the opt-out field.
+    // Propagation is gated on a parent price change — never on custo alone, a
+    // custo edit never touches a child's precos — OR on the explicit false →
+    // true re-enable transition. The latter is the confirmed UI action that
+    // deliberately replaces each independent child map with the parent's
+    // current map, even when the parent price itself was not edited.
     // `!== false` treats a missing field (every produto written before this
     // field existed) the same as the schema default `true`. Variation children
     // never reach here on their own write (their `precos` diff is suppressed by
@@ -546,8 +549,8 @@ export async function recordProdutoModificationAndPropagate(
     // `paiId == null` check stays as defense-in-depth.
     const shouldPropagate =
       after.paiId == null &&
-      entry.campos.includes('precos') &&
-      after.propagatePriceToChildren !== false;
+      after.propagatePriceToChildren !== false &&
+      (entry.campos.includes('precos') || before?.propagatePriceToChildren === false);
     const childWrites = shouldPropagate
       ? await findChildrenToPropagate(db, produtoId, (after.precos as PrecosMap) ?? null)
       : [];

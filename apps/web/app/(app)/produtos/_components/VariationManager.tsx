@@ -64,11 +64,14 @@ import {
   reconcileStagedChildren,
   reconstructFromSkuSuffix,
   reconstructFromVariacoesUid,
+  samePrecos,
   sameCombo,
   varianteFakePath,
 } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { newDocId } from '@/lib/produtos/docId';
+import { CurrencyInput } from './CurrencyInput';
+import type { ListaComId } from './PrecoCustoManager';
 import {
   describeReferences,
   findManyProdutoReferences,
@@ -95,6 +98,10 @@ interface ChildRow {
   /** Empty string = no SKU (persisted as null). */
   sku: string;
   variacoesUid: string[];
+  /** Child price map, independently editable only when the parent opts out of propagation. */
+  precos: PrecosMap;
+  /** A locally authored child price must not be replaced by the parent's latest map on create. */
+  priceDirty: boolean;
   serverOrdem: number | null;
   deleteMark: boolean;
   /** Local edits pending (nome/sku/variacoesUid changed vs the server doc). */
@@ -115,6 +122,7 @@ export interface VariationRow {
   nome: string;
   sku: string;
   variacoesUid: string[];
+  precos: PrecosMap;
   deleteMark: boolean;
 }
 
@@ -138,6 +146,8 @@ interface ChildPatch {
   nome?: string;
   sku?: string;
   variacoesUid?: string[];
+  precos?: PrecosMap;
+  priceDirty?: boolean;
   deleteMark?: boolean;
 }
 
@@ -156,6 +166,10 @@ export interface VariationManagerProps {
   grupos: GrupoComId[];
   /** Load error from the page's grupos snapshot — surfaced, never swallowed. */
   gruposError?: string;
+  /** Active/in-use price lists, supplied by the same bounded query as the parent price editor. */
+  listas?: ListaComId[];
+  /** Missing values retain the schema default: parent prices propagate. */
+  propagatePriceToChildren?: boolean;
   /** Parent `variacoesUid` (variant fake paths) from the form. */
   value: string[] | null;
   onChange: (next: string[]) => void;
@@ -225,6 +239,8 @@ export function VariationManager({
   db,
   grupos,
   gruposError,
+  listas = [],
+  propagatePriceToChildren = true,
   value,
   onChange,
   onGroupsChange,
@@ -250,6 +266,26 @@ export function VariationManager({
   // `useFormContext` is TYPED non-null but actually returns `null` outside a
   // provider (its context default), hence the optional chaining below.
   const form = useFormContext();
+  // The page snapshot catches up only after save. Subscribe to the form as
+  // well so a toggle changed in this session immediately opens/closes the child
+  // editors, and the flush follows the value the operator is actually saving.
+  // `useFormContext` is null in isolated component tests, hence this effect's
+  // fallback to the persisted prop instead of `useWatch` (which needs a control).
+  const [formPropagation, setFormPropagation] = useState<boolean | undefined>(undefined);
+  useEffect(() => {
+    if (!form) {
+      setFormPropagation(undefined);
+      return;
+    }
+    setFormPropagation(form.getValues('propagatePriceToChildren') !== false);
+    const subscription = form.watch((values, { name }) => {
+      if (name === 'propagatePriceToChildren') {
+        setFormPropagation(values.propagatePriceToChildren !== false);
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [form]);
+  const pricesPropagate = formPropagation ?? propagatePriceToChildren;
   const liveParent = <K extends keyof Produto>(key: K): Produto[K] | null => {
     const live = form?.getValues(key as string) as Produto[K] | undefined;
     if (live !== undefined && live !== null && live !== '') return live;
@@ -296,10 +332,16 @@ export function VariationManager({
           nome: patch.nome ?? r.data.nome,
           sku: patch.sku ?? r.data.sku ?? '',
           variacoesUid: patch.variacoesUid ?? r.data.variacoesUid ?? [],
+          // `null` is a meaningful map value, so `??` cannot choose this fallback.
+          precos: Object.hasOwn(patch, 'precos') ? (patch.precos ?? null) : (r.data.precos ?? null),
+          priceDirty: patch.priceDirty === true,
           serverOrdem: r.data.ordem ?? null,
           deleteMark: patch.deleteMark ?? false,
           dirty:
-            patch.nome !== undefined || patch.sku !== undefined || patch.variacoesUid !== undefined,
+            patch.nome !== undefined ||
+            patch.sku !== undefined ||
+            patch.variacoesUid !== undefined ||
+            patch.priceDirty === true,
         };
       });
     // A staged row's key IS the doc id it will be written to, so a server row
@@ -331,6 +373,7 @@ export function VariationManager({
       nome: r.nome,
       sku: r.sku,
       variacoesUid: r.variacoesUid,
+      precos: r.precos,
       deleteMark: r.deleteMark,
     }));
     const key = JSON.stringify(mapped);
@@ -578,6 +621,10 @@ export function VariationManager({
         continue;
       }
       const normalized = normalizeVariacoesUid(row.variacoesUid, grupos);
+      const precosIndependentes =
+        !pricesPropagate && row.priceDirty
+          ? parsePrecosDaVariacao(row.nome || row.sku || '(sem nome)', row.precos)
+          : undefined;
       if (!row.id) {
         let docData: Produto;
         try {
@@ -589,7 +636,9 @@ export function VariationManager({
             paiId: parentId,
             ordem,
             variacoesUid: normalized.length > 0 ? normalized : null,
-            precos: parentPrecos,
+            // A newly generated child starts at the current parent price. A locally
+            // edited independent map wins only when propagation is off.
+            precos: precosIndependentes !== undefined ? precosIndependentes : parentPrecos,
             codPai: liveParent('codPai'),
             pesoLiquidoKg: liveParent('pesoLiquidoKg'),
             pesoBrutoKg: liveParent('pesoBrutoKg'),
@@ -638,6 +687,10 @@ export function VariationManager({
           variacoesUid: normalized.length > 0 ? normalized : null,
           ordem,
           ...(absorbed.has(row.key) && normalized.length > 0 ? { gtin: null } : {}),
+          // Independent prices are part of the parent's staged save. Never put
+          // `precos` on this path while propagation is enabled: the trigger owns
+          // that synchronization and must remain the only writer.
+          ...(precosIndependentes !== undefined ? { precos: precosIndependentes } : {}),
           // ⚠️ The promoted survivor takes the parent's whole mirror. Without this
           // the update branch writes four fields and the produto's sellable unit
           // keeps whatever the variation happened to have — on a kit parent, a
@@ -762,6 +815,24 @@ export function VariationManager({
     }
   }
 
+  function patchPrice(row: ChildRow, precos: PrecosMap) {
+    if (row.id) {
+      const id = row.id;
+      setPatches((prev) => ({ ...prev, [id]: { ...prev[id], precos, priceDirty: true } }));
+    } else {
+      setNewRows((prev) =>
+        prev.map((r) => (r.key === row.key ? { ...r, precos, priceDirty: true } : r)),
+      );
+    }
+  }
+
+  function setChildPrice(row: ChildRow, listaId: string, valor: number | null) {
+    const next = { ...(row.precos ?? {}) };
+    if (valor === null) delete next[listaId];
+    else next[listaId] = { valor };
+    patchPrice(row, Object.keys(next).length > 0 ? next : null);
+  }
+
   function changeGroups(ids: string[]) {
     setGroupsTouched(ids);
     onGroupsChange(ids);
@@ -808,6 +879,8 @@ export function VariationManager({
             nome: c.nome,
             sku: c.sku,
             variacoesUid: c.variacoesUid,
+            precos: (liveParent('precos') as PrecosMap) ?? null,
+            priceDirty: false,
             serverOrdem: null,
             deleteMark: false,
             dirty: true,
@@ -889,6 +962,8 @@ export function VariationManager({
         nome: '',
         sku: '',
         variacoesUid: [],
+        precos: (liveParent('precos') as PrecosMap) ?? null,
+        priceDirty: false,
         serverOrdem: null,
         deleteMark: false,
         dirty: true,
@@ -1101,8 +1176,14 @@ export function VariationManager({
                   skuError={
                     duplicateSkuKeys.has(row.key) ? 'SKU duplicado entre as variações' : undefined
                   }
+                  listas={listas}
+                  independentPrices={!pricesPropagate}
+                  pricesDiverge={
+                    !samePrecos(row.precos, (liveParent('precos') as PrecosMap) ?? null)
+                  }
                   onNome={(nome) => patchRow(row, { nome })}
                   onSku={(sku) => patchRow(row, { sku })}
+                  onPreco={(listaId, valor) => setChildPrice(row, listaId, valor)}
                   onToggleDelete={() => void requestDelete(row)}
                 />
               ))}
@@ -1145,8 +1226,14 @@ interface SortableChildProps {
   checkingRefs?: boolean;
   /** Sibling-uniqueness violation message for the SKU input. */
   skuError?: string;
+  listas: ListaComId[];
+  /** True only after the parent explicitly opts out of server-side propagation. */
+  independentPrices: boolean;
+  /** A visible comparison against the parent's current map. */
+  pricesDiverge: boolean;
   onNome: (value: string) => void;
   onSku: (value: string) => void;
+  onPreco: (listaId: string, valor: number | null) => void;
   onToggleDelete: () => void;
 }
 
@@ -1155,8 +1242,12 @@ function SortableChild({
   disabled,
   checkingRefs,
   skuError,
+  listas,
+  independentPrices,
+  pricesDiverge,
   onNome,
   onSku,
+  onPreco,
   onToggleDelete,
 }: SortableChildProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -1210,6 +1301,11 @@ function SortableChild({
             Será excluída
           </Badge>
         )}
+        {!row.deleteMark && pricesDiverge && (
+          <Badge color="yellow" variant="light" mb={6} title="Preço diferente do produto pai">
+            preço diferente
+          </Badge>
+        )}
         {row.id && (
           <ActionIcon
             component={Link}
@@ -1245,6 +1341,60 @@ function SortableChild({
             </ActionIcon>
           ))}
       </Group>
+      {independentPrices && !row.deleteMark && (
+        <Stack gap="xs" mt="xs" pl={disabled ? 0 : 32}>
+          <Text size="xs" fw={500}>
+            Preços desta variação
+          </Text>
+          {priceListRows(listas, row.precos).length === 0 ? (
+            <Text size="xs" c="dimmed">
+              Nenhuma lista de preços cadastrada.
+            </Text>
+          ) : (
+            <Group align="flex-end" gap="xs">
+              {priceListRows(listas, row.precos).map((lista) => (
+                <CurrencyInput
+                  key={lista.id}
+                  label={lista.data.nome}
+                  value={row.precos?.[lista.id]?.valor ?? null}
+                  onChange={(valor) => onPreco(lista.id, valor)}
+                  disabled={disabled}
+                  style={{ width: 180 }}
+                />
+              ))}
+            </Group>
+          )}
+        </Stack>
+      )}
     </Paper>
   );
+}
+
+/** Active lists first; a legacy price on an inactive list remains editable until removed. */
+function priceListRows(listas: ListaComId[], precos: PrecosMap): ListaComId[] {
+  return [
+    ...listas.filter((lista) => lista.data.ativo),
+    ...listas.filter((lista) => !lista.data.ativo && precos?.[lista.id] !== undefined),
+  ];
+}
+
+/**
+ * A child update bypasses the collection converter, so validate the independent
+ * map here before it reaches the batch. The parent form reports `ZodError`s in
+ * its normal alert; prefixing the child keeps the correction actionable.
+ */
+function parsePrecosDaVariacao(nome: string, precos: PrecosMap): PrecosMap {
+  try {
+    return produtoSchema.pick({ precos: true }).parse({ precos }).precos;
+  } catch (err) {
+    if (err instanceof ZodError) {
+      throw new ZodError(
+        err.issues.map((issue) => ({
+          ...issue,
+          message: `variação "${nome}": ${issue.message}`,
+        })),
+      );
+    }
+    throw err;
+  }
 }
