@@ -1,3 +1,5 @@
+'use client';
+
 import { useEffect, useState } from 'react';
 import { onIdTokenChanged } from 'firebase/auth';
 import { FirebaseError } from 'firebase/app';
