@@ -37,8 +37,8 @@
  *    every error this package raises extends — HTTP/reauth/network/
  *    validation), which is the same universe, and rethrow anything else
  *    (repo "no generic catch" rule).
- * 2. The caller-supplied previous value (`oldPrazoDespacho` / `fallbackUs`),
- *    when present, wins over any schedule computation.
+ * 2. The lazily-loaded previous value (`oldPrazoDespacho`), when present,
+ *    wins over any schedule computation.
  * 3. Otherwise, derive a deadline from
  *    `shipping_option.estimated_handling_limit.date` (`prazoDespacho`) plus
  *    the seller's weekly dispatch window
@@ -92,20 +92,21 @@
  * `prazoDespacho`'s original calendar day. Looks like a bug, but this is a
  * faithful port, not a fix.
  *
- * Pure computation aside from the two API calls — no Firestore, no
- * `Date.now()`. Returns microseconds since epoch (µs precision at ms
- * resolution, matching `@delfrance/core/datetime`'s `nowMicros()`
- * convention) or `null` when nothing can be computed.
+ * Pure computation aside from lazy loaders and the two API calls — no direct
+ * Firestore access and no `Date.now()`. Returns microseconds since epoch plus
+ * the winning source, or `indisponivel` when nothing can be computed.
  */
 import {
   MercadoLivreError,
   shipmentLeadTime,
   shipmentLogisticType,
   type MercadoLivreApi,
+  type MlPayment,
   type MlSellerShippingSchedule,
   type MlShipment,
 } from '@delfrance/integrations-mercado-livre';
-import { coerceToMicros } from '@delfrance/core/datetime';
+import { coerceToMicros, millisToMicros, parseIsoToMillis } from '@delfrance/core/datetime';
+import { getPrazoDespachoNoFuso, type HorarioDeCorte } from '@delfrance/schemas';
 
 /**
  * `LOGISTIC_TYPE` (legacy `api.dart:43-48`) — the four values ML accepts for
@@ -281,23 +282,55 @@ export interface ResolvePrazoDespachoArgs {
   shipment: MlShipment;
   /** The account's OWN seller id — `await seller_id` in legacy (`api.dart:1690`), not the buyer's. */
   sellerId: number;
-  /** The previously-stored `freteInicial.prazoDespacho` (µs), if any — `oldPrazoDespacho` in legacy. */
-  fallbackUs: number | null;
+  /** Lazy so a valid SLA does not pay a Firestore read. */
+  loadStoredPrazoUs: () => Promise<number | null>;
+  /** Lazy so the operator schedule is only loaded after both ML-native fallbacks fail. */
+  loadHorarioDeCorte: () => Promise<readonly HorarioDeCorte[] | null>;
+  /** Lazy so payment details are only loaded when a valid operator schedule exists. */
+  loadPayments: () => Promise<readonly MlPayment[]>;
+}
+
+export type PrazoDespachoFonte =
+  | 'sla'
+  | 'armazenado'
+  | 'estimated-handling'
+  | 'pagamento-corte'
+  | 'indisponivel';
+
+export interface PrazoDespachoResolvido {
+  prazoDespachoUs: number | null;
+  fonte: PrazoDespachoFonte;
+}
+
+/**
+ * The last approved payment is the instant when a partial-payment order or
+ * pack became fully dispatchable. Invalid/missing dates never displace a
+ * valid approval.
+ */
+export function latestApprovedPaymentMs(payments: readonly MlPayment[]): number | null {
+  let latestMs: number | null = null;
+  for (const payment of payments) {
+    if (payment.status !== 'approved' || payment.date_approved == null) continue;
+    const approvedMs = parseIsoToMillis(payment.date_approved);
+    if (approvedMs == null) continue;
+    if (latestMs == null || approvedMs > latestMs) latestMs = approvedMs;
+  }
+  return latestMs;
 }
 
 /**
  * Resolves the dispatch deadline for a shipment. See the file docstring for
- * the full ported decision tree. Returns µs since epoch, or `null` when
- * nothing can be computed (no SLA, no fallback, no
- * `estimated_handling_limit.date`).
+ * the full ordered decision tree and source contract.
  */
-export async function resolvePrazoDespacho(args: ResolvePrazoDespachoArgs): Promise<number | null> {
-  const { api, shipment, sellerId, fallbackUs } = args;
+export async function resolvePrazoDespacho(
+  args: ResolvePrazoDespachoArgs,
+): Promise<PrazoDespachoResolvido> {
+  const { api, shipment, sellerId, loadStoredPrazoUs, loadHorarioDeCorte, loadPayments } = args;
 
   try {
     const sla = await api.getShipmentSla(shipment.id);
     const expectedUs = coerceToMicros(sla.expected_date ?? null);
-    if (expectedUs != null) return expectedUs;
+    if (expectedUs != null) return { prazoDespachoUs: expectedUs, fonte: 'sla' };
     // expected_date missing/unparseable — legacy's `DateTime.parse(...)`
     // throws inside this same try, so it is swallowed exactly like a network
     // failure and falls through below.
@@ -307,7 +340,10 @@ export async function resolvePrazoDespacho(args: ResolvePrazoDespachoArgs): Prom
     // can raise (HTTP/reauth/network/response-validation) is tolerated here.
   }
 
-  if (fallbackUs != null) return fallbackUs;
+  const storedPrazoUs = await loadStoredPrazoUs();
+  if (storedPrazoUs != null) {
+    return { prazoDespachoUs: storedPrazoUs, fonte: 'armazenado' };
+  }
 
   // `estimated_handling_limit` was DEPRECATED by ML on 2025-05-13 — "a informação
   // só poderá ser consumida no recurso de SLA" — and the `x-format-new` body does
@@ -320,14 +356,18 @@ export async function resolvePrazoDespacho(args: ResolvePrazoDespachoArgs): Prom
     estimated_handling_limit?: { date?: string | null } | null;
   } | null;
   const prazoDespachoStr = leadTime?.estimated_handling_limit?.date ?? null;
-  if (prazoDespachoStr == null) return null;
+  if (prazoDespachoStr == null) {
+    return resolvePrazoDespachoPorPagamento(loadHorarioDeCorte, loadPayments);
+  }
 
-  const prazoDespachoMs = Date.parse(prazoDespachoStr);
+  const prazoDespachoMs = parseIsoToMillis(prazoDespachoStr);
   // Defensive beyond legacy fidelity: Dart's field is pre-parsed at JSON
   // deserialization (an unparseable value would have thrown much earlier,
   // outside this function); our Zod type defers parsing to here, so a
   // malformed string is handled as "cannot compute" rather than crashing.
-  if (Number.isNaN(prazoDespachoMs)) return null;
+  if (prazoDespachoMs == null) {
+    return resolvePrazoDespachoPorPagamento(loadHorarioDeCorte, loadPayments);
+  }
 
   const logisticType = shipmentLogisticType(shipment);
   if (logisticType == null || !KNOWN_LOGISTIC_TYPES.has(logisticType)) {
@@ -344,5 +384,28 @@ export async function resolvePrazoDespacho(args: ResolvePrazoDespachoArgs): Prom
     estimatedDeliveryLimitDate: shipmentLeadTime(shipment)?.estimated_delivery_limit?.date ?? null,
   };
   const deadlineMs = computeDeadlineFromSchedule(ctx, schedule);
-  return deadlineMs * 1000; // ms -> µs
+  return {
+    prazoDespachoUs: millisToMicros(deadlineMs),
+    fonte: 'estimated-handling',
+  };
+}
+
+async function resolvePrazoDespachoPorPagamento(
+  loadHorarioDeCorte: () => Promise<readonly HorarioDeCorte[] | null>,
+  loadPayments: () => Promise<readonly MlPayment[]>,
+): Promise<PrazoDespachoResolvido> {
+  const horarios = await loadHorarioDeCorte();
+  if (horarios == null || horarios.length === 0) {
+    return { prazoDespachoUs: null, fonte: 'indisponivel' };
+  }
+
+  const pagamentoMs = latestApprovedPaymentMs(await loadPayments());
+  if (pagamentoMs == null) {
+    return { prazoDespachoUs: null, fonte: 'indisponivel' };
+  }
+
+  const prazoMs = getPrazoDespachoNoFuso(horarios, pagamentoMs, 'America/Sao_Paulo');
+  return prazoMs == null
+    ? { prazoDespachoUs: null, fonte: 'indisponivel' }
+    : { prazoDespachoUs: millisToMicros(prazoMs), fonte: 'pagamento-corte' };
 }

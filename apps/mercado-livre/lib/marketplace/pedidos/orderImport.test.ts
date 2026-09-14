@@ -39,9 +39,10 @@ vi.mock('@delfrance/data/admin/clientes', () => ({
 }));
 vi.mock('./orderPedidoTx', () => ({
   discoverPedidoMercadoLivre: vi.fn(),
+  embeddedPayments: vi.fn((order: { payments?: unknown[] | null }) => order.payments ?? []),
 }));
 vi.mock('./orderPrazoDespacho', () => ({
-  resolvePrazoDespacho: vi.fn(async () => null),
+  resolvePrazoDespacho: vi.fn(async () => ({ prazoDespachoUs: null, fonte: 'indisponivel' })),
 }));
 
 import { resolveOrderLineProduto } from './orderProdutoResolve';
@@ -393,7 +394,10 @@ beforeEach(() => {
   // the same `conta-A`.
   __resetAllReadCaches();
   vi.mocked(resolveOrderLineProduto).mockResolvedValue({ produtoId: null, via: 'unresolved' });
-  vi.mocked(resolvePrazoDespacho).mockResolvedValue(null);
+  vi.mocked(resolvePrazoDespacho).mockResolvedValue({
+    prazoDespachoUs: null,
+    fonte: 'indisponivel',
+  });
   // The double CREATES the doc it reports having created. Every step after
   // `discoverPedidoMercadoLivre` patches that pedido, and the Admin SDK rejects
   // an `update` of an absent document — a rule the shared `OccEngine` now
@@ -1404,7 +1408,7 @@ describe('importPedidoMercadoLivre — frete', () => {
       ]),
     });
     const prazoDespachoUs = Date.parse('2026-01-08T00:00:00.000Z') * 1000;
-    vi.mocked(resolvePrazoDespacho).mockResolvedValue(prazoDespachoUs);
+    vi.mocked(resolvePrazoDespacho).mockResolvedValue({ prazoDespachoUs, fonte: 'sla' });
 
     await importPedidoMercadoLivre(deps(db, api), 1);
 
@@ -1466,6 +1470,188 @@ describe('importPedidoMercadoLivre — frete', () => {
     expect(db.docs('pedidos').get('pedido-1')!.freteInicial).toEqual(freteInicial);
     // Nothing was written to the pedido at all.
     expect(db.lastPatch('pedidos', 'pedido-1')).toBeUndefined();
+  });
+
+  it('repairs a null deadline on an already-applied shipment without reopening costs or item conference', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'iniciado',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      valorCobrado: 50,
+      freteInicial: {
+        estado: 'postado',
+        externalId: '777',
+        valorCobrado: 20,
+        prazoDespacho: null,
+        ultimaModificacao: Date.parse('2026-01-05T00:00:00Z') * 1000,
+      },
+      itens: {
+        'produto-1': [
+          {
+            produtoUid: 'produto-1',
+            ordem: 1,
+            mktplaceId: 'MLB1',
+            precoDeVenda: 100,
+            quantidade: 1,
+            descontoUnitario: 0,
+          },
+        ],
+      },
+    });
+    const prazoDespachoUs = Date.parse('2026-01-06T18:00:00-03:00') * 1000;
+    vi.mocked(resolvePrazoDespacho).mockResolvedValue({
+      prazoDespachoUs,
+      fonte: 'pagamento-corte',
+    });
+    const getShipmentCosts = vi.fn();
+    const getShipmentOrders = vi.fn();
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 777 })),
+      getShipment: vi.fn(async () => ({
+        id: 777,
+        order_id: 1,
+        status: 'shipped',
+        last_updated: '2026-01-01T00:00:00Z',
+        shipping_option: {},
+      })),
+      getShipmentCosts,
+      getShipmentOrders,
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(getShipmentCosts).not.toHaveBeenCalled();
+    expect(getShipmentOrders).not.toHaveBeenCalled();
+    expect(db.docs('pedidos').get('pedido-1')).toMatchObject({
+      valorCobrado: 120,
+      freteInicial: { prazoDespacho: prazoDespachoUs },
+    });
+  });
+
+  it('does not reopen the expensive conference when stale shipment deadline repair is unavailable', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'pago',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      valorCobrado: 0,
+      freteInicial: {
+        estado: 'postado',
+        externalId: '777',
+        prazoDespacho: null,
+        ultimaModificacao: Date.parse('2026-01-05T00:00:00Z') * 1000,
+      },
+      itens: {},
+    });
+    const getShipmentCosts = vi.fn();
+    const getShipmentOrders = vi.fn();
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 777, status: 'paid' })),
+      getShipment: vi.fn(async () => ({
+        id: 777,
+        order_id: 1,
+        status: 'shipped',
+        last_updated: '2026-01-01T00:00:00Z',
+        shipping_option: {},
+      })),
+      getShipmentCosts,
+      getShipmentOrders,
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(getShipmentCosts).not.toHaveBeenCalled();
+    expect(getShipmentOrders).not.toHaveBeenCalled();
+    expect(db.docs('pedidos').get('pedido-1')!.freteInicial).toMatchObject({
+      prazoDespacho: null,
+    });
+  });
+
+  it('keeps a deadline written concurrently over a lower-precedence payment fallback', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'iniciado',
+      clientePedidoOuterRef: 'documents/clientes/cli-1',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        prazoDespacho: null,
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00Z') * 1000,
+      },
+      itens: {},
+    });
+    const concorrenteUs = Date.parse('2026-01-09T18:00:00-03:00') * 1000;
+    vi.mocked(resolvePrazoDespacho).mockImplementationOnce(async () => {
+      const current = db.docs('pedidos').get('pedido-1')!;
+      db.seed('pedidos', 'pedido-1', {
+        ...current,
+        freteInicial: { ...(current.freteInicial as DocData), prazoDespacho: concorrenteUs },
+      });
+      return {
+        prazoDespachoUs: Date.parse('2026-01-08T18:00:00-03:00') * 1000,
+        fonte: 'pagamento-corte',
+      };
+    });
+    const api = makeApi({
+      getOrder: vi.fn(async () => makeOrder({ id: 1, shippingId: 777 })),
+      getShipment: vi.fn(async () => ({
+        id: 777,
+        order_id: 1,
+        status: 'ready_to_ship',
+        last_updated: '2026-01-10T00:00:00Z',
+        shipping_option: {},
+      })),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 1);
+
+    expect(db.docs('pedidos').get('pedido-1')!.freteInicial).toMatchObject({
+      prazoDespacho: concorrenteUs,
+    });
+  });
+
+  it('passes embedded payments from every pack order to the deadline loader', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'iniciado',
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        prazoDespacho: null,
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00Z') * 1000,
+      },
+      itens: {},
+    });
+    const initial = makeOrder({ id: 11, packId: 100, shippingId: 777 });
+    initial.payments = [{ id: 101, status: 'approved' }];
+    const sibling = makeOrder({ id: 12, packId: 100 });
+    sibling.payments = [{ id: 102, status: 'approved' }];
+    let loadedIds: number[] = [];
+    vi.mocked(resolvePrazoDespacho).mockImplementationOnce(async (input) => {
+      loadedIds = (await input.loadPayments()).map((payment) => payment.id);
+      return { prazoDespachoUs: null, fonte: 'indisponivel' };
+    });
+    const api = makeApi({
+      getOrder: vi.fn(async (id: number) => (id === 11 ? initial : sibling)),
+      getPack: vi.fn(async () => ({ id: 100, status: 'ready', orders: [{ id: 11 }, { id: 12 }] })),
+      getShipment: vi.fn(async () => ({
+        id: 777,
+        order_id: 11,
+        status: 'ready_to_ship',
+        last_updated: '2026-01-10T00:00:00Z',
+        shipping_option: {},
+      })),
+    });
+
+    await importPedidoMercadoLivre(deps(db, api), 11);
+
+    expect(loadedIds).toEqual([101, 102]);
   });
 });
 

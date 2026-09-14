@@ -247,7 +247,7 @@ interface MlOrderWithEmbeddedPayments {
   payments?: MlPayment[] | null;
 }
 
-function embeddedPayments(order: MlOrder): MlPayment[] {
+export function embeddedPayments(order: MlOrder): MlPayment[] {
   return (order as unknown as MlOrderWithEmbeddedPayments).payments ?? [];
 }
 

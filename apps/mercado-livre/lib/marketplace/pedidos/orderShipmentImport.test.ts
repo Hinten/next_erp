@@ -7,11 +7,11 @@ import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrat
 // internal decision tree (SLA fetch / schedule search) — that module has its
 // own dedicated test file (`orderPrazoDespacho.test.ts`). Everything else
 // (`orderImport.ts`'s `loadContaBag`/`mergeFreteInicial`/
-// `resolveMercadoEnviosIntFreteOuterRef`, `orderShipmentMapping.ts`'s real
+// `resolveMercadoEnviosIntFrete`, `orderShipmentMapping.ts`'s real
 // mapper + `mergeEstadoFretePreservando`) runs FOR REAL against the FakeDb
 // below, since several cases here assert on their actual merge output.
 vi.mock('./orderPrazoDespacho', () => ({
-  resolvePrazoDespacho: vi.fn(async () => null),
+  resolvePrazoDespacho: vi.fn(async () => ({ prazoDespachoUs: null, fonte: 'indisponivel' })),
 }));
 
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
@@ -213,16 +213,17 @@ function seedConta(db: FakeDb, over: DocData = {}): void {
 
 /**
  * ⚠️ The back-ref is seeded in the BARE `integracao/<id>` form on purpose: since #782
- * `resolveMercadoEnviosIntFreteOuterRef` first tries an indexed equality on the
+ * `resolveMercadoEnviosIntFrete` first tries an indexed equality on the
  * canonical `documents/integracao/<id>`, and this fixture is what keeps the tolerant
  * fallback scan honest. `seedIntFreteCanonico` below covers the indexed path.
  */
-function seedIntFrete(db: FakeDb, id = 'if-1'): void {
+function seedIntFrete(db: FakeDb, id = 'if-1', over: DocData = {}): void {
   db.seed('int_frete', id, {
     tipo: 'mercadoLivre',
     ativo: true,
     contaMercadoLivreMercadoEnviosOuterRef: `integracao/${INTEGRACAO_ID}`,
     dataCadastro: 1000,
+    ...over,
   });
 }
 
@@ -285,6 +286,7 @@ function makeApi(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): Me
     // Empty by default: the fixture still carries the legacy field, so the
     // fallback only fires for the tests that null it out.
     getShipmentOrders: vi.fn(async () => []),
+    getPayment: vi.fn(),
     ...over,
   } as unknown as MercadoLivreApi;
 }
@@ -299,7 +301,10 @@ beforeEach(() => {
   // cache keyed by the document PATH — so a fresh `FakeDb` per test does NOT
   // isolate it, and every test here seeds `conta-A` with different overrides.
   __resetAllReadCaches();
-  vi.mocked(resolvePrazoDespacho).mockResolvedValue(null);
+  vi.mocked(resolvePrazoDespacho).mockResolvedValue({
+    prazoDespachoUs: null,
+    fonte: 'indisponivel',
+  });
 });
 
 afterEach(() => {
@@ -554,7 +559,7 @@ describe('importShipmentMercadoLivre — happy path write', () => {
 
   // #782: the freight doc is now a server-owned companion of the conta, and its
   // back-ref is written in the canonical `documents/integracao/<id>` form — which
-  // `resolveMercadoEnviosIntFreteOuterRef` resolves through an INDEXED equality.
+  // `resolveMercadoEnviosIntFrete` resolves through an INDEXED equality.
   // The other cases here seed the bare form on purpose, exercising the tolerant
   // fallback; this one pins the shape the trigger actually produces.
   it('resolves the int_frete doc from the canonical back-ref the #782 trigger writes', async () => {
@@ -617,7 +622,7 @@ describe('importShipmentMercadoLivre — happy path write', () => {
   });
 
   it('resolves the int_frete doc ONCE across repeated shipments notifications', async () => {
-    // `resolveMercadoEnviosIntFreteOuterRef` is unconditional on this path, and
+    // `resolveMercadoEnviosIntFrete` is unconditional on this path, and
     // its miss branch scans the whole `int_frete` collection — the scanned-bytes
     // cost the cache exists for. Seeded with the BARE back-ref so the tolerant
     // scan is what runs.
@@ -654,7 +659,7 @@ describe('importShipmentMercadoLivre — happy path write', () => {
     expect(freteInicial.integracaoFreteOuterRef).toBe('documents/int_frete/if-1');
   });
 
-  it('calls resolvePrazoDespacho with fallbackUs null and the account sellerId', async () => {
+  it('calls resolvePrazoDespacho with lazy loaders and the account sellerId', async () => {
     const db = new FakeDb();
     seedConta(db);
     seedIntFrete(db);
@@ -670,7 +675,179 @@ describe('importShipmentMercadoLivre — happy path write', () => {
     await importShipmentMercadoLivre(deps(db, api), 777);
 
     expect(resolvePrazoDespacho).toHaveBeenCalledWith(
-      expect.objectContaining({ api, shipment, sellerId: SELLER_USER_ID, fallbackUs: null }),
+      expect.objectContaining({
+        api,
+        shipment,
+        sellerId: SELLER_USER_ID,
+        loadStoredPrazoUs: expect.any(Function),
+        loadHorarioDeCorte: expect.any(Function),
+        loadPayments: expect.any(Function),
+      }),
+    );
+  });
+
+  it('provides the stored deadline lazily and does not fetch payment details when it wins', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    const storedPrazoUs = Date.parse('2026-01-12T18:00:00-03:00') * 1000;
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        prazoDespacho: storedPrazoUs,
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00Z') * 1000,
+      },
+    });
+    const getPayment = vi.fn();
+    const api = makeApi({ getPayment });
+    vi.mocked(resolvePrazoDespacho).mockImplementationOnce(async (input) => ({
+      prazoDespachoUs: await input.loadStoredPrazoUs(),
+      fonte: 'armazenado',
+    }));
+
+    await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(getPayment).not.toHaveBeenCalled();
+    expect((db.lastPatch('pedidos', 'pedido-1')!.freteInicial as DocData).prazoDespacho).toBe(
+      storedPrazoUs,
+    );
+  });
+
+  it('loads only unique approved shipment payment ids and ignores a 404 detail', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00Z') * 1000,
+      },
+    });
+    const getPayment = vi.fn(async (id: number | string) => {
+      if (String(id) === '4') throw new MercadoLivreHttpError('missing', 404, null);
+      return { id: Number(id), status: 'approved', date_approved: '2026-01-05T12:00:00Z' };
+    });
+    const api = makeApi({
+      getShipmentPayments: vi.fn(async () => [
+        { payment_id: 1, status: 'approved', amount: 10 },
+        { payment_id: 1, status: 'approved', amount: 10 },
+        { payment_id: 2, status: 'pending', amount: 10 },
+        { payment_id: 3, status: 'rejected', amount: 10 },
+        { payment_id: 4, status: 'approved', amount: 10 },
+      ]),
+      getPayment,
+    });
+    let loadedIds: number[] = [];
+    vi.mocked(resolvePrazoDespacho).mockImplementationOnce(async (input) => {
+      loadedIds = (await input.loadPayments()).map((payment) => payment.id);
+      return { prazoDespachoUs: null, fonte: 'indisponivel' };
+    });
+
+    await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(getPayment.mock.calls.map(([id]) => id)).toEqual(['1', '4']);
+    expect(loadedIds).toEqual([1]);
+  });
+
+  it('degrades an invalid horarioDeCorte to null without losing the freight outer ref', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db, 'if-1', { horarioDeCorte: [{ diaDaSemana: 'monday' }] });
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00Z') * 1000,
+      },
+    });
+    const getPayment = vi.fn();
+    const api = makeApi({ getPayment });
+    let horario: unknown = 'not-loaded';
+    vi.mocked(resolvePrazoDespacho).mockImplementationOnce(async (input) => {
+      horario = await input.loadHorarioDeCorte();
+      return { prazoDespachoUs: null, fonte: 'indisponivel' };
+    });
+
+    await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(horario).toBeNull();
+    expect(getPayment).not.toHaveBeenCalled();
+    expect(
+      (db.lastPatch('pedidos', 'pedido-1')!.freteInicial as DocData).integracaoFreteOuterRef,
+    ).toBe('documents/int_frete/if-1');
+  });
+
+  it('keeps the transaction-fresh stored deadline over a lower-precedence fallback', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        prazoDespacho: null,
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00Z') * 1000,
+      },
+    });
+    const concorrenteUs = Date.parse('2026-01-09T18:00:00-03:00') * 1000;
+    vi.mocked(resolvePrazoDespacho).mockImplementationOnce(async () => {
+      const current = db.docs('pedidos').get('pedido-1')!;
+      db.seed('pedidos', 'pedido-1', {
+        ...current,
+        freteInicial: { ...(current.freteInicial as DocData), prazoDespacho: concorrenteUs },
+      });
+      return {
+        prazoDespachoUs: Date.parse('2026-01-08T18:00:00-03:00') * 1000,
+        fonte: 'pagamento-corte',
+      };
+    });
+
+    await importShipmentMercadoLivre(deps(db, makeApi()), 777);
+
+    expect((db.lastPatch('pedidos', 'pedido-1')!.freteInicial as DocData).prazoDespacho).toBe(
+      concorrenteUs,
+    );
+  });
+
+  it('keeps a fresh SLA authoritative over a stored deadline', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        prazoDespacho: Date.parse('2026-01-08T18:00:00-03:00') * 1000,
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00Z') * 1000,
+      },
+    });
+    const slaUs = Date.parse('2026-01-10T18:00:00-03:00') * 1000;
+    vi.mocked(resolvePrazoDespacho).mockResolvedValueOnce({
+      prazoDespachoUs: slaUs,
+      fonte: 'sla',
+    });
+
+    await importShipmentMercadoLivre(deps(db, makeApi()), 777);
+
+    expect((db.lastPatch('pedidos', 'pedido-1')!.freteInicial as DocData).prazoDespacho).toBe(
+      slaUs,
     );
   });
 });
@@ -702,6 +879,34 @@ describe('importShipmentMercadoLivre — error policy', () => {
     await expect(importShipmentMercadoLivre(deps(db, api), 777)).rejects.toBeInstanceOf(
       MercadoLivreHttpError,
     );
+  });
+
+  it('propagates a non-404 payment-detail error so the notification can retry', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00Z') * 1000,
+      },
+    });
+    const boom = new MercadoLivreHttpError('unauthorized', 401, null);
+    const api = makeApi({
+      getShipmentPayments: vi.fn(async () => [{ payment_id: 1, status: 'approved', amount: 10 }]),
+      getPayment: vi.fn(async () => {
+        throw boom;
+      }),
+    });
+    vi.mocked(resolvePrazoDespacho).mockImplementationOnce(async (input) => {
+      await input.loadPayments();
+      return { prazoDespachoUs: null, fonte: 'indisponivel' };
+    });
+
+    await expect(importShipmentMercadoLivre(deps(db, api), 777)).rejects.toBe(boom);
   });
 
   it('propagates a network/generic error instead of swallowing it', async () => {
