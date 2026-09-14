@@ -10,12 +10,15 @@ import {
   SHOPEE_GET_ESCROW_LIST_PATH,
   SHOPEE_GET_ITEM_LIMIT_PATH,
   SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
+  SHOPEE_GET_PACKAGE_DETAIL_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
   SHOPEE_GET_VARIATION_TREE_PATH_ALT,
   SHOPEE_ORDER_DETAIL_MAX_ORDER_SN,
   SHOPEE_ORDER_DETAIL_OPTIONAL_FIELDS,
   SHOPEE_ORDER_LIST_MAX_PAGE_SIZE,
   SHOPEE_ORDER_LIST_MAX_WINDOW_SECONDS,
+  SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES,
+  SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES,
   SHOPEE_TAXONOMY_LANGUAGE,
   type ShopeeClient,
   type ShopeeClientConfig,
@@ -2057,5 +2060,420 @@ describe('get_escrow_list', () => {
     await client.getEscrowList({ ...PARAMS_LIQUIDACAO, pageNo: 2 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('page_no')).toBe('2');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                   O detalhe do pacote (passo 7)                             */
+/* -------------------------------------------------------------------------- */
+
+/** ⚠️ Inventado, como todo id deste arquivo. Nunca um package_number real. */
+const PACKAGE_NUMBER = 'OFG242672552205937';
+const PACKAGE_NUMBER_2 = 'OFG242672552205938';
+
+const PACKAGE_ROW = {
+  order_sn: ORDER_SN,
+  package_number: PACKAGE_NUMBER,
+  fulfillment_status: 'LOGISTICS_READY',
+  update_time: 1_661_950_674,
+  logistics_channel_id: 90021,
+  shipping_carrier: 'Entrega Turbo - M1020',
+  days_to_ship: 3,
+  ship_by_date: 1_662_209_873,
+  // ⚠️ A sentinela da própria página. Chega VERBATIM; quem normaliza é a app.
+  tracking_number: '-',
+  is_shipment_arranged: false,
+};
+
+const PACKAGE_DETAIL_BODY = {
+  request_id: 'req-package',
+  error: '',
+  response: {
+    package_list: [
+      PACKAGE_ROW,
+      { ...PACKAGE_ROW, package_number: PACKAGE_NUMBER_2, tracking_number: 'BR123456789BR' },
+    ],
+  },
+};
+
+/** N números de pacote distintos, para as duas bordas de `limit [1,50]`. */
+function pacotes(n: number): string[] {
+  return Array.from({ length: n }, (_, i) => `${PACKAGE_NUMBER}-${String(i)}`);
+}
+
+describe('get_package_detail', () => {
+  it('1 — vai por GET, sem corpo, no caminho da página e com as quatro chaves comuns mais a própria', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [PACKAGE_NUMBER],
+    });
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    expect(url.pathname).toBe('/api/v2/order/get_package_detail');
+    expect(url.pathname).toBe(SHOPEE_GET_PACKAGE_DETAIL_PATH);
+    expect([...url.searchParams.keys()].sort()).toEqual(
+      [...CHAVES_COMUNS, 'package_number_list'].sort(),
+    );
+  });
+
+  it('2 — junta os números num ÚNICO `package_number_list`, com vírgula e SEM espaço, e não repete a chave', async () => {
+    // ⚠️ `signedQuery` não sabe emitir chave repetida, e o exemplo de requisição
+    // da própria página vem com vírgula (`…%2C…`). Um espaço depois da vírgula
+    // viraria parte do próximo `package_number` e a Shopee devolveria a linha a
+    // menos — sem erro nenhum.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [PACKAGE_NUMBER, PACKAGE_NUMBER_2],
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.getAll('package_number_list')).toHaveLength(1);
+    expect(url.searchParams.get('package_number_list')).toBe(
+      `${PACKAGE_NUMBER},${PACKAGE_NUMBER_2}`,
+    );
+    expect(url.searchParams.get('package_number_list')).not.toContain(' ');
+    expect(url.search).toContain(`package_number_list=${PACKAGE_NUMBER}%2C${PACKAGE_NUMBER_2}`);
+  });
+
+  it('3 — UM pacote viaja na MESMA chave, sem sufixo e sem vírgula sobrando', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [PACKAGE_NUMBER],
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.get('package_number_list')).toBe(PACKAGE_NUMBER);
+    expect(url.searchParams.get('package_number_list')).not.toContain(',');
+  });
+
+  it('4 — recusa 0 e 51 pacotes ANTES da rede; aceita 1 e 50', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await expect(client.getPackageDetail({ packageNumbers: [] })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    await expect(
+      client.getPackageDetail({
+        packageNumbers: pacotes(SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES + 1),
+      }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // As duas bordas BOAS passam — sem isto o teste acima passaria com um
+    // cliente que recusasse tudo.
+    await expect(
+      client.getPackageDetail({ packageNumbers: [PACKAGE_NUMBER] }),
+    ).resolves.toBeDefined();
+    await expect(
+      client.getPackageDetail({ packageNumbers: pacotes(SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES) }),
+    ).resolves.toBeDefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES).toBe(50);
+  });
+
+  it('5 — recusa um elemento em BRANCO nomeando a POSIÇÃO, antes da rede', async () => {
+    // ⚠️ O parâmetro de wire é UM escalar juntado, então o `error_param` da
+    // Shopee só poderia dizer que `package_number_list` está errado — nunca
+    // qual elemento. A posição é a única coisa que o operador pode usar.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    const erro = await createShopeeClient(shopConfig(fetchMock))
+      .getPackageDetail({ packageNumbers: [PACKAGE_NUMBER, '  ', PACKAGE_NUMBER_2] })
+      .catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('posição 1');
+    expect((erro as Error).message).toContain('package_number');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('6 — ⚠️ NEAR-MISS: recusa o elemento `"-"` e ACEITA `"-A"` e `"A-"`', async () => {
+    // A sentinela é o VALOR INTEIRO, nunca um pedaço dele. `-` é como esta
+    // página escreve "ausente" em `tracking_number`, `item_sku` e
+    // `virtual_contact_number`; quem devolvesse um desses como chave estaria
+    // pedindo "nenhum pacote". Um traço DENTRO do número é só um número.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const erro = await client.getPackageDetail({ packageNumbers: ['-'] }).catch((e: unknown) => e);
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('posição 0');
+    // Espaçado dos dois lados é a MESMA sentinela — a comparação é depois do trim.
+    await expect(client.getPackageDetail({ packageNumbers: [' - '] })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Os dois quase-iguais passam, e chegam à query VERBATIM.
+    await expect(client.getPackageDetail({ packageNumbers: ['-A'] })).resolves.toBeDefined();
+    await expect(client.getPackageDetail({ packageNumbers: ['A-'] })).resolves.toBeDefined();
+    expect(
+      new URL(String(fetchMock.mock.calls[0]![0])).searchParams.get('package_number_list'),
+    ).toBe('-A');
+    expect(
+      new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('package_number_list'),
+    ).toBe('A-');
+  });
+
+  it('6 — ⚠️ o elemento vai TRIMADO para a query: quem julga e quem envia leem a MESMA string', async () => {
+    // ⚠️ As recusas julgam o elemento APARADO (`numero.trim() === ''`,
+    // `=== '-'`), então enviar o cru seria recusar sobre uma string e pedir
+    // outra: ` OFG…937 ` passa por todas elas e sairia como `%20OFG…937%20` —
+    // uma chave que a Shopee não tem. E a resposta não é erro nenhum: vêm as
+    // linhas dos pacotes que ela reconheceu, uma a menos, sem sinal em lugar
+    // nenhum.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [` ${PACKAGE_NUMBER} `, `\t${PACKAGE_NUMBER_2}`],
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.get('package_number_list')).toBe(
+      `${PACKAGE_NUMBER},${PACKAGE_NUMBER_2}`,
+    );
+    // ⚠️ O valor CODIFICADO, porque é ele que viaja — e `URLSearchParams`
+    // escreve espaço como `+`, nunca como `%20`, então é `+` que não pode
+    // aparecer (a tabulação vira `%09`). Um teste que procurasse `%20` passaria
+    // verde sobre a query errada.
+    expect(url.search).toContain(`package_number_list=${PACKAGE_NUMBER}%2C${PACKAGE_NUMBER_2}`);
+    expect(url.search).not.toContain('+');
+    expect(url.search).not.toContain('%09');
+
+    // ⚠️ QUASE-ERRO: o aparo é SÓ nas pontas. Um espaço NO MEIO do valor é parte
+    // do valor e viaja verbatim — aparar por dentro seria inventar um pacote.
+    await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [' OFG 111 '],
+    });
+    expect(
+      new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('package_number_list'),
+    ).toBe('OFG 111');
+  });
+
+  it('6 — QUASE-ERRO: um elemento SÓ de espaços continua recusado ANTES da rede', async () => {
+    // A âncora do caso acima: o aparo no envio não pode ter virado uma forma de
+    // um elemento em branco chegar à query como string vazia — e nem de a
+    // SENTINELA espaçada chegar como `-`.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await expect(
+      client.getPackageDetail({ packageNumbers: [PACKAGE_NUMBER, ' \t '] }),
+    ).rejects.toBeInstanceOf(ShopeeConfigError);
+    await expect(client.getPackageDetail({ packageNumbers: [' - '] })).rejects.toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('7 — recusa um elemento com VÍRGULA antes da rede: ela é o separador', async () => {
+    // Um elemento com vírgula viraria DOIS parâmetros em silêncio, e a resposta
+    // traria uma linha que ninguém pediu no lugar da que se pediu.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    const erro = await createShopeeClient(shopConfig(fetchMock))
+      .getPackageDetail({ packageNumbers: [`${PACKAGE_NUMBER},${PACKAGE_NUMBER_2}`] })
+      .catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('vírgula');
+    expect((erro as Error).message).toContain('posição 0');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('8 — desembrulha `response`: o envelope não chega ao chamador', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    const detalhe = await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [PACKAGE_NUMBER, PACKAGE_NUMBER_2],
+    });
+
+    expect('error' in detalhe).toBe(false);
+    expect('request_id' in detalhe).toBe(false);
+    expect(detalhe.package_list).toHaveLength(2);
+    expect(detalhe.package_list[0]?.package_number).toBe(PACKAGE_NUMBER);
+    expect(detalhe.package_list[0]?.fulfillment_status).toBe('LOGISTICS_READY');
+    // ⚠️ VERBATIM: a sentinela `-` atravessa o pacote e é a app que a dobra.
+    expect(detalhe.package_list[0]?.tracking_number).toBe('-');
+    expect(detalhe.package_list[1]?.tracking_number).toBe('BR123456789BR');
+  });
+
+  it('9 — ⚠️ aceita `"error": "-"` como SUCESSO nesta operação', async () => {
+    // A página contradiz a si mesma: a tabela de parâmetros diz "Empty if no
+    // error happened" e o exemplo renderizado imprime `-` em `error`, `message`
+    // E `warning`. A tolerância é por OPERAÇÃO porque a contradição é por PÁGINA.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...PACKAGE_DETAIL_BODY, error: '-', message: '-', warning: '-' }),
+    );
+    const detalhe = await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [PACKAGE_NUMBER],
+    });
+
+    expect(detalhe.package_list).toHaveLength(2);
+    expect(SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES).toEqual(['-']);
+  });
+
+  it('10 — ⚠️ NEAR-MISS: `"error": " "` (um espaço) continua sendo FALHA aqui', async () => {
+    // Igualdade EXATA contra cada alias, nunca um trim: um valor com espaço lido
+    // como sucesso faria um corpo de falha (que não traz `response`) chegar ao
+    // desembrulho.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...PACKAGE_DETAIL_BODY, error: ' ' }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+        packageNumbers: [PACKAGE_NUMBER],
+      }),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
+  });
+
+  it('11 — ⚠️ NEAR-MISS: o MESMO `"error": "-"` NÃO é sucesso no get_order_detail', async () => {
+    // O alias é da OPERAÇÃO. O irmão mais próximo — a outra leitura de pedido,
+    // no mesmo módulo `order` — não o tem, e um alias global apagaria a
+    // diferença.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ORDER_DETAIL_BODY, error: '-' }),
+    );
+    await expect(
+      createShopeeClient(shopConfig(fetchMock)).getOrderDetail({ orderSnList: [ORDER_SN] }),
+    ).rejects.toBeInstanceOf(ShopeeApiError);
+  });
+
+  it('12 — a assinatura NÃO depende de `package_number_list`; o access_token muda', async () => {
+    // ⚠️ MEDIDO: a base string de loja é `partner_id + path + timestamp +
+    // access_token + shop_id` (`sign.ts`) — sem verbo e sem os parâmetros da
+    // operação. Dois conjuntos de pacotes dão o MESMO `sign`, então um número
+    // errado aparece como `error_param`, nunca como `error_sign`.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(PACKAGE_DETAIL_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.getPackageDetail({ packageNumbers: [PACKAGE_NUMBER] });
+    await client.getPackageDetail({ packageNumbers: [PACKAGE_NUMBER_2, PACKAGE_NUMBER] });
+
+    const primeira = new URL(String(fetchMock.mock.calls[0]![0]));
+    const segunda = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(primeira.searchParams.get('package_number_list')).not.toBe(
+      segunda.searchParams.get('package_number_list'),
+    );
+    expect(primeira.searchParams.get('sign')).toBe(segunda.searchParams.get('sign'));
+
+    // NEAR-MISS na direção oposta: o que ESTÁ na base string muda a assinatura.
+    const outro = createShopeeClient(
+      shopConfig(fetchMock, () => Promise.resolve('outro-access-inventado')),
+    );
+    await outro.getPackageDetail({ packageNumbers: [PACKAGE_NUMBER] });
+    expect(new URL(String(fetchMock.mock.calls[2]![0])).searchParams.get('sign')).not.toBe(
+      primeira.searchParams.get('sign'),
+    );
+  });
+
+  it('13 — uma linha ILEGÍVEL vira `null` NO LUGAR e as boas passam intactas', async () => {
+    // ⚠️ Esta chamada é em lote até 50. Um pacote malformado não pode custar os
+    // outros 49 — e a sentinela existe para ser CONTADA pelo braço do passo 7.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        ...PACKAGE_DETAIL_BODY,
+        response: {
+          package_list: [
+            PACKAGE_ROW,
+            // `package_number` em branco: sem identidade, não é pacote.
+            { ...PACKAGE_ROW, package_number: '' },
+            { ...PACKAGE_ROW, package_number: PACKAGE_NUMBER_2 },
+          ],
+        },
+      }),
+    );
+    const detalhe = await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [PACKAGE_NUMBER, PACKAGE_NUMBER_2],
+    });
+
+    expect(detalhe.package_list).toHaveLength(3);
+    expect(detalhe.package_list[1]).toBeNull();
+    expect(detalhe.package_list[0]?.package_number).toBe(PACKAGE_NUMBER);
+    expect(detalhe.package_list[2]?.package_number).toBe(PACKAGE_NUMBER_2);
+    expect(detalhe.package_list.filter((linha) => linha === null)).toHaveLength(1);
+  });
+
+  it('14 — ⚠️ NEAR-MISS: a sentinela é `null`, NUNCA `{}` — um objeto vazio pareceria uma linha', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        ...PACKAGE_DETAIL_BODY,
+        response: { package_list: [{ package_number: 42 }] },
+      }),
+    );
+    const detalhe = await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [PACKAGE_NUMBER],
+    });
+
+    expect(detalhe.package_list[0]).toBeNull();
+    expect(detalhe.package_list[0]).not.toEqual({});
+  });
+
+  it('15 — MENOS linhas do que se pediu é resposta VÁLIDA: o chamador reconcilia por package_number', async () => {
+    // ⚠️ Nunca por posição. Aqui a única linha devolvida é a SEGUNDA que se
+    // pediu; ler `package_list[0]` como "a primeira que pedi" trocaria os dois
+    // pacotes de pedido.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        ...PACKAGE_DETAIL_BODY,
+        response: { package_list: [{ ...PACKAGE_ROW, package_number: PACKAGE_NUMBER_2 }] },
+      }),
+    );
+    const detalhe = await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [PACKAGE_NUMBER, PACKAGE_NUMBER_2],
+    });
+
+    expect(detalhe.package_list).toHaveLength(1);
+    expect(detalhe.package_list[0]?.package_number).toBe(PACKAGE_NUMBER_2);
+    expect(
+      detalhe.package_list.find((linha) => linha?.package_number === PACKAGE_NUMBER),
+    ).toBeUndefined();
+  });
+
+  it('16 — sem a chave `package_list`, zero linhas — nunca um corpo malformado', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...PACKAGE_DETAIL_BODY, response: {} }),
+    );
+    const detalhe = await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: [PACKAGE_NUMBER],
+    });
+
+    expect(detalhe.package_list).toEqual([]);
+  });
+
+  it('17 — `error_param`, `error_not_found` e `error_data` são ShopeeApiError de kind `other` — permanentes', async () => {
+    // ⚠️ Classificar como transitório faria a fila repetir para sempre a entrega
+    // de um pacote que a Shopee já disse não conhecer.
+    for (const code of ['error_param', 'error_not_found', 'error_data'] as const) {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        jsonResponse({ request_id: 'req', error: code, message: 'parametro invalido' }),
+      );
+      const erro = await createShopeeClient(shopConfig(fetchMock))
+        .getPackageDetail({ packageNumbers: [PACKAGE_NUMBER] })
+        .catch((e: unknown) => e);
+
+      expect(erro).toBeInstanceOf(ShopeeApiError);
+      expect((erro as ShopeeApiError).code).toBe(code);
+      expect((erro as ShopeeApiError).kind).toBe(SHOPEE_ERROR_KIND.other);
+    }
+  });
+
+  it('18 — NÃO pagina sozinho: uma chamada, uma lista — esta página não tem cursor nem `more`', async () => {
+    const cheia = Array.from({ length: SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES }, (_, i) => ({
+      ...PACKAGE_ROW,
+      package_number: `${PACKAGE_NUMBER}-${String(i)}`,
+    }));
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...PACKAGE_DETAIL_BODY, response: { package_list: cheia } }),
+    );
+    const detalhe = await createShopeeClient(shopConfig(fetchMock)).getPackageDetail({
+      packageNumbers: pacotes(SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES),
+    });
+
+    // Uma página CHEIA não faz o cliente pedir outra.
+    expect(detalhe.package_list).toHaveLength(SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect('more' in detalhe).toBe(false);
+    expect('next_cursor' in detalhe).toBe(false);
   });
 });

@@ -17,6 +17,11 @@
  * importer), so it stays offline while still proving the dispatched bundle
  * carries the order-import arm.
  *
+ * …and, since step 7, the SAME shape for a **code 4** (`order_trackingno_push`),
+ * which proves the dispatched bundle carries the shipment arm — `DISPATCH[4]`
+ * moved from `parado` to `frete`, so a stale artifact parks this delivery where
+ * a current one defers it.
+ *
  * ⚠️ Why an unknown four-digit code. Every other destino either writes nothing
  * (`ack`) or reaches for a Shopee call: the conta arms resolve a shop against
  * `integracao`, and code 12 then signs a Public `get_shops_by_partner`. ⚠️ The
@@ -243,6 +248,77 @@ describe.skipIf(!EMULATED || !TASKS)('webhook Shopee → Cloud Tasks → onTaskD
       shop_id: shopId,
       // ⚠️ `deferred`, not `parked` and not `failed`. `parked` would mean the
       // dispatched bundle still routes code 3 to the unbuilt-handler arm (a
+      // stale artifact); `failed` would mean the receiver took its own enqueue
+      // fallback and the queue hop never happened at all.
+      status: 'deferred',
+      tentativas: 0,
+    });
+    // The reason names the shop, which is what an operator acts on: connect it.
+    expect(String(doc.erro)).toContain(String(shopId));
+    expect(doc.processedAt).toBeGreaterThan(0);
+  });
+
+  /**
+   * The step-7 arm, through the same hop — and the ONE code-4 case that stays
+   * offline, for the code-3 case's reason exactly.
+   *
+   * ⚠️ Why an unmapped shop again. Every other code-4/30/47 path reaches
+   * `rastrearPedidoShopee`, which loads a conta context and calls
+   * `get_package_detail`; the lane's fetch kill-switch lives in the VITEST
+   * process and does not cover the dispatched function, so that call would
+   * really leave the runner. A shop that maps to no active integração is refused
+   * by `findIntegracaoByShopId` BEFORE `deps.rastrearPedido` is ever resolved —
+   * so the lazy `import('../pedidos/rastrearPedido')` never even fires: no token,
+   * no secret, no Shopee call, and still a REAL write by the dispatched
+   * function.
+   *
+   * What it proves that the two cases above cannot: the dispatched bundle really
+   * carries `DISPATCH[4] = 'frete'` (a bundle built before step 7 PARKS this
+   * delivery, because code 4's `MOTIVO_PARADO` row existed then), and the new
+   * `frete-adiado`/`sem-conta` defer survives the queue hop as a `deferred` row
+   * rather than a `failed` one.
+   */
+  it('um code 4 de loja não mapeada ADIA — a função despachada grava `deferred`, sem chamar a Shopee', async () => {
+    const shopId = 900_000 + Math.floor(Math.random() * 90_000);
+    const timestampSegundos = Math.floor(Date.now() / 1000);
+    // Shopee's own doc-sample shapes; no real order and no real parcel exist.
+    const orderSn = `2601010${randomUUID().slice(0, 6).toUpperCase()}`;
+    const packageNumber = `OFG${randomUUID().replace(/\D/g, '').padEnd(15, '0').slice(0, 15)}`;
+    // ⚠️ NO `update_time`: `push 2` documents none at all, so the carimbo falls
+    // to the envelope stamp — and the doc id below has to agree with
+    // `identidadeDoPush`'s code-4 row or nothing is found.
+    const raw = JSON.stringify({
+      code: 4,
+      shop_id: shopId,
+      timestamp: timestampSegundos,
+      data: { ordersn: orderSn, package_number: packageNumber, tracking_no: 'BR000000001BR' },
+    });
+
+    const assinatura = expectedPushSignature(raw, {
+      partnerKey: shopeeConfig().partnerKey,
+      callbackUrl: shopeePushCallbackUrl(),
+    });
+
+    const res = await POST(
+      new Request('http://localhost:3009/api/webhooks/shopee', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: assinatura },
+        body: raw,
+      }),
+    );
+    expect(res.status).toBe(204);
+
+    // ⚠️ FIVE segments: code 4's entity is `<loja>:<ordersn>:<package_number>`,
+    // because two packages of one order arranged by the same `ship_order` get
+    // their tracking numbers in the same second.
+    const docId = `4:${String(shopId)}:${orderSn}:${packageNumber}:${String(timestampSegundos * 1000)}`;
+    const doc = await waitForDoc(docId);
+
+    expect(doc).toMatchObject({
+      code: 4,
+      shop_id: shopId,
+      // ⚠️ `deferred`, not `parked` and not `failed`. `parked` would mean the
+      // dispatched bundle still routes code 4 to the unbuilt-handler arm (a
       // stale artifact); `failed` would mean the receiver took its own enqueue
       // fallback and the queue hop never happened at all.
       status: 'deferred',

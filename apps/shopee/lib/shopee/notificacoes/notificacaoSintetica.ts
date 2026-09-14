@@ -57,8 +57,15 @@ import type { ShopeeNotificationPayload } from './notificacao';
  * and whose pedido (or pagamento) does not exist here yet. It carries no
  * `orderStatus` — the settlement listing has no such field — so the importer
  * re-reads `get_order_detail` for it exactly as it does for every other code 3.
+ *
+ * ⚠️ `'rastreio'` (#1515, step 7) is a code 4/30/47 delivery that found no
+ * pedido — the race the docs guarantee is possible, since no page anywhere
+ * states an ordering between push codes and `push_guarantee = 0`. It is the one
+ * producer driven by a PUSH rather than by a sweep, so it synthesizes at most
+ * once per delivery per lane run; the bound is in `rastrearPedido.ts`'s
+ * docblock.
  */
-export type OrigemSintetica = 'backfill' | 'reserva-travada' | 'liquidacao';
+export type OrigemSintetica = 'backfill' | 'reserva-travada' | 'liquidacao' | 'rastreio';
 
 export interface NotificacaoSinteticaDePedidoParams {
   /** The conta's `shop_id` — top level on a real code 3. */

@@ -405,10 +405,10 @@ describe('mesclarFreteInicialShopee', () => {
     printLabelId: 'ETQ-1',
   };
 
-  it('atualiza EXATAMENTE os oito campos declarados — nada mais', () => {
+  it('40 — atualiza EXATAMENTE os SETE campos declarados — nada mais', () => {
     // Drift anchor: the mapped block below differs in every field, so any key
-    // the merge touches shows up here. If a ninth field is ever refreshed, this
-    // fails until it is added to `CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE` too.
+    // the merge touches shows up here. If an eighth field is ever refreshed,
+    // this fails until it is added to `CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE` too.
     const { frete: mapeado } = mapearFreteInicialShopee({
       // `edt_to` is patched in because the SG order zero-fills it, and a mapped
       // `null` cannot show whether the merge would have taken the field.
@@ -423,6 +423,30 @@ describe('mesclarFreteInicialShopee', () => {
         JSON.stringify((armazenado as Record<string, unknown>)[k]),
     );
     expect(mudaram.sort()).toEqual([...CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE].sort());
+    // The list is SEVEN since step 7 (#1515) and `prazoDespacho` is not in it.
+    expect(CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE).toHaveLength(7);
+    expect([...CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE]).not.toContain('prazoDespacho');
+  });
+
+  it('40 — QUASE-ERRO: um prazoDespacho ARMAZENADO sobrevive a um re-import que mapeia OUTRO', () => {
+    // ⚠️ The near-miss the ownership move is about: the mapped deadline here is
+    // a REAL value and a DIFFERENT one, so a merge that still refreshed the
+    // field would show it. Step 7 folds the per-package deadlines into this
+    // slot, so on a split order the order-level number is not the answer.
+    const { frete: mapeado } = mapearFreteInicialShopee({
+      detalhe: linha({ ship_by_date: 1_789_405_354, edt_to: 1_789_900_000 }),
+      escrow: null,
+      watermarkUs: WATERMARK_US,
+    });
+    // ÂNCORA: the two really do differ — otherwise the assertion below is vacuous.
+    expect(mapeado.prazoDespacho).toBe(microsDeSegundosShopee(1_789_405_354));
+    expect(mapeado.prazoDespacho).not.toBe(armazenado.prazoDespacho);
+
+    const saida = mesclarFreteInicialShopee(armazenado, mapeado);
+    expect(saida.prazoDespacho).toBe(1);
+    // …while `dataPrevisaoEntrega`, its NEIGHBOUR on the same wire and still on
+    // the list, DOES move. So this is the ownership move, not a dead merge.
+    expect(saida.dataPrevisaoEntrega).toBe(microsDeSegundosShopee(1_789_900_000));
   });
 
   it('⚠️ NUNCA toca estado, codRastreio nem printLabelId', () => {

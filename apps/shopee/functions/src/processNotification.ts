@@ -66,6 +66,17 @@ export const processShopeeNotification = onTaskDispatched(
     // document — and nothing that touches the network. The budget above is
     // unchanged, and the ladder invariant `index.test.ts` pins
     // (3 × 300 + 2 × 300 = 1 500 ≤ 1 800) is untouched.
+    //
+    // ⚠️ Step 7 (#1515) adds ONE Shopee call to this path — `get_package_detail`,
+    // one package per code-4/30/47 delivery — plus one document read and one
+    // transaction. That is the first time this budget's premise has moved since
+    // step 5, and it moves DOWNWARD: a shipment delivery makes one GET where an
+    // order import makes two, resolves no produto, writes ONE document and
+    // creates no incidentes. A delivery whose pedido does not exist yet spends
+    // NO call at all — the pedido read comes first, the handler defers and
+    // enqueues one synthetic code 3. The budget above is unchanged, the ladder
+    // invariant `index.test.ts` pins is untouched, and there is NO new queue
+    // function: the arm rides this one.
     timeoutSeconds: 300,
     retryConfig: {
       maxAttempts: TASK_MAX_ATTEMPTS,

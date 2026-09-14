@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SHOPEE_INVOICE_ISSUER,
+  SHOPEE_LOGISTICS_STATUS,
+  SHOPEE_PACKAGE_FULFILLMENT_STATUS,
   SHOPEE_SHOP_STATUS,
+  SHOPEE_TRACKING_LOGISTICS_STATUS,
   dataOp,
   flatOp,
   shopeeAppPushConfigSchema,
@@ -24,6 +27,10 @@ import {
   shopeeLostPushSchema,
   shopeeOrderDetailSchema,
   shopeeOrderListSchema,
+  shopeePackageDetailItemSchema,
+  shopeePackageDetailRowSchema,
+  shopeePackageDetailSchema,
+  shopeePackageItemSchema,
   shopeeProfileSchema,
   shopeeShopInfoSchema,
   shopeeShopStatusSchema,
@@ -1432,5 +1439,306 @@ describe('os campos de tarifa do escrow (passo 6)', () => {
       shopeeEscrowDetailSchema.parse(rendaEscrow({ final_shipping_fee: '-10' })).response
         .order_income!.final_shipping_fee,
     ).toBe(-10);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                   O detalhe do pacote (passo 7)                             */
+/* -------------------------------------------------------------------------- */
+
+/** ⚠️ Inventado. Nunca um package_number real. */
+const PACOTE = 'OFG242672552205937';
+const PACOTE_2 = 'OFG242672552205938';
+const ORDER_SN_PACOTE = '220831EGF1JMXF';
+
+/** Uma linha mínima e VÁLIDA — só as duas identidades estritas. */
+function linhaPacote(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { order_sn: ORDER_SN_PACOTE, package_number: PACOTE, ...extra };
+}
+
+function corpoPacote(...linhas: unknown[]): Record<string, unknown> {
+  return { error: '', request_id: 'req-pacote', response: { package_list: linhas } };
+}
+
+/**
+ * Os OITO campos que esta página traz e que o schema DELIBERADAMENTE não
+ * declara — sete no nível do pacote e `prescription_reject_reason` um nível
+ * abaixo, no item.
+ */
+const CHAVES_PII_NAO_DECLARADAS = [
+  'recipient_address',
+  'driver_info',
+  'virtual_contact_number',
+  'package_query_number',
+  'prescription_images',
+  'pharmacist_name',
+  'buyer_proof_of_collection',
+  'prescription_reject_reason',
+] as const;
+
+describe('o detalhe do pacote (get_package_detail, passo 7)', () => {
+  it('1 — a linha RECUSA um `order_sn` em branco e um `package_number` em branco, alto e claro', () => {
+    // ⚠️ As duas são identidades: a primeira é a pré-imagem do id determinístico
+    // do pedido, a segunda é por onde o chamador reconcilia. Uma em branco
+    // colapsaria todas essas linhas num pacote só.
+    const semPedido = shopeePackageDetailRowSchema.safeParse(linhaPacote({ order_sn: '' }));
+    expect(semPedido.success).toBe(false);
+    expect(semPedido.error?.issues.map((i) => i.path.join('.'))).toContain('order_sn');
+
+    const semPacote = shopeePackageDetailRowSchema.safeParse(linhaPacote({ package_number: '' }));
+    expect(semPacote.success).toBe(false);
+    expect(semPacote.error?.issues.map((i) => i.path.join('.'))).toContain('package_number');
+
+    // ÂNCORA: a MESMA linha com as duas identidades preenchidas parseia.
+    expect(shopeePackageDetailRowSchema.safeParse(linhaPacote()).success).toBe(true);
+  });
+
+  it('2 — `fulfillment_status` aceita um token que ninguém viu: quem julga é a dobra, não o schema', () => {
+    // ⚠️ Um décimo-segundo token inventado pela Shopee amanhã não pode derrubar
+    // a leitura de remessa do pedido inteiro. O leitor dobra e registra o token
+    // desconhecido; o schema só transporta.
+    const linha = shopeePackageDetailRowSchema.parse(
+      linhaPacote({ fulfillment_status: 'LOGISTICS_TELEPORTED' }),
+    );
+    expect(linha.fulfillment_status).toBe('LOGISTICS_TELEPORTED');
+
+    // E os onze documentados continuam passando, um a um.
+    for (const token of SHOPEE_PACKAGE_FULFILLMENT_STATUS) {
+      expect(
+        shopeePackageDetailRowSchema.parse(linhaPacote({ fulfillment_status: token }))
+          .fulfillment_status,
+      ).toBe(token);
+    }
+
+    // Ausente é `null`, nunca uma string vazia inventada.
+    expect(shopeePackageDetailRowSchema.parse(linhaPacote()).fulfillment_status).toBeNull();
+  });
+
+  it('3 — `tracking_number: "-"` sobrevive VERBATIM: a sentinela é da app, não do schema', () => {
+    // ⚠️ Normalizar aqui esconderia de um fixture capturado exatamente o fato de
+    // wire que o fixture existe para registrar. Esta página manda `-` em
+    // `tracking_number`, `item_sku`, `model_sku` e `virtual_contact_number`.
+    const linha = shopeePackageDetailRowSchema.parse(
+      linhaPacote({
+        tracking_number: '-',
+        item_list: [{ item_id: 2_200_149_592, item_sku: '-', model_sku: '-' }],
+      }),
+    );
+    expect(linha.tracking_number).toBe('-');
+    expect(linha.item_list?.[0]?.item_sku).toBe('-');
+    expect(linha.item_list?.[0]?.model_sku).toBe('-');
+
+    // NEAR-MISS: um número REAL com traço no meio atravessa igualzinho — nada
+    // aqui olha para dentro do valor.
+    expect(
+      shopeePackageDetailRowSchema.parse(linhaPacote({ tracking_number: 'BR-123' }))
+        .tracking_number,
+    ).toBe('BR-123');
+  });
+
+  it('4 — um `update_time` CITADO parseia; `"1.5e9"` NÃO — a tolerância é sobre a aspa, nunca sobre a forma', () => {
+    // A tolerância do #1087: um serializador que cita UM campo não pode custar o
+    // pacote inteiro. Mas um expoente é um palpite sobre o que o provedor quis
+    // dizer, e um instante inventado é pior que uma linha recusada.
+    const citado = shopeePackageDetailRowSchema.parse(
+      linhaPacote({ update_time: '1661950674', ship_by_date: '1662209873' }),
+    );
+    expect(citado.update_time).toBe(1_661_950_674);
+    expect(citado.ship_by_date).toBe(1_662_209_873);
+
+    const expoente = shopeePackageDetailRowSchema.safeParse(linhaPacote({ update_time: '1.5e9' }));
+    expect(expoente.success).toBe(false);
+    expect(expoente.error?.issues.map((i) => i.path.join('.'))).toContain('update_time');
+
+    // E na LISTA, a linha com expoente vira a sentinela `null` — as outras ficam.
+    const pagina = shopeePackageDetailSchema.parse(
+      corpoPacote(linhaPacote({ update_time: '1.5e9' }), linhaPacote({ package_number: PACOTE_2 })),
+    ).response;
+    expect(pagina.package_list[0]).toBeNull();
+    expect(pagina.package_list[1]?.package_number).toBe(PACOTE_2);
+  });
+
+  it('5 — o zero-fill sobrevive como `0`, nunca como `null`: quem decide que zero é ausência é o leitor', () => {
+    // ⚠️ A Shopee preenche numéricos ausentes com zero, e o exemplo desta página
+    // manda `tracking_number_expiration_date: 0`, `pickup_done_time: 0`,
+    // `parcel_chargeable_weight_gram: 0` e `group_shipment_id: 0`. Um `??` em
+    // qualquer um deles é um bug — e `logistics_channel_id: 0` como canal é um
+    // canal que não existe.
+    const linha = shopeePackageDetailRowSchema.parse(
+      linhaPacote({
+        ship_by_date: 0,
+        logistics_channel_id: 0,
+        pickup_done_time: 0,
+        group_shipment_id: 0,
+        parcel_chargeable_weight_gram: 0,
+      }),
+    );
+    expect(linha.ship_by_date).toBe(0);
+    expect(linha.logistics_channel_id).toBe(0);
+    expect(linha.pickup_done_time).toBe(0);
+    expect(linha.group_shipment_id).toBe(0);
+    expect(linha.parcel_chargeable_weight_gram).toBe(0);
+
+    // NEAR-MISS: AUSENTE é `null`, e os dois casos continuam distinguíveis.
+    const vazia = shopeePackageDetailRowSchema.parse(linhaPacote());
+    expect(vazia.ship_by_date).toBeNull();
+    expect(vazia.logistics_channel_id).toBeNull();
+  });
+
+  it('6 — os três arrays têm 11 / 13 / 36 membros, e o de 13 é superconjunto ESTRITO do de 11 pelos dois valores nomeados', () => {
+    expect(SHOPEE_PACKAGE_FULFILLMENT_STATUS).toHaveLength(11);
+    expect(SHOPEE_LOGISTICS_STATUS).toHaveLength(13);
+    expect(SHOPEE_TRACKING_LOGISTICS_STATUS).toHaveLength(36);
+
+    // Cada um sem repetição — uma lista transcrita à mão é onde um valor duplica.
+    expect(new Set(SHOPEE_PACKAGE_FULFILLMENT_STATUS).size).toBe(11);
+    expect(new Set(SHOPEE_LOGISTICS_STATUS).size).toBe(13);
+    expect(new Set(SHOPEE_TRACKING_LOGISTICS_STATUS).size).toBe(36);
+
+    // ⚠️ O delta do `guide 229`, valor a valor: "Due to legacy logic, the package
+    // logistics status in get_order_detail will return 2 additional values".
+    const extras = SHOPEE_LOGISTICS_STATUS.filter(
+      (v) => !(SHOPEE_PACKAGE_FULFILLMENT_STATUS as readonly string[]).includes(v),
+    );
+    expect(extras).toEqual(['LOGISTICS_PENDING_ARRANGE', 'LOGISTICS_COD_REJECTED']);
+    // E nada do lado de 11 ficou de fora do de 13.
+    expect(
+      SHOPEE_PACKAGE_FULFILLMENT_STATUS.filter(
+        (v) => !(SHOPEE_LOGISTICS_STATUS as readonly string[]).includes(v),
+      ),
+    ).toEqual([]);
+  });
+
+  it('7 — ⚠️ `FAILED_DELIVERED` está no array de rastreio e NÃO no de logística — as duas listas não são a mesma', () => {
+    // A página do `get_tracking_info` manda "See Data Definition - LogisticsStatus"
+    // para os DOIS campos chamados `logistics_status`, e o próprio exemplo dela
+    // usa `FAILED_DELIVERED`, que não é membro da lista de 13. Ler um valor
+    // POR EVENTO contra `LogisticsStatus` recusaria todos os 36.
+    expect(SHOPEE_TRACKING_LOGISTICS_STATUS).toContain('FAILED_DELIVERED');
+    expect(SHOPEE_LOGISTICS_STATUS as readonly string[]).not.toContain('FAILED_DELIVERED');
+
+    // NEAR-MISS na direção oposta: nenhum token `LOGISTICS_*` está na lista de
+    // rastreio, e os dois vocabulários não se encostam em valor nenhum.
+    expect(SHOPEE_TRACKING_LOGISTICS_STATUS.filter((v) => v.startsWith('LOGISTICS_'))).toEqual([]);
+    expect(
+      SHOPEE_LOGISTICS_STATUS.filter((v) =>
+        (SHOPEE_TRACKING_LOGISTICS_STATUS as readonly string[]).includes(v),
+      ),
+    ).toEqual([]);
+  });
+
+  it('8 — ⚠️ nenhuma das OITO chaves de PII é chave do `.shape`, e um corpo que as traz PARSEIA assim mesmo', () => {
+    // ⚠️ As duas metades são a decisão: a ausência é o que impede um leitor de
+    // alcançá-las por um TIPO, e o passthrough é o que faz um fixture capturado
+    // ainda registrá-las (o `redact.ts` percorre o JSON, não o schema).
+    const declaradas = Object.keys(shopeePackageDetailRowSchema.shape);
+    for (const chave of CHAVES_PII_NAO_DECLARADAS) {
+      expect(declaradas).not.toContain(chave);
+    }
+    // `prescription_reject_reason` também não é chave do ITEM.
+    expect(Object.keys(shopeePackageDetailItemSchema.shape)).not.toContain(
+      'prescription_reject_reason',
+    );
+
+    // ÂNCORA: o `.shape` NÃO está vazio — as que são para estar, estão.
+    expect(declaradas).toContain('tracking_number');
+    expect(declaradas).toContain('fulfillment_status');
+    expect(declaradas).toContain('is_shipment_arranged');
+
+    // E o corpo real da página, com todas elas, continua sendo uma linha válida.
+    const linha = shopeePackageDetailRowSchema.parse(
+      linhaPacote({
+        recipient_address: { name: 'b***r', phone: '******78', geolocation: { latitude: -23.5 } },
+        driver_info: { driver_name: '', driver_phone: '', driver_status: 'Driver is on the way' },
+        virtual_contact_number: '-',
+        package_query_number: 'false',
+        prescription_images: ['-'],
+        pharmacist_name: '-',
+        buyer_proof_of_collection: ['-'],
+        item_list: [{ item_id: 1, prescription_reject_reason: '-' }],
+      }),
+    );
+    expect(linha.package_number).toBe(PACOTE);
+    // Elas chegam — mas só atrás de um cast explícito, nunca por um campo tipado.
+    expect((linha as unknown as Record<string, unknown>).driver_info).toBeDefined();
+    expect((linha as unknown as Record<string, unknown>).virtual_contact_number).toBe('-');
+  });
+
+  it('9 — o item do pacote CONCORDA com o do pedido nas seis chaves comuns e acrescenta exatamente duas', () => {
+    // ⚠️ Estendido em vez de re-declarado: as seis compartilhadas não podem
+    // divergir, e as duas novas são as únicas que esta página acrescenta e que
+    // uma reconciliação pacote↔linha quereria.
+    const doPedido = Object.keys(shopeePackageItemSchema.shape).sort();
+    const doPacote = Object.keys(shopeePackageDetailItemSchema.shape).sort();
+
+    expect(doPedido).toHaveLength(6);
+    expect(doPacote).toHaveLength(8);
+    for (const chave of doPedido) expect(doPacote).toContain(chave);
+    expect(doPacote.filter((c) => !doPedido.includes(c))).toEqual(['item_sku', 'model_sku']);
+
+    // E o comportamento compartilhado é o MESMO: `product_location_id` aceita as
+    // duas formas nos dois schemas (string no pacote, array no item do pedido).
+    expect(
+      shopeePackageDetailItemSchema.parse({ item_id: 1, product_location_id: 'BR-SP' })
+        .product_location_id,
+    ).toBe('BR-SP');
+    expect(
+      shopeePackageDetailItemSchema.parse({ item_id: 1, product_location_id: ['A', 'B'] })
+        .product_location_id,
+    ).toEqual(['A', 'B']);
+  });
+
+  it('10 — `wrappedOp` EXIGE `response`: o mesmo corpo debaixo de `data` falha', () => {
+    // ⚠️ Os três invólucros não são intercambiáveis, e é o schema da operação
+    // que decide qual — não uma flag no cliente.
+    expect(shopeePackageDetailSchema.safeParse(corpoPacote(linhaPacote())).success).toBe(true);
+
+    const sobData = shopeePackageDetailSchema.safeParse({
+      error: '',
+      data: { package_list: [linhaPacote()] },
+    });
+    expect(sobData.success).toBe(false);
+    expect(sobData.error?.issues.map((i) => i.path.join('.'))).toContain('response');
+
+    // E sem `package_list` nenhuma a página é uma lista VAZIA, não um corpo ruim.
+    expect(
+      shopeePackageDetailSchema.parse({ error: '', response: {} }).response.package_list,
+    ).toEqual([]);
+  });
+
+  it('11 — uma chave que a Shopee inventar amanhã atravessa em TODOS os níveis', () => {
+    const parsed = shopeePackageDetailSchema.parse({
+      error: '',
+      campo_novo_no_envelope: 1,
+      response: {
+        campo_novo_no_payload: 2,
+        package_list: [
+          linhaPacote({
+            campo_novo_na_linha: 3,
+            item_list: [{ item_id: 1, campo_novo_no_item: 4 }],
+            status_info_tag: { tag_id: 2, timestamp: 1_662_209_873, campo_novo_na_tag: 5 },
+            invoice_pending: { status: 'pending', campo_novo_na_nota: 6 },
+          }),
+        ],
+      },
+    });
+
+    const comoRegistro = parsed as unknown as Record<string, unknown>;
+    expect(comoRegistro.campo_novo_no_envelope).toBe(1);
+    expect((parsed.response as unknown as Record<string, unknown>).campo_novo_no_payload).toBe(2);
+
+    const linha = parsed.response.package_list[0]!;
+    expect((linha as unknown as Record<string, unknown>).campo_novo_na_linha).toBe(3);
+    expect((linha.item_list![0] as unknown as Record<string, unknown>).campo_novo_no_item).toBe(4);
+    expect((linha.status_info_tag as unknown as Record<string, unknown>).campo_novo_na_tag).toBe(5);
+    expect((linha.invoice_pending as unknown as Record<string, unknown>).campo_novo_na_nota).toBe(
+      6,
+    );
+
+    // E o que É tipado nesses dois blocos continua sendo lido.
+    expect(linha.status_info_tag?.tag_id).toBe(2);
+    expect(linha.status_info_tag?.timestamp).toBe(1_662_209_873);
+    expect(linha.invoice_pending?.status).toBe('pending');
+    expect(linha.invoice_pending?.pending_reason).toBeNull();
   });
 });

@@ -129,6 +129,14 @@ describe('salvarPedidoShopee — criação', () => {
     expect(doc.ultimaModificacao).toBe(NOW_US);
     expect(doc.integracaoPedidoOuterRef).toBe(`documents/integracao/${CONTA}`);
     expect(doc.itensIds).toEqual(['NONE']);
+    // ⚠️ The CREATE path writes the WHOLE mapped block and is not governed by
+    // `CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE`, so a brand-new pedido still carries
+    // step 5's ORDER-level deadline even though step 7 owns refreshing it
+    // (#1515). Without this a split order's first package delivery would be the
+    // first time the field was ever written.
+    expect((doc.freteInicial as Record<string, unknown>).prazoDespacho).toBe(
+      microsDeSegundosShopee(1_789_405_354),
+    );
   });
 
   it('⚠️ usa tx.create e NUNCA tx.set — o opLog é [get, create]', async () => {
@@ -836,6 +844,82 @@ describe('salvarPedidoShopee — o escopo das comparações', () => {
     const { r, db } = await segundaRodada(mapear());
     expect(r.acao).toBe('ignorado-sem-mudanca');
     expect(db.writes).toEqual([]);
+  });
+
+  it('41 — um re-import cuja ÚNICA diferença é prazoDespacho produz patch VAZIO', async () => {
+    // ⚠️ The ownership move of step 7 (#1515), from step 5's side.
+    // `ship_by_date` is read by NOTHING else in the mapper, so this payload
+    // differs from the first round in exactly one field — and that field left
+    // `CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE`, so the freight comparison must not
+    // see it. Before the move this wrote the whole block on every delivery of a
+    // split order, fighting the per-package fold.
+    const outroPrazo = 1_789_500_000;
+    const mapeado = mapear({ detalhe: linha({ ship_by_date: outroPrazo }) });
+    // ÂNCORA: the mapped deadline really is different — otherwise the test is
+    // an equal pair wearing a near-miss's title.
+    expect(mapeado.dados.freteInicial.prazoDespacho).toBe(microsDeSegundosShopee(outroPrazo));
+    expect(mapeado.dados.freteInicial.prazoDespacho).not.toBe(
+      mapear().dados.freteInicial.prazoDespacho,
+    );
+
+    const { r, db } = await segundaRodada(mapeado);
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(db.writes).toEqual([]);
+    // …and the stored deadline is still the FIRST round's, untouched.
+    const frete = db.store[PEDIDO_PATH]!.data.freteInicial as Record<string, unknown>;
+    expect(frete.prazoDespacho).toBe(microsDeSegundosShopee(1_789_405_354));
+  });
+
+  it('42 — um re-import PRESERVA `pacotes` e `estado` do frete armazenado', async () => {
+    // The mirror of the convergence case, from step 5's side: step 7 owns the
+    // diary and the freight estado, and this transaction reaches the block
+    // through `{ ...existente }`. A delivery that DOES move a step-5 field must
+    // carry both over byte-identically.
+    const diario = [
+      {
+        numero: 'OFG242672552205937',
+        estado: ESTADO_FRETE.postado,
+        estadoMarketplace: 'LOGISTICS_PICKUP_DONE',
+        codRastreio: 'BR000000001BR',
+        canalId: '11006',
+        prazoDespacho: microsDeSegundosShopee(1_789_405_354),
+        atualizadoEm: WATERMARK_US,
+        fonte: 'get_package_detail',
+      },
+    ];
+    const db = new FakeDb();
+    await salvar(db);
+    const antes = db.store[PEDIDO_PATH]!.data.freteInicial as Record<string, unknown>;
+    db.seed(PEDIDO_PATH, {
+      ...db.store[PEDIDO_PATH]!.data,
+      freteInicial: { ...antes, estado: ESTADO_FRETE.postado, pacotes: diario },
+    });
+    db.writes.length = 0;
+
+    // A second delivery that really does move a step-5 field (the buyer's
+    // freight charge arrives with the escrow), so the block IS rewritten.
+    const r = await salvar(
+      db,
+      mapear({
+        frete: mapearFreteInicialShopee({
+          detalhe: detalheSG(),
+          escrow: {
+            order_sn: ORDER_SN,
+            order_income: { buyer_paid_shipping_fee: 7.5 },
+          } as never,
+          watermarkUs: WATERMARK_US,
+        }).frete,
+      }),
+    );
+
+    expect(r.acao).toBe('atualizado');
+    const depois = db.store[PEDIDO_PATH]!.data.freteInicial as Record<string, unknown>;
+    // ÂNCORA: the write really happened and really touched this block.
+    expect(depois.valorCobrado).toBe(7.5);
+    // …and step 7's two fields came through the spread untouched.
+    expect(depois.estado).toBe(ESTADO_FRETE.postado);
+    expect(depois.pacotes).toEqual(diario);
   });
 
   it('⚠️ NEAR-MISS: pendingTerms null e [] são DISTINTOS', async () => {

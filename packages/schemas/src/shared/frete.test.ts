@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   ESTADO_FRETE,
+  ESTADOS_FRETE_IGNORAR_REMOCAO,
   ESTADOS_FRETE_PRE_AUTORIZACAO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
@@ -12,8 +14,10 @@ import {
   integracoesFreteSchema,
   isFreteJaPostado,
   isFreteMarketplaceOwned,
+  pacoteFreteSchema,
   podeAutorizarDespacho,
   reboqueSchema,
+  seedFreteInicial,
   transportadoraSchema,
   veiculoSchema,
   type EstadoFrete,
@@ -436,5 +440,431 @@ describe('isFreteMarketplaceOwned', () => {
     expect(isFreteMarketplaceOwned('bogus-legacy-tipo')).toBe(false);
     expect(isFreteMarketplaceOwned(null)).toBe(false);
     expect(isFreteMarketplaceOwned(undefined)).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        pacoteFreteSchema + freteInicial.pacotes — the per-package diary     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The diary a marketplace channel folds the pedido's SINGLE `estado` /
+ * `codRastreio` / `prazoDespacho` slots from (Shopee step 7, #1515).
+ *
+ * Two properties carry the whole design and each has its own test below:
+ *
+ *   - `pacotes` is `.nullable().optional()` and NOT `.nullable().default(null)`.
+ *     A default would materialise `pacotes: null` on the first rewrite of every
+ *     stored `freteInicial` by every writer of the block, and `freteInicial` is
+ *     in neither `PEDIDO_HISTORY_IGNORE_FIELDS` nor `CONCURRENCY_IGNORE` — one
+ *     phantom "Sistema" audit row and one phantom editor conflict per pedido,
+ *     fleet-wide. Test 43 is the guard against someone "tidying" it into a
+ *     default; test 46 is the same claim from the seed's side.
+ *   - a stored row is TOLERANT per ELEMENT, never per field: one corrupt row
+ *     must not cost the readable ones (test 47).
+ */
+// 43 — the `.optional()` contract: a block without the key parses WITHOUT it.
+describe('freteDoPedidoSchema.pacotes — the `.optional()` contract (43)', () => {
+  /**
+   * The 33 keys `freteDoPedidoSchema.parse` materialised BEFORE `pacotes`
+   * existed, captured from the pre-change file. Pinned in order, so a stored
+   * non-Shopee `freteInicial` rewritten by any writer stays byte-identical.
+   */
+  const CHAVES_ANTES_DO_DIARIO = [
+    'externalId',
+    'printLabelId',
+    'externalOptionId',
+    'externalOptionIntegracao',
+    'externalOptionData',
+    'externalOptionSelectionDate',
+    'estado',
+    'integracaoFreteOuterRef',
+    'integracaoTargetOuterRef',
+    'integracao_path',
+    'clienteRecebedorOuterReference',
+    'enderecoFreteOuterReference',
+    'modalidade',
+    'transportadora',
+    'veiculo',
+    'reboques',
+    'vagao',
+    'balsa',
+    'volumes',
+    'codRastreio',
+    'valorCobrado',
+    'custoCalculado',
+    'custoFinal',
+    'ehReverso',
+    'prazoExtra',
+    'prazoDespacho',
+    'dataEntrega',
+    'dataPrevisaoEntrega',
+    'valor_assegurado',
+    'maoPropria',
+    'avisoRecebimento',
+    'ultimaModificacao',
+    'timestamp',
+  ];
+
+  it('43a — a block with no pacotes parses with NO pacotes key at all', () => {
+    const frete = freteDoPedidoSchema.parse({ estado: 'iniciado' });
+    // `Object.hasOwn`, not `?? null`: a `.default(null)` would flip this to true
+    // while every value-level assertion still passed.
+    expect(Object.hasOwn(frete, 'pacotes')).toBe(false);
+    expect(Object.keys(frete)).toEqual(CHAVES_ANTES_DO_DIARIO);
+  });
+
+  it('43b — ANCHOR: the same parse WITH pacotes does carry the key', () => {
+    const frete = freteDoPedidoSchema.parse({
+      estado: 'iniciado',
+      pacotes: [{ numero: 'OFG242672552205937' }],
+    });
+    expect(Object.hasOwn(frete, 'pacotes')).toBe(true);
+    // Zod emits keys in DECLARATION order, so the diary lands immediately after
+    // `codRastreio` — the slot it folds into — and not at the tail. The splice
+    // is the pin: move the declaration and this fails.
+    const esperadas = [...CHAVES_ANTES_DO_DIARIO];
+    esperadas.splice(CHAVES_ANTES_DO_DIARIO.indexOf('codRastreio') + 1, 0, 'pacotes');
+    expect(Object.keys(frete)).toEqual(esperadas);
+    expect(esperadas[20]).toBe('pacotes');
+    expect(frete.pacotes?.[0]?.numero).toBe('OFG242672552205937');
+  });
+
+  it('43c — an explicit pacotes: null is kept as null (nullable, not stripped)', () => {
+    const frete = freteDoPedidoSchema.parse({ estado: 'iniciado', pacotes: null });
+    expect(Object.hasOwn(frete, 'pacotes')).toBe(true);
+    expect(frete.pacotes).toBeNull();
+  });
+});
+
+// 44 — round trip + the row's `.passthrough()`.
+describe('freteDoPedidoSchema.pacotes — round trip and row passthrough (44)', () => {
+  /** A full row: every declared field present, so the parse adds nothing. */
+  const LINHA_COMPLETA = {
+    numero: 'OFG242672552205937',
+    estado: ESTADO_FRETE.aguardandoPostagem,
+    estadoMarketplace: 'LOGISTICS_REQUEST_CREATED',
+    codRastreio: 'BR123456789XY',
+    canalId: '90021',
+    prazoDespacho: 1_788_973_354_000_000,
+    atualizadoEm: 1_788_973_300_000_000,
+    fonte: 'get_package_detail',
+  };
+
+  it('44a — a block WITH pacotes round-trips byte-identically', () => {
+    const entrada = { estado: 'iniciado', pacotes: [LINHA_COMPLETA] };
+    const frete = freteDoPedidoSchema.parse(entrada);
+    expect(frete.pacotes).toEqual([LINHA_COMPLETA]);
+    // Byte-identical, not merely deep-equal: key ORDER and value shape survive,
+    // which is what makes a replay write the same stored bytes.
+    expect(JSON.stringify(frete.pacotes)).toBe(JSON.stringify([LINHA_COMPLETA]));
+  });
+
+  it('44b — an unknown key INSIDE a row survives .passthrough()', () => {
+    const frete = freteDoPedidoSchema.parse({
+      estado: 'iniciado',
+      pacotes: [{ ...LINHA_COMPLETA, pesoCobradoGramas: 1250 }],
+    });
+    expect(frete.pacotes?.[0]).toEqual({ ...LINHA_COMPLETA, pesoCobradoGramas: 1250 });
+    expect((frete.pacotes?.[0] as Record<string, unknown>).pesoCobradoGramas).toBe(1250);
+  });
+
+  it('44c — a minimal row fills exactly the seven declared defaults with null', () => {
+    const linha = pacoteFreteSchema.parse({ numero: 'OFG242672552205937' });
+    expect(linha).toEqual({
+      numero: 'OFG242672552205937',
+      estado: null,
+      estadoMarketplace: null,
+      codRastreio: null,
+      canalId: null,
+      prazoDespacho: null,
+      atualizadoEm: null,
+      fonte: null,
+    });
+  });
+
+  it('44d — two rows keep their own values and their array order', () => {
+    const frete = freteDoPedidoSchema.parse({
+      estado: 'iniciado',
+      pacotes: [
+        { ...LINHA_COMPLETA, numero: 'OFG000000000000001', estadoMarketplace: 'LOGISTICS_READY' },
+        LINHA_COMPLETA,
+      ],
+    });
+    expect(frete.pacotes?.map((p) => p.numero)).toEqual([
+      'OFG000000000000001',
+      'OFG242672552205937',
+    ]);
+    expect(frete.pacotes?.map((p) => p.estadoMarketplace)).toEqual([
+      'LOGISTICS_READY',
+      'LOGISTICS_REQUEST_CREATED',
+    ]);
+  });
+
+  it('44e — the block-level array really IS pacoteFreteSchema, not an opaque list', () => {
+    // Without this, `z.array(z.unknown())` passes every other test in this file:
+    // the rows survive untouched, so a round trip and a passthrough both look
+    // right while nothing validates a row on the way into the pedido.
+    // (1) the row's own defaults are filled THROUGH the block parse...
+    const frete = freteDoPedidoSchema.parse({
+      estado: 'iniciado',
+      pacotes: [{ numero: 'OFG242672552205937' }],
+    });
+    expect(frete.pacotes?.[0]).toEqual({
+      numero: 'OFG242672552205937',
+      estado: null,
+      estadoMarketplace: null,
+      codRastreio: null,
+      canalId: null,
+      prazoDespacho: null,
+      atualizadoEm: null,
+      fonte: null,
+    });
+    // (2) ...and a row without the identity fails the WHOLE block parse.
+    expect(
+      freteDoPedidoSchema.safeParse({
+        estado: 'iniciado',
+        pacotes: [{ estadoMarketplace: 'LOGISTICS_READY' }],
+      }).success,
+    ).toBe(false);
+    // ANCHOR: the same body with a `numero` parses.
+    expect(
+      freteDoPedidoSchema.safeParse({
+        estado: 'iniciado',
+        pacotes: [{ numero: 'OFG242672552205937', estadoMarketplace: 'LOGISTICS_READY' }],
+      }).success,
+    ).toBe(true);
+  });
+});
+
+// 45 — the row's own validation, every negative paired with its anchor.
+describe('pacoteFreteSchema — row validation (45)', () => {
+  it('45a — rejects an empty numero (the row identity), accepts a one-char one', () => {
+    expect(pacoteFreteSchema.safeParse({ numero: '' }).success).toBe(false);
+    // ANCHOR: the same body with one character in `numero` parses.
+    expect(pacoteFreteSchema.safeParse({ numero: 'X' }).success).toBe(true);
+  });
+
+  it('45b — rejects a numero over 60 chars, accepts exactly 60', () => {
+    expect(pacoteFreteSchema.safeParse({ numero: 'A'.repeat(61) }).success).toBe(false);
+    expect(pacoteFreteSchema.safeParse({ numero: 'A'.repeat(60) }).success).toBe(true);
+  });
+
+  it('45c — rejects a codRastreio over 200 chars, accepts exactly 200', () => {
+    // The cap the N-package join has to respect: `freteInicial.codRastreio` is
+    // `.max(200)` too, so an uncapped join would throw inside the merge parse.
+    const base = { numero: 'OFG242672552205937' };
+    expect(pacoteFreteSchema.safeParse({ ...base, codRastreio: 'B'.repeat(201) }).success).toBe(
+      false,
+    );
+    const ok = pacoteFreteSchema.safeParse({ ...base, codRastreio: 'B'.repeat(200) });
+    expect(ok.success).toBe(true);
+    expect(ok.success && ok.data.codRastreio?.length).toBe(200);
+  });
+
+  it('45d — rejects an estado outside estadoFreteSchema, accepts a member and null', () => {
+    const base = { numero: 'OFG242672552205937' };
+    // A raw provider token is NOT an `EstadoFrete` — the derivation is the
+    // channel's, and a mis-derived value must not reach the diary.
+    expect(pacoteFreteSchema.safeParse({ ...base, estado: 'LOGISTICS_READY' }).success).toBe(false);
+    expect(pacoteFreteSchema.safeParse({ ...base, estado: 'postadoo' }).success).toBe(false);
+    // ANCHOR x2: a real member, and the explicit "not derived yet" null.
+    const membro = pacoteFreteSchema.safeParse({ ...base, estado: ESTADO_FRETE.postado });
+    expect(membro.success && membro.data.estado).toBe('postado');
+    const nulo = pacoteFreteSchema.safeParse({ ...base, estado: null });
+    expect(nulo.success).toBe(true);
+    expect(nulo.success && nulo.data.estado).toBeNull();
+  });
+
+  it('45e — rejects an estadoMarketplace over 120 chars, accepts exactly 120', () => {
+    const base = { numero: 'OFG242672552205937' };
+    expect(
+      pacoteFreteSchema.safeParse({ ...base, estadoMarketplace: 'L'.repeat(121) }).success,
+    ).toBe(false);
+    expect(
+      pacoteFreteSchema.safeParse({ ...base, estadoMarketplace: 'L'.repeat(120) }).success,
+    ).toBe(true);
+  });
+
+  it('45f — an unknown raw token IS storable verbatim (the source of truth is free text)', () => {
+    const linha = pacoteFreteSchema.parse({
+      numero: 'OFG242672552205937',
+      estadoMarketplace: 'LOGISTICS_SOMETHING_THE_PROVIDER_ADDS_TOMORROW',
+      estado: null,
+    });
+    expect(linha.estadoMarketplace).toBe('LOGISTICS_SOMETHING_THE_PROVIDER_ADDS_TOMORROW');
+    expect(linha.estado).toBeNull();
+  });
+});
+
+// 46 — `seedFreteInicial` is byte-identical to before the diary existed.
+describe('seedFreteInicial — unchanged by the diary (46)', () => {
+  /** Captured from the pre-change file: `seedFreteInicial(MODALIDADE_FRETE.fob, true)`. */
+  const SEMENTE_FOB_SAIDA_ANTES = {
+    externalId: null,
+    printLabelId: null,
+    externalOptionId: null,
+    externalOptionIntegracao: null,
+    externalOptionData: null,
+    externalOptionSelectionDate: null,
+    estado: 'iniciado',
+    integracaoFreteOuterRef: null,
+    integracaoTargetOuterRef: null,
+    integracao_path: null,
+    clienteRecebedorOuterReference: null,
+    enderecoFreteOuterReference: null,
+    modalidade: '1',
+    transportadora: null,
+    veiculo: null,
+    reboques: null,
+    vagao: null,
+    balsa: null,
+    volumes: null,
+    codRastreio: null,
+    valorCobrado: null,
+    custoCalculado: null,
+    custoFinal: null,
+    ehReverso: false,
+    prazoExtra: 0,
+    prazoDespacho: null,
+    dataEntrega: null,
+    dataPrevisaoEntrega: null,
+    valor_assegurado: null,
+    maoPropria: null,
+    avisoRecebimento: null,
+    ultimaModificacao: null,
+    timestamp: null,
+  };
+
+  it('46a — the seed is byte-identical to the pre-diary snapshot, with no pacotes', () => {
+    const semente = seedFreteInicial(MODALIDADE_FRETE.fob, true);
+    expect(JSON.stringify(semente)).toBe(JSON.stringify(SEMENTE_FOB_SAIDA_ANTES));
+    expect(Object.hasOwn(semente, 'pacotes')).toBe(false);
+  });
+
+  it('46b — the entrada variant is likewise unchanged (only ehReverso/modalidade differ)', () => {
+    const semente = seedFreteInicial(MODALIDADE_FRETE.terceiros, false);
+    expect(JSON.stringify(semente)).toBe(
+      JSON.stringify({ ...SEMENTE_FOB_SAIDA_ANTES, modalidade: '2', ehReverso: true }),
+    );
+    expect(Object.hasOwn(semente, 'pacotes')).toBe(false);
+  });
+});
+
+// 47 — per-ELEMENT tolerance: one corrupt row costs only that row.
+describe('pacoteFreteSchema — per-element tolerance (47)', () => {
+  const LINHA_BOA = {
+    numero: 'OFG242672552205937',
+    estado: ESTADO_FRETE.postado,
+    estadoMarketplace: 'LOGISTICS_PICKUP_DONE',
+    codRastreio: 'BR123456789XY',
+    canalId: '90021',
+    prazoDespacho: 1_788_973_354_000_000,
+    atualizadoEm: 1_788_973_300_000_000,
+    fonte: 'get_package_detail',
+  };
+  /** A stored row a past bug (or a hand edit) left without its identity. */
+  const LINHA_CORROMPIDA = { numero: '', estadoMarketplace: 'LOGISTICS_READY' };
+
+  it('47a — one corrupt row becomes null; the readable rows keep their values', () => {
+    const tolerante = z.array(pacoteFreteSchema.nullable().catch(null));
+    const linhas = tolerante.parse([LINHA_BOA, LINHA_CORROMPIDA, { numero: 'OFG000000000000001' }]);
+    expect(linhas.length).toBe(3);
+    expect(linhas[0]).toEqual(LINHA_BOA);
+    expect(linhas[1]).toBeNull();
+    expect(linhas[2]?.numero).toBe('OFG000000000000001');
+    // What the reader keeps once the nulls are filtered out.
+    expect(linhas.filter((l) => l !== null).map((l) => l.numero)).toEqual([
+      'OFG242672552205937',
+      'OFG000000000000001',
+    ]);
+  });
+
+  it('47b — ANCHOR: WITHOUT the per-element catch the same array fails whole', () => {
+    // The near-miss that proves the tolerance is doing the work and the row
+    // schema is not merely lax: a Zod array fails ENTIRELY on one bad element.
+    const estrito = z.array(pacoteFreteSchema);
+    expect(estrito.safeParse([LINHA_BOA, LINHA_CORROMPIDA]).success).toBe(false);
+    // ...and the same strict array accepts it once the bad row is gone.
+    expect(estrito.safeParse([LINHA_BOA]).success).toBe(true);
+  });
+
+  it('47c — the tolerance is per ELEMENT, never per FIELD', () => {
+    // A row whose `codRastreio` is over the cap is dropped WHOLE (null), not
+    // silently repaired into a row with `codRastreio: null` — the diary must
+    // never invent a package state nobody observed.
+    const tolerante = z.array(pacoteFreteSchema.nullable().catch(null));
+    const linhas = tolerante.parse([{ ...LINHA_BOA, codRastreio: 'B'.repeat(201) }]);
+    expect(linhas[0]).toBeNull();
+    // ANCHOR: the very same row under the cap survives with every field intact.
+    expect(tolerante.parse([{ ...LINHA_BOA, codRastreio: 'B'.repeat(200) }])[0]).toEqual({
+      ...LINHA_BOA,
+      codRastreio: 'B'.repeat(200),
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*    Count pins — nothing but the diary moved in this file (Shopee step 7)    */
+/* -------------------------------------------------------------------------- */
+
+describe('ESTADO_FRETE and the stock sets are untouched by the diary', () => {
+  it('the enum still has exactly its 27 members, in order', () => {
+    expect(estadoFreteSchema.options.length).toBe(27);
+    expect(estadoFreteSchema.options).toEqual([
+      'fulfillment',
+      'iniciado',
+      'aguardandoAutorizacao',
+      'aguardandoNFe',
+      'aguardandoValidacaoTransporadora',
+      'despachoAutorizado',
+      'aguardandoAgendamento',
+      'despachoNegado',
+      'emSeparacao',
+      'empacotado',
+      'aguardandoPostagem',
+      'checkFinalizado',
+      'postado',
+      'recebidoPelaTransportadora',
+      'aCaminho',
+      'tentandoRealizarEntrega',
+      'entregue',
+      'falhaNaEntrega',
+      'suspenso',
+      'enderecoNaoEncontrado',
+      'aCaminhoDoRemetente',
+      'devolvido',
+      'objetoExtraviado',
+      'cancelado',
+      'desconhecido',
+      'error',
+      'aguardandoRetirada',
+    ]);
+  });
+
+  it('ESTADOS_FRETE_REMOVE_ESTOQUE still holds exactly its 15 members', () => {
+    expect(ESTADOS_FRETE_REMOVE_ESTOQUE.size).toBe(15);
+    expect([...ESTADOS_FRETE_REMOVE_ESTOQUE]).toEqual([
+      'empacotado',
+      'aguardandoPostagem',
+      'checkFinalizado',
+      'postado',
+      'recebidoPelaTransportadora',
+      'aCaminho',
+      'tentandoRealizarEntrega',
+      'entregue',
+      'falhaNaEntrega',
+      'suspenso',
+      'enderecoNaoEncontrado',
+      'aCaminhoDoRemetente',
+      'devolvido',
+      'objetoExtraviado',
+      'aguardandoRetirada',
+    ]);
+  });
+
+  it('ESTADOS_FRETE_IGNORAR_REMOCAO still holds exactly desconhecido + error', () => {
+    expect(ESTADOS_FRETE_IGNORAR_REMOCAO.size).toBe(2);
+    expect([...ESTADOS_FRETE_IGNORAR_REMOCAO]).toEqual(['desconhecido', 'error']);
   });
 });

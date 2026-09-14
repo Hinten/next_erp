@@ -75,6 +75,29 @@ locally without deploying: `node apps/shopee/functions/build.mjs` (writes
 the full servable folder at `.deploy/shopee-functions`. Both need
 `FUNCTIONS_REGION` set — `requireBuildRegion` throws without it, on purpose.
 
+⚠️ **The inline proof.** Two handlers reach this bundle through a **dynamic**
+`import()` in `lib/shopee/notificacoes/notificacao.ts` — lazily, so the App
+Hosting receiver's own bundle never carries the pedido tree. The functions
+bundle is the half that must carry them, and the bundler inlining them is not
+something any test asserts. Check it after a build:
+
+```bash
+FUNCTIONS_REGION=us-east1 node apps/shopee/functions/scripts/prepare-deploy.mjs
+for n in importarPedidoShopee rastrearPedidoShopee; do
+  grep -q "$n" .deploy/shopee-functions/index.js || echo "AUSENTE $n"
+done
+```
+
+Silence is the pass: both names are in the bundle. An `AUSENTE <nome>` line says
+the dispatched function would park (step 5) or never reach the shipment merge
+(step 7) instead of running it — green everywhere else, because nothing but this
+check looks.
+
+⚠️ **One check PER NAME, never a combined `grep -c -e A -e B`.** That form prints
+one SUM, so a bundle carrying only `importarPedidoShopee` still prints a non-zero
+number and exits 0 — it reports green over exactly the step-7 regression this
+block exists to catch. Only `grep -q` per name has a per-name exit status.
+
 ## Functions in this codebase
 
 | Export                           | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |

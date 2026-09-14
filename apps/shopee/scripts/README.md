@@ -3,11 +3,12 @@
 Dev-only CLIs. **Never run by an agent** (root `CLAUDE.md` rule 8) — a human
 runs them, from this worktree, against the project the environment points at.
 
-| script                   | what it does                                    | writes?                   |
-| ------------------------ | ----------------------------------------------- | ------------------------- |
-| `oauth-url.ts`           | mints a Shopee consent URL without the web UI   | one `oauthState` document |
-| `importar-pedido.ts`     | imports ONE order through the real step-5 path  | only with `--live`        |
-| `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6) | only with `--live`        |
+| script                   | what it does                                       | writes?                   |
+| ------------------------ | -------------------------------------------------- | ------------------------- |
+| `oauth-url.ts`           | mints a Shopee consent URL without the web UI      | one `oauthState` document |
+| `importar-pedido.ts`     | imports ONE order through the real step-5 path     | only with `--live`        |
+| `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6)    | only with `--live`        |
+| `rastrear-pedido.ts`     | rehearses the shipment merge of ONE order (step 7) | only with `--live`        |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -122,9 +123,13 @@ There is no `--force` and none is needed: the importer is idempotent on
 
 `/pedidos` — the pedido appears with `numero` = the `order_sn`. Open it and
 check: the estado, the items (unbound lines sit in the `NONE` bucket), the Frete
-tab (`valorCobrado`, the dispatch deadline, the package as one volume), and the
+tab (`valorCobrado`, the dispatch deadline, the package as one volume, and — see
+the caveat below — the freight `estado` the step-7 backstop folded), and the
 `observacoesInternas` if the buyer wrote one. `/incidentes` carries one
-non-blocking row per unbound line.
+non-blocking row per unbound line. ⚠️ Since step 7 the Frete tab is **read-only**
+on a Shopee pedido: the block declares `externalOptionIntegracao: 'shopee'`, and
+that alone now locks it even though the importer sets no
+`integracaoFreteOuterRef`.
 
 ### 7. Caveats you should expect to see (none of these is a bug)
 
@@ -151,8 +156,22 @@ contaProdutoShopeeOuterRef)`, which is **#1532**, migration-window work. On
 - **`descontoTotal` is `0`**, always. Shopee has no order-level discount; its
   five escrow discounts are item-level and already ride each line's
   `descontoUnitario`.
-- **`custoFinal` and `codRastreio` stay null.** Step 7 owns tracking and the
-  shipment; a value invented at import would look like a shipment that happened.
+- **`custoFinal` stays null; `codRastreio` is step 7's** — written by
+  `rastrear:pedido` and by the code-4/30/47 push arm, never by the import.
+  `get_order_detail` carries no tracking number at all, so a value invented here
+  would look like a shipment that happened.
+- **A LIVE import now MOVES `freteInicial.estado`, and a dry run does not.**
+  Step 7 attached its BACKSTOP to this path: after the pedido and the pagamentos,
+  the same fold runs over the `get_order_detail.package_list[]` this import
+  already fetched — no new Shopee call. So the SG sandbox order lands at
+  `despachoAutorizado` (its package reads `LOGISTICS_READY`) with a one-row
+  `freteInicial.pacotes` diary, **not** at step 5's `iniciado` seed. ⚠️ The DRY
+  RUN still prints `iniciado`: it stops at step 5's mapper, and the backstop
+  lives in the write half. ⚠️ `despachoAutorizado` is **not** in
+  `ESTADOS_FRETE_REMOVE_ESTOQUE`, so this particular fold moves no stock — an
+  order whose package already reads `LOGISTICS_REQUEST_CREATED` folds to
+  `aguardandoPostagem`, which is. Use `rastrear:pedido --dry-run` to see the
+  diary; this script's summary does not print it.
 - **A live run can move stock, indirectly.** The importer itself moves none, but
   both `aguardandoConfirmacaoDePagamento` and `pago` are estados that
   `onPedidoEstoqueSync` reserves against — so wherever that trigger is deployed,
@@ -295,3 +314,176 @@ effect, and it is why the run prints `sintéticas` separately from `liquidados`.
   and the next tick resumes at the persisted page.
 - **`payout / escrow` may look 100× apart.** That is the open question, not a
   defect; record the ratio you see.
+
+---
+
+## `rastrear:pedido` — rehearsing the shipment merge
+
+`rastrearPedidoShopee` normally runs unattended: a Shopee push (code **4**
+`order_trackingno_push`, **30** `package_fulfillment_status_push` or **47**
+`package_info_push`) → Cloud Tasks → `processShopeeNotification` → the frete arm.
+Those three pushes are **lossy by design** — `timeout=3`, `push_guarantee=0`,
+three retries and then gone — and the sandbox console's Push Test Data offers
+code 4 but **not** 30 and **not** 47. So the first time this channel ever moves a
+`freteInicial.estado`, which is a **stock-moving** field, would otherwise happen
+unattended, from a push nobody can replay, against whatever `get_package_detail`
+decided to answer. This script drives the same code from a terminal, against one
+named order.
+
+### 9.1 Environment
+
+Identical to `importar:pedido` — same `.env.local`, and the same connected
+integração carrying a `shop_id` (see §2 above). The preamble goes to **stderr**
+and leads with the mode: `modo: DRY-RUN — não grava nada` or
+`modo: LIVE — VAI GRAVAR`, then the project, the database, the raw
+`SHOPEE_SANDBOX`, the integração, the `order_sn`, the `--package` value, the
+resolved Shopee environment and the shop id. Read them before you let it
+continue.
+
+A conta connected by MAIN ACCOUNT has no `shop_id`, cannot sign a call, and the
+script stops on it saying so (exit `1`).
+
+### 9.2 Dry run first — always
+
+```bash
+pnpm --filter @delfrance/shopee-app rastrear:pedido --integracao int-1 --order-sn 260910KJBHUJDM
+```
+
+It reads the pedido at its digest id (no query, no mirror collection), resolves
+the package set in three **tagged rungs** and prints where each package came
+from — `[flag]` (`--package`), `[volume]` (the stored
+`freteInicial.volumes[].numero`, which step 5 wrote one per package) and
+`[order_detail]` (`get_order_detail.package_list[].package_number`) — then prints
+the difference in **both** directions (`só na Shopee` / `só no pedido`). Then it
+makes ONE batched `get_package_detail` for that set, runs the same producer the
+push arm runs, and runs the **same** `preverFreteShopee` the transaction runs —
+so `campos que mudariam` is the exact dotted field list a live delivery would
+write, not a second implementation's opinion of it. Last it prints what the
+**code-3 backstop** would fold from the same order's `package_list[]`.
+
+It writes nothing and enqueues nothing, and that is structural rather than a
+promise: `simularRastreioShopee` contains no writer and no scheduler, and a test
+strips its comments and asserts the module names neither.
+
+⚠️ A dry run is **not offline**: it spends one `get_package_detail` and, unless
+`--package` was given, one `get_order_detail`, against the same rate limits.
+
+One package only:
+
+```bash
+pnpm --filter @delfrance/shopee-app rastrear:pedido --integracao int-1 --order-sn 260910KJBHUJDM --package OFG242672552205937
+```
+
+⚠️ `--package` makes the tool skip `get_order_detail` **entirely** — that is the
+whole meaning of the flag — so that run has **no drift report and no backstop
+comparison**.
+
+| flag                | meaning                                                                                                                                                                                                                          |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>` | required — the integração document id                                                                                                                                                                                            |
+| `--order-sn <sn>`   | required — the Shopee order                                                                                                                                                                                                      |
+| `--package <n>`     | ONE `package_number`. Refused: a blank value, a bare `-` (Shopee's own absence sentinel on this page) and any value containing a comma (the batch separator) — all three in the parser, before a Firestore read or a Shopee call |
+| `--dry-run`         | the **DEFAULT**                                                                                                                                                                                                                  |
+| `--live`            | writes; **refused together with `--dry-run`** rather than resolved by precedence                                                                                                                                                 |
+| `--project <id>`    | overrides `FIREBASE_PROJECT_ID` before the admin app resolves it                                                                                                                                                                 |
+| `--json`            | the same redacted summary on stdout, preamble on stderr                                                                                                                                                                          |
+| `--help`, `-h`      | prints the usage and exits `0` — answered before any dynamic import, so it touches no environment, no Firestore and no Shopee                                                                                                    |
+
+⚠️ A bare `--` is refused with the pnpm explanation — no command in this file
+carries one (see the note at the top).
+
+### 9.3 What to read in the output
+
+| line                                     | what it tells you                                                                                                                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pedido existe?` / `tem freteInicial?`   | a `NÃO` on either is what a real delivery answers `ignorado-sem-pedido` / `ignorado-sem-frete-inicial` for. This step creates neither.                                                                        |
+| `só na Shopee` / `só no pedido`          | the drift between the stored volumes and Shopee's packages. A package Shopee knows and the volumes do not is a SPLIT, and nothing in the web UI shows it.                                                     |
+| `[flag]` / `[volume]` / `[order_detail]` | which rung produced that package.                                                                                                                                                                             |
+| `fulfillment_status → estado alvo`       | the RAW wire token and what the channel's table projects it to. A `—` on the right means the table does not know the token: a real delivery would write **nothing** and log it once.                          |
+| `tracking_number`                        | printed in the clear, deliberately — it IS `codRastreio`, and `/pedidos` renders it verbatim beside a copy button.                                                                                            |
+| `ship_by_date` / `update_time`           | wire **SECONDS**, with the ISO UTC beside them.                                                                                                                                                               |
+| `ação`                                   | what the transaction would answer: `atualizado`, `ignorado-sem-mudanca`, `ignorado-obsoleto` (a stored package clock is newer), `ignorado-desconhecido`, `ignorado-sem-frete-inicial`, `ignorado-sem-pedido`. |
+| `campos que mudariam`                    | the exact dotted names (`freteInicial.estado`, `.codRastreio`, `.prazoDespacho`, `.externalOptionId`, `.pacotes`). `(nenhum)` beside `ignorado-sem-mudanca` is the healthy steady state.                      |
+| the BACKSTOP block                       | what a code-3 import would fold from the SAME order, token by token. Comparing it with the pull's token is settle-live **register item 28** answered by eye.                                                  |
+
+⚠️ **The output carries no buyer data by construction.** The package summary is
+an allow-list of **fourteen** fields; the `get_package_detail` body it is built
+from also carries `recipient_address`, `driver_info`, `virtual_contact_number`
+and a prescription block, and none of them has a field to travel in. The
+`--live` re-read is a SECOND allow-list, which is why `externalOptionData`
+(Melhor Envio's untyped bag, rendered raw) never appears. It is safe to paste
+into an issue. Keep it that way if you extend it.
+
+### 9.4 The live run
+
+```bash
+pnpm --filter @delfrance/shopee-app rastrear:pedido --integracao int-1 --order-sn 260910KJBHUJDM --live
+```
+
+This calls `rastrearPedidoShopee` **once per resolved package** — the real arm
+body, the real transaction and the real synthetic code 3 — then re-reads the
+pedido and prints the stored block: `estado`, `codRastreio`, `externalOptionId`,
+`prazoDespacho`, `ultimaModificacao` and every `pacotes` row.
+
+What a live run can change:
+
+- `freteInicial.estado` — ⚠️ **stock-moving**: `onPedidoEstoqueSync` observes it
+  and everything from `aguardandoPostagem` onward removes physical stock.
+- `freteInicial.codRastreio`, `.prazoDespacho`, `.externalOptionId` and the
+  `.pacotes` diary.
+- the pedido's own `ultimaModificacao` — in both ignore lists, so it files no
+  audit row.
+
+What it can **never** change: `lastMarketplaceUpdate` and
+`freteInicial.ultimaModificacao` (step 5 owns both), `valorCobrado`,
+`custoCalculado`, `volumes`, the items, the pedido's `estado`, any pagamento.
+
+⚠️ It can also enqueue a **synthetic code 3** — one per package whose pedido does
+not exist yet, printed as `code 3 sintético ... ENFILEIRADO` — and each of those
+imports a pedido through the normal step-5 path. That is the one pedido-creating
+side effect, and a dry run cannot reach it: it never calls the handler.
+
+⚠️ A rehearsal has no push behind it, so the diagnostic it hands the handler
+carries `code: 4` with **every claim field null** — no `statusDoPush`, no
+`trackingNoDoPush`, no clock. That pattern is how a reader tells a rehearsal line
+from a real delivery in the task log.
+
+Exit `0` on **any** `ação`, the `ignorado-*` ones included — those are answers,
+not failures. Exit `1` only on a throw (reported by error CLASS plus Shopee's
+`code`/`path`, never a payload) or on a conta with no `shop_id`.
+
+### 9.5 Caveats you should expect to see (none of these is a bug)
+
+- **`pedido existe? NÃO` on a fresh staging project.** Run `importar:pedido`
+  first. A real delivery would DEFER and enqueue one synthetic code 3 (bounded at
+  8 per delivery); a dry run enqueues nothing.
+- **`ignorado-sem-mudanca` on a second run is the idempotence working**, and it
+  writes _nothing at all_ — not even `ultimaModificacao`. Any write would file a
+  `historicoDeModificacoes` row per delivery for ever.
+- **What `get_package_detail` answers for a `LOGISTICS_READY` package on a
+  SANDBOX shop is settle-live register item 33 and is UNMEASURED** — nobody has
+  called this endpoint. Record what comes back. ⚠️ A body worth committing to
+  `__wire__` needs `redact.ts` extended FIRST (the `driver_info` SEGMENT plus six
+  more suffixes): the row leaves those keys undeclared and they ride
+  `.passthrough()`, so a raw capture records them in full.
+- **`só na Shopee` being non-empty is not a defect.** Step 5 writes one volume
+  per package AT IMPORT and Shopee can split an order afterwards — that drift is
+  exactly what this report exists to show.
+- **`tracking_number: —` before the label exists is normal**, and so is a literal
+  `-` arriving on the wire: the reader turns that whole-value sentinel into
+  `null` before anything is written (how often it really arrives is settle-live
+  register item 30).
+- **More than 50 resolved packages are truncated** to the batch's own limit, with
+  a printed warning — `get_package_detail` refuses a longer list before it
+  fetches.
+- **The BACKSTOP block can omit `freteInicial.prazoDespacho` on an order whose
+  `ship_by_date` is absent or zero-filled.** The rehearsal hands the fold
+  `prazoDaOrdemUs: null`; a live code-3 import hands it the mapped deadline,
+  which on such an order comes from the mapper's 14:00-on-`pay_time` fallback. So
+  when that fallback differs from the STORED deadline, the live import writes one
+  more field than the rehearsal predicts. The per-package half and the PUSH half
+  are exact — production passes `null` there too — and the divergence is named in
+  `rastrearPedidoSimulacao.ts`'s header.
+- **A live run can move stock, indirectly.** The transaction moves none itself,
+  but `onPedidoEstoqueSync` reacts to the `estado` it writes, so wherever that
+  trigger is deployed, writing the freight state is what sets it off.

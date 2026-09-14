@@ -198,11 +198,17 @@ function mesmasDimensoes(a: Volume['dimensoes'], b: Volume['dimensoes']): boolea
 /**
  * Did the freight merge change anything?
  *
- * ⚠️ It compares ONLY the eight fields `mesclarFreteInicialShopee` can refresh —
+ * ⚠️ It compares ONLY the SEVEN fields `mesclarFreteInicialShopee` can refresh —
  * which is sound BECAUSE that is the exact set the merge writes: everything else
- * is copied from `existente` by the spread and cannot differ. A ninth refreshed
- * field must be added in both places, and `orderFreteMapping.test.ts` pins the
- * set against the merge itself.
+ * is copied from `existente` by the spread and cannot differ. An eighth
+ * refreshed field must be added in both places, and `orderFreteMapping.test.ts`
+ * pins the set against the merge itself.
+ *
+ * ⚠️ It is therefore BLIND to everything step 7 (#1515) owns — `estado`,
+ * `codRastreio`, `prazoDespacho`, `externalOptionId`'s package fold and the
+ * whole `pacotes` diary. A `ignorado-sem-mudanca` here says nothing at all
+ * about the shipment, which is why `importarPedido.ts` runs the freight
+ * transaction on that outcome too.
  */
 function mesmoFrete(armazenado: FreteDoPedido | null | undefined, novo: FreteDoPedido): boolean {
   if (armazenado == null) return false;
@@ -211,7 +217,6 @@ function mesmoFrete(armazenado: FreteDoPedido | null | undefined, novo: FreteDoP
     armazenado.externalOptionId === novo.externalOptionId &&
     armazenado.valorCobrado === novo.valorCobrado &&
     armazenado.custoCalculado === novo.custoCalculado &&
-    armazenado.prazoDespacho === novo.prazoDespacho &&
     armazenado.dataPrevisaoEntrega === novo.dataPrevisaoEntrega &&
     armazenado.ultimaModificacao === novo.ultimaModificacao &&
     mesmosVolumes(armazenado.volumes ?? null, novo.volumes ?? null)
