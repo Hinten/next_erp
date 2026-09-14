@@ -15,6 +15,7 @@ import {
   NFeRejectedError,
   NFeRuntimeNotReadyError,
   NFeServerError,
+  NFeXsdValidationFailedError,
   type NFeEmitResult,
 } from '@delfrance/integrations-nfe/http-provider';
 import { ESTADO_NFE } from '@delfrance/schemas';
@@ -212,6 +213,20 @@ describe('notificationForNFeError', () => {
     expect(n.color).toBe('red');
     expect(n.title).toBe('Erro no servidor de NF-e');
     expect(n.message).toBe('transport failed');
+  });
+
+  it('NFeXsdValidationFailedError → schema toast, not the generic server error (#1602)', () => {
+    // An emission whose XML fails the XSD also reaches the client coded
+    // `NFeXsdValidationError`, so it maps here instead of to NFeServerError.
+    const err = new NFeXsdValidationFailedError(
+      "XSD validation failed for <NFe>: Element 'xNome': [facet 'maxLength']",
+      500,
+      {},
+    );
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('XML fora do schema da SEFAZ');
+    expect(n.message).toContain('<NFe>');
   });
 
   it('generic Error → red fallback', () => {

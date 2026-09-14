@@ -187,8 +187,10 @@ export async function POST(req: Request): Promise<NextResponse> {
       // the degraded 200 above — a reply that fails the XSD is not "SEFAZ
       // unreachable", and parsing it would hand the form a plausible-looking
       // wrong answer. The web caller already falls back to the public IE on any
-      // NFeHttpError. xmllint quotes the offending value; that is acceptable in
-      // Cloud Logging, which is private (see the nfe package's sefaz-log.ts).
+      // NFeHttpError, and the HTTP client maps this `code` to a NON-retryable
+      // NFeXsdValidationFailedError, so no client retry re-POSTs the consulta to
+      // SEFAZ. xmllint quotes the offending value; that is acceptable in Cloud
+      // Logging, which is private (see the nfe package's sefaz-log.ts).
       safeLog('error', '[nfe/consulta-cadastro] XSD', { root: e.rootKey, errors: e.errors });
       return authError(500, { error: e.message, code: e.name });
     }
