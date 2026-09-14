@@ -2,6 +2,13 @@
 // Codex-only PreToolUse/Bash hook for the one pre-authorized push command.
 // The prefix rule deliberately names `origin`; this guard proves what that
 // name resolves to and which branch HEAD names before the sandbox is crossed.
+//
+// The gate is inverted on purpose. Codex's prefix_rule matches a PREFIX, so any
+// shell spelling that reaches `git -c safe.directory=* push -u origin HEAD` is
+// auto-allowed. Recognising those spellings one by one is a race against the
+// shell grammar (escapes, line continuations, `&`, quoting a heredoc marker),
+// so instead any command that even mentions `safe.directory` together with
+// `push` is denied unless it is PROVABLY the canonical command and nothing else.
 
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 export const EXPECTED_ORIGIN = 'https://github.com/Hinten/next_erp.git';
 export const CANONICAL_PUSH = ['git', '-c', 'safe.directory=*', 'push', '-u', 'origin', 'HEAD'];
 
+const EXPECTED_REPO_IDENTITY = 'github.com/hinten/next_erp';
 const SHELLS = new Set([
   'bash',
   'cmd',
@@ -19,143 +27,228 @@ const SHELLS = new Set([
   'powershell',
   'powershell.exe',
 ]);
-const COMMAND_SEPARATORS = new Set(['&&', '||', ';', '|', '\n', '(', ')']);
-const SIMPLE_WRAPPERS = new Set(['&', 'command', 'nohup']);
+const SHELL_COMMAND_FLAGS = new Set(['-c', '-lc', '-command', '/c']);
+// Outside quotes, any of these makes the argv depend on the shell rather than
+// on the text: control operators, redirections, expansion and globbing.
+const UNPROVABLE_UNQUOTED = new Set([
+  ';',
+  '&',
+  '|',
+  '(',
+  ')',
+  '<',
+  '>',
+  '\n',
+  '$',
+  '`',
+  '*',
+  '?',
+  '[',
+  ']',
+  '{',
+  '}',
+  '~',
+  '#',
+]);
 
-function stripHeredocs(command) {
-  const kept = [];
-  let delimiter = null;
-  for (const line of String(command).split(/\r?\n/)) {
-    if (delimiter !== null) {
-      if (line.trim() === delimiter) delimiter = null;
-      continue;
-    }
-    kept.push(line);
-    const match = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
-    if (match) delimiter = match[2];
-  }
-  return kept.join('\n');
+const NON_CANONICAL_REASON =
+  "A push that names safe.directory must be exactly `git -c 'safe.directory=*' push -u origin HEAD`, on its own: no extra flags or refspecs, no chained commands, escapes or shell expansion. Use a plain `git push` for anything else.";
+
+/**
+ * True when the command could be a spelling of the pre-authorized push. Quotes,
+ * backslashes, `$` and backticks are folded away first, so `safe.dir''ectory`,
+ * `safe.directory=\*` and `$'push'` are all still seen. Over-matching is safe:
+ * a candidate that is not provably canonical is denied with a message naming
+ * the exact form, and a plain `git push` never matches.
+ */
+export function mentionsPreauthorizedPush(command) {
+  const folded = String(command)
+    .replace(/\\\r?\n/g, '')
+    .replace(/[\\'"`$]/g, '');
+  return /safe\.directory/i.test(folded) && /push/i.test(folded);
 }
 
-function tokenize(command) {
-  const tokens = [];
+/**
+ * Splits a POSIX-shell word list, honouring single quotes, double quotes,
+ * backslash escapes and backslash-newline continuations. Returns null when the
+ * argv cannot be derived from the text alone (see UNPROVABLE_UNQUOTED, `$` or a
+ * backtick inside double quotes, or an unterminated quote).
+ */
+function parseWords(command) {
+  const words = [];
   let current = '';
-  let quote = null;
-
-  const pushCurrent = () => {
-    if (!current) return;
-    tokens.push(current);
-    current = '';
-  };
+  let inWord = false;
 
   for (let index = 0; index < command.length; index++) {
     const character = command[index];
-    if (quote !== null) {
-      if (character === quote) quote = null;
-      else current += character;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (character === '\r') continue;
-    if (character === '\n') {
-      pushCurrent();
-      tokens.push('\n');
-      continue;
-    }
-    if (/\s/.test(character)) {
-      pushCurrent();
+
+    if (character === "'") {
+      const end = command.indexOf("'", index + 1);
+      if (end === -1) return null;
+      current += command.slice(index + 1, end);
+      inWord = true;
+      index = end;
       continue;
     }
 
-    const pair = command.slice(index, index + 2);
-    if (pair === '&&' || pair === '||') {
-      pushCurrent();
-      tokens.push(pair);
-      index++;
-      continue;
-    }
-    if ([';', '|', '(', ')'].includes(character)) {
-      pushCurrent();
-      tokens.push(character);
-      continue;
-    }
-    current += character;
-  }
-
-  pushCurrent();
-  return tokens;
-}
-
-function splitCommands(command) {
-  const commands = [];
-  let current = [];
-  for (const token of tokenize(stripHeredocs(command))) {
-    if (COMMAND_SEPARATORS.has(token)) {
-      if (current.length > 0) commands.push(current);
-      current = [];
-    } else {
-      current.push(token);
-    }
-  }
-  if (current.length > 0) commands.push(current);
-  return commands;
-}
-
-function commandIndex(tokens) {
-  let index = 0;
-  while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) index++;
-  while (index < tokens.length && SIMPLE_WRAPPERS.has(tokens[index]?.toLowerCase())) {
-    index++;
-    while (tokens[index] === '--' || tokens[index] === '-p') index++;
-  }
-  return index;
-}
-
-function gitCommands(command) {
-  const found = [];
-  for (const tokens of splitCommands(command)) {
-    const start = commandIndex(tokens);
-    const executable = tokens[start]?.toLowerCase();
-    if (!executable) continue;
-
-    if (SHELLS.has(executable)) {
-      const commandFlag = tokens.findIndex(
-        (token, index) =>
-          index > start && ['-c', '-lc', '-command', '/c'].includes(token.toLowerCase()),
-      );
-      if (commandFlag !== -1 && tokens[commandFlag + 1]) {
-        found.push(...gitCommands(tokens.slice(commandFlag + 1).join(' ')));
+    if (character === '"') {
+      let closed = false;
+      for (index++; index < command.length; index++) {
+        const inner = command[index];
+        if (inner === '"') {
+          closed = true;
+          break;
+        }
+        if (inner === '$' || inner === '`') return null;
+        if (inner === '\\') {
+          const next = command[index + 1];
+          if (next === '\n') {
+            index++;
+            continue;
+          }
+          if (next === '"' || next === '\\' || next === '$' || next === '`') {
+            current += next;
+            index++;
+            continue;
+          }
+        }
+        current += inner;
       }
+      if (!closed) return null;
+      inWord = true;
       continue;
     }
 
-    if (executable === 'git') found.push(tokens.slice(start));
+    if (character === '\\') {
+      const next = command[index + 1];
+      if (next === undefined) return null;
+      index++;
+      if (next === '\n') continue;
+      if (next === '\r' && command[index + 1] === '\n') {
+        index++;
+        continue;
+      }
+      current += next;
+      inWord = true;
+      continue;
+    }
+
+    if (character === ' ' || character === '\t' || character === '\r') {
+      if (inWord) words.push(current);
+      current = '';
+      inWord = false;
+      continue;
+    }
+
+    if (UNPROVABLE_UNQUOTED.has(character)) return null;
+    current += character;
+    inWord = true;
   }
-  return found;
+
+  if (inWord) words.push(current);
+  return words;
 }
 
-function startsWith(values, prefix) {
-  return prefix.every((value, index) => values[index] === value);
+function sameWords(words, expected) {
+  return words.length === expected.length && expected.every((word, i) => words[i] === word);
 }
 
+/**
+ * True only when the whole command is the canonical push, either bare or as the
+ * sole script of a shell wrapper (`pwsh -Command "<push>"`, `bash -lc '<push>'`).
+ */
+function provesCanonical(command, nested = false) {
+  const words = parseWords(command.trim());
+  if (words === null) return false;
+  if (sameWords(words, CANONICAL_PUSH)) return true;
+  if (nested || words.length < 3 || !SHELLS.has(words[0].toLowerCase())) return false;
+
+  const flag = words.at(-2).toLowerCase();
+  const options = words.slice(1, -2);
+  if (!SHELL_COMMAND_FLAGS.has(flag)) return false;
+  if (!options.every((option) => /^[-/][A-Za-z]+$/.test(option))) return false;
+  return provesCanonical(words.at(-1), true);
+}
+
+function parseUrl(value) {
+  try {
+    return new URL(value);
+  } catch (err) {
+    if (err instanceof TypeError) return null;
+    throw err;
+  }
+}
+
+// `user@host:owner/repo`; the lookahead keeps `https://…` out of it.
+const SCP_REMOTE = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/)(\S+)$/;
+
+/**
+ * `host/owner/repo`, lower-cased, without userinfo or a `.git` suffix, for the
+ * https, ssh:// and scp-style spellings of a remote; null for anything else.
+ * GitHub resolves owner and repository names case-insensitively.
+ */
+export function repoIdentity(remote) {
+  const value = String(remote ?? '').trim();
+  let host;
+  let path;
+
+  const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? parseUrl(value) : null;
+  if (url) {
+    if (!['https:', 'ssh:', 'git+ssh:'].includes(url.protocol)) return null;
+    if (url.search || url.hash) return null;
+    host = url.hostname;
+    path = url.pathname;
+  } else {
+    const scp = value.match(SCP_REMOTE);
+    if (!scp) return null;
+    [, host, path] = scp;
+  }
+
+  const repo = path
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\.git$/i, '')
+    .toLowerCase();
+  return `${host.toLowerCase()}/${repo}`;
+}
+
+/**
+ * A remote spelled for a deny message. Never echoes the raw value: an https
+ * remote routinely embeds a credential (`https://x-access-token:ghs_…@github.com`
+ * in an Actions checkout), and the reason lands in transcripts and hook logs.
+ */
+export function describeRemote(remote) {
+  if (remote === null || remote === undefined) return 'an unreadable remote';
+  const value = String(remote).trim();
+  if (!value) return 'an unset remote';
+
+  const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? parseUrl(value) : null;
+  if (url) return `${url.protocol}//${url.host}${url.pathname}`;
+
+  const scp = value.match(SCP_REMOTE);
+  if (scp) return `${scp[1]}:${scp[2]}`;
+  return 'an unrecognized remote';
+}
+
+/**
+ * Null when the command is not the pre-authorized push (normal approval policy
+ * applies) or when it is and every check passes; otherwise the deny reason.
+ * `originUrl` or `branch` being null means git could not be read.
+ */
 export function verifyCodexPush(command, { originUrl, branch }) {
-  for (const gitCommand of gitCommands(command)) {
-    if (!startsWith(gitCommand, CANONICAL_PUSH)) continue;
-    if (gitCommand.length !== CANONICAL_PUSH.length) {
-      return 'The pre-authorized Codex push cannot contain additional flags or refspecs.';
-    }
-    if (originUrl !== EXPECTED_ORIGIN) {
-      return `The origin remote must be exactly ${EXPECTED_ORIGIN}; refusing to publish to ${originUrl || 'an unresolved remote'}.`;
-    }
-    if (!branch) {
-      return 'The pre-authorized Codex push requires an attached codex/* branch; HEAD is detached.';
-    }
-    if (!branch.startsWith('codex/')) {
-      return `The pre-authorized Codex push requires a codex/* branch; refusing to publish ${branch}.`;
-    }
+  if (!mentionsPreauthorizedPush(command)) return null;
+  if (!provesCanonical(String(command))) return NON_CANONICAL_REASON;
+
+  if (repoIdentity(originUrl) !== EXPECTED_REPO_IDENTITY) {
+    return `The origin remote must be the github.com/Hinten/next_erp repository; refusing to publish to ${describeRemote(originUrl)}.`;
+  }
+  if (branch === null || branch === undefined) {
+    return 'Could not read the current branch; refusing the pre-authorized push.';
+  }
+  if (!branch) {
+    return 'The pre-authorized Codex push requires an attached codex/* branch; HEAD is detached.';
+  }
+  if (!branch.startsWith('codex/')) {
+    return `The pre-authorized Codex push requires a codex/* branch; refusing to publish ${branch}.`;
   }
   return null;
 }
@@ -199,18 +292,12 @@ function runHook() {
       }
       throw err;
     }
-    if (!gitCommands(command).some((tokens) => startsWith(tokens, CANONICAL_PUSH))) return;
+    if (!mentionsPreauthorizedPush(command)) return;
 
-    const originUrl = readGit('remote', 'get-url', 'origin');
-    const branch = readGit('branch', '--show-current');
-    if (originUrl === null || branch === null) {
-      deny(
-        'Could not verify the Codex branch and origin remote; refusing the pre-authorized push.',
-      );
-      return;
-    }
-
-    const reason = verifyCodexPush(command, { originUrl, branch });
+    const reason = verifyCodexPush(command, {
+      originUrl: readGit('remote', 'get-url', 'origin'),
+      branch: readGit('branch', '--show-current'),
+    });
     if (reason) deny(reason);
   });
 }
