@@ -1,11 +1,17 @@
 import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  MelhorEnvioNetworkError,
+  MelhorEnvioReauthRequiredError,
+} from '@delfrance/integrations-freight-br';
 
 import {
   MAX_TENTATIVAS,
+  MAX_TENTATIVAS_DEFERRED,
   TASK_MAX_ATTEMPTS,
   handleNotificationTask,
   notificationDocId,
+  reprocessDeferredNotifications,
   reprocessNotifications,
   type MelhorEnvioNotificationPayload,
   type MelhorEnvioProcessDeps,
@@ -26,6 +32,7 @@ function matches(data: DocData, clauses: Clause[]): boolean {
 class FakeDb {
   readonly collections = new Map<string, Map<string, DocData>>();
   readonly failCreateIds = new Set<string>();
+  readonly failUpdateIds = new Set<string>();
   private autoId = 0;
 
   private docs(path: string): Map<string, DocData> {
@@ -80,6 +87,11 @@ class FakeDb {
           set: async (data: DocData, options?: { merge?: boolean }) => {
             docs.set(id, options?.merge ? { ...(docs.get(id) ?? {}), ...data } : { ...data });
           },
+          update: async (data: DocData) => {
+            if (this.failUpdateIds.has(id)) throw new Error('redrive unavailable');
+            if (!docs.has(id)) throw Object.assign(new Error('not found'), { code: 5 });
+            docs.set(id, { ...(docs.get(id) ?? {}), ...data });
+          },
           delete: async () => {
             docs.delete(id);
           },
@@ -111,14 +123,28 @@ function pedido(id = 'pedido-1'): PedidoMatch {
   return {
     id,
     updateTime: timestamp,
-    data: { freteInicial: { estado: 'postado', codRastreio: null } },
+    data: {
+      freteInicial: {
+        estado: 'postado',
+        codRastreio: null,
+        integracaoFreteOuterRef: 'documents/int_frete/int-1',
+      },
+    },
   };
 }
 
 function processDeps(
   find: MelhorEnvioProcessDeps['findPedidoByLabel'] = vi.fn(async () => pedido()),
 ): MelhorEnvioProcessDeps {
-  return { findPedidoByLabel: find, updatePedido: vi.fn(async () => {}) };
+  return {
+    findPedidoByLabel: find,
+    loadCurrentLabel: vi.fn(async (_db, _intFreteId, labelId) => ({
+      id: labelId,
+      status: 'posted',
+      tracking: null,
+    })),
+    updatePedido: vi.fn(async () => {}),
+  };
 }
 
 function seedFailure(
@@ -138,12 +164,25 @@ function seedFailure(
   return id;
 }
 
+function seedDeferred(
+  db: FakeDb,
+  value: MelhorEnvioNotificationPayload,
+  over: DocData = {},
+): string {
+  return seedFailure(db, value, { status: 'deferred', ...over });
+}
+
 describe('Melhor Envio notification pipeline', () => {
   it('persists neither successful work nor deterministic drops', async () => {
     const db = new FakeDb();
     await expect(
       handleNotificationTask(asDb(db), payload(), 0, processDeps()),
-    ).resolves.toMatchObject({ outcome: 'done', kind: 'noop', detail: 'sem-alteracao' });
+    ).resolves.toMatchObject({
+      outcome: 'done',
+      kind: 'noop',
+      detail: 'sem-alteracao',
+      providerStatusEfetivo: 'posted',
+    });
     await expect(
       handleNotificationTask(asDb(db), payload({ providerStatus: 'unknown' }), 0, processDeps()),
     ).resolves.toMatchObject({ outcome: 'dropped', kind: 'dropped' });
@@ -172,6 +211,25 @@ describe('Melhor Envio notification pipeline', () => {
       status: 'failed',
       tentativas: 0,
       erro: 'firestore offline',
+    });
+  });
+
+  it('persists external-action blockers in the deferred lane and reports the real outcome', async () => {
+    const db = new FakeDb();
+    const deps = processDeps();
+    vi.mocked(deps.loadCurrentLabel).mockRejectedValueOnce(
+      new MelhorEnvioReauthRequiredError('no_token', 'reconnect'),
+    );
+
+    await expect(handleNotificationTask(asDb(db), payload(), 0, deps)).resolves.toMatchObject({
+      outcome: 'deferred',
+      kind: 'deferred',
+      detail: 'oauth-reconectar',
+      providerStatusEfetivo: null,
+    });
+    expect(db.rows(COLLECTION).get(notificationDocId(payload()))).toMatchObject({
+      status: 'deferred',
+      tentativas: 0,
     });
   });
 
@@ -219,5 +277,81 @@ describe('Melhor Envio notification pipeline', () => {
       tentativas: MAX_TENTATIVAS,
       processedAt: 10_000,
     });
+  });
+
+  it('drains, retains, graduates and parks deferred rows independently', async () => {
+    const db = new FakeDb();
+    const resolved = payload({ labelId: 'resolved' });
+    const blocked = payload({ labelId: 'blocked' });
+    const transient = payload({ labelId: 'transient' });
+    const parked = payload({ labelId: 'parked-deferred' });
+    const resolvedId = seedDeferred(db, resolved);
+    const blockedId = seedDeferred(db, blocked);
+    const transientId = seedDeferred(db, transient);
+    const parkedId = seedDeferred(db, parked, {
+      tentativas: MAX_TENTATIVAS_DEFERRED - 1,
+    });
+    const deps = processDeps();
+    vi.mocked(deps.loadCurrentLabel).mockImplementation(async (_db, _intFreteId, labelId) => {
+      if (labelId === 'blocked' || labelId === 'parked-deferred') {
+        throw new MelhorEnvioReauthRequiredError('no_token', 'reconnect');
+      }
+      if (labelId === 'transient') throw new MelhorEnvioNetworkError('offline');
+      return { id: labelId, status: 'posted', tracking: null };
+    });
+
+    const result = await reprocessDeferredNotifications(
+      asDb(db),
+      { now: 100_000, olderThanMs: 100 },
+      deps,
+    );
+
+    expect(result.outcomes).toMatchObject({
+      'sem-alteracao': 1,
+      deferred: 1,
+      redriven: 1,
+      parked: 1,
+    });
+    expect(result.errors).toEqual([]);
+    expect(db.rows(COLLECTION).has(resolvedId)).toBe(false);
+    expect(db.rows(COLLECTION).get(blockedId)).toMatchObject({
+      status: 'deferred',
+      tentativas: 1,
+    });
+    expect(db.rows(COLLECTION).get(transientId)).toMatchObject({
+      status: 'failed',
+      tentativas: 0,
+    });
+    expect(db.rows(COLLECTION).get(parkedId)).toMatchObject({
+      status: 'parked',
+      tentativas: MAX_TENTATIVAS_DEFERRED,
+    });
+  });
+
+  it('isolates a deferred redrive write failure and still resolves the next row', async () => {
+    const db = new FakeDb();
+    const broken = payload({ labelId: 'broken' });
+    const brokenId = seedDeferred(db, broken);
+    db.failUpdateIds.add(brokenId);
+    const good = payload({ labelId: 'good' });
+    const goodId = seedDeferred(db, good);
+    const deps = processDeps();
+    vi.mocked(deps.loadCurrentLabel).mockImplementation(async (_db, _intFreteId, labelId) => {
+      if (labelId === 'broken') throw new MelhorEnvioNetworkError('offline');
+      return { id: labelId, status: 'posted', tracking: null };
+    });
+
+    const result = await reprocessDeferredNotifications(
+      asDb(db),
+      { now: 100_000, olderThanMs: 100 },
+      deps,
+    );
+
+    expect(result.errors).toHaveLength(1);
+    expect(db.rows(COLLECTION).get(brokenId)).toMatchObject({
+      status: 'deferred',
+      tentativas: 1,
+    });
+    expect(db.rows(COLLECTION).has(goodId)).toBe(false);
   });
 });

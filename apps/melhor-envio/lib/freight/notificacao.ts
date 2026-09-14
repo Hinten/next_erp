@@ -14,16 +14,24 @@ import {
 import {
   defineNotificationPipeline,
   MAX_TENTATIVAS,
+  MAX_TENTATIVAS_DEFERRED,
   type NotificationDisposition,
   type ReprocessOptions,
   type ReprocessResult,
   TASK_MAX_ATTEMPTS,
 } from '@delfrance/data/admin/notifications';
+import {
+  MelhorEnvioHttpError,
+  MelhorEnvioReauthRequiredError,
+  type Order,
+} from '@delfrance/integrations-freight-br';
+
+import { MelhorEnvioContaNotConfiguredError, MelhorEnvioConfigError } from './melhorEnvioErrors';
 
 /** Deployed task function name and auto-provisioned queue name. */
 export const MELHOR_ENVIO_NOTIFICATION_QUEUE = 'processMelhorEnvioNotification';
 
-export { MAX_TENTATIVAS, TASK_MAX_ATTEMPTS };
+export { MAX_TENTATIVAS, MAX_TENTATIVAS_DEFERRED, TASK_MAX_ATTEMPTS };
 export type { ReprocessOptions, ReprocessResult };
 
 const meNotificationWireSchema = z
@@ -192,7 +200,32 @@ export interface PedidoMatch {
 
 export interface MelhorEnvioProcessDeps {
   findPedidoByLabel(db: Firestore, labelId: string): Promise<PedidoMatch | null>;
+  loadCurrentLabel(db: Firestore, intFreteId: string, labelId: string): Promise<Order>;
   updatePedido(db: Firestore, pedido: PedidoMatch, patch: Record<string, unknown>): Promise<void>;
+}
+
+export function requireMelhorEnvioNotificationRuntimeConfig(): void {
+  const sandbox = process.env.MELHOR_ENVIO_SANDBOX;
+  if (sandbox !== 'true' && sandbox !== 'false') {
+    throw new MelhorEnvioConfigError(
+      'MELHOR_ENVIO_SANDBOX deve ser configurado explicitamente como true ou false.',
+    );
+  }
+  const publicUrl = process.env.MELHOR_ENVIO_PUBLIC_URL?.trim();
+  if (!publicUrl) {
+    throw new MelhorEnvioConfigError(
+      'MELHOR_ENVIO_PUBLIC_URL deve ser configurada para renovar o token OAuth.',
+    );
+  }
+  try {
+    const url = new URL(publicUrl);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      throw new TypeError('unsupported protocol');
+    }
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    throw new MelhorEnvioConfigError('MELHOR_ENVIO_PUBLIC_URL deve ser uma URL absoluta válida.');
+  }
 }
 
 const defaultProcessDeps: MelhorEnvioProcessDeps = {
@@ -204,6 +237,12 @@ const defaultProcessDeps: MelhorEnvioProcessDeps = {
       .get();
     const doc = snap.docs[0];
     return doc ? { id: doc.id, data: doc.data(), updateTime: doc.updateTime } : null;
+  },
+  async loadCurrentLabel(db, intFreteId, labelId) {
+    requireMelhorEnvioNotificationRuntimeConfig();
+    const { loadMelhorEnvioContext } = await import('./melhorEnvio');
+    const ctx = await loadMelhorEnvioContext(db, intFreteId);
+    return ctx.api.getOrder(labelId);
   },
   async updatePedido(db, pedido, patch) {
     await pedidoCollection.docRef(db, {}, pedido.id).update(patch, {
@@ -221,7 +260,11 @@ export type MelhorEnvioProcessDetail =
   | 'released'
   | 'label-ausente'
   | 'label-desconhecida'
-  | 'status-nao-mapeado';
+  | 'status-nao-mapeado'
+  | 'integracao-ausente-ou-invalida'
+  | 'integracao-nao-configurada'
+  | 'oauth-reconectar'
+  | 'etiqueta-indisponivel';
 
 export type MelhorEnvioProcessOutcome =
   | {
@@ -232,12 +275,14 @@ export type MelhorEnvioProcessOutcome =
       >;
       pedidoId: string;
       estado: string | null;
+      providerStatusEfetivo: string;
     }
   | {
       kind: 'noop';
       detail: Extract<MelhorEnvioProcessDetail, 'sem-alteracao' | 'estado-terminal' | 'released'>;
       pedidoId?: string;
       estado?: string | null;
+      providerStatusEfetivo?: string | null;
     }
   | {
       kind: 'dropped';
@@ -246,15 +291,101 @@ export type MelhorEnvioProcessOutcome =
         'label-ausente' | 'label-desconhecida' | 'status-nao-mapeado'
       >;
       reason: string;
+    }
+  | {
+      kind: 'deferred';
+      detail: Extract<
+        MelhorEnvioProcessDetail,
+        | 'integracao-ausente-ou-invalida'
+        | 'integracao-nao-configurada'
+        | 'oauth-reconectar'
+        | 'etiqueta-indisponivel'
+      >;
+      reason: string;
+      pedidoId: string;
+      estado: string | null;
+      providerStatusEfetivo?: null;
     };
 
-function readFrete(data: unknown): { estado: string | null; codRastreio: string | null } {
+function readFrete(data: unknown): {
+  estado: string | null;
+  codRastreio: string | null;
+  integracaoFreteOuterRef: string | null;
+} {
   const root = objectValue(data);
   const frete = objectValue(root?.freteInicial);
   return {
     estado: asString(frete?.estado),
     codRastreio: asString(frete?.codRastreio),
+    integracaoFreteOuterRef: asString(frete?.integracaoFreteOuterRef),
   };
+}
+
+function intFreteIdFromOuterRef(outerRef: string | null): string | null {
+  const match = /^documents\/int_frete\/([^/]+)$/.exec(outerRef ?? '');
+  return match?.[1] ?? null;
+}
+
+export class MelhorEnvioRemoteStateUnavailableError extends Error {
+  constructor(status: string | null) {
+    super(`Situação atual da etiqueta ainda não acionável: ${status ?? '(ausente)'}.`);
+    this.name = 'MelhorEnvioRemoteStateUnavailableError';
+  }
+}
+
+async function loadAuthoritativeLabel(
+  db: Firestore,
+  deps: MelhorEnvioProcessDeps,
+  pedido: PedidoMatch,
+  intFreteId: string,
+  labelId: string,
+  estado: string | null,
+): Promise<
+  | { loaded: true; order: Order }
+  | { loaded: false; outcome: Extract<MelhorEnvioProcessOutcome, { kind: 'deferred' }> }
+> {
+  try {
+    return { loaded: true, order: await deps.loadCurrentLabel(db, intFreteId, labelId) };
+  } catch (err) {
+    if (err instanceof MelhorEnvioContaNotConfiguredError) {
+      return {
+        loaded: false,
+        outcome: {
+          kind: 'deferred',
+          detail: 'integracao-nao-configurada',
+          reason: 'A integração Melhor Envio associada ao pedido não está disponível.',
+          pedidoId: pedido.id,
+          estado,
+        },
+      };
+    }
+    if (err instanceof MelhorEnvioReauthRequiredError) {
+      return {
+        loaded: false,
+        outcome: {
+          kind: 'deferred',
+          detail: 'oauth-reconectar',
+          reason: 'A conta Melhor Envio precisa ser reconectada.',
+          pedidoId: pedido.id,
+          estado,
+        },
+      };
+    }
+    if (err instanceof MelhorEnvioHttpError && [401, 403, 404].includes(err.status)) {
+      return {
+        loaded: false,
+        outcome: {
+          kind: 'deferred',
+          detail: 'etiqueta-indisponivel',
+          reason: `A etiqueta não pôde ser consultada no Melhor Envio (HTTP ${err.status}).`,
+          pedidoId: pedido.id,
+          estado,
+        },
+      };
+    }
+    if (err instanceof MelhorEnvioConfigError) throw err;
+    throw err;
+  }
 }
 
 function effectiveProviderStatus(payload: MelhorEnvioNotificationPayload): string | null {
@@ -275,8 +406,7 @@ export async function processMelhorEnvioNotification(
   if (providerStatus === 'released') {
     return { kind: 'noop', detail: 'released' };
   }
-  const target = meStatusToEstadoFrete(providerStatus);
-  if (!target) {
+  if (!meStatusToEstadoFrete(providerStatus)) {
     return {
       kind: 'dropped',
       detail: 'status-nao-mapeado',
@@ -294,11 +424,37 @@ export async function processMelhorEnvioNotification(
   }
 
   const frete = readFrete(pedido.data);
+  const intFreteId = intFreteIdFromOuterRef(frete.integracaoFreteOuterRef);
+  if (!intFreteId) {
+    return {
+      kind: 'deferred',
+      detail: 'integracao-ausente-ou-invalida',
+      reason: 'O pedido não possui uma referência válida para a integração Melhor Envio.',
+      pedidoId: pedido.id,
+      estado: frete.estado,
+    };
+  }
+
+  const currentLabel = await loadAuthoritativeLabel(
+    db,
+    deps,
+    pedido,
+    intFreteId,
+    payload.labelId,
+    frete.estado,
+  );
+  if (!currentLabel.loaded) return currentLabel.outcome;
+  const providerStatusEfetivo = asString(currentLabel.order.status);
+  if (!providerStatusEfetivo) throw new MelhorEnvioRemoteStateUnavailableError(null);
+  const target = meStatusToEstadoFrete(providerStatusEfetivo);
+  if (!target) throw new MelhorEnvioRemoteStateUnavailableError(providerStatusEfetivo);
+
   const isTerminal = frete.estado != null && TERMINAL_ESTADOS.has(frete.estado as EstadoFrete);
   const patch: Record<string, unknown> = {};
   if (!isTerminal && frete.estado !== target) patch['freteInicial.estado'] = target;
-  if (payload.tracking != null && frete.codRastreio !== payload.tracking) {
-    patch['freteInicial.codRastreio'] = payload.tracking;
+  const tracking = asString(currentLabel.order.tracking) ?? payload.tracking;
+  if (tracking != null && frete.codRastreio !== tracking) {
+    patch['freteInicial.codRastreio'] = tracking;
   }
 
   if (Object.keys(patch).length === 0) {
@@ -307,6 +463,7 @@ export async function processMelhorEnvioNotification(
       detail: isTerminal ? 'estado-terminal' : 'sem-alteracao',
       pedidoId: pedido.id,
       estado: frete.estado,
+      providerStatusEfetivo,
     };
   }
 
@@ -323,16 +480,18 @@ export async function processMelhorEnvioNotification(
     detail,
     pedidoId: pedido.id,
     estado: changedEstado ? target : frete.estado,
+    providerStatusEfetivo,
   };
 }
 
 export interface MelhorEnvioTaskResult {
-  outcome: 'done' | 'failed' | 'dropped';
+  outcome: 'done' | 'failed' | 'parked' | 'dropped' | 'deferred';
   labelId?: string;
   pedidoId?: string;
   estado?: string | null;
   kind?: MelhorEnvioProcessOutcome['kind'];
   detail?: MelhorEnvioProcessDetail;
+  providerStatusEfetivo: string | null;
 }
 
 function pipelineFor(deps: MelhorEnvioProcessDeps) {
@@ -351,10 +510,14 @@ function pipelineFor(deps: MelhorEnvioProcessDeps) {
       }
       return result.data;
     },
+    graduateDeferredTransientErrors: true,
     process: (db, payload) => processMelhorEnvioNotification(db, payload, deps),
     toDisposition: (outcome): NotificationDisposition => {
       if (outcome.kind === 'dropped') {
         return { kind: 'drop', reason: outcome.reason, label: outcome.detail };
+      }
+      if (outcome.kind === 'deferred') {
+        return { kind: 'defer', reason: outcome.reason };
       }
       return { kind: 'resolve', label: outcome.detail };
     },
@@ -380,12 +543,16 @@ export async function handleNotificationTask(
   const result = await pipelineFor(deps).handleTask(db, data, retryCount);
   const pedidoId = result.result && 'pedidoId' in result.result ? result.result.pedidoId : null;
   const estado = result.result && 'estado' in result.result ? result.result.estado : null;
+  const providerStatusEfetivo =
+    result.result && 'providerStatusEfetivo' in result.result
+      ? result.result.providerStatusEfetivo
+      : null;
   return {
-    outcome:
-      result.outcome === 'parked' || result.outcome === 'deferred' ? 'failed' : result.outcome,
+    outcome: result.outcome,
     ...(result.payload?.labelId ? { labelId: result.payload.labelId } : {}),
     ...(pedidoId != null ? { pedidoId } : {}),
     ...(estado != null ? { estado } : {}),
+    providerStatusEfetivo: providerStatusEfetivo ?? null,
     ...(result.result ? { kind: result.result.kind, detail: result.result.detail } : {}),
   };
 }
@@ -396,4 +563,12 @@ export function reprocessNotifications(
   deps: MelhorEnvioProcessDeps = defaultProcessDeps,
 ): Promise<ReprocessResult> {
   return pipelineFor(deps).reprocess(db, opts);
+}
+
+export function reprocessDeferredNotifications(
+  db: Firestore,
+  opts: ReprocessOptions = {},
+  deps: MelhorEnvioProcessDeps = defaultProcessDeps,
+): Promise<ReprocessResult> {
+  return pipelineFor(deps).reprocessDeferred(db, opts);
 }

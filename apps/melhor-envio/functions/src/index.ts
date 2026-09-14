@@ -6,6 +6,7 @@ import { readCacheDelta, readCacheMark } from '@delfrance/data/admin/cache';
 
 import {
   MELHOR_ENVIO_NOTIFICATION_QUEUE,
+  reprocessDeferredNotifications,
   reprocessNotifications,
 } from '../../lib/freight/notificacao';
 import { getDb } from './lib/admin';
@@ -22,19 +23,38 @@ if (!(MELHOR_ENVIO_NOTIFICATION_QUEUE in notificationHandlers)) {
 export { processMelhorEnvioNotification } from './processNotification';
 
 export const reprocessMelhorEnvioNotifications = onSchedule(
-  { schedule: 'every 30 minutes', timeZone: 'America/Sao_Paulo' },
+  {
+    schedule: 'every 30 minutes',
+    timeZone: 'America/Sao_Paulo',
+    secrets: ['MELHOR_ENVIO_CLIENT_ID', 'MELHOR_ENVIO_CLIENT_SECRET'],
+    timeoutSeconds: 540,
+  },
   async () => {
-    const cacheMark = readCacheMark();
+    let cacheMark = readCacheMark();
     const result = await reprocessNotifications(getDb());
-    logger.info('[melhor-envio] reprocess sweep', {
+    logger.info('[melhor-envio] hot reprocess sweep', {
       processed: result.processed,
       outcomes: result.outcomes,
       errorCount: result.errors.length,
       readCache: readCacheDelta(cacheMark),
     });
     if (result.errors.length > 0) {
-      logger.warn('[melhor-envio] reprocess sweep had per-doc failures', {
+      logger.warn('[melhor-envio] hot reprocess sweep had per-doc failures', {
         errors: result.errors.slice(0, 10),
+      });
+    }
+
+    cacheMark = readCacheMark();
+    const deferred = await reprocessDeferredNotifications(getDb());
+    logger.info('[melhor-envio] deferred reprocess sweep', {
+      processed: deferred.processed,
+      outcomes: deferred.outcomes,
+      errorCount: deferred.errors.length,
+      readCache: readCacheDelta(cacheMark),
+    });
+    if (deferred.errors.length > 0) {
+      logger.warn('[melhor-envio] deferred reprocess sweep had per-doc failures', {
+        errors: deferred.errors.slice(0, 10),
       });
     }
   },

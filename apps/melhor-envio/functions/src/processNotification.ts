@@ -20,6 +20,7 @@ export const processMelhorEnvioNotification = onTaskDispatched(
       maxDoublings: 2,
     },
     rateLimits: { maxConcurrentDispatches: 3, maxDispatchesPerSecond: 5 },
+    secrets: ['MELHOR_ENVIO_CLIENT_ID', 'MELHOR_ENVIO_CLIENT_SECRET'],
   },
   async (req) => {
     const payload = req.data as {
@@ -36,6 +37,7 @@ export const processMelhorEnvioNotification = onTaskDispatched(
       labelId: typeof payload?.labelId === 'string' ? payload.labelId : null,
       event: typeof payload?.event === 'string' ? payload.event : null,
       providerStatus: typeof payload?.providerStatus === 'string' ? payload.providerStatus : null,
+      providerStatusEfetivo: result.providerStatusEfetivo ?? null,
       pedidoId: result.pedidoId ?? null,
       estado: result.estado ?? null,
       retryCount: req.retryCount ?? 0,

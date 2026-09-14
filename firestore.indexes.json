@@ -371,6 +371,16 @@
       ]
     },
     {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "freteInicial.printLabelId",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "produtos",
       "queryScope": "COLLECTION",
       "fields": [

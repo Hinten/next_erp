@@ -12,7 +12,21 @@ Hosting backend and retries persisted failures on a 30-minute schedule.
 
 ## Required configuration
 
-The build requires `FUNCTIONS_REGION` and `TASKS_INVOKER_SA`. The App Hosting
+The build requires `FUNCTIONS_REGION` and `TASKS_INVOKER_SA`. Both exported
+functions bind the `MELHOR_ENVIO_CLIENT_ID` and `MELHOR_ENVIO_CLIENT_SECRET`
+secrets because every notification may refresh OAuth before consulting the
+current label state. Grant the runtime service account access to exactly those
+two secrets.
+
+Runtime non-secret configuration belongs in
+`apps/melhor-envio/functions/.env.deploy.<project-id>` (copy the documented
+values from `.env.example`):
+
+- `MELHOR_ENVIO_SANDBOX=true|false` is mandatory and has no implicit default;
+- `MELHOR_ENVIO_PUBLIC_URL` is mandatory and must be an absolute HTTP(S) origin;
+- `MELHOR_ENVIO_USER_AGENT` is optional and keeps the application fallback.
+
+The App Hosting
 backend uses `MELHOR_ENVIO_TASKS_REGION`, falling back to `FUNCTIONS_REGION`,
 to address the regional queue. Set `MELHOR_ENVIO_TASKS_DISABLED=1` while the
 queue is not ready; enqueue failures are then persisted for the sweep.
@@ -27,12 +41,15 @@ account needs `roles/run.invoker` on the task function.
 No deployment is performed by this change. In the coordinated operations
 window:
 
-1. Deploy the `(status ASC, processedAt ASC)` Firestore index.
-2. Configure the region and `TASKS_INVOKER_SA`.
+1. Deploy the notification sweep index and the
+   `pedidos.freteInicial.printLabelId` lookup index.
+2. Configure the region, `TASKS_INVOKER_SA`, both secrets, and the three
+   non-secret Melhor Envio runtime values above.
 3. Build and deploy with `firebase.melhor-envio.deploy.json`.
-4. Verify the three IAM grants above.
+4. Verify the Cloud Tasks, invoker, Firestore, and Secret Manager grants.
 5. Configure the App Hosting backend's task region.
-6. Verify queue dispatch, structured task logs, persisted failures, and sweep
+6. Verify queue dispatch, authoritative label lookup, structured task logs,
+   persisted `failed`/`deferred` rows, and both sweep lanes.
    results.
 7. Remove `MELHOR_ENVIO_TASKS_DISABLED` only after dispatch is healthy.
 

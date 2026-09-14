@@ -63,6 +63,7 @@ describe('processMelhorEnvioNotification log line', () => {
       detail: 'estado-atualizado',
       pedidoId: 'ped-1',
       estado: 'postado',
+      providerStatusEfetivo: 'suspended',
     });
     await run({
       data: {
@@ -81,10 +82,11 @@ describe('processMelhorEnvioNotification log line', () => {
       labelId: 'lbl-1',
       event: 'order.posted',
       providerStatus: 'posted',
+      providerStatusEfetivo: 'suspended',
       pedidoId: 'ped-1',
       estado: 'postado',
       retryCount: 1,
-      readCache: expect.anything(),
+      readCache: null,
     });
   });
 
@@ -94,7 +96,15 @@ describe('processMelhorEnvioNotification log line', () => {
 
     const payload = loggedPayload(info);
     expect(payload.labelId).toBe('lbl-1');
-    for (const key of ['kind', 'detail', 'event', 'providerStatus', 'pedidoId', 'estado']) {
+    for (const key of [
+      'kind',
+      'detail',
+      'event',
+      'providerStatus',
+      'providerStatusEfetivo',
+      'pedidoId',
+      'estado',
+    ]) {
       expect(payload).toHaveProperty(key, null);
     }
   });
@@ -116,6 +126,13 @@ describe('processMelhorEnvioNotification options', () => {
       'apphosting@p.iam.gserviceaccount.com',
       '1-compute@developer.gserviceaccount.com',
     ]);
+  });
+
+  it('binds exactly the two OAuth application secrets', () => {
+    const names = (endpoint.secretEnvironmentVariables as { key?: string }[] | undefined)?.map(
+      (secret) => secret.key,
+    );
+    expect(names).toEqual(['MELHOR_ENVIO_CLIENT_ID', 'MELHOR_ENVIO_CLIENT_SECRET']);
   });
 
   it('keeps the function export and queue name aligned', () => {

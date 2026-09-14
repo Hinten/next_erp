@@ -1,5 +1,12 @@
 import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  MelhorEnvioHttpError,
+  MelhorEnvioNetworkError,
+  MelhorEnvioReauthRequiredError,
+  MelhorEnvioSchemaError,
+  type Order,
+} from '@delfrance/integrations-freight-br';
 
 import {
   meStatusToEstadoFrete,
@@ -7,10 +14,12 @@ import {
   notificationDocId,
   parseNotificationBody,
   processMelhorEnvioNotification,
+  requireMelhorEnvioNotificationRuntimeConfig,
   type MelhorEnvioNotificationPayload,
   type MelhorEnvioProcessDeps,
   type PedidoMatch,
 } from './notificacao';
+import { MelhorEnvioContaNotConfiguredError, MelhorEnvioConfigError } from './melhorEnvio';
 
 const db = {} as Firestore;
 const updateTime = {} as Timestamp;
@@ -27,20 +36,32 @@ function payload(
   };
 }
 
-function pedido(estado: string, codRastreio: string | null = null): PedidoMatch {
+function pedido(
+  estado: string,
+  codRastreio: string | null = null,
+  integracaoFreteOuterRef: string | null = 'documents/int_frete/int-1',
+): PedidoMatch {
   return {
     id: 'ped-1',
     updateTime,
-    data: { freteInicial: { estado, codRastreio, printLabelId: 'lbl-1' } },
+    data: {
+      freteInicial: { estado, codRastreio, printLabelId: 'lbl-1', integracaoFreteOuterRef },
+    },
   };
 }
 
-function deps(match: PedidoMatch | null = pedido('aguardandoPostagem')) {
+function order(over: Partial<Order> = {}): Order {
+  return { id: 'lbl-1', status: 'posted', tracking: null, ...over };
+}
+
+function deps(match: PedidoMatch | null = pedido('aguardandoPostagem'), current: Order = order()) {
   const findPedidoByLabel = vi.fn(async () => match);
+  const loadCurrentLabel = vi.fn(async () => current);
   const updatePedido = vi.fn(async () => {});
   return {
-    value: { findPedidoByLabel, updatePedido } satisfies MelhorEnvioProcessDeps,
+    value: { findPedidoByLabel, loadCurrentLabel, updatePedido } satisfies MelhorEnvioProcessDeps,
     findPedidoByLabel,
+    loadCurrentLabel,
     updatePedido,
   };
 }
@@ -63,6 +84,15 @@ describe('Melhor Envio notification parsing', () => {
     expect(parsed?.data).toBe(
       '{"id":"lbl-1","status":"delivered","tracking":"ME123BR","carrier":"x"}',
     );
+  });
+
+  it('prefers data.status over the event suffix', () => {
+    expect(
+      parseNotificationBody({
+        event: 'order.delivered',
+        data: { id: 'lbl-1', status: 'posted' },
+      })?.providerStatus,
+    ).toBe('posted');
   });
 
   it('bounds unknown field names, values and count', () => {
@@ -139,32 +169,41 @@ describe('processMelhorEnvioNotification', () => {
     expect(d.findPedidoByLabel).not.toHaveBeenCalled();
   });
 
-  it('prefers data.status over the event suffix and falls back when absent', async () => {
-    const preferred = deps(pedido('aguardandoPostagem'));
+  it('uses the authoritative API state instead of an older webhook state', async () => {
+    const preferred = deps(pedido('postado'), order({ status: 'suspended' }));
     await processMelhorEnvioNotification(
       db,
-      payload({ providerStatus: 'posted', event: 'order.delivered' }),
+      payload({ providerStatus: 'posted', event: 'order.posted' }),
       preferred.value,
     );
     expect(preferred.updatePedido).toHaveBeenCalledWith(db, expect.anything(), {
-      'freteInicial.estado': 'postado',
+      'freteInicial.estado': 'suspenso',
     });
 
-    const d = deps(pedido('postado'));
+    const d = deps(pedido('suspenso'), order({ status: 'posted' }));
     await processMelhorEnvioNotification(
       db,
-      payload({ providerStatus: null, event: 'order.delivered' }),
+      payload({ providerStatus: 'suspended', event: 'order.suspended' }),
       d.value,
     );
     expect(d.updatePedido).toHaveBeenCalledWith(db, expect.objectContaining({ id: 'ped-1' }), {
-      'freteInicial.estado': 'entregue',
+      'freteInicial.estado': 'postado',
+    });
+  });
+
+  it('applies a legitimate recovery from delivery failure when the API confirms posted', async () => {
+    const d = deps(pedido('falhaNaEntrega'), order({ status: 'posted' }));
+    await expect(processMelhorEnvioNotification(db, payload(), d.value)).resolves.toMatchObject({
+      kind: 'applied',
+      estado: 'postado',
+      providerStatusEfetivo: 'posted',
     });
   });
 
   it('writes only the two fields that actually changed', async () => {
-    const both = deps();
+    const both = deps(undefined, order({ tracking: 'REMOTE123BR' }));
     await expect(
-      processMelhorEnvioNotification(db, payload({ tracking: 'ME123BR' }), both.value),
+      processMelhorEnvioNotification(db, payload({ tracking: 'SIGNED123BR' }), both.value),
     ).resolves.toMatchObject({
       kind: 'applied',
       detail: 'estado-e-rastreio-atualizados',
@@ -172,10 +211,10 @@ describe('processMelhorEnvioNotification', () => {
     });
     expect(both.updatePedido).toHaveBeenCalledWith(db, expect.anything(), {
       'freteInicial.estado': 'postado',
-      'freteInicial.codRastreio': 'ME123BR',
+      'freteInicial.codRastreio': 'REMOTE123BR',
     });
 
-    const trackingOnly = deps(pedido('postado'));
+    const trackingOnly = deps(pedido('postado'), order({ tracking: null }));
     await processMelhorEnvioNotification(db, payload({ tracking: 'ME123BR' }), trackingOnly.value);
     expect(trackingOnly.updatePedido).toHaveBeenCalledWith(db, expect.anything(), {
       'freteInicial.codRastreio': 'ME123BR',
@@ -200,7 +239,7 @@ describe('processMelhorEnvioNotification', () => {
       ),
     ).resolves.toMatchObject({ kind: 'noop', detail: 'estado-terminal' });
 
-    const tracking = deps(pedido('cancelado'));
+    const tracking = deps(pedido('cancelado'), order({ status: 'delivered', tracking: null }));
     await processMelhorEnvioNotification(
       db,
       payload({ providerStatus: 'delivered', tracking: 'ME999BR' }),
@@ -217,5 +256,96 @@ describe('processMelhorEnvioNotification', () => {
     await expect(processMelhorEnvioNotification(db, payload(), d.value)).rejects.toThrow(
       'FAILED_PRECONDITION',
     );
+  });
+
+  it('refetches Firestore and Melhor Envio after a precondition conflict', async () => {
+    const d = deps();
+    d.updatePedido.mockRejectedValueOnce(new Error('FAILED_PRECONDITION'));
+    await expect(processMelhorEnvioNotification(db, payload(), d.value)).rejects.toThrow(
+      'FAILED_PRECONDITION',
+    );
+    d.findPedidoByLabel.mockResolvedValueOnce(pedido('postado'));
+    await expect(processMelhorEnvioNotification(db, payload(), d.value)).resolves.toMatchObject({
+      kind: 'noop',
+    });
+    expect(d.findPedidoByLabel).toHaveBeenCalledTimes(2);
+    expect(d.loadCurrentLabel).toHaveBeenCalledTimes(2);
+  });
+
+  it('defers missing integration references and account/OAuth action requirements', async () => {
+    const missing = deps(pedido('postado', null, null));
+    await expect(
+      processMelhorEnvioNotification(db, payload(), missing.value),
+    ).resolves.toMatchObject({ kind: 'deferred', detail: 'integracao-ausente-ou-invalida' });
+    expect(missing.loadCurrentLabel).not.toHaveBeenCalled();
+
+    const invalid = deps(pedido('postado', null, 'documents/int_frete/int-1/extra'));
+    await expect(
+      processMelhorEnvioNotification(db, payload(), invalid.value),
+    ).resolves.toMatchObject({ kind: 'deferred', detail: 'integracao-ausente-ou-invalida' });
+    expect(invalid.loadCurrentLabel).not.toHaveBeenCalled();
+
+    for (const error of [
+      new MelhorEnvioContaNotConfiguredError('missing'),
+      new MelhorEnvioReauthRequiredError('no_token', 'reconnect'),
+      new MelhorEnvioHttpError('unauthorized', 401, { token: 'must-not-leak' }),
+      new MelhorEnvioHttpError('forbidden', 403, {}),
+      new MelhorEnvioHttpError('not found', 404, {}),
+    ]) {
+      const d = deps();
+      d.loadCurrentLabel.mockRejectedValueOnce(error);
+      await expect(processMelhorEnvioNotification(db, payload(), d.value)).resolves.toMatchObject({
+        kind: 'deferred',
+      });
+    }
+  });
+
+  it('keeps network, throttling, server, schema, config and remote-state failures hot', async () => {
+    const errors = [
+      new MelhorEnvioNetworkError('offline'),
+      new MelhorEnvioHttpError('throttled', 429, {}),
+      new MelhorEnvioHttpError('server', 503, {}),
+      new MelhorEnvioSchemaError('invalid 200', []),
+      new MelhorEnvioConfigError('missing deployment config'),
+    ];
+    for (const error of errors) {
+      const d = deps();
+      d.loadCurrentLabel.mockRejectedValueOnce(error);
+      await expect(processMelhorEnvioNotification(db, payload(), d.value)).rejects.toBe(error);
+    }
+
+    const unavailable = deps(undefined, order({ status: 'created' }));
+    await expect(processMelhorEnvioNotification(db, payload(), unavailable.value)).rejects.toThrow(
+      'ainda não acionável',
+    );
+  });
+});
+
+describe('notification Functions runtime configuration', () => {
+  it('requires explicit sandbox mode and an absolute HTTP(S) public URL', () => {
+    const sandbox = process.env.MELHOR_ENVIO_SANDBOX;
+    const publicUrl = process.env.MELHOR_ENVIO_PUBLIC_URL;
+    try {
+      delete process.env.MELHOR_ENVIO_SANDBOX;
+      process.env.MELHOR_ENVIO_PUBLIC_URL = 'https://me.example.com';
+      expect(() => requireMelhorEnvioNotificationRuntimeConfig()).toThrow('MELHOR_ENVIO_SANDBOX');
+
+      process.env.MELHOR_ENVIO_SANDBOX = ' false ';
+      expect(() => requireMelhorEnvioNotificationRuntimeConfig()).toThrow('MELHOR_ENVIO_SANDBOX');
+
+      process.env.MELHOR_ENVIO_SANDBOX = 'false';
+      process.env.MELHOR_ENVIO_PUBLIC_URL = 'relative/path';
+      expect(() => requireMelhorEnvioNotificationRuntimeConfig()).toThrow(
+        'MELHOR_ENVIO_PUBLIC_URL',
+      );
+
+      process.env.MELHOR_ENVIO_PUBLIC_URL = 'https://me.example.com';
+      expect(() => requireMelhorEnvioNotificationRuntimeConfig()).not.toThrow();
+    } finally {
+      if (sandbox === undefined) delete process.env.MELHOR_ENVIO_SANDBOX;
+      else process.env.MELHOR_ENVIO_SANDBOX = sandbox;
+      if (publicUrl === undefined) delete process.env.MELHOR_ENVIO_PUBLIC_URL;
+      else process.env.MELHOR_ENVIO_PUBLIC_URL = publicUrl;
+    }
   });
 });
