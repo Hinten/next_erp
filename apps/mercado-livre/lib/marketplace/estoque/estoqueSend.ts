@@ -30,10 +30,12 @@
  * THE joined query once (`bulkEstoquePlan.fetchStockFamilies`), computes every
  * family member's quantity (`quantidadesDaFamilia`) and bakes the result into
  * the task — `quantidade` XOR `variations` — together with `linkDocId`, the
- * status-writeback target, so the handler re-resolves NOTHING: no fresh gate,
- * no fresh quantities, no produto/link/children/estoque reads. Firestore
- * reads per task: the per-conta pause state doc (plus the context loader's
- * own conta/token loads).
+ * status-writeback target. Attempt zero transmits that snapshot with zero
+ * produto/estoque reads. A real Cloud Tasks retry, or a task previously parked
+ * behind the pause gate, refreshes it through deterministic produto reads and
+ * the exact estoque ids captured by the sweep, including legacy auto-ids. An
+ * incomplete modern locator set or ambiguous old task falls back atomically to
+ * the original payload; see `estoqueRetryRefresh.ts`.
  *
  * ⚠️ **#831 qualifies that in exactly one place, and the qualification is about
  * OTHER variations, never ours.** A legacy-model `variations[]` body is not a
@@ -41,15 +43,16 @@
  * routinely emits a partial array, so before such a PUT the handler reads the
  * listing (`GET /items/{id}`) and completes the array with the live ids and
  * quantities of the variations it is NOT changing (`reconciliarVariations`).
- * Our own numbers still ride the payload verbatim; the sweep remains the sole
- * authority on what the stock is. Only this one `kind` pays the extra call, and
- * if the array cannot be proven complete nothing is sent at all.
+ * The current attempt's own numbers come either verbatim from the attempt-zero
+ * payload or from the retry refresh. Only this one `kind` pays the extra ML
+ * call, and if the array cannot be proven complete nothing is sent at all.
  *
- * ---- Retry staleness — the trade the owner chose over a monotonic guard: a
- * Cloud Tasks retry, or a task parked behind a 429 pause, sends numbers up to
- * `now − sweepComputedAtMs` old and can briefly overwrite a newer value; the
- * next sweep converges. Every `'sent'` logs `ageMs` so that staleness stays
- * observable.
+ * ---- Retry freshness (#693): only attempt zero is payload-verbatim. A real
+ * queue retry (`refreshStockOnRetry && retryCount > 0`) or a pause re-enqueue
+ * (`reenqueues > 0`) recomputes current quantities before token/ML work. The
+ * refresh costs at most two BatchGet RPCs and no query/scan. `ageMs` still names
+ * the age of the original sweep payload; structured `stockRefresh` telemetry
+ * names the quantity/locator source and exact point-read counts.
  *
  * ---- Per-conta 429 pause (`estoqueMercadoLivreSync/{integracaoId}`): on a
  * rate-limit the handler stamps `pausedUntilUs` (Retry-After when ML sent one,
@@ -118,11 +121,17 @@ import {
   PAUSE_REENQUEUE_JITTER_MAX_S,
   STOCK_SEND_MAX_ATTEMPTS,
   STOCK_SYNC_FLAG_ENV,
+  type StockTaskEstoqueSnapshot,
   isStockSyncEnabled,
   maxPauseReenqueues,
   podeEnviarEstoque,
   ratePauseMin,
 } from './bulkEstoquePlan';
+import {
+  type StockRefreshTelemetry,
+  payloadStockTelemetry,
+  refreshStockTaskPayload,
+} from './estoqueRetryRefresh';
 import {
   type MemberFoldTarget,
   applyItemStatusToLink,
@@ -148,6 +157,39 @@ import type { MlStockTaskScheduler } from './mlStockTasks';
 import { clearFalha, type FalhaPatch, falhaPatch } from '../core/publishFalhas';
 
 /* ------------------------------- task payload ------------------------------ */
+
+/**
+ * Keep malformed snapshot metadata parseable so a retry can choose the safe,
+ * whole-payload fallback. Empty strings are internal invalid sentinels; the
+ * planner never emits them.
+ */
+function tolerantEstoqueSnapshot(raw: unknown): StockTaskEstoqueSnapshot {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { depositoId: '', refs: [] };
+  }
+  const record = raw as Record<string, unknown>;
+  const refs = Array.isArray(record.refs)
+    ? record.refs.map((entry) => {
+        if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) {
+          return { produtoId: '', estoqueDocId: '' };
+        }
+        const locator = entry as Record<string, unknown>;
+        return {
+          produtoId: typeof locator.produtoId === 'string' ? locator.produtoId : '',
+          estoqueDocId:
+            locator.estoqueDocId === null
+              ? null
+              : typeof locator.estoqueDocId === 'string'
+                ? locator.estoqueDocId
+                : '',
+        };
+      })
+    : [];
+  return {
+    depositoId: typeof record.depositoId === 'string' ? record.depositoId : '',
+    refs,
+  };
+}
 
 /**
  * The stock send task payload — carries the SWEEP-COMPUTED quantities (module
@@ -206,9 +248,25 @@ export const mlStockSendTaskSchema = z.object({
    * pass this value to `updateItem` unreconciled.
    */
   variations: z
-    .array(z.object({ id: z.number().int(), available_quantity: z.number().int().min(0) }))
+    .array(
+      z.object({
+        id: z.number().int(),
+        /**
+         * Added in #693 so retries can point-read the child produto. Optional
+         * and nullable only for already-enqueued payloads from the previous
+         * release; every new planner draft supplies it.
+         */
+        produtoId: z.string().min(1).nullable().optional(),
+        available_quantity: z.number().int().min(0),
+      }),
+    )
     .nullable()
     .default(null),
+  /**
+   * Exact estoque rows observed by the sweep. Null only for tasks enqueued by a
+   * previous release; retries use these ids so legacy auto-id rows stay visible.
+   */
+  estoqueSnapshot: z.unknown().transform(tolerantEstoqueSnapshot).nullable().default(null),
   /** When the sweep computed the quantities (ms since epoch) — feeds the `ageMs` sent log. */
   sweepComputedAtMs: z.number().int(),
   /** The sweep tick that enqueued this task (log correlation only). */
@@ -288,6 +346,13 @@ export interface StockSendDeps {
    * `deps` here so the handler keeps its 3-arg signature.
    */
   retryCount?: number;
+  /**
+   * True only for the deployed Cloud Tasks dispatcher. The manual sender also
+   * uses `retryCount` to drive its inline 4xx ladder, but its quantity was just
+   * computed and must remain verbatim. Making the distinction explicit keeps
+   * an inline retry from paying Firestore reads reserved for delayed tasks.
+   */
+  refreshStockOnRetry: boolean;
   /**
    * Whole-second jitter added to a pause re-enqueue delay, `0..maxS`.
    * Injectable so tests get deterministic delay math; the default is
@@ -532,6 +597,7 @@ export async function processStockSendTask(
 
   const nowMs = deps.nowMs;
   const nowUs = millisToMicros(nowMs);
+  const retryCount = deps.retryCount ?? 0;
   const stateRef = () => estoqueMercadoLivreSyncCollection.docRef(db, {}, payload.integracaoId);
 
   // (1) Pause gate: a 429-paused conta must not be hit again. Re-enqueue past
@@ -611,6 +677,66 @@ export async function processStockSendTask(
       });
       return { outcome: 'skipped', reason: 'sem-deposito' };
     }
+
+    // (2b) #693 hybrid freshness. The dominant first-attempt path remains
+    // payload-verbatim and pays ZERO produto/estoque reads. Only a real Cloud
+    // Tasks retry, or a task that previously parked behind the pause gate,
+    // point-reads the current quantities. The manual sender also has a
+    // `retryCount` ladder, so `refreshStockOnRetry` is the explicit caller
+    // discriminator — inferring from the number alone would add reads to the
+    // synchronous manual path.
+    const refreshSource =
+      payload.reenqueues > 0
+        ? 'pause-reenqueue'
+        : deps.refreshStockOnRetry && retryCount > 0
+          ? 'cloud-task-retry'
+          : null;
+    let stockTelemetry: StockRefreshTelemetry;
+    if (refreshSource == null) {
+      stockTelemetry = payloadStockTelemetry(payload, retryCount, depositoId);
+    } else {
+      const refreshed = await refreshStockTaskPayload({
+        db,
+        payload,
+        depositoId,
+        retryCount,
+        source: refreshSource,
+      });
+      stockTelemetry = refreshed.telemetry;
+      if (refreshed.outcome === 'skipped') {
+        console.warn('[mercado-livre] stock-send: refresh de quantidade recusou o envio', {
+          integracaoId: payload.integracaoId,
+          produtoId: payload.produtoId,
+          itemId: payload.itemId,
+          sweepId: payload.sweepId,
+          reason: refreshed.reason,
+          stockRefresh: stockTelemetry,
+        });
+        return { outcome: 'skipped', reason: refreshed.reason };
+      }
+      if (refreshed.outcome === 'payload-fallback') {
+        console.warn(
+          '[mercado-livre] stock-send: refresh indeterminado — usando payload original inteiro',
+          {
+            integracaoId: payload.integracaoId,
+            produtoId: payload.produtoId,
+            itemId: payload.itemId,
+            sweepId: payload.sweepId,
+            reason: refreshed.reason,
+            stockRefresh: stockTelemetry,
+          },
+        );
+      }
+      payload = refreshed.payload;
+    }
+    console.info('[mercado-livre] stock-send: fonte da quantidade resolvida', {
+      integracaoId: payload.integracaoId,
+      produtoId: payload.produtoId,
+      itemId: payload.itemId,
+      sweepId: payload.sweepId,
+      stockRefresh: stockTelemetry,
+    });
+
     const channelCtx = await ctx.resolveChannelContext(nowMs);
     api = apiFactory({ getAccessToken: async () => channelCtx.accessToken });
 
@@ -619,14 +745,14 @@ export async function processStockSendTask(
     // that call is not merely wrong — ML accepts it and silently discards the
     // quantity, which is the failure mode this issue exists to end.
     if (payload.kind === 'userProductStock') {
-      return await enviarEstoqueUserProduct(db, api, payload, nowMs, deps.retryCount ?? 0);
+      return await enviarEstoqueUserProduct(db, api, payload, nowMs, retryCount, stockTelemetry);
     }
 
-    // (3) The request body — the payload's sweep-computed numbers, VERBATIM
-    // (module doc: no re-resolution, no fresh reads). The schema stays plain,
-    // so the exactly-one invariant is enforced here: both null is an enqueue
-    // bug (a retry would fail identically → drop); both non-null prefers the
-    // bulk `variations`, loudly.
+    // (3) The request body — sweep-computed on attempt zero, refreshed from
+    // bounded point reads on a real retry/pause re-enqueue (#693). The
+    // schema stays plain, so the exactly-one invariant is enforced here: both
+    // null is an enqueue bug (a retry would fail identically → drop); both
+    // non-null prefers the bulk `variations`, loudly.
     if (payload.variations != null && payload.quantidade != null) {
       console.warn(
         '[mercado-livre] stock-send: payload com quantidade E variations — variations vence',
@@ -649,11 +775,9 @@ export async function processStockSendTask(
     // `status-nao-enviavel` firing on a member ML ITSELF paused). So the array
     // is completed against the live listing before it can be sent.
     //
-    // ⚠️ This is the ONE place the module doc's "re-resolves NOTHING" contract
-    // is qualified, and the qualification is narrow on purpose: the read
-    // supplies the ids and quantities of variations we are NOT changing. It
-    // never re-derives OUR numbers — those still ride the payload verbatim, so
-    // the sweep stays the only authority on what the stock IS.
+    // This read supplies only ids and quantities of variations we are NOT
+    // changing. Our numbers were already chosen above from the attempt-zero
+    // payload or the bounded retry refresh.
     //
     // ⚠️ No fallback. If the array cannot be proven complete, nothing is sent:
     // a partial PUT does not fail, it silently destroys variations on a live
@@ -801,13 +925,14 @@ export async function processStockSendTask(
       );
     }
 
-    // Staleness observability (module doc): the numbers were computed at sweep
-    // time and sent verbatim — `ageMs` says how old they were.
+    // `ageMs` intentionally keeps describing the original payload even when a
+    // delayed attempt refreshed its quantities immediately before this send.
     console.info('[mercado-livre] stock-send: enviado', {
       integracaoId: payload.integracaoId,
       itemId: payload.itemId,
       sweepId: payload.sweepId,
       ageMs: nowMs - payload.sweepComputedAtMs,
+      stockRefresh: stockTelemetry,
     });
     return { outcome: 'sent', reason: null };
   } catch (err) {
@@ -875,7 +1000,6 @@ export async function processStockSendTask(
         // not proof: rethrow and let the queue's backoff re-run the whole send
         // (the repo's `retryCount < MAX - 1` ladder — massImport.ts:412,
         // precoSync.ts:681, notifications/pipeline.ts:180).
-        const retryCount = deps.retryCount ?? 0;
         if (retryCount < STOCK_SEND_MAX_ATTEMPTS - 1) throw err;
 
         // LAST attempt. Never derive the terminal state from the rejection alone:
@@ -1057,6 +1181,7 @@ async function enviarEstoqueUserProduct(
   nowMs: number,
   /** Cloud Tasks attempt index — only the LAST attempt may latch (see below). */
   retryCount: number,
+  stockTelemetry: StockRefreshTelemetry,
 ): Promise<StockSendResult> {
   const quantidade = payload.quantidade;
   if (quantidade == null) {
@@ -1228,6 +1353,7 @@ async function enviarEstoqueUserProduct(
     storeId: escrito[0]?.store_id ?? null,
     sweepId: payload.sweepId,
     ageMs: nowMs - payload.sweepComputedAtMs,
+    stockRefresh: stockTelemetry,
   });
   return { outcome: 'sent', reason: null };
 }

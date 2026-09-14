@@ -142,13 +142,14 @@ import {
   ESTOQUE_MIN,
   type FamilyChild,
   type FamilyMember,
-  MAX_VARIATIONS_PER_TASK,
   MERCADO_LIVRE_STOCK_SEND_QUEUE,
   PAUSE_REENQUEUE_JITTER_MAX_S,
   type RawVarLinkRow,
   STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV,
   STOCK_MULTIORIGEM_FLAG_ENV,
   STOCK_SYNC_FLAG_ENV,
+  STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+  STOCK_TASK_ENCODED_BODY_WARN_BYTES,
   TAG_MULTIWAREHOUSE,
   TAG_WAREHOUSE_MANAGEMENT,
   type StockFamilyRow,
@@ -179,6 +180,7 @@ import {
   quantidadesDaFamilia,
   resolverModoEstoque,
   ratePauseMin,
+  stockTaskEncodedBodyBytes,
   quantidadesAnteriores,
   chaveMovimento,
   windowOverlapSec,
@@ -283,7 +285,15 @@ const ownEstoqueSub = () => ({
     { stage: 'subcollection', args: ['estoques'] },
     { stage: 'where', args: [depOr] },
     { stage: 'limit', args: [1] },
-    { stage: 'select', args: ['quantidade', 'quantidadeReservada', 'ultimaModificacao'] },
+    {
+      stage: 'select',
+      args: [
+        alias('estoqueDocId', docId(f('__name__'))),
+        'quantidade',
+        'quantidadeReservada',
+        'ultimaModificacao',
+      ],
+    },
   ],
 });
 
@@ -309,7 +319,13 @@ const compEstoquesSub = (keysVar: string) =>
         { stage: 'where', args: [AND(inAny(f('parentId'), vr(keysVar)), depOr)] },
         {
           stage: 'select',
-          args: ['parentId', 'quantidade', 'quantidadeReservada', 'ultimaModificacao'],
+          args: [
+            alias('estoqueDocId', docId(f('__name__'))),
+            'parentId',
+            'quantidade',
+            'quantidadeReservada',
+            'ultimaModificacao',
+          ],
         },
       ],
     },
@@ -525,6 +541,13 @@ function familyRow(spec: FamilyRowSpec = {}): StockFamilyRow {
   };
 }
 
+function missingStockSnapshot(...produtoIds: string[]) {
+  return {
+    depositoId: DEPOSITO_ID,
+    refs: produtoIds.map((produtoId) => ({ produtoId, estoqueDocId: null })),
+  };
+}
+
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -541,13 +564,47 @@ describe('constants', () => {
   it('pure code constants keep their spec values', () => {
     expect(ESTOQUE_MIN).toBe(0);
     expect(PAUSE_REENQUEUE_JITTER_MAX_S).toBe(30);
-    expect(MAX_VARIATIONS_PER_TASK).toBe(2000);
+    expect(STOCK_TASK_ENCODED_BODY_BUDGET_BYTES).toBe(80 * 1024);
+    expect(STOCK_TASK_ENCODED_BODY_WARN_BYTES).toBe(64 * 1024);
     expect(MERCADO_LIVRE_STOCK_SEND_QUEUE).toBe('sendMercadoLivreStock');
     expect(STOCK_SYNC_FLAG_ENV).toBe('MERCADO_LIVRE_STOCK_SYNC_ENABLED');
     // #1087: the escape hatch is named for the SKIP, so `envFlag`'s "OFF unless
     // '1'" convention keeps OFF meaning the CORRECTED behaviour. A `SEND_…`
     // spelling would silently invert the default.
     expect(STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV).toBe('MERCADO_LIVRE_STOCK_KIT_VIRTUAL_SKIP_ENABLED');
+  });
+});
+
+describe('stockTaskEncodedBodyBytes', () => {
+  it('measures the firebase-admin `{ data }` UTF-8 body after Base64 encoding', () => {
+    const task = { produtoId: 'AÇÃO-📦', quantidade: 7 };
+    const expected = Buffer.byteLength(
+      Buffer.from(JSON.stringify({ data: task }), 'utf8').toString('base64'),
+      'ascii',
+    );
+    expect(stockTaskEncodedBodyBytes(task)).toBe(expected);
+  });
+
+  it('pins the nearest representable payloads below and above the 80 KiB budget', () => {
+    let low = 0;
+    let high = STOCK_TASK_ENCODED_BODY_BUDGET_BYTES;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (
+        stockTaskEncodedBodyBytes({ padding: 'x'.repeat(mid) }) <=
+        STOCK_TASK_ENCODED_BODY_BUDGET_BYTES
+      ) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    expect(stockTaskEncodedBodyBytes({ padding: 'x'.repeat(low) })).toBeLessThanOrEqual(
+      STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+    );
+    expect(stockTaskEncodedBodyBytes({ padding: 'x'.repeat(low + 1) })).toBeGreaterThan(
+      STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+    );
   });
 });
 
@@ -963,9 +1020,20 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
         componentesKit: { A: { quantidade: 2, limitarEstoque: true, timestamp: null } },
         integracoesComProduto: [CONTA, 42], // non-strings filtered out
         timestamp: T1,
-        estoque: { quantidade: 5, quantidadeReservada: 2, ultimaModificacao: T1 },
+        estoque: {
+          estoqueDocId: 'legacy-anchor-auto-id',
+          quantidade: 5,
+          quantidadeReservada: 2,
+          ultimaModificacao: T1,
+        },
         componentEstoques: [
-          { parentId: 'A', quantidade: 10, quantidadeReservada: 0, ultimaModificacao: T2 },
+          {
+            estoqueDocId: 'canonical-component-id',
+            parentId: 'A',
+            quantidade: 10,
+            quantidadeReservada: 0,
+            ultimaModificacao: T2,
+          },
           'junk',
           null,
         ],
@@ -975,7 +1043,11 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
             childId: 'CH2',
             publicado: true,
             timestamp: T2,
-            estoque: { quantidade: 3, quantidadeReservada: 1 },
+            estoque: {
+              estoqueDocId: 'legacy-child-auto-id',
+              quantidade: 3,
+              quantidadeReservada: 1,
+            },
             componentEstoques: [],
             varLinks: [
               { itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF },
@@ -1003,9 +1075,20 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
           publicado: true,
           componentesKit: { A: { quantidade: 2, limitarEstoque: true, timestamp: null } },
           timestampMs: T1,
-          estoque: { quantidade: 5, quantidadeReservada: 2, ultimaModificacao: T1 },
+          estoque: {
+            estoqueDocId: 'legacy-anchor-auto-id',
+            quantidade: 5,
+            quantidadeReservada: 2,
+            ultimaModificacao: T1,
+          },
           componentEstoques: [
-            { parentId: 'A', quantidade: 10, quantidadeReservada: 0, ultimaModificacao: T2 },
+            {
+              estoqueDocId: 'canonical-component-id',
+              parentId: 'A',
+              quantidade: 10,
+              quantidadeReservada: 0,
+              ultimaModificacao: T2,
+            },
           ],
         },
         integracoesComProduto: [CONTA],
@@ -1029,7 +1112,11 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
             publicado: true,
             componentesKit: null,
             timestampMs: T2,
-            estoque: { quantidade: 3, quantidadeReservada: 1 },
+            estoque: {
+              estoqueDocId: 'legacy-child-auto-id',
+              quantidade: 3,
+              quantidadeReservada: 1,
+            },
             componentEstoques: [],
             varLinks: [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
           },
@@ -1714,7 +1801,12 @@ describe('quantidadesAnteriores + deveEnviarFamilia — the send policy (ADR 001
 });
 
 describe('buildSendTasks — decision ladder + task shapes', () => {
-  const OPTS = { integracaoId: CONTA, sweepId: 'sweep-1', sweepComputedAtMs: T4 };
+  const OPTS = {
+    integracaoId: CONTA,
+    depositoId: DEPOSITO_ID,
+    sweepId: 'sweep-1',
+    sweepComputedAtMs: T4,
+  };
   const BASE_TASK = {
     integracaoId: CONTA,
     produtoId: 'PROD',
@@ -1722,6 +1814,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     sweepId: 'sweep-1',
     sweepComputedAtMs: T4,
     reenqueues: 0,
+    estoqueSnapshot: missingStockSnapshot('PROD'),
   };
 
   function run(row: StockFamilyRow, qty: ReadonlyMap<string, number> = new Map([['PROD', 7]])) {
@@ -1773,6 +1866,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(res.tasks).toEqual([
       {
         ...BASE_TASK,
+        estoqueSnapshot: missingStockSnapshot('PROD', 'COMP'),
         kind: 'item',
         itemId: 'MLB111',
         variacaoProdutoId: null,
@@ -2005,10 +2099,10 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       A: { quantidade: 1, limitarEstoque: true, timestamp: null },
       B: { quantidade: 1, limitarEstoque: true, timestamp: null },
     },
-    estoque: { quantidade: 50, quantidadeReservada: 0 },
+    estoque: { estoqueDocId: 'legacy-kit-stock', quantidade: 50, quantidadeReservada: 0 },
     componentEstoques: [
-      { parentId: 'A', quantidade: 5, quantidadeReservada: 0 },
-      { parentId: 'B', quantidade: 3, quantidadeReservada: 0 },
+      { estoqueDocId: 'legacy-a-stock', parentId: 'A', quantidade: 5, quantidadeReservada: 0 },
+      { estoqueDocId: 'legacy-b-stock', parentId: 'B', quantidade: 3, quantidadeReservada: 0 },
     ],
   };
 
@@ -2020,6 +2114,14 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       tasks: [
         {
           ...BASE_TASK,
+          estoqueSnapshot: {
+            depositoId: DEPOSITO_ID,
+            refs: [
+              { produtoId: 'PROD', estoqueDocId: 'legacy-kit-stock' },
+              { produtoId: 'A', estoqueDocId: 'legacy-a-stock' },
+              { produtoId: 'B', estoqueDocId: 'legacy-b-stock' },
+            ],
+          },
           kind: 'item',
           itemId: 'MLB111',
           variacaoProdutoId: null,
@@ -2119,7 +2221,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     const res = buildSendTasks(row, quantidadesDaFamilia(row), OPTS);
 
     expect(res.skips).toEqual([]);
-    expect(res.tasks[0]!.variations).toEqual([{ id: 102, available_quantity: 0 }]);
+    expect(res.tasks[0]!.variations).toEqual([
+      { id: 102, produtoId: 'CHV', available_quantity: 0 },
+    ]);
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy.mock.calls[0]?.[1]).toMatchObject({ produtoId: 'CHV', componentes: ['COMP'] });
   });
@@ -2146,8 +2250,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     const aberto = buildSendTasks(r1, quantidadesDaFamilia(r1), OPTS);
     expect(aberto.skips).toEqual([]);
     expect(aberto.tasks[0]!.variations).toEqual([
-      { id: 101, available_quantity: 4 },
-      { id: 102, available_quantity: 9 },
+      { id: 101, produtoId: 'CH1', available_quantity: 4 },
+      { id: 102, produtoId: 'CHV', available_quantity: 9 },
     ]);
 
     // Hatch ON: the virtual child alone drops out, and its SIBLING still sends.
@@ -2157,7 +2261,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(fechado.skips).toEqual([
       { produtoId: 'CHV', reason: 'kit-virtual', itemId: 'MLB111', linkDocId: 'link1' },
     ]);
-    expect(fechado.tasks[0]!.variations).toEqual([{ id: 101, available_quantity: 4 }]);
+    expect(fechado.tasks[0]!.variations).toEqual([
+      { id: 101, produtoId: 'CH1', available_quantity: 4 },
+    ]);
   });
 
   // ---- #1087: `publicado` is not part of the decision any more --------------
@@ -2306,6 +2412,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       tasks: [
         {
           ...BASE_TASK,
+          estoqueSnapshot: missingStockSnapshot('CH1', 'CH2'),
           kind: 'item',
           itemId: 'MLB111',
           variacaoProdutoId: null,
@@ -2313,13 +2420,66 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           varLinkDocId: null,
           quantidade: null,
           variations: [
-            { id: 101, available_quantity: 3 },
-            { id: 102, available_quantity: 4 },
+            { id: 101, produtoId: 'CH1', available_quantity: 3 },
+            { id: 102, produtoId: 'CH2', available_quantity: 4 },
           ],
         },
       ],
       skips: [],
     });
+  });
+
+  it('bulk snapshot keeps exact auto-ids and deduplicates a shared kit component', () => {
+    const sharedComponent = {
+      estoqueDocId: 'legacy-shared-component-stock',
+      parentId: 'COMP',
+      quantidade: 20,
+      quantidadeReservada: 0,
+    };
+    const row = familyRow({
+      children: [
+        child('KIT-A', [{ id: 101, produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+          ehKit: true,
+          componentesKit: {
+            COMP: { quantidade: 2, limitarEstoque: true, timestamp: null },
+          },
+          estoque: {
+            estoqueDocId: 'legacy-kit-a-stock',
+            quantidade: 0,
+            quantidadeReservada: 0,
+          },
+          componentEstoques: [sharedComponent],
+        }),
+        child('KIT-B', [{ id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF }], {
+          ehKit: true,
+          componentesKit: {
+            COMP: { quantidade: 4, limitarEstoque: true, timestamp: null },
+          },
+          estoque: {
+            estoqueDocId: 'legacy-kit-b-stock',
+            quantidade: 0,
+            quantidadeReservada: 0,
+          },
+          componentEstoques: [sharedComponent],
+        }),
+      ],
+    });
+
+    const result = buildSendTasks(row, quantidadesDaFamilia(row), OPTS);
+
+    expect(result.skips).toEqual([]);
+    expect(result.tasks[0]?.estoqueSnapshot).toEqual({
+      depositoId: DEPOSITO_ID,
+      refs: [
+        { produtoId: 'KIT-A', estoqueDocId: 'legacy-kit-a-stock' },
+        { produtoId: 'COMP', estoqueDocId: 'legacy-shared-component-stock' },
+        { produtoId: 'KIT-B', estoqueDocId: 'legacy-kit-b-stock' },
+      ],
+    });
+    expect(result.tasks[0]?.variations).toEqual([
+      { id: 101, produtoId: 'KIT-A', available_quantity: 10 },
+      { id: 102, produtoId: 'KIT-B', available_quantity: 5 },
+    ]);
   });
 
   it('old bulk: unmatched / non-numeric-id / quantity-less children skip, siblings ride', () => {
@@ -2340,13 +2500,14 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(res.tasks).toEqual([
       {
         ...BASE_TASK,
+        estoqueSnapshot: missingStockSnapshot('CH1'),
         kind: 'item',
         itemId: 'MLB111',
         variacaoProdutoId: null,
         userProductId: null,
         varLinkDocId: null,
         quantidade: null,
-        variations: [{ id: 101, available_quantity: 3 }],
+        variations: [{ id: 101, produtoId: 'CH1', available_quantity: 3 }],
       },
     ]);
     // Every child skip names the LISTING it was excluded from — a family can
@@ -2359,57 +2520,110 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     ]);
   });
 
-  it('old bulk: > 1000 variations (below the cap) still builds ONE task + early warn', () => {
+  it('old bulk: encoded body between 64 and 80 KiB builds ONE task + early warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
     const errorSpy = vi.spyOn(console, 'error').mockClear();
     const children: FamilyChild[] = [];
     const qty = new Map<string, number>([['PROD', 7]]);
-    for (let i = 1; i <= 1001; i++) {
+    for (let i = 1; i <= 550; i++) {
       children.push(child(`CH${i}`, [{ id: i, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]));
       qty.set(`CH${i}`, 1);
     }
     const res = buildSendTasks(familyRow({ children }), qty, OPTS);
     expect(res.tasks).toHaveLength(1);
-    expect(res.tasks[0]!.variations).toHaveLength(1001);
+    expect(res.tasks[0]!.variations).toHaveLength(550);
     expect(res.skips).toEqual([]);
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('variations'),
-      expect.objectContaining({ produtoId: 'PROD', itemId: 'MLB111', variations: 1001 }),
+      expect.stringContaining('limite de payload'),
+      expect.objectContaining({
+        produtoId: 'PROD',
+        itemId: 'MLB111',
+        variations: 550,
+        budgetBytes: STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+        encodedBodyBytes: expect.any(Number),
+      }),
     );
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
-  it('old bulk: variations past MAX_VARIATIONS_PER_TASK → NO task, skip + console.error', () => {
-    // Past the cap the Cloud Tasks enqueue itself would reject the ~100 KB+
-    // payload and the sweep would re-attempt the same family forever.
+  it('old bulk: 2000 realistic ids exceed the encoded-body budget → NO task', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
     const errorSpy = vi.spyOn(console, 'error').mockClear();
     const children: FamilyChild[] = [];
     const qty = new Map<string, number>([['PROD', 7]]);
-    for (let i = 1; i <= MAX_VARIATIONS_PER_TASK + 1; i++) {
-      children.push(child(`CH${i}`, [{ id: i, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]));
-      qty.set(`CH${i}`, 1);
+    for (let i = 1; i <= 2000; i++) {
+      const produtoId = `01JREALISTICPRODUCTIDENTIFIER${String(i).padStart(21, '0')}`;
+      children.push(child(produtoId, [{ id: i, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]));
+      qty.set(produtoId, 1);
     }
     const res = buildSendTasks(familyRow({ children }), qty, OPTS);
     expect(res.tasks).toEqual([]);
     expect(res.skips).toEqual([
       {
         produtoId: 'PROD',
-        reason: 'variations-excede-limite',
+        reason: 'task-excede-limite',
         itemId: 'MLB111',
         linkDocId: 'link1',
       },
     ]);
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('variations'),
+      expect.stringContaining('limite de payload'),
       expect.objectContaining({
         produtoId: 'PROD',
         itemId: 'MLB111',
-        variations: MAX_VARIATIONS_PER_TASK + 1,
-        max: MAX_VARIATIONS_PER_TASK,
+        variations: 2000,
+        budgetBytes: STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+        encodedBodyBytes: expect.any(Number),
       }),
     );
-    expect(warnSpy).not.toHaveBeenCalled(); // the hard guard runs BEFORE the early warn
+    expect(warnSpy).not.toHaveBeenCalled(); // the hard guard runs before the warning
+  });
+
+  it('the complete scalar task immediately below/above 80 KiB is accepted/refused', () => {
+    const candidate = (itemId: string) => ({
+      ...BASE_TASK,
+      kind: 'item' as const,
+      itemId,
+      variacaoProdutoId: null,
+      userProductId: null,
+      varLinkDocId: null,
+      quantidade: 7,
+      variations: null,
+    });
+    let low = 1;
+    let high = STOCK_TASK_ENCODED_BODY_BUDGET_BYTES;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (
+        stockTaskEncodedBodyBytes(candidate('X'.repeat(mid))) <=
+        STOCK_TASK_ENCODED_BODY_BUDGET_BYTES
+      ) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    const acceptedId = 'X'.repeat(low);
+    const refusedId = 'X'.repeat(low + 1);
+
+    expect(stockTaskEncodedBodyBytes(candidate(acceptedId))).toBeLessThanOrEqual(
+      STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+    );
+    expect(stockTaskEncodedBodyBytes(candidate(refusedId))).toBeGreaterThan(
+      STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+    );
+    expect(run(familyRow({ links: [{ id: acceptedId }] })).tasks).toHaveLength(1);
+    expect(run(familyRow({ links: [{ id: refusedId }] }))).toEqual({
+      tasks: [],
+      skips: [
+        {
+          produtoId: 'PROD',
+          reason: 'task-excede-limite',
+          itemId: refusedId,
+          linkDocId: 'link1',
+        },
+      ],
+    });
   });
 
   it('old bulk: EVERY child excluded → no task, only the skips', () => {
@@ -2450,6 +2664,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(res.tasks).toEqual([
       {
         ...BASE_TASK,
+        estoqueSnapshot: missingStockSnapshot('CH2'),
         kind: 'item',
         itemId: 'MLB111',
         userProductId: null,
@@ -2457,7 +2672,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         variacaoProdutoId: null,
         quantidade: null,
         // 111 is gone — only the live sibling rides the bulk payload.
-        variations: [{ id: 222, available_quantity: 4 }],
+        variations: [{ id: 222, produtoId: 'CH2', available_quantity: 4 }],
       },
     ]);
     expect(res.skips).toEqual([
@@ -2472,7 +2687,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       children: [child('CH1', [{ id: 111, produtoMercadoLivreOuterRef: PARENT_LINK_REF }])],
     });
     const res = buildSendTasks(row, new Map([['CH1', 3]]), OPTS);
-    expect(res.tasks[0]?.variations).toEqual([{ id: 111, available_quantity: 3 }]);
+    expect(res.tasks[0]?.variations).toEqual([
+      { id: 111, produtoId: 'CH1', available_quantity: 3 },
+    ]);
     expect(res.skips).toEqual([]);
   });
 
@@ -2507,6 +2724,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       tasks: [
         {
           ...BASE_TASK,
+          estoqueSnapshot: missingStockSnapshot('CH1'),
           kind: 'variationItem',
           itemId: 'MLB-CH1',
           variacaoProdutoId: 'CH1',
@@ -2517,6 +2735,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         },
         {
           ...BASE_TASK,
+          estoqueSnapshot: missingStockSnapshot('CH2'),
           kind: 'variationItem',
           itemId: 'MLB-CH2',
           variacaoProdutoId: 'CH2',
@@ -2549,6 +2768,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(res.tasks).toEqual([
       {
         ...BASE_TASK,
+        estoqueSnapshot: missingStockSnapshot('CH1'),
         kind: 'variationItem',
         itemId: 'MLB-CH1',
         variacaoProdutoId: 'CH1',
@@ -2604,6 +2824,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(res.tasks).toEqual([
       {
         ...BASE_TASK,
+        estoqueSnapshot: missingStockSnapshot('CH2'),
         kind: 'variationItem',
         itemId: 'MLB-CH2',
         userProductId: null,
@@ -2696,6 +2917,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       tasks: [
         {
           ...BASE_TASK,
+          estoqueSnapshot: missingStockSnapshot('CH1', 'CH2'),
           kind: 'item',
           itemId: 'MLB111',
           variacaoProdutoId: null,
@@ -2703,12 +2925,13 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           varLinkDocId: null,
           quantidade: null,
           variations: [
-            { id: 101, available_quantity: 3 },
-            { id: 102, available_quantity: 4 },
+            { id: 101, produtoId: 'CH1', available_quantity: 3 },
+            { id: 102, produtoId: 'CH2', available_quantity: 4 },
           ],
         },
         {
           ...BASE_TASK,
+          estoqueSnapshot: missingStockSnapshot('CH1', 'CH2'),
           linkDocId: 'link2',
           kind: 'item',
           itemId: 'MLB222',
@@ -2717,8 +2940,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           varLinkDocId: null,
           quantidade: null,
           variations: [
-            { id: 201, available_quantity: 3 },
-            { id: 202, available_quantity: 4 },
+            { id: 201, produtoId: 'CH1', available_quantity: 3 },
+            { id: 202, produtoId: 'CH2', available_quantity: 4 },
           ],
         },
       ],
@@ -2776,6 +2999,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       tasks: [
         {
           ...BASE_TASK,
+          estoqueSnapshot: missingStockSnapshot('CH1'),
           kind: 'variationItem',
           itemId: 'MLB-CH1',
           variacaoProdutoId: 'CH1',
@@ -2845,6 +3069,7 @@ describe('resolverModoEstoque (#706)', () => {
 describe('buildSendTasks — multiorigem (modo userProduct, #706)', () => {
   const OPTS = {
     integracaoId: CONTA,
+    depositoId: DEPOSITO_ID,
     sweepId: 'sweep-1',
     sweepComputedAtMs: T4,
     modo: 'userProduct' as const,
@@ -2856,6 +3081,7 @@ describe('buildSendTasks — multiorigem (modo userProduct, #706)', () => {
     sweepId: 'sweep-1',
     sweepComputedAtMs: T4,
     reenqueues: 0,
+    estoqueSnapshot: missingStockSnapshot('PROD'),
   };
 
   function run(row: StockFamilyRow, qty: ReadonlyMap<string, number> = new Map([['PROD', 7]])) {
@@ -2962,6 +3188,7 @@ describe('buildSendTasks — multiorigem (modo userProduct, #706)', () => {
     expect(res.tasks).toEqual([
       {
         ...BASE,
+        estoqueSnapshot: missingStockSnapshot('CH1'),
         kind: 'userProductStock',
         itemId: 'MLB-CH1',
         userProductId: 'MLBU-A',
@@ -2972,6 +3199,7 @@ describe('buildSendTasks — multiorigem (modo userProduct, #706)', () => {
       },
       {
         ...BASE,
+        estoqueSnapshot: missingStockSnapshot('CH2'),
         kind: 'userProductStock',
         itemId: 'MLB-CH2',
         userProductId: 'MLBU-B',
@@ -3075,6 +3303,7 @@ describe('buildSendTasks — multiorigem (modo userProduct, #706)', () => {
   it('modo defaults to items, so nothing changes for a conta that never opts in', () => {
     const res = buildSendTasks(familyRow(), new Map([['PROD', 7]]), {
       integracaoId: CONTA,
+      depositoId: DEPOSITO_ID,
       sweepId: 'sweep-1',
       sweepComputedAtMs: T4,
     });

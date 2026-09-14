@@ -32,19 +32,21 @@
  * ONE conta — the legacy sender loops every one, functions.dart:275-282, and
  * `buildSendTasks` emits tasks per listing) + the variation children
  * server-side in ONE pipeline execution per conta per sweep page, with a
- * minimal `select`, and hand the sender a payload it NEVER re-reads
- * produtos/estoques for.
+ * minimal `select`, and hand the sender a quantity-bearing payload. Attempt
+ * zero never re-reads produtos/estoques; delayed retries refresh from the exact
+ * estoque document ids captured by the sweep (including legacy auto-ids).
  *
  * Owner decisions locked 2026-07-27:
  *  1. Standalone produtos (no children): the legacy query EXCLUDED the
  *     anchor's own estoque as a change trigger — deliberately FIXED here: the
  *     anchor's own estoque is a first-class trigger (`maxOwn` in S3/S4).
  *     Expect a one-time correction burst on the first post-deploy sweep.
- *  2. Retry staleness: tasks are sent VERBATIM (legacy parity, zero extra
- *     reads at send time). Quantities are computed once, at sweep time, and
- *     carried in the task payload; the send handler logs
- *     `ageMs = now − sweepComputedAtMs` on every send and the next sweep
- *     converges any staleness.
+ *  2. Retry freshness (#693): quantities are computed once at sweep time and
+ *     attempt zero sends them verbatim. A real Cloud Tasks retry or pause
+ *     re-enqueue refreshes them from deterministic produto point reads plus the
+ *     exact estoque document ids captured by the sweep;
+ *     the manual sender remains verbatim. `ageMs` always measures the original
+ *     payload age and `stockRefresh` logs the read cost/source.
  *
  * Timestamp units: produto/estoque timestamps AND `historicoEstoque.timestamp`
  * are MS since epoch — the movement pre-pass windows on ms, so nothing here
@@ -493,6 +495,8 @@ export function concurrentDispatches(): number {
  * `parentId` can never reach a kit's own row.
  */
 export interface RawEstoqueRow {
+  /** Exact estoque document id projected by the sweep; legacy rows may be auto-id. */
+  estoqueDocId?: unknown;
   parentId?: unknown;
   quantidade?: unknown;
   quantidadeReservada?: unknown;
@@ -640,7 +644,12 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
       .subcollection('estoques')
       .where(depMatch())
       .limit(1)
-      .select('quantidade', 'quantidadeReservada', 'ultimaModificacao')
+      .select(
+        pipelines.documentId(pipelines.field('__name__')).as('estoqueDocId'),
+        'quantidade',
+        'quantidadeReservada',
+        'ultimaModificacao',
+      )
       .toScalarExpression();
 
   const ownEstoqueMax = () =>
@@ -667,7 +676,13 @@ function stockJoinBuilders(db: Firestore, integracaoId: string, depositoId: stri
             depMatch(),
           ),
         )
-        .select('parentId', 'quantidade', 'quantidadeReservada', 'ultimaModificacao')
+        .select(
+          pipelines.documentId(pipelines.field('__name__')).as('estoqueDocId'),
+          'parentId',
+          'quantidade',
+          'quantidadeReservada',
+          'ultimaModificacao',
+        )
         .toArrayExpression(),
       pipelines.array([]),
     );
@@ -1612,15 +1627,21 @@ export type SendUnitKind =
   | 'userProductStock';
 
 /**
- * Hard cap on one old-model bulk task's `variations` array. Cloud Tasks
- * rejects payloads over ~100 KB at ENQUEUE time — and a rejected enqueue means
- * the sweep re-attempts the same unsendable family forever. One serialized
- * entry (`{"id":<~13-digit ML id>,"available_quantity":<=99999},`) is ~40 B,
- * so 2000 entries ≈ 80 KB — comfortably under the limit with headroom for the
- * task envelope. Above the cap NO task is built: the listing skips
- * `'variations-excede-limite'` + `console.error`.
+ * Conservative budget for the Base64 body stored on the Cloud Task. The REST
+ * reference still documents a 100 KB task limit while the quota page documents
+ * 1 MiB, so 80 KiB leaves room for the task envelope under the stricter value.
  */
-export const MAX_VARIATIONS_PER_TASK = 2000;
+export const STOCK_TASK_ENCODED_BODY_BUDGET_BYTES = 80 * 1024;
+
+/** Early warning at 80% of the task-body budget. */
+export const STOCK_TASK_ENCODED_BODY_WARN_BYTES = 64 * 1024;
+
+/** Mirror firebase-admin's `{ data: task }` UTF-8 body followed by Base64 encoding. */
+export function stockTaskEncodedBodyBytes(task: unknown): number {
+  const json = JSON.stringify({ data: task });
+  const encoded = Buffer.from(json, 'utf8').toString('base64');
+  return Buffer.byteLength(encoded, 'ascii');
+}
 
 export type SendSkipReason =
   | 'sem-link'
@@ -1662,7 +1683,7 @@ export type SendSkipReason =
    * class 1, and here it also aborted the whole family (see `buildSendTasks`).
    */
   | 'conta-fora-do-produto'
-  | 'variations-excede-limite';
+  | 'task-excede-limite';
 
 export interface SendSkip {
   /** The produto the reason applies to — the family anchor, or the UP child. */
@@ -1688,17 +1709,37 @@ export interface SendSkip {
 export interface StockVariationEntry {
   /** Numeric ML variation id (the variação link's `id` field). */
   id: number;
+  /**
+   * ERP produto that owns this variation's stock. Internal task metadata only:
+   * the sender strips it before building the Mercado Livre `variations[]`
+   * body. It is what lets a queue retry refresh by deterministic point reads
+   * instead of resolving the family with a query (#693).
+   */
+  produtoId: string;
   available_quantity: number;
+}
+
+/** One exact estoque-row locator carried only inside the Cloud Task payload. */
+export interface StockDocumentLocator {
+  produtoId: string;
+  /** Exact legacy/canonical doc id, or null when the sweep observed no row. */
+  estoqueDocId: string | null;
+}
+
+/** Sweep-time read map used to point-read the same rows on a delayed retry. */
+export interface StockTaskEstoqueSnapshot {
+  depositoId: string;
+  refs: StockDocumentLocator[];
 }
 
 /**
  * One ready-to-enqueue send task — the `mlStockSendTaskSchema` wire shape
  * (the zod schema lives on the stacked send-queue branch; this local type
  * mirrors it). Exactly ONE of `quantidade` / `variations` is non-null. The
- * payload is sent VERBATIM by the handler (owner decision 3 — legacy parity,
- * zero reads at send time; the handler logs `ageMs = now −
- * sweepComputedAtMs` and the next sweep converges staleness). `linkDocId` is
- * the status-writeback target — never re-resolved.
+ * payload is sent verbatim on attempt zero (legacy parity, zero hot-path stock
+ * reads). Queue retries and pause re-enqueues may replace only its quantities
+ * using deterministic point reads; `linkDocId` remains the status-writeback
+ * target and is never re-resolved.
  */
 export interface StockSendTaskDraft {
   integracaoId: string;
@@ -1733,6 +1774,8 @@ export interface StockSendTaskDraft {
   linkDocId: string;
   quantidade: number | null;
   variations: StockVariationEntry[] | null;
+  /** Internal only; never forwarded to a Mercado Livre endpoint. */
+  estoqueSnapshot: StockTaskEstoqueSnapshot;
   sweepId: string;
   /** When the sweep computed the quantities (ms since epoch). */
   sweepComputedAtMs: number;
@@ -1746,6 +1789,8 @@ export interface BuildSendTasksResult {
 
 export interface BuildSendTasksOpts {
   integracaoId: string;
+  /** Depósito whose exact estoque row ids were joined into `row`. */
+  depositoId: string;
   sweepId: string;
   sweepComputedAtMs: number;
   /**
@@ -1759,6 +1804,59 @@ export interface BuildSendTasksOpts {
 /** A projected `userProductId` that is actually usable, else null (#706). */
 function asUserProductId(raw: unknown): string | null {
   return typeof raw === 'string' && raw !== '' ? raw : null;
+}
+
+/** Components whose stock participates in `quantidadeParaEnvio`'s kit minimum. */
+function constrainingComponentIdsForMember(member: FamilyMember): string[] {
+  if (!(member.ehKit || member.ehKitVirtual)) return [];
+  return componentesKitEntries(member.componentesKit)
+    .filter(([, component]) => component.limitarEstoque !== false)
+    .filter(([, component]) => Number.isFinite(component.quantidade) && component.quantidade > 0)
+    .map(([produtoId]) => produtoId);
+}
+
+/** Exact sweep-time estoque rows needed to recompute the supplied members. */
+function estoqueSnapshotForMembers(
+  members: readonly FamilyMember[],
+  depositoId: string,
+): StockTaskEstoqueSnapshot {
+  const refs: StockDocumentLocator[] = [];
+  const refIndexByProdutoId = new Map<string, number>();
+
+  const add = (produtoId: string, row: RawEstoqueRow | null): void => {
+    const estoqueDocId =
+      row == null
+        ? null
+        : typeof row.estoqueDocId === 'string' && row.estoqueDocId !== ''
+          ? row.estoqueDocId
+          : undefined;
+    // A present row without the projected id is indeterminate. Omitting it makes
+    // the retry fall back atomically instead of pretending the row was absent.
+    if (estoqueDocId === undefined) return;
+
+    const previousIndex = refIndexByProdutoId.get(produtoId);
+    if (previousIndex == null) {
+      refIndexByProdutoId.set(produtoId, refs.length);
+      refs.push({ produtoId, estoqueDocId });
+      return;
+    }
+    // Shared components should resolve identically. Prefer a concrete locator
+    // over an earlier null while preserving the first-seen order.
+    if (refs[previousIndex]!.estoqueDocId == null && estoqueDocId != null) {
+      refs[previousIndex] = { produtoId, estoqueDocId };
+    }
+  };
+
+  for (const member of members) {
+    // Always carry own stock: the own-stock kit flag may change before a retry.
+    add(member.produtoId, member.estoque);
+    for (const componentId of constrainingComponentIdsForMember(member)) {
+      const componentRow = member.componentEstoques.find((row) => row.parentId === componentId);
+      add(componentId, componentRow ?? null);
+    }
+  }
+
+  return { depositoId, refs };
 }
 
 function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResult {
@@ -1863,11 +1961,9 @@ function membroPodeEnviar(
  * PUT, and refuses to send at all when it cannot. So an exclusion below costs a
  * missed stock UPDATE for that child — never the child's existence — and adding
  * a fifth exclusion is safe in the same way. ALL children excluded
- * → NO task for that listing (skips only); a `variations` array past
- * `MAX_VARIATIONS_PER_TASK` also builds NO task (the enqueue would blow the
- * ~100 KB Cloud Tasks payload limit and the sweep would retry forever) —
- * skip `'variations-excede-limite'` + `console.error`, with the existing
- * >1000 warn kept as the early warning below the cap. Old model childless → one `'item'`
+ * → NO task for that listing (skips only). Every completed task candidate is
+ * measured after Base64 encoding; an oversized task builds nothing and records
+ * `task-excede-limite`. Old model childless → one `'item'`
  * task with the anchor quantity. User Products: one `'variationItem'` task
  * per child (each variation is its own ML item); a childless UP listing
  * degenerates to a single `'item'` task with the anchor quantity.
@@ -1959,6 +2055,35 @@ export function buildSendTasks(
 
   const tasks: StockSendTaskDraft[] = [];
   const skips: SendSkip[] = [];
+  const memberById = new Map(
+    [row.anchor, ...row.children].map((member) => [member.produtoId, member] as const),
+  );
+
+  const emitTask = (
+    task: StockSendTaskDraft,
+    skipTarget: { produtoId: string; itemId: string; linkDocId: string },
+  ): boolean => {
+    const encodedBodyBytes = stockTaskEncodedBodyBytes(task);
+    const details = {
+      integracaoId: opts.integracaoId,
+      produtoId: skipTarget.produtoId,
+      itemId: skipTarget.itemId,
+      variations: task.variations?.length ?? 0,
+      estoqueLocators: task.estoqueSnapshot.refs.length,
+      encodedBodyBytes,
+      budgetBytes: STOCK_TASK_ENCODED_BODY_BUDGET_BYTES,
+    };
+    if (encodedBodyBytes > STOCK_TASK_ENCODED_BODY_BUDGET_BYTES) {
+      console.error('[mercado-livre] stock-sync: task excede o limite de payload', details);
+      skips.push({ ...skipTarget, reason: 'task-excede-limite' });
+      return false;
+    }
+    if (encodedBodyBytes >= STOCK_TASK_ENCODED_BODY_WARN_BYTES) {
+      console.warn('[mercado-livre] stock-sync: task próxima do limite de payload', details);
+    }
+    tasks.push(task);
+    return true;
+  };
   // Cycle-wide dedup across ALL of the family's listings (legacy
   // processedUpFamilies / processedUpVariationItems): each ML item id is sent
   // at most once per cycle; a duplicate drops silently (legacy debug print).
@@ -2093,12 +2218,13 @@ export function buildSendTasks(
       // listings resolving to the same UP would otherwise race each other's
       // `x-version` and trade 409s all tick.
       const emitUp = (
-        produtoId: string,
+        member: FamilyMember,
         unitItemId: string,
         userProductId: string | null,
         variacaoProdutoId: string | null,
         varLinkDocId: string | null,
       ): void => {
+        const produtoId = member.produtoId;
         const dedupKey = userProductId ?? `item:${unitItemId}`;
         if (emittedUpKeys.has(dedupKey)) return; // cycle-wide dedup — silent
         const quantidade = quantidades.get(produtoId) ?? null;
@@ -2106,8 +2232,7 @@ export function buildSendTasks(
           skips.push({ produtoId, reason: 'kit-virtual', itemId: unitItemId, linkDocId });
           return;
         }
-        emittedUpKeys.add(dedupKey);
-        tasks.push({
+        const task: StockSendTaskDraft = {
           ...base,
           kind: 'userProductStock',
           itemId: unitItemId,
@@ -2116,13 +2241,17 @@ export function buildSendTasks(
           variacaoProdutoId,
           quantidade,
           variations: null,
-        });
+          estoqueSnapshot: estoqueSnapshotForMembers([member], opts.depositoId),
+        };
+        if (emitTask(task, { produtoId, itemId: unitItemId, linkDocId })) {
+          emittedUpKeys.add(dedupKey);
+        }
       };
 
       if (row.children.length === 0) {
         // Childless: the parent link IS the stock unit, so a lazily resolved UP
         // belongs on it — hence no `varLinkDocId`.
-        emitUp(anchorId, itemId, asUserProductId(link.userProductId), null, null);
+        emitUp(row.anchor, itemId, asUserProductId(link.userProductId), null, null);
         continue;
       }
 
@@ -2166,7 +2295,7 @@ export function buildSendTasks(
         // `varItemId ?? itemId`: with a UP id in hand the item is only used for
         // logging, so the family's own id is a fine stand-in.
         emitUp(
-          child.produtoId,
+          child,
           varItemId ?? itemId,
           upId,
           child.produtoId,
@@ -2189,8 +2318,7 @@ export function buildSendTasks(
         skips.push({ produtoId: anchorId, reason: 'kit-virtual' });
         continue;
       }
-      emittedItemIds.add(itemId);
-      tasks.push({
+      const task: StockSendTaskDraft = {
         ...base,
         kind: 'item',
         itemId,
@@ -2199,7 +2327,11 @@ export function buildSendTasks(
         variacaoProdutoId: null,
         quantidade,
         variations: null,
-      });
+        estoqueSnapshot: estoqueSnapshotForMembers([row.anchor], opts.depositoId),
+      };
+      if (emitTask(task, { produtoId: anchorId, itemId, linkDocId })) {
+        emittedItemIds.add(itemId);
+      }
       continue;
     }
 
@@ -2254,39 +2386,14 @@ export function buildSendTasks(
           skips.push({ produtoId: child.produtoId, reason: 'kit-virtual', itemId, linkDocId });
           continue;
         }
-        variations.push({ id: varId, available_quantity: quantidade });
+        variations.push({ id: varId, produtoId: child.produtoId, available_quantity: quantidade });
       }
       if (variations.length === 0) continue; // nothing sendable on this listing
-      if (variations.length > MAX_VARIATIONS_PER_TASK) {
-        // Hard cap (see MAX_VARIATIONS_PER_TASK): past it the Cloud Tasks
-        // enqueue itself would reject the ~100 KB+ payload and the sweep
-        // would re-attempt the same unsendable family forever — build NO task.
-        console.error(
-          '[mercado-livre] stock-sync: família excede o limite de variations por task',
-          {
-            integracaoId: opts.integracaoId,
-            produtoId: anchorId,
-            itemId,
-            variations: variations.length,
-            max: MAX_VARIATIONS_PER_TASK,
-          },
-        );
-        skips.push({ produtoId: anchorId, reason: 'variations-excede-limite', itemId, linkDocId });
-        continue;
-      }
-      if (variations.length > 1000) {
-        // Early warning below the MAX_VARIATIONS_PER_TASK cap (~40 B/entry
-        // against the 100 KB Cloud Tasks payload limit) — families this large
-        // deserve a look before they grow into the hard limit.
-        console.warn('[mercado-livre] stock-sync: família com variations acima de 1000 entradas', {
-          integracaoId: opts.integracaoId,
-          produtoId: anchorId,
-          itemId,
-          variations: variations.length,
-        });
-      }
-      emittedItemIds.add(itemId);
-      tasks.push({
+      const taskMembers = variations.flatMap((variation) => {
+        const member = memberById.get(variation.produtoId);
+        return member == null ? [] : [member];
+      });
+      const task: StockSendTaskDraft = {
         ...base,
         kind: 'item',
         itemId,
@@ -2295,7 +2402,11 @@ export function buildSendTasks(
         variacaoProdutoId: null,
         quantidade: null,
         variations,
-      });
+        estoqueSnapshot: estoqueSnapshotForMembers(taskMembers, opts.depositoId),
+      };
+      if (emitTask(task, { produtoId: anchorId, itemId, linkDocId })) {
+        emittedItemIds.add(itemId);
+      }
       continue;
     }
 
@@ -2347,8 +2458,7 @@ export function buildSendTasks(
         });
         continue;
       }
-      emittedItemIds.add(varItemId);
-      tasks.push({
+      const task: StockSendTaskDraft = {
         ...base,
         kind: 'variationItem',
         itemId: varItemId,
@@ -2357,7 +2467,11 @@ export function buildSendTasks(
         variacaoProdutoId: child.produtoId,
         quantidade,
         variations: null,
-      });
+        estoqueSnapshot: estoqueSnapshotForMembers([child], opts.depositoId),
+      };
+      if (emitTask(task, { produtoId: child.produtoId, itemId: varItemId, linkDocId })) {
+        emittedItemIds.add(varItemId);
+      }
     }
   }
 

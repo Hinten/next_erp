@@ -379,6 +379,11 @@ describe('enviarEstoqueManual — sending', () => {
     // attempt maps onto STOCK_SEND_MAX_ATTEMPTS - 1.
     const retryCounts = sendTask.mock.calls.map((c) => (c[2] as { retryCount: number }).retryCount);
     expect(retryCounts).toEqual([0, STOCK_SEND_MAX_ATTEMPTS - 1]);
+    expect(
+      sendTask.mock.calls.map(
+        (c) => (c[2] as { refreshStockOnRetry: boolean }).refreshStockOnRetry,
+      ),
+    ).toEqual([false, false]);
     expect(sendTask).toHaveBeenCalledTimes(MANUAL_PUSH_MAX_ATTEMPTS);
   });
 
