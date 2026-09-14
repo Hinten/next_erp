@@ -2,24 +2,17 @@ import type { Auth, UserRecord } from 'firebase-admin/auth';
 import type { Firestore, Transaction } from 'firebase-admin/firestore';
 import { PERM, rulesClaimsFromBits } from '@delfrance/auth';
 import {
-  cargoSchema,
+  cargoAccessSchema,
   effectiveUsuarioPermissoes,
   isSuperUserBits,
-  usuarioSchema,
+  usuarioAccessSchema,
   type Usuario,
   type Cargo,
 } from '@delfrance/schemas';
 import { cargoCollection, usuarioCollection } from '../collections';
 import { AccessError, VALIDATION_PAGE_SIZE } from './model';
 
-export const usuarioAccessSchema = usuarioSchema.pick({
-  cargos: true,
-  ativo: true,
-  colaborador: true,
-  isSuperUser: true,
-  externalId: true,
-});
-const cargoAccessSchema = cargoSchema.pick({ permissoes: true });
+export { usuarioAccessSchema } from '@delfrance/schemas';
 
 export async function readCargos(db: Firestore, ids: string[], tx?: Transaction) {
   const result = new Map<string, Pick<Cargo, 'permissoes'>>();

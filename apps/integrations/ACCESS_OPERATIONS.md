@@ -111,6 +111,24 @@ separate explicit approval.
 
 ## Verification boundaries
 
+Holder pagination explicitly orders by document ID. Its declared index therefore
+contains both `cargos CONTAINS` and `__name__ ASCENDING`; this is an explicit query
+field, not a copied Standard-edition implicit suffix. Enterprise does not append
+that field automatically ([query interface differences](https://docs.cloud.google.com/firestore/native/docs/query-data/understanding-core-pipelines)).
+The declaration is covered by a regression test; deployment and measurement of
+the actual Enterprise query plan remain part of coordinated activation.
+
+Stored authorization fields are parsed independently of presentation fields.
+Malformed flags, role references or masks stop the operation and identify the
+affected holder; they are never silently skipped or interpreted as truthy values.
+Editor reads tolerate unrelated legacy presentation data, using a shared browser
+and server decoder. Commands still require valid write schemas; commit preserves
+stored audit values and extra fields without full-parsing the old document.
+
+A slice that runs out of time before making progress is retried automatically
+under the existing finite attempt limit. Repeated timeouts eventually require
+manual recovery while retaining the reservation and cursor.
+
 Unit tests exercise multiple pages/slices, full-holder authorization, replay,
 lease ownership, idempotency, partial failures and eligibility. The storage lane's
 named Firestore emulator validates actual transactions and queries; Auth and task

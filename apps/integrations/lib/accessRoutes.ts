@@ -8,6 +8,8 @@ import {
   accessIdSchema,
   cargoSchema,
   usuarioSchema,
+  cargoEditorReadSchema,
+  usuarioEditorReadSchema,
   type AccessCommand,
 } from '@delfrance/schemas';
 import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
@@ -40,7 +42,9 @@ export function readEditor(req: Request, id: string, cargo: boolean) {
     const snap = await collection.docRef(getAdminFirestore(), {}, id).get();
     if (!snap.exists) throw new AccessError(404, 'NOT_FOUND', 'Registro não encontrado.');
     return NextResponse.json({
-      value: cargo ? cargoSchema.parse(snap.data()) : usuarioSchema.parse(snap.data()),
+      value: cargo
+        ? cargoEditorReadSchema.parse(snap.data())
+        : usuarioEditorReadSchema.parse(snap.data()),
       version: snapshotVersion(snap),
     });
   });

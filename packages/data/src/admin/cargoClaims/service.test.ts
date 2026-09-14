@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { AccessAuth as Auth } from './claims';
 class FirebaseAuthError extends Error {
   code: string;
@@ -411,7 +412,120 @@ it('accepts legacy non-authorization fields but rejects malformed authorization'
   expect((await finish()).phase).toBe(P.completed);
   store.seed('usuarios/u', { ...store.get('usuarios/u'), ativo: 'yes' });
   await start('invalid');
-  expect((await finish('invalid')).errorCode).toBe('INVALID_AUTHORIZATION_DATA');
+  expect(await finish('invalid')).toMatchObject({
+    errorCode: 'INVALID_AUTHORIZATION_DATA',
+    errorTarget: 'u',
+    phase: P.rejected,
+  });
+});
+it('declares the filter and explicit ID ordering needed by the paged holder query', () => {
+  const indexes: unknown = JSON.parse(
+    readFileSync(new URL('../../../../../firestore.indexes.json', import.meta.url), 'utf8'),
+  );
+  expect(indexes).toMatchObject({
+    indexes: expect.arrayContaining([
+      {
+        collectionGroup: 'usuarios',
+        queryScope: 'COLLECTION',
+        fields: [
+          { fieldPath: 'cargos', arrayConfig: 'CONTAINS' },
+          { fieldPath: '__name__', order: 'ASCENDING' },
+        ],
+      },
+    ]),
+  });
+});
+it('commits a corrected legacy cargo without parsing its old presentation or audit fields', async () => {
+  store.seed('cargos/role', { permissoes: '1', timestamp: 'legacy-stamp', extra: 17 });
+  await start();
+  expect((await finish()).phase).toBe(P.completed);
+  expect(store.get('cargos/role')).toMatchObject({
+    nome: 'Cargo',
+    permissoes: '3',
+    timestamp: 'legacy-stamp',
+    extra: 17,
+  });
+});
+it('commits a user correction while preserving legacy audit fields and unrelated data', async () => {
+  holder('u');
+  store.seed('usuarios/u', {
+    ...store.get('usuarios/u'),
+    email: 17,
+    timestamp: 'legacy-stamp',
+    jaFoiSuperUser: 'legacy-history',
+    extra: 17,
+  });
+  await startAccessOperation(store.db, {
+    id: 'op',
+    actorId: 'actor',
+    tokenBits: SUPERUSER_MASK,
+    command: {
+      action: A.updateUser,
+      targetId: 'u',
+      expectedVersion: store.version('usuarios/u'),
+      cargo: null,
+      usuario: user({ email: 'fixed@example.test' }),
+    },
+  });
+  expect((await finish()).phase).toBe(P.completed);
+  expect(store.get('usuarios/u')).toMatchObject({
+    email: 'fixed@example.test',
+    timestamp: 'legacy-stamp',
+    jaFoiSuperUser: 'legacy-history',
+    extra: 17,
+  });
+  expect(accounts.get('u')?.customClaims.permissions).toBe('1');
+});
+it('automatically retries an exhausted slice budget without losing its cursor or reservation', async () => {
+  holder('u');
+  await start();
+  await tick();
+  await tick();
+  vi.mocked(auth.getUser).mockImplementationOnce(async (uid) => {
+    clock += 80_001;
+    return accounts.get(uid) as Awaited<ReturnType<Auth['getUser']>>;
+  });
+  expect(await tick()).toMatchObject({
+    phase: P.applying,
+    errorCode: 'SLICE_BUDGET_EXHAUSTED',
+    processed: 0,
+    cursor: null,
+  });
+  expect(store.get('accessControl/current')?.activeId).toBe('op');
+  expect(write).not.toHaveBeenCalled();
+  expect((await finish()).phase).toBe(P.completed);
+});
+it('bounds retries for repeated slice timeouts and preserves incomplete work', async () => {
+  holder('u');
+  await start();
+  await tick();
+  await tick();
+  vi.mocked(auth.getUser).mockImplementation(async (uid) => {
+    clock += 80_001;
+    return accounts.get(uid) as Awaited<ReturnType<Auth['getUser']>>;
+  });
+  for (let attempt = 0; attempt < 4; attempt++) expect((await tick()).phase).toBe(P.applying);
+  expect(await tick()).toMatchObject({
+    phase: P.failed,
+    processed: 0,
+    errorCode: 'SLICE_BUDGET_EXHAUSTED',
+  });
+  expect(store.get('accessControl/current')?.activeId).toBe('op');
+  expect(write).not.toHaveBeenCalled();
+});
+it('keeps committed work blocked and identifies a holder with invalid authorization', async () => {
+  holder('u');
+  await start();
+  await tick();
+  await tick();
+  store.seed('usuarios/u', { ...store.get('usuarios/u'), ativo: 1 });
+  expect(await tick()).toMatchObject({
+    phase: P.failed,
+    errorCode: 'INVALID_AUTHORIZATION_DATA',
+    errorTarget: 'u',
+  });
+  expect(store.get('accessControl/current')?.activeId).toBe('op');
+  expect(write).not.toHaveBeenCalled();
 });
 it('parks repeated unknown worker crashes without releasing a committed operation', async () => {
   holder('u');

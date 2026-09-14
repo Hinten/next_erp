@@ -6,8 +6,6 @@ import {
   ACCESS_ACTION as A,
   ACCESS_PHASE as P,
   accessCommandSchema,
-  cargoSchema,
-  usuarioSchema,
   isSuperUserBits,
   type AccessCommand,
   type AccessOperation,
@@ -264,7 +262,9 @@ async function subjects(db: Firestore, op: AccessOperation, size: number) {
     if (op.cursor) return [];
     if (op.command.usuario) return [{ uid: op.command.targetId, user: op.command.usuario }];
     const doc = await usuarioCollection.docRef(db, {}, op.command.targetId).get();
-    return doc.exists ? [{ uid: doc.id, user: usuarioAccessSchema.parse(doc.data()) }] : [];
+    if (!doc.exists) return [];
+    op.errorTarget = doc.id;
+    return [{ uid: doc.id, user: usuarioAccessSchema.parse(doc.data()) }];
   }
   let query = usuarioCollection
     .ref(db, {})
@@ -273,7 +273,10 @@ async function subjects(db: Firestore, op: AccessOperation, size: number) {
     .limit(size);
   if (op.cursor) query = query.startAfter(op.cursor);
   const page = await query.get();
-  return page.docs.map((doc) => ({ uid: doc.id, user: usuarioAccessSchema.parse(doc.data()) }));
+  return page.docs.map((doc) => {
+    op.errorTarget = doc.id;
+    return { uid: doc.id, user: usuarioAccessSchema.parse(doc.data()) };
+  });
 }
 
 async function commitMutation(db: Firestore, op: AccessOperation) {
@@ -295,7 +298,9 @@ async function commitMutation(db: Firestore, op: AccessOperation) {
     const now = Date.now();
     if (op.command.action === A.deleteCargo) tx.delete(ref);
     else if (isCargo(op)) {
-      const old = target.exists ? cargoSchema.parse(target.data()) : null;
+      // Preserve stored audit fields without parsing unrelated legacy content.
+      // The proposed replacement and authorization were validated separately.
+      const old = target.data();
       tx.set(ref, {
         ...target.data(),
         ...op.command.cargo!,
@@ -303,15 +308,15 @@ async function commitMutation(db: Firestore, op: AccessOperation) {
         ultimaModificacao: now,
       });
     } else if (op.command.usuario) {
-      const old = target.exists ? usuarioSchema.parse(target.data()) : null;
+      const old = target.data();
       const user = op.command.usuario;
       tx.set(ref, {
         ...target.data(),
         ...user,
         timestamp: old?.timestamp ?? now,
         ultimaModificacao: now,
-        jaFoiColaborador: !!old?.jaFoiColaborador || user.colaborador,
-        jaFoiSuperUser: !!old?.jaFoiSuperUser || user.isSuperUser,
+        jaFoiColaborador: user.colaborador ? true : (old?.jaFoiColaborador ?? false),
+        jaFoiSuperUser: user.isSuperUser ? true : (old?.jaFoiSuperUser ?? false),
       });
     }
     tx.set(accessOperations.docRef(db, {}, op.id), {
@@ -399,7 +404,7 @@ async function applyPage(db: Firestore, auth: Auth, op: AccessOperation) {
     throw new AccessError(
       503,
       'SLICE_BUDGET_EXHAUSTED',
-      'O serviço de autenticação excedeu o prazo deste lote. Retome a operação.',
+      'O serviço excedeu o prazo deste lote. Uma nova tentativa será feita automaticamente.',
     );
   const done = page.length === 0;
   await checkpoint(
@@ -444,7 +449,9 @@ export async function processAccessOperation(db: Firestore, auth: Auth, id: stri
     )
       throw err;
     if (err instanceof AccessError && err.code === 'LEASE_LOST') return;
-    const permanent = err instanceof AccessError || err instanceof ZodError;
+    const permanent =
+      (err instanceof AccessError && err.code !== 'SLICE_BUDGET_EXHAUSTED') ||
+      err instanceof ZodError;
     const exhausted = op.attempts >= MAX_ATTEMPTS;
     const stop = permanent || exhausted;
     const rejected = stop && !op.committed;
@@ -460,7 +467,9 @@ export async function processAccessOperation(db: Firestore, auth: Auth, id: stri
             : 'INVALID_AUTHORIZATION_DATA',
         errorMessage:
           err instanceof AccessError
-            ? err.message
+            ? exhausted && err.code === 'SLICE_BUDGET_EXHAUSTED'
+              ? 'O serviço excedeu o prazo em todas as tentativas. Retome a operação.'
+              : err.message
             : 'Não foi possível atualizar as permissões. Consulte o diagnóstico da operação.',
         errorTarget: op.errorTarget ?? op.command.targetId,
         finishedAt: rejected ? Date.now() : null,

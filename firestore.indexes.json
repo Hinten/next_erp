@@ -3,7 +3,10 @@
     {
       "collectionGroup": "usuarios",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "cargos", "arrayConfig": "CONTAINS" }]
+      "fields": [
+        { "fieldPath": "cargos", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "__name__", "order": "ASCENDING" }
+      ]
     },
     {
       "collectionGroup": "integracao",

@@ -2,8 +2,8 @@ import { z } from 'zod';
 import {
   accessAcceptedSchema,
   accessOperationSchema,
-  cargoSchema,
-  usuarioSchema,
+  cargoEditorReadSchema,
+  usuarioEditorReadSchema,
   type Cargo,
   type Usuario,
 } from '@delfrance/schemas';
@@ -12,14 +12,14 @@ import { call } from './users';
 export const readCargo = (id: string, token: string) =>
   call(
     `/api/admin/cargos/${encodeURIComponent(id)}`,
-    z.object({ value: cargoSchema, version: z.string() }),
+    z.object({ value: cargoEditorReadSchema, version: z.string() }),
     { method: 'GET' },
     token,
   );
 export const readUsuario = (id: string, token: string) =>
   call(
     `/api/admin/users/${encodeURIComponent(id)}`,
-    z.object({ value: usuarioSchema, version: z.string() }),
+    z.object({ value: usuarioEditorReadSchema, version: z.string() }),
     { method: 'GET' },
     token,
   );

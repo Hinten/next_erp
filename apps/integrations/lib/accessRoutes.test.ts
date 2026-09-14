@@ -33,7 +33,7 @@ import {
 } from '../app/api/admin/cargos/[id]/route';
 import { POST as createUser } from '../app/api/admin/users/route';
 import { POST as refresh } from '../app/api/admin/users/[uid]/claims/route';
-import { PATCH as updateUser } from '../app/api/admin/users/[uid]/route';
+import { PATCH as updateUser, GET as readUser } from '../app/api/admin/users/[uid]/route';
 import { GET as readOperation } from '../app/api/admin/access-operations/[id]/route';
 import { POST as retryOperation } from '../app/api/admin/access-operations/[id]/retry/route';
 
@@ -126,6 +126,27 @@ describe('authenticated access routes', () => {
     expect(await (await readCargo(req(), ctx)).json()).toEqual({ value: role, version: '1:2' });
     m.verify.mockResolvedValue({ uid: 'actor', permissions: '0' });
     expect((await readCargo(req(), ctx)).status).toBe(403);
+  });
+  it('opens legacy display data but rejects invalid authorization in editor reads', async () => {
+    m.snapshot.mockResolvedValue({
+      exists: true,
+      data: () => ({ nome: 'Legacy', permissoes: '1' }),
+      updateTime: { seconds: 1, nanoseconds: 2 },
+    });
+    expect(await (await readCargo(req(), ctx)).json()).toMatchObject({
+      value: { nome: 'Legacy', descricao: null, permissoes: '1' },
+      version: '1:2',
+    });
+    m.snapshot.mockResolvedValue({
+      exists: true,
+      data: () => ({ nome: 'Legacy', email: 'invalid email', ativo: true }),
+      updateTime: { seconds: 1, nanoseconds: 2 },
+    });
+    expect(await (await readUser(req(), userCtx)).json()).toMatchObject({
+      value: { email: 'invalid email', ativo: true },
+    });
+    m.snapshot.mockResolvedValue({ exists: true, data: () => ({ nome: 'Legacy', ativo: 'true' }) });
+    expect((await readUser(req(), userCtx)).status).toBe(400);
   });
   it('allows a self-demoted actor to read their operation, but denies unrelated readers', async () => {
     m.verify.mockResolvedValue({ uid: 'actor', permissions: '0' });

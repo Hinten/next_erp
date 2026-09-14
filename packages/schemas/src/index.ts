@@ -26,6 +26,7 @@ export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
 // notification collection. Exported so a NEW channel's schema can spread the same
 // block the pipeline in `@delfrance/data/admin/notifications` writes/reads blind.
 export * from './accessOperation';
+export * from './shared/accessRead';
 
 export {
   notificacaoResilienciaStatusSchema,
