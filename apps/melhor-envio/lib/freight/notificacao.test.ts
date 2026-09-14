@@ -279,7 +279,7 @@ describe('processMelhorEnvioNotification', () => {
     ).resolves.toMatchObject({ kind: 'deferred', detail: 'integracao-ausente-ou-invalida' });
     expect(missing.loadCurrentLabel).not.toHaveBeenCalled();
 
-    const invalid = deps(pedido('postado', null, 'documents/int_frete/int-1/extra'));
+    const invalid = deps(pedido('postado', null, 'documents/int_frete/int-1/tokens/token-1'));
     await expect(
       processMelhorEnvioNotification(db, payload(), invalid.value),
     ).resolves.toMatchObject({ kind: 'deferred', detail: 'integracao-ausente-ou-invalida' });
@@ -298,6 +298,16 @@ describe('processMelhorEnvioNotification', () => {
         kind: 'deferred',
       });
     }
+  });
+
+  it('normalizes a tolerated bare integration outerRef before loading the label', async () => {
+    const d = deps(pedido('postado', null, 'int_frete/int-legacy'));
+
+    await expect(processMelhorEnvioNotification(db, payload(), d.value)).resolves.toMatchObject({
+      kind: 'noop',
+      detail: 'sem-alteracao',
+    });
+    expect(d.loadCurrentLabel).toHaveBeenCalledWith(db, 'int-legacy', 'lbl-1');
   });
 
   it('keeps network, throttling, server, schema, config and remote-state failures hot', async () => {

@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import type { Firestore, Timestamp } from 'firebase-admin/firestore';
 import { z } from 'zod';
-import { ESTADO_FRETE, notificationResilienceFields } from '@delfrance/schemas';
+import { ESTADO_FRETE, notificationResilienceFields, toOuterRefOrNull } from '@delfrance/schemas';
 import type { EstadoFrete } from '@delfrance/schemas';
 import {
   notificacaoMelhorEnvioCollection,
@@ -322,7 +322,8 @@ function readFrete(data: unknown): {
 }
 
 function intFreteIdFromOuterRef(outerRef: string | null): string | null {
-  const match = /^documents\/int_frete\/([^/]+)$/.exec(outerRef ?? '');
+  const canonical = toOuterRefOrNull(outerRef);
+  const match = /^documents\/int_frete\/([^/]+)$/.exec(canonical ?? '');
   return match?.[1] ?? null;
 }
 
@@ -383,7 +384,6 @@ async function loadAuthoritativeLabel(
         },
       };
     }
-    if (err instanceof MelhorEnvioConfigError) throw err;
     throw err;
   }
 }

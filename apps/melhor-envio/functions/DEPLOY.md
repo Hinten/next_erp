@@ -50,7 +50,6 @@ window:
 5. Configure the App Hosting backend's task region.
 6. Verify queue dispatch, authoritative label lookup, structured task logs,
    persisted `failed`/`deferred` rows, and both sweep lanes.
-   results.
 7. Remove `MELHOR_ENVIO_TASKS_DISABLED` only after dispatch is healthy.
 
 Monitor final task failures, dispatch `403` responses,
