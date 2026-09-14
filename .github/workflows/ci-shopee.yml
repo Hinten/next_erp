@@ -111,6 +111,9 @@ on:
       - 'packages/schemas/src/valorMascarado.ts'
       - 'packages/schemas/src/enderecoBuilder.ts'
       - 'packages/schemas/src/intFrete.ts'
+      # Step 7 (shipment → freteInicial) put the per-package diary on the SHARED
+      # freight schema — a FILE where a file is meant, like the block above.
+      - 'packages/schemas/src/shared/frete.ts'
       - 'packages/schemas/src/shared/notificationResilience.ts'
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'

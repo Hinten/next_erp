@@ -2,13 +2,14 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Steps 1–6 and 10 of
+Runs on `:3009` in dev. Steps 1–7 and 10 of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
 conta status, the access-token refresh, the cached taxonomy reads, the inbound
 push receiver with its Cloud Tasks queue, nested functions codebase, weekly
 authorization-expiry sweep and the three step-4 delivery backstops, the
-step-5 order → pedido import, and the step-6 pagamentos with their weekly
-escrow settlement sweep**.
+step-5 order → pedido import, the step-6 pagamentos with their weekly
+escrow settlement sweep, and the step-7 shipment tracking that merges a
+per-package observation into the pedido's `freteInicial`**.
 
 ⚠️ **Step 5 is where this app started writing ERP business data** — `pedidos`,
 `clientes`, `enderecos`, `incidentes`, and since step 6 the
@@ -133,13 +134,30 @@ a page of the 3-day queue irreversibly.
   transaction that stamps the pagamento's top-level `liquidacao`.
   ⚠️ `liquidarPagamentosCli.ts` is the pure CLI half, for the same
   `scripts/`-is-outside-vitest reason as `importarPedidoCli.ts`.
+- `lib/shopee/pedidos/{fretePushShopee,freteShopeeMapping,freteTx,rastrearPedido,rastrearPedidoSimulacao,rastrearPedidoCli}.ts`
+  — step 7's shipment half, one clause each: `fretePushShopee.ts` parses the
+  three per-code push bodies into a target (`alvoDoPushDeFrete`) and builds the
+  ONE shared `PacoteObservadoShopee` record from either wire page;
+  `freteShopeeMapping.ts` is the PURE state model — the `LOGISTICS_*` token →
+  `EstadoFrete` table with its two alias pairs, the monotone ladder and
+  `estadoFreteShopeeAplicavel`, the per-package freshness policy, the diary merge
+  and the N-package fold — and the only module in this app that decides what
+  moves physical stock; `freteTx.ts` is the pure `preverFreteShopee` plus the
+  class-B `salvarFreteShopee` that rewrites `pedidos/{id}.freteInicial`;
+  `rastrearPedido.ts` is the handler the code-4/30/47 arm lazily imports (the
+  cheap pedido read, the one `get_package_detail`, the transaction, the bounded
+  synthetic code 3); and `rastrearPedidoSimulacao.ts` + `rastrearPedidoCli.ts`
+  are the `rastrear:pedido` rehearsal's two testable halves — the dry run (the
+  package-set rungs, the batched pull, the per-package and backstop predictions)
+  and the pure CLI (args, the two allow-lists, the renderers, the error
+  describer). See **Shipment tracking (step 7)** below.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
   loaders. **Test-only, imported by no `src` file** — the
   `lib/shopee/testing/fakeDb.ts` precedent. A body enters the corpus only after
   `redact`, and a scan finding never carries the value it found.
-- `lib/shopee/avisos/autorizacao.ts` — one of the **five** modules in this app
+- `lib/shopee/avisos/autorizacao.ts` — one of the **seven** modules in this app
   that speak **microseconds**; every other signature is milliseconds. Raises
   `shopeeAutorizacaoExpirando` / `shopeeDesautorizado` and resolves both, and
   since step 4 it also EXPORTS the µs seam
@@ -147,9 +165,10 @@ a page of the 3-day queue irreversibly.
   write avisos without knowing the unit — which is what keeps its own call sites
   countable rather than merely written down.
 
-  ⚠️ **Three arrived with step 5, a fifth with step 6, and naming all of them
-  is the point** — a "the ONE module that speaks µs" sentence that has quietly
-  become five is worse than no sentence. This is a list of SITES, not of
+  ⚠️ **Three arrived with step 5, a fifth with step 6, two more with step 7,
+  and naming all of them is the point** — a "the ONE module that speaks µs"
+  sentence that has quietly become seven is worse than no sentence. This is a
+  list of SITES, not of
   helpers: there are still only the three conversions below (seconds → µs,
   ms → µs, and the tolerant coercion of a stored value), and a site earns a
   number here by being a place where the unit changes at all:
@@ -178,8 +197,31 @@ a page of the 3-day queue irreversibly.
      it classifies by magnitude, reads `1.65e9` as MILLIseconds and answers
      1970, which is a settlement watermark that says "older" for ever. It also
      coerces the STORED `ultimaModificacao` the way the readers below do.
+  6. `pedidos/rastrearPedido.ts` (step 7) — the code-4/30/47 handler, and the
+     ONLY clock read of the push path. It performs the single
+     `millisToMicros(nowMs)` of that path — item 2's pattern exactly, one clock
+     read handed DOWN, here as the `nowUs` argument of `salvarFreteShopee` — and
+     it converts nothing else: the package's own stamps are site 7's.
+     ⚠️ `nowMs` arrives from the pipeline's injectable clock, so there is still
+     no `Date.now()` anywhere under `pedidos/`.
+  7. `pedidos/freteTx.ts` (step 7) — the shipment merge, and the ONLY place a
+     PACKAGE clock crosses into microseconds. The incoming
+     `get_package_detail.update_time` and `ship_by_date` are wire **SECONDS**
+     and cross by CALLING site (3), `microsDeSegundosShopee`, once each.
+     ⚠️ Never `coerceToMicros` on either: it classifies by magnitude, reads
+     `1.66e9` as MILLIseconds and answers 1970 — a per-package freshness guard
+     that says "older" for ever. On the STORED side the opposite holds, and it
+     coerces the pedido's own `ultimaModificacao` the way the readers below do;
+     the diary's two stamps reach the same coercion through `pacoteFreteSchema`'s
+     tolerant preprocess, so there is no second call site. The µs it WRITES is
+     `freteInicial.pacotes[].atualizadoEm` — the SHIPMENT clock. It never writes
+     `lastMarketplaceUpdate` (the ORDER clock, step 5's alone — comparing a
+     package event against it is ADR 0011's cross-clock failure) and never
+     ASSIGNS `freteInicial.ultimaModificacao`; ⚠️ that stored value IS carried by
+     the whole-map rebuild's spread and must be, because `update()` masks at the
+     top-level key and omitting it would ERASE step 5's order watermark.
 
-  Plus **two** READERS, which declare no new conversion but have to know the
+  Plus **three** READERS, which declare no new conversion but have to know the
   unit:
   - `pedidos/orderPedidoTx.ts` coerces the STORED `lastMarketplaceUpdate` and
     `ultimaModificacao` through `coerceToMicros` — correct there, because the
@@ -187,20 +229,42 @@ a page of the 3-day queue irreversibly.
   - `pedidos/pagamentoTx.ts` (step 6) does the same on its own two stored values
     (the pedido's `lastMarketplaceUpdate` watermark and the pagamento's
     `ultimaModificacao`) and converts **nothing** new — every µs it writes
-    arrives as a parameter.
+    arrives as a parameter;
+  - `pedidos/freteShopeeMapping.ts` (step 7) declares no conversion at all — it
+    is pure over values ALREADY in µs and over raw wire TOKENS — but it compares
+    µs stamps and folds a µs deadline, so a reader must not be told it is
+    unit-free. ⚠️ Its own test greps that source as RAW TEXT for the three
+    converter names, comments included, so writing one into a comment there reds
+    a test for a reason the code does not show.
 
   **Nothing else converts anything.** A `millisToMicros` or a `coerceToMicros`
   appearing in `itens.ts`, `produtoResolve.ts`, `incidentesProduto.ts`,
-  `comprador.ts`, `pagamentoMapping.ts`, `liquidacaoSweep.ts` or
-  `liquidarPagamentosCli.ts` is the drift this list exists to prevent.
+  `comprador.ts`, `pagamentoMapping.ts`, `liquidacaoSweep.ts`,
+  `liquidarPagamentosCli.ts`, `fretePushShopee.ts`, `freteShopeeMapping.ts`,
+  `rastrearPedidoSimulacao.ts` or `rastrearPedidoCli.ts` is the drift this list
+  exists to prevent.
   ⚠️ `pagamentoMapping.ts` holds no converter of its own — it CALLS site (3) for
   `pay_time`, the same way item 5 does — and **`liquidacaoSweep.ts` holds no
   microsecond at all**: the sweep is pure epoch MILLISECONDS end to end, and an
-  inline `* 1000` there would be an undeclared sixth site.
+  inline `* 1000` there would be an undeclared eighth site.
   `liquidarPagamentosCli.ts` holds µs only as DISPLAY: it carries
   `escrowReleaseTimeUs` verbatim out of the prediction and renders it through
   `microsToMillis`, converting nothing that is written — so it is not a site
   either, but it is not µs-free and a reader must not be told it is.
+  ⚠️ **`fretePushShopee.ts` emits wire SECONDS on purpose** — that is why the
+  shared `PacoteObservadoShopee` record spells the unit into the field names
+  (`updateTimeS`, `shipByDateS`) — and `freteShopeeMapping.ts` converts nothing
+  at all (it is the third reader above).
+  ⚠️ **The `rastrear:pedido` halves are the `pagamentoMapping.ts` /
+  `liquidarPagamentosCli.ts` position, not a new numbered site.**
+  `rastrearPedidoSimulacao.ts` and `rastrearPedidoCli.ts` hold no clock and no
+  converter of their OWN: the first CALLS site (3) once, for the backstop's
+  order clock, and the second calls it to render a wire stamp and
+  `microsToMillis` to render a stored one — display only. The CLI path's single
+  clock read and its single `millisToMicros` live in
+  **`scripts/rastrear-pedido.ts`**, the I/O half, precisely so that neither
+  tested lib module holds one; `rastrearPedidoShopee` takes the MILLISECONDS
+  from there and does its own site-6 conversion, and the simulation takes the µs.
   `orderMapping.ts` additionally exports `maiorUs` and
   `vazio` (moved out of `orderPedidoTx.ts` by step 6 so both transactions can
   share them) — patch primitives that compare and test, unit-agnostic, and not
@@ -238,15 +302,18 @@ a page of the 3-day queue irreversibly.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — three dev-only CLIs, **never run by an agent** (root CLAUDE.md
+- `scripts/` — four dev-only CLIs, **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
   consent URL without the web UI, `importar-pedido.ts` imports ONE named
-  order through the real step-5 path, and `liquidar-pagamentos.ts` (step 6)
-  rehearses the weekly settlement sweep for ONE integração — the last two
-  **dry-run by default**, `--live` to write. Their pure halves (arg parsing,
-  the redacted summary, the renderer, the error describer) live in
-  `lib/shopee/pedidos/importarPedidoCli.ts` and
-  `lib/shopee/pedidos/liquidarPagamentosCli.ts` **because `scripts/` is outside
+  order through the real step-5 path, `liquidar-pagamentos.ts` (step 6)
+  rehearses the weekly settlement sweep for ONE integração, and
+  `rastrear-pedido.ts` (step 7) rehearses the shipment merge for ONE order —
+  the last three **dry-run by default**, `--live` to write. Their pure halves
+  (arg parsing, the redacted summary, the renderer, the error describer) live in
+  `lib/shopee/pedidos/importarPedidoCli.ts`,
+  `lib/shopee/pedidos/liquidarPagamentosCli.ts` and
+  `lib/shopee/pedidos/{rastrearPedidoCli,rastrearPedidoSimulacao}.ts`
+  **because `scripts/` is outside
   this app's vitest `include`**, so logic written in a script file can never be
   tested (the `pedidoMoneyAudit.ts` precedent in `apps/mercado-livre`).
   Script-only, imported by no route and no bundle.
@@ -388,9 +455,22 @@ same on the real host, and then it goes.
 ⚠️ **Keyed on the push CODE, never `push_api_id`.** They differ, and not by a
 constant: `shop_penalty_update_push` is code **28** and push_api_id **31**. The
 dispatch table is the only place this is written down — codes 1 / 2 / 12 are the
-conta arms, a listed handful `ack`, everything data-bearing whose owning step is
-unbuilt **parks**, and an unlisted code parks too, which is the only signal a new
-code appeared.
+conta arms, code 3 is the order import (step 5), codes 4 / 30 / 47 are the
+shipment merge (step 7), a listed handful `ack`, everything data-bearing whose
+owning step is unbuilt **parks**, and an unlisted code parks too, which is the
+only signal a new code appeared. ⚠️ `DestinoPush` has **six** members and the
+ladder that reads it is closed by a compile-time `const restante: 'conta' =
+destino` line: a seventh destino without an arm of its own stops compiling,
+rather than falling through to the authorization arms.
+
+✅ **Codes 4, 30 and 47 route to the shipment merge (step 7).** Three codes, ONE
+destino: they differ only in which field Shopee changed, all three name a
+PACKAGE, and all three are answered by one `get_package_detail` for that
+package. The push is a POINTER — nothing reads `tracking_no`,
+`fulfillment_status` or `new.ship_by_date` off the body — which is what makes a
+replayed or out-of-order delivery idempotent and what gives **code 4 a clock at
+all**, since `push 2` documents no `update_time`. See **Shipment tracking
+(step 7)** below.
 
 Three rows were added by the sandbox push test of 2026-09-09. **Code 0** is
 undocumented: it is the console's own "Verify and Save" message (`verify_info`,
@@ -400,9 +480,20 @@ branch, `0:-:-:-`. **Codes 24 and 25** are documented — the logistics *booking
 pushes `booking_trackingno_push` (push_api_id 27) and
 `booking_shipping_document_status_push` (push_api_id 28), both "New Push" of
 2024-07-02 — and were simply missed by the doc survey; the sandbox is what made
-them arrive, unlisted, and park. Both still **park**, keyed on `booking_sn`,
-until steps 7 and 15 own them. They arrived unlisted first, which is that
-signal doing its job.
+them arrive, unlisted, and park. Both still **park**, keyed on `booking_sn`.
+They arrived unlisted first, which is that signal doing its job.
+
+⚠️ **Code 24 was RE-PARKED by step 7 and now has NO owning step** (25 is still
+step 15's). An earlier revision of this page promised it to step 7; that promise
+was false and the reason is the wire. A "booking" is an **Advance Fulfillment**
+parcel — stock the seller ships to Shopee BEFORE any buyer order exists — and
+the programme is ID/PH/VN (`announcement 1064`) plus TH (`announcement 1317`),
+never BR. `push 27` names ONLY a `booking_sn`: no `order_sn`, no
+`package_number`, so **no pedido id is derivable** from it without a
+`get_booking_detail` that answers an order only once
+`booking_status === 'MATCHED'`. It arrived in the 2026-09-09 sandbox test
+because that shop is SG. Its `MOTIVO_PARADO` row names the programme and says
+so; whoever ever needs Advance Fulfillment owns it.
 
 ⚠️ **The app type does not gate what the console can send.** An ERP System app
 cannot receive `webchat_push` (code 10) per `guide 18`, which is why that code
@@ -423,7 +514,16 @@ defers":
 | **code 3**, a shop that maps to no active integração | ⚠️ the OPPOSITE reading of the same fact — see below |
 | **code 3**, `ShopeeReauthRequiredError` / the three credential classes / a conta that vanished | a human re-consents or fixes the conta; `kind: 'pedido-adiado'` |
 | **code 3**, Shopee's DAILY quota (`error_limit`) | resets 00:00 UTC+8; the daily lane's cadence is what brackets it — a burst limit THROWS instead |
+| **codes 4 / 30 / 47**, a shop that maps to no active integração | the SAME reading as code 3, and the same `sem-conta` kind: connecting the shop makes the package **actionable** — `get_package_detail` still answers for it |
+| **codes 4 / 30 / 47**, the pedido does not exist yet | no page states an ordering between push codes, so a package event can precede the code 3 that creates the pedido; `kind: 'frete-adiado'`, and it enqueues ONE synthetic code 3 (`origem: 'rastreio'`) |
 | ⚠️ **code 2**, the same unmapped shop | **ACKED, not deferred** |
+
+⚠️ **Every reason string is prefixed by its arm**, so a parked or deferred row
+says which one wrote it: `push_code 3:` for the order import, **`rastreio:`**
+for the shipment merge. The two error→disposition readers
+(`disposicaoDaFalhaDeImportacao`, `disposicaoDaFalhaDeRastreio`) are one private
+class table with two prefixes — step 5's behaviour is byte-identical and its
+tests are unedited, which is the proof that the refactor changed nothing.
 
 ⚠️ **The code-2 inversion, and why code 3 goes the other way.** For a code 2 the
 event that clears the precondition (the operator connecting the shop) is exactly
@@ -940,6 +1040,200 @@ each instrumented rather than guessed:
 | `instalment_plan` format beyond `"N/A"` | ⏳ three shapes on record (the `"N/A"` sentinel, a quoted number, an int), so the package schema is a union and ONE reader owns the fold; an unparsable raw is logged once, by the parser. |
 | when is the escrow READABLE, and when FINAL? | ⏳ undocumented. The escrow read stays CONTAINED on the task path (an absent one omits the fee keys rather than erasing them), and the sweep is what stamps final — `liquidacao.escrowReleaseTimeUs` being set is the strongest "money is final" signal this channel has. |
 
+## Shipment tracking (`lib/shopee/pedidos/frete*.ts` + `rastrearPedido*.ts`, step 7)
+
+Three push codes — **4** (`order_trackingno_push`), **30**
+(`package_fulfillment_status_push`) and **47** (`package_info_push`) — become
+ONE thing: a per-package observation merged into `pedidos/{id}.freteInicial`.
+
+**The push is a POINTER, never a payload.** Every delivery re-fetches
+`v2.order.get_package_detail` for the named package — one call, one package —
+and applies THAT. `guide 746` says it in Shopee's own words ("Push NÃO substitui
+API. O Push só diz: 'Algo mudou.'"), and here it is load-bearing three times
+over: it makes a replayed or out-of-order delivery idempotent, it gives **code 4**
+a clock (its page documents no `update_time`, so the only clock on that body is
+the envelope stamp, which is OURS), and it is what stops `push 44`'s
+echoed-unchanged `logistics_channel_id` from rewriting a channel nothing moved.
+`changed_fields` is therefore a DIAGNOSTIC and never a gate: the gate is
+structural, because no push value has a path into a patch.
+
+**Why `get_package_detail` and not `get_tracking_info`.** The tracking page is
+per-ORDER, returns **no tracking number**, types its package-level field against
+the 13-value `LogisticsStatus` while push 33 sends the 11-value
+`PackageFulfillmentStatus`, and is the only page in the whole cached API corpus
+that documents `logistics.error_status_limit` — a status gate whose passing
+statuses no page names. The package page answers `fulfillment_status` +
+`tracking_number` + `ship_by_date` + `logistics_channel_id` + `update_time` for
+up to 50 packages in one call, in the same enum the push uses.
+`get_tracking_info` is **not built**; `get_tracking_number` is step 15's.
+
+**Two `-` problems, one page.** `get_package_detail` samples `"error": "-"`
+where every other order page samples `""`, so the op carries its own
+`emptyErrorAliases: ['-']` — per OPERATION, because the contradiction is per
+PAGE, and it is now the THIRD such constant beside the two lost-push ones. And
+it samples `"tracking_number": "-"` on the PAYLOAD, so `textoShopeeUtilizavel`
+— the string twin of `positivoOuNull`, in `orderMapping.ts` — is the one reader
+that turns it into `null` before anything is written. The rule is the WHOLE
+trimmed value: `'--'` and `'BR-123'` survive. A `codRastreio` of `"-"` is a
+value `/pedidos` renders verbatim beside a copy button.
+
+**Three push codes and one order import, ONE record.** Everything that can
+observe a package produces the same `PacoteObservadoShopee` — the pull (always,
+on a push) and the code-3 order import from `get_order_detail.package_list[]`,
+which is the **BACKSTOP** and costs no new call because step 5 already fetched
+that body. The backstop is not optional politeness: the pushes are lossy by
+design (`timeout=3`, `push_guarantee=0`, three retries and then gone) and the
+sandbox console cannot emit codes 30 or 47 at all. The record carries the RAW
+wire token and its `fonte`, and the fold is one table in one place.
+
+**The pedido may not exist yet, and that is expected.** No page anywhere states
+an ordering between push codes, so a code 4 can precede the code 3 that creates
+the pedido. The handler reads the pedido FIRST — before spending the Shopee
+call — and on a miss enqueues ONE synthetic code 3 (`origem: 'rastreio'`, the
+**fourth** `OrigemSintetica` member and the only one driven by a push rather
+than by a sweep) and DEFERS. The bound is **`1 + MAX_TENTATIVAS_DEFERRED` = 8**
+synthetics per delivery — a `defer` does not retry on the queue, the deferred
+lane re-drives daily seven times and then parks, and this handler enqueues at
+most one per invocation — and the sequence stops the moment the pedido exists.
+⚠️ "Only on the last retry" is NOT implementable: the shared pipeline's
+`process(db, payload)` carries no attempt count.
+
+**The arm's outcomes.** `frete { acaoFrete, orderSn, packageNumber, pedidoId,
+statusMarketplace, estadoEscrito, campos, detail }` resolves (its own
+`toDisposition` label, `'frete'`), and `frete-adiado { shopId, orderSn,
+packageNumber, reason, sintetica }` defers. ⚠️ The field is `acaoFrete` and not
+`acao` on purpose: `handleNotificationTask` reads the result with structural
+`in` checks and the `pedido` outcome already carries an `acao`, so an `acao`
+here would put an import action in the frete column of the task log.
+`TaskResult` gained `packageNumber?` and `acaoFrete?`, both spread only when
+present (the key is ABSENT, never `null`), and `acaoFrete` rides a **code-3**
+delivery too — there it is the BACKSTOP's verdict.
+
+⚠️ **The arm reaches both the reader and the handler through
+`await import(...)`.** A static import would pull the schema tree into the
+receiver route's Next bundle: `fretePushShopee.ts` imports the small tolerant
+readers from `orderMapping.ts`, which imports `@delfrance/schemas` as VALUES. A
+test bans any static value import from `../pedidos/` in `notificacao.ts` for
+exactly that reason, and it covers the reader as well as the handler.
+
+**What this step never writes.** `lastMarketplaceUpdate` — the ORDER clock,
+step 5's single writer, and comparing a package event against it is ADR 0011's
+cross-clock failure — and `freteInicial.ultimaModificacao`, step 5's order
+watermark: rewriting it would ping-pong with `mesmoFrete` and file one audit row
+per delivery. ⚠️ **"Never written" here means never ASSIGNED.** The stored
+`ultimaModificacao` IS carried by the whole-map rebuild's spread and must be,
+because `update()` masks at the top-level key and omitting a nested field from
+the rewrite ERASES it — so the honest assertion, and the one a test pins, is
+that the value in the patch is byte-identical to the stored one. Also never
+written: a `historicoFtIni` row (the `onPedidoChanged` trigger derives that trail
+from the `freteInicial.estado` this step writes, comparing the NESTED estado only
+— call-site appends were rejected in PR #720); a `freteInicial` block that does
+not exist (step 5 seeds it; an absent one answers `ignorado-sem-frete-inicial`,
+an absent pedido `ignorado-sem-pedido`, and this transaction creates neither);
+`externalId`, `volumes`, `valorCobrado`, `custoCalculado`, `custoFinal`,
+`dataPrevisaoEntrega` and `dataEntrega` (no source — `pickup_done_time` is not a
+delivery time), all of which ride the spread unchanged; the pedido's own
+`estado` / `itens` / `marketplace` / `capturaComprador`; any stock; a label; a
+return; an `int_frete`. **Beyond the block it writes exactly one thing**: the
+pedido's `ultimaModificacao`, which is in both ignore lists, so it files no audit
+row and only surfaces the pedido in the recency monitor.
+
+⚠️ **`freteInicial.estado` moves PHYSICAL STOCK.** `sincronizarEstoquePedido`
+observes it and `ESTADOS_FRETE_REMOVE_ESTOQUE` starts at `empacotado` — and this
+channel's table puts `LOGISTICS_REQUEST_CREATED` at `aguardandoPostagem`, which
+is inside that set. A fold that answers one estado too eagerly takes goods out of
+inventory; one that never answers leaves a delivered order reserving them. That
+is why an **unknown token writes nothing at all** and is logged once per
+delivery, rather than defaulting to anything.
+
+**The diary is `freteInicial.pacotes`** — an array of typed rows sorted ASC by
+`numero` (plain code-unit comparison, never `localeCompare`), nested inside a
+block the rulesets emit one `is map` clause for, so it regenerated no ruleset and
+needs no index. Each row keeps the RAW `estadoMarketplace` as the **source of
+truth** and its `estado` as a PROJECTION re-derived from that token on every
+delivery (#1369), so a correction to the table retro-applies with no wire event.
+`atualizadoEm` (µs, the PACKAGE clock) advances ONLY when one of the four WIRE
+fields changed — never because we looked, never on a change to the derived
+estado — which is what makes a replay an empty patch and stops the backstop
+re-stamping every row on every import. Rows the delivery did not name are left
+exactly as stored: `consolidaPacote: 'nao'` means Shopee can SPLIT an order, so a
+number missing from one answer is not evidence the parcel stopped existing.
+
+**The block's single `estado` is a FOLD over the diary**, not the latest event:
+the LEAST-ADVANCED live package by ladder index, and when none is live the first
+member of a DECLARED failure precedence (never "the latest by clock", which is
+not idempotent under out-of-order pushes). It reproduces `faq 510` — Shopee's own
+order status follows the package fulfilled earliest, ignores failed packages and
+completes only when all are delivered — and it is the stock-safe direction, since
+a pedido's stock leaves as a WHOLE. The write is then gated by a monotone verdict
+that refuses a regression, preserves a return or an `error` state, and logs a
+`ressuscitado` when a terminal is traded for a non-terminal.
+
+⚠️ **`prazoDespacho` CHANGED OWNER.** Step 5 no longer refreshes it —
+`CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE` is **seven** fields now and `mesmoFrete`
+compares those seven — because step 5's order-level value and step 7's
+per-package minimum would otherwise overwrite each other on every delivery of a
+split order. The create path still seeds the order-level deadline. Step 7 folds
+the EARLIEST package deadline, never `min(stored, incoming)`: `push 44`'s two
+samples disagree on the DIRECTION of a `ship_by_date` move, so a monotone floor
+would make a pushed-out deadline unreachable for ever.
+
+⚠️ **Convergence between the push and the backstop is REAL but narrower than
+"the package call wins".** A `get_package_detail` observation has higher
+fidelity than a `get_order_detail` one, and the lower-fidelity source never
+re-stamps `fonte` or `atualizadoEm` — those two are what the sentence is about.
+`estadoMarketplace` is deliberately **take-new-when-present**, so a later order
+import really does overwrite a pull's token in the diary ROW: measured, a pull
+that wrote `LOGISTICS_PICKUP_DONE` is followed by an import that rewrites that
+row's token to `LOGISTICS_READY`. Two nets contain it and both are pinned — the
+ladder never walks the BLOCK estado back (`postado` stands), and the clock and
+`fonte` are not re-stamped, so the row does not claim to be fresher than it is.
+A fill-or-keep on the token was the alternative and is worse: it would make the
+machine one-way and a `PICKUP_RETRY` after a `PICKUP_FAILED` unreachable. Whether
+the two readings ever disagree LIVE is register item 28, and the per-delivery log
+prints both tokens plus a `divergePushVsPull` boolean.
+
+⚠️ **A step-7 write is not literally byte-preserving over an under-populated
+stored block** — and that is true of every writer of `freteInicial`, not of step
+7 alone. `parseMerge` validates the nested block in FULL, so a partially stored
+sub-object (a `transportadora` holding only `nome`) comes back with its own
+schema defaults materialised. The field-by-field content comparison is what keeps
+a replay an empty patch; it is not a byte comparison of the stored map.
+
+⚠️ **`hasUserInteraction` is NOT read here**, deliberately, and step 5's freeze
+is not widened. That freeze exists for MONEY and step 7 writes none; the estado
+it writes is stock-moving, so blinding the tracking feed of the one pedido an
+operator touched is the expensive direction; Mercado Livre's shipment import
+ignores the flag too. An operator hand-edit made before the web fix below is
+simply a stored value the ladder arbitrates — a hand-set `entregue` refuses a
+later `postado`, a hand-typed `codRastreio` is replaced by the first fold value.
+
+**The Frete tab now locks on the BLOCK.** `apps/web`'s `FreteTab` used to key
+`marketplaceOwned` on the resolved `int_frete` document alone, and step 5 never
+sets an `integracaoFreteOuterRef` (step 20 does) — so a Shopee pedido rendered
+the editable generic body and a save latched `hasUserInteraction`. Ownership is
+now the OR of the two declarations over the marketplace-owned PREDICATE: a
+resolved document can WIDEN the lock and can never narrow it. ⚠️ One consequence
+worth knowing before someone reports it as a bug: `headerDisabled` also disables
+the `IntegracaoFreteSelect`, so an operator can no longer attach a different
+`int_frete` to a Shopee pedido by hand — the importer owns the block.
+
+⚠️ **Code 24 is not part of this step** (see the re-park note under **Inbound
+push**), and **`FREIGHT_TIPO_CAPS.shopee.canTrack` stays `false`** until step 15
+flips it with `canFetchLabel`, `canPrint` and `channel`. Nothing reads the flag
+today except `freightCapsFor` consumers, and `mercadoLivre` carries
+`canTrack: false` beside a live shipments handler — so flipping it alone would
+make Shopee the first marketplace with `canTrack: true` for no behavioural
+reason.
+
+**The rehearsal.** `rastrear:pedido` is the only way to exercise the estado path
+before a BR shop exists: of the codes this step owns, the sandbox console's Push
+Test Data offers **only 4** — not 30, not 47 — so a state transition cannot be
+pushed at all from there. Dry-run by default, it runs the SAME pure prediction the transaction runs
+and prints the exact patch — plus what the code-3 backstop would fold from the
+same order, which is register item 28 answered by eye. See `scripts/README.md`
+§9.
+
 ## Taxonomy reads (`lib/shopee/taxonomia/`, step 10)
 
 Seven Shop-signed GETs on Shopee's `product` module — the category tree,
@@ -1105,13 +1399,17 @@ behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
 runs `*.tasks.test.ts` against firestore + functions + tasks emulators
 (`firebase.shopee.tasks.json`, ports 8084/5003/9500).
 
-Two deliveries go through that hop: an unknown push code (→ `parked`) and, since
-step 5, a **code 3 naming a shop that maps to no integração** (→ `deferred`).
-Both are chosen for the same reason — they are the only outcomes that write a
-document without any Shopee call. ⚠️ The lane's fetch kill-switch lives in the
-VITEST process and does **not** cover the dispatched function, which runs in the
-emulator's own process, so a code-3 case that reached `importarPedidoShopee`
-would really leave the runner. Keep the tasks suites on paths that need no token.
+Three deliveries go through that hop: an unknown push code (→ `parked`); since
+step 5, a **code 3 naming a shop that maps to no integração** (→ `deferred`);
+and since step 7, a **code 4 naming such a shop** (→ `deferred`), which mirrors
+the code-3 case field for field. All three are chosen for the same reason — they
+are the only outcomes that write a document without any Shopee call, and the
+code-4 one never reaches the lazy `import('../pedidos/rastrearPedido')` at all.
+⚠️ The lane's fetch kill-switch lives in the VITEST process and does **not**
+cover the dispatched function, which runs in the emulator's own process, so a
+code-3 case that reached `importarPedidoShopee` — or a code-4 one that reached
+`rastrearPedidoShopee` — would really leave the runner. Keep the tasks suites on
+paths that need no token.
 
 ⚠️ The lane's `push: paths:` grew with step 5 (`packages/schemas/src/pedido/**`,
 the cliente/endereço/`intFrete` schemas, `packages/data/src/admin/{clientes,produtos,enderecos}/**`
@@ -1120,8 +1418,10 @@ again with step 6 by exactly two FILES — `packages/schemas/src/liquidacaoShope
 (the settlement cursor) and `packages/schemas/src/bandeiraCartao.ts` (the card
 brand catalogue the `cartao` block folds into). Everything else step 6 added
 lives under `apps/shopee/**` or `packages/schemas/src/pedido/**`, both already
-listed. `pull_request:` still has **no** `paths:` and never may — the `changes`
-job derives that closure from the workspace graph.
+listed. Step 7 grew it by exactly ONE more file,
+`packages/schemas/src/shared/frete.ts` — the shared freight schema, where the
+per-package diary was promoted to. `pull_request:` still has **no** `paths:` and
+never may — the `changes` job derives that closure from the workspace graph.
 
 ⚠️ **This lane owns no exclusion, and that is the point.** Unlike
 `ci-mercado-livre`, `ci.yml` still runs every `@delfrance/shopee-app` unit test
@@ -1168,19 +1468,23 @@ Open the printed URL, log in with the sandbox shop, and the browser lands on
 app, leave the sandbox redirect-URL domain EMPTY (Shopee then validates nothing)
 or register `localhost`.
 
-The other two CLIs are **dry-run by default** and, like `oauth:url`, are **never
-run by an agent** (root CLAUDE.md rule 8) — the flags, the expected output and
-the runbook for each live in `scripts/README.md`:
+The other three CLIs are **dry-run by default** and, like `oauth:url`, are
+**never run by an agent** (root CLAUDE.md rule 8) — the flags, the expected
+output and the runbook for each live in `scripts/README.md`:
 
 ```bash
 pnpm --filter @delfrance/shopee-app importar:pedido --integracao <integracaoId> --order-sn <orderSn>
 pnpm --filter @delfrance/shopee-app liquidar:pagamentos --integracao <integracaoId>
+pnpm --filter @delfrance/shopee-app rastrear:pedido --integracao <integracaoId> --order-sn <orderSn>
 ```
 
 The first imports ONE named order through the real step-5 path; the second
 (step 6) rehearses the weekly settlement sweep for one conta, printing the exact
-patch a live tick would write. Both still CALL Shopee in dry-run — what they do
-not do is write.
+patch a live tick would write; the third (step 7) rehearses the shipment merge
+for one order — the same `get_package_detail` pull and the same pure prediction a
+code-4/30/47 delivery runs, plus what the code-3 backstop would fold from the
+same order. All three still CALL Shopee in dry-run — what they do not do is
+write.
 
 ## Deploy
 

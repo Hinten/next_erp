@@ -85,6 +85,23 @@ transitions are **UNKNOWN — docs do not say**.
 
 ### 1.2 ⚠️ `get_order_detail` and `get_package_detail` can disagree on the same order
 
+> ⚠️ **2026-09-14 — the citation below no longer exists.** `guide 697` was
+> rewritten that day as "Turbo Delivery (Quotation API)": the sentence quoted
+> here is **no longer on the page** in `en` or in `pt-br`, and its "Channel Order
+> Flow and Status" section now renders as an image with no text. The quotation is
+> kept as a **dated observation** of what the page said when it was read, not as
+> a live citation, and nothing here was re-derived from it afterwards.
+>
+> What IS still documented, and was never cited in this survey, is the
+> PACKAGE-level behaviour on `api v2.logistics.update_tracking_status`: on
+> 90021 / 90025 / 90026 the logistics status becomes `LOGISTICS_REQUEST_CREATED`
+> after arrange shipment, and that API is how a package is moved to
+> `LOGISTICS_PICKUP_DONE` / `LOGISTICS_DELIVERY_DONE` /
+> `LOGISTICS_DELIVERY_FAILED`. `announcement 1264` makes calling it **mandatory**
+> on 90021. See the master plan's §1.2 and step 7's §2b **item 31**, which
+> re-scopes the live observation to "what `order_status` reads *while*
+> `fulfillment_status` is `LOGISTICS_REQUEST_CREATED`".
+
 `guide 697` §"Arrange Shipment", for Entrega Expressa:
 
 > "order_status will be updated to PROCESSED status after arranging shipment, and will be returned in
