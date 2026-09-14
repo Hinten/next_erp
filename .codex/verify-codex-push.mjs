@@ -3,7 +3,7 @@
 // The prefix rule deliberately names `origin`; this guard proves what that
 // name resolves to and which branch HEAD names before the sandbox is crossed.
 
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const EXPECTED_ORIGIN = 'https://github.com/Hinten/next_erp.git';
@@ -160,12 +160,16 @@ export function verifyCodexPush(command, { originUrl, branch }) {
   return null;
 }
 
+// Returns null when git cannot run or exits non-zero, so the caller fails
+// closed without a catch.
 function readGit(...args) {
-  return execFileSync('git', ['-c', 'safe.directory=*', ...args], {
+  const result = spawnSync('git', ['-c', 'safe.directory=*', ...args], {
     cwd: process.cwd(),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
-  }).trim();
+  });
+  if (result.error || result.status !== 0) return null;
+  return result.stdout.trim();
 }
 
 function deny(reason) {
@@ -197,12 +201,9 @@ function runHook() {
     }
     if (!gitCommands(command).some((tokens) => startsWith(tokens, CANONICAL_PUSH))) return;
 
-    let originUrl = '';
-    let branch = '';
-    try {
-      originUrl = readGit('remote', 'get-url', 'origin');
-      branch = readGit('branch', '--show-current');
-    } catch {
+    const originUrl = readGit('remote', 'get-url', 'origin');
+    const branch = readGit('branch', '--show-current');
+    if (originUrl === null || branch === null) {
       deny(
         'Could not verify the Codex branch and origin remote; refusing the pre-authorized push.',
       );
