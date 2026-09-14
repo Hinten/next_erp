@@ -181,9 +181,11 @@ function toInfCad(cad: TRetConsCad_infCons_infCad): ConsultaCadastroInfCad {
  * transport (`nfeConsultaCadastro` → `postSoap`): same mTLS agent, SOAP 1.2
  * envelope, SOAPAction, and `assertSafeTpAmb` guard.
  *
- * The response parse reads only the elements layout 2.00 declares; anything
- * else SEFAZ sends is ignored. `<infCad>` repeats 0..n times and always comes
- * back as an array. cStat 111/112 = found; 258/259/108/109/etc =
+ * The reply must match layout 2.00 EXACTLY. `infCons` is a closed `xs:sequence`
+ * (no `xs:any`), so an element the layout does not declare — even one a UF
+ * merely appends — fails `validateRetConsCad` and never reaches the parse; it is
+ * a rejection, not something ignored. `<infCad>` repeats 0..n times and always
+ * comes back as an array. cStat 111/112 = found; 258/259/108/109/etc =
  * none/invalid/down, with an empty `infCad`.
  */
 export async function consultarCadastro(

@@ -86,6 +86,14 @@ describe('validateRetConsCad', () => {
     expect(err.message).toContain('dhCons');
   });
 
+  it('rejects an element layout 2.00 does not declare — infCons is a closed sequence', async () => {
+    // An extra field is NOT ignored: there is no xs:any, so a reply carrying one
+    // never reaches the parse. A UF that appends a field fails right here (#1602).
+    const err = await rejection(retConsCad(`${HEADER}<algoNovo>x</algoNovo>`));
+    expect(err.rootKey).toBe('retConsCad');
+    expect(err.message).toContain('algoNovo');
+  });
+
   it('rejects an empty retConsCad (no infCons)', async () => {
     const err = await rejection(`<retConsCad versao="2.00" xmlns="${NFE_NS}"></retConsCad>`);
     expect(err.rootKey).toBe('retConsCad');
