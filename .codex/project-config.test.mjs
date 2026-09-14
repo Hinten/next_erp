@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = readFileSync(resolve(REPO_ROOT, '.codex/config.toml'), 'utf8');
+const RULES = readFileSync(resolve(REPO_ROOT, '.codex/rules/default.rules'), 'utf8');
 
 function gitFiles(pathspecs) {
   return execFileSync('git', ['-c', 'safe.directory=*', 'ls-files', '--', ...pathspecs], {
@@ -43,6 +44,15 @@ describe('Codex instruction discovery', () => {
 
   it('routes Codex branches through the pre-PR push CI prefix', () => {
     match(CONFIG, /Create Codex task branches under `codex\/\*`/);
+  });
+
+  it('uses the single pre-authorized current-branch push form', () => {
+    match(CONFIG, /git -c 'safe\.directory=\*' push -u origin HEAD/);
+    match(
+      RULES,
+      /pattern = \["git", "-c", "safe\.directory=\*", "push", "-u", "origin", "HEAD"\][\s\S]*?decision = "allow"/,
+    );
+    match(RULES, /pattern = \["git", "push"\][\s\S]*?decision = "prompt"/);
   });
 
   it('records the outcome of every addressed GitHub review comment in its thread', () => {
@@ -98,6 +108,18 @@ describe('shared destructive Git hook', () => {
     );
     match(registrations[0][0].matcher, /Bash/);
     match(registrations[1][0].matcher, /Bash/);
+  });
+});
+
+describe('Codex push destination hook', () => {
+  it('is registered once for Codex shell commands', () => {
+    const codexHooks = JSON.parse(readFileSync(resolve(REPO_ROOT, '.codex/hooks.json'), 'utf8'));
+    const registrations = codexHooks.hooks.PreToolUse.filter((entry) =>
+      entry.hooks.some((hook) => hook.command.includes('verify-codex-push.mjs')),
+    );
+
+    deepStrictEqual(registrations.length, 1);
+    match(registrations[0].matcher, /Bash/);
   });
 });
 

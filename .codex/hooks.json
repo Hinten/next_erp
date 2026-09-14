@@ -7,6 +7,17 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"$(git -c 'safe.directory=*' rev-parse --show-toplevel)/.codex/verify-codex-push.mjs\"",
+            "timeout": 30,
+            "statusMessage": "Verifying Codex push destination"
+          }
+        ]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
             "command": "node \"$(git -c 'safe.directory=*' rev-parse --show-toplevel)/.claude/hooks/enforce-claude-branch-prefix.mjs\"",
             "timeout": 30,
             "statusMessage": "Checking branch name"

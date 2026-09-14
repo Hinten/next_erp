@@ -5,6 +5,8 @@ default_permissions = "next-erp"
 developer_instructions = """
 Create Codex task branches under `codex/*`. Published `codex/**` branches receive the repository's pre-PR push CI, including all three E2E lanes, and the prefix is also accepted by every pull-request base filter for stacked work.
 
+Publish both new branches and follow-up commits only with `git -c 'safe.directory=*' push -u origin HEAD`. This exact command is pre-authorized because a Codex-only hook verifies that `origin` is `https://github.com/Hinten/next_erp.git`, the current branch starts with `codex/`, and the command contains no additional refspecs or flags. Do not spell out the branch name, use another remote, or add arguments to this command.
+
 After finishing repository changes, create or update a pull request in draft mode unless the user explicitly requests a different state.
 
 Monitor the pull request until every required CI check passes. If CI finds a bug or failure caused by the pull request, diagnose it, plan and implement the fix, verify it locally, push the update, and resume monitoring. If a CI failure is unrelated to the pull request, report the failing check and the evidence that it is unrelated instead of changing unrelated code.
