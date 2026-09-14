@@ -1,0 +1,14 @@
+{
+  "name": "@delfrance/melhor-envio-functions",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "//": "NOT a pnpm workspace package. This manifest is copied into the deploy artifact without a lockfile, so both Firebase SDKs stay exact and aligned with the workspace catalog.",
+  "dependencies": {
+    "firebase-admin": "14.2.0",
+    "firebase-functions": "7.3.2"
+  }
+}

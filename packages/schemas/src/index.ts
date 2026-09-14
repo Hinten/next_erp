@@ -427,6 +427,15 @@ export {
 } from './notificacaoMercadoPago';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the failures-only Melhor
+  // Envio order-status notification backlog (#681).
+  notificacaoMelhorEnvioStatusSchema,
+  notificacaoMelhorEnvioSchema,
+  type NotificacaoMelhorEnvioStatus,
+  type NotificacaoMelhorEnvio,
+} from './notificacaoMelhorEnvio';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound Shopee push
   // log, mirrors notificacaoMercadoPago above (Shopee master plan, step 3).
   notificacaoShopeeStatusSchema,

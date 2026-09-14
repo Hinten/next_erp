@@ -173,6 +173,20 @@
       ]
     },
     {
+      "collectionGroup": "notificacoesMelhorEnvio",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "importacoesMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [

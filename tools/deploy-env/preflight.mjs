@@ -3,7 +3,7 @@
  * Functions codebase is bundled and shipped.
  *
  * Sibling of `env-files.mjs`, which owns the same question for FILES. Both are
- * shared by all five `prepare-deploy.mjs`, and both fail the predeploy hook
+ * shared by all seven `prepare-deploy.mjs`, and both fail the predeploy hook
  * outright rather than degrading — for the same reason: a deploy artifact is
  * uploaded and run, and a wrong one is discovered in production or not at all.
  *
@@ -31,7 +31,7 @@
  *
  * ## WHERE IT RUNS, AND WHY THAT PLACEMENT
  *
- * From the `predeploy` ARRAY of the five `firebase.*.deploy.json`, ahead of
+ * From the `predeploy` ARRAY of the seven `firebase.*.deploy.json`, ahead of
  * `prepare-deploy.mjs`. The deploy config is what defines a deploy, so the guard
  * fires exactly when deploying and needs no opt-out flag:
  *
@@ -127,6 +127,17 @@ const CODEBASES = {
     backendManifest: 'apps/mercado-pago/apphosting.yaml',
     deployShell: {},
     runtimeOverrides: ['MERCADO_PAGO_TASKS_REGION'],
+  },
+  'melhor-envio': {
+    deployConfig: 'firebase.melhor-envio.deploy.json',
+    buildScript: 'apps/melhor-envio/functions/build.mjs',
+    deployDoc: 'apps/melhor-envio/functions/DEPLOY.md',
+    inlined: { FUNCTIONS_REGION: null },
+    tasksRegionVar: 'FUNCTIONS_REGION',
+    backendVar: 'MELHOR_ENVIO_TASKS_REGION',
+    backendManifest: 'apps/melhor-envio/apphosting.yaml',
+    deployShell: {},
+    runtimeOverrides: ['MELHOR_ENVIO_TASKS_REGION'],
   },
   whatsapp: {
     deployConfig: 'firebase.whatsapp.deploy.json',

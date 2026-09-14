@@ -71,6 +71,7 @@ export { historicoEstadoPedidoCollection } from './historicoEstadoPedidoCollecti
 export { historicoFreteInicialCollection } from './historicoFreteInicialCollection';
 export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollection';
 export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollection';
+export { notificacaoMelhorEnvioCollection } from './notificacaoMelhorEnvioCollection';
 export { notificacaoShopeeCollection } from './notificacaoShopeeCollection';
 export { clienteCollection } from './clienteCollection';
 export { conversaCollection } from './conversaCollection';
