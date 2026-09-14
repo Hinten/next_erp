@@ -3,6 +3,7 @@ import { CAMPOS_ESTOQUE_SYNC, isIgnoredForConcurrency } from '@delfrance/data/pe
 import { ESTADO_FRETE, ESTADO_PEDIDO } from '@delfrance/schemas';
 
 import { resolveUsuarioOuterRef as sharedResolveUsuarioOuterRef } from '../lib/authContext';
+import { buildModificationEntry } from '../lib/modificationHistory';
 import {
   PEDIDO_HISTORY_IGNORE_FIELDS,
   buildEstadoHistoryEntry,
@@ -31,6 +32,7 @@ describe('PEDIDO_HISTORY_IGNORE_FIELDS', () => {
   it('is exactly the stamps, the ML watermark, the itens projection and the sync write-back', () => {
     expect([...PEDIDO_HISTORY_IGNORE_FIELDS].sort()).toEqual([
       'bloqueiosLiberados',
+      'capturaComprador',
       'dataIndisponivelEstoque',
       'dataRemocaoEstoque',
       'devolucaoAbertaEm',
@@ -38,6 +40,7 @@ describe('PEDIDO_HISTORY_IGNORE_FIELDS', () => {
       'estoqueAplicado',
       'itensIds',
       'lastMarketplaceUpdate',
+      'marketplace',
       'timestamp',
       'ultimaModificacao',
     ]);
@@ -52,12 +55,67 @@ describe('PEDIDO_HISTORY_IGNORE_FIELDS', () => {
     // ignoring in the feed but never written by a trigger), and the removed
     // derived caches are conflict-only. What MUST hold is that every field a
     // server trigger writes behind the operator's back is in BOTH.
-    for (const campo of ['disputaAbertaEm', 'devolucaoAbertaEm', 'bloqueiosLiberados']) {
+    for (const campo of [
+      'disputaAbertaEm',
+      'devolucaoAbertaEm',
+      'bloqueiosLiberados',
+      // #1513: the marketplace lifecycle flag + the buyer-capture diary. Same
+      // pair, one importer later — and this one writes on EVERY delivery of an
+      // order, so leaving either out of either list is not an occasional
+      // phantom row, it is one per push.
+      'marketplace',
+      'capturaComprador',
+    ]) {
       expect(PEDIDO_HISTORY_IGNORE_FIELDS, `${campo} missing from the history list`).toContain(
         campo,
       );
       expect(isIgnoredForConcurrency(campo), `${campo} missing from CONCURRENCY_IGNORE`).toBe(true);
     }
+  });
+
+  it('⚠️ NEAR-MISS: a write touching ONLY the two step-5 blocks records NO row', () => {
+    // The equal pair below is the same write with `estado` moved — that one
+    // MUST still produce a row, or this ignore would have silenced the audit
+    // trail instead of the noise.
+    const antes = {
+      estado: ESTADO_PEDIDO.pago,
+      numero: '250910KJBHUJDM',
+      marketplace: { tipo: 'shopee', status: 'READY_TO_SHIP', statusEm: EVENT_MICROS },
+      capturaComprador: { estado: 'pendente', tentativas: 1, camposRecusados: ['nome:mascarado'] },
+    };
+    const soOsBlocos = buildModificationEntry({
+      before: antes,
+      after: {
+        ...antes,
+        marketplace: { tipo: 'shopee', status: 'SHIPPED', statusEm: EVENT_MICROS + 1 },
+        capturaComprador: {
+          estado: 'expirado',
+          tentativas: 2,
+          camposRecusados: ['nome:mascarado'],
+        },
+      },
+      ignore: PEDIDO_HISTORY_IGNORE_FIELDS,
+      path: 'pedidos/p1',
+      subcolecao: null,
+      docId: 'p1',
+      eventId: 'evt-1',
+      eventTimeMicros: EVENT_MICROS,
+      usuarioOuterRef: null,
+    });
+    expect(soOsBlocos).toBeNull();
+
+    const comEstado = buildModificationEntry({
+      before: antes,
+      after: { ...antes, estado: ESTADO_PEDIDO.cancelado, marketplace: null },
+      ignore: PEDIDO_HISTORY_IGNORE_FIELDS,
+      path: 'pedidos/p1',
+      subcolecao: null,
+      docId: 'p1',
+      eventId: 'evt-2',
+      eventTimeMicros: EVENT_MICROS,
+      usuarioOuterRef: null,
+    });
+    expect(comEstado?.campos).toEqual(['estado']);
   });
 
   it('contains every CAMPOS_ESTOQUE_SYNC field — the phantom-row guard', () => {

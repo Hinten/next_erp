@@ -193,9 +193,11 @@ export const conversaSchema = z.object({
    */
   respostaBloqueada: z.string().nullable().default(null),
 });
-// No `.passthrough()`: every field the legacy Flutter app and the webchat
-// widget write to `chat/*` is modeled above, so unknown top-level keys are
-// stripped and — on a write through `defineCollection` — rejected (#464).
+// No `.passthrough()`: every field the legacy Flutter app and its webchat widget
+// wrote to `chat/*` is modeled above, so unknown top-level keys are stripped and
+// — on a write through `defineCollection` — rejected (#464). ⚠️ Past tense on the
+// widget is deliberate: it was never ported (2026-09-07), so nothing writes those
+// shapes today, but the imported legacy corpus still CONTAINS them.
 // Reads stay tolerant regardless (`parseSoftRead` logs, never throws).
 
 export type Conversa = z.infer<typeof conversaSchema>;
@@ -394,8 +396,9 @@ export const mensagemSchema = z.object({
   timestamp: millisSinceEpoch().nullable().default(null),
 
   /*
-   * Legacy WhatsApp/webchat-pipeline fields (`.old` atendimento models,
-   * populated by the WhatsApp Cloud API webhook pipeline). The new UI only
+   * Legacy WhatsApp/webchat-pipeline fields (`.old` atendimento models; the
+   * WhatsApp half is still populated by the Cloud API webhook pipeline, the
+   * webchat half only by the imported legacy corpus). The new UI only
    * *reads* these, never authors them, so they are modeled as `.nullish()`
    * (wire-optional; the Flutter `toJson` omits null values) rather than the
    * `.nullable().default(null)` convention used by the app-authored fields
@@ -501,10 +504,13 @@ export const mensagemSchema = z.object({
 });
 // No `.passthrough()` (see the `conversaSchema` note): unknown top-level keys
 // are stripped, and rejected on writes through `defineCollection`. `createdAt`
-// (a raw Firestore `Timestamp` written by `apps/webchat` alongside the ms-int
-// `timestamp`) is intentionally NOT modeled — it is a redundant server-write
-// companion the new UI never reads; it is soft-stripped on read and is never
-// sent through the converter, so it never trips the strict-write check.
+// (a raw Firestore `Timestamp` the legacy webchat widget wrote alongside the
+// ms-int `timestamp`) is intentionally NOT modeled — it is a redundant
+// server-write companion the new UI never reads; it is soft-stripped on read and
+// is never sent through the converter, so it never trips the strict-write check.
+// ⚠️ No live writer produces it any more (the widget was dropped 2026-09-07), but
+// the imported legacy documents carry it, so leaving it unmodeled stays correct:
+// the tolerance is about the CORPUS, not about a running app.
 
 export type Mensagem = z.infer<typeof mensagemSchema>;
 

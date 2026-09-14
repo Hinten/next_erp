@@ -88,6 +88,8 @@ const INVENTARIO = {
     'Estoque tab. Displays the stored value verbatim (deliberately — the defect must stay visible) and computes availability through `estoqueDisponivel`.',
   'apps/web/app/(app)/produtos/_components/EstoqueMovimentacaoModal.tsx':
     'Movement editor. Local input state only; availability preview goes through `estoqueDisponivel`.',
+  'apps/web/lib/reports/productLocation.ts':
+    'Product-location report. Displays the stored reservation verbatim and computes availability through `estoqueDisponivel`, so a negative stored value stays visible without inventing stock.',
 
   // ---- Writes it, floors the RESULT ---------------------------------------
   'apps/functions/src/estoques/aplicarEstoque.ts':

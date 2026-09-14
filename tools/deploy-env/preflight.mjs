@@ -139,6 +139,25 @@ const CODEBASES = {
     deployShell: {},
     runtimeOverrides: ['WHATSAPP_TASKS_REGION'],
   },
+  shopee: {
+    // ⚠️ Step 3 (#1511) ships the codebase AND `firebase.shopee.deploy.json`, but
+    // shipping the config is not shipping the deploy: nobody has run it, the
+    // ROLLOUT is step 22's (#1530), and the deploy itself is a manual coordinated
+    // human step (root `CLAUDE.md` rule 8). So this row is wired as a real
+    // predeploy hook while still earning its keep offline through
+    // `bundle-inlining.test.js`, which builds every CODEBASES `build.mjs` and
+    // proves the region actually reaches the bundle. Same MP shape: one region,
+    // inherited by the task/schedule functions through `setGlobalOptions`.
+    deployConfig: 'firebase.shopee.deploy.json',
+    buildScript: 'apps/shopee/functions/build.mjs',
+    deployDoc: 'apps/shopee/functions/DEPLOY.md',
+    inlined: { FUNCTIONS_REGION: null },
+    tasksRegionVar: 'FUNCTIONS_REGION',
+    backendVar: 'SHOPEE_TASKS_REGION',
+    backendManifest: 'apps/shopee/apphosting.yaml',
+    deployShell: {},
+    runtimeOverrides: ['SHOPEE_TASKS_REGION'],
+  },
   nfe: {
     deployConfig: 'firebase.nfe.deploy.json',
     buildScript: 'apps/nfe/functions/build.mjs',

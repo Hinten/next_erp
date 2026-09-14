@@ -20,6 +20,7 @@ import {
   flattenItensDevolvidos,
   itemCusto,
   itemSubtotal,
+  nomeDoItem,
   valuesEqual,
   type Pedido,
 } from '@delfrance/schemas';
@@ -222,6 +223,15 @@ function DevolucaoRowEditor({
 }) {
   const isAvulso = row.originId === NONE_KEY;
   const dimmed = row._delete ? { opacity: 0.45 } : undefined;
+  // ONE resolved name for the whole row — the visible cell AND the three input
+  // labels. ⚠️ An `aria-label` is display, never persisted, so the "`nome` is
+  // data" constraint on `DevolucaoEditRow` does not reach it; naming the inputs
+  // from the raw `row.nome` instead collapses every nameless row in the table
+  // onto the same accessible name and disagrees with what the cell shows.
+  const nomeExibido = nomeDoItem(
+    { produtoUid: row.produtoUid, nomeDeVenda: row.nome, sku: row.sku },
+    null,
+  );
   return (
     <Table.Tr style={dimmed}>
       <Table.Td>
@@ -233,7 +243,10 @@ function DevolucaoRowEditor({
               if (r) {
                 onUpdate(row.rowId, {
                   produtoUid: r.id,
-                  nome: r.data?.nome ?? r.id,
+                  // `nome` is PERSISTED as `nomeDeVenda` — a doc id here would
+                  // be stored as the sale name. Blank is the honest value; the
+                  // display falls back through `nomeDoItem`.
+                  nome: r.data?.nome ?? '',
                   sku: r.data?.sku ?? null,
                 });
               }
@@ -243,12 +256,12 @@ function DevolucaoRowEditor({
             disabled={disabled || row._delete}
           />
         ) : (
-          <Text size="sm">{row.nome || row.produtoUid}</Text>
+          <Text size="sm">{nomeExibido}</Text>
         )}
       </Table.Td>
       <Table.Td>
         <DecimalInput
-          ariaLabel={`Quantidade devolvida de ${row.nome || 'item'}`}
+          ariaLabel={`Quantidade devolvida de ${nomeExibido}`}
           value={row.quantidade}
           onChange={(n) => onUpdate(row.rowId, { quantidade: n ?? 0 })}
           min={0}
@@ -263,7 +276,7 @@ function DevolucaoRowEditor({
       </Table.Td>
       <Table.Td>
         <CurrencyInput
-          ariaLabel={`Preço de ${row.nome || 'item'}`}
+          ariaLabel={`Preço de ${nomeExibido}`}
           value={row.precoDeVenda}
           // Clearing emits null; keep the form's data-entry floor of 0.01 (the
           // SCHEMA floor is 0, relaxed in #794 for zero-priced marketplace
@@ -274,7 +287,7 @@ function DevolucaoRowEditor({
       </Table.Td>
       <Table.Td>
         <CurrencyInput
-          ariaLabel={`Desconto de ${row.nome || 'item'}`}
+          ariaLabel={`Desconto de ${nomeExibido}`}
           value={row.descontoUnitario}
           onChange={(n) => onUpdate(row.rowId, { descontoUnitario: n ?? 0 })}
           disabled={disabled || row._delete}

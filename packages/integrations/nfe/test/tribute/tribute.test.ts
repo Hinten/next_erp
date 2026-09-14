@@ -27,6 +27,9 @@ import {
   type Imposto,
   type Retencao,
 } from '../../src/tribute/index';
+// Not on the barrel (only `buildPagXml` is) — reached directly so the typed
+// <pag> value can be asserted without widening the package's public surface.
+import { buildPagObject } from '../../src/tribute/pag';
 import { IND_INCENTIVO, IND_ISS, ORIGEM } from '@delfrance/schemas';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
@@ -984,6 +987,43 @@ describe('buildPagXml', () => {
   });
   it('rejects a negative vPag', () => {
     expect(() => buildPagXml([{ tPag: '17', vPag: -1 }])).toThrow();
+  });
+
+  // <vTroco> — the second parameter. SEFAZ 866 (YA03-20) is "ausência de troco
+  // quando o valor dos pagamentos informados for maior que o total da nota", so
+  // an over-payment is only legal WITH this element.
+  it('emits <vTroco> after </detPag> when change is supplied', () => {
+    const xml = buildPagXml([{ tPag: '01', vPag: 100 }], 10);
+    expect(xml).toBe(
+      '<pag><detPag><tPag>01</tPag><vPag>100.00</vPag></detPag><vTroco>10.00</vTroco></pag>',
+    );
+  });
+
+  it('formats the troco to 2 decimals', () => {
+    expect(buildPagXml([{ tPag: '01', vPag: 100 }], 0.5)).toContain('<vTroco>0.50</vTroco>');
+  });
+
+  // ⚠️ The omission cases. A <vTroco>0.00</vTroco> is XSD-valid (TDec_1302
+  // matches "0.00"), so nothing downstream would catch it — these are the only
+  // guard that an absent troco stays absent.
+  it('omits <vTroco> entirely when not supplied', () => {
+    expect(buildPagXml([{ tPag: '01', vPag: 100 }])).not.toContain('vTroco');
+  });
+
+  it('omits <vTroco> when the troco is 0 or null', () => {
+    expect(buildPagXml([{ tPag: '01', vPag: 100 }], 0)).not.toContain('vTroco');
+    expect(buildPagXml([{ tPag: '01', vPag: 100 }], null)).not.toContain('vTroco');
+  });
+
+  it('rejects a negative troco (that would be a shortfall — 865, not a troco)', () => {
+    expect(() => buildPagXml([{ tPag: '01', vPag: 100 }], -1)).toThrow(/vTroco/);
+  });
+
+  it('buildPagObject carries the troco on the <pag> GROUP, not on a detPag', () => {
+    const pag = buildPagObject([{ tPag: '01', vPag: 100 }], 10);
+    expect(pag.vTroco).toBe('10.00');
+    expect(pag.detPag).toHaveLength(1);
+    expect(pag.detPag[0]).not.toHaveProperty('vTroco');
   });
 });
 

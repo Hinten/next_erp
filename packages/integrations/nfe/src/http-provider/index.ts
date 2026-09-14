@@ -28,6 +28,13 @@ export {
   type NFeVerificarResult,
 } from './client';
 
+/**
+ * `<ICMSTot>` → modeled numbers. Lives here rather than under the kitchen-sink
+ * root because `apps/web` needs it too, and this is the package's browser-safe
+ * surface (see `CLAUDE.md` → "Adding a new browser-safe module").
+ */
+export { extrairTotaisNFe } from '../totals';
+
 export {
   NFeAuthError,
   isRetryableNFeHttpError,

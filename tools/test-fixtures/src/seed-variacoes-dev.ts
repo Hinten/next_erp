@@ -106,7 +106,6 @@ export async function seedDevVariacoes(): Promise<{ children: number }> {
     videos: null,
     anexos: null,
     fotosArquivosIds: [],
-    nome_embedding: null,
     ultimaModificacao: now,
     timestamp: now,
   };

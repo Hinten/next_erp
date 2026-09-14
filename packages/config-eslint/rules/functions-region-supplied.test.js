@@ -53,6 +53,16 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '
  *  - `playwright test` builds apps/web, whose callables read
  *    NEXT_PUBLIC_FUNCTIONS_REGION — inlined at build time, so it is the BUILD that
  *    needs it, not the test run.
+ *
+ * ⚠️ **`filter` makes a row WORKSPACE-scoped, and it exists because the command
+ * string stopped identifying the variable.** `test:tasks` is a script NAME, not a
+ * lane: `ci-mercado-livre.yml` runs `@delfrance/mercado-livre-app`'s and reads
+ * `MERCADO_LIVRE_TASKS_REGION`, `ci-shopee.yml` runs `@delfrance/shopee-app`'s and
+ * reads `SHOPEE_TASKS_REGION`. Without a scope the two rows would each demand BOTH
+ * variables of BOTH jobs, so every lane would have to set a region belonging to
+ * another channel's enqueuer — a value that is read nowhere and reads to the next
+ * person as if it were. A row WITHOUT `filter` stays file-wide on purpose (the
+ * three build shapes really do apply to every job that runs them).
  */
 const REGION_COMMANDS = [
   { command: 'functions build', variable: 'FUNCTIONS_REGION' },
@@ -63,8 +73,21 @@ const REGION_COMMANDS = [
   // simply is not a shape the entries above match.
   { command: 'turbo run build', variable: 'FUNCTIONS_REGION' },
   { command: 'prepare-deploy', variable: 'FUNCTIONS_REGION' },
-  { command: 'test:firestore', variable: 'MERCADO_LIVRE_TASKS_REGION' },
-  { command: 'test:tasks', variable: 'MERCADO_LIVRE_TASKS_REGION' },
+  {
+    command: 'test:firestore',
+    variable: 'MERCADO_LIVRE_TASKS_REGION',
+    filter: '@delfrance/mercado-livre-app',
+  },
+  {
+    command: 'test:tasks',
+    variable: 'MERCADO_LIVRE_TASKS_REGION',
+    filter: '@delfrance/mercado-livre-app',
+  },
+  {
+    command: 'test:tasks',
+    variable: 'SHOPEE_TASKS_REGION',
+    filter: '@delfrance/shopee-app',
+  },
   { command: 'playwright test', variable: 'NEXT_PUBLIC_FUNCTIONS_REGION' },
 ];
 
@@ -77,6 +100,7 @@ const REGION_COMMANDS = [
 const KNOWN_BUILDERS = [
   '.github/workflows/ci.yml',
   '.github/workflows/ci-mercado-livre.yml',
+  '.github/workflows/ci-shopee.yml',
   '.github/workflows/ci-storage.yml',
   '.github/workflows/copilot-setup-steps.yml',
   '.github/workflows/e2e-emulator.yml',
@@ -111,6 +135,45 @@ const delegates = (body) => /^\s*uses:\s*\.\/\.github\/workflows\//m.test(body);
 
 const runsRegionCommand = (source) =>
   REGION_COMMANDS.some(({ command }) => source.includes(command));
+
+/**
+ * The single per-job walk every assertion below reads through.
+ *
+ * Returns the offenders AND, per REGION_COMMANDS index, whether that row matched
+ * a job at all. Sharing one walk is what makes the fourth floor honest: a scanner
+ * that stopped matching produces an empty `offenders` list AND an all-false
+ * `matched` list, so the floor fires instead of the offender assertion passing
+ * over nothing.
+ */
+function scanJobs() {
+  const offenders = [];
+  const matched = REGION_COMMANDS.map(() => false);
+
+  for (const file of findWorkflows()) {
+    for (const [id, rawBody] of Object.entries(jobBlocks(read(file)))) {
+      // ⚠️ Comments stripped FIRST. Anchoring `jobBlocks` to `jobs:` fixed the
+      // comment-above-`jobs:` shape, but a comment at job indent BETWEEN two jobs
+      // still lands in the preceding job's body — `jobBlocks` cannot know it
+      // documents the next one. `includes(command)` would then match prose and
+      // blame a job that really exists. A command named in a comment is not a
+      // command, so scanning the stripped body settles it positionally-blind.
+      const body = stripComments(rawBody);
+      if (delegates(body)) continue;
+      REGION_COMMANDS.forEach((entry, i) => {
+        const { command, variable, filter } = entry;
+        if (!body.includes(command)) return;
+        // A workspace-scoped row only speaks for the job that runs THAT
+        // workspace's script — see the `filter` note on REGION_COMMANDS.
+        if (filter && !body.includes(filter)) return;
+        matched[i] = true;
+        if (new RegExp(`^\\s*${variable}\\s*:`, 'm').test(body)) return;
+        offenders.push(`${file} › ${id} runs \`${command}\` without ${variable}`);
+      });
+    }
+  }
+
+  return { offenders, matched };
+}
 
 describe('a workflow that builds a functions bundle supplies its region', () => {
   it('finds every known builder', () => {
@@ -192,25 +255,7 @@ describe('a workflow that builds a functions bundle supplies its region', () => 
    * than not checking at all.
    */
   it('every JOB that needs a region sets it', () => {
-    const offenders = [];
-
-    for (const file of findWorkflows()) {
-      for (const [id, rawBody] of Object.entries(jobBlocks(read(file)))) {
-        // ⚠️ Comments stripped FIRST. Anchoring `jobBlocks` to `jobs:` fixed the
-        // comment-above-`jobs:` shape, but a comment at job indent BETWEEN two jobs
-        // still lands in the preceding job's body — `jobBlocks` cannot know it
-        // documents the next one. `includes(command)` would then match prose and
-        // blame a job that really exists. A command named in a comment is not a
-        // command, so scanning the stripped body settles it positionally-blind.
-        const body = stripComments(rawBody);
-        if (delegates(body)) continue;
-        for (const { command, variable } of REGION_COMMANDS) {
-          if (!body.includes(command)) continue;
-          if (new RegExp(`^\\s*${variable}\\s*:`, 'm').test(body)) continue;
-          offenders.push(`${file} › ${id} runs \`${command}\` without ${variable}`);
-        }
-      }
-    }
+    const { offenders } = scanJobs();
 
     expect(
       offenders,
@@ -230,6 +275,39 @@ describe('a workflow that builds a functions bundle supplies its region', () => 
         '',
         'Offenders:',
         ...offenders.map((o) => `  - ${o}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  it('every REGION_COMMANDS entry matched at least one job', () => {
+    // ⚠️ FOURTH anti-vacuity floor, and the one the `filter` field made
+    // necessary. The three floors above all read the FILE: they prove the
+    // pathspec still finds the workflows, that `jobBlocks` still parses them,
+    // and that some REGION_COMMANDS string still appears somewhere in each known
+    // builder. None of them notices a row that matches nothing at the JOB level
+    // — which is exactly what a stale `filter` produces. Rename
+    // `@delfrance/shopee-app`, or move `test:tasks` behind a variable, and the
+    // Shopee row silently stops demanding anything while every other assertion
+    // here stays green. Mutation-tested: flip either `filter` to a typo and only
+    // this assertion fails.
+    //
+    // It is a per-ROW check, not a count, because two rows now share a command
+    // string: a total is satisfied by one of them matching twice.
+    const { matched } = scanJobs();
+    const unmatched = REGION_COMMANDS.filter((_, i) => !matched[i]).map(
+      (c) => `${c.command} → ${c.variable}${c.filter ? ` (filter: ${c.filter})` : ''}`,
+    );
+
+    expect(
+      unmatched,
+      [
+        'These REGION_COMMANDS rows matched NO job in any workflow, so they demand',
+        'nothing and the per-job assertion above passes over them silently.',
+        '',
+        'Either the command / filter string drifted from how the workflows actually',
+        'invoke it (fix the row), or the lane that ran it is gone (delete the row).',
+        'A row that matches nothing is not a guard, it is decoration:',
+        ...unmatched.map((c) => `  - ${c}`),
       ].join('\n'),
     ).toEqual([]);
   });

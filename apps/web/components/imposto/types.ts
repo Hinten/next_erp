@@ -21,14 +21,17 @@ import type {
  * round-trip untouched.
  */
 export interface ImpostoConfigValue {
-  // Dados Gerais (lenient strings, like the stored Imposto).
+  // Dados Gerais (lenient strings, like the stored Imposto) — except the two
+  // below, which are typed to the real wire shape (#466): every tax collection
+  // stores `NVE` as a `List<String>?` and `indEscala` as a `bool?`, so the
+  // editor edits them in that shape rather than bridging free text per screen.
   origem?: string | null;
   cfop?: string | null;
   cfopInterestadual?: string | null;
   NCM?: string | null;
-  NVE?: string | null;
+  NVE?: string[] | null;
   CEST?: string | null;
-  indEscala?: string | null;
+  indEscala?: boolean | null;
   CNPJFab?: string | null;
   cBenef?: string | null;
   extipi?: string | null;

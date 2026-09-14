@@ -14,11 +14,52 @@ export function resolveActionRows<T>(
   selectedRows: ReadonlyArray<SnapshotRow<T>>,
   visibleRows: ReadonlyArray<SnapshotRow<T>> = [],
 ): SnapshotRow<T>[] {
-  if (selectedRows.length > 0) return [...selectedRows];
-  if (action.fallbackToSingleVisibleRow && visibleRows.length === 1) {
-    return [visibleRows[0]!];
+  return partitionActionRows(action, selectedRows, visibleRows).eligible;
+}
+
+/** One refused row and the operator-facing reason it was refused. */
+export interface RefusedRow<T> {
+  row: SnapshotRow<T>;
+  reason: string;
+}
+
+/**
+ * The rows an action would receive, split into what it will act on and what it
+ * refused.
+ *
+ * ⚠️ The eligibility filter runs AFTER the selection is resolved, never before,
+ * and `actionDisabledReason` checks `maxSelection` against the RAW selection.
+ * Filtering first would let three selected rows — two of them refused — satisfy
+ * a `maxSelection: 1` action that should have declined the SELECTION, not
+ * silently acted on its one survivor.
+ *
+ * ⚠️ `fallbackToSingleVisibleRow` can now resolve to an EMPTY list where it
+ * previously always returned one row. Every `run` opens with a length guard, so
+ * that degrades correctly, but it is a real change in what the perk promises.
+ */
+export function partitionActionRows<T>(
+  action: ActionConfig<T>,
+  selectedRows: ReadonlyArray<SnapshotRow<T>>,
+  visibleRows: ReadonlyArray<SnapshotRow<T>> = [],
+): { eligible: SnapshotRow<T>[]; refused: RefusedRow<T>[] } {
+  const resolved =
+    selectedRows.length > 0
+      ? [...selectedRows]
+      : action.fallbackToSingleVisibleRow && visibleRows.length === 1
+        ? [visibleRows[0]!]
+        : [];
+
+  const predicate = action.rowIneligibleReason;
+  if (!predicate) return { eligible: resolved, refused: [] };
+
+  const eligible: SnapshotRow<T>[] = [];
+  const refused: RefusedRow<T>[] = [];
+  for (const row of resolved) {
+    const reason = predicate(row);
+    if (reason === null) eligible.push(row);
+    else refused.push({ row, reason });
   }
-  return [];
+  return { eligible, refused };
 }
 
 /**
@@ -39,10 +80,17 @@ export function actionDisabledReason<T>(
   if (max != null && selectedRows.length > max) {
     return max === 1 ? 'Selecione apenas 1 registro' : `Selecione no máximo ${max} registros`;
   }
+  const { eligible, refused } = partitionActionRows(action, selectedRows, visibleRows);
+  // Every selected row was refused. Saying "Selecione ao menos 1 registro" here
+  // would be false — they DID select — and would hide the one thing that
+  // explains the disabled button. With a single row, name its reason outright.
+  if (eligible.length === 0 && refused.length > 0) {
+    return refused.length === 1
+      ? refused[0]!.reason
+      : `Nenhum dos ${refused.length} registros selecionados aceita esta ação`;
+  }
   if (!action.requiresSelection) return null;
-  return resolveActionRows(action, selectedRows, visibleRows).length === 0
-    ? 'Selecione ao menos 1 registro'
-    : null;
+  return eligible.length === 0 ? 'Selecione ao menos 1 registro' : null;
 }
 
 /** Whether a bulk action button/menu item should be disabled. */

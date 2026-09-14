@@ -1,0 +1,75 @@
+# Project-local command policy for Codex. These rules load only after the
+# repository .codex layer is trusted. The normal PR workflow may push the
+# current branch, but history rewriting, main mutation, and merging stay human.
+
+prefix_rule(
+    pattern = ["gh", "pr", "merge"],
+    decision = "forbidden",
+    justification = "Do not merge pull requests; leave the final merge to the repository owner.",
+    match = ["gh pr merge 1580", "gh pr merge --auto"],
+    not_match = ["gh pr view 1580", "gh pr checks 1580"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["--force", "-f", "--force-with-lease"]],
+    decision = "forbidden",
+    justification = "Do not rewrite remote history; push an ordinary follow-up commit instead.",
+    match = ["git push --force origin HEAD", "git push -f", "git push --force-with-lease"],
+    not_match = ["git push origin HEAD", "git push -u origin claude/fix"],
+)
+
+prefix_rule(
+    pattern = ["git", "rebase"],
+    decision = "forbidden",
+    justification = "Do not rewrite this shared branch; merge the base branch or ask the repository owner.",
+    match = ["git rebase main", "git rebase --interactive HEAD~2"],
+    not_match = ["git merge main", "git status"],
+)
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "forbidden",
+    justification = "Do not discard workspace changes; inspect and preserve them.",
+    match = ["git reset --hard", "git reset --hard HEAD~1"],
+    not_match = ["git reset HEAD file.ts", "git status"],
+)
+
+prefix_rule(
+    pattern = ["git", "branch", ["-D", "--delete", "-d"], "main"],
+    decision = "forbidden",
+    justification = "Do not delete the main branch.",
+    match = ["git branch -D main", "git branch --delete main", "git branch -d main"],
+    not_match = ["git branch --list", "git branch -d claude/obsolete"],
+)
+
+prefix_rule(
+    pattern = ["git", ["checkout", "switch"], "main"],
+    decision = "forbidden",
+    justification = "Remain on the task branch; do not mutate the main checkout.",
+    match = ["git checkout main", "git switch main"],
+    not_match = ["git checkout claude/fix", "git switch claude/fix"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", "origin", ["main", "main:main"]],
+    decision = "forbidden",
+    justification = "Push only the current claude/* task branch; never push main directly.",
+    match = ["git push origin main", "git push origin main:main"],
+    not_match = ["git push origin HEAD", "git push origin claude/fix"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", "-u", "origin", "main"],
+    decision = "forbidden",
+    justification = "Push only the current claude/* task branch; never push main directly.",
+    match = ["git push -u origin main"],
+    not_match = ["git push -u origin HEAD", "git push -u origin claude/fix"],
+)
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "prompt",
+    justification = "Confirm the destination branch and ensure the push is non-destructive.",
+    match = ["git push", "git push origin HEAD", "git push -u origin claude/fix"],
+    not_match = ["git status", "gh pr view 1580"],
+)

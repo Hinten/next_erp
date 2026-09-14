@@ -147,6 +147,7 @@ export default function ClientesPage() {
           db={db}
           meta={clienteMeta}
           rowHref={(id) => `/clientes/${id}`}
+          rowLinkColumn="nome"
           queryOverride={queryOverride}
           renderNewButton={() => (
             <Button component={Link} href="/clientes/novo">

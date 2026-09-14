@@ -200,7 +200,7 @@ pnpm dev                           # all apps from the repo root
 curl http://localhost:3004/api/health
 ```
 
-Port: **3004** (3000 = web, 3001 = integrations, 3002 = webchat). The
+Port: **3004** (3000 = web, 3001 = integrations; 3002 is free — it was webchat, dropped 2026-09-07). The
 homologação chain at `packages/integrations/nfe/ca/sefaz-sp-homologacao.pem`
 must exist — `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca`
 captures it on first setup. Exercising **contingência** needs its transport's

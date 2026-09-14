@@ -68,9 +68,11 @@ export function merchantBaseString(p: MerchantSignParams): string {
 /**
  * HMAC-SHA256 of the base string under the partner key, LOWERCASE hex.
  *
- * Shopee compares the hex case-insensitively on the push side, but the request
- * signature is documented as lowercase and there is nothing to gain from
- * discovering whether the API agrees.
+ * Shopee's own demos emit lowercase hex and compare it verbatim; case is never
+ * asserted for the wire, so the push verifier lowercases what it RECEIVES as
+ * one-sided tolerance. Emitting lowercase here is what the request signature is
+ * documented as, and there is nothing to gain from discovering whether the API
+ * would accept anything else.
  */
 export function signBaseString(base: string, partnerKey: string): string {
   return createHmac('sha256', partnerKey).update(base, 'utf8').digest('hex');

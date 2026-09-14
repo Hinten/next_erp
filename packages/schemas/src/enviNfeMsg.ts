@@ -125,6 +125,28 @@ export const enviNfeMsgMeta: CollectionMetadata = {
     write: PERM_FISCAL_WRITE,
     delete: PERM_FISCAL_DELETE,
   },
+  /**
+   * Declares the query `/nfe/comunicacoes` was already issuing, so it stops
+   * being the one list screen outside both index guards.
+   *
+   * `defaultQuery.indexes.test.ts` and the `default-query-needs-index` lint
+   * rule BOTH open with `if (!meta.defaultQuery) continue;`, and so does the
+   * update-monitor pass — so a collection with no declared query is not
+   * checked leniently, it is not checked at all. This screen sorts a fiscal
+   * log by `timestamp desc` and its monitor watches the same key (no
+   * `ultimaModificacao` on this schema — the field here is `ultima_modificacao`,
+   * which the resolver does not match, so it falls through to `timestamp`).
+   *
+   * ⚠️ This adds NO index. `enviNfe(timestamp DESCENDING)` is already declared
+   * and already serving both queries; what was missing was the declaration
+   * that brings them under the guard. `columns` is deliberately omitted: the
+   * screen passes its own `defaultColumns`, which wins, and a second copy here
+   * would be a list nothing checks and everything could drift from.
+   */
+  defaultQuery: {
+    orderBy: [{ field: 'timestamp', direction: 'desc' }],
+    limit: 50,
+  },
 };
 
 export const enviNfeMsg = { schema: enviNfeMsgSchema, meta: enviNfeMsgMeta };

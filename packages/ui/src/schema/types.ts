@@ -75,9 +75,57 @@ export type FilterableField = Pick<
  * emitting one must short-circuit (see the TableView guard) or, better, emit
  * `undefined` and drop the filter entirely.
  */
+/**
+ * Ops a column filter may carry. A superset of `PipelineFilterOp`: `between` is
+ * a UI-ONLY op that expands to two real predicates at query-build time.
+ *
+ * It is deliberately NOT added to `PipelineFilterOp`. The data layer's op set
+ * describes what Firestore can be asked directly; `between` is a presentation
+ * of two of those, and letting it reach `buildPipeline` would mean teaching the
+ * query builder about a second operand it has no field for. Expansion happens
+ * in exactly one place — {@link expandColumnFilter}.
+ */
+export type ColumnFilterOp = PipelineFilterOp | 'between';
+
 export interface ColumnFilterValue {
-  op: PipelineFilterOp;
+  op: ColumnFilterOp;
   value: string | number | boolean | null | ReadonlyArray<string>;
+  /**
+   * Upper bound. `between` only, and required there — the lower bound rides
+   * `value`. Anything else must leave it undefined.
+   */
+  valueTo?: string | number | null;
+}
+
+/**
+ * The one place a `ColumnFilterValue` becomes real query predicates.
+ *
+ * `between` is the only op that expands to more than one, and it expands to an
+ * INCLUSIVE pair — `gte` lower, `lte` upper — which is what an operator means by
+ * "de X até Y" for both a date range and a value range.
+ *
+ * ⚠️ A range makes the field an inequality, so it must lead the `orderBy` or the
+ * query stops matching its composite index (silently, on Enterprise). Callers
+ * must derive a forced sort from an active range; see `TableView`.
+ *
+ * ⚠️ An incomplete range is NOT a range. A `between` whose `valueTo` never
+ * arrived degrades to the single bound it does have rather than emitting a
+ * comparison against `undefined`, which would match nothing and look like an
+ * empty result set.
+ */
+export function expandColumnFilter(
+  field: string,
+  v: ColumnFilterValue,
+): Array<{ field: string; op: PipelineFilterOp; value: ColumnFilterValue['value'] }> {
+  if (v.op !== 'between') {
+    return [{ field, op: v.op, value: v.value }];
+  }
+  const lo = v.value;
+  const hi = v.valueTo;
+  const out: Array<{ field: string; op: PipelineFilterOp; value: ColumnFilterValue['value'] }> = [];
+  if (lo !== null && lo !== undefined && lo !== '') out.push({ field, op: 'gte', value: lo });
+  if (hi !== null && hi !== undefined && hi !== '') out.push({ field, op: 'lte', value: hi });
+  return out;
 }
 
 /**
@@ -223,6 +271,33 @@ export interface ActionConfig<T> {
    */
   maxSelection?: number;
   refreshOnComplete?: boolean;
+  /**
+   * Why THIS row cannot take the action, or `null` when it can.
+   *
+   * A refused row is dropped from the rows `run` receives, and the confirm
+   * dialog names it with this reason — so an operator who selected twelve
+   * pedidos and had two skipped is told which two and why, rather than watching
+   * the count quietly disagree with their selection.
+   *
+   * Returns the REASON, not a boolean: a boolean predicate cannot carry one, and
+   * the pair would drift. `actionDisabledReason` already uses this shape.
+   *
+   * ⚠️ May read ONLY fields listed in {@link rowEligibilityFields}. `row.data` is
+   * a Pipelines `select()` projection on the static path, so an undeclared field
+   * arrives `undefined` and the predicate refuses EVERY row while looking
+   * correct — a disabled button with a plausible tooltip. Three existing pedido
+   * actions re-read the whole document specifically to dodge this
+   * (`useDevolucaoIntegralAction`: "hiding a column strips its `dependsOn`
+   * fields, which would falsely reject every row").
+   */
+  rowIneligibleReason?: (row: SnapshotRow<T>) => string | null;
+  /**
+   * Fields {@link rowIneligibleReason} reads. Unioned into the Pipelines
+   * `select()` exactly like `VirtualColumn.dependsOn`, and with the same escape
+   * hatch: declaring a predicate WITHOUT this forces a full-document read rather
+   * than letting it run against a projection that may be missing its inputs.
+   */
+  rowEligibilityFields?: ReadonlyArray<string>;
   run: (rows: SnapshotRow<T>[]) => Promise<void> | void;
   confirm?: { title: string; message: string };
 }

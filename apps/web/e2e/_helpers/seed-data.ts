@@ -172,8 +172,6 @@ export async function seedClientes(prefix: string, n: number): Promise<void> {
       observacoesInternas: null,
       timestamp: Date.now(),
       ultimaModificacao: Date.now() + i,
-      nome_embedding: null,
-      telefone_embedding: null,
       userCliente: null,
     });
   }
@@ -1324,8 +1322,6 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     // Stamped so the fixture cliente shows in `/clientes` (default sort is
     // `ultimaModificacao desc`; Firestore skips docs missing the field).
     ultimaModificacao: clienteNow,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
   batch.set(db().collection('operacao').doc(operacaoId), {
@@ -1424,7 +1420,6 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   });
   await batch.commit();
 
@@ -1555,7 +1550,6 @@ export async function seedPedidoEstoqueFixtures(prefix: string): Promise<{
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   });
   batch.set(db().collection('pedidos').doc(pedidoId), {
     ehSaida: true,
@@ -1735,8 +1729,6 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
     observacoesInternas: null,
     timestamp: now,
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
   batch.set(db().collection('integracao').doc(integracaoId), {
@@ -1790,7 +1782,6 @@ export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   });
   batch.set(db().collection('pedidos').doc(naoImpressoId), {
     ...pedidoBase,
@@ -3426,7 +3417,6 @@ function checkoutProdutoDoc(nome: string, sku: string, ehKit = false) {
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
   };
 }
 
@@ -3617,8 +3607,6 @@ export async function seedCheckoutFixtures(prefix: string): Promise<CheckoutFixt
     observacoesInternas: null,
     timestamp: now,
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
 
@@ -3915,7 +3903,6 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
     videos: null,
     anexos: null,
     fotosArquivosIds: null,
-    nome_embedding: null,
     ...extra,
   });
 
@@ -3933,8 +3920,6 @@ export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
     observacoesInternas: null,
     timestamp: now,
     ultimaModificacao: now,
-    nome_embedding: null,
-    telefone_embedding: null,
     userCliente: null,
   });
   batch.set(db().collection('integracao').doc(integracaoId), {
@@ -4021,4 +4006,130 @@ export async function cleanupPedidoAnexosFixtures(
     .delete()
     .catch(() => undefined);
   await cleanupPedidoFixtures(prefix);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Avisos — the operator notification inbox                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Seed three avisos for the bell suite: two broadcast (visible to everyone who
+ * can act) and one addressed to a DIFFERENT operator, which must never reach the
+ * signed-in user's badge.
+ *
+ * Ids are the dedup `chave` in production; here they are prefix-scoped so the
+ * sweep can find them, since an aviso has no `nome` for the shared prefix sweep
+ * to match on.
+ */
+export async function seedAvisos(prefix: string): Promise<{ ids: string[]; broadcast: string[] }> {
+  const agoraUs = millisToMicros(Date.now());
+  const base = {
+    severidade: 'atencao',
+    canal: 'shopee',
+    motivo: null,
+    urlInterna: null,
+    urlExterna: null,
+    prazo: null,
+    relogioEvento: null,
+    ocorrencias: 1,
+    resolvidoEm: null,
+    resolucaoMotivo: null,
+    atualizadoEm: agoraUs,
+  };
+
+  const broadcast = [`${prefix}-a1`, `${prefix}-a2`];
+  const docs: Array<[string, Record<string, unknown>]> = [
+    [
+      broadcast[0]!,
+      {
+        ...base,
+        tipo: 'shopeeAutorizacaoExpirando',
+        params: { loja: `${prefix}-loja`, dias: 29 },
+        destinatarioUid: null,
+        criadoEm: agoraUs,
+      },
+    ],
+    [
+      broadcast[1]!,
+      {
+        ...base,
+        tipo: 'canalSemCredencial',
+        params: { canal: 'Shopee' },
+        destinatarioUid: null,
+        criadoEm: agoraUs + 1,
+      },
+    ],
+    [
+      `${prefix}-a3`,
+      {
+        ...base,
+        tipo: 'pedidoPrecisaDecisao',
+        params: { pedido: `${prefix}-ped`, situacao: 'cancelamento solicitado' },
+        // Addressed to somebody else: the routing hint the bell filters on.
+        destinatarioUid: `${prefix}-outro-operador`,
+        criadoEm: agoraUs + 2,
+      },
+    ],
+  ];
+
+  const batch = db().batch();
+  for (const [id, data] of docs) batch.set(db().collection('avisos').doc(id), data);
+  await batch.commit();
+
+  return { ids: docs.map(([id]) => id), broadcast };
+}
+
+export async function cleanupAvisos(ids: string[]): Promise<void> {
+  const batch = db().batch();
+  for (const id of ids) batch.delete(db().collection('avisos').doc(id));
+  await batch.commit();
+}
+
+/**
+ * Reset one operator's read state. The suite marks avisos read, and that write
+ * outlives the run — without this a second run would start with everything
+ * already read and every assertion would pass vacuously.
+ */
+export async function resetAvisosLeitura(uid: string): Promise<void> {
+  // Refuse an empty uid loudly. Firestore's own error for `.doc('')` is
+  // "Value for argument \"documentPath\" is not a valid resource path", which
+  // says nothing about WHERE the uid went missing — and that is precisely how
+  // this helper first failed, masking the real cause (an unset `E2E_SU_EMAIL`
+  // two frames up).
+  if (!uid) {
+    throw new Error(
+      'resetAvisosLeitura: empty uid. The signed-in identity in the e2e lanes is ' +
+        'the ephemeral test user from `e2eUserEmail()`, not the SU — `E2E_SU_EMAIL` ' +
+        'is only set for the `configuracoes` project.',
+    );
+  }
+  await db().collection('avisosLeitura').doc(uid).delete();
+}
+
+/**
+ * Seed ONE broadcast aviso, created `now`. Used to prove the read watermark
+ * covers what existed when it moved and nothing after it.
+ */
+export async function seedAvisoUnico(id: string, loja: string): Promise<void> {
+  const agoraUs = millisToMicros(Date.now());
+  await db()
+    .collection('avisos')
+    .doc(id)
+    .set({
+      tipo: 'shopeeAutorizacaoExpirando',
+      severidade: 'critico',
+      canal: 'shopee',
+      params: { loja, dias: 3 },
+      motivo: null,
+      destinatarioUid: null,
+      urlInterna: null,
+      urlExterna: null,
+      prazo: null,
+      criadoEm: agoraUs,
+      atualizadoEm: agoraUs,
+      ocorrencias: 1,
+      relogioEvento: null,
+      resolvidoEm: null,
+      resolucaoMotivo: null,
+    });
 }

@@ -19,7 +19,12 @@ export const depositoSchema = z.object({
   timestamp: millisSinceEpoch().nullable().optional(),
   // System field — stamped by `saveRecord` on every write so the TableView
   // update-monitor sees edits.
-  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  // `.default(null)`, never a bare `.optional()`: the TableView update-
+  // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+  // which EXCLUDES documents missing the key — so a dropped key hides the
+  // row from the staleness check, silently. Pinned by
+  // `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch().nullable().default(null),
 });
 
 export type Deposito = z.infer<typeof depositoSchema>;

@@ -14,15 +14,18 @@ name: E2E — Cadastros
 # still reports. See .github/scripts/e2e-affected.mjs for why the old hand-written
 # path list was wrong as well as invisible.
 on:
+  # Codex branches run the complete staging suite before a PR exists.
+  push:
+    branches: ['codex/**']
   pull_request:
     # The prefix entries cover stacked PRs — see ci.yml. `production` is the
     # release base (main → production); without it the PR that actually ships
     # would run no e2e at all.
-    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
   workflow_dispatch:
 
 concurrency:
-  group: e2e-cadastros-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 # Grant the union of what the reusable workflow's jobs request. A reusable
@@ -130,11 +133,11 @@ jobs:
     needs: [changes]
     # Fork PRs can't see repo secrets, so the run would only fail noisily at
     # the Firebase steps — skip it. The gate below reports that skip as RED:
-    # unverified is not the same as verified. Manual dispatch always runs
-    # (same-repo).
+    # unverified is not the same as verified. Push and manual dispatch are
+    # trusted in-repo events and always run.
     if: >-
       ${{ needs.changes.outputs.run_e2e == 'true' &&
-          (github.event_name == 'workflow_dispatch' ||
+          (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.fork == false) }}
     uses: ./.github/workflows/e2e-reusable.yml
     with:
@@ -250,11 +253,48 @@ jobs:
           #     by name. This is what makes a vacuous pass impossible: if the
           #     reusable workflow is refactored so `e2e` stops running, the gate
           #     goes red instead of inheriting a hollow success.
-          if ! conclusion=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
-                 --jq '[.jobs[] | select(.name == env.E2E_JOB_NAME) | .conclusion] | last // "missing"')
-          then
-            conclusion="unreachable"
-          fi
+          #
+          #     ⚠️ Ask it MORE THAN ONCE. Actions releases this gate the moment the
+          #     suite job has concluded, but this endpoint is only eventually
+          #     consistent with that: for a few seconds afterwards it can still
+          #     serve the pre-conclusion snapshot. On run 34232714671 that reddened
+          #     `E2E gate (vendas)` in 4s over a shard `needs` -- and a `gh run
+          #     rerun --failed` with no code change -- both called `success`. So an
+          #     UNSETTLED read is re-read, up to POLL_ATTEMPTS times, POLL_SLEEP
+          #     seconds apart, before it counts as an answer.
+          #
+          #     ⚠️ Nothing is FORGIVEN here, only re-read. A real conclusion is
+          #     terminal in this API and is never polled away: `failure`,
+          #     `cancelled`, `skipped`, `timed_out` break out on the first pass and
+          #     go RED as fast as they ever did. An unsettled read that survives the
+          #     LAST attempt goes RED with the same verdict it always had -- a suite
+          #     job this gate cannot find is still a lane this gate will not
+          #     certify. The bound is what keeps this a guard rather than a
+          #     wait-for-green loop: at most 50s, inside a job that allows 5 minutes.
+          POLL_ATTEMPTS=6
+          POLL_SLEEP=10
+
+          attempt=1
+          while : ; do
+            if ! conclusion=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+                   --jq '[.jobs[] | select(.name == env.E2E_JOB_NAME) | (.conclusion // "pending")] | last // "missing"')
+            then
+              conclusion="unreachable"
+            fi
+            # `pending` = listed but not concluded yet, `missing` = not listed yet at
+            # all, `unreachable` = the endpoint itself did not answer. ⚠️ The jq
+            # gained its `// "pending"` here: without it a listed-but-running job
+            # yielded `null`, which `// "missing"` then reported as NOT EXISTING --
+            # the two states this loop has to tell apart collapsed into one, and the
+            # gate accused a live job of having been refactored away.
+            case "$conclusion" in
+              pending|missing|unreachable|'') : ;;
+              *) break ;;
+            esac
+            [ "$attempt" -lt "$POLL_ATTEMPTS" ] || break
+            attempt=$((attempt + 1))
+            sleep "$POLL_SLEEP"
+          done
 
           [ "$conclusion" = "success" ] || \
             fail "The called workflow reported success, but the job \`$E2E_JOB_NAME\` in this run concluded \`$conclusion\`. Refusing to certify a lane whose suite job cannot be found."

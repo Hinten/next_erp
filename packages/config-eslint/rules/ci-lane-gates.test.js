@@ -187,6 +187,28 @@ const LANES = {
       },
     ],
   },
+  '.github/workflows/ci-shopee.yml': {
+    gate: 'CI gate (shopee)',
+    scope: 'CI scope (shopee)',
+    // One root. `@delfrance/integrations-shopee`, `@delfrance/data` (the
+    // notification pipeline AND the avisos seam the sweep writes through) and
+    // `@delfrance/schemas` are all in the app's closure, so the graph runs this
+    // lane on a change to any of them without a list to maintain.
+    roots: ['@delfrance/shopee-app'],
+    // ⚠️ ONE certified job, and deliberately so (#1511, decision D7). Unlike
+    // ci-mercado-livre, this lane owns NO exclusion: `ci.yml` still runs every
+    // `@delfrance/shopee-app` unit test in `CI test`, unfiltered and with no
+    // `if:`. So a skip here loses only the emulator round trip, never the unit
+    // suite — the smaller blast radius while step 22 (#1530) is still open.
+    // Step 22 may move the offline job in when it adds the Firestore-only one.
+    jobs: [
+      {
+        id: 'shopee-tasks-roundtrip',
+        check: 'Shopee Cloud Tasks round trip',
+        class: 'required',
+      },
+    ],
+  },
   '.github/workflows/ci-storage.yml': {
     gate: 'CI gate (storage)',
     scope: 'CI scope (storage)',
@@ -1367,43 +1389,131 @@ describe('CI lanes always report', () => {
   // ------------------------------------------------------------------
   // 11. Triggers.
   // ------------------------------------------------------------------
-  it('every lane accepts the production base, and the domain lanes keep push paths', () => {
+  it('every lane implements the complete codex push and PR trigger contract', () => {
+    const CI = '.github/workflows/ci.yml';
+    const workflows = [CI, ...Object.keys(LANES)];
+    const e2e = new Set([
+      '.github/workflows/e2e-cadastros.yml',
+      '.github/workflows/e2e-vendas.yml',
+      '.github/workflows/e2e-emulator.yml',
+    ]);
+    const expectedPrBranches = [
+      'master',
+      'main',
+      'production',
+      'claude/**',
+      'codex/**',
+      'feat/**',
+      'fix/**',
+    ];
+    const expectedPushBranches = ['master', 'main', 'codex/**'];
+    const expectedConcurrency =
+      'group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}';
     const offenders = [];
-    for (const file of Object.keys(LANES)) {
+    for (const file of workflows) {
       const source = read(file);
-      const pr = (onSubBlock(source, 'pull_request') ?? []).join('\n');
-      if (!/branches:\s*\[[^\]]*\bproduction\b/.test(pr)) {
-        offenders.push(`${file} → \`production\` missing from \`pull_request: branches:\``);
+      const pr = onSubBlock(source, 'pull_request');
+      const prBranches = yamlListUnder(pr ?? [], 'branches');
+      if (JSON.stringify(prBranches) !== JSON.stringify(expectedPrBranches)) {
+        offenders.push(
+          `${file} → pull_request branches are ${JSON.stringify(prBranches)}, expected ${JSON.stringify(expectedPrBranches)}`,
+        );
       }
+
       const push = onSubBlock(source, 'push');
-      const isDomain = file.includes('/ci-');
-      if (isDomain) {
-        if (push === null) offenders.push(`${file} → domain lane lost its \`push:\` trigger`);
-        else if (!push.some((l) => /^\s+paths\s*:/.test(l))) {
-          offenders.push(`${file} → domain lane's \`push:\` lost its \`paths:\``);
+      const pushBranches = yamlListUnder(push ?? [], 'branches');
+      if (e2e.has(file)) {
+        if (JSON.stringify(pushBranches) !== JSON.stringify(['codex/**'])) {
+          offenders.push(
+            `${file} → E2E push branches are ${JSON.stringify(pushBranches)}, expected ["codex/**"]`,
+          );
         }
-      } else if (push !== null) {
-        offenders.push(`${file} → e2e lane gained a \`push:\` trigger`);
+        if ((push ?? []).some((l) => /^\s+paths(-ignore)?\s*:/.test(l))) {
+          offenders.push(`${file} → Codex E2E push must stay unfiltered`);
+        }
+      } else if (JSON.stringify(pushBranches) !== JSON.stringify(expectedPushBranches)) {
+        offenders.push(
+          `${file} → push branches are ${JSON.stringify(pushBranches)}, expected ${JSON.stringify(expectedPushBranches)}`,
+        );
+      }
+
+      const isDomain = file !== CI && file.includes('/ci-');
+      if (isDomain && !(push ?? []).some((l) => /^\s+paths\s*:/.test(l))) {
+        offenders.push(`${file} → domain lane's \`push:\` lost its \`paths:\``);
+      }
+      if (file === CI && (push ?? []).some((l) => /^\s+paths(-ignore)?\s*:/.test(l))) {
+        offenders.push(`${file} → full-graph CI push gained a path filter`);
+      }
+
+      const concurrency = topBlock(source, 'concurrency').body.map((line) => line.trim());
+      if (!concurrency.includes(expectedConcurrency)) {
+        offenders.push(
+          `${file} → concurrency does not isolate event while grouping by source repo + branch`,
+        );
+      }
+      if (!concurrency.includes('cancel-in-progress: true')) {
+        offenders.push(`${file} → concurrency no longer makes the newest event win`);
+      }
+
+      if (e2e.has(file) && file !== '.github/workflows/e2e-emulator.yml') {
+        const jobs = jobBlocks(source);
+        for (const job of LANES[file].jobs) {
+          const body = jobs[job.id] ?? '';
+          if (!body.includes("github.event_name != 'pull_request'")) {
+            offenders.push(`${file} → \`${job.id}\` does not explicitly allow push/dispatch`);
+          }
+          if (!body.includes('github.event.pull_request.head.repo.fork == false')) {
+            offenders.push(`${file} → \`${job.id}\` lost its fork-PR guard`);
+          }
+        }
       }
     }
 
     expect(
       offenders,
       [
-        'A lane trigger changed in a way the design depends on.',
+        'A lane trigger or concurrency key changed in a way the design depends on.',
         '',
-        '`production` is the release base (main → production). Without it the lane',
-        'publishes no check on the PR that actually ships, and a required check that',
-        'never reports leaves that PR permanently unmergeable.',
+        'Every lane accepts the complete PR-base list, including codex/** for stacked',
+        'PRs. CI and domain lanes run on main/master/codex pushes; domain paths remain',
+        'the pre-run cost boundary. E2E runs unfiltered on codex pushes only.',
         '',
-        'The domain lanes KEEP `push: paths:` deliberately: nothing on the push path',
-        'is a required check, and the `changes` job short-circuits to run=true on',
-        'non-PR events — so removing it would run the full live SEFAZ pipeline on',
-        'every merge to main for no gating benefit.',
+        'Concurrency keeps push and PR separate because cancelled checks on their',
+        'shared SHA block the PR even when the other event passes. Newer runs still',
+        'cancel older runs of the same event and branch, while forks remain distinct.',
+        'The staging E2E jobs explicitly allow non-PR events but must continue',
+        'rejecting fork PRs that cannot read secrets.',
         '',
         ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),
     ).toEqual([]);
+  });
+
+  it('a codex push cannot force the live NFe suite', () => {
+    const NFE = '.github/workflows/ci-nfe.yml';
+    const changes = jobBlocks(read(NFE)).changes ?? '';
+
+    expect(changes, `${NFE} no longer has an explicit non-PR decision for the live suite.`).toMatch(
+      /if \[ "\$GITHUB_EVENT_NAME" != "pull_request" \]; then/,
+    );
+    expect(
+      changes,
+      `${NFE} must force live only for workflow_dispatch and main/master pushes.`,
+    ).toMatch(/workflow_dispatch:\*\|push:main\|push:master\)[\s\S]*?FORCE_LIVE=true[\s\S]*?;;/);
+    expect(
+      changes,
+      [
+        `${NFE} must keep codex pushes on the offline lane.`,
+        '',
+        'A codex push has no PR file list for `--only-paths`. Forcing live here',
+        'emits at rate-limited SEFAZ homologação for workflow and lockfile changes',
+        'that the PR path deliberately excludes.',
+      ].join('\n'),
+    ).toMatch(/push:codex\/\*\)[\s\S]*?FORCE_LIVE=false[\s\S]*?LIVE_WHY=[\s\S]*?;;/);
+    expect(
+      changes.match(/push:codex\/\*\)[\s\S]*?;;/)?.[0] ?? '',
+      `${NFE}'s codex-push branch must never set FORCE_LIVE=true.`,
+    ).not.toContain('FORCE_LIVE=true');
   });
 
   // ------------------------------------------------------------------
@@ -1726,6 +1836,251 @@ describe('CI lanes always report', () => {
         'only on a re-run. Add the `Trim apt sources to the Ubuntu archive` step ahead',
         'of the install (copy it from e2e-emulator.yml), or move the job into the',
         'Playwright container, where no apt runs at all.',
+        '',
+        ...offenders.map((o) => `  - ${o}`),
+      ].join('\n'),
+    ).toEqual([]);
+  });
+
+  // ------------------------------------------------------------------
+  // 17. The job-existence cross-check absorbs API lag without forgiving
+  //     anything.
+  // ------------------------------------------------------------------
+  it('every gate re-reads the jobs endpoint before refusing to certify', () => {
+    // WHAT WENT WRONG. Every gate ends by asking
+    // `repos/{repo}/actions/runs/{run_id}/jobs` whether each job it is about to
+    // certify actually exists and concluded `success`. That is the anti-vacuity
+    // lock: `needs.<job>.result` reports what the runner thinks, not that a job
+    // of that name was ever real. But the endpoint is only EVENTUALLY consistent
+    // with the run's own dependency graph — Actions releases the gate the moment
+    // every `needs:` job has concluded, and for a few seconds after that the jobs
+    // list can still serve the pre-conclusion snapshot.
+    //
+    // On run 34232714671 the scope job said run, both required shards concluded
+    // `success`, and `E2E gate (vendas)` went RED in 4 seconds anyway because
+    // `vendas-1 / e2e` read back `pending`. `gh run rerun --failed` turned it
+    // green with no code change: a required check reddened by nothing in the PR,
+    // the same class of unattributable red as assertion 16's apt 403.
+    //
+    // ⚠️ WHY A TEST AND NOT JUST THE COMMENT IN THE WORKFLOW. BOTH ways of
+    // breaking this are silent, and they fail in opposite directions:
+    //
+    //   - Delete the loop and the gate goes back to flaking on propagation lag,
+    //     rarely enough to read as an unrelated hiccup and be re-run away.
+    //   - Widen the retry set to a REAL conclusion — `failure`, `cancelled`,
+    //     `skipped` — and the gate polls a genuine failure until it gives up.
+    //     It still ends RED, so no test notices, and the only trace is 50 wasted
+    //     seconds. But the same edit applied to `success` (or a bound raised
+    //     until the job times out) turns the lock into a wait-for-green loop,
+    //     which is precisely the vacuous certification it exists to prevent.
+    //
+    // So this pins both halves: the re-read is bounded and the fetch happens
+    // INSIDE it, and only the two unsettled reads may be retried.
+    const RETRYABLE = new Set(['pending', 'missing', 'unreachable', "''"]);
+    const MAX_TOTAL_WAIT_S = 120;
+
+    /**
+     * Offenders for one gate body, or `null` when the body carries no cross-check
+     * at all. Kept as a function so the positive control below can drive the very
+     * same code over a deliberately broken fixture.
+     */
+    const scan = (file, gate) => {
+      const bad = [];
+      const lines = gate.split('\n');
+
+      const start = lines.findIndex((l) => /^\s*POLL_ATTEMPTS=/.test(l));
+      const opens = lines.findIndex((l, i) => i > start && /^\s*while\s*:\s*;\s*do\s*$/.test(l));
+      if (start === -1 || opens === -1) {
+        return {
+          loop: null,
+          bad: [`${file} → the jobs cross-check is not wrapped in a bounded re-read loop`],
+        };
+      }
+      // The loop's OWN `done`, matched at the `while`'s indent. The inner
+      // per-check walk in the manifest gates also ends in `done`, four columns
+      // deeper and with a `< "$CERTIFY"` redirect after it.
+      const indent = lines[opens].match(/^\s*/)[0];
+      const closes = lines.findIndex((l, i) => i > opens && l === `${indent}done`);
+      if (closes === -1) {
+        return { loop: null, bad: [`${file} → the re-read loop never closes`] };
+      }
+
+      const loop = lines.slice(start, closes + 1).join('\n');
+
+      // (a) The fetch is INSIDE the loop. A loop that re-reads a snapshot taken
+      //     once outside it replays the same stale answer on every pass — a retry
+      //     that cannot change its own verdict, which is worse than none.
+      if (!/gh api "repos\/\$REPO\/actions\/runs\/\$RUN_ID\/jobs/.test(loop)) {
+        bad.push(
+          `${file} → the loop never re-fetches the jobs endpoint; it can only replay a stale read`,
+        );
+      }
+      // (b) It is bounded, and it actually waits between passes.
+      if (!loop.includes('sleep "$POLL_SLEEP"')) {
+        bad.push(
+          `${file} → the loop never sleeps, so its attempts all land inside the same lag window`,
+        );
+      }
+      if (!loop.includes('[ "$attempt" -lt "$POLL_ATTEMPTS" ] || break')) {
+        bad.push(
+          `${file} → the loop has no attempt cap; a gate must give a verdict, not wait for green`,
+        );
+      }
+
+      const attempts = Number((gate.match(/^\s*POLL_ATTEMPTS=(\d+)\s*$/m) || [])[1]);
+      const secs = Number((gate.match(/^\s*POLL_SLEEP=(\d+)\s*$/m) || [])[1]);
+      if (!(attempts >= 2 && secs >= 1)) {
+        bad.push(`${file} → POLL_ATTEMPTS/POLL_SLEEP are not a usable bound (${attempts}/${secs})`);
+      } else if ((attempts - 1) * secs > MAX_TOTAL_WAIT_S) {
+        bad.push(
+          `${file} → worst-case wait is ${(attempts - 1) * secs}s, over the ${MAX_TOTAL_WAIT_S}s ceiling; ` +
+            'a gate that waits long enough stops being a guard',
+        );
+      }
+
+      // (c) ONLY the unsettled reads are retried. This is the half that keeps the
+      //     lock strong: a real conclusion is terminal in this API and must go RED
+      //     on the first pass.
+      const pattern = stripComments(loop)
+        .split('\n')
+        .find((l) => /^\s*[a-z'|]+\)/.test(l) && l.includes('pending'));
+      if (!pattern) {
+        bad.push(
+          `${file} → no retry-set \`case\` pattern found; this scanner cannot see what is retried`,
+        );
+      } else {
+        for (const alt of pattern.trim().split(')')[0].split('|')) {
+          if (!RETRYABLE.has(alt.trim())) {
+            bad.push(
+              `${file} → retries on \`${alt.trim()}\`, which is a REAL conclusion, not a lagging read. ` +
+                `Only ${[...RETRYABLE].join(', ')} may be re-read.`,
+            );
+          }
+        }
+      }
+
+      // (d) The verdict still lives on the far side of the loop, pinned
+      //     STRUCTURALLY rather than by its wording: what must survive is that a
+      //     read which is not `success` still produces a refusal. Matching the
+      //     sentence instead both fails on a harmless reword and — worse — passes
+      //     on a real deletion, because the "could not list the jobs" bail-out
+      //     above carries the very same words. Not hypothetical: this check was
+      //     written against the text first, and deleting the per-job RED verdict
+      //     out of ci-freight.yml left it green.
+      const after = lines.slice(closes + 1).join('\n');
+      const refuses = gate.includes('$CERTIFY')
+        ? /\[\s*"\$actual"\s*!=\s*"success"\s*\]/.test(after) && /RED="\$\{RED\}/.test(after)
+        : /\[\s*"\$conclusion"\s*=\s*"success"\s*\]\s*\|\|/.test(after) && /\bfail\s+"/.test(after);
+      if (!refuses) {
+        bad.push(
+          `${file} → after the loop, a read that is not \`success\` no longer produces a refusal; ` +
+            'the retry swallowed the verdict',
+        );
+      }
+
+      return { loop, bad };
+    };
+
+    const offenders = [];
+    const variants = { manifest: [], single: [] };
+
+    for (const file of Object.keys(LANES)) {
+      const gate = jobBlocks(read(file)).gate;
+      if (!gate) {
+        offenders.push(`${file} → no \`gate\` job`);
+        continue;
+      }
+      const { loop, bad } = scan(file, gate);
+      offenders.push(...bad);
+      // The manifest gates certify N jobs through a `$CERTIFY` file; the two
+      // single-suite e2e gates resolve one job name. Two shapes, one contract.
+      if (loop) variants[gate.includes('$CERTIFY') ? 'manifest' : 'single'].push({ file, loop });
+    }
+
+    // Anti-vacuity. Every lane must have been examined, or the checks above
+    // passed over an empty list.
+    const examined = variants.manifest.length + variants.single.length;
+    expect(
+      examined,
+      `Found a re-read loop in ${examined} of ${Object.keys(LANES).length} lanes — the scanner has ` +
+        'rotted, or a gate lost its cross-check entirely.',
+    ).toBe(Object.keys(LANES).length);
+
+    // Within a variant the loop is COPIED, so it must stay byte-identical. That
+    // is what makes a one-file drift loud instead of a divergence nobody diffs —
+    // the same reason SKILL.md tells you to copy a gate from a real file rather
+    // than retype it.
+    for (const [name, members] of Object.entries(variants)) {
+      for (const m of members.slice(1)) {
+        if (m.loop !== members[0].loop) {
+          offenders.push(
+            `${m.file} → its re-read loop has drifted from ${members[0].file}'s. All ${name} gates ` +
+              'share one body; patch them together or the lanes stop agreeing about what green means.',
+          );
+        }
+      }
+    }
+
+    // Positive control: the same scanner over a loop with no sleep, no cap and a
+    // real conclusion in the retry set must object to all three. Without this,
+    // a regex that quietly matched nothing would report a clean sweep.
+    const control = scan(
+      '<fixture>',
+      [
+        '          POLL_ATTEMPTS=6',
+        '          POLL_SLEEP=10',
+        '          while : ; do',
+        '            gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100"',
+        '            case "$actual" in',
+        '              pending|missing|failure) : ;;',
+        '            esac',
+        '          done',
+        '          echo done',
+      ].join('\n'),
+    );
+    expect(
+      control.bad.length,
+      'The scanner accepted a loop that never sleeps, never caps its attempts, retries `failure` ' +
+        'and drops the verdict. It is no longer checking anything.',
+    ).toBeGreaterThanOrEqual(4);
+
+    expect(
+      offenders,
+      [
+        "A gate's job-existence cross-check does not survive GitHub API propagation lag,",
+        'or survives it by forgiving something it must not.',
+        '',
+        'Every gate finishes by re-reading `repos/{repo}/actions/runs/{run_id}/jobs` and',
+        'refusing to certify a job it cannot find there with conclusion `success`. That',
+        'endpoint is EVENTUALLY consistent with the run: Actions releases the gate as',
+        'soon as every `needs:` job has concluded, and for a few seconds afterwards the',
+        'jobs list can still serve the pre-conclusion snapshot. Run 34232714671 reddened',
+        '`E2E gate (vendas)` in 4s over two shards that had both concluded `success`;',
+        '`gh run rerun --failed` cleared it with no code change.',
+        '',
+        'So the read is retried — bounded, and re-fetched on every pass:',
+        '',
+        '  POLL_ATTEMPTS=6',
+        '  POLL_SLEEP=10',
+        '  while : ; do',
+        '    if gh api "…/jobs?per_page=100" … > "$RUNNER_TEMP/jobs.attempt.tsv"',
+        '    then',
+        '      mv "$RUNNER_TEMP/jobs.attempt.tsv" "$RUNNER_TEMP/jobs.tsv"',
+        '      …recount the unsettled jobs from THIS response…',
+        '      [ "$UNSETTLED" -gt 0 ] || break',
+        '    fi',
+        '    [ "$attempt" -lt "$POLL_ATTEMPTS" ] || break',
+        '    attempt=$((attempt + 1))',
+        '    sleep "$POLL_SLEEP"',
+        '  done',
+        '',
+        '⚠️ ONLY AN UNSETTLED READ MAY BE RETRIED — `pending` (listed, not concluded),',
+        '`missing` (not listed yet) or `unreachable` (the endpoint did not answer). A',
+        'real conclusion is terminal in this API: `failure`, `cancelled`, `skipped` and',
+        '`timed_out` go RED on the first pass, and a job still unsettled after the last',
+        'attempt goes RED with the verdict it always had. Retrying a real conclusion',
+        'costs 50 silent seconds; retrying `success`, or raising the bound until the job',
+        'times out, converts the anti-vacuity lock into a wait-for-green loop.',
         '',
         ...offenders.map((o) => `  - ${o}`),
       ].join('\n'),

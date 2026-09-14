@@ -38,6 +38,7 @@ export default function CanalWhatsappPage() {
       // cadastro instead. One meta, three screens — hence the prop.
       defaultColumns={['nome', 'numero', 'ativo']}
       rowHref={(id) => `/canais/whatsapp/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/canais/whatsapp/novo">
           Nova conta WhatsApp

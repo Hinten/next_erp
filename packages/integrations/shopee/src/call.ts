@@ -7,6 +7,13 @@
  * HTTP 200**, so the outcome is decided by `envelope.error === ''` and never by
  * `res.ok`.
  *
+ * ⚠️ That invariant has exactly ONE exception, and it is opt-in PER OPERATION:
+ * {@link ShopeeCallParams.emptyErrorAliases}. Two pages — and only two, both on
+ * the lost-push queue — print `"-"` where every other page prints `""`, and the
+ * alias exists so those two operations can read it as success. It is never a
+ * global widening: the default stays exact equality with `''`, and a `' '` is a
+ * failure everywhere, aliases included.
+ *
  * ## Why the body is parsed TWICE
  *
  * Stage 1 parses the envelope alone; stage 2 parses the operation schema. That
@@ -70,6 +77,35 @@ export interface ShopeeCallParams<S extends z.ZodType> {
   readonly sensitive?: boolean;
   readonly query?: Readonly<Record<string, string | number | undefined>>;
   readonly body?: unknown;
+  /**
+   * Envelope `error` values THIS OPERATION accepts as success, beyond `''`.
+   *
+   * ⚠️ Exactly two call sites, both on the lost-push pages, both `['-']`, and
+   * both because those two pages CONTRADICT THEMSELVES: their parameter tables
+   * sample `error` as `""` ("Empty if no error happened") while their rendered
+   * response samples print `"-"` for `error`, `message` AND `warning`. Every
+   * other cached page, `get_app_push_config` included, samples `""` — so the
+   * tolerance is per OPERATION because the contradiction is per PAGE. The
+   * sandbox cannot exercise those two APIs, so the first call is PRODUCTION.
+   *
+   * ⚠️ EXACT equality against each alias — never a trim, never a
+   * `.length === 0` fold. `' '` stays a failure on these operations too, and a
+   * test pins it. `-` appears on no documented error list anywhere (Shopee's are
+   * `error_data`, `error_param`, `error_server`, …), so the alias cannot mask a
+   * real code.
+   *
+   * ⚠️ Cost of guessing wrong, in both directions: with the alias, a `-` that
+   * really meant failure surfaces as a `ShopeeSchemaError` on the wrapped getter
+   * (a failing body carries no `response`) or as duplicate work on the ack —
+   * never as a loss. Without it, a live `-` would make the sweep throw on its
+   * first production call and stay dead until a code change ships, with a 3-day
+   * expiry clock running.
+   *
+   * ⚠️ `warning: "-"` is NOT filtered here: no config in this repo sets
+   * `onWarning` today, and if one ever does it will see `-` as noise on these
+   * two operations.
+   */
+  readonly emptyErrorAliases?: readonly string[];
 }
 
 /** How much of a non-JSON body may reach a log line. */
@@ -200,9 +236,12 @@ export async function shopeeCall<S extends z.ZodType>(
 
   const envelope = envelopeLeitura.data;
 
-  // ⚠️ EXACT equality with the empty string. `' '` is a failure, and trimming
-  // here would read it as a success.
-  if (envelope.error !== '') {
+  // ⚠️ EXACT equality with the empty string, and EXACT equality with each alias.
+  // `' '` is a failure — trimming here, on either side, would read a padded
+  // value as a success. See `emptyErrorAliases` for the two operations that
+  // carry one and why the tolerance is per operation.
+  const sucesso = envelope.error === '' || (p.emptyErrorAliases?.includes(envelope.error) ?? false);
+  if (!sucesso) {
     throw shopeeErrorFromEnvelope(envelope, {
       path: p.path,
       httpStatus: res.status,

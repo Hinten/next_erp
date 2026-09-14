@@ -73,8 +73,6 @@ export default function ClientePage() {
           excludedFields={[
             'timestamp',
             'ultimaModificacao',
-            'nome_embedding',
-            'telefone_embedding',
             'userCliente',
             'isUF',
             'idEstrangeiro',

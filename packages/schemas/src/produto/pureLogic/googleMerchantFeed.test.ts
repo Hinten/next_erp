@@ -26,6 +26,7 @@ function gruposFixture(): GrupoComId[] {
           { id: 'az', nome: 'Azul', codigo: 'AZ' },
           { id: 'vd', nome: 'Verde', codigo: 'VD' },
         ],
+        ultimaModificacao: null,
       },
     },
     {
@@ -40,6 +41,7 @@ function gruposFixture(): GrupoComId[] {
           { id: 'p', nome: 'P', codigo: 'P' },
           { id: 'm', nome: 'M', codigo: 'M' },
         ],
+        ultimaModificacao: null,
       },
     },
     {
@@ -51,6 +53,7 @@ function gruposFixture(): GrupoComId[] {
         permiteFotos: false,
         variacoesIds: ['x'],
         variacoes: [{ id: 'x', nome: 'Edição especial', codigo: 'X' }],
+        ultimaModificacao: null,
       },
     },
   ];

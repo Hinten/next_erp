@@ -161,6 +161,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       ie: opts.ie,
       iest: null,
       imun: null,
+      ultimaModificacao: null,
       sede: {
         idExterno: null,
         // Endereço fields go through sanitizeNFeText (acentos stripped,
@@ -184,6 +185,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
         email: null,
         telefone: null,
         timestamp: null,
+        ultimaModificacao: null,
       },
     },
     operacao: {
@@ -217,6 +219,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       CEST: '2803800',
       unidade: 'UN',
       infCpl: null,
+      ultimaModificacao: null,
     },
     cliente: {
       tipo: TIPO_CLIENTE.pessoaJuridica,
@@ -239,10 +242,9 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       telefone: null,
       observacoesInternas: null,
       timestamp: null,
-      nome_embedding: null,
-      telefone_embedding: null,
       userCliente: null,
       idMercadoLivre: null,
+      ultimaModificacao: null,
     },
     enderecoDest: {
       idExterno: null,
@@ -264,6 +266,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
       email: null,
       telefone: null,
       timestamp: null,
+      ultimaModificacao: null,
     },
     itens: [item],
     totalXml: buildTotalXml(totals),

@@ -60,7 +60,12 @@ export const listaDePrecosSchema = z.object({
   ativo: z.boolean().default(true),
   formulasCalculoPreco: z.array(formulaCalculoPrecoSchema).nullable().optional(),
   formulasPorCategoria: z.record(z.string(), formulasPorCategoriaSchema).nullable().optional(),
-  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  // `.default(null)`, never a bare `.optional()`: the TableView update-
+  // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+  // which EXCLUDES documents missing the key — so a dropped key hides the
+  // row from the staleness check, silently. Pinned by
+  // `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch().nullable().default(null),
   timestamp: millisSinceEpoch().nullable().optional(),
 });
 

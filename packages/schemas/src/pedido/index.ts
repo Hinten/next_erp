@@ -27,6 +27,7 @@ export * from './pureLogic/estado'; // kanban buckets
 export * from './pureLogic/estoque'; // pedido → estoque desired-state predicates
 export * from './pureLogic/itens'; // flattenPedidoItens (grouped → ordem-sorted list)
 export * from './pureLogic/itemIdentity'; // per-line identity for the modification history
+export * from './pureLogic/nomeDoItem'; // the ONE display-name resolver for a pedido line
 export * from './pureLogic/checkoutEngine'; // kit-aware scan engine (checkout screen)
 export * from './pureLogic/checkoutCompleteness'; // save-time completeness check
 

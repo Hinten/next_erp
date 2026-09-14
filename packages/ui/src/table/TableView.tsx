@@ -1,11 +1,13 @@
 'use client';
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useLocalStorage } from '@mantine/hooks';
 import {
   ActionIcon,
   Alert,
+  Badge,
   Button,
   Center,
   Checkbox,
@@ -46,8 +48,10 @@ import {
   PipelineUnsupportedError,
   buildPipeline,
   isPipelineSupported,
+  sanitizeSearchDsl,
 } from '@delfrance/data/pipeline-queries';
 import { extractFieldsFromSchema } from '../schema/derive';
+import { expandColumnFilter } from '../schema/types';
 import type {
   ActionConfig,
   ColumnFilterValue,
@@ -60,7 +64,19 @@ import { ActionBar } from './ActionBar';
 import { ActionSidePanel } from './ActionSidePanel';
 import { ActiveFilters } from './ActiveFilters';
 import { useCollectionMonitor } from './useCollectionMonitor';
-import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@tabler/icons-react';
+import {
+  LIVE_LABEL,
+  STATIC_REASON_LABEL,
+  resetControlLabel,
+  resolveListMode,
+} from './resolveListMode';
+import {
+  IconArrowDown,
+  IconArrowsSort,
+  IconArrowUp,
+  IconRefreshAlert,
+  IconRestore,
+} from '@tabler/icons-react';
 import { ColumnFilter, FilterPopover } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
 import { SearchBar } from './SearchBar';
@@ -68,6 +84,7 @@ import { type SearchIdResolver, useSearchIdResolution } from './useSearchIdResol
 import { SEARCH_CHIP_KEY, buildFilterChips, subcollectionLookupFormatter } from './describeFilter';
 import { applyColumnFilters } from './filterRows';
 import {
+  MAX_PAGES,
   type SortState,
   parseFiltersFromParams,
   parseSortFromParams,
@@ -76,29 +93,62 @@ import {
 import { renderCell } from './cell-renderers';
 
 /**
- * Ceiling on the "Carregar mais" window recovered from the sticky list memory.
- *
- * Restoring the window costs a re-read of every row in it, and this database is
- * Firestore ENTERPRISE, which bills DATA SCANNED (root `CLAUDE.md` rule 1) — so
- * an operator who once clicked through ten pages would pay for ten pages on
- * every return to that screen, forever. #1216 measured the same quantity from
- * the other side: on `/pedidos` the page size is effectively a concurrent
- * listener count, which is what capped that list at 50 rows in the first place.
- * Three pages restores the useful case (you were a screen or two down) without
- * reopening either wound.
- */
-export const MAX_RESTORED_PAGES = 3;
-
-/**
  * Trailing debounce before a scroll offset is persisted. Long enough that a
  * flick settles into one write, short enough that a deliberate scroll-then-click
  * is captured by the unmount flush rather than lost.
  */
 export const SCROLL_PERSIST_DEBOUNCE_MS = 150;
 
+/**
+ * Styling for the `rowLinkColumn` anchor. The link is a SEMANTIC affordance,
+ * not a visual one: an adopted screen must look exactly as it did, because the
+ * row already advertises itself with `highlightOnHover` + a pointer cursor, and
+ * the wrapped content is frequently a `<Badge>`/`<Code>` carrying its own
+ * colour that an anchor colour would fight rather than unify. What the anchor
+ * adds is the focus ring, which is half the point of the feature.
+ *
+ * `inline-block` rather than the anchor default `inline` because the wrapped
+ * content can be a block-level `<Group>`/`<Text>`: an inline box split by a
+ * block child renders a broken, discontinuous focus ring.
+ */
+const ROW_LINK_STYLE = { display: 'inline-block', color: 'inherit', textDecoration: 'none' };
+
+/**
+ * Click handler for the `rowLinkColumn` anchor.
+ *
+ * `stopPropagation` is load-bearing. Without it a plain click runs BOTH
+ * handlers in one tick — `next/link` pushes, then the event bubbles to
+ * `<Table.Tr>` and that handler pushes the same URL again. Neither is deduped
+ * against "the current URL" because both are queued before either commits, so
+ * the user needs two Back presses to return to the list, on the single most
+ * common gesture in the app.
+ *
+ * The cost of stopping it is that the row's own text-selection guard never runs
+ * for clicks on the link, so it is replicated here. `preventDefault` is what
+ * actually cancels the navigation: `next/link` checks `defaultPrevented` after
+ * calling this handler and bails, and it also cancels the browser's own anchor
+ * activation. Net: select-and-copy over the link behaves exactly as it does
+ * over padding.
+ *
+ * ⚠️ `event.detail > 0` scopes that guard to POINTER clicks, and it is not
+ * optional. Copied verbatim from the row it can only ever cancel a mouse click,
+ * because the row is mouse-only — but this anchor is reachable by Enter, and
+ * `getSelection()` is DOCUMENT-scoped rather than "a selection inside this
+ * cell". So: select some text anywhere on the page, Tab to a row link (moving
+ * focus does not clear that selection), press Enter — the guard would see the
+ * stale selection and cancel the navigation, silently killing the exact gesture
+ * this prop exists to enable. A keyboard-activated click carries `detail === 0`,
+ * which is how the browser distinguishes the two.
+ */
+function handleRowLinkClick(event: MouseEvent<HTMLAnchorElement>) {
+  event.stopPropagation();
+  if (event.detail > 0 && window.getSelection()?.toString()) event.preventDefault();
+}
+
 // Re-exported for back-compat; the implementations now live in
 // ./useTableUrlState alongside the hook that owns this state.
 export { parseFiltersFromParams, parseSortFromParams };
+export { MAX_PAGES, MAX_RESTORED_PAGES } from './useTableUrlState';
 
 export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   /** Title shown above the table. */
@@ -195,6 +245,49 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * embedded subcollection table. `rowHref` is ignored while this is set.
    */
   onRowClick?: (id: string, row: z.infer<S>) => void;
+  /**
+   * Name ONE visible column whose cell content is wrapped in a real `next/link`
+   * anchor pointing at this row's `rowHref`. Default off — unset, nothing about
+   * the table changes.
+   *
+   * The row is already clickable, but only by MOUSE: the row handler below
+   * takes no event argument, so Tab never reaches a row, Enter never opens one,
+   * Cmd/Ctrl-click navigates the CURRENT tab instead of opening a new one, and
+   * there is nothing to right-click → "Copy link address". An `<a href>` is the
+   * only thing that fixes all four, because all four are browser behaviours OF
+   * THE ANCHOR ELEMENT rather than behaviours an `onClick` could grow.
+   *
+   * The key is matched against the rendered column key — a schema field key OR
+   * a `virtualColumns` key — so both cell branches can be linked. It reads no
+   * additional field, so `selectFields` and therefore the screen's read cost
+   * are untouched, and because the primary stays a schema column it keeps its
+   * header sort AND its `<ColumnFilter>` (a virtual column gets a filter only
+   * when it declares `filter`, which is how /produtos silently lost its Nome
+   * filter when it hand-rolled a link column).
+   *
+   * ⚠️ Do NOT name a column whose cell ALREADY renders an `<a>` (a hand-rolled
+   * `<Anchor component={Link}>` — /produtos' `nomeLink`). React builds the DOM
+   * directly, so `<a><a></a></a>` really renders: invalid HTML, and two links
+   * with the same accessible name in one row break every
+   * `getByRole('link', { name })` locator under Playwright strict mode. Adopt
+   * this prop OR keep the hand-rolled link, never both.
+   *
+   * ⚠️ Never give that anchor an `aria-label` for a cell that HAS text. The
+   * row's accessible name is computed FROM CONTENTS, and a descendant's
+   * `aria-label` replaces its text in that computation — it would rename every
+   * row and break the `getByRole('row', { name })` locators the e2e suite is
+   * built on. The one exception is built in below and is the inverse case: when
+   * the linked schema value is empty the cell rendered only a `—` placeholder,
+   * so there is no text to replace and the link falls back to `Abrir <id>` —
+   * without it every such row is an identical em dash in a links list. A
+   * VIRTUAL link column gets no fallback: TableView cannot tell an empty render
+   * from a deliberately terse one, so name it yourself.
+   *
+   * Ignored while `onRowClick` is set (that prop outranks `rowHref`, so a link
+   * would navigate where the row does not) and for a row with an empty `id`
+   * (same reason the row's own `onClick` is skipped there).
+   */
+  rowLinkColumn?: string;
   /** Optional "Novo" link rendered in the ActionBar. */
   newHref?: string;
   /**
@@ -293,6 +386,37 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
     toFilters: (term: string) => ReadonlyArray<PipelineFieldFilter>;
     toForcedOrderBy?: (term: string) => { field: string; direction?: 'asc' | 'desc' } | undefined;
     resolveIds?: SearchIdResolver;
+    /**
+     * Opt into WIDENING an empty result with a Firestore text search, on the
+     * declared text index. Return the term to search for, or `undefined` to
+     * decline this one.
+     *
+     * ⚠️⚠️ A WIDENING, not a replacement, and the difference is measured rather
+     * than stylistic. Text search matches WHOLE WORDS: on staging `Bandeja`
+     * returns 5 rows while `Bandej`, `Bande` and `Band` return zero, with or
+     * without a trailing `*`. Putting it in front of `toFilters` would empty the
+     * table until a whole word was typed, so it runs BEHIND: only once the
+     * primary query has answered, and answered with nothing.
+     *
+     * What that buys is the thing a prefix range structurally cannot do — a word
+     * in the MIDDLE of a name. Measured: `Gatinho` against "Bandeja De Madeira
+     * Enfeitada Gatinho" returns 1 row here and 0 through the range.
+     *
+     * ⚠️ Known gap, accepted on purpose: a term that IS a name prefix never
+     * widens, because the primary query is not empty. `Camiseta` still misses
+     * produtos carrying it mid-name. Closing that means running both on every
+     * search and merging, which costs a second query per search.
+     *
+     * ⚠️ Pipelines path ONLY. There is no classic-query text search, so the
+     * fallback (and therefore the emulator e2e lane) keeps the `toFilters`
+     * behaviour and never widens. Do not write a test that can only pass on one
+     * of the two.
+     *
+     * The returned term is run through `sanitizeSearchDsl` here rather than by
+     * the caller: the string is a search DSL, `-` negates in it, and a caller
+     * that forgot would get a silently empty result instead of an error.
+     */
+    toTextQuery?: (term: string) => string | undefined;
   };
 
   /**
@@ -368,6 +492,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   monitorField,
   rowHref,
   onRowClick,
+  rowLinkColumn,
   newHref,
   renderNewButton,
   meta,
@@ -451,8 +576,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
 
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // Bumped by the update-monitor's "Atualizar" button to force the row query
-  // to re-execute (the Pipelines path is one-shot — see `pipeline` below).
+  // Forces the row query to re-execute (the Pipelines path is one-shot — see
+  // `pipeline` below). Three writers: a completed `refreshOnComplete` action,
+  // from either the bar or the side panel, and the update-monitor's "Atualizar"
+  // button — which now only exists on the frozen transport, where re-executing
+  // is the whole point. The two action ones are load-bearing regardless: a
+  // delete has to make the one-shot pipeline read again.
   const [refreshKey, setRefreshKey] = useState(0);
   // The copy action needs row selection; enabling copy implies `selectable`.
   const selectionEnabled = selectable || !!copyHref;
@@ -496,8 +625,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     search: searchTerm,
     setSearch,
     clearAll,
+    pages,
+    setPages,
+    resetListState,
+    hasOwnState,
     restored,
-    rememberView,
+    rememberScroll,
   } = useTableUrlState(filterableFields, orderBy, {
     collectionPath: collection.resolvePath(pathContext),
     // Only claim `?q=` when this component actually renders the search box;
@@ -509,19 +642,22 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Each bump re-reads the whole window (the one-shot pipeline has no cursor) —
   // fine for admin lists; true cursor pagination is deliberately deferred.
   //
-  // Seeded from the sticky list memory (capped — see `MAX_RESTORED_PAGES`) in
-  // the initializer rather than an effect, so a restored window is issued as
-  // ONE query instead of a default page followed immediately by a wider re-read.
-  const [pages, setPages] = useState(() => Math.min(restored?.pages ?? 1, MAX_RESTORED_PAGES));
+  // The count itself is owned by `useTableUrlState`, because it belongs in the
+  // URL: mirrored to `?pages=`, browser Back reopens the window the operator had
+  // instead of collapsing the list to one page. That hook also applies the
+  // ceilings — `MAX_PAGES` to the URL, the lower `MAX_RESTORED_PAGES` to what the
+  // sticky memory offers unasked.
   const effectiveLimit = resolvedPageSize * pages;
 
   // A term whose match cannot be expressed as a filter on this collection is
   // resolved to a candidate id list first — see the `search.resolveIds` prop.
   // `undefined` ids means the resolver declined (or there is none), which is
   // what falls the term through to `toFilters` below.
-  // ⚠️ `refreshKey` is passed so the update-monitor's "Atualizar" invalidates
-  // the RESOLUTION too, not just the row query. Without it a refresh re-reads
-  // the documents named by a stale id list — fresh rows, wrong set.
+  // ⚠️ `refreshKey` is passed so a refresh invalidates the RESOLUTION too, not
+  // just the row query. Without it a refresh re-reads the documents named by a
+  // stale id list — fresh rows, wrong set. A resolved term always puts the list
+  // on the frozen transport, so both refresh routes reach here: the monitor's
+  // "Atualizar" and a completed action.
   const searchResolve = useSearchIdResolution(searchConfig?.resolveIds, searchTerm, refreshKey);
   const searchIdsActive = searchResolve.ids !== undefined;
   // While a resolution is in flight we do not yet know WHICH mode the term
@@ -755,7 +891,50 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     searchConfig && searchTerm !== '' && !searchIdsActive && !searchResolving
       ? searchConfig.toForcedOrderBy?.(searchTerm)
       : undefined;
-  const resolvedForcedOrderBy = forcedOrderBy ?? searchForcedOrderBy;
+  /**
+   * A `between` filter makes its field an INEQUALITY, and Firestore requires an
+   * inequality field to lead the `orderBy`. Sorting by anything else silently
+   * stops matching the composite index — no error on Enterprise, just a scan
+   * billed by data read. So an active range takes the sort, exactly as the
+   * legacy app did for its despacho range (`pedidoTableView.dart:210,218`).
+   *
+   * ⚠️ Only the FIRST range wins. A second inequality is a post-filter that,
+   * per Firestore's own docs, "does not reduce the number of index entries
+   * scanned" (root CLAUDE.md, #785) — so a second range cannot be served by
+   * leading the sort with it, and pretending otherwise would just move the scan.
+   * The UI should keep one range active; this makes the query honest either way.
+   */
+  const rangeFilterField = useMemo(
+    () => Object.entries(serverFilters).find(([, v]) => v.op === 'between')?.[0],
+    [serverFiltersSerial],
+  );
+  const rangeForcedOrderBy = rangeFilterField
+    ? {
+        field: rangeFilterField,
+        // The range field must LEAD the orderBy; its direction is free, and both
+        // are index-legal. So a header click on that column still flips it —
+        // otherwise the one sort that IS legal here would be the one the
+        // operator could not reach, and the arrow would sit on a control that
+        // does nothing.
+        direction: sort?.field === rangeFilterField ? sort.direction : ('desc' as const),
+      }
+    : undefined;
+  /**
+   * ⚠️ Search outranks a column range, and the order of these three is the whole
+   * point.
+   *
+   * `/produtos`' search emits a `nome` PREFIX RANGE and forces `nome asc` to
+   * keep it leading — its docstring says that leaving another sort in place
+   * "silently stop[s] using `produtos(paiId, nome)`, turning the seek this
+   * search exists to be into the full scan". A column range on any datetime
+   * column (`ultimaModificacao` is one, and is a declared produtos column) is
+   * therefore the SECOND inequality, and the second one is a post-filter either
+   * way — so the lead belongs to the search, which has an index built for it.
+   *
+   * Ranked the other way round, typing in the search box while a date range was
+   * open silently demoted the search's own range to a post-filter and scanned.
+   */
+  const resolvedForcedOrderBy = forcedOrderBy ?? searchForcedOrderBy ?? rangeForcedOrderBy;
   const forcedSort: SortState | undefined = resolvedForcedOrderBy
     ? {
         field: resolvedForcedOrderBy.field,
@@ -781,6 +960,44 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       ? { field: defaultQuery.orderBy[0].field, direction: defaultQuery.orderBy[0].direction }
       : undefined);
 
+  // --- Transport: live stream vs static snapshot ---------------------------
+  // LIVE is permitted only when the query about to be issued is byte-for-byte
+  // the declared `meta.defaultQuery`. See `resolveListMode` for why the rule is
+  // this strict, and what must ship before it can be widened.
+  const orderBySerial = useMemo(() => JSON.stringify(effectiveOrderBy ?? []), [effectiveOrderBy]);
+  const declaredOrderBySerial = useMemo(
+    () =>
+      JSON.stringify(
+        (defaultQuery?.orderBy ?? []).map((o) => ({ field: o.field, direction: o.direction })),
+      ),
+    [defaultQuery],
+  );
+  const listMode = useMemo(
+    () =>
+      resolveListMode({
+        hasQueryOverride: !!queryOverride,
+        hasDeclaredQuery: !!defaultQuery,
+        columnFilterCount: Object.keys(serverFilters).length,
+        extraFilterCount: effectiveExtraFilters?.length ?? 0,
+        searchTerm,
+        idRestrictionActive,
+        orderBySerial,
+        declaredOrderBySerial,
+      }),
+    // `serverFiltersSerial` stands in for the `serverFilters` object content,
+    // matching how every other memo in this file tracks it.
+    [
+      queryOverride,
+      defaultQuery,
+      serverFiltersSerial,
+      effectiveExtraFilters,
+      searchTerm,
+      idRestrictionActive,
+      orderBySerial,
+      declaredOrderBySerial,
+    ],
+  );
+
   // Pipeline projection (`select`). Project the visible schema columns to cut
   // payload; `buildPipeline` re-appends the doc id. Visible virtual columns
   // can read arbitrary fields from `row.data`, so a visible virtual WITHOUT a
@@ -789,12 +1006,21 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const selectFields = useMemo<string[] | undefined>(() => {
     const schemaKeys = [...visibleKeys].filter((k) => descriptors.some((d) => d.key === k));
     const visibleVirtuals = virtualColumns.filter((v) => visibleKeys.has(v.key));
-    if (visibleVirtuals.length === 0) return schemaKeys;
+    // An action's eligibility predicate reads `row.data` too, so its inputs
+    // must survive the projection. Same contract and same escape hatch as a
+    // virtual column's `dependsOn`: an UNDECLARED predicate forces a
+    // full-document read, because the alternative is a predicate silently
+    // running against fields that arrive `undefined` and refusing every row
+    // behind a plausible tooltip.
+    const eligibilityActions = actions.filter((a) => a.rowIneligibleReason);
+    if (eligibilityActions.some((a) => a.rowEligibilityFields === undefined)) return undefined;
+    if (visibleVirtuals.length === 0 && eligibilityActions.length === 0) return schemaKeys;
     if (visibleVirtuals.some((v) => v.dependsOn === undefined)) return undefined;
     const union = new Set(schemaKeys);
     for (const v of visibleVirtuals) for (const f of v.dependsOn ?? []) union.add(f);
+    for (const a of eligibilityActions) for (const f of a.rowEligibilityFields ?? []) union.add(f);
     return [...union];
-  }, [visibleKeys, descriptors, virtualColumns]);
+  }, [visibleKeys, descriptors, virtualColumns, actions]);
   const selectFieldsSerial = useMemo(
     () => (selectFields ? selectFields.join('|') : '*'),
     [selectFields],
@@ -818,13 +1044,25 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // non-interactive so it should not be reachable anyway.
     if (forcedSort) return;
     const current = displaySort?.field === fieldKey ? displaySort.direction : undefined;
-    setSort({ field: fieldKey, direction: current === 'asc' ? 'desc' : 'asc' });
+    const next: SortState = {
+      field: fieldKey,
+      direction: current === 'asc' ? 'desc' : 'asc',
+    };
+    // Sorting off the declared order leaves the streaming path
+    // (`resolveListMode`). A toast used to announce that; the "Resultado fixo"
+    // badge in the toolbar states it standing, and the reset control beside it
+    // is now how you undo it — a notification on top of both is noise.
+    setSort(next);
   }
 
   // --- Data source selection ----------------------------------------------
   // Always use the classic Query path when an override is supplied. Otherwise,
   // try Pipelines first; fall back to buildQuery when unsupported by the SDK.
   const pipeline: Pipeline | null = useMemo(() => {
+    // The declared query streams instead. Returning null here routes it to
+    // `fallbackQuery` below, which builds exactly `where(base) + orderBy(declared)
+    // + limit` — the shape both index guards already assert an index for.
+    if (listMode.mode === 'live') return null;
     if (queryOverride) return null;
     if (!isPipelineSupported(db)) return null;
     // A subcollection-lookup filter is active but still resolving, or it
@@ -843,7 +1081,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         filters: [
           ...baseFilters,
           ...(effectiveExtraFilters ?? []),
-          ...Object.entries(serverFilters).map(([field, v]) => ({ field, ...v })),
+          // `flatMap`, not `map`: a `between` filter is ONE piece of UI state
+          // that expands to TWO predicates (`expandColumnFilter`). The query
+          // builder never learns about the UI op.
+          ...Object.entries(serverFilters).flatMap(([field, v]) => expandColumnFilter(field, v)),
         ],
         // Constrain to the parent ids a subcollection lookup resolved (NF
         // by numero/chave). Undefined when no such filter is active.
@@ -878,6 +1119,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     lookupLoading,
     lookupEmpty,
     selectFieldsSerial,
+    listMode,
     refreshKey,
   ]);
 
@@ -966,7 +1208,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // to match (base meta filters are already in the fallback query / owned by
   // the override). Everything below — selection, counts, the table body —
   // reads `rows`, not `snap.data`, so it all stays consistent with the filter.
-  const rows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
+  const primaryRows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
     () => {
       // A subcollection lookup that matched nothing, or an extra filter with
       // an empty candidate list → no rows (no query ran).
@@ -978,13 +1220,270 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [pipeline, snap.data, serverFiltersSerial, lookupEmpty, extraEmpty],
   );
 
+  // The window the rows `snap` currently holds were fetched at.
+  //
+  // ⚠️ `pages` is READ here but must never TRIGGER this effect, which is why
+  // it is deliberately absent from the dependency array. `snap.loading` lags
+  // `pages` by exactly one commit: on the click render the widened pipeline has
+  // been built but `usePipelineSnapshot` has not yet flipped `loading`, so an
+  // effect woken by `pages` sees a settled snapshot and records the NEW count
+  // against the OLD rows — after which `loadedPagesRef.current < pages` is false
+  // for the whole refetch and the mechanism below is a silent no-op. Woken only
+  // by the snapshot, it runs when a result actually settles, which is the thing
+  // it means to record. Idempotent under the StrictMode double-invocation
+  // `apps/web/next.config.ts` turns on, and read during render because the
+  // comparison is a fact about the rows on screen, not about a transition.
+  const loadedPagesRef = useRef<number | null>(null);
+
+  /**
+   * True while a "Carregar mais" re-read is in flight over rows that are still
+   * correct — the one refetch whose previous result may stay on screen.
+   *
+   * This is what keeps the scroll position, and it works by removing the height
+   * change rather than by restoring the offset afterwards. The WINDOW is the
+   * scroller here, so swapping a 50-row table for three skeletons collapses the
+   * document below the current offset and the browser clamps `scrollY` to 0 —
+   * and because that clamp fires a real scroll event, the persister below then
+   * writes the 0 over the remembered offset as well.
+   *
+   * ⚠️ Scoped to a growth, never to a refetch in general. Rows that no longer
+   * match the chips above them would be actively misleading, so a filter, sort,
+   * param or refresh re-read still shows skeletons: each of those either leaves
+   * `pages` alone or drops it to 1 through the reset effect below, and only the
+   * button ever raises it.
+   */
+  /**
+   * True from the click that widens the window until the wider result lands.
+   *
+   * ⚠️ Deliberately NOT gated on `snap.loading`, which lags `pages` by the
+   * one commit the effect above describes. Anything keyed on that flag is
+   * ABSENT on the click render: the footer's own fullness test has already gone
+   * false (the held rows no longer fill the widened limit), so a footer admitted
+   * only by `growingWindow` unmounts for exactly one commit — and the two
+   * commits are separated by a passive effect React schedules as its own task,
+   * so the browser is free to lay out and paint a ~36px shrink in between. That
+   * is the height change this whole mechanism exists to remove, and it can fire
+   * a real clamp event while `showSkeleton` is still false.
+   *
+   * `snap.data` still gates it, so a failed read hides the footer rather than
+   * leaving a button spinning forever.
+   */
+  const pendingGrowth =
+    !!snap.data && loadedPagesRef.current !== null && loadedPagesRef.current < pages;
+
+  // --- Widening: the second query that runs only when the first found nothing
+  //
+  // See `search.toTextQuery` for why it sits BEHIND the primary query and not in
+  // front of it. Everything here is gated on the primary having ANSWERED, so on
+  // the common path this block builds nothing and issues nothing.
+  const textQuerySolicitada =
+    searchConfig?.toTextQuery && searchTerm !== '' && !searchIdsActive && !searchResolving
+      ? searchConfig.toTextQuery(searchTerm)
+      : undefined;
+  // ⚠️ Sanitised HERE, once, rather than trusted from the caller — the string is
+  // a search DSL where `-` negates, and a raw `Porta-lápis` asks for "Porta but
+  // NOT lápis" and comes back empty with no error to notice.
+  const textQuery = textQuerySolicitada ? sanitizeSearchDsl(textQuerySolicitada) : undefined;
+
+  // ⚠️ `snap.loading` AND `snap.error` both have to clear first. Widening on a
+  // still-loading query would fire on every keystroke's empty first frame, and
+  // widening on a FAILED one would answer a question the primary never asked —
+  // an error would render as "nothing starts with this, here is what contains
+  // it", quietly replacing a failure with a plausible result set.
+  // ⚠️ `pendingGrowth` is what lets a "Carregar mais" click SURVIVE here. Growing
+  // the window refetches the primary too, so a bare `!snap.loading` tore the
+  // widening down mid-click: `widenPipeline` went null, the widened rows on
+  // screen vanished, and the table emptied until the primary settled — over a
+  // result the operator was reading. A growth is not a new question, so the
+  // answer "the primary found nothing" still stands while it is in flight.
+  const primarioVazio =
+    !!pipeline &&
+    !snap.error &&
+    (primaryRows?.length ?? -1) === 0 &&
+    (!snap.loading || pendingGrowth);
+
+  const widenPipeline: Pipeline | null = useMemo(() => {
+    if (!primarioVazio || !textQuery) return null;
+    if (lookupLoading || lookupEmpty || extraEmpty) return null;
+    try {
+      return buildPipeline(db, {
+        collection: collection.resolvePath(pathContext),
+        textSearch: { query: textQuery },
+        // ⚠️ `extraFilters`, NOT `effectiveExtraFilters`. The latter carries the
+        // search's own `toFilters` output — the very prefix range that just
+        // returned nothing — and re-applying it would guarantee this query
+        // returns nothing too, silently, forever.
+        filters: [
+          ...baseFilters,
+          ...(extraFilters ?? []),
+          ...Object.entries(serverFilters).flatMap(([field, v]) => expandColumnFilter(field, v)),
+        ],
+        idIn,
+        select: selectFields,
+        orderBy: effectiveOrderBy,
+        limit: effectiveLimit,
+      });
+    } catch (err) {
+      if (err instanceof PipelineUnsupportedError) return null;
+      throw err;
+    }
+  }, [
+    db,
+    collection,
+    primarioVazio,
+    textQuery,
+    effectiveLimit,
+    effectiveOrderBy,
+    baseFiltersSerial,
+    extraFiltersSerial,
+    extraEmpty,
+    serverFiltersSerial,
+    idInSerial,
+    lookupLoading,
+    lookupEmpty,
+    selectFieldsSerial,
+    refreshKey,
+  ]);
+
+  const fromWiden = usePipelineSnapshot<z.infer<S>>(widenPipeline);
+  const widenRows = widenPipeline ? fromWiden.data : undefined;
+  // The banner claims the list is showing widened results, so it must be keyed
+  // on rows actually arriving — not on the widening having been attempted.
+  const widenAtivo = !!widenPipeline && (widenRows?.length ?? 0) > 0;
+
+  /**
+   * ⚠️ ONE value, read by BOTH the skeleton branch and the table branch below.
+   *
+   * It was written inline in the skeleton branch only, and the table body then
+   * rendered UNDERNEATH it: while the widening is in flight the primary has
+   * already answered, so `snap.loading` is false and `rows` is `[]` — the
+   * skeletons and the `Nenhum resultado.` row painted at the same time, and the
+   * widened rows still swapped in a beat later. That is precisely the flash the
+   * skeleton was added to prevent, so the duplicated expression did not merely
+   * repeat itself, it silently did nothing.
+   */
+  const widenLoading = !!widenPipeline && fromWiden.loading;
+
+  /**
+   * The FETCHED window of whichever query produced the rows on screen — what
+   * "Carregar mais" is gauged on, far below.
+   *
+   * ⚠️ It cannot stay `snap.data`. A widening only exists BECAUSE the primary
+   * returned nothing, so while widened rows are on screen `snap.data` is `[]`
+   * and can never equal `effectiveLimit` — the button never appeared, and a
+   * whole-word term matching more than one page showed its first page with no
+   * affordance and no signal that anything was cut. The query side already
+   * works: `widenPipeline` carries `effectiveLimit`, so a click refetches
+   * deeper. Only the gauge did not know which query it was measuring.
+   *
+   * Still the FETCHED window and not `rows`, for the original reason: on the
+   * paths that filter client-side, a full server page can shrink below the
+   * limit and would wrongly hide the button.
+   */
+  const fetchedWindow = widenAtivo ? widenRows : snap.data;
+
+  // ⚠️ Declared beside its ref above but EVALUATED here, after `widenLoading`
+  // exists. A dependency array is read during RENDER, so leaving this where the
+  // ref is declared throws `Cannot access 'widenLoading' before initialization`
+  // on the first paint — the effect BODY would have been fine, which is exactly
+  // what makes the mistake easy to talk yourself into.
+  useEffect(() => {
+    // ⚠️ `widenLoading` belongs here for the same reason the other two do, and
+    // it is easy to miss: under a widening the PRIMARY settles first and
+    // trivially (it returns nothing — that is why the widening exists). Without
+    // this term the window would be recorded against rows the widened query has
+    // not delivered yet, `pendingGrowth` would go false mid-flight, and the
+    // skeletons this whole mechanism removes would come back for the widened
+    // set alone.
+    //
+    // ⚠️⚠️ REASONED, NOT PINNED — recorded rather than dressed up. Removing this
+    // term does not fail any test: the harness could not be driven into the
+    // ordering it defends (primary settled, widening still in flight, a growth
+    // pending), because the effect never re-ran under `rerender`, verified with
+    // a temporary run-counter rather than assumed. A test was written for it and
+    // DELETED once it proved unable to fail, since a green test over an
+    // undefended guard is worse than an honest note. The neighbouring
+    // `primarioVazio` growth term IS mutation-proven; this one is not.
+    if (snap.loading || lookupLoading || widenLoading || !snap.data) return;
+    loadedPagesRef.current = pages;
+    // Waking this effect on `pages` is precisely the bug described above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `pages` is read here, never a trigger
+  }, [snap.loading, lookupLoading, widenLoading, snap.data]);
+
+  /**
+   * A failed WIDENING is not the table's error, and must not be rendered as one.
+   *
+   * The operator asked for "names starting with X". The primary query answered
+   * that, successfully, with nothing — so `Nenhum resultado.` is the honest
+   * result and stays. The widening is an extra they never asked for; surfacing
+   * its failure turns a query that WORKED into a red alert carrying a raw
+   * Firestore message.
+   *
+   * ⚠️ Not hypothetical, and this PR is the proof twice over. The index deploy
+   * and the app deploy are separate manual steps in either order, so an app that
+   * ships first meets no text index at all — and the very fault this work exists
+   * to repair (`9 FAILED_PRECONDITION: Found multiple global text search
+   * indexes`) would have been shown to the operator on every empty search.
+   *
+   * So it degrades to "no widening", the same way an empty widened result
+   * already does. Reported to the console rather than swallowed, on the
+   * `rowLinkColumn` precedent above: keyed on the error so a re-render does not
+   * re-warn, and an effect so rendering stays pure.
+   */
+  useEffect(() => {
+    if (!fromWiden.error) return;
+    console.warn(
+      `TableView: the text-search widening failed and was skipped — ` +
+        `${fromWiden.error.message}. The list still shows the primary query's ` +
+        `result, which succeeded.`,
+    );
+  }, [fromWiden.error]);
+
+  // Everything below — selection, counts, the table body — reads `rows`, so the
+  // widened set has to land HERE rather than at the render site, or a selected
+  // row would not be one the actions can act on.
+  const rows = widenAtivo ? widenRows : primaryRows;
+  const growingWindow =
+    (snap.loading || lookupLoading || widenLoading) &&
+    // Rows to KEEP, not merely a defined array: `rows` is `[]` when a lookup or
+    // an extra filter resolved to no candidates, and holding an empty table on
+    // screen in place of the skeleton says nothing to anyone.
+    !!rows &&
+    rows.length > 0 &&
+    pendingGrowth;
+
+  // Skeletons only when there is nothing trustworthy to show. See above.
+  const showSkeleton = (snap.loading || lookupLoading || widenLoading) && !growingWindow;
+  // Mirrored for the scroll persister, which has to know whether the table is
+  // on screen at the moment a scroll event arrives. Assigned during render
+  // rather than from an effect on purpose: the browser clamps and fires that
+  // event during the commit that removes the rows, which is BEFORE any passive
+  // effect runs, so a mirror kept by `useEffect` would still be reporting the
+  // previous frame exactly when it is asked.
+  const skeletonRef = useRef(showSkeleton);
+  skeletonRef.current = showSkeleton;
+
+  // The fetched window came back full, so there may be more behind it.
+  //
+  // ⚠️ `fetchedWindow`, never `snap.data`. A widening exists BECAUSE the primary
+  // returned nothing, so while widened rows are on screen `snap.data` is `[]`
+  // and can never equal `effectiveLimit` — the footer vanished over every
+  // widened result and a whole-word term matching more than one page showed its
+  // first page with no affordance and no signal that anything was cut.
+  const windowFull = !!fetchedWindow && fetchedWindow.length === effectiveLimit;
+
+  // Nothing left to offer: the window is as wide as it is allowed to get. Says
+  // so out loud rather than hiding the button, because a limit the operator
+  // cannot see is indistinguishable from a list that ended.
+  const atPageCeiling = pages >= MAX_PAGES && windowFull && !pendingGrowth;
+
   // Collapse "Carregar mais" back to one page whenever the query shape changes
   // (filters, sort, base filters or bound params) — the expanded window only
   // makes sense for the result set the user was looking at.
   //
   // ⚠️ Keyed on the query SHAPE, not on "have I run before". The window is now
-  // seeded from the sticky memory in `useState` above, so this effect's mount
-  // run must not collapse it — but a boolean "skip the first run" ref does NOT
+  // seeded from the URL (or the sticky memory) by `useTableUrlState`, so this
+  // effect's mount run must not collapse it — but a "skip the first run" ref does NOT
   // survive contact with React StrictMode, which `apps/web/next.config` turns
   // on: StrictMode mounts, unmounts and remounts on the SAME fiber, so the ref
   // is already armed on the second run, `setPages(1)` fires, and the restored
@@ -1022,6 +1521,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // an operator who types there would otherwise be thrown down a result set
     // they never scrolled the moment their own rows land.
     scrollRestoredRef.current = true;
+    // `setPages` is a `useState` setter reached through the hook's return
+    // object, so its identity is stable and listing it never re-runs this.
   }, [
     filtersSerial,
     baseFiltersSerial,
@@ -1031,14 +1532,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     sort?.direction,
     forcedSort?.field,
     forcedSort?.direction,
+    setPages,
   ]);
 
-  // Remember the window for the next visit.
-  useEffect(() => {
-    rememberView({ pages });
-  }, [pages, rememberView]);
-
-  // Remember where the operator was scrolled to.
+  // Remember where the operator was scrolled to. The window is not persisted
+  // here any more — it rides in the URL, and `useTableUrlState` mirrors that
+  // same string into the memory.
   //
   // The WINDOW is the scroller, not any element here: this component wraps the
   // table in plain `Stack`/`Group` with no overflow, and Mantine's `AppShell`
@@ -1053,13 +1552,27 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   useEffect(() => {
     let handle = 0;
     let moved = false;
+    // Where the operator actually was, as of the last real scroll event.
+    let at = 0;
     const onScroll = () => {
+      // ⚠️ A scroll event fired while the skeletons are up is the BROWSER
+      // clamping the offset to a document that just collapsed, not the operator
+      // moving — persisting it overwrites the remembered position with ~0, and
+      // the one-shot restore latch is long since burned. Every gate that swaps
+      // the table out does this: a filter or sort change, an "Atualizar", a
+      // lookup resolution, a failed read.
+      if (skeletonRef.current) return;
       moved = true;
+      // ⚠️ Sampled HERE, never inside the timeout. The guard above ignores the
+      // clamp EVENT, but a timer armed by a real scroll is not disarmed by it —
+      // so a callback reading `window.scrollY` 150ms later would read whatever
+      // a collapse landing inside that window clamped it to. Needs only a
+      // gesture ending on "Atualizar" or a chip, and `lookupLoading` flipping
+      // is not human-timed at all. Capturing is also simply more accurate: it
+      // persists where the operator was, not where they are 150ms later.
+      at = window.scrollY;
       window.clearTimeout(handle);
-      handle = window.setTimeout(
-        () => rememberView({ scroll: window.scrollY }),
-        SCROLL_PERSIST_DEBOUNCE_MS,
-      );
+      handle = window.setTimeout(() => rememberScroll(at), SCROLL_PERSIST_DEBOUNCE_MS);
     };
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => {
@@ -1073,9 +1586,13 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       // cleans up and remounts immediately, and an unconditional flush there
       // would persist `scrollY` 0 over the offset the restore is still on its
       // way to putting back.
-      if (moved) rememberView({ scroll: window.scrollY });
+      // Flushes the CAPTURED offset for the same reason, which also makes the
+      // skeleton guard unnecessary here: `moved` is only ever set by a real
+      // scroll, so `at` is a genuine position and is worth keeping even when
+      // the table happens to be mid-refetch as the operator leaves.
+      if (moved) rememberScroll(at);
     };
-  }, [rememberView]);
+  }, [rememberScroll]);
 
   // Put it back, once, after the rows that give the page its height exist —
   // scrolling to an offset the document is not yet tall enough for silently
@@ -1137,6 +1654,55 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     }
     return out;
   }, [visibleKeysArr, descriptors, virtualColumns, fieldOverrides]);
+
+  /**
+   * A `rowLinkColumn` that can never render is otherwise SILENT — the row still
+   * navigates on click, the anchor just never appears, and every cause presents
+   * identically as "the prop does nothing". Report the ones that are DESIGN-TIME
+   * facts, i.e. inert for every row on every render, and name which one it is:
+   *
+   * - by configuration: no `rowHref` (nothing to link to), or `onRowClick` set
+   *   (it outranks `rowHref`, so a link would navigate where the row does not);
+   * - by key: matches nothing, an `unknown`-kind descriptor, or one hidden via
+   *   `fields[key].hidden` (the shape /produtos uses to replace a schema column
+   *   with a virtual one — naming the hidden key there renders nothing, ever).
+   *
+   * A key the USER merely unticked in the ColumnPicker is a legitimate runtime
+   * state, not a bug, so it is deliberately not reported.
+   *
+   * `console.warn` rather than the `throw` used for query misconfiguration
+   * above: those guard correctness of a BILLED read, where failing silently
+   * widens the scan. This one degrades to exactly today's behaviour.
+   */
+  const rowLinkInertReason = useMemo(() => {
+    if (!rowLinkColumn) return null;
+    // Inert by CONFIGURATION, not by key — and these two are likelier than a
+    // typo'd key, which at least has the key itself as a clue. `rowHref` and
+    // `rowLinkColumn` sit adjacent in the skill's snippet, so copying one
+    // without the other is the plausible slip.
+    if (!rowHref) return 'rowHref is not set, so there is no target to link to';
+    if (onRowClick) return 'onRowClick is set, and it outranks rowHref';
+    // Inert by key.
+    if (virtualColumns.some((v) => v.key === rowLinkColumn)) return null;
+    const descriptor = descriptors.find((d) => d.key === rowLinkColumn);
+    if (!descriptor) return 'it matches no schema field and no virtualColumns key';
+    if (descriptor.kind === 'unknown') return 'that field is of unknown kind, so it never renders';
+    if (fieldOverrides[rowLinkColumn]?.hidden) {
+      return `fields.${rowLinkColumn}.hidden is set, so that column never renders`;
+    }
+    return null;
+  }, [rowLinkColumn, rowHref, onRowClick, descriptors, virtualColumns, fieldOverrides]);
+
+  // Keyed on the derived reason, not on its inputs: callers pass `fields={{…}}`
+  // as an inline literal, so an effect depending on `fieldOverrides` directly
+  // would re-warn on every render.
+  useEffect(() => {
+    if (!rowLinkInertReason) return;
+    console.warn(
+      `TableView: rowLinkColumn="${rowLinkColumn}" renders no row link — ` +
+        `${rowLinkInertReason}. The row's own click navigation is unaffected.`,
+    );
+  }, [rowLinkInertReason, rowLinkColumn]);
 
   /**
    * Columns offered by the ColumnPicker. It MUST apply the same exclusions as
@@ -1221,22 +1787,56 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     rowsNotifyRef.current.cb?.(rowsNotifyRef.current.rows);
   }, [rowIdsSerial]);
 
-  // Update-monitor field: explicit prop wins; otherwise prefer a
-  // last-modified field, then the creation timestamp.
+  /**
+   * What the operator is actually looking at.
+   *
+   * ⚠️ Derived from the TRANSPORT that was selected (`pipeline === null` ⇒ the
+   * rows come from `useSnapshot`), never from `listMode`. The two disagree on
+   * `queryOverride`: the policy calls it static, but `fallbackQuery` returns the
+   * caller's query and `useSnapshot` streams it — so `/clientes`' endereço search
+   * is genuinely LIVE while the policy says otherwise. A badge that is wrong on
+   * the one screen reaching that branch is worse than no badge.
+   *
+   * Declared HERE, above the update monitor, because the monitor reads it too:
+   * one const, so the badge and the monitor cannot drift apart.
+   */
+  const transportIsLive = pipeline === null;
+
+  /**
+   * Update-monitor field: explicit prop wins; otherwise prefer a last-modified
+   * field, then the creation timestamp.
+   *
+   * ⚠️ `null` while the rows STREAM, which switches the monitor off entirely
+   * (`useSnapshot(null)` never subscribes). The monitor exists to announce that
+   * a FROZEN result set has fallen behind its collection; on the live transport
+   * the rows already carry every change, so a second `limit(1)` listener could
+   * only raise "desatualizada" over a list that had just updated itself.
+   *
+   * It reads the TRANSPORT and not `listMode.mode` for the reason above: the
+   * policy calls a `queryOverride` static while `useSnapshot` streams it, so the
+   * policy would keep a pointless listener on `/clientes`' endereço search AND
+   * put that flag beside its "Tempo real" badge.
+   */
   const resolvedMonitorField = useMemo<string | null>(() => {
+    if (transportIsLive) return null;
     if (monitorField === false) return null;
     if (typeof monitorField === 'string') return monitorField;
     const keys = new Set(descriptors.map((d) => d.key));
     if (keys.has('ultimaModificacao')) return 'ultimaModificacao';
     if (keys.has('timestamp')) return 'timestamp';
     return null;
-  }, [monitorField, descriptors]);
+  }, [transportIsLive, monitorField, descriptors]);
 
   const monitor = useCollectionMonitor({
     db,
     collection,
     pathContext,
     field: resolvedMonitorField,
+    // `pipeline` IS the re-read signal: `usePipelineSnapshot` executes once per
+    // identity, so a new object means the rows on screen were just refetched
+    // and the notice must come down with them. Non-null whenever the monitor
+    // runs at all, since the two are gated on the same transport.
+    rowsGeneration: pipeline,
   });
 
   // The top-right toolbar row. Every member is conditional, so without this
@@ -1245,7 +1845,32 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // and pays for its vertical space.
   const actionBarShown =
     !panelEnabled && (actions.length > 0 || !!newHref || !!renderNewButton || !!copyHref);
-  const headerToolbarShown = monitor.stale || showColumnPicker || actionBarShown;
+  // Reads `transportIsLive`, declared above the update monitor because that
+  // monitor is gated on it too.
+  const transportLabel = transportIsLive
+    ? LIVE_LABEL
+    : STATIC_REASON_LABEL[listMode.reason ?? 'override'];
+
+  /**
+   * Is there anything of the OPERATOR's on this list — exactly what
+   * `resetListState` clears, and nothing else?
+   *
+   * Computed by `useTableUrlState`, not here, because it has to agree with that
+   * reset about what "the operator's" means, and the sort makes that subtle:
+   * the `orderBy` prop SEEDS the sort state, so a naive `sort !== undefined` is
+   * true from the first render on any screen passing it, with no interaction at
+   * all — offering a reset for state nobody set.
+   *
+   * `queryOverride`, a page's `extraFilters`, a `forcedOrderBy` and a missing
+   * `meta.defaultQuery` are screen-owned in the same way. They can hold a list
+   * on the static path, and nothing in this toolbar can clear them, so they too
+   * must not enable a button that would then do nothing.
+   */
+  const hasOwnListState = hasOwnState;
+
+  // Always shown, because it now carries the transport badge. Two lists that
+  // behave differently and look identical is how #40 stayed invisible.
+  const headerToolbarShown = true;
 
   // An id restriction that hit its cap is showing a PREFIX of the real answer.
   // Both sources compute this and neither used to render it, so the 30-row cap
@@ -1272,7 +1897,71 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           {headerToolbarShown && (
             <Group justify="flex-end" wrap="nowrap" align="flex-end">
               <Group gap="xs">
-                {monitor.stale && (
+                <Tooltip label={transportLabel} withinPortal multiline maw={280}>
+                  <Badge
+                    variant="light"
+                    color={transportIsLive ? 'teal' : 'yellow'}
+                    data-list-mode={transportIsLive ? 'live' : 'static'}
+                    data-list-policy={listMode.mode}
+                    data-list-reason={listMode.reason ?? ''}
+                  >
+                    {transportIsLive ? 'Tempo real' : 'Resultado fixo'}
+                  </Badge>
+                </Tooltip>
+                {/*
+                 * The way back to the declared query — and until it existed the
+                 * app asked for something impossible: `STATIC_REASON_LABEL.sort`
+                 * says "limpe a ordenação para voltar ao tempo real", but a sort
+                 * renders no filter chip, so the chip row (and the only
+                 * clear-all in it) was absent in exactly that case.
+                 *
+                 * ⚠️ The name must never contain "Limpar filtros". The chip
+                 * row's own button carries that name, and
+                 * `clientes.cadastros.e2e.spec.ts` locates it WITHOUT `exact`
+                 * before asserting the count drops to zero — Playwright matches
+                 * names by substring, so an always-mounted sibling containing
+                 * that phrase reds a spec that never imports this file.
+                 */}
+                <Tooltip
+                  label={
+                    // Takes the POLICY, and its signature enforces that — see
+                    // the note on `resetControlLabel`. The badge two lines up
+                    // reads the TRANSPORT, deliberately, and the two disagree.
+                    resetControlLabel(hasOwnListState, listMode.mode)
+                  }
+                  withinPortal
+                  multiline
+                  maw={260}
+                >
+                  {/*
+                   * Mantine turns pointer events OFF on a disabled control, so a
+                   * Tooltip wrapping one directly never fires — and disabled is
+                   * exactly when this tooltip has something to explain.
+                   */}
+                  <span style={{ display: 'inline-block' }}>
+                    <ActionIcon
+                      variant="subtle"
+                      color="gray"
+                      aria-label="Limpar ordenação, filtros e busca"
+                      disabled={!hasOwnListState}
+                      onClick={resetListState}
+                    >
+                      <IconRestore size={18} />
+                    </ActionIcon>
+                  </span>
+                </Tooltip>
+                {/*
+                 * ⚠️ Gated on the TRANSPORT a second time, and the redundancy is
+                 * deliberate: `resolvedMonitorField` closes the LISTENER, this
+                 * closes the PIXEL. Both read the one `transportIsLive` const,
+                 * so there is no second copy of the rule to drift — and a
+                 * rendering test can pin this one, which it could not do
+                 * through the mocked hook.
+                 *
+                 * The invariant it buys: a stale flag can never appear beside a
+                 * "Tempo real" badge, `queryOverride` included.
+                 */}
+                {!transportIsLive && monitor.stale && (
                   <Tooltip
                     label="Os dados desta coleção foram alterados desde que a página carregou. Clique para atualizar."
                     withinPortal
@@ -1344,13 +2033,31 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Text>
           )}
 
+          {/* The widening has to SAY it widened. Without this the operator reads
+              rows that do not start with what they typed and concludes the
+              search is broken — the results are correct, the surprise is not. */}
+          {widenAtivo && (
+            <Text c="dimmed" size="sm">
+              Nenhum nome começa com “{searchTerm}”. Mostrando nomes que contêm essa palavra.
+            </Text>
+          )}
+
+          {/* ⚠️ `fromWiden.error` is deliberately NOT here — see the effect that
+              logs it. A failed optional widening must not become the error state
+              of a primary query that succeeded. */}
           {(snap.error || subLookup.error || searchResolve.error) && (
             <Alert color="red" title="Erro ao carregar">
               {(snap.error ?? subLookup.error ?? searchResolve.error)?.message}
             </Alert>
           )}
 
-          {(snap.loading || lookupLoading) && (
+          {/* ⚠️ The widening counts as loading, and `showSkeleton` is where that
+              lives — one value read by this branch AND the table branch below.
+              Written inline in only one of them, the table body rendered
+              underneath the skeletons: while the widening is in flight the
+              primary has already answered, so its `loading` is false and `rows`
+              is `[]`. */}
+          {showSkeleton && (
             <Stack>
               <Skeleton height={36} />
               <Skeleton height={36} />
@@ -1358,7 +2065,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Stack>
           )}
 
-          {!snap.loading && !lookupLoading && rows && (
+          {!showSkeleton && rows && (
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
@@ -1484,6 +2191,62 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                   const href = rowHref ? rowHref(row.id, row.data) : undefined;
                   // `onRowClick` takes precedence over `rowHref` navigation.
                   const clickable = !!row.id && (!!onRowClick || !!href);
+                  // The row link MIRRORS the row's own navigation, so it exists
+                  // only where the row would navigate: `clickable` already
+                  // carries the empty-id guard (an `<a href="/collection/">`
+                  // would be worse than a dead row — it is keyboard-reachable
+                  // and lands on a 404), and `onRowClick` outranking `rowHref`
+                  // means a link there would go somewhere the row does not.
+                  const linkHref = rowLinkColumn && !onRowClick && clickable ? href : undefined;
+                  // `emptyValue` drives the accessible-name fallback below. Only
+                  // the schema branch can supply it — a virtual column renders
+                  // arbitrary nodes and TableView cannot tell "empty" from
+                  // "deliberately terse", so a virtual link column names itself.
+                  const wrapRowLink = (key: string, content: ReactNode, emptyValue = false) =>
+                    linkHref && key === rowLinkColumn ? (
+                      // `draggable={false}` is required, not cosmetic: anchors
+                      // are draggable by default, so without it a drag across
+                      // this cell starts a LINK drag and the text can no longer
+                      // be selected at all — which would make the selection
+                      // guard in `handleRowLinkClick` unreachable rather than
+                      // merely redundant.
+                      <Link
+                        href={linkHref as Route}
+                        // `prefetch={false}` is a cost decision, not a default.
+                        // next/link's `prefetch` defaults to `null`, which is
+                        // "auto" — it mounts an IntersectionObserver per link
+                        // and fires an RSC request as each enters the viewport.
+                        // A list page renders `resolvedPageSize` rows (50 by
+                        // default) and grows from there, so leaving it on means
+                        // ~one App Hosting request PER ROW, per page-grow, on
+                        // every list screen. And it buys nothing here: apps/web
+                        // is client-first, so a detail route's prefetched
+                        // payload is a near-empty shell whose real data is read
+                        // from Firestore on mount either way.
+                        prefetch={false}
+                        draggable={false}
+                        // The ONLY case that may carry an `aria-label`, and it
+                        // is the inverse of the usual danger. Normally a label
+                        // here would REPLACE the cell's text in the row's
+                        // name-from-contents computation and rename every row;
+                        // when the value is empty there is no text to replace —
+                        // the default renderer emitted `—`, so without this the
+                        // link's entire accessible name is an em dash and every
+                        // such row is indistinguishable from the next in a
+                        // screen reader's links list. Nullable primaries are
+                        // ordinary here: `pedido.numero` and `cliente.nome` are
+                        // both `.nullable().default(null)`, and the app already
+                        // falls back to the id elsewhere (as does the selection
+                        // checkbox's own label just below).
+                        aria-label={emptyValue ? `Abrir ${row.id}` : undefined}
+                        onClick={handleRowLinkClick}
+                        style={ROW_LINK_STYLE}
+                      >
+                        {content}
+                      </Link>
+                    ) : (
+                      content
+                    );
                   return (
                     <Table.Tr
                       key={row.id}
@@ -1519,7 +2282,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                       {visibleColumns.map((col) => {
                         if (col.kind === 'virtual') {
                           return (
-                            <Table.Td key={col.column.key}>{col.column.renderCell(row)}</Table.Td>
+                            <Table.Td key={col.column.key}>
+                              {wrapRowLink(col.column.key, col.column.renderCell(row))}
+                            </Table.Td>
                           );
                         }
                         const d = col.descriptor;
@@ -1528,7 +2293,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                         const content = override?.renderCell
                           ? override.renderCell(value as never, row.data)
                           : renderCell(value, d);
-                        return <Table.Td key={d.key}>{content}</Table.Td>;
+                        // Match what the default renderer treats as empty (it
+                        // emits `—` for null/undefined/''), plus the empty array
+                        // — `targetsChnfe` is `.default([])` and its override
+                        // renders `—` for it, so the placeholder is reached
+                        // through both paths.
+                        const emptyValue =
+                          value === null ||
+                          value === undefined ||
+                          value === '' ||
+                          (Array.isArray(value) && value.length === 0);
+                        return (
+                          <Table.Td key={d.key}>{wrapRowLink(d.key, content, emptyValue)}</Table.Td>
+                        );
                       })}
                     </Table.Tr>
                   );
@@ -1538,21 +2315,44 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           )}
 
           {/* A full page implies there may be more — offer to grow the window.
-              Gauge "page was full" on the *fetched* window (`snap.data`), not
+              Gauge "page was full" on the *fetched* window (`fetchedWindow` —
+              the widened query's rows when one is on screen, `snap.data`
+              otherwise; see its docblock), not
               the post-filter `rows`: client-side column filtering (the fallback
               / queryOverride paths) can shrink `rows` below the limit even when
               the server returned a full page, which would wrongly hide the
               button and strand matches on later pages. The standard heuristic
               over-offers by one click on an exact multiple, which is harmless.
               Hidden entirely under `queryOverride`: that query is caller-owned
-              and ignores `effectiveLimit`, so the button couldn't fetch more. */}
-          {!snap.loading && !queryOverride && snap.data && snap.data.length === effectiveLimit && (
-            <Center>
-              <Button variant="subtle" onClick={() => setPages((p) => p + 1)}>
-                Carregar mais
-              </Button>
-            </Center>
-          )}
+              and ignores `effectiveLimit`, so the button couldn't fetch more.
+
+              ⚠️ `pendingGrowth` is its own admission ticket. During a growth
+              the rows on screen are the PREVIOUS window, so their count no
+              longer equals the widened `effectiveLimit` and the fullness test
+              goes false — the footer would vanish mid-click and the page would
+              jump under the operator's cursor, which is the shift this whole
+              change exists to remove. It is `pendingGrowth` rather than
+              `growingWindow` precisely because the latter waits on
+              `snap.loading`, which arrives one commit too late to cover the
+              click render. */}
+          {!queryOverride &&
+            (pendingGrowth || (!snap.loading && windowFull)) &&
+            (atPageCeiling ? (
+              <Text c="dimmed" size="sm" ta="center">
+                Limite de carregamento atingido ({MAX_PAGES * resolvedPageSize} registros). Refine
+                os filtros ou a busca para ver outros resultados.
+              </Text>
+            ) : (
+              <Center>
+                <Button
+                  variant="subtle"
+                  loading={pendingGrowth}
+                  onClick={() => setPages((p) => Math.min(p + 1, MAX_PAGES))}
+                >
+                  Carregar mais
+                </Button>
+              </Center>
+            ))}
         </Stack>
 
         {panelEnabled && (

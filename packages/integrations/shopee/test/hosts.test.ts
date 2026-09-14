@@ -90,3 +90,12 @@ describe('resolveShopeeHosts', () => {
     );
   });
 });
+
+it('o host de consentimento do sandbox é o do guia 644 — o `.com.br` NÃO existe (DNS NXDOMAIN, 2026-09-10)', () => {
+  // A primeira tentativa real de consentimento respondeu DNS_PROBE_FINISHED_NXDOMAIN
+  // para `open.sandbox.test-stable.shopee.com.br`: o sandbox é UM ambiente global
+  // e o sufixo de região nunca se aplicou a ele. Fixado como literal, não como
+  // a própria constante, para que uma volta ao palpite fique vermelha aqui.
+  expect(SHOPEE_SANDBOX_AUTH_HOST).toBe('https://open.sandbox.test-stable.shopee.com');
+  expect(SHOPEE_SANDBOX_AUTH_HOST).not.toMatch(/\.com\.br$/);
+});

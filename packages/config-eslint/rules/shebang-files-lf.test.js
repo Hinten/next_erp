@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync } from 'node:fs';
+import { closeSync, lstatSync, openSync, readSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { REPO_ROOT, gitCheckAttr, gitLsFilesZ } from './lib/repo-scan.js';
@@ -40,8 +40,10 @@ let shebangCache = null;
  * Deliberately unguarded: `openSync` throwing means a tracked path is missing
  * from the working tree, which is a broken checkout, not a case to skip over
  * quietly — and skipping it silently would shrink the set this guard checks.
- * Verified there is nothing legitimate to tolerate: the repo has no submodules
- * and every `git ls-files -s` entry is a regular blob (100644/100755).
+ * The one deliberate exception is a symbolic link: Git does not apply text/EOL
+ * conversion to its target string, and opening a link to a directory as a file
+ * raises EISDIR. The repo has no submodules; every other tracked entry is a
+ * regular blob (100644/100755).
  *
  * ⚠️ TRACKED-ONLY, and deliberately unlike its four neighbours. The other
  * repo-scanning guards here (`env-example-location`, `ci-lane-gates`,
@@ -66,7 +68,10 @@ function shebangFiles() {
   const out = [];
   const buf = Buffer.alloc(2);
   for (const file of gitLsFilesZ()) {
-    const fd = openSync(resolve(REPO_ROOT, file), 'r');
+    const path = resolve(REPO_ROOT, file);
+    if (lstatSync(path).isSymbolicLink()) continue;
+
+    const fd = openSync(path, 'r');
     try {
       const n = readSync(fd, buf, 0, 2, 0);
       if (n === 2 && buf[0] === 0x23 && buf[1] === 0x21) out.push(file);
@@ -96,6 +101,8 @@ describe('shebang files check out with LF', () => {
     expect(found).toContain('.github/scripts/e2e-affected.mjs');
     // ...and a known non-member: this very file starts with `import`.
     expect(found).not.toContain('packages/config-eslint/rules/shebang-files-lf.test.js');
+    // A tracked directory symlink is neither opened nor mistaken for file data.
+    expect(found).not.toContain('.agents/skills');
 
     // The attribute reader must distinguish, or assertion 1 is vacuous too.
     const attrs = eolAttrs(['.github/scripts/e2e-affected.mjs', 'package.json']);

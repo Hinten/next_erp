@@ -58,12 +58,12 @@ vi.mock('@delfrance/integrations-shopee', async (importActual) => {
   return { ...actual, exchangeCode: h.exchangeCode, createShopeeClient: h.createShopeeClient };
 });
 
-const {
-  ShopeeContaNotConfiguredError,
-  __setShopeeCacheClockForTests,
-  invalidateShopeeConta,
-  loadShopeeContext,
-} = await import('./shopee');
+const { ShopeeContaNotConfiguredError, loadShopeeContext } = await import('./shopee');
+// The conta reader moved to `./contaCache` in step 3 (a second reader — the
+// `shop_id` resolver — had to share the same instance). The cache-hit specs
+// below are unchanged on purpose: they assert the CONTEXT LOADER's caching
+// behaviour, which is what the extraction had to preserve.
+const { __setShopeeCacheClockForTests, invalidateShopeeConta } = await import('./contaCache');
 const { ShopeeContaSemShopIdError } = await import('./tokenStore');
 
 const db = {} as never;
@@ -255,6 +255,31 @@ describe('createShopClient', () => {
     await config.getAccessToken();
     await config.getAccessToken();
     expect(h.getOrRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends NO `paths` key when SHOPEE_VARIATIONS_PATH is unset', async () => {
+    // A convention, not a behaviour: the repo does not set
+    // `exactOptionalPropertyTypes`, and the package resolves the override with
+    // `=== undefined`, so `paths: { getVariations: undefined }` would reach the
+    // same default path. Pinning the OMISSION keeps that flag a compiler change
+    // rather than a behaviour change if it is ever turned on.
+    const ctx = await loadShopeeContext(db, 'int-1');
+    ctx.createShopClient();
+
+    const config = h.createShopeeClient.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(config).not.toHaveProperty('paths');
+  });
+
+  it('passes SHOPEE_VARIATIONS_PATH through as the get_variations override', async () => {
+    // The pair to the case above. The path is inside the HMAC base string, so
+    // this override is how the documented-vs-sampled contradiction is settled by
+    // one env var instead of a redeploy.
+    vi.stubEnv('SHOPEE_VARIATIONS_PATH', '/api/v2/product/get_variation_tree');
+    const ctx = await loadShopeeContext(db, 'int-1');
+    ctx.createShopClient();
+
+    const config = h.createShopeeClient.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(config.paths).toEqual({ getVariations: '/api/v2/product/get_variation_tree' });
   });
 });
 

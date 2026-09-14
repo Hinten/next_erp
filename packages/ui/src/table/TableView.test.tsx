@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineTestProvider } from '../testing/mantine';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
@@ -21,6 +21,9 @@ const {
   whereArrayContainsSpy,
   buildQuerySpy,
   monitorRef,
+  monitorFieldRef,
+  monitorGenRef,
+  widenState,
 } = vi.hoisted(() => ({
   snapState: {
     current: {
@@ -34,7 +37,24 @@ const {
   },
   pushSpy: vi.fn(),
   searchParamsRef: { current: new URLSearchParams() },
-  buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
+  // ⚠️ Tags the built pipeline with `__widen` so the snapshot stub can answer
+  // the two pipelines DIFFERENTLY. Without that, TableView's primary query and
+  // its empty-result widening share one canned response, and a widening test
+  // passes on the primary's rows while asserting nothing about the second
+  // query.
+  buildPipelineSpy: vi.fn((_db: unknown, spec?: { textSearch?: unknown }) => ({
+    __pipeline: true,
+    __widen: !!spec?.textSearch,
+  })),
+  // What the WIDENING query returns. Separate from `snapState` for the reason
+  // above; defaults to "answered, nothing found" so no existing case widens.
+  widenState: {
+    current: {
+      data: [],
+      loading: false,
+      error: undefined,
+    } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
+  },
   // Flip to false in a test to exercise the classic-query fallback path.
   pipelineSupportedRef: { current: true },
   // Spied so the fallback tests can assert which constraint each
@@ -44,14 +64,28 @@ const {
   // Spied so a test can assert the classic fallback built NO query at all —
   // the difference between "renders nothing" and "renders the whole table".
   buildQuerySpy: vi.fn(() => ({ __fakeQuery: true })),
-  // The update-monitor drives the only refresh affordance /produtos has
-  // left in its header. Stubbed so a test can raise `stale` and click it;
+  // The update-monitor drives the only refresh affordance /produtos has left
+  // in its header — on its SEARCHED view, which is where the term puts it on
+  // the frozen transport. Stubbed so a test can raise `stale` and click it;
   // `stale: false` is what the real hook reports for every other case.
   monitorRef: { current: { stale: false, acknowledge: vi.fn() } },
+  // The `field` of the last call, which is how TableView switches the monitor
+  // off: `null` while the rows stream. ⚠️ The mock deliberately does NOT act on
+  // it — a mock that returned `stale: false` for a null field would keep the
+  // rendering test green after someone deleted the production gate.
+  monitorFieldRef: { current: undefined as string | null | undefined },
+  // The row-query identity handed to the monitor, which re-pins its baseline
+  // whenever it changes. Recorded so a test can prove it moves on a re-read
+  // and holds still otherwise.
+  monitorGenRef: { current: undefined as unknown },
 }));
 
 vi.mock('./useCollectionMonitor', () => ({
-  useCollectionMonitor: () => monitorRef.current,
+  useCollectionMonitor: (opts: { field: string | null; rowsGeneration?: unknown }) => {
+    monitorFieldRef.current = opts.field;
+    monitorGenRef.current = opts.rowsGeneration;
+    return monitorRef.current;
+  },
 }));
 
 vi.mock('next/navigation', () => ({
@@ -72,7 +106,8 @@ vi.mock('@delfrance/data/hooks', async () => {
   return { ...actual, useSnapshot: () => snapState.current };
 });
 vi.mock('@delfrance/data/hooks/usePipelineSnapshot', () => ({
-  usePipelineSnapshot: () => snapState.current,
+  usePipelineSnapshot: (p: { __widen?: boolean } | null) =>
+    p?.__widen ? widenState.current : snapState.current,
 }));
 vi.mock('@delfrance/data/pipeline-queries', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/data/pipeline-queries')>();
@@ -97,7 +132,7 @@ vi.mock('@delfrance/data', async () => {
 });
 
 import { StrictMode } from 'react';
-import { MAX_RESTORED_PAGES, SCROLL_PERSIST_DEBOUNCE_MS, TableView } from './TableView';
+import { MAX_PAGES, MAX_RESTORED_PAGES, SCROLL_PERSIST_DEBOUNCE_MS, TableView } from './TableView';
 import { listViewMemoryKey, readListViewMemory, writeListViewMemory } from './listViewMemory';
 
 /** The slot this harness's table uses: pathname '/clientes' + collection 'tests'. */
@@ -137,8 +172,16 @@ describe('TableView', () => {
     // The URL-sync effect mutates the URL via history.replaceState; reset it
     // so one case's query string doesn't bleed into the next.
     window.history.replaceState(null, '', '/clientes');
+    // Same reason, for the MOCKED `useSearchParams`. It sits beside the three
+    // above because it is the same class of leak, and it was the one missing:
+    // a case that sets a filter param left it set for every case after it, so
+    // whether the next one passed depended on the order they ran in.
+    searchParamsRef.current = new URLSearchParams();
     pipelineSupportedRef.current = true;
     monitorRef.current = { stale: false, acknowledge: vi.fn() };
+    monitorFieldRef.current = undefined;
+    monitorGenRef.current = undefined;
+    widenState.current = { data: [], loading: false, error: undefined };
   });
 
   it('renders one header per non-unknown field by default', () => {
@@ -292,6 +335,376 @@ describe('TableView', () => {
     // surrounding <tr>, which receives the event via bubbling.
     fireEvent.click(screen.getByText('Alice'));
     expect(pushSpy).toHaveBeenCalledWith('/tests/1');
+  });
+
+  // `rowLinkColumn` — the row is clickable but MOUSE-ONLY without it: the row's
+  // handler takes no event, so Tab/Enter/Cmd-click/"Copy link address" are all
+  // unreachable. Naming a column wraps its cell in a real anchor.
+  //
+  // jsdom renders the real `next/link` (nothing mocks it), but with no
+  // AppRouterContext its own onClick returns early — so these cases assert the
+  // rendered `href` and OUR handler's effects, never a next/link navigation.
+
+  it('renders no row link and still pushes on click when rowLinkColumn is unset', () => {
+    // The negative and the untouched default path in ONE case, so they cannot
+    // drift apart: an implementation that always wrapped would fail both halves.
+    pushSpy.mockClear();
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+      />,
+    );
+    expect(screen.queryByRole('link', { name: 'Alice' })).toBeNull();
+    fireEvent.click(screen.getByText('Alice'));
+    expect(pushSpy).toHaveBeenCalledWith('/tests/1');
+  });
+
+  it("rowLinkColumn wraps that column's cell in an anchor carrying the rowHref", () => {
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Alice' }).getAttribute('href')).toBe('/tests/1');
+    expect(screen.getByRole('link', { name: 'Bob' }).getAttribute('href')).toBe('/tests/2');
+  });
+
+  it('wraps only the named column', () => {
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        defaultColumns={['nome', 'tipo']}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    // Two rows, one link each, and it is the Nome cell — the Tipo cell (an
+    // enum, so a <Badge>) stays unwrapped. Queried by role rather than by cell
+    // text so the case does not depend on how a given kind renders.
+    expect(screen.getAllByRole('link')).toHaveLength(2);
+    const [, firstRow] = screen.getAllByRole('row'); // index 0 is the header
+    const cells = within(firstRow!).getAllByRole('cell');
+    expect(within(cells[0]!).getByRole('link').getAttribute('href')).toBe('/tests/1');
+    expect(within(cells[1]!).queryByRole('link')).toBeNull();
+  });
+
+  it('clicking the row link does not also fire the row navigation', () => {
+    // The double-push guard. Without `stopPropagation` a click runs next/link's
+    // push AND the row's `router.push` in one tick — two undeduped App Router
+    // pushes, so Back needs two presses. This case is the entire justification
+    // for stopping propagation; if it ever goes green after the guard is
+    // removed, the guard is not doing what its comment claims.
+    pushSpy.mockClear();
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    fireEvent.click(screen.getByRole('link', { name: 'Alice' }));
+    expect(pushSpy).not.toHaveBeenCalled();
+  });
+
+  it('clicking outside the row link still navigates via router.push', () => {
+    pushSpy.mockClear();
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        defaultColumns={['nome', 'tipo']}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    // Proves the anchor did not swallow the rest of the row: the Tipo cell has
+    // no link, so its click bubbles to the <tr> exactly as it did before.
+    const [, firstRow] = screen.getAllByRole('row'); // index 0 is the header
+    fireEvent.click(within(firstRow!).getAllByRole('cell')[1]!);
+    expect(pushSpy).toHaveBeenCalledWith('/tests/1');
+  });
+
+  it('does not navigate from the row link while text is selected with the mouse', () => {
+    // Asserting `defaultPrevented` — not merely "no push" — is what pins the
+    // cancellation contract: next/link bails when the handler preventDefaults,
+    // and jsdom's Link never navigates anyway, so "no push" alone would pass
+    // even if the guard were deleted.
+    //
+    // `detail: 1` is load-bearing and must be explicit: testing-library's click
+    // defaults to `detail: 0`, which is the KEYBOARD shape (see the near-miss
+    // below), so without it this case would assert the opposite of what its
+    // name says.
+    pushSpy.mockClear();
+    const selection = vi
+      .spyOn(window, 'getSelection')
+      .mockReturnValue({ toString: () => 'Ali' } as unknown as Selection);
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      const link = screen.getByRole('link', { name: 'Alice' });
+      const event = createEvent.click(link, { detail: 1 });
+      fireEvent(link, event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(pushSpy).not.toHaveBeenCalled();
+    } finally {
+      selection.mockRestore();
+    }
+  });
+
+  it('still navigates on Enter while text is selected elsewhere on the page', () => {
+    // The NEAR-MISS half of the case above, and the whole reason the guard is
+    // scoped to `detail > 0`. `getSelection()` is document-scoped, and moving
+    // focus does not clear a selection — so a user who selected text anywhere,
+    // then Tabbed to a row link and pressed Enter, would otherwise have the
+    // navigation cancelled with nothing to explain why: the exact gesture this
+    // prop exists to enable, killed by a guard copied from a mouse-only row.
+    // A keyboard-activated click carries `detail === 0`.
+    const selection = vi
+      .spyOn(window, 'getSelection')
+      .mockReturnValue({ toString: () => 'selected elsewhere' } as unknown as Selection);
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      const link = screen.getByRole('link', { name: 'Alice' });
+      const event = createEvent.click(link, { detail: 0 });
+      fireEvent(link, event);
+      expect(event.defaultPrevented).toBe(false);
+    } finally {
+      selection.mockRestore();
+    }
+  });
+
+  it('renders no row link when onRowClick is set, and says so', () => {
+    // `onRowClick` outranks `rowHref`, so a link would navigate where the row
+    // opens a modal instead. Inert for every row on every render ⇒ a
+    // design-time fact ⇒ warned, not left to present as "the prop does nothing".
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onRowClick = vi.fn();
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+          onRowClick={onRowClick}
+        />,
+      );
+      expect(screen.queryByRole('link', { name: 'Alice' })).toBeNull();
+      fireEvent.click(screen.getByText('Alice'));
+      expect(onRowClick).toHaveBeenCalledWith('1', expect.objectContaining({ nome: 'Alice' }));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/onRowClick is set/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns when rowLinkColumn is set without a rowHref', () => {
+    // The likeliest slip of all: the two props sit adjacent in the skill's
+    // snippet, so copying one without the other names a perfectly valid column
+    // that can never link to anything.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowLinkColumn="nome"
+        />,
+      );
+      expect(screen.queryAllByRole('link')).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/rowHref is not set/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves the row accessible name unchanged', () => {
+    // The one case standing between a future `aria-label` on that anchor and a
+    // silently broken e2e suite: a descendant's aria-label REPLACES its text in
+    // the row's name-from-contents computation, so every
+    // `getByRole('row', { name })` locator in apps/web/e2e would stop matching
+    // at once, with nothing here to say why.
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    expect(screen.getByRole('row', { name: /Alice/ })).toBeTruthy();
+  });
+
+  it('names the row link after the id when the linked value is empty', () => {
+    // A nullable primary is ordinary here (`pedido.numero`, `cliente.nome` are
+    // both `.nullable().default(null)`). The default renderer emits `—`, so
+    // without a fallback every such row is an identical em dash in a screen
+    // reader's links list — indistinguishable, on the exact audience this prop
+    // exists for.
+    // `finally`, not a trailing assignment: a failing assertion would otherwise
+    // skip the restore and leave every LATER case rendering null-named rows,
+    // turning one red test into a cascade that hides its own cause.
+    snapState.current = {
+      data: [
+        { id: '1', path: 'x/1', data: { nome: null as unknown as string, tipo: '0' } },
+        { id: '2', path: 'x/2', data: { nome: '', tipo: '1' } },
+      ],
+      loading: false,
+      error: undefined,
+    };
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      // Distinct names, and each still points at its own row.
+      expect(screen.getByRole('link', { name: 'Abrir 1' }).getAttribute('href')).toBe('/tests/1');
+      expect(screen.getByRole('link', { name: 'Abrir 2' }).getAttribute('href')).toBe('/tests/2');
+    } finally {
+      snapState.current = {
+        data: [
+          { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
+          { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
+        ],
+        loading: false,
+        error: undefined,
+      };
+    }
+  });
+
+  it('does not label the row link when the cell has text', () => {
+    // The NEAR-MISS of the case above, and the guard on the rule the prop's
+    // docstring states: an `aria-label` on a cell that HAS text would replace
+    // that text in the row's name-from-contents computation, renaming every row
+    // and breaking the e2e `getByRole('row', { name })` locators. The fallback
+    // must fire ONLY where there is no text to replace.
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="nome"
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Alice' }).hasAttribute('aria-label')).toBe(false);
+    expect(screen.queryByRole('link', { name: 'Abrir 1' })).toBeNull();
+  });
+
+  it('wraps a virtual column too', () => {
+    // The virtual branch is the only one that can reach `row.id`, which is why
+    // /produtos had to hand-roll its link there. Both branches are wrapped so
+    // such a screen can adopt the prop instead.
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        defaultColumns={['ir']}
+        virtualColumns={[
+          {
+            key: 'ir',
+            label: 'Ir',
+            dependsOn: [],
+            renderCell: (row) => <span>abrir {row.id}</span>,
+          },
+        ]}
+        rowHref={(id) => `/tests/${id}`}
+        rowLinkColumn="ir"
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'abrir 1' }).getAttribute('href')).toBe('/tests/1');
+  });
+
+  it('renders no row link for a row with an empty id', () => {
+    // An `<a href="/tests/">` would be worse than today's dead row: it is
+    // keyboard-reachable and lands on a 404.
+    snapState.current = {
+      data: [{ id: '', path: 'x/', data: { nome: 'Alice', tipo: '0' } }],
+      loading: false,
+      error: undefined,
+    };
+    // `finally` so a failure here cannot cascade into every later case.
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      expect(screen.queryAllByRole('link')).toHaveLength(0);
+    } finally {
+      snapState.current = {
+        data: [
+          { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
+          { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
+        ],
+        loading: false,
+        error: undefined,
+      };
+    }
+  });
+
+  it('warns and renders no row link when rowLinkColumn names a hidden field', () => {
+    // The /produtos shape: `fields: { nome: { hidden: true } }` replaces a
+    // schema column with a virtual one. Naming the hidden key would render
+    // nothing, forever, while the row kept navigating — indistinguishable from
+    // "the prop does nothing" without this warning.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          fields={{ nome: { hidden: true } }}
+          rowHref={(id) => `/tests/${id}`}
+          rowLinkColumn="nome"
+        />,
+      );
+      expect(screen.queryAllByRole('link')).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/rowLinkColumn="nome"/));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('shows an empty state when no rows', () => {
@@ -643,6 +1056,11 @@ describe('TableView', () => {
 
     it('seeds the pipeline orderBy and limit from meta.defaultQuery', () => {
       buildPipelineSpy.mockClear();
+      // A column filter puts this table on the STATIC transport. The declared
+      // query with no filters now STREAMS (`resolveListMode`), and the pipeline
+      // is not built at all — so the seeding this test is about has to be
+      // observed on the path that still uses it.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
       wrap(
         <TableView
           schema={testSchema}
@@ -660,6 +1078,233 @@ describe('TableView', () => {
           orderBy: [{ field: 'nome', direction: 'asc' }],
           limit: 25,
         }),
+      );
+    });
+
+    it('STREAMS the declared query, and drops to the pipeline for anything else', () => {
+      // The #40 fix, pinned at the seam. The declared query — no filter, no
+      // search, declared sort — is the ONLY shape both index guards already
+      // assert an index for, so it is the only shape allowed to hold an open
+      // listener. Everything else must fall back to the one-shot pipeline.
+      //
+      // Without this case the gate could be deleted and every other test here
+      // would still pass: they assert what the PIPELINE is built with, and
+      // removing the gate simply routes everything back through it.
+      const meta = {
+        ...metaBase,
+        defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+      };
+      buildPipelineSpy.mockClear();
+      buildQuerySpy.mockClear();
+      const { unmount } = wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={meta}
+        />,
+      );
+      expect(
+        buildPipelineSpy,
+        'the declared query must not build a pipeline',
+      ).not.toHaveBeenCalled();
+      expect(buildQuerySpy, 'the declared query must build a classic query').toHaveBeenCalled();
+      unmount();
+
+      // One column filter is enough to leave the live path.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={meta}
+        />,
+      );
+      expect(buildPipelineSpy, 'a filtered query must go back to the pipeline').toHaveBeenCalled();
+    });
+
+    it('keeps a caller-owned query on the live transport, badge included', () => {
+      // The branch where the POLICY and the TRANSPORT disagree, and it is live
+      // in production: /clientes sets `queryOverride` for a matched endereço
+      // search. `pipeline` is null there, so `transportIsLive` is TRUE and
+      // `fallbackQuery` hands the caller's query to `useSnapshot` — the rows
+      // keep streaming, which is what the badge must report even though
+      // `listMode` calls this `static/override`.
+      //
+      // Sorting such a list changes no transport at all: `fallbackQuery`
+      // returns the override and never consults `effectiveOrderBy`. So the
+      // badge must read the same before and after the clicks.
+      //
+      // ⚠️ This is the only assertion on the badge anywhere in the repo. It
+      // outlived the toast whose regression test it arrived with (the toast
+      // was keyed on the transport, so it fired on every header click of these
+      // results while the badge beside it correctly said "Tempo real").
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          queryOverride={{ __q: 'caller' } as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+          }}
+        />,
+      );
+      const badge = screen.getByText('Tempo real').closest('[data-list-mode]');
+      expect(badge?.getAttribute('data-list-mode')).toBe('live');
+      expect(badge?.getAttribute('data-list-policy')).toBe('static');
+      expect(badge?.getAttribute('data-list-reason')).toBe('override');
+      fireEvent.click(screen.getByText('Nome'));
+      fireEvent.click(screen.getByText('Tipo'));
+      expect(
+        screen.getByText('Tempo real'),
+        'sorting an overridden query changes no transport',
+      ).toBeDefined();
+    });
+
+    it('lets the SEARCH keep the orderBy lead when a column range is also active', () => {
+      // /produtos' search emits a `nome` PREFIX RANGE and forces `nome asc` to
+      // keep it leading; its docstring says another sort "silently stop[s] using
+      // produtos(paiId, nome) — turning the seek this search exists to be into
+      // the full scan". A column range is therefore the SECOND inequality, and
+      // the second one is a post-filter either way, so the lead belongs to the
+      // search — which has an index built for it.
+      //
+      // Ranked the other way round, typing in the search box while a date range
+      // was open silently demoted the search's own range and scanned.
+      searchParamsRef.current = new URLSearchParams('observacoes=between:1..9&q=cami');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={metaBase}
+          search={{
+            placeholder: 'Buscar',
+            toFilters: (t) => [{ field: 'nome', op: 'gte', value: t }],
+            toForcedOrderBy: () => ({ field: 'nome', direction: 'asc' as const }),
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'nome', direction: 'asc' }] }),
+      );
+    });
+
+    it('gives a column range the lead when no search is competing for it', () => {
+      searchParamsRef.current = new URLSearchParams('observacoes=between:1..9');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={metaBase}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
+      );
+    });
+
+    it('lets a header click flip the range column, the one legal sort here', () => {
+      // `forcedSort` outranks the user sort, so without this the range column's
+      // own header is a dead control: the click writes `?sort=` to the URL while
+      // the table stays put. The DIRECTION is free — both are index-legal.
+      searchParamsRef.current = new URLSearchParams(
+        'observacoes=between:1..9&sort=observacoes:asc',
+      );
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={metaBase}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'asc' }] }),
+      );
+    });
+
+    it('widens the projection by an action predicate, and disables it when undeclared', () => {
+      // The trap this pins: `row.data` is a `select()` projection on the static
+      // path, so a predicate reading a field nobody projected gets `undefined`
+      // and refuses EVERY row — behind a disabled button with a plausible
+      // tooltip. Three pedido actions already re-read the whole document to
+      // dodge exactly this.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' as const }],
+              columns: ['nome'],
+              limit: 25,
+            },
+          }}
+          selectable
+          actions={[
+            {
+              id: 'g',
+              label: 'Guardada',
+              requiresSelection: true,
+              rowIneligibleReason: () => null,
+              rowEligibilityFields: ['tipo'],
+              run: () => {},
+            },
+          ]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ select: expect.arrayContaining(['nome', 'tipo']) }),
+      );
+
+      // No declaration ⇒ full-document read, the same escape hatch a virtual
+      // column without `dependsOn` gets. `select: undefined` is that read.
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              orderBy: [{ field: 'nome', direction: 'asc' as const }],
+              columns: ['nome'],
+              limit: 25,
+            },
+          }}
+          selectable
+          actions={[
+            {
+              id: 'g',
+              label: 'Guardada',
+              requiresSelection: true,
+              rowIneligibleReason: () => null,
+              run: () => {},
+            },
+          ]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ select: undefined }),
       );
     });
 
@@ -687,6 +1332,11 @@ describe('TableView', () => {
 
     it('lets the pageSize prop override meta.defaultQuery.limit', () => {
       buildPipelineSpy.mockClear();
+      // A column filter puts this table on the STATIC transport. The declared
+      // query with no filters now STREAMS (`resolveListMode`), and the pipeline
+      // is not built at all — so the seeding this test is about has to be
+      // observed on the path that still uses it.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
       wrap(
         <TableView
           schema={testSchema}
@@ -707,6 +1357,11 @@ describe('TableView', () => {
 
     it('prepends literal base filters and binds param filters from queryParams', () => {
       buildPipelineSpy.mockClear();
+      // A column filter puts this table on the STATIC transport. The declared
+      // query with no filters now STREAMS (`resolveListMode`), and the pipeline
+      // is not built at all — so the seeding this test is about has to be
+      // observed on the path that still uses it.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
       wrap(
         <TableView
           schema={testSchema}
@@ -726,7 +1381,12 @@ describe('TableView', () => {
       expect(buildPipelineSpy).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
-          filters: [{ field: 'tipo', op: 'eq', value: '1' }],
+          // Base first, the operator's column filter after — which is the
+          // ordering this test is named for.
+          filters: [
+            { field: 'tipo', op: 'eq', value: '1' },
+            { field: 'observacoes', op: 'contains', value: 'x' },
+          ],
         }),
       );
     });
@@ -846,6 +1506,11 @@ describe('TableView', () => {
       // The column set IS the `select()` projection — Enterprise bills data
       // scanned, which is why the declaration lives on defaultQuery.
       buildPipelineSpy.mockClear();
+      // A column filter puts this table on the STATIC transport. The declared
+      // query with no filters now STREAMS (`resolveListMode`), and the pipeline
+      // is not built at all — so the seeding this test is about has to be
+      // observed on the path that still uses it.
+      searchParamsRef.current = new URLSearchParams('observacoes=contains:x');
       wrap(
         <TableView
           schema={testSchema}
@@ -889,6 +1554,364 @@ describe('TableView', () => {
       const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
       expect(headers).toContain('Tipo');
       expect(headers).not.toContain('Nome');
+    });
+  });
+
+  /**
+   * The control beside the mode badge that puts a frozen list back on the
+   * declared query.
+   *
+   * It exists because the app used to ask for something impossible:
+   * `STATIC_REASON_LABEL.sort` says "limpe a ordenação para voltar ao tempo
+   * real", but a sort renders no filter chip, `ActiveFilters` returns null with
+   * no chips, and `clearAll` never touched the sort — so in the one case that
+   * needed an escape hatch, nothing was rendered and nothing could have helped.
+   */
+  describe('reset control', () => {
+    const RESET = 'Limpar ordenação, filtros e busca';
+    // ⚠️ Spread, exactly like every other meta fixture in this file, and not by
+    // style: `delfrance/default-query-needs-index` engages on a `defaultQuery`
+    // whose object has a LITERAL `collectionPath` sibling, and would then
+    // demand a real entry in firestore.indexes.json for a collection called
+    // "tests". The spread leaves no literal sibling, so the rule bails.
+    const metaBase = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+    const declared = {
+      ...metaBase,
+      defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+    };
+    const resetButton = () => screen.getByRole('button', { name: RESET }) as HTMLButtonElement;
+
+    it('brings a sort-only static list back to the live transport', () => {
+      // THE case the control was added for. Nothing is filtered and nothing is
+      // searched — the sort alone is what left the streaming path.
+      searchParamsRef.current = new URLSearchParams('sort=tipo:desc');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+        />,
+      );
+      expect(screen.getByText('Resultado fixo')).toBeDefined();
+
+      searchParamsRef.current = new URLSearchParams();
+      buildPipelineSpy.mockClear();
+      buildQuerySpy.mockClear();
+      fireEvent.click(resetButton());
+
+      expect(
+        buildPipelineSpy,
+        'back on the declared query, so nothing may build a pipeline',
+      ).not.toHaveBeenCalled();
+      expect(
+        buildQuerySpy,
+        'the declared query streams through a classic query',
+      ).toHaveBeenCalled();
+      expect(screen.getByText('Tempo real')).toBeDefined();
+    });
+
+    it('clears the filter, the term and the sort in one click', () => {
+      // One assertion pins all three: `encodeTableState` serialises filters,
+      // sort and search together, so dropping any single setter leaves its own
+      // key behind in the remembered query string. It also pins that the reset
+      // is REMEMBERED as cleared rather than resurrected on the next visit.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana&q=cami&sort=tipo:desc');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+          search={{
+            placeholder: 'Buscar…',
+            toFilters: (term: string) => [{ field: 'nome', op: 'gte' as const, value: term }],
+          }}
+        />,
+      );
+      searchParamsRef.current = new URLSearchParams();
+      fireEvent.click(resetButton());
+
+      expect(readListViewMemory(MEMORY_KEY)?.qs).toBe('');
+    });
+
+    it('does not collide with the chip row’s clear-all locator', () => {
+      // Playwright matches an accessible name by SUBSTRING unless a spec passes
+      // `exact`, and `clientes.cadastros.e2e.spec.ts` does not — it locates
+      // "Limpar filtros" and then asserts the count drops to zero. Naming this
+      // control "Limpar filtros e ordenação" would make that spec ambiguous and
+      // then red, from a file it never imports. The regex mirrors those
+      // semantics so the collision is caught here in milliseconds instead.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+        />,
+      );
+      searchParamsRef.current = new URLSearchParams();
+
+      expect(screen.getAllByRole('button', { name: /Limpar filtros/ })).toHaveLength(1);
+    });
+
+    it('is always mounted, and disabled only when nothing of yours is set', () => {
+      // "Sempre presente" is the decision: an operator should never have to
+      // discover that the way back appears only under some conditions.
+      const render = () =>
+        wrap(
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={declared}
+          />,
+        );
+
+      const pristine = render();
+      expect(resetButton().hasAttribute('disabled'), 'nothing to clear').toBe(true);
+      pristine.unmount();
+
+      searchParamsRef.current = new URLSearchParams('sort=tipo:desc');
+      const sorted = render();
+      expect(resetButton().hasAttribute('disabled'), 'a sort is yours to clear').toBe(false);
+      sorted.unmount();
+
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      render();
+      expect(resetButton().hasAttribute('disabled'), 'a filter is yours to clear').toBe(false);
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('does not count the orderBy prop as the operator’s sort', () => {
+      // `resolveInitialTableState` seeds `sort` from the `orderBy` prop, so
+      // `sort !== undefined` is TRUE on a virgin load of any screen passing it
+      // — /nfe/comunicacoes today. Counting that would arm the control before
+      // the operator touched anything, and clicking it would change nothing
+      // they can see: the "enabled button that does nothing" this control's
+      // own rule exists to prevent.
+      const pristine = wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+          orderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      expect(resetButton().hasAttribute('disabled'), 'the prop is not theirs').toBe(true);
+      pristine.unmount();
+
+      // A real header click on top of that prop IS theirs, and must arm it.
+      searchParamsRef.current = new URLSearchParams('sort=tipo:desc');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+          orderBy={{ field: 'nome', direction: 'asc' }}
+        />,
+      );
+      expect(resetButton().hasAttribute('disabled'), 'a real sort is theirs').toBe(false);
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('resets to the screen’s own opening order, not past it', () => {
+      // The `orderBy` prop is documented as OVERRIDING meta.defaultQuery.orderBy,
+      // so a screen may legitimately open on a different order. Resetting to
+      // `undefined` would discard that declaration on a click the operator
+      // meant as "undo MY changes", and nothing but a reload would bring it
+      // back — the URL sync has meanwhile dropped `?sort=`.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={declared}
+          orderBy={{ field: 'tipo', direction: 'desc' }}
+        />,
+      );
+      searchParamsRef.current = new URLSearchParams();
+      fireEvent.click(resetButton());
+
+      // The screen's order survived; only the operator's filter went.
+      expect(readListViewMemory(MEMORY_KEY)?.qs).toBe('sort=tipo%3Adesc');
+      expect(resetButton().hasAttribute('disabled'), 'nothing of theirs is left').toBe(true);
+    });
+
+    it('stays offered, and honest, where live is unreachable', () => {
+      // A caller-owned query holds the POLICY on static, but none of it is the
+      // operator's, so the control must not offer to fix what it cannot reach.
+      // Keying the enabled rule on `listMode.mode !== 'live'` — a very
+      // plausible reading of "show it when the list is frozen" — enables a
+      // button here that would do nothing.
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          queryOverride={{ __q: 'caller' } as never}
+          meta={declared}
+        />,
+      );
+      expect(resetButton().hasAttribute('disabled')).toBe(true);
+      expect(screen.getByText('Tempo real')).toBeDefined();
+    });
+  });
+
+  describe('update monitor', () => {
+    // The monitor is a SECOND listener, watching for another session's writes
+    // behind the rows. It compensates for a frozen result set, so a list whose
+    // rows stream has nothing for it to find — every change is already on
+    // screen by the time it could report one.
+    const metaBase = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+    const declared = {
+      ...metaBase,
+      defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' as const }], limit: 25 },
+    };
+    // ⚠️ `testSchema` carries NEITHER `ultimaModificacao` nor `timestamp`, so
+    // every test here would pass vacuously against it: the field resolution
+    // returns null on the schema alone and the gate under test is never
+    // reached. This schema is what makes the gate the only reason for a null.
+    const monitoredSchema = z.object({
+      nome: z.string(),
+      tipo: z.enum(['0', '1']).describe('Tipo'),
+      ultimaModificacao: z.number().nullable().default(null),
+    });
+    const monitored = () => fakeCollection() as unknown as CollectionHandle<typeof monitoredSchema>;
+    const staleIcon = () =>
+      screen.queryByRole('button', { name: 'Página desatualizada — atualizar' });
+    const renderMonitored = () =>
+      wrap(
+        <TableView
+          schema={monitoredSchema}
+          collection={monitored()}
+          db={{} as never}
+          meta={declared}
+        />,
+      );
+
+    it('watches nothing while the rows are streaming', () => {
+      renderMonitored();
+      expect(screen.getByText('Tempo real')).toBeDefined();
+      expect(
+        monitorFieldRef.current,
+        'a null field is what keeps useSnapshot from subscribing at all',
+      ).toBe(null);
+    });
+
+    it('watches once the rows are frozen', () => {
+      // Pins that this is a GATE and not a deletion. The same list, one column
+      // filter later, cannot see another session's writes by itself and still
+      // owes the operator that signal.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      renderMonitored();
+      searchParamsRef.current = new URLSearchParams();
+      expect(screen.getByText('Resultado fixo')).toBeDefined();
+      expect(monitorFieldRef.current).toBe('ultimaModificacao');
+    });
+
+    it('keeps the notice reachable on a frozen list', () => {
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      monitorRef.current = { stale: true, acknowledge: vi.fn() };
+      renderMonitored();
+      searchParamsRef.current = new URLSearchParams();
+      expect(screen.getByText('Resultado fixo')).toBeDefined();
+      expect(staleIcon(), 'a one-shot result cannot refresh itself').not.toBeNull();
+    });
+
+    it('never shows the stale notice beside a “Tempo real” badge', () => {
+      // The mock reports `stale` whatever field it is handed, so this fails
+      // unless TableView ALSO refuses to render the icon. Two gates, one const:
+      // the field closes the listener, this closes the pixel, and only this one
+      // is visible to a render.
+      monitorRef.current = { stale: true, acknowledge: vi.fn() };
+      renderMonitored();
+      expect(screen.getByText('Tempo real')).toBeDefined();
+      expect(staleIcon(), 'the rows already carry every change').toBeNull();
+    });
+
+    it('hands the monitor a new generation when a re-read happens, and only then', () => {
+      // The hook re-pins its baseline whenever `rowsGeneration` changes, so
+      // the notice comes down on a re-read that did NOT come from its own
+      // button — a review found "Carregar mais" leaving the yellow icon up
+      // over rows that had just been refetched and already contained the write
+      // it was reporting. This is the TableView half of that contract; the
+      // hook's own file covers what it does with the value.
+      //
+      // ⚠️ The second half matters as much as the first. `pipeline` is the
+      // signal precisely because it is STABLE per row query — were it to churn
+      // per render, every render would re-pin and the monitor would silently
+      // stop reporting anything at all.
+      searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+      // ⚠️ ONE handle across both renders. A fresh one per render is a new
+      // pipeline, which is correct — `collection` really is part of the query —
+      // and would make the stability half of this test pass for the wrong
+      // reason. Real screens hold both this and `pathContext` stable, which is
+      // what the data layer already requires of them.
+      // ⚠️ ONE handle and ONE db across both renders. Both are dependencies of
+      // the pipeline memo, so a fresh object per render is a genuinely new
+      // query — correct behaviour, but it would make this test's stability
+      // half fail for a reason that has nothing to do with the monitor.
+      const handle = monitored();
+      const db = {} as never;
+      // ⚠️ A FUNCTION, so each render gets a fresh element carrying the same
+      // prop values. Reusing one element object makes React bail out of the
+      // subtree entirely — the component never re-renders and the stability
+      // half of this test passes without ever exercising anything.
+      const list = () => (
+        <TableView
+          schema={monitoredSchema}
+          collection={handle}
+          db={db}
+          meta={declared}
+          // 2 rows in the snapshot === pageSize 2 → the page looks full → button.
+          pageSize={2}
+        />
+      );
+      const view = wrap(list());
+      searchParamsRef.current = new URLSearchParams();
+      const first = monitorGenRef.current;
+      expect(first, 'a frozen list is watched, so it has a row query').toBeTruthy();
+
+      // An idle re-render: same prop values, nothing about the query changed.
+      view.rerender(<MantineTestProvider>{list()}</MantineTestProvider>);
+      expect(monitorGenRef.current, 'nothing was re-read').toBe(first);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      expect(monitorGenRef.current, 'the rows were re-read').not.toBe(first);
+    });
+
+    it('leaves a caller-owned query watching nothing, because it streams', () => {
+      // ⚠️ THE case that separates the two variables. `queryOverride` holds the
+      // POLICY on static while `fallbackQuery` hands the caller's query to
+      // `useSnapshot`, which streams it — /clientes' endereço search. Keying
+      // either gate on `listMode.mode`, a very plausible reading of "watch it
+      // when the list is frozen", leaves a pointless listener open here AND
+      // paints "desatualizada" beside a "Tempo real" badge. That exact mix-up
+      // has already shipped twice out of this file.
+      monitorRef.current = { stale: true, acknowledge: vi.fn() };
+      wrap(
+        <TableView
+          schema={monitoredSchema}
+          collection={monitored()}
+          db={{} as never}
+          queryOverride={{ __q: 'caller' } as never}
+          meta={declared}
+        />,
+      );
+      expect(screen.getByText('Tempo real')).toBeDefined();
+      expect(monitorFieldRef.current).toBe(null);
+      expect(staleIcon()).toBeNull();
     });
   });
 
@@ -971,14 +1994,14 @@ describe('TableView', () => {
           />
         </MantineTestProvider>,
       );
-      expect(buildPipelineSpy).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
-      );
-      expect(buildPipelineSpy).not.toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ orderBy: [{ field: 'tipo', direction: 'asc' }] }),
-      );
+      // Asserted through the TRANSPORT, which is now the stronger form. Only a
+      // query that is byte-for-byte the declared one reaches the live path
+      // (`resolveListMode`), so "no pipeline was built" IS "the sort is the
+      // declared default". Had the click been recorded as `tipo:asc`, the sort
+      // would differ from the declaration, the table would be static, and the
+      // pipeline WOULD have been built — so this negative cannot pass vacuously.
+      expect(buildPipelineSpy).not.toHaveBeenCalled();
+      expect(buildQuerySpy).toHaveBeenCalled();
     });
 
     it('falls back to the declared default once cleared', () => {
@@ -1002,10 +2025,11 @@ describe('TableView', () => {
           />
         </MantineTestProvider>,
       );
-      expect(buildPipelineSpy).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ orderBy: [{ field: 'observacoes', direction: 'desc' }] }),
-      );
+      // Same reasoning as the case above: reaching the LIVE transport is only
+      // possible for the declared query, so this proves the fallback landed on
+      // it — and additionally that clearing a forced sort restores streaming.
+      expect(buildPipelineSpy).not.toHaveBeenCalled();
+      expect(buildQuerySpy).toHaveBeenCalled();
     });
   });
 
@@ -1014,7 +2038,7 @@ describe('TableView', () => {
       // The reported bug: filter /produtos, open a record, click Cancelar. The
       // detail page navigates to the BARE list path, so the query string that
       // held the filter is gone by the time the list remounts.
-      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', pages: 1, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', scroll: 0 });
       buildPipelineSpy.mockClear();
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
       expect(buildPipelineSpy).toHaveBeenCalledWith(
@@ -1027,7 +2051,7 @@ describe('TableView', () => {
       // Restoring from an effect would spend one full unfiltered page of
       // scanned data before correcting itself — and this database bills data
       // scanned. Exactly one query, already narrowed.
-      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', pages: 1, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', scroll: 0 });
       buildPipelineSpy.mockClear();
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
       // `buildPipelineSpy` is declared with no parameters, so `mock.calls` is
@@ -1039,7 +2063,7 @@ describe('TableView', () => {
     });
 
     it('lets the URL win over the memory, so a shared link is never overridden', () => {
-      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', pages: 1, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'nome=contains%3Aana', scroll: 0 });
       searchParamsRef.current = new URLSearchParams('nome=contains:bob');
       buildPipelineSpy.mockClear();
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
@@ -1068,7 +2092,7 @@ describe('TableView', () => {
     });
 
     it('restores the "Carregar mais" window, capped', () => {
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 10, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'pages=10', scroll: 0 });
       buildPipelineSpy.mockClear();
       wrap(
         <TableView
@@ -1090,7 +2114,7 @@ describe('TableView', () => {
       // Every effect runs once on mount, including the one that resets the
       // window whenever the query shape changes. Unguarded, it undoes the
       // restore a beat after it lands and the page count never comes back.
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'pages=2', scroll: 0 });
       buildPipelineSpy.mockClear();
       wrap(
         <TableView
@@ -1114,7 +2138,7 @@ describe('TableView', () => {
       // already armed on the second run, so the reset fires and the restored
       // window vanishes in `next dev` while production is fine. Rendering
       // without StrictMode (as every other case here does) cannot see it.
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'pages=2', scroll: 0 });
       buildPipelineSpy.mockClear();
       render(
         <StrictMode>
@@ -1155,6 +2179,77 @@ describe('TableView', () => {
       vi.useRealTimers();
     });
 
+    it('persists where the operator was, not where a later collapse clamped them', async () => {
+      // The `onScroll` guard ignores the clamp EVENT, but a timer already armed
+      // by a real scroll is not disarmed by it. A callback that read
+      // `window.scrollY` when it fired would therefore read whatever a collapse
+      // landing inside those 150ms clamped it to — a wheel gesture ending on
+      // "Atualizar" or a chip is enough, and `lookupLoading` flipping is not
+      // human-timed at all. The offset is captured in the handler instead.
+      vi.useFakeTimers();
+      vi.stubGlobal('scrollTo', vi.fn());
+      const withRows = snapState.current;
+      // A third value, so "wrote the clamp" and "never wrote" stay tellable
+      // apart from "wrote the right thing".
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 900 });
+      const { rerender } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 640, configurable: true });
+      window.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS - 50);
+
+      // The table collapses inside the debounce window and the browser clamps.
+      snapState.current = { ...withRows, loading: true };
+      rerender(
+        <MantineTestProvider>
+          <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />
+        </MantineTestProvider>,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS + 20);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(640);
+
+      snapState.current = withRows;
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it('ignores the browser clamp that follows a collapsed table', async () => {
+      // Whenever the table is swapped for skeletons the document collapses
+      // below the operator's offset and the browser clamps `scrollY` — which
+      // fires a REAL scroll event. Persisting that would overwrite the
+      // remembered position with 0, and the one-shot restore latch is long
+      // since burned, so the offset is gone for good. A scroll event arriving
+      // while there is no table on screen is never the operator moving.
+      vi.useFakeTimers();
+      vi.stubGlobal('scrollTo', vi.fn());
+      const withRows = snapState.current;
+      const { rerender } = wrap(
+        <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 640, configurable: true });
+      window.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS + 20);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(640);
+
+      snapState.current = { ...withRows, loading: true };
+      rerender(
+        <MantineTestProvider>
+          <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />
+        </MantineTestProvider>,
+      );
+      Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+      window.dispatchEvent(new Event('scroll'));
+      await vi.advanceTimersByTimeAsync(SCROLL_PERSIST_DEBOUNCE_MS + 20);
+      expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(640);
+
+      snapState.current = withRows;
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
     it('flushes a pending scroll when the list unmounts', async () => {
       // Clicking a row within the debounce window of the last scroll is exactly
       // the gesture this feature exists to remember; without the flush it is
@@ -1180,7 +2275,7 @@ describe('TableView', () => {
       // set they never scrolled when their own rows finally land.
       const scrollTo = vi.fn();
       vi.stubGlobal('scrollTo', scrollTo);
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       const withRows = snapState.current;
       snapState.current = { data: [], loading: false, error: undefined };
 
@@ -1208,7 +2303,7 @@ describe('TableView', () => {
       // `scrollY` 0 over the offset the restore is still on its way to
       // putting back.
       vi.stubGlobal('scrollTo', vi.fn());
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       const { unmount } = wrap(
         <TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />,
       );
@@ -1218,7 +2313,7 @@ describe('TableView', () => {
     });
 
     it('still collapses the window when the filter changes afterwards', () => {
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 2, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'pages=2', scroll: 0 });
       wrap(
         <TableView
           schema={testSchema}
@@ -1242,7 +2337,7 @@ describe('TableView', () => {
       // yet tall enough for silently lands at the bottom instead.
       const scrollTo = vi.fn();
       vi.stubGlobal('scrollTo', scrollTo);
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
       await vi.waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 840));
       vi.unstubAllGlobals();
@@ -1254,7 +2349,7 @@ describe('TableView', () => {
       // try again when the rows actually arrive.
       const scrollTo = vi.fn();
       vi.stubGlobal('scrollTo', scrollTo);
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       const withRows = snapState.current;
       snapState.current = { data: [], loading: false, error: undefined };
 
@@ -1283,7 +2378,7 @@ describe('TableView', () => {
       // and before the restore has landed. Seeded with a zero it would blank the
       // offset that was on its way back, so leaving again right away lost it.
       vi.stubGlobal('scrollTo', vi.fn());
-      writeListViewMemory(MEMORY_KEY, { qs: '', pages: 1, scroll: 840 });
+      writeListViewMemory(MEMORY_KEY, { qs: '', scroll: 840 });
       wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
       expect(readListViewMemory(MEMORY_KEY)?.scroll).toBe(840);
       vi.unstubAllGlobals();
@@ -1312,6 +2407,169 @@ describe('TableView', () => {
       // `copyFrom` belongs to the navigation that carried it, not to this
       // screen's saved position — restoring it later would be nonsense.
       expect(readListViewMemory(MEMORY_KEY)?.qs).toBe('sort=nome%3Aasc');
+    });
+  });
+
+  describe('"Carregar mais"', () => {
+    // The widened read, as the real hooks report it: `data` is KEPT and
+    // `loading` flips (usePipelineSnapshot.ts:31 and useSnapshot.ts:133 both do
+    // exactly this). The shared stub cannot express that — and over a hundred
+    // cases rely on it never reporting `loading` — so these cases drive it by
+    // hand and put it back afterwards.
+    const settled = snapState.current;
+    afterEach(() => {
+      snapState.current = settled;
+    });
+
+    function beginRefetch() {
+      snapState.current = { ...snapState.current, loading: true };
+    }
+    function settle(rows: number) {
+      snapState.current = {
+        data: Array.from({ length: rows }, (_, i) => ({
+          id: String(i + 1),
+          path: `x/${i + 1}`,
+          data: { nome: `Row ${i + 1}`, tipo: '0' },
+        })),
+        loading: false,
+        error: undefined,
+      };
+    }
+    const table = (pageSize: number) => (
+      <MantineTestProvider>
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          pageSize={pageSize}
+        />
+      </MantineTestProvider>
+    );
+
+    it('keeps the loaded rows on screen while the wider read is in flight', () => {
+      // The reported bug. The WINDOW is the scroller, so swapping the table for
+      // three skeletons collapses the document below the operator's offset and
+      // the browser clamps `scrollY` to 0 — the list jumps to the top on every
+      // click. Keeping the rows mounted removes the height change that starts it.
+      //
+      // ⚠️ The order is load-bearing: `loading` must flip AFTER the click, which
+      // is the sequence the real hook produces. Flipping it first passes even
+      // when the mechanism is dead.
+      const view = render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      beginRefetch();
+      view.rerender(table(2));
+      expect(screen.queryByRole('table')).not.toBeNull();
+      expect(screen.getByText('Alice')).toBeTruthy();
+    });
+
+    it('still shows skeletons when the FILTER changes, not just any refetch', () => {
+      // The near miss. Rows that no longer match the chips above them would be
+      // actively misleading, so the previous window may only survive a re-read
+      // that WIDENS it. Without this pair the case above only proves the rows
+      // are kept, never that they stop being kept.
+      const view = render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      settle(4);
+      view.rerender(table(2));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Filtrar Nome' }));
+      fireEvent.change(screen.getByLabelText('Nome contém'), { target: { value: 'ana' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar' }));
+      beginRefetch();
+      view.rerender(table(2));
+      expect(screen.queryByRole('table')).toBeNull();
+    });
+
+    it('still shows skeletons when the SORT changes', () => {
+      const view = render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      settle(4);
+      view.rerender(table(2));
+
+      fireEvent.click(screen.getByText('Nome'));
+      beginRefetch();
+      view.rerender(table(2));
+      expect(screen.queryByRole('table')).toBeNull();
+    });
+
+    it('keeps the button in place, loading, instead of letting it vanish', () => {
+      // During a growth the rows on screen are the PREVIOUS window, so their
+      // count no longer equals the widened limit and the fullness test goes
+      // false. Left at that the footer disappears mid-click and the page jumps
+      // under the cursor — the very shift this change exists to remove.
+      const view = render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      // ⚠️ Asserted BEFORE `beginRefetch()`, and that order is the whole
+      // point. `snap.loading` lags `pages` by one commit, so THIS is the render
+      // where the fullness test has already gone false and nothing has replaced
+      // it yet — the commit the footer used to disappear on. Skipping straight
+      // to the loading commit hides the gap entirely.
+      const onClickRender = screen.queryByRole('button', { name: 'Carregar mais' });
+      expect(onClickRender).not.toBeNull();
+      expect(onClickRender?.hasAttribute('data-loading')).toBe(true);
+
+      beginRefetch();
+      view.rerender(table(2));
+      expect(
+        screen.getByRole('button', { name: 'Carregar mais' }).hasAttribute('data-loading'),
+      ).toBe(true);
+    });
+
+    it('mirrors the window to ?pages= so browser Back can give it back', () => {
+      const replaceState = vi.spyOn(window.history, 'replaceState');
+      render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      expect(replaceState).toHaveBeenLastCalledWith(null, '', '/clientes?pages=2');
+      replaceState.mockRestore();
+    });
+
+    it('drops ?pages= again when the query shape changes', () => {
+      // The window described the result set the operator was looking at and is
+      // meaningless against a different one — and a stale `pages=4` left in the
+      // URL is paid for again on the next reload.
+      const replaceState = vi.spyOn(window.history, 'replaceState');
+      render(table(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Filtrar Nome' }));
+      fireEvent.change(screen.getByLabelText('Nome contém'), { target: { value: 'ana' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Aplicar' }));
+      expect(replaceState).toHaveBeenLastCalledWith(null, '', '/clientes?nome=contains%3Aana');
+      replaceState.mockRestore();
+    });
+
+    it('issues a window arriving in the URL as ONE query', () => {
+      // A default page followed by a wider re-read would spend a full page of
+      // scanned data before correcting itself, on a database that bills it.
+      searchParamsRef.current = new URLSearchParams('pages=3');
+      buildPipelineSpy.mockClear();
+      render(table(2));
+      const limits = buildPipelineSpy.mock.calls.map(
+        (call) => (call as unknown as [unknown, { limit: number }])[1].limit,
+      );
+      expect(limits).toEqual([6]);
+    });
+
+    it('clamps a hand-edited window to the ceiling', () => {
+      // `?pages=` is a cost lever anyone can type, and this database bills data
+      // scanned.
+      searchParamsRef.current = new URLSearchParams('pages=999');
+      buildPipelineSpy.mockClear();
+      render(table(2));
+      expect(buildPipelineSpy).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 2 * MAX_PAGES }),
+      );
+    });
+
+    it('says so at the ceiling instead of quietly dropping the button', () => {
+      // A limit the operator cannot see is indistinguishable from a list that
+      // ended, which is how they would conclude the missing rows do not exist.
+      settle(MAX_PAGES);
+      searchParamsRef.current = new URLSearchParams(`pages=${MAX_PAGES}`);
+      render(table(1));
+      expect(screen.queryByRole('button', { name: 'Carregar mais' })).toBeNull();
+      expect(screen.getByText(/Limite de carregamento atingido/)).toBeTruthy();
     });
   });
 
@@ -1402,7 +2660,7 @@ describe('TableView', () => {
     });
 
     it('shows a restored term in the box and as a chip', () => {
-      writeListViewMemory(MEMORY_KEY, { qs: 'q=camiseta', pages: 1, scroll: 0 });
+      writeListViewMemory(MEMORY_KEY, { qs: 'q=camiseta', scroll: 0 });
       wrap(
         <TableView
           schema={testSchema}
@@ -1513,7 +2771,17 @@ describe('TableView', () => {
         renderWithResolver(resolveIds);
         await vi.waitFor(() => expect(resolveIds).toHaveBeenCalledTimes(1));
 
-        fireEvent.click(screen.getByRole('button', { name: 'Página desatualizada — atualizar' }));
+        // ⚠️ Wait for the notice rather than assuming it. It only exists once
+        // the term has RESOLVED: while the resolution is in flight the pipeline
+        // is withheld, so the list is momentarily on the classic transport,
+        // where there is no frozen result to be stale about and TableView
+        // switches the monitor off. Reaching for the button on the call count
+        // alone lands in exactly that window.
+        const refresh = await vi.waitFor(() =>
+          screen.getByRole('button', { name: 'Página desatualizada — atualizar' }),
+        );
+        expect(screen.getByText('Resultado fixo')).toBeDefined();
+        fireEvent.click(refresh);
         await vi.waitFor(() => expect(resolveIds).toHaveBeenCalledTimes(2));
       });
 
@@ -1533,6 +2801,255 @@ describe('TableView', () => {
         expect(buildQuerySpy).not.toHaveBeenCalled();
         pipelineSupportedRef.current = true;
       });
+    });
+  });
+
+  describe('search.toTextQuery — widening an empty result', () => {
+    const metaWiden = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+
+    /** The prefix range the widening exists to sit BEHIND. */
+    const searchWiden = {
+      placeholder: 'Buscar',
+      toFilters: (t: string) => [{ field: 'nome', op: 'gte' as const, value: t }],
+      toForcedOrderBy: () => ({ field: 'nome', direction: 'asc' as const }),
+      toTextQuery: (t: string) => t.trim() || undefined,
+    };
+
+    function renderComBusca(termo = 'cami', extra: { pageSize?: number } = {}) {
+      searchParamsRef.current = new URLSearchParams(`q=${encodeURIComponent(termo)}`);
+      buildPipelineSpy.mockClear();
+      return wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={metaWiden}
+          search={searchWiden}
+          {...extra}
+        />,
+      );
+    }
+
+    /** `n` widened rows, ids distinct so the table can key them. */
+    function widenComLinhas(n: number) {
+      return {
+        data: Array.from({ length: n }, (_, i) => ({
+          id: `w${i}`,
+          path: `x/w${i}`,
+          data: { nome: `Widened ${i}`, tipo: '0' },
+        })),
+        loading: false,
+        error: undefined,
+      } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>;
+    }
+
+    /** Every spec `buildPipeline` was handed that carried a text search. */
+    function especsDeTexto() {
+      return buildPipelineSpy.mock.calls
+        .map((c) => c[1] as { textSearch?: { query: string }; filters?: unknown[] } | undefined)
+        .filter((spec) => !!spec?.textSearch);
+    }
+
+    it('does not widen while the primary query is returning rows', () => {
+      // The common path, and the one that must cost nothing. `snapState` still
+      // holds Alice and Bob.
+      renderComBusca();
+      expect(especsDeTexto()).toHaveLength(0);
+      expect(screen.queryByText(/Mostrando nomes que contêm/)).toBeNull();
+    });
+
+    it('widens once the primary has answered with nothing, and says so', () => {
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = {
+        data: [{ id: '9', path: 'x/9', data: { nome: 'Bandeja Gatinho', tipo: '0' } }],
+        loading: false,
+        error: undefined,
+      };
+      renderComBusca();
+
+      const especs = especsDeTexto();
+      expect(especs).toHaveLength(1);
+      expect(especs[0]?.textSearch).toEqual({ query: 'cami' });
+      // The rows have to reach the TABLE, not just the query — `rows` is what
+      // selection, counts and the action bar all read.
+      expect(screen.getByText('Bandeja Gatinho')).toBeTruthy();
+      expect(screen.getByText(/Mostrando nomes que contêm/)).toBeTruthy();
+    });
+
+    it('drops the search filters the widening exists to get past', () => {
+      // ⚠️ The mistake this pins is silent and self-confirming: re-applying the
+      // prefix range that JUST returned nothing guarantees the widened query
+      // returns nothing too, so the feature looks implemented, runs a second
+      // billed query, and can never produce a row.
+      snapState.current = { data: [], loading: false, error: undefined };
+      renderComBusca();
+
+      const filtros = (especsDeTexto()[0]?.filters ?? []) as Array<{ field: string; op: string }>;
+      expect(filtros.some((f) => f.field === 'nome' && f.op === 'gte')).toBe(false);
+    });
+
+    it('does not widen while a refetch is in flight over an empty result', () => {
+      // ⚠️ `data: []` WITH `loading: true` is the state that discriminates, and
+      // it is a real one: `usePipelineSnapshot` sets `loading` via
+      // `setState(s => ({ ...s, loading: true }))`, so the PREVIOUS rows survive
+      // into the next fetch. Written with `data: undefined` this test passes
+      // with the `!snap.loading` guard deleted — the `?? -1` below already
+      // rejects undefined — and would have pinned nothing.
+      snapState.current = { data: [], loading: true, error: undefined };
+      renderComBusca();
+      expect(especsDeTexto()).toHaveLength(0);
+    });
+
+    it('does not widen when the primary query FAILED', () => {
+      // ⚠️ An error is not an empty result. Widening past it answers a question
+      // the primary never got to ask: the operator reads "nothing starts with
+      // this, here is what contains it" when the truth is that the first query
+      // broke.
+      //
+      // ⚠️ Same discrimination problem as above, and worth stating because the
+      // state is NOT one today's hooks produce — the catch in
+      // `usePipelineSnapshot` nulls `data`, so the `?? -1` would stop the
+      // widening on its own and a test written that way is vacuous. This pins
+      // the `!snap.error` guard against a hook that keeps the last rows on
+      // failure, which is exactly what it already does while loading.
+      snapState.current = {
+        data: [],
+        loading: false,
+        error: new Error('boom') as never,
+      };
+      renderComBusca();
+      expect(especsDeTexto()).toHaveLength(0);
+      expect(screen.getByText('boom')).toBeTruthy();
+    });
+
+    it('shows skeletons ALONE while the widening is in flight', () => {
+      // ⚠️ Both halves, because the bug was that only one of them knew. The
+      // primary has already answered, so `snap.loading` is false and `rows` is
+      // `[]` — assert the skeletons appear AND that the table body is gone.
+      // Asserting only the skeletons passes with the table rendering
+      // underneath them, which is the flash the skeleton exists to prevent.
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = { data: [], loading: true, error: undefined };
+      const { container } = renderComBusca();
+
+      expect(container.querySelectorAll('.mantine-Skeleton-root').length).toBeGreaterThan(0);
+      expect(screen.queryByText('Nenhum resultado.')).toBeNull();
+      expect(screen.queryByRole('table')).toBeNull();
+    });
+
+    it('does not turn a failed widening into the table error state', () => {
+      // ⚠️ The operator asked for "names starting with X" and got a truthful
+      // answer: nothing. The widening is an extra they never requested, so its
+      // failure must degrade to "no widening" — not to a red alert carrying a
+      // raw Firestore message over a query that WORKED.
+      //
+      // Reachable on this PR's own deploy list: the index deploy and the app
+      // deploy are separate manual steps in either order, so an app that ships
+      // first meets no text index and every empty search would go red.
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = {
+        data: undefined,
+        loading: false,
+        error: new Error('9 FAILED_PRECONDITION: no text index') as never,
+      };
+      renderComBusca();
+
+      expect(screen.queryByText('Erro ao carregar')).toBeNull();
+      expect(screen.queryByText(/FAILED_PRECONDITION/)).toBeNull();
+      // The honest result still renders.
+      expect(screen.getByText('Nenhum resultado.')).toBeTruthy();
+    });
+
+    it('still reports a primary failure, which the widening must not mask', () => {
+      // The control for the case above: dropping `fromWiden.error` from the
+      // alert must not have taken the real error path with it.
+      snapState.current = {
+        data: [],
+        loading: false,
+        error: new Error('primary boom') as never,
+      };
+      renderComBusca();
+      expect(screen.getByText('primary boom')).toBeTruthy();
+    });
+
+    it('offers "Carregar mais" over a FULL widened page', () => {
+      // ⚠️ The button is gauged on the FETCHED window, and under a widening the
+      // primary's window is `[]` by definition — so gauging it on `snap.data`
+      // hid the button over every widened result, capping a whole-word term at
+      // one page with nothing on screen to say so.
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = widenComLinhas(2);
+      renderComBusca('cami', { pageSize: 2 });
+      expect(screen.getByRole('button', { name: 'Carregar mais' })).toBeTruthy();
+    });
+
+    it('keeps the widened rows on screen while "Carregar mais" grows the window', () => {
+      // ⚠️ The one behaviour the MERGE created, so nothing upstream covers it.
+      // Growing the window refetches the PRIMARY too, and a bare `!snap.loading`
+      // in `primarioVazio` tore the widening down mid-click: the pipeline went
+      // null, the rows the operator was reading vanished, and the table sat
+      // empty until the primary settled. A growth is not a new question, so the
+      // answer "the primary found nothing" has to survive it.
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = widenComLinhas(2);
+      const { rerender } = renderComBusca('cami', { pageSize: 2 });
+      expect(screen.getByText('Widened 0')).toBeTruthy();
+
+      // The click, then the primary re-reading at the wider limit.
+      fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+      snapState.current = { data: [], loading: true, error: undefined };
+      rerender(
+        <MantineTestProvider>
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={metaWiden}
+            search={searchWiden}
+            pageSize={2}
+          />
+        </MantineTestProvider>,
+      );
+
+      expect(screen.getByText('Widened 0')).toBeTruthy();
+      expect(screen.queryByText('Nenhum resultado.')).toBeNull();
+    });
+
+    it('does not offer it over a widened page that was not full', () => {
+      // The control. Without it the test above passes with the condition
+      // dropped altogether, which would offer the button on every result.
+      snapState.current = { data: [], loading: false, error: undefined };
+      widenState.current = widenComLinhas(1);
+      renderComBusca('cami', { pageSize: 2 });
+      expect(screen.queryByRole('button', { name: 'Carregar mais' })).toBeNull();
+    });
+
+    it('sanitises the term, so a DSL operator is not read as syntax', () => {
+      // `-` negates in the search DSL, so the raw term would ask for
+      // "Porta but NOT lápis" and come back empty with nothing to notice.
+      snapState.current = { data: [], loading: false, error: undefined };
+      renderComBusca('Porta-lápis');
+      expect(especsDeTexto()[0]?.textSearch).toEqual({ query: 'Porta lápis' });
+    });
+
+    it('issues nothing when the term sanitises away entirely', () => {
+      snapState.current = { data: [], loading: false, error: undefined };
+      renderComBusca('---');
+      expect(especsDeTexto()).toHaveLength(0);
+    });
+
+    it('never widens on the classic fallback, which has no text search', () => {
+      // The emulator e2e lane runs this path. A test written against the
+      // widening would pass on staging and fail there, or vice versa.
+      pipelineSupportedRef.current = false;
+      snapState.current = { data: [], loading: false, error: undefined };
+      renderComBusca();
+      expect(especsDeTexto()).toHaveLength(0);
+      expect(screen.queryByText(/Mostrando nomes que contêm/)).toBeNull();
+      pipelineSupportedRef.current = true;
     });
   });
 });

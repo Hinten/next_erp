@@ -249,6 +249,49 @@ describe('remotelyChangedFields', () => {
     const current = { numero: 'A', valorComissoes: 40, impostos: 19 };
     expect(remotelyChangedFields(baseline, current)).toEqual([]);
   });
+
+  it('ignores the marketplace flag and the buyer-capture diary (#1513)', () => {
+    // The Shopee order importer rewrites BOTH on every delivery of an order — a
+    // push, a Cloud Tasks retry, the hourly sweep, the backfill — so without
+    // this an operator holding the pedido editor open on a live marketplace
+    // order collects a conflict modal per push, naming fields no control in
+    // `buildPedidoPatch` can author.
+    //
+    // ⚠️ Unlike `serverOwnedFields` above, these two ARE client-writable (they
+    // gate nothing — see the schema docblocks), so the drift guard that
+    // auto-extends from that list does NOT cover them. They are pinned here.
+    expect(isIgnoredForConcurrency('marketplace')).toBe(true);
+    expect(isIgnoredForConcurrency('capturaComprador')).toBe(true);
+
+    const baseline = {
+      numero: 'A',
+      marketplace: { tipo: 'shopee', status: 'READY_TO_SHIP' },
+      capturaComprador: { estado: 'pendente', tentativas: 1 },
+    };
+    const current = {
+      numero: 'A',
+      marketplace: { tipo: 'shopee', status: 'SHIPPED' },
+      capturaComprador: { estado: 'expirado', tentativas: 2 },
+    };
+    expect(remotelyChangedFields(baseline, current)).toEqual([]);
+  });
+
+  it('⚠️ NEAR-MISS: the SAME import moving `estado` still conflicts', () => {
+    // The ignore above must silence the noise, never the signal: `estado` is
+    // what moves stock and what an operator acts on, so a marketplace import
+    // that cancels the sale under an open editor MUST still interrupt.
+    const baseline = {
+      numero: 'A',
+      estado: 'pago',
+      marketplace: { tipo: 'shopee', status: 'READY_TO_SHIP' },
+    };
+    const current = {
+      numero: 'A',
+      estado: 'cancelado',
+      marketplace: { tipo: 'shopee', status: 'CANCELLED' },
+    };
+    expect(remotelyChangedFields(baseline, current)).toEqual(['estado']);
+  });
 });
 
 describe('savePedido', () => {

@@ -35,7 +35,6 @@ cat .env.example .env.secrets.example > .env.local
 pnpm dev
 # apps/web         http://localhost:3000
 # apps/integrations http://localhost:3001
-# apps/webchat     http://localhost:3002
 # apps/docs        http://localhost:3003
 ```
 

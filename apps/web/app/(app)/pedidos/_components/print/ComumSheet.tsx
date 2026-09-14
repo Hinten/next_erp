@@ -99,11 +99,11 @@ function ItemRows({ item, idx }: { item: PrintItem; idx: number }) {
       <tr>
         <td className="estoque">{item.estoqueText}</td>
         <td>
-          <Foto url={item.fotoUrl} alt={item.nome ?? 'Produto'} />
+          <Foto url={item.fotoUrl} alt={item.nome} />
         </td>
         <td>{item.sku ?? '—'}</td>
         <td>
-          <div className="prod-nome">{item.nome ?? 'Produto'}</div>
+          <div className="prod-nome">{item.nome}</div>
           {item.variacoesText && <div className="prod-var">{item.variacoesText}</div>}
         </td>
         <td>{item.localizacao}</td>

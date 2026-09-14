@@ -177,6 +177,52 @@ describe('usePedidoRowReadPrefetch', () => {
     expect(result.current.status).toBe('pending');
   });
 
+  it('batches only the clientes it has not already read', async () => {
+    // Since the list STREAMS (#40), `onRowsChange` fires on every insertion the
+    // ML importer makes while the operator is just looking at the page. Without
+    // this, each arrival re-read the WHOLE window's clientes — the exact cost
+    // the batch exists to remove, paid once per inserted pedido.
+    getDocsByIdsMock.mockResolvedValue(new Map());
+    const { result } = renderHook(() => usePedidoRowReadPrefetch(), { wrapper });
+
+    await actSettle(() =>
+      result.current.onRows([row('p1', 'clientes/a', null), row('p2', 'clientes/b', null)]),
+    );
+    expect(getDocsByIdsMock).toHaveBeenCalledTimes(1);
+    expect(getDocsByIdsMock.mock.calls[0]![2]).toEqual(['a', 'b']);
+
+    // One new pedido prepends; a + b are unchanged and already cached.
+    await actSettle(() =>
+      result.current.onRows([
+        row('p3', 'clientes/c', null),
+        row('p1', 'clientes/a', null),
+        row('p2', 'clientes/b', null),
+      ]),
+    );
+    expect(getDocsByIdsMock).toHaveBeenCalledTimes(2);
+    expect(getDocsByIdsMock.mock.calls[1]![2], 'only the new cliente').toEqual(['c']);
+
+    // A row set with nothing new must not read at all.
+    await actSettle(() => result.current.onRows([row('p1', 'clientes/a', null)]));
+    expect(getDocsByIdsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not record ids from a batch that REJECTED', async () => {
+    // Marking them read before the fetch resolves would make a transient
+    // failure permanent: no later batch would ever pick them up again, and the
+    // column would fall back to a per-cell read forever.
+    getDocsByIdsMock.mockRejectedValueOnce(new FirebaseError('unavailable', 'offline'));
+    const { result } = renderHook(() => usePedidoRowReadPrefetch(), { wrapper });
+
+    await actSettle(() => result.current.onRows([row('p1', 'clientes/a', null)]));
+    expect(getDocsByIdsMock).toHaveBeenCalledTimes(1);
+
+    getDocsByIdsMock.mockResolvedValue(new Map());
+    await actSettle(() => result.current.onRows([row('p1', 'clientes/a', null)]));
+    expect(getDocsByIdsMock, 'the failed id must be retried').toHaveBeenCalledTimes(2);
+    expect(getDocsByIdsMock.mock.calls[1]![2]).toEqual(['a']);
+  });
+
   it('releases the cells when the batch REJECTS', async () => {
     // A failed prefetch must cost a fallback read, never a blank column.
     getDocsByIdsMock.mockRejectedValue(new FirebaseError('unavailable', 'offline'));

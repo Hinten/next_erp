@@ -23,6 +23,7 @@ import {
   type Filial,
   type FreteDoPedido,
   type Integracao,
+  type IntegracaoTipo,
   type NFeConfig,
   type Operacao,
   type Pagamento,
@@ -97,6 +98,18 @@ export interface PedidoBundle {
    * couldn't be resolved.
    */
   readonly integracao: Integracao | null;
+  /**
+   * `integracao.tipo` — the SALES CHANNEL, off the same snapshot as
+   * {@link integracao} but read UNCONDITIONALLY. {@link intermediadorFromSnap}
+   * discards the doc unless `operacao.indIntermed === '1'`, and "which channel
+   * sold this" is a separate question from "does this nota carry an
+   * `<infIntermed>` block".
+   *
+   * Null when the doc carries no numeric `tipo`. Consumers must treat null as
+   * an UNKNOWN channel and take the conservative arm — see the troco gate in
+   * `generator-input.ts`.
+   */
+  readonly integracaoTipo: IntegracaoTipo | null;
   /**
    * Imposto rules under `operacao/{operacaoId}/regras`. Pre-loaded
    * in the bundle fan-out so the per-item resolver (`resolveItemImposto`)
@@ -308,6 +321,7 @@ export async function loadPedidoBundle(
   const operacao: Operacao = operacaoParse.data;
   const frete = parseFreteFromPedido(pedidoId, pedido);
   const integracao = intermediadorFromSnap(pedidoId, integracaoPath, integracaoSnap, operacao);
+  const integracaoTipo = integracaoTipoFromSnap(integracaoSnap);
   const regrasImposto = parseRegraImpostoSnapshot(pedidoId, regraImpostoSnap);
 
   // `codigoMunicipio` (IBGE) is mandatory for enderDest.cMun, enderEmit.cMun
@@ -344,6 +358,7 @@ export async function loadPedidoBundle(
     pagamentos,
     frete,
     integracao,
+    integracaoTipo,
     regrasImposto,
   };
 }
@@ -425,6 +440,27 @@ export function intermediadorFromSnap(
     return null;
   }
   return parsed.data;
+}
+
+/**
+ * `integracao.tipo` off the ALREADY-loaded snapshot — no extra read.
+ *
+ * Deliberately NOT schema-parsed and NOT gated on `indIntermed`, unlike
+ * {@link intermediadorFromSnap}. Callers feed this to `ehMarketplace`
+ * (`@delfrance/schemas`), which is documented to TOLERATE a value outside the
+ * enum — the migrated legacy corpus carries wire-format enums
+ * `integracaoTipoSchema` does not model — and to answer "is a marketplace" for
+ * it. That is the conservative arm of every gate built on it, so parsing
+ * strictly here would buy nothing and lose the legacy tipos we CAN read.
+ */
+export function integracaoTipoFromSnap(
+  integracaoSnap: FirebaseFirestore.DocumentSnapshot,
+): IntegracaoTipo | null {
+  // `getField(snap.data(), …)` — the reader this file already uses on THIS
+  // snapshot (see the filial resolve above). `snap.get()` would work against a
+  // real DocumentSnapshot and blow up on every hand-rolled test double.
+  const raw = getField(integracaoSnap.data(), 'tipo');
+  return typeof raw === 'number' ? (raw as IntegracaoTipo) : null;
 }
 
 /**

@@ -24,8 +24,8 @@ import { warmRoutes } from './helpers/warmup';
  * screen's own UI/CSV behavior. The trigger itself is covered deterministically
  * by `produto-preco.emulator.e2e.spec.ts`.
  *
- * Three behaviors worth flagging for reviewers, since they shape the test
- * order below:
+ * Four behaviors worth flagging for reviewers, since they shape the tests
+ * below:
  *
  *  - Every COMPLETED apply run (any outcome mix, even all-`pulado`) resets the
  *    page's produto selection (`AplicarDialog`'s `onApplied` callback). Any
@@ -39,12 +39,26 @@ import { warmRoutes } from './helpers/warmup';
  *    (never reaches "Alteração de preços concluída"). The bounds test below
  *    asserts the pre-apply preview badge + the confirm dialog's inline
  *    ignored-count note instead of a post-apply summary.
- *  - Tests 2–3 write a `varejo` price onto every seeded produto (A/B/C), so by
- *    test 4 none of them still lacks one — the wrong precondition for
- *    exercising `precoAtual`'s "sem preço cadastrado" error. A 4th, untouched
- *    fixture (D) is seeded up front and stays unselected until that one
- *    assertion, exactly as the module notes license ("use fresh produtos if
- *    state juggling gets fragile").
+ *  - ⚠️ Every test seeds its OWN `precos`/`custo` preconditions — `beforeEach`
+ *    restores the four fixtures to {@link seedPrecosBaseline}'s state and a
+ *    test needing something else (only the "Baixar preços" one, which must
+ *    start from a price ABOVE its target) overwrites it in its own body. No
+ *    test inherits a price another test wrote, so each one passes on a cold
+ *    run and under a `-g` single-test invocation. `describe.serial` stays
+ *    regardless: the four produtos are SHARED, and `fullyParallel: true` would
+ *    otherwise let two tests' `beforeEach` resets stomp each other's run.
+ *  - ⚠️ Never assert a whole `precos` map with a strict `toEqual` — assert
+ *    {@link precosDaSuite}'s projection of it instead. The `precos` map is
+ *    keyed by lista id and the #544 recalcular-precos screen writes EVERY
+ *    parent produto in the shared catalog with no per-spec scoping. The
+ *    `crud-cadastros-recalculo` project's `dependencies` serializes that
+ *    within ONE Playwright run, but three PRs' e2e lanes hit the same staging
+ *    project concurrently — so a foreign run's `e2e-<otherRun>-w8-recalc-*`
+ *    key can land on this suite's produtos mid-test, which is precisely how
+ *    run 34131436615 lost two attempts of the "Baixar preços" test on a
+ *    correct `valor: 50`. Projecting to this run's own lista ids keeps the
+ *    assertion strict over everything this spec owns (a clobbered `atacado`
+ *    entry still fails) while ignoring what it provably does not.
  */
 test.describe.serial('Alterar preço em massa e2e (#545)', () => {
   const prefix = e2ePrefix('altpreco');
@@ -74,9 +88,12 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
       // ever lists `paiId == null` parents; propagation onto it is
       // server-owned and not asserted here).
       seedProdutoComFilho(prefix),
-      seedComponenteKit(prefix, 0, 'b'), // custo forced to null below
+      // These `custo` arguments are placeholders: `seedPrecosBaseline` below
+      // re-stamps `custo` AND `precos` on all four before every test, and IT
+      // is the authority on what each fixture is for.
+      seedComponenteKit(prefix, 0, 'b'),
       seedComponenteKit(prefix, 5, 'c'),
-      seedComponenteKit(prefix, 7, 'd'), // untouched fixture — see file doc
+      seedComponenteKit(prefix, 7, 'd'),
     ]);
     aId = produtoComFilho.parentId;
     aNome = produtoComFilho.parentNome;
@@ -87,13 +104,58 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     dId = d.id;
     dNome = d.nome;
 
+    await warmRoutes(browser, ['/produtos/alterar-precos']);
+  });
+
+  /**
+   * The `precos`/`custo` state every test below starts from:
+   *
+   *  - A — custo 10, a varejo price of 20 (the only fixture that starts with
+   *    one, so the preview can show a real atual→novo pair).
+   *  - B — custo NULL, no prices at all: the `detalhado` "Custo do produto não
+   *    encontrado" fixture, and the "a produto with no price under the target
+   *    lista always passes the direction gate" fixture.
+   *  - C — custo 5, an ATACADO price only: proves the apply merges into
+   *    `precos` rather than replacing it.
+   *  - D — custo 7, an atacado price only, and never selected except by the
+   *    `precoAtual` "sem preço cadastrado" assertion, which needs a produto
+   *    that still lacks a varejo price AFTER that test's own apply has given
+   *    A and C one.
+   *
+   * Written with `update({ precos })` (a whole-field replace, not a merge), so
+   * a foreign `…-recalc-…` key left on a fixture by a concurrent run is
+   * cleared at the start of every test rather than accumulating.
+   */
+  async function seedPrecosBaseline(): Promise<void> {
     await Promise.all([
       setProdutoFields(aId, { custo: 10, precos: { [varejoId]: { valor: 20 } } }),
-      setProdutoFields(bId, { custo: null }),
-      setProdutoFields(cId, { precos: { [atacadoId]: { valor: 15 } } }),
-      setProdutoFields(dId, { precos: { [atacadoId]: { valor: 99 } } }),
-      warmRoutes(browser, ['/produtos/alterar-precos']),
+      setProdutoFields(bId, { custo: null, precos: null }),
+      setProdutoFields(cId, { custo: 5, precos: { [atacadoId]: { valor: 15 } } }),
+      setProdutoFields(dId, { custo: 7, precos: { [atacadoId]: { valor: 99 } } }),
     ]);
+  }
+
+  /**
+   * A produto's `precos` map narrowed to THIS run's two listas — the only
+   * shape a strict `toEqual` may be run against here. See the file doc's last
+   * bullet: the map is a shared namespace the #544 screen writes into from
+   * other CI runs, so a whole-map equality asserts something this suite does
+   * not control. Absent/`null` `precos` projects to `{}`.
+   */
+  async function precosDaSuite(produtoId: string): Promise<Record<string, unknown>> {
+    const precos = (await getProdutoData(produtoId))?.precos as
+      | Record<string, unknown>
+      | null
+      | undefined;
+    const projecao: Record<string, unknown> = {};
+    for (const listaId of [varejoId, atacadoId]) {
+      if (precos && listaId in precos) projecao[listaId] = precos[listaId];
+    }
+    return projecao;
+  }
+
+  test.beforeEach(async () => {
+    await seedPrecosBaseline();
   });
 
   test.afterAll(async () => {
@@ -144,21 +206,39 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await dialog.getByRole('button', { name: 'Fechar', exact: true }).click();
 
     await expect
-      .poll(async () => (await getProdutoData(aId))?.precos, { timeout: 15_000 })
+      .poll(() => precosDaSuite(aId), { timeout: 15_000 })
       .toEqual({ [varejoId]: { valor: 50 } });
     // B had no price anywhere — the direction gate always passes when there's
     // nothing to compare against.
     await expect
-      .poll(async () => (await getProdutoData(bId))?.precos, { timeout: 15_000 })
+      .poll(() => precosDaSuite(bId), { timeout: 15_000 })
       .toEqual({ [varejoId]: { valor: 50 } });
     // C's existing atacado price must survive the merge — only varejo is added.
     await expect
-      .poll(async () => (await getProdutoData(cId))?.precos, { timeout: 15_000 })
+      .poll(() => precosDaSuite(cId), { timeout: 15_000 })
       .toEqual({ [atacadoId]: { valor: 15 }, [varejoId]: { valor: 50 } });
   });
 
   test('gates a lower price on "Baixar preços"', async ({ page }) => {
     test.setTimeout(90_000);
+
+    // This test's own precondition (NOT inherited from the test above): all
+    // three must already carry a varejo price STRICTLY ABOVE the 10 applied
+    // below. `applyPrecoAlteracoes` classifies `novo === precoAtual` as
+    // 'semAlteracao' before the gate ever runs, so a produto sitting at 10
+    // would silently never exercise the direction gate this test is about —
+    // and the `3 pulado(s)` assertion would read 0. 50 is the same value the
+    // "Valor Fixo" test happens to write, chosen here for the same reason it
+    // was chosen there: far enough from 10 that the preview's atual→novo pair
+    // is unambiguous.
+    await Promise.all([
+      setProdutoFields(aId, { precos: { [varejoId]: { valor: 50 } } }),
+      setProdutoFields(bId, { precos: { [varejoId]: { valor: 50 } } }),
+      setProdutoFields(cId, {
+        precos: { [atacadoId]: { valor: 15 }, [varejoId]: { valor: 50 } },
+      }),
+    ]);
+
     await page.goto('/produtos/alterar-precos');
     await selectFieldWithSearch(page, 'Lista de preços', varejoNome);
     await includeProdutos(page, prefix, [aNome, bNome, cNome]);
@@ -166,8 +246,8 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await selectField(page, 'Regra', 'Valor Fixo');
     await page.getByLabel('Novo Preço', { exact: true }).fill('10');
 
-    // All three currently sit at 50 (previous test) — lowering to 10 needs
-    // "Baixar preços" (off by default: aumentar=true, baixar=false).
+    // All three sit at 50 (seeded above) — lowering to 10 needs "Baixar
+    // preços" (off by default: aumentar=true, baixar=false).
     const aRow = previewRowLocator(page, aNome);
     await expect(aRow).toContainText(/R\$\s*50,00/, { timeout: 10_000 });
     await expect(aRow).toContainText(/R\$\s*10,00/, { timeout: 10_000 });
@@ -182,7 +262,7 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await dialog.getByRole('button', { name: 'Fechar', exact: true }).click();
 
     await expect
-      .poll(async () => (await getProdutoData(aId))?.precos, { timeout: 10_000 })
+      .poll(() => precosDaSuite(aId), { timeout: 10_000 })
       .toEqual({ [varejoId]: { valor: 50 } });
 
     // The completed run above reset the page's selection — re-pick, enable
@@ -199,7 +279,7 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await dialog.getByRole('button', { name: 'Fechar', exact: true }).click();
 
     await expect
-      .poll(async () => (await getProdutoData(aId))?.precos, { timeout: 10_000 })
+      .poll(() => precosDaSuite(aId), { timeout: 10_000 })
       .toEqual({ [varejoId]: { valor: 10 } });
   });
 
@@ -213,7 +293,7 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     const bRow = previewRowLocator(page, bNome);
     await expect(bRow).toContainText('Custo do produto não encontrado', { timeout: 10_000 });
 
-    const bPrecosBefore = (await getProdutoData(bId))?.precos;
+    const bPrecosBefore = await precosDaSuite(bId);
 
     await page.getByRole('button', { name: 'Aplicar', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Aplicar alteração de preços' });
@@ -225,11 +305,17 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await expect(dialog.getByText('1 erro(s)', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: 'Fechar', exact: true }).click();
 
-    expect((await getProdutoData(bId))?.precos).toEqual(bPrecosBefore);
+    expect(await precosDaSuite(bId)).toEqual(bPrecosBefore);
 
-    // 'Com base no preço atual' errors on a produto with NO price yet under
-    // the target lista — A/B/C all gained one above, so a fresh, untouched
-    // produto (D, seeded with only an atacado price) is used instead.
+    // 'Com base no preço atual' errors on a produto with NO price under the
+    // target lista, and the apply above leaves A and C holding one: the
+    // detalhado defaults compute `f(c) = 9.6c + 36`, so A's baseline 20 was
+    // REPLACED by 132 and C gained 84. B would still qualify — its calc erro
+    // keeps it out of the write, so it stays at the baseline's `precos: null`
+    // — but D carries the assertion because this test's own apply never
+    // touched it at all. That property holds whatever the erro path does;
+    // B's depends on `detalhado` continuing to exclude a null-custo produto
+    // from the write.
     await includeProdutos(page, prefix, [dNome]);
     await selectField(page, 'Regra', 'Com base no preço atual');
 
@@ -258,9 +344,7 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     const aRow = previewRowLocator(page, aNome);
     await expect(aRow).toContainText('Fora dos limites', { timeout: 10_000 });
 
-    const before = await Promise.all(
-      [aId, bId, cId].map(async (id) => (await getProdutoData(id))?.precos),
-    );
+    const before = await Promise.all([aId, bId, cId].map((id) => precosDaSuite(id)));
 
     await page.getByRole('button', { name: 'Aplicar', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Aplicar alteração de preços' });
@@ -269,9 +353,7 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await expect(dialog.getByRole('button', { name: 'Aplicar', exact: true })).toBeDisabled();
     await dialog.getByRole('button', { name: 'Cancelar', exact: true }).click();
 
-    const after = await Promise.all(
-      [aId, bId, cId].map(async (id) => (await getProdutoData(id))?.precos),
-    );
+    const after = await Promise.all([aId, bId, cId].map((id) => precosDaSuite(id)));
     expect(after).toEqual(before);
   });
 

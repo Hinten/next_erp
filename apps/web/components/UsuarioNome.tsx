@@ -44,7 +44,14 @@ export function uidFromUsuarioRef(ref: string | null | undefined): string | null
  * Same reasoning as the checkout tab's produto resolution.
  */
 export function useUsuarioNomes(uids: ReadonlyArray<string>): Record<string, string> {
-  const podeLer = usePermission(PERM.configuracoes.read);
+  // ⚠️ Destructure. `usePermission` returns `{ allowed, loading }`, so the bare
+  // hook result is an object and `enabled: podeLer && …` was ALWAYS true — the
+  // gate documented above had never rejected anything, and every reader without
+  // the bit fired a wave of permission-denied gets whose rejection surfaced as
+  // an errored query and fell back to the uid. Correct on screen, wrong on the
+  // wire, silent either way. `UsuarioNome.test.tsx` mocked `usePermission` as a
+  // plain `true`, so no test could see it.
+  const { allowed: podeLer } = usePermission(PERM.configuracoes.read);
   const distinct = [...new Set(uids)].sort();
 
   const { data } = useQuery({

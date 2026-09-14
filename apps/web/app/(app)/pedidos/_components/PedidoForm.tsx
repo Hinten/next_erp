@@ -267,8 +267,25 @@ function NfeLockNotice({ loading, lockText }: { loading: boolean; lockText: stri
   return null;
 }
 
-function buildDefaults(existing?: Pedido, pedidoId?: string, ehSaida = true): PedidoFormState {
-  if (!existing) return { ...EMPTY_DEFAULTS, ehSaida };
+/**
+ * ⚠️ `usuarioRef` seeds the CREATE branch only. On edit the loaded doc's own
+ * `vendedorPedidoOuterRef` is spread through untouched — re-stamping it would
+ * reattribute someone else's pedido to whoever happened to open it, which is
+ * the same lie the Vendedor field used to tell on screen.
+ */
+function buildDefaults(
+  existing?: Pedido,
+  pedidoId?: string,
+  ehSaida = true,
+  usuarioRef: string | null = null,
+): PedidoFormState {
+  // Create: the operator IS the vendedor. Nothing on the plain-create path wrote
+  // this field — `createPedidoWithNumero` passes `values` through verbatim — so
+  // every pedido made at /pedidos/novo landed with a null vendedor while the
+  // screen displayed the operator's email for the whole session. Duplicar and
+  // Devolução arrive here WITH an `existing` seed that already carries its own
+  // vendedor (`packages/data/src/pedido/{duplicar,devolucao}.ts`), and it wins.
+  if (!existing) return { ...EMPTY_DEFAULTS, ehSaida, vendedorPedidoOuterRef: usuarioRef };
   return {
     ...EMPTY_DEFAULTS,
     ...existing,
@@ -300,9 +317,15 @@ export function PedidoForm({
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.pedido.write);
 
+  // The `(app)` layout renders a Loader until auth resolves (`layout.tsx`
+  // returns early while `!user`), so `user` is already non-null when this form
+  // mounts and the create seed below cannot miss it. Same ref string shape
+  // NovoPedidoView builds for the Duplicar / Devolução seeds.
+  const usuarioRef = user ? `documents/usuarios/${user.uid}` : null;
+
   const initial = useMemo(
-    () => buildDefaults(defaultValues, pedidoId, ehSaida),
-    [defaultValues, pedidoId, ehSaida],
+    () => buildDefaults(defaultValues, pedidoId, ehSaida, usuarioRef),
+    [defaultValues, pedidoId, ehSaida, usuarioRef],
   );
 
   // Direction is immutable (enforced by the page model via `ehSaidaOriginal`),
@@ -329,7 +352,7 @@ export function PedidoForm({
     fromCache,
     isDirty: form.formState.isDirty,
     onSeed: (serverTruth) => {
-      form.reset(buildDefaults(defaultValues, pedidoId, ehSaida));
+      form.reset(buildDefaults(defaultValues, pedidoId, ehSaida, usuarioRef));
       onSeeded?.(serverTruth);
     },
   });
@@ -551,12 +574,13 @@ export function PedidoForm({
                 {dadosGeraisLockNotice}
               </Alert>
             )}
+            {/* Vendedor is not passed in: the tab reads it off the form, so the
+                value shown and the value saved are the same one. */}
             <PrincipalTab
               form={form}
               db={db}
               disabled={dadosGeraisDisabled}
               observacoesDisabled={disabled}
-              vendedorLabel={user?.email ?? user?.uid ?? undefined}
             />
           </Tabs.Panel>
 

@@ -76,6 +76,7 @@ const ORIGIN: Endereco = {
   email: 'loja@example.com',
   telefone: '1133334444',
   timestamp: null,
+  ultimaModificacao: null,
 };
 
 const FILIAL: Filial = {
@@ -87,6 +88,7 @@ const FILIAL: Filial = {
   iest: null,
   imun: null,
   sede: ORIGIN,
+  ultimaModificacao: null,
 };
 
 /** A long destination street to exercise the 39-char address cap. */
@@ -110,6 +112,7 @@ const DEST_PF: Endereco = {
   email: 'maria@example.com',
   telefone: '21999998888',
   timestamp: null,
+  ultimaModificacao: null,
 };
 
 const ITENS: ItemDoPedido[] = [

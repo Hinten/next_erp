@@ -26,6 +26,11 @@ import { useState } from 'react';
 import { notifications } from '@mantine/notifications';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { Pedido } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  ESTADO_PEDIDO_LABELS,
+  emissaoNFeBloqueadaPorEstado,
+} from '@delfrance/schemas';
 import type { ActionConfig } from '@delfrance/ui';
 
 import { useNFeClient } from './client';
@@ -121,6 +126,32 @@ export function useEmitirNFeAction(): {
     label: 'Emitir NF-e',
     color: 'teal',
     requiresSelection: true,
+    /**
+     * Refuse a pedido the emission would reject anyway, and say which.
+     *
+     * The estado half REUSES the server predicate rather than restating its
+     * set: `prepareEmission` blocks the same states and answers with
+     * `NFeBlockedError`, so a second copy of that list here would drift toward
+     * plausible while both stayed green.
+     *
+     * ⚠️ The FRETE half has no server counterpart — a cancelled shipment does
+     * NOT block emission server-side, so this is the only place it is caught.
+     * That makes it the half actually worth having: the estado half moves
+     * where the operator learns, this one is new information.
+     */
+    rowIneligibleReason: (row) => {
+      const p = row.data;
+      if (p.estado && emissaoNFeBloqueadaPorEstado(p.estado)) {
+        return `${p.numero ?? row.id}: pedido ${ESTADO_PEDIDO_LABELS[p.estado] ?? p.estado}`;
+      }
+      if (p.freteInicial?.estado === ESTADO_FRETE.cancelado) {
+        return `${p.numero ?? row.id}: frete cancelado`;
+      }
+      return null;
+    },
+    // Read by the predicate above, so they must survive the Pipelines
+    // `select()` projection — see `ActionConfig.rowEligibilityFields`.
+    rowEligibilityFields: ['estado', 'numero', 'freteInicial'],
     // No `refreshOnComplete`: the NF column (`NFCell`) is a live `onSnapshot` on
     // `pedidos/{id}/nfev4`, so it reflects the new estado on its own. A table-wide
     // re-query here would only flash the list to skeletons and drop the selection

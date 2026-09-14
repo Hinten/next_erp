@@ -1268,7 +1268,9 @@ FBS sellable stock has its own category (2085) with `36 fbs_sellable_stock` and 
 
 ## 11. Limits — `v2.product.get_item_limit`
 
-`POST /api/v2/product/get_item_limit` (rendered as GET in the code samples), request
+`GET /api/v2/product/get_item_limit` (`method: 2`, and every code sample agrees — there is no
+contradiction here; this line said POST until 2026-09-09 because `shopee-doc.mjs` read the verb from
+`is_get_method`, which is `0` on all 20 cached pages), request
 `{ "category_id": 400055 }` — **optional**. It is a **Shop-type** API (`shop_id` in the common
 params), so the answer is scoped to *this shop* and, when given, *this category*.
 

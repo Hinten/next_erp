@@ -114,7 +114,7 @@ interface Corpus {
  *
  * ⚠️ A `.select()` projection, not a convenience. Enterprise bills DATA SCANNED,
  * and this is a full-collection walk: an unprojected `doc.data()` pulls the whole
- * produto — the `nome_embedding` vector, `fotos`, the marketplace denorms — and
+ * produto — `fotos`, the marketplace denorms — and
  * `raizes` then RETAINS all of it for the entire duration of pass 2. That is the
  * exact shape `kitRollup.ts:246-255` calls out by name for rule 1, and the sibling
  * census already does the opposite on the same walk (it pushes a small

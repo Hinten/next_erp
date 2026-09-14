@@ -1,4 +1,56 @@
-import { type Page, expect } from '@playwright/test';
+import { type Locator, type Page, expect } from '@playwright/test';
+
+export type ListMode = 'live' | 'static';
+
+export type ListModeReason =
+  | 'override'
+  | 'no-declared-query'
+  | 'filter'
+  | 'search'
+  | 'ids'
+  | 'sort';
+
+export interface ListModeExpectation {
+  mode: ListMode;
+  policy: ListMode;
+  reason: ListModeReason | null;
+}
+
+type ListModeScope = Page | Locator;
+
+/** The TableView indicator exposes the transport without coupling specs to its visible copy. */
+function listModeIndicator(scope: ListModeScope) {
+  return scope.locator('[data-list-mode]');
+}
+
+/** Assert the TableView transport, plus its policy state when supplied. */
+export async function expectListMode(
+  scope: ListModeScope,
+  mode: ListMode,
+  reason?: ListModeReason | null,
+  policy?: ListMode,
+): Promise<void> {
+  const indicator = listModeIndicator(scope);
+  await expect(indicator).toHaveAttribute('data-list-mode', mode, { timeout: 15_000 });
+  if (reason !== undefined) {
+    await expect(indicator).toHaveAttribute('data-list-reason', reason ?? '');
+  }
+  if (policy !== undefined) {
+    await expect(indicator).toHaveAttribute('data-list-policy', policy);
+  }
+}
+
+/** Verify both sides of a list-mode transition around one completed gesture. */
+export async function transitionListMode(
+  scope: ListModeScope,
+  before: ListModeExpectation,
+  after: ListModeExpectation,
+  gesture: () => Promise<unknown>,
+): Promise<void> {
+  await expectListMode(scope, before.mode, before.reason, before.policy);
+  await gesture();
+  await expectListMode(scope, after.mode, after.reason, after.policy);
+}
 
 /**
  * Helpers for driving the generic `TableView` (`@delfrance/ui`): per-column
@@ -48,17 +100,46 @@ export async function firstRowText(page: Page): Promise<string> {
 }
 
 /**
- * Open a column's filter popover via its `Filtrar <label>` icon, type a
- * substring and apply (string columns → `contains`).
+ * The open filter popover for one column.
+ *
+ * ⚠️ Every control inside a filter popover MUST be located through this, never
+ * through `page`. Mantine's `Popover.Dropdown` carries `role="dialog"` plus
+ * `aria-labelledby` pointing at the `Filtrar <label>` trigger, so each open
+ * popover is a dialog with a UNIQUE accessible name — that is the only thing
+ * distinguishing its "Aplicar" / "Limpar" / `<label> contém` controls from
+ * identically-named controls anywhere else on the page.
+ *
+ * Page-scoped locators worked only while the column header was the sole filter
+ * surface. `ActiveFilters.tsx` already records the sibling rule for chips
+ * ("Nothing here may render a bare column label"); this is the same invariant
+ * one layer up, and it is what lets a screen grow a filter panel without
+ * reopening every call site.
+ *
+ * Every input inside renders with `withinPortal: false` (ColumnFilter.tsx), so
+ * Select listboxes and date pickers live inside this dialog too, not in a portal.
+ */
+function filterPopover(page: Page, columnLabel: string) {
+  return page.getByRole('dialog', { name: `Filtrar ${columnLabel}`, exact: true });
+}
+
+/** Open a column's filter popover via its `Filtrar <label>` icon. */
+async function openColumnFilter(page: Page, columnLabel: string) {
+  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
+  return filterPopover(page, columnLabel);
+}
+
+/**
+ * Open a column's filter popover, type a substring and apply (string columns →
+ * `contains`).
  */
 export async function applyTextFilter(
   page: Page,
   columnLabel: string,
   value: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
-  await page.getByLabel(`${columnLabel} contém`, { exact: true }).fill(value);
-  await page.getByRole('button', { name: 'Aplicar', exact: true }).click();
+  const popover = await openColumnFilter(page, columnLabel);
+  await popover.getByLabel(`${columnLabel} contém`, { exact: true }).fill(value);
+  await popover.getByRole('button', { name: 'Aplicar', exact: true }).click();
 }
 
 /**
@@ -70,26 +151,31 @@ export async function applySelectFilter(
   columnLabel: string,
   optionLabel: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
+  const popover = await openColumnFilter(page, columnLabel);
   // `getByLabel` also matches the Select's `role="listbox"` popup (same
   // `aria-labelledby`); target the combobox input explicitly.
-  await page.getByRole('combobox', { name: columnLabel, exact: true }).click();
-  await page.getByRole('option', { name: optionLabel, exact: true }).click();
+  await popover.getByRole('combobox', { name: columnLabel, exact: true }).click();
+  await popover.getByRole('option', { name: optionLabel, exact: true }).click();
 }
 
 /** Open a column's filter popover and click "Limpar". */
 export async function clearColumnFilter(page: Page, columnLabel: string): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
-  await page.getByRole('button', { name: 'Limpar', exact: true }).click();
+  const popover = await openColumnFilter(page, columnLabel);
+  await popover.getByRole('button', { name: 'Limpar', exact: true }).click();
 }
 
 /**
  * Click a column header to cycle its sort (different col → asc; same → flip).
  * Targets the header's label span by exact text — the sort `onClick` lives on
  * the wrapping group, so the click bubbles up to it.
+ *
+ * ⚠️ Scoped to `thead`. The label text is not unique on the page: a filter
+ * surface listing the same column names would make a page-scoped
+ * `getByText(label, { exact: true })` resolve to several nodes and fail
+ * Playwright strict mode on every sort call site at once.
  */
 export async function clickColumnSort(page: Page, columnLabel: string): Promise<void> {
-  await page.getByText(columnLabel, { exact: true }).click();
+  await page.locator('thead').getByText(columnLabel, { exact: true }).click();
 }
 
 /** Check the selection checkbox of the row containing `text`. */

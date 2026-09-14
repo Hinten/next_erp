@@ -275,9 +275,11 @@ estadoEnvio === ESTADO_ENVIO.salva (1)  AND  tipo not in {'e','!'}  AND  mid == 
 writes (`nova conversa`, `reaberto`) are also `salva` but carry `tipo: 'e'` (and
 error messages `tipo: '!'`), so the `tipo` clause keeps them from being sent;
 inbound customer messages are `estadoEnvio: recebido (7)` and never match. The
-`origem === 'whatsapp'` clause is the AUTHORITATIVE channel gate: `apps/webchat`
-('site' conversas) writes its own NON-null local `mid`, but a 'site' conversa is
-excluded by the origem gate regardless of its `mid` convention.
+`origem === 'whatsapp'` clause is the AUTHORITATIVE channel gate: the legacy webchat
+widget ('site' conversas) wrote its own NON-null local `mid`. That widget was never
+ported (dropped 2026-09-07), but the imported legacy corpus still holds those
+conversas, and they are excluded by the origem gate regardless of their `mid`
+convention — which is why the gate is on `origem`, not on `mid`.
 
 ### The `estaAberto` UTC-hour quirk (models.dart:288-308)
 

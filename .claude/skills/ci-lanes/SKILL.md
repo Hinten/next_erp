@@ -8,7 +8,7 @@ description: >-
   `protect-main` ruleset, or when deciding what should trigger a lane. Covers
   the `changes` scope job and `.github/scripts/e2e-affected.mjs` (--roots,
   --self, --only-paths, --kind), the unskippable `gate` job and its
-  required/optional guard manifest, the fifteen pinnable check names, the
+  required/optional guard manifest, the sixteen pinnable check names, the
   `ci-lane-gates.test.js` backstop, and the three GitHub behaviours that make
   naive CI silently green — a non-matching `paths:` publishing no check at all,
   a `skipped` job satisfying a required check, and check-run names carrying no
@@ -46,7 +46,7 @@ Everything here exists because of these. None is obvious, all three bite.
    repo-wide — three lanes once published an identical
    `Lint / typecheck / unit / build (offline)`.
 
-## The fifteen pinnable checks
+## The sixteen pinnable checks
 
 | lane | gate | roots |
 | --- | --- | --- |
@@ -58,6 +58,7 @@ Everything here exists because of these. None is obvious, all three bite.
 | ci-mercado-livre | `CI gate (mercado-livre)` | `mercado-livre-app` |
 | ci-storage | `CI gate (storage)` | `storage`, `functions` |
 | ci-rules | `CI gate (rules)` | `rules-gen` |
+| ci-shopee | `CI gate (shopee)` | `shopee-app` |
 | ci.yml | `CI typecheck` | — (full graph) |
 | ci.yml | `CI lint` | — (full graph) |
 | ci.yml | `CI format check` | — (whole repo) |
@@ -212,6 +213,29 @@ what the runner thinks, not that a job of that name ever existed. It queries
 `repos/{repo}/actions/runs/{run_id}/jobs` and requires every certified job to be
 present with conclusion `success`.
 
+⚠️ **That endpoint is eventually consistent with the run's own dependency graph,
+so the lock RE-READS it.** Actions releases the gate the moment every `needs:` job
+has concluded, and for a few seconds afterwards the jobs list can still serve the
+pre-conclusion snapshot. On run `34232714671` both `vendas-1 / e2e` and
+`vendas-2 / e2e` concluded `success` and `E2E gate (vendas)` went red in **4
+seconds** because `vendas-1 / e2e` read back `pending`; `gh run rerun --failed`
+cleared it with no code change. So an **unsettled** read is retried — `pending`
+(listed, not concluded), `missing` (not listed yet), or `unreachable` (the
+endpoint did not answer) — `POLL_ATTEMPTS=6` times, `POLL_SLEEP=10` seconds apart,
+**re-fetching on every pass**. A snapshot taken once outside the loop would replay
+the same stale answer, which is a retry that cannot change its own verdict.
+
+⚠️ **Nothing is forgiven, only re-read, and that line is the guard.** A real
+conclusion is terminal in this API and is never polled away: `failure`,
+`cancelled`, `skipped`, `timed_out` go red on the **first** pass with zero sleeps.
+A job still unsettled after the last attempt goes red with the verdict it always
+had. Retrying a real conclusion costs 50 silent seconds; retrying `success`, or
+raising the bound until the job times out, converts the lock into a
+wait-for-green loop — the exact vacuous certification it exists to prevent.
+Assertion 17 in `ci-lane-gates.test.js` pins the fetch-inside-the-loop, the sleep,
+the attempt cap, a 120 s ceiling, the retryable vocabulary, the surviving refusal
+and byte-identity within each variant.
+
 Verdict table:
 
 | condition | gate |
@@ -250,16 +274,32 @@ Prettier-formatted and its indentation is not machine-guaranteed.
 
 ## Triggers
 
-- `pull_request: branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']`
+- `pull_request: branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']`
   on every lane. `branches:` matches the PR's **base**, so a stacked PR must sit
   on one of those prefixes. `production` is the release base — omit it and the PR
   that actually ships reports no check, which for a required check means
   permanently unmergeable.
 - **Never** a `paths:` on `pull_request:`.
 - The domain lanes **keep** `paths:` on `push:`. Nothing on the push path is a
-  required check, and `changes` short-circuits to run=true on non-PR events, so
-  removing it would run the full live SEFAZ pipeline on every merge to `main` for
-  no gating benefit. The e2e lanes have no `push:` at all.
+  required check, and `changes` short-circuits the offline lane to run=true on
+  non-PR events. Removing it would run domain suites on unrelated pushes for no
+  gating benefit. Their push branches are `[master, main, 'codex/**']`.
+- `ci-nfe.yml` deliberately does **not** force `nfe-live` on a `codex/**` push.
+  That event has no PR file list to feed `--only-paths`, so forcing it would emit
+  at rate-limited SEFAZ homologação for every matching agent commit, including
+  lockfile and workflow-only changes the PR path correctly excludes. Only
+  `workflow_dispatch` and pushes to main/master force live; the Codex push runs
+  offline, and its PR applies the narrow live scope.
+- The three E2E lanes have an unfiltered `push:` only for `codex/**`. This is
+  intentionally expensive: every published Codex branch runs the full staging
+  and emulator suites before a PR exists.
+- Every lane groups concurrency by workflow + event + source repository + source
+  branch, using the PR head repository/ref on `pull_request` and the current
+  repository/`ref_name` otherwise. Including the event is load-bearing: push and
+  PR checks share the same SHA, and a cancelled required check leaves the PR
+  blocked even when the other event's check passes. The two event batches therefore
+  run independently while newer runs still cancel older runs of the same event and
+  branch; the repository component keeps equally named fork branches distinct.
 - `timeout-minutes` on every job. 14 jobs once had none, leaving GitHub's 6-hour
   default as the only bound on a hung SEFAZ call. Derive values from observed
   maxima, not guesses: a too-tight timeout turns "slow" into a red required check.
@@ -312,7 +352,8 @@ surface further in.
    one required job, no guards) or `ci-storage.yml` (two required jobs, no
    guards). The `run:` body of every gate is **byte-identical**; only the `env:`
    block and the `JOBS:` manifest differ. Copy it from a real file rather than
-   retyping 142 lines of shell, then `diff` the two bodies to prove you did.
+   retyping 200-odd lines of shell, then `diff` the two bodies to prove you did.
+   Assertion 17 already enforces that for the re-read loop specifically.
 2. Give it `--roots`, `--self`, and a unique ASCII gate name.
 3. Add it to `LANES` in `packages/config-eslint/rules/ci-lane-gates.test.js`.
    Every workflow must be in `LANES` **or** `UNGATED` with a written reason — the
@@ -329,7 +370,7 @@ Order matters. Merge first, let the gates publish, **then** pin.
 
 Read the names back from the merged PR's **head SHA**, not from `main` — the e2e
 lanes have no `push:` trigger and the domain lanes' `push:` keeps a narrow
-`paths:`, so a merge commit may carry only some of the nine.
+`paths:`, so a merge commit may carry only some of the ten.
 
 ```bash
 gh api "repos/Hinten/next_erp/commits/<head-sha>/check-runs?per_page=100" \

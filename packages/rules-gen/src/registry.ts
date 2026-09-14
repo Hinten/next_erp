@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import type { DomainSchema } from '@delfrance/schemas';
-import { ALL_DOMAINS } from '@delfrance/schemas';
+import { ALL_DOMAINS, AVISOS_LEITURA_COLLECTION_PATH } from '@delfrance/schemas';
 import { GRUPO_ECONOMICO_COLLECTION_PATH } from '@delfrance/core/tenant';
 
 /** Every schema-backed domain the generator emits match blocks for. */
@@ -26,6 +26,20 @@ export const VALIDATOR_WHITELIST: ReadonlySet<string> = new Set([
  * grupoEconomico: the tenant registry. Every signed-in user reads their own
  * grupo doc (useTenant reads the `grupoEconomico` claim and fetches that id);
  * there are no client writes — the Flutter/admin side manages tenants.
+ *
+ * avisosLeitura: one doc per operator holding what they have read of the
+ * `avisos` inbox. ⚠️ It is here rather than in `ALL_DOMAINS` for a reason that
+ * is easy to get backwards: a registered `*Meta` can only emit
+ * `isSuperUser() || p('d_<domain>', k)`, which would let ANY aviso-holder
+ * overwrite ANY other operator's read state — and adding a stricter block on
+ * top would not fix it, because Firestore ORs every matching `allow`, so a
+ * second block widens access and can never narrow it. The only way to scope
+ * this to its owner is for this block to be the ONLY rule on the path.
+ *
+ * ⚠️ Unlike grupoEconomico's, this block grants the client a WRITE — marking an
+ * aviso read is a client action. It is scoped to the document id and nothing
+ * else; there is no field-level validation here, so `avisosLeituraSchema` is the
+ * only thing shaping what lands.
  */
 export const EXTRA_MATCH_BLOCKS: ReadonlyArray<{ path: string; body: ReadonlyArray<string> }> = [
   {
@@ -33,6 +47,10 @@ export const EXTRA_MATCH_BLOCKS: ReadonlyArray<{ path: string; body: ReadonlyArr
     body: [
       "allow read: if isSuperUser() || (request.auth != null && request.auth.token.get('grupoEconomico', '') == grupoId);",
     ],
+  },
+  {
+    path: `${AVISOS_LEITURA_COLLECTION_PATH}/{uid}`,
+    body: ['allow read, write: if request.auth != null && request.auth.uid == uid;'],
   },
 ];
 

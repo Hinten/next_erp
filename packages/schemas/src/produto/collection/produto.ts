@@ -264,9 +264,6 @@ export const produtoSchema = z.object({
   anexos: z.array(anexoSchema).nullable().default(null),
   fotosArquivosIds: z.array(z.string()).nullable().default(null),
 
-  // Server-managed.
-  nome_embedding: z.unknown().nullable().default(null),
-
   // System stamps — create-only `timestamp` (nullish coalesce) and
   // `ultimaModificacao` on every write; both stamped by `saveRecord` /
   // ObjectView so the TableView update-monitor sees edits.

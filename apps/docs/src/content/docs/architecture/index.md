@@ -9,7 +9,6 @@ The monorepo splits Next.js apps **by persona/runtime**, not by ERP domain. The 
 
 - `apps/web` — internal ERP UI. Client-first; the server runtime exists but does almost nothing.
 - `apps/integrations` — API-only for external systems (webhooks, OAuth, NFe SEFAZ async).
-- `apps/webchat` — embeddable widget; static.
 - `apps/docs` — this site.
 
 ## Why client-first in `apps/web`

@@ -22,6 +22,7 @@ export default function MedidasPage() {
       db={getFirebaseFirestore()}
       meta={tabelaDeMedidasMeta}
       rowHref={(id) => `/medidas/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/medidas/novo">
           Nova tabela de medidas

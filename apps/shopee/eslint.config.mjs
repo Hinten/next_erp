@@ -67,10 +67,28 @@ const config = [
     },
   },
   {
-    // The admin singleton legitimately calls getFirestore.
-    files: ['lib/firebase/admin.ts'],
+    // The admin singletons legitimately call getFirestore — the app's own and
+    // the nested Cloud Functions codebase's (deployed separately).
+    files: ['lib/firebase/admin.ts', 'functions/src/lib/admin.ts'],
     rules: {
       'no-restricted-imports': 'off',
+      'no-restricted-syntax': ['error', ...baseRestrictedSyntax],
+    },
+  },
+  {
+    // The emulator suites (ci-shopee.yml) need RAW refs, and for the same reason
+    // the rule exists: the handles validate against the Zod schema, and these
+    // tests must reach around that validation on purpose. They read back the
+    // PHYSICAL document to check what the handle actually stored — reading
+    // through the handle instead would apply `parseRead`, whose soft-parse is
+    // precisely the layer under test. In `*.tasks.test.ts` the document being
+    // read back was written by a DIFFERENT process (the function running inside
+    // the emulator), which is exactly when you want the raw bytes. Scoped to the
+    // two suffixes, so production code and the offline unit tests stay covered.
+    // ⚠️ `*.firestore.test.ts` is listed before any such suite exists: that lane
+    // is step 22's (#1530), and the block must not have to be remembered then.
+    files: ['**/*.firestore.test.ts', '**/*.tasks.test.ts'],
+    rules: {
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],
     },
   },

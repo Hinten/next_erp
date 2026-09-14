@@ -398,7 +398,12 @@ export const integracaoSchema = z
     // System stamps — `dataCadastro` create-only (nullish coalesce) and
     // `ultimaModificacao` on every write; both stamped by `saveRecord`.
     dataCadastro: millisSinceEpoch().nullable().default(null),
-    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
+    // `.default(null)`, never a bare `.optional()`: the TableView update-
+    // monitor runs a CLASSIC `orderBy(ultimaModificacao, 'desc').limit(1)`,
+    // which EXCLUDES documents missing the key — so a dropped key hides the
+    // row from the staleness check, silently. Pinned by
+    // `defaultQuery.sortKeyPresence.test.ts`.
+    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
   })
   .passthrough();
 

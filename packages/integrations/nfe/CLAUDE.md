@@ -14,7 +14,7 @@ Declared in `package.json`'s `exports` field:
 | Subpath | Contents | Consumers |
 |---|---|---|
 | `.` | Kitchen sink: cert, sign, soap, xsd, safety, xml, generator, operations, tribute, numeracao, recovery, state, http-provider. **Pulls `node:fs`, `node-forge`, `soap`, `xmllint-wasm`.** | `apps/nfe` (Node) |
-| `./http-provider` | Typed `NFeHttpClient` + the eight typed error classes (NFeRejectedError, NFePedidoNotFoundError, …). Imports only `@delfrance/schemas` + `globalThis.fetch`. **Zero server deps.** | `apps/web` (browser bundle via Turbopack) |
+| `./http-provider` | Typed `NFeHttpClient` + the eight typed error classes (NFeRejectedError, NFePedidoNotFoundError, …), plus `extrairTotaisNFe` (`src/totals/`, the `<ICMSTot>` → modeled-numbers fold shared by the emitter, the backfill and the CSV report — #1491). Imports only `@delfrance/schemas`, `@delfrance/core/money` + `globalThis.fetch`. **Zero server deps.** | `apps/web` (browser bundle via Turbopack) |
 
 `apps/web/eslint.config.mjs` carries a `no-restricted-imports` rule
 forbidding the root specifier from anywhere under `apps/web/**` —

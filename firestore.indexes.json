@@ -47,6 +47,38 @@
       ]
     },
     {
+      "collectionGroup": "integracao",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "shop_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ativo",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notificacoesShopee",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [
@@ -231,6 +263,7 @@
           }
         }
       ],
+      "density": "SPARSE_ANY",
       "searchIndexOptions": {
         "textLanguage": "pt-BR"
       }
@@ -241,6 +274,34 @@
       "fields": [
         {
           "fieldPath": "sku",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "variashopee",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "model_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "contaVariacaoShopeeOuterRef",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "prodshopee",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "item_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "contaProdutoShopeeOuterRef",
           "order": "ASCENDING"
         }
       ]
@@ -964,6 +1025,50 @@
       ]
     },
     {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_emissao",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "filialId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.tpNF",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.finNFe",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totais.receitaBruta",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_emissao",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "cartacorrecao",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
@@ -1017,6 +1122,22 @@
       "fields": [
         {
           "fieldPath": "markedForDeletionAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "checkout",
+      "queryScope": "COLLECTION_GROUP",
+      "apiScope": "ANY_API",
+      "density": "SPARSE_ANY",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "usuarioCheckoutFretePedidoOuterRef",
           "order": "ASCENDING"
         }
       ]
@@ -1749,6 +1870,100 @@
         },
         {
           "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "avisos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "resolvidoEm",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "criadoEm",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "avisos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "resolvidoEm",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "balanco",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "dataFinalizado",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "filiais",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "integracao",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dataCadastro",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "paiId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "publicado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaModificacao",
           "order": "DESCENDING"
         }
       ]

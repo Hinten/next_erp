@@ -33,6 +33,7 @@ function fixtures(): GrupoComId[] {
           { id: 'az', nome: 'Azul', codigo: 'AZ' },
           { id: 'vd', nome: 'Verde', codigo: 'VD' },
         ],
+        ultimaModificacao: null,
       },
     },
     {
@@ -47,6 +48,7 @@ function fixtures(): GrupoComId[] {
           { id: 'm', nome: 'M', codigo: 'M' },
           { id: 'g', nome: 'G', codigo: 'G' },
         ],
+        ultimaModificacao: null,
       },
     },
   ];

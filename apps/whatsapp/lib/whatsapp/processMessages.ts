@@ -19,8 +19,9 @@
  * ── `ultima_modificacao` recency bump ──────────────────────────────────────────
  * A real inbound message stamps the conversa's `ultima_modificacao` so it
  * resurfaces in an `ultima_modificacao desc` list — the recency behavior legacy
- * Flutter got by stamping the field on every `.save()`, and apps/webchat gets
- * per visitor message. The create/reopen paths stamp it inside their txn; every
+ * Flutter got by stamping the field on every `.save()` (including from its webchat
+ * widget, per visitor message — that widget was never ported, so WhatsApp is the only
+ * live producer now). The create/reopen paths stamp it inside their txn; every
  * other real-inbound path (in-order-non-reopenable, out-of-order) uses a
  * separate MONOTONIC guarded merge (`bumpUltimaModificacao`) that never moves it
  * backwards on an out-of-order redelivery. The daily auto-reply bumps it with

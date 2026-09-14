@@ -302,6 +302,20 @@ function parseNCM(produto: Record<string, unknown> | null): string | null {
 }
 
 /**
+ * A config doc that fails its OWN collection schema never reaches the cascade —
+ * it is dropped from the candidate list before any tier runs, so the
+ * `failed impostoSchema … falling through` warnings above can never fire for
+ * it. Without this line the item silently resolves against a LOWER tier (or
+ * none): not a loud failure, a wrong NF-e. Logged with the concrete doc path
+ * so the offending document is directly addressable.
+ */
+function warnDropped(path: string, error: ZodError): void {
+  console.warn(
+    `[nfe/imposto-resolver] dropped '${path}': does not match its collection schema — ${firstIssue(error)} — this doc cannot participate in the cascade`,
+  );
+}
+
+/**
  * Default Firestore-backed factory. Wires the read functions to the
  * Admin SDK; the resolver itself is the pure cascade above.
  */
@@ -324,6 +338,7 @@ export function createFirestoreImpostoResolver(
       for (const doc of snap.docs) {
         const parsed = impostoProdutoSchema.safeParse({ id: doc.id, ...doc.data() });
         if (parsed.success) out.push(parsed.data);
+        else warnDropped(doc.ref.path, parsed.error);
       }
       return out;
     },
@@ -333,6 +348,7 @@ export function createFirestoreImpostoResolver(
       for (const doc of snap.docs) {
         const parsed = impostoCategoriaSchema.safeParse({ id: doc.id, ...doc.data() });
         if (parsed.success) out.push(parsed.data);
+        else warnDropped(doc.ref.path, parsed.error);
       }
       return out;
     },

@@ -90,7 +90,6 @@ const NAV: NavEntry[] = [
       { href: '/canais/magalu', label: 'Magalu' },
       { href: '/canais/mercado-livre', label: 'Mercado Livre' },
       { href: '/canais/shopee', label: 'Shopee' },
-      { href: '/canais/webchat', label: 'Webchat' },
       { href: '/canais/whatsapp', label: 'WhatsApp' },
       // The WhatsApp chat INBOX moved into the unified `/chat` inbox (PR-C2,
       // supersedes #528's separate `/whatsapp` entry); `/canais/whatsapp` above

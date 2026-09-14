@@ -1,0 +1,14 @@
+{
+  "name": "@delfrance/agent-hooks",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint .",
+    "test": "node --test *.test.mjs"
+  },
+  "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
+    "eslint": "catalog:"
+  }
+}

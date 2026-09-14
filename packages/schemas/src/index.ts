@@ -95,6 +95,22 @@ export {
   type ClienteResolveFields,
 } from './clienteIdentity';
 
+// The shared "is this provider value usable, or is it a redaction?" rule.
+// Provider-neutral on purpose: every marketplace that hides buyer data outside
+// an unmask window redacts IN PLACE, so the value arrives non-empty and every
+// truthiness check passes. Sits beside the cliente-identity block because the
+// two are used together on every unattended buyer capture.
+export {
+  MOTIVO_RECUSA,
+  TIPO_DE_VALOR,
+  cpfCnpjUtilizavel,
+  motivoDaRecusa,
+  nomeUtilizavel,
+  valorUtilizavel,
+  type MotivoRecusa,
+  type TipoDeValor,
+} from './valorMascarado';
+
 export {
   endereco,
   enderecoSchema,
@@ -185,10 +201,15 @@ export {
 
 export {
   DIA_DA_SEMANA_LABELS,
+  calcularPrazoDespachoCivil,
   diaDaSemanaSchema,
   faixaCepOptionString,
   faixaDeCepSchema,
   getPrazoDespacho,
+  // The zoned binding of the SAME cut-off rule. A server surface must use this
+  // one: the ambient process zone differs across this repo's backends, so
+  // `getPrazoDespacho` answers a different day depending on which service ran it.
+  getPrazoDespachoNoFuso,
   horarioDeCorteSchema,
   intFrete,
   intFreteMeta,
@@ -202,6 +223,8 @@ export {
   type HorarioDeCorte,
   type IntFrete,
   type MapaDeIntegracoes,
+  type PartesCivis,
+  type PrazoDespachoCivil,
   type TokenMelEnv,
 } from './intFrete';
 
@@ -409,6 +432,15 @@ export {
 } from './notificacaoMercadoPago';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound Shopee push
+  // log, mirrors notificacaoMercadoPago above (Shopee master plan, step 3).
+  notificacaoShopeeStatusSchema,
+  notificacaoShopeeSchema,
+  type NotificacaoShopeeStatus,
+  type NotificacaoShopee,
+} from './notificacaoShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
   // anúncios" mass-import job/checkpoint doc (#621).
   importacaoMercadoLivreStatusSchema,
@@ -431,6 +463,36 @@ export {
   backfillPedidosMercadoLivreMeta,
   type BackfillPedidosMercadoLivre,
 } from './backfillPedidosMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // cursor doc for the flag-gated Shopee order-backfill sweep (master-plan
+  // step 4, #1512). Bare schema+meta (perms 0n), not a DomainSchema — see the
+  // NOTE at the bottom of backfillPedidosShopee.ts. ⚠️ Its clocks are
+  // MILLISECONDS, unlike the ML pair above: apps/shopee keeps µs to its one
+  // avisos module.
+  backfillPedidosShopeeSchema,
+  backfillPedidosShopeeMeta,
+  type BackfillPedidosShopee,
+} from './backfillPedidosShopee';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // cursor doc for the WEEKLY Shopee settlement sweep (master-plan step 6,
+  // #1514), which pages `get_escrow_list` and stamps `pagamento.liquidacao`.
+  // Bare schema+meta (perms 0n), not a DomainSchema — see the NOTE at the
+  // bottom of liquidacaoShopee.ts. ⚠️ Its clocks are MILLISECONDS like the
+  // Shopee backfill cursor above, with ONE exception that names its unit:
+  // `pendentes[].escrowReleaseTimeS` is the wire value in SECONDS.
+  liquidacaoShopeeSchema,
+  liquidacaoShopeeMeta,
+  liquidacaoPendenteSchema,
+  motivoPendenteShopeeSchema,
+  MOTIVO_PENDENTE_SHOPEE,
+  type LiquidacaoShopee,
+  type LiquidacaoPendente,
+  type MotivoPendenteShopee,
+} from './liquidacaoShopee';
 
 export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta health doc
@@ -685,6 +747,26 @@ export {
   type Bandeira,
 } from './bandeiraCartao';
 
+export * from './simplesNacional';
+export {
+  ANEXO_SIMPLES,
+  ANEXO_SIMPLES_LABELS,
+  APURACAO_ESTADO,
+  SIMPLES_NACIONAL_CONFIG_DOC_ID,
+  anexoSimplesSchema,
+  apuracaoEstadoSchema,
+  apuracaoSimples,
+  apuracaoSimplesMeta,
+  apuracaoSimplesSchema,
+  simplesNacionalConfig,
+  simplesNacionalConfigMeta,
+  simplesNacionalConfigSchema,
+  type AnexoSimplesWire,
+  type ApuracaoEstado,
+  type ApuracaoSimples,
+  type SimplesNacionalConfig,
+} from './simplesNacionalConfig';
+
 export {
   nfe,
   nfeSchema,
@@ -695,6 +777,10 @@ export {
   ESTADOS_FINAIS_NFE,
   isEstadoFinalNFe,
   CHAVE_NFE_REGEX,
+  nfeTotaisSchema,
+  nfeTotaisRtcSchema,
+  type NFeTotais,
+  type NFeTotaisRtc,
   type NotaFiscalEletronica,
   type EstadoNFe,
 } from './nfe';
@@ -762,6 +848,10 @@ export {
 // Tributary config schemas (ICMS/IPI/PIS/COFINS/ISSQN/retenção + RTC IBS/CBS/IS).
 // Single source of truth, browser-safe; the NF-e tribute engine re-exports them.
 export {
+  // Dados Gerais folds shared by storage and the imposto editor (#466).
+  nveFromScalar,
+  indEscalaFromScalar,
+  nveCarriesValue,
   // enums
   crtSchema,
   csosnSchema,
@@ -941,3 +1031,35 @@ export {
   type Video,
   type VideoFormato,
 } from './storage/video';
+
+export {
+  aviso,
+  avisoSchema,
+  avisoMeta,
+  avisosLeituraSchema,
+  AVISOS_LEITURA_COLLECTION_PATH,
+  urlInternaAvisoSchema,
+  tipoAvisoSchema,
+  severidadeAvisoSchema,
+  canalAvisoSchema,
+  TIPO_AVISO,
+  TIPO_AVISO_LABELS,
+  SEVERIDADE_AVISO,
+  SEVERIDADE_AVISO_LABELS,
+  CANAL_AVISO,
+  CANAL_AVISO_LABELS,
+  ROTAS_AVISO,
+  chaveDeAviso,
+  avisoNaoLido,
+  marcarTodosComoLidos,
+  urlExternaSegura,
+  rotaInternaSegura,
+  type Aviso,
+  type AvisosLeitura,
+  type UrlInternaAviso,
+  type TipoAviso,
+  type SeveridadeAviso,
+  type CanalAviso,
+  type ChaveAvisoInput,
+  type RotaAvisoKey,
+} from './aviso';

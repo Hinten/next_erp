@@ -57,6 +57,7 @@ service cloud.firestore {
     function v_pedidos(d, c) {
       return (!c.hasAny(['bloquearEmissaoNFe']) || (d.get('bloquearEmissaoNFe', null) == null || d.get('bloquearEmissaoNFe', null) is bool))
         && (!c.hasAny(['bloqueiosLiberados']) || (d.get('bloqueiosLiberados', null) == null || d.get('bloqueiosLiberados', null) is list))
+        && (!c.hasAny(['capturaComprador']) || (d.get('capturaComprador', null) == null || d.get('capturaComprador', null) is map))
         && (!c.hasAny(['chNFeReferenciadas']) || (d.get('chNFeReferenciadas', null) == null || d.get('chNFeReferenciadas', null) is list))
         && (!c.hasAny(['clientePedidoOuterRef']) || (d.get('clientePedidoOuterRef', null) == null || d.get('clientePedidoOuterRef', null) is string))
         && (!c.hasAny(['dataFinalExpedicao']) || (d.get('dataFinalExpedicao', null) == null || d.get('dataFinalExpedicao', null) is int))
@@ -82,6 +83,7 @@ service cloud.firestore {
         && (!c.hasAny(['itensIds']) || d.get('itensIds', null) is list)
         && (!c.hasAny(['lastMarketplaceUpdate']) || (d.get('lastMarketplaceUpdate', null) == null || d.get('lastMarketplaceUpdate', null) is int))
         && (!c.hasAny(['listaDePrecosOuterRef']) || (d.get('listaDePrecosOuterRef', null) == null || d.get('listaDePrecosOuterRef', null) is string))
+        && (!c.hasAny(['marketplace']) || (d.get('marketplace', null) == null || d.get('marketplace', null) is map))
         && (!c.hasAny(['numero']) || (d.get('numero', null) == null || d.get('numero', null) is string))
         && (!c.hasAny(['observacoesInternas']) || (d.get('observacoesInternas', null) == null || d.get('observacoesInternas', null) is string))
         && (!c.hasAny(['operacaoPedidoOuterRef']) || (d.get('operacaoPedidoOuterRef', null) == null || d.get('operacaoPedidoOuterRef', null) is string))
@@ -103,6 +105,8 @@ service cloud.firestore {
         && (!c.hasAny(['duplicata']) || d.get('duplicata', null) is bool)
         && (!c.hasAny(['id']) || (d.get('id', null) == null || d.get('id', null) is string))
         && (!c.hasAny(['juros']) || (d.get('juros', null) == null || (d.get('juros', null) is number && d.get('juros', null) >= 0)))
+        && (!c.hasAny(['liquidacao']) || (d.get('liquidacao', null) == null || d.get('liquidacao', null) is map))
+        && (!c.hasAny(['marketplace']) || (d.get('marketplace', null) == null || d.get('marketplace', null) is map))
         && (!c.hasAny(['metodoPagamentoOuterRef']) || (d.get('metodoPagamentoOuterRef', null) == null || d.get('metodoPagamentoOuterRef', null) is string))
         && (!c.hasAny(['nFat']) || (d.get('nFat', null) == null || d.get('nFat', null) is string && d.get('nFat', null).size() <= 60))
         && (!c.hasAny(['parcelas']) || (d.get('parcelas', null) is int && d.get('parcelas', null) >= 1))
@@ -160,6 +164,12 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_arquivo', 1);
       allow create, update: if isSuperUser() || p('d_arquivo', 2);
       allow delete: if isSuperUser() || p('d_arquivo', 4);
+    }
+
+    match /avisos/{docId} {
+      allow read: if isSuperUser() || p('d_aviso', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /balanco/{docId} {
@@ -279,6 +289,18 @@ service cloud.firestore {
     }
 
     match /filiais/{filialId}/nfeconfig/{docId} {
+      allow read: if isSuperUser() || p('d_fiscal', 1);
+      allow create, update: if isSuperUser() || p('d_fiscal', 2);
+      allow delete: if isSuperUser() || p('d_fiscal', 4);
+    }
+
+    match /filiais/{filialId}/simplesnacional/{docId} {
+      allow read: if isSuperUser() || p('d_fiscal', 1);
+      allow create, update: if isSuperUser() || p('d_fiscal', 2);
+      allow delete: if isSuperUser() || p('d_fiscal', 4);
+    }
+
+    match /filiais/{filialId}/simplesnacional/default/apuracoes/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
       allow create, update: if isSuperUser() || p('d_fiscal', 2);
       allow delete: if isSuperUser() || p('d_fiscal', 4);
@@ -546,6 +568,10 @@ service cloud.firestore {
       allow read, write: if request.auth != null && nsColl.matches('^e2e_[0-9A-Za-z_]+$');
     }
 
+    match /avisosLeitura/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
     match /grupoEconomico/{grupoId} {
       allow read: if isSuperUser() || (request.auth != null && request.auth.token.get('grupoEconomico', '') == grupoId);
     }
@@ -553,6 +579,9 @@ service cloud.firestore {
     // Collection-group reads (client groupQuery / collectionGroup).
     // A leaf shared by several collections carries the UNION of their
     // read claims (see the dedupe note in emitRules).
+    match /{path=**}/apuracoes/{docId} {
+      allow read: if isSuperUser() || p('d_fiscal', 1);
+    }
     match /{path=**}/brandshopee/{docId} {
       allow read: if isSuperUser() || p('d_integracao', 1);
     }
@@ -630,6 +659,9 @@ service cloud.firestore {
     }
     match /{path=**}/regras/{docId} {
       allow read: if isSuperUser() || p('d_regraImposto', 1);
+    }
+    match /{path=**}/simplesnacional/{docId} {
+      allow read: if isSuperUser() || p('d_fiscal', 1);
     }
     match /{path=**}/token6h/{docId} {
       allow read: if isSuperUser() || p('d_integracao', 1);

@@ -22,6 +22,7 @@ export default function MotivosIncidentePage() {
       db={getFirebaseFirestore()}
       meta={motivoIncidenteMeta}
       rowHref={(id) => `/motivos-incidente/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/motivos-incidente/novo">
           Novo motivo

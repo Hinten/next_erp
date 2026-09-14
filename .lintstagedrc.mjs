@@ -21,16 +21,23 @@ const ROOT = process.cwd();
 //
 // Sorted longest-first so a nested workspace (`packages/integrations/nfe`)
 // matches before any shorter prefix (`packages/integrations`).
-const WORKSPACE_GLOBS = ['apps', 'packages', 'packages/integrations', 'tools'];
+const WORKSPACE_GLOBS = ['.claude', '.codex', 'apps', 'packages', 'packages/integrations', 'tools'];
 
-const ESLINT_WORKSPACES = WORKSPACE_GLOBS.flatMap((dir) => {
-  const abs = path.join(ROOT, dir);
-  if (!existsSync(abs)) return [];
-  return readdirSync(abs, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => `${dir}/${e.name}`)
-    .filter((ws) => existsSync(path.join(ROOT, ws, 'eslint.config.mjs')));
-}).sort((a, b) => b.length - a.length);
+const ESLINT_WORKSPACES = [
+  ...new Set(
+    WORKSPACE_GLOBS.flatMap((dir) => {
+      const abs = path.join(ROOT, dir);
+      if (!existsSync(abs)) return [];
+      const candidates = [
+        dir,
+        ...readdirSync(abs, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => `${dir}/${e.name}`),
+      ];
+      return candidates.filter((ws) => existsSync(path.join(ROOT, ws, 'eslint.config.mjs')));
+    }),
+  ),
+].sort((a, b) => b.length - a.length);
 
 // ⚠️ `.js`/`.mjs`/`.cjs` are included deliberately. They used to be absent, so
 // every custom rule and backstop under `packages/config-eslint/rules` and the
@@ -77,8 +84,9 @@ export default function lintStaged(stagedFiles) {
 
   // 2) ESLint --fix, grouped by owning workspace. Code files that live outside
   //    any ESLint-config workspace get Prettier only — that is repo-root files
-  //    and `.github/scripts/**` / `.claude/hooks/**`, which belong to no
-  //    workspace and which no root flat config covers.
+  //    and `.github/scripts/**`, which belongs to no workspace and which no
+  //    root flat config covers. `.claude/hooks` is a workspace so its shared
+  //    Claude/Codex hook code is linted and tested by the normal gates.
   //    ⚠️ It used to name `packages/core` and `packages/ui` as the examples.
   //    Both ship an `eslint.config.mjs` and are discovered above — `packages/ui`
   //    is a workspace this same PR adds hook rules to — so the examples were

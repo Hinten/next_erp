@@ -43,6 +43,7 @@ export function IntFreteListPage({ slice }: { slice: LogisticaSlice }) {
       meta={intFreteMeta}
       queryParams={{ tipo: slice.tipo }}
       rowHref={(id) => `/logistica/${slice.slug}/${id}`}
+      rowLinkColumn="nome"
       // Create/delete affordances only for users holding the matching
       // PERM.frete bits — the backend (rules) is the real gate; hiding
       // them avoids offering flows that would be rejected.

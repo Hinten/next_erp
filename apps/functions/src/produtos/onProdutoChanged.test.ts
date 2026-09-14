@@ -24,6 +24,10 @@ describe('PRODUTO_HISTORY_IGNORE_FIELDS', () => {
         // missing from this list — so one of the pair produced history rows and
         // the other did not.
         'marketplaceIds',
+        // Kept even though `produtoSchema` no longer declares the field: the
+        // sweep that deletes the stored key fires this trigger per produto, and
+        // a disappearing key is a CHANGE to `diffDocumentFields`. Without this
+        // entry that sweep writes one history row per produto.
         'nome_embedding',
         'statusProdutosMarketplace',
         'timestamp',

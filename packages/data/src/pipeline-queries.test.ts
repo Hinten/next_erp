@@ -26,19 +26,26 @@ const { mockPipelinesExports } = vi.hoisted(() => ({
       expr,
       as: (alias: string) => ({ kind: 'aliased', alias, expr }),
     }),
+    documentMatches: (rquery: unknown) => ({ kind: 'documentMatches', rquery }),
   } as Record<string, unknown>,
 }));
 
 vi.mock('firebase/firestore/pipelines', () => mockPipelinesExports);
 
 import type { Firestore } from 'firebase/firestore';
-import { PipelineUnsupportedError, buildPipeline, isPipelineSupported } from './pipeline-queries';
+import {
+  PipelineUnsupportedError,
+  buildPipeline,
+  isPipelineSupported,
+  sanitizeSearchDsl,
+} from './pipeline-queries';
 
 interface Stage {
   where: ReturnType<typeof vi.fn>;
   sort: ReturnType<typeof vi.fn>;
   limit: ReturnType<typeof vi.fn>;
   select: ReturnType<typeof vi.fn>;
+  search: ReturnType<typeof vi.fn>;
   __calls: string[];
 }
 
@@ -59,6 +66,10 @@ function makeStage(): Stage {
     }),
     select: vi.fn(() => {
       calls.push('select');
+      return stage;
+    }),
+    search: vi.fn(() => {
+      calls.push('search');
       return stage;
     }),
     __calls: calls,
@@ -361,5 +372,96 @@ describe('buildPipeline', () => {
     expect(() => buildPipeline(db, { collection: 'produtos', select: ['rowId'] })).toThrow(
       /reserved/,
     );
+  });
+});
+
+describe('buildPipeline textSearch', () => {
+  it('emits the search stage FIRST, ahead of every where', () => {
+    // ⚠️ The one property that is not a preference: Firestore requires `search`
+    // to sit next to the source. Emitting it after a `where` does not produce a
+    // slower plan, it produces an invalid pipeline — so the ORDER is the
+    // assertion here, not merely the presence of the stage.
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'produtos',
+      textSearch: { query: 'Gatinho' },
+      filters: [{ field: 'paiId', op: 'eq', value: null }],
+      orderBy: [{ field: 'nome', direction: 'asc' }],
+      limit: 50,
+    });
+
+    expect(stage.__calls).toEqual(['search', 'where', 'sort', 'limit']);
+    expect(stage.search).toHaveBeenCalledWith({
+      query: { kind: 'documentMatches', rquery: 'Gatinho' },
+    });
+  });
+
+  it('omits retrievalDepth entirely rather than sending undefined', () => {
+    // Sending the key as `undefined` is not the same as leaving it off: the
+    // backend default is what the measurement was taken against, and an
+    // explicit undefined is a shape nobody probed.
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, { collection: 'produtos', textSearch: { query: 'Bandeja' } });
+    expect(stage.search.mock.calls[0]?.[0]).not.toHaveProperty('retrievalDepth');
+
+    const segundo = makeDb(true);
+    buildPipeline(segundo.db, {
+      collection: 'produtos',
+      textSearch: { query: 'Bandeja', retrievalDepth: 200 },
+    });
+    expect(segundo.stage.search).toHaveBeenCalledWith(
+      expect.objectContaining({ retrievalDepth: 200 }),
+    );
+  });
+
+  it('refuses to run textSearch and the substring search over one term', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'produtos',
+        textSearch: { query: 'Gatinho' },
+        search: { fields: ['nome'], term: 'Gatinho' },
+      }),
+    ).toThrow(/alternatives/);
+  });
+});
+
+describe('sanitizeSearchDsl', () => {
+  // ⚠️ BOTH HALVES, deliberately. This function decides which two terms are the
+  // SAME query, and a test that only shows it folding cannot show where the fold
+  // STOPS — the failure mode is folding too much, silently, which is why the
+  // repo keeps an equivalence-fold inventory at all.
+
+  it('folds a term whose operators the DSL would have read as syntax', () => {
+    // The hazard, on a real catalogue name: the hyphen is documented negation,
+    // so raw this asks for "Porta, but NOT lápis".
+    expect(sanitizeSearchDsl('Porta-lápis')).toBe('Porta lápis');
+    expect(sanitizeSearchDsl('Camiseta  Polo')).toBe('Camiseta Polo');
+    expect(sanitizeSearchDsl('  Bandeja  ')).toBe('Bandeja');
+    expect(sanitizeSearchDsl('"Camiseta" (Polo)')).toBe('Camiseta Polo');
+  });
+
+  it('keeps NEAR-MISSES distinct — the analyzer relates them, not this', () => {
+    // Singular and plural must arrive as different DSL strings. Stemming is a
+    // property of the pt-BR index and happens at QUERY time; folding them here
+    // would move a measured backend behaviour into untested string code.
+    expect(sanitizeSearchDsl('Camiseta')).not.toBe(sanitizeSearchDsl('Camisetas'));
+    // Accents survive. Measured on staging, folding is INCONSISTENT across
+    // words (`Leao` reaches `Leão`, `Ceramica` does not reach `Cerâmica`), so
+    // stripping them here would replace a partial backend behaviour with a
+    // total one and change which rows come back.
+    expect(sanitizeSearchDsl('Leão')).toBe('Leão');
+    expect(sanitizeSearchDsl('Leão')).not.toBe(sanitizeSearchDsl('Leao'));
+    // Case survives too: the analyzer lowercases, this does not pretend to.
+    expect(sanitizeSearchDsl('Bandeja')).not.toBe(sanitizeSearchDsl('bandeja'));
+  });
+
+  it('returns undefined when nothing searchable survives', () => {
+    // A term of pure operators must not become the empty DSL string, which
+    // `documentMatches('')` would send as a query matching who-knows-what.
+    expect(sanitizeSearchDsl('')).toBeUndefined();
+    expect(sanitizeSearchDsl('   ')).toBeUndefined();
+    expect(sanitizeSearchDsl('---')).toBeUndefined();
+    expect(sanitizeSearchDsl('"" ()')).toBeUndefined();
   });
 });

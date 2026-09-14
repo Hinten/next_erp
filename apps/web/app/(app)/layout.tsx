@@ -6,6 +6,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { useRequireAuth } from '@/lib/auth';
 import { SidebarNav } from './_components/SidebarNav';
 import { TenantBadge } from './_components/TenantBadge';
+import { AvisosBell } from './_components/AvisosBell';
 import { UserMenu } from './_components/UserMenu';
 
 export default function AppLayout({ children }: { children: ReactNode }) {
@@ -33,7 +34,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             <Title order={4}>Delfrance</Title>
             <TenantBadge />
           </Group>
-          <UserMenu />
+          <Group gap="xs">
+            <AvisosBell />
+            <UserMenu />
+          </Group>
         </Group>
       </AppShell.Header>
       <AppShell.Navbar p="xs">

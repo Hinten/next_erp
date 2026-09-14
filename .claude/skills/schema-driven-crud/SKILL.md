@@ -151,6 +151,7 @@ export default function FoosPage() {
       defaultColumns={['nome', 'status']}
       orderBy={{ field: 'nome', direction: 'asc' }}
       rowHref={(id) => `/foos/${id}`}
+      rowLinkColumn="nome"
       renderNewButton={() => (
         <Button component={Link} href="/foos/novo">Novo foo</Button>
       )}
@@ -222,6 +223,7 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `orderBy` | Initial sort `{ field, direction }`. User changes it by clicking the header. |
 | `rowHref` | `(id, row) => string` — row-click target. |
 | `onRowClick` | `(id, row) => void` — row-click handler instead of navigation (e.g. a modal editor for an embedded subcollection table). `rowHref` is ignored while set. |
+| `rowLinkColumn` | Name ONE visible column (a schema key **or** a `virtualColumns` key) whose cell content is wrapped in a real `next/link` anchor built from this row's `rowHref`. **Set it on every list screen** — without it the row is MOUSE-ONLY: the row handler takes no event, so <kbd>Tab</kbd> never reaches a row, <kbd>Enter</kbd> never opens one, ⌘/Ctrl-click navigates the current tab instead of opening a new one, and there is nothing to right-click → *Copy link address*. All four are behaviours of the `<a href>` element, not things an `onClick` can grow. Reads no extra field, so the projection and the screen's read cost are unchanged, and because the primary stays a **schema** column it keeps its header sort AND its `<ColumnFilter>`. ⚠️ Never name a column whose cell already renders its own `<a>` — React builds the DOM directly, so nested anchors really render, and two links with the same accessible name break `getByRole('link', { name })` under Playwright strict mode (this is why `/produtos`, which hand-rolled one in `nomeLink`, does NOT set this prop). ⚠️ Never give that anchor an `aria-label` for a cell that HAS text: a descendant's `aria-label` replaces its text in the row's name-from-contents computation, renaming every row and breaking the `getByRole('row', { name })` locators the e2e suite is built on. The inverse case is handled for you — when the linked **schema** value is empty (`null`, `''`, `[]`) the cell rendered only a `—`, so the link falls back to `Abrir <id>` instead of leaving every such row an identical em dash in a screen reader's links list. Nullable primaries are ordinary here: `pedido.numero` and `cliente.nome` are both `.nullable().default(null)`. A **virtual** link column gets no fallback (TableView cannot tell an empty render from a deliberately terse one), so name it yourself. Ignored while `onRowClick` is set, and for rows with an empty id — the inert configurations warn. |
 | `newHref` | "New" button as a plain href — simpler alternative to `renderNewButton`. |
 | `renderNewButton` | "New" button render-prop (use `<Button component={Link}>`). |
 | `fields` | `Record<string, FieldConfig>` — per-field overrides (see §6). |
@@ -231,7 +233,7 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `renderActionsPanelExtra` | `(ctx: { collapsed }) => ReactNode` — caller content rendered inside `actionsPanel` below the buttons (ignored without it). Unlike the ActionBar the panel can host state that outlives a click, which is what makes it the home for a long-running job's progress (`/canais/mercado-livre`). It renders on the collapsed rail too, so shrink to a badge via `ctx.collapsed` rather than returning `null`. |
 | `onSelectionChange` | `(rows: SnapshotRow<T>[]) => void` — observe the checked rows outside an action (fires once with `[]` on mount, then on every change of the selected **id set**, not on unrelated snapshot ticks). The callback is read through a latest-ref, so an inline arrow is safe. |
 | `copyHref` | Enables the built-in "Copiar" action. Setting it is the on/off toggle; it also implies row selection. Selecting exactly one row + "Copiar" navigates to `${copyHref}?copyFrom=<id>` (the create page pre-fills from that doc). |
-| `monitorField` | Field the update-monitor orders by (`limit(1)`, desc) to flag a stale page. `false` disables; omitted auto-resolves `ultimaModificacao` → `timestamp` → disabled. |
+| `monitorField` | Field the update-monitor orders by (`limit(1)`, desc) to flag a stale page. `false` disables; omitted auto-resolves `ultimaModificacao` → `timestamp` → disabled. ⚠️ It runs only while the list is on the FROZEN transport — a column filter, a search term or a sort other than the declared one. A streaming list has nothing for it to find, so the field resolves to `null` there and no listener opens. ⚠️ **And never under `queryOverride`**, which `resolveListMode` calls static while `fallbackQuery` hands the caller's query to `useSnapshot` and it streams: the gate reads the TRANSPORT, not the policy. The index is still owed on every collection: any list reaches the frozen transport. |
 | `pageSize` | Rows per page (default 50). |
 | `pathContext` | For sub-collections (`{ parentId }`). |
 | `extraFilters` | `ReadonlyArray<PipelineFieldFilter>` — page-owned server-side filters (no filter UI, never in the URL), AND-combined with `meta.defaultQuery` base filters and the user's column filters. An `array-contains-any` entry whose value is an EMPTY array short-circuits to an empty result set without querying (a resolved candidate list that came back empty); an array value on any OTHER op throws (programmer error), never silently renders an empty table. Ignored under `queryOverride`. On the classic fallback path `array-contains-any` is capped at 30 values and `contains`/`startsWith` throw (pipeline-only). |
@@ -392,7 +394,10 @@ before it went green. Check here first when a CRUD test fails.
   in `beforeAll` and keep a generous table-load timeout.
 - **A row you just created is missing from the list.** Under the Pipelines
   path `TableView` runs a *one-shot* query — it does not re-fetch after a
-  create. The update-monitor shows a yellow "Atualizar" banner when the
+  create. ⚠️ Which path you are on depends on the list's own state: an
+  untouched list streams the declared query and the row simply appears, while
+  a filter, a search term or a custom sort freezes it. On the frozen one the
+  update-monitor shows a yellow "Atualizar" banner when the
   collection changes, but the main table won't refresh until that button
   (or `monitorField`-driven reload) fires. The fix belongs in the **test**,
   not the component: after creating, wait for the doc to commit (e.g.
@@ -405,8 +410,9 @@ before it went green. Check here first when a CRUD test fails.
   the delete action keeps the list fresh in the same tab). The update-monitor
   itself only watches the most-recent doc (`limit(1)`), so it does **not**
   detect deletions made in *other* sessions — a hard delete leaves no
-  queryable trace. That cross-session gap is a known limitation tracked in
-  issue #40.
+  queryable trace. A STREAMING list no longer needs it to (the row simply goes),
+  which is what closed the common half of issue #40; on a filtered, searched or
+  custom-sorted list that cross-session gap is still there and still open.
 - **Vitest: Mantine throws under JSDOM** (`ResizeObserver is not defined`,
   `matchMedia`, `document.fonts`, `visualViewport`). `packages/ui/vitest.setup.ts`
   shims all four. Any new package that renders Mantine components in unit

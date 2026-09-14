@@ -140,9 +140,9 @@ export function refineClienteTipoDocumento(
  * the label; JSON objects encode richer hints (kind overrides, reference
  * collection ids, etc.).
  *
- * Vector embeddings (`nome_embedding`, `telefone_embedding`) are written by
- * server-side code (Functions). They aren't part of the form schema; the
- * runtime treats them as opaque pass-through.
+ * The `nome_embedding` / `telefone_embedding` vectors were DROPPED — nothing
+ * produced or read them. Migrated documents keep the stored keys until the
+ * sweep removes them, and this schema strips them on read.
  */
 export const clienteSchema = z.object({
   tipo: tipoClienteSchema.nullable().default(null).describe('Tipo'),
@@ -205,10 +205,12 @@ export const clienteSchema = z.object({
   // `saveRecord` on every write so the TableView update-monitor sees edits.
   // Labelled so it renders as "Última modificação" in the list (the builder
   // already carries the datetime/ms hint that formats the epoch as a date).
-  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
-  // Embeddings are server-managed; treat as opaque on the client.
-  nome_embedding: z.unknown().nullable().default(null),
-  telefone_embedding: z.unknown().nullable().default(null),
+  // ⚠️ `.default(null)`, never a bare `.optional()`: this is the list's sort key,
+  // and a classic `orderBy` EXCLUDES documents missing the ordered field. Zod
+  // drops an `.optional()` key the writer omits, so the row would vanish from
+  // the list with no error — the #861/#1213 produtos outage exactly.
+  // Pinned by `defaultQuery.sortKeyPresence.test.ts`.
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().default(null),
   // userCliente outer reference: stored as a Firestore document path string
   // (`users/<uid>`) on writes from this app. Phase 1 keeps it pass-through.
   userCliente: z.string().nullable().default(null),

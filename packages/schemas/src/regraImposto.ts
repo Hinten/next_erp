@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
-import { taxConfigFields } from './imposto/tribute';
+import { indEscalaField, nveField, taxConfigFields } from './imposto/tribute';
 import type { CollectionMetadata } from './types';
 
 // Mirrors PERM.regraImposto in packages/auth/src/permissions.ts (byte 12;
@@ -55,18 +55,12 @@ const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
  *   tab's list query) — same gap the field had before this schema modeled it
  *   at all, since `dataCadastro` itself is unchanged.
  *
- * ⚠️ `NVE`/`indEscala` need a READ-tolerant preprocess, not just a corrected
- * type. Before this schema fixed their type, they were `z.string()` — and
- * `MacrosTab`'s editor (`apps/web`) faithfully wrote plain strings through
- * that shape, so an already-stored `operacao/{id}/regras` doc (staging, not
- * just a hypothetical legacy export) can carry a scalar. A bare type swap
- * would fail the WHOLE-DOCUMENT parse for those docs: the resolver's
- * `parseRegraImpostoSnapshot` (`apps/nfe/lib/nfe/orchestrator/bundle.ts`)
- * drops such a rule silently on a failed `safeParse`, sending the item's tax
- * calculation to the wrong tier — not a loud failure, a wrong NF-e. The
- * preprocess accepts the legacy scalar (one-element array / sim-não text)
- * so the doc still parses; the new editor never writes a scalar again
- * (`MacrosTab`'s save path bridges its free-text UI to the real shape).
+ * ⚠️ `NVE`/`indEscala` carry their wire types through the shared `nveField()` /
+ * `indEscalaField()` (`./imposto/tribute`), whose READ-tolerant preprocess is
+ * what lets an already-stored scalar still parse — see those helpers for why a
+ * bare type swap would turn a failed whole-document parse into a wrong NF-e.
+ * Since #466 all three tax collections share that definition, so a fold change
+ * lands on every tier at once instead of drifting between them.
  */
 export const regraImpostoSchema = z.object({
   id: z.string().nullable().default(null),
@@ -83,33 +77,11 @@ export const regraImpostoSchema = z.object({
   CFOP: z.string().nullable().optional(),
   cfopInterestadual: z.string().nullable().optional(),
   NCM: z.string().nullable().optional(),
-  /**
-   * Legacy wire type is a `List`, not a scalar string — but an
-   * already-stored doc may carry the OLD (pre-fix) scalar shape this app's
-   * own editor wrote (see class doc). A string becomes a one-element array;
-   * blank becomes null.
-   */
-  NVE: z
-    .preprocess(
-      (v) => (typeof v === 'string' ? (v.trim() === '' ? null : [v.trim()]) : v),
-      z.array(z.string()).nullable(),
-    )
-    .default(null),
+  /** Legacy `List<String>?` wire, read-tolerant of the old scalar. See {@link nveField}. */
+  NVE: nveField(),
   CEST: z.string().nullable().optional(),
-  /**
-   * Legacy wire type is a `bool`, not a string — same already-stored-scalar
-   * concern as `NVE` (see class doc). Blank stays null; `n`/`não`/`nao`/
-   * `false`/`0` (case-insensitive) become `false`; any other non-blank text
-   * becomes `true`.
-   */
-  indEscala: z
-    .preprocess((v) => {
-      if (typeof v !== 'string') return v;
-      const trimmed = v.trim();
-      if (trimmed === '') return null;
-      return !/^(n|não|nao|false|0)$/i.test(trimmed);
-    }, z.boolean().nullable())
-    .default(null),
+  /** Legacy `bool?` wire, read-tolerant of the old scalar. See {@link indEscalaField}. */
+  indEscala: indEscalaField(),
   CNPJFab: z.string().nullable().optional(),
   cBenef: z.string().nullable().optional(),
   extipi: z.string().nullable().optional(),

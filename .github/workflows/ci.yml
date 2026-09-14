@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, 'codex/**']
   pull_request:
     # `branches:` matches the PR's BASE, not its head — so the prefix entries
     # are what give a stacked PR (B -> A -> main) CI. Stack onto one of them; a
@@ -14,10 +14,13 @@ on:
     # ci-rules.yml no longer re-run the @delfrance/{schemas,data,auth} suites, so
     # on a main → production PR the `test` job below is the only thing that runs
     # them.
-    branches: [master, main, production, 'claude/**', 'feat/**', 'fix/**']
+    branches: [master, main, production, 'claude/**', 'codex/**', 'feat/**', 'fix/**']
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Keep push and PR runs separate: cancelling one leaves failed/cancelled check
+  # rows on the shared SHA and can block the PR even when the other run passes.
+  # Newer runs still replace older ones within the same event and source branch.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 # ---------------------------------------------------------------------------

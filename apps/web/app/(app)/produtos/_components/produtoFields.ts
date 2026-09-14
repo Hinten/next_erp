@@ -275,7 +275,6 @@ export const PRODUTO_TRANSIENT_FIELDS: string[] = [
  * the Variações tab manages it and the page's `deriveOnSave` persists it.)
  */
 export const PRODUTO_EXCLUDED_FIELDS: string[] = [
-  'nome_embedding',
   'grupoDeVariacoesUid',
   // `componentesKit` renders in the Kit tab; `componentesKitKeys` is the denorm
   // the delete-guard queries — derived in `deriveOnSave`, never rendered.

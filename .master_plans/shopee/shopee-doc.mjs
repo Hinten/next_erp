@@ -163,7 +163,14 @@ if (cmd === 'modules') {
   rtRender(safeParse(j.raw_content, []), out);
 } else if (cmd === 'api') {
   const j = await getJson(`/doc/api/?version=2&api_name=${arg}`, `api_${arg}`);
-  out.push(`# ${j.api_name}   [${j.module_name}]  type=${j.api_type}  ${j.is_get_method ? 'GET' : 'POST'} ${j.path}`);
+  // ⚠️ `is_get_method` is 0 on EVERY one of the 20 cached API pages (and absent
+  // on the two cached bodies that are lookup ERRORS, not pages), so it printed
+  // POST for all of them and contaminated every verb claim in evidence/. The
+  // page's real field is `method`: 1 = POST, 2 = GET, and it agrees with the
+  // request samples 20/20. Anything else prints ITSELF rather than defaulting to
+  // a verb — defaulting is precisely the defect this replaces.
+  const verb = j.method === 2 ? 'GET' : j.method === 1 ? 'POST' : `method=${String(j.method)}`;
+  out.push(`# ${j.api_name}   [${j.module_name}]  type=${j.api_type}  ${verb} ${j.path}`);
   out.push(`url: ${j.url}\ntest_url: ${j.test_url}\nrate_limit: ${j.rate_limit}\napi_permission: ${JSON.stringify(j.api_permission)}`);
   out.push(`\n## Definition\n${stripHtml(j.define)}`);
   const params = safeParse(j.params, {});

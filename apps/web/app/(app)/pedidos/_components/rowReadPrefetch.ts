@@ -188,6 +188,21 @@ export function usePedidoRowReadPrefetch(): RowReadPrefetch {
   const [status, setStatus] = useState<RowReadsStatus>('pending');
   const runIdRef = useRef(0);
 
+  /**
+   * Cliente ids this mount has already fetched.
+   *
+   * ⚠️ Load-bearing since the list STREAMS (#40). `onRowsChange` fires whenever
+   * the row id set changes, and under `onSnapshot` that now includes every
+   * insertion the ML importer makes while the operator is just looking at the
+   * page — each of which used to re-issue a chunked read for the WHOLE window's
+   * clientes. Batching only the ids that are actually new turns that back into
+   * one read per arriving pedido.
+   *
+   * Populated only after a successful fetch: an id recorded on a failed batch
+   * would never be retried by a later one.
+   */
+  const fetchedClienteIdsRef = useRef<Set<string>>(new Set());
+
   const deadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Insurance against `onRowsChange` never firing at all. Long on purpose — it
@@ -235,17 +250,28 @@ export function usePedidoRowReadPrefetch(): RowReadPrefetch {
         setStatus('settled');
         return;
       }
+      // Only what this mount has not already read. A streaming list re-fires
+      // this on every insertion, and re-reading the whole window each time is
+      // the cost that made the batch worth having in the first place.
+      const pending = clientes.filter((c) => !fetchedClienteIdsRef.current.has(c.id));
+      if (pending.length === 0) {
+        setStatus('settled');
+        return;
+      }
       void (async () => {
         try {
           const clienteDocs = await getDocsByIds(
             db,
             clienteCollection,
-            clientes.map((c) => c.id),
+            pending.map((c) => c.id),
           );
           // A newer page superseded this batch — its seeds are for rows nobody
           // is looking at, and its `settled` would race the newer run's.
           if (runId !== runIdRef.current) return;
-          seedRowReads(queryClient, clientes, clienteDocs);
+          seedRowReads(queryClient, pending, clienteDocs);
+          // Recorded only here, on the success path: an id marked before the
+          // read would be skipped by every later batch if this one threw.
+          for (const c of pending) fetchedClienteIdsRef.current.add(c.id);
         } catch (err) {
           // A prefetch is pure optimisation: every cell reads for itself in the
           // `finally` below, so a Firestore failure here costs a fallback read
