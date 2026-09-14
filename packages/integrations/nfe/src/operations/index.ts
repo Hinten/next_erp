@@ -137,7 +137,20 @@ function textOrNull(value: string | undefined): string | null {
   return t ? t : null;
 }
 
-function toInfCad(cad: TRetConsCad_infCons_infCad): ConsultaCadastroInfCad {
+/**
+ * A generated type as it can actually arrive: every field optional, at every
+ * depth. `retConsCad` is never XSD-validated, so a field the XSD marks required
+ * is a promise the wire does not keep — reading through this makes the compiler
+ * reject `infCons.cStat.trim()` instead of a real SEFAZ reply throwing it.
+ */
+type Wire<T> =
+  T extends ReadonlyArray<infer U>
+    ? Array<Wire<U>>
+    : T extends object
+      ? { [K in keyof T]?: Wire<T[K]> }
+      : T;
+
+function toInfCad(cad: Wire<TRetConsCad_infCons_infCad>): ConsultaCadastroInfCad {
   const { ender } = cad;
   return {
     IE: textOrNull(cad.IE) ?? '',
@@ -205,8 +218,9 @@ export async function consultarCadastro(
   await validateConsCad(xml);
   const { resultXml } = await nfeConsultaCadastro(call, xml, cUF);
 
-  // `Partial`: the generated type calls `infCons` required, but the wire can omit it.
-  const { infCons } = parseConsCad<Partial<TRetConsCad>>('retConsCad', resultXml);
+  // `Wire`: the XSD calls these fields required, but retConsCad is never
+  // XSD-validated, so any of them — at any depth — can be missing on the wire.
+  const { infCons } = parseConsCad<Wire<TRetConsCad>>('retConsCad', resultXml);
   if (!infCons) {
     // A retConsCad with no infCons is malformed — surface it so the route maps
     // it to a 500 (our parse/SEFAZ-shape bug), not a misleading "no match".
