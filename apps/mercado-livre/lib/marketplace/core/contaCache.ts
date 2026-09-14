@@ -42,7 +42,7 @@ import {
   createReadCache,
 } from '@delfrance/data/admin/cache';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
-import type { Integracao } from '@delfrance/schemas';
+import type { HorarioDeCorte, Integracao } from '@delfrance/schemas';
 
 /**
  * Injectable clock. `createReadCache` captures `opts.now` ONCE at construction,
@@ -194,7 +194,7 @@ export async function resolveContaAtivaPorUserId(
  * fallback is the expensive read this cache exists for, and it fires on every
  * miss including the ones that then find a doc by the non-canonical back-ref.
  *
- * ⚠️ It attaches at the `resolveMercadoEnviosIntFreteOuterRef` WRAPPER, never
+ * ⚠️ It attaches at the `resolveMercadoEnviosIntFrete` WRAPPER, never
  * inside `buscarIntFreteDaConta`, which is also called with `{ tx }` by the
  * `int_frete` sync. Caching a transactional read would drop the document from
  * the transaction's read set and reopen the read-modify-write gap that
@@ -204,7 +204,12 @@ export async function resolveContaAtivaPorUserId(
  * path (`tipo == mercadoLivre`, and `apenasAtivo` is always `true` here), and
  * the conta ref the query filters on is a bijection of the id.
  */
-const intFreteDaConta = createReadCache<readonly [string], string | null>({
+export interface MercadoEnviosIntFreteRead {
+  outerRef: string;
+  horarioDeCorte: readonly HorarioDeCorte[] | null;
+}
+
+const intFreteDaConta = createReadCache<readonly [string], MercadoEnviosIntFreteRead | null>({
   name: 'ml:int-frete-da-conta',
   ttlMs: READ_CACHE_TTL.config,
   maxEntries: 64,
@@ -220,11 +225,11 @@ const intFreteDaConta = createReadCache<readonly [string], string | null>({
   sampleEvery: 0,
 });
 
-/** The cached Mercado Envios `int_frete` outer-ref for a conta. */
-export function readIntFreteOuterRefDaConta(
+/** The cached useful projection of the Mercado Envios `int_frete` for a conta. */
+export function readMercadoEnviosIntFreteDaConta(
   integracaoId: string,
-  load: () => Promise<string | null>,
-): Promise<string | null> {
+  load: () => Promise<MercadoEnviosIntFreteRead | null>,
+): Promise<MercadoEnviosIntFreteRead | null> {
   return intFreteDaConta.get([integracaoId], load);
 }
 

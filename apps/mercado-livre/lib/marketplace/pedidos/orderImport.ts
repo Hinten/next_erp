@@ -100,6 +100,7 @@ import {
   type EnderecoBuildOutcome,
   ESTADO_FRETE,
   MODALIDADE_FRETE,
+  horarioDeCorteSchema,
   seedFreteInicial,
   type EstadoFrete,
 } from '@delfrance/schemas';
@@ -115,7 +116,11 @@ import {
 } from '@delfrance/data/admin/collections';
 import { isAlreadyExists } from '@delfrance/data/admin';
 
-import { readConta, readIntFreteOuterRefDaConta } from '../core/contaCache';
+import {
+  readConta,
+  readMercadoEnviosIntFreteDaConta,
+  type MercadoEnviosIntFreteRead,
+} from '../core/contaCache';
 import { safeMlUserId } from '../core/mlUserId';
 import { buscarIntFreteDaConta } from '../frete/intFreteSync';
 import {
@@ -147,9 +152,18 @@ import {
 } from './orderCliente';
 import { findOrCreateCliente } from '@delfrance/data/admin/clientes';
 import { type ViaCepClient, createViaCepClient } from '@delfrance/core/cep';
-import { discoverPedidoMercadoLivre, type DiscoverPedidoArgs } from './orderPedidoTx';
-import { resolvePrazoDespacho } from './orderPrazoDespacho';
+import {
+  discoverPedidoMercadoLivre,
+  embeddedPayments,
+  type DiscoverPedidoArgs,
+} from './orderPedidoTx';
+import {
+  resolvePrazoDespacho,
+  selectPrazoDespachoAgainstFresh,
+  type PrazoDespachoResolvido,
+} from './orderPrazoDespacho';
 import { resolveShipmentSellerCost } from './shipmentSellerCost';
+import { loadShipmentPaymentDetails, shipmentPaymentId } from './shipmentPayments';
 
 /**
  * Re-exported for the callers that already import them from here
@@ -324,11 +338,6 @@ function orderSellerId(order: MlOrder): number | string | null {
   return (order as unknown as MlOrderSellerPassthrough).seller?.id ?? null;
 }
 
-/** One `shipment/payments[]` entry's `payment_id` — not a named `MlShipmentPayment` field (plugin `types.ts`). */
-interface MlShipmentPaymentIdPassthrough {
-  payment_id?: number | string | null;
-}
-
 /**
  * Strict `status_pagamento === aprovado` sum (tasks.dart:721-722/756-762) —
  * deliberately NOT `sumPagamentosPagos` (which also treats a null status as
@@ -446,16 +455,29 @@ export async function loadContaBag(db: Firestore, integracaoId: string): Promise
  * Exported for reuse by the shipments-topic handler (`orderShipmentImport.ts`,
  * Step 9 PR 3) — same lookup, same account, no behavior change.
  */
-export async function resolveMercadoEnviosIntFreteOuterRef(
+export async function resolveMercadoEnviosIntFrete(
   db: Firestore,
   integracaoId: string,
-): Promise<string | null> {
+): Promise<MercadoEnviosIntFreteRead | null> {
   // Cached at THIS wrapper, never inside `buscarIntFreteDaConta` — that function
   // is also called with `{ tx }` by the int_frete sync, and caching a
   // transactional read would drop the doc from the transaction's read set.
-  return readIntFreteOuterRefDaConta(integracaoId, async () => {
+  return readMercadoEnviosIntFreteDaConta(integracaoId, async () => {
     const encontrado = await buscarIntFreteDaConta(db, integracaoId, { apenasAtivo: true });
-    return encontrado != null ? toOuterRef(intFreteCollection.docPath({}, encontrado.id)) : null;
+    if (encontrado == null) return null;
+    const rawHorarioDeCorte = encontrado.data.horarioDeCorte;
+    const horarioResult = horarioDeCorteSchema.array().safeParse(rawHorarioDeCorte);
+    if (rawHorarioDeCorte != null && !horarioResult.success) {
+      console.warn('[mercado-livre] int_frete com horarioDeCorte invalido', {
+        integracaoId,
+        intFreteId: encontrado.id,
+        issues: horarioResult.error.issues,
+      });
+    }
+    return {
+      outerRef: toOuterRef(intFreteCollection.docPath({}, encontrado.id)),
+      horarioDeCorte: horarioResult.success ? horarioResult.data : null,
+    };
   });
 }
 
@@ -925,18 +947,6 @@ async function applyEnderecoStep(args: {
 /* -------------------------------------------------------------------------- */
 /*                                   Frete                                    */
 /* -------------------------------------------------------------------------- */
-
-async function fetchFullShippingPayments(
-  api: MercadoLivreApi,
-  shippingPayments: readonly MlShipmentPayment[],
-): Promise<MlPayment[]> {
-  // `payment_id` rides in the plugin schema's passthrough (only `status`/
-  // `amount` are promoted) — same local-cast pattern as `orderMapping.ts`.
-  const ids = shippingPayments
-    .map((p) => (p as MlShipmentPaymentIdPassthrough).payment_id)
-    .filter((id): id is number | string => id != null);
-  return Promise.all(ids.map((id) => api.getPayment(id)));
-}
 
 /** Writes every `fullPayments` entry not already present in `alreadyRegisteredExternalIds`; returns the newly-written summaries (for the caller's own paid-sum). MUST be called AFTER every tx read (it only writes). */
 function registerMissingPagamentos(
@@ -1490,6 +1500,37 @@ function advanceFreteSemEnvioParaEntregue(args: {
   );
 }
 
+/** Builds the two repairs historically owned by the stale-shipment branch. */
+function buildFreteParadoPatch(
+  freshPedido: Pedido,
+  prazoResolvido: PrazoDespachoResolvido,
+): Record<string, unknown> {
+  const freshFrete = freshPedido.freteInicial;
+  const patch: Record<string, unknown> = {};
+  if (
+    freshFrete != null &&
+    freshFrete.prazoDespacho == null &&
+    prazoResolvido.prazoDespachoUs != null
+  ) {
+    patch.freteInicial = {
+      ...freshFrete,
+      prazoDespacho: prazoResolvido.prazoDespachoUs,
+    };
+  }
+
+  // Repair an under-counted total (#791). The conference owns this value only
+  // once both a freight block and fiscal address exist.
+  if (freshFrete != null && freshPedido.enderecoFiscalOuterRef != null) {
+    const alvo = derivePedidoFreteTotals({
+      itens: flattenPedidoItens(freshPedido.itens),
+      descontoTotal: freshPedido.descontoTotal ?? 0,
+      freteInicial: freshFrete,
+    }).valorCobrado;
+    if (freshPedido.valorCobrado !== alvo) patch.valorCobrado = alvo;
+  }
+  return patch;
+}
+
 async function applyFreteStep(args: {
   db: Firestore;
   api: MercadoLivreApi;
@@ -1497,7 +1538,6 @@ async function applyFreteStep(args: {
   /** Pre-transaction read — a network early-out ONLY. Never a guard. */
   pedido: Pedido;
   shippingInstance: MlShipment;
-  integracaoId: string;
   contaBag: ContaBag;
   /** The initial order's `last_updated` in µs — legacy stamps the pedido's
    * `ultimaModificacao` with the ORDER's timestamp on the full-conference
@@ -1512,6 +1552,10 @@ async function applyFreteStep(args: {
   nowUs: number;
   /** Run-scoped memo, shared with `applyPagoAdvanceOrDowngrade`. */
   loadShipmentPayments: () => Promise<MlShipmentPayment[]>;
+  /** Payments already embedded in every order payload, including pack siblings. */
+  embeddedOrderPayments: readonly MlPayment[];
+  /** Run-scoped memo shared by the deadline fallback and freight mapping. */
+  loadMercadoEnviosIntFrete: () => Promise<MercadoEnviosIntFreteRead | null>;
 }): Promise<void> {
   const {
     db,
@@ -1519,11 +1563,12 @@ async function applyFreteStep(args: {
     pedidoId,
     pedido,
     shippingInstance,
-    integracaoId,
     contaBag,
     orderStatus,
     nowUs,
     loadShipmentPayments,
+    embeddedOrderPayments,
+    loadMercadoEnviosIntFrete,
   } = args;
 
   // Early-out (cheap, NON-authoritative). Mirrors legacy's own pre-read gate at
@@ -1538,23 +1583,30 @@ async function applyFreteStep(args: {
   });
   if (!talvezMaisNovo && freteAntigo?.prazoDespacho != null) return;
 
-  const shippingPayments = await loadShipmentPayments();
-  const integracaoFreteOuterRef = await resolveMercadoEnviosIntFreteOuterRef(db, integracaoId);
-  const prazoDespachoUs = await resolvePrazoDespacho({
+  const prazoResolvido = await resolvePrazoDespacho({
     api,
     shipment: shippingInstance,
     sellerId: contaBag.sellerUserId ?? 0,
-    fallbackUs: freteAntigo?.prazoDespacho ?? null,
+    loadStoredPrazoUs: async () => coerceToMicros(freteAntigo?.prazoDespacho ?? null),
+    loadHorarioDeCorte: async () => (await loadMercadoEnviosIntFrete())?.horarioDeCorte ?? null,
+    loadPayments: async () => embeddedOrderPayments,
   });
+
+  // A shipment payload already represented by the stored watermark needs only
+  // a deadline/total repair. The conditional values below keep every expensive
+  // call out of that path while reusing the existing freight transaction.
+  const somenteReparo = !talvezMaisNovo;
+  const shippingPayments = somenteReparo ? [] : await loadShipmentPayments();
+  const integracaoFreteOuterRef = somenteReparo
+    ? null
+    : ((await loadMercadoEnviosIntFrete())?.outerRef ?? null);
   // The seller's freight cost — `GET /shipments/{id}/costs`, the authoritative
   // replacement for the `base_cost` the `x-format-new` body discontinued (#957).
   // Fetched HERE with the other ML round-trips, never inside the transaction,
   // and it degrades to `null` on any failure rather than poisoning the import.
-  const custoSellerCost = await resolveShipmentSellerCost(
-    api,
-    shippingInstance.id,
-    contaBag.sellerUserId ?? null,
-  );
+  const custoSellerCost = somenteReparo
+    ? null
+    : await resolveShipmentSellerCost(api, shippingInstance.id, contaBag.sellerUserId ?? null);
 
   // Shipment↔pedido item conference (#669). Fetched HERE, never inside the
   // transaction: an ML round-trip in the OCC window would hold a document the
@@ -1581,21 +1633,24 @@ async function applyFreteStep(args: {
     (freteAntigo == null ||
       freteAntigo.prazoDespacho == null ||
       ESTADOS_CONFERIR_PAGAMENTO.has(pedido.estado));
-  const linhasDoEnvio = podeConferir ? await fetchLinhasDoEnvio(api, shippingInstance.id) : null;
+  const linhasDoEnvio =
+    !somenteReparo && podeConferir ? await fetchLinhasDoEnvio(api, shippingInstance.id) : null;
 
   // `enderecoOuterRef` is deliberately NULL here: it is the ONE mapper input
   // that comes from OUR document rather than ML's payload, so it must not ride
   // in from the stale read (nor be re-applied verbatim on an OCC retry). It is
   // substituted from the tx-fresh pedido inside the transaction below.
-  const mappedBase = mlShipmentToFreteInicial({
-    shipment: shippingInstance,
-    shippingPayments,
-    integracaoFreteOuterRef,
-    enderecoOuterRef: null,
-    prazoDespachoUs,
-    modalidadeOverride: contaBag.modalidadeFreteImportacao,
-    custoSellerCost,
-  });
+  const mappedBase = somenteReparo
+    ? null
+    : mlShipmentToFreteInicial({
+        shipment: shippingInstance,
+        shippingPayments,
+        integracaoFreteOuterRef,
+        enderecoOuterRef: null,
+        prazoDespachoUs: prazoResolvido.prazoDespachoUs,
+        modalidadeOverride: contaBag.modalidadeFreteImportacao,
+        custoSellerCost,
+      });
 
   // Set by the FINAL (committed) attempt. Held in a record rather than a bare
   // `let` so the reset below is unmistakable: legacy declared the equivalent
@@ -1615,6 +1670,18 @@ async function applyFreteStep(args: {
       pedidoSnap.data() ?? {},
       pedidoCollection.docPath({}, pedidoId),
     );
+    if (somenteReparo) {
+      const patch = buildFreteParadoPatch(freshPedido, prazoResolvido);
+      if (Object.keys(patch).length > 0) {
+        patch.ultimaModificacao = avancarWatermark(
+          coerceToMicros(freshPedido.ultimaModificacao),
+          nowUs,
+        );
+        tx.update(pedidoRef, pedidoCollection.parseMerge(patch) as DocumentData);
+      }
+      return;
+    }
+    if (mappedBase == null) return;
     // Only when the pedido is sitting in `error` can this step have anything to
     // undo, so the extra read is paid only there. An OPEN divergence incidente
     // at our own deterministic id is the proof that WE set that `error` — the
@@ -1649,32 +1716,7 @@ async function applyFreteStep(args: {
       // conditions that FORCES the full conference below, so leaving it null
       // would make every future import pay three ML round-trips and write
       // nothing, forever.
-      const patchParado: Record<string, unknown> = {};
-      if (freshFrete != null && freshFrete.prazoDespacho == null && prazoDespachoUs != null) {
-        patchParado.freteInicial = { ...freshFrete, prazoDespacho: prazoDespachoUs };
-      }
-      // Repair an under-counted total (#791). The conference computes
-      // `valorCobrado` from the items it can see; a pack sibling merged AFTER it
-      // leaves the total permanently low, and the pedido then reaches `pago` on
-      // a partial payment via a perfectly correct comparison against a wrong
-      // threshold. Nothing else recomputes it: once the shipment stops changing,
-      // the conference never runs again.
-      //
-      // Only where the conference already OWNS the field (a frete block and a
-      // fiscal address both present) — otherwise `valorCobrado` still holds
-      // `mlOrderToPedidoCoreFields`' order-derived value and is not ours to
-      // overwrite. Uses the STORED frete's own `valorCobrado`, never this
-      // (older) payload's, so it carries no staleness.
-      if (freshFrete != null && freshPedido.enderecoFiscalOuterRef != null) {
-        // Same `derivePedidoFreteTotals` the conference below uses — the two
-        // repairs must agree to the cent or they fight each other across runs.
-        const alvo = derivePedidoFreteTotals({
-          itens: flattenPedidoItens(freshPedido.itens),
-          descontoTotal: freshPedido.descontoTotal ?? 0,
-          freteInicial: freshFrete,
-        }).valorCobrado;
-        if (freshPedido.valorCobrado !== alvo) patchParado.valorCobrado = alvo;
-      }
+      const patchParado = buildFreteParadoPatch(freshPedido, prazoResolvido);
       if (Object.keys(patchParado).length > 0) {
         patchParado.ultimaModificacao = avancarWatermark(
           coerceToMicros(freshPedido.ultimaModificacao),
@@ -1687,6 +1729,10 @@ async function applyFreteStep(args: {
 
     const mappedFrete: MappedFreteInicialFields = {
       ...mappedBase,
+      prazoDespacho: selectPrazoDespachoAgainstFresh(
+        prazoResolvido,
+        coerceToMicros(freshFrete?.prazoDespacho ?? null),
+      ),
       enderecoFreteOuterReference: freshPedido.enderecoFiscalOuterRef,
     };
     const targetFrete = mergeFreteInicial(freshFrete, mappedFrete);
@@ -2246,12 +2292,21 @@ export async function importPedidoMercadoLivre(
           .filter((id): id is string => typeof id === 'string'),
       );
       const faltantes = resumos.filter((p) => {
-        const id = (p as MlShipmentPaymentIdPassthrough).payment_id;
+        const id = shipmentPaymentId(p);
         return id != null && !ids.has(String(id));
       });
-      fullShipmentPaymentsCache = await fetchFullShippingPayments(api, faltantes);
+      fullShipmentPaymentsCache = await loadShipmentPaymentDetails(api, faltantes, {
+        approvedOnly: false,
+        tolerateNotFound: false,
+      });
     }
     return fullShipmentPaymentsCache;
+  };
+
+  let mercadoEnviosIntFretePromise: Promise<MercadoEnviosIntFreteRead | null> | null = null;
+  const loadMercadoEnviosIntFrete = (): Promise<MercadoEnviosIntFreteRead | null> => {
+    mercadoEnviosIntFretePromise ??= resolveMercadoEnviosIntFrete(db, integracaoId);
+    return mercadoEnviosIntFretePromise;
   };
 
   pedido = await applyEnderecoStep({
@@ -2285,12 +2340,13 @@ export async function importPedidoMercadoLivre(
       pedidoId,
       pedido,
       shippingInstance,
-      integracaoId,
       contaBag,
       orderLastUpdatedUs,
       orderStatus: initialOrder.status ?? null,
       nowUs,
       loadShipmentPayments,
+      embeddedOrderPayments: orders.flatMap(embeddedPayments),
+      loadMercadoEnviosIntFrete,
     });
   } else if (semEnvio) {
     await applyFreteSemEnvioStep({
