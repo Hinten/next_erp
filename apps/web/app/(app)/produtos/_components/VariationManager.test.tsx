@@ -6,7 +6,6 @@ import { Controller, FormProvider, useForm, type UseFormReturn } from 'react-hoo
 import { ZodError } from 'zod';
 import { samePrecos, type GrupoComId, type PrecosMap, varianteFakePath } from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
-import type { ListaComId } from './PrecoCustoManager';
 import { PropagatePriceToChildrenField } from './PropagatePriceToChildrenField';
 
 /**
@@ -143,6 +142,7 @@ vi.mock('firebase/firestore', async (importOriginal) => {
 
 const { VariationManager } = await import('./VariationManager');
 type ChildrenFlush = import('./VariationManager').ChildrenFlush;
+type VariationPriceEdits = import('./VariationManager').VariationPriceEdits;
 
 /* --------------------------------- fixtures -------------------------------- */
 
@@ -184,13 +184,9 @@ function child(
   return { id, data: { nome, sku, variacoesUid, ordem, precos } };
 }
 
-function listasDePreco(): ListaComId[] {
-  return [{ id: 'l1', data: { nome: 'Varejo', ativo: true } }] as ListaComId[];
-}
-
 interface ManagerOptions {
   propagatePriceToChildren?: boolean;
-  listas?: ListaComId[];
+  onPriceDirtyChange?: (dirty: boolean) => void;
 }
 
 function renderManager(
@@ -199,18 +195,20 @@ function renderManager(
   options: ManagerOptions = {},
 ) {
   const flushRef: React.MutableRefObject<ChildrenFlush | null> = { current: null };
+  const priceEditsRef: React.MutableRefObject<VariationPriceEdits | null> = { current: null };
   const renderTree = (nextOptions: ManagerOptions = options) => (
     <MantineTestProvider>
       <VariationManager
         produtoId="p1"
         db={db}
         grupos={grupos()}
-        listas={nextOptions.listas}
         propagatePriceToChildren={nextOptions.propagatePriceToChildren}
         value={value}
         onChange={() => undefined}
         onGroupsChange={() => undefined}
+        onPriceDirtyChange={nextOptions.onPriceDirtyChange}
         flushRef={flushRef}
+        priceEditsRef={priceEditsRef}
         membroUnicoId={membroUnicoId}
       />
     </MantineTestProvider>
@@ -219,6 +217,7 @@ function renderManager(
   return {
     ...utils,
     flushRef,
+    priceEditsRef,
     rerenderWith: (nextOptions: ManagerOptions) => utils.rerender(renderTree(nextOptions)),
   };
 }
@@ -232,6 +231,8 @@ interface PricingHarnessProps {
   initialPrecos: unknown;
   onDivergentPriceCountChange?: (count: number) => void;
   captureForm: (form: UseFormReturn<PricingFormValues>) => void;
+  flushRef: React.MutableRefObject<ChildrenFlush | null>;
+  priceEditsRef: React.MutableRefObject<VariationPriceEdits | null>;
   withToggle?: boolean;
 }
 
@@ -239,6 +240,8 @@ function PricingHarness({
   initialPrecos,
   onDivergentPriceCountChange,
   captureForm,
+  flushRef,
+  priceEditsRef,
   withToggle = false,
 }: PricingHarnessProps) {
   const form = useForm<PricingFormValues>({
@@ -266,7 +269,6 @@ function PricingHarness({
           produtoId="p1"
           db={db}
           grupos={grupos()}
-          listas={listasDePreco()}
           value={[uidP]}
           onChange={() => undefined}
           onGroupsChange={() => undefined}
@@ -274,7 +276,8 @@ function PricingHarness({
             setDivergentChildren(count);
             onDivergentPriceCountChange?.(count);
           }}
-          flushRef={{ current: null }}
+          flushRef={flushRef}
+          priceEditsRef={priceEditsRef}
         />
       </FormProvider>
     </MantineTestProvider>
@@ -283,17 +286,24 @@ function PricingHarness({
 
 function renderPricingHarness(
   initialPrecos: unknown,
-  options: Omit<PricingHarnessProps, 'initialPrecos' | 'captureForm'> = {},
+  options: Omit<
+    PricingHarnessProps,
+    'initialPrecos' | 'captureForm' | 'flushRef' | 'priceEditsRef'
+  > = {},
 ) {
   let form!: UseFormReturn<PricingFormValues>;
+  const flushRef: React.MutableRefObject<ChildrenFlush | null> = { current: null };
+  const priceEditsRef: React.MutableRefObject<VariationPriceEdits | null> = { current: null };
   const utils = render(
     <PricingHarness
       {...options}
       initialPrecos={initialPrecos}
       captureForm={(next) => (form = next)}
+      flushRef={flushRef}
+      priceEditsRef={priceEditsRef}
     />,
   );
-  return { ...utils, form: () => form };
+  return { ...utils, form: () => form, flushRef, priceEditsRef };
 }
 
 /** Every SKU input currently rendered — one per row. */
@@ -357,21 +367,20 @@ describe('VariationManager — independent variation prices', () => {
     expect(samePrecos({ l1: { valor: 20 } }, { l1: { valor: 21 } })).toBe(false);
   });
 
-  it('edits and saves a child price only while propagation is disabled, with a divergence cue', async () => {
+  it('stages and saves a child price from the pricing-tab bridge, with a divergence cue', async () => {
     h.parent.current = {
       data: { id: 'p1', data: { nome: 'Camiseta', sku: 'CAM', precos: { l1: { valor: 20 } } } },
       loading: false,
       error: undefined,
     };
     h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0, { l1: { valor: 20 } })]);
-    const { flushRef } = renderManager([uidP], null, {
+    const { flushRef, priceEditsRef } = renderManager([uidP], null, {
       propagatePriceToChildren: false,
-      listas: listasDePreco(),
     });
 
-    expect(screen.getByText('Preços desta variação')).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('Varejo'), { target: { value: '35' } });
+    act(() => priceEditsRef.current!.setPrice('c1', 'l1', 35));
     expect(screen.getByText('preço diferente')).toBeTruthy();
+    expect(screen.queryByText('Preços desta variação')).toBeNull();
 
     const { pending } = await startFlush(flushRef.current!);
     await settleCommit(pending);
@@ -388,14 +397,12 @@ describe('VariationManager — independent variation prices', () => {
       error: undefined,
     };
     h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0, { l1: { valor: 20 } })]);
-    const { flushRef, rerenderWith } = renderManager([uidP], null, {
+    const { flushRef, priceEditsRef, rerenderWith } = renderManager([uidP], null, {
       propagatePriceToChildren: false,
-      listas: listasDePreco(),
     });
 
-    fireEvent.change(screen.getByLabelText('Varejo'), { target: { value: '35' } });
-    rerenderWith({ propagatePriceToChildren: true, listas: listasDePreco() });
-    expect(screen.queryByText('Preços desta variação')).toBeNull();
+    act(() => priceEditsRef.current!.setPrice('c1', 'l1', 35));
+    rerenderWith({ propagatePriceToChildren: true });
 
     const { pending } = await startFlush(flushRef.current!);
     await settleCommit(pending);
@@ -412,19 +419,34 @@ describe('VariationManager — independent variation prices', () => {
       error: undefined,
     };
     h.setChildren([child('membro-1', 'Camiseta', 'CAM', null, 0, { l1: { valor: 20 } })]);
-    const { flushRef } = renderManager([], 'membro-1', {
+    const { flushRef, priceEditsRef } = renderManager([], 'membro-1', {
       propagatePriceToChildren: false,
-      listas: listasDePreco(),
     });
 
-    expect(screen.getByText('Preços desta variação')).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('Varejo'), { target: { value: '27' } });
+    act(() => priceEditsRef.current!.setPrice('membro-1', 'l1', 27));
     const { pending } = await startFlush(flushRef.current!);
     await settleCommit(pending);
 
     expect(h.ops.find((op) => op.kind === 'update' && op.id === 'membro-1')?.data).toMatchObject({
       precos: { l1: { valor: 27 } },
     });
+  });
+
+  it('reports an independent price draft until its flush completes', async () => {
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0, { l1: { valor: 20 } })]);
+    const onPriceDirtyChange = vi.fn();
+    const { flushRef, priceEditsRef } = renderManager([uidP], null, {
+      propagatePriceToChildren: false,
+      onPriceDirtyChange,
+    });
+
+    await waitFor(() => expect(onPriceDirtyChange).toHaveBeenLastCalledWith(false));
+    act(() => priceEditsRef.current!.setPrice('c1', 'l1', 35));
+    await waitFor(() => expect(onPriceDirtyChange).toHaveBeenLastCalledWith(true));
+
+    const { pending } = await startFlush(flushRef.current!);
+    await settleCommit(pending);
+    await waitFor(() => expect(onPriceDirtyChange).toHaveBeenLastCalledWith(false));
   });
 
   it('uses the live parent price for the re-enable confirmation', async () => {
@@ -495,14 +517,25 @@ describe('VariationManager — independent variation prices', () => {
       error: undefined,
     };
     h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0, { l1: { valor: 30 } })]);
-    const { form } = renderPricingHarness({ l1: { valor: 30 } });
+    const { form, flushRef, priceEditsRef } = renderPricingHarness({ l1: { valor: 30 } });
 
-    expect(screen.getByText('Preços desta variação')).toBeTruthy();
+    act(() => priceEditsRef.current!.setPrice('c1', 'l1', 35));
     act(() => form().setValue('propagatePriceToChildren', true));
-    await waitFor(() => expect(screen.queryByText('Preços desta variação')).toBeNull());
+    const first = await startFlush(flushRef.current!);
+    await settleCommit(first.pending);
+    expect(h.ops.find((op) => op.kind === 'update' && op.id === 'c1')?.data).not.toHaveProperty(
+      'precos',
+    );
 
+    h.ops.length = 0;
     act(() => form().reset({ propagatePriceToChildren: false, precos: { l1: { valor: 30 } } }));
-    await waitFor(() => expect(screen.getByText('Preços desta variação')).toBeTruthy());
+    await waitFor(() => expect(priceEditsRef.current).not.toBeNull());
+    act(() => priceEditsRef.current!.setPrice('c1', 'l1', 36));
+    const second = await startFlush(flushRef.current!);
+    await settleCommit(second.pending);
+    expect(h.ops.find((op) => op.kind === 'update' && op.id === 'c1')?.data).toMatchObject({
+      precos: { l1: { valor: 36 } },
+    });
   });
 });
 

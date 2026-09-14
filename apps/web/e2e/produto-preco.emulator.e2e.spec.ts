@@ -93,7 +93,7 @@ test.describe.serial('Produtos preço/custo trigger e2e — histórico unificado
   async function openPrecoTab(page: Page, produtoId: string) {
     await page.goto(`/produtos/${produtoId}/editar`);
     await page.getByRole('tab', { name: 'Preço e custo' }).click();
-    await expect(page.getByRole('textbox', { name: varejoNome })).toBeVisible({
+    await expect(page.getByRole('textbox', { name: varejoNome, exact: true })).toBeVisible({
       timeout: 30_000,
     });
   }
@@ -121,7 +121,7 @@ test.describe.serial('Produtos preço/custo trigger e2e — histórico unificado
     page,
   }) => {
     await openPrecoTab(page, parentId);
-    await typeMoney(page, varejoNome, '30');
+    await typeMoney(page, varejoNome, '30', { exact: true });
     await clickSave(page, 'Salvar alterações');
 
     // Flutter parity: a price added from nothing records `old: null`. Note
@@ -157,7 +157,7 @@ test.describe.serial('Produtos preço/custo trigger e2e — histórico unificado
 
   test('records changes.precos old/new on a price change', async ({ page }) => {
     await openPrecoTab(page, parentId);
-    await typeMoney(page, varejoNome, '35');
+    await typeMoney(page, varejoNome, '35', { exact: true });
     await clickSave(page, 'Salvar alterações');
 
     await expect
@@ -196,7 +196,7 @@ test.describe.serial('Produtos preço/custo trigger e2e — histórico unificado
 
   test('propagates a parent price change to its variation child', async ({ page }) => {
     await openPrecoTab(page, parentId);
-    await typeMoney(page, varejoNome, '40');
+    await typeMoney(page, varejoNome, '40', { exact: true });
     await clickSave(page, 'Salvar alterações');
 
     await expect
@@ -208,7 +208,7 @@ test.describe.serial('Produtos preço/custo trigger e2e — histórico unificado
     page,
   }) => {
     await openPrecoTab(page, noPropParentId);
-    await typeMoney(page, varejoNome, '50');
+    await typeMoney(page, varejoNome, '50', { exact: true });
     await clickSave(page, 'Salvar alterações');
 
     // The modification entry is unconditional — assert it FIRST so the
@@ -243,7 +243,7 @@ test.describe.serial('Produtos preço/custo trigger e2e — histórico unificado
     // child's (fast, no-op) trigger invocation ample time to have run before
     // the negative assertion below.
     await openPrecoTab(page, parentId);
-    await typeMoney(page, varejoNome, '45');
+    await typeMoney(page, varejoNome, '45', { exact: true });
     await clickSave(page, 'Salvar alterações');
     await expect
       .poll(
