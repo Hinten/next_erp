@@ -126,6 +126,8 @@ const PATHSPECS = [
  * 2 event-clock watermark, 3 tell the human.
  */
 const INVENTARIO = {
+  'packages/data/src/admin/cargoClaims/service.ts':
+    'Class B: every transition re-reads operation and global control. Commands are guarded by target snapshot version; claims pages hold a lease longer than worker lifetime and checkpoints compare owner, phase and cursor. Actor authority is re-derived inside start and commit. Auth I/O stays outside transactions.',
   // ---- A — every input re-derived from a `tx.get` inside the callback -----
   'apps/functions/src/estoques/aplicarBalanco.ts':
     'Two sites. `:417` reads every target with `tx.getAll` and plans against those snapshots; the shard counter rides `FieldValue.increment` (tier 0). `:601` re-reads the balanço and re-checks `podeFinalizarBalanco` on the fresh doc before claiming `finalizando`.',

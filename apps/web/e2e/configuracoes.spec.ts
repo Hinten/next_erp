@@ -23,7 +23,7 @@ import { e2ePrefix } from './_helpers/seed-data';
  *        FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT (or *_PATH),
  *        NEXT_PUBLIC_INTEGRATIONS_URL (defaults to http://localhost:3001 in dev)
  *
- * The last two tests POST to the admin endpoints, which live in
+ * The mutation tests call the coordinated admin endpoints, which live in
  * `apps/integrations` (:3001) — NOT in apps/web, which has no route handlers at
  * all. Locally, root `pnpm dev` brings that app up alongside web. In CI the
  * vendas lane builds and serves it too (`integrations: true` in
@@ -34,7 +34,7 @@ import { e2ePrefix } from './_helpers/seed-data';
  *
  * The cargo/usuario `[id]/editar` routes were collapsed into `[id]` by
  * c034a7b — the detail page IS the edit form. So each `[id]` page shows the
- * static entity heading ("Cargo" / "Usuário"), saving redirects to the LIST,
+ * static entity heading ("Cargo" / "Usuário"), saving displays a durable operation,
  * and granted permission bits read back as ticked checkboxes rather than a text
  * summary. This suite could not observe that drift for two months: it skipped
  * itself while E2E_SU_EMAIL/E2E_SU_PASSWORD went unset (#674).
@@ -45,6 +45,7 @@ import { e2ePrefix } from './_helpers/seed-data';
  */
 
 test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
+  test.setTimeout(180_000);
   test.beforeAll(() => {
     requireSuAuthEnv();
   });
@@ -100,7 +101,12 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
 
     await page.getByRole('button', { name: 'Criar' }).click();
 
-    // Redirects to the detail page; URL ends with the new doc id. `/cargos/novo`
+    await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({
+      timeout: 120_000,
+    });
+    await page.getByRole('link', { name: 'Abrir registro' }).click();
+
+    // Opens the detail page; URL ends with the new doc id. `/cargos/novo`
     // ALSO matches a naive `/cargos/[^/]+$` pattern, and waitForURL resolves
     // immediately when the current URL already matches — so exclude the create
     // route explicitly, or `cargoId` silently captures the string "novo".
@@ -125,7 +131,7 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     expect(cargoId).not.toBe('');
     await page.goto(`/configuracoes/cargos/${cargoId}`);
     await expect(page.getByRole('heading', { name: 'Cargo' })).toBeVisible();
-    // The form only mounts once useDocSnapshot resolves (a Skeleton renders
+    // The form only mounts once the versioned editor request resolves (a Skeleton renders
     // until then), so gate on the loaded name before touching a checkbox.
     await expect(page.getByLabel('Nome')).toHaveValue(cargoNome);
 
@@ -135,8 +141,10 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     await clientesCard.getByLabel('Excluir').check();
 
     await page.getByRole('button', { name: /Salvar/i }).click();
-    // Saving redirects to the LIST, not back to the detail page.
-    await page.waitForURL('/configuracoes/cargos');
+    // Completion means the server finished applying the claims, not just accepted the command.
+    await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({
+      timeout: 120_000,
+    });
 
     // Re-open the record to assert the new bit actually persisted.
     await page.goto(`/configuracoes/cargos/${cargoId}`);
@@ -152,6 +160,7 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     await page.getByLabel('Nome').fill(userNome);
     await page.getByLabel('E-mail').fill(userEmail);
     await page.getByLabel('Senha provisória').fill(userPassword);
+    await page.getByLabel('Colaborador interno', { exact: true }).check();
 
     // Mantine MultiSelect: click the field, pick the option by visible text.
     // Scope to the combobox role, not a bare getByLabel — the open dropdown's
@@ -171,6 +180,10 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     userUid = body.uid;
     expect(userUid).not.toBe('');
 
+    await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({
+      timeout: 120_000,
+    });
+    await page.getByRole('link', { name: 'Abrir registro' }).click();
     await page.waitForURL(`/configuracoes/usuarios/${userUid}`);
 
     // Admin SDK: claim.permissions must be the aggregated bitmask.
@@ -178,7 +191,20 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     expect(perms).toBe(editedBits.toString());
   });
 
-  test('edita usuario: remove cargo aciona refreshClaims e zera bits', async ({ page }) => {
+  test('editar cargo atualiza automaticamente as claims do usuário atribuído', async ({ page }) => {
+    await page.goto(`/configuracoes/cargos/${cargoId}`);
+    await expect(page.getByLabel('Nome')).toHaveValue(cargoNome);
+    const card = page.locator('.mantine-Card-root').filter({ hasText: 'Clientes' }).first();
+    await card.getByLabel('Editar').uncheck();
+    await card.getByLabel('Excluir').uncheck();
+    await page.getByRole('button', { name: /Salvar/i }).click();
+    await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({
+      timeout: 120_000,
+    });
+    expect(await getUserPermissionsClaim(userEmail)).toBe(PERM.cliente.read.toString());
+  });
+
+  test('edita usuario pelo endpoint e zera os bits ao remover o cargo', async ({ page }) => {
     expect(userUid).not.toBe('');
     await page.goto(`/configuracoes/usuarios/${userUid}`);
     await expect(page.getByRole('heading', { name: 'Usuário' })).toBeVisible();
@@ -194,15 +220,16 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     await page.keyboard.press('Escape');
 
     const refreshResp = page.waitForResponse(
-      (r) =>
-        r.url().includes(`/api/admin/users/${userUid}/claims`) && r.request().method() === 'POST',
+      (r) => r.url().endsWith(`/api/admin/users/${userUid}`) && r.request().method() === 'PATCH',
     );
     await page.getByRole('button', { name: /Salvar/i }).click();
     const response = await refreshResp;
-    expect(response.status()).toBe(200);
+    expect(response.status()).toBe(202);
 
-    // Saving redirects to the LIST, not back to the detail page.
-    await page.waitForURL('/configuracoes/usuarios');
+    // Completion means the server finished applying the claims, not just accepted the command.
+    await expect(page.getByText('Atualização concluída', { exact: true })).toBeVisible({
+      timeout: 120_000,
+    });
 
     const perms = await getUserPermissionsClaim(userEmail);
     expect(perms).toBe('0');

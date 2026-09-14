@@ -31,6 +31,8 @@ import { REPO_ROOT, gitGrep } from './lib/repo-scan.js';
 
 /** Path → what the function is, so a new one has to be read, not just listed. */
 const INVENTORY = {
+  'apps/functions/src/access/processAccessOperation.ts':
+    'Access propagation, enqueued by the operation-created trigger, worker continuations and watchdog (functions runtime SA).',
   // ---- codebase `mercado-livre` (apps/mercado-livre/functions) -------------
   'apps/mercado-livre/functions/src/processNotification.ts':
     'The ML webhook notification handler. Enqueued by the receiver route AND by two onSchedule sweeps (order backfill, missed_feeds) running as the FUNCTIONS runtime SA.',

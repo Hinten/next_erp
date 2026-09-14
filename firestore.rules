@@ -200,8 +200,8 @@ service cloud.firestore {
 
     match /cargos/{docId} {
       allow read: if isSuperUser() || p('d_configuracoes', 1);
-      allow create, update: if isSuperUser() || p('d_configuracoes', 2);
-      allow delete: if isSuperUser() || p('d_configuracoes', 2);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /categorias/{docId} {
@@ -549,8 +549,8 @@ service cloud.firestore {
 
     match /usuarios/{docId} {
       allow read: if isSuperUser() || p('d_configuracoes', 1);
-      allow create, update: if isSuperUser() || p('d_configuracoes', 2);
-      allow delete: if isSuperUser() || p('d_configuracoes', 2);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
     }
 
     match /avisosLeitura/{uid} {

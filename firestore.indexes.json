@@ -1,6 +1,11 @@
 {
   "indexes": [
     {
+      "collectionGroup": "usuarios",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "cargos", "arrayConfig": "CONTAINS" }]
+    },
+    {
       "collectionGroup": "integracao",
       "queryScope": "COLLECTION",
       "fields": [

@@ -989,6 +989,9 @@ importers:
 
   packages/data:
     dependencies:
+      '@delfrance/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@delfrance/core':
         specifier: workspace:*
         version: link:../core

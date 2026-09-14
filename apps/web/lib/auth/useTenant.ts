@@ -1,47 +1,49 @@
-'use client';
-
 import { useEffect, useState } from 'react';
-import { useAuth } from './useAuth';
-
+import { onIdTokenChanged } from 'firebase/auth';
+import { FirebaseError } from 'firebase/app';
+import { getFirebaseAuth } from '../firebase/client';
 export interface TenantClaims {
   grupoEconomico: string | null;
-  // Permissions are encoded as a BigInt string in custom claims to avoid
-  // the JS 53-bit number limit. Decode on read with BigInt(value).
   permissions: string | null;
 }
-
 export function useTenant(): { claims: TenantClaims | null; loading: boolean } {
-  const { user, loading: authLoading } = useAuth();
   const [claims, setClaims] = useState<TenantClaims | null>(null);
   const [loading, setLoading] = useState(true);
-
   useEffect(() => {
-    if (authLoading) return;
-    if (!user) {
-      setClaims(null);
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    user
-      .getIdTokenResult()
-      .then((result) => {
-        if (cancelled) return;
-        setClaims({
-          grupoEconomico: (result.claims.grupoEconomico as string | undefined) ?? null,
-          permissions: (result.claims.permissions as string | undefined) ?? null,
-        });
-        setLoading(false);
-      })
-      .catch(() => {
-        if (cancelled) return;
+    let generation = 0;
+    const unsubscribe = onIdTokenChanged(getFirebaseAuth(), (user) => {
+      const current = ++generation;
+      if (!user) {
         setClaims(null);
         setLoading(false);
-      });
+        return;
+      }
+      void user
+        .getIdTokenResult()
+        .then((result) => {
+          if (current !== generation) return;
+          setClaims({
+            grupoEconomico:
+              typeof result.claims.grupoEconomico === 'string'
+                ? result.claims.grupoEconomico
+                : null,
+            permissions:
+              typeof result.claims.permissions === 'string' ? result.claims.permissions : null,
+          });
+          setLoading(false);
+        })
+        .catch((err: unknown) => {
+          if (!(err instanceof FirebaseError)) throw err;
+          if (current === generation) {
+            setClaims(null);
+            setLoading(false);
+          }
+        });
+    });
     return () => {
-      cancelled = true;
+      generation++;
+      unsubscribe();
     };
-  }, [user, authLoading]);
-
+  }, []);
   return { claims, loading };
 }

@@ -51,6 +51,7 @@ export type Usuario = z.infer<typeof usuarioSchema>;
 
 export const usuarioMeta: CollectionMetadata = {
   collectionPath: 'usuarios',
+  serverOwned: true,
   permissions: {
     read: PERM_CONFIG_READ,
     write: PERM_CONFIG_WRITE,
@@ -104,4 +105,18 @@ export function aggregatePermissoes(
     if (c) bits |= decodePermissoes(c);
   }
   return bits;
+}
+
+/** Auth eligibility is shared by creation, manual refresh and cargo propagation.
+ * External contacts never receive Auth claims. An inactive account is revoked;
+ * an active superuser does not need the independent collaborator flag.
+ */
+export function effectiveUsuarioPermissoes(
+  user: Pick<Usuario, 'cargos' | 'isSuperUser' | 'ativo' | 'colaborador' | 'externalId'>,
+  cargosById: Map<string, Pick<Cargo, 'permissoes'>>,
+): bigint {
+  if (user.externalId != null || !user.ativo || (!user.colaborador && !user.isSuperUser)) {
+    return 0n;
+  }
+  return aggregatePermissoes(user, cargosById);
 }
