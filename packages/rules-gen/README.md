@@ -73,6 +73,14 @@ Each `gen:` invocation writes **one** file, so a schema change needs **both**.
 
 Skipping step 1 or 2 reds `ci-rules.yml`.
 
+## Datetime fields
+
+Datetimes are epoch integers (#484), declared through `millisSinceEpoch()` /
+`microsSinceEpoch()` from `@delfrance/schemas`, so a whitelisted validator emits
+`is int` for them. An ISO datetime (`z.string().datetime()`, JSON-schema
+`format: 'date-time'`) in a whitelisted schema **fails generation** — it is
+neither skipped nor loosened to `is string`. Fix the schema, not the generator.
+
 ## Size gate
 
 `src/size-gate.ts` hard-fails generation above **120 KiB** and warns above

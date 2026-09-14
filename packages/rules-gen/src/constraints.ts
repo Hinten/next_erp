@@ -41,7 +41,7 @@ export function clausesForSchema(schema: z.ZodTypeAny): FieldClause[] {
     const prop = properties[field];
     if (!prop) continue;
     const ref = `d.get('${field}', null)`;
-    const expr = exprForProperty(ref, prop);
+    const expr = exprForProperty(field, ref, prop);
     if (expr === null) continue;
     clauses.push({ field, expr: `(!c.hasAny(['${field}']) || ${expr})` });
   }
@@ -53,25 +53,31 @@ export function clausesForSchema(schema: z.ZodTypeAny): FieldClause[] {
  * field (unconstrained/unsupported shapes — skipping is always safe, it just
  * validates less).
  */
-function exprForProperty(ref: string, prop: JsonSchema): string | null {
+function exprForProperty(field: string, ref: string, prop: JsonSchema): string | null {
   // `.nullable()` emits `anyOf: [inner, { type: 'null' }]`.
   const anyOf = prop.anyOf as JsonSchema[] | undefined;
   if (anyOf) {
     const nonNull = anyOf.filter((m) => m.type !== 'null');
     if (nonNull.length === anyOf.length) return null; // not a nullable wrapper — skip unions
     if (nonNull.length !== 1 || !nonNull[0]) return null;
-    const inner = exprForProperty(ref, nonNull[0]);
+    const inner = exprForProperty(field, ref, nonNull[0]);
     if (inner === null) return null;
     return `(${ref} == null || ${inner})`;
   }
 
-  // Datetime fields are skipped entirely. ⚠️ The stated reason — a coexisting
-  // Flutter app writing real Timestamps to the same documents, which `is string`
-  // would brick — is VOID (no dual run; root `CLAUDE.md` rule 8). This app writes
-  // ISO strings, so nothing validates datetimes today for a reason that no longer
-  // applies. Tightening it changes the generated ruleset, so it is its own change,
-  // not a drive-by edit here.
-  if (prop.format === 'date-time') return null;
+  // An ISO datetime in a whitelisted validator is a convention violation, not a
+  // shape to validate. Datetimes are epoch integers (#484), declared through
+  // `millisSinceEpoch()` / `microsSinceEpoch()`, which emit `is int`. Falling
+  // through here would emit a weaker `is string` in silence — and the skip that
+  // used to sit here validated nothing, for a dual run that never happens (root
+  // `CLAUDE.md` rule 8). So generation fails, and the fix belongs in the schema.
+  if (prop.format === 'date-time') {
+    throw new Error(
+      `validator field '${field}' is an ISO datetime (format: 'date-time'); datetimes are ` +
+        'epoch integers (#484) — declare it with millisSinceEpoch() or microsSinceEpoch() ' +
+        'from @delfrance/schemas',
+    );
+  }
 
   if (Array.isArray(prop.enum)) {
     const values = (prop.enum as unknown[]).map(literal).join(', ');
