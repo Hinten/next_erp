@@ -177,3 +177,52 @@ export function overview(pedidos: PedidoLite[]): OverviewTotals {
     itensVendidos: itens,
   };
 }
+
+/* ---------------------------- Checkouts por usuário ------------------------ */
+
+export const CHECKOUT_TOP_USERS = 20;
+export const OTHER_CHECKOUT_USERS = 'Outros usuários';
+
+/** Counts returned by Firestore's grouped aggregate, never checkout documents. */
+export interface CheckoutUserCount {
+  userId: string | null;
+  count: number;
+}
+
+export interface CheckoutReportRow extends CheckoutUserCount {
+  label: string;
+}
+
+export interface CheckoutReport {
+  total: number;
+  rows: CheckoutReportRow[];
+}
+
+/** Merge wire aliases of a uid before choosing the bounded name-lookup set. */
+export function rankCheckoutUsers(groups: readonly CheckoutUserCount[]): CheckoutUserCount[] {
+  const counts = new Map<string, number>();
+  for (const { userId, count } of groups) {
+    if (userId !== null) counts.set(userId, (counts.get(userId) ?? 0) + count);
+  }
+  return [...counts]
+    .map(([userId, count]) => ({ userId, count }))
+    .sort(
+      (a, b) => b.count - a.count || (a.userId! < b.userId! ? -1 : a.userId! > b.userId! ? 1 : 0),
+    );
+}
+
+/** Unknown/non-collaborator users and every row beyond the lookup cap stay in the total. */
+export function checkoutsPorUsuario(
+  groups: readonly CheckoutUserCount[],
+  collaboratorNames: ReadonlyMap<string, string>,
+): CheckoutReport {
+  const total = groups.reduce((sum, row) => sum + row.count, 0);
+  const rows: CheckoutReportRow[] = [];
+  for (const group of rankCheckoutUsers(groups).slice(0, CHECKOUT_TOP_USERS)) {
+    const label = collaboratorNames.get(group.userId!);
+    if (label?.trim()) rows.push({ ...group, label });
+  }
+  const other = total - rows.reduce((sum, row) => sum + row.count, 0);
+  if (other > 0) rows.push({ userId: null, label: OTHER_CHECKOUT_USERS, count: other });
+  return { total, rows };
+}

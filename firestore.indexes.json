@@ -1129,6 +1129,22 @@
     {
       "collectionGroup": "checkout",
       "queryScope": "COLLECTION_GROUP",
+      "apiScope": "ANY_API",
+      "density": "SPARSE_ANY",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "usuarioCheckoutFretePedidoOuterRef",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "checkout",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
         {
           "fieldPath": "usuarioCheckoutFretePedidoOuterRef",

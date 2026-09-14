@@ -1,7 +1,78 @@
 import { describe, expect, it } from 'vitest';
 import { ESTADO_PEDIDO } from '@delfrance/schemas';
 import type { ItemDoPedido, Pedido } from '@delfrance/schemas';
-import { type PedidoLite, overview, porBucket, porEstado, topProdutos } from './aggregations';
+import {
+  type PedidoLite,
+  overview,
+  porBucket,
+  porEstado,
+  topProdutos,
+  checkoutsPorUsuario,
+  rankCheckoutUsers,
+} from './aggregations';
+
+describe('checkoutsPorUsuario', () => {
+  it('returns an empty report and a single collaborator without an artificial Other row', () => {
+    expect(checkoutsPorUsuario([], new Map())).toEqual({ total: 0, rows: [] });
+    expect(checkoutsPorUsuario([{ userId: 'a', count: 3 }], new Map([['a', 'Ana']]))).toEqual({
+      total: 3,
+      rows: [{ userId: 'a', label: 'Ana', count: 3 }],
+    });
+  });
+
+  it('keeps the top 20 and combines the entire tail into Other without truncating the total', () => {
+    const groups = Array.from({ length: 25 }, (_, i) => ({ userId: `user${i}`, count: 25 - i }));
+    const names = new Map(groups.map((row) => [row.userId, row.userId]));
+    const report = checkoutsPorUsuario(groups, names);
+    expect(report.total).toBe(325);
+    expect(report.rows).toHaveLength(21);
+    expect(report.rows.slice(0, 20).map((row) => row.count)).toEqual(
+      Array.from({ length: 20 }, (_, i) => 25 - i),
+    );
+    expect(report.rows[20]).toEqual({ userId: null, label: 'Outros usuários', count: 15 });
+    expect(report.rows.reduce((sum, row) => sum + row.count, 0)).toBe(report.total);
+  });
+
+  it('puts missing, unknown and blank-name users in Other without merging duplicate display names', () => {
+    expect(
+      checkoutsPorUsuario(
+        [
+          { userId: null, count: 9 },
+          { userId: 'missing', count: 8 },
+          { userId: 'blank', count: 7 },
+          { userId: 'a', count: 3 },
+          { userId: 'b', count: 2 },
+        ],
+        new Map([
+          ['blank', '  '],
+          ['a', 'Ana'],
+          ['b', 'Ana'],
+        ]),
+      ),
+    ).toEqual({
+      total: 29,
+      rows: [
+        { userId: 'a', label: 'Ana', count: 3 },
+        { userId: 'b', label: 'Ana', count: 2 },
+        { userId: null, label: 'Outros usuários', count: 24 },
+      ],
+    });
+  });
+
+  it('merges counts for the same uid before ranking and breaks ties deterministically', () => {
+    expect(
+      rankCheckoutUsers([
+        { userId: 'b', count: 6 },
+        { userId: 'a', count: 2 },
+        { userId: 'a', count: 4 },
+        { userId: null, count: 100 },
+      ]),
+    ).toEqual([
+      { userId: 'a', count: 6 },
+      { userId: 'b', count: 6 },
+    ]);
+  });
+});
 
 // All nullable fields of ItemDoPedido set to null. Spread to override only
 // what each test cares about. Avoids repeating 10+ null lines per object.
