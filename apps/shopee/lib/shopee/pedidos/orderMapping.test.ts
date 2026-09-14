@@ -15,9 +15,12 @@ import { mapearFreteInicialShopee } from './orderFreteMapping';
 import {
   PISO_SEGUNDOS_SHOPEE,
   REGIAO_BR_PEDIDO,
+  SENTINELA_AUSENTE_SHOPEE,
   mapearPedidoShopee,
   microsDeSegundosShopee,
   segundosShopeeUtilizaveis,
+  textoOuNull,
+  textoShopeeUtilizavel,
   type MapearPedidoShopeeArgs,
 } from './orderMapping';
 import { ALVO_ESTADO_SHOPEE } from './orderStatusMaps';
@@ -106,6 +109,50 @@ describe('segundosShopeeUtilizaveis', () => {
     expect(segundosShopeeUtilizaveis(PISO_SEGUNDOS_SHOPEE - 1)).toBeNull();
     // The floor is a real date, not a magic number: 2020-01-01T00:00:00Z.
     expect(new Date(PISO_SEGUNDOS_SHOPEE * 1000).toISOString()).toBe('2020-01-01T00:00:00.000Z');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                        a sentinela de ausência `-`                          */
+/* -------------------------------------------------------------------------- */
+
+describe('textoShopeeUtilizavel — a sentinela `-` do passo 7', () => {
+  it('a sentinela é o valor INTEIRO, e é só ela', () => {
+    expect(SENTINELA_AUSENTE_SHOPEE).toBe('-');
+    expect(textoShopeeUtilizavel('-')).toBeNull();
+    expect(textoShopeeUtilizavel(' - ')).toBeNull();
+  });
+
+  it('⚠️ NEAR-MISS: `--` e `BR-123` NÃO são a sentinela', () => {
+    // The fold that decides "this field is absent" must not decide it for a
+    // value that merely CONTAINS a dash — `codRastreio` is rendered in the
+    // clear on `/pedidos`, so both directions cost.
+    expect(textoShopeeUtilizavel('--')).toBe('--');
+    expect(textoShopeeUtilizavel('BR-123')).toBe('BR-123');
+    expect(textoShopeeUtilizavel('-A')).toBe('-A');
+    expect(textoShopeeUtilizavel('A-')).toBe('A-');
+  });
+
+  it('vazio, branco e não-string são ausência; o espaço em volta some', () => {
+    expect(textoShopeeUtilizavel('')).toBeNull();
+    expect(textoShopeeUtilizavel('   ')).toBeNull();
+    expect(textoShopeeUtilizavel(null)).toBeNull();
+    expect(textoShopeeUtilizavel(undefined)).toBeNull();
+    expect(textoShopeeUtilizavel(0)).toBeNull();
+    expect(textoShopeeUtilizavel(false)).toBeNull();
+    expect(textoShopeeUtilizavel(['-'])).toBeNull();
+    expect(textoShopeeUtilizavel('  BR1  ')).toBe('BR1');
+  });
+
+  it('⚠️ o corte com textoOuNull é DELIBERADO: um `-` continua sendo um valor lá', () => {
+    // A `cancel_reason` of `-` on the ORDER detail is an explanation an operator
+    // should still see; a `tracking_number` of `-` is an absence. One fold each,
+    // and the second is built on the first — never a second copy.
+    expect(textoOuNull('-')).toBe('-');
+    expect(textoOuNull(' - ')).toBe('-');
+    expect(textoOuNull('')).toBeNull();
+    expect(textoOuNull('  BR1  ')).toBe('BR1');
+    expect(textoOuNull(42)).toBeNull();
   });
 });
 

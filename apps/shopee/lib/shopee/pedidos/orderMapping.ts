@@ -151,11 +151,45 @@ export function vazio(valor: unknown): boolean {
  * carrying a `*`, and that is right for BUYER data and wrong here — a
  * `cancel_reason` legitimately containing an asterisk is not a masked value, and
  * dropping it would lose the only explanation an operator gets.
+ *
+ * ⚠️ It does NOT know the `-` sentinel — that is {@link textoShopeeUtilizavel},
+ * one function down, and the split is deliberate: a `cancel_reason` of `-` on
+ * the ORDER detail is a value an operator should still see, while a
+ * `tracking_number` of `-` is an absence. Exported for that second reader and
+ * for the step-7 module that calls it, never so a third fold can be written.
  */
-function textoOuNull(raw: unknown): string | null {
+export function textoOuNull(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const t = raw.trim();
   return t.length === 0 ? null : t;
+}
+
+/**
+ * Shopee's OTHER absence sentinel, on the STRING side.
+ *
+ * `v2.order.get_package_detail` samples a bare `"-"` for `tracking_number`,
+ * `item_sku`, `model_sku`, `product_location_id`, `consultation_id` and
+ * `virtual_contact_number`, and its envelope prints it for `error`, `message`
+ * and `warning`; `v2.logistics.get_tracking_info` samples it for
+ * `package_number`. It is the string twin of the numeric zero-fill
+ * {@link positivoOuNull} guards, and a naive write stores `codRastreio: "-"` —
+ * a value `/pedidos` renders verbatim and an operator would try to track.
+ */
+export const SENTINELA_AUSENTE_SHOPEE = '-';
+
+/**
+ * A Shopee string that is really a value — empty, blank and the `-` SENTINEL
+ * all answer `null`.
+ *
+ * ⚠️ **The WHOLE trimmed value, never a substring.** `BR-123` is a real
+ * tracking number and `--` is not the sentinel; `orderMapping.test.ts` pins
+ * both as near-misses, because the fold that decides "this field is absent" is
+ * exactly the fold that must not decide it for a value that merely contains a
+ * dash.
+ */
+export function textoShopeeUtilizavel(raw: unknown): string | null {
+  const t = textoOuNull(raw);
+  return t === null || t === SENTINELA_AUSENTE_SHOPEE ? null : t;
 }
 
 /**
