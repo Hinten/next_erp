@@ -49,11 +49,12 @@ import { KitManager, stripKitForSave } from '../../_components/KitManager';
 import { KitVariacoesManager, type KitVariacoesFlush } from '../../_components/KitVariacoesManager';
 import { ModificacoesManager } from '../../_components/ModificacoesManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
-import { PropagatePriceToChildrenField } from '../../_components/PropagatePriceToChildrenField';
+import { VariationPricesField } from '../../_components/VariationPricesEditor';
 import { VideoManager } from '../../_components/VideoManager';
 import {
   VariationManager,
   type ChildrenFlush,
+  type VariationPriceEdits,
   type VariationRow,
 } from '../../_components/VariationManager';
 import {
@@ -121,6 +122,7 @@ export default function EditarProdutoPage() {
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
   const flushChildrenRef = useRef<ChildrenFlush | null>(null);
+  const variationPriceEditsRef = useRef<VariationPriceEdits | null>(null);
   // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
   // the variation-children flush so the child docs exist.
   const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
@@ -143,6 +145,7 @@ export default function EditarProdutoPage() {
   // Only the variation children are kept live here — not every tab's effects.
   const [variationRows, setVariationRows] = useState<VariationRow[]>([]);
   const [divergentVariationCount, setDivergentVariationCount] = useState(0);
+  const [variationPriceDirty, setVariationPriceDirty] = useState(false);
   const childrenQuery = useMemo(
     () => buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', params.id)]),
     [db, params.id],
@@ -262,11 +265,17 @@ export default function EditarProdutoPage() {
       propagatePriceToChildren: {
         ...produtoFieldOverrides.propagatePriceToChildren,
         renderInput: (p) => (
-          <PropagatePriceToChildrenField
+          <VariationPricesField
             value={p.value !== false}
             onChange={p.onChange}
             disabled={p.disabled}
             divergentChildren={divergentVariationCount}
+            rows={effectiveVariationRows}
+            listas={listas}
+            listasError={listasSnap.error?.message}
+            onPriceChange={(rowKey, listaId, valor) =>
+              variationPriceEditsRef.current?.setPrice(rowKey, listaId, valor)
+            }
           />
         ),
       },
@@ -358,7 +367,6 @@ export default function EditarProdutoPage() {
             db={db}
             grupos={grupos}
             gruposError={gruposSnap.error?.message}
-            listas={listas}
             propagatePriceToChildren={produtoSnap.data?.data.propagatePriceToChildren !== false}
             value={(p.value as string[] | null) ?? null}
             onChange={p.onChange}
@@ -367,6 +375,8 @@ export default function EditarProdutoPage() {
             }}
             onRowsChange={setVariationRows}
             onDivergentPriceCountChange={setDivergentVariationCount}
+            onPriceDirtyChange={setVariationPriceDirty}
+            priceEditsRef={variationPriceEditsRef}
             flushRef={flushChildrenRef}
             disabled={p.disabled}
           />
@@ -556,9 +566,9 @@ export default function EditarProdutoPage() {
       fields={fields}
       excludedFields={PRODUTO_EXCLUDED_FIELDS}
       transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}
-      // Pending Mercado Livre edits live in their own documents and their own
-      // form, so the leave-guard needs to be told about them explicitly.
-      extraDirty={mlDirty}
+      // Pending Mercado Livre and independent-variation-price edits live
+      // outside this RHF form, so both must arm the shared leave guard.
+      extraDirty={mlDirty || variationPriceDirty}
       transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
       deriveOnSave={(values) => {
         // Keep the Flutter wire shapes on every save: bare group ids sorted
