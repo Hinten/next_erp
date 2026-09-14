@@ -97,8 +97,14 @@ The first dispatch uses the payload verbatim and performs zero produto/estoque r
 reads. A real Cloud Tasks retry or a task previously re-enqueued by the pause gate performs
 one BatchGet for distinct target produtos and one for the union of target/component estoque
 refs: product reads = `|P|`, stock reads = `|P ∪ C|`, queries/scans = 0, depósito reads = 0,
-and BatchGet RPCs ≤ 2. `ageMs` still measures the original payload; `stockRefresh` reports
-the source, exact counts and bounded read-set samples. Manual inline retries stay verbatim.
+and BatchGet RPCs ≤ 2. New tasks capture the exact estoque doc ids returned by the sweep,
+including legacy auto-ids; `null` records that no row existed. If the depósito changed or a
+current component has no captured locator, no partial refresh is sent. Tasks from before the
+snapshot field try only canonical ids and fall back to the complete original payload when an
+absence is ambiguous. `ageMs` still measures the original payload; `stockRefresh` reports the
+source, locator origin, exact counts and bounded read-set samples. Manual inline retries stay
+verbatim. Task creation measures the Base64-encoded UTF-8 `{ data: task }` body, warns at
+64 KiB and refuses above the conservative 80 KiB budget.
 
 ### Durability & the residual loss window
 

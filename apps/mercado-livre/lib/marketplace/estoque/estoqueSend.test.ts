@@ -341,11 +341,21 @@ function seedEstoque(
   produtoId: string,
   quantidade: unknown,
   quantidadeReservada: unknown = 0,
+  estoqueDocId = makeEstoqueUid(produtoId, 'DEP'),
 ): void {
-  db.seed(`produtos/${produtoId}/estoques`, makeEstoqueUid(produtoId, 'DEP'), {
+  db.seed(`produtos/${produtoId}/estoques`, estoqueDocId, {
     quantidade,
     quantidadeReservada,
   });
+}
+
+function estoqueSnapshot(
+  ...refs: Array<[produtoId: string, estoqueDocId: string | null]>
+): NonNullable<MlStockSendTask['estoqueSnapshot']> {
+  return {
+    depositoId: 'DEP',
+    refs: refs.map(([produtoId, estoqueDocId]) => ({ produtoId, estoqueDocId })),
+  };
 }
 
 function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
@@ -360,6 +370,7 @@ function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
     linkDocId: 'link1',
     quantidade: 10,
     variations: null,
+    estoqueSnapshot: null,
     sweepComputedAtMs: SWEEP_MS,
     sweepId: 'sweep-1',
     reenqueues: 0,
@@ -611,6 +622,7 @@ describe('mlStockSendTaskSchema', () => {
     };
     const built = buildSendTasks(row, new Map([['PROD', 7]]), {
       integracaoId: CONTA,
+      depositoId: 'DEP',
       sweepId: 'sweep-1',
       sweepComputedAtMs: SWEEP_MS,
     });
@@ -619,7 +631,9 @@ describe('mlStockSendTaskSchema', () => {
     // The compile-time half of the contract: a draft IS a valid schema input
     // (field names/nullability drift fails typecheck on this assignment).
     const drafts: Array<z.input<typeof mlStockSendTaskSchema>> = built.tasks;
-    expect(mlStockSendTaskSchema.parse(drafts[0])).toEqual(payload({ quantidade: 7 }));
+    expect(mlStockSendTaskSchema.parse(drafts[0])).toEqual(
+      payload({ quantidade: 7, estoqueSnapshot: estoqueSnapshot(['PROD', null]) }),
+    );
   });
 });
 
@@ -1086,7 +1100,7 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
 describe('processStockSendTask — retry stock refresh (#693)', () => {
   it('first attempts of every protocol perform zero produto/estoque BatchGets', async () => {
     const item = makeHarness();
-    await run(item, payload({ quantidade: 7 }));
+    await run(item, payload({ quantidade: 7, estoqueSnapshot: estoqueSnapshot(['PROD', null]) }));
 
     const variationItem = makeHarness();
     await run(
@@ -1096,6 +1110,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
         itemId: 'MLB-CHILD',
         variacaoProdutoId: 'CHILD',
         quantidade: 8,
+        estoqueSnapshot: estoqueSnapshot(['CHILD', null]),
       }),
     );
 
@@ -1104,6 +1119,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
       bulk,
       payload({
         quantidade: null,
+        estoqueSnapshot: estoqueSnapshot(['CHILD', null]),
         variations: [{ id: 101, produtoId: 'CHILD', available_quantity: 9 }],
       }),
     );
@@ -1116,6 +1132,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
         userProductId: 'MLBU-1',
         variacaoProdutoId: 'CHILD',
         quantidade: 10,
+        estoqueSnapshot: estoqueSnapshot(['CHILD', null]),
       }),
     );
 
@@ -1175,6 +1192,210 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
           estoqueReadCount: 1,
         }),
       }),
+    );
+  });
+
+  it('a modern retry reads the exact legacy auto-id captured by the sweep', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(h.db, 'PROD');
+    seedEstoque(h.db, 'PROD', 21, 3, 'legacy-auto-stock-row');
+
+    await run(
+      h,
+      payload({
+        quantidade: 99,
+        estoqueSnapshot: estoqueSnapshot(['PROD', 'legacy-auto-stock-row']),
+      }),
+    );
+
+    expect(h.db.batchGets[1]).toEqual({
+      paths: ['produtos/PROD/estoques/legacy-auto-stock-row'],
+      fieldMask: ['quantidade', 'quantidadeReservada'],
+    });
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      available_quantity: 18,
+    });
+    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+      expect.stringContaining('fonte da quantidade'),
+      expect.objectContaining({
+        stockRefresh: expect.objectContaining({
+          locatorSource: 'snapshot',
+          legacyEstoqueRefCount: 1,
+          missingLocatorCount: 0,
+        }),
+      }),
+    );
+  });
+
+  it('a null locator detects canonical stock created after the sweep', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(h.db, 'PROD');
+    seedEstoque(h.db, 'PROD', 12, 1);
+
+    await run(h, payload({ quantidade: 80, estoqueSnapshot: estoqueSnapshot(['PROD', null]) }));
+
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      available_quantity: 11,
+    });
+  });
+
+  it('an old task with no canonical stock falls back to its whole original payload', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(h.db, 'PROD');
+    seedEstoque(h.db, 'PROD', 99, 0, 'legacy-auto-not-discoverable-by-point-id');
+
+    const res = await run(h, payload({ quantidade: 37 }));
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      available_quantity: 37,
+    });
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('payload original inteiro'),
+      expect.objectContaining({
+        reason: 'refresh-sem-snapshot-legado',
+        stockRefresh: expect.objectContaining({ refreshed: false, missingLocatorCount: 1 }),
+      }),
+    );
+  });
+
+  it('a deleted exact stock row is authoritative zero, never an old-payload fallback', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(h.db, 'PROD');
+
+    await run(
+      h,
+      payload({
+        quantidade: 44,
+        estoqueSnapshot: estoqueSnapshot(['PROD', 'legacy-row-deleted-after-sweep']),
+      }),
+    );
+
+    expect(h.db.batchGets[1]?.paths).toEqual([
+      'produtos/PROD/estoques/legacy-row-deleted-after-sweep',
+    ]);
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      available_quantity: 0,
+    });
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalledWith(
+      expect.stringContaining('payload original inteiro'),
+      expect.anything(),
+    );
+  });
+
+  it('a snapshot from another depósito skips before any produto or estoque BatchGet', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+
+    const res = await run(
+      h,
+      payload({
+        quantidade: 44,
+        estoqueSnapshot: {
+          depositoId: 'DEP-ANTIGO',
+          refs: [{ produtoId: 'PROD', estoqueDocId: 'legacy-row' }],
+        },
+      }),
+    );
+
+    expect(res).toEqual({ outcome: 'skipped', reason: 'refresh-deposito-alterado' });
+    expect(h.db.batchGets).toEqual([]);
+    expect(h.apiFactory).not.toHaveBeenCalled();
+  });
+
+  it('a new constraining component without a locator falls back before stock reads', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(h.db, 'PROD', {
+      ehKit: true,
+      componentesKit: { COMP: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+    });
+
+    await run(h, payload({ quantidade: 31, estoqueSnapshot: estoqueSnapshot(['PROD', null]) }));
+
+    expect(h.db.batchGets).toEqual([
+      {
+        paths: ['produtos/PROD'],
+        fieldMask: ['ehKit', 'ehKitVirtual', 'componentesKit'],
+      },
+    ]);
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      available_quantity: 31,
+    });
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('payload original inteiro'),
+      expect.objectContaining({ reason: 'refresh-localizador-incompleto' }),
+    );
+  });
+
+  it('one missing bulk locator falls back atomically without mixing fresh quantities', async () => {
+    const h = makeHarness({
+      retryCount: 1,
+      refreshStockOnRetry: true,
+      getItem: async () => vivo([101, 102]),
+    });
+    seedProduto(h.db, 'A');
+    seedProduto(h.db, 'B');
+    seedEstoque(h.db, 'A', 90);
+    seedEstoque(h.db, 'B', 80);
+
+    await run(
+      h,
+      payload({
+        quantidade: null,
+        estoqueSnapshot: estoqueSnapshot(['A', makeEstoqueUid('A', 'DEP')]),
+        variations: [
+          { id: 101, produtoId: 'A', available_quantity: 3 },
+          { id: 102, produtoId: 'B', available_quantity: 4 },
+        ],
+      }),
+    );
+
+    expect(h.db.batchGets).toHaveLength(1);
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      variations: [
+        { id: 101, available_quantity: 3 },
+        { id: 102, available_quantity: 4 },
+      ],
+    });
+  });
+
+  it('conflicting duplicate locators also cause one whole-payload fallback', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(h.db, 'PROD');
+
+    await run(
+      h,
+      payload({
+        quantidade: 29,
+        estoqueSnapshot: estoqueSnapshot(['PROD', 'legacy-a'], ['PROD', 'legacy-b']),
+      }),
+    );
+
+    expect(h.db.batchGets).toHaveLength(1);
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      available_quantity: 29,
+    });
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('payload original inteiro'),
+      expect.objectContaining({ reason: 'refresh-localizador-incompleto' }),
+    );
+  });
+
+  it('malformed locator metadata stays parseable and falls back without a bad doc path', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(h.db, 'PROD');
+
+    await run(
+      h,
+      payload({ quantidade: 27, estoqueSnapshot: estoqueSnapshot(['PROD', 'bad/path']) }),
+    );
+
+    expect(h.db.batchGets).toHaveLength(1);
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
+      available_quantity: 27,
+    });
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('payload original inteiro'),
+      expect.objectContaining({ reason: 'refresh-localizador-incompleto' }),
     );
   });
 
@@ -1309,6 +1530,11 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
       h,
       payload({
         quantidade: null,
+        estoqueSnapshot: estoqueSnapshot(
+          ['KIT-A', null],
+          ['COMP', makeEstoqueUid('COMP', 'DEP')],
+          ['KIT-B', null],
+        ),
         variations: [
           { id: 101, produtoId: 'KIT-A', available_quantity: 99 },
           { id: 102, produtoId: 'KIT-B', available_quantity: 99 },
@@ -1352,6 +1578,12 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
       h,
       payload({
         quantidade: null,
+        estoqueSnapshot: estoqueSnapshot(
+          ['MISSING', null],
+          ['NEG-RES', makeEstoqueUid('NEG-RES', 'DEP')],
+          ['NEGATIVE', makeEstoqueUid('NEGATIVE', 'DEP')],
+          ['HIGH', makeEstoqueUid('HIGH', 'DEP')],
+        ),
         variations: ids.map((produtoId, index) => ({
           id: 101 + index,
           produtoId,
@@ -1378,13 +1610,22 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
       componentesKit: { COMP: { quantidade: 2, limitarEstoque: true, timestamp: null } },
     });
     seedEstoque(normal.db, 'COMP', 9);
-    await run(normal, payload({ quantidade: 70 }));
+    await run(
+      normal,
+      payload({
+        quantidade: 70,
+        estoqueSnapshot: estoqueSnapshot(['PROD', null], ['COMP', makeEstoqueUid('COMP', 'DEP')]),
+      }),
+    );
     expect(normal.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 4 });
 
     vi.stubEnv(STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV, '1');
     const scalar = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
     seedProduto(scalar.db, 'PROD', { ehKit: true, ehKitVirtual: true });
-    const scalarResult = await run(scalar);
+    const scalarResult = await run(
+      scalar,
+      payload({ estoqueSnapshot: estoqueSnapshot(['PROD', null]) }),
+    );
     expect(scalarResult).toEqual({ outcome: 'skipped', reason: 'kit-virtual' });
     expect(scalar.apiFactory).not.toHaveBeenCalled();
 
@@ -1400,6 +1641,10 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
       bulk,
       payload({
         quantidade: null,
+        estoqueSnapshot: estoqueSnapshot(
+          ['VIRTUAL', null],
+          ['PLAIN', makeEstoqueUid('PLAIN', 'DEP')],
+        ),
         variations: [
           { id: 101, produtoId: 'VIRTUAL', available_quantity: 90 },
           { id: 102, produtoId: 'PLAIN', available_quantity: 90 },
@@ -1419,6 +1664,7 @@ describe('processStockSendTask — retry stock refresh (#693)', () => {
       allBulk,
       payload({
         quantidade: null,
+        estoqueSnapshot: estoqueSnapshot(['VIRTUAL', null]),
         variations: [{ id: 101, produtoId: 'VIRTUAL', available_quantity: 90 }],
       }),
     );
@@ -2245,7 +2491,12 @@ it('THE SEAM: what the prune writes is what the next sweep leaves out', () => {
       ['C1', 3],
       ['C2', 4],
     ]),
-    { integracaoId: CONTA, sweepId: 'sweep-2', sweepComputedAtMs: SWEEP_MS },
+    {
+      integracaoId: CONTA,
+      depositoId: 'DEP',
+      sweepId: 'sweep-2',
+      sweepComputedAtMs: SWEEP_MS,
+    },
   );
 
   // The phantom is gone; the live sibling still ships.

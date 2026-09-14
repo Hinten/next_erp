@@ -270,7 +270,7 @@ function member(produtoId: string, over: Partial<FamilyMember> = {}): FamilyMemb
     // disponivel = 10 − 2 = 8. NO `parentId`: `ownEstoque()` does not project one
     // and the reconstruction keys the own row by `produtoId` instead (#932).
     // Hand-writing the field here would re-hide exactly the bug that shipped.
-    estoque: { quantidade: 10, quantidadeReservada: 2 },
+    estoque: { estoqueDocId: `stock-${produtoId}`, quantidade: 10, quantidadeReservada: 2 },
     componentEstoques: [],
     ...over,
   };
@@ -326,7 +326,11 @@ function run(
 }
 
 /** The exact draft the sweep must enqueue for the default single-link family. */
-function expectedDraft(mode: StockSweepMode, integracaoId: string): Record<string, unknown> {
+function expectedDraft(
+  mode: StockSweepMode,
+  integracaoId: string,
+  depositoId = 'dep-1',
+): Record<string, unknown> {
   return {
     integracaoId,
     produtoId: 'PROD-1',
@@ -338,6 +342,10 @@ function expectedDraft(mode: StockSweepMode, integracaoId: string): Record<strin
     linkDocId: 'link-1',
     quantidade: 8,
     variations: null,
+    estoqueSnapshot: {
+      depositoId,
+      refs: [{ produtoId: 'PROD-1', estoqueDocId: 'stock-PROD-1' }],
+    },
     sweepId: `${mode}-${integracaoId}-${NOW_MS}`,
     sweepComputedAtMs: NOW_MS,
     reenqueues: 0,
@@ -565,7 +573,7 @@ describe('runStockSweep — conta enumeration', () => {
     // own send) held for each.
     expect(enqueue).toHaveBeenCalledTimes(2);
     expect(enqueue).toHaveBeenNthCalledWith(1, expectedDraft('incremental', 'INT-A'));
-    expect(enqueue).toHaveBeenNthCalledWith(2, expectedDraft('incremental', 'INT-B'));
+    expect(enqueue).toHaveBeenNthCalledWith(2, expectedDraft('incremental', 'INT-B', 'dep-2'));
     expect(result.contas.map((c) => [c.integracaoId, c.enqueued, c.error])).toEqual([
       ['INT-A', 1, null],
       ['INT-B', 1, null],
@@ -1103,7 +1111,11 @@ describe('runStockSweep — monthly reconciliation', () => {
     // Comfortably high on both sides — the incremental tier would skip it.
     const alto = familyRow({
       anchor: member('PROD-1', {
-        estoque: { quantidade: 500, quantidadeReservada: 0 },
+        estoque: {
+          estoqueDocId: 'stock-PROD-1',
+          quantidade: 500,
+          quantidadeReservada: 0,
+        },
       }),
     });
     const { fetchFamilies } = makeFetch([{ rows: [alto], nextAfterAnchorId: null }]);
@@ -1451,7 +1463,11 @@ describe('runStockSweep — persistent continuation', () => {
     // would skip it, so it only survives if the frozen daily policy is honoured.
     const alto = familyRow({
       anchor: member('PROD-1', {
-        estoque: { quantidade: 500, quantidadeReservada: 0 },
+        estoque: {
+          estoqueDocId: 'stock-PROD-1',
+          quantidade: 500,
+          quantidadeReservada: 0,
+        },
       }),
     });
     const { fetchFamilies } = makeFetch([{ rows: [alto], nextAfterAnchorId: null }]);

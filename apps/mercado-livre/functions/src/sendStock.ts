@@ -22,8 +22,11 @@ import { tasksInvokerOptions } from './tasksInvoker';
  * limited actual ML calls (429 storms). Payloads carry the SWEEP-COMPUTED
  * quantities: attempt zero transmits them verbatim with zero produto/estoque
  * reads; a real queue retry or pause re-enqueue refreshes them through at most
- * two point-read BatchGets (#693). `ageMs` still measures the original payload
- * and `stockRefresh` reports source and exact read counts. A task landing on a
+ * two point-read BatchGets (#693), using the exact legacy/canonical estoque ids
+ * captured by the sweep. An incomplete locator set falls back to the whole
+ * original payload, never a partially refreshed bulk. `ageMs` still measures
+ * the original payload and `stockRefresh` reports source and exact read counts.
+ * A task landing on a
  * 429-paused conta re-enqueues itself
  * via the scheduler (delay + jitter) instead of burning queue retries; a 429
  * itself pauses the conta and RETHROWS so the retry rides the queue backoff

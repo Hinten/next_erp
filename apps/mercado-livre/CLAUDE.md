@@ -668,7 +668,13 @@ and quantities of the variations it is not changing
 (`estoque/variacoesReconciliacao.ts`). Attempt zero still uses the payload's own
 numbers verbatim. A real Cloud Tasks retry or pause re-enqueue first refreshes
 those numbers through at most two deterministic BatchGets (#693), with no query,
-scan, depósito read or cache. Only the legacy bulk `kind` pays the extra
+scan, depósito read or cache. The sweep carries the exact estoque document ids
+it already joined, including legacy auto-ids, plus explicit `null` locators for
+rows that were absent. A changed depósito skips; a newly participating component
+without a locator, or an ambiguous pre-snapshot task, falls back to the complete
+original stock intent so a bulk never mixes fresh and stale values. This is only
+the quantity-source fallback; the complete live `variations[]` reconciliation
+below still has no fallback. Only the legacy bulk `kind` pays the extra
 `GET /items` needed to preserve the complete live variation list.
 ⚠️ **A planner-side completeness check could NOT have covered this, and that is
 what decided where the fix lives.** A variation existing on ML with no local

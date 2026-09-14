@@ -120,9 +120,8 @@ export const PRICE_SYNC_FAILURES_CAP = 100;
  * Hard cap on one family's drafts. The fila is PERSISTED on the job doc a plan
  * page at a time, so a runaway family would blow the 1 MiB document limit and
  * wedge the job on every retry — past the cap the family builds NO drafts and
- * skips `FAMILIA_MUITO_GRANDE` instead (the `MAX_VARIATIONS_PER_TASK`
- * discipline: refuse loudly rather than re-attempt an unpersistable family
- * forever).
+ * skips `FAMILIA_MUITO_GRANDE` instead (the stock-task payload discipline:
+ * refuse loudly rather than re-attempt an unpersistable family forever).
  */
 export const MAX_DRAFTS_PER_FAMILY = 2000;
 

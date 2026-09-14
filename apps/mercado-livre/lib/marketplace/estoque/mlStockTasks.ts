@@ -8,7 +8,8 @@
  * the queue dispatches to `functions/src/sendStock.ts`, which transmits the
  * SWEEP-COMPUTED quantities verbatim on attempt zero. A real queue retry or a
  * task previously re-enqueued by the pause gate refreshes stock with bounded
- * deterministic point reads (#693). The task handler is ALSO a consumer of
+ * point reads using the exact estoque ids captured by the sweep (#693). The
+ * task handler is ALSO a consumer of
  * this scheduler: a task landing on a
  * 429-paused conta re-enqueues itself with `scheduleDelaySeconds`, so the
  * pause never burns queue retries.

@@ -32,8 +32,10 @@
  * the task — `quantidade` XOR `variations` — together with `linkDocId`, the
  * status-writeback target. Attempt zero transmits that snapshot with zero
  * produto/estoque reads. A real Cloud Tasks retry, or a task previously parked
- * behind the pause gate, refreshes it through deterministic produto/estoque
- * point reads; see `estoqueRetryRefresh.ts`.
+ * behind the pause gate, refreshes it through deterministic produto reads and
+ * the exact estoque ids captured by the sweep, including legacy auto-ids. An
+ * incomplete modern locator set or ambiguous old task falls back atomically to
+ * the original payload; see `estoqueRetryRefresh.ts`.
  *
  * ⚠️ **#831 qualifies that in exactly one place, and the qualification is about
  * OTHER variations, never ours.** A legacy-model `variations[]` body is not a
@@ -50,7 +52,7 @@
  * (`reenqueues > 0`) recomputes current quantities before token/ML work. The
  * refresh costs at most two BatchGet RPCs and no query/scan. `ageMs` still names
  * the age of the original sweep payload; structured `stockRefresh` telemetry
- * names the quantity source and exact point-read counts.
+ * names the quantity/locator source and exact point-read counts.
  *
  * ---- Per-conta 429 pause (`estoqueMercadoLivreSync/{integracaoId}`): on a
  * rate-limit the handler stamps `pausedUntilUs` (Retry-After when ML sent one,
@@ -119,6 +121,7 @@ import {
   PAUSE_REENQUEUE_JITTER_MAX_S,
   STOCK_SEND_MAX_ATTEMPTS,
   STOCK_SYNC_FLAG_ENV,
+  type StockTaskEstoqueSnapshot,
   isStockSyncEnabled,
   maxPauseReenqueues,
   podeEnviarEstoque,
@@ -154,6 +157,39 @@ import type { MlStockTaskScheduler } from './mlStockTasks';
 import { clearFalha, type FalhaPatch, falhaPatch } from '../core/publishFalhas';
 
 /* ------------------------------- task payload ------------------------------ */
+
+/**
+ * Keep malformed snapshot metadata parseable so a retry can choose the safe,
+ * whole-payload fallback. Empty strings are internal invalid sentinels; the
+ * planner never emits them.
+ */
+function tolerantEstoqueSnapshot(raw: unknown): StockTaskEstoqueSnapshot {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { depositoId: '', refs: [] };
+  }
+  const record = raw as Record<string, unknown>;
+  const refs = Array.isArray(record.refs)
+    ? record.refs.map((entry) => {
+        if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) {
+          return { produtoId: '', estoqueDocId: '' };
+        }
+        const locator = entry as Record<string, unknown>;
+        return {
+          produtoId: typeof locator.produtoId === 'string' ? locator.produtoId : '',
+          estoqueDocId:
+            locator.estoqueDocId === null
+              ? null
+              : typeof locator.estoqueDocId === 'string'
+                ? locator.estoqueDocId
+                : '',
+        };
+      })
+    : [];
+  return {
+    depositoId: typeof record.depositoId === 'string' ? record.depositoId : '',
+    refs,
+  };
+}
 
 /**
  * The stock send task payload — carries the SWEEP-COMPUTED quantities (module
@@ -226,6 +262,11 @@ export const mlStockSendTaskSchema = z.object({
     )
     .nullable()
     .default(null),
+  /**
+   * Exact estoque rows observed by the sweep. Null only for tasks enqueued by a
+   * previous release; retries use these ids so legacy auto-id rows stay visible.
+   */
+  estoqueSnapshot: z.unknown().transform(tolerantEstoqueSnapshot).nullable().default(null),
   /** When the sweep computed the quantities (ms since epoch) — feeds the `ageMs` sent log. */
   sweepComputedAtMs: z.number().int(),
   /** The sweep tick that enqueued this task (log correlation only). */
@@ -662,7 +703,7 @@ export async function processStockSendTask(
         source: refreshSource,
       });
       stockTelemetry = refreshed.telemetry;
-      if (!refreshed.ok) {
+      if (refreshed.outcome === 'skipped') {
         console.warn('[mercado-livre] stock-send: refresh de quantidade recusou o envio', {
           integracaoId: payload.integracaoId,
           produtoId: payload.produtoId,
@@ -672,6 +713,19 @@ export async function processStockSendTask(
           stockRefresh: stockTelemetry,
         });
         return { outcome: 'skipped', reason: refreshed.reason };
+      }
+      if (refreshed.outcome === 'payload-fallback') {
+        console.warn(
+          '[mercado-livre] stock-send: refresh indeterminado — usando payload original inteiro',
+          {
+            integracaoId: payload.integracaoId,
+            produtoId: payload.produtoId,
+            itemId: payload.itemId,
+            sweepId: payload.sweepId,
+            reason: refreshed.reason,
+            stockRefresh: stockTelemetry,
+          },
+        );
       }
       payload = refreshed.payload;
     }
@@ -695,7 +749,7 @@ export async function processStockSendTask(
     }
 
     // (3) The request body — sweep-computed on attempt zero, refreshed from
-    // deterministic point reads on a real retry/pause re-enqueue (#693). The
+    // bounded point reads on a real retry/pause re-enqueue (#693). The
     // schema stays plain, so the exactly-one invariant is enforced here: both
     // null is an enqueue bug (a retry would fail identically → drop); both
     // non-null prefers the bulk `variations`, loudly.

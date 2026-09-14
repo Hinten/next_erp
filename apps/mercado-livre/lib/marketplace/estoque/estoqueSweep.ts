@@ -636,6 +636,7 @@ async function sweepConta(
       }
       const { tasks, skips } = buildSendTasks(row, quantidades, {
         integracaoId,
+        depositoId,
         sweepId,
         sweepComputedAtMs: nowMs,
         modo: modoEstoque,

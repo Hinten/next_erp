@@ -243,7 +243,7 @@ export const MENSAGEM_POR_MOTIVO: Record<string, string> = {
   // ⚠️ No `'nao-publicado'` (#1087): an oculto produto whose anúncio is live is
   // SENT now, and says so through `AVISO_OCULTO_NO_ERP` on the `enviado` row.
   'conta-fora-do-produto': 'O produto não está vinculado a esta conta.',
-  'variacoes-excede-limite': 'A família tem variações demais para um único envio.',
+  'task-excede-limite': 'A sincronização gera dados demais para um único envio.',
   'produto-nao-encontrado': 'Produto não encontrado.',
   'familia-nao-encontrada': 'Produto não encontrado ou não é um produto pai.',
   'sem-deposito': 'A conta não tem depósito configurado.',
@@ -301,7 +301,7 @@ export const MOTIVO_POR_SKIP: Record<SendSkipReason, string> = {
   'status-nao-enviavel': 'status-nao-enviavel',
   'kit-virtual': 'kit-virtual',
   'conta-fora-do-produto': 'conta-fora-do-produto',
-  'variations-excede-limite': 'variacoes-excede-limite',
+  'task-excede-limite': 'task-excede-limite',
   // #706: already channel-neutral enough to pass through — the message above
   // carries the ML wording, not the key.
   'sem-user-product': 'sem-user-product',
@@ -631,6 +631,7 @@ export async function enviarEstoqueManual(
     const quantidades = quantidadesDaFamilia(row);
     const built = buildSendTasks(row, quantidades, {
       integracaoId: args.integracaoId,
+      depositoId,
       // Deterministic and self-describing in the send handler's logs.
       sweepId: `manual-${args.integracaoId}-${nowMs}`,
       // Manual quantities are computed NOW, so the handler's `ageMs` reads ~0.
