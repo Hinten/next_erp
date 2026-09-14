@@ -9,6 +9,7 @@ import {
   ShopeeRateLimitError,
   ShopeeReauthRequiredError,
   ShopeeSchemaError,
+  shopeePackageDetailRowSchema,
   type ShopeeClient,
   type ShopeeEscrowDetail,
   type ShopeeOrderDetail,
@@ -17,6 +18,8 @@ import {
 
 import { FIXTURE_ORDER_DETAIL_QTY2_SG, lerPedidoDetalhe } from '../fixtures/wireCorpus';
 import { FakeDb, asDb, type DocData } from '../testing/fakeDb';
+import { observadoDoPacoteDetalhe, type PacoteObservadoShopee } from './fretePushShopee';
+import { salvarFreteShopee } from './freteTx';
 import { mapearItensShopee } from './itens';
 import { makePagamentoIdShopee, makePedidoIdShopee } from './orderIds';
 import { microsDeSegundosShopee } from './orderMapping';
@@ -213,9 +216,16 @@ describe('importarPedidoShopee — o caminho feliz sobre a fixture SG', () => {
     // Freight: the buyer paid 1.99 while `actual_shipping_fee` is the zero-fill.
     const frete = doc.freteInicial as Record<string, unknown>;
     expect(frete.valorCobrado).toBe(1.99);
-    expect(frete.estado).toBe(ESTADO_FRETE.iniciado);
+    // ⚠️ Step 5 SEEDS `iniciado` and step 7's backstop (#1515) immediately folds
+    // the order's own `package_list[]` over it — the SG body carries
+    // `LOGISTICS_READY` — so the estado the document ends this import with is
+    // the FOLD's, not the seed's. That is the whole point of the backstop: the
+    // pushes that would otherwise carry it are lossy.
+    expect(frete.estado).toBe(ESTADO_FRETE.despachoAutorizado);
     expect(frete.prazoDespacho).toBe(microsDeSegundosShopee(1789405354));
     expect(frete.volumes).toHaveLength(1);
+    // …and the per-package diary the same transaction wrote.
+    expect(frete.pacotes).toHaveLength(1);
 
     // Step 9 has written no link doc, so the line lands unresolved…
     const itens = doc.itens as Record<string, unknown[]>;
@@ -773,5 +783,268 @@ describe('importarPedidoShopee — os pagamentos', () => {
     const pedido = c.db.store[PEDIDO_PATH]!.data;
     const pagamento = c.db.store[`${PAGAMENTOS_PATH}/${PAGAMENTO_ID}`]!.data;
     expect(pagamento.valor).toBe(pedido.valorCobrado);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                 step 7 — the code-3 BACKSTOP and its convergence            */
+/* -------------------------------------------------------------------------- */
+
+/** The SG body's own package, and the channel it rides. */
+const PACOTE_SG = 'OFG242672552205937';
+const CANAL_SG = 11006;
+const SHIP_BY_DATE_S = 1789405354;
+
+/** What a `get_package_detail` pull would observe for that same package. */
+function observadoDoPull(over: Record<string, unknown> = {}) {
+  return observadoDoPacoteDetalhe(
+    shopeePackageDetailRowSchema.parse({
+      order_sn: ORDER_SN,
+      package_number: PACOTE_SG,
+      fulfillment_status: 'LOGISTICS_READY',
+      logistics_channel_id: CANAL_SG,
+      ship_by_date: SHIP_BY_DATE_S,
+      update_time: UPDATE_TIME_S,
+      ...over,
+    }),
+  )!;
+}
+
+function freteDoPedido(db: FakeDb): Record<string, unknown> {
+  return db.store[PEDIDO_PATH]!.data.freteInicial as Record<string, unknown>;
+}
+
+function salvarFrete(db: FakeDb, observados: PacoteObservadoShopee[], nowUs = NOW_US) {
+  return salvarFreteShopee(asDb(db), {
+    pedidoId: PEDIDO_ID,
+    orderSn: ORDER_SN,
+    observados,
+    relogioDaOrdemUs: null,
+    prazoDaOrdemUs: null,
+    nowUs,
+  });
+}
+
+describe('importarPedidoShopee — o frete (passo 7)', () => {
+  it('35 — grava o frete DEPOIS do pedido e DEPOIS dos pagamentos', async () => {
+    const c = cenario();
+
+    const r = await importar(c);
+
+    expect(r.acaoFrete).toBe('atualizado');
+    expect(r.pacotesGravados).toBe(1);
+
+    // ⚠️ A ORDEM é a asserção: a transação de frete recusa um pedido ausente, e
+    // ela é a TERCEIRA — o pagamento tem de ter entrado antes, senão um
+    // `ZodError` do frete pararia a importação com o dinheiro por gravar.
+    const escritas = c.db.writes.map((w) => w.path);
+    const iPedido = escritas.indexOf(PEDIDO_PATH);
+    const iPagamento = escritas.findIndex((p) => p.startsWith(`${PAGAMENTOS_PATH}/`));
+    const iFrete = escritas.lastIndexOf(PEDIDO_PATH);
+    expect(iPedido).toBe(0);
+    expect(iPagamento).toBeGreaterThan(iPedido);
+    expect(iFrete).toBeGreaterThan(iPagamento);
+    // …e a última escrita no pedido é mesmo a do frete.
+    expect(Object.keys(c.db.patches.at(-1)!.patch).sort()).toEqual([
+      'freteInicial',
+      'ultimaModificacao',
+    ]);
+  });
+
+  it('35 — o diário sai do `package_list[]` que a MESMA chamada já trouxe — nenhuma chamada nova', async () => {
+    const c = cenario();
+
+    await importar(c);
+
+    // O backstop não busca nada: uma segunda chamada Shopee aqui seria o custo
+    // que ele existe para não pagar.
+    expect(c.getOrderDetail).toHaveBeenCalledTimes(1);
+    expect(c.getEscrowDetail).toHaveBeenCalledTimes(1);
+
+    const frete = freteDoPedido(c.db);
+    const pacotes = frete.pacotes as Record<string, unknown>[];
+    expect(pacotes).toHaveLength(1);
+    expect(pacotes[0]).toMatchObject({
+      numero: PACOTE_SG,
+      estadoMarketplace: 'LOGISTICS_READY',
+      estado: ESTADO_FRETE.despachoAutorizado,
+      canalId: String(CANAL_SG),
+      // ⚠️ R2: uma order de UM pacote herda o prazo da ORDEM — em µs, convertido
+      // uma vez na fronteira. Um valor em segundos aqui cairia em 1970.
+      prazoDespacho: microsDeSegundosShopee(SHIP_BY_DATE_S),
+      atualizadoEm: microsDeSegundosShopee(UPDATE_TIME_S),
+      fonte: 'get_order_detail',
+    });
+    // `get_order_detail` não carrega rastreio nenhum — e um null nunca apaga.
+    expect(pacotes[0]!.codRastreio).toBeNull();
+  });
+
+  it('36 — `ignorado-sem-mudanca` no pedido NÃO pula o frete', async () => {
+    const c = cenario();
+    await importar(c);
+    // ⚠️ A entrega seguinte difere em UMA coisa só: o `logistics_status` do
+    // PACOTE. Nada que `mesmoFrete` compare mudou — os sete campos refrescáveis
+    // não incluem nenhum deles, e `mapearFreteInicialShopee` nem lê esse campo —
+    // então o pedido responde `ignorado-sem-mudanca` enquanto o pacote andou.
+    // É exatamente por isso que esse desfecho não pula o braço do frete.
+    const pacote = detalheSG().package_list![0]!;
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [
+        linha({ package_list: [{ ...pacote, logistics_status: 'LOGISTICS_PICKUP_DONE' }] }),
+      ],
+    });
+    c.db.caminhos.length = 0;
+    c.db.writes.length = 0;
+
+    const r = await importar(c);
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(r.acaoFrete).toBe('atualizado');
+    expect(r.pacotesGravados).toBe(1);
+    expect(freteDoPedido(c.db).estado).toBe(ESTADO_FRETE.postado);
+    // O pedido FOI escrito — pela transação do frete, e só por ela.
+    expect(c.db.writes.filter((w) => w.path === PEDIDO_PATH)).toHaveLength(1);
+    expect(Object.keys(c.db.patches.at(-1)!.patch).sort()).toEqual([
+      'freteInicial',
+      'ultimaModificacao',
+    ]);
+  });
+
+  it('36 — ⚠️ QUASE-ERRO: a fonte de fidelidade MENOR ainda SOBRESCREVE o token', async () => {
+    // A propriedade real, pinada porque a prova de convergência do relatório de
+    // desenho a descreve como "a chamada do pacote ganha": ganha o RELÓGIO e a
+    // FONTE, não o token. `estadoMarketplace` é take-new-when-present por
+    // desenho (§5.4: um fill-or-keep no token tornaria a máquina de estados de
+    // mão única e um `PICKUP_RETRY` depois de um `PICKUP_FAILED` inalcançável),
+    // então um detalhe de ORDER mais velho que o pull realmente reescreve o
+    // token — e o diário volta a dizer READY. As duas redes que contêm o dano
+    // são a escada (o estado do BLOCO não regride) e o relógio/fonte, que não
+    // são re-carimbados. Se um dia as duas leituras divergirem ao vivo (item 28
+    // do registro), isto é o que acontece.
+    const c = cenario();
+    await importar(c);
+    await salvarFrete(c.db, [observadoDoPull({ fulfillment_status: 'LOGISTICS_PICKUP_DONE' })]);
+    expect(freteDoPedido(c.db).estado).toBe(ESTADO_FRETE.postado);
+
+    const r = await importar(c);
+
+    expect(r.acaoFrete).toBe('atualizado');
+    const pacotes = freteDoPedido(c.db).pacotes as Record<string, unknown>[];
+    expect(pacotes[0]!.estadoMarketplace).toBe('LOGISTICS_READY');
+    // Rede 1: o estado do BLOCO não anda para trás.
+    expect(freteDoPedido(c.db).estado).toBe(ESTADO_FRETE.postado);
+    // Rede 2: nem o relógio nem a fonte do pull são re-carimbados.
+    expect(pacotes[0]!.fonte).toBe('get_package_detail');
+  });
+
+  it('36 — `ignorado-obsoleto` no pedido PULA o frete inteiro', async () => {
+    const c = cenario();
+    await importar(c);
+    c.getOrderDetail.mockResolvedValue({
+      order_list: [linha({ order_status: 'UNPAID', update_time: UPDATE_TIME_S - 60 })],
+    });
+    c.db.writes.length = 0;
+
+    const r = await importar(c);
+
+    expect(r.acao).toBe('ignorado-obsoleto');
+    expect(r.acaoFrete).toBeNull();
+    expect(r.pacotesGravados).toBe(0);
+    expect(c.db.writes).toEqual([]);
+  });
+
+  it('36 — `ignorado-inexistente` nunca chega no frete', async () => {
+    const c = cenario();
+    c.getOrderDetail.mockRejectedValue(erroApi(SHOPEE_ERRO_ORDER_NOT_FOUND));
+
+    const r = await importar(c);
+
+    expect(r.acao).toBe('ignorado-inexistente');
+    expect(r.acaoFrete).toBeNull();
+    expect(r.pacotesGravados).toBe(0);
+  });
+
+  it('37 — CONVERGÊNCIA: uma escrita do PULL e depois um import ⇒ patch vazio, ZERO escritas', async () => {
+    const c = cenario();
+    await importar(c);
+
+    // A entrega por push: o MESMO estado físico, pela fonte de fidelidade maior,
+    // trazendo o rastreio que o detalhe da order não tem.
+    const push = await salvarFrete(c.db, [observadoDoPull({ tracking_number: 'BR000000001BR' })]);
+    expect(push.acao).toBe('atualizado');
+    expect(push.campos).toEqual(['freteInicial.codRastreio', 'freteInicial.pacotes']);
+
+    c.db.writes.length = 0;
+    const antes = structuredClone(c.db.store[PEDIDO_PATH]!.data);
+
+    const r = await importar(c);
+
+    // ⚠️ A prova de §7.2: a mesma tabela lê os dois vocabulários, o rastreio
+    // sobrevive por fill-or-keep e a fonte de fidelidade MENOR não re-carimba o
+    // relógio — então o documento fica byte-idêntico.
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(c.db.writes.filter((w) => w.path === PEDIDO_PATH)).toEqual([]);
+    expect(c.db.store[PEDIDO_PATH]!.data).toEqual(antes);
+    expect(freteDoPedido(c.db).codRastreio).toBe('BR000000001BR');
+  });
+
+  it('38 — a ordem INVERSA: import, depois pull ⇒ exatamente UMA escrita, e depois estável', async () => {
+    const c = cenario();
+    await importar(c);
+    c.db.writes.length = 0;
+
+    const primeira = await salvarFrete(c.db, [
+      observadoDoPull({ tracking_number: 'BR000000001BR' }),
+    ]);
+    expect(primeira.acao).toBe('atualizado');
+    expect(c.db.writes.filter((w) => w.path === PEDIDO_PATH)).toHaveLength(1);
+    // A fonte de fidelidade MAIOR carimba o relógio do PACOTE e toma a fonte.
+    const linhaDoDiario = (freteDoPedido(c.db).pacotes as Record<string, unknown>[])[0]!;
+    expect(linhaDoDiario.fonte).toBe('get_package_detail');
+
+    const segunda = await salvarFrete(
+      c.db,
+      [observadoDoPull({ tracking_number: 'BR000000001BR' })],
+      NOW_US + 900_000_000,
+    );
+
+    expect(segunda.acao).toBe('ignorado-sem-mudanca');
+    expect(c.db.writes.filter((w) => w.path === PEDIDO_PATH)).toHaveLength(1);
+  });
+
+  it('38 — dois imports seguidos, sem o pacote andar, não escrevem nada no segundo', async () => {
+    const c = cenario();
+    await importar(c);
+    c.db.writes.length = 0;
+
+    const r = await importar(c);
+
+    expect(r.acao).toBe('ignorado-sem-mudanca');
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(c.db.writes.filter((w) => w.path === PEDIDO_PATH)).toEqual([]);
+  });
+
+  it('39 — a linha de log carrega acaoFrete/estadoFrete/pacotes e NENHUM payload de pacote', async () => {
+    const c = cenario();
+    await importar(c);
+
+    const linhaDoImport = infos.find((args) => String(args[0]).includes('pedido importado'));
+    const campos = linhaDoImport![1] as Record<string, unknown>;
+    expect(campos.acaoFrete).toBe('atualizado');
+    expect(campos.estadoFrete).toBe(ESTADO_FRETE.despachoAutorizado);
+    expect(campos.motivoFrete).toBeNull();
+    expect(campos.pacotes).toBe(1);
+    expect(campos.tokensFreteDesconhecidos).toEqual([]);
+
+    // ⚠️ Nada do pacote em si: o `get_order_detail.package_list[]` carrega um
+    // `shipping_carrier` e um `product_location_id`, e nenhum dos dois é um id
+    // que um log deste canal deva repetir.
+    const tudo = [...infos, ...avisos]
+      .map((args) => args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '))
+      .join('\n');
+    expect(tudo).toContain('pedido importado');
+    expect(tudo).not.toContain('Standard Express');
+    expect(tudo).not.toContain('SGZ');
+    expect(tudo).not.toContain('shipping_carrier');
   });
 });

@@ -121,6 +121,11 @@ function resultadoDeImportacao(
     // case and every test that wants it says so.
     acaoPagamentos: 'criado',
     pagamentosGravados: 1,
+    // Step 7 (#1515): same convention — the default is the ordinary happy path
+    // (the shipment transaction ran and wrote one package row); `null`/`0` is
+    // the "it did not run" case and every test that wants it says so.
+    acaoFrete: 'atualizado',
+    pacotesGravados: 1,
     detail: 'criado',
     ...over,
   };

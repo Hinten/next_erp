@@ -107,6 +107,8 @@ import {
   type PedidoMapeadoShopee,
 } from './orderMapping';
 import { criarResolvedorDeLinhasShopee } from './produtoResolve';
+import { observadosDoDetalheDoPedido } from './fretePushShopee';
+import { salvarFreteShopee, type AcaoFreteShopee, type ResultadoFreteShopee } from './freteTx';
 import { salvarPedidoShopee, type AcaoPedidoShopee } from './orderPedidoTx';
 import {
   COMPOSICAO_TARIFAS,
@@ -164,6 +166,18 @@ export interface ResultadoImportacaoPedidoShopee {
   readonly acaoPagamentos: AcaoPagamentosShopee | null;
   /** Pagamento documents created or updated by this import. */
   readonly pagamentosGravados: number;
+  /**
+   * The shipment transaction's own outcome (#1515, step 7 — the code-3
+   * BACKSTOP), or `null` when it did not run: `ignorado-inexistente`, and a
+   * pedido write that came out `ignorado-obsoleto`.
+   */
+  readonly acaoFrete: AcaoFreteShopee | null;
+  /**
+   * Rows in the per-package diary this import WROTE — `0` on every outcome that
+   * wrote nothing, exactly like {@link pagamentosGravados}. The diary's SIZE on
+   * a no-op delivery rides the log line instead.
+   */
+  readonly pacotesGravados: number;
   /**
    * A short machine-readable tail for the log filter — the action, so a Cloud
    * Logging query separates "we created a pedido" from "Shopee denied the
@@ -598,6 +612,7 @@ export async function importarPedidoShopee(
   // the fees change while the order row does not.
   let mapeadosPag: PagamentosMapeadosShopee | null = null;
   let pagamentos: ResultadoPagamentosShopee | null = null;
+  let frete7: ResultadoFreteShopee | null = null;
   if (resultado.acao !== 'ignorado-obsoleto') {
     mapeadosPag = mapearPagamentosShopee({
       linha,
@@ -621,6 +636,33 @@ export async function importarPedidoShopee(
       // `pay_time` came back `0` must still reverse a stored `aprovado`. Same
       // pure function the mapper calls — one implementation, two callers.
       alvoStatus: statusPagamentoDeOrderStatus(linha.order_status),
+    });
+
+    // Step 7 (#1515) — the THIRD transaction, and the BACKSTOP source of the
+    // shipment state. The pushes that carry it (codes 4/30/47) are lossy by
+    // design (`timeout=3`, `guarantee=0`, three retries and then gone) and the
+    // sandbox console cannot emit codes 30/47 at all, so the SAME pure fold runs
+    // on every order import over the `package_list[]` this call already fetched.
+    // NO new Shopee call, and no new clock read — `nowUs` is this path's single
+    // `millisToMicros` (µs site 2), handed down.
+    // ⚠️ `ignorado-sem-mudanca` does NOT skip: `mesmoFrete` compares only the
+    // seven refreshable fields, so it says nothing at all about `estado`,
+    // `codRastreio` or the diary — a package can move while the order row does
+    // not. Only `ignorado-obsoleto` skips, exactly like the pagamentos.
+    frete7 = await salvarFreteShopee(db, {
+      pedidoId,
+      orderSn,
+      // ⚠️ SECONDS, the value BEFORE step 5 converted it — never `watermarkUs / 1e6`.
+      observados: observadosDoDetalheDoPedido(linha, {
+        relogioDoPedidoS: segundosShopeeUtilizaveis(linha.update_time),
+      }).observados,
+      // The ORDER clock as the package clock: `get_order_detail` carries no
+      // per-package one, and an absent clock is not evidence of order.
+      relogioDaOrdemUs: watermarkUs,
+      // What `prazoDespachoShopee` computed for this order — the fold's fallback
+      // when NO package carries a deadline of its own.
+      prazoDaOrdemUs: frete.prazoDespacho,
+      nowUs,
     });
   }
 
@@ -695,6 +737,15 @@ export async function importarPedidoShopee(
     ...(linha.region === REGIAO_BR_PEDIDO
       ? { entradasPaymentInfo: mapeadosPag?.diagnosticos.entradasPaymentInfo ?? 0 }
       : {}),
+    // ── step 7: the shipment. Counts, enum tokens and package NUMBERS only —
+    // never a `recipient_address`, a `driver_info` or a `virtual_contact_number`
+    // (this path reads none of them: `get_order_detail.package_list[]` carries
+    // no such field), and never a tracking-number VALUE.
+    acaoFrete: frete7?.acao ?? null,
+    estadoFrete: frete7?.estadoEscrito ?? null,
+    motivoFrete: frete7?.motivoEstado ?? null,
+    pacotes: frete7?.pacotes ?? 0,
+    tokensFreteDesconhecidos: frete7?.tokensDesconhecidos ?? null,
   });
 
   return {
@@ -706,6 +757,8 @@ export async function importarPedidoShopee(
     itensSemProduto: semProduto.length,
     acaoPagamentos: pagamentos?.acao ?? null,
     pagamentosGravados: pagamentos == null ? 0 : pagamentos.criados + pagamentos.atualizados,
+    acaoFrete: frete7?.acao ?? null,
+    pacotesGravados: frete7?.acao === 'atualizado' ? frete7.pacotes : 0,
     detail: resultado.acao,
   };
 }
@@ -721,6 +774,8 @@ function inexistente(orderSn: string, motivo: string): ResultadoImportacaoPedido
     itensSemProduto: 0,
     acaoPagamentos: null,
     pagamentosGravados: 0,
+    acaoFrete: null,
+    pacotesGravados: 0,
     detail: `ignorado-inexistente:${motivo}`,
   };
 }

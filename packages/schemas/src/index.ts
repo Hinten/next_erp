@@ -146,8 +146,14 @@ export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './cat
 export {
   ESTADO_FRETE,
   ESTADO_FRETE_LABELS,
+  // ⚠️ The two stock sets are exported because a marketplace channel has to ASK
+  // whether an estado it is about to write moves physical stock (#1515, step 7).
+  // Enumerating a channel-local copy instead is the two-copies-drift-toward-
+  // plausible shape (#1369): the copy reads correct and the shared set moves.
+  ESTADOS_FRETE_IGNORAR_REMOCAO,
   ESTADOS_FRETE_NAO_POSTADO,
   ESTADOS_FRETE_PRE_AUTORIZACAO,
+  ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE,
   INTEGRACAO_FRETE_LABELS,

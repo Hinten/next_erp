@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   ESTADO_FRETE,
+  ESTADOS_FRETE_REMOVE_ESTOQUE,
   ESTADO_PEDIDO,
   MODALIDADE_FRETE,
   efeitoEstoquePedido,
@@ -19,7 +20,6 @@ import {
   ESCADA_FRETE_SHOPEE,
   ESTADOS_FRETE_FORA_DO_CANAL,
   ESTADOS_FRETE_RETORNO,
-  ESTADOS_FRETE_SHOPEE_REMOVEM_ESTOQUE,
   ESTADOS_FRETE_SHOPEE_TERMINAL,
   ESTADO_FRETE_DE_TOKEN_SHOPEE,
   FALHA_FRETE_SHOPEE,
@@ -37,6 +37,7 @@ import {
   mesclarPacotesShopee,
   type ObservacaoPacoteUs,
 } from './freteShopeeMapping';
+import type { FontePacoteShopee } from './fretePushShopee';
 
 /* -------------------------------------------------------------------------- */
 /*                          fixtures (fixture ids only)                        */
@@ -311,14 +312,19 @@ describe('6 — a COLUNA DE ESTOQUE, medida no conjunto compartilhado', () => {
     expect(removeEstoqueCompartilhado(leitura.estado)).toBe(esperado);
   });
 
-  it('6 — ESTADOS_FRETE_SHOPEE_REMOVEM_ESTOQUE É a interseção MEDIDA', () => {
-    // The module enumerates this set because the shared one is not exported from
-    // `@delfrance/schemas`. This is what stops the two from drifting: the
-    // expectation is computed from the shared set, never retyped.
-    const medido = [...new Set(Object.values(ESTADO_FRETE_DE_TOKEN_SHOPEE))]
-      .filter((estado) => removeEstoqueCompartilhado(estado))
-      .sort();
-    expect([...ESTADOS_FRETE_SHOPEE_REMOVEM_ESTOQUE].sort()).toEqual(medido);
+  it('6 — o conjunto COMPARTILHADO é o que a imagem da tabela encontra', () => {
+    // The gate-5 set is no longer a channel-local copy: `ESTADOS_FRETE_REMOVE_ESTOQUE`
+    // is imported from `@delfrance/schemas`. Two independent readings of it are
+    // asserted to agree — the MEASURED one (through `efeitoEstoquePedido`, which
+    // is what actually moves stock) and the imported set itself — and then the
+    // intersection with this channel's token image is pinned to the six estados
+    // this channel can produce. A row moving in the table, or a member moving in
+    // the shared set, fails here.
+    const imagem = [...new Set(Object.values(ESTADO_FRETE_DE_TOKEN_SHOPEE))];
+    for (const estado of imagem) {
+      expect(ESTADOS_FRETE_REMOVE_ESTOQUE.has(estado)).toBe(removeEstoqueCompartilhado(estado));
+    }
+    const medido = imagem.filter((estado) => removeEstoqueCompartilhado(estado)).sort();
     expect(medido).toEqual(
       [
         ESTADO_FRETE.aguardandoPostagem,
@@ -329,6 +335,11 @@ describe('6 — a COLUNA DE ESTOQUE, medida no conjunto compartilhado', () => {
         ESTADO_FRETE.suspenso,
       ].sort(),
     );
+    // ⚠️ QUASE-ERRO: the shared set is genuinely WIDER than the intersection —
+    // it also holds estados this channel's table never produces. Asserting
+    // equality instead of intersection would pass only by accident.
+    expect(ESTADOS_FRETE_REMOVE_ESTOQUE.has(ESTADO_FRETE.checkFinalizado)).toBe(true);
+    expect(imagem).not.toContain(ESTADO_FRETE.checkFinalizado);
   });
 });
 
@@ -1162,6 +1173,23 @@ describe('a porta de frescor, linha por linha', () => {
 });
 
 describe('a FIDELIDADE da fonte', () => {
+  it('fonte — as DUAS declarações do vocabulário são o mesmo conjunto', () => {
+    // ⚠️ `FontePacoteShopee` (the union on `PacoteObservadoShopee.fonte`, wave I)
+    // and `FONTE_PACOTE_SHOPEE` (the named members, this module) are two
+    // declarations of ONE vocabulary. The module's `satisfies
+    // Record<string, FontePacoteShopee>` already refuses a member the union does
+    // not name; this closes the other direction — a member ADDED to the union
+    // with no row here fails to compile on the next line, and the runtime
+    // assertion pins that the two lists are equal as SETS rather than merely
+    // assignable.
+    const exaustivo: Record<FontePacoteShopee, number> = FIDELIDADE_FONTE_PACOTE_SHOPEE;
+    const doVocabulario = [...Object.values(FONTE_PACOTE_SHOPEE)].sort();
+    expect(Object.keys(exaustivo).sort()).toEqual(doVocabulario);
+    expect(doVocabulario).toEqual(['get_order_detail', 'get_package_detail']);
+    // ÂNCORA: a string outside the vocabulary is not a key of either table.
+    expect(Object.hasOwn(FIDELIDADE_FONTE_PACOTE_SHOPEE, 'get_tracking_info')).toBe(false);
+  });
+
   it('fidelidade — get_package_detail (2) > get_order_detail (1) > desconhecida (0)', () => {
     expect(fidelidadeDaFonteShopee(PACOTE_DETAIL)).toBe(2);
     expect(fidelidadeDaFonteShopee(ORDER_DETAIL)).toBe(1);

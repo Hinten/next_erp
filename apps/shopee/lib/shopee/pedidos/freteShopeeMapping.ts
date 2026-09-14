@@ -87,7 +87,14 @@
  * rule is "it lives in `@delfrance/schemas` because it has TWO callers that must
  * not disagree" (`seedFreteInicial`'s own docblock), and today it has one.
  */
-import { ESTADO_FRETE, type EstadoFrete, type PacoteFrete } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  ESTADOS_FRETE_REMOVE_ESTOQUE,
+  type EstadoFrete,
+  type PacoteFrete,
+} from '@delfrance/schemas';
+
+import type { FontePacoteShopee } from './fretePushShopee';
 
 /* -------------------------------------------------------------------------- */
 /*                        (1) the token → estado table                         */
@@ -269,33 +276,6 @@ export const FALHA_FRETE_SHOPEE: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>
   ORDEM_FALHA_SHOPEE,
 );
 
-/**
- * The estados THIS channel's token table can produce from which the goods have
- * physically left the warehouse — i.e. the image of
- * {@link ESTADO_FRETE_DE_TOKEN_SHOPEE} intersected with `@delfrance/schemas`'
- * `ESTADOS_FRETE_REMOVE_ESTOQUE`.
- *
- * ⚠️ It is ENUMERATED here rather than read from the shared set, and that is a
- * compromise rather than a design: `ESTADOS_FRETE_REMOVE_ESTOQUE` is declared in
- * `packages/schemas/src/shared/frete.ts` but is NOT re-exported from that
- * package's barrel, and no file in this repo deep-imports the package. Adding
- * the export is a one-line change this file does not own.
- *
- * The drift is held by a test rather than by a comment: `freteShopeeMapping.test.ts`
- * MEASURES the real shared set through the exported `efeitoEstoquePedido`
- * (whose `freteRemove` term is exactly `ESTADOS_FRETE_REMOVE_ESTOQUE.has(...)`)
- * and asserts this set equals the measured intersection, row by row. Two copies
- * drift TOWARD plausible (#1369); a measured one cannot.
- */
-export const ESTADOS_FRETE_SHOPEE_REMOVEM_ESTOQUE: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
-  ESTADO_FRETE.aguardandoPostagem,
-  ESTADO_FRETE.postado,
-  ESTADO_FRETE.entregue,
-  ESTADO_FRETE.falhaNaEntrega,
-  ESTADO_FRETE.objetoExtraviado,
-  ESTADO_FRETE.suspenso,
-]);
-
 /** Why an estado was NOT written. */
 export type MotivoFreteShopee =
   /** The fold produced no ERP estado (an unknown or return-only token). */
@@ -346,8 +326,15 @@ function indiceEscada(estado: EstadoFrete): number {
  *  3. stored ∈ {@link ESTADOS_FRETE_FORA_DO_CANAL} ⇒ `fora-do-canal`.
  *  4. stored ∈ {@link ESTADOS_FRETE_RETORNO} ⇒ `retorno-preservado`.
  *  5. stored is `error` ⇒ write ONLY when the target is a physical fact
- *     ({@link ESTADOS_FRETE_SHOPEE_REMOVEM_ESTOQUE}) — a parcel that really
- *     moved clears step 14's NF-e stamp; routine churn must not.
+ *     (`ESTADOS_FRETE_REMOVE_ESTOQUE`, the SHARED set — a parcel that really
+ *     moved clears step 14's NF-e stamp; routine churn must not). ⚠️ The set is
+ *     read from `@delfrance/schemas` rather than enumerated here: it is the
+ *     same set `efeitoEstoquePedido` consults to move physical stock, and a
+ *     channel-local copy of it would drift TOWARD plausible (#1369). It is
+ *     WIDER than this channel's token table can produce, which changes nothing
+ *     today — `alvo` always comes from {@link dobrarPacotesShopee} over rows
+ *     derived from {@link ESTADO_FRETE_DE_TOKEN_SHOPEE}, whose image meets the
+ *     shared set in exactly six estados (a test measures that intersection).
  *  6. both on the ladder and the target sits lower ⇒ `regressivo`.
  *  7. otherwise write.
  *
@@ -386,7 +373,7 @@ export function estadoFreteShopeeAplicavel(
     return { escrever: false, motivo: MOTIVO_FRETE_SHOPEE.retornoPreservado };
   }
   if (armazenado === ESTADO_FRETE.error) {
-    return ESTADOS_FRETE_SHOPEE_REMOVEM_ESTOQUE.has(alvo)
+    return ESTADOS_FRETE_REMOVE_ESTOQUE.has(alvo)
       ? { escrever: true, estado: alvo, ressuscitado: true }
       : { escrever: false, motivo: MOTIVO_FRETE_SHOPEE.erroPreservado };
   }
@@ -409,13 +396,20 @@ export function estadoFreteShopeeAplicavel(
 
 /**
  * The closed set of Shopee sources for a diary row. `PacoteFrete['fonte']` is a
- * FREE string on purpose (the set is per-channel), so the closed set lives here
- * and `satisfies` that type.
+ * FREE string on purpose (the set is per-channel), so the closed set lives here.
+ *
+ * ⚠️ It `satisfies Record<string, FontePacoteShopee>` — the union the WIRE
+ * READER puts on `PacoteObservadoShopee.fonte` — so the two declarations of one
+ * vocabulary cannot drift apart in the direction this file controls. The other
+ * direction (a member added to the union) is held by the fidelity table, which
+ * a test assigns to `Record<FontePacoteShopee, number>` and which would then
+ * fail to compile. Two names for one set is the shape the root `CLAUDE.md`
+ * warns about; this is the compiler holding them together instead of a comment.
  */
 export const FONTE_PACOTE_SHOPEE = {
   packageDetail: 'get_package_detail',
   orderDetail: 'get_order_detail',
-} as const satisfies Record<string, string>;
+} as const satisfies Record<string, FontePacoteShopee>;
 
 /**
  * Provenance rank — higher wins, unknown/absent is `0`.

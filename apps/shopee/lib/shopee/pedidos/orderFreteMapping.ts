@@ -290,6 +290,17 @@ export function mapearFreteInicialShopee(args: MapearFreteShopeeArgs): FreteMape
  * Enumerated deliberately: everything not named here belongs to somebody else —
  * `estado` to step 7 (it moves physical stock), `codRastreio`/`printLabelId` to
  * the label flow, `modalidade`/`transportadora`/`veiculo` to the operator.
+ *
+ * ⚠️ **`prazoDespacho` left this list with step 7 (#1515).** The block now has
+ * ONE deadline slot and TWO sources for it: this mapper's ORDER-level
+ * `ship_by_date` (with the 14:00 fallback) and step 7's fold of the PER-PACKAGE
+ * `get_package_detail.ship_by_date` deadlines. On a split order those are
+ * different numbers, so leaving the field here would make every order import
+ * and every package delivery overwrite each other in turn — a ping-pong with
+ * one write, one `historicoDeModificacoes` row and one editor conflict per
+ * round. Step 7 owns the field; {@link mapearFreteInicialShopee} still computes
+ * it, because the CREATE path writes the whole mapped block and a brand-new
+ * pedido must carry a deadline before any package has been observed.
  */
 export const CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE = [
   'externalId',
@@ -297,7 +308,6 @@ export const CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE = [
   'valorCobrado',
   'custoCalculado',
   'volumes',
-  'prazoDespacho',
   'dataPrevisaoEntrega',
   'ultimaModificacao',
 ] as const satisfies ReadonlyArray<keyof FreteDoPedido>;
@@ -305,9 +315,13 @@ export const CAMPOS_FRETE_ATUALIZAVEIS_SHOPEE = [
 /**
  * Merge a freshly mapped block onto the stored one.
  *
- * `{ ...existente }` first, then ONLY the eight fields above, each as
+ * `{ ...existente }` first, then ONLY the seven fields above, each as
  * `mapeado ?? existente ?? null` — an absent figure never overwrites a stored
  * one (#957), and no key the list does not name is touched.
+ *
+ * ⚠️ `prazoDespacho` is NOT one of them since step 7 (#1515): a stored deadline
+ * survives a re-import whose mapped value differs, because the per-package fold
+ * is the authority on it.
  *
  * ⚠️ The CALLER skips this entirely while `hasUserInteraction === true`. That is
  * not because the Frete tab is editable for a Shopee order (it is not —
@@ -331,7 +345,6 @@ export function mesclarFreteInicialShopee(
     valorCobrado: mapeado.valorCobrado ?? existente.valorCobrado ?? null,
     custoCalculado: mapeado.custoCalculado ?? existente.custoCalculado ?? null,
     volumes: mapeado.volumes ?? existente.volumes ?? null,
-    prazoDespacho: mapeado.prazoDespacho ?? existente.prazoDespacho ?? null,
     dataPrevisaoEntrega: mapeado.dataPrevisaoEntrega ?? existente.dataPrevisaoEntrega ?? null,
     ultimaModificacao: mapeado.ultimaModificacao ?? existente.ultimaModificacao ?? null,
   };
