@@ -71,6 +71,8 @@ function exprForProperty(field: string, ref: string, prop: JsonSchema): string |
   // through here would emit a weaker `is string` in silence — and the skip that
   // used to sit here validated nothing, for a dual run that never happens (root
   // `CLAUDE.md` rule 8). So generation fails, and the fix belongs in the schema.
+  // Top-level fields only: objects stop at `is map` and arrays at `is list` below,
+  // so a NESTED ISO datetime (e.g. `cheque.bomPara`) never reaches this check.
   if (prop.format === 'date-time') {
     throw new Error(
       `validator field '${field}' is an ISO datetime (format: 'date-time'); datetimes are ` +

@@ -78,8 +78,15 @@ Skipping step 1 or 2 reds `ci-rules.yml`.
 Datetimes are epoch integers (#484), declared through `millisSinceEpoch()` /
 `microsSinceEpoch()` from `@delfrance/schemas`, so a whitelisted validator emits
 `is int` for them. An ISO datetime (`z.string().datetime()`, JSON-schema
-`format: 'date-time'`) in a whitelisted schema **fails generation** — it is
-neither skipped nor loosened to `is string`. Fix the schema, not the generator.
+`format: 'date-time'`) as a **top-level field** of a whitelisted schema — bare or
+wrapped in `.nullable()` / `.optional()` / `.default()` / `.catch()` — **fails
+generation**; it is neither skipped nor loosened to `is string`. Fix the schema,
+not the generator.
+
+⚠️ The check stops at the first nesting level, like every other clause: a nested
+object is only `is map`, an array only `is list`, and a non-nullable union is
+skipped. So a nested ISO datetime — `cheque.bomPara` inside `pagamentoSchema`, for
+one — does **not** fail generation.
 
 ## Size gate
 
