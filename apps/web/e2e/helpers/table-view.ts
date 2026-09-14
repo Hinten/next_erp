@@ -1,4 +1,56 @@
-import { type Page, expect } from '@playwright/test';
+import { type Locator, type Page, expect } from '@playwright/test';
+
+export type ListMode = 'live' | 'static';
+
+export type ListModeReason =
+  | 'override'
+  | 'no-declared-query'
+  | 'filter'
+  | 'search'
+  | 'ids'
+  | 'sort';
+
+export interface ListModeExpectation {
+  mode: ListMode;
+  policy: ListMode;
+  reason: ListModeReason | null;
+}
+
+type ListModeScope = Page | Locator;
+
+/** The TableView indicator exposes the transport without coupling specs to its visible copy. */
+function listModeIndicator(scope: ListModeScope) {
+  return scope.locator('[data-list-mode]');
+}
+
+/** Assert the TableView transport, plus its policy state when supplied. */
+export async function expectListMode(
+  scope: ListModeScope,
+  mode: ListMode,
+  reason?: ListModeReason | null,
+  policy?: ListMode,
+): Promise<void> {
+  const indicator = listModeIndicator(scope);
+  await expect(indicator).toHaveAttribute('data-list-mode', mode, { timeout: 15_000 });
+  if (reason !== undefined) {
+    await expect(indicator).toHaveAttribute('data-list-reason', reason ?? '');
+  }
+  if (policy !== undefined) {
+    await expect(indicator).toHaveAttribute('data-list-policy', policy);
+  }
+}
+
+/** Verify both sides of a list-mode transition around one completed gesture. */
+export async function transitionListMode(
+  scope: ListModeScope,
+  before: ListModeExpectation,
+  after: ListModeExpectation,
+  gesture: () => Promise<unknown>,
+): Promise<void> {
+  await expectListMode(scope, before.mode, before.reason, before.policy);
+  await gesture();
+  await expectListMode(scope, after.mode, after.reason, after.policy);
+}
 
 /**
  * Helpers for driving the generic `TableView` (`@delfrance/ui`): per-column

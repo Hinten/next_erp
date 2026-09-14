@@ -13,7 +13,9 @@ import {
   expectEmptyState,
   expectRowHidden,
   expectRowVisible,
+  expectListMode,
   firstRowText,
+  transitionListMode,
 } from './helpers/table-view';
 import {
   clickSave,
@@ -58,19 +60,28 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
   test('TableView query works without a filter', async ({ page }) => {
     await page.goto('/clientes');
     await expect(page.getByRole('heading', { name: 'Clientes' })).toBeVisible();
-    // The table only mounts once the (one-shot) Pipelines query resolves —
-    // a preview API that can lag well past the 5s default expect timeout.
+    // The table waits for the declared-query listener's first snapshot.
     await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
-    // A failed pipeline query renders an "Erro ao carregar" alert.
+    await expectListMode(page, 'live', null, 'live');
     await expect(page.getByText('Erro ao carregar')).toHaveCount(0);
   });
 
   test('filters rows by the Nome (text) and Tipo (enum) columns', async ({ page }) => {
     await page.goto('/clientes');
-    await applyTextFilter(page, 'Nome', row(3));
+    await transitionListMode(
+      page,
+      { mode: 'live', policy: 'live', reason: null },
+      { mode: 'static', policy: 'static', reason: 'filter' },
+      () => applyTextFilter(page, 'Nome', row(3)),
+    );
     await expectRowVisible(page, row(3));
     await expectRowHidden(page, row(1));
-    await clearColumnFilter(page, 'Nome');
+    await transitionListMode(
+      page,
+      { mode: 'static', policy: 'static', reason: 'filter' },
+      { mode: 'live', policy: 'live', reason: null },
+      () => clearColumnFilter(page, 'Nome'),
+    );
 
     // Seeded tipo cycles ['1','2','0',...] over i=1..7 → tipo '0' at i=3,6.
     await applyTextFilter(page, 'Nome', prefix);
