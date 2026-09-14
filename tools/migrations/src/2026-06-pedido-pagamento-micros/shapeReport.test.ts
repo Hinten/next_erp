@@ -29,6 +29,19 @@ describe('classify', () => {
     expect(classify('2024-05-01T00:00:00.000Z')).toBe('iso-string');
     expect(classify('2024-05-01T00:00:00-03:00')).toBe('iso-string');
   });
+
+  it('asks the converter, not Date.parse — so it agrees with --apply in both directions', () => {
+    // Date.parse accepts these; coerceToMicros refuses them, so --apply SKIPS them.
+    expect(classify('June 16, 2026')).toBe('string-invalida');
+    expect(classify('2024/05/01')).toBe('string-invalida');
+    expect(classify('Mon Jun 16 2026 00:00:00 GMT-0300')).toBe('string-invalida');
+    // Date.parse refuses these; coerceToMicros converts them, zone and all.
+    expect(classify('2026-06-16T12:00:00,5Z')).toBe('iso-string');
+    expect(classify('2026-06-16T12:00:00-03')).toBe('iso-string');
+    expect(classify('2026-06-16T12:00:00+03:00[America/Sao_Paulo]')).toBe('iso-string');
+    // Near-miss: an annotation is not an offset — without one the value still reads as UTC.
+    expect(classify('2026-06-16T12:00:00[America/Sao_Paulo]')).toBe('iso-sem-fuso');
+  });
 });
 
 /**
@@ -133,6 +146,29 @@ describe('formatReport', () => {
     // It converts fine — possibly to the wrong instant — so it never stops a run.
     expect(out).toContain('OK —');
     expect(out).not.toContain('STOP');
+  });
+
+  it('scopes the verdict to fields --apply converts — a report-only refusal is a CHECK', () => {
+    const TIMESTAMP = { seconds: 1, nanoseconds: 0 };
+
+    const bomPara = emptyStats(true);
+    record(bomPara, TIMESTAMP);
+    const out = formatReport(new Map([['pagamentos.cheque.bomPara', bomPara]]));
+    expect(out).toContain('(report-only)');
+    expect(out).toMatch(/CHECK: report-only .*pagamentos\.cheque\.bomPara/);
+    expect(out).toContain('OK —');
+    expect(out).not.toContain('STOP');
+
+    // Near-miss: the SAME value in a field the backfill converts still stops the run.
+    const vencimento = emptyStats();
+    record(vencimento, TIMESTAMP);
+    const ambos = formatReport(
+      new Map([
+        ['pagamentos.cheque.bomPara', bomPara],
+        ['pagamentos.vencimento', vencimento],
+      ]),
+    );
+    expect(ambos).toContain('STOP: 1 value(s)');
   });
 
   it('raises no CHECK when every ISO string carries its zone', () => {

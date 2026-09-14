@@ -74,9 +74,9 @@ async function* pagesByDocId(coll: CollectionReference): AsyncGenerator<QueryDoc
 /** `--report-only`: classify every datetime field, write nothing, print a table. */
 async function runReport(ctx: MigrationContext): Promise<MigrationSummary> {
   const porCampo = new Map<string, ShapeStats>();
-  const anota = (campo: string, valor: unknown): void => {
+  const anota = (campo: string, valor: unknown, reportOnly = false): void => {
     let s = porCampo.get(campo);
-    if (!s) porCampo.set(campo, (s = emptyStats()));
+    if (!s) porCampo.set(campo, (s = emptyStats(reportOnly)));
     recordShape(s, valor);
   };
   let docsScanned = 0;
@@ -104,9 +104,11 @@ async function runReport(ctx: MigrationContext): Promise<MigrationSummary> {
           // not persist a non-null one (its save cast the form's int `as String`
           // and threw), so anything counted here was written out of band — and an
           // offset-less ISO value would read 3h early. The CHECK line says which.
+          // `reportOnly`: a refused value here must not STOP the backfill it is not
+          // part of.
           const cheque = pagData.cheque;
           if (cheque != null && typeof cheque === 'object') {
-            anota(`${nome}.cheque.bomPara`, (cheque as Record<string, unknown>).bomPara);
+            anota(`${nome}.cheque.bomPara`, (cheque as Record<string, unknown>).bomPara, true);
           }
         }
       }
