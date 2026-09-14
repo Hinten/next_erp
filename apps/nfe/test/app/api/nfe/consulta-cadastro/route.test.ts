@@ -92,7 +92,7 @@ const RET_111: ConsultaCadastroResult = {
       UF: 'SP',
       cSit: '1',
       indCredNFe: '1',
-      indCredNFCe: '0',
+      indCredCTe: '0',
       xNome: 'EMPRESA TESTE LTDA',
       ender: {
         xLgr: 'RUA DAS FLORES',

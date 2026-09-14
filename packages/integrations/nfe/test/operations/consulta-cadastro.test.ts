@@ -47,7 +47,7 @@ const RET_111 =
   `<xMotivo>Consulta cadastro com uma ocorrência</xMotivo><UF>SP</UF><CNPJ>${CNPJ}</CNPJ>` +
   `<dhCons>2026-06-23T10:00:00-03:00</dhCons><cUF>35</cUF>` +
   `<infCad><IE>111111111111</IE><CNPJ>${CNPJ}</CNPJ><UF>SP</UF><cSit>1</cSit>` +
-  `<indCredNFe>1</indCredNFe><indCredNFCe>0</indCredNFCe>` +
+  `<indCredNFe>1</indCredNFe><indCredCTe>0</indCredCTe>` +
   `<xNome>EMPRESA TESTE LTDA</xNome><xRegApur>NORMAL</xRegApur><CNAE>4711301</CNAE>` +
   `<ender><xLgr>RUA DAS FLORES</xLgr><nro>100</nro><xCpl>SALA 2</xCpl>` +
   `<xBairro>CENTRO</xBairro><cMun>3550308</cMun><xMun>SAO PAULO</xMun><CEP>01001000</CEP>` +
@@ -100,6 +100,24 @@ describe('consultarCadastro', () => {
     expect(vi.mocked(mockedNfeConsultaCadastro).mock.calls[0]![2]).toBe('35');
   });
 
+  it('serializes the request from the layout 2.00 META — exact wire shape', async () => {
+    // Pinned whole: the order comes from the generated META, so a regen that
+    // moved an element would change what SEFAZ receives. (The SOAP layer strips
+    // the declaration before embedding it in the envelope.) The request also
+    // passed the REAL validateConsCad on its way here — only the POST is mocked.
+    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
+      resultXml: RET_259,
+      rawBody: RET_259,
+    });
+    await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ });
+    expect(vi.mocked(mockedNfeConsultaCadastro).mock.calls[0]![1]).toBe(
+      '<?xml version="1.0" encoding="UTF-8"?>' +
+        `<ConsCad xmlns="${NFE_NS}" versao="2.00">` +
+        `<infCons><xServ>CONS-CAD</xServ><UF>SP</UF><CNPJ>${CNPJ}</CNPJ></infCons>` +
+        `</ConsCad>`,
+    );
+  });
+
   it('strips non-digits from the CNPJ before sending', async () => {
     vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
       resultXml: RET_259,
@@ -130,7 +148,7 @@ describe('consultarCadastro', () => {
     expect(cad.UF).toBe('SP');
     expect(cad.cSit).toBe('1');
     expect(cad.indCredNFe).toBe('1');
-    expect(cad.indCredNFCe).toBe('0');
+    expect(cad.indCredCTe).toBe('0');
     expect(cad.xNome).toBe('EMPRESA TESTE LTDA');
 
     expect(cad.ender).not.toBeNull();
@@ -160,6 +178,22 @@ describe('consultarCadastro', () => {
     expect(result.infCad[1]!.cSit).toBe('0');
   });
 
+  it('trims leaf text: a blank element reads as null, a "0" stays "0"', async () => {
+    // The fold's scope, both sides: whitespace-only is "absent", but a falsy-looking
+    // real value ('0' = não credenciado / não habilitado) must survive.
+    const xml = RET_111.replace('<xCpl>SALA 2</xCpl>', '<xCpl>   </xCpl>').replace(
+      '<xNome>EMPRESA TESTE LTDA</xNome>',
+      '<xNome>  EMPRESA  TESTE </xNome>',
+    );
+    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({ resultXml: xml, rawBody: xml });
+
+    const cad = (await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ })).infCad[0]!;
+
+    expect(cad.ender!.xCpl).toBeNull();
+    expect(cad.xNome).toBe('EMPRESA  TESTE');
+    expect(cad.indCredCTe).toBe('0');
+  });
+
   it('parses cStat 259 — no match, empty infCad', async () => {
     vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
       resultXml: RET_259,
@@ -184,10 +218,9 @@ describe('consultarCadastro', () => {
   });
 
   it('fails fast (does not spin) on truncated XML — unterminated comment', async () => {
-    // Without the indexOf(-1) guards in parseConsCadXml this unterminated `<!--`
-    // pushes the cursor backwards and the loop spins forever. With the guards it
-    // breaks, leaves infCons unparsed, and consultarCadastro throws — a hang
-    // would instead trip Vitest's per-test timeout and fail loudly.
+    // Without the indexOf(-1) guards in the shared XML parser this unterminated
+    // `<!--` pushes the cursor backwards and the loop spins forever. With the
+    // guards it stops, leaves infCons unparsed, and consultarCadastro throws.
     vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
       resultXml: `<retConsCad versao="2.00" xmlns="${NFE_NS}"><!-- truncado`,
       rawBody: '',

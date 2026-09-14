@@ -477,9 +477,9 @@ export const CONSCAD_VERSAO = '2.00';
  * registry for a CNPJ in a UF.
  *
  * The request `consCad` is XSD-validated by the caller (`consultarCadastro` →
- * `validateConsCad`) before this is invoked; the `consCad`/`retConsCad` v2.00
- * XSDs aren't in the codegen (issue #251), so this wrapper doesn't go through
- * the codegen-driven `postSoapValidated` — it builds the SOAP envelope +
+ * `validateConsCad`) before this is invoked. Layout 2.00 is not in the v4.00
+ * `XSD_BY_ROOT` registry (it is its own pack, `generated/conscad/`), so this
+ * wrapper doesn't go through `postSoapValidated` — it builds the SOAP envelope +
  * SOAPAction like the other operations, plus the **`<nfeCabecMsg>` SOAP Header**
  * (`cUF` + `versaoDados=2.00`) that the layout-2.00 message requires (omitting
  * it is a `cStat=215`). `assertSafeTpAmbForTransport` still guards produção before
