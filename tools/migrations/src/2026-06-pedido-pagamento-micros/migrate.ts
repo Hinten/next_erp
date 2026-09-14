@@ -99,6 +99,15 @@ async function runReport(ctx: MigrationContext): Promise<MigrationSummary> {
           docsScanned += 1;
           const pagData = pag.data() as Record<string, unknown>;
           for (const f of PAGAMENTO_FIELDS) anota(`${nome}.${f}`, pagData[f]);
+
+          // Report-only: the backfill never converts `cheque.bomPara`. Legacy could
+          // not persist a non-null one (its save cast the form's int `as String`
+          // and threw), so anything counted here was written out of band — and an
+          // offset-less ISO value would read 3h early. The CHECK line says which.
+          const cheque = pagData.cheque;
+          if (cheque != null && typeof cheque === 'object') {
+            anota(`${nome}.cheque.bomPara`, (cheque as Record<string, unknown>).bomPara);
+          }
         }
       }
     }

@@ -18,6 +18,17 @@ describe('classify', () => {
   it('flags a Timestamp as blocking — coerceToMicros refuses it', () => {
     expect(classify({ seconds: 1, nanoseconds: 0 })).toBe('timestamp-ou-outro');
   });
+
+  it('splits ISO strings on whether they carry a zone', () => {
+    // What Dart's toIso8601String() emits for a local DateTime — read as UTC.
+    expect(classify('2024-05-01T00:00:00.000')).toBe('iso-sem-fuso');
+    expect(classify('2024-05-01T00:00')).toBe('iso-sem-fuso');
+    // Date-only: the trailing `-01` is the day, not a `-01` offset.
+    expect(classify('2024-05-01')).toBe('iso-sem-fuso');
+    // Near-misses: an explicit zone is read exactly and stays `iso-string`.
+    expect(classify('2024-05-01T00:00:00.000Z')).toBe('iso-string');
+    expect(classify('2024-05-01T00:00:00-03:00')).toBe('iso-string');
+  });
 });
 
 /**
@@ -110,5 +121,26 @@ describe('formatReport', () => {
     record(s, { seconds: 1, nanoseconds: 0 });
     const out = formatReport(new Map([['pedidos.timestamp', s]]));
     expect(out).toContain('STOP');
+  });
+
+  it('flags offset-less ISO fields with a CHECK — outside the verdict', () => {
+    const cheque = emptyStats();
+    record(cheque, '2024-05-01T00:00:00.000');
+    record(cheque, null);
+    const out = formatReport(new Map([['pagamentos.cheque.bomPara', cheque]]));
+    expect(out).toContain('iso-sem-fuso=1');
+    expect(out).toMatch(/CHECK: .*pagamentos\.cheque\.bomPara/);
+    // It converts fine — possibly to the wrong instant — so it never stops a run.
+    expect(out).toContain('OK —');
+    expect(out).not.toContain('STOP');
+  });
+
+  it('raises no CHECK when every ISO string carries its zone', () => {
+    const s = emptyStats();
+    record(s, '2026-06-16T12:00:00.000Z');
+    record(s, '2026-06-16T09:00:00.000-03:00');
+    const out = formatReport(new Map([['pagamentos.vencimento', s]]));
+    expect(out).toContain('iso-string=2');
+    expect(out).not.toContain('CHECK');
   });
 });

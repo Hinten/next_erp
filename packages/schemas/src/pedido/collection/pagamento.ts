@@ -455,10 +455,19 @@ export type Cartao = z.infer<typeof cartaoSchema>;
 /**
  * `pagamento.cheque` — embedded cheque detail (NOT a collection; nested map,
  * pass-through on `pagamentoSchema`). Mirrors Flutter's `Cheque`
- * (`models.dart:2298`). `bomPara` uses `microsSinceEpoch()` so a legacy ISO-8601
- * value is coerced to microseconds (the new-app standard) instead of being
- * dropped; `.catch(null)` only catches a genuinely unparseable value. The
- * multi-cheque parcela split (intervalo/quantidade) is not ported (follow-up).
+ * (`models.dart:2298`). The multi-cheque parcela split is done by the web form
+ * (`buildChequeSplitPagamentos`), not here.
+ *
+ * `bomPara` uses `microsSinceEpoch()`, whose tolerant read accepts ms/µs ints and
+ * ISO strings; `.catch(null)` only catches a genuinely unparseable value.
+ * ⚠️ Legacy's serializer would have written an ISO string here, but no legacy path
+ * ever persisted a non-null `bomPara`: its form saves an int, and the save goes
+ * through `Cheque.fromJson`, which does `DateTime.parse(json['bomPara'] as String)`
+ * and throws (`.old/packages/pedido/lib/src/models.g.dart:516`). So the imported
+ * corpus should hold null. Anything else was written out of band — and an
+ * OFFSET-LESS ISO string (Dart's `toIso8601String()` of a local `DateTime`) is read
+ * as UTC, landing 3h early: local midnight becomes the previous day. The µs
+ * migration's `--report-only` counts exactly that shape (#155).
  */
 export const chequeSchema = z
   .object({

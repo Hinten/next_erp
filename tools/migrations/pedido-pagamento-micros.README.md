@@ -29,6 +29,13 @@ document is the runbook and the reference for the future Flutter import.
 > The field-by-field split is below. Run `--report-only` first: the shape report
 > now prints `µs=REAL` or `µs=PADDING` per field, which is the empirical version
 > of that table.
+>
+> It also splits ISO strings into `iso-string` (carries `Z` or an offset, read
+> exactly) and `iso-sem-fuso` (no zone — read as **UTC**, so a value a São Paulo
+> device wrote lands 3h early), and prints a `⚠️ CHECK` line for the latter that
+> does not change the OK/STOP verdict. It also counts `pagamento(s).cheque.bomPara`,
+> which the backfill never converts: legacy could not persist a non-null value,
+> so anything there was written out of band (#155).
 
 Datetime fields were standardized onto a **plain integer epoch** (never a
 Firebase `Timestamp`, which each SDK deserializes differently). `pedido`,

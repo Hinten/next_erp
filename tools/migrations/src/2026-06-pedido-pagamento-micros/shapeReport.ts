@@ -19,8 +19,16 @@ export type ShapeBucket =
   | 'micros'
   /** Millisecond int (<= 9e12) — the legacy Flutter wire format for pedido/frete. */
   | 'millis'
-  /** ISO-8601 string — the legacy Flutter wire format for pagamento. */
+  /** ISO-8601 string that carries its zone (`Z` / `±hh:mm`) — read exactly. */
   | 'iso-string'
+  /**
+   * ISO-8601 string with NO zone — `2024-05-01T00:00:00.000`, or date-only. It is
+   * what Dart's `toIso8601String()` emits for a local `DateTime`. `coerceToMicros`
+   * resolves it as UTC by design, so a value a São Paulo device wrote lands 3h
+   * early: local midnight becomes the previous day at 21:00. It IS classifiable,
+   * so it is not a STOP — `formatReport` flags it with a CHECK line instead.
+   */
+  | 'iso-sem-fuso'
   /** A string that is not a parseable date. */
   | 'string-invalida'
   /**
@@ -71,6 +79,7 @@ export function emptyStats(): ShapeStats {
       micros: 0,
       millis: 0,
       'iso-string': 0,
+      'iso-sem-fuso': 0,
       'string-invalida': 0,
       'zona-morta': 0,
       'timestamp-ou-outro': 0,
@@ -83,6 +92,13 @@ export function emptyStats(): ShapeStats {
   };
 }
 
+/**
+ * A zone designator that follows a TIME. Anchoring it after `hh:mm[:ss[.fff]]` is
+ * the point: a date-only `2024-05-01` ends in `-01`, which is the day, not a
+ * `-01` offset — and a date-only string has no zone either.
+ */
+const ZONA_APOS_HORA = /[T ]\d{2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)$/i;
+
 export function classify(value: unknown): ShapeBucket {
   if (value == null) return 'ausente';
   if (typeof value === 'number') {
@@ -92,7 +108,8 @@ export function classify(value: unknown): ShapeBucket {
     return 'zona-morta';
   }
   if (typeof value === 'string') {
-    return Number.isNaN(Date.parse(value)) ? 'string-invalida' : 'iso-string';
+    if (Number.isNaN(Date.parse(value))) return 'string-invalida';
+    return ZONA_APOS_HORA.test(value.trim()) ? 'iso-string' : 'iso-sem-fuso';
   }
   if (value instanceof Date) return 'iso-string';
   // A firebase-admin `Timestamp`, a map, an array — anything the converter
@@ -126,6 +143,7 @@ const ORDEM: readonly ShapeBucket[] = [
   'micros',
   'millis',
   'iso-string',
+  'iso-sem-fuso',
   'zona-morta',
   'string-invalida',
   'timestamp-ou-outro',
@@ -140,6 +158,7 @@ function iso(us: number | null): string {
 export function formatReport(porCampo: ReadonlyMap<string, ShapeStats>): string {
   const linhas: string[] = [];
   let bloqueia = 0;
+  const semFuso: string[] = [];
 
   for (const [campo, s] of [...porCampo].sort(([a], [b]) => a.localeCompare(b))) {
     const total = Object.values(s.counts).reduce((n, v) => n + v, 0);
@@ -150,6 +169,7 @@ export function formatReport(porCampo: ReadonlyMap<string, ShapeStats>): string 
       .map(([d, n]) => `${d}d×${n}`)
       .join(' ');
     bloqueia += s.counts['timestamp-ou-outro'] + s.counts['zona-morta'];
+    if (s.counts['iso-sem-fuso'] > 0) semFuso.push(campo);
     // Precision census — NOT part of the verdict, purely intelligence about
     // whether this field's microseconds carry information or are padding.
     const convertidos = s.microsPadded + s.microsReais;
@@ -174,5 +194,20 @@ export function formatReport(porCampo: ReadonlyMap<string, ShapeStats>): string 
         'coerceToMicros refuses these, so the backfill would SKIP them and they would stay ' +
         'wrong. Extend the converter before applying.';
 
-  return ['', 'Shape report (nothing was written):', ...linhas, '', veredito, ''].join('\n');
+  // Deliberately OUTSIDE the verdict: an offset-less string converts fine, it may
+  // just convert to the wrong instant. Only the writer's zone can say which.
+  const aviso =
+    semFuso.length === 0
+      ? []
+      : [
+          `⚠️  CHECK: offset-less ISO string(s) (\`iso-sem-fuso\`) in ${semFuso.join(', ')}. ` +
+            'coerceToMicros reads them as UTC, so a value a São Paulo device wrote lands 3h ' +
+            'early (local midnight → the previous day at 21:00). The verdict above does not ' +
+            "count these — confirm the writer's zone before --apply or before trusting the field.",
+          '',
+        ];
+
+  return ['', 'Shape report (nothing was written):', ...linhas, '', veredito, '', ...aviso].join(
+    '\n',
+  );
 }
