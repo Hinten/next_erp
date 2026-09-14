@@ -12,10 +12,11 @@ import { z } from 'zod';
  * `z.number().int()` and carry a `.describe()` JSON tag `{ kind: 'datetime',
  * unit }`. So the schema-declared datetime fields are discovered via that tag
  * (and, for completeness, any residual JSON-schema `format: 'date-time'`),
- * NOT by field name. The legacy Flutter app historically wrote ms-since-epoch
- * ints and two ISO-string exceptions (`Cheque.bomPara`, webchat
- * `abertura`/`fechamento`); this module classifies whatever actually sits on a
- * live doc so the wire shape can be confirmed before any validator flip.
+ * NOT by field name. The legacy Flutter app wrote ms-since-epoch ints; its
+ * serializers would have written two ISO-string exceptions (`Cheque.bomPara`,
+ * webchat `abertura`/`fechamento`), though no legacy path ever persisted a
+ * non-null `bomPara` (see `KNOWN_ISO_EXCEPTIONS`). This module classifies
+ * whatever actually sits on a live doc.
  */
 
 /** The unit a codec datetime field is expected to carry on the wire. */
@@ -47,7 +48,13 @@ export interface Observation {
   example: unknown;
 }
 
-/** Field names known to be ISO strings in the legacy wire shape (per #155). */
+/**
+ * Field names the legacy SERIALIZERS would write as ISO strings (per #155). Not a
+ * claim that the corpus holds any: legacy never persisted a non-null
+ * `Cheque.bomPara` (its save cast the form's int `as String` and threw), and
+ * webchat is not in the validator whitelist this sampler walks. Kept so an
+ * out-of-band value is labelled when one does surface.
+ */
 export const KNOWN_ISO_EXCEPTIONS: ReadonlySet<string> = new Set([
   'bomPara', // Cheque.bomPara — nested in pedido/pagamento data
   'abertura', // legacy webchat collection (ISO) vs integracao_frete (ms) — per-package

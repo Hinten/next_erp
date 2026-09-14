@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { pagamentoSchema } from '@delfrance/schemas';
+import { microsSinceEpoch, millisSinceEpoch, pagamentoSchema } from '@delfrance/schemas';
 import { clausesForSchema } from './constraints';
 
 function exprOf(schema: z.ZodTypeAny, field: string): string | undefined {
@@ -61,9 +61,27 @@ describe('clausesForSchema', () => {
     expect(exprOf(schema, 'tipo')).toBe("(!c.hasAny(['tipo']) || d.get('tipo', null) == 1)");
   });
 
-  it('skips datetime fields entirely (Flutter writes real Timestamps)', () => {
-    const schema = z.object({ timestamp: z.string().datetime().nullable() });
-    expect(exprOf(schema, 'timestamp')).toBeUndefined();
+  it('refuses an ISO datetime field — datetimes are epoch integers (#484)', () => {
+    expect(() => clausesForSchema(z.object({ timestamp: z.string().datetime() }))).toThrow(
+      /'timestamp'.*millisSinceEpoch/,
+    );
+    // The nullable wrapper recurses into the same check — it is not a way around it.
+    expect(() =>
+      clausesForSchema(z.object({ vencimento: z.string().datetime().nullable() })),
+    ).toThrow(/'vencimento'.*millisSinceEpoch/);
+  });
+
+  it('emits `is int` for the epoch datetime builders the refusal points at', () => {
+    const schema = z.object({
+      ultimaModificacao: millisSinceEpoch(),
+      vencimento: microsSinceEpoch().nullable().default(null),
+    });
+    expect(exprOf(schema, 'ultimaModificacao')).toBe(
+      "(!c.hasAny(['ultimaModificacao']) || d.get('ultimaModificacao', null) is int)",
+    );
+    expect(exprOf(schema, 'vencimento')).toBe(
+      "(!c.hasAny(['vencimento']) || (d.get('vencimento', null) == null || d.get('vencimento', null) is int))",
+    );
   });
 
   it('skips unknown/any fields, including nullable ones', () => {

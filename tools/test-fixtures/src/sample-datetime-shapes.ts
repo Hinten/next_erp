@@ -1,16 +1,16 @@
 /**
- * Staging datetime wire-shape sampler (issue #483, prerequisite of #155/#485).
+ * Staging datetime wire-shape sampler (issue #483, a child of #155).
  *
  * READ-ONLY. Samples a few live docs per validator-whitelisted collection and
  * reports the actual runtime shape (`number` / `iso-string` / `Timestamp` /
  * `null`) of every schema-declared datetime field, plus any datetime-shaped
- * value discovered nested where the schema doesn't declare one (this is how the
- * `Cheque.bomPara` / webchat `abertura`/`fechamento` ISO exceptions surface).
+ * value discovered nested where the schema doesn't declare one (this is how an
+ * out-of-band `Cheque.bomPara` ISO value would surface).
  *
- * The point (#155): before the rules-gen validator skip for `format:'date-time'`
- * is lifted (#485) or the non-fiscal datetime wire shape is standardized (#484),
- * confirm on real data whether legacy docs still carry ms/µs ints, ISO strings,
- * or Firestore Timestamps. Paste this script's Markdown output into #155.
+ * Why it was built (#155): to confirm on real data what the datetime fields carry
+ * before the rules-gen `format:'date-time'` skip was retired. That question is
+ * settled — #484 standardized on epoch ints, and rules-gen now REFUSES an ISO
+ * datetime field (#485) — so this stays as a staging diagnostic.
  *
  * Usage (staging, from repo root):
  *   pnpm --filter @delfrance/test-fixtures sample:datetime
