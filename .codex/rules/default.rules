@@ -66,6 +66,23 @@ prefix_rule(
     not_match = ["git push -u origin HEAD", "git push -u origin claude/fix"],
 )
 
+# This is the only push form Codex may run without a prompt. The unusual
+# command-local safe.directory value is stable across Windows worktrees and
+# makes this rule exact; verify-codex-push.mjs independently checks the remote,
+# current branch and argument count before Git runs.
+prefix_rule(
+    pattern = ["git", "-c", "safe.directory=*", "push", "-u", "origin", "HEAD"],
+    decision = "allow",
+    justification = "Push only the current codex/* branch to the verified Hinten/next_erp origin.",
+    match = ["git -c 'safe.directory=*' push -u origin HEAD"],
+    not_match = [
+        "git -c 'safe.directory=*' push origin HEAD",
+        "git -c 'safe.directory=*' push -u upstream HEAD",
+        "git -c 'safe.directory=*' push -u origin codex/task",
+        "git push -u origin HEAD",
+    ],
+)
+
 prefix_rule(
     pattern = ["git", "push"],
     decision = "prompt",
