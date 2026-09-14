@@ -76,6 +76,8 @@ const INVENTARIO = {
     'Adds the reservation BACK into `quantidade` (ML `available_quantity` is `disponivel`). Both arms floor with `reservaEfetiva`; a raw negative would shrink stock on every re-import.',
   'apps/mercado-livre/lib/marketplace/estoque/bulkEstoquePlan.ts':
     'Sweep math over RAW pipeline rows. Every availability read goes through `estoqueDisponivel`. `desfazerMovimento` may synthesize a negative on purpose — floored downstream, pinned by a test.',
+  'apps/mercado-livre/lib/marketplace/estoque/estoqueRetryRefresh.ts':
+    'Retry refresh reads the stored reservation from each deduplicated estoque document, tolerantly coerces a missing/non-finite value to zero, and computes availability only through `estoqueDisponivel`, so a negative reservation cannot invent stock.',
   'apps/mercado-livre/lib/marketplace/anuncios/upSoleMember.ts':
     '#1087 sole-member plan. SPLITS the parent row when publish gives a User-Products produto its one child: the child takes `quantidade - reservaEfetiva(...)` and the parent is left holding exactly the reserve. Floored through `reservaEfetiva`, then `Math.max(0, ...)` on the difference, so a negative stored value can neither inflate what moves nor push the remainder below zero. The reserve stays put deliberately — an open pedido’s release decrements the produto its LINE names, which is the parent.',
   'apps/mercado-livre/lib/marketplace/anuncios/upSoleMemberWrite.ts':
