@@ -20,7 +20,6 @@ import {
   normalizeVariacoesUid,
   parseFakePath,
   produtoPageIssues,
-  samePrecos,
   sortGrupoUids,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField, whereArrayContains, whereEqual } from '@delfrance/data';
@@ -143,6 +142,7 @@ export default function EditarProdutoPage() {
   // saved children (this page component is always mounted, unlike a hidden tab).
   // Only the variation children are kept live here — not every tab's effects.
   const [variationRows, setVariationRows] = useState<VariationRow[]>([]);
+  const [divergentVariationCount, setDivergentVariationCount] = useState(0);
   const childrenQuery = useMemo(
     () => buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', params.id)]),
     [db, params.id],
@@ -181,13 +181,6 @@ export default function EditarProdutoPage() {
   // see `lastSavedKitStatus` below).
   const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
   const produtoSnap = useDocSnapshot(produtoDocRef);
-  const divergentVariationCount = useMemo(
-    () =>
-      effectiveVariationRows.filter(
-        (row) => !samePrecos(row.precos, produtoSnap.data?.data.precos ?? null),
-      ).length,
-    [effectiveVariationRows, produtoSnap.data?.data.precos],
-  );
   // Parent kit-status (#298): when this produto is a variation child (`paiId`
   // set), read its parent once so the page model can enforce "a kit parent ⟹
   // its children are kits" on the CHILD-edit direction. Null ref (a parent
@@ -373,6 +366,7 @@ export default function EditarProdutoPage() {
               groupsRef.current = ids;
             }}
             onRowsChange={setVariationRows}
+            onDivergentPriceCountChange={setDivergentVariationCount}
             flushRef={flushChildrenRef}
             disabled={p.disabled}
           />
@@ -514,6 +508,8 @@ export default function EditarProdutoPage() {
       listasSnap.error?.message,
       effectiveVariationRows,
       divergentVariationCount,
+      produtoSnap.data?.data.filhoUnicoId,
+      produtoSnap.data?.data.propagatePriceToChildren,
       kitExcludeIds,
       referencedByKits,
       referencedByMore,

@@ -72,6 +72,7 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { newDocId } from '@/lib/produtos/docId';
 import { CurrencyInput } from './CurrencyInput';
 import type { ListaComId } from './PrecoCustoManager';
+import { normalizePrecosForComparison, stripPrecosForSave } from './precosDraft';
 import {
   describeReferences,
   findManyProdutoReferences,
@@ -180,6 +181,8 @@ export interface VariationManagerProps {
    * "Gerar Variações" grid can render + target them. Pass a stable setter.
    */
   onRowsChange?: (rows: VariationRow[]) => void;
+  /** Publishes the count used by the re-enable confirmation in the sibling price field. */
+  onDivergentPriceCountChange?: (count: number) => void;
   /**
    * Receives the flush function so the page can wire it into the ObjectView's
    * `onAfterSave` (children are written only when the parent saves).
@@ -245,6 +248,7 @@ export function VariationManager({
   onChange,
   onGroupsChange,
   onRowsChange,
+  onDivergentPriceCountChange,
   flushRef,
   disabled,
 }: VariationManagerProps) {
@@ -271,21 +275,39 @@ export function VariationManager({
   // editors, and the flush follows the value the operator is actually saving.
   // `useFormContext` is null in isolated component tests, hence this effect's
   // fallback to the persisted prop instead of `useWatch` (which needs a control).
-  const [formPropagation, setFormPropagation] = useState<boolean | undefined>(undefined);
+  const [formPricing, setFormPricing] = useState<
+    { propagatePriceToChildren: boolean; precos: unknown } | undefined
+  >(() =>
+    form
+      ? {
+          propagatePriceToChildren: form.getValues('propagatePriceToChildren') !== false,
+          precos: form.getValues('precos'),
+        }
+      : undefined,
+  );
   useEffect(() => {
-    if (!form) {
-      setFormPropagation(undefined);
-      return;
-    }
-    setFormPropagation(form.getValues('propagatePriceToChildren') !== false);
-    const subscription = form.watch((values, { name }) => {
-      if (name === 'propagatePriceToChildren') {
-        setFormPropagation(values.propagatePriceToChildren !== false);
+    if (!form) return;
+    const syncPricing = () => {
+      setFormPricing({
+        propagatePriceToChildren: form.getValues('propagatePriceToChildren') !== false,
+        precos: form.getValues('precos'),
+      });
+    };
+    syncPricing();
+    const subscription = form.watch((_values, { name }) => {
+      if (name === undefined || name === 'propagatePriceToChildren' || name === 'precos') {
+        syncPricing();
       }
     });
     return () => subscription.unsubscribe();
   }, [form]);
-  const pricesPropagate = formPropagation ?? propagatePriceToChildren;
+  const pricesPropagate = formPricing?.propagatePriceToChildren ?? propagatePriceToChildren;
+  const parentPrecosForComparison = form
+    ? normalizePrecosForComparison(
+        formPricing ? formPricing.precos : form.getValues('precos'),
+        (parent?.precos as PrecosMap) ?? null,
+      )
+    : ((parent?.precos as PrecosMap) ?? null);
   const liveParent = <K extends keyof Produto>(key: K): Produto[K] | null => {
     const live = form?.getValues(key as string) as Produto[K] | undefined;
     if (live !== undefined && live !== null && live !== '') return live;
@@ -381,6 +403,18 @@ export function VariationManager({
     publishedRowsKey.current = key;
     onRowsChange(mapped);
   }, [rows, onRowsChange]);
+
+  const divergentPriceCount = useMemo(
+    () =>
+      rows.filter(
+        (row) =>
+          row.id !== null && !row.deleteMark && !samePrecos(row.precos, parentPrecosForComparison),
+      ).length,
+    [rows, parentPrecosForComparison],
+  );
+  useEffect(() => {
+    onDivergentPriceCountChange?.(divergentPriceCount);
+  }, [divergentPriceCount, onDivergentPriceCountChange]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
@@ -591,8 +625,9 @@ export function VariationManager({
     // value when available (null = all prices cleared — deliberate, must NOT
     // fall back to the stale persisted doc), the persisted doc only without a
     // form context.
-    const livePrecos = form?.getValues('precos') as PrecosMap | undefined;
-    const parentPrecos = livePrecos !== undefined ? livePrecos : (parent?.precos ?? null);
+    const parentPrecos = form
+      ? stripPrecosForSave(form.getValues('precos'))
+      : ((parent?.precos as PrecosMap) ?? null);
 
     const deleteTargets = reconciled.filter((r) => r.deleteMark && r.id);
     const refsById = await findManyProdutoReferences(
@@ -879,7 +914,7 @@ export function VariationManager({
             nome: c.nome,
             sku: c.sku,
             variacoesUid: c.variacoesUid,
-            precos: (liveParent('precos') as PrecosMap) ?? null,
+            precos: parentPrecosForComparison,
             priceDirty: false,
             serverOrdem: null,
             deleteMark: false,
@@ -962,7 +997,7 @@ export function VariationManager({
         nome: '',
         sku: '',
         variacoesUid: [],
-        precos: (liveParent('precos') as PrecosMap) ?? null,
+        precos: parentPrecosForComparison,
         priceDirty: false,
         serverOrdem: null,
         deleteMark: false,
@@ -1178,9 +1213,7 @@ export function VariationManager({
                   }
                   listas={listas}
                   independentPrices={!pricesPropagate}
-                  pricesDiverge={
-                    !samePrecos(row.precos, (liveParent('precos') as PrecosMap) ?? null)
-                  }
+                  pricesDiverge={!samePrecos(row.precos, parentPrecosForComparison)}
                   onNome={(nome) => patchRow(row, { nome })}
                   onSku={(sku) => patchRow(row, { sku })}
                   onPreco={(listaId, valor) => setChildPrice(row, listaId, valor)}

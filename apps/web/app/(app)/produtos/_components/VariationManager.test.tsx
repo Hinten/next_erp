@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { Firestore } from 'firebase/firestore';
+import { Controller, FormProvider, useForm, type UseFormReturn } from 'react-hook-form';
 import { ZodError } from 'zod';
 import { samePrecos, type GrupoComId, type PrecosMap, varianteFakePath } from '@delfrance/schemas';
 import { MantineTestProvider } from '@/lib/testing/mantine';
 import type { ListaComId } from './PrecoCustoManager';
+import { PropagatePriceToChildrenField } from './PropagatePriceToChildrenField';
 
 /**
  * The children snapshot is driven through a real external store so an emission
@@ -220,6 +223,79 @@ function renderManager(
   };
 }
 
+interface PricingFormValues {
+  propagatePriceToChildren: boolean;
+  precos: unknown;
+}
+
+interface PricingHarnessProps {
+  initialPrecos: unknown;
+  onDivergentPriceCountChange?: (count: number) => void;
+  captureForm: (form: UseFormReturn<PricingFormValues>) => void;
+  withToggle?: boolean;
+}
+
+function PricingHarness({
+  initialPrecos,
+  onDivergentPriceCountChange,
+  captureForm,
+  withToggle = false,
+}: PricingHarnessProps) {
+  const form = useForm<PricingFormValues>({
+    defaultValues: { propagatePriceToChildren: false, precos: initialPrecos },
+  });
+  const [divergentChildren, setDivergentChildren] = useState(0);
+  captureForm(form);
+  return (
+    <MantineTestProvider>
+      <FormProvider {...form}>
+        {withToggle && (
+          <Controller
+            control={form.control}
+            name="propagatePriceToChildren"
+            render={({ field }) => (
+              <PropagatePriceToChildrenField
+                value={field.value}
+                onChange={field.onChange}
+                divergentChildren={divergentChildren}
+              />
+            )}
+          />
+        )}
+        <VariationManager
+          produtoId="p1"
+          db={db}
+          grupos={grupos()}
+          listas={listasDePreco()}
+          value={[uidP]}
+          onChange={() => undefined}
+          onGroupsChange={() => undefined}
+          onDivergentPriceCountChange={(count) => {
+            setDivergentChildren(count);
+            onDivergentPriceCountChange?.(count);
+          }}
+          flushRef={{ current: null }}
+        />
+      </FormProvider>
+    </MantineTestProvider>
+  );
+}
+
+function renderPricingHarness(
+  initialPrecos: unknown,
+  options: Omit<PricingHarnessProps, 'initialPrecos' | 'captureForm'> = {},
+) {
+  let form!: UseFormReturn<PricingFormValues>;
+  const utils = render(
+    <PricingHarness
+      {...options}
+      initialPrecos={initialPrecos}
+      captureForm={(next) => (form = next)}
+    />,
+  );
+  return { ...utils, form: () => form };
+}
+
 /** Every SKU input currently rendered — one per row. */
 function skuInputs(): HTMLInputElement[] {
   return screen.getAllByLabelText('SKU') as HTMLInputElement[];
@@ -349,6 +425,84 @@ describe('VariationManager — independent variation prices', () => {
     expect(h.ops.find((op) => op.kind === 'update' && op.id === 'membro-1')?.data).toMatchObject({
       precos: { l1: { valor: 27 } },
     });
+  });
+
+  it('uses the live parent price for the re-enable confirmation', async () => {
+    h.parent.current = {
+      data: { id: 'p1', data: { nome: 'Camiseta', sku: 'CAM', precos: { l1: { valor: 30 } } } },
+      loading: false,
+      error: undefined,
+    };
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0, { l1: { valor: 30 } })]);
+    const { form } = renderPricingHarness({ l1: { valor: 30 } }, { withToggle: true });
+
+    act(() => form().setValue('precos', { l1: { valor: 40 } }));
+    await waitFor(() => expect(screen.getByText('preço diferente')).toBeTruthy());
+    fireEvent.click(screen.getByRole('switch', { name: /Propagar preço para as variações/ }));
+
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('does not count deleted or brand-new rows in the overwrite confirmation', async () => {
+    h.parent.current = {
+      data: { id: 'p1', data: { nome: 'Camiseta', sku: 'CAM', precos: { l1: { valor: 30 } } } },
+      loading: false,
+      error: undefined,
+    };
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0, { l1: { valor: 30 } })]);
+    const onCount = vi.fn();
+    const { form } = renderPricingHarness(
+      { l1: { valor: 30 } },
+      { onDivergentPriceCountChange: onCount },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remover variação' }));
+    await waitFor(() => expect(screen.getByText('Será excluída')).toBeTruthy());
+    act(() => form().setValue('precos', { l1: { valor: 40 } }));
+    await waitFor(() => expect(onCount).toHaveBeenLastCalledWith(0));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nova variante' }));
+    await waitFor(() => expect(onCount).toHaveBeenLastCalledWith(0));
+  });
+
+  it('normalizes removed and incomplete parent drafts for divergence', async () => {
+    h.parent.current = {
+      data: { id: 'p1', data: { nome: 'Camiseta', sku: 'CAM', precos: { l1: { valor: 30 } } } },
+      loading: false,
+      error: undefined,
+    };
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0, { l1: { valor: 30 } })]);
+    const onCount = vi.fn();
+    const { form } = renderPricingHarness(
+      { l1: { valor: 30 } },
+      { onDivergentPriceCountChange: onCount },
+    );
+
+    act(() => form().setValue('precos', { l1: { valor: 30, _delete: true } }));
+    await waitFor(() => expect(onCount).toHaveBeenLastCalledWith(1));
+
+    act(() => form().reset({ propagatePriceToChildren: false, precos: { l1: {} } }));
+    await waitFor(() => expect(onCount).toHaveBeenLastCalledWith(0));
+
+    act(() => form().reset({ propagatePriceToChildren: false, precos: null }));
+    await waitFor(() => expect(onCount).toHaveBeenLastCalledWith(1));
+  });
+
+  it('tracks in-session toggles and whole-form resets through FormProvider', async () => {
+    h.parent.current = {
+      data: { id: 'p1', data: { nome: 'Camiseta', sku: 'CAM', precos: { l1: { valor: 30 } } } },
+      loading: false,
+      error: undefined,
+    };
+    h.setChildren([child('c1', 'Camiseta P', 'CAM-P', [uidP], 0, { l1: { valor: 30 } })]);
+    const { form } = renderPricingHarness({ l1: { valor: 30 } });
+
+    expect(screen.getByText('Preços desta variação')).toBeTruthy();
+    act(() => form().setValue('propagatePriceToChildren', true));
+    await waitFor(() => expect(screen.queryByText('Preços desta variação')).toBeNull());
+
+    act(() => form().reset({ propagatePriceToChildren: false, precos: { l1: { valor: 30 } } }));
+    await waitFor(() => expect(screen.getByText('Preços desta variação')).toBeTruthy());
   });
 });
 
