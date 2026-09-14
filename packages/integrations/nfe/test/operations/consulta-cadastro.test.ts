@@ -4,6 +4,7 @@ import https from 'node:https';
 import type { NFeCertificate } from '../../src/cert';
 import type { SefazCall } from '../../src/soap';
 import { consultarCadastro } from '../../src/operations/index';
+import { NFeXsdValidationError } from '../../src/xsd/index';
 
 vi.mock('../../src/soap', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/soap')>();
@@ -40,6 +41,10 @@ function dummyCall(): SefazCall {
   };
 }
 
+// Every fixture below is a SCHEMA-VALID retConsCad: `consultarCadastro` checks the
+// reply against retConsCad_v2.00.xsd before parsing it (#1602), so an invalid
+// fixture would test the rejection path instead of the parse.
+
 /** retConsCad with a single match (one infCad WITH ender) — cStat 111. */
 const RET_111 =
   `<retConsCad versao="2.00" xmlns="${NFE_NS}">` +
@@ -59,10 +64,11 @@ const RET_112 =
   `<retConsCad versao="2.00" xmlns="${NFE_NS}">` +
   `<infCons><verAplic>SP_NFE_PL_009</verAplic><cStat>112</cStat>` +
   `<xMotivo>Consulta cadastro com mais de uma ocorrência</xMotivo><UF>SP</UF><CNPJ>${CNPJ}</CNPJ>` +
+  `<dhCons>2026-06-23T10:00:00-03:00</dhCons><cUF>35</cUF>` +
   `<infCad><IE>111111111111</IE><CNPJ>${CNPJ}</CNPJ><UF>SP</UF><cSit>1</cSit>` +
-  `<xNome>FILIAL UM</xNome></infCad>` +
+  `<indCredNFe>1</indCredNFe><indCredCTe>0</indCredCTe><xNome>FILIAL UM</xNome></infCad>` +
   `<infCad><IE>222222222222</IE><CNPJ>${CNPJ}</CNPJ><UF>SP</UF><cSit>0</cSit>` +
-  `<xNome>FILIAL DOIS</xNome></infCad>` +
+  `<indCredNFe>0</indCredNFe><indCredCTe>0</indCredCTe><xNome>FILIAL DOIS</xNome></infCad>` +
   `</infCons></retConsCad>`;
 
 /** retConsCad with no match — cStat 259 (CNPJ não consta na base). */
@@ -70,7 +76,25 @@ const RET_259 =
   `<retConsCad versao="2.00" xmlns="${NFE_NS}">` +
   `<infCons><verAplic>SP_NFE_PL_009</verAplic><cStat>259</cStat>` +
   `<xMotivo>CNPJ não consta na base de dados da SEFAZ</xMotivo><UF>SP</UF><CNPJ>${CNPJ}</CNPJ>` +
+  `<dhCons>2026-06-23T10:00:00-03:00</dhCons><cUF>35</cUF>` +
   `</infCons></retConsCad>`;
+
+function replyWith(resultXml: string): void {
+  vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({ resultXml, rawBody: resultXml });
+}
+
+/** The reply must be rejected by the response XSD check — never parsed into a result. */
+async function expectReplyRejected(resultXml: string): Promise<NFeXsdValidationError> {
+  replyWith(resultXml);
+  const err: unknown = await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ }).then(
+    () => null,
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(NFeXsdValidationError);
+  const xsdErr = err as NFeXsdValidationError;
+  expect(xsdErr.rootKey).toBe('retConsCad');
+  return xsdErr;
+}
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -78,10 +102,7 @@ afterEach(() => {
 
 describe('consultarCadastro', () => {
   it('builds a versao="2.00" consCad request with CONS-CAD, the UF and CNPJ', async () => {
-    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
-      resultXml: RET_111,
-      rawBody: RET_111,
-    });
+    replyWith(RET_111);
 
     await consultarCadastro(dummyCall(), { uf: 'sp', cnpj: CNPJ });
 
@@ -105,10 +126,7 @@ describe('consultarCadastro', () => {
     // moved an element would change what SEFAZ receives. (The SOAP layer strips
     // the declaration before embedding it in the envelope.) The request also
     // passed the REAL validateConsCad on its way here — only the POST is mocked.
-    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
-      resultXml: RET_259,
-      rawBody: RET_259,
-    });
+    replyWith(RET_259);
     await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ });
     expect(vi.mocked(mockedNfeConsultaCadastro).mock.calls[0]![1]).toBe(
       '<?xml version="1.0" encoding="UTF-8"?>' +
@@ -119,20 +137,14 @@ describe('consultarCadastro', () => {
   });
 
   it('strips non-digits from the CNPJ before sending', async () => {
-    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
-      resultXml: RET_259,
-      rawBody: RET_259,
-    });
+    replyWith(RET_259);
     await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: '14.200.166/0001-87' });
     const sentXml = vi.mocked(mockedNfeConsultaCadastro).mock.calls[0]![1];
     expect(sentXml).toContain(`<CNPJ>${CNPJ}</CNPJ>`);
   });
 
   it('parses cStat 111 — one infCad WITH ender, normalized to an array', async () => {
-    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
-      resultXml: RET_111,
-      rawBody: RET_111,
-    });
+    replyWith(RET_111);
 
     const result = await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ });
 
@@ -162,10 +174,7 @@ describe('consultarCadastro', () => {
   });
 
   it('parses cStat 112 — two infCad entries (single→array normalization)', async () => {
-    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
-      resultXml: RET_112,
-      rawBody: RET_112,
-    });
+    replyWith(RET_112);
 
     const result = await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ });
 
@@ -178,27 +187,8 @@ describe('consultarCadastro', () => {
     expect(result.infCad[1]!.cSit).toBe('0');
   });
 
-  it('trims leaf text: a blank element reads as null, a "0" stays "0"', async () => {
-    // The fold's scope, both sides: whitespace-only is "absent", but a falsy-looking
-    // real value ('0' = não credenciado / não habilitado) must survive.
-    const xml = RET_111.replace('<xCpl>SALA 2</xCpl>', '<xCpl>   </xCpl>').replace(
-      '<xNome>EMPRESA TESTE LTDA</xNome>',
-      '<xNome>  EMPRESA  TESTE </xNome>',
-    );
-    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({ resultXml: xml, rawBody: xml });
-
-    const cad = (await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ })).infCad[0]!;
-
-    expect(cad.ender!.xCpl).toBeNull();
-    expect(cad.xNome).toBe('EMPRESA  TESTE');
-    expect(cad.indCredCTe).toBe('0');
-  });
-
   it('parses cStat 259 — no match, empty infCad', async () => {
-    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
-      resultXml: RET_259,
-      rawBody: RET_259,
-    });
+    replyWith(RET_259);
 
     const result = await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ });
 
@@ -207,26 +197,43 @@ describe('consultarCadastro', () => {
     expect(result.infCad).toHaveLength(0);
   });
 
-  it('throws NFeXmlError when retConsCad has no infCons (our/SEFAZ-shape bug)', async () => {
-    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
-      resultXml: `<retConsCad versao="2.00" xmlns="${NFE_NS}"></retConsCad>`,
-      rawBody: '',
-    });
-    await expect(consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ })).rejects.toThrow(
-      /infCons/,
-    );
+  it('trims an xs:token field SEFAZ padded — the XSD accepts it, so the trim stays', async () => {
+    // `cSit` is an xs:token: the schema collapses whitespace before checking the
+    // enumeration, so ` 1 ` is VALID and reaches the parse. '0' stays '0' (RET_111's
+    // indCredCTe) — a falsy-looking value is not "absent".
+    replyWith(RET_111.replace('<cSit>1</cSit>', '<cSit> 1 </cSit>'));
+
+    const cad = (await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ })).infCad[0]!;
+
+    expect(cad.cSit).toBe('1');
+    expect(cad.indCredCTe).toBe('0');
   });
 
-  it('fails fast (does not spin) on truncated XML — unterminated comment', async () => {
-    // Without the indexOf(-1) guards in the shared XML parser this unterminated
-    // `<!--` pushes the cursor backwards and the loop spins forever. With the
-    // guards it stops, leaves infCons unparsed, and consultarCadastro throws.
-    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
-      resultXml: `<retConsCad versao="2.00" xmlns="${NFE_NS}"><!-- truncado`,
-      rawBody: '',
-    });
-    await expect(consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ })).rejects.toThrow(
-      /infCons/,
+  it('rejects a padded string field instead of trimming it into a result', async () => {
+    // Near-miss of the test above: `xNome` is a TString, whose pattern forbids
+    // leading/trailing whitespace, so this reply fails the XSD and is never parsed.
+    const err = await expectReplyRejected(
+      RET_111.replace('<xNome>EMPRESA TESTE LTDA</xNome>', '<xNome>  EMPRESA TESTE </xNome>'),
     );
+    expect(err.message).toContain('xNome');
+  });
+
+  it('rejects a reply missing a required field (dhCons) — #1602', async () => {
+    const err = await expectReplyRejected(RET_259.replace(/<dhCons>.*<\/dhCons>/, ''));
+    expect(err.message).toContain('dhCons');
+  });
+
+  it('rejects a retConsCad with no infCons', async () => {
+    await expectReplyRejected(`<retConsCad versao="2.00" xmlns="${NFE_NS}"></retConsCad>`);
+  });
+
+  it('rejects an HTML page inside the result wrapper (captive portal / proxy)', async () => {
+    await expectReplyRejected('<html><body>Acesso bloqueado pelo proxy</body></html>');
+  });
+
+  it('rejects truncated XML — unterminated comment', async () => {
+    // xmllint refuses the malformed document before the parser ever sees it. The
+    // parser's own no-spin guard on truncated input is pinned in test/xml.
+    await expectReplyRejected(`<retConsCad versao="2.00" xmlns="${NFE_NS}"><!-- truncado`);
   });
 });

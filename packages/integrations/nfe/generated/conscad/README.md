@@ -8,8 +8,10 @@ pack**:
   files here and writes `types/conscad-schema.ts` (interfaces + `META` +
   `ROOTS`; no Zod mirror). `consultarCadastro` builds the request and reads the
   response through it (`serializeConsCad` / `parseConsCad` in `src/xml`).
-- `validateConsCad` (`src/xsd/index.ts`) validates the request against
-  `consCad_v2.00.xsd` before it is sent.
+- `src/xsd/index.ts` checks both directions: `validateConsCad` validates the
+  request against `consCad_v2.00.xsd` before it is sent, and
+  `validateRetConsCad` validates SEFAZ's response against `retConsCad_v2.00.xsd`
+  before it is parsed (#1602 — a failure is a 500 at the route).
 
 ## ⚠️ Never move these XSDs into `generated/moc7.0/schemas/`
 
@@ -35,7 +37,7 @@ which emits `<ConsCad …>`. The response root, by contrast, is `retConsCad`.)
 | File | Source |
 |---|---|
 | `consCad_v2.00.xsd` | Vendored verbatim from nfephp `schemes/NFe/PL_006u/` (byte-identical to `sped-nfe/schemes/PL_009_V4/`, checked 2026-09-14). Declares the request root `<xs:element name="ConsCad" type="TConsCad">` (capital C — see warning above) + `xs:include`s the leiaute. |
-| `retConsCad_v2.00.xsd` | Vendored verbatim from nfephp `sped-nfe/schemes/PL_009_V4/` (2026-09-14). Declares the response root `<xs:element name="retConsCad" type="TRetConsCad">` + `xs:include`s the leiaute. Read by the codegen; responses are not XSD-validated. |
+| `retConsCad_v2.00.xsd` | Vendored verbatim from nfephp `sped-nfe/schemes/PL_009_V4/` (2026-09-14). Declares the response root `<xs:element name="retConsCad" type="TRetConsCad">` + `xs:include`s the leiaute. Read by the codegen and by `validateRetConsCad`, which checks every SEFAZ reply before it is parsed (#1602). |
 | `leiauteConsultaCadastro_v2.00.xsd` | Vendored verbatim from nfephp `schemes/NFe/PL_006u/` (byte-identical to `sped-nfe/schemes/PL_009_V4/`, checked 2026-09-14). Defines `TConsCad`, `TRetConsCad` and this layout's `TEndereco`. |
 | `tiposBasico_v1.03.xsd` | The base types `leiauteConsultaCadastro_v2.00.xsd` `xs:include`s (TUf, TCnpjVar, …). Same file already vendored under `moc7.0/schemas/`. |
 | `types/conscad-schema.ts` | **Generated** — never hand-edit; re-run `gen:nfe-types`. |

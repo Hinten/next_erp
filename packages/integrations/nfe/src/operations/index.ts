@@ -34,7 +34,7 @@ import {
 import { UF_TO_IBGE } from '../generator/ide';
 import { buildInutNFe, type InutilizacaoInput } from '../inutilizacao';
 import { signEvento, signInutilizacao } from '../sign';
-import { validateConsCad, validateXsd } from '../xsd';
+import { validateConsCad, validateRetConsCad, validateXsd } from '../xsd';
 import {
   CONSCAD_VERSAO,
   nfeAutorizacaoLote,
@@ -131,26 +131,17 @@ export interface ConsultaCadastroResult {
   readonly infCad: ReadonlyArray<ConsultaCadastroInfCad>;
 }
 
-/** Trimmed leaf text, or `null` when the element is absent or blank. */
+/**
+ * Trimmed leaf text, or `null` when the element is absent or blank. The trim is
+ * load-bearing even after the response XSD check: `xs:token` fields (`cSit`,
+ * `CEP`, `CNAE`, …) pass the schema with surrounding whitespace.
+ */
 function textOrNull(value: string | undefined): string | null {
   const t = value?.trim();
   return t ? t : null;
 }
 
-/**
- * A generated type as it can actually arrive: every field optional, at every
- * depth. `retConsCad` is never XSD-validated, so a field the XSD marks required
- * is a promise the wire does not keep — reading through this makes the compiler
- * reject `infCons.cStat.trim()` instead of a real SEFAZ reply throwing it.
- */
-type Wire<T> =
-  T extends ReadonlyArray<infer U>
-    ? Array<Wire<U>>
-    : T extends object
-      ? { [K in keyof T]?: Wire<T[K]> }
-      : T;
-
-function toInfCad(cad: Wire<TRetConsCad_infCons_infCad>): ConsultaCadastroInfCad {
+function toInfCad(cad: TRetConsCad_infCons_infCad): ConsultaCadastroInfCad {
   const { ender } = cad;
   return {
     IE: textOrNull(cad.IE) ?? '',
@@ -180,10 +171,13 @@ function toInfCad(cad: Wire<TRetConsCad_infCons_infCad>): ConsultaCadastroInfCad
  *
  * Message layout 2.00 is not part of the v4.00 MOC, so its types, `META` and
  * `ROOTS` come from a SEPARATE codegen pack (`generated/conscad/`) and it goes
- * through `serializeConsCad`/`parseConsCad`. The request **IS XSD-validated
- * before sending** via `validateConsCad` — SEFAZ rule: never POST
- * schema-invalid XML, since repeated `cStat=215/225` trips `cStat=656`
- * (Consumo Indevido) → throttling/ban. It then travels the existing SOAP
+ * through `serializeConsCad`/`parseConsCad`. Both directions are checked against
+ * the vendored v2.00 schemas: the request **before sending** (`validateConsCad`)
+ * — SEFAZ rule: never POST schema-invalid XML, since repeated `cStat=215/225`
+ * trips `cStat=656` (Consumo Indevido) → throttling/ban — and the reply **before
+ * parsing** (`validateRetConsCad`, #1602), so a reply that is not a schema-valid
+ * `retConsCad` throws `NFeXsdValidationError` (the route answers 500) instead of
+ * being parsed into a plausible-looking result. It travels the existing SOAP
  * transport (`nfeConsultaCadastro` → `postSoap`): same mTLS agent, SOAP 1.2
  * envelope, SOAPAction, and `assertSafeTpAmb` guard.
  *
@@ -218,14 +212,12 @@ export async function consultarCadastro(
   await validateConsCad(xml);
   const { resultXml } = await nfeConsultaCadastro(call, xml, cUF);
 
-  // `Wire`: the XSD calls these fields required, but retConsCad is never
-  // XSD-validated, so any of them — at any depth — can be missing on the wire.
-  const { infCons } = parseConsCad<Wire<TRetConsCad>>('retConsCad', resultXml);
-  if (!infCons) {
-    // A retConsCad with no infCons is malformed — surface it so the route maps
-    // it to a 500 (our parse/SEFAZ-shape bug), not a misleading "no match".
-    throw new NFeXmlError('retConsCad missing <infCons>');
-  }
+  // Response XSD gate (#1602) — the check `postSoapValidated` runs for every v4.00
+  // operation. It is also what makes the generated `TRetConsCad` below true:
+  // every field the type calls required is present once this returns.
+  await validateRetConsCad(resultXml);
+
+  const { infCons } = parseConsCad<TRetConsCad>('retConsCad', resultXml);
   return {
     cStat: textOrNull(infCons.cStat),
     xMotivo: textOrNull(infCons.xMotivo),

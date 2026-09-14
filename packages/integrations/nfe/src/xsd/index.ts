@@ -89,7 +89,7 @@ export interface XsdError {
 
 export class NFeXsdValidationError extends Error {
   constructor(
-    public readonly rootKey: XsdRootKey | 'consCad',
+    public readonly rootKey: XsdRootKey | 'consCad' | 'retConsCad',
     public readonly errors: ReadonlyArray<XsdError>,
   ) {
     const first = errors[0]?.message ?? '(no detail)';
@@ -156,14 +156,13 @@ export function supportedRoots(): ReadonlyArray<XsdRootKey> {
   return Object.keys(XSD_BY_ROOT) as XsdRootKey[];
 }
 
-// --- Consulta Cadastro (consCad v2.00) ---------------------------------------
-// The consCad request schema is layout v2.00, a separate pack from the v4.00
-// MOC. It lives in its OWN dir (`generated/conscad/`, NOT `moc7.0/schemas/`),
+// --- Consulta Cadastro (consCad / retConsCad v2.00) --------------------------
+// The Consulta Cadastro schemas are layout v2.00, a separate pack from the v4.00
+// MOC. They live in their OWN dir (`generated/conscad/`, NOT `moc7.0/schemas/`),
 // which is also its own codegen pack: both leiautes declare a `TEndereco`, so
 // they must never share a codegen run (`generated/conscad/README.md`, issue
 // #251). Same `NFE_SCHEMA_DIR`-style override for esbuild-bundled consumers.
 const CONSCAD_DIR = join(HERE, '..', '..', 'generated', 'conscad');
-const CONSCAD_ROOT_FILE = 'consCad_v2.00.xsd';
 
 let consCadPreloadCache: ReadonlyArray<XMLFileInfo> | null = null;
 function loadConsCadPreload(): ReadonlyArray<XMLFileInfo> {
@@ -186,15 +185,36 @@ function loadConsCadPreload(): ReadonlyArray<XMLFileInfo> {
  * `NFeXsdValidationError` (with line numbers) on failure; returns on success.
  */
 export async function validateConsCad(xml: string): Promise<void> {
+  await validateAgainstConsCadPack('consCad', 'consCad_v2.00.xsd', xml);
+}
+
+/**
+ * Validate a `retConsCad` (Consulta Cadastro reply) against the v2.00 schema
+ * **before** parsing it — the Consulta Cadastro counterpart of the response
+ * check `postSoapValidated` runs for every v4.00 operation. It stops what the
+ * parser would otherwise read as data: a captive-portal or proxy HTML page, a
+ * truncated body, a reply missing a required field. The route answers a failure
+ * with a 500, not the degraded 200 (#1602). Throws `NFeXsdValidationError`
+ * (`rootKey: 'retConsCad'`) on failure; returns on success.
+ */
+export async function validateRetConsCad(xml: string): Promise<void> {
+  await validateAgainstConsCadPack('retConsCad', 'retConsCad_v2.00.xsd', xml);
+}
+
+async function validateAgainstConsCadPack(
+  rootKey: 'consCad' | 'retConsCad',
+  rootFile: string,
+  xml: string,
+): Promise<void> {
   const preload = loadConsCadPreload();
-  const schema = preload.find((f) => f.fileName === CONSCAD_ROOT_FILE);
+  const schema = preload.find((f) => f.fileName === rootFile);
   if (!schema) {
-    throw new NFeXsdValidationError('consCad', [
-      { message: `consCad schema not found in vendored conscad/: ${CONSCAD_ROOT_FILE}`, line: 0 },
+    throw new NFeXsdValidationError(rootKey, [
+      { message: `${rootKey} schema not found in vendored conscad/: ${rootFile}`, line: 0 },
     ]);
   }
   const result = await validateXML({
-    xml: { fileName: 'consCad.xml', contents: xml },
+    xml: { fileName: `${rootKey}.xml`, contents: xml },
     schema: schema.contents as string,
     preload,
   });
@@ -203,5 +223,5 @@ export async function validateConsCad(xml: string): Promise<void> {
     message: e.message,
     line: e.loc?.lineNumber ?? 0,
   }));
-  throw new NFeXsdValidationError('consCad', errors);
+  throw new NFeXsdValidationError(rootKey, errors);
 }

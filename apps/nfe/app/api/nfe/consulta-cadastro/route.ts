@@ -21,15 +21,17 @@
  *   401  no/invalid token
  *   403  insufficient perm (needs PERM.fiscal.read)
  *   422  filial has no cert (NFeCertError)
- *   500  our bug (malformed request XML / parse failure)
+ *   500  our bug (malformed request XML / parse failure), or a SEFAZ reply that
+ *        fails retConsCad_v2.00.xsd (NFeXsdValidationError — #1602)
  *   503  runtime not ready
  *
  * `consultarCadastro` serializes the `ConsCad` request and parses the
  * `retConsCad` response through the layout 2.00 codegen pack
- * (`generated/conscad/`). The request is **XSD-validated before sending**
- * (`validateConsCad`) — SEFAZ rule: never POST schema-invalid XML, since
- * repeated `cStat=215/225` trips `cStat=656` (Consumo Indevido). A schema-
- * invalid request throws before the POST and surfaces here as a 500.
+ * (`generated/conscad/`). Both directions are **XSD-validated**: the request
+ * before sending (`validateConsCad`) — SEFAZ rule: never POST schema-invalid XML,
+ * since repeated `cStat=215/225` trips `cStat=656` (Consumo Indevido) — and
+ * SEFAZ's reply before parsing (`validateRetConsCad`). Either failure throws
+ * `NFeXsdValidationError` and surfaces here as a 500, never the degraded 200.
  * See `packages/integrations/nfe/src/operations/index.ts:consultarCadastro`.
  */
 import { NextResponse } from 'next/server';
@@ -38,6 +40,7 @@ import { z } from 'zod';
 import {
   NFeCertError,
   NFeTransportError,
+  NFeXsdValidationError,
   consultarCadastro,
   getConsultaCadastroEndpoint,
   type ConsultaCadastroInfCad,
@@ -178,8 +181,19 @@ export async function POST(req: Request): Promise<NextResponse> {
         infCad: [],
       });
     }
-    // A genuine bug (our consCad XML malformed / retConsCad parse failure) —
-    // surface as 500 so it's visible, not silently swallowed as "no match".
+    if (e instanceof NFeXsdValidationError) {
+      // Schema-invalid XML on either side: our ConsCad request (rootKey
+      // 'consCad') or SEFAZ's reply ('retConsCad'). Decided in #1602: a 500, NOT
+      // the degraded 200 above — a reply that fails the XSD is not "SEFAZ
+      // unreachable", and parsing it would hand the form a plausible-looking
+      // wrong answer. The web caller already falls back to the public IE on any
+      // NFeHttpError. xmllint quotes the offending value; that is acceptable in
+      // Cloud Logging, which is private (see the nfe package's sefaz-log.ts).
+      safeLog('error', '[nfe/consulta-cadastro] XSD', { root: e.rootKey, errors: e.errors });
+      return authError(500, { error: e.message, code: e.name });
+    }
+    // A genuine bug (retConsCad parse failure, …) — surface as 500 so it's
+    // visible, not silently swallowed as "no match".
     safeLog('error', '[nfe/consulta-cadastro]', e);
     return authError(500, {
       error: e instanceof Error ? e.message : 'Erro interno',
