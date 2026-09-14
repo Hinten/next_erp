@@ -208,22 +208,48 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   }
 
   const tipo = integracaoDoc?.data.tipo;
+  const tipoDoBloco = freteInicial?.externalOptionIntegracao ?? null;
+  // ⚠️ Ownership is declared in TWO places, and the resolved `int_frete` doc is
+  // the WEAKER one. A marketplace block whose integração was never materialised
+  // — every Shopee pedido today: `apps/shopee/lib/shopee/pedidos/
+  // orderFreteMapping.ts` writes `externalOptionIntegracao: 'shopee'` and never
+  // an `integracaoFreteOuterRef` — resolves `tipo === undefined` and used to
+  // fall straight through to the EDITABLE generic body, where an operator could
+  // latch `hasUserInteraction` on the two fields the importer owns
+  // (`codRastreio` and the frete `estado`). Server-side the same question is
+  // already answered off the block itself — `pedidoReconcile` reads
+  // `freteInicial.externalOptionIntegracao` so it needs no extra transaction
+  // read — so reading it here too is what stops the two from disagreeing.
+  //
+  // ⚠️ The combination is over the PREDICATE, not over the two VALUES. A plain
+  // `tipo ?? tipoDoBloco` NARROWS instead of widening: a hand-attached
+  // `retiradaNaLoja` doc on a `'shopee'` block would answer `retiradaNaLoja`,
+  // which is not marketplace-owned, and the tab would unlock a block the server
+  // still treats as the importer's — recreating the very disagreement above.
+  // The two spellings differ ONLY when a resolved tipo is not marketplace-owned;
+  // everywhere else they are the same value.
+  const tipoDono = (isFreteMarketplaceOwned(tipo) ? tipo : tipoDoBloco) ?? null;
   // Marketplace-managed freight (importer owns the whole block): lock the
   // common header fields too — modalidade, endereço, recebedor, status and
   // the integração itself — not just the per-tipo body. Remapping a
   // marketplace shipping option happens via the integração's `mapa`, never
   // by hand-editing the pedido. While the integração doc is still resolving
   // the header stays locked as well (tipo unknown = ownership unknown); a
-  // resolved-but-missing doc unlocks it so a dangling ref can be fixed.
+  // resolved-but-missing doc unlocks it so a dangling ref can be fixed —
+  // unless the block itself names a marketplace, because `tipoDono` above only
+  // ever WIDENS ownership and never narrows it.
   // Shared predicate with the pedido estado reconcile, which refuses to authorize
-  // dispatch on a marketplace-owned block (#702). The two feed it DIFFERENT tipos
-  // and can disagree: here it is the resolved `int_frete` doc, server-side it is
-  // `freteInicial.externalOptionIntegracao` (no extra read inside the transaction).
-  const marketplaceOwned = isFreteMarketplaceOwned(tipo);
+  // dispatch on a marketplace-owned block (#702).
+  const marketplaceOwned = isFreteMarketplaceOwned(tipoDono);
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
 
   function renderTipoFields() {
+    // BEFORE the `!integracaoRef` branch: ownership does not depend on the
+    // integração doc existing.
+    if (marketplaceOwned && tipoDono) {
+      return <MarketplaceReadOnly frete={freteInicial!} tipo={tipoDono} />;
+    }
     if (!integracaoRef) return <GenericFreteFields form={form} db={db} disabled={disabled} />;
     if (loadingIntegracao) return <Skeleton height={120} />;
     if (!integracaoDoc) {
@@ -232,9 +258,6 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
           A integração de frete vinculada a este pedido não foi encontrada.
         </Alert>
       );
-    }
-    if (marketplaceOwned && tipo) {
-      return <MarketplaceReadOnly frete={freteInicial!} tipo={tipo} />;
     }
     switch (tipo) {
       case INTEGRACAO_FRETE.retiradaNaLoja:

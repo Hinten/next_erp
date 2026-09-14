@@ -14,6 +14,7 @@ import {
   ShopeeSchemaError,
 } from '@delfrance/integrations-shopee';
 import { z } from 'zod';
+import { ESTADO_FRETE } from '@delfrance/schemas';
 
 // Type-only — erased at compile time, so it does not defeat the mocks below.
 import type { ShopeeNotificationPayload } from './notificacao';
@@ -21,6 +22,7 @@ import type {
   AlvoDeImportacaoShopee,
   ResultadoImportacaoPedidoShopee,
 } from '../pedidos/importarPedido';
+import type { AlvoDeRastreioShopee, ResultadoRastreioShopee } from '../pedidos/rastrearPedido';
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeContaNotConfiguredError } from '../core/shopee';
 import {
@@ -104,6 +106,12 @@ const SHOP_ID = 987654;
 const INTEGRACAO_ID = 'int-1';
 /** Shopee's own doc-sample shape for an `order_sn` — not a real order. */
 const ORDER_SN = '220810QSK8S7BX';
+/** The `package_number` shape of the committed wire corpus — not a real parcel. */
+const PACOTE = 'OFG242672552205937';
+/** A second one, so "two packages of one order" is expressible. */
+const PACOTE_2 = 'OFG199593509207187';
+/** An invented carrier code. Never a real one, and never a logged VALUE. */
+const RASTREIO = 'BR000000001BR';
 const AGORA_MS = 1_700_000_000_000;
 
 function resultadoDeImportacao(
@@ -142,11 +150,44 @@ const importarPedido = vi.fn(
     resultadoDeImportacao(),
 );
 
+/**
+ * The step-7 handler's happy path: the pull answered, the transaction wrote.
+ * `sinteticaEnfileirada` is `false` here on purpose — a synthetic is only ever
+ * enqueued on `ignorado-sem-pedido`, and every test that wants one says so.
+ */
+function resultadoDeRastreio(over: Partial<ResultadoRastreioShopee> = {}): ResultadoRastreioShopee {
+  return {
+    kind: 'frete',
+    acao: 'atualizado',
+    orderSn: ORDER_SN,
+    packageNumber: PACOTE,
+    pedidoId: 'ped-abc',
+    statusMarketplace: 'LOGISTICS_REQUEST_CREATED',
+    estadoEscrito: ESTADO_FRETE.aguardandoPostagem,
+    campos: ['freteInicial.estado', 'freteInicial.pacotes'],
+    sinteticaEnfileirada: false,
+    detail: 'atualizado',
+    ...over,
+  };
+}
+
+/**
+ * The codes-4/30/47 seam. Injected on EVERY call in this file for the same
+ * reason {@link importarPedido} is: a routing bug that reaches the shipment
+ * handler from another code is caught here instead of dynamically importing the
+ * real pedido tree (which would open a Firestore and a Shopee client).
+ */
+const rastrearPedido = vi.fn(
+  async (_db: Firestore, _alvo: AlvoDeRastreioShopee): Promise<ResultadoRastreioShopee> =>
+    resultadoDeRastreio(),
+);
+
 const deps = {
   partnerClient: () => ({ getShopsByPartner: async () => ({}) }) as never,
   increment: (by: number) => by,
   nowMs: () => AGORA_MS,
   importarPedido,
+  rastrearPedido,
 };
 
 function payload(over: Partial<ShopeeNotificationPayload> = {}): ShopeeNotificationPayload {
@@ -168,6 +209,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   importarPedido.mockReset();
   importarPedido.mockImplementation(async () => resultadoDeImportacao());
+  rastrearPedido.mockReset();
+  rastrearPedido.mockImplementation(async () => resultadoDeRastreio());
   h.find.mockResolvedValue(null);
   h.readConta.mockResolvedValue(null);
   h.resolverAvisos.mockResolvedValue({ expiracao: true, desautorizacao: false });
@@ -733,15 +776,20 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
     // essa linha é o que ARMA a varredura de pedidos (`orderBackfill.ts` lê a
     // tabela, não um literal).
     [3, 'pedido'],
-    [4, 'parado'],
+    // ⚠️ O passo 7 tirou 4/30/47 do bloco parado e as três linhas
+    // de `MOTIVO_PARADO` correspondentes foram APAGADAS: TRÊS codes, UM destino.
+    // Eles diferem só em qual campo mudou; os três nomeiam um PACOTE, os três
+    // são PONTEIROS, e um único `get_package_detail` responde por todos.
+    [4, 'frete'],
+    [30, 'frete'],
+    [47, 'frete'],
     [10, 'parado'],
     [15, 'parado'],
     [16, 'parado'],
     [27, 'parado'],
     [29, 'parado'],
-    [30, 'parado'],
-    [47, 'parado'],
     // ⚠️ 24 e 25 (booking) chegaram no teste de sandbox de 2026-09-09 SEM estar
+    // (o 24 continua parado depois do passo 7 — RE-parado, com motivo novo)
     // na tabela — foram exatamente o "único sinal de que um código novo
     // apareceu" que o parque de um code desconhecido existe para dar.
     [24, 'parado'],
@@ -797,22 +845,43 @@ describe('destinoDoCodigo — todo push_code tem destino', () => {
   });
 
   it('o motivo do parque nomeia o passo dono do handler', () => {
-    expect(motivoDoParque(4)).toContain('passo 7');
     expect(motivoDoParque(29)).toContain('passo 17');
-    expect(motivoDoParque(24)).toContain('passo 7');
     expect(motivoDoParque(25)).toContain('passo 15');
     expect(motivoDoParque(999)).toContain('desconhecido');
   });
 
+  // ⚠️ O par que substituiu `motivoDoParque(4) ⇒ 'passo 7'` — a reescrita que o
+  // passo 5 já fez pelo code 3, agora pelos três codes do frete. Com os handlers
+  // construídos as linhas 4/30/47 de `MOTIVO_PARADO` foram APAGADAS, então
+  // aquela asserção só poderia passar sobre o texto de fallback ("código novo"),
+  // uma frase falsa a respeito de codes que este canal processa.
+  it('os codes 4/30/47 têm handler — vão para o frete, não para o parque', () => {
+    for (const code of [4, 30, 47]) {
+      expect(destinoDoCodigo(code)).toBe('frete');
+      expect(motivoDoParque(code)).not.toContain('passo 7');
+    }
+  });
+
   // ⚠️ O par de quase-falha do de cima: 24 e 25 são a família BOOKING, e o
-  // motivo tem de dizer isso — o passo 7 já é dono do code 4 (rastreio do
-  // PEDIDO) e o passo 15 do code 15 (documento de envio do PACOTE), então o
-  // número do passo sozinho não distingue a linha parada.
-  it('o motivo dos codes de booking nomeia a reserva, não o pedido nem o pacote', () => {
-    expect(motivoDoParque(24)).toContain('reserva');
+  // motivo tem de dizer isso — o passo 15 é dono do code 15 (documento de envio
+  // do PACOTE), então o número do passo sozinho não distingue a linha parada.
+  //
+  // ⚠️ E o 24 é o caso que o passo 7 RE-parou: ele dizia "o handler é o passo 7"
+  // e isso era FALSO — uma booking é uma parcela de Advance Fulfillment
+  // (ID/PH/VN/TH, nunca BR) cujo payload traz só `booking_sn`, do qual nenhum
+  // pedido é derivável. O motivo novo tem de nomear o programa e dizer que NÃO
+  // existe passo dono, em vez de apontar para um que não o construiu.
+  it('o motivo dos codes de booking nomeia a reserva, e o 24 não promete passo dono', () => {
+    expect(motivoDoParque(24)).toMatch(/reserva/i);
+    expect(motivoDoParque(24)).toContain('Advance Fulfillment');
+    expect(motivoDoParque(24)).toContain('Sem passo dono');
+    expect(motivoDoParque(24)).not.toContain('o handler é o passo');
     expect(motivoDoParque(25)).toContain('reserva');
-    expect(motivoDoParque(4)).not.toContain('reserva');
-    expect(motivoDoParque(15)).not.toContain('reserva');
+    expect(motivoDoParque(25)).toContain('passo 15');
+    // A quase-falha: o 4 não tem MAIS linha nenhuma (ele tem handler), então a
+    // âncora passou a ser o 15 — ainda parado, e ainda não é uma reserva.
+    expect(motivoDoParque(15)).not.toMatch(/reserva/i);
+    expect(motivoDoParque(15)).toContain('passo 15');
   });
 });
 
@@ -861,6 +930,37 @@ describe('toDisposition', () => {
 
   it('parado ⇒ park, nunca defer', () => {
     expect(toDisposition({ kind: 'parado', motivo: 'm' })).toEqual({ kind: 'park', reason: 'm' });
+  });
+
+  // ⚠️ Passo 7 (#1515): rótulo PRÓPRIO, porque o mapa `outcomes` da varredura é
+  // o que separa uma fusão de remessa de uma importação de pedido e de um aviso.
+  // Um rótulo cobrindo dois significados é a forma do #1087.
+  it('frete ⇒ resolve rotulado "frete" — nem "pedido", nem "aviso"', () => {
+    const d = toDisposition({
+      kind: 'frete',
+      acaoFrete: 'atualizado',
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+      pedidoId: 'ped-1',
+      statusMarketplace: 'LOGISTICS_REQUEST_CREATED',
+      estadoEscrito: ESTADO_FRETE.aguardandoPostagem,
+      campos: ['freteInicial.estado'],
+      detail: 'atualizado',
+    });
+    expect(d).toEqual({ kind: 'resolve', label: 'frete' });
+  });
+
+  it('frete-adiado ⇒ defer, com a razão que nomeia a corrida com o code 3', () => {
+    expect(
+      toDisposition({
+        kind: 'frete-adiado',
+        shopId: SHOP_ID,
+        orderSn: ORDER_SN,
+        packageNumber: PACOTE,
+        reason: 'rastreio: pedido ainda não existe',
+        sintetica: true,
+      }),
+    ).toEqual({ kind: 'defer', reason: 'rastreio: pedido ainda não existe' });
   });
 });
 
@@ -912,9 +1012,11 @@ describe('processNotificationPayload — a ordem das portas', () => {
   });
 
   // ⚠️ O 3 SAIU desta lista no passo 5 — ele agora resolve a conta de propósito.
-  // Todo o resto continua tendo de parar antes de qualquer leitura: um code sem
-  // handler não pode custar uma consulta ao Firestore por entrega.
-  it.each([4, 10, 15, 16, 24, 25, 27, 29, 30, 47, 999])(
+  // ⚠️ E 4, 30 e 47 saíram no passo 7, pela mesma razão e com a mesma nota: eles
+  // resolvem a conta porque têm handler. O 24 FICA — a booking continua sem
+  // passo dono. Todo o resto continua tendo de parar antes de qualquer leitura:
+  // um code sem handler não pode custar uma consulta ao Firestore por entrega.
+  it.each([10, 15, 16, 24, 25, 27, 29, 999])(
     'push_code %i PARA antes de qualquer leitura de conta',
     async (code) => {
       const out = await processNotificationPayload(db, payload({ code, shopId: 111 }), deps);
@@ -968,6 +1070,10 @@ describe('code 3 — importação do pedido', () => {
       itensSemProduto: 0,
       // Step 6 (#1514): o veredito da transação de pagamento viaja no outcome.
       acaoPagamentos: 'criado',
+      // Step 7 (#1515, R4): e o do BACKSTOP de frete também — a mesma dobra
+      // roda em TODA importação de pedido, e o log da tarefa tem de separá-la
+      // do que um push de rastreio escreveu.
+      acaoFrete: 'atualizado',
       detail: 'criado',
     });
     expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'pedido' });
@@ -1352,6 +1458,501 @@ describe('code 3 — a falha da importação vira disposição no braço', () =>
   });
 });
 
+describe('codes 4/30/47 — o braço do frete (passo 7)', () => {
+  /** Um `push 2` real: code 4, `ordersn`, `package_number`, `tracking_no`. */
+  function push4(data: Record<string, unknown> = {}) {
+    return payload({
+      code: 4,
+      shopId: SHOP_ID,
+      timestamp: AGORA_MS,
+      data: { ordersn: ORDER_SN, package_number: PACOTE, tracking_no: RASTREIO, ...data },
+    });
+  }
+  /** Um `push 33` real: code 30, `ordersn`, `fulfillment_status`, `update_time`. */
+  function push30(data: Record<string, unknown> = {}) {
+    return payload({
+      code: 30,
+      shopId: SHOP_ID,
+      timestamp: AGORA_MS,
+      data: {
+        ordersn: ORDER_SN,
+        package_number: PACOTE,
+        fulfillment_status: 'LOGISTICS_REQUEST_CREATED',
+        update_time: 1_760_000_000,
+        ...data,
+      },
+    });
+  }
+  /** Um `push 44` real: code 47, `order_sn` (a grafia DOCUMENTADA deste code). */
+  function push47(data: Record<string, unknown> = {}) {
+    return payload({
+      code: 47,
+      shopId: SHOP_ID,
+      timestamp: AGORA_MS,
+      data: {
+        order_sn: ORDER_SN,
+        package_number: PACOTE,
+        changed_fields: ['ship_by_date'],
+        old: { ship_by_date: 1_789_405_354 },
+        new: { ship_by_date: 1_789_491_754 },
+        update_time: 1_760_000_000,
+        ...data,
+      },
+    });
+  }
+
+  beforeEach(() => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+  });
+
+  // 1
+  it('(1) code 4 chama rastrearPedido com a integração da loja, o ordersn, o pacote e UM relógio', async () => {
+    const out = await processNotificationPayload(db, push4(), deps);
+
+    expect(h.find).toHaveBeenCalledTimes(1);
+    expect(h.find).toHaveBeenCalledWith(db, SHOP_ID);
+    expect(rastrearPedido).toHaveBeenCalledTimes(1);
+    const [, alvo] = rastrearPedido.mock.calls[0]!;
+    expect(alvo).toMatchObject({
+      integracaoId: INTEGRACAO_ID,
+      shopId: SHOP_ID,
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+      code: 4,
+      // ⚠️ MILISSEGUNDOS, e o relógio é o do handler (`deps.nowMs()`): o
+      // `update_time` do push é da Shopee, em SEGUNDOS, e nunca é um relógio
+      // nosso. O `push 2` nem sequer documenta um.
+      nowMs: AGORA_MS,
+    });
+    // O diagnóstico do push viaja, e ele é o do code 4: sem relógio próprio.
+    expect(alvo.diagnostico).toMatchObject({
+      code: 4,
+      grafiaDoPedido: 'ordersn',
+      trackingNoDoPush: RASTREIO,
+      statusDoPush: null,
+      relogioDoPushS: null,
+    });
+    expect(out.kind).toBe('frete');
+  });
+
+  // 2
+  it('(2) code 30 lê `ordersn` e code 47 lê `order_sn` — a grafia DOCUMENTADA de cada página', async () => {
+    await processNotificationPayload(db, push30(), deps);
+    await processNotificationPayload(db, push47(), deps);
+
+    const alvos = rastrearPedido.mock.calls.map(([, a]) => a);
+    expect(alvos.map((a) => a.orderSn)).toEqual([ORDER_SN, ORDER_SN]);
+    expect(alvos.map((a) => a.code)).toEqual([30, 47]);
+    expect(alvos[0]!.diagnostico.grafiaDoPedido).toBe('ordersn');
+    expect(alvos[1]!.diagnostico.grafiaDoPedido).toBe('order_sn');
+    // O que cada página traz de próprio, para o LOG e para nada mais.
+    expect(alvos[0]!.diagnostico.statusDoPush).toBe('LOGISTICS_REQUEST_CREATED');
+    expect(alvos[1]!.diagnostico.camposMudados).toEqual(['ship_by_date']);
+  });
+
+  // 3
+  it('(3) ⚠️ quase-falha: um code 47 grafado `ordersn` ainda processa, e o DOCUMENTADO vence quando os dois chegam', async () => {
+    // A tolerância existe porque o `push 17` (code 15) contradiz a si mesmo — a
+    // tabela de parâmetros diz `order_sn` e o próprio sample manda `ordersn`.
+    await processNotificationPayload(
+      db,
+      payload({
+        code: 47,
+        shopId: SHOP_ID,
+        timestamp: AGORA_MS,
+        data: { ordersn: ORDER_SN, package_number: PACOTE, changed_fields: ['return_code'] },
+      }),
+      deps,
+    );
+    expect(rastrearPedido.mock.calls[0]![1].orderSn).toBe(ORDER_SN);
+    expect(rastrearPedido.mock.calls[0]![1].diagnostico.grafiaDoPedido).toBe('ordersn');
+
+    // …e o par que tem de ficar DISTINTO: com as duas grafias presentes e
+    // DIFERENTES, o code 47 toma `order_sn`, que é a sua grafia documentada.
+    rastrearPedido.mockClear();
+    await processNotificationPayload(db, push47({ ordersn: 'OUTRO260910SN0' }), deps);
+    expect(rastrearPedido.mock.calls[0]![1].orderSn).toBe(ORDER_SN);
+    expect(rastrearPedido.mock.calls[0]![1].diagnostico.grafiaDoPedido).toBe('order_sn');
+  });
+
+  // 4
+  it('(4) sem `shop_id` ⇒ parado com prefixo `rastreio:`, e rastrearPedido NUNCA foi chamado', async () => {
+    const out = await processNotificationPayload(
+      db,
+      payload({ code: 4, shopId: null, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } }),
+      deps,
+    );
+
+    expect(out).toEqual({ kind: 'parado', motivo: expect.stringContaining('sem shop_id') });
+    expect(out.kind === 'parado' && out.motivo.startsWith('rastreio:')).toBe(true);
+    expect(toDisposition(out).kind).toBe('park');
+    // PARA, nunca ADIA: as três páginas documentam `shop_id` no topo, então um
+    // push sem ele é defeito do provedor ou do produtor — nada a resolver.
+    expect(rastrearPedido).not.toHaveBeenCalled();
+    expect(h.find).not.toHaveBeenCalled();
+  });
+
+  // 5
+  it('(5) sem chave de pedido, sem `package_number`, ou `package_number` de UMA LINHA SÓ ⇒ parado', async () => {
+    const semPedido = await processNotificationPayload(
+      db,
+      payload({
+        code: 4,
+        shopId: SHOP_ID,
+        timestamp: AGORA_MS,
+        data: { package_number: PACOTE },
+      }),
+      deps,
+    );
+    expect(semPedido).toEqual({
+      kind: 'parado',
+      motivo: 'rastreio: sem ordersn/order_sn',
+    });
+
+    const semPacote = await processNotificationPayload(
+      db,
+      payload({ code: 30, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } }),
+      deps,
+    );
+    // O `package_number` é `.min(1)` no schema do push, então a ausência sai
+    // como uma falha de SCHEMA que nomeia o CAMINHO — e nada mais.
+    expect(semPacote).toEqual({
+      kind: 'parado',
+      motivo: 'rastreio: data inválido no push 30: package_number',
+    });
+
+    // ⚠️ A sentinela `-`: esta página amostra `-` como AUSÊNCIA no próprio corpo
+    // (`tracking_number`, `item_sku`, `virtual_contact_number`), então um
+    // `package_number` de `-` é "nenhum pacote", não um pacote chamado "-".
+    const sentinela = await processNotificationPayload(db, push4({ package_number: '-' }), deps);
+    expect(sentinela).toEqual({ kind: 'parado', motivo: 'rastreio: sem package_number' });
+
+    expect(rastrearPedido).not.toHaveBeenCalled();
+  });
+
+  // 6
+  it('(6) uma loja não mapeada ⇒ sem-conta ⇒ defer, e NENHUMA chamada à Shopee', async () => {
+    h.find.mockResolvedValue(null);
+
+    const out = await processNotificationPayload(db, push4(), deps);
+
+    // ⚠️ O MESMO `sem-conta` do braço do code 3, e a mesma leitura: um operador
+    // conectando a loja torna a remessa ACIONÁVEL — o pacote continua existindo
+    // na Shopee e o `get_package_detail` continua respondendo por ele. A
+    // inversão do code 2 não se aplica.
+    expect(out).toEqual({
+      kind: 'sem-conta',
+      shopId: SHOP_ID,
+      reason: expect.stringContaining(String(SHOP_ID)),
+    });
+    expect(toDisposition(out)).toEqual({ kind: 'defer', reason: expect.any(String) });
+    // O handler jamais foi invocado, então o import preguiçoso nem disparou.
+    expect(rastrearPedido).not.toHaveBeenCalled();
+  });
+
+  // 7
+  it('(7) `ignorado-sem-pedido` ⇒ frete-adiado com sintetica: true ⇒ defer', async () => {
+    rastrearPedido.mockResolvedValue(
+      resultadoDeRastreio({
+        acao: 'ignorado-sem-pedido',
+        pedidoId: 'ped-abc',
+        statusMarketplace: null,
+        estadoEscrito: null,
+        campos: [],
+        sinteticaEnfileirada: true,
+        detail: 'ignorado-sem-pedido:pedido ainda não existe',
+      }),
+    );
+
+    const out = await processNotificationPayload(db, push4(), deps);
+
+    expect(out).toEqual({
+      kind: 'frete-adiado',
+      shopId: SHOP_ID,
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+      reason: expect.stringContaining('code 3 sintético enfileirado'),
+      sintetica: true,
+    });
+    expect(toDisposition(out).kind).toBe('defer');
+  });
+
+  // 7b — a válvula, que é a MESMA linha com a outra metade da frase
+  it('(7b) com a válvula fechada o adiamento diz que o sintético NÃO foi enfileirado', async () => {
+    rastrearPedido.mockResolvedValue(
+      resultadoDeRastreio({ acao: 'ignorado-sem-pedido', sinteticaEnfileirada: false }),
+    );
+
+    const out = await processNotificationPayload(db, push30(), deps);
+
+    expect(out).toMatchObject({
+      kind: 'frete-adiado',
+      sintetica: false,
+      reason: expect.stringContaining('NÃO enfileirado (válvula)'),
+    });
+    expect(toDisposition(out).kind).toBe('defer');
+  });
+
+  // 8
+  it('(8) `ignorado-pacote-ausente` ⇒ parado, e o motivo carrega a contagem de linhas ilegíveis', async () => {
+    rastrearPedido.mockResolvedValue(
+      resultadoDeRastreio({
+        acao: 'ignorado-pacote-ausente',
+        pedidoId: null,
+        detail: `pacote ${PACOTE} não veio na resposta (linhas ilegíveis: 2)`,
+      }),
+    );
+
+    const out = await processNotificationPayload(db, push47(), deps);
+
+    // Permanente a respeito de UM pacote (um split/unsplit, ou um número que
+    // nunca existiu), então PARA. A contagem é o único diagnóstico que o
+    // `.catch(null)` por ELEMENTO custa.
+    expect(out).toEqual({
+      kind: 'parado',
+      motivo: `rastreio: pacote ${PACOTE} não veio na resposta (linhas ilegíveis: 2)`,
+    });
+    expect(toDisposition(out).kind).toBe('park');
+  });
+
+  // 9
+  it('(9) uma falha transitória SOBE, e sobe o erro ORIGINAL', async () => {
+    const err = new ShopeeNetworkError('ECONNRESET');
+    rastrearPedido.mockRejectedValueOnce(err);
+
+    await expect(processNotificationPayload(db, push4(), deps)).rejects.toBe(err);
+  });
+
+  // 10
+  it('(10) `ShopeeSchemaError` ⇒ parado com CAMINHOS de campo, e nenhum valor', async () => {
+    rastrearPedido.mockRejectedValueOnce(
+      new ShopeeSchemaError('resposta fora do schema', {
+        campos: ['response.package_list[].update_time'],
+        httpStatus: 200,
+        path: '/api/v2/order/get_package_detail',
+      }),
+    );
+
+    const out = await processNotificationPayload(db, push4(), deps);
+
+    expect(out.kind).toBe('parado');
+    const motivo = out.kind === 'parado' ? out.motivo : '';
+    expect(motivo).toContain('response.package_list[].update_time');
+    expect(motivo).toContain('/api/v2/order/get_package_detail');
+    // ⚠️ Nenhum VALOR: nem o número de rastreio do push, nem o order_sn do corpo
+    // recusado (#1015 — caminhos, nunca conteúdo).
+    expect(motivo).not.toContain(RASTREIO);
+  });
+
+  // 11
+  it('(11) a cota DIÁRIA adia; um limite de RAJADA sobe', async () => {
+    const diario = new ShopeeRateLimitError('cota diária', {
+      ...initApi('error_limit', SHOPEE_ERROR_KIND.daily),
+      kind: SHOPEE_ERROR_KIND.daily,
+    });
+    rastrearPedido.mockRejectedValueOnce(diario);
+    const adiado = await processNotificationPayload(db, push4(), deps);
+    expect(adiado).toMatchObject({
+      kind: 'frete-adiado',
+      sintetica: false,
+      reason: expect.stringContaining('cota diária'),
+    });
+    expect(toDisposition(adiado).kind).toBe('defer');
+
+    const rajada = new ShopeeRateLimitError('limite curto', {
+      ...initApi('error_rate_limit', SHOPEE_ERROR_KIND.burst),
+      kind: SHOPEE_ERROR_KIND.burst,
+      retryAfterSeconds: 60,
+    });
+    rastrearPedido.mockRejectedValueOnce(rajada);
+    await expect(processNotificationPayload(db, push4(), deps)).rejects.toBe(rajada);
+  });
+
+  // 12
+  it.each([
+    ['sem shop_id', () => payload({ code: 4, shopId: null, timestamp: AGORA_MS, data: {} })],
+    [
+      'sem package_number',
+      () =>
+        payload({ code: 30, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } }),
+    ],
+  ])(
+    '(12) ⚠️ toda razão de parque deste braço começa com `rastreio:` (%s)',
+    async (_nome, constroi) => {
+      const out = await processNotificationPayload(db, constroi(), deps);
+      expect(out.kind).toBe('parado');
+      expect(out.kind === 'parado' && out.motivo.startsWith('rastreio: ')).toBe(true);
+    },
+  );
+
+  it('(12b) ⚠️ e toda razão de ADIAMENTO vinda de uma FALHA também', async () => {
+    rastrearPedido.mockRejectedValueOnce(
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+    );
+    const out = await processNotificationPayload(db, push4(), deps);
+    expect(out.kind).toBe('frete-adiado');
+    expect(out.kind === 'frete-adiado' && out.reason.startsWith('rastreio: ')).toBe(true);
+    // …e a quase-falha que separa os dois prefixos: o braço do code 3 usa o SEU.
+    importarPedido.mockRejectedValueOnce(
+      new ShopeeReauthRequiredError(
+        'grant morto',
+        initApi('shop_access_expired', SHOPEE_ERROR_KIND.reauth),
+      ),
+    );
+    const doCode3 = await processNotificationPayload(
+      db,
+      payload({ code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } }),
+      deps,
+    );
+    expect(doCode3.kind).toBe('pedido-adiado');
+    expect(doCode3.kind === 'pedido-adiado' && doCode3.reason.startsWith('push_code 3: ')).toBe(
+      true,
+    );
+  });
+
+  // 13
+  it('(13) uma fusão bem-sucedida ⇒ kind `frete` ⇒ resolve rotulado "frete", com os campos no TaskResult', async () => {
+    const out = await processNotificationPayload(db, push30(), deps);
+
+    expect(out).toEqual({
+      kind: 'frete',
+      acaoFrete: 'atualizado',
+      orderSn: ORDER_SN,
+      packageNumber: PACOTE,
+      pedidoId: 'ped-abc',
+      statusMarketplace: 'LOGISTICS_REQUEST_CREATED',
+      estadoEscrito: ESTADO_FRETE.aguardandoPostagem,
+      campos: ['freteInicial.estado', 'freteInicial.pacotes'],
+      detail: 'atualizado',
+    });
+    expect(toDisposition(out)).toEqual({ kind: 'resolve', label: 'frete' });
+  });
+
+  // 14 — O PAR DOBRA-IGUAL, e a sua quase-falha.
+  it('(14) ⚠️ DOIS pushes com valores PRÓPRIOS diferentes produzem o MESMO argumento de handler', async () => {
+    // O push é um PONTEIRO: nada do corpo dele é escrito. Estes dois diferem em
+    // `tracking_no`, em `fulfillment_status` e no `new.ship_by_date` — tudo o que
+    // um leitor ingênuo copiaria para o patch — e apontam para o MESMO pacote.
+    await processNotificationPayload(db, push4({ tracking_no: RASTREIO }), deps);
+    await processNotificationPayload(
+      db,
+      payload({
+        code: 30,
+        shopId: SHOP_ID,
+        timestamp: AGORA_MS + 5_000,
+        data: {
+          ordersn: ORDER_SN,
+          package_number: PACOTE,
+          fulfillment_status: 'LOGISTICS_PICKUP_DONE',
+          update_time: 1_760_000_999,
+        },
+      }),
+      deps,
+    );
+
+    const [a, b] = rastrearPedido.mock.calls.map(([, alvo]) => alvo);
+    // O que o handler recebe para DECIDIR — a identidade — é idêntico. O
+    // `diagnostico` (que só vai para o log) e o `code` são o que difere, e é
+    // exatamente por isso que estão separados do resto.
+    const identidade = (alvo: AlvoDeRastreioShopee) => ({
+      integracaoId: alvo.integracaoId,
+      shopId: alvo.shopId,
+      orderSn: alvo.orderSn,
+      packageNumber: alvo.packageNumber,
+    });
+    expect(identidade(a!)).toEqual(identidade(b!));
+    // …e nenhum valor do push atravessou para a identidade.
+    expect(JSON.stringify(identidade(a!))).not.toContain(RASTREIO);
+    expect(JSON.stringify(identidade(a!))).not.toContain('LOGISTICS_PICKUP_DONE');
+
+    // ⚠️ A QUASE-FALHA: um pacote DIFERENTE tem de produzir um argumento
+    // diferente. Sem ela o teste acima passaria também se a identidade fosse
+    // constante.
+    rastrearPedido.mockClear();
+    await processNotificationPayload(db, push4({ package_number: PACOTE_2 }), deps);
+    const c = rastrearPedido.mock.calls[0]![1];
+    expect(identidade(c)).not.toEqual(identidade(a!));
+    expect(c.packageNumber).toBe(PACOTE_2);
+  });
+
+  // 15 — o braço não LOGA nada, e é isso que o torna incapaz de vazar
+  it('(15) ⚠️ o braço emite ZERO linhas de log — nada do push atravessa para um logger', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    // Uma entrega feliz, um parque e um adiamento — os três caminhos que
+    // terminam com alguma coisa a dizer.
+    const feliz = await processNotificationPayload(db, push4({ tracking_no: RASTREIO }), deps);
+    rastrearPedido.mockResolvedValue(
+      resultadoDeRastreio({ acao: 'ignorado-pacote-ausente', pedidoId: null }),
+    );
+    const parado = await processNotificationPayload(db, push47(), deps);
+    rastrearPedido.mockResolvedValue(
+      resultadoDeRastreio({ acao: 'ignorado-sem-pedido', sinteticaEnfileirada: true }),
+    );
+    const adiado = await processNotificationPayload(db, push30(), deps);
+
+    // ÂNCORA: as três entregas realmente ACONTECERAM, então o zero abaixo é a
+    // ausência de log e não a ausência de trabalho.
+    expect([feliz.kind, parado.kind, adiado.kind]).toEqual(['frete', 'parado', 'frete-adiado']);
+
+    // ⚠️ ZERO. A ÚNICA linha por entrega é a do handler (`rastrearPedido.ts`), e
+    // a transação tem as suas três — o braço repetindo qualquer uma delas as
+    // dobraria. Um `console` novo aqui mata este teste, que é o ponto.
+    expect(info.mock.calls).toEqual([]);
+    expect(warn.mock.calls).toEqual([]);
+    expect(error.mock.calls).toEqual([]);
+
+    // …e a metade de CONTEÚDO da mesma propriedade, para o dia em que o braço
+    // ganhar uma linha: nada do corpo do push pode viajar nela.
+    const tudo = [...info.mock.calls, ...warn.mock.calls, ...error.mock.calls]
+      .map((args) => args.map((a) => JSON.stringify(a) ?? '').join(' '))
+      .join(' | ');
+    for (const proibido of [
+      RASTREIO,
+      'recipient_address',
+      'driver_info',
+      'virtual_contact_number',
+      'driver_name',
+      'driver_phone',
+    ]) {
+      expect(tudo).not.toContain(proibido);
+    }
+  });
+
+  // 16 — o backstop da queda-através
+  it('(16) ⚠️ nenhum destino que não seja `conta` cai nos braços de autorização', async () => {
+    // A escada dos codes 12 / 1 / 2 testa `payload.code` e não tem `default`, e
+    // o compilador só garante isso pela linha `restante`. Este teste é a metade
+    // de RUNTIME da mesma propriedade: nenhum code roteado para ack, parado,
+    // pedido ou frete pode sair como `aviso`, e a varredura de expiração — que é
+    // o que um code 12 dispara — não pode ter sido chamada.
+    const codes = [0, 3, 4, 5, 7, 8, 9, 10, 11, 13, 15, 16, 22, 24, 25, 27, 28, 29, 30, 47];
+    for (const code of codes) {
+      vi.clearAllMocks();
+      h.find.mockResolvedValue(INTEGRACAO_ID);
+      const out = await processNotificationPayload(
+        db,
+        payload({
+          code,
+          shopId: SHOP_ID,
+          timestamp: AGORA_MS,
+          data: { ordersn: ORDER_SN, package_number: PACOTE },
+        }),
+        deps,
+      );
+      expect(out.kind, `push_code ${String(code)}`).not.toBe('aviso');
+      expect(h.sweep, `push_code ${String(code)}`).not.toHaveBeenCalled();
+      expect(h.avisarDesautorizacao, `push_code ${String(code)}`).not.toHaveBeenCalled();
+      expect(h.resolverAvisos, `push_code ${String(code)}`).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe('code 1 — reautorização RESOLVE os avisos da loja', () => {
   it('chama resolverAvisosDeAutorizacao uma vez por loja mapeada', async () => {
     h.find.mockImplementation(async (_db, shopId) => (shopId === 111 ? 'int-1' : 'int-2'));
@@ -1691,6 +2292,31 @@ describe('a fiação do pipeline', () => {
     expect(fonte).not.toMatch(/^import\s+(?!type\b)[^;]*from\s+'\.\.\/pedidos\//m);
   });
 
+  // ⚠️ O gêmeo do passo 7, e a asserção de cima (o `not.toMatch`) cobre os DOIS:
+  // ela proíbe QUALQUER import estático de valor vindo de `../pedidos/`, então o
+  // handler de rastreio e o leitor de push têm de chegar pelo mesmo caminho.
+  // `pedidos/rastrearPedido` alcança o mapeador de frete, a transação, a coleção
+  // de pedidos e todo schema que eles tocam; `pedidos/fretePushShopee` é puro
+  // mas importa `pedidos/orderMapping`, que traz `@delfrance/schemas` como
+  // VALOR — a árvore exata que este bundle não pode carregar.
+  it('o default de rastrearPedido existe e é PREGUIÇOSO — e o leitor de push também', () => {
+    expect(typeof defaultProcessDeps.rastrearPedido).toBe('function');
+
+    const fonte = readFileSync(fileURLToPath(new URL('./notificacao.ts', import.meta.url)), 'utf8');
+    expect(fonte).toContain("await import('../pedidos/rastrearPedido')");
+    expect(fonte).toContain("await import('../pedidos/fretePushShopee')");
+  });
+
+  // ⚠️ D9 — a linha que transforma um SÉTIMO membro de `DestinoPush` sem braço
+  // próprio em erro de compilação. A escada abaixo do braço de frete testa
+  // `payload.code`, não `destino`, e não tem `default`: um destino novo cairia
+  // nos braços de autorização em silêncio. Fixado pela FONTE porque a garantia é
+  // do compilador, e nenhum teste de runtime pode observá-la.
+  it('⚠️ a exaustividade de DestinoPush é de COMPILAÇÃO — a linha `restante` existe', () => {
+    const fonte = readFileSync(fileURLToPath(new URL('./notificacao.ts', import.meta.url)), 'utf8');
+    expect(fonte).toContain("const restante: 'conta' = destino;");
+  });
+
   // ⚠️ `notificationGuardrails.test.ts` (guarda B) IGNORA a forma abreviada
   // `collection,` de propósito — ela é a assinatura dos fakes sintéticos. Uma
   // abreviação aqui leria como "este canal escreveu o próprio store" e
@@ -1848,5 +2474,84 @@ describe('handleNotificationTask — `acaoPagamentos` no TaskResult', () => {
     expect(Object.prototype.hasOwnProperty.call(r, 'acaoPagamentos')).toBe(false);
     // …e a âncora: o resto do TaskResult chegou, então o negativo não é vácuo.
     expect(r.kind).toBe('pedido');
+  });
+});
+
+// ── handleNotificationTask — `acaoFrete` / `packageNumber` (#1515, step 7) ──
+
+describe('handleNotificationTask — `acaoFrete` e `packageNumber` no TaskResult', () => {
+  it('⚠️ o veredito da transação de frete e o pacote chegam ao log da tarefa', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    rastrearPedido.mockResolvedValue(
+      resultadoDeRastreio({ acao: 'ignorado-sem-mudanca', packageNumber: PACOTE_2 }),
+    );
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(
+      asDb(fake),
+      {
+        code: 4,
+        shopId: SHOP_ID,
+        timestamp: AGORA_MS,
+        data: { ordersn: ORDER_SN, package_number: PACOTE_2, tracking_no: RASTREIO },
+      },
+      0,
+      deps,
+    );
+
+    expect(r.outcome).toBe('done');
+    expect(r.kind).toBe('frete');
+    expect(r.acaoFrete).toBe('ignorado-sem-mudanca');
+    expect(r.packageNumber).toBe(PACOTE_2);
+    expect(r.orderSn).toBe(ORDER_SN);
+    // ⚠️ `acaoFrete`, jamais `acao`: o outcome `pedido` já carrega um `acao` de
+    // OUTRO vocabulário, e `handleNotificationTask` lê por `in` — um `acao` aqui
+    // poria uma ação de importação na coluna do frete (a forma do #1087).
+    expect(Object.prototype.hasOwnProperty.call(r, 'acao')).toBe(false);
+  });
+
+  // ⚠️ E o par do #1514, agora pelo BACKSTOP: uma entrega code 3 carrega o
+  // veredito da MESMA transação, porque a dobra roda em toda importação.
+  it('⚠️ numa entrega code 3, o acaoFrete é o do BACKSTOP', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    importarPedido.mockResolvedValue(
+      resultadoDeImportacao({ acao: 'ignorado-sem-mudanca', acaoFrete: 'atualizado' }),
+    );
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(
+      asDb(fake),
+      { code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } },
+      0,
+      deps,
+    );
+
+    expect(r.kind).toBe('pedido');
+    expect(r.acaoFrete).toBe('atualizado');
+    // …e nenhum pacote: a importação não nomeia um.
+    expect(Object.prototype.hasOwnProperty.call(r, 'packageNumber')).toBe(false);
+  });
+
+  it('⚠️ quando a transação de frete NÃO roda, as chaves ficam AUSENTES — não `null`', async () => {
+    h.find.mockResolvedValue(INTEGRACAO_ID);
+    importarPedido.mockResolvedValue(
+      resultadoDeImportacao({ acao: 'ignorado-obsoleto', acaoPagamentos: null, acaoFrete: null }),
+    );
+    const fake = new FakeDb();
+
+    const r = await handleNotificationTask(
+      asDb(fake),
+      { code: 3, shopId: SHOP_ID, timestamp: AGORA_MS, data: { ordersn: ORDER_SN } },
+      0,
+      deps,
+    );
+
+    // "não rodou" e "rodou e não mudou nada" são fatos diferentes, e uma chave
+    // ausente é como este repo escreve o primeiro (regra 7, `camposInformados`).
+    expect(Object.prototype.hasOwnProperty.call(r, 'acaoFrete')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(r, 'packageNumber')).toBe(false);
+    // …e a âncora: o resto do TaskResult chegou, então o negativo não é vácuo.
+    expect(r.kind).toBe('pedido');
+    expect(r.orderSn).toBe(ORDER_SN);
   });
 });

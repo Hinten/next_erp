@@ -75,6 +75,21 @@ locally without deploying: `node apps/shopee/functions/build.mjs` (writes
 the full servable folder at `.deploy/shopee-functions`. Both need
 `FUNCTIONS_REGION` set — `requireBuildRegion` throws without it, on purpose.
 
+⚠️ **The inline proof.** Two handlers reach this bundle through a **dynamic**
+`import()` in `lib/shopee/notificacoes/notificacao.ts` — lazily, so the App
+Hosting receiver's own bundle never carries the pedido tree. The functions
+bundle is the half that must carry them, and the bundler inlining them is not
+something any test asserts. Check it after a build:
+
+```bash
+FUNCTIONS_REGION=us-east1 node apps/shopee/functions/scripts/prepare-deploy.mjs
+grep -c -e importarPedidoShopee -e rastrearPedidoShopee .deploy/shopee-functions/index.js
+```
+
+Both names must appear. A zero means the dispatched function would park (step 5)
+or never reach the shipment merge (step 7) instead of running it — green
+everywhere else, because nothing but this grep looks.
+
 ## Functions in this codebase
 
 | Export                           | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |

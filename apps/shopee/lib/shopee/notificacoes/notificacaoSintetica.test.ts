@@ -143,6 +143,39 @@ describe('notificacaoSinteticaDePedido', () => {
     expect(Object.keys(liquidacao.data ?? {}).sort()).toEqual(['ordersn', 'origem']);
   });
 
+  it('origem `rastreio` (passo 7) é aceita e NÃO faz parte da identidade', () => {
+    // ⚠️ The fourth producer, and the one that is NOT a sweep: a code 4/30/47
+    // delivery whose pedido is not here yet (no page states an ordering between
+    // push codes, and `push_guarantee = 0`). It must be indistinguishable from
+    // the other three for everything that decides identity — otherwise a
+    // shipment push and the 15-minute backfill finding the same order in the
+    // same tick would enqueue two jobs and write two dead-letter rows.
+    const rastreio = notificacaoSinteticaDePedido({
+      shopId: SHOP,
+      orderSn: ORDER_SN,
+      nowMs: AGORA_MS,
+      origem: 'rastreio',
+    });
+    const backfill = notificacaoSinteticaDePedido({
+      shopId: SHOP,
+      orderSn: ORDER_SN,
+      nowMs: AGORA_MS,
+      origem: 'backfill',
+    });
+
+    expect(rastreio.code).toBe(3);
+    expect(destinoDoCodigo(rastreio.code)).toBe('pedido');
+    expect(rastreio.data).toHaveProperty('origem', 'rastreio');
+    expect(docIdOf(rastreio)).toBe(docIdOf(backfill));
+    expect(dedupKeyOf(rastreio)).toBe(dedupKeyOf(backfill));
+    // ⚠️ NEAR-MISS, and it is the same one: a shipment push carries no
+    // `order_status`, so the key is ABSENT rather than present-and-null.
+    expect(Object.keys(rastreio.data ?? {}).sort()).toEqual(['ordersn', 'origem']);
+    // …and the anchor that keeps the identity claim from being vacuous: the two
+    // payloads really do DIFFER, in exactly one place.
+    expect(rastreio.data?.origem).not.toBe(backfill.data?.origem);
+  });
+
   it('docIdOf/dedupKeyOf batem com o contrato escrito no docblock', () => {
     const p = notificacaoSinteticaDePedido({
       shopId: SHOP,
