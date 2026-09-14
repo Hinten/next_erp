@@ -6,9 +6,10 @@
  * The stock sweeps (PR C) enqueue one task per ML API call onto the
  * `sendMercadoLivreStock` queue (auto-provisioned by the function on deploy);
  * the queue dispatches to `functions/src/sendStock.ts`, which transmits the
- * SWEEP-COMPUTED quantities carried in the payload verbatim (zero per-task
- * produto/estoque reads — see estoqueSend.ts for the staleness contract). The
- * task handler is ALSO a consumer of this scheduler: a task landing on a
+ * SWEEP-COMPUTED quantities verbatim on attempt zero. A real queue retry or a
+ * task previously re-enqueued by the pause gate refreshes stock with bounded
+ * deterministic point reads (#693). The task handler is ALSO a consumer of
+ * this scheduler: a task landing on a
  * 429-paused conta re-enqueues itself with `scheduleDelaySeconds`, so the
  * pause never burns queue retries.
  *

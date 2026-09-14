@@ -7,8 +7,9 @@
  * START (`quantidadesAnteriores`, from the LAZY, TICK-SHARED ledger sum),
  * applies the send policy (`deveEnviarFamilia`),
  * and enqueues the resulting `buildSendTasks` drafts onto the
- * `sendMercadoLivreStock` queue. The task payload CARRIES the quantities —
- * the send handler transmits them verbatim (estoqueSend.ts).
+ * `sendMercadoLivreStock` queue. The task payload CARRIES the quantities:
+ * attempt zero transmits them verbatim, while a real retry or pause re-enqueue
+ * refreshes them through bounded deterministic point reads (#693).
  *
  * Flag-gated OFF: runs ONLY when `MERCADO_LIVRE_STOCK_SYNC_ENABLED === '1'`
  * (`isStockSyncEnabled()`); until the flag flips the deployed functions tick,

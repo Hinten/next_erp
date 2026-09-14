@@ -2119,7 +2119,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     const res = buildSendTasks(row, quantidadesDaFamilia(row), OPTS);
 
     expect(res.skips).toEqual([]);
-    expect(res.tasks[0]!.variations).toEqual([{ id: 102, available_quantity: 0 }]);
+    expect(res.tasks[0]!.variations).toEqual([
+      { id: 102, produtoId: 'CHV', available_quantity: 0 },
+    ]);
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(errorSpy.mock.calls[0]?.[1]).toMatchObject({ produtoId: 'CHV', componentes: ['COMP'] });
   });
@@ -2146,8 +2148,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     const aberto = buildSendTasks(r1, quantidadesDaFamilia(r1), OPTS);
     expect(aberto.skips).toEqual([]);
     expect(aberto.tasks[0]!.variations).toEqual([
-      { id: 101, available_quantity: 4 },
-      { id: 102, available_quantity: 9 },
+      { id: 101, produtoId: 'CH1', available_quantity: 4 },
+      { id: 102, produtoId: 'CHV', available_quantity: 9 },
     ]);
 
     // Hatch ON: the virtual child alone drops out, and its SIBLING still sends.
@@ -2157,7 +2159,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     expect(fechado.skips).toEqual([
       { produtoId: 'CHV', reason: 'kit-virtual', itemId: 'MLB111', linkDocId: 'link1' },
     ]);
-    expect(fechado.tasks[0]!.variations).toEqual([{ id: 101, available_quantity: 4 }]);
+    expect(fechado.tasks[0]!.variations).toEqual([
+      { id: 101, produtoId: 'CH1', available_quantity: 4 },
+    ]);
   });
 
   // ---- #1087: `publicado` is not part of the decision any more --------------
@@ -2313,8 +2317,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           varLinkDocId: null,
           quantidade: null,
           variations: [
-            { id: 101, available_quantity: 3 },
-            { id: 102, available_quantity: 4 },
+            { id: 101, produtoId: 'CH1', available_quantity: 3 },
+            { id: 102, produtoId: 'CH2', available_quantity: 4 },
           ],
         },
       ],
@@ -2346,7 +2350,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         userProductId: null,
         varLinkDocId: null,
         quantidade: null,
-        variations: [{ id: 101, available_quantity: 3 }],
+        variations: [{ id: 101, produtoId: 'CH1', available_quantity: 3 }],
       },
     ]);
     // Every child skip names the LISTING it was excluded from — a family can
@@ -2457,7 +2461,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
         variacaoProdutoId: null,
         quantidade: null,
         // 111 is gone — only the live sibling rides the bulk payload.
-        variations: [{ id: 222, available_quantity: 4 }],
+        variations: [{ id: 222, produtoId: 'CH2', available_quantity: 4 }],
       },
     ]);
     expect(res.skips).toEqual([
@@ -2472,7 +2476,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       children: [child('CH1', [{ id: 111, produtoMercadoLivreOuterRef: PARENT_LINK_REF }])],
     });
     const res = buildSendTasks(row, new Map([['CH1', 3]]), OPTS);
-    expect(res.tasks[0]?.variations).toEqual([{ id: 111, available_quantity: 3 }]);
+    expect(res.tasks[0]?.variations).toEqual([
+      { id: 111, produtoId: 'CH1', available_quantity: 3 },
+    ]);
     expect(res.skips).toEqual([]);
   });
 
@@ -2703,8 +2709,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           varLinkDocId: null,
           quantidade: null,
           variations: [
-            { id: 101, available_quantity: 3 },
-            { id: 102, available_quantity: 4 },
+            { id: 101, produtoId: 'CH1', available_quantity: 3 },
+            { id: 102, produtoId: 'CH2', available_quantity: 4 },
           ],
         },
         {
@@ -2717,8 +2723,8 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           varLinkDocId: null,
           quantidade: null,
           variations: [
-            { id: 201, available_quantity: 3 },
-            { id: 202, available_quantity: 4 },
+            { id: 201, produtoId: 'CH1', available_quantity: 3 },
+            { id: 202, produtoId: 'CH2', available_quantity: 4 },
           ],
         },
       ],

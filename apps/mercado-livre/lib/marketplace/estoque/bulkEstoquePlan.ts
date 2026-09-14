@@ -32,19 +32,19 @@
  * ONE conta — the legacy sender loops every one, functions.dart:275-282, and
  * `buildSendTasks` emits tasks per listing) + the variation children
  * server-side in ONE pipeline execution per conta per sweep page, with a
- * minimal `select`, and hand the sender a payload it NEVER re-reads
- * produtos/estoques for.
+ * minimal `select`, and hand the sender a quantity-bearing payload. Attempt
+ * zero never re-reads produtos/estoques; delayed retries refresh by point id.
  *
  * Owner decisions locked 2026-07-27:
  *  1. Standalone produtos (no children): the legacy query EXCLUDED the
  *     anchor's own estoque as a change trigger — deliberately FIXED here: the
  *     anchor's own estoque is a first-class trigger (`maxOwn` in S3/S4).
  *     Expect a one-time correction burst on the first post-deploy sweep.
- *  2. Retry staleness: tasks are sent VERBATIM (legacy parity, zero extra
- *     reads at send time). Quantities are computed once, at sweep time, and
- *     carried in the task payload; the send handler logs
- *     `ageMs = now − sweepComputedAtMs` on every send and the next sweep
- *     converges any staleness.
+ *  2. Retry freshness (#693): quantities are computed once at sweep time and
+ *     attempt zero sends them verbatim. A real Cloud Tasks retry or pause
+ *     re-enqueue refreshes them from deterministic produto/estoque point reads;
+ *     the manual sender remains verbatim. `ageMs` always measures the original
+ *     payload age and `stockRefresh` logs the read cost/source.
  *
  * Timestamp units: produto/estoque timestamps AND `historicoEstoque.timestamp`
  * are MS since epoch — the movement pre-pass windows on ms, so nothing here
@@ -1688,6 +1688,13 @@ export interface SendSkip {
 export interface StockVariationEntry {
   /** Numeric ML variation id (the variação link's `id` field). */
   id: number;
+  /**
+   * ERP produto that owns this variation's stock. Internal task metadata only:
+   * the sender strips it before building the Mercado Livre `variations[]`
+   * body. It is what lets a queue retry refresh by deterministic point reads
+   * instead of resolving the family with a query (#693).
+   */
+  produtoId: string;
   available_quantity: number;
 }
 
@@ -1695,10 +1702,10 @@ export interface StockVariationEntry {
  * One ready-to-enqueue send task — the `mlStockSendTaskSchema` wire shape
  * (the zod schema lives on the stacked send-queue branch; this local type
  * mirrors it). Exactly ONE of `quantidade` / `variations` is non-null. The
- * payload is sent VERBATIM by the handler (owner decision 3 — legacy parity,
- * zero reads at send time; the handler logs `ageMs = now −
- * sweepComputedAtMs` and the next sweep converges staleness). `linkDocId` is
- * the status-writeback target — never re-resolved.
+ * payload is sent verbatim on attempt zero (legacy parity, zero hot-path stock
+ * reads). Queue retries and pause re-enqueues may replace only its quantities
+ * using deterministic point reads; `linkDocId` remains the status-writeback
+ * target and is never re-resolved.
  */
 export interface StockSendTaskDraft {
   integracaoId: string;
@@ -2254,7 +2261,7 @@ export function buildSendTasks(
           skips.push({ produtoId: child.produtoId, reason: 'kit-virtual', itemId, linkDocId });
           continue;
         }
-        variations.push({ id: varId, available_quantity: quantidade });
+        variations.push({ id: varId, produtoId: child.produtoId, available_quantity: quantidade });
       }
       if (variations.length === 0) continue; // nothing sendable on this listing
       if (variations.length > MAX_VARIATIONS_PER_TASK) {

@@ -665,9 +665,11 @@ produto shape — and since #1399 the sweep SENDS virtual kits) and
 `status-nao-enviavel` firing on a member **ML itself** paused. So `estoqueSend`
 reads the listing before any bulk PUT and completes the array with the live ids
 and quantities of the variations it is not changing
-(`estoque/variacoesReconciliacao.ts`); the payload's own numbers still ride
-verbatim, so the sweep stays the sole authority on what the stock IS. Only this
-one `kind` pays the extra `GET /items`.
+(`estoque/variacoesReconciliacao.ts`). Attempt zero still uses the payload's own
+numbers verbatim. A real Cloud Tasks retry or pause re-enqueue first refreshes
+those numbers through at most two deterministic BatchGets (#693), with no query,
+scan, depósito read or cache. Only the legacy bulk `kind` pays the extra
+`GET /items` needed to preserve the complete live variation list.
 ⚠️ **A planner-side completeness check could NOT have covered this, and that is
 what decided where the fix lives.** A variation existing on ML with no local
 `variacaoMercadoLivre` link produces no child row at all — nothing is skipped,

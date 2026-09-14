@@ -776,6 +776,10 @@ async function enviarComLadder(
         nowMs: deps.nowMs,
         contextLoader: deps.contextLoader,
         retryCount: ultima ? STOCK_SEND_MAX_ATTEMPTS - 1 : 0,
+        // The manual flow computed this task's quantity immediately above. Its
+        // retryCount drives only the terminal-4xx policy, never the delayed-task
+        // refresh reserved for Cloud Tasks (#693).
+        refreshStockOnRetry: false,
         // The pause path never enqueues here, so jitter is meaningless — pin it
         // to 0 so the delay math is deterministic in tests.
         jitterSec: () => 0,

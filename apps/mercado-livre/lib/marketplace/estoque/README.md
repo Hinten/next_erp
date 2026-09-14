@@ -18,6 +18,13 @@ the store does not have. See ADR 0014 §7.
   network call: the stored half is re-read inside the callback so a concurrent
   import aborts this attempt rather than losing to it. Losing would mark a
   **live** variation `closed` and silently stop its stock.
+- `estoqueRetryRefresh.ts` — #693's delayed-task refresh. Attempt zero never
+  reaches it; a real Cloud Tasks retry or pause re-enqueue performs one BatchGet
+  for distinct target produtos and one for the union of target/component estoque
+  refs. Every estoque id is `makeEstoqueUid(produtoId, depositoId)`: no query,
+  scan, depósito read or cache. Cost is `P` produto reads + `|P ∪ C|` estoque
+  reads in at most two RPCs. Old bulk payloads without child `produtoId` skip so
+  the next sweep can rebuild them instead of scanning or sending stale numbers.
 - `variacoesReconciliacao.ts` — pure. Completes a legacy-model bulk
   `variations[]` patch against the listing ML actually holds (**#831**).
   ⚠️ **A `variations[]` body is not a patch: ML DELETES every variation the

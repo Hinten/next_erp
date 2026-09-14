@@ -9,9 +9,11 @@ import {
   type MlUserProductStock,
 } from '@delfrance/integrations-mercado-livre';
 import { estoqueMercadoLivreSyncCollection } from '@delfrance/data/admin/collections';
+import { makeEstoqueUid } from '@delfrance/schemas';
 
 import {
   PAUSE_REENQUEUE_JITTER_MAX_S,
+  STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV,
   STOCK_SEND_MAX_ATTEMPTS,
   STOCK_SYNC_FLAG_ENV,
   type StockFamilyRow,
@@ -81,6 +83,8 @@ function parentDocId(colPath: string): string {
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly opLog: Array<{ op: 'get' | 'set' | 'update'; path: string }> = [];
+  readonly batchGets: Array<{ paths: string[]; fieldMask: string[] }> = [];
+  getAllError: unknown = null;
   /** Document versions — what makes `runTransaction` below a real OCC loop. */
   readonly versions = new Map<string, number>();
   /** Runs inside the read→commit window, so a test can interleave a competing writer. */
@@ -144,6 +148,7 @@ class FakeDb {
         return {
           id,
           __path: path,
+          path: `${path}/${id}`,
           get: async () => {
             self.opLog.push({ op: 'get', path: `${path}/${id}` });
             return { exists: col.has(id), id, data: () => col.get(id) };
@@ -172,6 +177,31 @@ class FakeDb {
         };
       },
     };
+  }
+
+  async getAll(
+    ...args: Array<FakeDocRef | { fieldMask?: readonly string[] }>
+  ): Promise<FakeSnap[]> {
+    if (this.getAllError != null) throw this.getAllError;
+    const last = args.at(-1);
+    const readOptions =
+      last && !('__path' in last) ? (args.pop() as { fieldMask?: readonly string[] }) : undefined;
+    const refs = args as FakeDocRef[];
+    const fieldMask = [...(readOptions?.fieldMask ?? [])];
+    this.batchGets.push({
+      paths: refs.map((ref) => ref.path),
+      fieldMask,
+    });
+    return refs.map((ref) => {
+      const raw = this.cols.get(ref.__path)?.get(ref.id);
+      const data =
+        raw == null || fieldMask.length === 0
+          ? raw
+          : Object.fromEntries(
+              fieldMask.filter((field) => field in raw).map((field) => [field, raw[field]]),
+            );
+      return { exists: raw != null, id: ref.id, data: () => data };
+    });
   }
 
   collectionGroup(groupId: string): FakeQuery {
@@ -273,6 +303,7 @@ class FakeDb {
 interface FakeDocRef {
   id: string;
   __path: string;
+  path: string;
   get: () => Promise<FakeSnap>;
   set: (data: DocData, opts?: { merge?: boolean }) => void;
   update: (data: DocData) => Promise<void>;
@@ -295,6 +326,27 @@ const SWEEP_MS = NOW_MS - 42_000;
 
 const STATE_PATH = estoqueMercadoLivreSyncCollection.resolvePath({});
 const LINK_PATH = 'produtos/PROD/produtoMercadoLivre';
+
+function seedProduto(db: FakeDb, produtoId: string, extra: DocData = {}): void {
+  db.seed('produtos', produtoId, {
+    ehKit: false,
+    ehKitVirtual: false,
+    componentesKit: null,
+    ...extra,
+  });
+}
+
+function seedEstoque(
+  db: FakeDb,
+  produtoId: string,
+  quantidade: unknown,
+  quantidadeReservada: unknown = 0,
+): void {
+  db.seed(`produtos/${produtoId}/estoques`, makeEstoqueUid(produtoId, 'DEP'), {
+    quantidade,
+    quantidadeReservada,
+  });
+}
 
 function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
   return {
@@ -383,6 +435,8 @@ interface HarnessOpts {
    * `retryCount: LAST_ATTEMPT` out loud.
    */
   retryCount?: number;
+  /** True only for the Cloud Tasks wrapper; inline/manual retries keep payload quantities. */
+  refreshStockOnRetry?: boolean;
 }
 
 function makeHarness(opts: HarnessOpts = {}) {
@@ -454,6 +508,7 @@ function makeHarness(opts: HarnessOpts = {}) {
     apiFactory,
     jitterSec,
     retryCount: opts.retryCount ?? 0,
+    refreshStockOnRetry: opts.refreshStockOnRetry ?? false,
   };
   return {
     db,
@@ -511,6 +566,21 @@ describe('mlStockSendTaskSchema', () => {
         payload({ quantidade: null, variations: [{ id: 101, available_quantity: -1 }] }),
       ),
     ).toThrow();
+  });
+
+  it('accepts both modern and pre-#693 bulk entries while preserving child metadata', () => {
+    const modern = mlStockSendTaskSchema.parse(
+      payload({
+        quantidade: null,
+        variations: [{ id: 101, produtoId: 'CHILD', available_quantity: 4 }],
+      }),
+    );
+    const legacy = mlStockSendTaskSchema.parse(
+      payload({ quantidade: null, variations: [{ id: 101, available_quantity: 4 }] }),
+    );
+
+    expect(modern.variations).toEqual([{ id: 101, produtoId: 'CHILD', available_quantity: 4 }]);
+    expect(legacy.variations).toEqual([{ id: 101, available_quantity: 4 }]);
   });
 
   it('accepts a buildSendTasks draft verbatim (the sweep-side wire contract)', () => {
@@ -1010,6 +1080,429 @@ describe('processStockSendTask — request bodies (payload verbatim)', () => {
       expect.stringContaining('enviado'),
       expect.objectContaining({ ageMs: 90_000, itemId: 'MLB111', sweepId: 'sweep-1' }),
     );
+  });
+});
+
+describe('processStockSendTask — retry stock refresh (#693)', () => {
+  it('first attempts of every protocol perform zero produto/estoque BatchGets', async () => {
+    const item = makeHarness();
+    await run(item, payload({ quantidade: 7 }));
+
+    const variationItem = makeHarness();
+    await run(
+      variationItem,
+      payload({
+        kind: 'variationItem',
+        itemId: 'MLB-CHILD',
+        variacaoProdutoId: 'CHILD',
+        quantidade: 8,
+      }),
+    );
+
+    const bulk = makeHarness({ getItem: async () => vivo([101]) });
+    await run(
+      bulk,
+      payload({
+        quantidade: null,
+        variations: [{ id: 101, produtoId: 'CHILD', available_quantity: 9 }],
+      }),
+    );
+
+    const userProduct = makeHarness();
+    await run(
+      userProduct,
+      payload({
+        kind: 'userProductStock',
+        userProductId: 'MLBU-1',
+        variacaoProdutoId: 'CHILD',
+        quantidade: 10,
+      }),
+    );
+
+    for (const h of [item, variationItem, bulk, userProduct]) {
+      expect(h.db.batchGets).toEqual([]);
+    }
+    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+      expect.stringContaining('fonte da quantidade'),
+      expect.objectContaining({
+        stockRefresh: expect.objectContaining({
+          refreshed: false,
+          source: 'payload',
+          produtoReadCount: 0,
+          estoqueReadCount: 0,
+          componentRefCount: 0,
+        }),
+      }),
+    );
+    expect(item.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 7 });
+    expect(variationItem.updateItem).toHaveBeenCalledWith('MLB-CHILD', {
+      available_quantity: 8,
+    });
+    expect(bulk.updateItem).toHaveBeenCalledWith('MLB111', {
+      variations: [{ id: 101, available_quantity: 9 }],
+    });
+    expect(userProduct.putUserProductSellerWarehouseStock).toHaveBeenCalledWith('MLBU-1', '7', [
+      expect.objectContaining({ quantity: 10 }),
+    ]);
+  });
+
+  it('a real Cloud Tasks retry replaces the scalar quantity with two bounded BatchGets', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(h.db, 'PROD');
+    seedEstoque(h.db, 'PROD', 19, 2);
+
+    const res = await run(h, payload({ quantidade: 99 }));
+
+    expect(res).toEqual({ outcome: 'sent', reason: null });
+    expect(h.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 17 });
+    expect(h.db.batchGets).toEqual([
+      {
+        paths: ['produtos/PROD'],
+        fieldMask: ['ehKit', 'ehKitVirtual', 'componentesKit'],
+      },
+      {
+        paths: [`produtos/PROD/estoques/${makeEstoqueUid('PROD', 'DEP')}`],
+        fieldMask: ['quantidade', 'quantidadeReservada'],
+      },
+    ]);
+    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+      expect.stringContaining('fonte da quantidade'),
+      expect.objectContaining({
+        stockRefresh: expect.objectContaining({
+          refreshed: true,
+          source: 'cloud-task-retry',
+          produtoReadCount: 1,
+          estoqueReadCount: 1,
+        }),
+      }),
+    );
+  });
+
+  it('the manual retry ladder keeps its just-computed payload verbatim', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: false });
+
+    await run(h, payload({ quantidade: 23 }));
+
+    expect(h.db.batchGets).toEqual([]);
+    expect(h.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 23 });
+  });
+
+  it('a pause re-enqueue refreshes even when the Cloud Tasks attempt index reset to zero', async () => {
+    const h = makeHarness({ retryCount: 0, refreshStockOnRetry: false });
+    seedProduto(h.db, 'PROD');
+    seedEstoque(h.db, 'PROD', 14, 3);
+
+    await run(h, payload({ reenqueues: 1, quantidade: 70 }));
+
+    expect(h.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 11 });
+    expect(h.db.batchGets).toHaveLength(2);
+    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+      expect.stringContaining('fonte da quantidade'),
+      expect.objectContaining({
+        stockRefresh: expect.objectContaining({ source: 'pause-reenqueue', reenqueues: 1 }),
+      }),
+    );
+  });
+
+  it('an account that is still paused re-enqueues before any refresh read', async () => {
+    const h = makeHarness({ retryCount: 2, refreshStockOnRetry: true });
+    h.db.seed(STATE_PATH, CONTA, { pausedUntilUs: NOW_US + 60_000_000 });
+
+    const res = await run(h, payload({ reenqueues: 1 }));
+
+    expect(res).toEqual({ outcome: 'paused-requeued', reason: null });
+    expect(h.db.batchGets).toEqual([]);
+    expect(h.apiFactory).not.toHaveBeenCalled();
+  });
+
+  it('the first dispatch after a pause expires reads fresh stock', async () => {
+    const h = makeHarness();
+    h.db.seed(STATE_PATH, CONTA, { pausedUntilUs: NOW_US - 1 });
+    seedProduto(h.db, 'PROD');
+    seedEstoque(h.db, 'PROD', 6);
+
+    await run(h, payload({ reenqueues: 1, quantidade: 88 }));
+
+    expect(h.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 6 });
+    expect(h.db.batchGets).toHaveLength(2);
+  });
+
+  it('variationItem and userProductStock both target the child produto', async () => {
+    const variation = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(variation.db, 'CHILD');
+    seedEstoque(variation.db, 'CHILD', 12, 2);
+    await run(
+      variation,
+      payload({ kind: 'variationItem', variacaoProdutoId: 'CHILD', quantidade: 77 }),
+    );
+
+    const up = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(up.db, 'CHILD');
+    seedEstoque(up.db, 'CHILD', 9, 1);
+    await run(
+      up,
+      payload({
+        kind: 'userProductStock',
+        userProductId: 'MLBU-1',
+        variacaoProdutoId: 'CHILD',
+        quantidade: 66,
+      }),
+    );
+
+    expect(variation.db.batchGets[0]?.paths).toEqual(['produtos/CHILD']);
+    expect(variation.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 10 });
+    expect(up.db.batchGets[0]?.paths).toEqual(['produtos/CHILD']);
+    expect(up.putUserProductSellerWarehouseStock).toHaveBeenCalledWith('MLBU-1', '7', [
+      expect.objectContaining({ store_id: 'STORE-1', network_node_id: 'NODE-1', quantity: 8 }),
+    ]);
+  });
+
+  it('bulk refresh deduplicates repeated produto ids and never sends internal metadata to ML', async () => {
+    const h = makeHarness({
+      retryCount: 1,
+      refreshStockOnRetry: true,
+      getItem: async () => vivo([101, 102]),
+    });
+    seedProduto(h.db, 'CHILD');
+    seedEstoque(h.db, 'CHILD', 13);
+
+    await run(
+      h,
+      payload({
+        quantidade: null,
+        variations: [
+          { id: 101, produtoId: 'CHILD', available_quantity: 1 },
+          { id: 102, produtoId: 'CHILD', available_quantity: 2 },
+        ],
+      }),
+    );
+
+    expect(h.db.batchGets.map((batch) => batch.paths)).toEqual([
+      ['produtos/CHILD'],
+      [`produtos/CHILD/estoques/${makeEstoqueUid('CHILD', 'DEP')}`],
+    ]);
+    expect(h.updateItem).toHaveBeenCalledWith('MLB111', {
+      variations: [
+        { id: 101, available_quantity: 13 },
+        { id: 102, available_quantity: 13 },
+      ],
+    });
+  });
+
+  it('shared kit components are read once and each kit uses its own component minimum', async () => {
+    const h = makeHarness({
+      retryCount: 1,
+      refreshStockOnRetry: true,
+      getItem: async () => vivo([101, 102]),
+    });
+    seedProduto(h.db, 'KIT-A', {
+      ehKit: true,
+      componentesKit: { COMP: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+    });
+    seedProduto(h.db, 'KIT-B', {
+      ehKit: true,
+      componentesKit: { COMP: { quantidade: 4, limitarEstoque: true, timestamp: null } },
+    });
+    seedEstoque(h.db, 'COMP', 20);
+
+    await run(
+      h,
+      payload({
+        quantidade: null,
+        variations: [
+          { id: 101, produtoId: 'KIT-A', available_quantity: 99 },
+          { id: 102, produtoId: 'KIT-B', available_quantity: 99 },
+        ],
+      }),
+    );
+
+    expect(h.db.batchGets[1]?.paths).toEqual([
+      `produtos/KIT-A/estoques/${makeEstoqueUid('KIT-A', 'DEP')}`,
+      `produtos/KIT-B/estoques/${makeEstoqueUid('KIT-B', 'DEP')}`,
+      `produtos/COMP/estoques/${makeEstoqueUid('COMP', 'DEP')}`,
+    ]);
+    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+      expect.stringContaining('fonte da quantidade'),
+      expect.objectContaining({
+        stockRefresh: expect.objectContaining({ componentRefCount: 1, estoqueReadCount: 3 }),
+      }),
+    );
+    expect(h.updateItem).toHaveBeenCalledWith('MLB111', {
+      variations: [
+        { id: 101, available_quantity: 10 },
+        { id: 102, available_quantity: 5 },
+      ],
+    });
+  });
+
+  it('stock tolerance preserves zeroing, negative-reservation safety, floor and max clamp', async () => {
+    vi.stubEnv('MERCADO_LIVRE_STOCK_MAX', '500');
+    const ids = ['MISSING', 'NEG-RES', 'NEGATIVE', 'HIGH'];
+    const h = makeHarness({
+      retryCount: 1,
+      refreshStockOnRetry: true,
+      getItem: async () => vivo([101, 102, 103, 104]),
+    });
+    for (const id of ids) seedProduto(h.db, id);
+    seedEstoque(h.db, 'NEG-RES', 8.9, -20);
+    seedEstoque(h.db, 'NEGATIVE', -4.2, 0);
+    seedEstoque(h.db, 'HIGH', 250_000, Number.NaN);
+
+    await run(
+      h,
+      payload({
+        quantidade: null,
+        variations: ids.map((produtoId, index) => ({
+          id: 101 + index,
+          produtoId,
+          available_quantity: 40,
+        })),
+      }),
+    );
+
+    expect(h.updateItem).toHaveBeenCalledWith('MLB111', {
+      variations: [
+        { id: 101, available_quantity: 0 },
+        { id: 102, available_quantity: 8 },
+        { id: 103, available_quantity: 0 },
+        { id: 104, available_quantity: 500 },
+      ],
+    });
+  });
+
+  it('virtual kits send by default; the escape hatch skips scalar and filters bulk children', async () => {
+    const normal = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(normal.db, 'PROD', {
+      ehKit: true,
+      ehKitVirtual: true,
+      componentesKit: { COMP: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+    });
+    seedEstoque(normal.db, 'COMP', 9);
+    await run(normal, payload({ quantidade: 70 }));
+    expect(normal.updateItem).toHaveBeenCalledWith('MLB111', { available_quantity: 4 });
+
+    vi.stubEnv(STOCK_KIT_VIRTUAL_SKIP_FLAG_ENV, '1');
+    const scalar = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(scalar.db, 'PROD', { ehKit: true, ehKitVirtual: true });
+    const scalarResult = await run(scalar);
+    expect(scalarResult).toEqual({ outcome: 'skipped', reason: 'kit-virtual' });
+    expect(scalar.apiFactory).not.toHaveBeenCalled();
+
+    const bulk = makeHarness({
+      retryCount: 1,
+      refreshStockOnRetry: true,
+      getItem: async () => vivo([101, 102]),
+    });
+    seedProduto(bulk.db, 'VIRTUAL', { ehKit: true, ehKitVirtual: true });
+    seedProduto(bulk.db, 'PLAIN');
+    seedEstoque(bulk.db, 'PLAIN', 7);
+    await run(
+      bulk,
+      payload({
+        quantidade: null,
+        variations: [
+          { id: 101, produtoId: 'VIRTUAL', available_quantity: 90 },
+          { id: 102, produtoId: 'PLAIN', available_quantity: 90 },
+        ],
+      }),
+    );
+    expect(bulk.updateItem).toHaveBeenCalledWith('MLB111', {
+      variations: [
+        { id: 101, available_quantity: 2 },
+        { id: 102, available_quantity: 7 },
+      ],
+    });
+
+    const allBulk = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    seedProduto(allBulk.db, 'VIRTUAL', { ehKit: true, ehKitVirtual: true });
+    const allBulkResult = await run(
+      allBulk,
+      payload({
+        quantidade: null,
+        variations: [{ id: 101, produtoId: 'VIRTUAL', available_quantity: 90 }],
+      }),
+    );
+    expect(allBulkResult).toEqual({ outcome: 'skipped', reason: 'kit-virtual' });
+    expect(allBulk.apiFactory).not.toHaveBeenCalled();
+  });
+
+  it('read-set samples stop at 20 entries and mark truncation without losing exact counts', async () => {
+    const ids = Array.from({ length: 21 }, (_, index) => `P-${index + 1}`);
+    const h = makeHarness({
+      retryCount: 1,
+      refreshStockOnRetry: true,
+      getItem: async () => vivo(ids.map((_, index) => 101 + index)),
+    });
+    for (const id of ids) {
+      seedProduto(h.db, id);
+      seedEstoque(h.db, id, 1);
+    }
+
+    await run(
+      h,
+      payload({
+        quantidade: null,
+        variations: ids.map((produtoId, index) => ({
+          id: 101 + index,
+          produtoId,
+          available_quantity: 20,
+        })),
+      }),
+    );
+
+    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+      expect.stringContaining('fonte da quantidade'),
+      expect.objectContaining({
+        stockRefresh: expect.objectContaining({
+          produtoReadCount: 21,
+          estoqueReadCount: 21,
+          produtoIdsSample: ids.slice(0, 20),
+          estoquePathsSample: ids
+            .slice(0, 20)
+            .map((id) => `produtos/${id}/estoques/${makeEstoqueUid(id, 'DEP')}`),
+          readSetTruncated: true,
+        }),
+      }),
+    );
+  });
+
+  it('old bulk tasks without produtoId skip without scans, stock reads or ML calls', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+
+    const res = await run(
+      h,
+      payload({ quantidade: null, variations: [{ id: 101, available_quantity: 8 }] }),
+    );
+
+    expect(res).toEqual({ outcome: 'skipped', reason: 'refresh-sem-produto-id' });
+    expect(h.db.batchGets).toEqual([]);
+    expect(h.apiFactory).not.toHaveBeenCalled();
+    expect(h.updateItem).not.toHaveBeenCalled();
+  });
+
+  it('a missing target produto skips the whole send before the estoque batch', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+
+    const res = await run(h);
+
+    expect(res).toEqual({ outcome: 'skipped', reason: 'refresh-produto-ausente' });
+    expect(h.db.batchGets).toEqual([
+      {
+        paths: ['produtos/PROD'],
+        fieldMask: ['ehKit', 'ehKitVirtual', 'componentesKit'],
+      },
+    ]);
+    expect(h.apiFactory).not.toHaveBeenCalled();
+  });
+
+  it('a Firestore BatchGet failure is rethrown for Cloud Tasks to retry', async () => {
+    const h = makeHarness({ retryCount: 1, refreshStockOnRetry: true });
+    const boom = new Error('batch unavailable');
+    h.db.getAllError = boom;
+
+    await expect(run(h)).rejects.toBe(boom);
+
+    expect(h.apiFactory).not.toHaveBeenCalled();
   });
 });
 
@@ -1757,7 +2250,7 @@ it('THE SEAM: what the prune writes is what the next sweep leaves out', () => {
 
   // The phantom is gone; the live sibling still ships.
   expect(built.tasks).toHaveLength(1);
-  expect(built.tasks[0]?.variations).toEqual([{ id: 101, available_quantity: 3 }]);
+  expect(built.tasks[0]?.variations).toEqual([{ id: 101, produtoId: 'C1', available_quantity: 3 }]);
   expect(built.skips).toEqual([
     { produtoId: 'C2', reason: 'status-nao-enviavel', itemId: 'MLB111', linkDocId: 'link1' },
   ]);
