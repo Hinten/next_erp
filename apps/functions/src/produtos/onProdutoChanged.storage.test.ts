@@ -246,7 +246,67 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     expect(child.precos).toEqual({ l1: { valor: 5 } }); // untouched
   });
 
-  it('a child write changing ONLY precos records no entry (echo suppressed)', async () => {
+  it('re-enabling propagation synchronizes independent child prices even when the parent map is unchanged', async () => {
+    const db = getDb();
+    const parentId = freshId('parent-reenable');
+    const childId = freshId('child-reenable');
+    const parentPrecos = { l1: { valor: 30 } };
+    await db
+      .collection('produtos')
+      .doc(parentId)
+      .set({ nome: 'Pai', paiId: null, precos: parentPrecos, propagatePriceToChildren: false });
+    await db
+      .collection('produtos')
+      .doc(childId)
+      .set({ nome: 'Filho independente', paiId: parentId, precos: { l1: { valor: 5 } } });
+    await db.collection('produtos').doc(parentId).update({ propagatePriceToChildren: true });
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      parentId,
+      { nome: 'Pai', paiId: null, precos: parentPrecos, propagatePriceToChildren: false },
+      { nome: 'Pai', paiId: null, precos: parentPrecos, propagatePriceToChildren: true },
+      freshId('evt'),
+      EVENT_TIME_MICROS,
+    );
+
+    expect((await db.collection('produtos').doc(childId).get()).data()?.precos).toEqual(
+      parentPrecos,
+    );
+  });
+
+  it('a delayed re-enable delivery propagates the current parent map, never its stale snapshot', async () => {
+    const db = getDb();
+    const parentId = freshId('parent-delayed');
+    const childId = freshId('child-delayed');
+    const oldPrecos = { l1: { valor: 30 } };
+    const currentPrecos = { l1: { valor: 40 } };
+    await db.collection('produtos').doc(parentId).set({
+      nome: 'Pai',
+      paiId: null,
+      precos: currentPrecos,
+      propagatePriceToChildren: true,
+    });
+    await db
+      .collection('produtos')
+      .doc(childId)
+      .set({ nome: 'Filho', paiId: parentId, precos: { l1: { valor: 5 } } });
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      parentId,
+      { nome: 'Pai', paiId: null, precos: oldPrecos, propagatePriceToChildren: false },
+      { nome: 'Pai', paiId: null, precos: oldPrecos, propagatePriceToChildren: true },
+      freshId('evt-delayed'),
+      EVENT_TIME_MICROS,
+    );
+
+    expect((await db.collection('produtos').doc(childId).get()).data()?.precos).toEqual(
+      currentPrecos,
+    );
+  });
+
+  it('an Admin-SDK child write changing ONLY precos records no entry (echo suppressed)', async () => {
     const db = getDb();
     const childId = freshId('echo');
     const eventId = freshId('evt');
@@ -267,6 +327,33 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
     );
 
     expect(await coreEntries(db, childId)).toHaveLength(0);
+  });
+
+  it('an authenticated child price edit records a reversible precos entry', async () => {
+    const db = getDb();
+    const childId = freshId('operator-price');
+    const eventId = freshId('evt');
+    const before = { nome: 'Variação', paiId: 'algumPai', precos: { l1: { valor: 5 } } };
+    const after = { nome: 'Variação', paiId: 'algumPai', precos: { l1: { valor: 20 } } };
+    await db.collection('produtos').doc(childId).set(after);
+
+    await recordProdutoModificationAndPropagate(
+      db,
+      childId,
+      before,
+      after,
+      eventId,
+      EVENT_TIME_MICROS,
+      'documents/usuarios/u1',
+    );
+
+    const entries = await coreEntries(db, childId);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.data()).toMatchObject({
+      campos: ['precos'],
+      usuarioOuterRef: 'documents/usuarios/u1',
+      changes: { precos: { old: before.precos, new: after.precos } },
+    });
   });
 
   it('a child write changing nome records an entry without precos in campos', async () => {

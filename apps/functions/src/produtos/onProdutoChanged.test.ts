@@ -46,8 +46,12 @@ describe('produtoExtraIgnores', () => {
     expect(produtoExtraIgnores({}, {})).toEqual([]);
   });
 
-  it('ignores precos for a variation child write (paiId set via after)', () => {
+  it('ignores precos for an Admin-SDK variation child write (paiId set via after)', () => {
     expect(produtoExtraIgnores({}, { paiId: 'pai1' })).toEqual(['precos']);
+  });
+
+  it('audits precos for an authenticated variation child write', () => {
+    expect(produtoExtraIgnores({}, { paiId: 'pai1' }, 'documents/usuarios/u1')).toEqual([]);
   });
 
   it('falls back to before.paiId when after is undefined (delete of a variation child)', () => {

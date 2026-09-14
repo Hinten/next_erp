@@ -78,19 +78,20 @@ export const PRODUTO_HISTORY_IGNORE_FIELDS: ReadonlyArray<string> = [
 ];
 
 /**
- * A variation child's `precos` is server-PROPAGATED from its parent (the
- * write below) — recording it here would echo that write back as a spurious
- * "child changed" entry, and on the child's own re-fire of this trigger would
- * make `campos` non-empty for a change nobody made by hand. `after` carries
- * `paiId` on every write except a delete, where only `before` is left.
+ * A variation child's `precos` may be server-propagated or operator-authored.
+ * Admin-SDK writes have no acting user and stay ignored to suppress the
+ * propagation echo; an authenticated editor write is audited like any other
+ * human change. `after` carries `paiId` on every write except a delete, where
+ * only `before` is left.
  */
 export function produtoExtraIgnores(
   before: DocumentData | undefined,
   after: DocumentData | undefined,
+  usuarioOuterRef: string | null = null,
 ): ReadonlyArray<string> {
   const doc = after ?? before;
   const ignores: string[] = [];
-  if (doc?.paiId != null) ignores.push('precos');
+  if (doc?.paiId != null && usuarioOuterRef === null) ignores.push('precos');
   // On a KIT the weight and box are server-DERIVED — rolled up from the
   // components by `dimensoesDoKit`, pushed in by `KitManager` on save and
   // rewritten by `recalcularDimensoesKit` whenever a component changes (#1152).
@@ -523,7 +524,10 @@ export async function recordProdutoModificationAndPropagate(
   const entry = buildModificationEntry({
     before,
     after,
-    ignore: [...PRODUTO_HISTORY_IGNORE_FIELDS, ...produtoExtraIgnores(before, after)],
+    ignore: [
+      ...PRODUTO_HISTORY_IGNORE_FIELDS,
+      ...produtoExtraIgnores(before, after, usuarioOuterRef),
+    ],
     path: `produtos/${produtoId}`,
     subcolecao: null,
     docId: produtoId,
@@ -537,20 +541,40 @@ export async function recordProdutoModificationAndPropagate(
   if (entry !== null) {
     await recordModification(db, PRODUTO_HISTORY_ROOT, produtoId, entry);
 
-    // Propagation is gated on the entry's `campos` — never on custo alone, a
-    // custo edit never touches a child's precos — AND on the opt-out field.
+    // Propagation is gated on a parent price change — never on custo alone, a
+    // custo edit never touches a child's precos — OR on the explicit false →
+    // true re-enable transition. The latter is the confirmed UI action that
+    // deliberately replaces each independent child map with the parent's
+    // current map, even when the parent price itself was not edited.
     // `!== false` treats a missing field (every produto written before this
-    // field existed) the same as the schema default `true`. Variation children
-    // never reach here on their own write (their `precos` diff is suppressed by
-    // `produtoExtraIgnores`, so `entry.campos` never contains it), but the
-    // `paiId == null` check stays as defense-in-depth.
-    const shouldPropagate =
-      after.paiId == null &&
-      entry.campos.includes('precos') &&
-      after.propagatePriceToChildren !== false;
-    const childWrites = shouldPropagate
-      ? await findChildrenToPropagate(db, produtoId, (after.precos as PrecosMap) ?? null)
-      : [];
+    // field existed) the same as the schema default `true`. Authenticated child
+    // price edits are now audited, so `entry.campos` may contain `precos`; the
+    // `paiId == null` guard is what keeps them out of parent propagation.
+    const priceChanged = entry.campos.includes('precos');
+    const propagationReenabled =
+      before?.propagatePriceToChildren === false && after.propagatePriceToChildren !== false;
+    let parentPrecosToPropagate: PrecosMap | undefined;
+    if (after.paiId == null && after.propagatePriceToChildren !== false) {
+      if (propagationReenabled) {
+        // A re-enable event may be delivered after a newer parent price write.
+        // Re-read the parent so every delayed delivery converges on the current
+        // map instead of restoring its stale `after.precos` snapshot. If the
+        // current policy is disabled again (or the parent is gone), do nothing.
+        const currentParent = await produtoCollection.docRef(db, {}, produtoId).get();
+        const currentData = currentParent.data();
+        if (currentParent.exists && currentData?.propagatePriceToChildren !== false) {
+          parentPrecosToPropagate = (currentData?.precos as PrecosMap) ?? null;
+        }
+      } else if (priceChanged) {
+        // Common path: this delivery is the write that set the price, so its
+        // snapshot is the target and no extra parent read is required.
+        parentPrecosToPropagate = (after.precos as PrecosMap) ?? null;
+      }
+    }
+    const childWrites =
+      parentPrecosToPropagate !== undefined
+        ? await findChildrenToPropagate(db, produtoId, parentPrecosToPropagate)
+        : [];
     if (childWrites.length > 0) {
       await commitChunked(db, childWrites);
     }
@@ -614,8 +638,9 @@ export async function recordProdutoModificationAndPropagate(
  * The produto modification-history + propagation trigger. Fires on EVERY
  * produto write (create/update/delete); the guards above make a delete or a
  * write that changes nothing outside the ignore list a zero-write no-op —
- * only a real change writes the entry, and only a precos change (never custo
- * alone) performs the one extra read that finds children to propagate to.
+ * only a real change writes the entry. A parent precos change reads the
+ * children to propagate; re-enabling propagation first re-reads the current
+ * parent and then reads the children. A custo-only change does neither.
  * Targets the NAMED `default` database (gotcha #8).
  */
 export const onProdutoChanged = onDocumentWrittenWithAuthContext(
