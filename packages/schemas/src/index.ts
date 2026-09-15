@@ -125,6 +125,11 @@ export {
 } from './endereco';
 
 export {
+  historicoModificacaoCliente,
+  historicoModificacaoClienteMeta,
+} from './clienteHistoricoModificacoes';
+
+export {
   ENDERECO_FALLBACKS,
   ENDERECO_PREFIXOS_MINIMO,
   NFE_ENDERECO_LIMITES,
@@ -725,6 +730,11 @@ export {
   type IndIntermedOperacao,
   type OrigemProdutoImposto,
 } from './operacao';
+
+export {
+  historicoModificacaoOperacao,
+  historicoModificacaoOperacaoMeta,
+} from './operacaoHistoricoModificacoes';
 
 export {
   motivoIncidente,
