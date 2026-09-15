@@ -2,14 +2,16 @@
 
 API-only Next.js app for the **Shopee Open Platform** sales channel. One App
 Hosting backend per channel (ADR 0015), so its logs and deploy are isolated.
-Runs on `:3009` in dev. Steps 1–7 and 10 of
+Runs on `:3009` in dev. Steps 1–8 and 10 of
 `.master_plans/shopee/shopee-marketplace-integration.md` — **OAuth connect,
 conta status, the access-token refresh, the cached taxonomy reads, the inbound
 push receiver with its Cloud Tasks queue, nested functions codebase, weekly
-authorization-expiry sweep and the three step-4 delivery backstops, the
+authorization-expiry sweep and the step-4 delivery backstops, the
 step-5 order → pedido import, the step-6 pagamentos with their weekly
-escrow settlement sweep, and the step-7 shipment tracking that merges a
-per-package observation into the pedido's `freteInicial`**.
+escrow settlement sweep, the step-7 shipment tracking that merges a
+per-package observation into the pedido's `freteInicial`, and the step-8 weekly
+stuck-reservation sweep that re-drives — and, where it cannot decide, SURFACES —
+a pedido still holding a stock reservation past the horizon**.
 
 ⚠️ **Step 5 is where this app started writing ERP business data** — `pedidos`,
 `clientes`, `enderecos`, `incidentes`, and since step 6 the
@@ -151,13 +153,30 @@ a page of the 3-day queue irreversibly.
   package-set rungs, the batched pull, the per-package and backstop predictions)
   and the pure CLI (args, the two allow-lists, the renderers, the error
   describer). See **Shipment tracking (step 7)** below.
+- `lib/shopee/pedidos/{reservaTravadaMapping,reservaTravadaSweep,varrerReservasCli}.ts`
+  + `lib/shopee/avisos/reservaTravada.ts` — step 8's weekly stuck-reservation
+  sweep, in the same three-part shape step 7 uses.
+  `reservaTravadaMapping.ts` is the PURE half — the eleven-member verdict union
+  with `VEREDITOS_QUE_AVISAM`, `classificarReservaTravada` (which consults
+  `estadoPedidoDeOrderStatus` and no status table of its own), the two ownership
+  proofs `provaDeIdentidadeShopee` / `integracaoIdDoPedidoShopee`, and
+  `idadeEmDias`; `reservaTravadaSweep.ts` is the tick (the paged candidate query,
+  the four gates, the batched `get_order_detail` read, the two effects, the
+  reconciliation pass and the counters); `avisos/reservaTravada.ts` is the
+  FIRST producer of `TIPO_AVISO.pedidoPrecisaDecisao` plus the machine resolver
+  that tipo has owed since it was declared; and `varrerReservasCli.ts` is the
+  pure half of the fifth CLI. ⚠️ **The sweep writes no pedido field and runs no
+  multi-document atomic write**, so it files no entry in the transaction
+  inventory — which is also why none of those modules may NAME that API, even
+  in a comment (the guard greps raw text). See **Stuck-reservation sweep
+  (step 8)** below.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
   loaders. **Test-only, imported by no `src` file** — the
   `lib/shopee/testing/fakeDb.ts` precedent. A body enters the corpus only after
   `redact`, and a scan finding never carries the value it found.
-- `lib/shopee/avisos/autorizacao.ts` — one of the **seven** modules in this app
+- `lib/shopee/avisos/autorizacao.ts` — one of the **eight** modules in this app
   that speak **microseconds**; every other signature is milliseconds. Raises
   `shopeeAutorizacaoExpirando` / `shopeeDesautorizado` and resolves both, and
   since step 4 it also EXPORTS the µs seam
@@ -165,9 +184,10 @@ a page of the 3-day queue irreversibly.
   write avisos without knowing the unit — which is what keeps its own call sites
   countable rather than merely written down.
 
-  ⚠️ **Three arrived with step 5, a fifth with step 6, two more with step 7,
-  and naming all of them is the point** — a "the ONE module that speaks µs"
-  sentence that has quietly become seven is worse than no sentence. This is a
+  ⚠️ **Three arrived with step 5, a fifth with step 6, two more with step 7, an
+  eighth with step 8, and naming all of them is the point** — a "the ONE module
+  that speaks µs" sentence that has quietly become eight is worse than no
+  sentence. This is a
   list of SITES, not of
   helpers: there are still only the three conversions below (seconds → µs,
   ms → µs, and the tolerant coercion of a stored value), and a site earns a
@@ -220,8 +240,26 @@ a page of the 3-day queue irreversibly.
      ASSIGNS `freteInicial.ultimaModificacao`; ⚠️ that stored value IS carried by
      the whole-map rebuild's spread and must be, because `update()` masks at the
      top-level key and omitting it would ERASE step 5's order watermark.
+  8. `pedidos/reservaTravadaSweep.ts` (step 8) — the weekly stuck-reservation
+     sweep, and the ONLY clock read of its path. It performs the single
+     `millisToMicros(nowMs)` of that path — item 2's pattern exactly, one clock
+     read handed DOWN as `nowUs`, from which the candidate cutoff and every
+     verdict-side age derive — and it converts nothing else: the live `pay_time`
+     never crosses (`reservaTravadaMapping.ts` folds it to a BOOLEAN through
+     `segundosShopeeUtilizaveis`, site 3's neighbour, and it is never stored),
+     and the aviso writes funnel through site 1's `agoraUsDe`. On the STORED
+     side it coerces `timestamp` and `marketplace.statusEm` with
+     `coerceToMicros` — the migrated Shopee corpus really does hold millisecond
+     ints — which is the OPPOSITE rule from site 3's wire values, and the reason
+     both are numbered. ⚠️ No coercion reaches a SERVER-side filter, and none
+     needs to: a ms stamp (~1.7e12) is below any µs cutoff (~1.75e15), so a
+     legacy row satisfies `timestamp < cutoffUs` by construction and sorts LAST
+     under `DESC`. The filter over-matches in the SAFE direction, the
+     verdict-side age is honest because `idadeEmDias` reads through
+     `coerceToMicros`, and the paging loop is what makes a row that sorts last
+     still reachable.
 
-  Plus **three** READERS, which declare no new conversion but have to know the
+  Plus **four** READERS, which declare no new conversion but have to know the
   unit:
   - `pedidos/orderPedidoTx.ts` coerces the STORED `lastMarketplaceUpdate` and
     `ultimaModificacao` through `coerceToMicros` — correct there, because the
@@ -236,21 +274,35 @@ a page of the 3-day queue irreversibly.
     unit-free. ⚠️ Its own test greps that source as RAW TEXT for the three
     converter names, comments included, so writing one into a comment there reds
     a test for a reason the code does not show.
+  - `pedidos/reservaTravadaMapping.ts` (step 8) is PURE — no clock, no env, no
+    Firestore, no wire call — and declares no conversion either, but
+    `idadeEmDias` reads a STORED stamp through `coerceToMicros`, which is what
+    keeps a migrated MILLISECOND pedido from reporting an age measured from
+    1970. It earns no site number for the same reason `pagamentoMapping.ts` does
+    not: it converts nothing it writes, and it writes nothing at all.
 
   **Nothing else converts anything.** A `millisToMicros` or a `coerceToMicros`
   appearing in `itens.ts`, `produtoResolve.ts`, `incidentesProduto.ts`,
   `comprador.ts`, `pagamentoMapping.ts`, `liquidacaoSweep.ts`,
   `liquidarPagamentosCli.ts`, `fretePushShopee.ts`, `freteShopeeMapping.ts`,
-  `rastrearPedidoSimulacao.ts` or `rastrearPedidoCli.ts` is the drift this list
-  exists to prevent.
+  `rastrearPedidoSimulacao.ts`, `rastrearPedidoCli.ts`,
+  `avisos/reservaTravada.ts`, `varrerReservasCli.ts` or
+  `scripts/varrer-reservas.ts` is the drift this list exists to prevent.
   ⚠️ `pagamentoMapping.ts` holds no converter of its own — it CALLS site (3) for
   `pay_time`, the same way item 5 does — and **`liquidacaoSweep.ts` holds no
   microsecond at all**: the sweep is pure epoch MILLISECONDS end to end, and an
-  inline `* 1000` there would be an undeclared eighth site.
+  inline `* 1000` there would be an undeclared NINTH site.
   `liquidarPagamentosCli.ts` holds µs only as DISPLAY: it carries
   `escrowReleaseTimeUs` verbatim out of the prediction and renders it through
   `microsToMillis`, converting nothing that is written — so it is not a site
   either, but it is not µs-free and a reader must not be told it is.
+  ⚠️ **`varrerReservasCli.ts` (step 8) holds the SAME display-only position**,
+  and it is not a new numbered site: the one µs number it touches is the
+  sweep's `cutoffUs`, carried verbatim out of the result and rendered through
+  `microsToMillis` as `<raw> (<ISO UTC>)`. Its I/O half
+  `scripts/varrer-reservas.ts` holds no conversion at all — its only clock is
+  the single `Date.now()` it hands the sweep as `nowMs`, and the
+  `millisToMicros` that number meets lives in the sweep, site 8.
   ⚠️ **`fretePushShopee.ts` emits wire SECONDS on purpose** — that is why the
   shared `PacoteObservadoShopee` record spells the unit into the field names
   (`updateTimeS`, `shipByDateS`) — and `freteShopeeMapping.ts` converts nothing
@@ -287,32 +339,49 @@ a page of the 3-day queue irreversibly.
   `runShopeePushConfigMonitor`: the daily `get_app_push_config` reading and the
   three log-only divergence checks.
 - `lib/shopee/avisos/pushSaude.ts` — the producer for the two push-health
-  avisos, and the second module in this app that writes to the avisos inbox. It
+  avisos, and the second of the **three** modules in this app that write to the
+  avisos inbox (`autorizacao.ts`, this one, and step 8's `reservaTravada.ts`). It
   holds NO `millisToMicros`: it takes the µs helpers from
   `avisos/autorizacao.ts`, which stays the one module on the AVISOS path that
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double the
-  six sweep and producer suites drive. Test-only, imported by no `src` file (the
+  **eight** sweep and producer suites drive (step 8 added two: the
+  stuck-reservation sweep and its aviso producer), and since step 8 it has a
+  suite of its OWN. Test-only, imported by no `src` file (the
   `apps/web/lib/testing` precedent); ONE copy, because two copies with a
   comment claiming they agree is the smell the root CLAUDE.md names. Since
   step 6 it also serves an in-transaction COLLECTION read (the pagamento
   transaction reads the whole subcollection), so its collection chain carries a
   `path` and logs that `get` into `opLog` — a test asserting an exact `opLog`
   over a path that reads a collection sees one more entry than it used to.
+  ⚠️ **Step 8 extended it ADDITIVELY and the extension is load-bearing**: the
+  query builder used to DISCARD the operator and had no `orderBy` at all, so no
+  Shopee test could express a `<` range, an `in`, an ordering or a cursor — a
+  double that answered "matches nothing" while every suite read green. It now
+  honours `==` / `in` / `<` / `<=` / `>` / `>=` / `!=` (and **throws** on any
+  other operator rather than falling back to `===`), sorts on `orderBy`, takes a
+  `startAfter({ id })` document cursor and records the whole query into a SECOND
+  log, `consultasCompletas`. The original `consultas` log is byte-unchanged on
+  purpose: three live suites assert its rows by value, and one of them
+  destructures pairs, so widening it would have made an assertion pass or fail
+  for the wrong reason. The header names those three sites.
 - `functions/` — the nested Cloud Functions codebase (a deploy-artifact
   sub-build; see `functions/DEPLOY.md`). Covered by this app's
   typecheck/lint/test tasks. Mirrors `apps/mercado-pago/functions`.
-- `scripts/` — four dev-only CLIs, **never run by an agent** (root CLAUDE.md
+- `scripts/` — five dev-only CLIs, **never run by an agent** (root CLAUDE.md
   rule 8), with the runbook in `scripts/README.md`: `oauth-url.ts` mints a
   consent URL without the web UI, `importar-pedido.ts` imports ONE named
   order through the real step-5 path, `liquidar-pagamentos.ts` (step 6)
-  rehearses the weekly settlement sweep for ONE integração, and
-  `rastrear-pedido.ts` (step 7) rehearses the shipment merge for ONE order —
-  the last three **dry-run by default**, `--live` to write. Their pure halves
+  rehearses the weekly settlement sweep for ONE integração,
+  `rastrear-pedido.ts` (step 7) rehearses the shipment merge for ONE order, and
+  `varrer-reservas.ts` (step 8) rehearses the weekly stuck-reservation sweep
+  across every active conta — or one, with `--integracao` —
+  the last four **dry-run by default**, `--live` to write. Their pure halves
   (arg parsing, the redacted summary, the renderer, the error describer) live in
   `lib/shopee/pedidos/importarPedidoCli.ts`,
-  `lib/shopee/pedidos/liquidarPagamentosCli.ts` and
-  `lib/shopee/pedidos/{rastrearPedidoCli,rastrearPedidoSimulacao}.ts`
+  `lib/shopee/pedidos/liquidarPagamentosCli.ts`,
+  `lib/shopee/pedidos/{rastrearPedidoCli,rastrearPedidoSimulacao}.ts` and
+  `lib/shopee/pedidos/varrerReservasCli.ts`
   **because `scripts/` is outside
   this app's vitest `include`**, so logic written in a script file can never be
   tested (the `pedidoMoneyAudit.ts` precedent in `apps/mercado-livre`).
@@ -639,20 +708,31 @@ Four things that table encodes:
   leave a stored watermark alone rather than reset it (`camposInformados` reads
   an absent optional as "I do not know" and a `null` as "set it to null").
 
-## Delivery backstops (step 4, `functions/` + `lib/shopee/notificacoes/`)
+## Delivery backstops (steps 4 and 8, `functions/` + `lib/shopee/{notificacoes,pedidos}/`)
 
-Three `onSchedule`s in the nested codebase, each covering a different way a push
+Four `onSchedule`s in the nested codebase, each covering a different way a push
 never arrives. They are what decision P3 spends the receiver's scale-to-zero
-cold start on.
+cold start on. The first three are step 4's and are documented here; the fourth,
+step 8's **`sweepShopeeStuckReservations`**, has its own section below.
 
-⚠️ **The codebase holds more schedules than these three, and only these three are
+⚠️ **The codebase holds more schedules than these four, and only these four are
 backstops.** The weekly authorization-expiry sweep watches a clock (above), and
 step 6's `sweepShopeeEscrowSettlement` reads money that Shopee exposes only once
 the escrow is RELEASED — no push was ever sent for it, so none was ever missed.
 It is documented under **Payments and settlement**, not here; filing it as a
-fourth backstop would make "a way a push never arrives" mean nothing. The honest
-count is six `onSchedule` triggers in `functions/src/index.ts`, with
-`index.test.ts` pinning six distinct crons.
+fifth backstop would make "a way a push never arrives" mean nothing. The honest
+count is seven `onSchedule` triggers in `functions/src/index.ts`, with
+`index.test.ts` pinning seven distinct crons.
+
+⚠️ **Step 8's sweep IS a backstop by that same criterion, and it is the only one
+that reaches past three days.** A subscription Shopee SUSPENDS loses every push
+missed while it was disabled — those are never resent at all, not even into the
+lost-push queue the 2-hourly sweep drains — and the `UNPAID → PENDING`
+transition fires NO push whatsoever (`announcement 682` §4 Q1 says so, and the
+replacement it promised has never shipped). Both leave a pedido holding a stock
+reservation with nothing event-driven left to release it, which is exactly the
+"a way a push never arrives" test this list applies. See **Stuck-reservation
+sweep (step 8)** below.
 
 **`sweepShopeeLostPushes` — every 2 h at :20.** Shopee queues a push that
 exhausted its ladder (+5 min / +30 min / +3 h) for **3 days**, "the earliest 100
@@ -1260,6 +1340,191 @@ and prints the exact patch — plus what the code-3 backstop would fold from the
 same order, which is register item 28 answered by eye. See `scripts/README.md`
 §9.
 
+## Stuck-reservation sweep (`lib/shopee/pedidos/reservaTravada*.ts` + `avisos/reservaTravada.ts`, step 8)
+
+Step 5 imports an `UNPAID`/`PENDING` order as
+`aguardandoConfirmacaoDePagamento`, which is inside `ESTADOS_PEDIDO_RESERVA`:
+the unit is held **on purpose**, and the release is the `CANCELLED` push coming
+back through step 5's own ladder. This sweep exists for the four populations
+where that push never arrives — a SUSPENDED subscription (never resent),
+anything older than the 3-day lost-push queue, the silent `UNPAID → PENDING`
+transition that fires no push at all, and everything while
+`SHOPEE_ORDER_BACKFILL_ENABLED` ships off (and even with it on, its
+`get_order_list` window is 15 days on `update_time`, which by construction
+cannot reach an order whose `update_time` stopped moving).
+
+**It never writes the pedido, and it runs no transaction.** `pedido.estado` on
+this channel keeps exactly ONE writer, step 5, so rule 7 is answered at **tier
+0** — the race is made impossible rather than survived. The sweep does two
+things instead: it RE-DRIVES an order Shopee reports as moved, through one
+synthetic code 3 (`origem: 'reserva-travada'`, the shared
+`notificacaoSinteticaDePedido`) on the normal import path; and it SURFACES
+everything it cannot decide as a `pedidoPrecisaDecisao` aviso. It is the FIRST
+producer of that tipo, declared by #1543 with none, and it ships the machine
+resolver `aviso.ts` requires of every tipo.
+
+**Eleven verdicts, and only ONE of them releases anything.** The gates answer
+`interacao-humana` and `pagamento-aprovado`; the read answers `nao-verificavel`
+and `inexistente`; the classifier answers `ainda-nao-pago`, `pendente-pago`,
+`redirecionado-avancou`, `redirecionado-cancelado`, `manter-devolucao` and
+`status-desconhecido`; the effect answers `tasks-desabilitado`. Only
+`redirecionado-cancelado` (`CANCELLED → cancelado`, `IN_CANCEL →
+processandoCancelamento`) leaves `ESTADOS_PEDIDO_RESERVA` and therefore
+releases, and even that release is written by step 5 through
+`onPedidoEstoqueSync`, never here. `redirecionado-avancou` (`pago`) is enqueued
+too and releases nothing — `pago` is a live sale still inside the reserve set —
+and it is counted APART, because "the order moved" and "the reservation ended"
+are different facts. Four verdicts surface as an aviso: `ainda-nao-pago`,
+`pendente-pago`, `inexistente`, `manter-devolucao` — the set is declared once,
+as `VEREDITOS_QUE_AVISAM`, and `surfacar` is computed from it.
+
+⚠️ **Three verdicts a naive re-driver WOULD enqueue are deliberately never
+enqueued, and each refusal is the safe direction.** `status-desconhecido`,
+because a re-drive makes step 5 write
+`estado: error`, which is OUTSIDE `ESTADOS_PEDIDO_RESERVA` — it would RELEASE
+the reservation for a token nobody understands. `inexistente`, because the
+code-3 arm PARKS an order Shopee no longer knows and the synthetic doc id
+carries the tick's own clock, so a re-driver writes one new parked dead-letter
+document per candidate per week and releases nothing. `manter-devolucao`
+(`TO_RETURN`), because the ladder answers `manter` at its FIRST clause, so a
+re-drive provably cannot move the estado — surfacing is the only thing left that
+is not invisible.
+
+⚠️ **`PENDING` is not a synonym for unpaid.** Both pre-shipment tokens share one
+rung, so the estado cannot tell them apart; the discriminator is `pay_time`, the
+only documented payment signal, folded through `segundosShopeeUtilizaveis` so
+`0`, `null`, `undefined` and any pre-2020 value all read as ABSENT (Shopee
+zero-fills absent numerics on this wire). `PENDING` **with** a usable `pay_time`
+is a PAID sale Shopee is holding (`announcement 1486`: "Label print will be
+available within 4 days after buyer paid"), and its aviso says so in as many
+words — do not cancel it; the path is a ticket on the Open Platform.
+
+**The read is one batched call per 50 candidates per conta.**
+`get_order_detail` with `request_order_status_pending: true` and a MINIMAL
+`response_optional_fields` allow-list — `pay_time`, `cancel_by`,
+`cancel_reason`, and nothing else. `order_status` and `update_time` are BASE
+fields that arrive unasked, `pending_terms` is gated by the FLAG rather than by
+the list, and naming either risks `error_param`. There is no `buyer_cancel_reason`
+and no buyer, item, address, invoice or payment block: **this sweep carries no
+PII on its wire at all**, which is what makes the console-spy test a structural
+claim. Rows are reconciled by `order_sn` through a `Map`, never by position; an
+absent row is `inexistente`. ⚠️ A rate limit of either class, or a dead grant,
+**aborts the conta** — every remaining candidate counts `nao-verificavel` and
+there is never a retry, because "avoid frequent retry operations" plus a daily
+quota that resets at 00:00 UTC+8 makes a retry loop the one failure a human
+ticket has to undo.
+
+⚠️ **The batch-vs-error ambiguity is measured, not assumed.** Shopee's own error
+example and `faq 192` case 3 say an `order_sn` the shop does not own answers
+envelope `error_not_found`; the package says the row is simply omitted. A
+read-only probe on the SG sandbox shop (2026-09-15, three calls) found a MIXED
+batch omits the unknown row with no `error` and `warning: null`, and the
+envelope error fires only when EVERY `order_sn` of the call is unknown. Both
+arms are therefore built and both stay: reconcile-by-`order_sn` handles the
+absent row, and a batch-level `error_not_found` on `N > 1` falls back to
+per-order calls — which under the measured behaviour costs N extra calls only
+when all N are unknown. That is a dated observation on one sandbox shop, not
+documented behaviour, and the docblock says so (settle-live register item 38).
+
+**The gates, in order, and each rejects rather than decides.**
+`provaDeIdentidadeShopee` recomputes `makePedidoIdShopee(contaId, numero)` and
+compares it with the document id — the LEGACY-exact digest, imported and never
+re-derived, so a migrated pedido passes it; a failure counts `adotado` when
+`marketplace.tipo === 'shopee'` and `naoMarketplace` otherwise. Then a
+`lastMarketplaceUpdate` that will not coerce, then the active-conta set, then
+the CLI's `--integracao` scope. What survives is a **candidate**, and only a
+candidate can receive a verdict — which is why `Σ veredictos === candidatos`
+is an invariant a test asserts on every fixture, and why the four gate-1
+counters are never summed with `candidatos`. Two more gates then decide rather
+than reject: `hasUserInteraction === true` ⇒ `interacao-humana`, and any
+`aprovado` payment in the WHOLE `pagamentos` subcollection ⇒ `pagamento-aprovado`
+(the whole subcollection, because the second document is exactly the one a
+first-document read would miss).
+
+**The candidate query rides an index that already exists** —
+`pedidos (ehSaida ASC, estado ASC, timestamp DESC)` — with `estado` as a
+one-element `in` rather than a bare `==`, because on Enterprise the wrong index
+SHAPE does not throw, it full-scans and bills the scan. It pages with
+`startAfter(lastDoc)` to `MAX_PAGINAS` (10) × `PAGE_LIMIT` (200) = **2 000
+documents scanned per tick**, stopping at `MAX_CANDIDATOS` (200) Shopee
+candidates, a drained page, or the page ceiling (`truncado`). The paging is not
+decoration: the query carries no channel clause, so stale manual and ML pedidos
+colonise the head of the page permanently — that is the ML sweep's measured
+starvation, and the cursor is the fix at zero index cost. ⚠️ A migrated pedido
+whose `timestamp` is in MILLISECONDS satisfies any µs cutoff by construction and
+sorts LAST under `DESC`, so it is only ever reached BY the paging; its age is
+still honest, because `idadeEmDias` reads the stored stamp through
+`coerceToMicros`.
+
+**The dry run skips exactly two effects** — `scheduler.enqueue`, and the aviso
+writes/resolves. Everything else happens in both modes: the candidate page, the
+gates, the pagamento reads, the Shopee read, every verdict, the three diagnostic
+tables, and pass (b)'s query and pedido reads. A parity test asserts that over
+EVERY one of the eleven verdicts, which is what makes the rehearsal an
+instrument rather than a rehearsal of the plumbing. `tasks-desabilitado` is
+decided by READING `shopeeTasksDesabilitado()`, never by catching the throw: the
+error class is inside `erroContidoPorConta`, so a caught one would read as a
+per-conta outage, and a dry run never reaches the enqueue at all — the ML sweep
+reports two different verdicts for the identical candidate for exactly that
+reason.
+
+**The avisos, and why the chave carries no window.** The chave is
+`pedidoPrecisaDecisao:<integracaoId>:<pedidoId>` with **no `janela`** — a weekly
+window would mint a fresh document every Monday and destroy the only
+cross-tick memory there is, `ocorrencias`. **No `relogioEvento` is ever
+supplied** either: that guard is a `<=` against an event clock, and the
+residual's `update_time` does not move, so supplying it would freeze
+`ocorrencias` at 1 for exactly the population the aviso exists for. The in-line
+resolve set is exactly TWO — `interacao-humana` (`assumido-por-humano`) and
+`pagamento-aprovado` (`venda-viva`) — because those two void the aviso's own
+premise; resolving on an enqueue (which has no feedback channel) or on a rate
+limit (which is the ABSENCE of an observation) would close a live aviso and
+re-alert next week with a fresh `criadoEm`. Everything else is closed by **pass
+(b)**: one page of 200 unresolved avisos on the collection's OWN declared
+`(resolvidoEm ASC, criadoEm DESC)` composite — `tipo` and `canal` filtered in
+code, because the query cannot discriminate them — then one read by id per row
+whose chave parses as ours, resolving `pedido-inexistente`,
+`estado-saiu-do-conjunto`, `fora-da-posse` or `dentro-do-horizonte`.
+⚠️ Pass (b) is not optional: `sweepAvisosResolvidos` deletes a RESOLVED aviso
+90 days later, and an aviso nobody ever resolves stands forever.
+
+**The instrument.** The result is counters only — per verdict with the zero arms
+PRESENT (an absent key is indistinguishable from an arm that never existed), the
+four gate-1 rejects, `truncado`, the pass-(b) numbers, and
+`redriveAparentementeNaoAplicado` (the stored `marketplace.status` already
+equalled the live one on a `redirecionado-*`: a delivery was accepted and the
+estado still did not move). Beside them sit three tables computed from the
+candidate documents alone, **after the gates and BEFORE any Shopee call**:
+`statusArmazenado` (the `marketplace.status` distribution, verbatim),
+`idadeStatusDias` (bucketed `marketplace.statusEm`) and the cross-tab
+`statusPorIdade`, plus `statusArmazenadoPorVeredito` once the read has answered.
+That pair — a zero-call cross-tab beside the live verdicts — is the ONLY
+instrument anyone has for the question the whole step rests on: **does Shopee
+auto-cancel an unpaid BR order, and after how long?** No page of the cached
+corpus answers it, and the sandbox cannot produce an aged unpaid order. Read it
+week over week; `scripts/README.md` §10 carries the reading table.
+
+**The rehearsal.** `varrer:reservas` runs the same tick from a terminal,
+dry-run by default. `--dry-run` supplies BOTH `forcarDryRun` and
+`ignorarFlagMestra`, so the rehearsal runs BEFORE the master flag exists —
+and the sweep **throws `ShopeeConfigError` when `ignorarFlagMestra` arrives
+without the dry run**, which makes "can rehearse before the flag, can never
+write before the flag" structural rather than a promise. `--live` supplies neither: the master flag is honoured, and
+flipping it is a human's act in the migration window, never a second door in a
+CLI. The per-candidate detail reaches the CLI through the optional
+`deps.onCandidato` seam, called from inside `registrar` — the one function every
+arm reaches — so "exactly once per candidate" is the same property
+`Σ veredictos === candidatos` already asserts, and the tick itself still returns
+nothing but counters. See `scripts/README.md` §10.
+
+**What it never does.** It writes no pedido field — not the estado, not an
+incidente, not `ultimaModificacao`; it runs no transaction and files no entry in
+the transaction inventory (and names that API nowhere, comments included, since
+the guard greps raw text); it performs no estado logic and no estoque arithmetic
+of its own; it never cancels anything on Shopee's side; it adds no index, no
+schema field, no ruleset regeneration and no `apps/web` change — the tipo's
+wording, route and canal all already existed.
+
 ## Taxonomy reads (`lib/shopee/taxonomia/`, step 10)
 
 Seven Shop-signed GETs on Shopee's `product` module — the category tree,
@@ -1418,6 +1683,31 @@ value set in `apphosting.yaml` would be read by nothing.
   it is on, the tick stops after page 1: the queue did not advance, so the next
   read would return the same entries.
 
+## Env added by step 8
+
+Three more, all in the root `.env.example`, none a secret, and — like step 4's
+two — **read only by the nested functions codebase**, so their real home is
+`apps/shopee/functions/.env.deploy` and a value set in `apphosting.yaml` would be
+read by nothing.
+
+- **`SHOPEE_PEDIDO_TRAVADO_SWEEP_ENABLED`** — the master flag for
+  `sweepShopeeStuckReservations`, strict `=== '1'`. It **SHIPS OFF**, and while
+  off the function deploys, ticks, logs one info line naming the variable and
+  reads NOTHING — not Firestore, not Shopee. Turning it on is a runtime env
+  change for the migration window (rule 8), and the intended order is: run the
+  DRY RUN for a few weeks, read `veredictos.ainda-nao-pago` against the
+  `statusPorIdade` cross-tab, and only then flip it.
+- **`SHOPEE_PEDIDO_TRAVADO_DRY_RUN`** — report-only. Queries, gates, READS
+  Shopee and classifies exactly as a live run would, skipping only the two
+  effects. ⚠️ Both flags are read BEFORE the early return, so a disabled tick
+  still reports `dryRun` HONESTLY — the ML sweep reads its dry-run env after its
+  early return, and therefore tells an operator who set the rehearsal flag and
+  forgot the master one that the rehearsal is off.
+- **`SHOPEE_PEDIDO_TRAVADO_MAX_IDADE_D`** — the horizon in whole days; unset or
+  unreadable falls back to 7. ⚠️ The EFFECTIVE age is **7–14 days**, because the
+  schedule is weekly and a pedido that goes stale just after a tick waits for the
+  next one. Nothing may document "7" as a promise.
+
 ## CI
 
 `ci-shopee.yml` carries exactly ONE suite job, `Shopee Cloud Tasks round trip`,
@@ -1446,7 +1736,10 @@ brand catalogue the `cartao` block folds into). Everything else step 6 added
 lives under `apps/shopee/**` or `packages/schemas/src/pedido/**`, both already
 listed. Step 7 grew it by exactly ONE more file,
 `packages/schemas/src/shared/frete.ts` — the shared freight schema, where the
-per-package diary was promoted to. `pull_request:` still has **no** `paths:` and
+per-package diary was promoted to. Step 8 grew it by **nothing**: everything it
+touches is under `apps/shopee/**`, and the two shared paths its avisos reach —
+`packages/schemas/src/aviso.ts` and `packages/data/src/admin/avisos/**` — were
+already listed. `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 
 ⚠️ **This lane owns no exclusion, and that is the point.** Unlike
@@ -1494,7 +1787,7 @@ Open the printed URL, log in with the sandbox shop, and the browser lands on
 app, leave the sandbox redirect-URL domain EMPTY (Shopee then validates nothing)
 or register `localhost`.
 
-The other three CLIs are **dry-run by default** and, like `oauth:url`, are
+The other four CLIs are **dry-run by default** and, like `oauth:url`, are
 **never run by an agent** (root CLAUDE.md rule 8) — the flags, the expected
 output and the runbook for each live in `scripts/README.md`:
 
@@ -1502,6 +1795,7 @@ output and the runbook for each live in `scripts/README.md`:
 pnpm --filter @delfrance/shopee-app importar:pedido --integracao <integracaoId> --order-sn <orderSn>
 pnpm --filter @delfrance/shopee-app liquidar:pagamentos --integracao <integracaoId>
 pnpm --filter @delfrance/shopee-app rastrear:pedido --integracao <integracaoId> --order-sn <orderSn>
+pnpm --filter @delfrance/shopee-app varrer:reservas
 ```
 
 The first imports ONE named order through the real step-5 path; the second
@@ -1509,8 +1803,9 @@ The first imports ONE named order through the real step-5 path; the second
 patch a live tick would write; the third (step 7) rehearses the shipment merge
 for one order — the same `get_package_detail` pull and the same pure prediction a
 code-4/30/47 delivery runs, plus what the code-3 backstop would fold from the
-same order. All three still CALL Shopee in dry-run — what they do not do is
-write.
+same order; the fourth (step 8) rehearses the weekly stuck-reservation sweep
+across **every** active conta by default, `--integracao <id>` to scope it to one.
+All four still CALL Shopee in dry-run — what they do not do is write.
 
 ## Deploy
 
