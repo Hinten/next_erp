@@ -3,12 +3,13 @@
 Dev-only CLIs. **Never run by an agent** (root `CLAUDE.md` rule 8) — a human
 runs them, from this worktree, against the project the environment points at.
 
-| script                   | what it does                                       | writes?                   |
-| ------------------------ | -------------------------------------------------- | ------------------------- |
-| `oauth-url.ts`           | mints a Shopee consent URL without the web UI      | one `oauthState` document |
-| `importar-pedido.ts`     | imports ONE order through the real step-5 path     | only with `--live`        |
-| `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6)    | only with `--live`        |
-| `rastrear-pedido.ts`     | rehearses the shipment merge of ONE order (step 7) | only with `--live`        |
+| script                   | what it does                                          | writes?                   |
+| ------------------------ | ----------------------------------------------------- | ------------------------- |
+| `oauth-url.ts`           | mints a Shopee consent URL without the web UI         | one `oauthState` document |
+| `importar-pedido.ts`     | imports ONE order through the real step-5 path        | only with `--live`        |
+| `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6)       | only with `--live`        |
+| `rastrear-pedido.ts`     | rehearses the shipment merge of ONE order (step 7)    | only with `--live`        |
+| `varrer-reservas.ts`     | rehearses the weekly stuck-reservation sweep (step 8) | only with `--live`        |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -487,3 +488,191 @@ not failures. Exit `1` only on a throw (reported by error CLASS plus Shopee's
 - **A live run can move stock, indirectly.** The transaction moves none itself,
   but `onPedidoEstoqueSync` reacts to the `estado` it writes, so wherever that
   trigger is deployed, writing the freight state is what sets it off.
+
+---
+
+## `varrer:reservas` — rehearsing the weekly stuck-reservation sweep
+
+`sweepShopeeStuckReservations` normally runs unattended, Mondays 04:40, over
+every active conta. This script drives the same tick from a terminal.
+
+**It is the load-bearing artefact of step 8, not a formality.** The whole step
+rests on one question nobody can answer from documentation: **does Shopee
+auto-cancel an unpaid BR order, after how long, and with which
+`cancel_by` / `cancel_reason`?** The 215-page documentation cache contains no
+payment deadline, no auto-cancel rule and no window, and the sandbox cannot
+produce an aged unpaid order at all (order creation there has no payment step).
+So a few weeks of DRY-RUN ticks read week over week are the only instrument that
+exists — and they have to run **before** anyone decides whether to turn the
+master flag on.
+
+### 10.1 Environment
+
+Same `.env.local` as every other script here (`dotenv -e ../../.env.local -- tsx
+…`), and the same variables as §1 — plus the three the sweep itself reads, whose
+real home is `apps/shopee/functions/.env.deploy`:
+
+| variable                              | why it matters here                                                                                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SHOPEE_PEDIDO_TRAVADO_SWEEP_ENABLED` | the master flag. `--live` **honours** it: with it unset the tick prints `enabled: false`, names the variable and exits `0`.                      |
+| `SHOPEE_PEDIDO_TRAVADO_DRY_RUN`       | if it is `1`, the environment forces a dry run and `--live` cannot override it — the preamble says `⚠️ o ambiente força DRY_RUN`.                |
+| `SHOPEE_PEDIDO_TRAVADO_MAX_IDADE_D`   | the horizon in days (default 7). `--max-idade-d <n>` sets this same variable before the imports, so the rehearsal exercises the one real reader. |
+
+The preamble goes to **stderr** and leads with the mode
+(`modo: DRY-RUN — não enfileira e não grava nada` /
+`modo: LIVE — VAI ENFILEIRAR E ESCREVER AVISOS` — this CLI's own wording, not
+the three above: its live run has exactly two effects and the line names both),
+then the project, the database, the raw `SHOPEE_SANDBOX`, the integração scope,
+the
+horizon, **both** flag values raw, and the resolved Shopee environment (plus the
+shop, when `--integracao` scoped it to one conta). The two flags are separate
+lines on purpose: `--live` honours one of them and the other outranks `--live`.
+
+### 10.2 Dry run first — always
+
+```bash
+pnpm --filter @delfrance/shopee-app varrer:reservas
+```
+
+That is the schedule's own scope: **every active conta**. Scope it to one while
+you are learning what it prints:
+
+```bash
+pnpm --filter @delfrance/shopee-app varrer:reservas --integracao int-1
+```
+
+⚠️ **A dry run is not offline.** It reads Firestore _and_ calls Shopee —
+`get_order_detail`, batched 50 `order_sn` at a time — and spends the same
+rate-limited calls a live tick does. What it skips is exactly **two** effects:
+the synthetic code-3 enqueue and the aviso writes/resolves. Every verdict is
+decided on the same side of that boundary in both modes, which is what makes the
+report an instrument rather than a rehearsal of the plumbing.
+
+⚠️ **`--dry-run` is the default and it supplies BOTH seams** — `forcarDryRun`
+_and_ `ignorarFlagMestra` — so the rehearsal runs before
+`SHOPEE_PEDIDO_TRAVADO_SWEEP_ENABLED` exists anywhere. The sweep asserts that
+pair and throws `ShopeeConfigError` when they come apart, so "can rehearse
+before the flag, can never write before the flag" is structural rather than a
+promise.
+
+| flag                | meaning                                                                                                                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>` | restricts the tick to ONE conta. Omitted ⇒ every active conta, as the schedule runs. An id that is not an ACTIVE Shopee conta ⇒ `contas: []`, a loud stderr line naming it, exit `0`          |
+| `--max-idade-d <n>` | overrides the horizon; must be a number greater than zero. `0`, `-1`, `x` and `7d` are all **refused** — a clamp would silently rehearse a horizon nobody asked for                           |
+| `--dry-run`         | the **DEFAULT**                                                                                                                                                                               |
+| `--live`            | runs the tick for real; **refused together with `--dry-run`** rather than resolved by precedence                                                                                              |
+| `--project <id>`    | overrides `FIREBASE_PROJECT_ID` before the admin app resolves it                                                                                                                              |
+| `--json`            | one parseable document on stdout (`{ resultado, candidatos }`), preamble on stderr                                                                                                            |
+| `--help`, `-h`      | prints the usage and exits `0` — it wins over every validation, a contradiction included, and is answered before any dynamic import, so it touches no environment, no Firestore and no Shopee |
+
+⚠️ A bare `--` is refused, and no command in this file carries one (see the note
+at the top).
+
+### 10.3 What to read in the output
+
+Three blocks: the run header, the verdict vector, and the tables.
+
+| line                                                           | what it tells you                                                                                                                                                                                                                                                                 |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled` / `dryRun` / `motivo`                                | `enabled: false` means the master flag is off and NOTHING was read — the honest `dryRun` beside it is what tells you whether you also set the rehearsal flag.                                                                                                                     |
+| `examinados` / `paginas` / `truncado`                          | how much of the candidate page was walked. A `truncado: true` week after week means the tick never reaches the tail — read `naoMarketplace` next.                                                                                                                                 |
+| `naoMarketplace` / `adotado` / `contaInativa` / `foraDoEscopo` | the four gate-1 rejects — rows this channel does not own, or that this run is not scoped to. ⚠️ **Never summed with `candidatos`**: only a row the channel PROVED it owns can carry a verdict. (`semShopId` is separate again — a conta skipped before its candidates were read.) |
+| `candidatos` + `veredictos`                                    | the vector, with the zero arms present. `Σ veredictos === candidatos` on every tick; an absent arm would be indistinguishable from an arm that never existed, so the zeros are printed.                                                                                           |
+| `statusArmazenado` × `idadeStatusDias` → `statusPorIdade`      | the stored `marketplace.status` distribution cross-tabulated against age, computed from the candidate documents alone — **zero Shopee calls**. This is the instrument.                                                                                                            |
+| `statusArmazenadoPorVeredito`                                  | the join: what each stored status turned into once Shopee was asked.                                                                                                                                                                                                              |
+| `redriveAparentementeNaoAplicado`                              | a `redirecionado-*` whose stored status already equalled the live one — a delivery was accepted and the estado still did not move.                                                                                                                                                |
+| `avisosVarridos` / `reconciliados` / `reconciliacaoTruncada`   | pass (b). A sustained `reconciliacaoTruncada: true` means stale rows at the tail are never reconciled, and the fix is a discriminated index (migration window), not a code change.                                                                                                |
+| the per-candidate rows                                         | twelve allow-listed fields: `pedidoId`, `integracaoId`, `orderSn`, `veredito`, `orderStatus`, `pendingTerms`, `temPayTime`, `idadeDias`, `cancelBy`, `cancelReason`, `enfileiraria`, `avisaria`.                                                                                  |
+
+**How the tables answer the central question**, read over three or four
+consecutive Mondays:
+
+| what you read                                                                                         | what it means                                                                                                                                                                                                                   |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UNPAID` mass in the `30-60` / `60-90` buckets migrating to `redirecionado-cancelado`                 | Shopee DOES auto-cancel; the bucket where the mass moves IS the horizon, and `MAX_IDADE_D` should be tuned to just past it                                                                                                      |
+| `UNPAID` persisting as `ainda-nao-pago` at `60-90` and `90+`, tick after tick, `ocorrencias` climbing | Shopee does **not** auto-cancel; the residual is real and non-empty, and whether the sweep should ever write the release itself becomes a conversation to have with Lucas                                                       |
+| `PENDING` + `temPayTime` appearing at all                                                             | a PAID sale held on Shopee's side past a week. Its aviso says do not cancel it; if `pending_terms` reads `SYSTEM_PENDING` and its documented four hours have become twelve days, that is a Shopee ticket, not a design question |
+| `inexistente` concentrating in one age bucket                                                         | Shopee purges orders at that age — nothing in the corpus states it                                                                                                                                                              |
+| `naoMarketplace` dominating `examinados`, with `truncado: true`                                       | the candidate page is colonised by stale non-Shopee pedidos; that is the evidence for a discriminated index, which is migration-window work (#1208)                                                                             |
+| `nao-verificavel` non-trivial                                                                         | the read itself was unreliable — every other number that tick is a lower bound and must be read as one                                                                                                                          |
+
+⚠️ **The output carries no buyer data by construction.** The per-candidate
+summary is an ALLOW-LIST of twelve fields built one at a time, and `temPayTime`
+is a **boolean** — the stamp itself never leaves the sweep. The defence is
+layered: the sweep never lets a `get_order_detail` row out in the first place,
+and it never requests `buyer_cancel_reason`, so the buyer's own words never
+reach this process. It is safe to paste into an issue. Keep it that way if you
+extend it.
+
+### 10.4 The live run
+
+```bash
+pnpm --filter @delfrance/shopee-app varrer:reservas --live
+```
+
+`--live` supplies **neither** seam, so `SHOPEE_PEDIDO_TRAVADO_SWEEP_ENABLED=1`
+must already be in the environment. That is deliberate: flipping the master flag
+is a human's act in the migration window (root `CLAUDE.md` rule 8), and a CLI
+must not be a second door. With the flag off the tick prints `enabled: false`,
+names the variable and exits `0` having read nothing at all.
+
+What a live run can do — and it is only ever these two things:
+
+- **enqueue** one synthetic code 3 (`origem: 'reserva-travada'`) per candidate
+  whose order MOVED, onto the same queue a real push uses. Each one is a real
+  step-5 import, and the estado step 5 writes is what releases the reservation
+  through `onPedidoEstoqueSync`.
+- **write or resolve `avisos`** — one `pedidoPrecisaDecisao` row per residual
+  candidate, plus the two in-line resolves and pass (b)'s.
+
+What it can **never** do: write the pedido. Not the estado, not an incidente,
+not `ultimaModificacao` — the sweep has no writer for one and runs no
+transaction, so `pedido.estado` keeps exactly one writer on this channel,
+step 5. It also never cancels anything on Shopee's side.
+
+Exit `0` on **any** verdict. `ainda-nao-pago`, `inexistente` and
+`nao-verificavel` are answers, not failures, and so is an empty conta list. Exit
+`1` only on a throw, described by CLASS (the same table `importar:pedido` uses)
+and never a payload.
+
+### 10.5 Caveats you should expect to see (none of these is a bug)
+
+- **`candidatos: 0` on a fresh staging project** just means nothing has been
+  sitting in `aguardandoConfirmacaoDePagamento` past the horizon. Note that the
+  horizon is measured from the pedido's `timestamp`, which is the ORDER's
+  creation time — so importing an old enough `UNPAID` order makes it a candidate
+  immediately.
+- **`naoMarketplace` counting rows you did not expect.** The candidate query
+  carries no channel clause — no declared index could give it one — so manual
+  and Mercado Livre pedidos are read and rejected by the ownership proof. That
+  number is the measurement, not a defect (settle-live register item 45).
+- **A second run prints the same verdicts and `ocorrencias: 2` on the avisos.**
+  The chave carries no `janela` and no event clock, so a re-raise increments the
+  counter without moving `criadoEm` — which is what makes "this has been stuck
+  for N weeks" readable at all.
+- **An aviso stays open for one extra week after the pedido is genuinely
+  fixed.** The sweep resolves in line only on the two verdicts that void the
+  aviso's own premise; everything else waits for pass (b) to OBSERVE that the
+  pedido left the candidate set. Observing the fix is worth more than guessing
+  it.
+- **`status-desconhecido` never enqueues**, deliberately: a re-drive would make
+  step 5 write `estado: error`, which is outside the reserve set and would
+  RELEASE the reservation for a token nobody understands. ⚠️ The scheduled tick
+  logs the COUNT only — the raw token is in the `orderStatus` column of THIS
+  rehearsal's per-candidate table and nowhere else, so a `status-desconhecido`
+  seen in the weekly log is read by re-running `varrer:reservas` scoped to that
+  conta. Then add a rung to step 5's ladder (settle-live register item 43).
+- **`inexistente` never enqueues either.** The code-3 arm parks an order Shopee
+  no longer knows, and the synthetic doc id carries the tick's own clock, so a
+  re-driver would write one new parked dead-letter document per candidate per
+  week and release nothing.
+- **A rate-limit error of either class ends that conta's tick**, with its
+  remaining candidates counted `nao-verificavel`. There is no retry, on purpose:
+  the daily quota resets at 00:00 UTC+8 and un-restricting an app that hammered
+  the API is a human ticket.
+- **`chamadas` can exceed `⌈candidatos / 50⌉`.** A batch refused with
+  `error_not_found` falls back to one call per `order_sn`, so one refused batch
+  of 50 costs 51 calls. Measured on the SG sandbox, that only happens when EVERY
+  `order_sn` of the call is unknown — settle-live register item 38.
+- **Never run by an agent** (root `CLAUDE.md` rule 8) — in `--live` it enqueues
+  real Cloud Tasks and writes real documents.

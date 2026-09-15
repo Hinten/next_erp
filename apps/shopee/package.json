@@ -15,6 +15,7 @@
     "importar:pedido": "dotenv -e ../../.env.local -- tsx scripts/importar-pedido.ts",
     "liquidar:pagamentos": "dotenv -e ../../.env.local -- tsx scripts/liquidar-pagamentos.ts",
     "rastrear:pedido": "dotenv -e ../../.env.local -- tsx scripts/rastrear-pedido.ts",
+    "varrer:reservas": "dotenv -e ../../.env.local -- tsx scripts/varrer-reservas.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {

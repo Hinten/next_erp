@@ -96,13 +96,39 @@ class FirebaseShopeeTaskScheduler implements ShopeeTaskScheduler {
 }
 
 /**
+ * Is the enqueue valve closed? Read BEFORE a decision, never inferred from a
+ * throw — and the ONE reader of `SHOPEE_TASKS_DISABLED` (opt-in at exactly
+ * `'1'`, like every other valve in this app).
+ *
+ * ⚠️ It exists for step 8's stuck-reservation sweep, which owes a verdict of its
+ * own when the queue is off. Learning that by CATCHING
+ * {@link ShopeeTasksDisabledError} could not produce one: the class is inside
+ * `erroContidoPorConta` (`core/containment.ts:87`), so a disabled queue would
+ * come out as one contained per-conta `lastError` and every candidate of that
+ * conta would be skipped uncounted — an invisible outage where an observable one
+ * belongs. And a DRY RUN never reaches the enqueue at all, so it could never
+ * reach the verdict by any catch: `apps/mercado-livre/lib/marketplace/pedidos/pedidoTravadoSweep.ts:343`
+ * returns `'redirecionado'` above its own try, so with the queue off a live tick
+ * reports `tasks-desabilitado` and a dry run reports `redirecionado` for the
+ * identical candidate — the exact conflation that verdict's own docblock
+ * (`:180-186`) says it exists to prevent.
+ */
+export function shopeeTasksDesabilitado(): boolean {
+  return process.env.SHOPEE_TASKS_DISABLED === '1';
+}
+
+/**
  * Build the scheduler from the environment:
  *   - `SHOPEE_TASKS_DISABLED=1` → a scheduler whose `enqueue()` throws
  *     {@link ShopeeTasksDisabledError} (the receiver persists + the sweep drains);
  *   - otherwise → the real {@link FirebaseShopeeTaskScheduler}.
+ *
+ * It reads the valve through {@link shopeeTasksDesabilitado} rather than the
+ * variable, so the scheduler and every caller that must DECIDE about the valve
+ * can never disagree about what `'1'` means.
  */
 export function createShopeeTaskScheduler(): ShopeeTaskScheduler {
-  if (process.env.SHOPEE_TASKS_DISABLED === '1') {
+  if (shopeeTasksDesabilitado()) {
     return {
       async enqueue() {
         throw new ShopeeTasksDisabledError();

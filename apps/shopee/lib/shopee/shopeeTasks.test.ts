@@ -28,8 +28,12 @@ vi.mock('./notificacoes/notificacao', () => ({
   SHOPEE_NOTIFICATION_QUEUE: 'processShopeeNotification',
 }));
 
-const { ShopeeTasksDisabledError, createShopeeTaskScheduler, shopeeTasksRegion } =
-  await import('./shopeeTasks');
+const {
+  ShopeeTasksDisabledError,
+  createShopeeTaskScheduler,
+  shopeeTasksDesabilitado,
+  shopeeTasksRegion,
+} = await import('./shopeeTasks');
 
 const payload = {
   code: 1,
@@ -132,5 +136,38 @@ describe('createShopeeTaskScheduler', () => {
       expect(err.message).toContain('SHOPEE_TASKS_DISABLED');
       expect(err.message).toContain('sweep');
     }
+  });
+});
+
+/**
+ * O leitor da válvula (passo 8, #1516). Uma varredura precisa do veredito ANTES
+ * de decidir — pegar `ShopeeTasksDisabledError` não serve, porque a classe está
+ * dentro de `erroContidoPorConta` e porque um dry-run nunca chega ao enqueue.
+ */
+describe('shopeeTasksDesabilitado', () => {
+  // NEAR-MISS junto: ' 1' com espaço e 'true' NÃO desabilitam nada.
+  it.each<[string | undefined, boolean]>([
+    ['1', true],
+    ['0', false],
+    ['true', false],
+    ['', false],
+    [' 1', false],
+    [undefined, false],
+  ])('shopeeTasksDesabilitado lê exatamente "1" — %j ⇒ %s', (raw, esperado) => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', raw);
+    expect(shopeeTasksDesabilitado()).toBe(esperado);
+  });
+
+  it('createShopeeTaskScheduler passa pelo mesmo leitor', async () => {
+    vi.stubEnv('SHOPEE_TASKS_DISABLED', '1');
+    vi.stubEnv('SHOPEE_TASKS_REGION', 'us-east1');
+
+    // Um só leitor: o que o preditor responde é o que o scheduler faz.
+    expect(shopeeTasksDesabilitado()).toBe(true);
+    await expect(createShopeeTaskScheduler().enqueue(payload)).rejects.toBeInstanceOf(
+      ShopeeTasksDisabledError,
+    );
+    expect(h.getFunctions).not.toHaveBeenCalled();
+    expect(h.enqueue).not.toHaveBeenCalled();
   });
 });
