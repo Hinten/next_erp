@@ -62,6 +62,7 @@ const {
   sweepShopeeAuthorizationExpiry,
   sweepShopeeEscrowSettlement,
   sweepShopeeLostPushes,
+  sweepShopeeStuckReservations,
 } = modulo;
 
 afterAll(() => {
@@ -84,6 +85,7 @@ const AGENDAMENTOS = {
   monitorShopeePushConfig,
   backfillShopeeOrders,
   sweepShopeeEscrowSettlement,
+  sweepShopeeStuckReservations,
 } as const;
 
 /**
@@ -315,6 +317,51 @@ describe('sweepShopeeEscrowSettlement', () => {
   });
 });
 
+describe('sweepShopeeStuckReservations', () => {
+  it('roda SEMANALMENTE, segunda 04:40 America/Sao_Paulo', () => {
+    // Weekly is the cadence of the thing being read, twice over. The HORIZON is
+    // what bounds the lateness — `SHOPEE_PEDIDO_TRAVADO_MAX_IDADE_D` is 7 days
+    // and a weekly tick makes that an EFFECTIVE 7–14, since a pedido that goes
+    // stale just after a tick waits for the next one — and a daily walk would
+    // re-read the SAME stuck population seven times, because a reservation
+    // nobody released is still stuck tomorrow. That is seven times the
+    // `get_order_detail` budget against an endpoint whose published rate limit
+    // is `[0,0,0]`, i.e. unknown. The MINUTE is the other half: :40 keeps it
+    // clear of :00/:10/:15/:20/:30/:45 (every sibling schedule) and sits between
+    // the 04:00 expiry walk and the 05:10 settlement sweep, all of which draw on
+    // ONE undocumented partner rate-limit budget.
+    expect(gatilhoDe(sweepShopeeStuckReservations).schedule).toBe('40 4 * * 1');
+    expect(gatilhoDe(sweepShopeeStuckReservations).timeZone).toBe('America/Sao_Paulo');
+  });
+
+  it('⚠️ NÃO é um cron diário — a quase-colisão que um `toContain` deixaria passar', () => {
+    // `'40 4 * * *'` is ONE character away, reads identically at a glance, and
+    // would multiply the Shopee calls by seven over a population that does not
+    // change between ticks — for no extra information at all.
+    expect(gatilhoDe(sweepShopeeStuckReservations).schedule).not.toBe('40 4 * * *');
+  });
+
+  it('tem timeoutSeconds 540 — 10 páginas, 200 leituras de pagamento e até 204 chamadas por conta', () => {
+    // Up to MAX_PAGINAS (10) paged candidate queries of PAGE_LIMIT (200), one
+    // whole `pagamentos` subcollection read per candidate (≤ 200), then per
+    // conta ⌈200/50⌉ = 4 batched `get_order_detail` calls — up to 204 when an
+    // unknown `order_sn` forces the per-order fallback on every batch — plus
+    // ≤ 200 enqueues and ≤ 200 aviso round trips, all SEQUENTIAL. That is a
+    // ≈ 300 s budget and 540 is the gen2 ceiling it is sized against, so the
+    // ceiling is margin rather than a claim that nine minutes is normal. The
+    // gen2 60s default cannot absorb even the first batch, and a timeout
+    // mid-tick writes nothing partial — there is no cursor document.
+    expect(endpointOf(sweepShopeeStuckReservations).timeoutSeconds).toBe(540);
+  });
+
+  it('vincula exatamente as duas credenciais de parceiro', () => {
+    // Every `get_order_detail` is HMAC-signed with the partner key even though
+    // it is Shop-signed: the token rides in the query, the signature does not.
+    const serializado = JSON.stringify(endpointOf(sweepShopeeStuckReservations));
+    for (const segredo of SEGREDOS) expect(serializado).toContain(segredo);
+  });
+});
+
 describe('as quase-falhas que um `toContain` sozinho não pega', () => {
   it('nenhum dos agendamentos vincula um TERCEIRO segredo', () => {
     // `secrets:` is a whitelist an operator has to grant one by one. A name that
@@ -332,7 +379,7 @@ describe('as quase-falhas que um `toContain` sozinho não pega', () => {
 
   it('os agendamentos são DISTINTOS — nenhum PAR compartilha um cron', () => {
     // All-pairs, not "the first two differ": a copy-paste that left two of the
-    // six on the same cron would satisfy every per-function assertion above
+    // seven on the same cron would satisfy every per-function assertion above
     // taken one at a time, and would run one of them twice while the other
     // never ran at all.
     const crons = Object.values(AGENDAMENTOS).map((fn) => gatilhoDe(fn).schedule);

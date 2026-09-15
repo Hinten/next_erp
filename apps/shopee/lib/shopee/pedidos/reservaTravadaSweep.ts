@@ -197,6 +197,7 @@ import {
   CODIGOS_PEDIDO_INEXISTENTE,
   DIA_US,
   VEREDITO_RESERVA_TRAVADA,
+  VEREDITOS_QUE_AVISAM,
   VEREDITOS_RESERVA_TRAVADA,
   classificarReservaTravada,
   idadeEmDias,
@@ -335,6 +336,85 @@ export interface ReservaTravadaLogger {
   warn(msg: string, meta?: Record<string, unknown>): void;
 }
 
+/**
+ * ONE candidate, as the tick saw it at the instant its verdict became final.
+ *
+ * ⚠️ **The tick's own result carries counters and nothing else, on purpose** —
+ * a weekly unattended function has no business accumulating a per-document
+ * array it will only log. This is the seam for the ONE consumer that needs the
+ * detail: `varrer:reservas`, the rehearsal CLI, whose whole job is to produce
+ * the cross-tab that answers register item 37 (does Shopee auto-cancel an
+ * unpaid BR order, after how long, with which `cancel_by`/`cancel_reason`).
+ *
+ * ⚠️ **Twelve fields, an ALLOW-LIST, and the count is pinned by a test** —
+ * `varrerReservasCli.ts`'s `CAMPOS_RESUMO_RESERVA_TRAVADA`. The row is built
+ * FIELD BY FIELD from the candidate, the classification and the two cancel
+ * columns of the wire row; the wire row itself never leaves {@link
+ * runReservaTravadaSweep}, so no buyer datum has a field to travel in — and
+ * `buyer_cancel_reason` (the buyer's own words) is not even requested, see
+ * {@link CAMPOS_OPCIONAIS_RESERVA_TRAVADA}.
+ *
+ * ⚠️ `temPayTime` is a BOOLEAN: the stamp itself never leaves the sweep, and it
+ * is the only pre-payment signal Shopee documents, folded once by
+ * `classificarReservaTravada`.
+ */
+export interface CandidatoObservado {
+  readonly pedidoId: string;
+  readonly integracaoId: string;
+  /** `pedido.numero` — Shopee's own `order_sn`, proved by the id digest. */
+  readonly orderSn: string;
+  /** The FINAL verdict, including a `tasks-desabilitado` substituted for a re-drive. */
+  readonly veredito: VereditoReservaTravada;
+  /** Shopee's live token, verbatim. `null` when no row was read. */
+  readonly orderStatus: string | null;
+  readonly pendingTerms: readonly string[] | null;
+  /** ⚠️ A BOOLEAN. The `pay_time` value never leaves the sweep. */
+  readonly temPayTime: boolean;
+  /**
+   * Whole days the pedido has held the reservation.
+   *
+   * ⚠️ Declared nullable because the CONTRACT is nullable — a `timestamp` that
+   * will not coerce has no honest age. This tick can only ever emit a number:
+   * such a pedido is counted `naoMarketplace` at gate 1 and never becomes a
+   * candidate at all.
+   */
+  readonly idadeDias: number | null;
+  /** `buyer | seller | system | Ops` — a string, never an enum (E1 A9). */
+  readonly cancelBy: string | null;
+  /** Shopee's token. ⚠️ Observed samples sit outside every documented list — never branch on it. */
+  readonly cancelReason: string | null;
+  /** Would a live tick with an open queue have enqueued the code-3 re-drive? */
+  readonly enfileiraria: boolean;
+  /** Would a live tick have written an aviso? */
+  readonly avisaria: boolean;
+}
+
+/**
+ * The half of {@link CandidatoObservado} that only a READ row can supply.
+ *
+ * Everything else is on the candidate or is derived from the verdict, so a call
+ * site that observed nothing (a gate, an unanswered read) passes {@link
+ * DETALHE_NAO_LIDO} and cannot accidentally invent a status.
+ */
+interface DetalheObservado {
+  readonly orderStatus: string | null;
+  readonly pendingTerms: readonly string[] | null;
+  readonly temPayTime: boolean;
+  readonly cancelBy: string | null;
+  readonly cancelReason: string | null;
+  readonly enfileiraria: boolean;
+}
+
+/** No row was read: every wire-derived field is absent, and nothing would be enqueued. */
+const DETALHE_NAO_LIDO: DetalheObservado = {
+  orderStatus: null,
+  pendingTerms: null,
+  temPayTime: false,
+  cancelBy: null,
+  cancelReason: null,
+  enfileiraria: false,
+};
+
 export interface ReservaTravadaSweepDeps {
   readonly scheduler: ShopeeTaskScheduler;
   /** ONE clock read for the whole tick, MILLISECONDS. Never re-read in here. */
@@ -357,6 +437,21 @@ export interface ReservaTravadaSweepDeps {
    * flag a human has to flip.
    */
   readonly ignorarFlagMestra?: boolean;
+  /**
+   * CLI: observe every candidate, EXACTLY ONCE, as its verdict becomes final.
+   *
+   * ⚠️ Exactly-once is STRUCTURAL rather than a promise: the call sits inside
+   * the one function that records a verdict, and `Σ veredictos === candidatos`
+   * is asserted over every fixture that produces a candidate. A candidate that
+   * grew a second verdict would break that invariant first.
+   *
+   * ⚠️ **A throw inside the callback is the CALLER's problem.** It is not
+   * caught into `erros[]` and it is not contained per conta: this is a
+   * diagnostic seam only the rehearsal supplies, so a failure in it is a bug in
+   * the rehearsal, and swallowing it would make the CLI silently drop rows from
+   * the very cross-tab it exists to build. The scheduled tick supplies none.
+   */
+  readonly onCandidato?: (c: CandidatoObservado) => void;
 }
 
 export interface ReservaTravadaContaResult {
@@ -776,16 +871,46 @@ export async function runReservaTravadaSweep(
     }
   }
 
-  /** Record ONE verdict for ONE candidate, in every place it is counted. */
+  /**
+   * Record ONE verdict for ONE candidate, in every place it is counted.
+   *
+   * ⚠️ It is also the ONLY place `deps.onCandidato` is called, which is what
+   * makes "exactly once per candidate" structural instead of a list of call
+   * sites somebody has to keep in sync: every arm that decides a candidate —
+   * both gates, the two read arms, the classified arms and the
+   * `tasks-desabilitado` substitution — reaches a verdict through here, and
+   * `Σ veredictos === candidatos` is the assertion that keeps it that way.
+   *
+   * The observed row is built FIELD BY FIELD; the wire row never comes in here.
+   */
   function registrar(
     cand: Candidato,
     acc: AcumuladorDaConta,
     veredito: VereditoReservaTravada,
+    detalhe: DetalheObservado = DETALHE_NAO_LIDO,
   ): void {
     veredictos[veredito] += 1;
     acc.veredictos[veredito] += 1;
     const linha = (statusArmazenadoPorVeredito[cand.statusArmazenado] ??= zerarVeredictos());
     linha[veredito] += 1;
+    // ⚠️ NOT wrapped in a try: a throw here is the rehearsal's own bug and must
+    // reach it, never be laundered into `erros[]`.
+    deps.onCandidato?.({
+      pedidoId: cand.pedidoId,
+      integracaoId: cand.contaId,
+      orderSn: cand.orderSn,
+      veredito,
+      orderStatus: detalhe.orderStatus,
+      pendingTerms: detalhe.pendingTerms,
+      temPayTime: detalhe.temPayTime,
+      idadeDias: cand.idadeDias,
+      cancelBy: detalhe.cancelBy,
+      cancelReason: detalhe.cancelReason,
+      enfileiraria: detalhe.enfileiraria,
+      // Derived from the FINAL verdict rather than from the classification, so
+      // the two can never disagree — and the surfacing set is declared once.
+      avisaria: VEREDITOS_QUE_AVISAM.has(veredito),
+    });
   }
 
   async function resolverEmLinha(
@@ -876,12 +1001,21 @@ export async function runReservaTravadaSweep(
     return null;
   }
 
-  /** Apply one classification: the counters, then the two effects. */
+  /**
+   * Apply one classification: the counters, then the two effects.
+   *
+   * ⚠️ `cancelBy` / `cancelReason` are THREADED from the wire row rather than
+   * the row itself being passed down: they are the observable register item 37
+   * is read from, and they would otherwise die inside `consumir`. Two columns,
+   * named one at a time — never the row, which carries the buyer.
+   */
   async function aplicar(
     cand: Candidato,
     acc: AcumuladorDaConta,
     shopId: number,
     cls: ClassificacaoReservaTravada,
+    cancelBy: string | null,
+    cancelReason: string | null,
   ): Promise<void> {
     // Computed off the CLASSIFICATION, not off the effect, so the diagnostic is
     // stable across dry-run and a disabled queue.
@@ -894,7 +1028,16 @@ export async function runReservaTravadaSweep(
       const substituto = await redirigir(cand, acc, shopId, cls.orderStatus);
       if (substituto !== null) veredito = substituto;
     }
-    registrar(cand, acc, veredito);
+    registrar(cand, acc, veredito, {
+      orderStatus: cls.orderStatus,
+      pendingTerms: cls.pendingTerms,
+      temPayTime: cls.temPayTime,
+      cancelBy,
+      cancelReason,
+      // The PREDICTION, off the classification and the valve — so a dry run and
+      // a live run with an open queue report the same thing for the same order.
+      enfileiraria: cls.redirigir && !tasksDesabilitado,
+    });
 
     if (cls.surfacar) {
       await surfacar(
@@ -1207,7 +1350,7 @@ export async function runReservaTravadaSweep(
         registrar(cand, acc, VEREDITO_RESERVA_TRAVADA.naoVerificavel);
         return;
       }
-      await aplicar(cand, acc, shopId, cls);
+      await aplicar(cand, acc, shopId, cls, linha.cancel_by, linha.cancel_reason);
     } catch (err) {
       if (!erroContidoPorConta(err)) throw err;
       erros.push({ pedidoId: cand.pedidoId, message: err.message });

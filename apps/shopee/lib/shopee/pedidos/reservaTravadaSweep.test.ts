@@ -61,6 +61,7 @@ import {
   RESERVA_TRAVADA_FLAG_ENV,
   RESERVA_TRAVADA_MAX_IDADE_ENV,
   runReservaTravadaSweep,
+  type CandidatoObservado,
   type ReservaTravadaSweepResult,
 } from './reservaTravadaSweep';
 
@@ -225,6 +226,8 @@ interface RodarOver {
   readonly forcarDryRun?: boolean;
   readonly ignorarFlagMestra?: boolean;
   readonly semLogger?: boolean;
+  /** The wave-4 observation seam. Absent ⇒ the tick behaves exactly as before. */
+  readonly onCandidato?: (c: CandidatoObservado) => void;
 }
 
 function rodar(c: Cenario, over: RodarOver = {}): Promise<ReservaTravadaSweepResult> {
@@ -242,6 +245,7 @@ function rodar(c: Cenario, over: RodarOver = {}): Promise<ReservaTravadaSweepRes
     ...(over.apenasIntegracoes === undefined ? {} : { apenasIntegracoes: over.apenasIntegracoes }),
     ...(over.forcarDryRun === undefined ? {} : { forcarDryRun: over.forcarDryRun }),
     ...(over.ignorarFlagMestra === undefined ? {} : { ignorarFlagMestra: over.ignorarFlagMestra }),
+    ...(over.onCandidato === undefined ? {} : { onCandidato: over.onCandidato }),
   });
 }
 
@@ -1716,5 +1720,257 @@ describe('nenhuma das duas consultas exige um índice NOVO', () => {
     for (const i of nossos) {
       expect(i.fields?.map((f) => f.fieldPath)).not.toContain('__name__');
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  10 — the observation seam (wave 4): `deps.onCandidato`                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The twelve field names {@link CandidatoObservado} may carry, pinned HERE as
+ * well as in `varrerReservasCli.test.ts`.
+ *
+ * ⚠️ Two pins on purpose, at two layers: this one says the SWEEP emits exactly
+ * these, the CLI's says its allow-list admits exactly these. A single pin would
+ * let a field added at the seam ride straight through the summary that is
+ * supposed to BE the redaction.
+ */
+const CAMPOS_OBSERVADOS = [
+  'pedidoId',
+  'integracaoId',
+  'orderSn',
+  'veredito',
+  'orderStatus',
+  'pendingTerms',
+  'temPayTime',
+  'idadeDias',
+  'cancelBy',
+  'cancelReason',
+  'enfileiraria',
+  'avisaria',
+];
+
+describe('runReservaTravadaSweep — a observação por candidato', () => {
+  it.each(CASOS_PARIDADE.map((k) => [k.nome, k] as const))(
+    'onCandidato é chamado exatamente uma vez por candidato, em todo veredito › %s',
+    async (_nome, caso) => {
+      const c = cenario();
+      caso.montar(c);
+      if (caso.tasksOff === true) process.env.SHOPEE_TASKS_DISABLED = '1';
+      const vistos: CandidatoObservado[] = [];
+
+      const r = await rodar(c, { onCandidato: (obs) => vistos.push(obs) });
+
+      // ⚠️ Uma linha por candidato, nem mais nem menos — e é ESTRUTURAL: a
+      // chamada mora dentro da única função que registra um veredito, que é a
+      // mesma propriedade que `Σ veredictos === candidatos` fixa.
+      expect(vistos).toHaveLength(r.candidatos);
+      expect(r.candidatos).toBe(1);
+      expect(vistos[0]!.veredito).toBe(caso.veredito);
+      expect(vistos[0]!.integracaoId).toBe(INT_A);
+      expect(vistos[0]!.orderSn).toBe(SN_A);
+      expect(new Set(vistos.map((v) => v.pedidoId)).size).toBe(vistos.length);
+      esperarInvariante(r);
+    },
+  );
+
+  it('três candidatos num tick ⇒ três linhas, uma por pedidoId, e nenhuma repetida', async () => {
+    const c = cenario();
+    const sns = ['260910KJBHUJDM', '260910KJBHUJDN', '260910KJBHUJDP'];
+    const ids = sns.map((sn) => semearPedido(c.db, { orderSn: sn }));
+    c.getOrderDetail = clienteTabela(
+      new Map([
+        [sns[0]!, linha(sns[0]!, 'UNPAID')],
+        [sns[1]!, linha(sns[1]!, 'CANCELLED')],
+        [sns[2]!, linha(sns[2]!, 'TO_RETURN')],
+      ]),
+    );
+    const vistos: CandidatoObservado[] = [];
+
+    const r = await rodar(c, { onCandidato: (obs) => vistos.push(obs) });
+
+    expect(r.candidatos).toBe(3);
+    expect(vistos).toHaveLength(3);
+    expect(new Set(vistos.map((v) => v.pedidoId))).toEqual(new Set(ids));
+    // E cada linha carrega o veredito do SEU pedido, não o do vizinho.
+    const porId = new Map(vistos.map((v) => [v.pedidoId, v]));
+    expect(porId.get(ids[0]!)!.veredito).toBe(VEREDITO_RESERVA_TRAVADA.aindaNaoPago);
+    expect(porId.get(ids[1]!)!.veredito).toBe(VEREDITO_RESERVA_TRAVADA.redirecionadoCancelado);
+    expect(porId.get(ids[2]!)!.veredito).toBe(VEREDITO_RESERVA_TRAVADA.manterDevolucao);
+    esperarInvariante(r);
+  });
+
+  it('a linha observada tem exatamente os 12 campos e nenhum dado do comprador', async () => {
+    const c = cenario();
+    semearPedido(c.db);
+    // A linha `.passthrough()` que carrega tudo que a Shopee poderia mandar de
+    // carona — endereço, CPF e id do comprador.
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linhaComPii(SN_A, 'UNPAID')]]));
+    const vistos: CandidatoObservado[] = [];
+
+    await rodar(c, { onCandidato: (obs) => vistos.push(obs) });
+
+    expect(vistos).toHaveLength(1);
+    expect(Object.keys(vistos[0]!).sort()).toEqual([...CAMPOS_OBSERVADOS].sort());
+    const serializado = JSON.stringify(vistos);
+    expect(serializado).not.toContain(ENDERECO_FALSO);
+    expect(serializado).not.toContain(CPF_FALSO);
+    expect(serializado).not.toContain(String(BUYER_ID_FALSO));
+    expect(serializado).not.toContain('buyer_');
+    // ÂNCORA: o negativo não pode ser vazio — a linha carrega mesmo o que o
+    // ensaio precisa ler.
+    expect(vistos[0]!.orderStatus).toBe('UNPAID');
+    expect(vistos[0]!.idadeDias).toBe(30);
+    expect(vistos[0]!.avisaria).toBe(true);
+  });
+
+  it('cancelBy e cancelReason chegam do wire só nos vereditos lidos', async () => {
+    const c = cenario();
+    semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(
+      new Map([
+        [
+          SN_A,
+          linha(SN_A, 'CANCELLED', {
+            cancel_by: 'system',
+            cancel_reason: 'BACKEND_LOGISTICS_NOT_STARTED',
+          }),
+        ],
+      ]),
+    );
+    const lidos: CandidatoObservado[] = [];
+    await rodar(c, { onCandidato: (obs) => lidos.push(obs) });
+
+    // ⚠️ As duas colunas morriam dentro do consumidor do lote; elas são o
+    // observável do item 37 do registro e por isso são passadas UMA A UMA.
+    expect(lidos[0]!.cancelBy).toBe('system');
+    expect(lidos[0]!.cancelReason).toBe('BACKEND_LOGISTICS_NOT_STARTED');
+    expect(lidos[0]!.enfileiraria).toBe(true);
+
+    // Um veredito de porteira não leu linha nenhuma ⇒ não pode inventar nada.
+    const d = cenario();
+    semearPedido(d.db, { over: { hasUserInteraction: true } });
+    const porteira: CandidatoObservado[] = [];
+    await rodar(d, { onCandidato: (obs) => porteira.push(obs) });
+
+    expect(porteira[0]!.veredito).toBe(VEREDITO_RESERVA_TRAVADA.interacaoHumana);
+    expect(porteira[0]!.orderStatus).toBeNull();
+    expect(porteira[0]!.cancelBy).toBeNull();
+    expect(porteira[0]!.cancelReason).toBeNull();
+    expect(porteira[0]!.temPayTime).toBe(false);
+    expect(porteira[0]!.enfileiraria).toBe(false);
+    expect(porteira[0]!.avisaria).toBe(false);
+    expect(d.getOrderDetail).not.toHaveBeenCalled();
+  });
+
+  it('com a fila desabilitada `enfileiraria` é FALSO, e o veredito acompanha', async () => {
+    const c = cenario();
+    semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'CANCELLED')]]));
+    process.env.SHOPEE_TASKS_DISABLED = '1';
+    const vistos: CandidatoObservado[] = [];
+
+    await rodar(c, { onCandidato: (obs) => vistos.push(obs) });
+
+    // A previsão é sobre o que um tick VIVO com a válvula aberta faria; com ela
+    // fechada não há enfileiramento a prever, e o veredito diz o porquê.
+    expect(vistos[0]!.veredito).toBe(VEREDITO_RESERVA_TRAVADA.tasksDesabilitado);
+    expect(vistos[0]!.enfileiraria).toBe(false);
+    expect(c.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('o dry run observa o MESMO que o tick vivo — é para isso que o ensaio existe', async () => {
+    const montar = (c: Cenario): void => {
+      semearPedido(c.db);
+      c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'CANCELLED')]]));
+    };
+    const vivo = cenario();
+    montar(vivo);
+    const obsVivo: CandidatoObservado[] = [];
+    await rodar(vivo, { onCandidato: (o) => obsVivo.push(o) });
+
+    const seco = cenario();
+    montar(seco);
+    const obsSeco: CandidatoObservado[] = [];
+    await rodar(seco, { forcarDryRun: true, onCandidato: (o) => obsSeco.push(o) });
+
+    expect(obsSeco).toEqual(obsVivo);
+    expect(obsSeco[0]!.enfileiraria).toBe(true);
+    expect(seco.db.writes).toEqual([]);
+    expect(seco.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('uma exceção DENTRO do callback sobe — não vira erros[] nem contenção por conta', async () => {
+    const c = cenario();
+    semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+
+    // ⚠️ A falha é do ENSAIO, não da varredura. Engoli-la faria a CLI perder
+    // linhas exatamente da tabela cruzada que ela existe para montar.
+    await expect(
+      rodar(c, {
+        onCandidato: () => {
+          throw new TypeError('o ensaio quebrou');
+        },
+      }),
+    ).rejects.toThrow('o ensaio quebrou');
+  });
+
+  it('sem onCandidato nada muda — o resultado é idêntico', async () => {
+    const montar = (c: Cenario): void => {
+      semearPedido(c.db);
+      semearPedido(c.db, { orderSn: '260910KJBHUJDN' });
+      c.getOrderDetail = clienteTabela(
+        new Map([
+          [SN_A, linha(SN_A, 'UNPAID')],
+          ['260910KJBHUJDN', linha('260910KJBHUJDN', 'SHIPPED')],
+        ]),
+      );
+    };
+    const sem = cenario();
+    montar(sem);
+    const rSem = await rodar(sem);
+
+    const com = cenario();
+    montar(com);
+    const rCom = await rodar(com, { onCandidato: () => {} });
+
+    // O tick devolve contadores e só contadores: o seam não entra no resultado.
+    expect(rSem).toEqual(rCom);
+    expect(Object.keys(rSem)).not.toContain('candidatosObservados');
+    esperarInvariante(rSem);
+  });
+
+  it('o par do dry-run da CLI roda com a flag mestra AUSENTE e não grava nada', async () => {
+    // ⚠️ Este é o contrato da CLI, dirigido pelo tick de verdade: `--dry-run` (o
+    // padrão) entrega `forcarDryRun` + `ignorarFlagMestra`, porque o ensaio tem
+    // de rodar ANTES de a flag mestra existir no `.env.deploy` — e a asserção
+    // pareada do tick é o que torna "pode ensaiar antes da flag, nunca pode
+    // escrever antes da flag" estrutural.
+    const c = cenario();
+    semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+    delete process.env[RESERVA_TRAVADA_FLAG_ENV];
+    const vistos: CandidatoObservado[] = [];
+
+    const r = await rodar(c, {
+      forcarDryRun: true,
+      ignorarFlagMestra: true,
+      onCandidato: (o) => vistos.push(o),
+    });
+
+    expect(r.enabled).toBe(true);
+    expect(r.dryRun).toBe(true);
+    expect(r.candidatos).toBe(1);
+    expect(vistos).toHaveLength(1);
+    expect(vistos[0]!.avisaria).toBe(true);
+    // Leu o Firestore E a Shopee…
+    expect(c.getOrderDetail).toHaveBeenCalledTimes(1);
+    expect(c.db.consultasCompletas.length).toBeGreaterThan(0);
+    // …e não escreveu nem enfileirou NADA.
+    expect(c.db.writes).toEqual([]);
+    expect(c.enqueue).not.toHaveBeenCalled();
+    esperarInvariante(r);
   });
 });
