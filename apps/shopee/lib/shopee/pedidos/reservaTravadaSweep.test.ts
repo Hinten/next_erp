@@ -522,6 +522,61 @@ describe('runReservaTravadaSweep — a consulta de candidatos', () => {
     esperarInvariante(r);
   });
 
+  it('⚠️ o teto vale ATRAVÉS das páginas: nove de 22 mais uma CHEIA param em MAX_CANDIDATOS', async () => {
+    const c = cenario();
+    // A reprodução exata do teto verificado só ENTRE páginas: nove páginas
+    // contribuindo 22 candidatos cada somam 198 e não disparam quebra nenhuma;
+    // a décima, inteira de candidatos, aterrissa em
+    // MAX_CANDIDATOS - 2 + PAGE_LIMIT = 398 — praticamente o dobro de toda cota
+    // que o docblock, o plano e os 540 s do onSchedule declaram.
+    const nossos: string[] = [];
+    let k = 0;
+    const semear = (ehNosso: boolean): void => {
+      const diasAtras = 30 + k / 1000;
+      if (ehNosso) {
+        const sn = `2609PAG${String(k).padStart(4, '0')}`;
+        nossos.push(sn);
+        semearPedido(c.db, { orderSn: sn, diasAtras });
+      } else {
+        // Uma linha que a porteira 1 recusa: a consulta de candidatos não tem
+        // cláusula de canal, então linhas alheias colonizam a página de graça.
+        c.db.seed(`${PEDIDO_PATH}/alheio-${String(k).padStart(4, '0')}`, {
+          ehSaida: true,
+          estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+          timestamp: AGORA_US - diasAtras * DIA_US,
+        });
+      }
+      k += 1;
+    };
+    for (let p = 0; p < MAX_PAGINAS - 1; p += 1) {
+      for (let j = 0; j < PAGE_LIMIT; j += 1) semear(j < 22);
+    }
+    for (let j = 0; j < PAGE_LIMIT; j += 1) semear(true);
+    expect(nossos).toHaveLength(9 * 22 + PAGE_LIMIT);
+    c.getOrderDetail = clienteTabela(new Map(nossos.map((sn) => [sn, linha(sn, 'UNPAID')])));
+
+    const r = await rodar(c, { forcarDryRun: true });
+
+    expect(r.paginas).toBe(MAX_PAGINAS);
+    expect(r.candidatos).toBe(MAX_CANDIDATOS);
+    expect(r.truncado).toBe(true);
+    // ⚠️ `examinados` continua sendo o que o contrato diz — as LINHAS que a
+    // consulta devolveu — e não o que a coleta admitiu. O corte no meio da
+    // última página não muda essa semântica; muda quantas delas viram candidato.
+    expect(r.examinados).toBe(MAX_PAGINAS * PAGE_LIMIT);
+    expect(r.naoMarketplace).toBe(9 * (PAGE_LIMIT - 22));
+    // E as cotas DERIVADAS ficam onde estão declaradas: 4 lotes, nunca 8.
+    expect(r.contas[0]!.lotes).toBe(Math.ceil(MAX_CANDIDATOS / LOTE_ORDER_DETAIL));
+    expect(c.getOrderDetail).toHaveBeenCalledTimes(Math.ceil(MAX_CANDIDATOS / LOTE_ORDER_DETAIL));
+    // As linhas NÃO admitidas não viram veredito nem chegam à Shopee: o prefixo
+    // é exatamente os 200 primeiros por `timestamp desc`.
+    const perguntados = c.getOrderDetail.mock.calls.flatMap((a) => a[0].orderSnList);
+    expect(perguntados).toHaveLength(MAX_CANDIDATOS);
+    expect(new Set(perguntados)).toEqual(new Set(nossos.slice(0, MAX_CANDIDATOS)));
+    expect(perguntados).not.toContain(nossos[MAX_CANDIDATOS]);
+    esperarInvariante(r);
+  });
+
   it('⚠️ um pedido legado com timestamp em MILISSEGUNDOS é candidato, e a idade sai honesta', async () => {
     const c = cenario();
     // O corpus migrado guarda ms. ~1.7e12 satisfaz qualquer corte em µs por
@@ -1516,6 +1571,65 @@ describe('runReservaTravadaSweep — os avisos', () => {
     expect(doc.resolucaoMotivo).toBe('estado-saiu-do-conjunto');
   });
 
+  /**
+   * ⚠️ O par que prova o ESCOPO da dobra, não só que ela se aplica.
+   *
+   * A passagem (b) tem de responder à MESMA pergunta que a consulta de
+   * candidatos, e a consulta é montada a partir de
+   * {@link ESTADOS_RESERVA_TRAVADA_SHOPEE}. Escrito como literal, um SEGUNDO
+   * membro acrescentado àquela constante faria a passagem (b) resolver
+   * `estado-saiu-do-conjunto` para pedidos que continuam candidatos — uma
+   * escrita irrecuperável numa coleção `serverOwned`.
+   *
+   * O `it.each` roda sobre a constante DECLARADA: hoje é um caso, e um segundo
+   * membro vira um segundo caso que só passa se o predicado ler o conjunto.
+   *
+   * ⚠️ `apenasIntegracoes` tira a conta do escopo na semana 2 de propósito: sem
+   * isso o pedido volta a ser candidato, a chave entra em `chavesTocadas` e a
+   * passagem (b) o PULA — o aviso ficaria aberto por outro motivo e o teste não
+   * veria o predicado. Fora do escopo, a linha é lida e só o estado decide.
+   */
+  describe('⚠️ a passagem (b) lê o CONJUNTO declarado, não um literal re-escrito', () => {
+    async function semanaDoisComEstado(estado: string): Promise<{
+      r: ReservaTravadaSweepResult;
+      aviso: DocData;
+    }> {
+      const c = cenario();
+      const pedidoId = semearPedido(c.db);
+      c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+      await rodar(c);
+
+      c.db.store[`${PEDIDO_PATH}/${pedidoId}`]!.data.estado = estado;
+      const r = await rodar(c, {
+        nowMs: AGORA_MS + 7 * DIA_MS,
+        apenasIntegracoes: [INT_B],
+      });
+      expect(r.candidatos).toBe(0);
+      expect(r.avisosVarridos).toBe(1);
+      return {
+        r,
+        aviso: c.db.store[`${AVISO_PATH}/${chaveReservaTravada(INT_A, pedidoId)}`]!.data,
+      };
+    }
+
+    it.each([...ESTADOS_RESERVA_TRAVADA_SHOPEE])(
+      'o estado declarado %s MANTÉM o aviso aberto',
+      async (estado) => {
+        const { r, aviso } = await semanaDoisComEstado(estado);
+        expect(r.reconciliados).toBe(0);
+        expect(aviso.resolvidoEm).toBeNull();
+      },
+    );
+
+    it('o quase-acerto: pago está em ESTADOS_PEDIDO_RESERVA mas NÃO no conjunto ⇒ fecha', async () => {
+      // A outra metade da dobra: um estado que continua segurando estoque, e
+      // mesmo assim saiu do conjunto que ESTE tick examina.
+      const { r, aviso } = await semanaDoisComEstado(ESTADO_PEDIDO.pago);
+      expect(r.reconciliados).toBe(1);
+      expect(aviso.resolucaoMotivo).toBe('estado-saiu-do-conjunto');
+    });
+  });
+
   it('a passagem (b) fecha um aviso cujo pedido sumiu, e deixa em paz o que ainda está travado', async () => {
     const c = cenario();
     const pedidoId = semearPedido(c.db);
@@ -2113,6 +2227,22 @@ describe('as guardas', () => {
     // `firestore-transaction-inventory` varre TEXTO CRU sobre `*.ts` e exclui
     // `*.test.ts` — por isso ESTE arquivo pode soletrar a palavra e o módulo
     // não. Não "conserte" isso montando a literal por concatenação.
+  });
+
+  it('⚠️ o estado de reserva é soletrado UMA vez — todo leitor passa pelo conjunto', () => {
+    // ⚠️ O PAR do `it.each` da passagem (b), e a metade que consegue falhar
+    // HOJE: com um único membro declarado, o literal re-escrito e a pertinência
+    // ao conjunto concordam em todo fixture possível, então nenhum teste de
+    // COMPORTAMENTO distingue os dois até alguém acrescentar o segundo membro —
+    // que é exatamente o commit em que a divergência viraria uma escrita
+    // irrecuperável. Âncora primeiro, pelo motivo das guardas acima.
+    expect(FONTE_SWEEP).toContain('ESTADOS_RESERVA_TRAVADA_SHOPEE');
+    expect(FONTE_SWEEP.split('ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento')).toHaveLength(2);
+    // E a única ocorrência é a DECLARAÇÃO do conjunto, não um leitor.
+    const declaracao = FONTE_SWEEP.indexOf('export const ESTADOS_RESERVA_TRAVADA_SHOPEE');
+    const literal = FONTE_SWEEP.indexOf('ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento');
+    expect(declaracao).toBeGreaterThan(0);
+    expect(literal).toBeGreaterThan(declaracao);
   });
 
   it('as três tabelas são montadas ANTES da primeira chamada à Shopee', () => {

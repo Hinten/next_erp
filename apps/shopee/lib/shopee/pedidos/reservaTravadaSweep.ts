@@ -587,6 +587,27 @@ function estadoArmazenado(raw: Record<string, unknown>): string | null {
   return typeof v === 'string' ? v : null;
 }
 
+/**
+ * Is the stored estado still one the CANDIDATE QUERY would return?
+ *
+ * ⚠️ MEMBERSHIP of {@link ESTADOS_RESERVA_TRAVADA_SHOPEE}, never a re-spelled
+ * literal. Pass (b) and the candidate query have to answer the same question,
+ * and the query is built from that constant — so a second member added there
+ * must reach here too. It would otherwise make pass (b) resolve
+ * `estado-saiu-do-conjunto` for pedidos that are STILL candidates: an
+ * unrecoverable write on a `serverOwned` collection, and exactly the
+ * two-copies-drifting-toward-plausible shape the root `CLAUDE.md` calls out.
+ *
+ * A missing or non-string `estado` is not a member, so it reads as "left the
+ * set" — the pre-existing behaviour, and the safe direction: the candidate
+ * query cannot return such a pedido either.
+ */
+function ehEstadoDeReservaTravada(estado: string | null): boolean {
+  if (estado === null) return false;
+  const declarados: readonly string[] = ESTADOS_RESERVA_TRAVADA_SHOPEE;
+  return declarados.includes(estado);
+}
+
 function lotesDe<T>(itens: readonly T[], tamanho: number): T[][] {
   const saida: T[][] = [];
   for (let i = 0; i < itens.length; i += tamanho) saida.push(itens.slice(i, i + tamanho));
@@ -1418,6 +1439,33 @@ export async function runReservaTravadaSweep(
   // deliberately: one page, one counter, and `reconciliacaoTruncada` is the
   // signal that a discriminated index is needed (migration-window work).
   //
+  // ⚠️ **`criadoEm DESC` takes the NEWEST 200, and the rows this pass exists to
+  // close are the OLDEST** — an aviso raised weeks ago whose pedido has since
+  // left the candidate set sits at the tail. Above 200 open avisos repo-wide
+  // they are never reached. That is a KNOWN limit, registered as settle-live
+  // item 44, not an oversight, and `criadoEm ASC` is deliberately NOT the fix:
+  //
+  //  - Real Firestore would serve it. An index is scannable backwards, so it
+  //    serves a query whose orderings are the FULL reversal of its own;
+  //    reversing `(resolvidoEm ASC, criadoEm DESC)` gives
+  //    `(resolvidoEm DESC, criadoEm ASC)`, and `resolvidoEm` is an EQUALITY
+  //    here, whose direction a single-value prefix makes irrelevant.
+  //  - This repo's shared model does NOT encode that rule. `indexSatisfies`
+  //    (`packages/config-eslint/rules/lib/required-index.js`, consumed by the
+  //    `default-query-needs-index` ESLint ERROR and by the `@delfrance/schemas`
+  //    meta-test) compares field directions as-written, and answers `false` for
+  //    `(resolvidoEm ASC, criadoEm ASC)` against everything declared — i.e.
+  //    under the repo's own gate, ASC is a NEW index.
+  //  - A new index is a DEPLOY, which is migration-window work (root rule 8);
+  //    and on Enterprise the signal for having got it wrong is the INVOICE, not
+  //    an exception (root rule 1). Trading a registered, instrumented limit for
+  //    a silent full scan on a rule the shared model refuses is the wrong side
+  //    of that trade.
+  //
+  // Both halves are dissolved by the SAME migration-window change — a
+  // discriminated `(canal, tipo, resolvidoEm, criadoEm)` composite, after which
+  // the page holds only our rows and the direction stops mattering.
+  //
   // Why it is not optional: the retention sweep deletes a RESOLVED aviso 90
   // days later, and an aviso nothing resolves stands for ever. And it is where
   // a `redirecionado-*` candidate's aviso actually closes — the OBSERVATION
@@ -1439,8 +1487,16 @@ export async function runReservaTravadaSweep(
       const row = doc.data() as Record<string, unknown>;
       if (row.tipo !== TIPO_AVISO.pedidoPrecisaDecisao) continue;
       if (row.canal !== CANAL_AVISO.shopee) continue;
-      // Our own fresh rows must not eat the page — or be closed the same tick
-      // they were raised.
+      // A chave this tick raised or resolved is not re-read and not CLOSED the
+      // same tick it was raised.
+      //
+      // ⚠️ It is not spared the PAGE, and the comment used to claim it was:
+      // the skip runs after the 200 rows have already come back, so a tick that
+      // surfaces near `MAX_CANDIDATOS` can fill this page with rows it then
+      // refuses to act on. They cannot be excluded server-side either —
+      // `chavesTocadas` is only known after the conta loop, and no index
+      // expresses "not in this set". The budget is spent either way;
+      // `reconciliacaoTruncada` is what says so.
       if (chavesTocadas.has(doc.id)) continue;
       const pedidoId = pedidoIdDaChaveReservaTravada(doc.id);
       if (pedidoId === null) continue;
@@ -1520,8 +1576,8 @@ function linhaDaConta(
  *
  * `null` ⇒ it is still a candidate and its aviso stays open. The five arms are
  * evaluated in this order because each is a stronger statement than the next:
- * the document is gone, its estado moved, a human took it, it is no longer
- * ours, it is inside the horizon again.
+ * the document is gone, its estado left {@link ESTADOS_RESERVA_TRAVADA_SHOPEE},
+ * a human took it, it is no longer ours, it is inside the horizon again.
  *
  * ⚠️ A `timestamp` that will not coerce answers `null` — "inside the horizon"
  * is a claim about a value we could read, and closing an aviso is not undoable
@@ -1535,7 +1591,7 @@ function motivoDeReconciliacao(
 ): MotivoResolucaoReservaTravada | null {
   if (!existe) return MOTIVO_RESOLUCAO_RESERVA_TRAVADA.pedidoInexistente;
   const raw = (dados ?? {}) as Record<string, unknown>;
-  if (estadoArmazenado(raw) !== ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento) {
+  if (!ehEstadoDeReservaTravada(estadoArmazenado(raw))) {
     return MOTIVO_RESOLUCAO_RESERVA_TRAVADA.estadoSaiuDoConjunto;
   }
   if (raw.hasUserInteraction === true) {
