@@ -77,6 +77,54 @@
  *    that a byte-identical replay wrote NOTHING and that a create used
  *    `tx.create` rather than `tx.set`.
  *
+ * Added by step 8 (#1516), again strictly ADDITIVELY — every suite that drives
+ * this double is byte-unedited:
+ *
+ *  - the clause carries its OPERATOR and `where()` stops discarding its second
+ *    argument. Matching moves into `corresponde`: `==` is byte-identical to what
+ *    this file always did (including "an absent field never matches", the ⚠️
+ *    above), `in` is a real membership test, `<` / `<=` / `>` / `>=` compare only
+ *    same-typed numbers or strings, `!=` is the negation with the same
+ *    absent-field rule — and an operator nobody taught it **throws**. ⚠️ The
+ *    throw is the point: while the operator was dropped, an `in` or a `<`
+ *    answered "matches nothing" and the suite still read GREEN. A silent
+ *    fallback to `===` is that failure, kept;
+ *  - {@link FakeDb.collection}'s `orderBy(campo, direction)` SORTS the result
+ *    (multi-key, stable — `Array#sort` is — nulls last) before the cursor and
+ *    the limit. Recording the call without sorting would let a paging test
+ *    assert an order the double never produced;
+ *  - `startAfter(doc)` is a DOC-SNAPSHOT cursor: it drops everything up to and
+ *    including `doc.id` in the sorted result. Positioning by id rather than by
+ *    value is deliberate — Shopee's `create_time` has 1-second resolution, so two
+ *    orders created in the same second share one µs `timestamp` and a value
+ *    cursor would silently skip the second. A cursor id the query itself did not
+ *    return THROWS, for the same reason the unknown operator does;
+ *  - `limit(n)` returns the CHAIN with the cap stored, instead of a bare
+ *    `{ get }` — the shape `collectionGroup` already had — so `orderBy`,
+ *    `startAfter` and `limit` compose in any order while every existing
+ *    `.limit(n).get()` caller is unaffected;
+ *  - {@link FakeDb.consultasCompletas}, a SECOND query log carrying the WHOLE
+ *    query: clauses as `[campo, op, valor]` TRIPLES, the orders, the limit and
+ *    the cursor id.
+ *
+ * ⚠️ That second log is where "additively" has teeth, and the reason is three
+ * live assertions on the FIRST one: `core/contas.test.ts:35` compares the whole
+ * row with `toEqual`, so any new defined key fails it;
+ * `pedidos/produtoResolve.test.ts:133` asserts a clause with
+ * `toContainEqual(['contaVariacaoShopeeOuterRef', REF_CONTA])` — a PAIR; and
+ * `pedidos/importarPedido.test.ts:273-274` destructures `[campo]` / `[, valor]`,
+ * which on a triple would read the OPERATOR as the value and then either fail
+ * for the wrong reason or pass vacuously. So {@link FakeDb.consultas} keeps its
+ * pairs and its three keys. (`core/contaCache.test.ts` asserts the same pair
+ * shape on an identically-named double of its OWN, which does not import this
+ * file — named here so nobody "reconciles" the two by editing the wrong one.)
+ *
+ * ⚠️ One divergence from real Firestore that the ordering makes visible: a
+ * document LACKING the ordered field is not returned by a real `orderBy` at all,
+ * while this double keeps it and sorts it last. Exclude it with the same `where`
+ * the production query carries (a range clause already refuses an absent field)
+ * rather than relying on the position.
+ *
  * ⚠️ This file is in `firestore-transaction-inventory`'s scope from here on —
  * that guard greps raw TEXT, so even a doc comment naming the method pulls a
  * file in. Its entry is the "test harness" one, beside `occTransaction.ts`.
@@ -98,7 +146,96 @@ interface Stored {
 
 interface Filtro {
   campo: string;
+  /** The operator as the caller spelled it — `'=='`, `'in'`, `'<'`, … */
+  op: string;
   valor: unknown;
+}
+
+interface Ordem {
+  campo: string;
+  direcao: 'asc' | 'desc';
+}
+
+/**
+ * `-1 | 0 | 1` for two values of the SAME primitive type, `null` for anything
+ * else. Real Firestore does not compare across types, and this is also the sort
+ * comparator's primitive, so the two can never disagree.
+ */
+function comparar(a: unknown, b: unknown): number | null {
+  if (typeof a === 'number' && typeof b === 'number') return a < b ? -1 : a > b ? 1 : 0;
+  if (typeof a === 'string' && typeof b === 'string') return a < b ? -1 : a > b ? 1 : 0;
+  return null;
+}
+
+/**
+ * One clause against one stored value.
+ *
+ * ⚠️ An UNKNOWN operator throws instead of falling back to `===`. The fallback
+ * is what this double used to do by accident — the operator was dropped — and it
+ * answers "matches nothing" for every clause that is not an equality, which no
+ * assertion can see.
+ */
+function corresponde(valorArmazenado: unknown, f: Filtro): boolean {
+  switch (f.op) {
+    case '==':
+      return valorArmazenado === f.valor;
+    case '!=':
+      // Firestore's rule, not JavaScript's: a document that LACKS the field is
+      // not returned by a `!=` either.
+      return valorArmazenado !== undefined && valorArmazenado !== f.valor;
+    case 'in':
+      return Array.isArray(f.valor) && f.valor.includes(valorArmazenado);
+    case '<':
+    case '<=':
+    case '>':
+    case '>=': {
+      const c = comparar(valorArmazenado, f.valor);
+      if (c === null) return false;
+      if (f.op === '<') return c < 0;
+      if (f.op === '<=') return c <= 0;
+      if (f.op === '>') return c > 0;
+      return c >= 0;
+    }
+    default:
+      throw new Error(
+        `FakeDb: operador não suportado em where('${f.campo}', '${f.op}', …) — ensine-o antes de usá-lo`,
+      );
+  }
+}
+
+/** Multi-key sort; absent and `null` values last, whatever the direction. */
+function ordenar<T extends { stored: Stored }>(linhas: T[], ordens: Ordem[]): T[] {
+  return [...linhas].sort((a, b) => {
+    for (const { campo, direcao } of ordens) {
+      const va = a.stored.data[campo];
+      const vb = b.stored.data[campo];
+      const aAusente = va === undefined || va === null;
+      const bAusente = vb === undefined || vb === null;
+      if (aAusente || bAusente) {
+        if (aAusente && bAusente) continue;
+        return aAusente ? 1 : -1;
+      }
+      const c = comparar(va, vb);
+      if (c === null || c === 0) continue;
+      return direcao === 'desc' ? -c : c;
+    }
+    return 0;
+  });
+}
+
+/**
+ * The doc-snapshot cursor. A cursor naming a document this very query did not
+ * return is a broken walk, so it throws rather than quietly returning the whole
+ * page again.
+ */
+function depoisDe<T extends { id: string }>(linhas: T[], apos: string): T[] {
+  const i = linhas.findIndex((l) => l.id === apos);
+  if (i < 0) {
+    throw new Error(
+      `FakeDb: startAfter('${apos}') — o cursor não está no resultado desta consulta`,
+    );
+  }
+  return linhas.slice(i + 1);
 }
 
 /** An Admin-SDK-shaped failure: a plain `Error` carrying a numeric gRPC `code`. */
@@ -140,6 +277,19 @@ export class FakeDb {
    */
   readonly consultas: { fonte: string; clausulas: [string, unknown][]; limite: number | null }[] =
     [];
+  /**
+   * The same queries, WHOLE: clauses as `[campo, op, valor]` triples, the
+   * `orderBy` list as `[campo, direção]` pairs, the limit and the `startAfter`
+   * cursor id. A second log rather than a wider {@link FakeDb.consultas} — the
+   * header says which three assertions that protects.
+   */
+  readonly consultasCompletas: {
+    fonte: string;
+    clausulas: [string, string, unknown][];
+    ordens: [string, 'asc' | 'desc'][];
+    limite: number | null;
+    apos: string | null;
+  }[] = [];
   /** Every write, in order, whatever the verb — `create`, `set` and `update`. */
   readonly writes: { path: string; patch: DocData }[] = [];
   /** Injected failures for the `shop_id` query, keyed by the shop it asks for. */
@@ -262,17 +412,25 @@ export class FakeDb {
   collection(colPath: string) {
     this.caminhos.push(colPath);
     const filtros: Filtro[] = [];
+    const ordens: Ordem[] = [];
+    let limite: number | null = null;
+    let apos: string | null = null;
 
-    const buscar = async (
-      n: number | null,
-    ): Promise<{ docs: { id: string; data: () => DocData }[] }> => {
+    const buscar = async (): Promise<{ docs: { id: string; data: () => DocData }[] }> => {
       const alvo = filtros.find((f) => f.campo === 'shop_id')?.valor;
       const falha = typeof alvo === 'number' ? this.falhas.get(alvo) : undefined;
       if (falha) throw falha;
       this.consultas.push({
         fonte: colPath,
         clausulas: filtros.map((f) => [f.campo, f.valor]),
-        limite: n,
+        limite,
+      });
+      this.consultasCompletas.push({
+        fonte: colPath,
+        clausulas: filtros.map((f) => [f.campo, f.op, f.valor]),
+        ordens: ordens.map((o) => [o.campo, o.direcao]),
+        limite,
+        apos,
       });
       // ⚠️ A query read is logged as a `get` too (step 6, #1514), so a
       // transaction that reads a whole subcollection before writing shows the
@@ -282,9 +440,14 @@ export class FakeDb {
       const prefixo = `${colPath}/`;
       const encontrados = Object.entries(this.store)
         .filter(([path]) => path.startsWith(prefixo) && !path.slice(prefixo.length).includes('/'))
-        .filter(([, stored]) => filtros.every((f) => stored.data[f.campo] === f.valor))
-        .map(([path, stored]) => ({ id: path.slice(prefixo.length), data: () => stored.data }));
-      return { docs: n == null ? encontrados : encontrados.slice(0, n) };
+        .filter(([, stored]) => filtros.every((f) => corresponde(stored.data[f.campo], f)))
+        .map(([path, stored]) => ({ id: path.slice(prefixo.length), stored }));
+      // Order, THEN cursor, THEN cap — the three in the order the server applies
+      // them: a limit taken before the sort would page a different result set.
+      const ordenados = ordens.length > 0 ? ordenar(encontrados, ordens) : encontrados;
+      const apartirDe = apos == null ? ordenados : depoisDe(ordenados, apos);
+      const limitados = limite == null ? apartirDe : apartirDe.slice(0, limite);
+      return { docs: limitados.map(({ id, stored }) => ({ id, data: () => stored.data })) };
     };
 
     const consulta = {
@@ -297,14 +460,27 @@ export class FakeDb {
        * need — cannot be expressed against this double at all.
        */
       path: colPath,
-      where: (campo: string, _op: string, valor: unknown) => {
-        filtros.push({ campo, valor });
+      where: (campo: string, op: string, valor: unknown) => {
+        filtros.push({ campo, op, valor });
         return consulta;
       },
-      limit: (n: number) => ({ get: () => buscar(n) }),
+      /** Records AND sorts — see the step-8 note in the header. */
+      orderBy: (campo: string, direcao: 'asc' | 'desc' = 'asc') => {
+        ordens.push({ campo, direcao });
+        return consulta;
+      },
+      /** The doc-snapshot cursor: everything up to and including `doc.id` goes. */
+      startAfter: (doc: { id: string }) => {
+        apos = doc.id;
+        return consulta;
+      },
+      limit: (n: number) => {
+        limite = n;
+        return consulta;
+      },
       // ⚠️ The UNLIMITED chain, and it is deliberate: the order backfill
       // enumerates every active conta with `where().where().get()` and no cap.
-      get: () => buscar(null),
+      get: () => buscar(),
       /**
        * The blind create `defineAdminCollection().add()` performs — a fresh auto
        * id, no read, nothing to race with. `findOrCreateCliente` is the caller
@@ -347,10 +523,20 @@ export class FakeDb {
         clausulas: filtros.map((f) => [f.campo, f.valor]),
         limite,
       });
+      // The group chain has no `orderBy` and no cursor — nothing in this app runs
+      // one — so those two columns are constant here rather than absent: a second
+      // log with a different row shape would be two logs to read.
+      this.consultasCompletas.push({
+        fonte,
+        clausulas: filtros.map((f) => [f.campo, f.op, f.valor]),
+        ordens: [],
+        limite,
+        apos: null,
+      });
       const linhas = Object.entries(this.store)
         .map(([path, stored]) => ({ segs: path.split('/').filter(Boolean), stored }))
         .filter(({ segs }) => segs.length >= 3 && segs[segs.length - 2] === nome)
-        .filter(({ stored }) => filtros.every((f) => stored.data[f.campo] === f.valor))
+        .filter(({ stored }) => filtros.every((f) => corresponde(stored.data[f.campo], f)))
         .map(({ segs, stored }) => ({
           id: segs[segs.length - 1]!,
           exists: true,
@@ -362,8 +548,8 @@ export class FakeDb {
     };
 
     const consulta = {
-      where: (campo: string, _op: string, valor: unknown) => {
-        filtros.push({ campo, valor });
+      where: (campo: string, op: string, valor: unknown) => {
+        filtros.push({ campo, op, valor });
         return consulta;
       },
       limit: (n: number) => {
