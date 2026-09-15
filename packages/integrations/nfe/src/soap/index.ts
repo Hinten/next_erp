@@ -476,8 +476,9 @@ export const CONSCAD_VERSAO = '2.00';
  * `CadConsultaCadastro4 / consultaCadastro` — query a taxpayer's IE
  * registry for a CNPJ in a UF.
  *
- * The request `consCad` is XSD-validated by the caller (`consultarCadastro` →
- * `validateConsCad`) before this is invoked. Layout 2.00 is not in the v4.00
+ * Both directions are XSD-validated by the caller (`consultarCadastro`): the
+ * request with `validateConsCad` before this is invoked, the response with
+ * `validateRetConsCad` before it is parsed (#1602). Layout 2.00 is not in the v4.00
  * `XSD_BY_ROOT` registry (it is its own pack, `generated/conscad/`), so this
  * wrapper doesn't go through `postSoapValidated` — it builds the SOAP envelope +
  * SOAPAction like the other operations, plus the **`<nfeCabecMsg>` SOAP Header**

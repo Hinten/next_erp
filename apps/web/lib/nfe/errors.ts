@@ -17,6 +17,7 @@ import {
   NFeRejectedError,
   NFeRuntimeNotReadyError,
   NFeServerError,
+  NFeXsdValidationFailedError,
   type NFeEmitResult,
 } from '@delfrance/integrations-nfe/http-provider';
 import { ESTADO_NFE } from '@delfrance/schemas';
@@ -183,6 +184,15 @@ export function notificationForNFeError(err: unknown): NotificationShape {
       title: 'Erro de rede',
       message:
         'Não foi possível alcançar o servidor de NF-e. Verifique a conexão e tente novamente.',
+      color: 'red',
+    };
+  }
+  if (err instanceof NFeXsdValidationFailedError) {
+    // Deterministic: the XML (ours, or SEFAZ's reply) failed the SEFAZ schema on
+    // the server. Repeating the action replays it; the message names the element.
+    return {
+      title: 'XML fora do schema da SEFAZ',
+      message: err.message,
       color: 'red',
     };
   }

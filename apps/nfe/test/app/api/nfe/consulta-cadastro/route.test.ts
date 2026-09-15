@@ -10,6 +10,7 @@
  *   - 200 supported:true with friendly-keyed infCad (xNome→razaoSocial, xLgr→logradouro, …)
  *   - 200 supported:true infCad:[] on a no-match cStat (259)
  *   - 200 degraded on a transport error (NFeTransportError), never 5xx
+ *   - 500 (not degraded) when either side fails the XSD (NFeXsdValidationError, #1602)
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -34,6 +35,7 @@ import { NextResponse } from 'next/server';
 import {
   NFeCertError,
   NFeTransportError,
+  NFeXsdValidationError,
   consultarCadastro,
   getConsultaCadastroEndpoint,
   type ConsultaCadastroResult,
@@ -251,5 +253,23 @@ describe('POST /api/nfe/consulta-cadastro', () => {
     vi.mocked(consultarCadastro).mockRejectedValue(new Error('retConsCad missing <infCons>'));
     const res = await POST(req());
     expect(res.status).toBe(500);
+  });
+
+  it('500 — not the degraded 200 — when SEFAZ reply fails the XSD (#1602)', async () => {
+    vi.mocked(consultarCadastro).mockRejectedValue(
+      new NFeXsdValidationError('retConsCad', [
+        {
+          message: "Element 'infCons': Missing child element(s). Expected is ( dhCons ).",
+          line: 1,
+        },
+      ]),
+    );
+    const res = await POST(req());
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('NFeXsdValidationError');
+    expect(body.error).toContain('<retConsCad>');
+    expect(body).not.toHaveProperty('degraded');
+    expect(body).not.toHaveProperty('infCad');
   });
 });
