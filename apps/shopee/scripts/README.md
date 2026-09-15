@@ -519,8 +519,11 @@ real home is `apps/shopee/functions/.env.deploy`:
 | `SHOPEE_PEDIDO_TRAVADO_MAX_IDADE_D`   | the horizon in days (default 7). `--max-idade-d <n>` sets this same variable before the imports, so the rehearsal exercises the one real reader. |
 
 The preamble goes to **stderr** and leads with the mode
-(`modo: DRY-RUN — não grava nada` / `modo: LIVE — VAI GRAVAR`), then the
-project, the database, the raw `SHOPEE_SANDBOX`, the integração scope, the
+(`modo: DRY-RUN — não enfileira e não grava nada` /
+`modo: LIVE — VAI ENFILEIRAR E ESCREVER AVISOS` — this CLI's own wording, not
+the three above: its live run has exactly two effects and the line names both),
+then the project, the database, the raw `SHOPEE_SANDBOX`, the integração scope,
+the
 horizon, **both** flag values raw, and the resolved Shopee environment (plus the
 shop, when `--integracao` scoped it to one conta). The two flags are separate
 lines on purpose: `--live` honours one of them and the other outranks `--live`.
@@ -654,8 +657,11 @@ and never a payload.
   it.
 - **`status-desconhecido` never enqueues**, deliberately: a re-drive would make
   step 5 write `estado: error`, which is outside the reserve set and would
-  RELEASE the reservation for a token nobody understands. Read the raw token off
-  the log and add a rung to step 5's ladder (settle-live register item 43).
+  RELEASE the reservation for a token nobody understands. ⚠️ The scheduled tick
+  logs the COUNT only — the raw token is in the `orderStatus` column of THIS
+  rehearsal's per-candidate table and nowhere else, so a `status-desconhecido`
+  seen in the weekly log is read by re-running `varrer:reservas` scoped to that
+  conta. Then add a rung to step 5's ladder (settle-live register item 43).
 - **`inexistente` never enqueues either.** The code-3 arm parks an order Shopee
   no longer knows, and the synthetic doc id carries the tick's own clock, so a
   re-driver would write one new parked dead-letter document per candidate per

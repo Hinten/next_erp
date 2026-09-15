@@ -382,6 +382,13 @@ describe('4 — os veredictos', () => {
     expect([...VEREDITOS_RESERVA_TRAVADA].sort()).toEqual(
       [...Object.values(VEREDITO_RESERVA_TRAVADA)].sort(),
     );
+    // ⚠️ And TOTALITY over the union is a TYPE property, never this assertion's:
+    // both lists come from the same constants object, so a twelfth arm added to
+    // the UNION alone leaves the two agreeing and silently drops a zero-valued
+    // counter. What reds on that is the
+    // `satisfies Record<VereditoReservaTravada, number>` on the seed this array
+    // is derived from — said here so nobody "simplifies" it back to a listed
+    // array with an annotation, which proves only that what IS there belongs.
     for (const veredito of VEREDITOS_QUE_AVISAM) {
       expect(VEREDITOS_RESERVA_TRAVADA).toContain(veredito);
     }

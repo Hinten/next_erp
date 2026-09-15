@@ -709,7 +709,7 @@ export const sweepShopeeStuckReservations = onSchedule(
       // The paging hit its cap: `examinados` is a PREFIX and the oldest stuck
       // pedidos past it were not examined at all. Truncation week after week is
       // the signal for reconsidering a `marketplace.tipo` composite index
-      // (migration window, settle-live register item 41).
+      // (migration window, settle-live register item 45).
       truncado: result.truncado,
       // ⚠️ Never summed with `candidatos`: these four count rows the channel did
       // NOT prove it owns — a manual pedido, an adopted id, an inactive conta, a
@@ -751,7 +751,7 @@ export const sweepShopeeStuckReservations = onSchedule(
       // one on a `redirecionado-*`: a delivery was accepted and the estado still
       // did not move. There is no feedback channel from the task back to the
       // sweep, so this counter is the only place that shows up at all
-      // (settle-live register item 43).
+      // (settle-live register item 42).
       redriveAparentementeNaoAplicado: result.redriveAparentementeNaoAplicado,
       // ⚠️ The four diagnostic tables, logged WHOLE and deliberately: they are
       // computed from `marketplace.status`/`statusEm` after the gates and BEFORE

@@ -46,14 +46,19 @@
  * ## ⚠️ `status-desconhecido` NEVER redirects
  *
  * A synthetic re-drive makes step 5 write `ESTADO_DO_ERRO_SHOPEE`
- * (= `ESTADO_PEDIDO.error`, `orderStatusMaps.ts:165`) for a token the ladder
- * does not model — verified on the real engine, not by reading: with
+ * (= `ESTADO_PEDIDO.error`, declared beside `estadoPedidoDeOrderStatus` in
+ * `orderStatusMaps.ts`) for a token the ladder does not model — verified on the
+ * real engine, not by reading: with
  * `aguardandoConfirmacaoDePagamento` stored, `estadoShopeeAplicavel` answers
  * `{escrever: true, estado: error}`, and `error` is OUTSIDE
  * `ESTADOS_PEDIDO_RESERVA` (`packages/schemas/src/pedido/pureLogic/estoque.ts:16-22`).
  * So re-driving would **RELEASE the reservation for a status nobody
- * understands** — the unsafe direction. Count it, log the raw token, act on
- * nothing. `reservaTravadaMapping.test.ts` executes both halves of that proof.
+ * understands** — the unsafe direction. Count it, act on nothing. ⚠️ The
+ * scheduled tick logs the COUNT only (`veredictos['status-desconhecido']`); the
+ * raw token reaches no log line, and is readable only as the `orderStatus`
+ * column of the `varrer:reservas` rehearsal, which is the one caller that
+ * supplies `deps.onCandidato`.
+ * `reservaTravadaMapping.test.ts` executes both halves of that proof.
  *
  * ## ⚠️ The pedido preimage is the LEGACY one, and #1516 spells it wrong
  *
@@ -167,25 +172,43 @@ export const VEREDITO_RESERVA_TRAVADA = {
 } as const satisfies Record<string, VereditoReservaTravada>;
 
 /**
+ * The zero-seed itself, KEY-TOTAL over {@link VereditoReservaTravada}.
+ *
+ * ⚠️ `satisfies Record<VereditoReservaTravada, number>` is the whole point of
+ * the shape: it demands EVERY member of the union as a key, so a twelfth arm
+ * added to the union reds `typecheck` at this declaration. A listed array
+ * annotated `readonly VereditoReservaTravada[]` proves only that what is there
+ * belongs — never that nothing is missing — and the consumer cannot help
+ * either, since the tick's counter map is built through an
+ * `as Record<VereditoReservaTravada, number>` cast over an empty object. The
+ * arm would then exist, fire in some weeks and be ABSENT in others, which is
+ * precisely the week-over-week ambiguity the zero-seed exists to remove.
+ */
+const SEMENTE_VEREDITOS = {
+  'interacao-humana': 0,
+  'pagamento-aprovado': 0,
+  'nao-verificavel': 0,
+  inexistente: 0,
+  'ainda-nao-pago': 0,
+  'pendente-pago': 0,
+  'redirecionado-avancou': 0,
+  'redirecionado-cancelado': 0,
+  'manter-devolucao': 0,
+  'status-desconhecido': 0,
+  'tasks-desabilitado': 0,
+} as const satisfies Record<VereditoReservaTravada, number>;
+
+/**
  * Every arm, in declaration order — the ZERO-SEED for the tick's counter map.
  *
  * ⚠️ Zero-valued arms are present on purpose: the rehearsal instrument is a
  * week-over-week diff, and an omitted key is indistinguishable from an arm that
- * did not exist last week.
+ * did not exist last week. Derived from {@link SEMENTE_VEREDITOS} rather than
+ * listed, so "every arm" is a type error when it stops being true.
  */
-export const VEREDITOS_RESERVA_TRAVADA: readonly VereditoReservaTravada[] = [
-  VEREDITO_RESERVA_TRAVADA.interacaoHumana,
-  VEREDITO_RESERVA_TRAVADA.pagamentoAprovado,
-  VEREDITO_RESERVA_TRAVADA.naoVerificavel,
-  VEREDITO_RESERVA_TRAVADA.inexistente,
-  VEREDITO_RESERVA_TRAVADA.aindaNaoPago,
-  VEREDITO_RESERVA_TRAVADA.pendentePago,
-  VEREDITO_RESERVA_TRAVADA.redirecionadoAvancou,
-  VEREDITO_RESERVA_TRAVADA.redirecionadoCancelado,
-  VEREDITO_RESERVA_TRAVADA.manterDevolucao,
-  VEREDITO_RESERVA_TRAVADA.statusDesconhecido,
-  VEREDITO_RESERVA_TRAVADA.tasksDesabilitado,
-];
+export const VEREDITOS_RESERVA_TRAVADA: readonly VereditoReservaTravada[] = Object.keys(
+  SEMENTE_VEREDITOS,
+) as VereditoReservaTravada[];
 
 /**
  * The verdicts an operator is owed an aviso for — declared ONCE, and the only
@@ -199,7 +222,8 @@ export const VEREDITOS_RESERVA_TRAVADA: readonly VereditoReservaTravada[] = [
  *
  * ⚠️ `manter-devolucao` is in the set, and that overrides the brief. A
  * `TO_RETURN` order answers `manter` at the FIRST clause of
- * `estadoShopeeAplicavel` (`orderStatusMaps.ts:268-270`), so a re-drive
+ * `estadoShopeeAplicavel` (its `ALVO_ESTADO_SHOPEE.manter` guard, the clause
+ * that opens the function), so a re-drive
  * provably cannot move the estado; `get_order_list` cannot list `TO_RETURN`
  * (E1 B2) and step 17 is unbuilt, so nothing else in this repo will ever reach
  * that pedido. A permanently held reservation nobody can see is the worst of

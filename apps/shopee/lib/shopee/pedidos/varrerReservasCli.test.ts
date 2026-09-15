@@ -211,6 +211,34 @@ describe('parseArgsVarrerReservas', () => {
     expect(ajuda).toBeLessThan(primeiroImport);
   });
 
+  it('…e o PAR de deps do script, pinado no texto cru porque nada o executa', () => {
+    // ⚠️ `scripts/` está fora do `include` do vitest: NADA no repositório roda
+    // este arquivo, então três mutações dele passam verdes por toda a suíte —
+    // `--live` entregando `ignorarFlagMestra` (a asserção pareada do tick lança
+    // `ShopeeConfigError`, mas nenhuma lane de CI a veria), `--dry-run` deixando
+    // de entregar `forcarDryRun`, e o acumulador do ensaio empurrando DUAS
+    // linhas por candidato — o que duplicaria cada linha da tabela cruzada que é
+    // o artefato do passo 8. Um pino de texto é o instrumento mais fraco que
+    // existe; é também o único que alcança este arquivo.
+    const fonte = readFileSync(
+      new URL('../../../scripts/varrer-reservas.ts', import.meta.url),
+      'utf8',
+    );
+    // Só o CÓDIGO: o docblock do topo explica o par e citá-lo não é usá-lo.
+    const codigo = fonte
+      .split('\n')
+      .filter((l) => {
+        const t = l.trim();
+        return !t.startsWith('*') && !t.startsWith('//') && !t.startsWith('/*');
+      })
+      .join('\n');
+
+    expect(codigo).toContain('...(live ? {} : { forcarDryRun: true, ignorarFlagMestra: true })');
+    expect(codigo.match(/forcarDryRun/g) ?? []).toHaveLength(1);
+    expect(codigo.match(/ignorarFlagMestra/g) ?? []).toHaveLength(1);
+    expect(codigo.match(/linhas\.push\(resumoDoCandidato\(/g) ?? []).toHaveLength(1);
+  });
+
   it('o uso NÃO carrega um separador `--` entre flags', () => {
     // Um `pnpm run` com o separador antes das flags repassa o token literal
     // para o script, e todo CLI deste repo parseia `process.argv` sozinho —

@@ -105,7 +105,13 @@
  *    `.limit(n).get()` caller is unaffected;
  *  - {@link FakeDb.consultasCompletas}, a SECOND query log carrying the WHOLE
  *    query: clauses as `[campo, op, valor]` TRIPLES, the orders, the limit and
- *    the cursor id.
+ *    the cursor id;
+ *  - {@link FakeDb.falhasDeUpdate}, the `update` twin of
+ *    {@link FakeDb.falhasDeCriacao}. Without it two arms are unreachable from
+ *    any suite: `resolverAviso`'s precondition-lost branch, which answers
+ *    `false` — a lookup that closed NOTHING, as against a transition — and a
+ *    contained gRPC failure out of an in-line resolve, which is where a sweep
+ *    can record a SECOND verdict for one candidate.
  *
  * ⚠️ That second log is where "additively" has teeth, and the reason is three
  * live assertions on the FIRST one: `core/contas.test.ts:35` compares the whole
@@ -296,6 +302,8 @@ export class FakeDb {
   readonly falhas = new Map<number, Error>();
   /** Injected failures for `create`, keyed by the FULL document path. */
   readonly falhasDeCriacao = new Map<string, Error>();
+  /** Injected failures for `update`, keyed by the FULL document path. */
+  readonly falhasDeUpdate = new Map<string, Error>();
   /**
    * Every read and write in CALL order — `get` logged by the doc ref, the writes
    * logged by the engine when they are STAGED (not at commit).
@@ -381,6 +389,8 @@ export class FakeDb {
         });
       },
       update: (patch: DocData, precond?: { lastUpdateTime?: number }) => {
+        const falha = this.falhasDeUpdate.get(path);
+        if (falha) return Promise.reject(falha);
         const atual = this.store[path];
         if (!atual) return Promise.reject(grpc(5, 'NOT_FOUND'));
         if (precond?.lastUpdateTime !== undefined && precond.lastUpdateTime !== atual.updateTime) {

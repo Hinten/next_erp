@@ -23,7 +23,13 @@ import {
   pagamentoCollection,
   pedidoCollection,
 } from '@delfrance/data/admin/collections';
-import { ESTADO_PEDIDO, INTEGRACAO_TIPO, STATUS_PAGAMENTO, TIPO_AVISO } from '@delfrance/schemas';
+import {
+  CANAL_AVISO,
+  ESTADO_PEDIDO,
+  INTEGRACAO_TIPO,
+  STATUS_PAGAMENTO,
+  TIPO_AVISO,
+} from '@delfrance/schemas';
 import {
   SHOPEE_ERROR_KIND,
   ShopeeApiError,
@@ -220,12 +226,35 @@ function clienteTabela(
   });
 }
 
+interface LinhaDeLog {
+  readonly msg: string;
+  readonly meta: Record<string, unknown> | undefined;
+}
+
+/** A logger that KEEPS its lines, for the assertions that are about one. */
+function loggerGravador(): {
+  logger: { warn: (msg: string, meta?: Record<string, unknown>) => void };
+  linhas: LinhaDeLog[];
+} {
+  const linhas: LinhaDeLog[] = [];
+  return {
+    linhas,
+    logger: {
+      warn: (msg: string, meta?: Record<string, unknown>): void => {
+        linhas.push({ msg, meta });
+      },
+    },
+  };
+}
+
 interface RodarOver {
   readonly nowMs?: number;
   readonly apenasIntegracoes?: readonly string[];
   readonly forcarDryRun?: boolean;
   readonly ignorarFlagMestra?: boolean;
   readonly semLogger?: boolean;
+  /** Where the assertion is about a LOG LINE rather than about a counter. */
+  readonly logger?: { warn: (msg: string, meta?: Record<string, unknown>) => void };
   /** The wave-4 observation seam. Absent ⇒ the tick behaves exactly as before. */
   readonly onCandidato?: (c: CandidatoObservado) => void;
 }
@@ -236,7 +265,7 @@ function rodar(c: Cenario, over: RodarOver = {}): Promise<ReservaTravadaSweepRes
     scheduler,
     nowMs: over.nowMs ?? AGORA_MS,
     increment,
-    ...(over.semLogger === true ? {} : { logger: { warn: () => {} } }),
+    ...(over.semLogger === true ? {} : { logger: over.logger ?? { warn: () => {} } }),
     clientFor: (_db, integracaoId) =>
       Promise.resolve(
         c.clientPor.get(integracaoId) ??
@@ -462,6 +491,37 @@ describe('runReservaTravadaSweep — a consulta de candidatos', () => {
     esperarInvariante(r);
   });
 
+  it('⚠️ o teto de MAX_CANDIDATOS é por LINHA — uma reprovação de porteira na página 1 não o dobra', async () => {
+    const c = cenario();
+    // A população REAL: a consulta de candidatos não tem cláusula de canal, e
+    // as linhas que não são nossas colonizam a cabeça da página. Basta UMA para
+    // um teto verificado só ENTRE páginas deixar a coleta chegar a
+    // MAX_CANDIDATOS - 1 + PAGE_LIMIT = 399 — o dobro de cada cota declarada.
+    c.db.seed(`${PEDIDO_PATH}/alheio-mais-novo`, {
+      ehSaida: true,
+      estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+      timestamp: AGORA_US - 29 * DIA_US,
+    });
+    const sns: string[] = [];
+    for (let i = 0; i < 260; i += 1) {
+      const sn = `2609TETO${String(i).padStart(4, '0')}`;
+      sns.push(sn);
+      semearPedido(c.db, { orderSn: sn, diasAtras: 30 + i / 1000 });
+    }
+    c.getOrderDetail = clienteTabela(new Map(sns.map((sn) => [sn, linha(sn, 'UNPAID')])));
+
+    const r = await rodar(c, { forcarDryRun: true });
+
+    expect(r.naoMarketplace).toBe(1);
+    expect(r.candidatos).toBe(MAX_CANDIDATOS);
+    expect(r.truncado).toBe(true);
+    // E as cotas DERIVADAS do conjunto ficam onde o docblock, o plano e os
+    // 540 s as declaram: 4 lotes, nunca 8.
+    expect(r.contas[0]!.lotes).toBe(Math.ceil(MAX_CANDIDATOS / LOTE_ORDER_DETAIL));
+    expect(c.getOrderDetail).toHaveBeenCalledTimes(Math.ceil(MAX_CANDIDATOS / LOTE_ORDER_DETAIL));
+    esperarInvariante(r);
+  });
+
   it('⚠️ um pedido legado com timestamp em MILISSEGUNDOS é candidato, e a idade sai honesta', async () => {
     const c = cenario();
     // O corpus migrado guarda ms. ~1.7e12 satisfaz qualquer corte em µs por
@@ -560,6 +620,35 @@ describe('runReservaTravadaSweep — as porteiras', () => {
     const r2 = await rodar(comMs);
     expect(r2.naoMarketplace).toBe(0);
     expect(r2.candidatos).toBe(1);
+  });
+
+  it('⚠️ um lastMarketplaceUpdate em ISO é candidato; um ILEGÍVEL conta naoMarketplace', async () => {
+    // O corpus legado guarda STRINGS ISO, e a porteira usa `coerceToMicros`
+    // justamente por isso: um `typeof === 'number'` recusaria exatamente a
+    // população com mais chance de estar travada, e nenhum fixture de número em
+    // ms consegue mostrar isso — os dois leitores concordam sobre um número.
+    const iso = cenario();
+    semearPedido(iso.db, {
+      over: { lastMarketplaceUpdate: new Date(AGORA_MS - 30 * DIA_MS).toISOString() },
+    });
+    iso.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+
+    const r1 = await rodar(iso);
+
+    expect(r1.candidatos).toBe(1);
+    expect(r1.naoMarketplace).toBe(0);
+    esperarInvariante(r1);
+
+    // E o QUASE-ACERTO que tem de continuar recusado: a dobra aceita ISO, não
+    // qualquer string.
+    const lixo = cenario();
+    semearPedido(lixo.db, { over: { lastMarketplaceUpdate: 'não é uma data' } });
+
+    const r2 = await rodar(lixo);
+
+    expect(r2.naoMarketplace).toBe(1);
+    expect(r2.candidatos).toBe(0);
+    expect(lixo.getOrderDetail).not.toHaveBeenCalled();
   });
 
   it('um timestamp ilegível conta naoMarketplace em vez de inventar uma idade', async () => {
@@ -773,6 +862,123 @@ describe('runReservaTravadaSweep — a leitura', () => {
     esperarInvariante(r);
   });
 
+  it.each([
+    ['429 diário', rateLimit('daily')],
+    ['429 burst', rateLimit('burst')],
+    ['autorização morta', reauth()],
+  ])(
+    '⚠️ %s DENTRO do fallback por pedido ABORTA a conta — nem mais uma chamada',
+    async (_k, erro) => {
+      const c = cenario();
+      const sns: string[] = [];
+      for (let i = 0; i < 6; i += 1) {
+        const sn = `2609FB${String(i).padStart(4, '0')}`;
+        sns.push(sn);
+        semearPedido(c.db, { orderSn: sn, diasAtras: 30 + i / 1000 });
+      }
+      let porPedido = 0;
+      c.getOrderDetail = vi.fn((p: GetOrderDetailParams) => {
+        if (p.orderSnList.length > 1) return Promise.reject(apiError('error_not_found'));
+        porPedido += 1;
+        if (porPedido === 1) return Promise.reject(erro);
+        return Promise.resolve({
+          order_list: [linha(p.orderSnList[0]!, 'UNPAID')],
+        } as ShopeeOrderDetail);
+      });
+
+      const r = await rodar(c);
+
+      // 1 chamada em lote (recusada) + 1 por pedido (que abortou) e NADA mais:
+      // as 5 restantes — 49 num lote cheio — seriam 5 chamadas contra o limite
+      // que acabou de nos recusar, ou 5 assinadas com uma autorização que este
+      // mesmo tick já declarou morta.
+      expect(c.getOrderDetail).toHaveBeenCalledTimes(2);
+      expect(r.contas[0]!.chamadas).toBe(2);
+      expect(r.contas[0]!.pulada).toBe(MOTIVO_CONTA_ABORTADA);
+      // "Abortar a conta" é exatamente isto, e é a outra metade: TODO candidato
+      // restante conta nao-verificavel, nenhum ganha veredito de leitura e
+      // nenhum aviso é escrito depois do aborto.
+      expect(r.veredictos['nao-verificavel']).toBe(sns.length);
+      expect(r.contas[0]!.avisosEscritos).toBe(0);
+      expect(c.db.writes).toEqual([]);
+      expect(c.enqueue).not.toHaveBeenCalled();
+      esperarInvariante(r);
+    },
+  );
+
+  it('um erro COMUM da Shopee leva codigo e warning para a linha do lote', async () => {
+    const c = cenario();
+    semearPedido(c.db);
+    // ⚠️ O braço que TODO `ShopeeApiError` comum toma — `error_server`,
+    // `error_param`, `error_sign`, e o que a Shopee acrescentar amanhã. É o
+    // portador mais provável de um `warning` povoado, e o item 46 do registro
+    // não tem outro lugar de onde ser lido.
+    c.getOrderDetail = vi.fn(() =>
+      Promise.reject(
+        new ShopeeApiError('shopee caiu', {
+          code: 'error_server',
+          kind: SHOPEE_ERROR_KIND.transient,
+          httpStatus: 200,
+          path: '/api/v2/order/get_order_detail',
+          warning: 'AVISO_CRU_DA_SHOPEE',
+        }),
+      ),
+    );
+    const { logger, linhas } = loggerGravador();
+
+    const r = await rodar(c, { logger });
+
+    expect(r.veredictos['nao-verificavel']).toBe(1);
+    const doLote = linhas.find((l) => l.msg.includes('lote não verificável'));
+    expect(doLote).toBeDefined();
+    expect(doLote!.meta).toMatchObject({
+      codigo: 'error_server',
+      warning: 'AVISO_CRU_DA_SHOPEE',
+      pedidos: 1,
+    });
+    esperarInvariante(r);
+  });
+
+  it('uma falha na chamada POR PEDIDO deixa uma linha própria, com o warning', async () => {
+    const c = cenario();
+    semearPedido(c.db, { orderSn: '260910FALHA', diasAtras: 30 });
+    semearPedido(c.db, { orderSn: '260910BOA3', diasAtras: 31 });
+    c.getOrderDetail = vi.fn((p: GetOrderDetailParams) => {
+      if (p.orderSnList.length > 1) return Promise.reject(apiError('error_not_found'));
+      if (p.orderSnList[0] === '260910FALHA') {
+        return Promise.reject(
+          new ShopeeApiError('shopee caiu', {
+            code: 'error_server',
+            kind: SHOPEE_ERROR_KIND.transient,
+            httpStatus: 200,
+            path: '/api/v2/order/get_order_detail',
+            warning: 'AVISO_NO_FALLBACK',
+          }),
+        );
+      }
+      return Promise.resolve({
+        order_list: [linha('260910BOA3', 'UNPAID')],
+      } as ShopeeOrderDetail);
+    });
+    const { logger, linhas } = loggerGravador();
+
+    const r = await rodar(c, { logger });
+
+    // Sem esta linha a falha sobrevive só em `contas[].error`, que a PRÓXIMA
+    // falha contida sobrescreve — e a perna do fallback fica sem granularidade
+    // por `order_sn` nenhuma.
+    const doPedido = linhas.find((l) => l.msg.includes('pedido não verificável'));
+    expect(doPedido).toBeDefined();
+    expect(doPedido!.meta).toMatchObject({
+      codigo: 'error_server',
+      warning: 'AVISO_NO_FALLBACK',
+      pedidos: 1,
+    });
+    expect(r.veredictos['nao-verificavel']).toBe(1);
+    expect(r.veredictos['ainda-nao-pago']).toBe(1);
+    esperarInvariante(r);
+  });
+
   it('inexistente mapeia error_not_found e order_not_found para o mesmo motivo e guarda o código bruto', async () => {
     for (const codigo of ['error_not_found', 'order_not_found']) {
       const c = cenario();
@@ -813,27 +1019,36 @@ describe('runReservaTravadaSweep — a leitura', () => {
     esperarInvariante(r);
   });
 
-  it('um 429 ABORTA a conta: os lotes restantes contam nao-verificavel sem mais nenhuma chamada', async () => {
-    const c = cenario();
-    const sns: string[] = [];
-    for (let i = 0; i < LOTE_ORDER_DETAIL + 10; i += 1) {
-      const sn = `2609AB${String(i).padStart(4, '0')}`;
-      sns.push(sn);
-      semearPedido(c.db, { orderSn: sn, diasAtras: 30 + i / 1000 });
-    }
-    c.getOrderDetail = vi.fn(() => Promise.reject(rateLimit('daily')));
+  it.each([
+    ['429 diário', rateLimit('daily')],
+    // ⚠️ A autorização morta precisa do MESMO fixture de dois lotes: com um
+    // candidato só, `pulada` é inobservável e a classe pode sair da condição de
+    // aborto sem que nenhuma asserção mude.
+    ['autorização morta', reauth()],
+  ])(
+    'um %s ABORTA a conta: os lotes restantes contam nao-verificavel sem mais nenhuma chamada',
+    async (_k, erro) => {
+      const c = cenario();
+      const sns: string[] = [];
+      for (let i = 0; i < LOTE_ORDER_DETAIL + 10; i += 1) {
+        const sn = `2609AB${String(i).padStart(4, '0')}`;
+        sns.push(sn);
+        semearPedido(c.db, { orderSn: sn, diasAtras: 30 + i / 1000 });
+      }
+      c.getOrderDetail = vi.fn(() => Promise.reject(erro));
 
-    const r = await rodar(c);
+      const r = await rodar(c);
 
-    expect(c.getOrderDetail).toHaveBeenCalledTimes(1);
-    expect(r.contas[0]!.lotes).toBe(1);
-    expect(r.veredictos['nao-verificavel']).toBe(sns.length);
-    expect(r.contas[0]!.pulada).toBe(MOTIVO_CONTA_ABORTADA);
-    // ⚠️ Um candidato abortado NÃO aparece também em erros[] — isso tornaria
-    // `erros.length` ilegível.
-    expect(r.erros).toEqual([]);
-    esperarInvariante(r);
-  });
+      expect(c.getOrderDetail).toHaveBeenCalledTimes(1);
+      expect(r.contas[0]!.lotes).toBe(1);
+      expect(r.veredictos['nao-verificavel']).toBe(sns.length);
+      expect(r.contas[0]!.pulada).toBe(MOTIVO_CONTA_ABORTADA);
+      // ⚠️ Um candidato abortado NÃO aparece também em erros[] — isso tornaria
+      // `erros.length` ilegível.
+      expect(r.erros).toEqual([]);
+      esperarInvariante(r);
+    },
+  );
 
   it.each([
     ['reauth', reauth()],
@@ -974,6 +1189,27 @@ describe('runReservaTravadaSweep — os dois efeitos', () => {
     esperarInvariante(r);
   });
 
+  it('status-desconhecido NÃO enfileira — a re-condução LIBERARIA a reserva', async () => {
+    const c = cenario();
+    semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'ALGO_QUE_NINGUEM_MODELOU')]]));
+
+    const r = await rodar(c);
+
+    // ⚠️ É o efeito que precisa ser fixado, não o veredito: uma re-condução faz
+    // o passo 5 escrever `estado: error` para um token que a escada não modela,
+    // e `error` está FORA de ESTADOS_PEDIDO_RESERVA — solta a unidade por causa
+    // de um status que ninguém entende, que é a direção insegura. O veredito,
+    // `enfileiraria` e `avisaria` continuam todos certos enquanto isso
+    // acontece.
+    expect(r.veredictos['status-desconhecido']).toBe(1);
+    expect(c.enqueue).not.toHaveBeenCalled();
+    expect(r.contas[0]!.enfileirados).toBe(0);
+    // E não avisa: é pergunta de dev, não de operador.
+    expect(r.contas[0]!.avisosEscritos).toBe(0);
+    esperarInvariante(r);
+  });
+
   it('SHOPEE_TASKS_DISABLED ⇒ veredito tasks-desabilitado, decidido por LEITURA', async () => {
     const c = cenario();
     semearPedido(c.db);
@@ -1002,6 +1238,28 @@ describe('runReservaTravadaSweep — os dois efeitos', () => {
 
     expect(r.veredictos['tasks-desabilitado']).toBe(1);
     expect(r.erros).toEqual([]);
+    esperarInvariante(r);
+  });
+
+  it('⚠️ um pay_time de 2017 é uma AUSÊNCIA, não um pagamento — o piso da dobra', async () => {
+    const c = cenario();
+    semearPedido(c.db);
+    // A dobra do classificador é `segundosShopeeUtilizaveis`, que recusa
+    // qualquer carimbo abaixo do piso de 2020. Um leitor do lado ARMAZENADO
+    // (`coerceToMicros`) leria 1_500_000_000 como MILISSEGUNDOS e responderia
+    // 2017 em µs — acima de qualquer piso — e a linha viraria `pendente-pago`,
+    // um "pagamento retido" inventado. Todo fixture verde usa um carimbo
+    // pós-2020, onde os dois leitores CONCORDAM: este é o quase-acerto.
+    c.getOrderDetail = clienteTabela(
+      new Map([[SN_A, linha(SN_A, 'PENDING', { pay_time: 1_500_000_000 })]]),
+    );
+    const vistos: CandidatoObservado[] = [];
+
+    const r = await rodar(c, { onCandidato: (o) => vistos.push(o) });
+
+    expect(r.veredictos['ainda-nao-pago']).toBe(1);
+    expect(r.veredictos['pendente-pago']).toBe(0);
+    expect(vistos[0]!.temPayTime).toBe(false);
     esperarInvariante(r);
   });
 
@@ -1146,6 +1404,12 @@ describe('⚠️ a tabela de paridade do dry-run', () => {
       caso.montar(vivo);
       if (caso.tasksOff === true) process.env.SHOPEE_TASKS_DISABLED = '1';
       const rVivo = await rodar(vivo);
+
+      // ⚠️ O tick VIVO é o único lugar onde o enfileiramento existe, e só os
+      // dois braços `redirecionado-*` podem tê-lo. Sem esta linha, um braço que
+      // passasse a enfileirar — `status-desconhecido` acima de todos — mantém
+      // veredito, `enfileiraria` e `avisaria` corretos e a tabela não vê nada.
+      expect(vivo.enqueue).toHaveBeenCalledTimes(caso.veredito.startsWith('redirecionado') ? 1 : 0);
 
       const seco = cenario();
       caso.montar(seco);
@@ -1368,6 +1632,203 @@ describe('runReservaTravadaSweep — os avisos', () => {
     ).toBeNull();
   });
 
+  it('⚠️ a passagem (b) recusa uma linha cuja CHAVE é nossa mas o tipo ou o canal não são', async () => {
+    const c = cenario();
+    // Ids que o PARSER aceita — sem isso o `continue` do parser responde por
+    // tudo e os dois filtros de campo podem ser apagados em verde, numa coleção
+    // `serverOwned` onde nenhum humano desfaz um resolve.
+    const chaveTipo = chaveReservaTravada(INT_A, 'ped-tipo-alheio');
+    const chaveCanal = chaveReservaTravada(INT_A, 'ped-canal-alheio');
+    const chaveNossa = chaveReservaTravada(INT_A, 'ped-nosso-mesmo');
+    // O CONTROLE, byte a byte igual às duas de baixo exceto nos dois campos
+    // filtrados: sem ele, "nada foi fechado" é verdade por qualquer motivo —
+    // inclusive porque o parser recusou os três ids.
+    c.db.seed(`${AVISO_PATH}/${chaveNossa}`, {
+      tipo: TIPO_AVISO.pedidoPrecisaDecisao,
+      canal: CANAL_AVISO.shopee,
+      resolvidoEm: null,
+      criadoEm: AGORA_US - 2,
+    });
+    c.db.seed(`${AVISO_PATH}/${chaveTipo}`, {
+      tipo: TIPO_AVISO.shopeeAutorizacaoExpirando,
+      canal: CANAL_AVISO.shopee,
+      resolvidoEm: null,
+      criadoEm: AGORA_US,
+    });
+    c.db.seed(`${AVISO_PATH}/${chaveCanal}`, {
+      tipo: TIPO_AVISO.pedidoPrecisaDecisao,
+      canal: CANAL_AVISO.mercadoLivre,
+      resolvidoEm: null,
+      criadoEm: AGORA_US - 1,
+    });
+
+    const r = await rodar(c);
+
+    // Os três pedidos NÃO existem, e os três ids são chaves bem formadas que o
+    // parser aceita — então a ÚNICA diferença entre a linha que fecha e as duas
+    // que ficam abertas são `tipo` e `canal`. Sem os dois filtros, a passagem
+    // (b) fecharia as três com `pedido-inexistente`.
+    expect(r.avisosVarridos).toBe(3);
+    expect(r.reconciliados).toBe(1);
+    expect(c.db.store[`${AVISO_PATH}/${chaveNossa}`]!.data.resolucaoMotivo).toBe(
+      'pedido-inexistente',
+    );
+    expect(c.db.store[`${AVISO_PATH}/${chaveTipo}`]!.data.resolvidoEm).toBeNull();
+    expect(c.db.store[`${AVISO_PATH}/${chaveCanal}`]!.data.resolvidoEm).toBeNull();
+  });
+
+  it('a passagem (b) fecha por fora-da-posse quando o outerRef deixa de ser nosso', async () => {
+    const c = cenario();
+    const pedidoId = semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+    const chave = chaveReservaTravada(INT_A, pedidoId);
+    await rodar(c);
+
+    // O documento continua lá e continua no estado de reserva; o que mudou é
+    // que a prova de posse não fecha mais — migração, ou um re-aponte de conta.
+    c.db.store[`${PEDIDO_PATH}/${pedidoId}`]!.data.integracaoPedidoOuterRef =
+      'documents/integracao/int-9';
+    const r = await rodar(c, { nowMs: AGORA_MS + 7 * DIA_MS });
+
+    // A porteira 1a o conta ADOTADO (o `marketplace.tipo` continua shopee), não
+    // é mais candidato, e a chave não é tocada — então a passagem (b) o alcança.
+    expect(r.adotado).toBe(1);
+    expect(r.candidatos).toBe(0);
+    expect(r.avisosVarridos).toBe(1);
+    expect(r.reconciliados).toBe(1);
+    expect(c.db.store[`${AVISO_PATH}/${chave}`]!.data.resolucaoMotivo).toBe('fora-da-posse');
+  });
+
+  it('a passagem (b) fecha por assumido-por-humano mesmo quando a conta não pôde ser lida', async () => {
+    const c = cenario();
+    const pedidoId = semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+    const chave = chaveReservaTravada(INT_A, pedidoId);
+    await rodar(c);
+
+    // Sem `shop_id` a conta é pulada antes de qualquer leitura, então a chave
+    // NÃO é tocada neste tick — e o humano que assumiu o pedido é o que a
+    // passagem (b) observa.
+    c.db.store[`${INTEGRACAO_PATH}/${INT_A}`]!.data.shop_id = null;
+    c.db.store[`${PEDIDO_PATH}/${pedidoId}`]!.data.hasUserInteraction = true;
+    const r = await rodar(c, { nowMs: AGORA_MS + 7 * DIA_MS });
+
+    expect(r.semShopId).toBe(1);
+    expect(r.veredictos['nao-verificavel']).toBe(1);
+    expect(r.avisosVarridos).toBe(1);
+    expect(r.reconciliados).toBe(1);
+    expect(c.db.store[`${AVISO_PATH}/${chave}`]!.data.resolucaoMotivo).toBe('assumido-por-humano');
+    esperarInvariante(r);
+  });
+
+  it('⚠️ reconciliados conta a TRANSIÇÃO, não a tentativa', async () => {
+    const c = cenario();
+    const umId = semearPedido(c.db, { orderSn: '260910RECO1', diasAtras: 30 });
+    const doisId = semearPedido(c.db, { orderSn: '260910RECO2', diasAtras: 31 });
+    c.getOrderDetail = clienteTabela(
+      new Map([
+        ['260910RECO1', linha('260910RECO1', 'UNPAID')],
+        ['260910RECO2', linha('260910RECO2', 'UNPAID')],
+      ]),
+    );
+    await rodar(c);
+
+    // Os dois pedidos somem ⇒ a passagem (b) PERGUNTA pelos dois…
+    delete c.db.store[`${PEDIDO_PATH}/${umId}`];
+    delete c.db.store[`${PEDIDO_PATH}/${doisId}`];
+    // …e um deles perde a corrida: alguém resolveu (ou varreu) a linha entre a
+    // leitura da página e a escrita precondicionada, que é o único caso em que
+    // `resolverAviso` responde `false`.
+    c.db.falhasDeUpdate.set(
+      `${AVISO_PATH}/${chaveReservaTravada(INT_A, doisId)}`,
+      grpc(9, 'FAILED_PRECONDITION'),
+    );
+
+    const r = await rodar(c, { nowMs: AGORA_MS + 7 * DIA_MS });
+
+    expect(r.avisosVarridos).toBe(2);
+    // ⚠️ 1, não 2 — a diferença entre "fechamos" e "olhamos". É o mesmo booleano
+    // que impede `resolvidoEm` de ser re-carimbado toda semana, o que deixaria a
+    // linha para sempre fora do corte de 90 dias da retenção.
+    expect(r.reconciliados).toBe(1);
+    expect(
+      c.db.store[`${AVISO_PATH}/${chaveReservaTravada(INT_A, umId)}`]!.data.resolvidoEm,
+    ).not.toBeNull();
+    expect(
+      c.db.store[`${AVISO_PATH}/${chaveReservaTravada(INT_A, doisId)}`]!.data.resolvidoEm,
+    ).toBeNull();
+  });
+
+  it('⚠️ um timestamp ilegível NÃO fecha o aviso; de volta ao horizonte, fecha', async () => {
+    const c = cenario();
+    const pedidoId = semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+    const chave = chaveReservaTravada(INT_A, pedidoId);
+    await rodar(c);
+
+    // 5e13 cai na lacuna indeterminável de `coerceToMicros`. "Dentro do
+    // horizonte" é uma afirmação sobre um valor que conseguimos LER, e fechar um
+    // aviso não se desfaz à mão numa coleção `serverOwned`.
+    c.db.store[`${PEDIDO_PATH}/${pedidoId}`]!.data.timestamp = 5e13;
+    const r = await rodar(c, { nowMs: AGORA_MS + 7 * DIA_MS });
+
+    expect(r.avisosVarridos).toBe(1);
+    expect(r.reconciliados).toBe(0);
+    expect(c.db.store[`${AVISO_PATH}/${chave}`]!.data.resolvidoEm).toBeNull();
+
+    // O gêmeo que TEM de fechar: um carimbo legível, de volta ao horizonte.
+    c.db.store[`${PEDIDO_PATH}/${pedidoId}`]!.data.timestamp = AGORA_US;
+    const r2 = await rodar(c, { nowMs: AGORA_MS + 7 * DIA_MS });
+
+    expect(r2.reconciliados).toBe(1);
+    expect(c.db.store[`${AVISO_PATH}/${chave}`]!.data.resolucaoMotivo).toBe('dentro-do-horizonte');
+  });
+
+  it('a consulta do reconciliador monta resolvidoEm == null + criadoEm desc, com a página e sem cursor', async () => {
+    const c = cenario();
+    semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+
+    await rodar(c);
+
+    // ⚠️ O PAR da prova de índice: aquela deriva um índice de uma especificação
+    // escrita à MÃO e por isso não consegue discordar da consulta; esta lê a
+    // consulta que o módulo REALMENTE emitiu. Na Enterprise o formato errado não
+    // lança — ele varre tudo e cobra a varredura.
+    const q = c.db.consultasCompletas.filter((x) => x.fonte === AVISO_PATH);
+    expect(q).toHaveLength(1);
+    expect(q[0]!.clausulas).toEqual([['resolvidoEm', '==', null]]);
+    expect(q[0]!.ordens).toEqual([['criadoEm', 'desc']]);
+    expect(q[0]!.limite).toBe(RECONCILIACAO_PAGINA);
+    expect(q[0]!.apos).toBeNull();
+  });
+
+  it('o dry run TAMBÉM marca a chave tocada — a passagem (b) não re-lê o pedido', async () => {
+    const c = cenario();
+    const pedidoId = semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+    // Semana 1 VIVA, para que a linha exista de verdade na página da passagem (b).
+    await rodar(c);
+    const antes = c.db.opLog.length;
+
+    // Semana 2 SECA, com o pedido AINDA candidato — que é justamente o que o
+    // fixture de paridade da passagem (b) não exercita, porque ele tira o pedido
+    // do conjunto antes do tick seco e `surfacar` nunca roda.
+    const r = await rodar(c, { nowMs: AGORA_MS + 7 * DIA_MS, forcarDryRun: true });
+
+    expect(r.candidatos).toBe(1);
+    expect(r.contas[0]!.avisosEscritos).toBe(1);
+    expect(r.avisosVarridos).toBe(1);
+    expect(r.reconciliados).toBe(0);
+    // A prova do pulo é a AUSÊNCIA da leitura por id, a mesma do gêmeo vivo.
+    const leiturasPorId = c.db.opLog
+      .slice(antes)
+      .filter((o) => o.op === 'get' && o.path === `${PEDIDO_PATH}/${pedidoId}`);
+    expect(leiturasPorId).toEqual([]);
+    // E o tick seco não escreveu: a única escrita no aviso é a da semana 1.
+    expect(c.db.writes.filter((w) => w.path.startsWith(`${AVISO_PATH}/`))).toHaveLength(1);
+  });
+
   it('params não carregam nenhum dado do comprador', async () => {
     const c = cenario();
     const pedidoId = semearPedido(c.db);
@@ -1391,7 +1852,12 @@ describe('runReservaTravadaSweep — os avisos', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('runReservaTravadaSweep — o instrumento', () => {
-  it('as três tabelas de diagnóstico saem ANTES de qualquer chamada à Shopee', async () => {
+  it('as três tabelas de diagnóstico saem mesmo quando TODA leitura da Shopee falha', async () => {
+    // ⚠️ O título diz o que este fixture consegue reprovar. A ORDEM — as tabelas
+    // antes da primeira chamada — é indistinguível daqui, porque elas derivam de
+    // `candidatos`, que nenhuma leitura toca: mover o laço para logo antes do
+    // `return` devolve um resultado byte-idêntico. Quem fixa a ordem é a guarda
+    // de FONTE em "as guardas".
     const c = cenario();
     semearPedido(c.db, { orderSn: SN_A, diasAtras: 20 });
     semearPedido(c.db, {
@@ -1448,6 +1914,34 @@ describe('runReservaTravadaSweep — o instrumento', () => {
     esperarInvariante(r);
   });
 
+  it('⚠️ redriveAparentementeNaoAplicado sobrevive à válvula FECHADA e ao dry run', async () => {
+    const montar = (c: Cenario): void => {
+      semearPedido(c.db, {
+        over: {
+          marketplace: { tipo: 'shopee', status: 'CANCELLED', statusEm: AGORA_US - 30 * DIA_US },
+        },
+      });
+      c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'CANCELLED')]]));
+    };
+
+    // Com a válvula fechada o veredito FINAL vira `tasks-desabilitado` e diverge
+    // da classificação — e é justamente nesse tick que a única evidência do item
+    // 42 do registro sumiria calada, se o contador viesse do veredito.
+    const valvula = cenario();
+    montar(valvula);
+    process.env.SHOPEE_TASKS_DISABLED = '1';
+    const rValvula = await rodar(valvula);
+    expect(rValvula.veredictos['tasks-desabilitado']).toBe(1);
+    expect(rValvula.redriveAparentementeNaoAplicado).toBe(1);
+    delete process.env.SHOPEE_TASKS_DISABLED;
+
+    const seco = cenario();
+    montar(seco);
+    const rSeco = await rodar(seco, { forcarDryRun: true });
+    expect(rSeco.veredictos['redirecionado-cancelado']).toBe(1);
+    expect(rSeco.redriveAparentementeNaoAplicado).toBe(1);
+  });
+
   it('um redirecionado cujo status armazenado DIFERE do vivo não conta', async () => {
     const c = cenario();
     semearPedido(c.db);
@@ -1457,6 +1951,40 @@ describe('runReservaTravadaSweep — o instrumento', () => {
 
     expect(r.veredictos['redirecionado-cancelado']).toBe(1);
     expect(r.redriveAparentementeNaoAplicado).toBe(0);
+  });
+
+  it('⚠️ os limites dos baldes de idade são 13/14, 29/30, 59/60 e 89/90', async () => {
+    const c = cenario();
+    const casos = [13, 14, 29, 30, 59, 60, 89, 90];
+    const sns: string[] = [];
+    casos.forEach((dias, i) => {
+      const sn = `2609BK${String(i).padStart(4, '0')}`;
+      sns.push(sn);
+      semearPedido(c.db, {
+        orderSn: sn,
+        diasAtras: 30 + i / 1000,
+        over: {
+          marketplace: { tipo: 'shopee', status: 'UNPAID', statusEm: AGORA_US - dias * DIA_US },
+        },
+      });
+    });
+    c.getOrderDetail = clienteTabela(new Map(sns.map((sn) => [sn, linha(sn, 'UNPAID')])));
+
+    const r = await rodar(c, { forcarDryRun: true });
+
+    // A tabela de idade É o instrumento do item 37 do registro — a Shopee
+    // cancela sozinha um pedido não pago em BR, e depois de quanto tempo — e um
+    // erro de UM dia desloca a distribuição inteira em silêncio. Fixtures de 20
+    // e 100 dias não alcançam borda nenhuma.
+    expect(r.idadeStatusDias).toEqual({
+      '7-14': 1,
+      '14-30': 2,
+      '30-60': 2,
+      '60-90': 2,
+      '90+': 1,
+    });
+    expect(r.statusPorIdade.UNPAID).toEqual(r.idadeStatusDias);
+    esperarInvariante(r);
   });
 
   it('Σ veredictos === candidatos em todo fixture, e as porteiras 1 ficam de fora', async () => {
@@ -1506,6 +2034,70 @@ describe('runReservaTravadaSweep — o instrumento', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*  8b — a CONTAINED failure in an effect is never a second verdict           */
+/* -------------------------------------------------------------------------- */
+
+describe('⚠️ uma falha contida num EFEITO não rende um segundo veredito', () => {
+  it('a criação do aviso recusada com gRPC 13 ⇒ um veredito, um erro, uma linha observada', async () => {
+    const c = cenario();
+    const pedidoId = semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+    // Uma falha de escrita do Admin SDK é um `Error` com `code` gRPC numérico,
+    // que é exatamente o que `erroContidoPorConta` contém — e o efeito roda
+    // DEPOIS do registro do veredito.
+    c.db.falhasDeCriacao.set(
+      `${AVISO_PATH}/${chaveReservaTravada(INT_A, pedidoId)}`,
+      grpc(13, 'INTERNAL'),
+    );
+    const vistos: CandidatoObservado[] = [];
+
+    const r = await rodar(c, { onCandidato: (o) => vistos.push(o) });
+
+    esperarInvariante(r);
+    expect(r.veredictos['ainda-nao-pago']).toBe(1);
+    expect(r.veredictos['nao-verificavel']).toBe(0);
+    // A falha continua VISÍVEL, no lugar que `redirigir` já usa para um
+    // enfileiramento que lançou.
+    expect(r.erros).toEqual([{ pedidoId, message: 'INTERNAL' }]);
+    // E a tabela cruzada — o instrumento do item 37 — não conta o mesmo pedido
+    // em duas colunas.
+    expect(r.statusArmazenadoPorVeredito.UNPAID!['ainda-nao-pago']).toBe(1);
+    expect(r.statusArmazenadoPorVeredito.UNPAID!['nao-verificavel']).toBe(0);
+    // Uma linha por candidato: a CLI imprime uma por chamada, e duas linhas
+    // contraditórias sobre um pedido é o que o ensaio não pode produzir.
+    expect(vistos).toHaveLength(1);
+    expect(vistos[0]!.veredito).toBe(VEREDITO_RESERVA_TRAVADA.aindaNaoPago);
+    expect(r.contas[0]!.avisosEscritos).toBe(0);
+  });
+
+  it('o resolve EM LINHA recusado com gRPC 14 ⇒ o mesmo', async () => {
+    const c = cenario();
+    const pedidoId = semearPedido(c.db);
+    c.getOrderDetail = clienteTabela(new Map([[SN_A, linha(SN_A, 'UNPAID')]]));
+    const chave = chaveReservaTravada(INT_A, pedidoId);
+    await rodar(c);
+
+    // Semana 2: um humano assumiu o pedido, e o resolve em linha falha.
+    c.db.store[`${PEDIDO_PATH}/${pedidoId}`]!.data.hasUserInteraction = true;
+    c.db.falhasDeUpdate.set(`${AVISO_PATH}/${chave}`, grpc(14, 'UNAVAILABLE'));
+    const vistos: CandidatoObservado[] = [];
+
+    const r = await rodar(c, {
+      nowMs: AGORA_MS + 7 * DIA_MS,
+      onCandidato: (o) => vistos.push(o),
+    });
+
+    esperarInvariante(r);
+    expect(r.veredictos['interacao-humana']).toBe(1);
+    expect(r.veredictos['nao-verificavel']).toBe(0);
+    expect(r.erros).toEqual([{ pedidoId, message: 'UNAVAILABLE' }]);
+    expect(vistos).toHaveLength(1);
+    expect(r.contas[0]!.avisosResolvidos).toBe(0);
+    expect(c.db.store[`${AVISO_PATH}/${chave}`]!.data.resolvidoEm).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*  9 — the guards                                                            */
 /* -------------------------------------------------------------------------- */
 
@@ -1521,6 +2113,20 @@ describe('as guardas', () => {
     // `firestore-transaction-inventory` varre TEXTO CRU sobre `*.ts` e exclui
     // `*.test.ts` — por isso ESTE arquivo pode soletrar a palavra e o módulo
     // não. Não "conserte" isso montando a literal por concatenação.
+  });
+
+  it('as três tabelas são montadas ANTES da primeira chamada à Shopee', () => {
+    // ⚠️ Uma asserção de ORDEM sobre a FONTE, porque o RESULTADO não a observa:
+    // as tabelas derivam de `candidatos`, que nenhuma leitura toca e nada muta
+    // depois da paginação, então mover o laço para logo antes do `return`
+    // devolve um `ReservaTravadaSweepResult` byte-idêntico e as 100+ asserções
+    // deste arquivo continuam verdes. É o mesmo idioma da guarda acima — âncora
+    // primeiro, para que um índice `-1` não passe para sempre.
+    const tabela = FONTE_SWEEP.indexOf('statusArmazenado[cand.statusArmazenado] =');
+    const chamada = FONTE_SWEEP.indexOf('client.getOrderDetail(');
+    expect(tabela).toBeGreaterThan(0);
+    expect(chamada).toBeGreaterThan(0);
+    expect(tabela).toBeLessThan(chamada);
   });
 
   it('o módulo não nomeia nenhum token de order_status próprio', () => {

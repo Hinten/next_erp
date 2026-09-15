@@ -16,9 +16,9 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { pedidoCollection } from '@delfrance/data/admin/collections';
+import { avisoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
 
-import { FakeDb, asDb } from './fakeDb';
+import { FakeDb, asDb, grpc } from './fakeDb';
 
 /** The ids a chain answers, in the order it answered them. */
 async function idsDe(consulta: {
@@ -48,6 +48,28 @@ function comOrdem(): { db: FakeDb; pedidos: () => ReturnType<typeof pedidoCollec
   db.seed('pedidos/p6', { timestamp: null, estado: 'z' }); // `timestamp` nulo
   return { db, pedidos: () => pedidoCollection.ref(asDb(db), {}) };
 }
+
+describe('FakeDb — falhasDeUpdate', () => {
+  it('recusa o update de UM caminho e deixa os outros em paz', async () => {
+    const db = new FakeDb();
+    const avisos = avisoCollection.resolvePath({});
+    db.seed(`${avisos}/um`, { resolvidoEm: null });
+    db.seed(`${avisos}/dois`, { resolvidoEm: null });
+    db.falhasDeUpdate.set(`${avisos}/um`, grpc(9, 'FAILED_PRECONDITION'));
+
+    await expect(
+      avisoCollection.docRef(asDb(db), {}, 'um').update({ resolvidoEm: 1 }),
+    ).rejects.toMatchObject({ code: 9 });
+    await avisoCollection.docRef(asDb(db), {}, 'dois').update({ resolvidoEm: 2 });
+
+    // A recusa acontece ANTES da escrita: o documento não se move e nada entra
+    // em `writes`, que é o que torna "ninguém escreveu" asserível — e é o que
+    // deixa `resolverAviso` responder `false` sem ter escrito.
+    expect(db.store[`${avisos}/um`]!.data.resolvidoEm).toBeNull();
+    expect(db.store[`${avisos}/dois`]!.data.resolvidoEm).toBe(2);
+    expect(db.writes.map((w) => w.path)).toEqual([`${avisos}/dois`]);
+  });
+});
 
 describe('FakeDb — where', () => {
   it('where honra o operador: ==, in, <, <=, >, >=, !=', async () => {

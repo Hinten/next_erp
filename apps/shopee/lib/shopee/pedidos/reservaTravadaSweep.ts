@@ -733,6 +733,8 @@ export async function runReservaTravadaSweep(
   const erros: { pedidoId: string; message: string }[] = [];
   /** Chaves this tick raised or resolved — pass (b) leaves them alone. */
   const chavesTocadas = new Set<string>();
+  /** Candidates that already carry a verdict — see {@link registrar}. */
+  const registrados = new Set<string>();
   /** In-tick enqueue dedup, on the work identity rather than the document id. */
   const enfileiradosVistos = new Set<string>();
 
@@ -836,15 +838,26 @@ export async function runReservaTravadaSweep(
             : bucketDaIdade(Math.max(0, Math.floor((nowUs - statusEmUs) / DIA_US))),
         raw,
       });
+      // ⚠️ The ceiling is per ROW, never per page — checked only BETWEEN pages
+      // it bounds nothing. ONE gate-1 reject on a full page leaves the running
+      // total at MAX_CANDIDATOS - 1, the next whole page is taken, and the tick
+      // lands on MAX_CANDIDATOS - 1 + PAGE_LIMIT = 399: double the pagamento
+      // reads, double the batched `get_order_detail` calls (8 instead of 4, or
+      // 407 with the fallback on every batch) and double the aviso round trips
+      // that this module's docblock, the plan and the 540 s sizing all state as
+      // the worst case.
+      if (candidatos.length >= MAX_CANDIDATOS) {
+        truncado = true;
+        break;
+      }
     }
 
     ultimo = snap.docs[snap.docs.length - 1] ?? null;
+    // The cap was reached INSIDE this page, so rows of this very page went
+    // unexamined: the prefix is truncated even when the page came back short.
+    if (truncado) break;
     const drenada = snap.docs.length < PAGE_LIMIT;
     if (drenada) break;
-    if (candidatos.length >= MAX_CANDIDATOS) {
-      truncado = true;
-      break;
-    }
     if (paginas >= MAX_PAGINAS) {
       truncado = true;
       break;
@@ -889,6 +902,18 @@ export async function runReservaTravadaSweep(
     veredito: VereditoReservaTravada,
     detalhe: DetalheObservado = DETALHE_NAO_LIDO,
   ): void {
+    // ⚠️ ONE verdict per candidate, enforced HERE rather than trusted to the
+    // call sites, because both effects run AFTER their arm has registered: a
+    // contained (gRPC-coded) Firestore failure out of an aviso write or an
+    // in-line resolve lands on a catch that records `nao-verificavel`, which
+    // would count the same pedido twice — breaking `Σ veredictos ===
+    // candidatos`, double-counting one cell of the
+    // `statusArmazenadoPorVeredito` cross-tab the rehearsal is read from, and
+    // emitting two CONTRADICTORY `onCandidato` rows for one order. The failure
+    // still reaches `erros[]`, which is exactly the shape `redirigir` already
+    // uses for an enqueue that threw.
+    if (registrados.has(cand.pedidoId)) return;
+    registrados.add(cand.pedidoId);
     veredictos[veredito] += 1;
     acc.veredictos[veredito] += 1;
     const linha = (statusArmazenadoPorVeredito[cand.statusArmazenado] ??= zerarVeredictos());
@@ -1236,7 +1261,17 @@ export async function runReservaTravadaSweep(
           return;
         }
         acc.lotesComFallback += 1;
-        for (const cand of lote) await lerUm(client, cand, acc, shopId, restantes);
+        for (const cand of lote) {
+          // ⚠️ The same guard the batch loop carries, for the reason stated
+          // above: a rate limit or a dead grant raised INSIDE the fallback
+          // aborts the conta, and every remaining `order_sn` of this batch
+          // would be one more call — up to 49 — against the limit that just
+          // refused us, or one more call signed with a grant we have just
+          // declared dead. The candidates left in `restantes` count
+          // `nao-verificavel`, which is what "abort the conta" means.
+          if (acc.pulada === MOTIVO_CONTA_ABORTADA) break;
+          await lerUm(client, cand, acc, shopId, restantes);
+        }
         return;
       }
       // Any other Shopee failure costs this BATCH its verdicts and nothing
@@ -1246,6 +1281,13 @@ export async function runReservaTravadaSweep(
       logger.warn('[shopee/reserva-travada] lote não verificável', {
         shopId,
         erro: err.message,
+        // ⚠️ Conditional because this arm also catches HTTP / network / schema /
+        // gRPC failures, which carry neither field — and it is the branch every
+        // ORDINARY `ShopeeApiError` lands on (`error_server`, `error_param`,
+        // `error_sign`, and whatever Shopee adds tomorrow), i.e. the likeliest
+        // carrier of a populated `warning`. Dropping it here would leave
+        // register item 46 instrumented on the two rarest paths only.
+        ...(err instanceof ShopeeApiError ? { codigo: err.code, warning: err.warning } : {}),
         pedidos: lote.length,
       });
       return;
@@ -1300,6 +1342,15 @@ export async function runReservaTravadaSweep(
       }
       if (!erroContidoPorConta(err)) throw err;
       acc.error = err.message;
+      // Same line as the batch leg's: without it a fallback failure leaves no
+      // log at all and survives only as `contas[].error`, which the NEXT
+      // contained failure overwrites.
+      logger.warn('[shopee/reserva-travada] pedido não verificável', {
+        shopId,
+        erro: err.message,
+        ...(err instanceof ShopeeApiError ? { codigo: err.code, warning: err.warning } : {}),
+        pedidos: 1,
+      });
     }
   }
 
