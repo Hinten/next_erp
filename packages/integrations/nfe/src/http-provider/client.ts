@@ -30,6 +30,7 @@ import {
   NFeRuntimeNotReadyError,
   NFeSchemaError,
   NFeServerError,
+  NFeXsdValidationFailedError,
 } from './errors';
 
 /**
@@ -436,6 +437,14 @@ function errorFromResponse(
   // mapping below would otherwise produce.
   if (bodyCode === 'NFeCertError') {
     return new NFeCertificateError(message, status, body, 'NFeCertError');
+  }
+
+  // A document that failed the SEFAZ XSD on the server — our request, or SEFAZ's
+  // reply (#1602) — is tagged `code: 'NFeXsdValidationError'`. Map it BEFORE the
+  // status branches: at a 5xx it would otherwise become a RETRYABLE
+  // `NFeServerError`, and a retried Consulta Cadastro re-POSTs to SEFAZ.
+  if (bodyCode === 'NFeXsdValidationError') {
+    return new NFeXsdValidationFailedError(message, status, body);
   }
 
   if (status === 400) return new NFeBadRequestError(message, body);

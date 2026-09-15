@@ -182,12 +182,31 @@ export class NFeSchemaError extends NFeHttpError {
 }
 
 /**
+ * A document failed the SEFAZ XSD inside `apps/nfe` — the route answered with
+ * `code: 'NFeXsdValidationError'` (a 500 today). The document may be OUR request
+ * (checked before any SEFAZ contact) or SEFAZ's REPLY (Consulta Cadastro, #1602).
+ *
+ * ⚠️ Deliberately NOT an `NFeServerError`, although the status is a 5xx. The
+ * failure is DETERMINISTIC — a retry replays the same document — and for a reply
+ * it is worse than useless: every retry re-runs the route, which POSTs to SEFAZ
+ * again. `isRetryableNFeHttpError` therefore returns `false`, so `withNFeRetry`
+ * makes exactly one attempt instead of a SEFAZ burst.
+ */
+export class NFeXsdValidationFailedError extends NFeHttpError {
+  constructor(message: string, status: number, body: unknown) {
+    super(message, status, body);
+    this.name = 'NFeXsdValidationFailedError';
+  }
+}
+
+/**
  * Is this NF-e client error transient (worth a client-side retry)? `true` only
  * for the three non-deterministic failures: a dropped connection
  * (`NFeNetworkError`), a 5xx (`NFeServerError`), or the runtime-not-ready 503
  * (`NFeRuntimeNotReadyError`). Every deterministic error — bad request, auth,
  * SEFAZ rejection, not-found, blocked, cert, inutilização-aborted, DANFE
- * unavailable — returns `false`: retrying would just replay the same failure.
+ * unavailable, a document that failed the SEFAZ XSD — returns `false`: retrying
+ * would just replay the same failure.
  *
  * Pure + dependency-free (only `instanceof`), so the `./http-provider` subpath
  * stays browser-safe. Callers in `apps/web` feed this to `retryAsync`.

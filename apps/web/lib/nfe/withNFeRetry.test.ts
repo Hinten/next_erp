@@ -7,10 +7,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createNFeHttpClient,
   NFeNetworkError,
   NFeRejectedError,
   NFeRuntimeNotReadyError,
   NFeServerError,
+  NFeXsdValidationFailedError,
   type NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 
@@ -106,6 +108,34 @@ describe('withNFeRetry', () => {
       supported: true,
     });
     expect(consultaCadastro).toHaveBeenCalledTimes(2);
+  });
+
+  it('consultaCadastro makes ONE attempt on an XSD-coded 500 — no SEFAZ re-POST burst (#1602)', async () => {
+    // End to end through the REAL client error mapper: the route's XSD-coded 500
+    // must arrive as a deterministic error, or retryTransient re-runs the route —
+    // and with it the POST to SEFAZ — three times for a failure that cannot change.
+    const fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: 'XSD validation failed for <retConsCad>',
+            code: 'NFeXsdValidationError',
+          }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    const client = withNFeRetry(
+      createNFeHttpClient({
+        baseUrl: 'http://nfe.test',
+        getAuthToken: () => Promise.resolve('token'),
+        fetch,
+      }),
+    );
+    await expect(client.consultaCadastro('14200166000187', 'SP', 'F-1')).rejects.toBeInstanceOf(
+      NFeXsdValidationFailedError,
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('cartaCorrecao does NOT retry a post-send NFeServerError (not idempotent)', async () => {

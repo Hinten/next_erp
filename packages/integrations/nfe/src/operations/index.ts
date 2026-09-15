@@ -34,7 +34,7 @@ import {
 import { UF_TO_IBGE } from '../generator/ide';
 import { buildInutNFe, type InutilizacaoInput } from '../inutilizacao';
 import { signEvento, signInutilizacao } from '../sign';
-import { validateConsCad, validateXsd } from '../xsd';
+import { validateConsCad, validateRetConsCad, validateXsd } from '../xsd';
 import {
   CONSCAD_VERSAO,
   nfeAutorizacaoLote,
@@ -131,26 +131,35 @@ export interface ConsultaCadastroResult {
   readonly infCad: ReadonlyArray<ConsultaCadastroInfCad>;
 }
 
-/** Trimmed leaf text, or `null` when the element is absent or blank. */
+/**
+ * Strip XML whitespace (space, tab, CR, LF — deliberately NOT NBSP, which is a
+ * valid `TString` character) from both ends of every run of text between two
+ * tags. Only text changes: tags, attributes and entities are untouched, and
+ * whitespace INSIDE a value (`EMPRESA  TESTE`) is kept. A value that is only
+ * whitespace becomes empty, so the strict XSD check still rejects it.
+ *
+ * Why it exists: SEFAZ's registry data does not meet SEFAZ's own schema. Real
+ * SEFAZ-SP homologação returned `<xNome>` with a trailing space, which the
+ * `TString` pattern forbids — a lookup of a real company became a 500 (#1602).
+ */
+function trimElementWhitespace(xml: string): string {
+  return xml.replace(
+    />([^<]+)</g,
+    (_run, text: string) => `>${text.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '')}<`,
+  );
+}
+
+/**
+ * Leaf text, or `null` when the element is absent or empty. The reply was already
+ * trimmed per element before validation (`trimElementWhitespace`); the trim here
+ * only keeps this mapper safe on its own.
+ */
 function textOrNull(value: string | undefined): string | null {
   const t = value?.trim();
   return t ? t : null;
 }
 
-/**
- * A generated type as it can actually arrive: every field optional, at every
- * depth. `retConsCad` is never XSD-validated, so a field the XSD marks required
- * is a promise the wire does not keep — reading through this makes the compiler
- * reject `infCons.cStat.trim()` instead of a real SEFAZ reply throwing it.
- */
-type Wire<T> =
-  T extends ReadonlyArray<infer U>
-    ? Array<Wire<U>>
-    : T extends object
-      ? { [K in keyof T]?: Wire<T[K]> }
-      : T;
-
-function toInfCad(cad: Wire<TRetConsCad_infCons_infCad>): ConsultaCadastroInfCad {
+function toInfCad(cad: TRetConsCad_infCons_infCad): ConsultaCadastroInfCad {
   const { ender } = cad;
   return {
     IE: textOrNull(cad.IE) ?? '',
@@ -180,17 +189,24 @@ function toInfCad(cad: Wire<TRetConsCad_infCons_infCad>): ConsultaCadastroInfCad
  *
  * Message layout 2.00 is not part of the v4.00 MOC, so its types, `META` and
  * `ROOTS` come from a SEPARATE codegen pack (`generated/conscad/`) and it goes
- * through `serializeConsCad`/`parseConsCad`. The request **IS XSD-validated
- * before sending** via `validateConsCad` — SEFAZ rule: never POST
- * schema-invalid XML, since repeated `cStat=215/225` trips `cStat=656`
- * (Consumo Indevido) → throttling/ban. It then travels the existing SOAP
+ * through `serializeConsCad`/`parseConsCad`. Both directions are checked against
+ * the vendored v2.00 schemas: the request **before sending** (`validateConsCad`)
+ * — SEFAZ rule: never POST schema-invalid XML, since repeated `cStat=215/225`
+ * trips `cStat=656` (Consumo Indevido) → throttling/ban — and the reply **before
+ * parsing** (`validateRetConsCad`, #1602), so a reply that is not a schema-valid
+ * `retConsCad` throws `NFeXsdValidationError` (the route answers 500) instead of
+ * being parsed into a plausible-looking result. It travels the existing SOAP
  * transport (`nfeConsultaCadastro` → `postSoap`): same mTLS agent, SOAP 1.2
  * envelope, SOAPAction, and `assertSafeTpAmb` guard.
  *
- * The response parse reads only the elements layout 2.00 declares; anything
- * else SEFAZ sends is ignored. `<infCad>` repeats 0..n times and always comes
- * back as an array. cStat 111/112 = found; 258/259/108/109/etc =
- * none/invalid/down, with an empty `infCad`.
+ * The reply must match layout 2.00 EXACTLY, with one tolerance: each element's
+ * surrounding whitespace is trimmed first (`trimElementWhitespace`), because
+ * SEFAZ-SP's own registry data arrives padded. `infCons` is a closed
+ * `xs:sequence` (no `xs:any`), so an element the layout does not declare — even
+ * one a UF merely appends — fails `validateRetConsCad` and never reaches the
+ * parse; it is a rejection, not something ignored. `<infCad>` repeats 0..n times
+ * and always comes back as an array. cStat 111/112 = found; 258/259/108/109/etc
+ * = none/invalid/down, with an empty `infCad`.
  */
 export async function consultarCadastro(
   call: SefazCall,
@@ -218,14 +234,16 @@ export async function consultarCadastro(
   await validateConsCad(xml);
   const { resultXml } = await nfeConsultaCadastro(call, xml, cUF);
 
-  // `Wire`: the XSD calls these fields required, but retConsCad is never
-  // XSD-validated, so any of them — at any depth — can be missing on the wire.
-  const { infCons } = parseConsCad<Wire<TRetConsCad>>('retConsCad', resultXml);
-  if (!infCons) {
-    // A retConsCad with no infCons is malformed — surface it so the route maps
-    // it to a 500 (our parse/SEFAZ-shape bug), not a misleading "no match".
-    throw new NFeXmlError('retConsCad missing <infCons>');
-  }
+  // Trim first: real SEFAZ-SP data pads values (a trailing space in `xNome`) that
+  // TString's pattern forbids. The SAME trimmed string is validated and parsed, so
+  // what passed the check is exactly what gets read.
+  const reply = trimElementWhitespace(resultXml);
+  // Response XSD gate (#1602) — the check `postSoapValidated` runs for every v4.00
+  // operation. It is also what makes the generated `TRetConsCad` below true:
+  // every field the type calls required is present once this returns.
+  await validateRetConsCad(reply);
+
+  const { infCons } = parseConsCad<TRetConsCad>('retConsCad', reply);
   return {
     cStat: textOrNull(infCons.cStat),
     xMotivo: textOrNull(infCons.xMotivo),
