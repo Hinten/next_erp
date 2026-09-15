@@ -11,7 +11,9 @@ pack**:
 - `src/xsd/index.ts` checks both directions: `validateConsCad` validates the
   request against `consCad_v2.00.xsd` before it is sent, and
   `validateRetConsCad` validates SEFAZ's response against `retConsCad_v2.00.xsd`
-  before it is parsed (#1602 — a failure is a 500 at the route).
+  before it is parsed (#1602 — a failure is a 500 at the route). The response is
+  whitespace-trimmed per element first: real SEFAZ-SP data pads values (a
+  trailing space in `xNome`) that the `TString` pattern would otherwise reject.
 
 ## ⚠️ Never move these XSDs into `generated/moc7.0/schemas/`
 

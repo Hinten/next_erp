@@ -79,6 +79,17 @@ const RET_259 =
   `<dhCons>2026-06-23T10:00:00-03:00</dhCons><cUF>35</cUF>` +
   `</infCons></retConsCad>`;
 
+/**
+ * A REAL SEFAZ-SP homologação reply, verbatim (2026-09-15). The queried CNPJ is a
+ * placeholder with invalid check digits — hence cStat 258 — so it carries no
+ * taxpayer data.
+ */
+const RET_258_REAL_SEFAZ_SP =
+  `<retConsCad versao="2.00" xmlns="${NFE_NS}"><infCons><verAplic>SP_NFE_PL009_V4</verAplic>` +
+  `<cStat>258</cStat><xMotivo>Rejeição: CNPJ da consulta inválido</xMotivo><UF>SP</UF>` +
+  `<CNPJ>12345678000199</CNPJ><dhCons>2026-09-15T09:39:35-03:00</dhCons><cUF>35</cUF>` +
+  `</infCons></retConsCad>`;
+
 function replyWith(resultXml: string): void {
   vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({ resultXml, rawBody: resultXml });
 }
@@ -197,25 +208,42 @@ describe('consultarCadastro', () => {
     expect(result.infCad).toHaveLength(0);
   });
 
-  it('trims an xs:token field SEFAZ padded — the XSD accepts it, so the trim stays', async () => {
-    // `cSit` is an xs:token: the schema collapses whitespace before checking the
-    // enumeration, so ` 1 ` is VALID and reaches the parse. '0' stays '0' (RET_111's
-    // indCredCTe) — a falsy-looking value is not "absent".
-    replyWith(RET_111.replace('<cSit>1</cSit>', '<cSit> 1 </cSit>'));
+  it('accepts a real SEFAZ-SP homologação reply (cStat 258) and parses it', async () => {
+    replyWith(RET_258_REAL_SEFAZ_SP);
+
+    const result = await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: '12345678000199' });
+
+    expect(result.cStat).toBe('258');
+    expect(result.xMotivo).toBe('Rejeição: CNPJ da consulta inválido');
+    expect(result.uf).toBe('SP');
+    expect(result.infCad).toHaveLength(0);
+  });
+
+  it('trims the padding SEFAZ-SP really sends before validating — a trailing space is not a 500 (#1602)', async () => {
+    // Real SEFAZ-SP homologação (2026-09-15) returned <xNome> with a trailing
+    // space, which TString's pattern forbids. Each element is trimmed before the
+    // XSD check, so the reply passes; whitespace INSIDE a value is kept, and an
+    // xs:token field (cSit) is trimmed the same way.
+    const padded = RET_111.replace(
+      '<xNome>EMPRESA TESTE LTDA</xNome>',
+      '<xNome>EMPRESA  TESTE LTDA </xNome>',
+    ).replace('<cSit>1</cSit>', '<cSit> 1 </cSit>');
+    replyWith(padded);
 
     const cad = (await consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ })).infCad[0]!;
 
+    expect(cad.xNome).toBe('EMPRESA  TESTE LTDA');
     expect(cad.cSit).toBe('1');
     expect(cad.indCredCTe).toBe('0');
   });
 
-  it('rejects a padded string field instead of trimming it into a result', async () => {
-    // Near-miss of the test above: `xNome` is a TString, whose pattern forbids
-    // leading/trailing whitespace, so this reply fails the XSD and is never parsed.
+  it('still rejects a value that is ONLY whitespace — trimmed to empty, it fails the XSD', async () => {
+    // Near-miss of the test above: the trim must not turn a blank value into a
+    // pass. `<xCpl>   </xCpl>` becomes `<xCpl></xCpl>`, which TString rejects.
     const err = await expectReplyRejected(
-      RET_111.replace('<xNome>EMPRESA TESTE LTDA</xNome>', '<xNome>  EMPRESA TESTE </xNome>'),
+      RET_111.replace('<xCpl>SALA 2</xCpl>', '<xCpl>   </xCpl>'),
     );
-    expect(err.message).toContain('xNome');
+    expect(err.message).toContain('xCpl');
   });
 
   it('rejects a reply missing a required field (dhCons) — #1602', async () => {

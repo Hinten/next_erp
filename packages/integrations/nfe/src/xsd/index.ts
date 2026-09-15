@@ -194,8 +194,10 @@ export async function validateConsCad(xml: string): Promise<void> {
  * check `postSoapValidated` runs for every v4.00 operation. It stops what the
  * parser would otherwise read as data: a captive-portal or proxy HTML page, a
  * truncated body, a reply missing a required field. The route answers a failure
- * with a 500, not the degraded 200 (#1602). Throws `NFeXsdValidationError`
- * (`rootKey: 'retConsCad'`) on failure; returns on success.
+ * with a 500, not the degraded 200 (#1602). The check itself is strict:
+ * `consultarCadastro` trims each element's surrounding whitespace BEFORE calling
+ * it, because SEFAZ-SP's own registry data arrives padded. Throws
+ * `NFeXsdValidationError` (`rootKey: 'retConsCad'`) on failure; returns on success.
  */
 export async function validateRetConsCad(xml: string): Promise<void> {
   await validateAgainstConsCadPack('retConsCad', 'retConsCad_v2.00.xsd', xml);
