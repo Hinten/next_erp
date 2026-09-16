@@ -110,6 +110,7 @@ import {
 } from '@delfrance/data/admin/collections';
 
 import { tryGetAdminBucket } from '../../firebase/admin';
+import { criarMemoDeCategorias } from './categoriaShopee';
 import { isGrpcCodedError } from '../core/containment';
 import { ShopeeCredencialInvalidaError } from '../core/credentialStore';
 import { ShopeeContaNotConfiguredError, loadShopeeContext } from '../core/shopee';
@@ -132,6 +133,7 @@ import {
   type ImportarAnuncioDeps,
   type ItemLido,
 } from './itemLido';
+import { criarMemoDeGrupos } from './taxonomiaShopee';
 
 /* -------------------------------------------------------------------------- */
 /*  Constants                                                                  */
@@ -720,6 +722,15 @@ export async function processarImportacaoShopee(
       ...(ctx.bucket !== undefined ? { bucket: ctx.bucket } : {}),
       options: job.options,
       nowMs,
+      // ⚠️ The two per-DISPATCH memos, built HERE because this object is built
+      // once per dispatch and every item shares it. Both are LAZY and
+      // single-flight: `grupos` performs one full `grupoDeVariacoes` read on the
+      // first item that has models (and none at all for a catalogue of simple
+      // listings), `categorias` one TTL-cached tree read on the first item whose
+      // category has to be resolved. Building either per ITEM would multiply the
+      // cost by the page size on a database that bills DATA SCANNED.
+      grupos: criarMemoDeGrupos(db),
+      categorias: criarMemoDeCategorias(ctx.client, ctx.integracaoId),
     };
 
     /* ---------------------------- (a) one scan page --------------------- */

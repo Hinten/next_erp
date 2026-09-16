@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 
 import { LOST_PUSH_RETENTION_HOURS } from '../../lib/shopee/notificacoes/lostPushSweep';
 import { SHOPEE_NOTIFICATION_QUEUE } from '../../lib/shopee/notificacoes/notificacao';
+import { SHOPEE_MASS_IMPORT_QUEUE } from '../../lib/shopee/produtos/importacaoMassa';
 
 /**
  * The DECLARED options of every `onSchedule` trigger in this codebase, which
@@ -57,6 +58,7 @@ const modulo = await import('./index');
 const {
   backfillShopeeOrders,
   monitorShopeePushConfig,
+  processShopeeMassImport,
   processShopeeNotification,
   reprocessShopeeNotifications,
   sweepShopeeAuthorizationExpiry,
@@ -96,15 +98,18 @@ const AGENDAMENTOS = {
  * map a `taskQueueTrigger` export was invisible to it: `processShopeeNotification`
  * has run every Shopee delivery since step 3 while nothing in this file could
  * see it, and its `timeoutSeconds` went from an implicit 60 to an explicit 300
- * in step 5 with the whole assertion living in one sibling file. A second task
- * function (step 9's mass import is the likely one) would arrive uncovered the
- * same way three schedules nearly did.
+ * in step 5 with the whole assertion living in one sibling file. The second task
+ * function the note above predicted arrived in step 9 (`processShopeeMassImport`,
+ * the mass product import) and landed COVERED — the exact-secrets set, the
+ * explicit timeout and the ≤ 1800 s ladder below all applied to it the moment it
+ * was added here, with no new assertion written.
  *
- * Its per-option assertions stay in `processNotification.test.ts`, which mocks
- * the channel; what lives HERE is the cross-cutting set — the exact secrets,
- * the retry cap, the timeout — plus the completeness check.
+ * Each queue's per-option assertions stay in its own sibling file
+ * (`processNotification.test.ts`, `processMassImport.test.ts`), which mock their
+ * channels; what lives HERE is the cross-cutting set — the exact secrets, the
+ * retry cap, the timeout, the ladder — plus the completeness check.
  */
-const FILAS = { processShopeeNotification } as const;
+const FILAS = { processShopeeNotification, processShopeeMassImport } as const;
 
 function endpointOf(fn: unknown): Record<string, unknown> {
   return (fn as { __endpoint: Record<string, unknown> }).__endpoint;
@@ -471,5 +476,39 @@ describe('o nome do export da fila', () => {
     // not exist and the task simply never arrives.
     expect(SHOPEE_NOTIFICATION_QUEUE in modulo).toBe(true);
     expect((modulo as unknown as Record<string, unknown>)[SHOPEE_NOTIFICATION_QUEUE]).toBeDefined();
+  });
+});
+
+describe('processShopeeMassImport', () => {
+  it('é a SEGUNDA fila da codebase', () => {
+    // ⚠️ Não é contagem por contagem. Até o passo 9 esta codebase tinha UMA
+    // fila, e o docblock do `FILAS` registra o buraco em que ela viveu: o teste
+    // de exaustividade percorre `scheduleTrigger`, então um segundo
+    // `onTaskDispatched` que ninguém pusesse no mapa subiria, receberia
+    // despachos e teria as suas opções lidas por NADA. Esta asserção é o que
+    // torna o mapa um fato verificável em vez de uma lista que alguém lembrou
+    // de crescer: as duas filas são exportadas, são DISTINTAS entre si, e o
+    // módulo não exporta uma terceira (isso é do teste de exaustividade acima).
+    const comFila = Object.entries(modulo as unknown as Record<string, unknown>)
+      .filter(([, valor]) => {
+        const endpoint = (valor as { __endpoint?: Record<string, unknown> } | null)?.__endpoint;
+        return endpoint !== undefined && endpoint.taskQueueTrigger !== undefined;
+      })
+      .map(([nome]) => nome);
+    expect(comFila.sort()).toEqual(['processShopeeMassImport', 'processShopeeNotification']);
+    expect(Object.keys(FILAS)).toHaveLength(2);
+    expect(processShopeeMassImport).not.toBe(processShopeeNotification);
+  });
+
+  it('o nome do export é exatamente SHOPEE_MASS_IMPORT_QUEUE', () => {
+    // Gêmea da asserção da fila de notificação, e o risco é MAIOR aqui: esta
+    // função reenfileira contra a própria fila a cada continuação de varredura
+    // ou de dreno, então um rename pela metade não quebra o começo do job —
+    // quebra a CONTINUAÇÃO, e o job fica `running` para sempre sem nada que o
+    // re-conduza. `index.ts` afirma o par na carga do módulo (a análise de
+    // codebase do Firebase falha alto); isto fixa a mesma propriedade offline.
+    expect(SHOPEE_MASS_IMPORT_QUEUE in modulo).toBe(true);
+    expect((modulo as unknown as Record<string, unknown>)[SHOPEE_MASS_IMPORT_QUEUE]).toBeDefined();
+    expect(SHOPEE_MASS_IMPORT_QUEUE).not.toBe(SHOPEE_NOTIFICATION_QUEUE);
   });
 });

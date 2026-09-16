@@ -60,6 +60,8 @@ import { SHOPEE_NESTING_AMBIGUOUS_KEYS } from '@delfrance/integrations-shopee';
 import type { ImportacaoShopeeOptions } from '@delfrance/schemas';
 import type { Bucket } from '@delfrance/storage/admin';
 
+import type { ShopeeCategoriaIndice } from '../taxonomia/categorias';
+
 // ⚠️ TYPE-ONLY, and it has to stay that way: `planoImportacao.ts` imports real
 // VALUES from this module, so a value import here would close a runtime cycle.
 // `import type` is erased entirely, so there is none.
@@ -337,18 +339,69 @@ export interface ResultadoImportacaoShopee {
   readonly kit?: { readonly componentes: number; readonly criado: boolean };
 }
 
+/** One stored document, unparsed — the shape every memo below carries. */
+export interface DocumentoDeGrupo {
+  readonly id: string;
+  readonly raw: Record<string, unknown>;
+  /**
+   * The snapshot's write stamp, carried so the guarded grupo write can assert
+   * the read its patch was DERIVED from.
+   *
+   * ⚠️ It has to ride the memo rather than come from a second read in the
+   * writer. A patch planned against the memo's copy and guarded by a fresher
+   * read's stamp is an UNGUARDED write wearing a precondition: the window it
+   * claims to cover is exactly the window between the two reads. `unknown`
+   * because the concrete type is the Admin SDK's `Timestamp` and nothing here
+   * reads it — it is handed straight back to `update()`.
+   */
+  readonly updateTime?: unknown;
+}
+
 /**
- * The per-dispatch memo of the `grupoDeVariacoes` collection.
+ * The LOADED `grupoDeVariacoes` candidate set — what the PURE taxonomy core
+ * plans against.
  *
- * Wave 4/5 fill it (one full read per dispatch, lazily on the first item that
- * has models) and consume it (the tier-option → grupo rung scans
- * `linksVariacoesShopee` in memory, because Firestore cannot query inside an
- * array of objects). Declared here so the deps interface is complete before the
- * module that owns it exists; `raw` is the stored document, unparsed, because
- * the scan reads a field the grupo schema types as `z.array(z.unknown())`.
+ * `raw` is the stored document, unparsed, because the scan reads a field the
+ * grupo schema types as `z.array(z.unknown())`: Firestore cannot query inside an
+ * array of objects (`array-contains` needs exact element equality), so the
+ * operator-authored `linksVariacoesShopee` mapping — the very thing step 11's
+ * export reads — is only findable by scanning in memory.
  */
 export interface GrupoMemo {
-  readonly docs: ReadonlyArray<{ readonly id: string; readonly raw: Record<string, unknown> }>;
+  readonly docs: readonly DocumentoDeGrupo[];
+}
+
+/**
+ * The per-DISPATCH memo: one full read of `grupoDeVariacoes`, performed lazily
+ * on the first item that has models and reused by every later item and every
+ * rung.
+ *
+ * ⚠️ LAZY, and that is the whole point of the shape. An eager field would make
+ * the collection read happen once per ITEM (or once per dispatch even for a
+ * catalogue of no-model listings), and Firestore Enterprise bills DATA SCANNED —
+ * so "loaded when first needed, never again" is a cost property, not a style
+ * choice. `taxonomiaShopee.ts` builds one with `criarMemoDeGrupos(db)`; the job
+ * builds it ONCE per dispatch beside the rest of the importer's deps, and a
+ * per-item route or the CLI passes nothing and lets the module build its own.
+ */
+export interface MemoDeGrupos {
+  carregar(): Promise<GrupoMemo>;
+}
+
+/**
+ * The per-DISPATCH memo of the Shopee category tree, in the same lazy shape and
+ * for the same reason.
+ *
+ * ⚠️ It exists because the importer's deps carry no Shopee `client`: every wire
+ * read was already paid for by the caller, and the category tree is the one
+ * remaining read the importer itself needs. It is NOT a per-item API call — the
+ * loader goes through step 10's TTL-cached index — but it still has to be handed
+ * in by whoever owns a client. ABSENT ⇒ the categoria leg is skipped entirely
+ * (no chain, no document created, no leaf ref on the produto) with one log line,
+ * exactly like an unknown category id: never a throw, never a failed item.
+ */
+export interface MemoDeCategorias {
+  carregar(): Promise<ShopeeCategoriaIndice>;
 }
 
 /**
@@ -382,8 +435,13 @@ export interface ImportarAnuncioDeps {
    * `importacaoMassa.ts`), handed down — every module here takes it as a parameter.
    */
   readonly nowMs: number;
-  /** The per-dispatch grupo memo. Absent ⇒ the taxonomy module loads it itself. */
-  readonly grupos?: GrupoMemo;
+  /** The per-dispatch grupo memo. Absent ⇒ the taxonomy module builds its own. */
+  readonly grupos?: MemoDeGrupos;
+  /**
+   * The per-dispatch category-tree memo. Absent ⇒ the categoria leg is SKIPPED
+   * with one log line (see {@link MemoDeCategorias}).
+   */
+  readonly categorias?: MemoDeCategorias;
   readonly fetchImpl?: typeof globalThis.fetch;
 }
 

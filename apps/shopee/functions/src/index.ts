@@ -36,8 +36,10 @@ import {
   runShopeeOrderBackfill,
 } from '../../lib/shopee/notificacoes/orderBackfill';
 import { runShopeePushConfigMonitor } from '../../lib/shopee/notificacoes/pushConfigMonitor';
+import { SHOPEE_MASS_IMPORT_QUEUE } from '../../lib/shopee/produtos/importacaoMassa';
 import { createShopeeTaskScheduler } from '../../lib/shopee/shopeeTasks';
 import { getDb } from './lib/admin';
+import * as massImportHandlers from './processMassImport';
 import * as notificationHandlers from './processNotification';
 
 /**
@@ -69,21 +71,33 @@ import * as notificationHandlers from './processNotification';
  * fourth delivery backstop, and the only one that reaches past the 3-day
  * lost-push window. It never ends a sale by itself: it re-drives the step-5
  * import and surfaces what it cannot decide as an operator aviso.
+ *
+ * Master plan step 9 (#1517) adds the SECOND Cloud Tasks queue
+ * (`processShopeeMassImport`, ./processMassImport) — the resumable mass product
+ * import. ⚠️ Unlike every trigger above it, nothing here re-drives it: the
+ * handler re-enqueues onto its OWN queue for each scan/drain continuation and
+ * for the rate-limit pause, so there is no sweep behind it and a dropped
+ * dispatch leaves the job document `running` for ever. That is why its
+ * disposition table stamps the job `failed` rather than letting a dispatch end
+ * quietly, and why the rename-safety assertion below matters more for it than
+ * for the first queue.
  */
 
 /**
  * The Shopee partner credentials, bound to every trigger that can reach a
  * PUBLIC-signed Shopee call.
  *
- * ⚠️ It covers the seven `onSchedule` triggers in THIS file only.
- * `processShopeeNotification` is declared in `processNotification.ts` and holds
- * its own copy of the same two names, pinned by that module's own test — so
- * this constant does not by itself stop a NEW trigger picking a different
- * subset; the exact-set assertions in the two test files do. `index.test.ts`'s
- * `AGENDAMENTOS` map plus its exhaustiveness test is what keeps the count from
- * silently going stale again: a new schedule that is not in the map fails.
+ * ⚠️ It covers the seven `onSchedule` triggers in THIS file only. The TWO queue
+ * functions — `processShopeeNotification` (./processNotification) and
+ * `processShopeeMassImport` (./processMassImport, master plan step 9) — each
+ * declare their own copy of the same two names, each pinned by its own module's
+ * test, so this constant does not by itself stop a NEW trigger picking a
+ * different subset; the exact-set assertions do, and `index.test.ts` makes them
+ * mandatory for both families: `AGENDAMENTOS` plus its exhaustiveness test for
+ * the schedules, `FILAS` plus its own for the queues. Either map missing an
+ * export is what keeps the count from silently going stale again.
  *
- * ⚠️ Without these the sweep and the conta arms of the queue handler throw
+ * ⚠️ Without these the sweep and the conta arms of the queue handlers throw
  * `ShopeeConfigError` on their first call, which the pipeline treats as
  * transient — so the symptom is retries and parked documents, not a startup
  * failure that names the missing binding.
@@ -107,6 +121,27 @@ if (!(SHOPEE_NOTIFICATION_QUEUE in notificationHandlers)) {
 
 /** The queue-based notification processor (rate-limited, retry-with-backoff). */
 export { processShopeeNotification } from './processNotification';
+
+// The same rename-safety assertion for the SECOND queue of this codebase (master
+// plan step 9's mass product import). It is a separate `if` rather than a loop
+// over the two on purpose: the message has to name the FILE to fix, and the
+// two constants live in different modules.
+//
+// ⚠️ This one has a second enqueuer the notification queue does not: the handler
+// re-enqueues onto its OWN queue for every scan/drain continuation and for the
+// rate-limit pause, so a half-rename here breaks the job MID-RUN — the first
+// dispatch works, the continuation is enqueued onto a queue that does not exist,
+// and the job stays `running` for ever with nothing to re-drive it.
+if (!(SHOPEE_MASS_IMPORT_QUEUE in massImportHandlers)) {
+  throw new Error(
+    '[shopee] function-name drift: functions/src/processMassImport.ts must export a ' +
+      `handler named '${SHOPEE_MASS_IMPORT_QUEUE}' (the enqueue target). ` +
+      'Rename the export and the SHOPEE_MASS_IMPORT_QUEUE constant together.',
+  );
+}
+
+/** The queue-based mass product import (one dispatch at a time, self-continued). */
+export { processShopeeMassImport } from './processMassImport';
 
 /**
  * Reprocess backstop, draining BOTH retry lanes on the same tick:

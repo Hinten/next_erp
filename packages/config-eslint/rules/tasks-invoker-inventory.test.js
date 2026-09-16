@@ -56,6 +56,8 @@ const INVENTORY = {
   // ---- codebase `shopee` --------------------------------------------------
   'apps/shopee/functions/src/processNotification.ts':
     'The Shopee push notification handler. Enqueued by the receiver route only.',
+  'apps/shopee/functions/src/processMassImport.ts':
+    'The Shopee mass product import ("importar todos os anuncios", master-plan step 9). Enqueued by the /importar-todos route under the App Hosting runtime SA and re-enqueued by ITSELF — for every scan/drain continuation AND for the rate-limit pause (scheduleDelaySeconds) — so two identities dispatch it.',
 
   // ---- codebase `whatsapp` ------------------------------------------------
   'apps/whatsapp/functions/src/processNotification.ts':
@@ -84,7 +86,7 @@ const PATHSPECS = ['*.ts', ':(exclude)*.test.ts', ':(exclude)packages/config-esl
  * having checked NOTHING — the "green job that ran zero tests" shape. These are
  * a floor, not an inventory: they only ever need raising.
  */
-const MIN_TASK_FILES = 11;
+const MIN_TASK_FILES = 12;
 const MIN_CODEBASES = 7;
 
 function read(file) {
