@@ -270,8 +270,65 @@ function semearGrupoCor(db: FakeDb): void {
   });
 }
 
+/** `Tamanho`, com uma única variante `M` — um grupo que já era do operador. */
+function semearGrupoTamanho(db: FakeDb): void {
+  db.seed('grupoDeVariacoes/g-tamanho', {
+    nome: 'Tamanho',
+    codigo: null,
+    ordem: 3,
+    tipo: 1,
+    permiteFotos: false,
+    variacoes: [{ id: 'v-m', nome: 'M', codigo: null }],
+    variacoesIds: ['v-m'],
+    campoSoDoFlutter: 'não modelado aqui',
+  });
+}
+
 function consultasDeGrupo(db: FakeDb): unknown[] {
   return db.consultas.filter((c) => c.fonte === 'grupoDeVariacoes');
+}
+
+/**
+ * Quantas vezes a cascata do PAI foi percorrida — uma por TENTATIVA de importar
+ * um anúncio. É a testemunha independente de "zero replanejamentos": o replano
+ * refaz o preparo inteiro, e com ele esta consulta.
+ */
+function cascatasDePai(db: FakeDb): unknown[] {
+  return db.consultas.filter((c) => c.fonte === 'group:prodshopee');
+}
+
+/** Os nomes das variantes de um grupo, na ordem em que ficaram gravados. */
+function nomesDeVariacao(db: FakeDb, grupoId: string): unknown[] {
+  const doc = db.store[`grupoDeVariacoes/${grupoId}`]?.data ?? {};
+  return ((doc.variacoes ?? []) as { nome?: unknown }[]).map((v) => v.nome);
+}
+
+/** Um anúncio de dois tiers, com um único modelo na opção `i` de cada tier. */
+function anuncioDeTiers(
+  itemId: number,
+  sku: string,
+  modelId: number,
+  cores: string[],
+  tamanhos: string[],
+  indice: number,
+): ItemLido {
+  return item(
+    { item_id: itemId, item_sku: sku, has_model: true },
+    modelos(
+      [
+        {
+          model_id: modelId,
+          tier_index: [indice, indice],
+          model_sku: `${sku}-A`,
+          price_info: PRECO_BRL,
+        },
+      ],
+      [
+        { name: 'Cor', option_list: cores.map((option) => ({ option, image: null })) },
+        { name: 'Tamanho', option_list: tamanhos.map((option) => ({ option, image: null })) },
+      ],
+    ),
+  );
 }
 
 /**
@@ -740,24 +797,37 @@ describe('importarAnuncioShopee — o memo do despacho', () => {
     expect(consultasDeGrupo(db)).toHaveLength(1);
   });
 
-  it('⚠️ o memo ENVELHECE: um anúncio que cria um grupo faz o SEGUINTE replanejar', async () => {
-    // Não é um defeito de correção — o retry relê e o item entra — mas é o
-    // custo real do memo por DESPACHO, e ele gasta a única retentativa do
-    // segundo item. Fixado aqui para que uma mudança no memo seja deliberada.
+  it('o memo ABSORVE o que o DESPACHO escreve: o segundo anúncio não conflita nem replaneja', async () => {
+    // As duas metades do envelhecimento, num despacho só: o segundo anúncio
+    // CASA o `Cor` que o primeiro criou (sem absorver, ele planejaria a mesma
+    // criação e perderia para um ALREADY_EXISTS) e PATCHEIA o `Tamanho` que o
+    // primeiro já patcheou (sem absorver, o carimbo do memo é o velho e o
+    // update perde a precondição). Qualquer uma das duas gasta a única
+    // retentativa do item contra ele mesmo.
     const db = new FakeDb();
+    semearGrupoTamanho(db);
     const compartilhado = deps(db, { grupos: criarMemoDeGrupos(asDb(db)) });
 
-    await importarAnuncioShopee(compartilhado, anuncioDeDoisTiers());
+    await importarAnuncioShopee(
+      compartilhado,
+      anuncioDeTiers(ITEM_ID, 'CAM-001', MODEL_A, ['Azul'], ['M'], 0),
+    );
     const resultado = await importarAnuncioShopee(
       compartilhado,
-      item(
-        { item_id: OUTRO_ITEM_ID, item_sku: 'CAM-002', has_model: true },
-        modelos([{ model_id: 2000458804, tier_index: [0, 0], price_info: PRECO_BRL }]),
-      ),
+      anuncioDeTiers(OUTRO_ITEM_ID, 'CAM-002', MODEL_B, ['Azul', 'Verde'], ['M', 'G'], 1),
     );
 
     expect(resultado.variacoes.total).toBe(1);
-    expect(consultasDeGrupo(db)).toHaveLength(2);
+    // ZERO conflitos e ZERO replanejamentos: um replano constrói um memo NOVO
+    // (segunda leitura da coleção) e refaz o preparo inteiro (terceira cascata
+    // de pai). Estas duas contagens são o espião do caminho da perda.
+    expect(consultasDeGrupo(db)).toHaveLength(1);
+    expect(cascatasDePai(db)).toHaveLength(2);
+    // E o que ficou gravado é a UNIÃO dos dois anúncios, com o campo do Flutter
+    // intacto no grupo que já existia.
+    expect(nomesDeVariacao(db, 'g-tamanho')).toEqual(['M', 'G']);
+    expect(nomesDeVariacao(db, 'n-cor')).toEqual(['Azul', 'Verde']);
+    expect(db.store['grupoDeVariacoes/g-tamanho']?.data.campoSoDoFlutter).toBe('não modelado aqui');
   });
 
   it('⛔ um anúncio SEM modelos não lê `grupoDeVariacoes` nenhuma vez', async () => {

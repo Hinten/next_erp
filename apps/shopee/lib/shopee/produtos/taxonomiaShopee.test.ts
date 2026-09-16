@@ -326,3 +326,122 @@ describe('aplicarTaxonomiaShopee — a escrita guardada (tier 1)', () => {
     expect(db.writes).toEqual([]);
   });
 });
+
+/* ------------------------- 4. o memo ABSORVE o que escreve ---------------- */
+
+function nomesDe(raw: Record<string, unknown> | undefined): unknown[] {
+  return ((raw?.variacoes ?? []) as { nome?: unknown }[]).map((v) => v.nome);
+}
+
+describe('aplicarTaxonomiaShopee — o memo absorve o que o despacho escreve', () => {
+  it('absorve o grupo que acabou de CRIAR — com o corpo gravado e o carimbo dele', async () => {
+    const db = new FakeDb();
+    const memo = await criarMemoDeGrupos(asDb(db)).carregar();
+    expect(memo.docs).toHaveLength(0);
+
+    await aplicarTaxonomiaShopee(asDb(db), {
+      grupos: planejar(memo),
+      memo,
+      nowMs: AGORA,
+      itemId: ITEM_ID,
+    });
+
+    expect(memo.docs).toHaveLength(1);
+    const [doc] = memo.docs;
+    expect(doc?.id).toBe('n-cor');
+    expect(nomesDe(doc?.raw)).toEqual(['Azul', 'Verde']);
+    // O carimbo é o do documento gravado — é ele que vai guardar o próximo patch.
+    expect(doc?.updateTime).toBe(db.store['grupoDeVariacoes/n-cor']?.updateTime);
+  });
+
+  it('absorve a cópia PATCHEADA com o carimbo NOVO — um segundo patch no mesmo memo não perde a precondição', async () => {
+    const db = new FakeDb();
+    semearGrupo(db, 'g-cor');
+    const memo = await criarMemoDeGrupos(asDb(db)).carregar();
+    const carimboInicial = memo.docs[0]?.updateTime;
+
+    // Item 1 — acrescenta `Verde`.
+    await aplicarTaxonomiaShopee(asDb(db), {
+      grupos: planejar(memo),
+      memo,
+      nowMs: AGORA,
+      itemId: ITEM_ID,
+    });
+
+    expect(memo.docs).toHaveLength(1);
+    expect(memo.docs[0]?.updateTime).not.toBe(carimboInicial);
+    expect(nomesDe(memo.docs[0]?.raw)).toEqual(['Azul', 'Verde']);
+    // O corpo absorvido é o ARMAZENADO, não o patch: o que só o Flutter escreve
+    // continua lá, e é contra ele que o próximo item vai planejar.
+    expect(memo.docs[0]?.raw.campoSoDoFlutter).toBe('não modelado aqui');
+
+    // Item 2 — o MESMO memo, uma opção a mais. Sem a absorção este patch seria
+    // guardado pelo carimbo que o item 1 já queimou.
+    const tiersComPreta = tiersDoItem({
+      tiers: [
+        {
+          name: 'Cor',
+          option_list: [
+            { option: 'Azul', image: null },
+            { option: 'Verde', image: null },
+            { option: 'Preta', image: null },
+          ],
+        },
+      ],
+      padronizados: [],
+    });
+    await aplicarTaxonomiaShopee(asDb(db), {
+      grupos: planejar(memo, tiersComPreta),
+      memo,
+      nowMs: AGORA,
+      itemId: ITEM_ID,
+    });
+
+    expect(nomesDe(db.store['grupoDeVariacoes/g-cor']?.data)).toEqual(['Azul', 'Verde', 'Preta']);
+  });
+
+  it('⛔ absorver não afrouxa a guarda: um gravador concorrente em OUTRO grupo ainda dá `taxonomia-em-conflito`', async () => {
+    const db = new FakeDb();
+    semearGrupo(db, 'g-cor');
+    semearGrupo(db, 'g-tamanho', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M', codigo: null }],
+      variacoesIds: ['v-m'],
+    });
+    const memo = await criarMemoDeGrupos(asDb(db)).carregar();
+    const tiers = tiersDoItem({
+      tiers: [
+        {
+          name: 'Cor',
+          option_list: [
+            { option: 'Azul', image: null },
+            { option: 'Verde', image: null },
+          ],
+        },
+        { name: 'Tamanho', option_list: [{ option: 'G', image: null }] },
+      ],
+      padronizados: [],
+    });
+    const grupos = planejar(memo, tiers);
+
+    // O vencedor escreve no SEGUNDO grupo, depois da leitura do memo.
+    db.seed('grupoDeVariacoes/g-tamanho', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'do-vencedor', nome: 'GG' }],
+      variacoesIds: ['do-vencedor'],
+    });
+
+    await expect(
+      aplicarTaxonomiaShopee(asDb(db), { grupos, memo, nowMs: AGORA, itemId: ITEM_ID }),
+    ).rejects.toMatchObject({ motivo: 'taxonomia-em-conflito', itemId: ITEM_ID });
+
+    // A absorção é por DOCUMENTO, nunca um "o memo está fresco agora": o grupo
+    // que este despacho venceu entrou, e o do vencedor concorrente NÃO.
+    const absorvido = memo.docs.find((d) => d.id === 'g-cor');
+    const intocado = memo.docs.find((d) => d.id === 'g-tamanho');
+    expect(absorvido?.updateTime).toBe(db.store['grupoDeVariacoes/g-cor']?.updateTime);
+    expect(nomesDe(intocado?.raw)).toEqual(['M']);
+  });
+});

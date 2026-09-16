@@ -369,6 +369,24 @@ export interface DocumentoDeGrupo {
  */
 export interface GrupoMemo {
   readonly docs: readonly DocumentoDeGrupo[];
+  /**
+   * Take in a document THIS dispatch has just written, so the next item of the
+   * same dispatch plans against it instead of against the collection as it was
+   * before the first item ran.
+   *
+   * ⚠️ Without it the memo AGES: item 1 creates `Cor`, item 2 still cannot see
+   * it, plans the same create, and loses — spending its one bounded re-plan on
+   * ITSELF, so a genuine second writer arriving right afterwards would refuse
+   * the item for a conflict that never happened. It also turns "one collection
+   * read per dispatch" into one read per item that debuts a tier, on a database
+   * that bills DATA SCANNED.
+   *
+   * ⚠️ Optional so that a fixed candidate set (`{ docs: [...] }`) stays a legal
+   * `GrupoMemo` — a caller that cannot absorb simply keeps today's behaviour.
+   * The writer calls it only after a write it WON; a lost race is re-planned
+   * against a fresh read, never against a guess about who won.
+   */
+  absorver?(doc: DocumentoDeGrupo): void;
 }
 
 /**

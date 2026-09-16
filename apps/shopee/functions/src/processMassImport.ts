@@ -11,6 +11,7 @@ import {
   processarImportacaoShopee,
 } from '../../lib/shopee/produtos/importacaoMassa';
 import { importarAnuncioShopee } from '../../lib/shopee/produtos/importarAnuncio';
+import { importarKitShopee } from '../../lib/shopee/produtos/kitShopee';
 import { createShopeeMassImportScheduler } from '../../lib/shopee/produtos/shopeeMassImportTasks';
 import { getDb } from './lib/admin';
 import { tasksInvokerOptions } from './tasksInvoker';
@@ -47,12 +48,13 @@ import { tasksInvokerOptions } from './tasksInvoker';
  * Rename both together, or the enqueue targets a queue that does not exist and
  * the task is silently dropped while the caller sees success.
  *
- * ⚠️ `importarKit` is deliberately NOT injected in this wave: the kit importer
- * (`lib/shopee/produtos/kitShopee.ts`, arm K1) lands with master plan step 9's
- * kit wave, which adds the `importarKit: importarKitShopee` line here and the
- * test beside it. Until then a job whose queue reaches a kit ends with the job
- * module's missing-dependency `Error` — loud, on the ladder, never a silent
- * skip and never a simple produto minted from a kit.
+ * ⚠️ BOTH importers are injected, and they are two different functions on
+ * purpose: `importarAnuncio` mints a produto from a listing, `importarKit`
+ * (`lib/shopee/produtos/kitShopee.ts`, arm K1) resolves a kit's components and
+ * writes a kit produto that is never stocked. The job routes by `tag.kit` and
+ * drains `filaKits` LAST; an injection that went missing would not degrade
+ * quietly — the job module throws a missing-dependency `Error` on the ladder
+ * rather than skipping a kit or minting a simple produto from one.
  */
 export const processShopeeMassImport = onTaskDispatched(
   {
@@ -127,6 +129,7 @@ export const processShopeeMassImport = onTaskDispatched(
         db: getDb(),
         scheduler: createShopeeMassImportScheduler(),
         importarAnuncio: importarAnuncioShopee,
+        importarKit: importarKitShopee,
       },
       parsed.data,
       req.retryCount ?? 0,

@@ -561,6 +561,51 @@ describe('vínculos duplicados: o primeiro id vence, e NADA é apagado', () => {
     );
   });
 
+  it('⛔ dois `variashopee` sob o MESMO filho, no degrau da COMBINAÇÃO: vence o lexicamente primeiro, UMA linha de log, nada apagado', async () => {
+    // O único caminho até aqui: nenhum dos dois vínculos NOMEIA um modelo — um
+    // que nomeasse ESTE modelo teria sido achado pelo degrau 1, e um que
+    // nomeasse OUTRO desqualificaria o irmão. Um `model_id` ausente responde
+    // FALSE em `vinculoNomeiaOutroModelo`, então o irmão continua candidato e o
+    // duplicado chega ao degrau 3 — onde ele era escolhido em SILÊNCIO.
+    const db = new FakeDb();
+    semearProduto(db, 'prod-filho', { paiId: PAI, sku: null, variacoesUid: ['a'] });
+    // Semeados fora de ordem: a escolha não pode depender do que a leitura devolve.
+    db.seed('produtos/prod-filho/variashopee/var-z', {
+      model_id: null,
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+    });
+    db.seed('produtos/prod-filho/variashopee/var-a', {
+      model_id: null,
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+    });
+
+    const [r] = await resolverFilhosDaListagem(
+      asDb(db),
+      INTEGRACAO,
+      PAI,
+      true,
+      [modelo({ model_id: MODEL_ID })],
+      [combo('a')],
+    );
+
+    expect(r!.existente?.id).toBe('prod-filho');
+    expect(r!.link?.id).toBe('var-a');
+    expect(avisos).toHaveBeenCalledTimes(1);
+    expect(avisos).toHaveBeenCalledWith(
+      expect.stringContaining('mais de um vínculo'),
+      expect.objectContaining({
+        subcolecao: 'variashopee',
+        modelId: MODEL_ID,
+        produtoId: 'prod-filho',
+        encontrados: 2,
+        escolhido: 'var-a',
+      }),
+    );
+    expect(db.store['produtos/prod-filho/variashopee/var-z']).toBeDefined();
+    expect(db.store['produtos/prod-filho/variashopee/var-a']).toBeDefined();
+    expect(db.writes).toEqual([]);
+  });
+
   it('um único vínculo NÃO avisa nada', async () => {
     const db = new FakeDb();
     semearProduto(db, PAI, { sku: null });

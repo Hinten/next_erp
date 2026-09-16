@@ -24,6 +24,16 @@
  * candidate queries (`docRef`, `nome ==`, `tipo ==`, all three indexed),
  * accepting the duplicate-grupo risk. The size is a register item.
  *
+ * ⚠️ And the memo ABSORBS what the dispatch itself writes. A read-only memo ages
+ * the moment item 1 creates a grupo: item 2 plans the same create and loses to
+ * `ALREADY_EXISTS`, or plans a patch guarded by a stamp item 1 already bumped
+ * and loses the precondition — succeeding only through the single bounded
+ * re-plan below, i.e. SPENDING ITS ONE RETRY AGAINST ITSELF, so a genuine
+ * concurrent writer arriving right after refuses the item for a conflict that
+ * never happened. So every won write is read back into the memo
+ * ({@link absorverDoBanco}), which also restores the cost claim: one collection
+ * read per dispatch, not one per item that debuts a tier.
+ *
  * ## ⚠️ The write is ADR 0011 **tier 1**, and that is the whole design
  *
  * A guarded `update(patch, { lastUpdateTime })` naming ONLY `variacoes`,
@@ -91,7 +101,58 @@ async function lerTodosOsGrupos(db: Firestore): Promise<GrupoMemo> {
     raw: (d.data() ?? {}) as Record<string, unknown>,
     updateTime: d.updateTime,
   }));
-  return { docs };
+  return memoVivo(docs);
+}
+
+/**
+ * The loaded candidate set, ALIVE: it keeps its own mutable copy of the array it
+ * hands out, so a document absorbed after a write is visible to every later item
+ * of the same dispatch.
+ *
+ * ⚠️ `docs` is the very array the closure mutates, not a copy of it — the plan
+ * of item N reads the collection as of item N−1's writes. That is the whole
+ * point; see {@link GrupoMemo.absorver}.
+ */
+function memoVivo(docs: DocumentoDeGrupo[]): GrupoMemo {
+  return {
+    docs,
+    absorver(doc: DocumentoDeGrupo): void {
+      const i = docs.findIndex((d) => d.id === doc.id);
+      if (i >= 0) docs[i] = doc;
+      else docs.push(doc);
+    },
+  };
+}
+
+/**
+ * Re-read the ONE document this pass has just written and put it in the memo.
+ *
+ * ⚠️ It is a RE-READ rather than "the raw we sent plus the write's own stamp",
+ * and both halves of that are deliberate:
+ *
+ *  - **The stamp.** A patch guarded by a stamp is only as honest as the stamp;
+ *    the one the SDK reports for the write it just performed is the same value
+ *    a read would answer, but the in-memory double the tests drive answers
+ *    nothing at all, so a "use the write's stamp, else fall back" shape would
+ *    put the branch that runs in PRODUCTION outside every test. One shape, read
+ *    back from the database, is the only one both can prove.
+ *  - **The body.** `update` masks at the field path, so reconstructing the
+ *    stored document in memory means re-implementing Firestore's own merge
+ *    semantics — a second copy of a rule that would drift toward plausible. The
+ *    document as stored is the only body the next item may plan against.
+ *
+ * Cost: ONE document read per grupo actually written, and only then. It buys
+ * away a full re-read of the collection plus a re-plan of the whole item.
+ */
+async function absorverDoBanco(db: Firestore, memo: GrupoMemo, grupoId: string): Promise<void> {
+  if (memo.absorver === undefined) return;
+  const snap = await grupoDeVariacoesCollection.docRef(db, {}, grupoId).get();
+  if (!snap.exists) return;
+  memo.absorver({
+    id: grupoId,
+    raw: (snap.data() ?? {}) as Record<string, unknown>,
+    updateTime: snap.updateTime,
+  });
 }
 
 export interface ArgsAplicarTaxonomia {
@@ -159,6 +220,7 @@ async function aplicarUmaVez(
         if (isAlreadyExists(err)) return true;
         throw err;
       }
+      await absorverDoBanco(db, memo, grupo.grupoId);
       continue;
     }
 
@@ -183,6 +245,7 @@ async function aplicarUmaVez(
       if (isFailedPrecondition(err)) return true;
       throw err;
     }
+    await absorverDoBanco(db, memo, grupo.grupoId);
   }
 
   return false;

@@ -38,7 +38,7 @@ afterAll(() => {
 
 // The job engine is mocked; everything else the module imports is REAL — above
 // all `importacaoShopeeTaskSchema` (the drop below must be the schema's own
-// verdict, not a fixture's) and `importarAnuncioShopee` (the identity test).
+// verdict, not a fixture's) and the two importers (the identity test).
 const job = vi.hoisted(() => ({
   // ⚠️ A assinatura é declarada aqui (e não `vi.fn(async () => …)`) porque é ela
   // que tipa `mock.calls[0]`: um mock sem parâmetros registra as chamadas como
@@ -69,6 +69,7 @@ vi.mock('./lib/admin', () => ({ getDb: () => admin.db }));
 
 const { processShopeeMassImport } = await import('./processMassImport');
 const { importarAnuncioShopee } = await import('../../lib/shopee/produtos/importarAnuncio');
+const { importarKitShopee } = await import('../../lib/shopee/produtos/kitShopee');
 
 type RunnableTask = { data: unknown; retryCount?: number };
 
@@ -255,19 +256,20 @@ describe('o handler do processShopeeMassImport', () => {
     });
   });
 
-  it('o importarAnuncio injetado É o importarAnuncioShopee real, nunca um substituto', async () => {
-    // ⚠️ A única coisa que liga a fila ao importador de verdade é ESTA linha do
-    // wiring. Um refactor que trocasse o import por um stub, um placeholder ou
-    // um segundo módulo de mesmo nome compilaria, subiria e rodaria — o job
-    // relataria `done` para cada item e nenhum produto seria escrito. Identidade
-    // de referência é o que uma asserção de forma não pega.
+  it('os DOIS importadores injetados são os reais, nunca um substituto', async () => {
+    // ⚠️ A única coisa que liga a fila aos importadores de verdade são ESTAS
+    // duas linhas do wiring. Um refactor que trocasse um import por um stub, um
+    // placeholder ou um segundo módulo de mesmo nome compilaria, subiria e
+    // rodaria — o job relataria `done` para cada item e nenhum produto seria
+    // escrito. Identidade de referência é o que uma asserção de forma não pega.
     await run({ data: { jobId: 'job-1', integracaoId: 'int-1' }, retryCount: 0 });
 
     const [deps] = chamadaDoJob();
     expect(deps.importarAnuncio).toBe(importarAnuncioShopee);
-    // ⚠️ E `importarKit` continua AUSENTE nesta onda (o importador de kit é da
-    // onda seguinte): um `undefined` explícito passaria por "não injetado" e
-    // esconderia a linha que falta.
-    expect('importarKit' in deps).toBe(false);
+    // ⚠️ E `importarKit` É o kitShopee real, não o importador de anúncio: são
+    // funções DIFERENTES (um kit nunca vira produto simples), e as duas têm a
+    // mesma assinatura — então uma asserção de forma aceitaria a troca.
+    expect(deps.importarKit).toBe(importarKitShopee);
+    expect(deps.importarKit).not.toBe(deps.importarAnuncio);
   });
 });

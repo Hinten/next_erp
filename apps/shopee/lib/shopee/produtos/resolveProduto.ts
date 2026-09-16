@@ -434,7 +434,17 @@ export async function resolverFilhosDaListagem(
         tomados.add(produto.id);
         // Reuse the child's own link for this conta, so a re-import merges onto
         // it instead of minting a second `variashopee` under the same produto.
-        link ??= vinculos[0] ?? null;
+        // ⚠️ Through {@link escolherLink} like every other duplicate in this
+        // cascade: two `variashopee` documents for one conta under ONE child is
+        // the same anomaly as two under one key, and picking one silently is
+        // how it stays invisible. Same rule — lexically first, one log line,
+        // nothing deleted.
+        link ??= escolherLink(vinculos, {
+          integracaoId,
+          modelId,
+          produtoId: irmao.id,
+          subcolecao: 'variashopee',
+        });
         break;
       }
     }
