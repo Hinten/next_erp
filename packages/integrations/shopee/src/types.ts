@@ -1833,6 +1833,16 @@ export type ShopeeItemListRow = z.infer<typeof shopeeItemListRowSchema>;
  * `offset + page_size` — the page says "this value need set to next
  * request.offset" and the API reserves the right for the two to differ.
  *
+ * ⚠️ MEASURED on the sandbox (2026-09-16, step 9's wave-0 probe): the response
+ * carries FIVE keys — `item, total_count, has_next_page, next_offset, next` —
+ * and `next_offset` was present only on a FULL page (page_size 1 on a 1-item
+ * shop ⇒ `next_offset: 1`), ABSENT on a page with room left (page_size 10 on
+ * the same shop). `next` is UNDOCUMENTED, always present, and a STRING (`""`
+ * on every page seen). Both are declared so neither reading throws; the scan
+ * echoes `next_offset` while `has_next_page` is true, and a `has_next_page:
+ * true` with no usable `next_offset` is a TERMINAL job error, never a silent
+ * end of the catalogue (register item 66).
+ *
  * ⚠️ `total_count` is INFORMATIONAL. It is glossed "total count of all items"
  * and NO page says whether it honours the `item_status` filter, so nothing may
  * use it as a progress denominator or as a termination signal.
@@ -1843,6 +1853,8 @@ export const shopeeItemListPayloadSchema = z
     total_count: wireInt().nullable().default(null),
     has_next_page: z.boolean(),
     next_offset: wireInt().nullable().default(null),
+    /** Undocumented; a string on the sandbox (`""`). Observed, never consumed. */
+    next: z.string().nullable().default(null),
   })
   .passthrough();
 export type ShopeeItemList = z.infer<typeof shopeeItemListPayloadSchema>;
@@ -2192,7 +2204,14 @@ export const shopeeItemBaseInfoRowSchema = z
     /** Loose, for {@link shopeeItemListRowSchema}'s reason. */
     item_status: z.string().nullable().default(null),
     has_model: z.boolean().nullable().default(null),
-    deboost: z.boolean().nullable().default(null),
+    /**
+     * ⚠️ The page types it `boolean`; the sandbox sends the STRING `"FALSE"`
+     * (measured 2026-09-16, step 9's wave-0 probe — a `z.boolean()` here
+     * refused the WHOLE page, `ShopeeSchemaError` on
+     * `response.item_list[].deboost`, and with it every import). Nothing reads
+     * it, so both spellings are accepted verbatim and nothing folds them.
+     */
+    deboost: z.union([z.boolean(), z.string()]).nullable().default(null),
     has_promotion: z.boolean().nullable().default(null),
     is_fulfillment_by_shopee: z.boolean().nullable().default(null),
     /** ⚠️ `brand_id: 0` is "No brand" — data, not an absence. */

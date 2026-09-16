@@ -1879,6 +1879,51 @@ describe('as quatro leituras de item (passo 9)', () => {
     expect(paginado.response.item).toHaveLength(1);
   });
 
+  it('5b — a página REAL do sandbox parseia: `next` é uma STRING vazia e `next_offset` está AUSENTE', () => {
+    // ⚠️ MEDIDO 2026-09-16: com page_size 10 numa loja de 1 item a resposta
+    // trouxe `has_next_page: false`, `next: ""` e NENHUM `next_offset`; com
+    // page_size 1 (página CHEIA) trouxe `next_offset: 1`. `next` não está em
+    // página nenhuma da documentação. As duas chaves são declaradas para que
+    // nenhuma das duas formas derrube a varredura.
+    const paginado = shopeeItemListSchema.parse(
+      corpoItemList({
+        item: [
+          {
+            item_id: ITEM_ID,
+            item_status: 'NORMAL',
+            update_time: 1_608_128_470,
+            tag: { kit: false },
+          },
+        ],
+        total_count: 1,
+        has_next_page: false,
+        next: '',
+        next_offset: undefined,
+      }),
+    );
+    expect(paginado.response.next).toBe('');
+    expect(paginado.response.next_offset).toBeNull();
+    expect(paginado.response.has_next_page).toBe(false);
+
+    // A página CHEIA traz o `next_offset` numérico ao lado do `next` vazio.
+    const cheia = shopeeItemListSchema.parse(
+      corpoItemList({ has_next_page: false, next: '', next_offset: 1 }),
+    );
+    expect(cheia.response.next_offset).toBe(1);
+  });
+
+  it('5c — `deboost` chega como a STRING "FALSE" no sandbox e a página NÃO cai; o booleano documentado também passa', () => {
+    // ⚠️ MEDIDO 2026-09-16: um `z.boolean()` aqui recusou a página inteira
+    // (`ShopeeSchemaError` em `response.item_list[].deboost`) — e com ela toda
+    // importação. Ninguém lê o campo; as duas grafias sobrevivem verbatim.
+    const texto = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, { deboost: 'FALSE' }));
+    expect(texto.response.item_list[0]!.deboost).toBe('FALSE');
+    const booleano = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, { deboost: true }));
+    expect(booleano.response.item_list[0]!.deboost).toBe(true);
+    const ausente = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, {}));
+    expect(ausente.response.item_list[0]!.deboost).toBeNull();
+  });
+
   it('6 — get_item_base_info lê `tax_info` DENTRO do item (o sample da página)', () => {
     const lido = shopeeItemBaseInfoSchema.parse(
       corpoItemBase({}, { tax_info: { ncm: '61091000', origin: '0' } }),
