@@ -206,8 +206,11 @@ export type ImportacaoShopeeOptions = z.infer<typeof importacaoShopeeOptionsSche
  * by, not free text, and not free to rename (the `SkuMatchKind` doctrine). The
  * slugs are `item-deletado`, `item-nao-retornado`, `item-nao-encontrado`,
  * `sem-nome`, `vinculo-inconsistente`, `taxonomia-em-conflito`,
- * `kit-sem-detalhe`, `kit-componente-nao-vinculado`, `kit-nao-importado`,
- * plus the two job-level `erro-shopee` / `erro-schema`.
+ * `kit-sem-detalhe`, `kit-componente-nao-vinculado` (the eight blocked
+ * reasons of `apps/shopee/lib/shopee/produtos/errosImportacao.ts`, which is the
+ * one compiler-checked list), plus the two job-level `erro-shopee` /
+ * `erro-schema`. `kit-nao-importado` is NOT a member: it belonged to the
+ * observe-only kit arm (K2), and the build shipped K1.
  *
  * It is typed `z.string().min(1)` rather than an enum ON PURPOSE: the closed
  * vocabulary lives beside the error class that raises it, in the app

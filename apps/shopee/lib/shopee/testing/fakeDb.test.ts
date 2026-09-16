@@ -14,11 +14,13 @@
  * pedido schema: the handle supplies a PATH, the double stores and answers raw
  * data, and the subject is the query engine.
  */
+import { FieldValue } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 
 import { avisoCollection, pedidoCollection } from '@delfrance/data/admin/collections';
+import { isFailedPrecondition } from '@delfrance/data/admin';
 
-import { FakeDb, asDb, grpc } from './fakeDb';
+import { FakeDb, arrayUnion, asDb, grpc } from './fakeDb';
 
 /** The ids a chain answers, in the order it answered them. */
 async function idsDe(consulta: {
@@ -172,6 +174,194 @@ describe('FakeDb — orderBy, startAfter e limit', () => {
     expect(await idsDe(pedidos().limit(2).orderBy('timestamp', 'desc'))).toEqual(['p2', 'p3']);
     // …e o caminho antigo `.limit(n).get()` continua exatamente igual.
     expect(await idsDe(pedidos().limit(3))).toEqual(['p1', 'p2', 'p3']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  As três adições do passo 9 (#1517)                                         */
+/* -------------------------------------------------------------------------- */
+
+describe('FakeDb — o sentinela de arrayUnion', () => {
+  it('aplica a união na escrita: acrescenta em ORDEM e não duplica', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { tags: ['x'] });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+
+    await ref.update({ tags: arrayUnion('y', 'x', 'z') } as never);
+
+    // `x` já estava lá e não entra de novo; `y` e `z` entram na ordem em que
+    // foram passados. É a semântica do Firestore, não a de um `concat`.
+    expect(db.store['pedidos/a']!.data.tags).toEqual(['x', 'y', 'z']);
+    // ⚠️ E o registro de patches continua provando qual SENTINELA foi escrito —
+    // um read-modify-write não produziria essa linha.
+    expect(db.patches.at(-1)!.patch.tags).toEqual({ __arrayUnion: ['y', 'x', 'z'] });
+  });
+
+  it('aplica também o FieldValue.arrayUnion REAL — é o que putArquivoAdmin escreve', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', {});
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+
+    await ref.update({
+      externalIds: FieldValue.arrayUnion({
+        externalId: 'img-1',
+        integracaoPath: 'integracao/int-1',
+      }),
+    } as never);
+    await ref.update({
+      externalIds: FieldValue.arrayUnion({
+        externalId: 'img-1',
+        integracaoPath: 'integracao/int-1',
+      }),
+    } as never);
+
+    // Duas importações do mesmo `image_id` deixam UMA entrada — se o dobro
+    // sobrevivesse, toda asserção de dedup de foto passaria sem dedup nenhum.
+    expect(db.store['pedidos/a']!.data.externalIds).toEqual([
+      { externalId: 'img-1', integracaoPath: 'integracao/int-1' },
+    ]);
+  });
+
+  it('⛔ NEAR-MISS: a união não dobra tipos — "1" e 1, e 0 e null, continuam distintos', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { ids: [1] });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+
+    await ref.update({ ids: arrayUnion('1', 0, null) } as never);
+
+    // Um corpus legado guarda o mesmo id como STRING; dobrá-lo aqui reportaria
+    // um vínculo corrompido como "já presente" e ele ficaria sem apontar para
+    // nada para sempre.
+    expect(db.store['pedidos/a']!.data.ids).toEqual([1, '1', 0, null]);
+  });
+
+  it('⛔ NEAR-MISS: objetos com chaves em ORDEM diferente são o MESMO elemento', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { refs: [{ a: 1, b: 2 }] });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+
+    await ref.update({ refs: arrayUnion({ b: 2, a: 1 }, { a: 1, b: 3 }) } as never);
+
+    // A ordem das chaves não é um fato do documento — o Firestore não a usa para
+    // decidir igualdade, e um dedup por `JSON.stringify` diria que são dois.
+    expect(db.store['pedidos/a']!.data.refs).toEqual([
+      { a: 1, b: 2 },
+      { a: 1, b: 3 },
+    ]);
+  });
+});
+
+describe('FakeDb — caminhos pontilhados no update', () => {
+  it('expande a.b.c em objetos aninhados', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', {});
+    await pedidoCollection
+      .docRef(asDb(db), {}, 'a')
+      .update({ 'precos.tabela-1.valor': 10 } as never);
+
+    expect(db.store['pedidos/a']!.data).toEqual({ precos: { 'tabela-1': { valor: 10 } } });
+  });
+
+  it('⛔ NEAR-MISS: um campo IRMÃO sobrevive ao update pontilhado', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { precos: { normal: 10, promocional: 8 }, nome: 'x' });
+
+    await pedidoCollection.docRef(asDb(db), {}, 'a').update({ 'precos.normal': 12 } as never);
+
+    // É o motivo de a escrita de preço nomear UMA chave de tabela: a tabela
+    // irmã (e o mapa `precos` legado inteiro) não pode ser tocada. Um `update`
+    // que substituísse `precos` passaria em tudo, menos aqui.
+    expect(db.store['pedidos/a']!.data.precos).toEqual({ normal: 12, promocional: 8 });
+    expect(db.store['pedidos/a']!.data.nome).toBe('x');
+  });
+
+  it('o registro de patches guarda a chave PONTILHADA, não a expandida', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', {});
+    await pedidoCollection.docRef(asDb(db), {}, 'a').update({ 'precos.t1': 1 } as never);
+    expect(db.patches.at(-1)!.patch).toEqual({ 'precos.t1': 1 });
+  });
+
+  it('⛔ NEAR-MISS: em set/create a chave pontilhada é um NOME de campo, não um caminho', async () => {
+    // A regra é do Firestore, não uma conveniência do dobro: só os verbos de
+    // update expandem. Um dobro que expandisse em `set` esconderia um `set` que
+    // na produção criaria literalmente um campo chamado "a.b".
+    const db = new FakeDb();
+    await pedidoCollection.docRef(asDb(db), {}, 'a').set({ 'a.b': 1 } as never);
+    expect(db.store['pedidos/a']!.data).toEqual({ 'a.b': 1 });
+  });
+});
+
+describe('FakeDb — updateTime e a precondição lastUpdateTime', () => {
+  it('toda leitura traz um carimbo, e uma escrita bem-sucedida o AVANÇA', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+
+    const antes = await ref.get();
+    await ref.update({ n: 2 } as never);
+    const depois = await ref.get();
+
+    expect(antes.updateTime).toBeDefined();
+    expect(depois.updateTime!.isEqual(antes.updateTime!)).toBe(false);
+    // O mesmo carimbo é igual a si mesmo — `isEqual`, nunca `===`: dois
+    // Timestamps reais iguais são INSTÂNCIAS diferentes.
+    expect(depois.updateTime!.isEqual(depois.updateTime!)).toBe(true);
+  });
+
+  it('a consulta também devolve o carimbo de cada linha', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { estado: 'x' });
+    const snap = await pedidoCollection.ref(asDb(db), {}).where('estado', '==', 'x').get();
+    expect(snap.docs[0]!.updateTime).toBeDefined();
+  });
+
+  it('um update com o carimbo FRESCO passa', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+    const snap = await ref.get();
+
+    await ref.update({ n: 2 } as never, { lastUpdateTime: snap.updateTime! });
+    expect(db.store['pedidos/a']!.data.n).toBe(2);
+  });
+
+  it('⛔ NEAR-MISS: um carimbo VELHO é recusado com um erro que isFailedPrecondition reconhece', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    const ref = pedidoCollection.docRef(asDb(db), {}, 'a');
+    const snap = await ref.get();
+
+    // Um segundo escritor passa na frente…
+    await ref.update({ n: 99 } as never);
+
+    // …e o patch derivado da leitura antiga NÃO entra. Sem esta recusa a
+    // escrita guardada degrada para uma escrita sem guarda em TODO teste, e o
+    // perdedor sobrescreve o vencedor em silêncio.
+    const erro = await ref.update({ n: 2 } as never, { lastUpdateTime: snap.updateTime! }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(erro).not.toBeNull();
+    expect(isFailedPrecondition(erro)).toBe(true);
+    expect(db.store['pedidos/a']!.data.n).toBe(99);
+    // E nada foi escrito: a recusa acontece ANTES da escrita.
+    expect(db.writes.filter((w) => w.path === 'pedidos/a')).toHaveLength(1);
+  });
+
+  it('⛔ NEAR-MISS: um carimbo que não é carimbo NENHUM é recusado, não ignorado', async () => {
+    const db = new FakeDb();
+    db.seed('pedidos/a', { n: 1 });
+    // Passar um número (o formato ANTIGO deste dobro) não pode valer "sem
+    // precondição": isso faria uma escrita guardada virar uma sem guarda.
+    const erro = await pedidoCollection
+      .docRef(asDb(db), {}, 'a')
+      .update({ n: 2 } as never, { lastUpdateTime: 101 as never })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(isFailedPrecondition(erro)).toBe(true);
   });
 });
 

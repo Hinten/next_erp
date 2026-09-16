@@ -600,6 +600,9 @@ importers:
       '@delfrance/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
+      '@delfrance/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       firebase-admin:
         specifier: 'catalog:'
         version: 14.2.0

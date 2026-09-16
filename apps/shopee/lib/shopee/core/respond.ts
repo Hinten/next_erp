@@ -8,11 +8,11 @@
  * Mirrors `apps/mercado-livre/lib/marketplace/core/respond.ts`.
  *
  * ⚠️ The `instanceof` chain runs MOST-DERIVED FIRST, and on this channel that is
- * not cosmetic. `ShopeeConfigError`, `ShopeeSchemaError`, `ShopeeNetworkError`
- * and `ShopeeHttpError` all extend `ShopeeError` **directly** — they are NOT
- * `ShopeeApiError` subclasses — while `ShopeeReauthRequiredError` and
- * `ShopeeRateLimitError` are. Testing the base class first would collapse five
- * distinct diagnoses into one 500.
+ * not cosmetic. `ShopeeConfigError`, `ShopeeSchemaError`, `ShopeeNetworkError`,
+ * `ShopeeHttpError` and (since step 9) `ShopeeImportBlockedError` all extend
+ * `ShopeeError` **directly** — they are NOT `ShopeeApiError` subclasses — while
+ * `ShopeeReauthRequiredError` and `ShopeeRateLimitError` are. Testing the base
+ * class first would collapse six distinct diagnoses into one 500.
  */
 import { NextResponse } from 'next/server';
 import {
@@ -25,6 +25,7 @@ import {
   ShopeeSchemaError,
 } from '@delfrance/integrations-shopee';
 
+import { ShopeeImportBlockedError } from '../produtos/errosImportacao';
 import { ShopeeCredencialInvalidaError } from './credentialStore';
 import { ShopeeContaNotConfiguredError } from './shopee';
 import {
@@ -39,6 +40,14 @@ import {
  * forgotten here falls past the route catch and 500s. `ShopeeConfigError` IS one
  * (re-exported by `../env`), which is exactly why there is a single class rather
  * than an app-local copy.
+ *
+ * ⚠️ `ShopeeImportBlockedError` is the sixth app-local class and the one
+ * exception to that sentence: it DOES extend `ShopeeError`, so the base arm
+ * already answers the boolean for it. It joins this union anyway — not for the
+ * guard, but so `toResponse` can read `err.motivo` / `err.itemId` without a
+ * cast. The import runs ONE way (`respond.ts` → `produtos/`): every module under
+ * `produtos/` is Next-free because the Cloud Functions bundle reaches it, and
+ * this file imports `next/server`.
  */
 type KnownError =
   | ShopeeContaNotConfiguredError
@@ -46,6 +55,7 @@ type KnownError =
   | ShopeeSemCredencialError
   | ShopeeContaSemShopIdError
   | ShopeeRefreshEmAndamentoError
+  | ShopeeImportBlockedError
   | ShopeeError;
 
 /** A Shopee body is unbounded; a log line is not. Enough to identify it. */
@@ -58,6 +68,11 @@ export function isShopeeError(err: unknown): err is KnownError {
     err instanceof ShopeeSemCredencialError ||
     err instanceof ShopeeContaSemShopIdError ||
     err instanceof ShopeeRefreshEmAndamentoError ||
+    // Redundant with the base arm below (it extends `ShopeeError`) and named
+    // anyway: this guard is the list a reader consults to answer "does the route
+    // handle it?", and the answer for a blocked import must not depend on
+    // noticing which base class it happens to extend.
+    err instanceof ShopeeImportBlockedError ||
     err instanceof ShopeeError
   );
 }
@@ -208,6 +223,28 @@ function toResponse(err: KnownError): NextResponse {
     return NextResponse.json(
       { error: err.message, code: 'SHOPEE_HTTP_ERROR', upstreamStatus: err.httpStatus },
       { status: 502 },
+    );
+  }
+  if (err instanceof ShopeeImportBlockedError) {
+    // ⚠️ IMMEDIATELY ABOVE the base `ShopeeError` arm it extends — below it, a
+    // per-ITEM refusal would be reported as `SHOPEE_ERROR` 500, i.e. as OUR
+    // outage, and the operator would never be told which listing was refused or
+    // why. 422 and not 400: the request is well-formed and the caller may retry
+    // it unchanged once the cause is fixed (a kit component imported, a name
+    // filled in on Shopee).
+    //
+    // ⚠️ `mensagem` is a MECHANISM sentence by construction — never a listing
+    // name, a description, a URL or a response body (see the class docblock).
+    // The body says nothing more than the error already carries.
+    return NextResponse.json(
+      {
+        error: err.message,
+        code: 'SHOPEE_IMPORT_BLOCKED',
+        motivo: err.motivo,
+        itemId: err.itemId,
+        mensagem: err.mensagem,
+      },
+      { status: 422 },
     );
   }
   // Any other ShopeeError subclass — generic upstream failure.
