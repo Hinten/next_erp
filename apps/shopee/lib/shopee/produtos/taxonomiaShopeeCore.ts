@@ -225,7 +225,7 @@ function inteiro(v: unknown): number {
 
 /** `(integracaoShopeeId, category_id)` — the entry identity. */
 function chaveDaEntrada(integracaoShopeeId: string, categoryId: number): string {
-  return `${integracaoShopeeId} ${String(categoryId)}`;
+  return `${integracaoShopeeId}\x00${String(categoryId)}`;
 }
 
 /**
