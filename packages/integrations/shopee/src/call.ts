@@ -42,7 +42,7 @@ import {
   type ShopeeSurface,
   shopeeErrorFromEnvelope,
 } from './errors';
-import { type SignedCall, signedQuery } from './sign';
+import { type ShopeeQueryValue, type SignedCall, signedQuery } from './sign';
 import { shopeeEnvelopeSchema } from './types';
 
 /** What Shopee reported alongside a SUCCESSFUL call. Never an error. */
@@ -76,7 +76,15 @@ export interface ShopeeCallParams<S extends z.ZodType> {
    * logging entirely — status and length only.
    */
   readonly sensitive?: boolean;
-  readonly query?: Readonly<Record<string, string | number | undefined>>;
+  /**
+   * The operation's own query parameters, handed straight to `signedQuery`.
+   *
+   * ⚠️ An ARRAY value becomes a REPEATED key, one entry per element — see
+   * {@link ShopeeQueryValue}. Nothing here joins, and nothing here refuses: an
+   * empty array emits no key at all, and the refusal for a required parameter
+   * belongs to the operation's bound guard in `api.ts`.
+   */
+  readonly query?: Readonly<Record<string, ShopeeQueryValue>>;
   readonly body?: unknown;
   /**
    * Envelope `error` values THIS OPERATION accepts as success, beyond `''`.
