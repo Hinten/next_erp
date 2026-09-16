@@ -10,6 +10,7 @@ runs them, from this worktree, against the project the environment points at.
 | `liquidar-pagamentos.ts` | rehearses the weekly escrow settlement (step 6)       | only with `--live`        |
 | `rastrear-pedido.ts`     | rehearses the shipment merge of ONE order (step 7)    | only with `--live`        |
 | `varrer-reservas.ts`     | rehearses the weekly stuck-reservation sweep (step 8) | only with `--live`        |
+| `importar-anuncio.ts`    | imports ONE anúncio through the real step-9 path      | only with `--live`        |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -676,3 +677,179 @@ and never a payload.
   `order_sn` of the call is unknown — settle-live register item 38.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — in `--live` it enqueues
   real Cloud Tasks and writes real documents.
+
+---
+
+## `importar:anuncio` — rehearsing the first produto write
+
+`importarAnuncioShopee` normally runs unattended: the `importar-todos` job
+drains a queue of `item_id`s through the Cloud Tasks function, ten per dispatch.
+This script drives the same code from a terminal against ONE named anúncio, so
+the channel's first write to `produtos` / `grupoDeVariacoes` / `categorias` /
+`arquivos` — and its first write to `prodshopee` / `variashopee`, which step 5
+only ever READ — is deliberate and observable instead of arriving on a queue.
+
+It is also the only place the whole plan is printed. The importer is split
+`preparar` (write-free) → `planejar` (pure) → `aplicar`, so a dry run runs the
+first two halves and renders the plan the third one would execute. That is not a
+re-implementation of the live path: it is the live path, minus the writer.
+
+### 11.1 Environment
+
+Same `.env.local` as every other script here (`dotenv -e ../../.env.local -- tsx
+…`), and the same variables as §1. Step 9 adds **no** variable of its own —
+what it adds are three fields read off the **integração document**, and the
+preamble prints all three because each one silently disables a leg:
+
+| field on `integracao/{id}`  | what its absence does                                                                                                 |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `tabelaNormalOuterRef`      | `(nenhuma — sem preço)` — no price is written anywhere, on the parent or on any child                                 |
+| `tabelaPromocionalOuterRef` | printed, and printed as **`NUNCA escrita — #803`**: the import never writes the promotional table even when it is set |
+| `depositoOuterRef`          | `(nenhum — sem estoque)` — the estoque leg skips with one log line                                                    |
+
+The preamble goes to **stderr** and leads with the mode
+(`modo: DRY-RUN — não grava nada` / `modo: LIVE — VAI GRAVAR`), then the
+project, the database, the raw `SHOPEE_SANDBOX`, the integração, the `item_id`,
+the resolved Shopee environment, the shop id and those three refs — read all of
+them before you let it continue. A conta connected by MAIN ACCOUNT has no
+`shop_id`, so nothing can be signed; the script says so and exits `1` rather
+than printing a stack.
+
+### 11.2 Dry run first — always
+
+```bash
+pnpm --filter @delfrance/shopee-app importar:anuncio --integracao int-1 --item 2500139861
+```
+
+⚠️ **A dry run is not offline.** It reads Firestore _and_ calls Shopee — always
+one `get_item_base_info`, then `get_kit_item_info` for a `tag.kit` listing or
+`get_model_list` for a `has_model` one, never both — and spends the same
+rate-limited calls a live run does. What it skips is exactly the writing. That
+property is **structural**, not a promise: `prepararImportacaoShopee`'s call
+graph contains no writer, no bucket and no fetch, and a test drives it with a
+FakeDb that throws on every write verb.
+
+The usage the script itself prints (`--help`, answered before any dynamic
+import, so it touches no environment, no Firestore and no Shopee):
+
+```
+Importa UM anúncio da Shopee para o catálogo do ERP, pelo caminho real do step 9.
+
+  pnpm --filter @delfrance/shopee-app importar:anuncio \
+    --integracao <integracaoId> --item <item_id> [opções]
+
+Obrigatórios
+  --integracao <id>   documento da integração Shopee (ex.: int-1)
+  --item <item_id>    o anúncio da Shopee, só dígitos (ex.: 2500139861)
+
+Opções
+  --dry-run           lê, resolve e PLANEJA, sem gravar nada. É o PADRÃO.
+  --live              GRAVA: roda o importador de verdade (produto, variações,
+                      grupos, categorias, vínculos, estoque, preço e fotos) e
+                      depois relê o produto.
+  --project <id>      sobrescreve FIREBASE_PROJECT_ID antes de abrir o admin.
+  --json              imprime o mesmo resumo redigido em JSON no stdout
+                      (o cabeçalho vai para o stderr).
+  --help, -h          mostra esta ajuda e sai com 0, sem abrir o Firestore
+                      nem chamar a Shopee.
+```
+
+| flag                | meaning                                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>` | **required** — the Shopee integração document. A conta that is missing, inactive or of another tipo fails HERE, in `loadShopeeContext`, rather than at Shopee |
+| `--item <item_id>`  | **required** — digits only. `2500139861`, never a URL and never a `model_id`                                                                                  |
+| `--dry-run`         | the **DEFAULT**                                                                                                                                               |
+| `--live`            | runs the real importer and then re-reads the produto                                                                                                          |
+| `--project <id>`    | overrides `FIREBASE_PROJECT_ID` before the admin app resolves it                                                                                              |
+| `--json`            | the same REDACTED summary as one parseable document on stdout, preamble on stderr                                                                             |
+| `--help`, `-h`      | prints the usage and exits `0`, ahead of every validation and before any dynamic import                                                                       |
+
+⚠️ A bare `--` is refused, and no command in this file carries one (see the note
+at the top).
+
+### 11.3 What to read in the output
+
+Five blocks: the produto, preço and estoque, the variations, the grupos, and
+categoria/vínculos/fotos — plus a sixth, the component table, when the listing
+is a kit.
+
+| line                                          | what it tells you                                                                                                                                                                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `produto … criar/atualizar id=… kit=…`        | the deterministic id, and whether this run mints or merges. The id is `sha256("shopee\|<integracaoId>\|<item_id>")` — the same anúncio under a different integração is a DIFFERENT produto, on purpose.                         |
+| `campos do produto` / `campos de extraData`   | the exact key set a merge would carry. On an UPDATE this is the fill rule at work: only absent fields are filled, except the small `sobrescreverDadosProduto` carve-out.                                                        |
+| `descrição` / `tax_info`                      | **counts and field NAMES only.** The description's characters are counted and the `tax_info` values are never rendered — the summary is an allow-list, so it is safe to paste into an issue. Keep it that way if you extend it. |
+| `preço … (nenhum) motivo=<token>`             | why no price would be written: `opcao-desligada`, `sem-tabela`, `pai-com-filhos`, `sem-price-info`, `moeda-nao-brl`, `valor-abaixo-do-minimo`. On the SG sandbox this is normally `moeda-nao-brl` — see §11.5.                  |
+| `estoque … (nenhum) motivo=<token>`           | the same shape for stock. A parent that owns children never carries one.                                                                                                                                                        |
+| `### variações (N models → …)`                | `criar` / `existentes` / `semLink`. A `semLink` row is a `model_id: 0` child: the produto is created, the `variashopee` link is not, and that is the wire's answer rather than a failure.                                       |
+| the per-model rows                            | `criar` / `atualizar` / `sem mudança`, the child's own id, and its own `link` and `estoque`. A re-import of an unchanged listing should read `sem mudança` on every row.                                                        |
+| `### grupos de variações`                     | `novo` / `match + patch` / `match` per grupo. `match` with no patch on a second run is the `linksVariacoesShopee` merge proving it does not churn.                                                                              |
+| `categoria …`                                 | the root-first path, or `(nenhuma — id desconhecido ou opção desligada)`. No API call is made: the chain comes from step 10's cached tree.                                                                                      |
+| `prodshopee` / `variashopee`                  | `CRIAR` vs `MERGE`, per document. Nothing is ever deleted, so a `MERGE` over a link you did not expect is information, not damage.                                                                                              |
+| `fotos … no anúncio · já em cache · a baixar` | counts only; the image URLs are deliberately omitted. `já em cache` is the `externalIds` hit — a second run should download nothing.                                                                                            |
+| `### kit — componentes (R/N resolvidos)`      | the K1 table. `R < N` means the kit is REFUSED — see §11.5.                                                                                                                                                                     |
+
+### 11.4 The live run
+
+```bash
+pnpm --filter @delfrance/shopee-app importar:anuncio --integracao int-1 --item 2500139861 --live
+```
+
+`--live` runs `importarAnuncioShopee` (or `importarKitShopee`) for real and then
+re-reads the produto, so the last block of the output is what Firestore actually
+holds rather than what the plan intended. The writes happen in ONE order —
+taxonomia → categorias → the guarded price patch → produto → extraData →
+estoque → the parent link → each child → `filhoUnicoId` → photos — and two of
+those placements are load-bearing: taxonomia is first because a lost grupo race
+must refuse the item before any produto exists, and the price patch precedes the
+produto merge because the merge bumps `updateTime` and would invalidate the
+price precondition we are about to assert.
+
+⚠️ **A lost race is answered by re-planning, exactly once.** Both guarded writes
+fail loudly on a concurrent winner; the importer then re-reads and re-plans the
+whole item against a fresh memo rather than re-applying a patch that would write
+the loser's values over the winner's. A second loss ends the item as
+`taxonomia-em-conflito`, with nothing half-written.
+
+Exit `0` on **any plan**, including a BLOCKED one — a refusal is an answer, and
+it prints as `bloqueado: <motivo>`. Exit `1` only on a throw, described by CLASS
+and never by payload.
+
+### 11.5 Caveats you should expect to see (none of these is a bug)
+
+- **The sandbox shop is SGD, so a rehearsal imports NO price.** The import takes
+  only the first **BRL** `price_info` entry, so the plan prints
+  `preço … (nenhum) motivo=moeda-nao-brl`. Measured on the sandbox, not assumed.
+  It is the currency rule working; a BR shop is the only place the price leg can
+  be observed at all.
+- **`tax_info` is absent on a non-BR shop**, so the summary prints
+  `tax_info … ausente · campos: —`. The fiscal block is a BR-only answer;
+  `need_tax_info` is sent on every call regardless.
+- **`standardise_tier_variation[]` comes back all-zero outside Fashion.**
+  Measured: `variation_id: 0` and every `variation_option_id: 0`, with no
+  `variation_group_id`. `0` means CUSTOM, so outside Fashion only the NAMES
+  identify a tier or an option — which is why the grupo rung falls through to an
+  exact-name match instead of a `shopee-<id>` document.
+- **`weight` arrives as a STRING** (kilograms). `'1,1'`, `'0'` and `''` all map
+  to `null` rather than to a default — an invented weight is worse than an
+  absent one, because freight would quote against it.
+- **A `gtin_code` of `"00"` means ABSENT** and is dropped; `'0'` and `'000'` are
+  kept, because they are values somebody typed.
+- **A kit prints no stock at all.** A kit produto's stock is its components',
+  so no estoque row is written for it in either mode.
+- **A kit on a fresh catálogo is REFUSED** — `bloqueado:
+kit-componente-nao-vinculado`, printed together with the component table so
+  you can see exactly which component has no produto yet. Import the components
+  first and run the same command again; **run it twice** is the procedure, not a
+  workaround. The mass-import job avoids it by draining `filaKits` LAST.
+- **A `has_model` listing has no `price_info` on the item itself** — it is on
+  every model. The parent therefore prints `motivo=pai-com-filhos` and each
+  child carries its own price. Measured on the sandbox.
+- **The categoria leg is skipped when the category id is unknown to the cached
+  tree**, printing `(nenhuma — id desconhecido ou opção desligada)` and one
+  warn. Nothing fails: a category tree is a cached read, and an import that
+  blocked on it would be worse than an unlinked categoria that says so once.
+- **A second run should write almost nothing** — every model `sem mudança`,
+  every grupo `match`, `fotos … a baixar 0` — and that is the idempotence check
+  worth doing before any live run against a real catalogue.
+- **Never run by an agent** (root `CLAUDE.md` rule 8) — in `--live` it writes
+  real produtos, real links and real files into Storage.
