@@ -23,14 +23,40 @@ import { criarMemoDeCategorias } from './categoriaShopee';
 import { ShopeeImportBlockedError } from './errosImportacao';
 import {
   anuncioDerivadoDoKit,
+  comCamposDeKit,
   importarKitShopee,
   prepararImportacaoKitShopee,
   resolverComponentesDoKit,
+  type ComponenteDoKitShopee,
 } from './kitShopee';
+import type { PlanoImportacaoShopee } from './planoImportacao';
 import type { ImportarAnuncioDeps, ItemLido } from './itemLido';
 import { idDoFilhoPlanejado, idDoPaiPlanejado } from './resolveProduto';
 
 /* ---------------------------------- fixtures ------------------------------ */
+
+/**
+ * ⚠️ O plano de LISTAGEM que a transformação de kit recebe, com estoque no pai e
+ * no filho. Ele não é alcançável pelo caminho real — a tradução do kit nunca
+ * emite `stock_info_v2`, então o planejador compartilhado nunca planeja estoque
+ * —, e é exatamente por isso que o par cinto-e-suspensório só pode ser fixado
+ * metade a metade.
+ */
+function planoDeListagemComEstoque(): PlanoImportacaoShopee {
+  return {
+    produtoId: 'pai-x',
+    produtoPai: { produtoId: 'pai-x', criar: false, data: { nome: 'Kit' } },
+    estoquePai: { produtoId: 'pai-x', docId: 'est-pai', criar: true, data: { quantidade: 7 } },
+    filhoUnico: { paiId: 'pai-x', idsPlanejados: ['filho-x'] },
+    filhos: [
+      {
+        modelId: 2000458802,
+        produto: { produtoId: 'filho-x', criar: false, data: { nome: 'Kit A' } },
+        estoque: { produtoId: 'filho-x', docId: 'est-f', criar: true, data: { quantidade: 7 } },
+      },
+    ],
+  } as unknown as PlanoImportacaoShopee;
+}
 
 const ITEM_ID = 2500139861;
 const COMPONENTE_A = 2500139862;
@@ -501,6 +527,62 @@ describe('importarKitShopee — estoque e preços', () => {
     expect(escritasDeEstoque(db)).toEqual([]);
   });
 
+  it('⛔ a TRADUÇÃO nunca emite `stock_info_v2` — nem no pai, nem em modelo nenhum', () => {
+    // ⚠️ Metade das "suspensórios" do par, fixada SOZINHA. O teste acima não a
+    // alcança: os overrides `estoque: null` da transformação de kit absorvem
+    // qualquer estoque que vazasse por aqui, então os dois se cobrem e nenhum
+    // dos dois fica preso. A página do kit não traz estoque nenhum e inventar um
+    // é a única coisa que a leitura do kit proíbe explicitamente.
+    const detalhe = kit({
+      stock_info_v2: { seller_stock: [{ location_id: 'BR', stock: 7 }] },
+      model_list: [
+        {
+          model_id: MODEL_A,
+          model_sku: 'K-A',
+          original_price: 99.9,
+          stock_info_v2: { seller_stock: [{ location_id: 'BR', stock: 7 }] },
+          component_list: [componente({})],
+        },
+      ],
+    });
+
+    const derivado = anuncioDerivadoDoKit(entradaDeKit(detalhe), detalhe);
+
+    expect(derivado.base.stock_info_v2).toBeNull();
+    expect(derivado.models?.model.map((m) => m.stock_info_v2)).toEqual([null]);
+    // ÂNCORA: a tradução realmente leu essa página — o resto do modelo chegou.
+    expect(derivado.models?.model.map((m) => m.model_sku)).toEqual(['K-A']);
+  });
+
+  it('⛔ o CINTO: a transformação de kit zera o estoque do pai e o de cada filho', () => {
+    // A outra metade, fixada sozinha pelo mesmo motivo — e aqui a entrada é um
+    // plano de listagem COM estoque, que o caminho real nunca produz para um kit.
+    const componentes: ComponenteDoKitShopee[] = [
+      {
+        modelId: 2000458802,
+        itemId: COMPONENTE_A,
+        modelIdDoComponente: 0,
+        sku: null,
+        quantidade: 1,
+        produtoId: 'comp-a',
+        via: 'prodshopee',
+      },
+    ];
+
+    const plano = comCamposDeKit(planoDeListagemComEstoque(), componentes, AGORA, {
+      pai: null,
+      filhos: [null],
+    });
+
+    expect(plano.estoquePai).toBeNull();
+    expect(plano.filhos.map((f) => f.estoque)).toEqual([null]);
+    // ÂNCORA: a transformação realmente rodou sobre este plano.
+    expect(plano.produtoPai?.data.ehKit).toBe(true);
+    expect(plano.filhos[0]?.produto?.data.componentesKit).toEqual({
+      'comp-a': { quantidade: 1, limitarEstoque: true, timestamp: AGORA },
+    });
+  });
+
   it('o preço vai para a tabela NORMAL, no FILHO, só com importarPreco', async () => {
     const db = new FakeDb();
     semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
@@ -694,6 +776,68 @@ describe('importarKitShopee — a ordem de escrita e o re-import', () => {
     // E a composição continua lá, re-carimbada e não apagada.
     expect(docDoProduto(db, PAI_ID).componentesKit).toEqual({
       'comp-a': { quantidade: 1, limitarEstoque: true, timestamp: AGORA },
+    });
+  });
+
+  it('⛔ um re-import byte-idêntico numa HORA DIFERENTE não escreve produto nenhum', async () => {
+    // ⚠️ O relógio do despacho é outro, e é só isso que muda. `componentesKit`
+    // NÃO está em `PRODUTO_HISTORY_IGNORE_FIELDS`, então re-carimbar a composição
+    // aqui arquivaria uma linha de `historicoDeModificacoes` — sem autor, porque
+    // quem escreve é o Admin SDK — no pai E em cada filho, a cada passada, por
+    // uma composição que ninguém tocou. E o braço de kit re-importa por projeto:
+    // um catálogo novo recusa quase todo kit na primeira passada.
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    const entrada = entradaDeKit(kit());
+    const UMA_HORA_DEPOIS = AGORA + 3_600_000;
+
+    await importarKitShopee(deps(db), entrada);
+    const escritasDoPrimeiroPasse = db.writes.length;
+
+    await importarKitShopee(deps(db, { nowMs: UMA_HORA_DEPOIS }), entrada);
+
+    // ⚠️ NENHUM merge de produto com os três campos de kit — nem no pai, nem no
+    // filho. (O patch guardado de `precos.<tabelaId>` continua saindo: ele é do
+    // caminho de LISTAGEM e um re-import de anúncio comum faz o mesmo.)
+    const novas = db.writes.slice(escritasDoPrimeiroPasse);
+    expect(novas.filter((w) => 'componentesKit' in w.patch)).toEqual([]);
+    expect(novas.filter((w) => 'ehKit' in w.patch)).toEqual([]);
+    // E o carimbo guardado é o do primeiro passe, não o do segundo.
+    expect(docDoProduto(db, PAI_ID).componentesKit).toEqual({
+      'comp-a': { quantidade: 1, limitarEstoque: true, timestamp: AGORA },
+    });
+  });
+
+  it('⛔ NEAR-MISS: uma composição que MUDOU volta a escrever, e com o carimbo NOVO', async () => {
+    // A outra metade: carregar o carimbo adiante não pode virar "nunca mais
+    // escreve". Uma quantidade diferente é uma mudança real de composição.
+    const db = new FakeDb();
+    semearComponentePorListagem(db, 'comp-a', COMPONENTE_A);
+    const UMA_HORA_DEPOIS = AGORA + 3_600_000;
+
+    await importarKitShopee(deps(db), entradaDeKit(kit()));
+    const escritasDoPrimeiroPasse = db.writes.length;
+
+    await importarKitShopee(
+      deps(db, { nowMs: UMA_HORA_DEPOIS }),
+      entradaDeKit(
+        kit({
+          model_list: [
+            {
+              model_id: MODEL_A,
+              model_sku: 'KIT-001-A',
+              original_price: 99.9,
+              component_list: [componente({ quantity: 2 })],
+            },
+          ],
+        }),
+      ),
+    );
+
+    const novas = db.writes.slice(escritasDoPrimeiroPasse);
+    expect(novas.filter((w) => 'componentesKit' in w.patch).length).toBeGreaterThan(0);
+    expect(docDoProduto(db, PAI_ID).componentesKit).toEqual({
+      'comp-a': { quantidade: 2, limitarEstoque: true, timestamp: UMA_HORA_DEPOIS },
     });
   });
 

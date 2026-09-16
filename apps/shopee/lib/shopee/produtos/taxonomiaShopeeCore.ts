@@ -153,6 +153,15 @@ export interface OpcaoDeTierShopee {
   readonly nome: string;
   /** `0` = CUSTOM. Never treated as a wildcard, never treated as an absence. */
   readonly optionId: number;
+  /**
+   * This option's position in the WIRE `option_list`.
+   *
+   * WARNING Load-bearing, not decorative: {@link tiersDoItem} DROPS an option
+   * with no name and no id, so a position in `opcoes` is a COMPACTED one — while
+   * `model.tier_index[i]` addresses the raw wire list. Carrying the wire index is
+   * what keeps the two from being two different coordinate systems.
+   */
+  readonly indice: number;
 }
 
 /** One tier of a listing: its name, its (possibly zero) id, and its options. */
@@ -161,6 +170,12 @@ export interface TierShopee {
   /** `0` = CUSTOM. */
   readonly variationId: number;
   readonly opcoes: readonly OpcaoDeTierShopee[];
+  /**
+   * This tier's position in the WIRE `tier_variation`, for the same reason as
+   * {@link OpcaoDeTierShopee.indice}: a dropped tier compacts this list too, and
+   * `tier_index` is indexed by the raw one.
+   */
+  readonly indice: number;
 }
 
 function inteiroOuZero(v: number | null | undefined): number {
@@ -174,7 +189,12 @@ function inteiroOuZero(v: number | null | undefined): number {
  * ⚠️ The two arrays are paired by index **only when their lengths are equal**;
  * otherwise every id reads as `0` (custom) and the names carry the whole match.
  * ⚠️ A tier with no usable name and no non-zero id contributes nothing: there
- * would be no identity to match it by and no name to create it with.
+ * would be no identity to match it by and no name to create it with. The same
+ * goes for one option.
+ *
+ * ⚠️ Both drops COMPACT the output, which is why every entry carries its own
+ * WIRE `indice`: `model.tier_index` addresses the RAW arrays, and reading a
+ * compacted one with a raw index binds a model to another option's variante.
  */
 export function tiersDoItem(entrada: {
   readonly tiers: readonly ShopeeTierVariation[];
@@ -198,9 +218,9 @@ export function tiersDoItem(entrada: {
       const nomeOpcao = (opcao.option ?? padraoOpcao?.variation_option_name ?? '').trim();
       const optionId = inteiroOuZero(padraoOpcao?.variation_option_id);
       if (nomeOpcao.length === 0 && optionId === 0) continue;
-      opcoes.push({ nome: nomeOpcao, optionId });
+      opcoes.push({ nome: nomeOpcao, optionId, indice: j });
     }
-    saida.push({ nome, variationId, opcoes });
+    saida.push({ nome, variationId, opcoes, indice: i });
   }
   return saida;
 }
@@ -465,8 +485,19 @@ export interface GrupoPlanejado {
    * layer adds `ultimaModificacao` and the `lastUpdateTime` precondition.
    */
   readonly patch: Record<string, unknown> | null;
-  /** The Variante id each option of this tier resolved to, by option index. */
-  readonly varianteIds: readonly string[];
+  /**
+   * The Variante id each option of this tier resolved to, indexed by that
+   * option's **WIRE** position — which is what `model.tier_index[i]` addresses.
+   *
+   * ⚠️ `null` where the option bound to nothing: dropped by {@link tiersDoItem},
+   * or carrying neither an id nor a sluggable name so rung 4 could not create
+   * it. The hole is the point. Compacting it would shift every LATER option by
+   * one, so a model would be written with another option's variante while its
+   * own `nome` is composed from the right one — silently, and only after the gap.
+   */
+  readonly varianteIds: readonly (string | null)[];
+  /** This tier's WIRE position. See {@link TierShopee.indice}. */
+  readonly indiceTier: number;
 }
 
 /** What the whole taxonomy resolution produced. */
@@ -536,7 +567,11 @@ export interface ArgsPlanejarTaxonomia {
  * `reconstructFromVariacoesUid` joins names in.
  *
  * ⚠️ A tier or option that resolves to nothing contributes NOTHING to the
- * combination — never a placeholder, never a dangling fake path.
+ * combination — never a placeholder, never a dangling fake path. ⚠️ Which is
+ * exactly why it still occupies its own WIRE POSITION in
+ * {@link GrupoPlanejado.varianteIds} and in the tier lookup below: "contributes
+ * nothing" and "shifts everything after it" are opposite behaviours, and
+ * compacting turns the first into the second.
  */
 export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomiaShopee {
   const { tiers, modelos, integracaoId, categoryId, nowMs } = args;
@@ -565,7 +600,9 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
     const variacoes: unknown[] = casado ? [...casado.variacoes] : [];
     const entradaArmazenada =
       casado !== null ? entradaDoGrupo(casado, integracaoId, categoryId) : null;
-    const varianteIds: string[] = [];
+    // ⚠️ Indexed by the option's WIRE position, never by loop order — see
+    // {@link GrupoPlanejado.varianteIds}. Holes are normalised to `null` below.
+    const varianteIds: (string | null)[] = [];
     const opcoesDoLink: LinkVariacaoOpcaoShopee[] = [];
     let variacoesMudaram = false;
 
@@ -615,7 +652,7 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
           timestamp: nowMs,
         });
         variacoesMudaram = true;
-        varianteIds.push(idNovo);
+        varianteIds[opcao.indice] = idNovo;
         opcoesDoLink.push(montarOpcaoDoLink(opcao, idNovo));
         continue;
       }
@@ -633,9 +670,12 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
         variacoes[indice] = { ...bruto, externalVariacaoLinks: links };
         variacoesMudaram = true;
       }
-      varianteIds.push(casada.id);
+      varianteIds[opcao.indice] = casada.id;
       opcoesDoLink.push(montarOpcaoDoLink(opcao, casada.id));
     }
+    // A hole — a skipped option, or one `tiersDoItem` dropped before us —
+    // becomes an explicit `null`, so nothing downstream meets a sparse array.
+    for (let k = 0; k < varianteIds.length; k += 1) varianteIds[k] ??= null;
 
     // ---- the `linksVariacoesShopee` entry ----------------------------------
     const nossaEntrada: LinkVariacoesShopee = {
@@ -681,6 +721,7 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
         },
         patch: null,
         varianteIds,
+        indiceTier: tier.indice,
       });
     } else {
       const mudou = variacoesMudaram || fusao.mudou;
@@ -690,6 +731,7 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
         docNovo: null,
         patch: mudou ? { variacoes, variacoesIds, linksVariacoesShopee: fusao.array } : null,
         varianteIds,
+        indiceTier: tier.indice,
       });
     }
   }
@@ -697,13 +739,18 @@ export function planejarTaxonomia(args: ArgsPlanejarTaxonomia): PlanoDeTaxonomia
   // ---- each model's combination -------------------------------------------
   const combos: ComboResolvido[] = [];
   const combosPorModelo = new Map<number, ComboResolvido>();
+  // ⚠️ Keyed by the WIRE tier index, never by position in `grupos`: a tier
+  // `tiersDoItem` dropped is absent here, and `grupos[i]` would then answer the
+  // NEXT tier for every model — the same off-by-one as the option holes, one
+  // level up.
+  const grupoPorTier = new Map(grupos.map((g) => [g.indiceTier, g]));
   for (const modelo of modelos) {
     const grupoUids: string[] = [];
     const fakes: string[] = [];
     for (const [i, idx] of (modelo.tier_index ?? []).entries()) {
-      const grupo = grupos[i];
-      const varianteId = grupo?.varianteIds[idx];
-      if (grupo === undefined || varianteId === undefined) continue;
+      const grupo = grupoPorTier.get(i);
+      const varianteId = grupo?.varianteIds[idx] ?? null;
+      if (grupo === undefined || varianteId === null) continue;
       if (!grupoUids.includes(grupo.grupoId)) grupoUids.push(grupo.grupoId);
       const fake = varianteFakePath(grupo.grupoId, varianteId);
       if (!fakes.includes(fake)) fakes.push(fake);

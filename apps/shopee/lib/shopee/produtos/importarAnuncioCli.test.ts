@@ -478,6 +478,36 @@ describe('descreverBloqueio / descreverErroImportacao', () => {
     expect(linhas.join('\n')).toContain('Nada foi gravado');
   });
 
+  it('⛔ `taxonomia-em-conflito` NÃO promete que nada foi gravado — um grupo pode ter ficado', () => {
+    // ⚠️ O único motivo alcançável SÓ no `--live`, e o único sobre o qual a
+    // linha padrão mentiria: o passo de taxonomia percorre os grupos planejados
+    // em ordem e cada escrita cai antes de a seguinte ser tentada, então quando
+    // a segunda perde a precondição um grupo criado ou ajustado por ESTE item já
+    // está no banco. O que a recusa garante é a coisa mais estreita: nenhum
+    // PRODUTO foi escrito.
+    const linhas = descreverBloqueio(
+      new ShopeeImportBlockedError(
+        MOTIVO_IMPORT_BLOQUEADO.taxonomiaEmConflito,
+        ITEM_ID,
+        'outro gravador alterou o mesmo grupoDeVariacoes durante o planejamento',
+      ),
+    );
+    const texto = linhas.join('\n');
+    expect(texto).not.toContain('Nada foi gravado');
+    expect(texto).toContain('Nenhum PRODUTO foi gravado');
+    expect(texto).toContain('grupoDeVariacoes');
+
+    // ⛔ NEAR-MISS: todo OUTRO motivo continua com a promessa forte, que é
+    // verdadeira para eles — trocar a linha para todos seria assustar o operador
+    // à toa em sete dos oito casos.
+    for (const motivo of Object.values(MOTIVO_IMPORT_BLOQUEADO)) {
+      if (motivo === MOTIVO_IMPORT_BLOQUEADO.taxonomiaEmConflito) continue;
+      const outras = descreverBloqueio(new ShopeeImportBlockedError(motivo, ITEM_ID)).join('\n');
+      expect(outras).toContain('Nada foi gravado');
+      expect(outras).not.toContain('grupoDeVariacoes');
+    }
+  });
+
   it('um motivo sem detalhe não imprime um travessão solto', () => {
     const err = new ShopeeImportBlockedError(MOTIVO_IMPORT_BLOQUEADO.semNome, ITEM_ID);
     expect(descreverBloqueio(err)[0]).toBe('bloqueado: sem-nome');

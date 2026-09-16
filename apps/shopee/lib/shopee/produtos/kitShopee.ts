@@ -390,7 +390,15 @@ function exigirComponentesVinculados(
 
 /** One `componentesKit` map plus the key array that must agree with it. */
 interface ComposicaoDoKit {
-  readonly mapa: Record<string, { quantidade: number; limitarEstoque: boolean; timestamp: number }>;
+  /**
+   * ⚠️ `timestamp` is `number | null` because `kitSchema` declares it nullable
+   * and the web kit editor writes `null` for a fresh entry — a stored `null`
+   * that is carried forward stays `null` rather than being re-stamped.
+   */
+  readonly mapa: Record<
+    string,
+    { quantidade: number; limitarEstoque: boolean; timestamp: number | null }
+  >;
   readonly chaves: readonly string[];
 }
 
@@ -406,10 +414,20 @@ interface ComposicaoDoKit {
  * `limitarEstoque` is `true` for every entry: a component the kit consumes
  * constrains what the kit can sell, which is the whole point of deriving a kit's
  * availability instead of stocking it.
+ *
+ * ⚠️ The STAMP of an unchanged entry is carried FORWARD from what is stored, and
+ * `nowMs` is written only where the composition actually moved. A stamp records
+ * when an entry was EDITED; it is not part of what the kit is — the schemas
+ * package's own kit comparator leaves it outside the fold for that reason, and
+ * `componentesKit` is deliberately NOT in `PRODUTO_HISTORY_IGNORE_FIELDS`, so a
+ * re-stamp on every pass would file one unattributed `historicoDeModificacoes`
+ * row per kit produto per import for a composition nobody touched. The kit
+ * arm re-imports by design (a fresh catalogue refuses most kits on pass one).
  */
 function composicaoDoModelo(
   componentes: readonly ComponenteDoKitShopee[],
   nowMs: number,
+  armazenada: Record<string, unknown> | null,
 ): ComposicaoDoKit {
   const mapa: ComposicaoDoKit['mapa'] = {};
   for (const componente of componentes) {
@@ -422,7 +440,41 @@ function composicaoDoModelo(
       timestamp: nowMs,
     };
   }
+  for (const [produtoId, entrada] of Object.entries(mapa)) {
+    const guardado = carimboArmazenadoDoComponente(armazenada, produtoId, entrada.quantidade);
+    if (guardado !== null) mapa[produtoId] = { ...entrada, timestamp: guardado.carimbo };
+  }
   return { mapa, chaves: Object.keys(mapa) };
+}
+
+/**
+ * The stored stamp of ONE component entry, when that entry is unchanged.
+ *
+ * ⚠️ Compared FIELD BY FIELD and never through a shared equality helper: the
+ * fold this makes is tiny and local (`quantidade` and `limitarEstoque` decide,
+ * `timestamp` deliberately does not), and routing it through a general one would
+ * both widen it and pull `produtos/` into an inventory it has no entry in.
+ *
+ * ⚠️ A stored `timestamp` of `null` is a legal value the web kit editor writes
+ * for a fresh entry, which is why the answer is wrapped rather than returned
+ * bare — `null` as "no stamp to keep" and `{ carimbo: null }` as "keep the null"
+ * are different answers.
+ */
+function carimboArmazenadoDoComponente(
+  armazenada: Record<string, unknown> | null,
+  produtoId: string,
+  quantidade: number,
+): { readonly carimbo: number | null } | null {
+  if (armazenada === null) return null;
+  const bruto = armazenada[produtoId];
+  if (typeof bruto !== 'object' || bruto === null || Array.isArray(bruto)) return null;
+  const entrada = bruto as Record<string, unknown>;
+  if (entrada.quantidade !== quantidade) return null;
+  if (entrada.limitarEstoque !== true) return null;
+  const carimbo = entrada.timestamp;
+  if (carimbo === null) return { carimbo: null };
+  if (typeof carimbo !== 'number' || !Number.isFinite(carimbo)) return null;
+  return { carimbo };
 }
 
 /** Distinct component PRODUTOS across every model, in first-seen order. */
@@ -449,20 +501,73 @@ function camposDeKit(composicao: ComposicaoDoKit | null): Record<string, unknown
 }
 
 /**
- * Fold the kit fields into an existing produto write, or MINT one.
+ * Are the three kit fields already exactly what this document holds?
+ *
+ * ⚠️ Field by field, for the reason spelled out at
+ * {@link carimboArmazenadoDoComponente}. It treats two compositions as the same
+ * only when the SAME component ids carry the SAME `quantidade`, the same
+ * `limitarEstoque` and the same `timestamp` — the stamp included HERE, because
+ * by the time this runs the stamp of an unchanged entry has already been carried
+ * forward, so a difference in it means the composition really moved.
+ */
+function camposDeKitJaArmazenados(
+  armazenado: Record<string, unknown>,
+  composicao: ComposicaoDoKit | null,
+): boolean {
+  if (armazenado.ehKit !== true) return false;
+
+  const chavesGuardadas = armazenado.componentesKitKeys;
+  const chaves = composicao === null ? null : composicao.chaves;
+  if (chaves === null) {
+    if (chavesGuardadas !== null) return false;
+  } else {
+    if (!Array.isArray(chavesGuardadas)) return false;
+    if (chavesGuardadas.length !== chaves.length) return false;
+    if (chavesGuardadas.some((chave, i) => chave !== chaves[i])) return false;
+  }
+
+  const mapaGuardado = armazenado.componentesKit;
+  if (composicao === null) return mapaGuardado === null;
+  if (typeof mapaGuardado !== 'object' || mapaGuardado === null || Array.isArray(mapaGuardado)) {
+    return false;
+  }
+  const guardado = mapaGuardado as Record<string, unknown>;
+  if (Object.keys(guardado).length !== composicao.chaves.length) return false;
+  for (const [produtoId, entrada] of Object.entries(composicao.mapa)) {
+    const bruto = guardado[produtoId];
+    if (typeof bruto !== 'object' || bruto === null || Array.isArray(bruto)) return false;
+    const linha = bruto as Record<string, unknown>;
+    if (linha.quantidade !== entrada.quantidade) return false;
+    if (linha.limitarEstoque !== entrada.limitarEstoque) return false;
+    if (linha.timestamp !== entrada.timestamp) return false;
+  }
+  return true;
+}
+
+/**
+ * Fold the kit fields into an existing produto write, MINT one, or plan none.
  *
  * ⚠️ The mint matters: on a re-import the shared mapper plans no produto write
- * at all for an unchanged document, and the composition still has to land. The
- * minted patch carries `ultimaModificacao` — the same key the mapper's own
- * update patch always carries — plus the three kit fields, and nothing else.
+ * at all for an unchanged document, and a composition that is NOT yet stored
+ * still has to land. The minted patch carries `ultimaModificacao` — the same key
+ * the mapper's own update patch always carries — plus the three kit fields, and
+ * nothing else.
+ *
+ * ⚠️ And the NON-mint matters just as much: when the mapper planned nothing AND
+ * the document already holds exactly these three fields, this answers `null`. A
+ * byte-identical kit re-import must write no produto at all, exactly like a
+ * byte-identical listing re-import — otherwise every pass files an unattributed
+ * `historicoDeModificacoes` row on the parent and on every child.
  */
 function comCamposDeKitNoProduto(
   escrita: EscritaDeProduto | null,
   produtoId: string,
   composicao: ComposicaoDoKit | null,
   nowMs: number,
-): EscritaDeProduto {
+  armazenado: Record<string, unknown> | null,
+): EscritaDeProduto | null {
   if (escrita === null) {
+    if (armazenado !== null && camposDeKitJaArmazenados(armazenado, composicao)) return null;
     return {
       produtoId,
       criar: false,
@@ -472,9 +577,34 @@ function comCamposDeKitNoProduto(
   return { ...escrita, data: { ...escrita.data, ...camposDeKit(composicao) } };
 }
 
+/** The `componentesKit` map a produto document already holds, or `null`. */
+function mapaDeComponentesArmazenado(
+  raw: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const bruto = raw?.componentesKit;
+  if (typeof bruto !== 'object' || bruto === null || Array.isArray(bruto)) return null;
+  return bruto as Record<string, unknown>;
+}
+
+/** What {@link comCamposDeKit} has to READ from the documents already stored. */
+export interface ArmazenadosDoKit {
+  /** The parent produto as read, or `null` when the cascade resolved none. */
+  readonly pai: Record<string, unknown> | null;
+  /** Index-aligned with `plano.filhos`, i.e. with `get_model_list` order. */
+  readonly filhos: readonly (Record<string, unknown> | null)[];
+}
+
 /**
  * The listing plan → the KIT plan: `ehKit` everywhere, the composition on the
  * documents that own it, and no estoque anywhere.
+ *
+ * ⚠️ EXPORTED for one test, and the export is the point: `estoquePai: null` and
+ * the per-child `estoque: null` here are the BELT of a belt-and-braces pair
+ * whose braces are {@link anuncioDerivadoDoKit} never emitting a
+ * `stock_info_v2`. Neither half alone is observable end to end — the derived
+ * listing carries no stock, so the shared planner plans none, so removing either
+ * override changes nothing a whole-import test can see. Each half is therefore
+ * pinned directly, or it is pinned by nothing.
  *
  * ⚠️ The 1-model MIRROR (C7). A one-model kit is a família de um, and the order
  * resolver binds the PARENT for a kit — so the parent has to hold the same
@@ -483,18 +613,20 @@ function comCamposDeKitNoProduto(
  * `componentesKit: null`, because there is no single composition to mirror and a
  * merged one would be a fourth answer nobody wrote.
  */
-function comCamposDeKit(
+export function comCamposDeKit(
   plano: PlanoImportacaoShopee,
   componentes: readonly ComponenteDoKitShopee[],
   nowMs: number,
+  armazenados: ArmazenadosDoKit,
 ): PlanoImportacaoShopee {
   const porModelo = new Map<number, ComposicaoDoKit>();
-  for (const filho of plano.filhos) {
+  for (const [i, filho] of plano.filhos.entries()) {
     porModelo.set(
       filho.modelId,
       composicaoDoModelo(
         componentes.filter((c) => c.modelId === filho.modelId),
         nowMs,
+        mapaDeComponentesArmazenado(armazenados.filhos[i] ?? null),
       ),
     );
   }
@@ -512,6 +644,7 @@ function comCamposDeKit(
       plano.filhoUnico.idsPlanejados[i] ?? filho.produto?.produtoId ?? plano.produtoId,
       porModelo.get(filho.modelId) ?? null,
       nowMs,
+      armazenados.filhos[i] ?? null,
     ),
     // A kit child is assembled, never stocked. Structural, not incidental.
     estoque: null,
@@ -519,7 +652,13 @@ function comCamposDeKit(
 
   return {
     ...plano,
-    produtoPai: comCamposDeKitNoProduto(plano.produtoPai, plano.produtoId, espelho, nowMs),
+    produtoPai: comCamposDeKitNoProduto(
+      plano.produtoPai,
+      plano.produtoId,
+      espelho,
+      nowMs,
+      armazenados.pai,
+    ),
     estoquePai: null,
     filhos,
   };
@@ -637,11 +776,11 @@ export async function prepararImportacaoKitShopee(
   exigirComponentesVinculados(componentes, entrada.itemId);
 
   const anuncio = anuncioDerivadoDoKit(entrada, kit);
-  const plano = comCamposDeKit(
-    planejarImportacaoShopee(await lerPreparoDoKit(deps, anuncio)),
-    componentes,
-    deps.nowMs,
-  );
+  const lido = await lerPreparoDoKit(deps, anuncio);
+  const plano = comCamposDeKit(planejarImportacaoShopee(lido), componentes, deps.nowMs, {
+    pai: lido.pai.existente?.raw ?? null,
+    filhos: lido.filhos.map((filho) => filho.existente?.raw ?? null),
+  });
 
   return { plano, componentes, anuncio, produtosComponentes: produtosDosComponentes(componentes) };
 }

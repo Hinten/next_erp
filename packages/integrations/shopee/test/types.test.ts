@@ -1924,6 +1924,48 @@ describe('as quatro leituras de item (passo 9)', () => {
     expect(ausente.response.item_list[0]!.deboost).toBeNull();
   });
 
+  it('5d — UMA linha ruim vira o sentinela `null` e NÃO derruba as outras 49 do lote', () => {
+    // ⚠️ O precedente é `shopeePackageDetailPayloadSchema`, a outra op em LOTE
+    // deste mesmo arquivo, e a condição que ele exige está satisfeita aqui: quem
+    // chama reconcilia por `item_id` e já tem um veredito por item para um id sem
+    // linha. Sem isso, uma listagem cujo `weight`/`gtin_code`/bloco `tax_info`
+    // discorda de um tipo declarado recusa o CORPO inteiro, o dreno relança, a
+    // escada queima as três tentativas e o job morre com os itens saudáveis do
+    // lote nunca importados — e todo job seguinte volta a esbarrar nela.
+    const lido = shopeeItemBaseInfoSchema.parse({
+      error: '',
+      request_id: 'req-item-base',
+      response: {
+        item_list: [
+          linhaItemBase({ item_id: 2_500_139_861 }),
+          // `weight` é `z.string()`; um número aqui é a discordância por LINHA.
+          { ...linhaItemBase({ item_id: 2_500_139_862 }), weight: 10.02 },
+        ],
+      },
+    });
+
+    expect(lido.response.item_list).toHaveLength(2);
+    expect(lido.response.item_list[0]!.item_id).toBe(2_500_139_861);
+    expect(lido.response.item_list[1]).toBeNull();
+  });
+
+  it('5e — ⛔ NEAR-MISS do sentinela: ele é por ELEMENTO, nunca por campo, e a LISTA segue estrita', () => {
+    // A linha ruim some INTEIRA. Ela NÃO volta meio-lida com `weight: null`, que
+    // é o que um `.catch` por CAMPO faria — e aí o `item_id` sobreviveria e o
+    // dreno importaria uma listagem com um peso fabricado.
+    const so = shopeeItemBaseInfoSchema.parse({
+      error: '',
+      response: { item_list: [{ ...linhaItemBase({ item_id: 2_500_139_861 }), weight: 10.02 }] },
+    });
+    expect(so.response.item_list).toEqual([null]);
+
+    // E a tolerância para no elemento: `item_list` que não é lista continua
+    // recusando o corpo, porque aí não há linha nenhuma a conter.
+    expect(() =>
+      shopeeItemBaseInfoSchema.parse({ error: '', response: { item_list: 'nao-e-lista' } }),
+    ).toThrow();
+  });
+
   it('6 — get_item_base_info lê `tax_info` DENTRO do item (o sample da página)', () => {
     const lido = shopeeItemBaseInfoSchema.parse(
       corpoItemBase({}, { tax_info: { ncm: '61091000', origin: '0' } }),

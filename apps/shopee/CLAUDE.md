@@ -12,19 +12,17 @@ escrow settlement sweep, the step-7 shipment tracking that merges a
 per-package observation into the pedido's `freteInicial`, the step-8 weekly
 stuck-reservation sweep that re-drives — and, where it cannot decide, SURFACES —
 a pedido still holding a stock reservation past the horizon, and the step-9
-product import that pulls an anúncio into the catálogo as a produto, on demand
-and for the whole shop through a resumable Cloud Tasks job**.
+product import (an anúncio → a produto, one at a time or the whole shop through
+a resumable Cloud Tasks job)**.
 
 ⚠️ **Step 5 is where this app started writing ERP business data** — `pedidos`,
 `clientes`, `enderecos`, `incidentes`, since step 6 the
 `pedidos/{id}/pagamentos` subcollection, and since step 9 the **catálogo**
-itself (`produtos`, `grupoDeVariacoes`, `categorias`, `arquivos`, and the two
-link collections `prodshopee` / `variashopee`, which this channel had only ever
-READ) — so the old blanket "this app writes nothing" is no longer true and must
-not be re-asserted. What is still true is
-the direction: **nothing is published or written TO Shopee**, nothing reaches
-the seller's own catálogo or anúncios on the marketplace side — step 9 pulls IN
-and never pushes out; publishing is step 11's — and the only state-changing calls the app
+itself (`produtos`, `grupoDeVariacoes`, `categorias`, `arquivos`, `prodshopee` /
+`variashopee`) — so the old blanket "this app writes nothing" is no longer true
+and must not be re-asserted. What is still true is the direction: **nothing is
+published or written TO Shopee** (step 9 pulls IN; publishing is step 11's), and
+the only state-changing calls the app
 makes are the OAuth exchange, the token refresh and the lost-push CONFIRM. All
 three matter: the `refresh_token` is single-use and rotating, and a confirm acks
 a page of the 3-day queue irreversibly.
@@ -176,51 +174,26 @@ a page of the 3-day queue irreversibly.
   inventory — which is also why none of those modules may NAME that API, even
   in a comment (the guard greps raw text). See **Stuck-reservation sweep
   (step 8)** below.
-- `lib/shopee/produtos/` — step 9's product import, and the FIRST thing this app
+- `lib/shopee/produtos/` — step 9's product import, the FIRST thing this app
   writes into the catálogo (`produtos`, `grupoDeVariacoes`, `categorias`,
-  `arquivos`, and the two link collections `prodshopee` / `variashopee` this
-  channel had only ever READ). Twenty-one modules in five families, and the
-  families are the seam, not a filing convention:
-  - **the seam** — `itemLido.ts` (the `ItemLido` record and every `Deps` type,
-    the one-read-then-hand-down rule), `eixos.ts` (the ONE package-dimension
-    axis map), `produtoIds.ts` (the deterministic conta-scoped ids) and
-    `errosImportacao.ts` (`ShopeeImportBlockedError` + the contained
-    `MOTIVO_IMPORT_BLOQUEADO` vocabulary, which is also `respond.ts`'s 422 arm).
-  - **the pure half** — `mapeamento.ts` (listing → produto fields),
-    `taxonomiaShopeeCore.ts` (tiers, options, the two `tipoDeVariacao` folds and
-    the `linksVariacoesShopee` merge, all as data) and `planoImportacao.ts` (the
-    ORDERED write plan). No clock, no Firestore, no wire call — which is what
-    lets the CLI's dry run print exactly what a live run would write.
-  - **the IO half** — `resolveProduto.ts` (the import-direction cascade),
-    `links.ts` (resolve-then-write, never delete), `taxonomiaShopee.ts` (the
-    guarded grupo write and the per-dispatch memo), `categoriaShopee.ts` (the
-    `shopee-<id>` chain off step 10's cached tree), `fotosShopee.ts` (the
-    retriable picture unit), `estoquePrecos.ts` (the guarded price patch and the
-    stock row), `variacoesShopee.ts` (the children and `filhoUnicoId`) and
-    `importarAnuncio.ts` — the orchestrator, `preparar` (write-free) →
-    `planejar` (pure) → `aplicar`.
-  - **the kit arm** — `kitShopee.ts`: `get_kit_item_info` read as a listing,
-    every component resolved first, an ERP kit produto or a refusal. See
-    **Product import (step 9)** below.
-  - **the job and its surfaces** — `importacaoMassa.ts` (the resumable
-    `importacoesShopee` job: `iniciar` / `processar` / `finalizar` / `cancelar`,
-    the scan, the two queues, the dispositions) and `shopeeMassImportTasks.ts`
-    (the SECOND Cloud Tasks scheduler in this app, onto
-    `processShopeeMassImport`); `corpoImportacao.ts` (the app's first POST
-    bodies), `lerAnuncio.ts` (the single-id read that ends on the same
-    `montarItemLido` the job calls) and `importarAnuncioCli.ts` + the
-    `scripts/importar-anuncio.ts` it backs.
+  `arquivos`, `prodshopee` / `variashopee`). Twenty-one modules in five
+  families: the seam (`itemLido`, `eixos`, `produtoIds`, `errosImportacao`),
+  the pure half (`mapeamento`, `taxonomiaShopeeCore`, `planoImportacao`), the
+  IO half (`resolveProduto`, `links`, `taxonomiaShopee`, `categoriaShopee`,
+  `fotosShopee`, `estoquePrecos`, `variacoesShopee`, `importarAnuncio`), the
+  kit arm (`kitShopee`) and the job with its surfaces (`importacaoMassa`,
+  `shopeeMassImportTasks`, `corpoImportacao`, `lerAnuncio`,
+  `importarAnuncioCli`). The design is `lib/shopee/produtos/README.md`; the
+  rules are under **Product import (step 9)** below.
 - `app/api/marketplace/shopee/importar/route.ts` and
   `app/api/marketplace/shopee/importar-todos/{route,status/route,cancelar/route}.ts`
-  — step 9's four routes, and the first ones in this app that take a POST body.
-  `PERM.integracao.write` on three, `.read` on the status one. `importar`
-  answers 200 or a 422 naming the `motivo`; `importar-todos` answers 202
-  `{ jobId }`, 409 when one is already running and 503 when the Tasks valve is
-  closed — **before** it creates a job, so a closed valve never leaves a
-  `running` document nothing will drain.
-- `functions/src/processMassImport.ts` — the SECOND `onTaskDispatched` in this
-  codebase (one dispatch at a time, 300 s, a 3-attempt ladder). It is the only
-  Shopee function enqueued by TWO identities, because it re-enqueues itself.
+  — step 9's four routes, the first in this app with a POST body
+  (`PERM.integracao.write` ×3, `.read` on status): `importar` 200 / 422 with the
+  `motivo`; `importar-todos` 202 `{ jobId }`, 409 when one runs, 503 when the
+  Tasks valve is closed — checked BEFORE a job is created.
+- `functions/src/processMassImport.ts` — the SECOND `onTaskDispatched` (one at
+  a time, 300 s, a 3-attempt ladder); enqueued by TWO identities because it
+  re-enqueues itself.
 - `lib/shopee/fixtures/` — the redacted wire corpus (`__wire__/`), the
   `redact.ts` path-suffix denylist, the two-layer `piiScan.ts` (residue +
   patterns; the redaction's own FIXPOINT is the strong layer) and the typed
@@ -310,14 +283,11 @@ a page of the 3-day queue irreversibly.
      `coerceToMicros`, and the paging loop is what makes a row that sorts last
      still reachable.
 
-  ⚠️ **Step 9 adds NO site, and the list deliberately still says eight.**
-  `produtoSchema`'s `timestamp` / `ultimaModificacao` are
-  `millisSinceEpoch()`, so the product importer holds no microsecond value at
-  all: it converts nothing, and `importacaoMassa.ts`'s one default clock is a
-  MILLISECOND read (`Date.now()`) handed down as `ImportarAnuncioDeps.nowMs`,
-  not a conversion. The reflex — "a Shopee write path, so stamp µs" — is wrong
-  here, and a `millisToMicros` appearing anywhere under `produtos/` would be a
-  ninth site written against a millisecond field.
+  ⚠️ **Step 9 adds NO site; the list still says eight.** The produto stamps are
+  `millisSinceEpoch()`, the importer converts nothing, and `importacaoMassa.ts`'s
+  one default clock is a millisecond read handed down as `nowMs` — a
+  `millisToMicros` under `produtos/` would be a ninth site written against a
+  millisecond field.
 
   Plus **four** READERS, which declare no new conversion but have to know the
   unit:
@@ -407,24 +377,16 @@ a page of the 3-day queue irreversibly.
   knows the unit (the three pedido seams above are the others).
 - `lib/shopee/testing/fakeDb.ts` — the shared in-memory Firestore double
   **34** suites in this app drive, and since step 8 it has a suite of its OWN.
-  ⚠️ The number is re-derived, not remembered:
-  `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` — it read
-  **20** at step 8 and step 9 added **14** at once (ten under
-  `lib/shopee/produtos/`, four route suites under
-  `app/api/marketplace/shopee/`), which is why "the eight sweep and producer
-  suites" had to go: a count nobody re-derives becomes a number that is merely
-  written down. Step 9 extended the double ADDITIVELY in three ways, all of them
-  load-bearing for a guarded write: an `__arrayUnion` sentinel applied on write
-  (the photo unit appends `fotos` / `fotosArquivosIds` with it), **dotted-path**
-  expansion on `update` (the price patch writes `precos.<tabelaId>` and must not
-  clobber its siblings), and a real `updateTime` on every snapshot plus the
-  `update(patch, { lastUpdateTime })` PRECONDITION, which throws
-  `FAILED_PRECONDITION` on a stale stamp — without that third one the ADR 0011
-  tier-1 taxonomy and price writes would have had no way to LOSE in a test, and
-  a guard that can never reject is untested by construction. Its sibling
-  `lib/shopee/testing/fakeBucket.ts` (step 9, the ML `importPhotos.test.ts`
-  shape) is the same idea for Cloud Storage and is driven by three suites
-  (`fotosShopee`, `importarAnuncio`, `kitShopee`). Test-only, imported by no
+  ⚠️ Re-derive the number, never increment it:
+  `git grep -l "testing/fakeDb" -- "apps/shopee/**/*.test.ts" | wc -l` (20 at
+  step 8, 34 after step 9). Step 9 extended the double ADDITIVELY: an
+  `__arrayUnion` sentinel applied on write, **dotted-path** expansion on
+  `update` (the price patch writes `precos.<tabelaId>`), and a real `updateTime`
+  per snapshot plus the `update(patch, { lastUpdateTime })` PRECONDITION that
+  throws `FAILED_PRECONDITION` on a stale stamp — without it the ADR 0011 tier-1
+  taxonomy and price writes could never LOSE in a test. Its sibling
+  `lib/shopee/testing/fakeBucket.ts` (step 9) is the same idea for Cloud Storage
+  (three suites). Test-only, imported by no
   `src` file (the
   `apps/web/lib/testing` precedent); ONE copy, because two copies with a
   comment claiming they agree is the smell the root CLAUDE.md names. Since
@@ -1608,161 +1570,51 @@ wording, route and canal all already existed.
 
 ## Product import (`lib/shopee/produtos/`, step 9)
 
-The step that turns a Shopee anúncio into an ERP produto, and the first WRITER
-of the two link collections `prodshopee` / `variashopee` — step 5 built them as
-readers, which is why every Shopee order line on staging still resolves to no
-produto. Three callers, one code path: the `importar` route (one item), the
-`importar-anuncio.ts` CLI (one item, dry-run by default) and the resumable
-`importar-todos` job (the whole catálogo).
+A Shopee anúncio becomes an ERP produto — the first WRITER of `prodshopee` /
+`variashopee`. Three callers, one code path: the `importar` route, the
+`importar-anuncio.ts` CLI (dry-run by default) and the resumable
+`importar-todos` job. **The reasoning is `lib/shopee/produtos/README.md`; these
+are the rules a change must not break.**
 
-**One read, then hand it DOWN.** The importer never issues an item call. It
-takes an `ItemLido { base, models | null, taxInfo | null, kit | null, itemId }`
-assembled ONCE — by the job in a BATCH (`get_item_base_info` for up to ten ids
-per dispatch, reconciled **by `item_id`**, never by position), or by
-`lerAnuncio.ts` for a single id, both ending on the same `montarItemLido`. A
-`tag.kit` listing asks for `get_kit_item_info` and **nothing else**; otherwise
-`has_model === true` asks for `get_model_list`. What `get_model_list` answers
-for a kit is UNVERIFIED, so nobody spends the call to find out.
-
-**`preparar` → `planejar` → `aplicar`, and the split is structural.**
-`prepararImportacaoShopee` is write-free — no bucket, no fetch, no writer
-anywhere in its call graph, proved by a FakeDb that throws on every write verb,
-not by a comment. `planejarImportacaoShopee` is pure, so the CLI's dry run
-prints exactly what a live run would write. `aplicarImportacaoShopee` executes
-that plan in ONE order: **taxonomia → categorias → the guarded price patch →
-produto → extraData → estoque → the parent link → each child → `filhoUnicoId` →
-photos.** Two placements are load-bearing rather than tidy. *Taxonomia first*,
-because a lost grupo race refuses the whole ITEM and must do so before any
-produto exists — proceeding with a partial taxonomy leaves children whose
-combinations mismatch next time, and the combination rung then mints DUPLICATE
-children, a permanent duplicate bought for a transient conflict. *The price
-patch before the produto merge*, because the merge always writes (it carries
-`ultimaModificacao`) and so bumps `updateTime`: merging first would make the
-price precondition assert a stamp we had just invalidated ourselves, failing
-every price-writing import.
-
-**Links resolve, then write, and NEVER delete.** The parent cascade is
-`prodshopee (item_id, conta)` → `produtos (sku == item_sku, paiId == null)` →
-create at the deterministic id; the child cascade is
-`variashopee (model_id, conta)` → `produtos (sku == model_sku, paiId == parent)`
-→ the combination match → create. Every rung reads `limit(2)`, because the
-second document is the whole signal: duplicate links are resolved by
-lexically-first doc id with one log line, and nothing is ever deleted — a link
-we did not write may be the only binding a legacy row has. Two inconsistencies
-refuse the item BEFORE any write: a `prodshopee` found under a CHILD, and a
-`variashopee` pointing at another family. `model_id: 0` still creates the child
-and just skips the link (counted in `semLink`); a listing with no models writes
-no `variashopee` at all.
-
-**The grupo write is ADR 0011 tier 1.** `update(patch, { lastUpdateTime })`
-naming only `variacoes` / `variacoesIds` / `linksVariacoesShopee` /
-`ultimaModificacao`, `create()` for a new grupo. A lost precondition is answered
-by re-reading and **RE-PLANNING the whole item exactly once**, against a FRESH
-memo — never by re-applying the same patch, which would write the loser's values
-over the winner's, the precise thing the precondition exists to stop. A second
-loss is `taxonomia-em-conflito`, contained per item, with nothing half-written
-because taxonomia is first. ⚠️ **The memo absorbs its own writes**: one
-`MemoDeGrupos` per dispatch, a single full read of `grupoDeVariacoes` loaded
-lazily on the first `has_model` item and updated in place by every grupo this
-dispatch creates — so ten items of the same shape do one read, not ten, and the
-second item sees the grupo the first one minted instead of creating a twin.
-
-**Estoque and preços.** Prices are the first BRL `price_info` entry —
-`original_price ?? current_price` onto the conta's **normal** table only. The
-promotional table is never written: Mercado Livre's #803 settled that it belongs
-to promotions the operator authors in the ERP, and step 9 takes the same stance,
-so `tabelaPromocionalOuterRef` rides the deps as a documented no-op. A no-model
-listing carries the parent's `precos`; a has-model listing puts nothing on the
-parent and gives each child its own. Estoque is Σ `seller_stock[].stock` (never
-`shopee_stock`) plus `reservaEfetiva`, and it is **never written on a parent
-that has children** — gated on the payload's `has_model` OR the ERP's own
-`paiJaTemFilho`, because a parent row and child rows would double-count the same
-units. A missing `depositoOuterRef` skips the leg with one log line.
-
-**Photos are last, and retriable.** After the produto and link writes, paired
-`image_url_list[i]` ↔ `image_id_list[i]`, skipping ids already cached on this
-integração's arquivos; an SSRF host allow-list (`shopee.*`, `susercontent.com`,
-https only), non-`image/*` rejected, `sha512(bytes)` as the content address. A
-picture-level failure skips and counts; infra propagates. The log carries the
-host and the `image_id` and never the URL.
-
-**Two memos a caller must pass, and they fail differently.** `deps.grupos`
-absent ⇒ the taxonomy module builds its own (correct, just one read per item
-instead of per dispatch). `deps.categorias` absent ⇒ **the categoria leg is
-SKIPPED entirely**, with one `console.warn` — no failure, no partial chain. That
-asymmetry is deliberate: a category tree is step 10's cached read and an import
-must not block on it, but a silently unlinked categoria must still say so once.
-
-**Deterministic produto ids, scoped to the CONTA.** Parent =
-`sha256("shopee|<integracaoId>|<item_id>")`, child =
-`sha256("<parentProdutoId>|<model_id>")`. Conta-scoped, not shop-scoped, because
-every other Shopee identity here already is — the pedido id digest, both link
-documents' `conta*OuterRef`, and the `arquivos.externalIds[].integracaoPath`. A
-second integração over the same shop therefore forks consistently instead of
-converging one thing while everything around it stays forked. The legacy Flutter
-id was `sha256(now µs + 20 random chars)`, non-deterministic, so there is no
-preimage to inherit and no reason to try.
-
-**Kits (K1).** A `tag.kit` listing reaches `kitShopee.ts` and never
-`importarAnuncioShopee`, which refuses it outright rather than minting a simple
-produto for something that is not one. The kit page is a DIFFERENT page —
-`attributes` / `brand_info` / `pre_order_info` / `tier_variation_list`, a
-`category_id` that is an array in the docs and a scalar in the sample — so
-`anuncioDerivadoDoKit` translates it ONCE into a listing-shaped record through
-the package's own row schema, and everything downstream is the same code an
-ordinary import runs. The parent produto is `ehKit: true`, one child per kit
-model with its own `componentesKit` keyed by component produto id (duplicates
-SUMMED), and **no estoque row** — a kit's stock is its components'.
-⚠️ **Chicken and egg, and the refusal is the answer.** Every component is
-resolved first, and if ANY of them is not yet linked to an ERP produto the whole
-kit is refused with `kit-componente-nao-vinculado` **before a single write** —
-so a kit imported into a fresh catálogo fails, and the same command succeeds
-once its components have been imported. Run it twice; that is the design, not a
-retry loop. Kits are drained LAST by the job (`filaKits`), which is what makes
-"twice" usually unnecessary in a full catalogue walk. Creating a kit ON Shopee
-is step 19's, and the free availability probe for it is the shipped
-`taxonomia/limites/kit` route.
-
-**The job's dispositions, in one paragraph.** A `running` job scans one page
-when both queues are empty, drains up to ten items per dispatch (forty with
-`importarFotos: false`) and checkpoints after EVERY item. A **burst** rate limit
-stops the drain, checkpoints and re-enqueues with
-`scheduleDelaySeconds = retryAfterSeconds ?? 60` — it is never a per-item
-failure row and never an attempt. The **daily** quota, and the first-attempt
-classes (reauth, missing credential, a conta not configured or of the wrong
-tipo, no shop id, an invalid credential, `ShopeeConfigError`, the Tasks valve
-closed), stamp the job `failed` immediately — retrying them buys nothing and the
-ladder would only delay the truth. Transient API / network / HTTP / Firestore /
-`TypeError` are thrown into the 3-attempt ladder, and the final attempt stamps
-`failed`. An item-level block, API error or schema error is CONTAINED as one
-`failures[]` row. ⚠️ **The cursor is the SERVER's** (register item 66): the scan
-reads `next_offset` only while `has_next_page`, treats a non-advancing offset as
-exhausted, and treats `has_next_page: true` with NO usable `next_offset` as a
-TERMINAL failure — never as silent exhaustion. The sandbox probe measured
-`next_offset` ABSENT on a page that still had room, so its presence is not
-guaranteed and its absence must not be read as "done".
-
-**`finalizarImportacaoShopee` is the ONE transaction under `produtos/`**, class
-B, and the transaction inventory carries the whole race analysis: `status` has
-two uncoordinated writers (the dispatch stamping a terminal state and the
-`cancelar` route stamping `cancelled` mid-drain), so both `status` and
-`integracaoId` are re-derived from the `tx.get` snapshot and a concurrent winner
-turns the call into a `not-running` no-op instead of a clobber. Every per-item
-checkpoint is deliberately OUTSIDE it — they write no `status`, so they cannot
-bury a terminal state.
-
-ℹ️ **No ruleset regeneration.** Step 9 touches no `*Meta` permission or path, no
-`PERM` and no validator whitelist: `importacaoShopee.ts` and
-`shopeeLinkVariacoes.ts` are bare consts rather than `DomainSchema`s, and the
-widened `item_status` enum is a field's value set, not a rule input. So
-`gen:rules` / `gen:rules:e2e` are **not** run and the two snapshots do not move.
-
-ℹ️ **Out of scope, on purpose**, so nobody reads a gap as a bug: publishing,
-updating or pausing a listing (step 11), pushing stock (12) or price (13), size
-charts (18 — `size_chart` is a URL, read and ignored), creating a kit ON Shopee
-(19), and `integracoesComProduto` / any Shopee link trigger, which is why
-`/produtos` shows no Shopee badge yet. Per-option and description images are a
-recorded gap at Mercado Livre parity.
+- **One read, handed DOWN.** The importer never calls Shopee: it receives an
+  `ItemLido` assembled once (the job in a batch reconciled by `item_id`; the
+  route and the CLI through `lerAnuncio.ts`, which pays one `get_item_base_info`
+  to learn `tag.kit`). A kit then asks for `get_kit_item_info` and never
+  `get_model_list`. No clock under `produtos/` except the ONE documented default
+  in `importacaoMassa.ts` — `nowMs` is a parameter.
+- **`preparar` (write-free, proved by a throwing FakeDb) → `planejar` (pure) →
+  `aplicar`, in ONE order:** taxonomia → categorias → the guarded price patch
+  → produto → extraData → estoque → the parent link → each child →
+  `filhoUnicoId` → photos. Taxonomia first because a lost grupo race refuses the
+  ITEM before any produto exists; the price patch before the produto merge
+  because the merge bumps the `updateTime` the patch's precondition asserts.
+- **Links resolve, then write, NEVER delete.** `limit(2)` on every rung;
+  duplicates lexically-first with one log line; `model_id: 0` creates the child
+  and skips the link. Ids: parent `sha256("shopee|<integracaoId>|<item_id>")`,
+  child `sha256("<paiId>|<model_id>")` — conta-scoped, no legacy preimage.
+- **The grupo write is ADR 0011 tier 1**: `update(patch, { lastUpdateTime })`
+  naming four fields; a lost precondition RE-PLANS the item once against a fresh
+  memo, a second loss is `taxonomia-em-conflito`; the loser's patch is never
+  re-applied. The per-dispatch memo absorbs the grupos the dispatch writes.
+- **Prices go to the NORMAL table only** (`original_price ?? current_price`,
+  ML #803). **Estoque is never written on a parent with children.** Photos are
+  last, retriable, behind an SSRF host allow-list; logs carry host + `image_id`,
+  never the URL.
+- **Two memos a caller must pass**: `grupos` absent ⇒ the module builds its own;
+  `categorias` absent ⇒ the categoria leg is SKIPPED with one warn.
+- **Kits (K1)**: `kitShopee.ts`, parent `ehKit: true`, `componentesKit` keyed by
+  component produto id, NO estoque row; an unresolved component refuses the kit
+  before any write (a fresh catálogo needs a second run); the job drains kits
+  LAST.
+- **The job**: a burst rate limit re-enqueues with a delay — never a failure row
+  nor an attempt; the daily quota and the first-attempt classes stamp `failed`;
+  transients take the 3-attempt ladder; the cursor is the SERVER's
+  (`has_next_page` true with no `next_offset` is TERMINAL — register item 66).
+  `finalizarImportacaoShopee` is the ONE transaction under `produtos/` (class B,
+  inventoried) and the only file there that may name the API.
+- **No ruleset regeneration, no new env var.** Publishing, stock, price, size
+  charts and creating a kit ON Shopee are steps 11/12/13/18/19; `/produtos`
+  shows no Shopee badge until the link trigger of steps 11/12.
 
 ## Taxonomy reads (`lib/shopee/taxonomia/`, step 10)
 
@@ -1959,36 +1811,25 @@ runs `*.tasks.test.ts` against firestore + functions + tasks emulators
 one check name, no new gate-manifest row.
 
 Three **push deliveries** go through the receiver hop: an unknown push code
-(→ `parked`); since step 5, a **code 3 naming a shop that maps to no
-integração** (→ `deferred`); and since step 7, a **code 4 naming such a shop**
-(→ `deferred`), which mirrors the code-3 case field for field. Step 9's file is
-**not a fourth delivery** — it is a different hop altogether: enqueue →
-dispatch → stamp, `createShopeeMassImportScheduler().enqueue(...)` → the tasks
-emulator → the real `processShopeeMassImport` → a seeded job document reaching
-`failed`. All four cases are chosen for the same reason — they are the only
-outcomes that write a document without any Shopee call: the code-4 one never
-reaches the lazy `import('../pedidos/rastrearPedido')`, and the mass-import one
-seeds an `integracao/int-1` of the **WRONG `tipo`**, so `loadShopeeContext`
-refuses on `tipo` before `shopeeConfig()`, before the credential store and
-before a client exists. The refusal PRECEDES the client, which is the same
-property the unmapped shop has, and it is a first-attempt class, so the stamp
-lands on `retryCount: 0` — a path that had reached the network would show as a
-30 s backoff and two more dispatches instead.
+(→ `parked`); since step 5 a **code 3**, and since step 7 a **code 4**, naming a
+shop that maps to no integração (→ `deferred`). Step 9's file is a different
+hop: enqueue → the tasks emulator → the real `processShopeeMassImport` → a
+seeded job stamped `failed`. All four are chosen for the same reason — the only
+outcomes that write a document with NO Shopee call: the mass-import one seeds an
+`integracao/int-1` of the **WRONG `tipo`**, so `loadShopeeContext` refuses
+before a client exists, and the stamp lands on `retryCount: 0` (a path that had
+reached the network would show a 30 s backoff instead).
 ⚠️ The lane's fetch kill-switch lives in the VITEST process and does **not**
 cover the dispatched function, which runs in the emulator's own process, so a
 code-3 case that reached `importarPedidoShopee` — or a code-4 one that reached
 `rastrearPedidoShopee` — would really leave the runner. Keep the tasks suites on
 paths that need no token.
 
-⚠️ **Neither tasks suite exercises the mass import's burst pause.** The
-scheduler DOES set `scheduleDelaySeconds` on a rate-limit pause, but the
-emulator ignores it (dispatch is pure FIFO, firebase-tools#8254), so a test
-there would pass for the wrong reason; the pause is pinned offline in
-`importacaoMassa.test.ts`. ⚠️ **The emulator dispatches in FILE order**, with
-`fileParallelism: false` — the two files are not isolated by the runner, and the
-`beforeEach` wipe (`importacoesShopee` plus `integracao/int-1`, only what the
-file seeds) is the ONLY isolation there is. A future tasks test that seeds a
-`running` job without that wipe can have it drained twice.
+⚠️ **Neither tasks suite exercises the mass import's burst pause**: the
+scheduler sets `scheduleDelaySeconds` there, the emulator ignores it
+(firebase-tools#8254), and the pause is pinned offline in
+`importacaoMassa.test.ts`. ⚠️ The emulator dispatches in FILE order with
+`fileParallelism: false`; each file's `beforeEach` wipe is the ONLY isolation.
 
 ⚠️ The lane's `push: paths:` grew with step 5 (`packages/schemas/src/pedido/**`,
 the cliente/endereço/`intFrete` schemas, `packages/data/src/admin/{clientes,produtos,enderecos}/**`
@@ -2004,14 +1845,11 @@ touches is under `apps/shopee/**`, and the two shared paths its avisos reach —
 `packages/schemas/src/aviso.ts` and `packages/data/src/admin/avisos/**` — were
 already listed. **Step 9 grew it by seven entries**, because the product
 importer's graph reaches further than any step before it:
-`packages/storage/**` (the photo unit's bucket helpers),
-`packages/schemas/src/produto/**` (the produto, its `precos`/`componentesKit`
-blocks and both link schemas), `packages/schemas/src/grupoDeVariacoes.ts` (the
-tier-1 guarded write's target), `packages/schemas/src/categoria.ts` (the
-`shopee-<id>` chain), `packages/schemas/src/storage/**` (the arquivo shapes the
-photo unit writes), `packages/schemas/src/importacaoShopee.ts` (the job
-document) and `packages/data/src/admin/hash.ts` (the `sha256Hex` promoted out of
-`pedidos/orderIds.ts`, which every deterministic produto id now goes through).
+`packages/storage/**`, `packages/schemas/src/produto/**`,
+`packages/schemas/src/grupoDeVariacoes.ts`, `packages/schemas/src/categoria.ts`,
+`packages/schemas/src/storage/**`, `packages/schemas/src/importacaoShopee.ts`
+and `packages/data/src/admin/hash.ts` (the why of each is a comment beside it
+in the lane).
 `pull_request:` still has **no** `paths:` and
 never may — the `changes` job derives that closure from the workspace graph.
 
@@ -2080,14 +1918,11 @@ code-4/30/47 delivery runs, plus what the code-3 backstop would fold from the
 same order; the fourth (step 8) rehearses the weekly stuck-reservation sweep
 across **every** active conta by default, `--integracao <id>` to scope it to one;
 and the fifth (step 9) imports ONE named anúncio through the real step-9 path —
-its dry run reads, resolves and PLANS, printing what a live run would write, and
-`--live` then writes the produto, the variations, the grupos, the categorias,
-the links, the estoque, the preço and the fotos.
+the dry run prints the PLAN, `--live` writes it.
 All five still CALL Shopee in dry-run — what they do not do is write.
-⚠️ `importar:anuncio` against the **sandbox** shop will print no price at all:
-the sandbox is **SGD** and the import takes only the BRL `price_info` entry, so
-the plan carries `precoIgnorado: moeda-nao-brl`. That is the rule working, not a
-defect — `scripts/README.md` §11.5 lists it with the other expected caveats.
+⚠️ Against the **SGD sandbox** `importar:anuncio` plans no price
+(`precoIgnorado: moeda-nao-brl`) — the rule working; `scripts/README.md` §11.5
+lists the expected caveats.
 
 ## Deploy
 

@@ -13,6 +13,7 @@ import {
 import { MOTIVO_IMPORT_BLOQUEADO, ShopeeImportBlockedError } from './errosImportacao';
 import { montarItemLido } from './itemLido';
 import {
+  MSG_ITEM_LINHA_ILEGIVEL,
   MSG_ITEM_NAO_ENCONTRADO,
   MSG_ITEM_SEM_LINHA,
   MSG_KIT_SEM_DETALHE,
@@ -153,6 +154,25 @@ describe('as duas recusas que esta leitura decide sozinha', () => {
       motivo: MOTIVO_IMPORT_BLOQUEADO.itemNaoEncontrado,
       itemId: ITEM_ID,
       mensagem: MSG_ITEM_SEM_LINHA,
+    });
+  });
+
+  it('⛔ uma LINHA ILEGÍVEL não é "o anúncio não existe" — ela tem a sua própria frase', () => {
+    // O schema do pacote é tolerante por ELEMENTO: a linha que não casa vira o
+    // sentinela `null`. Dizer "o anúncio não existe nesta loja" sobre uma
+    // listagem que RESPONDEU mandaria o operador procurar a coisa errada.
+    const comSentinela = shopeeItemBaseInfoPayloadSchema.parse({
+      // `weight` é `z.string()`; um número é a discordância por linha.
+      item_list: [{ ...LINHA_SIMPLES, weight: 10.02 }],
+    });
+    expect(comSentinela.item_list).toEqual([null]);
+
+    const dobro = criarCliente({ base: () => comSentinela });
+
+    return expect(lerAnuncioShopee(dobro.client, ITEM_ID)).rejects.toMatchObject({
+      motivo: MOTIVO_IMPORT_BLOQUEADO.itemNaoEncontrado,
+      itemId: ITEM_ID,
+      mensagem: MSG_ITEM_LINHA_ILEGIVEL,
     });
   });
 

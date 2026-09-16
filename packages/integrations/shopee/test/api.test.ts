@@ -594,8 +594,10 @@ describe('a query assinada de cada leitura de taxonomia', () => {
 
   it('junta as categorias em UM `category_id_list`, mesmo quando é uma só', async () => {
     // A app manda uma por chamada porque `category_id_list=<id>` vale nas duas
-    // grafias com que a página se contradiz; a junção por vírgula é a única forma
-    // possível, já que `signedQuery` não emite chave repetida.
+    // grafias com que a página se contradiz; a junção por vírgula é uma ESCOLHA,
+    // não uma limitação: desde o passo 9 `signedQuery` sabe emitir chave
+    // repetida, e a página se contradiz sobre a grafia do NOME, não sobre a
+    // forma.
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ATTRIBUTE_BODY));
     const client = createShopeeClient(shopConfig(fetchMock));
 
@@ -2546,6 +2548,7 @@ function ids(n: number): number[] {
 
 /** O CÓDIGO-FONTE do cliente, para a asserção que só a fonte pode fazer. */
 const FONTE_API = readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
+const FONTE_API_TEST = readFileSync(new URL('./api.test.ts', import.meta.url), 'utf8');
 
 describe('get_item_list', () => {
   it('31 — vai por GET, shop-signed, sem corpo, no seu caminho e com os comuns na query', async () => {
@@ -2733,8 +2736,10 @@ describe('get_item_list', () => {
     await expect(
       client.getItemList({ ...base, updateTimeFromS: 1_700_000_001, updateTimeToS: 1_700_000_000 }),
     ).rejects.toBeInstanceOf(ShopeeConfigError);
-    // Um valor em MILISSEGUNDOS por engano também não é segundo positivo válido
-    // — é, mas fracionário/negativo não; o guarda de segundos pega o resto.
+    // ⚠️ Um valor em MILISSEGUNDOS PASSA: a unidade vive no NOME do campo e este
+    // pacote não converte nenhuma (o precedente é `GetOrderListParams`). O
+    // guarda só recusa não-inteiro, `<= 0` e a janela invertida — e é `0` que a
+    // linha abaixo exercita, não um valor em ms.
     await expect(client.getItemList({ ...base, updateTimeFromS: 0 })).rejects.toBeInstanceOf(
       ShopeeConfigError,
     );
@@ -3015,6 +3020,15 @@ describe('os erros das quatro leituras de item', () => {
     // defeito que este código-base paga para evitar.
     expect(FONTE_API).not.toContain('cannot emit a repeated key');
     expect(FONTE_API).not.toContain('não sabe emitir chave repetida');
+
+    // ⚠️ E ESTE arquivo também: a afirmação falsa sobreviveu aqui uma vez
+    // justamente porque a varredura só lia `src/api.ts`. A agulha é MONTADA por
+    // concatenação — um literal contíguo faria esta linha ser, ela mesma, uma
+    // ocorrência — e o radical `emite chave repetida` cobre as duas grafias
+    // negativas sem casar com o `SABE emitir chave repetida` que é verdadeiro.
+    const agulha = ['não ', 'emite chave repetida'].join('');
+    expect(FONTE_API).not.toContain(agulha);
+    expect(FONTE_API_TEST).not.toContain(agulha);
 
     const inicio = FONTE_API.indexOf('getAttributeTree: async');
     const fim = FONTE_API.indexOf('getBrandList: async');

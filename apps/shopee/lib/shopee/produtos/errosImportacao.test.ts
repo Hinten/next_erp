@@ -7,10 +7,12 @@ import { erroContidoPorConta } from '../core/containment';
 // reaches the Cloud Functions bundle, and the property under test is precisely
 // that the two sides agree about this class.
 import { isShopeeError } from '../core/respond';
+import { ShopeeTasksDisabledError } from '../shopeeTasks';
 import {
   MOTIVO_FALHA_JOB,
   MOTIVO_IMPORT_BLOQUEADO,
   ShopeeImportBlockedError,
+  ShopeeMassImportTasksDisabledError,
 } from './errosImportacao';
 
 const ITEM_ID = 2500139861;
@@ -152,5 +154,27 @@ describe('ShopeeImportBlockedError', () => {
       ITEM_ID,
     );
     expect(isShopeeError(err)).toBe(true);
+  });
+});
+
+describe('ShopeeMassImportTasksDisabledError', () => {
+  it('13 — ⛔ ShopeeMassImportTasksDisabledError NÃO é ShopeeError e NÃO é contido por conta', () => {
+    // ⚠️ A razão inteira de existirem DUAS classes de válvula fechada. A outra,
+    // `ShopeeTasksDisabledError`, está dentro de `erroContidoPorConta`: uma
+    // importação em massa que a levantasse seria CONTIDA como o `lastError` de
+    // uma conta em vez de carimbar o job `failed` — e o job ficaria `running`
+    // para sempre, porque não existe sweep por trás deste caminho. Hoje o job
+    // carimba só porque `ehFalhaDePrimeiraTentativa` nomeia esta classe à parte;
+    // todo OUTRO consumidor de `erroContidoPorConta` (as varreduras) passaria a
+    // contê-la em silêncio. Nada mais no app afirma isto.
+    const err = new ShopeeMassImportTasksDisabledError();
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(ShopeeError);
+    expect(erroContidoPorConta(err)).toBe(false);
+
+    // ⛔ NEAR-MISS, e é ele que dá sentido ao par: a classe GÊMEA É contida, de
+    // propósito. Sem esta linha o teste acima passaria mesmo que a contenção
+    // tivesse sido desligada para as duas.
+    expect(erroContidoPorConta(new ShopeeTasksDisabledError())).toBe(true);
   });
 });

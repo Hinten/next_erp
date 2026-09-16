@@ -158,11 +158,27 @@ describe('ehKitDe', () => {
 
 describe('temModelosDe', () => {
   it('10. ⛔ NEAR-MISS: has_model como string "false" NÃO é ter modelos', () => {
-    // (a) A string nem chega aqui: o schema do pacote recusa a página inteira,
-    // que é a leitura estrita começando uma camada antes. ⚠️ A sonda de 2026-09-16
-    // pegou a Shopee mandando a STRING "FALSE" num campo que a página tipa como
-    // boolean (`deboost`), então o cenário não é hipotético.
-    expect(() => comUmItem({ has_model: 'false' })).toThrow();
+    // (a) A string nem chega aqui: o schema do pacote DESCARTA a linha inteira —
+    // `item_list` é tolerante por ELEMENTO, então a linha ruim vira o sentinela
+    // `null` (a página não é perdida pelos outros 49 itens do lote) e NADA dela
+    // fica legível. Montar o item a partir desse payload é o erro de chamador que
+    // o job traduz em `item-nao-retornado`. ⚠️ A sonda de 2026-09-16 pegou a
+    // Shopee mandando a STRING "FALSE" num campo que a página tipa como boolean
+    // (`deboost`), então o cenário não é hipotético.
+    const comLinhaRuim = comUmItem({ has_model: 'false' });
+    expect(comLinhaRuim.item_list).toEqual([null]);
+    expect(() => montarItemLido({ itemId: ITEM_ID, payload: comLinhaRuim })).toThrow(
+      /não traz o item/,
+    );
+    // ⛔ NEAR-MISS do sentinela: a linha BOA do mesmo lote sobrevive à linha ruim.
+    const lote = payload({
+      item_list: [
+        { item_id: ITEM_ID, has_model: true },
+        { item_id: OUTRO_ITEM_ID, has_model: 'false' },
+      ],
+    });
+    expect(lote.item_list.map((l) => (l === null ? null : l.item_id))).toEqual([ITEM_ID, null]);
+    expect(temModelosDe(montarItemLido({ itemId: ITEM_ID, payload: lote }))).toBe(true);
 
     // (b) E ainda assim a leitura é `=== true`, exata: um registro montado com a
     // string — um `.passthrough()`, um dobro, um corpus remendado à mão — não

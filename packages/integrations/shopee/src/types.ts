@@ -2257,10 +2257,28 @@ export type ShopeeItemBaseInfoRow = z.infer<typeof shopeeItemBaseInfoRowSchema>;
  *
  * ⚠️ FEWER rows than were asked for is a valid answer. Reconcile by `item_id`,
  * never by position.
+ *
+ * ⚠️ **Per-ELEMENT tolerance with a `null` sentinel**, the
+ * {@link shopeePackageDetailPayloadSchema} precedent and for its reason: this op
+ * is batched to 50, and one malformed row must not cost the other 49. Without
+ * it one listing whose `weight`, `gtin_code` or BR `tax_info` block disagrees
+ * with a declared type refuses the WHOLE body, the mass-import drain rethrows,
+ * the ladder burns every attempt and the job ends `failed` with the healthy
+ * items of that batch never imported and no `failures[]` row naming anybody —
+ * and every later job walks back into the same listing. The precondition the
+ * precedent asks for is met here BECAUSE of the paragraph above: the caller
+ * already reconciles by `item_id` and already has a per-item verdict for an id
+ * with no row, so a `null` lands in a contained failure instead of a
+ * dispatch-level throw.
+ *
+ * ⚠️ Deliberately NOT per FIELD, and NOT a substitute for a strict field type:
+ * wire drift on this op is systematic (one field wrong on EVERY row), and a
+ * per-field catch would manufacture a null identity. A body whose rows are ALL
+ * sentinels still surfaces — as one failure row per id — rather than as data.
  */
 export const shopeeItemBaseInfoPayloadSchema = z
   .object({
-    item_list: z.array(shopeeItemBaseInfoRowSchema).default([]),
+    item_list: z.array(shopeeItemBaseInfoRowSchema.nullable().catch(null)).default([]),
     ...nestingAmbiguousShape,
   })
   .passthrough();

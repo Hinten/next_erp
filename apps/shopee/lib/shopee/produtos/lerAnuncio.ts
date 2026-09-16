@@ -56,6 +56,21 @@ export const MSG_ITEM_SEM_LINHA =
   'get_item_base_info respondeu sem nenhuma linha para este item_id — o anúncio não existe ' +
   'nesta loja ou não está visível para esta autorização.';
 
+/**
+ * `get_item_base_info` answered WITH a row for this id and the row did not
+ * parse, so the payload schema's per-element sentinel dropped it.
+ *
+ * ⚠️ A separate sentence from {@link MSG_ITEM_SEM_LINHA} because the two say
+ * OPPOSITE things about the shop: an empty list means the listing is not there
+ * (or not visible to this authorisation), while a sentinel means it IS there and
+ * its wire shape disagrees with a declared type. Mechanism only — the sentinel
+ * keeps no field path and this sentence is published twice (a 422 body and
+ * `failures[].mensagem`).
+ */
+export const MSG_ITEM_LINHA_ILEGIVEL =
+  'get_item_base_info respondeu uma linha para este item_id que não pôde ser lida: ela não ' +
+  'casa com o formato declarado e foi descartada pelo sentinela por-linha do payload.';
+
 /** `get_kit_item_info` answered, and carried no kit. */
 export const MSG_KIT_SEM_DETALHE = 'get_kit_item_info respondeu sem product_info para este kit.';
 
@@ -91,11 +106,16 @@ export async function lerAnuncioShopee(client: ShopeeClient, itemId: number): Pr
     throw err;
   }
 
-  if (!payload.item_list.some((linha) => linha.item_id === itemId)) {
+  // ⚠️ A row that did not parse is the payload schema's `null` sentinel, not an
+  // absent row: it is dropped here and named by its OWN sentence, because
+  // "o anúncio não existe nesta loja" would be false about a listing that
+  // answered.
+  const legiveis = payload.item_list.filter((linha) => linha !== null);
+  if (!legiveis.some((linha) => linha.item_id === itemId)) {
     throw new ShopeeImportBlockedError(
       MOTIVO_IMPORT_BLOQUEADO.itemNaoEncontrado,
       itemId,
-      MSG_ITEM_SEM_LINHA,
+      legiveis.length < payload.item_list.length ? MSG_ITEM_LINHA_ILEGIVEL : MSG_ITEM_SEM_LINHA,
     );
   }
 

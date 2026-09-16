@@ -417,7 +417,7 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
     expect(rs.map((r) => r.modelo.model_id)).toEqual([11, 22, 33]);
   });
 
-  it('dois modelos NUNCA amarram o mesmo irmão', async () => {
+  it('dois modelos NUNCA amarram o mesmo irmão — pelo degrau da COMBINAÇÃO', async () => {
     const db = new FakeDb();
     semearProduto(db, 'prod-filho', { paiId: PAI, sku: null, variacoesUid: ['a'] });
 
@@ -432,6 +432,79 @@ describe('resolverFilhosDaListagem — os quatro degraus', () => {
 
     expect(rs[0]!.existente?.id).toBe('prod-filho');
     expect(rs[1]!.existente).toBeNull();
+  });
+
+  it('dois modelos NUNCA amarram o mesmo irmão — pelo degrau do SKU', async () => {
+    // ⚠️ `model_sku` não tem restrição de unicidade no wire: a página de
+    // `get_model_list` só diz "SKU of this model. the length should be under
+    // 100". Dois modelos com o mesmo sku amarrando o MESMO produto significam um
+    // documento para dois modelos — o preço e o estoque do segundo por cima do
+    // primeiro — e dois `variashopee` sob ele nomeando `model_id` diferentes,
+    // estado que não se cura sozinho: no import seguinte os DOIS modelos vencem
+    // o degrau 1 nesse mesmo filho.
+    const db = new FakeDb();
+    semearProduto(db, 'prod-filho', { paiId: PAI, sku: 'SKU-COMPARTILHADO' });
+
+    const rs = await resolverFilhosDaListagem(
+      asDb(db),
+      INTEGRACAO,
+      PAI,
+      true,
+      [
+        modelo({ model_id: 11, model_sku: 'SKU-COMPARTILHADO' }),
+        modelo({ model_id: 22, model_sku: 'SKU-COMPARTILHADO' }),
+      ],
+      [combo(), combo()],
+    );
+
+    expect(rs[0]!.existente?.id).toBe('prod-filho');
+    expect(rs[1]!.existente).toBeNull();
+  });
+
+  it('degrau 2: um irmão cujo vínculo nomeia OUTRO modelo não é adotado pelo sku', async () => {
+    // O caso entre execuções: o vendedor renomeou o sku de um modelo e criou um
+    // novo com o sku antigo. Sem esta guarda o modelo novo adota o filho do
+    // modelo velho, e o velho fica órfão.
+    const db = new FakeDb();
+    semearProduto(db, 'prod-filho', { paiId: PAI, sku: 'SKU-ANTIGO' });
+    semearLinkDaVariacao(db, { produtoId: 'prod-filho', modelId: OUTRO_MODEL_ID });
+
+    const [r] = await resolverFilhosDaListagem(
+      asDb(db),
+      INTEGRACAO,
+      PAI,
+      true,
+      [modelo({ model_id: MODEL_ID, model_sku: 'SKU-ANTIGO' })],
+      [combo()],
+    );
+
+    expect(r!.existente).toBeNull();
+    expect(r!.link).toBeNull();
+  });
+
+  it('degrau 2: ⛔ NEAR-MISS — um vínculo que NÃO nomeia outro modelo é adotado e REAPROVEITADO', async () => {
+    // A outra metade da mesma guarda, e a que impede o conserto de virar um
+    // "nunca adote nada". Uma linha legada sem `model_id` não é evidência da
+    // reivindicação de ninguém: o degrau 1 não a acha (ela não entra no índice
+    // de `model_id`), o degrau 2 acha o filho pelo sku, e o vínculo é REUSADO —
+    // um `merge`, não um segundo `variashopee` sob o mesmo produto.
+    const db = new FakeDb();
+    semearProduto(db, 'prod-filho', { paiId: PAI, sku: 'SKU-A' });
+    db.seed('produtos/prod-filho/variashopee/var-legado', {
+      contaVariacaoShopeeOuterRef: REF_CONTA,
+    });
+
+    const [r] = await resolverFilhosDaListagem(
+      asDb(db),
+      INTEGRACAO,
+      PAI,
+      true,
+      [modelo({ model_id: MODEL_ID, model_sku: 'SKU-A' })],
+      [combo()],
+    );
+
+    expect(r!.existente?.id).toBe('prod-filho');
+    expect(r!.link?.id).toBe('var-legado');
   });
 });
 

@@ -268,7 +268,7 @@ export async function aplicarImportacaoShopee(
   // ---- 2. categorias -------------------------------------------------------
   await aplicarCategoriasShopee(db, plano.categorias);
 
-  // ---- 3..6. the parent ----------------------------------------------------
+  // ---- 3..4. the parent (the guarded price patch, then the produto) --------
   const produtoId = plano.produtoId;
   const ref = produtoCollection.docRef(db, {}, produtoId);
   let criado = plano.criar;

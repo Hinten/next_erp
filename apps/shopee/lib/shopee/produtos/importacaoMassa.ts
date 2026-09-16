@@ -237,6 +237,24 @@ const MSG_LOTE_DESCONHECIDO =
 const MSG_ITEM_NAO_RETORNADO =
   'O item foi pedido neste lote de get_item_base_info e não veio na resposta.';
 
+/**
+ * The same verdict, plus the count of rows the payload schema could not read.
+ *
+ * ⚠️ ONE verdict for two causes on purpose. `shopeeItemBaseInfoPayloadSchema` is
+ * tolerant per ELEMENT, so a row whose wire shape disagrees with a declared type
+ * arrives as `null` and is dropped — which is indistinguishable, per id, from a
+ * row the response simply omitted, because the sentinel keeps no `item_id`. The
+ * COUNT is the only diagnosis a per-element `.catch` leaves, which is exactly
+ * what step 7's `rastrearPedido.ts` puts in its park reason for the sibling
+ * batched op.
+ */
+function msgItemNaoRetornado(ilegiveis: number): string {
+  if (ilegiveis === 0) return MSG_ITEM_NAO_RETORNADO;
+  return (
+    `${MSG_ITEM_NAO_RETORNADO.slice(0, -1)} ` + `(linhas ilegíveis no lote: ${String(ilegiveis)}).`
+  );
+}
+
 const MSG_KIT_SEM_DETALHE = 'get_kit_item_info respondeu sem product_info para este kit.';
 
 /* -------------------------------------------------------------------------- */
@@ -276,8 +294,12 @@ class FalhaTerminalDoJob extends Error {
 /**
  * ⚠️ The ONE `Date.now()` under `lib/shopee/produtos/`, and it is a DEFAULT: the
  * dispatch reads it once and hands the value down, tests inject `deps.now`, and
- * every other module in this folder takes the clock as a parameter. A grep gate
- * asserts there is no second one.
+ * every other module in this folder takes the clock as a parameter.
+ *
+ * ⚠️ The "only one" is a real gate, not a promise: `importacaoMassa.test.ts`'s
+ * «o relógio é lido em UM único módulo» reads every non-test source of
+ * `lib/shopee/produtos/` off disk and fails if a second one calls the clock
+ * outside a comment. Before it existed nothing enforced this sentence.
  */
 function agoraMs(): number {
   return Date.now();
@@ -851,7 +873,15 @@ export async function processarImportacaoShopee(
         // FEWER rows than were asked for, and a by-position read would import one
         // listing's data onto another listing's produto — silently, and only for
         // the items after the gap.
-        const porId = new Map(corpos.item_list.map((r) => [r.item_id, r]));
+        // ⚠️ And per ELEMENT: a row the payload schema could not read arrives as
+        // `null` and is dropped HERE, so one listing's wire shape costs that
+        // listing a contained failure row instead of costing the whole dispatch
+        // a throw — which, on the last attempt, would end the job `failed` with
+        // the other items of this batch never imported and no row naming
+        // anybody. The count rides the verdict's sentence.
+        const legiveis = corpos.item_list.filter((r) => r !== null);
+        const ilegiveis = corpos.item_list.length - legiveis.length;
+        const porId = new Map(legiveis.map((r) => [r.item_id, r]));
         for (const itemId of lote) {
           fila = fila.slice(1);
           drenados += 1;
@@ -860,7 +890,7 @@ export async function processarImportacaoShopee(
               throw new ShopeeImportBlockedError(
                 MOTIVO_IMPORT_BLOQUEADO.itemNaoRetornado,
                 itemId,
-                MSG_ITEM_NAO_RETORNADO,
+                msgItemNaoRetornado(ilegiveis),
               );
             }
             const semModelos = montarItemLido({ itemId, payload: corpos });
@@ -989,7 +1019,20 @@ export async function processarImportacaoShopee(
             await carimbarFalha(MSG_VALVULA_FECHADA);
             return 'failed';
           }
-          throw erroDaPausa;
+          // ⚠️ The SAME final-attempt rule the generic tail below applies, and it
+          // has to be spelled again here because this `throw` sits INSIDE the
+          // dispatch's own `catch` and can never re-enter it. Without it a
+          // transport failure on the pause's re-enqueue ends the LAST attempt
+          // with neither a stamp nor a re-enqueue: nothing re-drives a job this
+          // queue drops, so the document would stay `running` for ever and the
+          // start guard would 409 every new import for that conta until an
+          // operator cancels. The ordinary continue arm's enqueue sits in the
+          // TRY body and already reaches the tail; this is the one arm that did
+          // not.
+          if (retryCount < MAX_TENTATIVAS - 1) throw erroDaPausa;
+          if (!(erroDaPausa instanceof Error)) throw erroDaPausa;
+          await carimbarFalha(erroDaPausa.message);
+          return 'failed';
         }
         return 'continued';
       }

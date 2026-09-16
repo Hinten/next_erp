@@ -808,11 +808,15 @@ price precondition we are about to assert.
 fail loudly on a concurrent winner; the importer then re-reads and re-plans the
 whole item against a fresh memo rather than re-applying a patch that would write
 the loser's values over the winner's. A second loss ends the item as
-`taxonomia-em-conflito`, with nothing half-written.
+`taxonomia-em-conflito`, with no PRODUTO written — a `grupoDeVariacoes` this item
+created or patched before the losing write does survive, which the CLI says out
+loud on that motivo.
 
-Exit `0` on **any plan**, including a BLOCKED one — a refusal is an answer, and
-it prints as `bloqueado: <motivo>`. Exit `1` only on a throw, described by CLASS
-and never by payload.
+Exit `0` on any DRY RUN, including a BLOCKED plan — there a refusal is an answer
+and it prints as `bloqueado: <motivo>`. ⚠️ Under `--live` a refusal is **not**
+caught: it takes the error path, prints `❌ ShopeeImportBlockedError (<motivo>)`
+and exits `1`, like any other throw. Every failure is described by CLASS and
+never by payload.
 
 ### 11.5 Caveats you should expect to see (none of these is a bug)
 

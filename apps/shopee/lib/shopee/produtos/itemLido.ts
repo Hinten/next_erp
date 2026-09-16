@@ -176,11 +176,19 @@ export interface ArgsMontarItemLido {
  * A `ShopeeError` here would let that bug be filed as a listing's failure row.
  */
 export function montarItemLido(args: ArgsMontarItemLido): ItemLido {
-  const bruta = args.payload.item_list.find((row) => row.item_id === args.itemId);
+  // ⚠️ `item_list` is tolerant PER ELEMENT: a row that did not parse arrives as
+  // the payload schema's `null` sentinel, so the lookup skips holes. A hole is
+  // the caller's problem exactly like an absent row — both are
+  // `item-nao-retornado`, decided by the job before anything is built.
+  const legiveis = args.payload.item_list.filter(
+    (row): row is ShopeeItemBaseInfoRow => row !== null,
+  );
+  const bruta = legiveis.find((row) => row.item_id === args.itemId);
   if (!bruta) {
     throw new Error(
       `montarItemLido: o payload de get_item_base_info não traz o item ${String(args.itemId)} ` +
-        `(pedidos: ${String(args.payload.item_list.length)} linha(s)). ` +
+        `(pedidos: ${String(legiveis.length)} linha(s) legível(is) de ` +
+        `${String(args.payload.item_list.length)}). ` +
         'Reconcilie por item_id antes de montar — uma linha ausente é item-nao-retornado, do job.',
     );
   }
@@ -540,9 +548,13 @@ export interface AgendadorImportacaoShopee {
  * The mass-import job's dependencies.
  *
  * ⚠️ `importarAnuncio` / `importarKit` are INJECTED so the job's suite never
- * loads the importer's graph and the two build waves run in parallel; the
- * default is a LAZY `await import('./importarAnuncio')` (the step-7
- * `rastrearPedido` precedent), never a top-level import.
+ * loads the importer's graph and the two build waves run in parallel. There is
+ * **no default**: this module never dynamic-imports the importer and never
+ * top-level-imports it, so each one is REQUIRED whenever there is matching work
+ * in its queue. A missing one is a programming error and THROWS a plain `Error`
+ * naming it — exactly like a missing scheduler, and never contained as a
+ * listing's failure row. Optional in the TYPE only because a dispatch with an
+ * empty `fila` needs neither.
  */
 export interface ImportacaoShopeeDeps {
   readonly db: Firestore;

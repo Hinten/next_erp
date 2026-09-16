@@ -343,7 +343,11 @@ async function vinculosDoFilho(
  *     sentinel and a link written for it binds any line of any listing. A hit
  *     whose produto belongs to another family sets
  *     {@link ResolucaoFilhoShopee.vinculoDeOutraFamilia}.
- *  2. `produtos (sku == model_sku, paiId == pai)`, accepted on EXACTLY one.
+ *  2. `produtos (sku == model_sku, paiId == pai)`, accepted on EXACTLY one —
+ *     and only when that one is neither already claimed by an earlier model of
+ *     this same listing nor carrying a `variashopee` for this conta that names a
+ *     DIFFERENT model. `model_sku` is not unique on the wire, so without those
+ *     two guards two models collapse onto one produto.
  *  3. the variation COMBINATION (`sameCombo`, order-insensitive), over the
  *     parent's existing children — loaded LAZILY, only once, and only when a
  *     model actually has a resolved combination to compare. A sibling whose own
@@ -412,8 +416,39 @@ export async function resolverFilhosDaListagem(
         .get();
       if (porSku.docs.length === 1) {
         const doc = porSku.docs[0]!;
-        existente = { id: doc.id, raw: (doc.data() ?? {}) as Record<string, unknown> };
-        tomados.add(existente.id);
+        // ⚠️ The SAME two guards rung 3 applies, for the same reason and at the
+        // same cost. `model_sku` carries no uniqueness constraint on the wire,
+        // so two models of ONE listing may name the same sku — and a sibling
+        // this dispatch already took, or one whose own `variashopee` for this
+        // conta names ANOTHER model, would then be bound twice: one produto
+        // document for two models, the second model's price and estoque written
+        // over the first's, and two `variashopee` rows under it naming two
+        // different `model_id`s. That state is permanent, because on every later
+        // import BOTH models win rung 1 onto the same child. Mercado Livre's
+        // equivalent applies the guard at this rung too.
+        const jaTomado = tomados.has(doc.id);
+        const vinculos = jaTomado ? [] : await vinculosDoFilho(db, doc.id, conta);
+        if (!jaTomado && !vinculos.some((v) => vinculoNomeiaOutroModelo(v.raw, modelId))) {
+          existente = { id: doc.id, raw: (doc.data() ?? {}) as Record<string, unknown> };
+          tomados.add(existente.id);
+          // Reuse the candidate's own link for this conta, so a re-import merges
+          // onto it instead of minting a second `variashopee` under the same
+          // produto — through {@link escolherLink}, like every other duplicate
+          // in this cascade.
+          //
+          // ⚠️ Never for `model_id: 0`, exactly as rung 1 never queries for it:
+          // `0` is Shopee's "no model item" sentinel and a link carrying it
+          // binds any line of any listing, so the child resolves and the link
+          // stays `null`.
+          if (modelId !== 0) {
+            link ??= escolherLink(vinculos, {
+              integracaoId,
+              modelId,
+              produtoId: doc.id,
+              subcolecao: 'variashopee',
+            });
+          }
+        }
       }
     }
 

@@ -429,14 +429,6 @@ export interface ArgsMapearProdutoPai {
    */
   readonly temFilhos: boolean;
   readonly estoqueExistente: LinhaEstoqueLida | null;
-  /**
-   * The kit arm's seam (C7): a kit listing's PARENT carries `ehKit: true`, so
-   * an order line binds the document that owns the composition instead of
-   * hopping to a sole member. Default `false`; `kitShopee.ts` (wave 6) is the
-   * only caller that passes `true`, and the kit COMPOSITION itself is that
-   * module's, never this one's.
-   */
-  readonly ehKit?: boolean;
 }
 
 /** The stock write this import plans, keyed to the row it read. */
@@ -575,7 +567,6 @@ export function mapearProdutoPai(args: ArgsMapearProdutoPai): MapaProdutoShopee 
   const ehUsado = ehUsadoDe(base.condition);
   const peso = pesoDe(base.weight);
   const dims = dimensaoDe(base.dimension);
-  const ehKit = args.ehKit ?? false;
   // `crossdocking` is the pre-order handling time and ONLY that: a
   // `days_to_ship` riding a listing that is not pre-order is the ordinary
   // dispatch window, and writing it would tell the ERP every listing is a
@@ -605,7 +596,11 @@ export function mapearProdutoPai(args: ArgsMapearProdutoPai): MapaProdutoShopee 
       sku,
       paiId: null,
       publicado: true,
-      ehKit,
+      // ⚠️ Always `false` here, on the CREATE path only. The kit flag belongs to
+      // `kitShopee.ts`, which folds `ehKit: true` in AFTER this mapper together
+      // with the composition it owns — one writer for the three kit fields
+      // instead of a seam this module can never reach.
+      ehKit: false,
       ehUsado,
       gtin,
       pesoLiquidoKg: peso,
@@ -879,9 +874,11 @@ export function mapearFilho(args: ArgsMapearFilho): MapaProdutoShopee {
  * LOST every response value the request shape could not express.
  *
  * ⚠️ `contaProdutoShopeeOuterRef` is stamped UNCONDITIONALLY and **after** the
- * spread, so a re-import self-heals a row whose ref drifted. The group queries
- * compare it by exact string equality, so a drifted ref is a link nothing can
- * ever find again.
+ * spread, so the key is always present and always CANONICAL — never a stored
+ * value riding forward. ⚠️ It does NOT heal a row whose ref drifted, and cannot:
+ * every cascade that reaches this builder found the row by exact string equality
+ * on this very field, so a drifted ref is a link nothing can ever find again and
+ * a re-import mints a second document beside it.
  *
  * ⚠️ Four fields are NEVER written: `violations` (the banned-item push owns it,
  * and `get_item_violation_info` has a different shape), `complaint_policy`
@@ -910,8 +907,8 @@ export function dadosLinkListagem(
   const existente = existenteRaw ?? {};
   return {
     ...existente,
-    // ⚠️ AFTER the spread — the self-heal, and the reason this is not a key in
-    // the object literal above it.
+    // ⚠️ AFTER the spread — always canonical, never the stored value, which is
+    // the reason this is not a key in the object literal above it.
     contaProdutoShopeeOuterRef: toOuterRef(`integracao/${integracaoId}`),
     item_name: base.item_name,
     item_id: base.item_id,

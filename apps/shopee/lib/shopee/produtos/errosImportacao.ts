@@ -149,10 +149,17 @@ export const MOTIVO_FALHA_JOB = {
 /**
  * ONE listing refused, with the reason a UI can group by.
  *
- * ⚠️ It is raised BEFORE any write for that item — that is the contract the job
- * relies on to contain it: a blocked item leaves no half-written produto, no
- * half-written link and no orphan grupo behind, so the next dispatch may retry
- * the same id from a clean state.
+ * ⚠️ It is raised BEFORE any PRODUTO write for that item — that is the contract
+ * the job relies on to contain it: a blocked item leaves no half-written
+ * produto, no half-written link and no half-written estoque behind, so the next
+ * dispatch may retry the same id from a clean state.
+ *
+ * ⚠️ The one thing it does NOT promise is an untouched `grupoDeVariacoes`.
+ * `taxonomia-em-conflito` is raised by the taxonomy step, which walks the
+ * planned grupos in order and lands each write before attempting the next — so a
+ * grupo THIS item created or patched survives its own refusal. That is why the
+ * retry re-plans against a fresh read instead of assuming a clean slate, and why
+ * the CLI prints a different last line for that motivo.
  *
  * ⚠️ **No PII, and no payload, in `mensagem`.** It is a MECHANISM sentence — what
  * the importer could not decide and why. Never a listing name, never a seller

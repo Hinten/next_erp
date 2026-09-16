@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   SHOPEE_ERROR_KIND,
@@ -957,6 +957,62 @@ describe('processarImportacaoShopee — contenção', () => {
     expect(job(db).erro).toBe(MSG_VALVULA_FECHADA);
   });
 
+  it('37c — ⛔ uma falha de TRANSPORTE no enfileiramento da pausa, na tentativa FINAL, carimba failed', async () => {
+    // ⚠️ O gêmeo do 37b para tudo que NÃO é a válvula. Aquele `throw` mora
+    // DENTRO do `catch` do despacho, então não pode reentrar nele: sem a regra
+    // da última tentativa repetida ali, a tentativa final terminaria sem carimbo
+    // E sem reenfileiramento. Nada re-dirige um job que a fila larga, então o
+    // documento ficaria `running` para sempre e a guarda de início passaria a
+    // 409 toda importação nova daquela conta até alguém cancelar. O mesmo erro
+    // no braço de continuação comum já carimba, porque ele nasce no `try`.
+    const cliente = clienteFalso({
+      getItemList: vi.fn(async () => {
+        throw new ShopeeRateLimitError('Shopee respondeu error_busy (HTTP 200)', {
+          code: 'error_busy',
+          kind: SHOPEE_ERROR_KIND.burst,
+          httpStatus: 200,
+          path: '/api/v2/product/get_item_list',
+        });
+      }),
+    });
+    const enqueue = vi.fn(async () => {
+      throw new Error('UNAVAILABLE');
+    });
+    const { db, deps } = montar({ cliente, deps: { scheduler: { enqueue } } });
+    semearJob(db);
+
+    const saida = await processarImportacaoShopee(deps, PAYLOAD, MAX_TENTATIVAS - 1);
+
+    expect(saida).toBe('failed');
+    expect(job(db).status).toBe('failed');
+    expect(job(db).erro).toBe('UNAVAILABLE');
+    expect(job(db).finishedAt).toBe(AGORA_MS);
+  });
+
+  it('37d — ⛔ NEAR-MISS: a MESMA falha numa tentativa NÃO-final continua subindo para a escada', async () => {
+    // A escada ainda tem tentativa, e é ela que deve reentregar — carimbar aqui
+    // encerraria um job que a fila ia retomar sozinha.
+    const cliente = clienteFalso({
+      getItemList: vi.fn(async () => {
+        throw new ShopeeRateLimitError('Shopee respondeu error_busy (HTTP 200)', {
+          code: 'error_busy',
+          kind: SHOPEE_ERROR_KIND.burst,
+          httpStatus: 200,
+          path: '/api/v2/product/get_item_list',
+        });
+      }),
+    });
+    const enqueue = vi.fn(async () => {
+      throw new Error('UNAVAILABLE');
+    });
+    const { db, deps } = montar({ cliente, deps: { scheduler: { enqueue } } });
+    semearJob(db);
+
+    await expect(processarImportacaoShopee(deps, PAYLOAD, 0)).rejects.toThrow('UNAVAILABLE');
+    expect(job(db).status).toBe('running');
+    expect(job(db).erro).toBeNull();
+  });
+
   it('38 — um error_limit carimba failed e não reenfileira', async () => {
     const cliente = clienteFalso({
       getItemList: vi.fn(async () => {
@@ -1200,6 +1256,55 @@ describe('processarImportacaoShopee — kits e lote desconhecido', () => {
     expect(job(db).kits).toBe(1);
   });
 
+  it('uma linha ILEGÍVEL do lote é contida por item — os irmãos saudáveis importam', async () => {
+    // ⚠️ `item_list` é tolerante por ELEMENTO: a linha que não casa com o schema
+    // chega como o sentinela `null`. Ela é descartada AQUI, e o id dela cai no
+    // mesmo veredito de um id que a resposta simplesmente omitiu — em vez de
+    // relançar e, na última tentativa, matar o job com os outros itens do lote
+    // nunca importados e nenhuma linha de `failures` nomeando ninguém.
+    const cliente = clienteFalso({
+      getItemList: vi.fn(async () => pagina({ item: [linha(1), linha(2)] })),
+      getItemBaseInfo: vi.fn(async () => corpoBase([linhaBase(1), null as unknown as DocData])),
+    });
+    const { db, deps, importarAnuncio } = montar({ cliente });
+    semearJob(db);
+
+    const saida = await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    expect(saida).toBe('done');
+    expect(job(db).status).toBe('completed');
+    // O item 1 importou; o 2 virou UMA falha contida, e a contagem de ilegíveis
+    // é a única diagnose que um `.catch` por elemento deixa.
+    expect(importarAnuncio).toHaveBeenCalledTimes(1);
+    expect(job(db).imported).toBe(1);
+    expect(job(db).failureCount).toBe(1);
+    expect((job(db).failures as DocData[])[0]).toMatchObject({
+      itemId: 2,
+      motivo: MOTIVO_FALHA_JOB.itemNaoRetornado,
+    });
+    expect(String((job(db).failures as DocData[])[0]!.mensagem)).toContain(
+      'linhas ilegíveis no lote: 1',
+    );
+  });
+
+  it('⛔ NEAR-MISS: sem nenhuma linha ilegível a mensagem NÃO fala de ilegibilidade', async () => {
+    // O mesmo veredito, a outra causa: a Shopee omitiu a linha. Uma frase que
+    // falasse de linhas ilegíveis aqui mandaria o operador procurar um formato
+    // errado onde só houve uma linha que não veio.
+    const cliente = clienteFalso({
+      getItemList: vi.fn(async () => pagina({ item: [linha(1), linha(2)] })),
+      getItemBaseInfo: vi.fn(async () => corpoBase([linhaBase(1)])),
+    });
+    const { db, deps } = montar({ cliente });
+    semearJob(db);
+
+    await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    const falha = (job(db).failures as DocData[])[0]!;
+    expect(falha).toMatchObject({ itemId: 2, motivo: MOTIVO_FALHA_JOB.itemNaoRetornado });
+    expect(String(falha.mensagem)).not.toContain('ilegíveis');
+  });
+
   it('um kit com product_info nulo vira kit-sem-detalhe contido', async () => {
     const cliente = clienteFalso({ getKitItemInfo: vi.fn(async () => kitInfo(null)) });
     const { db, deps, importarKit } = montar({ cliente });
@@ -1330,6 +1435,76 @@ describe('importacaoMassa — invariantes', () => {
 
     expect(semComentarios.split(palavra).length - 1).toBe(1);
     expect(fonte.split(palavra).length - 1).toBe(1);
+  });
+
+  it('o relógio é lido em UM único módulo de lib/shopee/produtos/', () => {
+    // ⚠️ Este teste É o gate que `agoraMs`' docblock promete. Antes dele a frase
+    // "toda a pasta recebe o relógio como parâmetro" não era garantida por nada:
+    // nenhuma regra de lint conta chamadas de relógio, nenhum inventário varre
+    // esta pasta atrás de uma, e a varredura do plano é um comando manual.
+    //
+    // ⚠️ A agulha é MONTADA, como a da transação logo acima: um literal
+    // contíguo faria este arquivo de teste aparecer na varredura de texto cru do
+    // orquestrador.
+    const relogio = ['Date', '.now()'].join('');
+    const dir = new URL('.', import.meta.url);
+    const fontes = readdirSync(dir)
+      .filter((nome) => nome.endsWith('.ts') && !nome.endsWith('.test.ts'))
+      .filter((nome) => {
+        const texto = readFileSync(new URL(nome, dir), 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/(^|[^:])\/\/.*$/gm, '$1');
+        return texto.includes(relogio);
+      });
+
+    expect(fontes).toEqual(['importacaoMassa.ts']);
+    // ÂNCORA: a varredura realmente leu a pasta, e não uma lista vazia.
+    expect(readdirSync(dir).length).toBeGreaterThan(20);
+  });
+
+  it('o composto de importacoesShopee está declarado, na ordem em que a guarda filtra', () => {
+    // ⚠️ O quinto composto da Shopee é o único do passo 9 que nenhuma lista
+    // percorre: `INDICES_COMPOSTOS_SHOPEE` só nomeia os dois collectionGroup, e
+    // o backstop de `@delfrance/schemas` deriva índices de `meta.defaultQuery`,
+    // que este documento não tem (permissões 0n, fora de ALL_DOMAINS). Apagar a
+    // entrada não quebraria nada que roda: no Enterprise um composto ausente
+    // varre a coleção inteira e é cobrado por dado varrido (regra 1).
+    const url = new URL('../../../../../firestore.indexes.json', import.meta.url);
+    const { indexes } = JSON.parse(readFileSync(url, 'utf8')) as {
+      indexes: {
+        collectionGroup: string;
+        queryScope: string;
+        fields: { fieldPath: string; order?: string }[];
+      }[];
+    };
+    expect(indexes).toContainEqual({
+      collectionGroup: COL,
+      queryScope: 'COLLECTION',
+      fields: [
+        { fieldPath: 'integracaoId', order: 'ASCENDING' },
+        { fieldPath: 'status', order: 'ASCENDING' },
+      ],
+    });
+  });
+
+  it('a guarda de início filtra por integracaoId E status, nessa ordem — e o status é vivo', async () => {
+    const db = new FakeDb();
+    // Um job TERMINADO da mesma conta não bloqueia: é a cláusula `status` que
+    // decide isso, e sem ela a segunda importação da conta nunca começaria.
+    semearJob(db, { status: 'completed' });
+
+    await iniciarImportacaoShopee(asDb(db), {
+      integracaoId: INT_A,
+      options: opcoes(),
+      now: AGORA_MS,
+    });
+
+    const consulta = db.consultasCompletas.find((c) => c.fonte === COL);
+    expect(consulta?.clausulas).toEqual([
+      ['integracaoId', '==', INT_A],
+      ['status', '==', 'running'],
+    ]);
+    expect(Object.keys(db.store).filter((k) => k.startsWith(`${COL}/`)).length).toBe(2);
   });
 
   it('o nome da fila é o nome da função implantada', () => {

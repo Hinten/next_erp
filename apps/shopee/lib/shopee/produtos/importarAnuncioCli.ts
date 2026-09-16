@@ -53,7 +53,7 @@
  * walks index-aligned with `filhos`.
  */
 import { ArgumentoInvalidoError, descreverErro } from '../pedidos/importarPedidoCli';
-import { ShopeeImportBlockedError } from './errosImportacao';
+import { MOTIVO_IMPORT_BLOQUEADO, ShopeeImportBlockedError } from './errosImportacao';
 import type { ItemLido, ResultadoImportacaoShopee } from './itemLido';
 // ⚠️ TYPE-ONLY, and structurally so: a VALUE import of either module would pull
 // `firebase-admin/firestore` and the collection handles into the `--help` path,
@@ -99,7 +99,8 @@ O dry-run continua CHAMANDO a Shopee (get_item_base_info e, conforme o anúncio,
 get_model_list ou get_kit_item_info) e lendo o Firestore — ele não grava, e isso
 é estrutural: a metade write-free do importador não tem escritor nenhum no corpo.
 Um anúncio BLOQUEADO (kit sem componente vinculado, item deletado, sem nome) é
-uma RESPOSTA: sai com 0. Ver apps/shopee/scripts/README.md.
+uma RESPOSTA no DRY-RUN: sai com 0. Em --live a mesma recusa não é capturada —
+ela sai com 1, como qualquer outro erro. Ver apps/shopee/scripts/README.md.
 `.trim();
 
 export interface ArgsImportarAnuncio {
@@ -399,7 +400,10 @@ function resumoDoGrupo(grupo: PlanoImportacaoShopee['taxonomia'][number]): Resum
     nome: texto(grupo.docNovo?.nome),
     criar: grupo.criar,
     temPatch: grupo.patch !== null,
-    variantes: grupo.varianteIds.length,
+    // ⚠️ The BOUND options, not the array length: `varianteIds` is indexed by
+    // the option's wire position and carries a `null` where an option bound to
+    // nothing, so `.length` would count holes as variantes.
+    variantes: grupo.varianteIds.filter((id) => id !== null).length,
   };
 }
 
@@ -757,9 +761,30 @@ export function renderProdutoArmazenado(r: ResumoProdutoArmazenado): string[] {
 /*                                   errors                                    */
 /* -------------------------------------------------------------------------- */
 
+/** The line every motivo but one gets: the refusal precedes EVERY write. */
+const LINHA_NADA_GRAVADO =
+  '  Nada foi gravado para este anúncio: a recusa acontece ANTES de qualquer escrita.';
+
 /**
- * A listing the importer REFUSES — an answer, never a failure, so the script
- * prints this and exits 0.
+ * ⚠️ `taxonomia-em-conflito` is the one motivo the line above would LIE about,
+ * and the only one reachable from `--live` alone. The taxonomy step walks the
+ * planned grupos in order and each write lands before the next is attempted, so
+ * when the second one loses its precondition a grupo this very item created or
+ * patched is already in the database. What the refusal guarantees is the
+ * narrower thing the planner and the writer both say in their own docblocks: no
+ * PRODUTO was written.
+ */
+const LINHA_GRUPO_PODE_TER_FICADO =
+  '  Nenhum PRODUTO foi gravado: a recusa é anterior a qualquer escrita de produto. Um ' +
+  'grupoDeVariacoes criado ou ajustado por este item PODE ter ficado — confira ' +
+  'grupoDeVariacoes antes de repetir.';
+
+/**
+ * A listing the importer REFUSES — an answer, never a failure.
+ *
+ * ⚠️ On the DRY RUN the script prints this and exits 0. On `--live` the refusal
+ * is not caught: it takes the error path, prints `❌ ShopeeImportBlockedError
+ * (<motivo>)` above these lines, and exits 1 like any other throw.
  *
  * ⚠️ `mensagem` is a MECHANISM sentence by that class's own contract (no
  * payload, no listing name, no fiscal value), which is what makes it printable
@@ -769,7 +794,9 @@ export function descreverBloqueio(err: ShopeeImportBlockedError): string[] {
   return [
     `bloqueado: ${err.motivo}${err.mensagem === '' ? '' : ` — ${err.mensagem}`}`,
     `  item_id ................. ${String(err.itemId)}`,
-    '  Nada foi gravado para este anúncio: a recusa acontece ANTES de qualquer escrita.',
+    err.motivo === MOTIVO_IMPORT_BLOQUEADO.taxonomiaEmConflito
+      ? LINHA_GRUPO_PODE_TER_FICADO
+      : LINHA_NADA_GRAVADO,
   ];
 }
 

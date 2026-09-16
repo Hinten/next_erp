@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { shopeeModelSchema, type ShopeeModel } from '@delfrance/integrations-shopee';
+import {
+  shopeeModelListPayloadSchema,
+  shopeeModelSchema,
+  type ShopeeModel,
+} from '@delfrance/integrations-shopee';
 import { TIPO_VARIACAO, type LinkVariacoesShopee } from '@delfrance/schemas';
 
 import type { GrupoMemo } from './itemLido';
+import { nomesDasOpcoesDoModelo } from './mapeamento';
 import {
   fundirLinksVariacoesShopee,
   normalizarParaSlug,
@@ -29,7 +34,10 @@ function tier(parcial: Partial<TierShopee> = {}): TierShopee {
   return {
     nome: 'Cor',
     variationId: 0,
-    opcoes: [{ nome: 'Azul', optionId: 0 }],
+    // ⚠️ `indice` is the WIRE position, and a fixture with TWO tiers has to say
+    // so: the plan is keyed by it, exactly like `model.tier_index`.
+    opcoes: [{ nome: 'Azul', optionId: 0, indice: 0 }],
+    indice: 0,
     ...parcial,
   };
 }
@@ -137,7 +145,7 @@ describe('tiersDoItem', () => {
       ] as never,
     });
     expect(lista[0]?.variationId).toBe(100015);
-    expect(lista[0]?.opcoes[1]).toEqual({ nome: 'Verde', optionId: 5002 });
+    expect(lista[0]?.opcoes[1]).toEqual({ nome: 'Verde', optionId: 5002, indice: 1 });
     expect(lista[1]?.variationId).toBe(100016);
   });
 
@@ -293,7 +301,7 @@ describe('planejarTaxonomia — a cascata de GRUPO', () => {
       ...base,
       tiers: [
         tier({ nome: 'Cor' }),
-        tier({ nome: 'Tamanho', opcoes: [{ nome: 'P', optionId: 0 }] }),
+        tier({ nome: 'Tamanho', indice: 1, opcoes: [{ nome: 'P', optionId: 0, indice: 0 }] }),
       ],
       candidatos: memo(),
     });
@@ -354,7 +362,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('rung 1: o mapeamento de OPÇÃO do operador vence, qualquer que seja o nome', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul Celeste', optionId: 5001 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul Celeste', optionId: 5001, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-escolhida', nome: 'Um Nome Totalmente Outro' }], {
         linksVariacoesShopee: [
           {
@@ -380,7 +388,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('⛔ NEAR-MISS: `shopee_option_id: 0` não casa por id — ele é custom, não curinga', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Roxo', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Roxo', optionId: 0, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-outra', nome: 'Verde' }], {
         linksVariacoesShopee: [
           {
@@ -406,7 +414,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('rung 2: casa por nome EXATO', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 0, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-azul', nome: 'Azul' }]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['v-azul']);
@@ -415,7 +423,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('⛔ NEAR-MISS: `azul` minúsculo NÃO casa por nome', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 0, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-azul', nome: 'azul' }]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['n-azul']);
@@ -424,7 +432,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('rung 3a: a vogal de gênero casa `Vermelha` com o armazenado `Vermelho`', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Vermelha', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Vermelha', optionId: 0, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-vermelho', nome: 'Vermelho' }]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['v-vermelho']);
@@ -433,7 +441,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('rung 3b: espaço⇄hífen casa `Azul Marinho` com `Azul-Marinho`', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul Marinho', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul Marinho', optionId: 0, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-am', nome: 'Azul-Marinho' }]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['v-am']);
@@ -448,7 +456,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
     // variante errada.
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Vermelha Clara', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Vermelha Clara', optionId: 0, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-vc', nome: 'Vermelha-Claro' }]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['n-vermelha-clara']);
@@ -458,7 +466,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
     // `Azul-Vermelha` → (hífen) `Azul Vermelha` → (vogal) `Azul Vermelho`.
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul-Vermelha', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul-Vermelha', optionId: 0, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-av', nome: 'Azul Vermelho' }]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['n-azul-vermelha']);
@@ -469,7 +477,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
     // chega aqui — o par é mantido como documentação do limite real do fold.
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Vermelha Clara', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Vermelha Clara', optionId: 0, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-vc2', nome: 'Vermelho-Claro' }]),
     });
     expect(plano.grupos[0]?.varianteIds).toEqual(['n-vermelha-clara']);
@@ -478,7 +486,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('rung 4: cria com `codigo: null` e o `externalVariacaoLinks` da integração', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Roxo', optionId: 5009 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Roxo', optionId: 5009, indice: 0 }] })],
       candidatos: memo(),
     });
     const variacoes = (plano.grupos[0]?.docNovo?.variacoes ?? []) as Record<string, unknown>[];
@@ -502,7 +510,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('carimba `externalVariacaoLinks` numa variante que casou e ainda não tem o par', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 5001 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 5001, indice: 0 }] })],
       candidatos: grupoCom([{ id: 'v-azul', nome: 'Azul' }]),
     });
     const variacoes = (plano.grupos[0]?.patch?.variacoes ?? []) as Record<string, unknown>[];
@@ -520,7 +528,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('⛔ não duplica o carimbo quando o par (integração, externalId) já existe', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 5001 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 5001, indice: 0 }] })],
       candidatos: grupoCom([
         {
           id: 'v-azul',
@@ -537,7 +545,7 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
   it('usa o NOME como `externalId` quando a opção é custom (id 0)', () => {
     const plano = planejarTaxonomia({
       ...base,
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Roxo', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Roxo', optionId: 0, indice: 0 }] })],
       candidatos: memo(),
     });
     const variacoes = (plano.grupos[0]?.docNovo?.variacoes ?? []) as Record<string, unknown>[];
@@ -556,21 +564,177 @@ describe('planejarTaxonomia — a cascata de VARIANTE', () => {
 /* ------------------------- 5. os combos por modelo ------------------------ */
 
 describe('planejarTaxonomia — os combos', () => {
+  const base = {
+    integracaoId: INTEGRACAO,
+    categoryId: CATEGORIA,
+    nomeCategoria: 'Camisetas',
+    nowMs: AGORA,
+  };
+
+  /** O `tier_variation` CRU do caso do símbolo — o que `model.tier_index` endereça. */
+  const TIERS_CRUS_SIMBOLO = shopeeModelListPayloadSchema.parse({
+    model: [],
+    tier_variation: [{ name: 'Cor', option_list: [{ option: '★' }, { option: 'Azul' }] }],
+  }).tier_variation!;
+
+  it('⛔ uma opção DESCARTADA antes de outra não desloca as seguintes', () => {
+    // ⚠️ `tiersDoItem` COMPACTA: uma opção sem nome e sem id some da lista. Mas
+    // `model.tier_index` endereça o `option_list` CRU, então ler a lista
+    // compactada com um índice cru amarraria cada modelo à opção do vizinho —
+    // em silêncio, e só depois do buraco. A opção nula no índice 0 é legal:
+    // `option` é `z.string().nullable().default(null)` no schema do pacote.
+    const tiers = tiersDoItem({
+      tiers: [
+        { name: 'Cor', option_list: [{ option: null }, { option: 'Azul' }, { option: 'Verde' }] },
+      ] as never,
+      padronizados: [],
+    });
+    // A compactação REALMENTE aconteceu — sem esta âncora o teste passaria por engano.
+    expect(tiers[0]?.opcoes.map((o) => o.nome)).toEqual(['Azul', 'Verde']);
+    expect(tiers[0]?.opcoes.map((o) => o.indice)).toEqual([1, 2]);
+
+    const plano = planejarTaxonomia({
+      ...base,
+      tiers,
+      modelos: [modelo([1], 11), modelo([2], 12)],
+      candidatos: memo(),
+    });
+
+    // Cada modelo cai na SUA opção, e o buraco do índice 0 é um `null`.
+    expect(plano.grupos[0]?.varianteIds).toEqual([null, 'n-azul', 'n-verde']);
+    expect(plano.combosPorModelo.get(11)?.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/n-cor/variacoes/n-azul',
+    ]);
+    expect(plano.combosPorModelo.get(12)?.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/n-cor/variacoes/n-verde',
+    ]);
+  });
+
+  it('⛔ o mesmo buraco no braço do CASAMENTO — não só no da criação', () => {
+    // ⚠️ A opção descartada some antes do degrau 1, e as duas que sobram CASAM
+    // com variantes que já existem. É um caminho diferente dentro do mesmo laço,
+    // e sem esta célula a posição só ficaria fixada no braço que CRIA.
+    const tiers = tiersDoItem({
+      tiers: [
+        { name: 'Cor', option_list: [{ option: null }, { option: 'Azul' }, { option: 'Verde' }] },
+      ] as never,
+      padronizados: [],
+    });
+
+    const plano = planejarTaxonomia({
+      ...base,
+      tiers,
+      modelos: [modelo([1], 11), modelo([2], 12)],
+      candidatos: memo([
+        {
+          id: 'g-cor',
+          raw: {
+            nome: 'Cor',
+            variacoes: [
+              { id: 'v-azul', nome: 'Azul' },
+              { id: 'v-verde', nome: 'Verde' },
+            ],
+          },
+        },
+      ]),
+    });
+
+    expect(plano.grupos[0]?.criar).toBe(false);
+    expect(plano.grupos[0]?.varianteIds).toEqual([null, 'v-azul', 'v-verde']);
+    expect(plano.combosPorModelo.get(11)?.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/g-cor/variacoes/v-azul',
+    ]);
+    expect(plano.combosPorModelo.get(12)?.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/g-cor/variacoes/v-verde',
+    ]);
+  });
+
+  it('⛔ uma opção sem slug antes de outra: quem some é ELA, e a seguinte fica no lugar', () => {
+    // O outro descarte, um degrau abaixo: a opção passa por `tiersDoItem` (tem
+    // nome) mas o degrau 4 não consegue criá-la, porque `optionId` é 0 e o nome
+    // não gera slug nenhum — o caso normal de uma cor escrita só com símbolo ou
+    // emoji fora de Fashion. O modelo dela não amarra nada; o da opção seguinte
+    // amarra a PRÓPRIA.
+    const tiers = tiersDoItem({
+      tiers: [{ name: 'Cor', option_list: [{ option: '★' }, { option: 'Azul' }] }] as never,
+      padronizados: [],
+    });
+    expect(tiers[0]?.opcoes.map((o) => o.nome)).toEqual(['★', 'Azul']);
+
+    const plano = planejarTaxonomia({
+      ...base,
+      tiers,
+      modelos: [modelo([0], 11), modelo([1], 12)],
+      candidatos: memo(),
+    });
+
+    expect(plano.grupos[0]?.varianteIds).toEqual([null, 'n-azul']);
+    expect(plano.combosPorModelo.get(11)).toEqual({
+      grupoDeVariacoesUid: null,
+      variacoesUid: null,
+    });
+    expect(plano.combosPorModelo.get(12)?.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/n-cor/variacoes/n-azul',
+    ]);
+    // ⚠️ E a IDENTIDADE do filho e o NOME dele falam da mesma opção: o nome sai
+    // de `nomesDasOpcoesDoModelo`, que lê o `tier_variation` CRU.
+    expect(nomesDasOpcoesDoModelo(TIERS_CRUS_SIMBOLO, [1])).toEqual(['Azul']);
+  });
+
+  it('⛔ um TIER descartado antes de outro não desloca os grupos', () => {
+    // A mesma coisa um nível acima: `grupos[i]` lido com o índice cru do tier
+    // responderia o tier SEGUINTE para todo modelo.
+    const tiers = tiersDoItem({
+      tiers: [
+        { name: '  ', option_list: [{ option: 'U' }] },
+        { name: 'Cor', option_list: [{ option: 'Azul' }, { option: 'Verde' }] },
+      ] as never,
+      padronizados: [],
+    });
+    expect(tiers.map((t) => t.nome)).toEqual(['Cor']);
+    expect(tiers.map((t) => t.indice)).toEqual([1]);
+
+    const plano = planejarTaxonomia({
+      ...base,
+      tiers,
+      modelos: [modelo([0, 1], 11)],
+      candidatos: memo(),
+    });
+
+    expect(plano.combosPorModelo.get(11)?.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/n-cor/variacoes/n-verde',
+    ]);
+    // ÂNCORA do wire: o nome cru do modelo para esse mesmo par é Verde.
+    expect(
+      nomesDasOpcoesDoModelo(
+        shopeeModelListPayloadSchema.parse({
+          model: [],
+          tier_variation: [
+            { name: '  ', option_list: [{ option: 'U' }] },
+            { name: 'Cor', option_list: [{ option: 'Azul' }, { option: 'Verde' }] },
+          ],
+        }).tier_variation!,
+        [0, 1],
+      ),
+    ).toEqual(['U', 'Verde']);
+  });
+
   it('projeta cada modelo nos dois campos de wire do produto', () => {
     const plano = planejarTaxonomia({
       tiers: [
         tier({
           nome: 'Cor',
           opcoes: [
-            { nome: 'Azul', optionId: 0 },
-            { nome: 'Verde', optionId: 0 },
+            { nome: 'Azul', optionId: 0, indice: 0 },
+            { nome: 'Verde', optionId: 0, indice: 1 },
           ],
         }),
         tier({
           nome: 'Tamanho',
+          indice: 1,
           opcoes: [
-            { nome: 'P', optionId: 0 },
-            { nome: 'M', optionId: 0 },
+            { nome: 'P', optionId: 0, indice: 0 },
+            { nome: 'M', optionId: 0, indice: 1 },
           ],
         }),
       ],
@@ -593,7 +757,7 @@ describe('planejarTaxonomia — os combos', () => {
 
   it('⛔ um tier fora dos limites não vira placeholder nem caminho pendurado', () => {
     const plano = planejarTaxonomia({
-      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 0 }] })],
+      tiers: [tier({ nome: 'Cor', opcoes: [{ nome: 'Azul', optionId: 0, indice: 0 }] })],
       modelos: [modelo([9], 11)],
       candidatos: memo(),
       integracaoId: INTEGRACAO,
