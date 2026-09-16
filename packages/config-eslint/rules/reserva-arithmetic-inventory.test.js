@@ -92,6 +92,8 @@ const INVENTARIO = {
     'Movement editor. Local input state only; availability preview goes through `estoqueDisponivel`.',
   'apps/web/lib/reports/productLocation.ts':
     'Product-location report. Displays the stored reservation verbatim and computes availability through `estoqueDisponivel`, so a negative stored value stays visible without inventing stock.',
+  'apps/shopee/lib/shopee/produtos/mapeamento.ts':
+    'Shopee listing import (#1517). Adds the reservation BACK into `quantidade` (Σ `seller_stock[].stock` is the BUYABLE count, i.e. `disponivel`). Floored with `reservaEfetiva` on the one branch that reads it — the overwrite of an existing row — so a stored negative cannot shrink the ERP count below Shopee’s on every re-import (#931); on the create branch the reserve is a literal 0. Pure: it plans the number and writes nothing.',
 
   // ---- Writes it, floors the RESULT ---------------------------------------
   'apps/functions/src/estoques/aplicarEstoque.ts':

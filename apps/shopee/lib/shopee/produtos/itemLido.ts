@@ -34,11 +34,13 @@
  * Shopee's `create_time` / `update_time` are wire SECONDS; the produto stamps
  * (`timestamp`, `ultimaModificacao`) are MILLISECONDS. Step 9 stores no Shopee
  * timestamp at all, so nothing here converts one — and **no module under
- * `produtos/` holds a microsecond helper**: `millisToMicros`/`coerceToMicros`
- * belong to the pedido/pagamento paths of this app and reaching for one here is
- * the drift that `apps/shopee/CLAUDE.md`'s µs list exists to prevent. The clock
- * itself is a PARAMETER ({@link ImportarAnuncioDeps.nowMs}) — one read per
- * dispatch, handed down — so no `Date.now()` appears under `produtos/` either.
+ * `produtos/` holds a microsecond helper**: the two ms→µs helpers belong to the
+ * pedido/pagamento paths of this app and reaching for one here is the drift
+ * that `apps/shopee/CLAUDE.md`'s µs list exists to prevent (described, not
+ * named — the repo's raw-text guards grep for the names). The clock itself is a
+ * PARAMETER ({@link ImportarAnuncioDeps.nowMs}) — one read per dispatch, handed
+ * down; the single clock read under `produtos/` is the documented default in
+ * `importacaoMassa.ts`, which is what fills it.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import type {
@@ -57,6 +59,11 @@ import type {
 import { SHOPEE_NESTING_AMBIGUOUS_KEYS } from '@delfrance/integrations-shopee';
 import type { ImportacaoShopeeOptions } from '@delfrance/schemas';
 import type { Bucket } from '@delfrance/storage/admin';
+
+// ⚠️ TYPE-ONLY, and it has to stay that way: `planoImportacao.ts` imports real
+// VALUES from this module, so a value import here would close a runtime cycle.
+// `import type` is erased entirely, so there is none.
+import type { PlanoImportacaoShopee } from './planoImportacao';
 
 /* -------------------------------------------------------------------------- */
 /*  The record                                                                 */
@@ -370,7 +377,10 @@ export interface ImportarAnuncioDeps {
   /** Absent ⇒ photos are skipped for the whole run (an unresolvable bucket NAME). */
   readonly bucket?: Bucket;
   readonly options: ImportacaoShopeeOptions;
-  /** Milliseconds. ONE read per dispatch, handed down — never a `Date.now()` under `produtos/`. */
+  /**
+   * Milliseconds. ONE clock read per dispatch (the documented default in
+   * `importacaoMassa.ts`), handed down — every module here takes it as a parameter.
+   */
   readonly nowMs: number;
   /** The per-dispatch grupo memo. Absent ⇒ the taxonomy module loads it itself. */
   readonly grupos?: GrupoMemo;
@@ -388,15 +398,14 @@ export interface ImportarAnuncioDeps {
 export type PrepararImportacaoShopeeDeps = Omit<ImportarAnuncioDeps, 'bucket' | 'fetchImpl'>;
 
 /**
- * The plan the write-free half produces.
+ * The plan the write-free half produces — the ORDERED write plan, as data.
  *
- * ⚠️ A BRAND only. Wave 4 defines its shape in `planoImportacao.ts` and
- * re-exports it; declaring members here would let wave 5 depend on a shape wave
- * 4 has not written yet, which is how two halves of one seam drift.
+ * ⚠️ RE-EXPORTED, not declared: `planoImportacao.ts` owns the shape. It replaced
+ * a brand-only placeholder the moment that module landed, rather than being
+ * shadowed by it — two declarations of one seam type is exactly how the two
+ * halves of a seam drift while both compile.
  */
-export interface PlanoImportacaoShopee {
-  readonly __planoImportacaoShopee?: never;
-}
+export type { PlanoImportacaoShopee };
 
 export type ImportarAnuncioShopeeFn = (
   deps: ImportarAnuncioDeps,

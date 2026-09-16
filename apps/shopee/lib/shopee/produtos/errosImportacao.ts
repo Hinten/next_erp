@@ -1,6 +1,10 @@
 /**
- * The per-ITEM refusal of the Shopee product import (#1517, step 9) and the two
- * PERSISTED reason vocabularies that go with it.
+ * The per-ITEM refusal of the Shopee product import (#1517, step 9), the two
+ * PERSISTED reason vocabularies that go with it, and the mass-import
+ * scheduler's closed-valve error ({@link ShopeeMassImportTasksDisabledError}) —
+ * declared HERE so the job module (`importacaoMassa.ts`) can `instanceof` it
+ * and the scheduler (`shopeeMassImportTasks.ts`) can throw it without either
+ * importing the other.
  *
  * ⚠️ **Next-free by declaration.** The Cloud Functions bundle reaches every
  * module under `lib/shopee/produtos/`, and `core/respond.ts` — which imports
@@ -172,5 +176,29 @@ export class ShopeeImportBlockedError extends ShopeeError {
     this.motivo = motivo;
     this.itemId = itemId;
     this.mensagem = mensagem ?? '';
+  }
+}
+
+/**
+ * Thrown by the mass-import scheduler (`shopeeMassImportTasks.ts`) when the
+ * `SHOPEE_TASKS_DISABLED=1` valve is closed.
+ *
+ * The route maps it to a 503 **before** creating a job; the task handler stamps
+ * the job `failed` on the FIRST attempt, because a retry cannot open a valve and
+ * there is no sweep to drain the work later.
+ *
+ * ⚠️ A separate class from `ShopeeTasksDisabledError` on purpose: that one is
+ * inside `core/containment.ts`'s `erroContidoPorConta`, so a mass import that
+ * raised it would be CONTAINED as one conta's `lastError` instead of stamping
+ * the job `failed`. This class is in no containment list, and it is a bare
+ * `Error` — not a `ShopeeError` — because nothing Shopee-shaped went wrong.
+ */
+export class ShopeeMassImportTasksDisabledError extends Error {
+  constructor() {
+    super(
+      'SHOPEE_TASKS_DISABLED=1 — enfileiramento da importação em massa desabilitado; ' +
+        'não há sweep por trás deste caminho, então o job é encerrado como failed.',
+    );
+    this.name = 'ShopeeMassImportTasksDisabledError';
   }
 }
