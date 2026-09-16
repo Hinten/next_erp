@@ -27,6 +27,7 @@ export * from './collection/historicoModificacoes'; // produtos/{id}/historicoDe
 export * from './collection/subcollections'; // produtos/{id}/<marketplace link docs>
 export * from './collection/mercadoLivreLink'; // typed ML link-doc write shapes (not DomainSchemas)
 export * from './collection/shopeeLink'; // typed Shopee link-doc write shapes (not DomainSchemas)
+export * from './collection/shopeeLinkVariacoes'; // typed grupoDeVariacoes.linksVariacoesShopee[] element (bare const)
 export * from './collection/amazonLink'; // typed Amazon link-doc write shapes (not DomainSchemas)
 export * from './collection/magaluLink'; // typed Magalu link-doc write shapes (not DomainSchemas)
 export * from './collection/lojaIntegradaLink'; // typed Loja Integrada link-doc write shapes (not DomainSchemas)

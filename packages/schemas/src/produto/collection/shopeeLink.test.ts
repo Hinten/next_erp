@@ -4,6 +4,7 @@ import {
   variacaoShopeeLinkSchema,
   shopeeItemStatusSchema,
   shopeeModelStatusSchema,
+  SHOPEE_ITEM_STATUS,
 } from './shopeeLink';
 
 describe('produtoShopeeLinkSchema', () => {
@@ -61,11 +62,74 @@ describe('produtoShopeeLinkSchema', () => {
     expect(parsed.violations).toBeNull();
   });
 
-  it('accepts only the two item_status wire codes', () => {
-    expect(shopeeItemStatusSchema.safeParse('NORMAL').success).toBe(true);
-    expect(shopeeItemStatusSchema.safeParse('UNLIST').success).toBe(true);
+  it('aceita os seis valores de wire de item_status', () => {
+    for (const valor of [
+      'NORMAL',
+      'BANNED',
+      'UNLIST',
+      'REVIEWING',
+      'SELLER_DELETE',
+      'SHOPEE_DELETE',
+    ]) {
+      expect(shopeeItemStatusSchema.safeParse(valor).success).toBe(true);
+    }
+    // e o link doc aceita cada um deles no campo
+    for (const valor of Object.values(SHOPEE_ITEM_STATUS)) {
+      const parsed = produtoShopeeLinkSchema.parse({
+        contaProdutoShopeeOuterRef: 'documents/integracao/int-1',
+        item_name: 'X',
+        item_status: valor,
+      });
+      expect(parsed.item_status).toBe(valor);
+    }
+  });
+
+  it('⛔ NEAR-MISS: recusa DELETED (a grafia pré-2024)', () => {
+    // `announcement 769`/`841`: até 2024-01-18 o conjunto era
+    // NORMAL|BANNED|UNLIST|DELETED. A grafia antiga fica de fora de propósito.
+    expect(shopeeItemStatusSchema.safeParse('DELETED').success).toBe(false);
+    expect(shopeeItemStatusSchema.safeParse('SELLER_DELETE').success).toBe(true);
+  });
+
+  it('⛔ NEAR-MISS: recusa normal minúsculo e um código que não é de wire', () => {
     expect(shopeeItemStatusSchema.safeParse('normal').success).toBe(false);
+    expect(shopeeItemStatusSchema.safeParse('Normal').success).toBe(false);
     expect(shopeeItemStatusSchema.safeParse('ACTIVE').success).toBe(false);
+  });
+
+  it('SHOPEE_ITEM_STATUS cobre exatamente os seis membros', () => {
+    expect([...Object.values(SHOPEE_ITEM_STATUS)].sort()).toEqual([
+      'BANNED',
+      'NORMAL',
+      'REVIEWING',
+      'SELLER_DELETE',
+      'SHOPEE_DELETE',
+      'UNLIST',
+    ]);
+    expect([...shopeeItemStatusSchema.options].sort()).toEqual(
+      [...Object.values(SHOPEE_ITEM_STATUS)].sort(),
+    );
+  });
+
+  it('um item_status DELETED armazenado reprova no safeParse do documento inteiro', () => {
+    // Registro do comportamento observado (register item 61). `parseSoftRead`
+    // (`packages/data/src/zodParse.ts:123-133`) é `safeParse` + `console.warn` +
+    // devolver o RAW: com um valor pré-2024 guardado ele NÃO derruba a leitura e
+    // NÃO apaga a chave — devolve o documento cru, com o `DELETED` intacto e sem
+    // nenhum `.default()` aplicado. Nada do caminho de importação chega aqui (o
+    // raw existente é espalhado, nunca reparseado), e a primeira reimportação
+    // substitui o valor por um vivo.
+    const armazenado = {
+      contaProdutoShopeeOuterRef: 'documents/integracao/int-1',
+      item_name: 'X',
+      item_status: 'DELETED',
+    };
+    const resultado = produtoShopeeLinkSchema.safeParse(armazenado);
+    expect(resultado.success).toBe(false);
+    if (resultado.success) throw new Error('esperava falha');
+    expect(resultado.error.issues.some((i) => i.path.join('.') === 'item_status')).toBe(true);
+    // o que `parseSoftRead` devolveria: o raw, sem tocar na chave
+    expect(armazenado.item_status).toBe('DELETED');
   });
 
   it('parses the banned-item push violations shape and typed extra keys pass through', () => {
