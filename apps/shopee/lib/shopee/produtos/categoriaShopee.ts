@@ -59,6 +59,22 @@ import type { CategoriaParaCriar } from './planoImportacao';
  * ⚠️ Single-flight for the same reason the grupo memo is: the PROMISE is
  * memoised, not the result, so two items asking before the first read resolves
  * do not each issue one.
+ *
+ * ⚠️ **A REJECTION is not memoised, and that asymmetry is the whole cost of
+ * memoising a promise.** Holding a rejected one would make every later
+ * `carregar()` of the dispatch re-await the SAME failure — and a category read
+ * that fails is contained PER ITEM (a `ShopeeApiError` reaches
+ * `classificarFalhaDeItem` as `erro-shopee`), so one blip on the first item
+ * that asks would turn every remaining item of the dispatch — up to
+ * `ITENS_POR_DESPACHO_SEM_FOTOS` of them — into a `failures[]` row for a read
+ * nobody ever retried, while the next dispatch's fresh memo imports them fine.
+ * So the slot is cleared when the read rejects and the NEXT item re-reads.
+ *
+ * ⚠️ The first caller still SEES that rejection — the clearing re-throws, so the
+ * item that paid for the read is the item that fails — and so do the concurrent
+ * callers that awaited the same in-flight promise: one read, one verdict, shared
+ * by everyone who was waiting on it. That is single-flight working, not the
+ * poisoning above, which is about callers arriving AFTER the read has settled.
  */
 export function criarMemoDeCategorias(
   client: ShopeeClient,
@@ -71,6 +87,9 @@ export function criarMemoDeCategorias(
         integracaoId,
         client,
         variationsPath: SHOPEE_GET_VARIATIONS_PATH,
+      }).catch((err: unknown) => {
+        pendente = null;
+        throw err;
       });
       return pendente;
     },

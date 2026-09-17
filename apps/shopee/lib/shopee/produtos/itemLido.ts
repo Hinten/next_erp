@@ -412,6 +412,27 @@ export interface GrupoMemo {
  */
 export interface MemoDeGrupos {
   carregar(): Promise<GrupoMemo>;
+  /**
+   * Throw the loaded set away — the NEXT `carregar()` performs one fresh full
+   * read, and everything the old one had absorbed goes with it.
+   *
+   * ⚠️ It exists for the ONE bounded re-plan in `importarAnuncio.ts`, and the
+   * alternative it replaces is the bug: dropping the memo from the retry's deps
+   * re-plans the losing item correctly, but the object dropped is the
+   * DISPATCH's, so the retry's own creates and guarded patches land in a
+   * throw-away per-item memo and item N+1 still plans against the collection as
+   * it was before the loss — planning a create the retry already made, or a
+   * patch against a stamp the retry already bumped, and burning its own single
+   * re-plan against a SIBLING rather than against a genuine concurrent writer.
+   * Resetting keeps the object, so what the retry wins is absorbed by the memo
+   * every later item shares.
+   *
+   * ⚠️ Optional for the same reason {@link GrupoMemo.absorver} is: a hand-built
+   * `{ carregar }` stays a legal `MemoDeGrupos`. A caller that cannot reset is
+   * not left planning against the loser — the re-plan drops such a memo from
+   * the retry's deps instead, which is the older, costlier behaviour.
+   */
+  invalidar?(): void;
 }
 
 /**

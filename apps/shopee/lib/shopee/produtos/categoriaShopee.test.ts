@@ -231,3 +231,97 @@ describe('caminhoDaCategoriaDoAnuncio', () => {
     expect(db.writes).toEqual([]);
   });
 });
+
+/* ------------------------ the memo's FAILURE path ------------------------- */
+
+/** A double whose first `n` reads reject and whose next one answers the tree. */
+function clienteInstavel(falhas: number) {
+  const chamadas = { getCategory: 0 };
+  const client = {
+    getCategory: () => {
+      chamadas.getCategory += 1;
+      if (chamadas.getCategory <= falhas) {
+        return Promise.reject(new TypeError('get_category: fetch failed'));
+      }
+      return Promise.resolve({ category_list: [...ARVORE] });
+    },
+  } as unknown as ShopeeClient;
+  return { client, chamadas };
+}
+
+/** A double whose read stays IN FLIGHT until the test settles it by hand. */
+function clienteAdiado() {
+  const chamadas = { getCategory: 0 };
+  let liberar: ((rows: readonly ShopeeCategoria[]) => void) | null = null;
+  let recusar: ((err: unknown) => void) | null = null;
+  const client = {
+    getCategory: () =>
+      new Promise((resolve, reject) => {
+        chamadas.getCategory += 1;
+        liberar = (rows) => resolve({ category_list: [...rows] });
+        recusar = reject;
+      }),
+  } as unknown as ShopeeClient;
+  return {
+    client,
+    chamadas,
+    responder: (rows: readonly ShopeeCategoria[] = ARVORE) => liberar?.(rows),
+    falhar: (err: unknown) => recusar?.(err),
+  };
+}
+
+describe('criarMemoDeCategorias', () => {
+  it('uma leitura que FALHA não envenena o despacho — o próximo item lê de novo e importa', async () => {
+    const { client, chamadas } = clienteInstavel(1);
+    const memo = criarMemoDeCategorias(client, INTEGRACAO);
+
+    await expect(memo.carregar()).rejects.toThrow('fetch failed');
+
+    const indice = await memo.carregar();
+    expect(indice.porId.get(100017)?.display_category_name).toBe('Manga Curta');
+    expect(chamadas.getCategory).toBe(2);
+  });
+
+  it('⛔ duas chamadas EM VOO compartilham UMA leitura — o single-flight continua de pé', async () => {
+    const { client, chamadas, responder } = clienteAdiado();
+    const memo = criarMemoDeCategorias(client, INTEGRACAO);
+
+    const primeira = memo.carregar();
+    const segunda = memo.carregar();
+    expect(chamadas.getCategory).toBe(1);
+
+    responder();
+    const [a, b] = await Promise.all([primeira, segunda]);
+    expect(a).toBe(b);
+    expect(chamadas.getCategory).toBe(1);
+  });
+
+  it('⛔ quando a leitura COMPARTILHADA falha, os dois que esperavam veem a MESMA rejeição', async () => {
+    const { client, chamadas, falhar } = clienteAdiado();
+    const memo = criarMemoDeCategorias(client, INTEGRACAO);
+
+    const falha = new TypeError('get_category: fetch failed');
+    const primeira = memo.carregar();
+    const segunda = memo.carregar();
+    const desfechos = Promise.allSettled([primeira, segunda]);
+    falhar(falha);
+
+    const [a, b] = await desfechos;
+    expect(a.status).toBe('rejected');
+    expect(b.status).toBe('rejected');
+    expect(a.status === 'rejected' ? a.reason : null).toBe(falha);
+    expect(b.status === 'rejected' ? b.reason : null).toBe(falha);
+    expect(chamadas.getCategory).toBe(1);
+  });
+
+  it('depois de uma leitura BEM-SUCEDIDA nada é lido de novo — o memo continua sendo memo', async () => {
+    const { client, chamadas } = clienteInstavel(0);
+    const memo = criarMemoDeCategorias(client, INTEGRACAO);
+
+    const primeira = await memo.carregar();
+    const segunda = await memo.carregar();
+
+    expect(segunda).toBe(primeira);
+    expect(chamadas.getCategory).toBe(1);
+  });
+});

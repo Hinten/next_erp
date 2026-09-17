@@ -382,7 +382,7 @@ async function importarUmaVez(
   tentativasRestantes: number,
 ): Promise<ResultadoImportacaoShopee> {
   // ⚠️ ONE memo per attempt, shared by the preparo and the writer. On the RETRY
-  // it is a FRESH one, which is the whole point: the re-plan has to see what the
+  // it is a RESET one, which is the whole point: the re-plan has to see what the
   // winner wrote, and reusing the memoised read would re-plan against the stale
   // documents that just lost.
   const memo: MemoDeGrupos = deps.grupos ?? criarMemoDeGrupos(deps.db);
@@ -393,9 +393,18 @@ async function importarUmaVez(
     return await aplicarImportacaoShopee(comMemo, plano);
   } catch (err) {
     if (tentativasRestantes > 0 && ehCorridaPerdida(err)) {
-      // ⚠️ RE-PLAN, never re-apply, and with `grupos` cleared so the retry reads
-      // the collection again.
-      const { grupos: _memoVencido, ...semMemo } = deps;
+      // ⚠️ RE-PLAN, never re-apply, and against a memo that reads the collection
+      // again. RESET, not dropped: the object belongs to the DISPATCH, so the
+      // retry's creates and guarded patches have to be absorbed by the very memo
+      // item N+1 will plan against — dropping it here is what left the next item
+      // planning a create the retry had already made (`MemoDeGrupos.invalidar`).
+      if (deps.grupos?.invalidar !== undefined) {
+        deps.grupos.invalidar();
+        return importarUmaVez(deps, entrada, tentativasRestantes - 1);
+      }
+      // A memo that cannot be reset (a hand-built `{ carregar }`) must still not
+      // re-plan against the loser: drop it and let this attempt build its own.
+      const { grupos: _semReset, ...semMemo } = deps;
       return importarUmaVez(semMemo, entrada, tentativasRestantes - 1);
     }
     throw err;

@@ -796,7 +796,9 @@ export async function processarImportacaoShopee(
 
       // `tag.kit` is the ONLY kit-discovery channel Shopee offers (there is no
       // kit listing endpoint), and at scan time the scan ROW is the only tag we
-      // hold — the base-info read has not happened yet.
+      // hold — the base-info read has not happened yet. A `null` here is
+      // therefore NOT "not a kit": the drain asks again once the base info
+      // lands, and re-routes what this page could not see.
       const ehKitDaLinha = (l: ShopeeItemListRow): boolean => ehKitDe({ tag: null }, l);
       const idsKit = vivas.filter(ehKitDaLinha).map((l) => l.item_id);
       const idsSimples = vivas.filter((l) => !ehKitDaLinha(l)).map((l) => l.item_id);
@@ -894,15 +896,35 @@ export async function processarImportacaoShopee(
               );
             }
             const semModelos = montarItemLido({ itemId, payload: corpos });
-            const modelos = temModelosDe(semModelos)
-              ? await ctx.client.getModelList({ itemId })
-              : null;
-            const item =
-              modelos !== null ? montarItemLido({ itemId, payload: corpos, modelos }) : semModelos;
+            // ⚠️ The kit question asked a SECOND time, now on the BASE-INFO row.
+            // It is not the scan's verdict repeated: the scan could only read
+            // the LIST row, whose `tag` is `.nullable().default(null)` because
+            // the field was added 2024-10-18 — a shop whose rows predate it has
+            // NONE, so every kit of that catalogue arrives here classified as an
+            // ordinary listing. The base info is already paid for, so the second
+            // read costs nothing; without it the kit reaches the listing
+            // importer, whose kit refusal is a programming-error signal no
+            // per-item verdict contains, and the whole job ends `failed` with
+            // the rest of the catalogue abandoned and no row naming the listing.
+            // Bookkeeping is the scan's, exactly: routing a kit counts NOTHING
+            // here — the id only changes queue, and the kit drain counts it when
+            // it completes. The per-item checkpoint below persists BOTH queues,
+            // so a crash between the move and the kit's import never loses it.
+            if (ehKitDe(semModelos.base)) {
+              filaKits = [...filaKits, itemId];
+            } else {
+              const modelos = temModelosDe(semModelos)
+                ? await ctx.client.getModelList({ itemId })
+                : null;
+              const item =
+                modelos !== null
+                  ? montarItemLido({ itemId, payload: corpos, modelos })
+                  : semModelos;
 
-            const res = await importarAnuncio(depsDoImportador, item);
-            imported += 1;
-            if (res.criado) created += 1;
+              const res = await importarAnuncio(depsDoImportador, item);
+              imported += 1;
+              if (res.criado) created += 1;
+            }
           } catch (err) {
             const falha = classificarFalhaDeItem(err);
             if (falha === null) throw err; // infra, a rate limit, a reauth — not this listing
