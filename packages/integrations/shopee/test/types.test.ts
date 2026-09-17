@@ -3,12 +3,28 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
+  SHOPEE_CONDITION,
   SHOPEE_INVOICE_ISSUER,
+  SHOPEE_ITEM_IMAGE_MAX,
+  SHOPEE_ITEM_STATUS_WRITABLE,
+  SHOPEE_ITEM_VIOLATION_MAX_IDS,
+  SHOPEE_LOGISTICS_FEE_TYPE,
   SHOPEE_LOGISTICS_STATUS,
+  SHOPEE_MODEL_MAX_PER_ITEM,
+  SHOPEE_MODEL_SKU_MAX_LENGTH,
   SHOPEE_NESTING_AMBIGUOUS_KEYS,
   SHOPEE_PACKAGE_FULFILLMENT_STATUS,
   SHOPEE_SHOP_STATUS,
+  SHOPEE_TIER_MAX_LEVELS,
+  SHOPEE_TIER_MAX_OPTIONS,
   SHOPEE_TRACKING_LOGISTICS_STATUS,
+  SHOPEE_UNLIST_MAX_ITEMS,
+  SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES,
+  SHOPEE_UPLOAD_IMAGE_FIELD,
+  SHOPEE_UPLOAD_IMAGE_MAX_BYTES,
+  SHOPEE_UPLOAD_IMAGE_SCENE,
+  SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO,
+  SHOPEE_UPLOAD_IMAGE_SIGNING,
   type ShopeeNestingAmbiguousKey,
   dataOp,
   flatOp,
@@ -19,6 +35,7 @@ import {
   shopeeCategoriaSchema,
   shopeeCategoryListSchema,
   shopeeCategoryRecommendSchema,
+  shopeeChannelListSchema,
   shopeeConfirmLostPushSchema,
   shopeeEnvelopeSchema,
   shopeeEscrowDetailSchema,
@@ -27,6 +44,8 @@ import {
   shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
   shopeeItemListSchema,
+  shopeeItemViolationInfoSchema,
+  shopeeItemWriteSchema,
   shopeeKitItemInfoSchema,
   shopeeKitItemLimitSchema,
   shopeeLostPushSchema,
@@ -41,8 +60,12 @@ import {
   shopeeShopInfoSchema,
   shopeeShopStatusSchema,
   shopeeShopsByPartnerSchema,
+  shopeeTierWriteSchema,
   shopeeTokenResponseSchema,
+  shopeeUnlistItemSchema,
+  shopeeUploadImageSchema,
   shopeeVariationsSchema,
+  shopeeWriteAckSchema,
   wrappedOp,
 } from '../src/types';
 import { z } from 'zod';
@@ -1764,8 +1787,21 @@ const MODEL_ID = 2000458802;
 /** O CÓDIGO-FONTE do módulo, para as asserções que só a fonte pode fazer. */
 const FONTE_TYPES = readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8');
 
-/** O trecho do passo 9 — do marcador de seção até o fim do arquivo. */
-const SECAO_PASSO_9 = FONTE_TYPES.slice(FONTE_TYPES.indexOf('The item reads (step 9)'));
+/**
+ * O trecho do passo 9 — do marcador de seção dele até o marcador do PRÓXIMO
+ * passo.
+ *
+ * ⚠️ Ele ia até o FIM DO ARQUIVO enquanto o passo 9 era a última seção, e isso
+ * era uma armadilha, não uma economia: o passo 11 declara um
+ * `item_max_dimension.unit` (o limite dimensional de um canal de logística), que
+ * nada tem a ver com o rename `unit → unit_price` do bloco de atacado, e a
+ * asserção de fonte do passo 9 o leria como o campo obsoleto ressuscitado. Cada
+ * passo fatia a SUA seção; o passo 11 tem o `SECAO_PASSO_11` logo abaixo.
+ */
+const SECAO_PASSO_9 = FONTE_TYPES.slice(
+  FONTE_TYPES.indexOf('The item reads (step 9)'),
+  FONTE_TYPES.indexOf('The listing writes (step 11)'),
+);
 
 /**
  * ⚠️ SÓ as linhas de CÓDIGO. As asserções de fonte abaixo falam de DECLARAÇÕES,
@@ -2294,5 +2330,854 @@ describe('as quatro leituras de item (passo 9)', () => {
     expect((lido.response.item_list[0] as unknown as Record<string, unknown>).promotion_id).toBe(
       123,
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                  As escritas de anúncio (passo 11)                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * O trecho do passo 11 — do marcador de seção até o fim do arquivo.
+ *
+ * ⚠️ Separado do `SECAO_PASSO_9` de propósito: aquele fatia até o FIM DO ARQUIVO
+ * e por isso passou a cobrir este passo também (o que é bom para a proibição do
+ * `z.number()` cru), mas uma asserção sobre ESTA seção não pode depender de onde
+ * a anterior termina.
+ */
+const SECAO_PASSO_11 = FONTE_TYPES.slice(FONTE_TYPES.indexOf('The listing writes (step 11)'));
+
+function trechoDoPasso11(de: string, ate: string): string {
+  const inicio = SECAO_PASSO_11.indexOf(de);
+  const fim = SECAO_PASSO_11.indexOf(ate);
+  expect(inicio).toBeGreaterThan(-1);
+  expect(fim).toBeGreaterThan(inicio);
+  return semComentarios(SECAO_PASSO_11.slice(inicio, fim));
+}
+
+/**
+ * A amostra de resposta da PÁGINA de `add_item`, com o `item_id` trocado pelo id
+ * de fixture. Os demais ids são de CATÁLOGO (categoria, canal, atributo) e são o
+ * que a página imprime.
+ *
+ * ⚠️ `error: '-'` é o que a página imprime. O módulo já documenta que `-` é um
+ * placeholder de autoria da doc em algumas páginas e que ele parseia como a
+ * string `'-'`: quem julga sucesso é o transporte, não este schema.
+ */
+const AMOSTRA_ADD_ITEM = {
+  message: '-',
+  warning: '-',
+  request_id: '98eae35efff24dd0974c21a847127184',
+  response: {
+    description: 'description',
+    weight: 1,
+    pre_order: { days_to_ship: 1, is_pre_order: true },
+    item_name: 'Hello Product',
+    images: { image_id_list: ['-'], image_url_list: ['-'] },
+    item_status: 'NORMAL',
+    price_info: { current_price: 148.02, original_price: 148.02 },
+    logistic_info: [
+      { size_id: 0, shipping_fee: 0.1, enabled: true, logistic_id: 88014, is_free: true },
+    ],
+    item_id: ITEM_ID,
+    attributes: [
+      {
+        attribute_id: 4990,
+        attribute_value_list: [
+          { original_value_name: 'Samsung ID', value_id: 32142, value_unit: 'kg' },
+        ],
+      },
+    ],
+    category_id: 14695,
+    dimension: { package_width: 11, package_length: 11, package_height: 11 },
+    condition: 'NEW',
+    video_info: [
+      {
+        video_url: 'https://cvf.shopee.sg/file/c67b847c954fd710e0d35ef1e22378d1',
+        thumbnail_url: 'https://cf.shopee.sg/file/6fc53c203151635da72151cfbad03cdf',
+        duration: 15,
+      },
+    ],
+    wholesale: [{ min_count: 1, max_count: 100, unit_price: 13.3 }],
+    brand: { brand_id: 0, original_brand_name: 'nike' },
+    item_dangerous: 0,
+    description_info: {
+      extended_description: {
+        field_list: [{ field_type: '-', text: '-', image_info: { image_id: '-' } }],
+      },
+    },
+    description_type: '-',
+    complaint_policy: {
+      warranty_time: 'ONE_YEAR',
+      exclude_entrepreneur_warranty: true,
+      complaint_address_id: 0,
+      additional_information: '-',
+    },
+    seller_stock: [{ location_id: '-', stock: 0 }],
+  },
+  error: '-',
+};
+
+/** A amostra de resposta da PÁGINA de `update_item`, mesmo tratamento de ids. */
+const AMOSTRA_UPDATE_ITEM = {
+  message: '-',
+  warning: '-',
+  request_id: '326527603d034fd1b2dd6a74d70ade54',
+  response: {
+    description: 'Hello product product 6xnhI3ug5D2rFpH3QoJSNNOrfUSP8rw5',
+    weight: 0.9,
+    pre_order: { days_to_ship: 2, is_pre_order: true },
+    item_name: 'Hello QdlHimD4nto0OGIQ',
+    item_status: 'UNLIST',
+    images: { image_id_list: ['-'], image_url_list: ['-'] },
+    logistic_info: [
+      {
+        estimated_shipping_fee: 1.49,
+        logistic_name: 'Ninja Van',
+        enabled: true,
+        logistic_id: 10007,
+        is_free: true,
+      },
+    ],
+    item_id: ITEM_ID,
+    category_id: 34106,
+    dimension: { package_width: 14, package_length: 12, package_height: 13 },
+    condition: 'USED',
+    brand: { brand_id: 0, original_brand_name: 'nike' },
+    item_dangerous: 0,
+    complaint_policy: {
+      warranty_time: '-',
+      exclude_entrepreneur_warranty: true,
+      additional_information: '-',
+    },
+    description_info: {
+      extended_description: {
+        field_list: [{ field_type: '-', text: '-', image_info: { image_id: '-' } }],
+      },
+    },
+    description_type: '-',
+  },
+  error: '-',
+};
+
+/**
+ * A amostra da página de `init_tier_variation` — DOIS tiers, NOVE modelos.
+ * `model_id` recebe a base do id de fixture; o resto é verbatim.
+ */
+const AMOSTRA_INIT_TIER = {
+  error: '-',
+  message: '-',
+  warning: '-',
+  request_id: 'req-123456',
+  response: {
+    tier_variation: [
+      {
+        name: 'Color',
+        option_list: [
+          { image: { image_url: 'https://cf.shopee.sg/file/img-cream' }, option: 'Cream stripe' },
+          { image: { image_url: 'https://cf.shopee.sg/file/img-blue' }, option: 'Blue stripe' },
+          { image: { image_url: 'https://cf.shopee.sg/file/img-mint' }, option: 'Mint stripe' },
+        ],
+      },
+      { name: 'Size', option_list: [{ option: 'S' }, { option: 'M' }, { option: 'L' }] },
+    ],
+    model: [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => ({
+      tier_index: [Math.floor(i / 3), i % 3],
+      model_id: MODEL_ID + i,
+      model_sku: `SKU-${i}`,
+      price_info: [{ original_price: 100000 }],
+      seller_stock: [{ location_id: '-', stock: i }],
+      weight: 1.1,
+    })),
+  },
+};
+
+/**
+ * A amostra da página de `add_model`, VERBATIM.
+ *
+ * ⚠️ Ela NÃO traz `model_id` — a página imprime uma linha de modelo sem o único
+ * campo que identifica o modelo. É por isso que a linha vira o sentinela `null`
+ * em vez de derrubar a página.
+ */
+const AMOSTRA_ADD_MODEL = {
+  error: '-',
+  message: '-',
+  warning: '-',
+  request_id: '-',
+  response: {
+    model: [
+      {
+        model_sku: 'sku',
+        price_info: [{ original_price: 52.4 }],
+        seller_stock: [{ location_id: '-', stock: 0 }],
+        weight: 1.1,
+      },
+    ],
+  },
+};
+
+/** A amostra MISTA da página de `unlist_item` — um sucesso e uma falha. */
+const AMOSTRA_UNLIST = {
+  error: '',
+  message: '',
+  warning: '',
+  request_id: '43133476d40c400897cc8c159a214034',
+  response: {
+    failure_list: [
+      { item_id: ITEM_ID + 1, failed_reason: "Can't unlist item when item is under promotion" },
+    ],
+    success_list: [{ item_id: ITEM_ID, unlist: false }],
+  },
+};
+
+/**
+ * A amostra da página de `get_item_violation_info`, VERBATIM — e repare no que
+ * ela NÃO tem: a chave `error`.
+ */
+const AMOSTRA_VIOLACAO = {
+  message: null,
+  request_id: '3cc224310e5b57eeb70a9b202ba5d341',
+  response: {
+    item_list: [
+      {
+        item_id: ITEM_ID,
+        item_name: 'testing product',
+        item_status: 'BANNED',
+        deboost: true,
+        item_status_details: [
+          {
+            violation_type: 'Prohibited Listing',
+            violation_reason: 'License Reason',
+            suggestion: 'Upload license',
+            update_time: 1705054788,
+            fix_deadline_time: 1705227588,
+          },
+        ],
+        deboost_details: [
+          {
+            violation_type: 'Prohibited Listing',
+            violation_reason: 'Wrong Category',
+            suggestion: 'The item is in wrong category, please update to the suggested_category',
+            suggested_category: [
+              { category_id: 100005, category_name: 'Health' },
+              { category_id: 107478, category_name: 'Personal Care' },
+            ],
+            update_time: 1704943027,
+            fix_deadline_time: 1705202227,
+          },
+        ],
+      },
+    ],
+  },
+};
+
+/** A amostra da página de `upload_image` — as DUAS posições no mesmo corpo. */
+const AMOSTRA_UPLOAD = {
+  error: '-',
+  message: '-',
+  warning: '-',
+  request_id: '-',
+  response: {
+    image_info: {
+      image_id: '-',
+      image_url_list: [{ image_url_region: '-', image_url: '-' }],
+    },
+    image_info_list: [
+      {
+        id: 0,
+        error: '-',
+        message: '-',
+        image_info: {
+          image_id: '-',
+          image_url_list: [{ image_url_region: '-', image_url: '-' }],
+        },
+      },
+    ],
+  },
+};
+
+/**
+ * Três dos seis canais da amostra da página de `get_channel_list`.
+ *
+ * ⚠️ As duas prosas longas de `logistics_description` foram encurtadas: são
+ * strings, e o conteúdo delas não é uma FORMA. Todo o resto é verbatim, incluindo
+ * `seller_logistic_has_configuration: null`, `unit: 'UNKNOWN'` e o canal que
+ * simplesmente NÃO traz `support_pause`.
+ */
+const AMOSTRA_CANAIS = {
+  error: '',
+  message: '',
+  request_id: '686fe13cb4c852300e2bf0c5d7527021',
+  response: {
+    logistics_channel_list: [
+      {
+        block_seller_cover_shipping_fee: false,
+        cod_enabled: true,
+        enabled: true,
+        fee_type: 'SIZE_INPUT',
+        force_enable: false,
+        item_max_dimension: { dimension_sum: 90, height: 30, length: 30, unit: 'cm', width: 30 },
+        logistics_capability: { seller_logistics: false },
+        logistics_channel_id: 40029,
+        logistics_channel_name: 'Shopee Self Pick-up',
+        logistics_description: 'Shopee Self Collect operating hours are from Monday to Sunday',
+        mask_channel_id: 0,
+        seller_logistic_has_configuration: null,
+        size_list: [],
+        support_cross_border: false,
+        volume_limit: { item_max_volume: 0, item_min_volume: 0 },
+        weight_limit: { item_max_weight: 5, item_min_weight: 0 },
+        support_pause: false,
+      },
+      {
+        block_seller_cover_shipping_fee: false,
+        cod_enabled: true,
+        enabled: false,
+        fee_type: 'SIZE_INPUT',
+        force_enable: false,
+        item_max_dimension: { dimension_sum: 0, height: 0, length: 0, unit: 'UNKNOWN', width: 0 },
+        logistics_capability: { seller_logistics: false },
+        logistics_channel_id: 4002,
+        logistics_channel_name: 'Sulit Local',
+        logistics_description: '',
+        mask_channel_id: 0,
+        seller_logistic_has_configuration: null,
+        size_list: [],
+        support_cross_border: false,
+        volume_limit: { item_max_volume: 0, item_min_volume: 0 },
+        weight_limit: { item_max_weight: 0, item_min_weight: 0 },
+        support_pause: false,
+      },
+      {
+        block_seller_cover_shipping_fee: false,
+        cod_enabled: true,
+        enabled: false,
+        fee_type: 'SIZE_INPUT',
+        force_enable: false,
+        item_max_dimension: {
+          dimension_sum: 300,
+          height: 150,
+          length: 150,
+          unit: 'cm',
+          width: 150,
+        },
+        logistics_capability: { seller_logistics: false },
+        logistics_channel_id: 40025,
+        logistics_channel_name: 'Flash Express',
+        logistics_description: '3pl Name: Flash Express Max Dimensions: 150 cm each side',
+        mask_channel_id: 4000,
+        seller_logistic_has_configuration: null,
+        size_list: [],
+        support_cross_border: false,
+        volume_limit: { item_max_volume: 0, item_min_volume: 0 },
+        weight_limit: { item_max_weight: 50, item_min_weight: 0 },
+      },
+    ],
+  },
+};
+
+describe('as escritas de anúncio (passo 11)', () => {
+  it('1 — a amostra de resposta da PÁGINA de add_item parseia, com `price_info` OBJETO', () => {
+    const lido = shopeeItemWriteSchema.parse(AMOSTRA_ADD_ITEM);
+    expect(lido.response.item_id).toBe(ITEM_ID);
+    expect(lido.response.price_info?.original_price).toBe(148.02);
+    expect(lido.response.item_status).toBe('NORMAL');
+    expect(lido.response.condition).toBe('NEW');
+    // A grafia do SAMPLE (`attributes`) e a da TABELA (`attribute`) são as duas
+    // declaradas; a amostra traz a primeira e a segunda fica null.
+    expect(lido.response.attributes?.[0]!.attribute_id).toBe(4990);
+    expect(lido.response.attribute).toBeNull();
+    // `images` (plural) é a grafia de escrita; a página de leitura diz `image`.
+    expect(lido.response.images?.image_id_list).toEqual(['-']);
+  });
+
+  it('2 — a amostra da PÁGINA de update_item parseia com o MESMO schema', () => {
+    // ⚠️ É esta asserção — e não um comentário dizendo que as duas páginas são
+    // espelhos — que justifica um schema só para as duas.
+    const lido = shopeeItemWriteSchema.parse(AMOSTRA_UPDATE_ITEM);
+    expect(lido.response.item_id).toBe(ITEM_ID);
+    expect(lido.response.item_status).toBe('UNLIST');
+    // A linha de logística do update traz OUTROS dois nomes que a do add.
+    expect(lido.response.logistic_info?.[0]!.estimated_shipping_fee).toBe(1.49);
+    expect(lido.response.logistic_info?.[0]!.logistic_name).toBe('Ninja Van');
+    // E os campos que só o add_item ecoa chegam nulos, nunca ausentes.
+    expect(lido.response.price_info).toBeNull();
+    expect(lido.response.seller_stock).toBeNull();
+  });
+
+  it('3 — ⛔ NEAR-MISS: `price_info` ARRAY (a forma de LEITURA) NÃO parseia no eco de escrita', () => {
+    // ⚠️ Mesmo nome de campo, duas formas, uma chamada de distância. Reusar o
+    // schema de leitura aqui recusaria o corpo INTEIRO do add_item; declarar a
+    // forma de leitura aqui recusaria a leitura. São dois schemas de propósito.
+    const comoLeitura = {
+      error: '',
+      request_id: 'req-eco',
+      response: {
+        item_id: ITEM_ID,
+        price_info: [{ currency: 'BRL', original_price: 10, current_price: 9 }],
+      },
+    };
+    const recusado = shopeeItemWriteSchema.safeParse(comoLeitura);
+    expect(recusado.success).toBe(false);
+    expect(recusado.error?.issues.map((i) => i.path.join('.'))).toContain('response.price_info');
+
+    // ÂNCORA 1: o MESMO array parseia onde ele de fato mora.
+    const naLeitura = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { price_info: [{ currency: 'BRL', original_price: 10 }] }),
+    );
+    expect(naLeitura.response.item_list[0]!.price_info?.[0]!.original_price).toBe(10);
+
+    // ÂNCORA 2 (o caminho inverso): o `price_info` OBJETO do add_item numa linha
+    // de get_item_base_info não vira dado — a linha cai no sentinela `null`.
+    const inverso = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { price_info: { current_price: 1, original_price: 1 } }),
+    );
+    expect(inverso.response.item_list[0]).toBeNull();
+  });
+
+  it('4 — um eco de add_item SEM `item_id` falha nomeando o campo', () => {
+    // ⚠️ O único campo obrigatório do eco: um add_item que respondeu sem id é
+    // inutilizável — a publicação não teria o que gravar no link — e tem de
+    // falhar alto em vez de gravar um link apontando para nada.
+    const semId = shopeeItemWriteSchema.safeParse({ error: '', response: { item_name: 'x' } });
+    expect(semId.success).toBe(false);
+    expect(semId.error?.issues.map((i) => i.path.join('.'))).toContain('response.item_id');
+  });
+
+  it('5 — a amostra da PÁGINA de init_tier_variation parseia: 9 modelos e `tier_index` de INTEIROS', () => {
+    const lido = shopeeTierWriteSchema.parse(AMOSTRA_INIT_TIER);
+    expect(lido.response.model).toHaveLength(9);
+    expect(lido.response.model.every((m) => m !== null)).toBe(true);
+    expect(lido.response.model[0]!.tier_index).toEqual([0, 0]);
+    expect(lido.response.model[8]!.model_id).toBe(MODEL_ID + 8);
+    // A árvore DEPRECIADA de escrita ainda chega na resposta, e é lida.
+    expect(lido.response.tier_variation).toHaveLength(2);
+    expect(lido.response.tier_variation![0]!.option_list[0]!.option).toBe('Cream stripe');
+  });
+
+  it('6 — a amostra da PÁGINA de add_model parseia com o MESMO schema — e a linha SEM `model_id` vira `null`', () => {
+    // ⚠️ A amostra da página imprime uma linha de modelo sem o único campo que
+    // identifica o modelo. Sob o sentinela por elemento ela vira `null` em vez
+    // de derrubar a página — e `null` é exatamente o que a releitura de
+    // `get_model_list` conserta. Um `model_id: null` atravessando daqui iria
+    // para `variashopee`, cujo `model_id` é obrigatório e não-nulo.
+    const lido = shopeeTierWriteSchema.parse(AMOSTRA_ADD_MODEL);
+    expect(lido.response.model).toEqual([null]);
+    // `init_tier_variation` responde `item_id`; `add_model` não, e vira null.
+    expect(lido.response.item_id).toBeNull();
+    expect(lido.response.tier_variation).toBeNull();
+
+    // ÂNCORA: a MESMA linha, com um `model_id`, chega inteira.
+    const comId = shopeeTierWriteSchema.parse({
+      ...AMOSTRA_ADD_MODEL,
+      response: { model: [{ ...AMOSTRA_ADD_MODEL.response.model[0]!, model_id: MODEL_ID }] },
+    });
+    expect(comId.response.model[0]!.model_id).toBe(MODEL_ID);
+    expect(comId.response.model[0]!.price_info?.[0]!.original_price).toBe(52.4);
+  });
+
+  it('7 — um modelo com `tier_index` em forma de OBJETO vira `null` e NÃO derruba a página', () => {
+    // ⚠️ A tabela de resposta do init_tier_variation tipa `tier_index` como
+    // `object[]`; as duas tabelas de REQUEST e o get_model_list dizem `int32[]`,
+    // e a própria amostra imprime `[0,0]`. Se a doc estiver certa, o custo é UMA
+    // linha — nunca a página, que chega DEPOIS de a Shopee já ter cunhado os
+    // modelos.
+    const lido = shopeeTierWriteSchema.parse({
+      error: '',
+      response: {
+        model: [
+          { model_id: MODEL_ID, tier_index: [{ index: 0 }, { index: 1 }], model_sku: 'a' },
+          { model_id: MODEL_ID + 1, tier_index: [0, 1], model_sku: 'b' },
+        ],
+      },
+    });
+    expect(lido.response.model[0]).toBeNull();
+    expect(lido.response.model[1]!.model_sku).toBe('b');
+    // ⛔ NEAR-MISS: o sentinela é por ELEMENTO, nunca por CAMPO. Um corpo cujas
+    // linhas são TODAS ilegíveis chega como uma lista de sentinelas — e não como
+    // modelos de identidade inventada.
+    const todasRuins = shopeeTierWriteSchema.parse({
+      error: '',
+      response: { model: [{ model_sku: 'a' }, { model_sku: 'b' }] },
+    });
+    expect(todasRuins.response.model).toEqual([null, null]);
+  });
+
+  it('8 — update_tier_variation, update_model, delete_model e delete_item parseiam como envelope PURO', () => {
+    // As quatro páginas declaram os mesmos quatro campos de envelope e NENHUM
+    // objeto `response` — verificado nas quatro tabelas e nas quatro amostras.
+    for (const amostra of [
+      { error: '', message: '', warning: '', request_id: 'aaaaaaa' },
+      { error: '', message: '', warning: '', request_id: '558ce5454c9b461aad47aa5cd8bb1e9f' },
+    ]) {
+      const lido = shopeeWriteAckSchema.parse(amostra);
+      expect(lido.error).toBe('');
+      expect(lido.request_id).toBe(amostra.request_id);
+    }
+  });
+
+  it('9 — ⛔ NEAR-MISS: o ack não INVENTA um `response`, e recusa um corpo sem `error`', () => {
+    // Um corpo que um dia passe a trazer `response` atravessa pelo passthrough —
+    // o ack não o rejeita e não o expõe. Quando isso acontecer com uma das
+    // quatro, a edição é DAR UM SCHEMA PRÓPRIO a ela, nunca alargar este.
+    const comResponse = shopeeWriteAckSchema.parse({ error: '', response: { item_id: ITEM_ID } });
+    expect('response' in comResponse).toBe(true);
+    expect((comResponse as unknown as Record<string, unknown>).response).toEqual({
+      item_id: ITEM_ID,
+    });
+    // E a regra do envelope continua valendo: sem `error` não há veredicto.
+    expect(shopeeWriteAckSchema.safeParse({ request_id: 'x' }).success).toBe(false);
+    // ÂNCORA de fonte: é `flatOp({})`, não o schema de transporte.
+    expect(trechoDoPasso11('shopeeWriteAckSchema', 'ShopeeWriteAck')).toContain('flatOp({})');
+  });
+
+  it('10 — unlist_item: a amostra MISTA da página dá 1 sucesso e 1 falha, e `unlist` é o ECO DO PEDIDO', () => {
+    // ⚠️ `success_list[].unlist` devolve a FLAG ENVIADA, não o novo
+    // `item_status`: a amostra da própria página responde `unlist: false` para
+    // um pedido de RE-LISTAGEM bem-sucedido. Quem precisa do status relê
+    // `get_item_base_info`.
+    const lido = shopeeUnlistItemSchema.parse(AMOSTRA_UNLIST);
+    expect(lido.response.success_list).toHaveLength(1);
+    expect(lido.response.success_list[0]!.item_id).toBe(ITEM_ID);
+    expect(lido.response.success_list[0]!.unlist).toBe(false);
+    expect(lido.response.failure_list[0]!.failed_reason).toContain('under promotion');
+  });
+
+  it('11 — unlist_item: uma `failure_list` ausente é lista VAZIA, nunca `null`', () => {
+    // ⚠️ `null` faria todo chamador escrever `?? []` — e um deles esqueceria.
+    const lido = shopeeUnlistItemSchema.parse({
+      error: '',
+      response: { success_list: [{ item_id: ITEM_ID, unlist: true }] },
+    });
+    expect(lido.response.failure_list).toEqual([]);
+    // E a regra vale para as DUAS listas: uma resposta em que tudo falhou não
+    // traz `success_list`, e ela também chega vazia.
+    expect(
+      shopeeUnlistItemSchema.parse({
+        error: '',
+        response: { failure_list: [{ item_id: ITEM_ID, failed_reason: 'sob promoção' }] },
+      }).response.success_list,
+    ).toEqual([]);
+    // ⛔ NEAR-MISS: uma linha SEM `item_id` é irreconciliável, então aqui a
+    // recusa é da PÁGINA — não há sentinela por elemento neste schema.
+    const semId = shopeeUnlistItemSchema.safeParse({
+      error: '',
+      response: { success_list: [{ unlist: true }] },
+    });
+    expect(semId.success).toBe(false);
+  });
+
+  it('12 — get_channel_list: a amostra da página parseia e `size_id` continua STRING', () => {
+    const lido = shopeeChannelListSchema.parse(AMOSTRA_CANAIS);
+    expect(lido.response.logistics_channel_list).toHaveLength(3);
+    expect(lido.response.logistics_channel_list[0]!.logistics_channel_id).toBe(40029);
+    expect(lido.response.logistics_channel_list[0]!.enabled).toBe(true);
+    // `seller_logistic_has_configuration: null` e um canal que simplesmente não
+    // traz `support_pause` — os dois parseiam.
+    expect(lido.response.logistics_channel_list[1]!.seller_logistic_has_configuration).toBeNull();
+    expect(lido.response.logistics_channel_list[2]!.support_pause).toBeNull();
+
+    // ⚠️ Os campos de 2026 (compulsory_channel, channel_relation_rules,
+    // auto_call_driver_setting) e o size_list são posteriores à amostra, então
+    // vêm num segundo corpo. `size_id` é STRING aqui e `int32` no
+    // `add_item.logistic_info[].size_id`: um "0" que voltasse como 0 mandaria um
+    // tamanho que o vendedor não escolheu. A conversão — e a recusa — são de
+    // quem monta a logística do item.
+    const novos = shopeeChannelListSchema.parse({
+      error: '',
+      response: {
+        logistics_channel_list: [
+          {
+            logistics_channel_id: 90021,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.sizeSelection,
+            size_list: [{ size_id: '0', name: 'Pequeno', default_price: 12.5 }],
+            compulsory_channel: true,
+            channel_relation_rules: [
+              { related_enabled_channels: [4000], related_dependent_block_channels: [40018] },
+            ],
+            auto_call_driver_setting: {
+              auto_call_driver_eligible: true,
+              auto_call_driver_enabled: false,
+              preparation_time: 10,
+              preparation_time_limit: { min_preparation_time: 10, max_preparation_time: 30 },
+            },
+            service_type_identifier: 'instant',
+            preprint: false,
+          },
+        ],
+      },
+    });
+    const canal = novos.response.logistics_channel_list[0]!;
+    expect(canal.size_list?.[0]!.size_id).toBe('0');
+    expect(canal.size_list?.[0]!.size_id).not.toBe(0);
+    expect(typeof canal.size_list?.[0]!.size_id).toBe('string');
+    expect(canal.compulsory_channel).toBe(true);
+    expect(canal.channel_relation_rules?.[0]!.related_enabled_channels).toEqual([4000]);
+    expect(canal.auto_call_driver_setting?.preparation_time_limit?.max_preparation_time).toBe(30);
+  });
+
+  it('13 — get_channel_list: NENHUM campo chamado `preferred` é declarado', () => {
+    // ⚠️ Anti-ressurreição: `preferred` não existe na tabela de resposta nem na
+    // amostra dessa página; ele sobrevive só num DTO legado. Declará-lo aqui
+    // criaria um campo fantasma em que a montagem de logística poderia ramificar.
+    const canais = trechoDoPasso11('get_channel_list ---', 'upload_image ---');
+    expect(canais).not.toContain('preferred');
+    // ÂNCORA: o trecho é mesmo o dos canais.
+    expect(canais).toContain('logistics_channel_id: wireInt()');
+    expect(canais).toContain('preprint');
+  });
+
+  it('14 — get_channel_list: um canal ilegível vira `null` e os outros sobrevivem', () => {
+    // A lista é da LOJA INTEIRA: um canal ilegível não pode custar a montagem de
+    // logística de toda publicação.
+    const lido = shopeeChannelListSchema.parse({
+      error: '',
+      response: {
+        logistics_channel_list: [
+          { logistics_channel_name: 'sem id' },
+          { logistics_channel_id: 4000, logistics_channel_name: 'Standard Local' },
+        ],
+      },
+    });
+    expect(lido.response.logistics_channel_list[0]).toBeNull();
+    expect(lido.response.logistics_channel_list[1]!.logistics_channel_id).toBe(4000);
+  });
+
+  it('15 — ⚠️ get_item_violation_info: a amostra da página NÃO traz a chave `error` e por isso FALHA', () => {
+    // ⚠️ AS DUAS amostras dessa página (a de sucesso e a de "Partial Fail")
+    // imprimem `{"message": null, "request_id": …, "response": {…}}` e mais
+    // nada, enquanto a tabela de resposta declara `error`. O envelope não tem
+    // `.default('')` de propósito — um corpo que não dá para julgar não pode ser
+    // lido como sucesso — então, se o corpo vivo realmente omitir a chave, o
+    // transporte recusa com ShopeeSchemaError e ESTE pull falha INTEIRO.
+    //
+    // Não há schema que conserte isso: alargar o envelope seria ler um corpo
+    // injulgável como sucesso. A resposta é um CONTRATO do chamador — toda
+    // chamada a `getItemViolationInfo` trata um throw de QUALQUER classe como
+    // "sem detalhe de violação desta vez" e segue com o status + deboost do
+    // get_item_base_info. Este teste é a evidência em que esse catch se apoia.
+    const semError = shopeeItemViolationInfoSchema.safeParse(AMOSTRA_VIOLACAO);
+    expect(semError.success).toBe(false);
+    expect(semError.error?.issues.map((i) => i.path.join('.'))).toContain('error');
+
+    // ÂNCORA: com a chave que a TABELA declara, a mesma amostra parseia inteira.
+    const lido = shopeeItemViolationInfoSchema.parse({ ...AMOSTRA_VIOLACAO, error: '' });
+    const linha = lido.response.item_list[0]!;
+    expect(linha.item_id).toBe(ITEM_ID);
+    expect(linha.item_status).toBe('BANNED');
+    expect(linha.item_status_details?.[0]!.fix_deadline_time).toBe(1705227588);
+    expect(linha.deboost_details?.[0]!.suggested_category?.[1]!.category_name).toBe(
+      'Personal Care',
+    );
+  });
+
+  it('16 — get_item_violation_info aceita `deboost` booleano E a string "FALSE"', () => {
+    // A mesma tolerância do get_item_base_info, medida no sandbox em 2026-09-16:
+    // um `z.boolean()` ali recusou a página inteira. Aqui NADA dobra as duas
+    // grafias — quem dobra é o fold da app, e ele precisa ver as duas.
+    const corpo = (deboost: unknown) => ({
+      error: '',
+      response: { item_list: [{ item_id: ITEM_ID, deboost }] },
+    });
+    expect(shopeeItemViolationInfoSchema.parse(corpo(true)).response.item_list[0]!.deboost).toBe(
+      true,
+    );
+    expect(shopeeItemViolationInfoSchema.parse(corpo('FALSE')).response.item_list[0]!.deboost).toBe(
+      'FALSE',
+    );
+    expect(
+      shopeeItemViolationInfoSchema.parse(corpo(null)).response.item_list[0]!.deboost,
+    ).toBeNull();
+  });
+
+  it('17 — get_item_violation_info aceita `deboosted_details` (a grafia da amostra do push 18) sem dobrá-la', () => {
+    // ⚠️ PAIR/NEAR-MISS: os dois nomes são declarados e NENHUM é dobrado no
+    // outro. Um parser que declarasse só `deboost_details` descartaria em
+    // silêncio todo payload de deboost que chegasse com a outra grafia — e a
+    // grafia da amostra do push é justamente a outra.
+    const soGrafiaDoPush = shopeeItemViolationInfoSchema.parse({
+      error: '',
+      response: {
+        item_list: [
+          {
+            item_id: ITEM_ID,
+            deboosted_details: [{ violation_type: 'Spam', violation_reason: 'Wrong Category' }],
+          },
+        ],
+      },
+    });
+    const linha = soGrafiaDoPush.response.item_list[0]!;
+    expect(linha.deboosted_details?.[0]!.violation_reason).toBe('Wrong Category');
+    // ⚠️ E ele é DECLARADO, não apenas carregado pelo passthrough: os campos que
+    // o corpo não trouxe vêm `null`, que é o que só um schema declarado faz.
+    // Sem esta linha, apagar a declaração passaria — o valor cru continuaria
+    // acessível e a asserção acima continuaria verde.
+    expect(linha.deboosted_details?.[0]!.suggestion).toBeNull();
+    expect(linha.deboosted_details?.[0]!.fix_deadline_time).toBeNull();
+    // NEAR-MISS: a outra grafia continua VAZIA — nada foi copiado de um nome
+    // para o outro.
+    expect(linha.deboost_details).toBeNull();
+
+    // PAIR: as duas grafias no mesmo corpo chegam as duas, cada uma na sua.
+    const asDuas = shopeeItemViolationInfoSchema.parse({
+      error: '',
+      response: {
+        item_list: [
+          {
+            item_id: ITEM_ID,
+            deboost_details: [{ violation_reason: 'A' }],
+            deboosted_details: [{ violation_reason: 'B' }],
+          },
+        ],
+      },
+    });
+    expect(asDuas.response.item_list[0]!.deboost_details?.[0]!.violation_reason).toBe('A');
+    expect(asDuas.response.item_list[0]!.deboosted_details?.[0]!.violation_reason).toBe('B');
+  });
+
+  it('18 — get_item_violation_info: uma linha com `fail_error` chega inteira ao lado de uma linha boa', () => {
+    // ⚠️ A TERCEIRA codificação de falha parcial do módulo Product: por LINHA,
+    // em banda. O unlist_item usa success_list/failure_list; esta página põe a
+    // falha na própria linha. Não existe parser genérico de lote, e não pode
+    // existir: quem reconcilia por `item_id` é o chamador.
+    const lido = shopeeItemViolationInfoSchema.parse({
+      error: '',
+      response: {
+        item_list: [
+          { item_id: ITEM_ID, item_name: 'item bom', item_status: 'BANNED' },
+          {
+            item_id: ITEM_ID + 1,
+            fail_error: 'error_param',
+            fail_message: 'Invalid request item_id',
+          },
+        ],
+      },
+    });
+    expect(lido.response.item_list[0]!.item_status).toBe('BANNED');
+    expect(lido.response.item_list[1]!.fail_error).toBe('error_param');
+    expect(lido.response.item_list[1]!.item_status).toBeNull();
+
+    // ⚠️ E a tolerância vai um degrau abaixo: a op é lotada em 50, então uma
+    // linha ilegível vira o sentinela `null` e as outras 49 sobrevivem — o
+    // precedente do get_item_base_info, cuja pré-condição vale aqui também
+    // (quem chama já reconcilia por `item_id`).
+    const comLinhaIlegivel = shopeeItemViolationInfoSchema.parse({
+      error: '',
+      response: {
+        item_list: [{ item_name: 'linha sem id' }, { item_id: ITEM_ID, item_status: 'NORMAL' }],
+      },
+    });
+    expect(comLinhaIlegivel.response.item_list[0]).toBeNull();
+    expect(comLinhaIlegivel.response.item_list[1]!.item_id).toBe(ITEM_ID);
+  });
+
+  it('19 — upload_image: as DUAS posições chegam ao chamador', () => {
+    // ⚠️ `image_info` é a forma de arquivo único; `image_info_list[]` é a forma
+    // múltipla e carrega `error`/`message` POR ÍNDICE — um 200 pode conter uma
+    // falha por arquivo. As duas viajam para quem pode registrar QUAL chegou.
+    const lido = shopeeUploadImageSchema.parse(AMOSTRA_UPLOAD);
+    expect(lido.response.image_info?.image_id).toBe('-');
+    expect(lido.response.image_info_list?.[0]!.image_info?.image_id).toBe('-');
+    expect(lido.response.image_info?.image_url_list?.[0]!.image_url_region).toBe('-');
+  });
+
+  it('20 — upload_image: um índice com `error` chega com `image_id` null e sem lançar', () => {
+    // ⚠️ `image_id` é anulável mesmo sendo o único campo que alguém quer: uma
+    // linha de falha por índice traz `error` e um `image_info` sem nada dentro.
+    // Exigi-lo aqui recusaria o corpo; quem transforma "sem id" em falha DA FOTO
+    // (mantendo as outras) é o chamador.
+    const lido = shopeeUploadImageSchema.parse({
+      error: '',
+      response: {
+        image_info_list: [
+          { id: 0, error: 'error_param', message: 'image too large', image_info: {} },
+          { id: 1, error: '', image_info: { image_id: 'img-ok' } },
+        ],
+      },
+    });
+    expect(lido.response.image_info_list?.[0]!.image_info?.image_id).toBeNull();
+    expect(lido.response.image_info_list?.[0]!.error).toBe('error_param');
+    expect(lido.response.image_info_list?.[1]!.image_info?.image_id).toBe('img-ok');
+    expect(lido.response.image_info).toBeNull();
+  });
+
+  it('21 — get_item_base_info: `scheduled_publish_time` chega em SEGUNDOS e ausente vira null', () => {
+    // ⚠️ É o ÚNICO campo que separa um anúncio AGENDADO de um PAUSADO: os dois
+    // estão em `item_status: 'UNLIST'` e o wire não diz mais nada sobre a
+    // diferença. Sem ele o braço `agendado` do fold é código morto.
+    //
+    // ⚠️ SEGUNDOS, como `create_time`/`update_time` desta mesma página — e ao
+    // contrário de TODO carimbo de produto deste repo, que é em milissegundos. A
+    // conversão é da app, nunca deste schema.
+    const agendado = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { item_status: 'UNLIST', scheduled_publish_time: 1733590920 }),
+    );
+    expect(agendado.response.item_list[0]!.scheduled_publish_time).toBe(1733590920);
+    // Segundos, não milissegundos: o valor da amostra da página é de 2024, e
+    // lido como ms seria 1970.
+    expect(new Date(1733590920 * 1000).getUTCFullYear()).toBe(2024);
+
+    // Um serializador que cite o número não custa a página (a regra do #1087).
+    const citado = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { scheduled_publish_time: '1733590920' }),
+    );
+    expect(citado.response.item_list[0]!.scheduled_publish_time).toBe(1733590920);
+
+    // E uma listagem comum simplesmente não o traz.
+    expect(
+      shopeeItemBaseInfoSchema.parse(corpoItemBase({}, { item_status: 'NORMAL' })).response
+        .item_list[0]!.scheduled_publish_time,
+    ).toBeNull();
+  });
+
+  it('22 — os limites de wire do passo 11 são os que as páginas declaram, e as duas flags são a escolha conservadora', () => {
+    // ⚠️ TODO limite que o WIRE declara mora no PACOTE, e `apps/shopee` não
+    // declara cópia local de nenhum deles: uma segunda cópia de um limite
+    // documentado é como as duas divergem no dia em que a sondagem vira uma.
+    expect(SHOPEE_TIER_MAX_LEVELS).toBe(2);
+    expect(SHOPEE_TIER_MAX_OPTIONS).toBe(20);
+    expect(SHOPEE_MODEL_MAX_PER_ITEM).toBe(50);
+    expect(SHOPEE_MODEL_SKU_MAX_LENGTH).toBe(100);
+    expect(SHOPEE_ITEM_IMAGE_MAX).toBe(9);
+    expect(SHOPEE_UNLIST_MAX_ITEMS).toBe(50);
+    expect(SHOPEE_ITEM_VIOLATION_MAX_IDS).toBe(50);
+    expect(SHOPEE_UPLOAD_IMAGE_MAX_BYTES).toBe(10 * 1024 * 1024);
+    expect(SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES).toEqual(['image/jpeg', 'image/jpg', 'image/png']);
+    expect(SHOPEE_UPLOAD_IMAGE_SIGNING).toBe('public');
+    expect(SHOPEE_UPLOAD_IMAGE_FIELD).toBe('image');
+    expect(SHOPEE_UPLOAD_IMAGE_SCENE).toEqual({ normal: 'normal', desc: 'desc' });
+    expect(SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO).toBe('normal');
+    expect(Object.values(SHOPEE_LOGISTICS_FEE_TYPE)).toEqual([
+      'SIZE_SELECTION',
+      'SIZE_INPUT',
+      'FIXED_DEFAULT_PRICE',
+      'CUSTOM_PRICE',
+    ]);
+    expect(SHOPEE_CONDITION).toEqual({ new: 'NEW', used: 'USED' });
+
+    // ⛔ NEAR-MISS: o enum de ESCRITA tem DOIS valores e não é o conjunto de
+    // LEITURA. Um item pode ESTAR `BANNED` ou `SELLER_DELETE`, e nenhuma escrita
+    // pode dizer isso.
+    expect(Object.values(SHOPEE_ITEM_STATUS_WRITABLE)).toEqual(['NORMAL', 'UNLIST']);
+    expect(Object.values(SHOPEE_ITEM_STATUS_WRITABLE)).not.toContain('BANNED');
+    expect(Object.values(SHOPEE_ITEM_STATUS_WRITABLE)).not.toContain('SELLER_DELETE');
+
+    // ⚠️ O 20 é uma ESCOLHA, não um fato da doc: as MESMAS duas páginas de tier
+    // carregam 20 (`error_tier_opt_too_many`) e 50 (`error_param`). O docblock
+    // tem de continuar dizendo isso — quem for flipar o literal precisa ler por
+    // que ele está onde está.
+    expect(SECAO_PASSO_11).toContain('A CHOICE, not a doc fact');
+  });
+
+  it('23 — nenhum schema do passo 11 declara um `z.number()` CRU', () => {
+    // O mesmo invariante que `integration-response-numbers-tolerant.test.js`
+    // guarda no repo, aplicado a ESTA seção: um serializador que cita UM campo
+    // não pode custar o recurso inteiro (#1087).
+    const codigo = semComentarios(SECAO_PASSO_11);
+    expect(codigo.split('\n').filter((linha) => /z\.number\(\)/.test(linha))).toEqual([]);
+    // ÂNCORA: a seção foi mesmo encontrada e tem números dentro.
+    expect(codigo.length).toBeGreaterThan(1000);
+    expect(codigo).toContain('wireInt()');
+    expect(codigo).toContain('wireNumber()');
   });
 });

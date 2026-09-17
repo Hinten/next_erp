@@ -2203,6 +2203,22 @@ export const shopeeItemBaseInfoRowSchema = z
     size_chart_id: wireInt().nullable().default(null),
     /** Loose, for {@link shopeeItemListRowSchema}'s reason. */
     item_status: z.string().nullable().default(null),
+    /**
+     * **SECONDS** since epoch — the scheduled publish instant of an UNLIST item.
+     *
+     * ⚠️ It is the ONLY thing that separates a *scheduled* listing from a paused
+     * one: both sit at `item_status: 'UNLIST'` and the wire says nothing else
+     * about the difference. A fold that reads status alone reports a listing
+     * waiting to go live as one the seller paused.
+     *
+     * ⚠️ SECONDS, like `create_time`/`update_time` on this page and unlike every
+     * produto stamp in this repo, which are MILLISECONDS. The conversion is the
+     * app's (`agendadoParaMsDe`), never this schema's.
+     *
+     * `add_item` may only SET it on an UNLIST item, from now+1h to now+90d
+     * (`add_item` request table); this page returns it on the row.
+     */
+    scheduled_publish_time: wireInt().nullable().default(null),
     has_model: z.boolean().nullable().default(null),
     /**
      * ⚠️ The page types it `boolean`; the sandbox sends the STRING `"FALSE"`
@@ -2600,3 +2616,748 @@ export type ShopeeKitItemInfo = z.infer<typeof shopeeKitItemInfoPayloadSchema>;
 /** `GET /api/v2/product/get_kit_item_info` — WRAPPED under `response`. */
 export const shopeeKitItemInfoSchema = wrappedOp(shopeeKitItemInfoPayloadSchema);
 export type ShopeeKitItemInfoResponse = z.infer<typeof shopeeKitItemInfoSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                       The listing writes (step 11)                         */
+/* -------------------------------------------------------------------------- */
+
+/* --------------------- the wire bounds and the write enums ---------------- */
+
+/**
+ * `add_item`/`update_item` `item_status` — the only two values either page WRITES.
+ *
+ * ⚠️ NOT {@link shopeeItemListRowSchema}'s loose read string, and NOT
+ * `SHOPEE_ITEM_STATUS_WIRE` (`api.ts`), which is the SIX-value REQUEST filter of
+ * `get_item_list`. Two names because they are two sets: an item can BE `BANNED`
+ * or `SELLER_DELETE`, and no write may ever say so.
+ */
+export const SHOPEE_ITEM_STATUS_WRITABLE = { normal: 'NORMAL', unlist: 'UNLIST' } as const;
+export type ShopeeItemStatusWritable =
+  (typeof SHOPEE_ITEM_STATUS_WRITABLE)[keyof typeof SHOPEE_ITEM_STATUS_WRITABLE];
+
+/**
+ * `condition` — `announcement 1528`: "only supports NEW or USED, case-insensitive",
+ * and MANDATORY on every create AND update for BR.
+ */
+export const SHOPEE_CONDITION = { new: 'NEW', used: 'USED' } as const;
+export type ShopeeCondition = (typeof SHOPEE_CONDITION)[keyof typeof SHOPEE_CONDITION];
+
+/**
+ * The four documented `fee_type` values of `get_channel_list`, for the CALLER's
+ * branch.
+ *
+ * ⚠️ The schema field stays a LOOSE string ({@link shopeeLogisticsChannelSchema}):
+ * an unknown value must cost ONE channel's usability, never the whole page. This
+ * constant is how the caller names the four it knows.
+ */
+export const SHOPEE_LOGISTICS_FEE_TYPE = {
+  sizeSelection: 'SIZE_SELECTION',
+  sizeInput: 'SIZE_INPUT',
+  fixedDefaultPrice: 'FIXED_DEFAULT_PRICE',
+  customPrice: 'CUSTOM_PRICE',
+} as const;
+export type ShopeeLogisticsFeeType =
+  (typeof SHOPEE_LOGISTICS_FEE_TYPE)[keyof typeof SHOPEE_LOGISTICS_FEE_TYPE];
+
+/**
+ * ⚠️ Every WIRE bound Shopee states lives HERE, in the package, and `apps/shopee`
+ * declares no local copy of any of them. A second copy of a documented bound is
+ * how the two drift the day a probe flips one.
+ *
+ * `init_tier_variation`: "Defining only color creates one tier, while color +
+ * size creates two tiers (maximum supported)"; `error_param: The level of
+ * tier-variation over 2.`
+ */
+export const SHOPEE_TIER_MAX_LEVELS = 2;
+
+/**
+ * Options per tier — the STRICTER of TWO contradictory bounds ON THE SAME PAGES.
+ *
+ * ⚠️ A CHOICE, not a doc fact. Both `init_tier_variation` and
+ * `update_tier_variation` carry BOTH `error_tier_opt_too_many: Count of
+ * tier_variation option is larger than 20.` and `error_param: Count of
+ * tier_variation options should be under 50.` — read 2026-09-17 on both pages.
+ * 20 refuses early rather than sending a body Shopee might reject; the sandbox
+ * probe settles it, and the flip is this one literal.
+ */
+export const SHOPEE_TIER_MAX_OPTIONS = 20;
+
+/**
+ * `add_model.model_list` limits [1,50]; `update_model.model` "between 1 to 50";
+ * `init_tier_variation.model` "model number at most 50".
+ */
+export const SHOPEE_MODEL_MAX_PER_ITEM = 50;
+
+/** "model_sku length information needs to be no more than 100 characters" (every model page). */
+export const SHOPEE_MODEL_SKU_MAX_LENGTH = 100;
+
+/**
+ * `upload_image`: "image number should be less than 9"; `get_item_limit`'s
+ * `item_image_count_limit` samples a max of 9.
+ *
+ * ⚠️ The HARD ceiling, not the band: the real bound is per SHOP and per CATEGORY
+ * and comes from `get_item_limit`. A body that fits this one can still be
+ * refused by the band.
+ */
+export const SHOPEE_ITEM_IMAGE_MAX = 9;
+
+/** `unlist_item.item_list`: "Length should be between 1 to 50." */
+export const SHOPEE_UNLIST_MAX_ITEMS = 50;
+
+/** `get_item_violation_info.item_id_list`: "limit [0,50]". */
+export const SHOPEE_ITEM_VIOLATION_MAX_IDS = 50;
+
+/** `upload_image`: "Max 10.0 MB each." */
+export const SHOPEE_UPLOAD_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** `upload_image`: "Image format accepted: JPG, JPEG, PNG." */
+export const SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES = ['image/jpeg', 'image/jpg', 'image/png'] as const;
+export type ShopeeUploadImageContentType = (typeof SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES)[number];
+
+export type ShopeeUploadImageSigning = 'public' | 'shop';
+
+/**
+ * ⚠️ The signing mode of `upload_image` — the ONE literal that flips it.
+ *
+ * The page is `type=Public`: its Common params are only `partner_id`,
+ * `timestamp` and `sign`, its sign description names four elements, and all four
+ * request samples carry a query of exactly those three. Against that, its own
+ * api-specific error list OPENS with `error_param: There is no access_token in
+ * query.` and `error_auth: Invalid access_token.` — errors a call with no token
+ * in its contract cannot produce — and the legacy PRODUCTION exporter signed it
+ * with the SHOP signature. The legacy code proves what was SENT, never what was
+ * ACCEPTED. Default `public`; the sandbox probe settles it.
+ */
+export const SHOPEE_UPLOAD_IMAGE_SIGNING: ShopeeUploadImageSigning = 'public';
+
+/**
+ * ⚠️ The multipart FIELD NAME — the second contradicted literal on the same page.
+ * The request table, the cURL, PHP and Python samples all say `image`; the JAVA
+ * sample says `file`. Three to one, and the legacy exporter sent `image` in
+ * production for years.
+ */
+export const SHOPEE_UPLOAD_IMAGE_FIELD = 'image';
+
+/**
+ * `scene` — "normal: we will process the image as a square image, it is
+ * recommended to use when uploading item image; desc: we will not process the
+ * image".
+ */
+export const SHOPEE_UPLOAD_IMAGE_SCENE = { normal: 'normal', desc: 'desc' } as const;
+export type ShopeeUploadImageScene =
+  (typeof SHOPEE_UPLOAD_IMAGE_SCENE)[keyof typeof SHOPEE_UPLOAD_IMAGE_SCENE];
+
+/**
+ * The scene a listing photo is sent with.
+ *
+ * ⚠️ SENT rather than omitted, even though `normal` is the page's documented
+ * default: the default is PROSE, and a listing image that silently stopped being
+ * squared would surface as a rejected `add_item`, never as a missing parameter.
+ */
+export const SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO: ShopeeUploadImageScene =
+  SHOPEE_UPLOAD_IMAGE_SCENE.normal;
+
+/* ------------------------- the envelope-only writes ----------------------- */
+
+/**
+ * `update_tier_variation`, `update_model`, `delete_model` and `delete_item` —
+ * all four answer the BARE envelope, with no `response` object at all (verified
+ * on all four Response-params tables and all four samples, 2026-09-17).
+ *
+ * ⚠️ `flatOp({})` rather than reusing {@link shopeeEnvelopeSchema}: that one is
+ * the TRANSPORT's stage-1 schema and must not become an operation's — the
+ * {@link shopeeConfirmLostPushSchema} rule.
+ *
+ * ⚠️ ONE constant over FOUR operations, and that is the edit hazard: if ONE of
+ * them ever grows a `response`, it gets its OWN schema. Splitting is the edit;
+ * widening this one is not.
+ */
+export const shopeeWriteAckSchema = flatOp({});
+export type ShopeeWriteAck = z.infer<typeof shopeeWriteAckSchema>;
+
+/* --------------------------- add_item / update_item ----------------------- */
+
+/**
+ * `add_item`'s echo of the item price — an OBJECT.
+ *
+ * ⚠️ {@link shopeePriceInfoSchema} is an ARRAY on every READ page. Reusing it
+ * here refuses the whole `add_item` body; declaring the array shape here would
+ * refuse the read. Two schemas for one concept, and the near-miss test pins that
+ * neither parses the other page's sample.
+ */
+export const shopeePriceInfoObjetoSchema = z
+  .object({
+    current_price: wireNumber().nullable().default(null),
+    original_price: wireNumber().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeePriceInfoObjeto = z.infer<typeof shopeePriceInfoObjetoSchema>;
+
+/**
+ * The echo of `add_item` AND of `update_item` — ONE schema for both pages.
+ *
+ * ⚠️ The decision rests on a passing sample PER PAGE (two tests), never on a
+ * comment claiming the two are mirrors. They are not: `add_item` additionally
+ * echoes `attribute`, `price_info`, `seller_stock`, `wholesale` and
+ * `video_info`, and its `logistic_info` rows carry `size_id`/`shipping_fee`
+ * where `update_item`'s carry `estimated_shipping_fee`/`logistic_name`. The
+ * UNION of both positions is declared and every field but `item_id` is nullable,
+ * so either body parses.
+ *
+ * ⚠️ NOTHING in step 11 reads this echo except `item_id`. State is read back
+ * through `get_item_base_info` — `announcement 1394` recommends exactly that,
+ * and `announcement 1395` is REMOVING `update_item`'s response logistics block,
+ * so reading channel state off it would rot on a date already announced.
+ *
+ * ⚠️ `item_id` is the one required field: an `add_item` that answered without
+ * one is unusable — the publish would have nothing to write back — and must fail
+ * loudly rather than write a link with a null id.
+ *
+ * ⚠️ `images` (plural, with the two string lists) is the WRITE spelling;
+ * `get_item_base_info` spells the same block `image`. `attribute` is the
+ * Response-params spelling and `attributes` is what `add_item`'s own SAMPLE
+ * prints — both are declared, neither is renamed, exactly as the kit page's four
+ * renames are handled.
+ */
+export const shopeeItemWriteEchoPayloadSchema = z
+  .object({
+    item_id: wireInt(),
+    item_status: z.string().nullable().default(null),
+    item_name: z.string().nullable().default(null),
+    description: z.string().nullable().default(null),
+    /** `NEW` | `USED`. Loose here for {@link shopeeItemListRowSchema}'s reason. */
+    condition: z.string().nullable().default(null),
+    /** ⚠️ A FLOAT on the write side and a STRING in KG on the read side. */
+    weight: wireNumber().nullable().default(null),
+    dimension: z
+      .object({
+        package_length: wireInt().nullable().default(null),
+        package_width: wireInt().nullable().default(null),
+        package_height: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    category_id: wireInt().nullable().default(null),
+    /** ⚠️ `brand_id: 0` is "No Brand" — data, not an absence. */
+    brand: z
+      .object({
+        brand_id: wireInt().nullable().default(null),
+        original_brand_name: z.string().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    pre_order: z
+      .object({
+        is_pre_order: z.boolean().nullable().default(null),
+        days_to_ship: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    item_dangerous: wireInt().nullable().default(null),
+    description_type: z.string().nullable().default(null),
+    description_info: shopeeDescriptionInfoSchema.nullable().default(null),
+    /** PL-only. Carried, never read. */
+    complaint_policy: z.record(z.string(), z.unknown()).nullable().default(null),
+    /** ⚠️ PLURAL on the write side; the read page spells the same block `image`. */
+    images: shopeeItemImageSchema.nullable().default(null),
+    /** The Response-params spelling. */
+    attribute: z.array(shopeeAtributoDoItemSchema).nullable().default(null),
+    /** ⚠️ The spelling `add_item`'s own response SAMPLE prints. */
+    attributes: z.array(shopeeAtributoDoItemSchema).nullable().default(null),
+    /** ⚠️ An OBJECT here — see {@link shopeePriceInfoObjetoSchema}. */
+    price_info: shopeePriceInfoObjetoSchema.nullable().default(null),
+    seller_stock: z
+      .array(
+        z
+          .object({
+            location_id: z.string().nullable().default(null),
+            stock: wireInt().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+    /** ⚠️ SINGULAR on the write side; the read page says `wholesales`. */
+    wholesale: z.array(shopeeWholesaleSchema).nullable().default(null),
+    video_info: z
+      .array(
+        z
+          .object({
+            video_url: z.string().nullable().default(null),
+            thumbnail_url: z.string().nullable().default(null),
+            duration: wireInt().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+    /**
+     * ⚠️ {@link shopeeLogisticInfoSchema} is reused because it already declares
+     * all seven names the two pages use between them. It is NEVER read back as
+     * channel state — `announcement 1395` deprecates these fields in the
+     * response.
+     */
+    logistic_info: z.array(shopeeLogisticInfoSchema).nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeItemWriteEcho = z.infer<typeof shopeeItemWriteEchoPayloadSchema>;
+
+/** `POST /api/v2/product/{add_item,update_item}` — WRAPPED under `response`. */
+export const shopeeItemWriteSchema = wrappedOp(shopeeItemWriteEchoPayloadSchema);
+export type ShopeeItemWriteResponse = z.infer<typeof shopeeItemWriteSchema>;
+
+/* ---------------------- init_tier_variation / add_model ------------------- */
+
+/**
+ * One model row as `init_tier_variation` and `add_model` echo it.
+ *
+ * ⚠️ `tier_index` is typed `object[]` on `init_tier_variation`'s response table
+ * and `int32[]` on `add_model`'s. It is a doc typing bug: both REQUEST tables say
+ * `int32[]`, `get_model_list` says `int32[]`, and `init_tier_variation`'s own
+ * sample prints `[0,0]`. It is read as int[]; a row that really carried objects
+ * costs ONE row, not the page — see the sentinel on the payload.
+ *
+ * ⚠️ `model_id` is REQUIRED inside the row. A row without one is not a model, and
+ * `variacaoShopeeLinkSchema.model_id` is required and non-nullable — a
+ * `model_id: null` riding through here would be written into `variashopee` as a
+ * link to nothing.
+ *
+ * ⚠️ `weight` is a float HERE and a STRING on the read pages. This is the write
+ * side.
+ */
+export const shopeeTierWriteRowSchema = z
+  .object({
+    model_id: wireInt(),
+    tier_index: z.array(wireInt()).default([]),
+    model_sku: z.string().nullable().default(null),
+    price_info: z
+      .array(z.object({ original_price: wireNumber().nullable().default(null) }).passthrough())
+      .nullable()
+      .default(null),
+    seller_stock: z
+      .array(
+        z
+          .object({
+            location_id: z.string().nullable().default(null),
+            stock: wireInt().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+    weight: wireNumber().nullable().default(null),
+    dimension: z
+      .object({
+        package_height: wireInt().nullable().default(null),
+        package_length: wireInt().nullable().default(null),
+        package_width: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeeTierWriteRow = z.infer<typeof shopeeTierWriteRowSchema>;
+
+/**
+ * The payload of `init_tier_variation` AND of `add_model`.
+ *
+ * ⚠️ ONE schema for two pages, justified by a passing sample per page:
+ * `init_tier_variation` additionally answers `item_id` and the DEPRECATED
+ * `tier_variation[]` read shape, `add_model` answers only `model[]`. Both extra
+ * fields are nullable, so either body parses.
+ *
+ * ⚠️ **PER-ELEMENT tolerance with a `null` sentinel**, the
+ * {@link shopeeItemBaseInfoPayloadSchema} precedent and for a SHARPER reason:
+ * this response arrives AFTER Shopee has already minted the models. A whole-body
+ * refusal would leave Shopee holding models the ERP has no id for. The
+ * precondition the precedent asks for is met — the publisher uses this pairing
+ * only as a cross-check and reconciles against a FRESH `get_model_list`, so a
+ * `null` row costs one un-cross-checked model and nothing durable.
+ *
+ * ⚠️ `add_model`'s own response SAMPLE prints a `model[]` row with NO `model_id`
+ * (read 2026-09-17). Under the sentinel that row parses as `null` instead of
+ * refusing the page — which is exactly the shape the reconciliation read repairs.
+ */
+export const shopeeTierWritePayloadSchema = z
+  .object({
+    item_id: wireInt().nullable().default(null),
+    tier_variation: z.array(shopeeTierVariationSchema).nullable().default(null),
+    model: z.array(shopeeTierWriteRowSchema.nullable().catch(null)).default([]),
+  })
+  .passthrough();
+export type ShopeeTierWrite = z.infer<typeof shopeeTierWritePayloadSchema>;
+
+/** `POST /api/v2/product/{init_tier_variation,add_model}` — WRAPPED under `response`. */
+export const shopeeTierWriteSchema = wrappedOp(shopeeTierWritePayloadSchema);
+export type ShopeeTierWriteResponse = z.infer<typeof shopeeTierWriteSchema>;
+
+/* ------------------------------- unlist_item ------------------------------ */
+
+/**
+ * `unlist_item` — the THIRD partial-failure encoding in the Product module.
+ *
+ * ⚠️ `success_list[].unlist` ECHOES THE REQUEST FLAG. It is NOT the item's new
+ * `item_status`: a re-list request answers `unlist: false` on success. The page's
+ * own mixed sample shows exactly that. Whoever needs the new status re-reads
+ * `get_item_base_info`.
+ *
+ * ⚠️ Both arrays `.default([])` rather than `.nullable()`: an absent
+ * `failure_list` means "nothing failed", and a `null` there would make every
+ * caller write `?? []` — one of which will forget.
+ *
+ * ⚠️ NO per-element `.catch(null)` here, deliberately: the rows are two scalars
+ * each, and a sentinel would produce an entry with no `item_id`, which is
+ * unreconcilable. A malformed row is a page-level refusal, and unlike
+ * `init_tier_variation` a refusal here costs nothing durable — the pause either
+ * happened or did not, and the status comes from a read-back anyway.
+ */
+export const shopeeUnlistItemPayloadSchema = z
+  .object({
+    success_list: z
+      .array(
+        z
+          .object({
+            item_id: wireInt(),
+            unlist: z.boolean().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .default([]),
+    failure_list: z
+      .array(
+        z
+          .object({
+            item_id: wireInt(),
+            failed_reason: z.string().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .default([]),
+  })
+  .passthrough();
+export type ShopeeUnlistItem = z.infer<typeof shopeeUnlistItemPayloadSchema>;
+
+/** `POST /api/v2/product/unlist_item` — WRAPPED under `response`. */
+export const shopeeUnlistItemSchema = wrappedOp(shopeeUnlistItemPayloadSchema);
+export type ShopeeUnlistItemResponse = z.infer<typeof shopeeUnlistItemSchema>;
+
+/* ------------------------ get_item_violation_info ------------------------- */
+
+/**
+ * One violation detail, on the status side or the deboost side.
+ *
+ * ⚠️ `fix_deadline_time` and `update_time` are SECONDS ("Empty if no deadline").
+ * The link document stores MILLISECONDS; the conversion is the app's.
+ *
+ * ⚠️ `suggested_category` is declared on the DEBOOST side only by the page, and
+ * is declared HERE for both: a doc gap and a doc bug look identical, and
+ * `.passthrough()` would hide which one it is.
+ */
+export const shopeeViolationDetailSchema = z
+  .object({
+    violation_type: z.string().nullable().default(null),
+    violation_reason: z.string().nullable().default(null),
+    suggestion: z.string().nullable().default(null),
+    /** SECONDS. */
+    fix_deadline_time: wireInt().nullable().default(null),
+    /** SECONDS. */
+    update_time: wireInt().nullable().default(null),
+    suggested_category: z
+      .array(
+        z
+          .object({
+            category_id: wireInt().nullable().default(null),
+            category_name: z.string().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeeViolationDetail = z.infer<typeof shopeeViolationDetailSchema>;
+
+/**
+ * One row of `get_item_violation_info.response.item_list`.
+ *
+ * ⚠️ `fail_error` / `fail_message` are IN BAND — a THIRD partial-failure
+ * encoding, per ROW. `unlist_item` uses `success_list`/`failure_list`; this page
+ * puts the failure on the row itself. There is no generic batch parser here and
+ * there must not be one: the caller reconciles by `item_id` and reads
+ * `fail_error`.
+ *
+ * ⚠️ `deboost` is `boolean | string`, like `get_item_base_info`'s: the sandbox
+ * answered the STRING `"FALSE"` there (measured 2026-09-16) and a `z.boolean()`
+ * refused the whole page. Nothing folds it HERE — the app's fold owns that, and
+ * it must handle both spellings.
+ *
+ * ⚠️ `deboosted_details` is declared beside `deboost_details` because push 18's
+ * own sample prints THAT spelling against a `deboost_details` parameter table,
+ * and the push's detail objects are byte-identical to this pull's. Both names
+ * are declared, NEITHER is folded into the other, and the reader prefers
+ * `deboost_details` — a parser that declared only one would silently drop every
+ * deboost payload of the other.
+ */
+export const shopeeItemViolationRowSchema = z
+  .object({
+    item_id: wireInt(),
+    item_name: z.string().nullable().default(null),
+    /** Loose, for {@link shopeeItemListRowSchema}'s reason. */
+    item_status: z.string().nullable().default(null),
+    deboost: z.union([z.boolean(), z.string()]).nullable().default(null),
+    item_status_details: z.array(shopeeViolationDetailSchema).nullable().default(null),
+    deboost_details: z.array(shopeeViolationDetailSchema).nullable().default(null),
+    /** ⚠️ Push 18's SAMPLE spelling. Declared, never folded. */
+    deboosted_details: z.array(shopeeViolationDetailSchema).nullable().default(null),
+    fail_error: z.string().nullable().default(null),
+    fail_message: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeItemViolationRow = z.infer<typeof shopeeItemViolationRowSchema>;
+
+/**
+ * The inner payload of `get_item_violation_info`.
+ *
+ * ⚠️ **Both of this page's response samples carry NO `error` key at all** (read
+ * 2026-09-17: `{"message": null, "request_id": …, "response": {…}}`), while its
+ * Response-params table declares one. {@link shopeeEnvelopeSchema} has no
+ * `.default('')` on `error` on purpose — a body we cannot judge must not read as
+ * a success — so if the live body really omits it, the transport refuses with
+ * `ShopeeSchemaError` naming `error` and this pull fails TOTALLY.
+ *
+ * ⚠️ No schema change can rescue that, and widening the envelope would be the
+ * wrong fix. The answer is a CONTRACT on the caller: every call site treats a
+ * throw of any class as "no violation detail this time" and proceeds on
+ * `get_item_base_info`'s status + deboost. The test that pins this is the
+ * evidence that best-effort catch rests on.
+ *
+ * ⚠️ Per-ELEMENT sentinel: the op is batched to 50 and one malformed row must
+ * not cost the other 49 — the {@link shopeeItemBaseInfoPayloadSchema} precedent,
+ * whose precondition is met here too (the caller already reconciles by
+ * `item_id`).
+ */
+export const shopeeItemViolationInfoPayloadSchema = z
+  .object({
+    item_list: z.array(shopeeItemViolationRowSchema.nullable().catch(null)).default([]),
+  })
+  .passthrough();
+export type ShopeeItemViolationInfo = z.infer<typeof shopeeItemViolationInfoPayloadSchema>;
+
+/** `GET /api/v2/product/get_item_violation_info` — WRAPPED under `response`. */
+export const shopeeItemViolationInfoSchema = wrappedOp(shopeeItemViolationInfoPayloadSchema);
+export type ShopeeItemViolationInfoResponse = z.infer<typeof shopeeItemViolationInfoSchema>;
+
+/* ---------------------------- get_channel_list ---------------------------- */
+
+/**
+ * One logistics channel of the SHOP, as `get_channel_list` returns it.
+ *
+ * ⚠️ `size_list[].size_id` is a **STRING** here and an `int32` on
+ * `add_item.logistic_info[].size_id` — same concept, two types, one call apart.
+ * It is NEVER `wireInt()`: a `"0"` that round-tripped as `0` would send a size
+ * the seller did not pick. The conversion (and the refusal when the value is not
+ * a safe integer) belongs to the caller that builds the item's logistics.
+ *
+ * ⚠️ `weight_limit` / `volume_limit`: "If the value is 0 or null, that means
+ * there is no limit." `0` is NOT a bound. Nothing here folds it; the caller does.
+ *
+ * ⚠️ `fee_type` is a LOOSE string — {@link SHOPEE_LOGISTICS_FEE_TYPE} names the
+ * four documented values for the caller's branch, and an unknown value costs ONE
+ * channel, never the page.
+ *
+ * ⚠️ `mask_channel_id: 0` means this IS a checkout (masked) channel; non-zero
+ * means it is a fulfillment channel hanging off one.
+ *
+ * ⚠️ `compulsory_channel`: "If the value is true, at least one such channel must
+ * be enabled." `channel_relation_rules` carries the auto-enable and
+ * block-on-disable sets.
+ *
+ * ⚠️ There is **NO `preferred` field** on this page — the response table has no
+ * such name and neither does its sample. It survives only in a legacy DTO, and
+ * declaring it here would resurrect a phantom the caller could then branch on.
+ *
+ * ⚠️ `auto_call_driver_setting.preparation_time_limit` is
+ * `min_preparation_time` / `max_preparation_time`, NOT `{min,max}`.
+ */
+export const shopeeLogisticsChannelSchema = z
+  .object({
+    logistics_channel_id: wireInt(),
+    logistics_channel_name: z.string().nullable().default(null),
+    cod_enabled: z.boolean().nullable().default(null),
+    /** SHOP level. A channel not enabled here cannot sensibly be enabled on an item. */
+    enabled: z.boolean().nullable().default(null),
+    fee_type: z.string().nullable().default(null),
+    /** Only for `fee_type: SIZE_SELECTION`. */
+    size_list: z
+      .array(
+        z
+          .object({
+            /** ⚠️ A STRING. Never `wireInt()` — see the block comment. */
+            size_id: z.string().nullable().default(null),
+            name: z.string().nullable().default(null),
+            default_price: wireNumber().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+    weight_limit: z
+      .object({
+        item_max_weight: wireNumber().nullable().default(null),
+        item_min_weight: wireNumber().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    item_max_dimension: z
+      .object({
+        height: wireNumber().nullable().default(null),
+        width: wireNumber().nullable().default(null),
+        length: wireNumber().nullable().default(null),
+        /** Sample `cm`, and `UNKNOWN` on a channel with no limit. Carried, never assumed. */
+        unit: z.string().nullable().default(null),
+        dimension_sum: wireNumber().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    volume_limit: z
+      .object({
+        item_max_volume: wireNumber().nullable().default(null),
+        item_min_volume: wireNumber().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    logistics_description: z.string().nullable().default(null),
+    /** "If true, sellers cannot close this channel." */
+    force_enable: z.boolean().nullable().default(null),
+    mask_channel_id: wireInt().nullable().default(null),
+    block_seller_cover_shipping_fee: z.boolean().nullable().default(null),
+    support_cross_border: z.boolean().nullable().default(null),
+    seller_logistic_has_configuration: z.boolean().nullable().default(null),
+    logistics_capability: z
+      .object({ seller_logistics: z.boolean().nullable().default(null) })
+      .passthrough()
+      .nullable()
+      .default(null),
+    preprint: z.boolean().nullable().default(null),
+    /** `instant` | `same_day` | null. */
+    service_type_identifier: z.string().nullable().default(null),
+    auto_call_driver_setting: z
+      .object({
+        auto_call_driver_eligible: z.boolean().nullable().default(null),
+        auto_call_driver_enabled: z.boolean().nullable().default(null),
+        /** MINUTES. */
+        preparation_time: wireInt().nullable().default(null),
+        preparation_time_limit: z
+          .object({
+            min_preparation_time: wireInt().nullable().default(null),
+            max_preparation_time: wireInt().nullable().default(null),
+          })
+          .passthrough()
+          .nullable()
+          .default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    support_pause: z.boolean().nullable().default(null),
+    compulsory_channel: z.boolean().nullable().default(null),
+    channel_relation_rules: z
+      .array(
+        z
+          .object({
+            related_enabled_channels: z.array(wireInt()).nullable().default(null),
+            related_dependent_block_channels: z.array(wireInt()).nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeeLogisticsChannel = z.infer<typeof shopeeLogisticsChannelSchema>;
+
+/**
+ * The inner payload of `get_channel_list`.
+ *
+ * ⚠️ Per-element sentinel: the list is whole-SHOP, and one unreadable channel
+ * must not cost the logistics build of every publish.
+ */
+export const shopeeChannelListPayloadSchema = z
+  .object({
+    logistics_channel_list: z
+      .array(shopeeLogisticsChannelSchema.nullable().catch(null))
+      .default([]),
+  })
+  .passthrough();
+export type ShopeeChannelList = z.infer<typeof shopeeChannelListPayloadSchema>;
+
+/** `GET /api/v2/logistics/get_channel_list` — WRAPPED under `response`. */
+export const shopeeChannelListSchema = wrappedOp(shopeeChannelListPayloadSchema);
+export type ShopeeChannelListResponse = z.infer<typeof shopeeChannelListSchema>;
+
+/* ----------------------------- upload_image ------------------------------- */
+
+/** One uploaded image: its id and one URL per region. */
+export const shopeeImageInfoSchema = z
+  .object({
+    image_id: z.string().nullable().default(null),
+    image_url_list: z
+      .array(
+        z
+          .object({
+            image_url_region: z.string().nullable().default(null),
+            image_url: z.string().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeeImageInfo = z.infer<typeof shopeeImageInfoSchema>;
+
+/**
+ * `upload_image`'s payload — BOTH documented positions, and NEITHER is preferred
+ * here.
+ *
+ * `image_info` is the single-file convenience field; `image_info_list[]` is the
+ * multi-file form and carries a PER-INDEX `error`/`message`, so a 200 can
+ * contain a per-file failure. Both travel to the caller, which is the only layer
+ * that can log WHICH one arrived — the `gtin_limit` technique.
+ *
+ * ⚠️ `image_id` is nullable even though it is the only field anyone wants: a
+ * per-index failure row carries `error` and an `image_info` with nothing in it.
+ * Requiring it here would refuse the body; the caller turns "no id" into a
+ * per-photo failure and keeps the other photos.
+ */
+export const shopeeUploadImagePayloadSchema = z
+  .object({
+    image_info: shopeeImageInfoSchema.nullable().default(null),
+    image_info_list: z
+      .array(
+        z
+          .object({
+            /** The INDEX of the image in the request, not an id. */
+            id: wireInt().nullable().default(null),
+            error: z.string().nullable().default(null),
+            message: z.string().nullable().default(null),
+            image_info: shopeeImageInfoSchema.nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeeUploadImage = z.infer<typeof shopeeUploadImagePayloadSchema>;
+
+/** `POST /api/v2/media_space/upload_image` — WRAPPED under `response`. */
+export const shopeeUploadImageSchema = wrappedOp(shopeeUploadImagePayloadSchema);
+export type ShopeeUploadImageResponse = z.infer<typeof shopeeUploadImageSchema>;
