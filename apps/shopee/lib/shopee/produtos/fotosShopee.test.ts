@@ -101,7 +101,9 @@ function paresDoPlano(
   return plano.fotos.baixar;
 }
 
-type RespostaFake = { status?: number; contentType?: string; body?: string } | 'erro-de-rede';
+type RespostaFake =
+  | { status?: number; contentType?: string; body?: string; location?: string }
+  | 'erro-de-rede';
 
 /** ⚠️ Uma URL sem entrada no mapa LANÇA: um fetch a mais é visível, nunca mudo. */
 function fakeFetch(mapa: Record<string, RespostaFake>) {
@@ -115,8 +117,13 @@ function fakeFetch(mapa: Record<string, RespostaFake>) {
       ok: status >= 200 && status < 300,
       status,
       headers: {
-        get: (h: string) =>
-          h.toLowerCase() === 'content-type' ? (entrada.contentType ?? 'image/jpeg') : null,
+        get: (h: string) => {
+          const nome = h.toLowerCase();
+          // ⚠️ O alvo do redirecionamento EXISTE na resposta — é o que torna
+          // "o log nunca leva o Location" uma asserção de verdade.
+          if (nome === 'location') return entrada.location ?? null;
+          return nome === 'content-type' ? (entrada.contentType ?? 'image/jpeg') : null;
+        },
       },
       arrayBuffer: () =>
         Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length)),
@@ -273,7 +280,7 @@ describe('urlDeImagemSegura — a allow-list de hosts', () => {
       { url: `http://${HOST_BR}/file/x`, imageId: 'i1' },
     ]);
     expect(res.importadas).toBe(1);
-    expect(fetch).toHaveBeenCalledWith(`https://${HOST_BR}/file/x`);
+    expect(fetch).toHaveBeenCalledWith(`https://${HOST_BR}/file/x`, { redirect: 'manual' });
   });
 
   it('⛔ recusa um host de FORA — inclusive um que só PREFIXA o domínio da Shopee', () => {
@@ -308,6 +315,86 @@ describe('urlDeImagemSegura — a allow-list de hosts', () => {
     expect(res).toEqual({ importadas: 0, ignoradas: 0, falhas: 1 });
     expect(fetch).not.toHaveBeenCalled();
     expect(bucket.saved).toEqual([]);
+  });
+});
+
+/* ------------- 3b. o redirecionamento: a allow-list vale no fio ----------- */
+
+describe('o redirecionamento — a guarda vale para o host que CONECTA, não só para o pedido', () => {
+  /** O alvo clássico de SSRF: o metadata service do runtime. Nunca pode vazar. */
+  const ALVO = 'http://169.254.169.254/latest/meta-data/';
+
+  it('o fetch é emitido com `redirect: manual` — a resposta 3xx chega a nós, não ao curl', async () => {
+    const db = new FakeDb();
+    const bucket = new FakeBucket();
+    semearProduto(db);
+    const fetch = fakeFetch({ [URL_1]: { body: 'bytes-1' } });
+
+    await importarFotosShopee(deps(db, bucket, fetch), PRODUTO, [{ url: URL_1, imageId: 'i1' }]);
+
+    expect(fetch).toHaveBeenCalledWith(URL_1, { redirect: 'manual' });
+  });
+
+  it('um 302 de um host PERMITIDO é recusado: conta em `falhas`, nada sobe, e o log leva o status e o host — nunca o `Location`', async () => {
+    const db = new FakeDb();
+    const bucket = new FakeBucket();
+    semearProduto(db);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetch = fakeFetch({ [URL_1]: { status: 302, location: ALVO } });
+
+    const res = await importarFotosShopee(deps(db, bucket, fetch), PRODUTO, [
+      { url: URL_1, imageId: 'i1' },
+    ]);
+
+    expect(res).toEqual({ importadas: 0, ignoradas: 0, falhas: 1 });
+    expect(bucket.saved).toEqual([]);
+    expect(db.idsEm('arquivos')).toEqual([]);
+    expect(patchesDoProduto(db)).toEqual([]);
+
+    const causa = String((warn.mock.calls[0]?.[1] as { causa?: unknown } | undefined)?.causa);
+    expect(causa).toContain('302');
+    expect(causa).toContain(HOST_BR);
+    const linha = JSON.stringify(warn.mock.calls[0]);
+    expect(linha).not.toContain('169.254.169.254');
+    expect(linha).not.toContain('meta-data');
+    expect(linha).not.toContain('abc123segredo');
+  });
+
+  it('um 301 conta igual a um 302 — a recusa é de QUALQUER 3xx, não de um status', async () => {
+    const db = new FakeDb();
+    const bucket = new FakeBucket();
+    semearProduto(db);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetch = fakeFetch({ [URL_1]: { status: 301, location: ALVO }, [URL_2]: { status: 307 } });
+
+    const res = await importarFotosShopee(deps(db, bucket, fetch), PRODUTO, [
+      { url: URL_1, imageId: 'i1' },
+      { url: URL_2, imageId: 'i2' },
+    ]);
+
+    expect(res).toEqual({ importadas: 0, ignoradas: 0, falhas: 2 });
+    expect(bucket.saved).toEqual([]);
+    const causas = warn.mock.calls.map((c) => String((c[1] as { causa?: unknown }).causa));
+    expect(causas[0]).toContain('301');
+    expect(causas[0]).toContain(HOST_BR);
+    expect(causas[1]).toContain('307');
+    expect(causas[1]).toContain(HOST_BR);
+  });
+
+  it('⛔ um 200 do MESMO host permitido continua importando — a recusa é do 3xx, não do host', async () => {
+    const db = new FakeDb();
+    const bucket = new FakeBucket();
+    semearProduto(db);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetch = fakeFetch({ [URL_1]: { status: 200, body: 'bytes-1' } });
+
+    const res = await importarFotosShopee(deps(db, bucket, fetch), PRODUTO, [
+      { url: URL_1, imageId: 'i1' },
+    ]);
+
+    expect(res).toEqual({ importadas: 1, ignoradas: 0, falhas: 0 });
+    expect(bucket.caminhos).toEqual([`produtos/${PRODUTO}/originals/${sha512De('bytes-1')}.jpeg`]);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

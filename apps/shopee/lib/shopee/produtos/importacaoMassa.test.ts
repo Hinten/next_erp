@@ -1365,6 +1365,80 @@ describe('processarImportacaoShopee — kits e lote desconhecido', () => {
     expect(job(db).fila).toEqual([]);
   });
 
+  it('um kit cuja tag só chega no get_item_base_info troca de fila e importa como KIT', async () => {
+    // A linha de LISTAGEM não traz tag nenhuma — o campo nasceu em 2024-10-18 e
+    // uma loja cujas linhas são anteriores a ele simplesmente não o tem. A
+    // varredura, que só enxerga essa linha, classifica o anúncio como comum; é o
+    // corpo do get_item_base_info que diz `tag.kit`, e o dreno pergunta de novo.
+    // Sem essa segunda pergunta o kit chegaria ao importador de anúncios, cuja
+    // recusa não é contida por veredito nenhum e mataria o job inteiro.
+    const cliente = clienteFalso({
+      getItemList: vi.fn(async () => pagina({ item: [linha(9, { tag: null })] })),
+      getItemBaseInfo: vi.fn(async (p: { itemIds: number[] }) =>
+        corpoBase(p.itemIds.map((id) => linhaBase(id, { tag: { kit: true } }))),
+      ),
+      getKitItemInfo: vi.fn(async () => kitInfo({ item_id: 9, item_name: 'Kit' })),
+    });
+    const { db, deps, importarAnuncio, importarKit } = montar({ cliente });
+    semearJob(db);
+
+    const saida = await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    // O importador de anúncios NUNCA vê o item, e nada vira falha: o id só
+    // trocou de fila e o dreno de kits — que roda por último, igual ao de um kit
+    // classificado na varredura — o importou pelo get_kit_item_info.
+    expect(importarAnuncio).not.toHaveBeenCalled();
+    expect(importarKit).toHaveBeenCalledTimes(1);
+    expect((importarKit.mock.calls[0]?.[1] as ItemLido).itemId).toBe(9);
+    expect(cliente.getKitItemInfo).toHaveBeenCalledWith({ itemId: 9 });
+    expect(job(db).failureCount).toBe(0);
+    expect(job(db).failures).toEqual([]);
+    expect(job(db).imported).toBe(1);
+    expect(job(db).kits).toBe(1);
+    expect(job(db).fila).toEqual([]);
+    expect(job(db).filaKits).toEqual([]);
+    expect(saida).toBe('done');
+    expect(job(db).status).toBe('completed');
+  });
+
+  it('⛔ NEAR-MISS: base-info com tag.kit false (ou sem tag) segue o caminho de anúncio', async () => {
+    // A segunda pergunta não pode transformar em kit tudo que traz um `tag`: um
+    // `kit: false` — e a ausência do campo — continuam sendo anúncio comum, ou o
+    // catálogo inteiro passaria a ser lido por get_kit_item_info.
+    const cliente = clienteFalso({
+      getItemBaseInfo: vi.fn(async () =>
+        corpoBase([linhaBase(9, { tag: { kit: false } }), linhaBase(10)]),
+      ),
+    });
+    const { db, deps, importarAnuncio, importarKit } = montar({ cliente });
+    semearJob(db, { fila: [9, 10] });
+
+    await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    expect(importarAnuncio).toHaveBeenCalledTimes(2);
+    expect(importarKit).not.toHaveBeenCalled();
+    expect(cliente.getKitItemInfo).not.toHaveBeenCalled();
+    expect(job(db).imported).toBe(2);
+    expect(job(db).kits).toBe(0);
+    expect(job(db).filaKits).toEqual([]);
+  });
+
+  it('o checkpoint logo após o re-roteamento já carrega o id em filaKits', async () => {
+    // A garantia de retomada: uma queda entre a troca de fila e a importação do
+    // kit não pode perder o id. O primeiro merge do dreno já tem de trazê-lo.
+    const cliente = clienteFalso({
+      getItemBaseInfo: vi.fn(async () => corpoBase([linhaBase(9, { tag: { kit: true } })])),
+      getKitItemInfo: vi.fn(async () => kitInfo({ item_id: 9 })),
+    });
+    const { db, deps } = montar({ cliente });
+    semearJob(db, { fila: [9] });
+
+    await processarImportacaoShopee(deps, PAYLOAD, 0);
+
+    const escritas = db.writes.filter((w) => w.path === CAMINHO_JOB);
+    expect(escritas[0]?.patch).toMatchObject({ fila: [], filaKits: [9], imported: 0, kits: 0 });
+  });
+
   it('sem importarAnuncio injetado com fila não vazia LANÇA — não é contenção', async () => {
     const { db, deps } = montar({ deps: { importarAnuncio: undefined } });
     semearJob(db, { fila: [ITEM] });

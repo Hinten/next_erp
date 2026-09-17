@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { shopeeModelSchema, type ShopeeModel } from '@delfrance/integrations-shopee';
 
-import { FakeDb, asDb } from '../testing/fakeDb';
+import { FakeDb, asDb, grpc } from '../testing/fakeDb';
 import { ShopeeImportBlockedError } from './errosImportacao';
 import type { GrupoMemo } from './itemLido';
 import { aplicarTaxonomiaShopee, criarMemoDeGrupos } from './taxonomiaShopee';
@@ -111,6 +111,63 @@ describe('criarMemoDeGrupos', () => {
     const [doc] = memo.docs;
     expect(doc?.raw.campoSoDoFlutter).toBe('não modelado aqui');
     expect(doc?.updateTime).toBeDefined();
+  });
+
+  it('`invalidar()` relê UMA vez: o conjunto novo vem do banco e o absorvido do anterior vai junto', async () => {
+    const db = new FakeDb();
+    semearGrupo(db, 'g-cor');
+    const memo = criarMemoDeGrupos(asDb(db));
+    const antes = await memo.carregar();
+
+    // Este despacho escreve e o memo absorve o que venceu...
+    await aplicarTaxonomiaShopee(asDb(db), {
+      grupos: planejar(antes),
+      memo: antes,
+      nowMs: AGORA,
+      itemId: ITEM_ID,
+    });
+    expect(nomesDe(antes.docs[0]?.raw)).toEqual(['Azul', 'Verde']);
+    // ...e um gravador concorrente cria outro grupo, que é o que o replanejamento
+    // precisa enxergar.
+    semearGrupo(db, 'g-tamanho', { nome: 'Tamanho', tipo: 1 });
+
+    memo.invalidar?.();
+    const depois = await memo.carregar();
+
+    expect(consultasDeGrupo(db)).toHaveLength(2);
+    // O conjunto anterior — absorções inclusive — foi jogado fora: este é outro,
+    // lido do banco, e é o corpo ARMAZENADO com o carimbo do banco que o próximo
+    // patch guardado vai afirmar.
+    expect(depois).not.toBe(antes);
+    expect(depois.docs.map((d) => d.id).sort()).toEqual(['g-cor', 'g-tamanho']);
+    const cor = depois.docs.find((d) => d.id === 'g-cor');
+    expect(nomesDe(cor?.raw)).toEqual(['Azul', 'Verde']);
+    expect(cor?.updateTime).toBe(db.store['grupoDeVariacoes/g-cor']?.updateTime);
+    // ⛔ Invalidar não desliga o memo: a pergunta seguinte continua sem reler.
+    await memo.carregar();
+    expect(consultasDeGrupo(db)).toHaveLength(2);
+  });
+
+  it('⛔ uma leitura que FALHA não fica memoizada — a pergunta seguinte tenta de novo', async () => {
+    const db = new FakeDb();
+    semearGrupo(db, 'g-cor');
+    const real = db.collection.bind(db);
+    let falhasRestantes = 1;
+    vi.spyOn(db, 'collection').mockImplementation((caminho: string) => {
+      const consulta = real(caminho);
+      if (caminho !== 'grupoDeVariacoes' || falhasRestantes <= 0) return consulta;
+      falhasRestantes -= 1;
+      return { ...consulta, get: () => Promise.reject(grpc(14, 'UNAVAILABLE')) };
+    });
+    const memo = criarMemoDeGrupos(asDb(db));
+
+    await expect(memo.carregar()).rejects.toThrow('UNAVAILABLE');
+    const segundo = await memo.carregar();
+
+    // Sem isto a rejeição ficaria memoizada e TODO item seguinte do despacho
+    // reergueria a mesma falha, nunca releitura nenhuma.
+    expect(segundo.docs.map((d) => d.id)).toEqual(['g-cor']);
+    expect(consultasDeGrupo(db)).toHaveLength(1);
   });
 });
 

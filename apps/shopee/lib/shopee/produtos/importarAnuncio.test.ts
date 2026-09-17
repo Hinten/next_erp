@@ -830,6 +830,82 @@ describe('importarAnuncioShopee — o memo do despacho', () => {
     expect(db.store['grupoDeVariacoes/g-tamanho']?.data.campoSoDoFlutter).toBe('não modelado aqui');
   });
 
+  it('uma perda no meio do despacho REINICIA o memo: o item 2 planeja contra o que a retentativa gravou', async () => {
+    // O item 1 perde UMA vez a precondição do `Tamanho` — um gravador concorrente
+    // entre a leitura do memo e o patch — e replaneja. O que a retentativa grava
+    // (o patch do `Tamanho`, com o carimbo novo) tem de entrar no memo do
+    // DESPACHO, senão o item 2 planeja contra a coleção anterior à perda e gasta
+    // a própria retentativa contra um irmão.
+    const db = new FakeDb();
+    semearGrupoTamanho(db);
+    const compartilhado = deps(db, { grupos: criarMemoDeGrupos(asDb(db)) });
+    const original = db.falhasDeUpdate.get.bind(db.falhasDeUpdate);
+    let restantes = 1;
+    vi.spyOn(db.falhasDeUpdate, 'get').mockImplementation((chave: string) => {
+      if (chave === 'grupoDeVariacoes/g-tamanho' && restantes > 0) {
+        restantes -= 1;
+        return grpc(9, 'FAILED_PRECONDITION');
+      }
+      return original(chave);
+    });
+
+    await importarAnuncioShopee(
+      compartilhado,
+      anuncioDeTiers(ITEM_ID, 'CAM-001', MODEL_A, ['Azul'], ['M'], 0),
+    );
+    const resultado = await importarAnuncioShopee(
+      compartilhado,
+      anuncioDeTiers(OUTRO_ITEM_ID, 'CAM-002', MODEL_B, ['Azul', 'Verde'], ['M', 'G'], 1),
+    );
+
+    expect(resultado.variacoes.total).toBe(1);
+    // ⛔ As duas contagens são o espião do caminho da perda, e o par é o que
+    // separa "reiniciar" de "descartar": DUAS leituras da coleção — a inicial e
+    // a releitura da invalidação — e TRÊS cascatas de pai, que são as três
+    // tentativas (item 1, a retentativa dele, item 2). Com o memo descartado o
+    // item 2 conflitaria, virando três leituras e quatro cascatas.
+    expect(consultasDeGrupo(db)).toHaveLength(2);
+    expect(cascatasDePai(db)).toHaveLength(3);
+    // E o gravado é a união dos dois anúncios, com o campo do Flutter intacto.
+    expect(nomesDeVariacao(db, 'g-tamanho')).toEqual(['M', 'G']);
+    expect(nomesDeVariacao(db, 'n-cor')).toEqual(['Azul', 'Verde']);
+    expect(db.store['grupoDeVariacoes/g-tamanho']?.data.campoSoDoFlutter).toBe('não modelado aqui');
+  });
+
+  it('⛔ um memo que não sabe reiniciar é DESCARTADO na retentativa — nunca replaneja contra o perdedor', async () => {
+    const db = new FakeDb();
+    semearGrupoCor(db);
+    const doDespacho = criarMemoDeGrupos(asDb(db));
+    // Um `MemoDeGrupos` legal sem `invalidar` — a forma que o tipo permite.
+    const semReset = { carregar: () => doDespacho.carregar() };
+    const original = db.falhasDeUpdate.get.bind(db.falhasDeUpdate);
+    let restantes = 1;
+    vi.spyOn(db.falhasDeUpdate, 'get').mockImplementation((chave: string) => {
+      if (chave === 'grupoDeVariacoes/g-cor' && restantes > 0) {
+        restantes -= 1;
+        return grpc(9, 'FAILED_PRECONDITION');
+      }
+      return original(chave);
+    });
+
+    const resultado = await importarAnuncioShopee(
+      deps(db, { grupos: semReset }),
+      item(
+        { has_model: true },
+        modelos(
+          [
+            { model_id: MODEL_A, tier_index: [0], price_info: PRECO_BRL },
+            { model_id: MODEL_B, tier_index: [1], price_info: PRECO_BRL },
+          ],
+          TIER_COR,
+        ),
+      ),
+    );
+
+    expect(resultado.variacoes.total).toBe(2);
+    expect(consultasDeGrupo(db)).toHaveLength(2);
+  });
+
   it('⛔ um anúncio SEM modelos não lê `grupoDeVariacoes` nenhuma vez', async () => {
     const db = new FakeDb();
 

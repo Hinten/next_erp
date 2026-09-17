@@ -36,6 +36,22 @@
  * product image URL carries the shop and the listing, which this app's own
  * redaction denylist already treats as personal data.
  *
+ * ⚠️ **A pre-flight check alone is not the guard.** `fetch` follows redirects by
+ * default, so the host that is finally CONNECTED to is whatever the allowed host
+ * answered with — and the allow-list never runs again. The request is therefore
+ * issued with `redirect: 'manual'` and ANY 3xx is refused as a picture-level
+ * problem naming the status and the HOST (never the `Location` target, which is
+ * attacker-chosen text and would land in a log line this module exists to keep
+ * clean).
+ *
+ * ⚠️ It is REFUSED rather than re-validated, and that is the cheaper answer
+ * here: Shopee's `image_url_list` points at its CDN directly, so a redirect off
+ * it is not a shape we have ever measured; and re-validating the target would
+ * still mean CONNECTING to whatever destination the allowed host chose, which is
+ * precisely what the allow-list exists to bound. A picture that is genuinely
+ * moved costs one skipped, counted image and a log line naming the status — not
+ * a failed item.
+ *
  * ## ⚠️ The failure split
  *
  * A picture-level problem ({@link ShopeeImagemError}) or a `TypeError` (which is
@@ -268,7 +284,15 @@ async function importarUmaFoto(
   par: ParDeImagemShopee,
 ): Promise<Foto> {
   const url = urlDeImagemSegura(par.url);
-  const res = await doFetch(url.toString());
+  // ⚠️ `redirect: 'manual'` — the allow-list above checked the host we ASK for,
+  // and a followed redirect would connect to one nobody checked. See the header.
+  const res = await doFetch(url.toString(), { redirect: 'manual' });
+  if (res.status >= 300 && res.status < 400) {
+    // ⚠️ The status and the HOST we asked — never the `Location` value.
+    throw new ShopeeImagemError(
+      `redirecionamento HTTP ${String(res.status)} recusado (host ${url.host})`,
+    );
+  }
   if (!res.ok) throw new ShopeeImagemError(`HTTP ${String(res.status)} ao baixar a imagem`);
 
   const contentType = normalizeContentType(res.headers.get('content-type') ?? '');

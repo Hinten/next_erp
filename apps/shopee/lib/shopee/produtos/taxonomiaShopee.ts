@@ -80,13 +80,29 @@ import type { GrupoPlanejado } from './taxonomiaShopeeCore';
  * of the object, whatever the concurrency, because it memoises the PROMISE and
  * not the result. Memoising the result would let two items that ask before the
  * first read resolves each issue their own.
+ *
+ * ⚠️ A REJECTED read is not memoised. Nothing would ever clear it, so a single
+ * blip would answer the same rejection to every later item of the dispatch —
+ * a failure that was never retried, wearing the shape of one that was.
+ *
+ * ⚠️ `invalidar()` clears the memoised promise, and with it the absorbed state
+ * that promise's `GrupoMemo` carried: the next `carregar()` reads the collection
+ * again and hands out a new live set. The one caller is the bounded re-plan in
+ * `importarAnuncio.ts` — see {@link MemoDeGrupos.invalidar} for why the retry
+ * resets this object instead of dropping it.
  */
 export function criarMemoDeGrupos(db: Firestore): MemoDeGrupos {
   let pendente: Promise<GrupoMemo> | null = null;
   return {
     carregar(): Promise<GrupoMemo> {
-      pendente ??= lerTodosOsGrupos(db);
+      pendente ??= lerTodosOsGrupos(db).catch((err: unknown) => {
+        pendente = null;
+        throw err;
+      });
       return pendente;
+    },
+    invalidar(): void {
+      pendente = null;
     },
   };
 }
