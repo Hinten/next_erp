@@ -19,12 +19,55 @@ available for every UF, including the SVC environments.
   (The DANFE also carries a "sem valor fiscal" watermark.) Issuing a homologação
   NF-e with a real recipient name is rejected.
 - NF-e issued here have **no fiscal value** — they are throwaway test data and
-  the issuer may generate them freely.
+  the issuer may generate them freely. ⚠️ That freedom does **not** extend to the
+  participants' CNPJs any more — see "Identificação do destinatário" below.
 - The certificate is real (a valid ICP-Brasil A1/A3); only the *environment*
   is test. The CI uses a dedicated homologação test certificate stored as the
   `NFE_CERT_BASE64` / `NFE_CERT_PASSWORD` secrets (with the `E` — runtime env
   vars, `.env.local`, and GitHub Actions secrets all use the same names).
 
+## Identificação do destinatário — mudou em 01/09/2026
+
+⚠️ **Um CNPJ de destinatário inventado, ainda que com DV válido, não passa mais
+em homologação.** A **NT 2026.007 §5.10** (RV **12E02-10**, cStat **181**) obriga
+o CNPJ do destinatário a constar na **LCC-RFB** — a réplica nacional do cadastro
+CNPJ da Receita Federal — e a estar `02-Ativa`. A regra consulta o cadastro real,
+então não existe placeholder que funcione. Implantação em homologação
+**01/09/2026**, produção **03/11/2026**. A família completa (178–186, incluindo o
+gêmeo do emitente) está em `cstat-rejeicoes.md`.
+
+⚠️ **Isso contradiz a rejeição 597** — "NF-e emitida em ambiente de homologação
+com CNPJ do destinatário diferente de `99999999000191`" (NT 2011.002, opcional
+por UF), que torna `99999999000191` o CNPJ *sancionado* para testes. Ele não
+consta na Receita, então 597 exige exatamente o que 12E02-10 rejeita. Conciliar
+as duas é da SEFAZ; enquanto não conciliam, **pode não haver CNPJ de destinatário
+utilizável em homologação**.
+
+As duas saídas, em ordem de preferência:
+
+1. **Destinatário pessoa física (CPF, tag `E03`).** A RV é condicionada a *"se
+   informado CNPJ do Destinatário (tag: E02)"*, então um CPF fica fora do escopo
+   de 181/182. É o que `apps/nfe/test/lib/nfe/{orchestrator,epec}.homologacao.test.ts`
+   fazem (`tipo: '0'`, CPF `12345678909`, com `ehConsumidorFinal: true` para
+   limpar a rejeição 696 de `indIEDest='9'`) — e é por isso que esses suites
+   continuaram passando quando os de CNPJ quebraram.
+2. **Um CNPJ real e ativo.** Funciona, mas amarra o CI à situação cadastral de um
+   terceiro: se ela sair de `02-Ativa`, a RV 12E02-20 (cStat 182) derruba a
+   suíte. E este repositório é público.
+
+⚠️ O que **não** mudou: `transporta`, o CNPJ da instituição de pagamento
+(`card/CNPJ`) e `infIntermed/CNPJ` **não** passam pela LCC-RFB. CNPJ de teste
+nessas posições segue válido — não troque os quatro de uma vez.
+
+Estado atual no repo: `emission.homologacao` e `rtc.homologacao` estão suspensos
+por esse motivo — flag única em
+`packages/integrations/nfe/test/helpers/lcc-rfb-bloqueio.ts`, rastreado em #1612.
+A emissão do `svc.homologacao` já estava suspensa desde 03/09/2026 pelo **178**
+(RV 12C02-10, o gêmeo do emitente) em #1471 — na época sem explicação; é a mesma
+NT. O skip do SVC continua condicionado a `!isFatalRun` de propósito: 178 já
+voltou a `100` sozinho (réplica LCC-RFB dessincronizada), então ainda vale sondar.
+181 não sara — `99999999000191` nunca vai constar na Receita — por isso o skip
+dos outros dois é incondicional.
 ## Endpoints
 
 - Homologação web-service list:
