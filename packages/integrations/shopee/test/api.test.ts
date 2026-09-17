@@ -3151,6 +3151,16 @@ const VIOLATION_BODY = {
   },
 };
 
+/**
+ * O MESMO corpo, SEM a chave `error` — a forma que o sandbox respondeu em
+ * 2026-09-17 (register 73) e que as duas amostras da própria página imprimem.
+ */
+const VIOLATION_BODY_SEM_ERROR = {
+  message: null,
+  request_id: 'req-violation',
+  response: VIOLATION_BODY.response,
+};
+
 const CHANNEL_LIST_BODY = {
   request_id: 'req-canais',
   error: '',
@@ -3511,16 +3521,28 @@ describe('tiers e modelos', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('68 — initTierVariation recusa 51 modelos, 3 tiers e 21 opções num tier', async () => {
-    // ⚠️ Os números são LITERAIS de propósito. `SHOPEE_TIER_MAX_OPTIONS` é uma
-    // ESCOLHA entre dois limites contraditórios da mesma página (20 e 50), e um
-    // teste escrito como `LIMITE + 1` acompanharia qualquer valor — inclusive um
-    // trocado por engano. Se o probe do sandbox provar 50, esta linha muda JUNTO
-    // com o literal, porque o comportamento mudou de verdade.
+  it('68 — initTierVariation ACEITA 21 opções num tier (medido) e recusa 51 modelos, 3 tiers e 51 opções', async () => {
+    // ⚠️ Os números são LITERAIS de propósito: um teste escrito como `LIMITE + 1`
+    // acompanharia qualquer valor, inclusive um trocado por engano.
+    //
+    // ⚠️ O 21 é o número que o probe do sandbox MEDIU em 2026-09-17: um
+    // `update_tier_variation` cru com 21 opções num tier foi ACEITO
+    // (`error: ''`). Era justamente esse o corpo que a guarda antiga recusava
+    // antes de sair da nossa máquina — das duas frases contraditórias das mesmas
+    // páginas (`error_tier_opt_too_many` com 20 e `error_param` com 50), a que
+    // vale no fio é a de 50.
     const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TIER_WRITE_BODY));
     const client = createShopeeClient(shopConfig(fetchMock));
     expect(SHOPEE_MODEL_MAX_PER_ITEM).toBe(50);
-    expect(SHOPEE_TIER_MAX_OPTIONS).toBe(20);
+    expect(SHOPEE_TIER_MAX_OPTIONS).toBe(50);
+
+    // O corpo MEDIDO: 21 opções passam a guarda e a chamada acontece.
+    await client.initTierVariation({
+      item_id: ITEM_ID,
+      model: [modelo([0])],
+      standardise_tier_variation: [tierPersonalizado(21)],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const demaisModelos = await erroDe(
       client.initTierVariation({
@@ -3543,25 +3565,28 @@ describe('tiers e modelos', () => {
       client.initTierVariation({
         item_id: ITEM_ID,
         model: [modelo([0])],
-        standardise_tier_variation: [tierPersonalizado(21)],
+        standardise_tier_variation: [tierPersonalizado(51)],
       }),
     );
 
     expect(demaisModelos).toBeInstanceOf(ShopeeConfigError);
     expect(tiersDemais).toBeInstanceOf(ShopeeConfigError);
     expect(opcoesDemais).toBeInstanceOf(ShopeeConfigError);
-    expect((opcoesDemais as Error).message).toContain('20');
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect((opcoesDemais as Error).message).toContain('50');
+    // ⛔ E a mensagem não pode mais falar em 20: o número saiu do código.
+    expect((opcoesDemais as Error).message).not.toContain('20');
+    // Nenhuma das três recusas saiu da máquina — só a chamada de 21 opções.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    // PAR: exatamente 20 opções num tier e 50 modelos PASSAM — as duas bordas de
-    // baixo. (Dois tiers de 20 dão 400 combinações possíveis; 50 é o teto de
+    // PAR: exatamente 50 opções num tier e 50 modelos PASSAM — as duas bordas de
+    // baixo. (Dois tiers de 50 dão 2500 combinações possíveis; 50 é o teto de
     // MODELOS, que é outro limite.)
     await client.initTierVariation({
       item_id: ITEM_ID,
       model: Array.from({ length: 50 }, (_, i) => modelo([i % 20, Math.floor(i / 20)])),
-      standardise_tier_variation: [tierPersonalizado(20), tierPersonalizado(20)],
+      standardise_tier_variation: [tierPersonalizado(50), tierPersonalizado(50)],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('69 — initTierVariation recusa dois modelos na MESMA combinação de tier_index', async () => {
@@ -3828,6 +3853,37 @@ describe('as duas LEITURAS do passo 11', () => {
       ShopeeConfigError,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('91 — getItemViolationInfo lê o corpo MEDIDO, que não traz a chave `error`, e é o ÚNICO a tolerá-lo', async () => {
+    // ⚠️ Em 2026-09-17 o sandbox respondeu esta operação com
+    // `{message, request_id, response: {item_list: […]}}` e mais nada — sem
+    // `error` — e a etapa 1 do transporte recusou o corpo inteiro
+    // (`campos=["error"]`). A tolerância é do TRANSPORTE e é por operação; o
+    // schema continua recusando esse mesmo corpo sozinho (types.test.ts, 15).
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(VIOLATION_BODY_SEM_ERROR),
+    );
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getItemViolationInfo({
+      itemIds: [ITEM_ID],
+    });
+
+    expect(payload.item_list[0]?.item_id).toBe(ITEM_ID);
+    expect(payload.item_list[0]?.item_status).toBe('BANNED');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // ⚠️ Asserção de FONTE, e ela é o contrato inteiro: a flag vale para UMA
+    // operação. Um segundo call site a copiando passaria por todos os testes de
+    // comportamento deste arquivo — cada operação é testada com corpos que TÊM
+    // `error` — e alargaria em silêncio o único ponto do pacote onde um corpo
+    // injulgável pode virar sucesso.
+    const ocorrencias = FONTE_API.split('erroAusenteEhSucesso').length - 1;
+    expect(ocorrencias).toBe(1);
+    const inicio = FONTE_API.indexOf('getItemViolationInfo: async');
+    const fim = FONTE_API.indexOf('getChannelList: async');
+    expect(inicio).toBeGreaterThan(-1);
+    expect(fim).toBeGreaterThan(inicio);
+    expect(FONTE_API.slice(inicio, fim)).toContain('erroAusenteEhSucesso: true');
   });
 
   it('83 — getChannelList vai por GET sem parâmetro nenhum além dos comuns, e o size_id continua STRING', async () => {

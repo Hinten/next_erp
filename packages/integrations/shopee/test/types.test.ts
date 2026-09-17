@@ -2912,8 +2912,48 @@ describe('as escritas de anúncio (passo 11)', () => {
     expect(canal.size_list?.[0]!.size_id).not.toBe(0);
     expect(typeof canal.size_list?.[0]!.size_id).toBe('string');
     expect(canal.compulsory_channel).toBe(true);
-    expect(canal.channel_relation_rules?.[0]!.related_enabled_channels).toEqual([4000]);
+    // A forma da TABELA (object[]) continua aceita — ver o teste 12b para a do fio.
+    expect(Array.isArray(canal.channel_relation_rules)).toBe(true);
+    const regrasDaTabela = canal.channel_relation_rules;
+    expect(
+      Array.isArray(regrasDaTabela) ? regrasDaTabela[0]!.related_enabled_channels : null,
+    ).toEqual([4000]);
     expect(canal.auto_call_driver_setting?.preparation_time_limit?.max_preparation_time).toBe(30);
+  });
+
+  it('12b — get_channel_list: `channel_relation_rules` chega como UM OBJETO no fio, com `related_disabled_channels`', () => {
+    // MEDIDO 2026-09-17 na sonda do passo 11 (sandbox SG): a página declara
+    // `object[]`, o corpo vivo manda UM objeto — e com uma terceira chave que a
+    // tabela não documenta. Um schema que só conhecia o array transformou os
+    // DOIS canais reais no sentinela `null`, e a montagem de logística viu zero
+    // canais. As duas formas são declaradas; nenhuma é dobrada na outra.
+    const lido = shopeeChannelListSchema.parse({
+      error: '',
+      response: {
+        logistics_channel_list: [
+          {
+            logistics_channel_id: 90021,
+            enabled: true,
+            fee_type: SHOPEE_LOGISTICS_FEE_TYPE.fixedDefaultPrice,
+            compulsory_channel: false,
+            channel_relation_rules: {
+              related_enabled_channels: [],
+              related_disabled_channels: [],
+              related_dependent_block_channels: [40018],
+            },
+          },
+        ],
+      },
+    });
+    const canal = lido.response.logistics_channel_list[0];
+    // ÂNCORA: o canal NÃO virou o sentinela — é exatamente isso que estava errado.
+    expect(canal).not.toBeNull();
+    const regras = canal!.channel_relation_rules;
+    expect(Array.isArray(regras)).toBe(false);
+    expect(
+      regras && !Array.isArray(regras) ? regras.related_dependent_block_channels : null,
+    ).toEqual([40018]);
+    expect(regras && !Array.isArray(regras) ? regras.related_disabled_channels : null).toEqual([]);
   });
 
   it('13 — get_channel_list: NENHUM campo chamado `preferred` é declarado', () => {
@@ -2943,19 +2983,24 @@ describe('as escritas de anúncio (passo 11)', () => {
     expect(lido.response.logistics_channel_list[1]!.logistics_channel_id).toBe(4000);
   });
 
-  it('15 — ⚠️ get_item_violation_info: a amostra da página NÃO traz a chave `error` e por isso FALHA', () => {
+  it('15 — ⚠️ get_item_violation_info: a amostra da página NÃO traz `error`, e o SCHEMA continua recusando', () => {
     // ⚠️ AS DUAS amostras dessa página (a de sucesso e a de "Partial Fail")
     // imprimem `{"message": null, "request_id": …, "response": {…}}` e mais
-    // nada, enquanto a tabela de resposta declara `error`. O envelope não tem
-    // `.default('')` de propósito — um corpo que não dá para julgar não pode ser
-    // lido como sucesso — então, se o corpo vivo realmente omitir a chave, o
-    // transporte recusa com ShopeeSchemaError e ESTE pull falha INTEIRO.
+    // nada, enquanto a tabela de resposta declara `error` — e em 2026-09-17 o
+    // sandbox respondeu exatamente a forma das amostras (register 73).
     //
-    // Não há schema que conserte isso: alargar o envelope seria ler um corpo
-    // injulgável como sucesso. A resposta é um CONTRATO do chamador — toda
-    // chamada a `getItemViolationInfo` trata um throw de QUALQUER classe como
-    // "sem detalhe de violação desta vez" e segue com o status + deboost do
-    // get_item_base_info. Este teste é a evidência em que esse catch se apoia.
+    // ⚠️ O que este teste pina é o SCHEMA, e ele NÃO mudou: o envelope não tem
+    // `.default('')` em `error` de propósito, porque um corpo sem `error` e sem
+    // `response` não dá para julgar e não pode ser lido como sucesso em operação
+    // nenhuma. Alargar o envelope aqui seria o conserto errado.
+    //
+    // ⚠️ Quem tolera o corpo medido é o TRANSPORTE, por operação:
+    // `ShopeeCallParams.erroAusenteEhSucesso` (call.ts), ligado só no
+    // `getItemViolationInfo` e só quando existe um `response`. Então a operação
+    // NÃO falha mais inteira por causa da chave ausente — mas ela ainda pode
+    // falhar por tudo o mais, e todo call site segue tratando um throw de
+    // QUALQUER classe como "sem detalhe de violação desta vez", caindo no status
+    // + deboost do get_item_base_info.
     const semError = shopeeItemViolationInfoSchema.safeParse(AMOSTRA_VIOLACAO);
     expect(semError.success).toBe(false);
     expect(semError.error?.issues.map((i) => i.path.join('.'))).toContain('error');
@@ -3130,12 +3175,12 @@ describe('as escritas de anúncio (passo 11)', () => {
     ).toBeNull();
   });
 
-  it('22 — os limites de wire do passo 11 são os que as páginas declaram, e as duas flags são a escolha conservadora', () => {
+  it('22 — os limites de wire do passo 11 são os que as páginas declaram, um deles MEDIDO no sandbox', () => {
     // ⚠️ TODO limite que o WIRE declara mora no PACOTE, e `apps/shopee` não
     // declara cópia local de nenhum deles: uma segunda cópia de um limite
     // documentado é como as duas divergem no dia em que a sondagem vira uma.
     expect(SHOPEE_TIER_MAX_LEVELS).toBe(2);
-    expect(SHOPEE_TIER_MAX_OPTIONS).toBe(20);
+    expect(SHOPEE_TIER_MAX_OPTIONS).toBe(50);
     expect(SHOPEE_MODEL_MAX_PER_ITEM).toBe(50);
     expect(SHOPEE_MODEL_SKU_MAX_LENGTH).toBe(100);
     expect(SHOPEE_ITEM_IMAGE_MAX).toBe(9);
@@ -3162,11 +3207,24 @@ describe('as escritas de anúncio (passo 11)', () => {
     expect(Object.values(SHOPEE_ITEM_STATUS_WRITABLE)).not.toContain('BANNED');
     expect(Object.values(SHOPEE_ITEM_STATUS_WRITABLE)).not.toContain('SELLER_DELETE');
 
-    // ⚠️ O 20 é uma ESCOLHA, não um fato da doc: as MESMAS duas páginas de tier
-    // carregam 20 (`error_tier_opt_too_many`) e 50 (`error_param`). O docblock
-    // tem de continuar dizendo isso — quem for flipar o literal precisa ler por
-    // que ele está onde está.
-    expect(SECAO_PASSO_11).toContain('A CHOICE, not a doc fact');
+    // ⚠️ O 50 não é mais uma ESCOLHA entre as duas frases contraditórias das
+    // MESMAS duas páginas de tier (20 em `error_tier_opt_too_many`, 50 em
+    // `error_param`): ele foi MEDIDO no sandbox em 2026-09-17, com 21 opções num
+    // tier aceitas. O docblock tem de registrar a MEDIÇÃO — quem for flipar o
+    // literal de novo precisa ler que o valor atual é uma observação, e que
+    // trocá-lo pede outra.
+    const docTier = SECAO_PASSO_11.slice(
+      SECAO_PASSO_11.indexOf('Options per tier'),
+      SECAO_PASSO_11.indexOf('export const SHOPEE_TIER_MAX_OPTIONS'),
+    );
+    expect(docTier.length).toBeGreaterThan(200);
+    expect(docTier).toContain('MEASURED');
+    expect(docTier).toContain('2026-09-17');
+    expect(docTier).toContain('21');
+    // ⛔ QUASE-IGUAL: a antiga afirmação de que era uma escolha saiu do arquivo.
+    // Sem esta linha, um docblock que dissesse as DUAS coisas passaria.
+    expect(docTier).not.toContain('A CHOICE, not a doc fact');
+    expect(SECAO_PASSO_11).not.toContain('A CHOICE, not a doc fact');
   });
 
   it('23 — nenhum schema do passo 11 declara um `z.number()` CRU', () => {

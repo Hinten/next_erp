@@ -8,7 +8,7 @@ import {
   type ShopeeWarning,
   shopeeCall,
 } from '../src/call';
-import { ShopeeNetworkError, ShopeeSchemaError } from '../src/errors';
+import { ShopeeApiError, ShopeeNetworkError, ShopeeSchemaError } from '../src/errors';
 
 /** ⚠️ Invented. Never a real Shopee partner key. */
 const TEST_PARTNER_KEY = 'chave-de-teste-nao-e-credencial';
@@ -278,5 +278,122 @@ describe('shopeeCall — o corpo multipart', () => {
     const [, init] = fetchMock.mock.calls[0]!;
     expect(init?.body).toBe('{"item_list":[{"item_id":2500139861,"unlist":true}]}');
     expect(init?.body).not.toBeInstanceOf(FormData);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*          `erroAusenteEhSucesso` — a chave `error` AUSENTE, por operação      */
+/* -------------------------------------------------------------------------- */
+
+const VIOLACAO_PATH = '/api/v2/product/get_item_violation_info';
+
+/**
+ * O corpo VIVO do `get_item_violation_info`, medido no sandbox em 2026-09-17: as
+ * quatro chaves do envelope MENOS `error`, que simplesmente não vem.
+ */
+const CORPO_SEM_ERROR = { message: null, request_id: 'req-violacao', response: { item_list: [] } };
+
+/** O mesmo corpo sem `error` E sem `response`: um corpo que não dá para julgar. */
+const CORPO_SEM_ERROR_NEM_RESPONSE = { message: null, request_id: 'req-violacao' };
+
+/**
+ * O schema da OPERAÇÃO, montado como o `wrappedOp` do `types.ts` monta os de
+ * verdade: o envelope INTEIRO — `error` incluído, sem default — mais o
+ * `response`.
+ *
+ * ⚠️ É isso que faz esta suíte exercitar as DUAS etapas do parse. Um schema de
+ * teste que só declarasse `response` passaria com uma tolerância que valesse só
+ * para a etapa 1 — e a chamada de verdade continuaria falhando na etapa 2, que
+ * relê o mesmo corpo com o schema da operação.
+ */
+const violacaoSchema = z
+  .object({
+    request_id: z.string().nullable().default(null),
+    error: z.string(),
+    message: z.string().nullable().default(null),
+    warning: z.string().nullable().default(null),
+    response: z.object({}).passthrough(),
+  })
+  .passthrough();
+
+function chamarViolacao(
+  fetchImpl: typeof globalThis.fetch,
+  opcoes: { readonly erroAusenteEhSucesso?: boolean } = {},
+) {
+  return shopeeCall(transporte(fetchImpl), {
+    method: 'GET',
+    path: VIOLACAO_PATH,
+    call: { class: 'shop', accessToken: 'token-inventado', shopId: TEST_SHOP_ID },
+    schema: violacaoSchema,
+    surface: 'business',
+    ...opcoes,
+  });
+}
+
+describe('shopeeCall — a tolerância por operação para um `error` AUSENTE', () => {
+  it('T9 — com a flag, um corpo SEM a chave `error` mas COM `response` é lido como sucesso', async () => {
+    // ⚠️ A forma MEDIDA em 2026-09-17 (register 73). Sem a flag, o parse de
+    // etapa 1 recusa e o pull inteiro falha — que foi o que o probe viu.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(CORPO_SEM_ERROR));
+    const res = await chamarViolacao(fetchMock, { erroAusenteEhSucesso: true });
+
+    expect(res.response).toEqual({ item_list: [] });
+    // ⚠️ A chave ausente chega ao chamador como `''` — e o resto do corpo chega
+    // inteiro: o conserto preenche UMA chave, não reescreve a resposta.
+    expect(res.error).toBe('');
+    expect(res.request_id).toBe('req-violacao');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('T10 — com a flag, um corpo sem `error` E sem `response` continua RECUSADO, nomeando `error`', async () => {
+    // ⚠️ É esta condição que torna a tolerância estreita o bastante para ser
+    // segura: um corpo que não traz NENHUMA das duas chaves é injulgável, e
+    // lê-lo como sucesso seria exatamente o que o envelope sem `.default('')`
+    // existe para impedir.
+    //
+    // ⚠️ A asserção é sobre os CAMPOS, não só sobre a classe: se a condição do
+    // `response` sumir, este corpo passa a "ter sucesso" na etapa 1 e morre na
+    // etapa 2 — também com um ShopeeSchemaError, mas nomeando `response`. Sem a
+    // linha do `campos`, a mutação ficaria VERDE.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(CORPO_SEM_ERROR_NEM_RESPONSE),
+    );
+    const erro = await chamarViolacao(fetchMock, { erroAusenteEhSucesso: true }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeSchemaError);
+    expect((erro as ShopeeSchemaError).campos).toContain('error');
+    expect((erro as ShopeeSchemaError).campos).not.toContain('response');
+  });
+
+  it('T11 — ⛔ QUASE-IGUAL: SEM a flag, o MESMO corpo sem `error` é recusado — o padrão não mudou', async () => {
+    // ⚠️ O par do T9. A tolerância é opt-in por CALL SITE; se ela virasse global,
+    // todo corpo sem `error` passaria a ser sucesso em TODA operação, e nada
+    // além desta linha diria isso.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(CORPO_SEM_ERROR));
+    const erro = await chamarViolacao(fetchMock).catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(ShopeeSchemaError);
+    expect((erro as ShopeeSchemaError).campos).toContain('error');
+  });
+
+  it('T12 — com a flag, um `error` REAL continua sendo ShopeeApiError: a tolerância nunca esconde erro', async () => {
+    // O parse estrito SUCEDE quando a chave existe, então o ramo tolerante nem é
+    // alcançado — o veredicto `error === ''` decide como sempre.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({
+        error: 'error_param',
+        message: 'item_id_list is invalid',
+        request_id: 'req-violacao',
+        response: null,
+      }),
+    );
+    const erro = await chamarViolacao(fetchMock, { erroAusenteEhSucesso: true }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeApiError);
+    expect((erro as ShopeeApiError).code).toBe('error_param');
   });
 });

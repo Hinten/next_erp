@@ -14,19 +14,25 @@
  * succeed and warn in the same breath. Nothing here may throw on it; `api.ts`
  * hands it to an `onWarning` hook and leaves it on the returned object.
  *
- * ⚠️ **The `error === ''` invariant has exactly ONE exception, and it is
- * per-operation.** Three pages CONTRADICT THEMSELVES — the two on the lost-push
- * queue and `v2.order.get_package_detail`: their parameter tables sample `error`
- * as `""` ("Empty if no error happened") while their rendered response samples
- * print `"-"` for `error`, `message` AND `warning`. Other cached pages —
+ * ⚠️ **The `error === ''` invariant has exactly TWO exceptions, and BOTH are
+ * per-operation and live in the TRANSPORT, never here.** The first is the VALUE:
+ * three pages CONTRADICT THEMSELVES — the two on the lost-push queue and
+ * `v2.order.get_package_detail`: their parameter tables sample `error` as `""`
+ * ("Empty if no error happened") while their rendered response samples print
+ * `"-"` for `error`, `message` AND `warning`. Other cached pages —
  * `get_app_push_config` and `get_order_detail` included — sample `""`. So `-` is
  * a doc-authoring placeholder on those pages, not a protocol variant, and it is
  * tolerated ONLY on those three operations, through
  * `ShopeeCallParams.emptyErrorAliases` in `call.ts` — three call sites over TWO
  * constants, the lost-push pair sharing one and `get_package_detail` carrying
- * its own. The schemas here are
- * unchanged by it: `error` is still `z.string()` with no default, and `'-'`
- * still parses as the string `'-'`.
+ * its own. The second is the KEY: `get_item_violation_info`'s success body omits
+ * `error` entirely (MEASURED 2026-09-17 — see
+ * {@link shopeeItemViolationInfoPayloadSchema}), and
+ * `ShopeeCallParams.erroAusenteEhSucesso` reads an absent key as `''` for that
+ * ONE operation, and only when the body carries a `response` object. The schemas
+ * here are unchanged by either: `error` is still `z.string()` with no default,
+ * `'-'` still parses as the string `'-'`, and a body without the key still
+ * fails.
  *
  * ## Flat vs wrapped vs data
  *
@@ -2671,16 +2677,21 @@ export type ShopeeLogisticsFeeType =
 export const SHOPEE_TIER_MAX_LEVELS = 2;
 
 /**
- * Options per tier — the STRICTER of TWO contradictory bounds ON THE SAME PAGES.
+ * Options per tier — **MEASURED on 2026-09-17**, no longer a judgement call.
  *
- * ⚠️ A CHOICE, not a doc fact. Both `init_tier_variation` and
+ * ⚠️ The pages contradict themselves: both `init_tier_variation` and
  * `update_tier_variation` carry BOTH `error_tier_opt_too_many: Count of
  * tier_variation option is larger than 20.` and `error_param: Count of
  * tier_variation options should be under 50.` — read 2026-09-17 on both pages.
- * 20 refuses early rather than sending a body Shopee might reject; the sandbox
- * probe settles it, and the flip is this one literal.
+ * The sandbox write probe settled it the same day: a raw `update_tier_variation`
+ * carrying **21** options in ONE tier was ACCEPTED (`error: ''`) by the SG
+ * sandbox shop. So the live bound is the `error_param` one, 50, and the
+ * `error_tier_opt_too_many` string is stale or belongs to a scope this shop is
+ * not in. What shipped before was the conservative arm of the contradiction (20)
+ * and it refused bodies Shopee accepts; this value is now an OBSERVATION, and
+ * changing it again takes another measurement.
  */
-export const SHOPEE_TIER_MAX_OPTIONS = 20;
+export const SHOPEE_TIER_MAX_OPTIONS = 50;
 
 /**
  * `add_model.model_list` limits [1,50]; `update_model.model` "between 1 to 50";
@@ -3124,16 +3135,25 @@ export type ShopeeItemViolationRow = z.infer<typeof shopeeItemViolationRowSchema
  *
  * ⚠️ **Both of this page's response samples carry NO `error` key at all** (read
  * 2026-09-17: `{"message": null, "request_id": …, "response": {…}}`), while its
- * Response-params table declares one. {@link shopeeEnvelopeSchema} has no
- * `.default('')` on `error` on purpose — a body we cannot judge must not read as
- * a success — so if the live body really omits it, the transport refuses with
- * `ShopeeSchemaError` naming `error` and this pull fails TOTALLY.
+ * Response-params table declares one — and the sandbox probe MEASURED the LIVE
+ * body doing exactly that on 2026-09-17 (register 73): the op answered
+ * `{message, request_id, response: {item_list: […]}}` and stage 1 refused it
+ * with `ShopeeSchemaError campos=["error"]`. The samples were right and the
+ * table is the odd one out.
  *
- * ⚠️ No schema change can rescue that, and widening the envelope would be the
- * wrong fix. The answer is a CONTRACT on the caller: every call site treats a
- * throw of any class as "no violation detail this time" and proceeds on
- * `get_item_base_info`'s status + deboost. The test that pins this is the
- * evidence that best-effort catch rests on.
+ * ⚠️ **The schemas here are unchanged by that, and must stay unchanged.**
+ * {@link shopeeEnvelopeSchema} has no `.default('')` on `error` BY DESIGN — a
+ * body carrying neither `error` nor `response` cannot be judged, and defaulting
+ * would read it as a success for EVERY operation. The tolerance is the
+ * TRANSPORT's and it is per operation (`call.ts`, set on `getItemViolationInfo`
+ * alone): an ABSENT `error` reads as `''` only when the body carries a
+ * `response` object. Parsing this page's sample through the schema ALONE still
+ * fails, and a test pins that.
+ *
+ * ⚠️ The caller's contract stands regardless, because the op can still fail for
+ * every other reason: every call site treats a throw of any class as "no
+ * violation detail this time" and proceeds on `get_item_base_info`'s status +
+ * deboost.
  *
  * ⚠️ Per-ELEMENT sentinel: the op is batched to 50 and one malformed row must
  * not cost the other 49 — the {@link shopeeItemBaseInfoPayloadSchema} precedent,
@@ -3183,6 +3203,21 @@ export type ShopeeItemViolationInfoResponse = z.infer<typeof shopeeItemViolation
  * ⚠️ `auto_call_driver_setting.preparation_time_limit` is
  * `min_preparation_time` / `max_preparation_time`, NOT `{min,max}`.
  */
+/**
+ * The relation rules of ONE channel — `announcement 1394`'s related-enable /
+ * dependent-block sets. `related_disabled_channels` is NOT on the page: the live
+ * sandbox body carries it (measured 2026-09-17), so it is declared rather than
+ * left to `.passthrough()`, where a caller could not read it typed.
+ */
+export const shopeeChannelRelationRulesSchema = z
+  .object({
+    related_enabled_channels: z.array(wireInt()).nullable().default(null),
+    related_disabled_channels: z.array(wireInt()).nullable().default(null),
+    related_dependent_block_channels: z.array(wireInt()).nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeChannelRelationRules = z.infer<typeof shopeeChannelRelationRulesSchema>;
+
 export const shopeeLogisticsChannelSchema = z
   .object({
     logistics_channel_id: wireInt(),
@@ -3268,15 +3303,17 @@ export const shopeeLogisticsChannelSchema = z
       .default(null),
     support_pause: z.boolean().nullable().default(null),
     compulsory_channel: z.boolean().nullable().default(null),
+    /**
+     * ⚠️ TWO shapes, both declared, neither folded (the `gtin_limit` technique).
+     * The page's response table declares `object[]`; the LIVE sandbox body
+     * (measured 2026-09-17, step-11 probe) carries ONE object — with an
+     * UNDOCUMENTED third key, `related_disabled_channels`. A schema that only
+     * knew the table's array turned every real channel into the `null`
+     * sentinel below, and a whole-shop logistics build saw zero channels. The
+     * caller normalises to a list; the package records what arrived.
+     */
     channel_relation_rules: z
-      .array(
-        z
-          .object({
-            related_enabled_channels: z.array(wireInt()).nullable().default(null),
-            related_dependent_block_channels: z.array(wireInt()).nullable().default(null),
-          })
-          .passthrough(),
-      )
+      .union([shopeeChannelRelationRulesSchema, z.array(shopeeChannelRelationRulesSchema)])
       .nullable()
       .default(null),
   })

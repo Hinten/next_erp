@@ -139,7 +139,7 @@
  * {@link SHOPEE_UPLOAD_IMAGE_SIGNING} (a `type=Public` page whose error list
  * names `access_token`), {@link SHOPEE_UPLOAD_IMAGE_FIELD} (`image` in three
  * samples, `file` in the Java one) and {@link SHOPEE_TIER_MAX_OPTIONS} (20 and 50
- * on the same two pages).
+ * on the same two pages — MEASURED at 50 on the sandbox, 2026-09-17).
  *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
@@ -1627,12 +1627,20 @@ export interface ShopeeClient {
   /**
    * The violation / deboost detail of 1…50 items — UNWRAPPED, like every read.
    *
-   * ⚠️ **This call can fail TOTALLY, and every call site must survive that.**
-   * Both of the page's response samples carry NO `error` key at all, while its
-   * own Response-params table declares one; `shopeeEnvelopeSchema` has no default
-   * for `error` on purpose, so if the live body really omits it the transport
-   * refuses with `ShopeeSchemaError`. Treat a throw of ANY class as "no violation
-   * detail this time" and fall back on `get_item_base_info`'s status + deboost.
+   * ⚠️ **This page's SUCCESS body carries no `error` key, and that is MEASURED.**
+   * Both of its response samples print `{"message": null, "request_id": …,
+   * "response": {…}}` while its own Response-params table declares an `error`,
+   * and on 2026-09-17 the sandbox answered exactly the samples' shape (register
+   * 73) — stage 1 refused it naming `error`. So this op, and ONLY this op, opts
+   * into the transport's per-operation absent-key tolerance (`call.ts`), which
+   * still demands a `response` object: a body carrying neither key is refused as
+   * before.
+   *
+   * ⚠️ **Every call site stays best-effort regardless.** The op can still fail —
+   * network, rate limit, a real `error_*`, a body with neither key — and none of
+   * those may cost the caller its listing state: treat a throw of ANY class as
+   * "no violation detail this time" and fall back on `get_item_base_info`'s
+   * status + deboost.
    *
    * ⚠️ A row carries its OWN failure in band (`fail_error` / `fail_message`) — a
    * third partial-failure encoding in this module. Reconcile by `item_id`.
@@ -3065,6 +3073,14 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         call: await signedCall(),
         schema: shopeeItemViolationInfoSchema,
         surface: SHOPEE_SURFACE.business,
+        // ⚠️ The ONE operation in this package that opts into the transport's
+        // absent-key tolerance, and the only place the flag may appear.
+        // MEASURED on the sandbox 2026-09-17 (register 73): the SUCCESS body is
+        // `{message, request_id, response: {item_list: […]}}` with NO `error`
+        // key, and stage 1 refused it with `campos=["error"]`. The tolerance
+        // still requires a `response` object, so a body carrying neither key
+        // stays refused — see the option's docblock in `call.ts`.
+        erroAusenteEhSucesso: true,
         query: {
           // ⚠️ The SAME literal `getItemBaseInfo` uses — this page samples no
           // encoding at all, and the shipped precedent is the bare comma.

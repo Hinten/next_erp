@@ -7,13 +7,21 @@
  * HTTP 200**, so the outcome is decided by `envelope.error === ''` and never by
  * `res.ok`.
  *
- * ⚠️ That invariant has exactly ONE exception, and it is opt-in PER OPERATION:
+ * ⚠️ That invariant has exactly TWO exceptions, and both are opt-in PER
+ * OPERATION. The first is about the VALUE:
  * {@link ShopeeCallParams.emptyErrorAliases}. Three pages — the two on the
  * lost-push queue and `v2.order.get_package_detail` — print `"-"` where the
  * others print `""`, and the alias exists so those three operations can read it
  * as success. It is never a global widening: the default stays exact equality
  * with `''`, the opt-in is per CALL SITE — three of them, over TWO constants —
  * and a `' '` is a failure everywhere, aliases included.
+ *
+ * ⚠️ The second is about the KEY: {@link ShopeeCallParams.erroAusenteEhSucesso},
+ * ONE call site (`get_item_violation_info`), whose SUCCESS body omits `error`
+ * altogether — measured on the sandbox 2026-09-17. It reads an ABSENT key as
+ * `''` and it is narrower than it sounds: it applies only when the body carries
+ * a `response` object, so a body with NEITHER key stays unjudgeable and stays
+ * refused, exactly as without the flag.
  *
  * ## Why the body is parsed TWICE
  *
@@ -40,7 +48,7 @@
  * it is a building block of. It is INTERNAL: `index.ts` deliberately does not
  * re-export it.
  */
-import type { z } from 'zod';
+import { z } from 'zod';
 
 import { lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
@@ -174,6 +182,36 @@ interface ShopeeCallBase<S extends z.ZodType> {
    * `get_package_detail` included: that page samples `"warning": "-"` as well.
    */
   readonly emptyErrorAliases?: readonly string[];
+  /**
+   * Read an ABSENT `error` key as `''` — for the ONE page whose SUCCESS body
+   * does not carry it.
+   *
+   * ⚠️ MEASURED, not inferred: on 2026-09-17 the sandbox answered
+   * `get_item_violation_info` with `{message, request_id, response: {item_list:
+   * […]}}` and stage 1 refused it (`ShopeeSchemaError campos=["error"]`) —
+   * register 73. The page's own two response samples had printed exactly that
+   * shape while its Response-params table declared an `error`, so the wire and
+   * the samples agree and the table is the odd one out. ONE call site carries
+   * this flag (`api.ts`, `getItemViolationInfo`), and nothing else may.
+   *
+   * ⚠️ The SECOND exception to `error === ''`, and deliberately NOT the same
+   * mechanism as {@link emptyErrorAliases}: that one widens which VALUES count
+   * as success, this one covers a key that is not there at all. A `.default('')`
+   * on `shopeeEnvelopeSchema` would do it for every operation at once and would
+   * be the wrong fix — a body carrying NEITHER `error` NOR `response` is a body
+   * nobody can judge, and defaulting would read it as a success.
+   *
+   * ⚠️ Hence the condition that keeps it narrow: the tolerance applies ONLY when
+   * the body carries a `response` OBJECT. A body with neither key is still
+   * refused with `ShopeeSchemaError` naming `error`, flag or no flag, and a
+   * near-miss test pins that the DEFAULT (no flag) refuses the very body this
+   * flag accepts.
+   *
+   * ⚠️ It cannot hide a real error either. A body that DOES carry
+   * `error: 'error_param'` parses on the strict pass, so the tolerant re-parse
+   * is never reached and the `error === ''` verdict throws as always.
+   */
+  readonly erroAusenteEhSucesso?: boolean;
 }
 
 /**
@@ -201,6 +239,26 @@ export type ShopeeCallParams<S extends z.ZodType> = ShopeeCallBase<S> &
         readonly multipart: ShopeeMultipartBody;
       }
   );
+
+/**
+ * The envelope as the ONE page whose success body omits `error` answers it: the
+ * key defaulted to `''`, and a `response` OBJECT REQUIRED in its place.
+ *
+ * ⚠️ Local to the TRANSPORT on purpose. `types.ts`'s `shopeeEnvelopeSchema`
+ * stays strict and a test there pins that this page's sample still fails it —
+ * the tolerance is a property of one call site, not of the wire format. Only a
+ * call carrying {@link ShopeeCallBase.erroAusenteEhSucesso} ever reaches this
+ * schema, and only after the strict parse has already failed.
+ *
+ * ⚠️ `response` is what makes the body judgeable: `z.object({}).passthrough()`
+ * accepts any OBJECT and refuses `null`, an array and a scalar, so a failing
+ * body — which carries no `response` — cannot slip through as a success just
+ * because it also lost its `error`.
+ */
+const envelopeComErroAusenteSchema = shopeeEnvelopeSchema.extend({
+  error: z.string().default(''),
+  response: z.object({}).passthrough(),
+});
 
 /** How much of a non-JSON body may reach a log line. */
 const MAX_LOGGED_BODY = 500;
@@ -315,7 +373,18 @@ export async function shopeeCall<S extends z.ZodType>(
   const retryAfterSeconds = parseRetryAfter(res);
 
   /* ------------------------------- stage 1 -------------------------------- */
-  const envelopeLeitura = lerRespostaJson(text, shopeeEnvelopeSchema);
+  const envelopeEstrito = lerRespostaJson(text, shopeeEnvelopeSchema);
+  // ⚠️ The per-operation tolerance for the ONE page whose SUCCESS body omits
+  // `error` — see `erroAusenteEhSucesso`. Two things keep it narrow. It is only
+  // ATTEMPTED when the strict parse already failed, so a present `error` (of any
+  // value) is judged exactly as before; and it only WINS when it succeeds, so a
+  // body that is not an envelope at all keeps the strict reading's diagnostics —
+  // the refusal still names `error`, never `response`.
+  const envelopeTolerante =
+    !envelopeEstrito.ok && p.erroAusenteEhSucesso === true
+      ? lerRespostaJson(text, envelopeComErroAusenteSchema)
+      : null;
+  const envelopeLeitura = envelopeTolerante?.ok === true ? envelopeTolerante : envelopeEstrito;
   if (!envelopeLeitura.ok) {
     // A bare 429 whose body is not an envelope is still a rate limit, and the
     // only signal a caller can act on. Classified as `burst`: the daily quota is
@@ -395,7 +464,16 @@ export async function shopeeCall<S extends z.ZodType>(
   }
 
   /* ------------------------------- stage 2 -------------------------------- */
-  const leitura = lerRespostaJson(text, p.schema);
+  // ⚠️ The operation schemas COMPOSE the envelope (`wrappedOp`/`flatOp`/`dataOp`
+  // all spread `envelopeShape`), so a missing `error` refuses the body a SECOND
+  // time here — a tolerance that stopped at stage 1 would look like it worked
+  // and still fail the call, one layer down. The repair therefore serves both
+  // stages: `envelopeComErroAusenteSchema` is `.passthrough()` at the top level
+  // and on `response`, so re-serialising its output is the body Shopee sent with
+  // the one absent key filled in as `''` and nothing else changed.
+  const textoParaSchema =
+    envelopeTolerante?.ok === true ? JSON.stringify(envelopeTolerante.data) : text;
+  const leitura = lerRespostaJson(textoParaSchema, p.schema);
   if (leitura.ok) return leitura.data;
 
   // Unreachable for the other two outcomes: stage 1 already proved the body is
