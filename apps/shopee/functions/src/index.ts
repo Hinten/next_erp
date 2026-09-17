@@ -81,6 +81,16 @@ import * as notificationHandlers from './processNotification';
  * disposition table stamps the job `failed` rather than letting a dispatch end
  * quietly, and why the rename-safety assertion below matters more for it than
  * for the first queue.
+ *
+ * Master plan step 11 (#1519) adds the codebase's FIRST Firestore trigger,
+ * `onProdutoShopeeLinkChanged` (./onProdutoShopeeLinkChanged) — the owner of
+ * the Shopee half of `produtos.integracoesComProduto`, derived from the
+ * `prodshopee` link documents instead of from a stamp every writer has to
+ * remember. ⚠️ It is neither a schedule nor a queue, so neither exhaustiveness
+ * test above could see it: an `eventTrigger` export was read by NOTHING until
+ * `index.test.ts` gained the third map, `GATILHOS`. The failure that hole hides
+ * is the silent one — an `onDocument*` that omits `database` deploys fine,
+ * binds to the non-existent `(default)` and NEVER FIRES.
  */
 
 /**
@@ -142,6 +152,10 @@ if (!(SHOPEE_MASS_IMPORT_QUEUE in massImportHandlers)) {
 
 /** The queue-based mass product import (one dispatch at a time, self-continued). */
 export { processShopeeMassImport } from './processMassImport';
+
+// Master plan step 11 (#1519): the Shopee half of `produtos.integracoesComProduto`,
+// derived from the `prodshopee` links. No `secrets:` — it never calls Shopee.
+export { onProdutoShopeeLinkChanged } from './onProdutoShopeeLinkChanged';
 
 /**
  * Reprocess backstop, draining BOTH retry lanes on the same tick:

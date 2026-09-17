@@ -22,6 +22,21 @@ export async function bundle(outfile) {
   // variable stops the build rather than inlining a region nobody chose — see
   // requireBuildRegion.
   const region = requireBuildRegion('FUNCTIONS_REGION');
+  // Default to `default` — the repo's NAMED Firestore database. Firebase reads no
+  // env during codebase analysis, so `onProdutoShopeeLinkChanged`'s `database:`
+  // binding (src/onProdutoShopeeLinkChanged.ts) would see `undefined` and bind to
+  // the non-existent `(default)` — the trigger then NEVER fires, and nothing
+  // anywhere says so. Inline it like FUNCTIONS_REGION so the analyzed endpoint
+  // carries the real database id. Mirrors apps/mercado-livre/functions/build.mjs.
+  //
+  // ⚠️ `src/lib/admin.ts` already reads the same variable at RUNTIME for
+  // `getDb()`. That is NOT the same thing and does not cover this: codebase
+  // analysis runs in the deploy's own process, before any env exists, and it is
+  // what decides which database the trigger is registered against.
+  //
+  // ⚠️ `|| 'default'`, not `requireBuildRegion` — an unset value has a correct
+  // answer here, where an unset region does not.
+  const databaseId = process.env.FIREBASE_DATABASE_ID || 'default';
   // Service accounts allowed to enqueue AND dispatch this codebase's task
   // functions, comma-separated. Inlined for the same reason as the region above
   // — `onTaskDispatched`'s `invoker` option is read during Firebase's codebase
@@ -46,6 +61,7 @@ export async function bundle(outfile) {
     external: ['firebase-admin', 'firebase-admin/*', 'firebase-functions', 'firebase-functions/*'],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
+      'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId),
       'process.env.TASKS_INVOKER_SA': JSON.stringify(tasksInvoker),
     },
     // ESM output has no `require`, but bundled CommonJS deps may call it
