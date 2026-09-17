@@ -50,7 +50,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { buildHomologacaoFixture } from '../helpers/homologacao-fixture';
 import { resolveProtocol } from '../helpers/resolve-protocol';
-import { logSefaz } from '../helpers/sefaz-log';
+import { descreverSefaz, logSefaz } from '../helpers/sefaz-log';
+import { LCC_RFB_BLOQUEADO, LCC_RFB_MOTIVO } from '../helpers/lcc-rfb-bloqueio';
 import { seedNNF } from '../helpers/homologacao-seed';
 import {
   assertCertNotExpired,
@@ -171,68 +172,117 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
   // duplicidade test below stays because it pins the consSitNFe
   // recovery contract the orchestrator's anti-loss path depends on
   // (see `recoverFrom539` in `apps/nfe/lib/nfe/orchestrator.ts`).
-  it('duplicidade recovery — second emission returns 204, consSitNFe resolves to original 100', async () => {
-    // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml
-    // "SEFAZ-SP HOM status gate" step runs operations.homologacao
-    // immediately before this test and short-circuits the whole job
-    // on cStat ≠ 107/108/109, so re-pinging the status endpoint here
-    // would just feed the 656 throttle for no extra signal.
-    const numeracao = seedNNF();
-    const fixture = buildFixture(numeracao);
-    const out = generateNFe(fixture);
-
-    const autorizacaoCall = buildCall(getEndpoints('SP', 'homologacao').NfeAutorizacao, TEST_CERT!);
-    // resolveProtocol's 103 fallback polls consReciNFe, which lives on the
-    // RetAutorizacao service — never reuse the Autorizacao call for it.
-    const consReciCall = buildCall(getEndpoints('SP', 'homologacao').NfeRetAutorizacao, TEST_CERT!);
-    const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
-
-    // 1st submission — must succeed.
-    const first = await autorizarLote(autorizacaoCall, {
-      idLote: out.chave.slice(-15),
-      NFe: [signedXml],
-      indSinc: '1',
-    });
-    assertNotConsumoIndevido(first, 'duplicidade/autorizarLote#1');
-    const firstProt = await resolveProtocol(first, consReciCall);
-    if (firstProt) assertNotConsumoIndevido(firstProt.infProt, 'duplicidade/protNFe#1');
-    expect(firstProt?.infProt.cStat).toBe('100');
-    const firstNProt = firstProt!.infProt.nProt;
-
-    // Throttle between identical-payload submissions.
-    await new Promise((r) => setTimeout(r, 1000));
-
-    // 2nd submission — same chave, expect cStat=204 (Duplicidade).
-    // SEFAZ surfaces 204 either at the lote level OR inside protNFe
-    // depending on lot composition; accept either as long as the
-    // chave is rejected as duplicate.
-    const second = await autorizarLote(autorizacaoCall, {
-      idLote: out.chave.slice(-15),
-      NFe: [signedXml],
-      indSinc: '1',
-    });
-    assertNotConsumoIndevido(second, 'duplicidade/autorizarLote#2');
-    logSefaz('duplicidade lote2', second);
-    const secondProt = await resolveProtocol(second, consReciCall);
-    if (secondProt) assertNotConsumoIndevido(secondProt.infProt, 'duplicidade/protNFe#2');
-    const dupCStat = secondProt?.infProt.cStat ?? second.cStat;
-    expect(['204', '539']).toContain(dupCStat);
-
-    // Recovery query — proves the original 100 + nProt are still
-    // resolvable by chave. This is the exact path the orchestrator's
-    // anti-loss recovery uses when a SOAP response goes missing.
-    await new Promise((r) => setTimeout(r, 1000));
-    const consultaCall = buildCall(
-      getEndpoints('SP', 'homologacao').NfeConsultaProtocolo,
-      TEST_CERT!,
+  // ⚠️ `process.stdout.write`, NOT `console.warn` — Vitest 4's default reporter
+  // only replays intercepted `console.*` for FAILING files, so a `console.warn`
+  // here would be invisible on exactly the green runs this skip creates. Same
+  // shape and same reasoning as the #1471 notice in `svc.homologacao.test.ts`.
+  if (LCC_RFB_BLOQUEADO && process.env.CI) {
+    process.stdout.write(
+      '::warning::The duplicidade-recovery contract is NOT verified on this run (#1612) — ' +
+        'SEFAZ rejects the shared fixture destinatário with cStat=181 (NT 2026.007 RV 12E02-10, ' +
+        'LCC-RFB: CNPJ não cadastrado na Receita Federal). Emission, the 204/539 duplicidade ' +
+        'path and the consSitNFe recovery `recoverFrom539` depends on are UNPROVEN until the ' +
+        'fixture gains a destinatário the RFB register knows.\n',
     );
-    const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
-    assertNotConsumoIndevido(sit, 'duplicidade/consSitNFe');
-    logSefaz('consSitNFe', { ...sit, protCStat: sit.protNFe?.infProt.cStat });
-    // SEFAZ retConsSitNFe.cStat=100 means "consulta atendida"; the
-    // **inner** protNFe.infProt.cStat is the actual NF-e status.
-    expect(sit.chNFe).toBe(out.chave);
-    expect(sit.protNFe?.infProt.cStat).toBe('100');
-    expect(sit.protNFe?.infProt.nProt).toBe(firstNProt);
-  }, 180_000);
+  }
+
+  // ⚠️ SUSPENSO desde 2026-09-17. SEFAZ-SP passou a aplicar a RV 12E02-10 da
+  // NT 2026.007 (LCC-RFB, implantação teste 01/09/2026) e rejeita o
+  // destinatário deste fixture — CNPJ 99999999000191 — com cStat=181, "CNPJ
+  // do destinatário não cadastrado na Receita Federal". O primeiro protocolo
+  // nunca chega a 100, então o contrato de duplicidade abaixo não tem como
+  // ser exercido. Nenhum CNPJ inventado resolve: a regra consulta o cadastro
+  // real. Detalhes, a família 178–186 e o fix proposto (destinatário PF/CPF,
+  // fora do escopo da RV) em `../helpers/lcc-rfb-bloqueio.ts` e #1612.
+  //
+  // ⚠️ Incondicional, ao contrário do skip de #1471 em svc.homologacao.test.ts,
+  // que preserva as runs FATAIS (`workflow_dispatch`/`schedule`) justamente para
+  // detectar quando o cadastro SARA. Aqui não há o que sarar: 99999999000191 é
+  // um CNPJ reservado de teste e nunca vai constar no cadastro da Receita, então
+  // uma run fatal só gastaria quota da SEFAZ para reencontrar o mesmo 181. A
+  // reavaliação é uma ação humana deliberada — trocar o destinatário e baixar a
+  // flag — e não uma sonda automática.
+  it.skipIf(LCC_RFB_BLOQUEADO)(
+    `duplicidade recovery — second emission returns 204, consSitNFe resolves to original 100 [${LCC_RFB_MOTIVO}]`,
+    async () => {
+      // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml
+      // "SEFAZ-SP HOM status gate" step runs operations.homologacao
+      // immediately before this test and short-circuits the whole job
+      // on cStat ≠ 107/108/109, so re-pinging the status endpoint here
+      // would just feed the 656 throttle for no extra signal.
+      const numeracao = seedNNF();
+      const fixture = buildFixture(numeracao);
+      const out = generateNFe(fixture);
+
+      const autorizacaoCall = buildCall(
+        getEndpoints('SP', 'homologacao').NfeAutorizacao,
+        TEST_CERT!,
+      );
+      // resolveProtocol's 103 fallback polls consReciNFe, which lives on the
+      // RetAutorizacao service — never reuse the Autorizacao call for it.
+      const consReciCall = buildCall(
+        getEndpoints('SP', 'homologacao').NfeRetAutorizacao,
+        TEST_CERT!,
+      );
+      const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
+
+      // 1st submission — must succeed.
+      const first = await autorizarLote(autorizacaoCall, {
+        idLote: out.chave.slice(-15),
+        NFe: [signedXml],
+        indSinc: '1',
+      });
+      assertNotConsumoIndevido(first, 'duplicidade/autorizarLote#1');
+      logSefaz('duplicidade lote1', first);
+      const firstProt = await resolveProtocol(first, consReciCall);
+      if (firstProt) assertNotConsumoIndevido(firstProt.infProt, 'duplicidade/protNFe#1');
+      // ⚠️ The message is not decoration. With indSinc='1' SEFAZ answers inline,
+      // so `resolveProtocol` never reaches its poll-path logging and this was the
+      // ONLY place the first protocol surfaced — as a bare cStat. cStat=181 cost a
+      // full diagnosis for exactly that reason (#1612), as `999` did in #1247 and
+      // `178` in #1471. `descreverSefaz` redacts; the repo is public.
+      expect(
+        firstProt?.infProt.cStat,
+        firstProt ? descreverSefaz('duplicidade protNFe#1', firstProt.infProt) : 'sem protNFe',
+      ).toBe('100');
+      const firstNProt = firstProt!.infProt.nProt;
+
+      // Throttle between identical-payload submissions.
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // 2nd submission — same chave, expect cStat=204 (Duplicidade).
+      // SEFAZ surfaces 204 either at the lote level OR inside protNFe
+      // depending on lot composition; accept either as long as the
+      // chave is rejected as duplicate.
+      const second = await autorizarLote(autorizacaoCall, {
+        idLote: out.chave.slice(-15),
+        NFe: [signedXml],
+        indSinc: '1',
+      });
+      assertNotConsumoIndevido(second, 'duplicidade/autorizarLote#2');
+      logSefaz('duplicidade lote2', second);
+      const secondProt = await resolveProtocol(second, consReciCall);
+      if (secondProt) assertNotConsumoIndevido(secondProt.infProt, 'duplicidade/protNFe#2');
+      const dupCStat = secondProt?.infProt.cStat ?? second.cStat;
+      expect(['204', '539']).toContain(dupCStat);
+
+      // Recovery query — proves the original 100 + nProt are still
+      // resolvable by chave. This is the exact path the orchestrator's
+      // anti-loss recovery uses when a SOAP response goes missing.
+      await new Promise((r) => setTimeout(r, 1000));
+      const consultaCall = buildCall(
+        getEndpoints('SP', 'homologacao').NfeConsultaProtocolo,
+        TEST_CERT!,
+      );
+      const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
+      assertNotConsumoIndevido(sit, 'duplicidade/consSitNFe');
+      logSefaz('consSitNFe', { ...sit, protCStat: sit.protNFe?.infProt.cStat });
+      // SEFAZ retConsSitNFe.cStat=100 means "consulta atendida"; the
+      // **inner** protNFe.infProt.cStat is the actual NF-e status.
+      expect(sit.chNFe).toBe(out.chave);
+      expect(sit.protNFe?.infProt.cStat).toBe('100');
+      expect(sit.protNFe?.infProt.nProt).toBe(firstNProt);
+    },
+    180_000,
+  );
 });

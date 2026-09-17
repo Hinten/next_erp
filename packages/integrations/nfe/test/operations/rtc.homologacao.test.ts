@@ -44,6 +44,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { buildHomologacaoFixture, impostoCsosn102ComRtc } from '../helpers/homologacao-fixture';
 import { resolveProtocol } from '../helpers/resolve-protocol';
 import { descreverSefaz, logSefaz } from '../helpers/sefaz-log';
+import { LCC_RFB_BLOQUEADO, LCC_RFB_MOTIVO } from '../helpers/lcc-rfb-bloqueio';
 import { seedNNF, SEFAZ_HOM_RTC_SERIE } from '../helpers/homologacao-seed';
 import {
   assertCertNotExpired,
@@ -98,42 +99,71 @@ describeOrSkip('SEFAZ-SP homologação — Reforma Tributária (IBS/CBS/IS) emis
     }
   });
 
-  it('emits a CRT=1 NF-e with IBS/CBS groups — SEFAZ accepts (cStat=100)', async () => {
-    const numeracao = seedNNF();
-    const fixture = buildHomologacaoFixture({
-      numeracao,
-      serie: SEFAZ_HOM_RTC_SERIE,
-      cnpj: TEST_CERT!.cnpj,
-      ie: TEST_IE!,
-      imposto: impostoCsosn102ComRtc(),
-      emitRtc: true,
-    });
-    const out = generateNFe(fixture);
+  // ⚠️ `process.stdout.write`, não `console.warn`: o reporter padrão do Vitest 4
+  // só reexibe `console.*` de arquivos que FALHARAM, e este skip produz um
+  // arquivo verde.
+  if (LCC_RFB_BLOQUEADO && process.env.CI) {
+    process.stdout.write(
+      '::warning::RTC (IBS/CBS) live emission is SKIPPED (#1612) — it shares the ' +
+        'destinatário of buildHomologacaoFixture, which SEFAZ now rejects with cStat=181 ' +
+        '(NT 2026.007 RV 12E02-10, LCC-RFB). The cadastral rejection lands BEFORE any ' +
+        'IBS/CBS validation, so running it would prove nothing about the RTC groups and ' +
+        'only spend SEFAZ quota. RTC readiness is UNPROVEN live on this run.\n',
+    );
+  }
 
-    const autorizacaoCall = buildCall(getEndpoints('SP', 'homologacao').NfeAutorizacao, TEST_CERT!);
-    const consReciCall = buildCall(getEndpoints('SP', 'homologacao').NfeRetAutorizacao, TEST_CERT!);
-    const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
+  // ⚠️ SUSPENSO. Este teste usa o mesmo `buildHomologacaoFixture` do
+  // emission.homologacao, cujo destinatário PJ (CNPJ 99999999000191) é
+  // rejeitado com cStat=181 pela RV 12E02-10 da NT 2026.007 (LCC-RFB). A
+  // rejeição é cadastral e chega ANTES de qualquer validação dos grupos
+  // IBS/CBS, então manter o teste ligado só gastaria quota da SEFAZ sem
+  // dizer nada sobre a RTC. Ver `../helpers/lcc-rfb-bloqueio.ts` e #1612.
+  it.skipIf(LCC_RFB_BLOQUEADO)(
+    `emits a CRT=1 NF-e with IBS/CBS groups — SEFAZ accepts (cStat=100) [${LCC_RFB_MOTIVO}]`,
+    async () => {
+      const numeracao = seedNNF();
+      const fixture = buildHomologacaoFixture({
+        numeracao,
+        serie: SEFAZ_HOM_RTC_SERIE,
+        cnpj: TEST_CERT!.cnpj,
+        ie: TEST_IE!,
+        imposto: impostoCsosn102ComRtc(),
+        emitRtc: true,
+      });
+      const out = generateNFe(fixture);
 
-    const ret = await autorizarLote(autorizacaoCall, {
-      idLote: out.chave.slice(-15),
-      NFe: [signedXml],
-      indSinc: '1',
-    });
-    assertNotConsumoIndevido(ret, 'rtc/autorizarLote');
-    logSefaz('rtc lote', ret);
-    const prot = await resolveProtocol(ret, consReciCall);
-    if (prot) assertNotConsumoIndevido(prot.infProt, 'rtc/protNFe');
-    const cStat = prot?.infProt.cStat ?? ret.cStat;
-    const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
-    logSefaz('rtc protNFe', { cStat, xMotivo });
-    // The best-guess codes target cStat=100. On a first-run rejection the log
-    // above names the exact code/alíquota to refine (1020/1023/1024/1026/...).
-    //
-    // ⚠️ The assertion message goes through `descreverSefaz` too: a vitest
-    // message lands in the CI ANNOTATION, which is as public as the log.
-    expect(
-      cStat,
-      `SEFAZ rejected the RTC NF-e — ${descreverSefaz('rtc protNFe', { cStat, xMotivo })}`,
-    ).toBe('100');
-  }, 180_000);
+      const autorizacaoCall = buildCall(
+        getEndpoints('SP', 'homologacao').NfeAutorizacao,
+        TEST_CERT!,
+      );
+      const consReciCall = buildCall(
+        getEndpoints('SP', 'homologacao').NfeRetAutorizacao,
+        TEST_CERT!,
+      );
+      const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
+
+      const ret = await autorizarLote(autorizacaoCall, {
+        idLote: out.chave.slice(-15),
+        NFe: [signedXml],
+        indSinc: '1',
+      });
+      assertNotConsumoIndevido(ret, 'rtc/autorizarLote');
+      logSefaz('rtc lote', ret);
+      const prot = await resolveProtocol(ret, consReciCall);
+      if (prot) assertNotConsumoIndevido(prot.infProt, 'rtc/protNFe');
+      const cStat = prot?.infProt.cStat ?? ret.cStat;
+      const xMotivo = prot?.infProt.xMotivo ?? ret.xMotivo;
+      logSefaz('rtc protNFe', { cStat, xMotivo });
+      // The best-guess codes target cStat=100. On a first-run rejection the log
+      // above names the exact code/alíquota to refine (1020/1023/1024/1026/...).
+      //
+      // ⚠️ The assertion message goes through `descreverSefaz` too: a vitest
+      // message lands in the CI ANNOTATION, which is as public as the log.
+      expect(
+        cStat,
+        `SEFAZ rejected the RTC NF-e — ${descreverSefaz('rtc protNFe', { cStat, xMotivo })}`,
+      ).toBe('100');
+    },
+    180_000,
+  );
 });
