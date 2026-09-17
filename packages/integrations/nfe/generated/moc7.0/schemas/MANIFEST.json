@@ -31,6 +31,30 @@
       ]
     },
     {
+      "name": "PL_010d_v1.03",
+      "nt": "NT 2026.004 v1.01 (CNPJ Alfanumérico)",
+      "publishedAt": "2026-07-01",
+      "role": "leiaute-overlay",
+      "description": "CNPJ Alfanumérico — supersedes PL_010c. Widens every CNPJ-typed field and the chave de acesso from numeric to alphanumeric per RFB Instrucao Normativa 2.229/2024: TCnpj and TCnpjVar become [0-9A-Z]{12}[0-9]{2}, TCnpjOpc [0-9]{0}|[0-9A-Z]{12}[0-9]{2}, TChNFe [0-9]{6}[0-9A-Z]{12}[0-9]{26} and infNFe/@Id NFe + the same. Note the alphanumeric window in a chave is exactly positions 6-17 (the CNPJ's 12-char body) — the CNPJ's two check digits and everything after stay numeric. Implantacao teste 01/06/2026, producao 01/07/2026. The pack also carries the NT 2026.001 PAA group (infPAA/PAASignature) and the xmldsig TRSAKeyValueType, which is why the generated type count moved 173 -> 177. Vendored from PL_010d_v1.03.zip, whose NFe/ copies are preferred over the NT2026.004 v1.01 wrapper's: they additionally fix the NFC-e QR-code facet to accept an alfa CNPJ ([0-9]{3,14} -> ([0-9A-Z]{12}[0-9]{2})|([0-9]{11})) and drop a stale TCnpjVar 'tamanho variavel (3-14)' doc string. Files normalised to LF to match the rest of this directory; the zip ships CRLF.",
+      "url": "https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=BMPFMBoln3w=",
+      "overlays": [
+        "leiauteNFe_v4.00.xsd",
+        "nfe_v4.00.xsd",
+        "tiposBasico_v4.00.xsd",
+        "tiposBasico_v1.03.xsd",
+        "consSitNFe_v4.00.xsd",
+        "leiauteConsSitNFe_v4.00.xsd",
+        "leiauteInutNFe_v4.00.xsd",
+        "procInutNFe_v4.00.xsd",
+        "retConsReciNFe_v4.00.xsd",
+        "retConsSitNFe_v4.00.xsd",
+        "envEvento_v1.00.xsd",
+        "retEnvEvento_v1.00.xsd",
+        "procEventoNFe_v1.00.xsd",
+        "leiauteEvento_v1.00.xsd"
+      ]
+    },
+    {
       "name": "PL_010c_NT2022_002v1.30",
       "nt": "NT 2022.002 v1.30",
       "publishedAt": "2026-03-26",
@@ -66,7 +90,9 @@
       "role": "evento-payload",
       "description": "Carta de Correção Eletrônica — supplies only the tpEvento 110110 detEvento payload schema. The pack's CCe-specific envelope files (envCCe, leiauteCCe, retEnvCCe, procCCeNFe, CCe) are deliberately not vendored: the envelope comes from Evento_Generico_PL_v1.01 and the payload is fed into its detEvento #raw slot. The portal entry names no Nota Técnica, hence nt: null.",
       "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=%2B0MSTVshMl8=",
-      "provides": ["e110110_v1.00.xsd"]
+      "provides": [
+        "e110110_v1.00.xsd"
+      ]
     },
     {
       "name": "Evento_Canc_PL_v1.01",
@@ -75,7 +101,9 @@
       "role": "evento-payload",
       "description": "Cancelamento — supplies only the tpEvento 110111 detEvento payload schema. The pack's cancelamento-specific envelope files (envEventoCancNFe, leiauteEventoCancNFe, retEnvEventoCancNFe, procEventoCancNFe, eventoCancNFe) are deliberately not vendored; the envelope comes from Evento_Generico_PL_v1.01. The portal entry names no Nota Técnica, hence nt: null.",
       "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=Ig8Y9i6kgOc=",
-      "provides": ["e110111_v1.00.xsd"]
+      "provides": [
+        "e110111_v1.00.xsd"
+      ]
     },
     {
       "name": "Evento_EPEC_PL_v1.01",
@@ -84,7 +112,9 @@
       "role": "evento-payload",
       "description": "EPEC (Evento Prévio de Emissão em Contingência) — supplies only the tpEvento 110140 detEvento payload schema. The pack's EPEC-specific envelope files (envEPEC, leiauteEPEC, retEnvEPEC, procEPEC, EPEC) are deliberately not vendored; the envelope comes from Evento_Generico_PL_v1.01. The portal entry names no Nota Técnica, hence nt: null.",
       "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=OPt9hJUGOv0=",
-      "provides": ["e110140_v1.00.xsd"]
+      "provides": [
+        "e110140_v1.00.xsd"
+      ]
     }
   ]
 }
