@@ -6,7 +6,7 @@
  * sub-tree arrives pre-built from the caller and is spliced in raw (tributary
  * computation is intentionally out of scope for Phase A — see the plan).
  */
-import { validateCNPJ } from '@delfrance/core/documents';
+import { normalizeDocumento, validateCNPJ } from '@delfrance/core/documents';
 import { sanitizeNFeText, temTextoCorrompido } from '../sanitize';
 import type { TNFe_infNFe_det_prod } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
@@ -44,9 +44,16 @@ function fmtMoney(n: number): string {
 }
 
 /**
- * `det.prod.CNPJFab` is XSD type `TCnpj` — `[0-9]{14}`, digits only — and MOC
- * 7.0 Anexo I I05e-20 (Obrigatória) rejects an invalid one with **489** ("CNPJ
- * informado inválido (DV ou zeros)").
+ * `det.prod.CNPJFab` is XSD type `TCnpj` — `[0-9A-Z]{12}[0-9]{2}` since
+ * NT 2026.004 (CNPJ Alfanumérico, RFB IN 2.229/2024) — and MOC 7.0 Anexo I
+ * I05e-20 (Obrigatória) rejects an invalid one with **489** ("CNPJ informado
+ * inválido (DV ou zeros)").
+ *
+ * ⚠️ `CNPJFab` is a COUNTERPARTY's CNPJ — the fabricante — and a newly
+ * registered manufacturer is exactly who the Receita now issues an alphanumeric
+ * CNPJ to. This guard used to `replace(/\D/g, '')` and demand `/^\d{14}$/`,
+ * which ATE the letters and then rejected the wreckage, telling the operator
+ * their valid CNPJ was invalid and echoing a mangled value back at them.
  *
  * ⚠️ Nothing upstream constrains it. `filial.cnpj` and `cliente.cpf_cnpj` carry
  * their own regexes in the schemas, which is why `buildEmit`/`buildDest` may
@@ -65,14 +72,18 @@ function requireCnpjFab(raw: string | undefined, nItem: number): string {
         `produto's Impostos tab, or clear "Indicador de escala".`,
     );
   }
-  const digits = raw.replace(/\D/g, '');
-  if (!/^\d{14}$/.test(digits) || !validateCNPJ(digits)) {
+  // Normalise punctuation and case; never strip letters. `validateCNPJ` is the
+  // canonical implementation (módulo 11 weighting each character by
+  // `charCodeAt − 48`) and already accepts both formats.
+  const normalizado = normalizeDocumento(raw);
+  if (!/^[0-9A-Z]{12}[0-9]{2}$/.test(normalizado) || !validateCNPJ(normalizado)) {
     throw new NFeDetError(
-      `item ${nItem}: CNPJFab='${raw}' is not a valid CNPJ (expected 14 digits with a ` +
-        `correct DV, got '${digits}') — SEFAZ rejeição 489. Fix the produto's Impostos tab.`,
+      `item ${nItem}: CNPJFab='${raw}' is not a valid CNPJ (expected 14 characters ` +
+        `matching [0-9A-Z]{12}[0-9]{2} with a correct DV, got '${normalizado}') — ` +
+        `SEFAZ rejeição 489. Fix the produto's Impostos tab.`,
     );
   }
-  return digits;
+  return normalizado;
 }
 
 /** `det.prod.cBenef` — `([!-ÿ]{8}|[!-ÿ]{10}|SEM CBENEF)?` (leiauteNFe_v4.00.xsd:967). */

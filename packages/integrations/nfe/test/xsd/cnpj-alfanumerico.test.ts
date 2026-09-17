@@ -97,3 +97,55 @@ describe('CNPJ alfanumérico — XSD gate (NT 2026.004 / PL_010d)', () => {
     expect(validateCNPJ('PC3D315K000194')).toBe(false);
   });
 });
+
+/**
+ * The two in-package guards that still spoke `[0-9]{14}` after the pack swap.
+ * Both take a COUNTERPARTY's CNPJ — exactly who the Receita issues alfa CNPJs
+ * to — and both used `replace(/\D/g, '')`, which ate the letters and then
+ * rejected the wreckage.
+ */
+describe('CNPJ alfanumérico — the generator guards', () => {
+  function fixtureComCnpjFab(cnpjFab: string) {
+    const base = buildHomologacaoFixture({
+      numeracao: 1,
+      serie: 2,
+      cnpj: '99999999000191',
+      ie: '111111111',
+    });
+    return {
+      ...base,
+      // ⚠️ BOTH are required to reach the guard: det.ts only emits the
+      // indEscala/CNPJFab pair when `item.indEscala != null && item.CEST`.
+      // Setting indEscala alone makes these tests pass vacuously.
+      itens: base.itens.map((i) => ({
+        ...i,
+        CEST: i.CEST ?? '2803800',
+        indEscala: false,
+        CNPJFab: cnpjFab,
+      })),
+    };
+  }
+
+  it('accepts an alphanumeric CNPJFab (fabricante)', () => {
+    expect(() => generateNFe(fixtureComCnpjFab('PC3D315K000193'))).not.toThrow();
+  });
+
+  it('still rejects a CNPJFab with a bad DV, and echoes it un-mangled', () => {
+    // ⚠️ The old message printed the STRIPPED value ('3315000193'), so the
+    // operator was shown digits they never typed. The value in the error must be
+    // recognisable as what is in the cadastro.
+    expect(() => generateNFe(fixtureComCnpjFab('PC3D315K000194'))).toThrow(/PC3D315K000194/);
+  });
+
+  it('accepts a 44-char chNFeReferenciada whose CNPJ body is alphanumeric', () => {
+    const base = buildHomologacaoFixture({
+      numeracao: 1,
+      serie: 2,
+      cnpj: '99999999000191',
+      ie: '111111111',
+    });
+    const chaveAlfa = `432601PC3D315K0001${'9'.repeat(26)}`;
+    expect(chaveAlfa).toHaveLength(44);
+    expect(() => generateNFe({ ...base, chNFeReferenciadas: [chaveAlfa] })).not.toThrow();
+  });
+});
