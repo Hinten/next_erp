@@ -20,10 +20,26 @@ substitute.
 
 | NT | Production | Topic | Skill impact |
 |---|---|---|---|
+| **`2026.007 v1.00`** | **teste 01/09/2026 · prod 03/11/2026** | **Emissão por Contribuinte exclusivo do IBS/CBS + RVs de cadastro LCC-RFB** | **MAJOR para os testes live.** §5.10 obriga todo CNPJ citado (emitente `C02`, destinatário `E02`, retirada `F02`, entrega `G02`, autor de evento) a existir na **LCC-RFB** — réplica nacional do cadastro CNPJ da RFB — e a estar `02-Ativa`. Novos cStat **178–186**, numa faixa que nenhuma tabela pública catalogava. É a causa do `181` em `emission.homologacao` e do `178` em SVC-AN (#1471, #1612). Também permite NF-e **sem IE** para contribuinte exclusivo de IBS/CBS (RVs C17-11/42/43, C18-50) e veda NFC-e a esse emitente. Detalhe em `cstat-rejeicoes.md` §178–186. |
+| `2026.006 v1.00` | — | ⚠️ **não vendorada — conteúdo não lido** | Desconhecido. Baixar do portal e vendorar antes de assumir irrelevância. |
+| `2026.005 v1.00` | — | ⚠️ **não vendorada — conteúdo não lido** | Desconhecido. Idem. |
 | `2026.004 v1.00` | — | Altera schema NFC-e/NF-e — **CNPJ Alfanumérico** | Schema regen needed (codegen.md). Affects chave structure if alfanumérico estende-se a NF-e. |
-| `2026.003 v1.00` | — | DANFE Simplificado Tipo 2 | Out of scope — **NFC-e** (model 65) layout. Our model-55 DANFE render is in scope (`references/danfe.md`); this Tipo 2 simplificado is not. |
-| `2026.002 v1.00` | — | (details: PDF) | tbd — see PDF |
+| `2026.003 v1.00` | — | ⚠️ **não vendorada — atribuição não verificada** | Esta linha dizia "DANFE Simplificado Tipo 2", mas esse é o assunto da **2026.002** (verificado na capa do PDF vendorado). Sem o PDF da 2026.003 não há como dizer do que ela trata. |
+| `2026.002 v1.00` | Maio/2026 | **Operações de vendas presenciais e não presenciais com impressão do DANFE Simplificado Tipo 2** | Out of scope — layout **NFC-e** (modelo 65). Nosso DANFE modelo 55 está em `references/danfe.md`; o Tipo 2 simplificado não. ⚠️ Corrigido: a tabela antes marcava esta linha como "tbd" e atribuía o assunto à 2026.003. Título lido da capa de `sources/nt/2026/NT_2026.002_v1.00.pdf`. |
 | `2026.001 v1.00` | — | PAA — Pagamento Antecipado de Adquirente | New flow related to RTC; cross-reference with `rtc-ibs-cbs-is.md` (gPagAntecipado Grupo BC). |
+
+⚠️ **A numeração das NTs não é densa aqui** — este repositório só conhece as que
+alguém vendorou à mão. `*.fazenda.gov.br` é bloqueado pelo proxy de egresso do
+sandbox (ver o cabeçalho deste arquivo), então **nenhum agente consegue baixar
+uma NT**: peça o PDF ao humano e coloque-o em `sources/nt/<ano>/`. A 2026.007 só
+entrou aqui porque foi enviada dessa forma, e ela já havia quebrado o CI duas
+vezes (#1471 em 03/09, #1612 em 17/09) enquanto estava ausente.
+
+> **LCC-RFB ≠ NT 2024.002.** A LCC-RFB é descrita num **Boletim Técnico**, série
+> distinta das Notas Técnicas. Não confundir `Boletim Técnico 2024.002` com a
+> `NT 2024.002` (eConf — confirmação eletrônica) da tabela de 2024 abaixo:
+> mesmo número, séries diferentes, assuntos sem relação. As RVs que o CI
+> encontra estão na **NT 2026.007**, que é o que está vendorado.
 
 > **CNPJ Alfanumérico**: a separate companion document
 > `DFe NTCJ 2025.001 CNPJ Alfa v1.00` (under `nt/2025/`) introduces the

@@ -263,6 +263,22 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
   // why this is a pause and not a fix. Nothing in this repo can fix it;
   // registering the CNPJ on the SVC-AN side is an external step (#1471).
   //
+  // ⚠️ The RULE behind 178 is now known, and it makes the "replica" reading
+  // above a description rather than a guess: **NT 2026.007 §5.10, RV 12C02-10**
+  // — "Acessar LCC-RFB (Chave: UF Emitente, CNPJ Emitente)… CNPJ Emitente não
+  // cadastrado". The LCC-RFB is a national replica of the Receita Federal CNPJ
+  // register synchronised to each autorizadora, so two autorizadoras answering
+  // differently for one CNPJ is exactly a replica that has not converged.
+  // Implantação teste 01/09/2026 — the day before the flapping started.
+  // 181 (RV 12E02-10) is the destinatário twin and now blocks the SEFAZ-SP
+  // suites too; see `../helpers/lcc-rfb-bloqueio.ts` and #1612.
+  //
+  // ⚠️ The skip condition below is deliberately NOT widened with
+  // `LCC_RFB_BLOQUEADO`. This test's `&& !isFatalRun` posture exists to keep the
+  // FATAL runs probing for the cadastro healing, and unlike 181 — whose CNPJ is
+  // a reserved placeholder that will never be registered — this one demonstrably
+  // heals: it has returned `100` on its own. Keep probing.
+  //
   // ⚠️ What the skip COSTS, stated so the next reviewer can weigh it: this is
   // the ONLY test that proves SVC-AN AUTHORIZES, and its body also carries the
   // consSitNFe recovery-lane assertions (the path `processar-pendentes` uses for

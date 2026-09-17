@@ -124,6 +124,66 @@ the signing, then resend with a fresh number is **not** needed (the NF-e was
 never stored). Plain rejections (schema, business rules) → fix and resend with
 the **same** number (the NF-e was discarded, not stored).
 
+## Faixa 178–186 — cadastro LCC-RFB (NT 2026.007)
+
+⚠️ **Estes códigos não aparecem em NENHUMA tabela pública de cStat.** As três
+cópias independentes (`nfephp-org/sped-nfe` `docs/cStat.md` e `storage/cstat.json`,
+`mazinsw/nfe-api`) saltam de 152 direto para 200, e o MOC 7.0 Anexo I vendorado
+em `sources/moc7/` também não os traz — são posteriores a essa linha de base. É
+por isso que um `181` chega parecendo código inválido ou de middleware. A fonte é
+a NT, vendorada em `sources/nt/2026/NT_2026.007_v1.00_EmissaoSemIE_RV_LCC.pdf`.
+
+A **LCC-RFB** (Lista Centralizada de Contribuintes da RFB) é uma réplica nacional
+do cadastro CNPJ da Receita Federal sincronizada com cada SEFAZ autorizadora. A
+NT 2026.007 §5.10 ("Banco de Dados: Validação Cadastro LCC-RFB") passou a exigir
+que **todo CNPJ citado no documento exista na lista e esteja `02-Ativa`**. Todas
+as regras abaixo são `Obrig.` e valem "para todas as SEFAZ Autorizadoras".
+
+**Cronograma: implantação teste 01/09/2026 · implantação produção 03/11/2026.**
+
+| RV | cStat | Rejeição |
+|---|---|---|
+| 12C02-10 | **178** | CNPJ `[XX.XXX.XXX/XXXX-DV]` do emitente não cadastrado na Receita Federal |
+| 12C02-20 | 179 | CNPJ `[…]` do emitente com situação irregular na Receita Federal |
+| 12C21-20 | 180 | Código Regime Tributário do emitente diverge do cadastro na Receita Federal |
+| **12E02-10** | **181** | **CNPJ `[…]` do destinatário não cadastrado na Receita Federal** |
+| 12E02-20 | 182 | CNPJ `[…]` do Destinatário com situação irregular na Receita Federal |
+| 12F02-10 | 183 | CNPJ `[…]` do Local de Retirada não cadastrado na Receita Federal |
+| 12F02-20 | 184 | CNPJ `[…]` do Local de Retirada com situação irregular na Receita Federal |
+| 12G02-10 | 185 | CNPJ `[…]` do Local de Entrega não cadastrado na Receita Federal |
+| 12G02-20 | 186 | CNPJ `[…]` do Local de Entrega com situação irregular na Receita Federal |
+| 1P10-30 / 1P10-32 | — | Autor de Evento — não cadastrado / situação irregular na Receita Federal |
+
+Cada regra lê *"Acessar LCC-RFB (Chave: UF do X, CNPJ do X. **Desconsiderar
+LCC.cSitCNPJ = 99 - Exclusão Lógica**)"*, e as variantes `-20` disparam quando
+`cSitCNPJ ≠ 02-Ativa`. A mesma NT **removeu a RV 5E17-70** ("CNPJ Destinatário
+não cadastrado") em favor destas.
+
+⚠️ **Campos cobertos: emit `C02`, dest `E02`, retirada `F02`, entrega `G02` e o
+autor do evento — e MAIS NENHUM.** `transporta`, o CNPJ da instituição de
+pagamento (`card/CNPJ`) e `infIntermed/CNPJ` **não** passam pela LCC-RFB, então
+um CNPJ de teste nessas posições continua válido. Não saia trocando os quatro.
+
+⚠️ **A RV só dispara "se informado CNPJ" — um destinatário PESSOA FÍSICA (tag
+`E03`, CPF) está fora do escopo de 181/182.** Isso é o que explica dois
+comportamentos que parecem contraditórios em CI: os suites que usam
+`buildHomologacaoFixture` (destinatário PJ) são rejeitados, enquanto
+`orchestrator.homologacao` e `epec.homologacao`, que montam um destinatário PF,
+continuam autorizando.
+
+### Recuperação
+
+Rejeição cadastral **não é retentável com o mesmo dado** — a NF-e não é
+armazenada, e reenviar o mesmo CNPJ só repete o código. Corrija o participante e
+reenvie com o **mesmo número/série**. `classifyCStat` (`src/state/index.ts`) cai
+no bucket padrão `'rejeitada'` → `ESTADO_NFE.rejeitada`, que é o tratamento
+correto; não crie ramo próprio.
+
+⚠️ **Em homologação isso colide com a rejeição 597** ("NF-e emitida em ambiente
+de homologação com CNPJ do destinatário diferente de 99999999000191"): 597 exige
+um CNPJ que a LCC-RFB rejeita, porque `99999999000191` é um placeholder que não
+consta no cadastro da Receita. Ver `homologacao.md`.
+
 ## cStats novos por NT (consolidado)
 
 ### NT 2025.001 (simplificação operacional, set/2025)
