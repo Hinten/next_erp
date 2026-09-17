@@ -14,15 +14,18 @@
  * µs (`microsSinceEpoch`), so the conversion happens here and only here, through
  * `millisToMicros`, at exactly two call sites: {@link agoraUsDe} — which every
  * writer AND every resolver funnels through, so the seam cannot multiply — and
- * `prazo`. A cross-unit comparison is a guard that never fires; keeping the
- * boundary to one module, and to two call sites inside it, is what makes it
- * reviewable.
+ * {@link prazoUsDe}, which every provider DEADLINE funnels through, including
+ * this module's own `prazo`. A cross-unit comparison is a guard that never
+ * fires; keeping the boundary to one module, and to two call sites inside it, is
+ * what makes it reviewable.
  *
- * ⚠️ And it is the seam `avisos/pushSaude.ts` funnels through — that module
- * holds no conversion of its own, which is why the "exactly two call sites"
- * count above still stands with a second producer module in the app. Anything
- * new that writes an aviso here imports {@link agoraUsDe} / {@link depsDeEscrita}
- * rather than reaching for `millisToMicros`.
+ * ⚠️ And it is the seam `avisos/pushSaude.ts` and `anuncios/avisoAnuncio.ts`
+ * funnel through — neither module holds a conversion of its own, which is why the
+ * "exactly two call sites" count above still stands with three producer modules
+ * in the app. Anything new that writes an aviso here imports
+ * {@link agoraUsDe} / {@link prazoUsDe} / {@link depsDeEscrita} rather than
+ * reaching for the converter itself, and `autorizacao.test.ts` counts the call
+ * sites as raw source text so the promise cannot quietly become three.
  *
  * ## ⚠️ No `janela`
  *
@@ -126,6 +129,22 @@ export function agoraUsDe(deps: { nowMs: number }): number {
   return millisToMicros(deps.nowMs);
 }
 
+/**
+ * The ms → µs seam for a provider DEADLINE — an authorization `expire_time`, a
+ * violation's `fix_deadline_time`. `null` in, `null` out.
+ *
+ * ⚠️ It exists so a second producer module can state `prazo` without holding a
+ * conversion: `anuncios/avisoAnuncio.ts` imports this rather than converting,
+ * which is what keeps the µs SITE list in `apps/shopee/CLAUDE.md` at eight and
+ * this module's own call-site count at two. `null` is a legitimate reading and
+ * not a missing value — `push 16` documents `fix_deadline_time` as "Empty if no
+ * deadline" — so it is passed through rather than defaulted to a number nobody
+ * measured.
+ */
+export function prazoUsDe(ms: number | null): number | null {
+  return ms === null ? null : millisToMicros(ms);
+}
+
 /** `escreverAviso`'s deps, from ours. One place, so the µs seam cannot drift. */
 export function depsDeEscrita(deps: AvisoDeps): {
   increment: (by: number) => unknown;
@@ -169,8 +188,9 @@ export function avisarExpiracaoAutorizacao(
         rota: ROTAS_AVISO.canalShopee.build(evento.integracaoId),
         campo: null,
       },
-      // The provider's own deadline, copied rather than computed.
-      prazo: millisToMicros(evento.expireTimeMs),
+      // The provider's own deadline, copied rather than computed — through the
+      // shared seam, so this file holds exactly two conversion call sites.
+      prazo: prazoUsDe(evento.expireTimeMs),
       // ⚠️ Spread-or-nothing, never `relogioEvento: undefined` and never `null`:
       // see the field's docblock above.
       ...(evento.relogioEventoMs === undefined ? {} : { relogioEvento: evento.relogioEventoMs }),

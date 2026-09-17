@@ -568,12 +568,12 @@ same on the real host, and then it goes.
 constant: `shop_penalty_update_push` is code **28** and push_api_id **31**. The
 dispatch table is the only place this is written down — codes 1 / 2 / 12 are the
 conta arms, code 3 is the order import (step 5), codes 4 / 30 / 47 are the
-shipment merge (step 7), a listed handful `ack`, everything data-bearing whose
-owning step is unbuilt **parks**, and an unlisted code parks too, which is the
-only signal a new code appeared. ⚠️ `DestinoPush` has **six** members and the
-ladder that reads it is closed by a compile-time `const restante: 'conta' =
-destino` line: a seventh destino without an arm of its own stops compiling,
-rather than falling through to the authorization arms.
+shipment merge (step 7), codes 16 / 27 the listing lifecycle (step 11), a listed
+handful `ack`, data-bearing codes with no owner **park**, and an unlisted code
+parks too, which is the only signal a new code appeared. ⚠️ `DestinoPush` has
+**seven** members and the ladder that reads it is closed by a compile-time
+`const restante: 'conta' = destino` line: an eighth destino without an arm of
+its own stops compiling, rather than falling through to the authorization arms.
 
 ✅ **Codes 4, 30 and 47 route to the shipment merge (step 7).** Three codes, ONE
 destino: they differ only in which field Shopee changed, all three name a

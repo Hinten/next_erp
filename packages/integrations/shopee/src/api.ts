@@ -114,18 +114,62 @@
  * neither `update_time` nor `tag.kit`) and `upload_image` (step 9 only
  * DOWNLOADS `image_url`).
  *
+ * ## The listing writes (step 11)
+ *
+ * The first operations here that CHANGE a listing: `add_item`, `update_item`, the
+ * four tier/model writes, `delete_model`, `delete_item`, `unlist_item`, plus two
+ * reads they need (`get_item_violation_info`, `get_channel_list`) and the ONE
+ * upload in this package (`upload_image`, on the PARTNER client).
+ *
+ * ⚠️ **Every write returns the WHOLE parsed envelope; the two reads unwrap.** A
+ * write's `warning` is a partial-failure channel — Shopee accepts the item and
+ * says what it ignored — and eight unwrapped ops would have made it unreachable.
+ * The precedent is `confirmConsumedLostPushMessages`.
+ *
+ * ⚠️ **The request types are the WIRE BODIES** (`snake_case`), not camelCase
+ * mirrors: the query ops keep `…Params`, the body ops take the body. See
+ * {@link ShopeeAddItemRequest}.
+ *
+ * ⚠️ Two of the twelve ship with **no caller in this repo** and say so in their
+ * own docblocks — {@link ShopeeClient.deleteModel} and
+ * {@link ShopeeClient.deleteItem} (the sandbox probe's cleanup).
+ *
+ * ⚠️ Three of Shopee's own contradictions are instrumented as single literals
+ * rather than guessed, all three in `types.ts`:
+ * {@link SHOPEE_UPLOAD_IMAGE_SIGNING} (a `type=Public` page whose error list
+ * names `access_token`), {@link SHOPEE_UPLOAD_IMAGE_FIELD} (`image` in three
+ * samples, `file` in the Java one) and {@link SHOPEE_TIER_MAX_OPTIONS} (20 and 50
+ * on the same two pages — MEASURED at 50 on the sandbox, 2026-09-17).
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
 import { type ShopeeTransport, type ShopeeWarning, shopeeCall } from './call';
 import { SHOPEE_SURFACE, ShopeeConfigError } from './errors';
 import type { ShopeeHosts } from './hosts';
+import type { SignedCall } from './sign';
 import {
+  SHOPEE_CONDITION,
+  SHOPEE_ITEM_IMAGE_MAX,
+  SHOPEE_ITEM_STATUS_WRITABLE,
+  SHOPEE_ITEM_VIOLATION_MAX_IDS,
+  SHOPEE_MODEL_MAX_PER_ITEM,
+  SHOPEE_MODEL_SKU_MAX_LENGTH,
+  SHOPEE_TIER_MAX_LEVELS,
+  SHOPEE_TIER_MAX_OPTIONS,
+  SHOPEE_UNLIST_MAX_ITEMS,
+  SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES,
+  SHOPEE_UPLOAD_IMAGE_FIELD,
+  SHOPEE_UPLOAD_IMAGE_MAX_BYTES,
+  SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO,
+  SHOPEE_UPLOAD_IMAGE_SIGNING,
   type ShopeeAppPushConfig,
   type ShopeeAttributeTree,
   type ShopeeBrandList,
   type ShopeeCategoryList,
   type ShopeeCategoryRecommend,
+  type ShopeeChannelList,
+  type ShopeeCondition,
   type ShopeeConfirmLostPush,
   type ShopeeEscrowDetail,
   type ShopeeEscrowList,
@@ -133,6 +177,9 @@ import {
   type ShopeeItemBaseInfo,
   type ShopeeItemLimit,
   type ShopeeItemList,
+  type ShopeeItemStatusWritable,
+  type ShopeeItemViolationInfo,
+  type ShopeeItemWriteResponse,
   type ShopeeKitItemInfo,
   type ShopeeKitItemLimit,
   type ShopeeLostPushResponse,
@@ -143,18 +190,27 @@ import {
   type ShopeeProfile,
   type ShopeeShopInfo,
   type ShopeeShopsByPartner,
+  type ShopeeTierWriteResponse,
+  type ShopeeUnlistItemResponse,
+  type ShopeeUploadImageResponse,
+  type ShopeeUploadImageScene,
+  type ShopeeUploadImageSigning,
   type ShopeeVariations,
+  type ShopeeWriteAck,
   shopeeAppPushConfigSchema,
   shopeeAttributeTreeSchema,
   shopeeBrandListSchema,
   shopeeCategoryListSchema,
   shopeeCategoryRecommendSchema,
+  shopeeChannelListSchema,
   shopeeConfirmLostPushSchema,
   shopeeEscrowDetailSchema,
   shopeeEscrowListSchema,
   shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
   shopeeItemListSchema,
+  shopeeItemViolationInfoSchema,
+  shopeeItemWriteSchema,
   shopeeKitItemInfoSchema,
   shopeeKitItemLimitSchema,
   shopeeLostPushSchema,
@@ -165,7 +221,11 @@ import {
   shopeeProfileSchema,
   shopeeShopInfoSchema,
   shopeeShopsByPartnerSchema,
+  shopeeTierWriteSchema,
+  shopeeUnlistItemSchema,
+  shopeeUploadImageSchema,
   shopeeVariationsSchema,
+  shopeeWriteAckSchema,
 } from './types';
 
 /**
@@ -206,6 +266,41 @@ export const SHOPEE_GET_ITEM_BASE_INFO_PATH = '/api/v2/product/get_item_base_inf
 export const SHOPEE_GET_MODEL_LIST_PATH = '/api/v2/product/get_model_list';
 /** `GET` — Shop-signed. WRAPPED. ONE kit item and its components. */
 export const SHOPEE_GET_KIT_ITEM_INFO_PATH = '/api/v2/product/get_kit_item_info';
+
+/* ------------------------- the listing writes (step 11) ------------------- */
+
+/** `POST` — Shop-signed. WRAPPED. Creates the item; answers its `item_id`. */
+export const SHOPEE_ADD_ITEM_PATH = '/api/v2/product/add_item';
+/**
+ * `POST` — Shop-signed. WRAPPED. FIELD-WISE: "fields not uploaded are not
+ * updated" (`guide 221 §5`), which is why a size chart set in Seller Centre
+ * survives a republish that never mentions it.
+ */
+export const SHOPEE_UPDATE_ITEM_PATH = '/api/v2/product/update_item';
+/** `POST` — Shop-signed. WRAPPED. The FIRST tier/model write of an item. */
+export const SHOPEE_INIT_TIER_VARIATION_PATH = '/api/v2/product/init_tier_variation';
+/** `POST` — Shop-signed. Envelope only. Re-maps live models onto tier options. */
+export const SHOPEE_UPDATE_TIER_VARIATION_PATH = '/api/v2/product/update_tier_variation';
+/** `POST` — Shop-signed. WRAPPED. Adds models to an item that already has tiers. */
+export const SHOPEE_ADD_MODEL_PATH = '/api/v2/product/add_model';
+/** `POST` — Shop-signed. Envelope only. Model SKU / weight / dimension only. */
+export const SHOPEE_UPDATE_MODEL_PATH = '/api/v2/product/update_model';
+/** `POST` — Shop-signed. Envelope only. ⚠️ No step-11 caller — see {@link ShopeeClient.deleteModel}. */
+export const SHOPEE_DELETE_MODEL_PATH = '/api/v2/product/delete_model';
+/** `POST` — Shop-signed. Envelope only. ⚠️ No step-11 caller — see {@link ShopeeClient.deleteItem}. */
+export const SHOPEE_DELETE_ITEM_PATH = '/api/v2/product/delete_item';
+/** `POST` — Shop-signed. WRAPPED. Batch pause / re-list, 1…50 items per call. */
+export const SHOPEE_UNLIST_ITEM_PATH = '/api/v2/product/unlist_item';
+/** `GET` — Shop-signed. WRAPPED. The violation / deboost detail of 1…50 items. */
+export const SHOPEE_GET_ITEM_VIOLATION_INFO_PATH = '/api/v2/product/get_item_violation_info';
+/** `GET` — Shop-signed. WRAPPED. Every logistics channel of the SHOP. No parameters. */
+export const SHOPEE_GET_CHANNEL_LIST_PATH = '/api/v2/logistics/get_channel_list';
+/**
+ * `POST` — **Public**-signed by default, `multipart/form-data`. The ONE upload in
+ * this package; see {@link SHOPEE_UPLOAD_IMAGE_SIGNING} for the contradiction the
+ * default rests on and {@link UploadImageParams.signing} for the escape hatch.
+ */
+export const SHOPEE_UPLOAD_IMAGE_PATH = '/api/v2/media_space/upload_image';
 
 /** `GET` — Public-signed. ONE page of the 3-day lost-push queue (the earliest 100). */
 export const SHOPEE_GET_LOST_PUSH_PATH = '/api/v2/push/get_lost_push_message';
@@ -839,6 +934,314 @@ export interface ShopeeItemLimitRead {
   readonly gtin_limit: ShopeeGtinLimit | null;
 }
 
+/* -------------------------------------------------------------------------- */
+/*            The listing writes (step 11) — WIRE-SHAPED request types         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠️ **The eight body ops take the WIRE BODY; the query ops keep camelCase
+ * `…Params`.** That is the whole rule, stated once.
+ *
+ * A camelCase mirror of ~45 fields over seven nested shapes would be a second
+ * vocabulary, and the mapping between the two is exactly where a rename hides
+ * without failing to compile. Wire-shaped request types let the publisher's
+ * mapper output be compared byte-for-byte with a documented payload sample.
+ *
+ * ⚠️ They are plain `interface`s and NOT Zod schemas, deliberately:
+ * `packages/config-eslint/rules/integration-response-numbers-tolerant.test.js`
+ * asserts this package declares RESPONSE shapes only, and a request schema here
+ * would need an `ALLOWED_STRICT` entry — a widening of a guard for a shape the
+ * compiler already checks.
+ */
+export interface ShopeeDimensionRequest {
+  /** int32, CENTIMETRES. */
+  readonly package_height: number;
+  readonly package_length: number;
+  readonly package_width: number;
+}
+
+export interface ShopeeSellerStockRequest {
+  /** The seller's warehouse. Omitted ⇒ the shop's default location. */
+  readonly location_id?: string;
+  readonly stock: number;
+}
+
+export interface ShopeePreOrderRequest {
+  readonly is_pre_order: boolean;
+  readonly days_to_ship?: number;
+}
+
+export interface ShopeeAttributeValueRequest {
+  /** REQUIRED. ⚠️ `0` is the CUSTOM sentinel, not an absence (`guide 211 §2.2`). */
+  readonly value_id: number;
+  /** REQUIRED when `value_id` is 0. */
+  readonly original_value_name?: string;
+  /** REQUIRED when the attribute's `format_type` is 2 and the value is custom. */
+  readonly value_unit?: string;
+}
+
+export interface ShopeeAttributeRequest {
+  readonly attribute_id: number;
+  readonly attribute_value_list?: readonly ShopeeAttributeValueRequest[];
+}
+
+export interface ShopeeLogisticInfoRequest {
+  readonly logistic_id: number;
+  readonly enabled: boolean;
+  /**
+   * int32 — ⚠️ and `get_channel_list` answers the same concept as a **STRING**.
+   * The package converts neither; the caller that reads the channel list decides
+   * what a non-integer size means (`shopeeLogisticsChannelSchema`).
+   */
+  readonly size_id?: number;
+  readonly shipping_fee?: number;
+  readonly is_free?: boolean;
+}
+
+export interface ShopeeImageRequest {
+  /** REQUIRED inside `image`, 1…{@link SHOPEE_ITEM_IMAGE_MAX}. Shopee renders them POSITIONALLY. */
+  readonly image_id_list: readonly string[];
+  /** `'1:1'` | `'3:4'` — whitelist-only, and nothing in step 11 sends it. */
+  readonly image_ratio?: string;
+}
+
+export interface ShopeeBrandRequest {
+  /** ⚠️ `0` is "No Brand" — a VALUE, never an absence. */
+  readonly brand_id: number;
+  readonly original_brand_name: string;
+}
+
+/**
+ * The BR fiscal block — every member a STRING.
+ *
+ * ⚠️ `tax_type` (the block's one int32) is TW-only and deliberately NOT declared:
+ * a member nothing here can produce is noise that later reads like a contract.
+ *
+ * ⚠️ Shopee refuses this block **all-or-nothing** (`error_param: all BR tax field
+ * should be empty or be filled at same time`), which is why the publisher builds
+ * it whole or omits the key entirely.
+ */
+export interface ShopeeTaxInfoRequest {
+  readonly ncm?: string;
+  readonly cest?: string;
+  readonly csosn?: string;
+  readonly icms_cst?: string;
+  readonly origin?: string;
+  readonly measure_unit?: string;
+  readonly pis?: string;
+  readonly cofins?: string;
+  readonly pis_cofins_cst?: string;
+  readonly federal_state_taxes?: string;
+  readonly operation_type?: string;
+  readonly same_state_cfop?: string;
+  readonly diff_state_cfop?: string;
+  readonly export_cfop?: string;
+  readonly ex_tipi?: string;
+  readonly fci_num?: string;
+  readonly recopi_num?: string;
+  readonly additional_info?: string;
+}
+
+/** One model, as `init_tier_variation.model[]` AND `add_model.model_list[]` carry it. */
+export interface ShopeeModelRequest {
+  readonly tier_index: readonly number[];
+  readonly original_price: number;
+  readonly seller_stock: readonly ShopeeSellerStockRequest[];
+  readonly model_sku?: string;
+  readonly gtin_code?: string;
+  readonly weight?: number;
+  /** ⚠️ Setting it REQUIRES `weight` too — both model pages say so. */
+  readonly dimension?: ShopeeDimensionRequest;
+  readonly pre_order?: ShopeePreOrderRequest;
+}
+
+export interface ShopeeTierOptionRequest {
+  /** Optional on `init_tier_variation`, REQUIRED on `update_tier_variation`. ⚠️ `0` is legal. */
+  readonly variation_option_id?: number;
+  readonly variation_option_name?: string;
+  readonly image_id?: string;
+}
+
+export interface ShopeeStandardiseTierRequest {
+  /** ⚠️ `0` = a CUSTOM tier (`announcement 873`), and for a BR shop outside Fashion that is EVERY tier. */
+  readonly variation_id: number;
+  /** REQUIRED iff `variation_id === 0`; FORBIDDEN otherwise (`announcement 873`). */
+  readonly variation_name?: string;
+  readonly variation_group_id?: number;
+  readonly variation_option_list: readonly ShopeeTierOptionRequest[];
+}
+
+/**
+ * `add_item` — the six REQUIRED fields are non-optional here, so a body that
+ * cannot be complete does not compile.
+ *
+ * ⚠️ `condition` is optional on the page and MANDATORY for BR
+ * (`announcement 1528` / `1460`); it stays optional in the type because the type
+ * describes the WIRE, and the refusal for a BR create belongs to the publisher.
+ */
+export interface ShopeeAddItemRequest {
+  readonly item_name: string;
+  readonly description: string;
+  readonly original_price: number;
+  readonly weight: number;
+  readonly category_id: number;
+  readonly image: ShopeeImageRequest;
+  readonly logistic_info: readonly ShopeeLogisticInfoRequest[];
+  readonly item_status?: ShopeeItemStatusWritable;
+  readonly condition?: ShopeeCondition;
+  readonly dimension?: ShopeeDimensionRequest;
+  readonly attribute_list?: readonly ShopeeAttributeRequest[];
+  readonly brand?: ShopeeBrandRequest;
+  readonly item_sku?: string;
+  readonly gtin_code?: string;
+  readonly seller_stock?: readonly ShopeeSellerStockRequest[];
+  readonly pre_order?: ShopeePreOrderRequest;
+  readonly tax_info?: ShopeeTaxInfoRequest;
+  /** ⚠️ `'extended'` is whitelist-only; narrowed on purpose. */
+  readonly description_type?: 'normal';
+}
+
+/**
+ * `update_item` — `item_id` is the only field the page REQUIRES.
+ *
+ * ⚠️ FIELD-WISE: "fields not uploaded are not updated" (`guide 221 §5`). An
+ * omitted key preserves; a key sent EMPTY deletes.
+ */
+export interface ShopeeUpdateItemRequest {
+  readonly item_id: number;
+  readonly item_name?: string;
+  readonly description?: string;
+  readonly category_id?: number;
+  readonly weight?: number;
+  readonly dimension?: ShopeeDimensionRequest;
+  readonly image?: ShopeeImageRequest;
+  readonly attribute_list?: readonly ShopeeAttributeRequest[];
+  /** ⚠️ Both children are OPTIONAL here and REQUIRED on create. */
+  readonly brand?: ShopeeBrandRequest;
+  readonly condition?: ShopeeCondition;
+  readonly item_sku?: string;
+  readonly gtin_code?: string;
+  readonly item_status?: ShopeeItemStatusWritable;
+  readonly tax_info?: ShopeeTaxInfoRequest;
+  readonly description_type?: 'normal';
+  /**
+   * ⚠️ ABSENT from the page's request TABLE and PRESENT in all five of its
+   * request samples, in three of its own error codes and in `announcement 1395`
+   * ("Logistics parameters in the update_item request will remain supported").
+   * Declared. ⚠️ Never read BACK from the response: the same announcement is
+   * REMOVING that block, and `announcement 1394` says to use
+   * `get_item_base_info` instead.
+   */
+  readonly logistic_info?: readonly ShopeeLogisticInfoRequest[];
+}
+
+/** `init_tier_variation` — ⚠️ the container is `model`. */
+export interface ShopeeInitTierVariationRequest {
+  readonly item_id: number;
+  readonly model: readonly ShopeeModelRequest[];
+  readonly standardise_tier_variation?: readonly ShopeeStandardiseTierRequest[];
+}
+
+/**
+ * `update_tier_variation` — ⚠️ the container is `model_list`.
+ *
+ * ⚠️ It is a FULL-LIST replace: a live model omitted from `model_list` loses its
+ * mapping. There is deliberately NO completeness guard in this package (it cannot
+ * know which models are live); the SENDER builds the list from a fresh
+ * `get_model_list` and skips rather than sends a body it cannot prove complete.
+ */
+export interface ShopeeUpdateTierVariationRequest {
+  readonly item_id: number;
+  readonly model_list?: readonly {
+    readonly model_id: number;
+    readonly tier_index: readonly number[];
+  }[];
+  readonly standardise_tier_variation?: readonly ShopeeStandardiseTierRequest[];
+}
+
+/** `add_model` — ⚠️ the container is `model_list`. */
+export interface ShopeeAddModelRequest {
+  readonly item_id: number;
+  readonly model_list: readonly ShopeeModelRequest[];
+}
+
+/**
+ * `update_model` — ⚠️ the container is `model`, and the page carries a field this
+ * interface deliberately cannot express.
+ *
+ * ⚠️ The model-status field of this page is **NOT DECLARED**: the page says
+ * "Only CNSC and KRSC sellers can set the model_status", and a BR shop is
+ * neither — so the field is UNCONSTRUCTIBLE here rather than merely documented
+ * as forbidden. A source-text test in `test/api.test.ts` asserts the interface
+ * body never regains it, because adding an optional key fails nothing.
+ *
+ * ⚠️ `model_sku` is REQUIRED by the page and `''` is LEGAL — `guide 221 §5`:
+ * "we support the delete operation, you can upload the null string".
+ */
+export interface ShopeeUpdateModelRequest {
+  readonly item_id: number;
+  readonly model: readonly {
+    readonly model_id: number;
+    readonly model_sku: string;
+    readonly gtin_code?: string;
+    readonly weight?: number;
+    readonly dimension?: ShopeeDimensionRequest;
+    /** ⚠️ BOTH members are required on THIS page. */
+    readonly pre_order?: { readonly is_pre_order: boolean; readonly days_to_ship: number };
+  }[];
+}
+
+/** `delete_model` — two ids, no body beyond them. */
+export interface ShopeeDeleteModelRequest {
+  readonly item_id: number;
+  readonly model_id: number;
+}
+
+/** `delete_item` — ONE id, no result body. See {@link ShopeeClient.deleteItem}. */
+export interface ShopeeDeleteItemRequest {
+  readonly item_id: number;
+}
+
+/** `unlist_item` — 1…{@link SHOPEE_UNLIST_MAX_ITEMS} entries, one verdict per entry. */
+export interface ShopeeUnlistItemRequest {
+  readonly item_list: readonly { readonly item_id: number; readonly unlist: boolean }[];
+}
+
+/** `get_item_violation_info` — 1…50 items. ⚠️ Duplicates ALLOWED, like `getItemBaseInfo`. */
+export interface GetItemViolationInfoParams {
+  readonly itemIds: readonly number[];
+}
+
+/** The shop credentials `upload_image` needs ONLY under `signing: 'shop'`. */
+export interface ShopeeShopAuth {
+  readonly accessToken: string;
+  readonly shopId: number;
+}
+
+/** `upload_image` — ONE file per call, plus the signing escape hatch. */
+export interface UploadImageParams {
+  readonly bytes: Uint8Array;
+  readonly filename: string;
+  /** One of {@link SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES}, compared trimmed and lowercased. */
+  readonly contentType: string;
+  /** Omitted ⇒ {@link SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO}, which is always SENT. */
+  readonly scene?: ShopeeUploadImageScene;
+  /** Supplied whenever available; USED only when the signing mode is `'shop'`. */
+  readonly shopAuth?: ShopeeShopAuth;
+  /**
+   * ⚠️ The PROBE's seam, and only the probe's. Production passes nothing here and
+   * lets {@link SHOPEE_UPLOAD_IMAGE_SIGNING} decide — ONE literal flips the whole
+   * app. The sandbox check has to try BOTH arms in one run, and the partner
+   * client holds no shop credentials, so two clients cannot express it.
+   *
+   * ⚠️ `'shop'` without {@link UploadImageParams.shopAuth} is a
+   * `ShopeeConfigError` BEFORE any fetch: signing shop-class with no token would
+   * go out Public-signed and come back `error_param: There is no access_token in
+   * query.` — the very error the flip exists to read.
+   */
+  readonly signing?: ShopeeUploadImageSigning;
+}
+
 export interface ShopeePartnerClient {
   /**
    * Every shop that authorized this partner, with `auth_time` / `expire_time`.
@@ -900,6 +1303,28 @@ export interface ShopeePartnerClient {
    * 13. Registration and recovery from a suspension are human Console steps.
    */
   getAppPushConfig(): Promise<ShopeeAppPushConfig>;
+
+  /**
+   * Upload ONE listing image and get its `image_id`.
+   *
+   * ⚠️ **On the PARTNER client, not the shop one.** The page is `type=Public`,
+   * and the partner client is the one that never asks for an access token. The
+   * shop credentials of {@link UploadImageParams.shopAuth} are a PARAMETER
+   * precisely so the escape hatch does not turn this into a token-holding client.
+   *
+   * ⚠️ The WHOLE parsed envelope comes back (not `res.response`), like every
+   * other write in this package: `warning` is a partial-failure channel and
+   * unwrapping would make it unreachable.
+   *
+   * ⚠️ Failure semantics worth knowing before reading a log: this page's own
+   * error list carries `error_param: There is no access_token in query.` and
+   * `error_auth: Invalid access_token.`, and under the default
+   * `signing: 'public'` BOTH mean *the signing mode is wrong*, never *the seller
+   * must reconnect*. They classify as kind `other` on the business surface, so
+   * they can never answer 409 `SHOPEE_REAUTH_REQUIRED` and send an operator to
+   * re-authorize a healthy conta.
+   */
+  uploadImage(p: UploadImageParams): Promise<ShopeeUploadImageResponse>;
 }
 
 export interface ShopeeClient {
@@ -1092,6 +1517,146 @@ export interface ShopeeClient {
    * still a failure.
    */
   getPackageDetail(p: GetPackageDetailParams): Promise<ShopeePackageDetail>;
+
+  /* ---------------------- the listing writes (step 11) ---------------------- */
+
+  /**
+   * Create a listing.
+   *
+   * ⚠️ **Every write here returns the WHOLE parsed envelope**, not `res.response`
+   * — the `confirmConsumedLostPushMessages` precedent. A write's `warning` is a
+   * partial-failure channel (Shopee accepts the item and says what it ignored),
+   * and unwrapping would drop it on the floor. The two READS below unwrap, like
+   * every other read in this file.
+   *
+   * ⚠️ Nothing in this repo reads the echo beyond `item_id`: listing state is
+   * read back through `get_item_base_info` (`announcement 1394`), because
+   * `announcement 1395` is removing the response's logistics block.
+   *
+   * ⚠️ An item created WITH variations is created UNLIST with a throwaway
+   * item-level price and stock, then tiered, then re-listed. That order is the
+   * caller's; this method sends exactly the body it is given.
+   */
+  addItem(body: ShopeeAddItemRequest): Promise<ShopeeItemWriteResponse>;
+
+  /**
+   * Update a listing, FIELD-WISE.
+   *
+   * ⚠️ "Fields not uploaded are not updated" (`guide 221 §5`) — so an omitted key
+   * PRESERVES and an empty one DELETES. A size chart attached in Seller Centre
+   * survives a republish that never mentions it, and an `item_sku: ''` erases the
+   * SKU.
+   *
+   * ⚠️ `logistic_info` IS accepted (`announcement 1395`), even though the page's
+   * request table omits it.
+   */
+  updateItem(body: ShopeeUpdateItemRequest): Promise<ShopeeItemWriteResponse>;
+
+  /**
+   * The FIRST tier/model write of an item — ⚠️ container `model`.
+   *
+   * ⚠️ The response pairs models with `tier_index` only as a cross-check: the
+   * authoritative pairing comes from a fresh `get_model_list`. An unreadable row
+   * arrives as a `null` in place rather than failing the page, because by then
+   * Shopee has already minted the models.
+   */
+  initTierVariation(body: ShopeeInitTierVariationRequest): Promise<ShopeeTierWriteResponse>;
+
+  /**
+   * Re-map LIVE models onto tier options — ⚠️ container `model_list`, and a FULL
+   * LIST.
+   *
+   * ⚠️ A live model omitted from the list loses its mapping, and this package
+   * cannot know which models are live, so there is deliberately **no completeness
+   * guard here**. The sender builds the list from a fresh `get_model_list` and
+   * skips rather than sends a body it cannot prove complete — a half-guard at the
+   * wire would read like the real one.
+   */
+  updateTierVariation(body: ShopeeUpdateTierVariationRequest): Promise<ShopeeWriteAck>;
+
+  /** Add models to an item that already has tiers — ⚠️ container `model_list`. */
+  addModel(body: ShopeeAddModelRequest): Promise<ShopeeTierWriteResponse>;
+
+  /**
+   * Update model SKU / GTIN / weight / dimension / pre-order — ⚠️ container
+   * `model`.
+   *
+   * ⚠️ It carries NO price and NO stock: those are `update_price` /
+   * `update_stock` (steps 12 and 13), and no body shape here can smuggle them.
+   */
+  updateModel(body: ShopeeUpdateModelRequest): Promise<ShopeeWriteAck>;
+
+  /**
+   * Delete ONE model.
+   *
+   * ⚠️ **No step-11 caller.** `update_tier_variation` already deletes by omission,
+   * and the publisher never deletes a model or a link doc — a model that vanished
+   * upstream is MARKED, never erased. It ships because the operation is part of
+   * this page family and a bound guard plus a test is cheaper than a second,
+   * unguarded copy the day something does need it.
+   */
+  deleteModel(body: ShopeeDeleteModelRequest): Promise<ShopeeWriteAck>;
+
+  /**
+   * Delete ONE item.
+   *
+   * ⚠️ **No step-11 caller: the sandbox probe's cleanup only.** The publisher
+   * never deletes a listing — pausing is `unlist_item` — and Shopee's own delete
+   * is not a tidy inverse of create: a deleted item stays readable for 90 days,
+   * cannot be updated, and four separate promotion locks refuse the call outright
+   * (`error_cannt_delete_in_promotion`, `error_in_item_promotion_delete_lock`,
+   * `error_in_model_promotion_delete_lock`, `error_slash_price_item_delete_lock`).
+   * It exists so a rehearsal against the sandbox shop can clean up after itself
+   * instead of leaving a probe item behind for a human to find.
+   */
+  deleteItem(body: ShopeeDeleteItemRequest): Promise<ShopeeWriteAck>;
+
+  /**
+   * Pause or re-list 1…50 items in ONE call.
+   *
+   * ⚠️ `unlist: false` RE-LISTS (`guide 221 §6`), and `success_list[].unlist`
+   * ECHOES THE REQUEST FLAG — it is NOT the item's new `item_status`. Whoever
+   * needs the new status re-reads `get_item_base_info`.
+   *
+   * ⚠️ Per-entry verdicts: an entry can land in `failure_list` while the call
+   * answers 200 with an empty `error`. A caller that only checked for a throw
+   * would report a pause that never happened.
+   */
+  unlistItem(body: ShopeeUnlistItemRequest): Promise<ShopeeUnlistItemResponse>;
+
+  /**
+   * The violation / deboost detail of 1…50 items — UNWRAPPED, like every read.
+   *
+   * ⚠️ **This page's SUCCESS body carries no `error` key, and that is MEASURED.**
+   * Both of its response samples print `{"message": null, "request_id": …,
+   * "response": {…}}` while its own Response-params table declares an `error`,
+   * and on 2026-09-17 the sandbox answered exactly the samples' shape (register
+   * 73) — stage 1 refused it naming `error`. So this op, and ONLY this op, opts
+   * into the transport's per-operation absent-key tolerance (`call.ts`), which
+   * still demands a `response` object: a body carrying neither key is refused as
+   * before.
+   *
+   * ⚠️ **Every call site stays best-effort regardless.** The op can still fail —
+   * network, rate limit, a real `error_*`, a body with neither key — and none of
+   * those may cost the caller its listing state: treat a throw of ANY class as
+   * "no violation detail this time" and fall back on `get_item_base_info`'s
+   * status + deboost.
+   *
+   * ⚠️ A row carries its OWN failure in band (`fail_error` / `fail_message`) — a
+   * third partial-failure encoding in this module. Reconcile by `item_id`.
+   */
+  getItemViolationInfo(p: GetItemViolationInfoParams): Promise<ShopeeItemViolationInfo>;
+
+  /**
+   * Every logistics channel of the SHOP — UNWRAPPED, and it takes NO parameters
+   * at all (the page's Request-params section is empty), the
+   * `getLostPushMessages` precedent.
+   *
+   * ⚠️ `size_list[].size_id` comes back a **STRING** here and `add_item` wants an
+   * `int32`. Nothing in this package converts it: a `"0"` round-tripped as `0`
+   * would send a size the seller never picked.
+   */
+  getChannelList(): Promise<ShopeeChannelList>;
 }
 
 function transportFrom(c: ShopeePartnerConfig): ShopeeTransport {
@@ -1404,6 +1969,464 @@ function assertSegundosPositivos(nome: string, value: number): void {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/*                 The listing writes (step 11) — the bound guards             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A Shopee id that may legitimately be **0** — the CUSTOM sentinel on both
+ * standardise levels (`announcement 873`).
+ *
+ * ⚠️ NEVER {@link assertIdPositivo} here: for a BR shop outside Fashion EVERY
+ * `variation_id` and `variation_option_id` is 0, so the positive reader would
+ * refuse every custom tier in the catalogue. Same for `brand_id`, where 0 is
+ * "No Brand".
+ */
+function assertIdNaoNegativo(nome: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ShopeeConfigError(
+      `${nome} deve ser um inteiro >= 0 (recebido: ${JSON.stringify(value)}).`,
+    );
+  }
+}
+
+/** A price or a weight: finite and strictly positive. */
+function assertPositivoFinito(nome: string, value: number): void {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new ShopeeConfigError(
+      `${nome} deve ser um número positivo (recebido: ${JSON.stringify(value)}).`,
+    );
+  }
+}
+
+/** A stock or a `tier_index` element: an integer, zero included. */
+function assertInteiroNaoNegativo(nome: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ShopeeConfigError(
+      `${nome} deve ser um inteiro >= 0 (recebido: ${JSON.stringify(value)}).`,
+    );
+  }
+}
+
+function assertTextoNaoVazio(nome: string, value: string): void {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new ShopeeConfigError(`${nome} não pode ser vazio (recebido: ${JSON.stringify(value)}).`);
+  }
+}
+
+/** Three positive int32 centimetres, all three or none. */
+function assertDimensao(nome: string, d: ShopeeDimensionRequest): void {
+  assertIdPositivo(`${nome}.package_height`, d.package_height);
+  assertIdPositivo(`${nome}.package_length`, d.package_length);
+  assertIdPositivo(`${nome}.package_width`, d.package_width);
+}
+
+/**
+ * `image.image_id_list` — 1…{@link SHOPEE_ITEM_IMAGE_MAX} non-blank ids.
+ *
+ * ⚠️ The hard ceiling, not the band: the real bound is per SHOP and per CATEGORY
+ * (`get_item_limit.item_image_count_limit`), so a body that clears this one can
+ * still be refused. A blank id is refused because Shopee renders the list
+ * POSITIONALLY — one empty string shifts every later picture.
+ */
+function assertImagem(nome: string, img: ShopeeImageRequest): void {
+  const quantidade = img.image_id_list.length;
+  if (quantidade < 1 || quantidade > SHOPEE_ITEM_IMAGE_MAX) {
+    throw new ShopeeConfigError(
+      `${nome}.image_id_list deve conter de 1 a ${String(SHOPEE_ITEM_IMAGE_MAX)} imagens (recebido: ${String(quantidade)}).`,
+    );
+  }
+  img.image_id_list.forEach((id, posicao) => {
+    assertTextoNaoVazio(`${nome}.image_id_list[${String(posicao)}]`, id);
+  });
+}
+
+/**
+ * `attribute_list` — and the one rule the stored attributes cannot encode:
+ * `value_id: 0` is the CUSTOM sentinel and REQUIRES `original_value_name`
+ * (`guide 211 §2.2`).
+ */
+function assertAtributos(atributos: readonly ShopeeAttributeRequest[]): void {
+  atributos.forEach((atributo, posicao) => {
+    assertIdPositivo(`attribute_list[${String(posicao)}].attribute_id`, atributo.attribute_id);
+    (atributo.attribute_value_list ?? []).forEach((valor, j) => {
+      const onde = `attribute_list[${String(posicao)}].attribute_value_list[${String(j)}]`;
+      assertIdNaoNegativo(`${onde}.value_id`, valor.value_id);
+      if (valor.value_id === 0) {
+        if (valor.original_value_name === undefined) {
+          throw new ShopeeConfigError(
+            `${onde}.original_value_name é obrigatório quando value_id é 0 (valor personalizado).`,
+          );
+        }
+        assertTextoNaoVazio(`${onde}.original_value_name`, valor.original_value_name);
+      }
+    });
+  });
+}
+
+/** Each `logistic_id` a positive int; the list itself may not be empty on a create. */
+function assertLogistica(canais: readonly ShopeeLogisticInfoRequest[]): void {
+  canais.forEach((canal, posicao) => {
+    assertIdPositivo(`logistic_info[${String(posicao)}].logistic_id`, canal.logistic_id);
+  });
+}
+
+function assertEstoqueDoVendedor(
+  nome: string,
+  estoques: readonly ShopeeSellerStockRequest[],
+): void {
+  estoques.forEach((e, posicao) => {
+    assertInteiroNaoNegativo(`${nome}[${String(posicao)}].stock`, e.stock);
+  });
+}
+
+/** `brand.brand_id` — ⚠️ `0` ("No Brand") is a VALUE and must pass. */
+function assertMarca(marca: ShopeeBrandRequest): void {
+  assertIdNaoNegativo('brand.brand_id', marca.brand_id);
+  assertTextoNaoVazio('brand.original_brand_name', marca.original_brand_name);
+}
+
+function assertStatusGravavel(value: ShopeeItemStatusWritable): void {
+  const gravaveis = new Set<string>(Object.values(SHOPEE_ITEM_STATUS_WRITABLE));
+  if (!gravaveis.has(value)) {
+    throw new ShopeeConfigError(
+      `item_status de escrita deve ser ${Object.values(SHOPEE_ITEM_STATUS_WRITABLE).join(' ou ')} (recebido: ${JSON.stringify(value)}).`,
+    );
+  }
+}
+
+function assertCondicao(value: ShopeeCondition): void {
+  const conhecidas = new Set<string>(Object.values(SHOPEE_CONDITION));
+  if (!conhecidas.has(value)) {
+    throw new ShopeeConfigError(
+      `condition deve ser ${Object.values(SHOPEE_CONDITION).join(' ou ')} (recebido: ${JSON.stringify(value)}).`,
+    );
+  }
+}
+
+/** Every `add_item` bound, checked BEFORE any fetch. */
+function assertAddItemParams(req: ShopeeAddItemRequest): void {
+  assertTextoNaoVazio('item_name', req.item_name);
+  assertTextoNaoVazio('description', req.description);
+  assertPositivoFinito('original_price', req.original_price);
+  // ⚠️ Shopee's own `error_param: Invalid Weight.` — the WIRE floor. The
+  // publisher's `sem-peso` refusal is a different, earlier decision.
+  assertPositivoFinito('weight', req.weight);
+  assertIdPositivo('category_id', req.category_id);
+  assertImagem('image', req.image);
+  if (req.logistic_info.length === 0) {
+    throw new ShopeeConfigError('logistic_info deve conter ao menos um canal habilitado.');
+  }
+  assertLogistica(req.logistic_info);
+  if (req.dimension !== undefined) assertDimensao('dimension', req.dimension);
+  if (req.item_status !== undefined) assertStatusGravavel(req.item_status);
+  if (req.condition !== undefined) assertCondicao(req.condition);
+  if (req.seller_stock !== undefined) assertEstoqueDoVendedor('seller_stock', req.seller_stock);
+  if (req.brand !== undefined) assertMarca(req.brand);
+  if (req.attribute_list !== undefined) assertAtributos(req.attribute_list);
+}
+
+/**
+ * Every `update_item` bound, plus the one this page needs and the create does
+ * not: a body carrying ONLY `item_id` is a spent call and a caller bug.
+ */
+function assertUpdateItemParams(req: ShopeeUpdateItemRequest): void {
+  assertIdPositivo('item_id', req.item_id);
+  const mutaveis = Object.keys(req).filter((chave) => chave !== 'item_id');
+  if (mutaveis.length === 0) {
+    throw new ShopeeConfigError(
+      'update_item precisa de ao menos um campo além de item_id — um corpo só com o id gasta a chamada e não muda nada.',
+    );
+  }
+  if (req.item_name !== undefined) assertTextoNaoVazio('item_name', req.item_name);
+  if (req.description !== undefined) assertTextoNaoVazio('description', req.description);
+  if (req.category_id !== undefined) assertIdPositivo('category_id', req.category_id);
+  if (req.weight !== undefined) assertPositivoFinito('weight', req.weight);
+  if (req.dimension !== undefined) assertDimensao('dimension', req.dimension);
+  if (req.image !== undefined) assertImagem('image', req.image);
+  if (req.attribute_list !== undefined) assertAtributos(req.attribute_list);
+  if (req.brand !== undefined) assertMarca(req.brand);
+  if (req.condition !== undefined) assertCondicao(req.condition);
+  if (req.item_status !== undefined) assertStatusGravavel(req.item_status);
+  if (req.logistic_info !== undefined) assertLogistica(req.logistic_info);
+}
+
+/**
+ * `init_tier_variation.model[]` and `add_model.model_list[]` — one guard, two
+ * containers.
+ *
+ * ⚠️ The duplicate-`tier_index` refusal is the load-bearing one: two models at
+ * the same combination is one silently overwriting the other, and Shopee's own
+ * message would name neither.
+ */
+function assertModelListParams(
+  nome: string,
+  models: readonly ShopeeModelRequest[],
+  opcoes: { readonly tiers?: readonly ShopeeStandardiseTierRequest[] } = {},
+): void {
+  if (models.length < 1 || models.length > SHOPEE_MODEL_MAX_PER_ITEM) {
+    throw new ShopeeConfigError(
+      `${nome} deve conter de 1 a ${String(SHOPEE_MODEL_MAX_PER_ITEM)} modelos (recebido: ${String(models.length)}).`,
+    );
+  }
+  const combinacoes = new Set<string>();
+  models.forEach((model, posicao) => {
+    const onde = `${nome}[${String(posicao)}]`;
+    assertPositivoFinito(`${onde}.original_price`, model.original_price);
+    if (model.seller_stock.length === 0) {
+      throw new ShopeeConfigError(`${onde}.seller_stock deve conter ao menos uma entrada.`);
+    }
+    assertEstoqueDoVendedor(`${onde}.seller_stock`, model.seller_stock);
+    if (model.model_sku !== undefined && model.model_sku.length > SHOPEE_MODEL_SKU_MAX_LENGTH) {
+      throw new ShopeeConfigError(
+        `${onde}.model_sku deve ter no máximo ${String(SHOPEE_MODEL_SKU_MAX_LENGTH)} caracteres (recebido: ${String(model.model_sku.length)}).`,
+      );
+    }
+    if (model.dimension !== undefined) {
+      assertDimensao(`${onde}.dimension`, model.dimension);
+      // Both model pages: "If set the dimension of this model, them must set the
+      // weight of this model".
+      if (model.weight === undefined) {
+        throw new ShopeeConfigError(`${onde}.weight é obrigatório quando dimension é informado.`);
+      }
+    }
+    if (model.weight !== undefined) assertPositivoFinito(`${onde}.weight`, model.weight);
+    assertTierIndex(onde, model.tier_index, opcoes.tiers);
+    // ⚠️ Joined on a NUL so `[1,11]` and `[11,1]` cannot collide with `[1,1,1]`.
+    const chave = model.tier_index.join(' ');
+    if (combinacoes.has(chave)) {
+      throw new ShopeeConfigError(
+        `${onde}.tier_index repete uma combinação já usada (${JSON.stringify(model.tier_index)}) — dois modelos na mesma combinação é um sobrescrevendo o outro.`,
+      );
+    }
+    combinacoes.add(chave);
+  });
+}
+
+/**
+ * `tier_index` — 1…{@link SHOPEE_TIER_MAX_LEVELS} non-negative ints, and exactly
+ * one entry per declared tier when the same body declared them
+ * (`error_param: Model tier_index error.`).
+ */
+function assertTierIndex(
+  onde: string,
+  tierIndex: readonly number[],
+  tiers?: readonly ShopeeStandardiseTierRequest[],
+): void {
+  if (tierIndex.length < 1 || tierIndex.length > SHOPEE_TIER_MAX_LEVELS) {
+    throw new ShopeeConfigError(
+      `${onde}.tier_index deve ter de 1 a ${String(SHOPEE_TIER_MAX_LEVELS)} níveis (recebido: ${String(tierIndex.length)}).`,
+    );
+  }
+  tierIndex.forEach((indice, j) => {
+    assertInteiroNaoNegativo(`${onde}.tier_index[${String(j)}]`, indice);
+  });
+  if (tiers !== undefined && tierIndex.length !== tiers.length) {
+    throw new ShopeeConfigError(
+      `${onde}.tier_index deve ter um índice por tier declarado (${String(tiers.length)}); recebido ${String(tierIndex.length)}.`,
+    );
+  }
+}
+
+/**
+ * `standardise_tier_variation` — the bounds, plus `announcement 873`'s XOR:
+ * "If you input variation_name & variation_id, and variation_id != 0, it will not
+ * allow you to input variation_name. … If variation_id = 0, then you must pass
+ * the variation_name."
+ *
+ * ⚠️ `optionIdRequired` is TRUE for `update_tier_variation` (its table marks the
+ * option id REQUIRED) and FALSE for `init_tier_variation` (optional there).
+ */
+function assertStandardiseTiers(
+  tiers: readonly ShopeeStandardiseTierRequest[],
+  opcoes: { readonly optionIdRequired: boolean },
+): void {
+  if (tiers.length < 1 || tiers.length > SHOPEE_TIER_MAX_LEVELS) {
+    throw new ShopeeConfigError(
+      `standardise_tier_variation deve ter de 1 a ${String(SHOPEE_TIER_MAX_LEVELS)} tiers (recebido: ${String(tiers.length)}).`,
+    );
+  }
+  tiers.forEach((tier, posicao) => {
+    const onde = `standardise_tier_variation[${String(posicao)}]`;
+    assertIdNaoNegativo(`${onde}.variation_id`, tier.variation_id);
+    if (tier.variation_id === 0) {
+      if (tier.variation_name === undefined) {
+        throw new ShopeeConfigError(
+          `${onde}.variation_name é obrigatório quando variation_id é 0 (tier personalizado).`,
+        );
+      }
+      assertTextoNaoVazio(`${onde}.variation_name`, tier.variation_name);
+    } else if (tier.variation_name !== undefined) {
+      throw new ShopeeConfigError(
+        `${onde}.variation_name é PROIBIDO quando variation_id != 0 — a Shopee recusa o par (announcement 873).`,
+      );
+    }
+    const opcoesDoTier = tier.variation_option_list;
+    if (opcoesDoTier.length < 1 || opcoesDoTier.length > SHOPEE_TIER_MAX_OPTIONS) {
+      throw new ShopeeConfigError(
+        `${onde}.variation_option_list deve ter de 1 a ${String(SHOPEE_TIER_MAX_OPTIONS)} opções (recebido: ${String(opcoesDoTier.length)}).`,
+      );
+    }
+    opcoesDoTier.forEach((opcao, j) => {
+      const ondeOpcao = `${onde}.variation_option_list[${String(j)}]`;
+      if (opcao.variation_option_id === undefined) {
+        if (opcoes.optionIdRequired) {
+          throw new ShopeeConfigError(
+            `${ondeOpcao}.variation_option_id é obrigatório em update_tier_variation.`,
+          );
+        }
+      } else {
+        assertIdNaoNegativo(`${ondeOpcao}.variation_option_id`, opcao.variation_option_id);
+      }
+    });
+  });
+}
+
+/**
+ * Every `update_tier_variation` bound.
+ *
+ * ⚠️ The duplicate-`model_id` refusal is Shopee's own
+ * (`error_duplicate_modelid: The model_id is duplicate`), caught here so it costs
+ * no call.
+ */
+function assertUpdateTierVariationParams(req: ShopeeUpdateTierVariationRequest): void {
+  assertIdPositivo('item_id', req.item_id);
+  if (req.model_list === undefined && req.standardise_tier_variation === undefined) {
+    throw new ShopeeConfigError(
+      'update_tier_variation precisa de model_list ou standardise_tier_variation.',
+    );
+  }
+  if (req.model_list !== undefined) {
+    if (req.model_list.length > SHOPEE_MODEL_MAX_PER_ITEM) {
+      throw new ShopeeConfigError(
+        `model_list deve ter no máximo ${String(SHOPEE_MODEL_MAX_PER_ITEM)} modelos (recebido: ${String(req.model_list.length)}).`,
+      );
+    }
+    const vistos = new Set<number>();
+    req.model_list.forEach((model, posicao) => {
+      const onde = `model_list[${String(posicao)}]`;
+      assertIdPositivo(`${onde}.model_id`, model.model_id);
+      if (vistos.has(model.model_id)) {
+        throw new ShopeeConfigError(
+          `${onde}.model_id repetido (${String(model.model_id)}) — a Shopee responde error_duplicate_modelid.`,
+        );
+      }
+      vistos.add(model.model_id);
+      assertTierIndex(onde, model.tier_index, req.standardise_tier_variation);
+    });
+  }
+  if (req.standardise_tier_variation !== undefined) {
+    assertStandardiseTiers(req.standardise_tier_variation, { optionIdRequired: true });
+  }
+}
+
+/** Every `update_model` bound. ⚠️ `model_sku: ''` is LEGAL — it DELETES the SKU. */
+function assertUpdateModelParams(req: ShopeeUpdateModelRequest): void {
+  assertIdPositivo('item_id', req.item_id);
+  if (req.model.length < 1 || req.model.length > SHOPEE_MODEL_MAX_PER_ITEM) {
+    throw new ShopeeConfigError(
+      `model deve conter de 1 a ${String(SHOPEE_MODEL_MAX_PER_ITEM)} modelos (recebido: ${String(req.model.length)}).`,
+    );
+  }
+  req.model.forEach((model, posicao) => {
+    const onde = `model[${String(posicao)}]`;
+    assertIdPositivo(`${onde}.model_id`, model.model_id);
+    if (typeof model.model_sku !== 'string') {
+      throw new ShopeeConfigError(
+        `${onde}.model_sku deve ser uma string (recebido: ${JSON.stringify(model.model_sku)}).`,
+      );
+    }
+    if (model.model_sku.length > SHOPEE_MODEL_SKU_MAX_LENGTH) {
+      throw new ShopeeConfigError(
+        `${onde}.model_sku deve ter no máximo ${String(SHOPEE_MODEL_SKU_MAX_LENGTH)} caracteres (recebido: ${String(model.model_sku.length)}).`,
+      );
+    }
+    if (model.weight !== undefined) assertPositivoFinito(`${onde}.weight`, model.weight);
+    if (model.dimension !== undefined) assertDimensao(`${onde}.dimension`, model.dimension);
+    if (model.pre_order !== undefined) {
+      assertIdPositivo(`${onde}.pre_order.days_to_ship`, model.pre_order.days_to_ship);
+    }
+  });
+}
+
+/**
+ * Every `unlist_item` bound.
+ *
+ * ⚠️ The duplicate-`item_id` refusal: two entries for one id with opposite flags
+ * are unreconcilable against a `success_list` keyed on `item_id` alone.
+ */
+function assertUnlistItemParams(req: ShopeeUnlistItemRequest): void {
+  const quantidade = req.item_list.length;
+  if (quantidade < 1 || quantidade > SHOPEE_UNLIST_MAX_ITEMS) {
+    throw new ShopeeConfigError(
+      `item_list deve conter de 1 a ${String(SHOPEE_UNLIST_MAX_ITEMS)} itens (recebido: ${String(quantidade)}).`,
+    );
+  }
+  const vistos = new Set<number>();
+  req.item_list.forEach((entrada, posicao) => {
+    assertIdPositivo(`item_list[${String(posicao)}].item_id`, entrada.item_id);
+    if (vistos.has(entrada.item_id)) {
+      throw new ShopeeConfigError(
+        `item_list[${String(posicao)}].item_id repetido (${String(entrada.item_id)}) — o success_list é chaveado só por item_id.`,
+      );
+    }
+    vistos.add(entrada.item_id);
+  });
+}
+
+/**
+ * Every `get_item_violation_info` bound.
+ *
+ * ⚠️ Duplicates ALLOWED, mirroring {@link assertItemBaseInfoParams}: the caller
+ * already reconciles by `item_id` and Shopee may answer fewer rows.
+ */
+function assertItemViolationParams(p: GetItemViolationInfoParams): void {
+  const quantidade = p.itemIds.length;
+  if (quantidade < 1 || quantidade > SHOPEE_ITEM_VIOLATION_MAX_IDS) {
+    throw new ShopeeConfigError(
+      `item_id_list deve conter de 1 a ${String(SHOPEE_ITEM_VIOLATION_MAX_IDS)} itens (recebido: ${String(quantidade)}).`,
+    );
+  }
+  p.itemIds.forEach((itemId, posicao) => {
+    if (!Number.isSafeInteger(itemId) || itemId <= 0) {
+      throw new ShopeeConfigError(
+        `item_id_list deve ser um inteiro positivo (posição ${String(posicao)}, recebido: ${JSON.stringify(itemId)}).`,
+      );
+    }
+  });
+}
+
+/**
+ * Every `upload_image` bound, checked BEFORE any fetch — including the one the
+ * signing switch owes.
+ *
+ * ⚠️ `signing: 'shop'` with no `shopAuth` cannot be expressed on the wire: the
+ * call would go out Public-signed and Shopee would answer `error_param: There is
+ * no access_token in query.` — the very message the flip exists to read, arriving
+ * for the wrong reason.
+ */
+function assertUploadImageParams(p: UploadImageParams, signing: ShopeeUploadImageSigning): void {
+  if (signing === 'shop' && p.shopAuth === undefined) {
+    throw new ShopeeConfigError(
+      'upload_image com signing "shop" exige shopAuth (access token + shop id) — veja SHOPEE_UPLOAD_IMAGE_SIGNING.',
+    );
+  }
+  assertTextoNaoVazio('filename', p.filename);
+  const tamanho = p.bytes.byteLength;
+  if (tamanho < 1 || tamanho > SHOPEE_UPLOAD_IMAGE_MAX_BYTES) {
+    throw new ShopeeConfigError(
+      `a imagem deve ter de 1 a ${String(SHOPEE_UPLOAD_IMAGE_MAX_BYTES)} bytes (recebido: ${String(tamanho)}).`,
+    );
+  }
+  const tipo = p.contentType.trim().toLowerCase();
+  const aceitos: readonly string[] = SHOPEE_UPLOAD_IMAGE_CONTENT_TYPES;
+  if (!aceitos.includes(tipo)) {
+    throw new ShopeeConfigError(
+      `content-type ${JSON.stringify(p.contentType)} não é aceito pela Shopee (aceitos: ${aceitos.join(', ')}).`,
+    );
+  }
+}
+
 export function createShopeePartnerClient(config: ShopeePartnerConfig): ShopeePartnerClient {
   const transport = transportFrom(config);
 
@@ -1481,6 +2504,40 @@ export function createShopeePartnerClient(config: ShopeePartnerConfig): ShopeePa
         // The tolerance is per OPERATION because the contradiction is per PAGE.
       });
       return res.response;
+    },
+
+    uploadImage: async (p) => {
+      const signing = p.signing ?? SHOPEE_UPLOAD_IMAGE_SIGNING;
+      assertUploadImageParams(p, signing);
+      // ⚠️ ONE literal decides the base string AND the query: `public` sends
+      // partner_id + timestamp + sign, `shop` adds access_token + shop_id — the
+      // shape the legacy production exporter used. See
+      // SHOPEE_UPLOAD_IMAGE_SIGNING for why the default is `public` anyway.
+      const call: SignedCall =
+        signing === 'shop' && p.shopAuth !== undefined
+          ? { class: 'shop', accessToken: p.shopAuth.accessToken, shopId: p.shopAuth.shopId }
+          : { class: 'public' };
+      // ⚠️ The WHOLE envelope — a write's `warning` is a partial-failure channel.
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPLOAD_IMAGE_PATH,
+        call,
+        schema: shopeeUploadImageSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ No `Content-Type` anywhere: `fetch` writes it WITH the boundary from
+        // the FormData. `sensitive` stays unset — an image is not a credential.
+        multipart: {
+          file: {
+            field: SHOPEE_UPLOAD_IMAGE_FIELD,
+            filename: p.filename,
+            contentType: p.contentType,
+            bytes: p.bytes,
+          },
+          // ⚠️ SENT rather than omitted, even though `normal` is the documented
+          // default — see SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO.
+          fields: { scene: p.scene ?? SHOPEE_UPLOAD_IMAGE_SCENE_PADRAO },
+        },
+      });
     },
   };
 }
@@ -1876,6 +2933,174 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         },
       });
       // ONE page, no auto-paging: this op has no cursor and no `more`.
+      return res.response;
+    },
+
+    /* -------------------------- the listing writes -------------------------- */
+
+    addItem: async (body) => {
+      assertAddItemParams(body);
+      // ⚠️ The WHOLE envelope, not `res.response` — C9's rule for every write:
+      // `warning` is where Shopee says what it accepted but ignored.
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_ADD_ITEM_PATH,
+        call: await signedCall(),
+        schema: shopeeItemWriteSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ The body is the WIRE body, verbatim. It is NOT signed (`call.ts`),
+        // so two different items produce the SAME `sign`; the common parameters
+        // stay in the signed query for a POST exactly as for a GET.
+        body,
+      });
+    },
+
+    updateItem: async (body) => {
+      assertUpdateItemParams(body);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPDATE_ITEM_PATH,
+        call: await signedCall(),
+        // The SAME echo schema as `add_item`, and that decision rests on a
+        // passing sample PER PAGE in `types.test.ts` — never on a comment
+        // claiming the two are mirrors.
+        schema: shopeeItemWriteSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    initTierVariation: async (body) => {
+      assertIdPositivo('item_id', body.item_id);
+      if (body.standardise_tier_variation !== undefined) {
+        // ⚠️ `optionIdRequired: false` — this page's option id is OPTIONAL and
+        // `update_tier_variation`'s is REQUIRED. One guard, one flag, two pages.
+        assertStandardiseTiers(body.standardise_tier_variation, { optionIdRequired: false });
+      }
+      assertModelListParams('model', body.model, { tiers: body.standardise_tier_variation });
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_INIT_TIER_VARIATION_PATH,
+        call: await signedCall(),
+        schema: shopeeTierWriteSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    updateTierVariation: async (body) => {
+      assertUpdateTierVariationParams(body);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPDATE_TIER_VARIATION_PATH,
+        call: await signedCall(),
+        // The BARE envelope: this page answers no `response` object at all.
+        schema: shopeeWriteAckSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    addModel: async (body) => {
+      assertIdPositivo('item_id', body.item_id);
+      // ⚠️ No `tiers` here: this page declares none, so the tier_index LENGTH
+      // cannot be cross-checked against a declaration that is not in the body.
+      assertModelListParams('model_list', body.model_list);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_ADD_MODEL_PATH,
+        call: await signedCall(),
+        schema: shopeeTierWriteSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    updateModel: async (body) => {
+      assertUpdateModelParams(body);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UPDATE_MODEL_PATH,
+        call: await signedCall(),
+        schema: shopeeWriteAckSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    deleteModel: async (body) => {
+      assertIdPositivo('item_id', body.item_id);
+      assertIdPositivo('model_id', body.model_id);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_DELETE_MODEL_PATH,
+        call: await signedCall(),
+        schema: shopeeWriteAckSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    deleteItem: async (body) => {
+      assertIdPositivo('item_id', body.item_id);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_DELETE_ITEM_PATH,
+        call: await signedCall(),
+        schema: shopeeWriteAckSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    unlistItem: async (body) => {
+      assertUnlistItemParams(body);
+      return shopeeCall(transport, {
+        method: 'POST',
+        path: SHOPEE_UNLIST_ITEM_PATH,
+        call: await signedCall(),
+        schema: shopeeUnlistItemSchema,
+        surface: SHOPEE_SURFACE.business,
+        body,
+      });
+    },
+
+    getItemViolationInfo: async (p) => {
+      assertItemViolationParams(p);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_ITEM_VIOLATION_INFO_PATH,
+        call: await signedCall(),
+        schema: shopeeItemViolationInfoSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ The ONE operation in this package that opts into the transport's
+        // absent-key tolerance, and the only place the flag may appear.
+        // MEASURED on the sandbox 2026-09-17 (register 73): the SUCCESS body is
+        // `{message, request_id, response: {item_list: […]}}` with NO `error`
+        // key, and stage 1 refused it with `campos=["error"]`. The tolerance
+        // still requires a `response` object, so a body carrying neither key
+        // stays refused — see the option's docblock in `call.ts`.
+        erroAusenteEhSucesso: true,
+        query: {
+          // ⚠️ The SAME literal `getItemBaseInfo` uses — this page samples no
+          // encoding at all, and the shipped precedent is the bare comma.
+          item_id_list: encodeShopeeIdList(p.itemIds),
+        },
+      });
+      // A READ: unwrapped, like every other read in this file.
+      return res.response;
+    },
+
+    getChannelList: async () => {
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_CHANNEL_LIST_PATH,
+        call: await signedCall(),
+        schema: shopeeChannelListSchema,
+        surface: SHOPEE_SURFACE.business,
+        // ⚠️ No `query` key at all: the page's Request params section is EMPTY,
+        // the `getLostPushMessages` precedent.
+      });
       return res.response;
     },
   };

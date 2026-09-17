@@ -7,13 +7,21 @@
  * HTTP 200**, so the outcome is decided by `envelope.error === ''` and never by
  * `res.ok`.
  *
- * ⚠️ That invariant has exactly ONE exception, and it is opt-in PER OPERATION:
+ * ⚠️ That invariant has exactly TWO exceptions, and both are opt-in PER
+ * OPERATION. The first is about the VALUE:
  * {@link ShopeeCallParams.emptyErrorAliases}. Three pages — the two on the
  * lost-push queue and `v2.order.get_package_detail` — print `"-"` where the
  * others print `""`, and the alias exists so those three operations can read it
  * as success. It is never a global widening: the default stays exact equality
  * with `''`, the opt-in is per CALL SITE — three of them, over TWO constants —
  * and a `' '` is a failure everywhere, aliases included.
+ *
+ * ⚠️ The second is about the KEY: {@link ShopeeCallParams.erroAusenteEhSucesso},
+ * ONE call site (`get_item_violation_info`), whose SUCCESS body omits `error`
+ * altogether — measured on the sandbox 2026-09-17. It reads an ABSENT key as
+ * `''` and it is narrower than it sounds: it applies only when the body carries
+ * a `response` object, so a body with NEITHER key stays unjudgeable and stays
+ * refused, exactly as without the flag.
  *
  * ## Why the body is parsed TWICE
  *
@@ -23,13 +31,24 @@
  * "`access_token` is missing" and BURY the `invalid_code` that actually explains
  * the failure. One `text`, two `safeParse`s, no second network call.
  *
+ * ## The two body shapes
+ *
+ * Almost every operation posts JSON. Exactly one — `v2.media_space.upload_image`
+ * — posts `multipart/form-data`, and it is a different enough animal that
+ * {@link ShopeeCallParams} makes the two **mutually exclusive at compile time**
+ * rather than guarding them at runtime: no `Content-Type` header (`fetch` writes
+ * the boundary), the file as a `Blob` over a copied buffer, and `undefined` text
+ * fields dropped. Everything after the request — the signature, the two-stage
+ * parse, the `error === ''` verdict, the warning channel — is byte-identical for
+ * both: a multipart request still answers a perfectly ordinary Shopee envelope.
+ *
  * ⚠️ Shared by `oauth.ts` (the two token endpoints) and `api.ts` (everything
  * else). It lives in its own module rather than inside `api.ts` so the
  * dependency edge runs one way — `oauth.ts` must not import the client factories
  * it is a building block of. It is INTERNAL: `index.ts` deliberately does not
  * re-export it.
  */
-import type { z } from 'zod';
+import { z } from 'zod';
 
 import { lerRespostaJson, resumirCampos } from '@delfrance/core/wire';
 
@@ -63,7 +82,46 @@ export interface ShopeeTransport {
   readonly onWarning?: (w: ShopeeWarning) => void;
 }
 
-export interface ShopeeCallParams<S extends z.ZodType> {
+/**
+ * One file part of a `multipart/form-data` POST.
+ *
+ * ⚠️ The `contentType` rides on the {@link Blob}, never on a request header:
+ * `fetch` writes the one `Content-Type` this request may carry, with the
+ * boundary in it.
+ */
+export interface ShopeeMultipartFile {
+  /**
+   * The form field name.
+   *
+   * ⚠️ A CONTRADICTED literal at the one call site that has one: the
+   * `upload_image` page's Request-params table, its PHP sample and its cURL
+   * sample all say `image`, while its Java sample says `file`. The package
+   * carries the choice as `SHOPEE_UPLOAD_IMAGE_FIELD` (`types.ts`) so the probe
+   * can flip it in one line; the transport itself sends whatever it is given.
+   */
+  readonly field: string;
+  readonly filename: string;
+  /** Rides on the Blob, never on a request header. */
+  readonly contentType: string;
+  readonly bytes: Uint8Array;
+}
+
+/** A `multipart/form-data` body: exactly ONE file, plus text fields. */
+export interface ShopeeMultipartBody {
+  readonly file: ShopeeMultipartFile;
+  /**
+   * Text fields that travel in the SAME form as the file.
+   *
+   * ⚠️ An `undefined` value is DROPPED, never appended: `FormData.append`
+   * stringifies, so `scene: undefined` would travel as the literal four-letter
+   * word `"undefined"` — a value `upload_image`'s `scene` (`normal | desc`) does
+   * not accept, sent by a caller that meant to send nothing at all.
+   */
+  readonly fields?: Readonly<Record<string, string | undefined>>;
+}
+
+/** Everything a call needs that does not decide HOW the body travels. */
+interface ShopeeCallBase<S extends z.ZodType> {
   readonly method: 'GET' | 'POST';
   /** API path only, e.g. `/api/v2/shop/get_shop_info`. */
   readonly path: string;
@@ -85,7 +143,6 @@ export interface ShopeeCallParams<S extends z.ZodType> {
    * belongs to the operation's bound guard in `api.ts`.
    */
   readonly query?: Readonly<Record<string, ShopeeQueryValue>>;
-  readonly body?: unknown;
   /**
    * Envelope `error` values THIS OPERATION accepts as success, beyond `''`.
    *
@@ -125,7 +182,83 @@ export interface ShopeeCallParams<S extends z.ZodType> {
    * `get_package_detail` included: that page samples `"warning": "-"` as well.
    */
   readonly emptyErrorAliases?: readonly string[];
+  /**
+   * Read an ABSENT `error` key as `''` — for the ONE page whose SUCCESS body
+   * does not carry it.
+   *
+   * ⚠️ MEASURED, not inferred: on 2026-09-17 the sandbox answered
+   * `get_item_violation_info` with `{message, request_id, response: {item_list:
+   * […]}}` and stage 1 refused it (`ShopeeSchemaError campos=["error"]`) —
+   * register 73. The page's own two response samples had printed exactly that
+   * shape while its Response-params table declared an `error`, so the wire and
+   * the samples agree and the table is the odd one out. ONE call site carries
+   * this flag (`api.ts`, `getItemViolationInfo`), and nothing else may.
+   *
+   * ⚠️ The SECOND exception to `error === ''`, and deliberately NOT the same
+   * mechanism as {@link emptyErrorAliases}: that one widens which VALUES count
+   * as success, this one covers a key that is not there at all. A `.default('')`
+   * on `shopeeEnvelopeSchema` would do it for every operation at once and would
+   * be the wrong fix — a body carrying NEITHER `error` NOR `response` is a body
+   * nobody can judge, and defaulting would read it as a success.
+   *
+   * ⚠️ Hence the condition that keeps it narrow: the tolerance applies ONLY when
+   * the body carries a `response` OBJECT. A body with neither key is still
+   * refused with `ShopeeSchemaError` naming `error`, flag or no flag, and a
+   * near-miss test pins that the DEFAULT (no flag) refuses the very body this
+   * flag accepts.
+   *
+   * ⚠️ It cannot hide a real error either. A body that DOES carry
+   * `error: 'error_param'` parses on the strict pass, so the tolerant re-parse
+   * is never reached and the `error === ''` verdict throws as always.
+   */
+  readonly erroAusenteEhSucesso?: boolean;
 }
+
+/**
+ * A call, plus exactly one way of carrying a body — or none.
+ *
+ * ⚠️ A UNION rather than two optional fields, so `{ body, multipart }` together
+ * is **unconstructible** instead of guarded: repo rule 7 tier 0. The transport
+ * would otherwise have to pick a winner at runtime, and whichever it picked
+ * would be silent — a JSON body dropped for a form, or a form dropped for a
+ * body, with a 200 either way.
+ */
+export type ShopeeCallParams<S extends z.ZodType> = ShopeeCallBase<S> &
+  (
+    | {
+        /**
+         * JSON. Serialised with `JSON.stringify` under
+         * `Content-Type: application/json`.
+         */
+        readonly body?: unknown;
+        readonly multipart?: undefined;
+      }
+    | {
+        readonly body?: undefined;
+        /** A `multipart/form-data` POST — see {@link ShopeeMultipartBody}. */
+        readonly multipart: ShopeeMultipartBody;
+      }
+  );
+
+/**
+ * The envelope as the ONE page whose success body omits `error` answers it: the
+ * key defaulted to `''`, and a `response` OBJECT REQUIRED in its place.
+ *
+ * ⚠️ Local to the TRANSPORT on purpose. `types.ts`'s `shopeeEnvelopeSchema`
+ * stays strict and a test there pins that this page's sample still fails it —
+ * the tolerance is a property of one call site, not of the wire format. Only a
+ * call carrying {@link ShopeeCallBase.erroAusenteEhSucesso} ever reaches this
+ * schema, and only after the strict parse has already failed.
+ *
+ * ⚠️ `response` is what makes the body judgeable: `z.object({}).passthrough()`
+ * accepts any OBJECT and refuses `null`, an array and a scalar, so a failing
+ * body — which carries no `response` — cannot slip through as a success just
+ * because it also lost its `error`.
+ */
+const envelopeComErroAusenteSchema = shopeeEnvelopeSchema.extend({
+  error: z.string().default(''),
+  response: z.object({}).passthrough(),
+});
 
 /** How much of a non-JSON body may reach a log line. */
 const MAX_LOGGED_BODY = 500;
@@ -164,6 +297,41 @@ function parseRetryAfter(res: Response): number | null {
   return Number.isSafeInteger(seconds) ? seconds : null;
 }
 
+/**
+ * The `FormData` for a multipart POST.
+ *
+ * ⚠️ Three things here are load-bearing, and every one of them is silent when
+ * it is wrong:
+ *
+ *  1. **No `Content-Type` header anywhere on the request.** `fetch` writes
+ *     `multipart/form-data; boundary=…` itself from this object. Setting the
+ *     header by hand — as `upload_image`'s own PHP sample does, WITHOUT a
+ *     boundary — produces a body Shopee cannot parse, and the reply is a
+ *     parameter error that reads like a bad request rather than a bad envelope.
+ *     The ML precedent says the same thing
+ *     (`packages/integrations/mercado-livre/src/api.ts:874`).
+ *  2. **The Blob owns a COPIED `ArrayBuffer` slice.** A `Uint8Array` is a VIEW:
+ *     handed to `Blob` directly, a view over a pooled buffer (what
+ *     `Buffer.from`/`Buffer.concat` hand out) would send the neighbouring bytes
+ *     of whatever else that pool holds. `slice` copies exactly this view's
+ *     range — same precedent, `api.ts:858-863`.
+ *  3. **An `undefined` text field is DROPPED.** See
+ *     {@link ShopeeMultipartBody.fields}.
+ */
+function corpoMultipart(m: ShopeeMultipartBody): FormData {
+  const form = new FormData();
+  const { field, filename, contentType, bytes } = m.file;
+  const copia = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+  form.append(field, new Blob([copia], { type: contentType }), filename);
+  for (const [chave, valor] of Object.entries(m.fields ?? {})) {
+    if (valor !== undefined) form.append(chave, valor);
+  }
+  return form;
+}
+
 export async function shopeeCall<S extends z.ZodType>(
   transport: ShopeeTransport,
   p: ShopeeCallParams<S>,
@@ -179,9 +347,14 @@ export async function shopeeCall<S extends z.ZodType>(
 
   const headers: Record<string, string> = { Accept: 'application/json' };
   const init: RequestInit = { method: p.method, headers };
-  if (p.body !== undefined) {
-    // ⚠️ The body is NOT part of the signature. It carries the operation's own
-    // parameters; the common ones stay in the query for POST as well as GET.
+  // ⚠️ Neither body shape is part of the signature — `baseStringFor` reads
+  // partner_id, path and timestamp (+ the token and the id) and nothing else.
+  // The operation's own parameters travel here; the common ones stay in the
+  // query for POST as well as GET. A test pins that two different multipart
+  // bodies produce the SAME `sign`, and that a different PATH does not.
+  if (p.multipart !== undefined) {
+    init.body = corpoMultipart(p.multipart);
+  } else if (p.body !== undefined) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(p.body);
   }
@@ -200,7 +373,18 @@ export async function shopeeCall<S extends z.ZodType>(
   const retryAfterSeconds = parseRetryAfter(res);
 
   /* ------------------------------- stage 1 -------------------------------- */
-  const envelopeLeitura = lerRespostaJson(text, shopeeEnvelopeSchema);
+  const envelopeEstrito = lerRespostaJson(text, shopeeEnvelopeSchema);
+  // ⚠️ The per-operation tolerance for the ONE page whose SUCCESS body omits
+  // `error` — see `erroAusenteEhSucesso`. Two things keep it narrow. It is only
+  // ATTEMPTED when the strict parse already failed, so a present `error` (of any
+  // value) is judged exactly as before; and it only WINS when it succeeds, so a
+  // body that is not an envelope at all keeps the strict reading's diagnostics —
+  // the refusal still names `error`, never `response`.
+  const envelopeTolerante =
+    !envelopeEstrito.ok && p.erroAusenteEhSucesso === true
+      ? lerRespostaJson(text, envelopeComErroAusenteSchema)
+      : null;
+  const envelopeLeitura = envelopeTolerante?.ok === true ? envelopeTolerante : envelopeEstrito;
   if (!envelopeLeitura.ok) {
     // A bare 429 whose body is not an envelope is still a rate limit, and the
     // only signal a caller can act on. Classified as `burst`: the daily quota is
@@ -280,7 +464,16 @@ export async function shopeeCall<S extends z.ZodType>(
   }
 
   /* ------------------------------- stage 2 -------------------------------- */
-  const leitura = lerRespostaJson(text, p.schema);
+  // ⚠️ The operation schemas COMPOSE the envelope (`wrappedOp`/`flatOp`/`dataOp`
+  // all spread `envelopeShape`), so a missing `error` refuses the body a SECOND
+  // time here — a tolerance that stopped at stage 1 would look like it worked
+  // and still fail the call, one layer down. The repair therefore serves both
+  // stages: `envelopeComErroAusenteSchema` is `.passthrough()` at the top level
+  // and on `response`, so re-serialising its output is the body Shopee sent with
+  // the one absent key filled in as `''` and nothing else changed.
+  const textoParaSchema =
+    envelopeTolerante?.ok === true ? JSON.stringify(envelopeTolerante.data) : text;
+  const leitura = lerRespostaJson(textoParaSchema, p.schema);
   if (leitura.ok) return leitura.data;
 
   // Unreachable for the other two outcomes: stage 1 already proved the body is

@@ -1,11 +1,26 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   produtoShopeeLinkSchema,
   variacaoShopeeLinkSchema,
   shopeeItemStatusSchema,
   shopeeModelStatusSchema,
   SHOPEE_ITEM_STATUS,
+  estadoAnuncioShopeeSchema,
+  ESTADO_ANUNCIO_SHOPEE,
+  shopeeViolacaoSchema,
+  shopeeViolationReasonWireSchema,
+  podeMoverAnuncioShopee,
+  type EstadoAnuncioShopee,
+  type MotivoAnuncioNaoMovivel,
 } from './shopeeLink';
+import { ACAO_STATUS_ANUNCIO, type AcaoStatusAnuncio } from './mercadoLivreLink';
+
+/** Fixture ids only — never a real partner/shop/item id. */
+const CONTA_REF = 'documents/integracao/int-1';
+const ITEM_ID = 2500139861;
+const MODEL_ID = 2000458802;
 
 describe('produtoShopeeLinkSchema', () => {
   it('parses a legacy-shaped ProdutoShopee fixture doc', () => {
@@ -225,5 +240,478 @@ describe('variacaoShopeeLinkSchema', () => {
       _customField: 'x',
     });
     expect((parsed as Record<string, unknown>)._customField).toBe('x');
+  });
+});
+
+// ===========================================================================
+// Passo 11 (#1519) — o ciclo de vida do anúncio
+// ===========================================================================
+
+describe('estadoAnuncioShopeeSchema', () => {
+  it('tem exatamente sete membros, e ESTADO_ANUNCIO_SHOPEE os nomeia todos', () => {
+    expect([...estadoAnuncioShopeeSchema.options].sort()).toEqual(
+      ['ativo', 'agendado', 'banido', 'desconhecido', 'em_revisao', 'pausado', 'removido'].sort(),
+    );
+    // O companheiro cobre TODOS os membros: um estado que o fold produz e a
+    // constante esqueceu (ou o contrário) reprova aqui.
+    expect([...Object.values(ESTADO_ANUNCIO_SHOPEE)].sort()).toEqual(
+      [...estadoAnuncioShopeeSchema.options].sort(),
+    );
+    expect(Object.keys(ESTADO_ANUNCIO_SHOPEE)).toHaveLength(
+      estadoAnuncioShopeeSchema.options.length,
+    );
+  });
+
+  it('⛔ NEAR-MISS: um item_status de WIRE não é um estadoAnuncio', () => {
+    // Os dois vocabulários vivem no mesmo arquivo e NÃO se misturam: um é a
+    // resposta da Shopee, o outro é o que este app decide que ela significa.
+    for (const wire of Object.values(SHOPEE_ITEM_STATUS)) {
+      expect(estadoAnuncioShopeeSchema.safeParse(wire).success).toBe(false);
+    }
+    expect(estadoAnuncioShopeeSchema.safeParse('Ativo').success).toBe(false);
+    expect(estadoAnuncioShopeeSchema.safeParse('em revisao').success).toBe(false);
+    expect(estadoAnuncioShopeeSchema.safeParse('emRevisao').success).toBe(false);
+    expect(estadoAnuncioShopeeSchema.safeParse('ativo').success).toBe(true);
+  });
+});
+
+describe('shopeeViolacaoSchema', () => {
+  const MODERNA = {
+    violation_type: 'PROHIBITED_ITEM',
+    violation_reason: 'Produto proibido para esta categoria',
+    suggestion: 'Ajuste a categoria e reenvie o anúncio',
+    fix_deadline_time: 1_757_000_000_000,
+    update_time: 1_756_000_000_000,
+    suggested_category: [{ category_id: 100182, category_name: 'Camisetas' }],
+    kind: 'status' as const,
+  };
+  const LEGADA = {
+    days_to_fix: 7,
+    suggestion: 'Remove counterfeit claim',
+    violation_reason: 'IP infringement',
+    violation_type: 'listing',
+  };
+
+  it('PAR: o corpo LEGADO e o MODERNO fazem parse no MESMO array de violations', () => {
+    const parsed = produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: CONTA_REF,
+      item_name: 'X',
+      violations: [LEGADA, MODERNA],
+    });
+    expect(parsed.violations).toHaveLength(2);
+    // O legado continua legível — nenhuma chave some.
+    expect(parsed.violations?.[0]).toMatchObject({
+      days_to_fix: 7,
+      violation_reason: 'IP infringement',
+    });
+    expect(parsed.violations?.[1]).toMatchObject({
+      violation_type: 'PROHIBITED_ITEM',
+      fix_deadline_time: 1_757_000_000_000,
+      kind: 'status',
+    });
+    // ⚠️ O ELEMENTO do campo é o moderno, não o legado com `.passthrough()` por
+    // cima: um elemento legado atravessa o schema antigo com as chaves modernas
+    // AUSENTES (`undefined`), enquanto aqui elas chegam `null` por default. É o
+    // que distingue "o campo foi trocado" de "as chaves só passaram batido".
+    expect(parsed.violations?.[0]?.fix_deadline_time).toBeNull();
+    expect(parsed.violations?.[0]?.kind).toBeNull();
+    expect(parsed.violations?.[0]?.suggested_category).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS: fix_deadline_time NÃO é derivado de days_to_fix, nem o contrário', () => {
+    // Mutante M-39. A conversão precisa de um relógio, perde o valor original e
+    // não é idempotente — o mesmo push relido amanhã daria outro número.
+    const soLegado = shopeeViolacaoSchema.parse({ days_to_fix: 10 });
+    expect(soLegado.days_to_fix).toBe(10);
+    expect(soLegado.fix_deadline_time).toBeNull();
+    expect(soLegado.update_time).toBeNull();
+    expect(soLegado.kind).toBeNull();
+    expect(soLegado.suggested_category).toBeNull();
+
+    const soModerno = shopeeViolacaoSchema.parse({ fix_deadline_time: 1_757_000_000_000 });
+    expect(soModerno.fix_deadline_time).toBe(1_757_000_000_000);
+    expect(soModerno.days_to_fix).toBeNull();
+  });
+
+  it('suggested_category sobrevive com category_id e category_name', () => {
+    const parsed = shopeeViolacaoSchema.parse({
+      kind: 'deboost',
+      suggested_category: [
+        { category_id: 100182, category_name: 'Camisetas' },
+        { category_id: 100183 },
+      ],
+    });
+    expect(parsed.suggested_category?.[0]).toEqual({
+      category_id: 100182,
+      category_name: 'Camisetas',
+    });
+    // Metade do par também passa: o nome ausente entra null, nunca undefined.
+    expect(parsed.suggested_category?.[1]).toEqual({ category_id: 100183, category_name: null });
+  });
+
+  it('kind distingue uma violação de STATUS de um DEBOOST no mesmo array', () => {
+    const parsed = produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: CONTA_REF,
+      item_name: 'X',
+      violations: [
+        { ...MODERNA, kind: 'status' },
+        { ...MODERNA, kind: 'deboost' },
+      ],
+    });
+    expect(parsed.violations?.map((v) => v.kind)).toEqual(['status', 'deboost']);
+  });
+
+  it('⛔ NEAR-MISS: kind aceita só status e deboost — e uma linha legada fica null', () => {
+    expect(shopeeViolacaoSchema.safeParse({ kind: 'STATUS' }).success).toBe(false);
+    expect(shopeeViolacaoSchema.safeParse({ kind: 'item_status' }).success).toBe(false);
+    expect(shopeeViolacaoSchema.parse(LEGADA).kind).toBeNull();
+  });
+
+  it('uma chave extra sobrevive NO elemento E na categoria sugerida (pass-through)', () => {
+    const parsed = shopeeViolacaoSchema.parse({
+      ...MODERNA,
+      reference_id: 'abc-123',
+      suggested_category: [{ category_id: 1, category_name: 'A', display_name: 'A > B' }],
+    });
+    expect((parsed as Record<string, unknown>).reference_id).toBe('abc-123');
+    expect(
+      (parsed.suggested_category?.[0] as Record<string, unknown> | undefined)?.display_name,
+    ).toBe('A > B');
+  });
+
+  it('o alias deprecado ainda parseia o corpo legado, e o novo parseia tudo que ele parseava', () => {
+    // A troca de elemento (C22) só não é quebra porque as quatro chaves antigas
+    // são um SUBCONJUNTO das novas.
+    const peloAntigo = shopeeViolationReasonWireSchema.parse(LEGADA);
+    const peloNovo = shopeeViolacaoSchema.parse(LEGADA) as Record<string, unknown>;
+    for (const [chave, valor] of Object.entries(peloAntigo)) {
+      expect(peloNovo[chave]).toEqual(valor);
+    }
+  });
+});
+
+describe('produtoShopeeLinkSchema — os onze campos do passo 11', () => {
+  const NOVOS = [
+    'estadoAnuncio',
+    'deboost',
+    'pausadoPeloErp',
+    'condition',
+    'original_brand_name',
+    'publicadoEm',
+    'ultimaPublicacao',
+    'falhaPublicacao',
+    'taxInfoOmitido',
+    'violacoesLidasEm',
+    'agendamentoFalhouEm',
+  ] as const;
+
+  it('um link do passo 9, sem nenhum campo novo, continua a fazer parse — e cada um entra null', () => {
+    const migrado = {
+      contaProdutoShopeeOuterRef: CONTA_REF,
+      item_name: 'Camiseta Básica Azul',
+      item_id: ITEM_ID,
+      item_status: 'NORMAL',
+      violations: null,
+    };
+    const parsed = produtoShopeeLinkSchema.parse(migrado) as Record<string, unknown>;
+    expect(NOVOS).toHaveLength(11);
+    for (const campo of NOVOS) {
+      expect(parsed).toHaveProperty(campo);
+      expect(parsed[campo]).toBeNull();
+      // `undefined` seria rejeitado pelo SDK do Firebase num addDoc/setDoc.
+      expect(parsed[campo]).not.toBeUndefined();
+    }
+  });
+
+  it('um documento MODERNO completo faz round-trip', () => {
+    const doc = {
+      contaProdutoShopeeOuterRef: CONTA_REF,
+      item_name: 'Camiseta Básica Azul',
+      item_id: ITEM_ID,
+      category_id: 100182,
+      item_status: 'NORMAL',
+      estadoAnuncio: ESTADO_ANUNCIO_SHOPEE.ativo,
+      deboost: true,
+      pausadoPeloErp: false,
+      condition: 'NEW',
+      original_brand_name: 'No Brand',
+      publicadoEm: 1_755_000_000_000,
+      ultimaPublicacao: { em: 1_756_000_000_000, etapa: 'update_item', itemId: ITEM_ID },
+      falhaPublicacao: null,
+      taxInfoOmitido: 'recusado-incompleto',
+      violacoesLidasEm: 1_756_500_000_000,
+      agendamentoFalhouEm: null,
+    };
+    const parsed = produtoShopeeLinkSchema.parse(doc);
+    expect(parsed).toMatchObject(doc);
+    // ⚠️ `NORMAL` + deboost continua ATIVO: os dois campos são ortogonais e o
+    // documento guarda os dois.
+    expect(parsed.estadoAnuncio).toBe('ativo');
+    expect(parsed.deboost).toBe(true);
+  });
+
+  it('falhaPublicacao guarda os problemas classificados, com problemas default []', () => {
+    const parsed = produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: CONTA_REF,
+      item_name: 'X',
+      falhaPublicacao: {
+        em: 1_756_000_000_000,
+        etapa: 'add_item',
+        erro: 'ShopeePublishRejectedError',
+        mensagem: 'A Shopee recusou o anúncio.',
+        problemas: [{ campo: 'weight', motivo: 'sem-peso', mensagem: 'Informe o peso bruto.' }],
+      },
+    });
+    expect(parsed.falhaPublicacao?.problemas).toHaveLength(1);
+    expect(parsed.falhaPublicacao?.problemas[0]).toMatchObject({ motivo: 'sem-peso' });
+
+    const semProblemas = produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: CONTA_REF,
+      item_name: 'X',
+      falhaPublicacao: {
+        em: 1_756_000_000_000,
+        etapa: 'upload_image',
+        erro: 'ShopeeApiError',
+        mensagem: 'Falha ao subir as fotos.',
+      },
+    });
+    expect(semProblemas.falhaPublicacao?.problemas).toEqual([]);
+  });
+
+  it('uma chave extra sobrevive DENTRO de ultimaPublicacao, falhaPublicacao e seus problemas', () => {
+    const parsed = produtoShopeeLinkSchema.parse({
+      contaProdutoShopeeOuterRef: CONTA_REF,
+      item_name: 'X',
+      ultimaPublicacao: { em: 1, etapa: 'add_item', itemId: ITEM_ID, tentativas: 2 },
+      falhaPublicacao: {
+        em: 2,
+        etapa: 'add_item',
+        erro: 'E',
+        mensagem: 'M',
+        problemas: [{ campo: 'c', motivo: 'm', mensagem: 'x', wire: 'error_param' }],
+        requestId: 'req-1',
+      },
+    });
+    expect((parsed.ultimaPublicacao as Record<string, unknown>).tentativas).toBe(2);
+    expect((parsed.falhaPublicacao as Record<string, unknown>).requestId).toBe('req-1');
+    expect(
+      (parsed.falhaPublicacao?.problemas[0] as Record<string, unknown> | undefined)?.wire,
+    ).toBe('error_param');
+    // `itemId` ausente entra null — o bloco é gravado antes de existir item_id.
+    expect(
+      produtoShopeeLinkSchema.parse({
+        contaProdutoShopeeOuterRef: CONTA_REF,
+        item_name: 'X',
+        ultimaPublicacao: { em: 1, etapa: 'add_item' },
+      }).ultimaPublicacao?.itemId,
+    ).toBeNull();
+  });
+
+  it('⛔ NEAR-MISS: um bloco aninhado sem "em" reprova — é escrito inteiro ou não é escrito', () => {
+    expect(
+      produtoShopeeLinkSchema.safeParse({
+        contaProdutoShopeeOuterRef: CONTA_REF,
+        item_name: 'X',
+        ultimaPublicacao: { etapa: 'add_item', itemId: ITEM_ID },
+      }).success,
+    ).toBe(false);
+    expect(
+      produtoShopeeLinkSchema.safeParse({
+        contaProdutoShopeeOuterRef: CONTA_REF,
+        item_name: 'X',
+        falhaPublicacao: { em: 1, etapa: 'add_item', erro: 'E' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('estadoAnuncio no documento aceita os sete membros e recusa um item_status', () => {
+    for (const estado of Object.values(ESTADO_ANUNCIO_SHOPEE)) {
+      expect(
+        produtoShopeeLinkSchema.parse({
+          contaProdutoShopeeOuterRef: CONTA_REF,
+          item_name: 'X',
+          estadoAnuncio: estado,
+        }).estadoAnuncio,
+      ).toBe(estado);
+    }
+    expect(
+      produtoShopeeLinkSchema.safeParse({
+        contaProdutoShopeeOuterRef: CONTA_REF,
+        item_name: 'X',
+        estadoAnuncio: 'UNLIST',
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('variacaoShopeeLinkSchema — modeloAusenteEm', () => {
+  it('entra null num link antigo e guarda um carimbo em MILISSEGUNDOS quando marcado', () => {
+    const base = {
+      contaVariacaoShopeeOuterRef: CONTA_REF,
+      produtoShopeeOuterRef: 'documents/produtos/p1/prodshopee/l1',
+      model_id: MODEL_ID,
+    };
+    expect(variacaoShopeeLinkSchema.parse(base).modeloAusenteEm).toBeNull();
+    const marcado = variacaoShopeeLinkSchema.parse({
+      ...base,
+      model_status: 'MODEL_UNAVAILABLE',
+      modeloAusenteEm: 1_756_000_000_000,
+    });
+    expect(marcado.modeloAusenteEm).toBe(1_756_000_000_000);
+    // O doc filho CONTINUA existindo — a marca é o oposto de um delete.
+    expect(marcado.model_id).toBe(MODEL_ID);
+  });
+});
+
+describe('podeMoverAnuncioShopee', () => {
+  type Caso = {
+    acao: AcaoStatusAnuncio;
+    estado: EstadoAnuncioShopee | null;
+    itemId: number | null;
+    esperado: true | MotivoAnuncioNaoMovivel;
+  };
+
+  const PAUSAR = ACAO_STATUS_ANUNCIO.pausar;
+  const REATIVAR = ACAO_STATUS_ANUNCIO.reativar;
+  const E = ESTADO_ANUNCIO_SHOPEE;
+
+  const TABELA: Caso[] = [
+    // pausar
+    { acao: PAUSAR, estado: E.ativo, itemId: null, esperado: 'sem-item-id' },
+    { acao: PAUSAR, estado: E.ativo, itemId: 0, esperado: 'sem-item-id' },
+    { acao: PAUSAR, estado: E.removido, itemId: ITEM_ID, esperado: 'anuncio-removido' },
+    { acao: PAUSAR, estado: E.banido, itemId: ITEM_ID, esperado: 'anuncio-banido' },
+    { acao: PAUSAR, estado: E.emRevisao, itemId: ITEM_ID, esperado: 'anuncio-em-revisao' },
+    { acao: PAUSAR, estado: E.pausado, itemId: ITEM_ID, esperado: 'ja-pausado' },
+    { acao: PAUSAR, estado: E.ativo, itemId: ITEM_ID, esperado: true },
+    // ⚠️ pausar um AGENDADO é permitido: é o operador cancelando o agendamento.
+    { acao: PAUSAR, estado: E.agendado, itemId: ITEM_ID, esperado: true },
+    { acao: PAUSAR, estado: E.desconhecido, itemId: ITEM_ID, esperado: true },
+    { acao: PAUSAR, estado: null, itemId: ITEM_ID, esperado: true },
+    // reativar
+    { acao: REATIVAR, estado: E.pausado, itemId: null, esperado: 'sem-item-id' },
+    { acao: REATIVAR, estado: E.removido, itemId: ITEM_ID, esperado: 'anuncio-removido' },
+    { acao: REATIVAR, estado: E.banido, itemId: ITEM_ID, esperado: 'anuncio-banido' },
+    { acao: REATIVAR, estado: E.emRevisao, itemId: ITEM_ID, esperado: 'anuncio-em-revisao' },
+    { acao: REATIVAR, estado: E.agendado, itemId: ITEM_ID, esperado: 'anuncio-agendado' },
+    { acao: REATIVAR, estado: E.ativo, itemId: ITEM_ID, esperado: 'ja-ativo' },
+    { acao: REATIVAR, estado: E.pausado, itemId: ITEM_ID, esperado: true },
+    { acao: REATIVAR, estado: E.desconhecido, itemId: ITEM_ID, esperado: true },
+    { acao: REATIVAR, estado: null, itemId: ITEM_ID, esperado: true },
+  ];
+
+  it.each(TABELA)('$acao + estado $estado + item_id $itemId ⇒ $esperado', (caso) => {
+    const resultado = podeMoverAnuncioShopee(
+      { item_id: caso.itemId, estadoAnuncio: caso.estado },
+      caso.acao,
+    );
+    if (caso.esperado === true) {
+      expect(resultado).toEqual({ pode: true });
+    } else {
+      expect(resultado).toEqual({ pode: false, motivo: caso.esperado });
+    }
+  });
+
+  it('a tabela cobre as DUAS ações × os OITO estados possíveis (os sete membros + null)', () => {
+    const cobertos = new Set(
+      TABELA.filter((c) => c.itemId === ITEM_ID).map((c) => `${c.acao}/${String(c.estado)}`),
+    );
+    const esperados = new Set<string>();
+    for (const acao of Object.values(ACAO_STATUS_ANUNCIO)) {
+      for (const estado of [...estadoAnuncioShopeeSchema.options, null]) {
+        esperados.add(`${acao}/${String(estado)}`);
+      }
+    }
+    expect([...cobertos].sort()).toEqual([...esperados].sort());
+    expect(esperados.size).toBe(16);
+  });
+
+  it('as SETE recusas têm todas um produtor — nenhuma é vocabulário morto', () => {
+    const produzidos = new Set(
+      TABELA.map((caso) =>
+        podeMoverAnuncioShopee({ item_id: caso.itemId, estadoAnuncio: caso.estado }, caso.acao),
+      )
+        .filter((r): r is { pode: false; motivo: MotivoAnuncioNaoMovivel } => r.pode === false)
+        .map((r) => r.motivo),
+    );
+    expect([...produzidos].sort()).toEqual(
+      [
+        'anuncio-agendado',
+        'anuncio-banido',
+        'anuncio-em-revisao',
+        'anuncio-removido',
+        'ja-ativo',
+        'ja-pausado',
+        'sem-item-id',
+      ].sort(),
+    );
+  });
+
+  it('⛔ NEAR-MISS: estadoAnuncio null NÃO é recusado; removido É', () => {
+    // Um link importado pelo passo 9 nunca foi dobrado — a leitura ausente não é
+    // prova de nada, e recusá-la mataria o botão para o corpus inteiro.
+    expect(podeMoverAnuncioShopee({ item_id: ITEM_ID, estadoAnuncio: null }, PAUSAR)).toEqual({
+      pode: true,
+    });
+    expect(podeMoverAnuncioShopee({ item_id: ITEM_ID, estadoAnuncio: null }, REATIVAR)).toEqual({
+      pode: true,
+    });
+    expect(podeMoverAnuncioShopee({ item_id: ITEM_ID, estadoAnuncio: E.removido }, PAUSAR)).toEqual(
+      {
+        pode: false,
+        motivo: 'anuncio-removido',
+      },
+    );
+  });
+
+  it('⛔ NEAR-MISS: um item_id 0, negativo ou não finito é sem-item-id — nunca endereçável', () => {
+    for (const itemId of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(podeMoverAnuncioShopee({ item_id: itemId, estadoAnuncio: E.ativo }, PAUSAR)).toEqual({
+        pode: false,
+        motivo: 'sem-item-id',
+      });
+    }
+    expect(podeMoverAnuncioShopee({ item_id: 1, estadoAnuncio: E.ativo }, PAUSAR)).toEqual({
+      pode: true,
+    });
+  });
+});
+
+describe('shopeeLink.ts — o texto do arquivo', () => {
+  const FONTE = readFileSync(join(import.meta.dirname, 'shopeeLink.ts'), 'utf8');
+
+  it('não menciona runTransaction nem nenhum helper de microssegundos', () => {
+    // Este arquivo é puro: nenhuma transação, nenhum relógio, e todo carimbo é
+    // MILISSEGUNDO. O inventário de transações (`config-eslint`) grepa TEXTO
+    // CRU, inclusive comentários — e uma comparação entre unidades diferentes é
+    // uma guarda que nunca dispara (regra 7 do CLAUDE.md da raiz).
+    for (const proibido of [
+      'runTransaction',
+      'coerceToMicros',
+      'millisToMicros',
+      'microsToMillis',
+      'microsDeSegundos',
+      'prazoUsDe',
+      'nowUs',
+      'Date.now(',
+      'µs',
+    ]) {
+      expect(FONTE).not.toContain(proibido);
+    }
+    expect(FONTE).toContain('MILLISECONDS');
+  });
+
+  it('o docblock não chama o code 6 de push moderno', () => {
+    // A correção é barata de escrever e barata de perder: sem isto, a próxima
+    // revisão do docblock volta a apontar o leitor para um push aposentado.
+    expect(FONTE).toContain('push_api_id` 18');
+    expect(FONTE).toContain('push_code 16');
+    const mencoes = [...FONTE.matchAll(/code[ -]6/gi)];
+    expect(mencoes.length).toBeGreaterThan(0);
+    for (const mencao of mencoes) {
+      const inicio = Math.max(0, (mencao.index ?? 0) - 200);
+      const janela = FONTE.slice(inicio, (mencao.index ?? 0) + 200);
+      expect(janela).toMatch(/retired|retirad|aposentad|legacy|legad/i);
+    }
   });
 });

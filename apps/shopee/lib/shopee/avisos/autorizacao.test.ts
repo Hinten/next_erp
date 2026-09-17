@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { CANAL_AVISO, SEVERIDADE_AVISO, TIPO_AVISO } from '@delfrance/schemas';
@@ -8,6 +11,7 @@ import {
   avisarExpiracaoAutorizacao,
   chaveDesautorizacao,
   chaveExpiracao,
+  prazoUsDe,
   resolverAvisosDeAutorizacao,
 } from './autorizacao';
 
@@ -346,5 +350,86 @@ describe('resolverAvisosDeAutorizacao', () => {
       resolvidoEm: null,
       resolucaoMotivo: null,
     });
+  });
+});
+
+describe('prazoUsDe — o segundo e ÚLTIMO sítio de conversão deste arquivo', () => {
+  it('converte um prazo em ms para µs', () => {
+    expect(prazoUsDe(AGORA_MS)).toBe(AGORA_MS * 1000);
+    // NEAR-MISS: não devolve os milissegundos.
+    expect(prazoUsDe(AGORA_MS)).not.toBe(AGORA_MS);
+  });
+
+  it('null entra, null sai — um prazo ausente é uma leitura, não um valor faltando', () => {
+    // `push 16` documenta `fix_deadline_time` como "Empty if no deadline", e um
+    // prazo que nós inventássemos seria pior que nenhum. ⚠️ NÃO é `?? 0`: zero é
+    // 1970, um prazo que já venceu.
+    expect(prazoUsDe(null)).toBeNull();
+    expect(prazoUsDe(null)).not.toBe(0);
+  });
+
+  it('0 é um valor, não uma ausência — só null vira null', () => {
+    expect(prazoUsDe(0)).toBe(0);
+  });
+});
+
+/** Recursively collect every `.ts` file under `dir`. */
+function arquivosTs(dir: string): string[] {
+  const saida: string[] = [];
+  for (const entrada of readdirSync(dir, { withFileTypes: true })) {
+    const caminho = `${dir}/${entrada.name}`;
+    if (entrada.isDirectory()) saida.push(...arquivosTs(caminho));
+    else if (entrada.name.endsWith('.ts')) saida.push(caminho);
+  }
+  return saida;
+}
+
+/** How many times `millisToMicros(` appears as a CALL in `fonte`. */
+function chamadas(fonte: string): number {
+  return fonte.split('millisToMicros(').length - 1;
+}
+
+describe('⚠️ a promessa do docblock: EXATAMENTE dois sítios de conversão', () => {
+  const RAIZ_AVISOS = fileURLToPath(new URL('.', import.meta.url));
+  const RAIZ_ANUNCIOS = fileURLToPath(new URL('../anuncios/', import.meta.url));
+
+  it('este arquivo converte em dois lugares — agoraUsDe e prazoUsDe, e em mais nenhum', () => {
+    // A frase "exactly two call sites" no cabeçalho é a única coisa que mantém o
+    // seam µs revisável, e uma frase que virou três é pior que nenhuma frase. O
+    // passo 11 acrescentou um terceiro módulo produtor de avisos sem acrescentar
+    // um terceiro sítio, e é isto que diz isso em voz alta.
+    const fonte = readFileSync(`${RAIZ_AVISOS}autorizacao.ts`, 'utf8');
+
+    expect(chamadas(fonte)).toBe(2);
+    // ÂNCORA: o arquivo realmente foi lido e realmente contém os dois seams.
+    expect(fonte).toContain('export function agoraUsDe');
+    expect(fonte).toContain('export function prazoUsDe');
+  });
+
+  it('o módulo de push-health continua sem conversão nenhuma', () => {
+    const fonte = readFileSync(`${RAIZ_AVISOS}pushSaude.ts`, 'utf8');
+    expect(chamadas(fonte)).toBe(0);
+    expect(fonte).toContain('export function chavePushDegradado');
+  });
+
+  it('⚠️ NADA sob lib/shopee/anuncios/ converte, lê relógio ou fala microssegundo', () => {
+    // O produtor de avisos de anúncio importa `prazoUsDe`/`agoraUsDe` daqui em
+    // vez de converter, o que é o que mantém a lista numerada de SÍTIOS em
+    // `apps/shopee/CLAUDE.md` em oito. Um `Date.now()` ali seria um relógio num
+    // caminho cujo `nowMs` é sempre parâmetro.
+    const arquivos = arquivosTs(RAIZ_ANUNCIOS);
+
+    // ÂNCORA anti-vacuidade: sem ela, um diretório vazio (ou renomeado) passaria
+    // verde dizendo nada.
+    expect(arquivos.length).toBeGreaterThanOrEqual(1);
+
+    for (const arquivo of arquivos) {
+      const fonte = readFileSync(arquivo, 'utf8');
+      // ⚠️ Texto CRU, comentários incluídos: nomear o conversor num comentário ali
+      // é exatamente o que faria um leitor procurar um sítio que não existe.
+      expect(fonte, arquivo).not.toContain('millisToMicros');
+      expect(fonte, arquivo).not.toContain('coerceToMicros');
+      expect(fonte, arquivo).not.toContain('Date.now(');
+    }
   });
 });

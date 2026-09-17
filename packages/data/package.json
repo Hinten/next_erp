@@ -18,6 +18,7 @@
     "./admin/clientes": "./src/admin/clientes/index.ts",
     "./admin/collections": "./src/admin/collections/index.ts",
     "./admin/grpcErrors": "./src/admin/grpcErrors.ts",
+    "./admin/imposto": "./src/admin/imposto/index.ts",
     "./admin/notifications": "./src/admin/notifications/index.ts",
     "./admin/oauth-state": "./src/admin/oauthState/index.ts",
     "./admin/produtos": "./src/admin/produtos/index.ts",

@@ -3,22 +3,28 @@ import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  SHOPEE_ADD_ITEM_PATH,
   SHOPEE_ATTRIBUTE_TREE_MAX_CATEGORIES,
   SHOPEE_BRAND_MAX_PAGE_SIZE,
   SHOPEE_BRAND_STATUS,
+  SHOPEE_DELETE_ITEM_PATH,
+  SHOPEE_DELETE_MODEL_PATH,
   SHOPEE_ESCROW_DETAIL_TRANSPORT,
   SHOPEE_ESCROW_LIST_DEFAULT_PAGE_SIZE,
   SHOPEE_ESCROW_LIST_MAX_PAGE_SIZE,
   SHOPEE_GET_ESCROW_LIST_PATH,
+  SHOPEE_GET_CHANNEL_LIST_PATH,
   SHOPEE_GET_ITEM_BASE_INFO_PATH,
   SHOPEE_GET_ITEM_LIMIT_PATH,
   SHOPEE_GET_ITEM_LIST_PATH,
+  SHOPEE_GET_ITEM_VIOLATION_INFO_PATH,
   SHOPEE_GET_KIT_ITEM_INFO_PATH,
   SHOPEE_GET_KIT_ITEM_LIMIT_PATH,
   SHOPEE_GET_MODEL_LIST_PATH,
   SHOPEE_GET_PACKAGE_DETAIL_PATH,
   SHOPEE_GET_VARIATIONS_PATH,
   SHOPEE_GET_VARIATION_TREE_PATH_ALT,
+  SHOPEE_INIT_TIER_VARIATION_PATH,
   SHOPEE_ITEM_BASE_INFO_MAX_IDS,
   SHOPEE_ITEM_ID_LIST_ENCODING,
   SHOPEE_ITEM_STATUS_WIRE,
@@ -30,10 +36,19 @@ import {
   SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES,
   SHOPEE_PACKAGE_DETAIL_MAX_PACKAGES,
   SHOPEE_TAXONOMY_LANGUAGE,
+  SHOPEE_UNLIST_ITEM_PATH,
+  SHOPEE_UPDATE_ITEM_PATH,
+  SHOPEE_UPDATE_MODEL_PATH,
+  SHOPEE_UPDATE_TIER_VARIATION_PATH,
+  SHOPEE_UPLOAD_IMAGE_PATH,
+  type ShopeeAddItemRequest,
   type ShopeeClient,
   type ShopeeClientConfig,
   type ShopeeItemStatusWire,
+  type ShopeeModelRequest,
   type ShopeePartnerConfig,
+  type ShopeeStandardiseTierRequest,
+  type UploadImageParams,
   createShopeeClient,
   createShopeePartnerClient,
   encodeShopeeIdList,
@@ -48,6 +63,25 @@ import {
   ShopeeSchemaError,
 } from '../src/errors';
 import { resolveShopeeHosts } from '../src/hosts';
+/**
+ * ⚠️ O pacote INTEIRO, pela sua porta pública — a única forma de provar que uma
+ * adição do passo 11 realmente sai por `index.ts` (que re-exporta por wildcard).
+ */
+import * as pacote from '../src/index';
+import {
+  SHOPEE_CONDITION,
+  SHOPEE_ITEM_IMAGE_MAX,
+  SHOPEE_ITEM_STATUS_WRITABLE,
+  SHOPEE_ITEM_VIOLATION_MAX_IDS,
+  SHOPEE_MODEL_MAX_PER_ITEM,
+  SHOPEE_MODEL_SKU_MAX_LENGTH,
+  SHOPEE_TIER_MAX_OPTIONS,
+  SHOPEE_UNLIST_MAX_ITEMS,
+  SHOPEE_UPLOAD_IMAGE_FIELD,
+  SHOPEE_UPLOAD_IMAGE_MAX_BYTES,
+  SHOPEE_UPLOAD_IMAGE_SCENE,
+  SHOPEE_UPLOAD_IMAGE_SIGNING,
+} from '../src/types';
 
 /** ⚠️ Invented. Never a real Shopee partner key. */
 const TEST_PARTNER_KEY = 'chave-de-teste-nao-e-credencial';
@@ -1201,6 +1235,9 @@ describe('as operações de push do cliente de parceiro', () => {
       'getAppPushConfig',
       'getLostPushMessages',
       'getShopsByPartner',
+      // ⚠️ `upload_image` (passo 11) é a QUINTA e é Public-signed: a página é
+      // `type=Public`, e este é o cliente que nunca pede um access token.
+      'uploadImage',
     ]);
     expect('setAppPushConfig' in client).toBe(false);
   });
@@ -3044,5 +3081,1005 @@ describe('os erros das quatro leituras de item', () => {
     await createShopeeClient(shopConfig(fetchMock)).getAttributeTree({ categoryIds: [4321, 4322] });
     const url = new URL(String(fetchMock.mock.calls[0]![0]));
     expect(url.searchParams.getAll('category_id_list')).toEqual(['4321,4322']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    As doze escritas de anúncio (passo 11)                   */
+/* -------------------------------------------------------------------------- */
+
+/** O envelope PURO das quatro operações sem `response` (`flatOp({})`). */
+const ACK_BODY = { request_id: 'req-ack', error: '', message: '', warning: '' };
+
+const ADD_ITEM_BODY = {
+  request_id: 'req-add',
+  error: '',
+  message: '',
+  warning: '',
+  response: {
+    item_id: ITEM_ID,
+    item_status: 'UNLIST',
+    item_name: 'Camiseta de teste',
+    // ⚠️ OBJETO aqui; nas páginas de LEITURA o mesmo nome é um ARRAY.
+    price_info: { current_price: 49.9, original_price: 49.9 },
+  },
+};
+
+const TIER_WRITE_BODY = {
+  request_id: 'req-tier',
+  error: '',
+  response: {
+    item_id: ITEM_ID,
+    model: [
+      { model_id: MODEL_ID, tier_index: [0], model_sku: 'AZ-P' },
+      { model_id: MODEL_ID + 1, tier_index: [1], model_sku: 'AZ-M' },
+    ],
+  },
+};
+
+const UNLIST_BODY = {
+  request_id: 'req-unlist',
+  error: '',
+  response: {
+    success_list: [{ item_id: ITEM_ID, unlist: true }],
+    failure_list: [{ item_id: ITEM_ID_2, failed_reason: 'error_item_not_found' }],
+  },
+};
+
+const VIOLATION_BODY = {
+  request_id: 'req-violation',
+  error: '',
+  response: {
+    item_list: [
+      {
+        item_id: ITEM_ID,
+        item_name: 'Camiseta de teste',
+        item_status: 'BANNED',
+        // ⚠️ Uma STRING, não um booleano — a grafia que o sandbox respondeu.
+        deboost: 'FALSE',
+        item_status_details: [
+          {
+            violation_type: 'PROHIBITED',
+            violation_reason: 'motivo',
+            suggestion: 'sugestão',
+            fix_deadline_time: 1_770_000_000,
+            update_time: 1_769_000_000,
+          },
+        ],
+      },
+    ],
+  },
+};
+
+/**
+ * O MESMO corpo, SEM a chave `error` — a forma que o sandbox respondeu em
+ * 2026-09-17 (register 73) e que as duas amostras da própria página imprimem.
+ */
+const VIOLATION_BODY_SEM_ERROR = {
+  message: null,
+  request_id: 'req-violation',
+  response: VIOLATION_BODY.response,
+};
+
+const CHANNEL_LIST_BODY = {
+  request_id: 'req-canais',
+  error: '',
+  response: {
+    logistics_channel_list: [
+      {
+        logistics_channel_id: 90021,
+        logistics_channel_name: 'Canal de teste',
+        enabled: true,
+        fee_type: 'SIZE_SELECTION',
+        // ⚠️ STRING no `get_channel_list` e int32 no `add_item`.
+        size_list: [{ size_id: '1', name: 'P', default_price: 10.5 }],
+        compulsory_channel: false,
+      },
+    ],
+  },
+};
+
+const UPLOAD_BODY = {
+  request_id: 'req-upload',
+  error: '',
+  warning: '',
+  response: {
+    image_info: {
+      image_id: 'img-1',
+      image_url_list: [{ image_url_region: 'BR', image_url: 'https://exemplo.test/img-1.jpg' }],
+    },
+    image_info_list: [
+      { id: 0, error: '', message: '', image_info: { image_id: 'img-1' } },
+      { id: 1, error: 'error_param', message: 'imagem inválida', image_info: null },
+    ],
+  },
+};
+
+function corpoAddItem(extra: Partial<ShopeeAddItemRequest> = {}): ShopeeAddItemRequest {
+  return {
+    item_name: 'Camiseta de teste',
+    description: 'Uma descrição de teste com tamanho suficiente.',
+    original_price: 49.9,
+    weight: 0.3,
+    category_id: 100182,
+    image: { image_id_list: ['img-1'] },
+    logistic_info: [{ logistic_id: 90021, enabled: true }],
+    ...extra,
+  };
+}
+
+function modelo(
+  tierIndex: readonly number[],
+  extra: Partial<ShopeeModelRequest> = {},
+): ShopeeModelRequest {
+  return {
+    tier_index: tierIndex,
+    original_price: 49.9,
+    seller_stock: [{ stock: 3 }],
+    ...extra,
+  };
+}
+
+function tierPersonalizado(
+  opcoes: number,
+  extra: Partial<ShopeeStandardiseTierRequest> = {},
+): ShopeeStandardiseTierRequest {
+  return {
+    // ⚠️ 0 = tier PERSONALIZADO — para uma loja BR fora de Moda, TODO tier é este.
+    variation_id: 0,
+    variation_name: 'Cor',
+    variation_option_list: Array.from({ length: opcoes }, (_, i) => ({
+      variation_option_name: `Opção ${String(i)}`,
+    })),
+    ...extra,
+  };
+}
+
+/** O erro que uma chamada rejeitada devolve, sem encadear `expect().rejects`. */
+async function erroDe(p: Promise<unknown>): Promise<unknown> {
+  return p.catch((e: unknown) => e);
+}
+
+describe('add_item / update_item', () => {
+  it('55 — addItem POSTa o corpo inteiro no seu caminho, shop-signed, e nada além dos comuns na query', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    const corpo = corpoAddItem({ item_status: SHOPEE_ITEM_STATUS_WRITABLE.unlist });
+    await createShopeeClient(shopConfig(fetchMock)).addItem(corpo);
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('POST');
+    expect(url.pathname).toBe('/api/v2/product/add_item');
+    expect(url.pathname).toBe(SHOPEE_ADD_ITEM_PATH);
+    // ⚠️ O corpo é o corpo do WIRE, verbatim: nada de espelho camelCase.
+    expect(JSON.parse(String(init?.body))).toEqual(corpo);
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+    expect((init?.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+  });
+
+  it('56 — o ENVELOPE inteiro chega ao chamador: o `warning` de add_item sobrevive', async () => {
+    // ⚠️ Toda ESCRITA devolve o envelope, toda LEITURA desembrulha. O `warning` é
+    // o canal de falha PARCIAL — a Shopee aceita o item e diz o que ignorou —, e
+    // desembrulhar aqui o jogaria fora com 200 na mão.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ADD_ITEM_BODY, warning: 'atributo ignorado' }),
+    );
+    const res = await createShopeeClient(shopConfig(fetchMock)).addItem(corpoAddItem());
+
+    expect(res.warning).toBe('atributo ignorado');
+    expect(res.request_id).toBe('req-add');
+    expect(res.response.item_id).toBe(ITEM_ID);
+  });
+
+  it('57 — updateItem manda `logistic_info` quando informado', async () => {
+    // ⚠️ O campo está AUSENTE da tabela de request da página e PRESENTE nos cinco
+    // samples dela, em três dos seus próprios códigos de erro e no
+    // `announcement 1395`. Quem "limpar" o tipo derruba a republicação inteira.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).updateItem({
+      item_id: ITEM_ID,
+      logistic_info: [{ logistic_id: 90021, enabled: true, is_free: false }],
+    });
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    expect(new URL(String(rawUrl)).pathname).toBe(SHOPEE_UPDATE_ITEM_PATH);
+    expect(JSON.parse(String(init?.body))).toEqual({
+      item_id: ITEM_ID,
+      logistic_info: [{ logistic_id: 90021, enabled: true, is_free: false }],
+    });
+  });
+
+  it('58 — updateItem recusa um corpo que só carrega item_id, antes da rede', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).updateItem({ item_id: ITEM_ID }),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('item_id');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('59 — addItem ACEITA brand_id 0 ("No Brand") e value_id 0 com original_value_name', async () => {
+    // ⚠️ `assertIdPositivo` aqui recusaria a marca padrão do catálogo inteiro:
+    // `brand_id: 0` é DADO ("No Brand"), nunca ausência. Mesmo raciocínio para o
+    // `value_id: 0`, que é a sentinela de valor PERSONALIZADO.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).addItem(
+      corpoAddItem({
+        brand: { brand_id: 0, original_brand_name: 'No Brand' },
+        attribute_list: [
+          {
+            attribute_id: 100003,
+            attribute_value_list: [{ value_id: 0, original_value_name: 'Algodão' }],
+          },
+        ],
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('60 — ⛔ QUASE-IGUAL: addItem recusa value_id 0 SEM original_value_name', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).addItem(
+        corpoAddItem({
+          attribute_list: [{ attribute_id: 100003, attribute_value_list: [{ value_id: 0 }] }],
+        }),
+      ),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('original_value_name');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('61 — addItem recusa image_id_list vazia, com 10 ids e com um id em branco', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const demais = Array.from({ length: SHOPEE_ITEM_IMAGE_MAX + 1 }, (_, i) => `img-${String(i)}`);
+
+    for (const lista of [[], demais, ['img-1', '   ']]) {
+      const erro = await erroDe(client.addItem(corpoAddItem({ image: { image_id_list: lista } })));
+      expect(erro).toBeInstanceOf(ShopeeConfigError);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('62 — addItem recusa item_status e condition fora dos enums de ESCRITA', async () => {
+    // ⚠️ `BANNED` é um estado que um item PODE TER e que nenhuma escrita pode
+    // dizer — por isso o enum gravável tem dois membros, e não os seis da leitura.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const status = await erroDe(
+      client.addItem(
+        corpoAddItem({
+          item_status: 'BANNED' as unknown as typeof SHOPEE_ITEM_STATUS_WRITABLE.normal,
+        }),
+      ),
+    );
+    const condicao = await erroDe(
+      client.addItem(
+        corpoAddItem({ condition: 'REFURBISHED' as unknown as typeof SHOPEE_CONDITION.new }),
+      ),
+    );
+
+    expect(status).toBeInstanceOf(ShopeeConfigError);
+    expect(condicao).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // PAR: os membros dos dois enums de escrita passam.
+    await client.addItem(
+      corpoAddItem({
+        item_status: SHOPEE_ITEM_STATUS_WRITABLE.normal,
+        condition: SHOPEE_CONDITION.new,
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('63 — addItem recusa peso 0, preço 0 e logistic_info vazio', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ADD_ITEM_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    for (const corpo of [
+      corpoAddItem({ weight: 0 }),
+      corpoAddItem({ original_price: 0 }),
+      corpoAddItem({ logistic_info: [] }),
+    ]) {
+      expect(await erroDe(client.addItem(corpo))).toBeInstanceOf(ShopeeConfigError);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('tiers e modelos', () => {
+  it('64 — initTierVariation POSTa no seu caminho e dois corpos diferentes dão o MESMO sign', async () => {
+    // ⚠️ PAR IGUAL: a base string é partner_id + path + timestamp + token +
+    // shop_id e não lê o corpo. Quem "assinar o corpo também" quebra as oito
+    // escritas de uma vez, com `error_sign` — que aponta para credencial.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TIER_WRITE_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const tiers = [tierPersonalizado(2)];
+    await client.initTierVariation({
+      item_id: ITEM_ID,
+      model: [modelo([0]), modelo([1])],
+      standardise_tier_variation: tiers,
+    });
+    await client.initTierVariation({
+      item_id: ITEM_ID,
+      model: [modelo([0], { model_sku: 'OUTRO' }), modelo([1])],
+      standardise_tier_variation: tiers,
+    });
+
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.pathname).toBe(SHOPEE_INIT_TIER_VARIATION_PATH);
+    const signA = url.searchParams.get('sign');
+    const signB = new URL(String(fetchMock.mock.calls[1]![0])).searchParams.get('sign');
+    expect(signB).toBe(signA);
+    // ⛔ QUASE-IGUAL: o CORPO, esse sim, é diferente.
+    expect(String(fetchMock.mock.calls[1]![1]?.body)).not.toBe(
+      String(fetchMock.mock.calls[0]![1]?.body),
+    );
+  });
+
+  it('65 — os QUATRO contêineres de modelo têm nomes DIFERENTES', async () => {
+    // ⚠️ `init_tier_variation.model`, `add_model.model_list`,
+    // `update_model.model`, `update_tier_variation.model_list`. Unificar o nome é
+    // o refactor "óbvio" que a Shopee responde com `error_param` em duas das
+    // quatro páginas — e só em duas.
+    // As duas escritas de UPDATE respondem o envelope puro; as duas de criação
+    // respondem os modelos recém-criados.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (url) =>
+      jsonResponse(String(url).includes('/update_') ? ACK_BODY : TIER_WRITE_BODY),
+    );
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const modelos = [modelo([0])];
+
+    await client.initTierVariation({ item_id: ITEM_ID, model: modelos });
+    await client.addModel({ item_id: ITEM_ID, model_list: modelos });
+    await client.updateModel({
+      item_id: ITEM_ID,
+      model: [{ model_id: MODEL_ID, model_sku: 'AZ-P' }],
+    });
+    await client.updateTierVariation({
+      item_id: ITEM_ID,
+      model_list: [{ model_id: MODEL_ID, tier_index: [0] }],
+    });
+
+    const chaves = fetchMock.mock.calls.map(([, init]) =>
+      Object.keys(JSON.parse(String(init?.body)) as Record<string, unknown>).filter((k) =>
+        k.startsWith('model'),
+      ),
+    );
+    expect(chaves).toEqual([['model'], ['model_list'], ['model'], ['model_list']]);
+  });
+
+  it('66 — initTierVariation ACEITA variation_id 0 e variation_option_id 0', async () => {
+    // ⚠️ Para uma loja BR fora de Moda, TODO variation_id e TODO
+    // variation_option_id é 0: um `assertIdPositivo` aqui recusaria o catálogo
+    // inteiro antes de qualquer chamada.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TIER_WRITE_BODY));
+    await createShopeeClient(shopConfig(fetchMock)).initTierVariation({
+      item_id: ITEM_ID,
+      model: [modelo([0])],
+      standardise_tier_variation: [
+        {
+          variation_id: 0,
+          variation_name: 'Cor',
+          variation_option_list: [{ variation_option_id: 0, variation_option_name: 'Azul' }],
+        },
+      ],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('67 — PAR/QUASE-IGUAL: variation_id 0 EXIGE variation_name e variation_id != 0 o PROÍBE', async () => {
+    // ⚠️ `announcement 873`, verbatim: "If you input variation_name &
+    // variation_id, and variation_id != 0, it will not allow you to input
+    // variation_name. … If variation_id = 0, then you must pass the
+    // variation_name." Dois lados, duas recusas — uma regra só.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TIER_WRITE_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    const semNome = await erroDe(
+      client.initTierVariation({
+        item_id: ITEM_ID,
+        model: [modelo([0])],
+        standardise_tier_variation: [
+          tierPersonalizado(1, { variation_name: undefined as unknown as string }),
+        ],
+      }),
+    );
+    const comNomeDemais = await erroDe(
+      client.initTierVariation({
+        item_id: ITEM_ID,
+        model: [modelo([0])],
+        standardise_tier_variation: [
+          tierPersonalizado(1, { variation_id: 100, variation_name: 'Cor' }),
+        ],
+      }),
+    );
+
+    expect(semNome).toBeInstanceOf(ShopeeConfigError);
+    expect((semNome as Error).message).toContain('obrigatório');
+    expect(comNomeDemais).toBeInstanceOf(ShopeeConfigError);
+    expect((comNomeDemais as Error).message).toContain('PROIBIDO');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // PAR: com variation_id != 0 e SEM nome, passa.
+    await client.initTierVariation({
+      item_id: ITEM_ID,
+      model: [modelo([0])],
+      standardise_tier_variation: [
+        { variation_id: 100, variation_option_list: [{ variation_option_name: 'Azul' }] },
+      ],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('68 — initTierVariation ACEITA 21 opções num tier (medido) e recusa 51 modelos, 3 tiers e 51 opções', async () => {
+    // ⚠️ Os números são LITERAIS de propósito: um teste escrito como `LIMITE + 1`
+    // acompanharia qualquer valor, inclusive um trocado por engano.
+    //
+    // ⚠️ O 21 é o número que o probe do sandbox MEDIU em 2026-09-17: um
+    // `update_tier_variation` cru com 21 opções num tier foi ACEITO
+    // (`error: ''`). Era justamente esse o corpo que a guarda antiga recusava
+    // antes de sair da nossa máquina — das duas frases contraditórias das mesmas
+    // páginas (`error_tier_opt_too_many` com 20 e `error_param` com 50), a que
+    // vale no fio é a de 50.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TIER_WRITE_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    expect(SHOPEE_MODEL_MAX_PER_ITEM).toBe(50);
+    expect(SHOPEE_TIER_MAX_OPTIONS).toBe(50);
+
+    // O corpo MEDIDO: 21 opções passam a guarda e a chamada acontece.
+    await client.initTierVariation({
+      item_id: ITEM_ID,
+      model: [modelo([0])],
+      standardise_tier_variation: [tierPersonalizado(21)],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const demaisModelos = await erroDe(
+      client.initTierVariation({
+        item_id: ITEM_ID,
+        model: Array.from({ length: 51 }, (_, i) => modelo([i])),
+      }),
+    );
+    const tiersDemais = await erroDe(
+      client.initTierVariation({
+        item_id: ITEM_ID,
+        model: [modelo([0, 0, 0])],
+        standardise_tier_variation: [
+          tierPersonalizado(1),
+          tierPersonalizado(1),
+          tierPersonalizado(1),
+        ],
+      }),
+    );
+    const opcoesDemais = await erroDe(
+      client.initTierVariation({
+        item_id: ITEM_ID,
+        model: [modelo([0])],
+        standardise_tier_variation: [tierPersonalizado(51)],
+      }),
+    );
+
+    expect(demaisModelos).toBeInstanceOf(ShopeeConfigError);
+    expect(tiersDemais).toBeInstanceOf(ShopeeConfigError);
+    expect(opcoesDemais).toBeInstanceOf(ShopeeConfigError);
+    expect((opcoesDemais as Error).message).toContain('50');
+    // ⛔ E a mensagem não pode mais falar em 20: o número saiu do código.
+    expect((opcoesDemais as Error).message).not.toContain('20');
+    // Nenhuma das três recusas saiu da máquina — só a chamada de 21 opções.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // PAR: exatamente 50 opções num tier e 50 modelos PASSAM — as duas bordas de
+    // baixo. (Dois tiers de 50 dão 2500 combinações possíveis; 50 é o teto de
+    // MODELOS, que é outro limite.)
+    await client.initTierVariation({
+      item_id: ITEM_ID,
+      model: Array.from({ length: 50 }, (_, i) => modelo([i % 20, Math.floor(i / 20)])),
+      standardise_tier_variation: [tierPersonalizado(50), tierPersonalizado(50)],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('69 — initTierVariation recusa dois modelos na MESMA combinação de tier_index', async () => {
+    // ⚠️ Dois modelos no mesmo combo é um sobrescrevendo o outro, e a mensagem
+    // da própria Shopee não nomearia nenhum dos dois.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TIER_WRITE_BODY));
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).initTierVariation({
+        item_id: ITEM_ID,
+        model: [modelo([0, 1]), modelo([0, 1])],
+      }),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('tier_index');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('70 — initTierVariation recusa tier_index de comprimento diferente do número de tiers', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TIER_WRITE_BODY));
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).initTierVariation({
+        item_id: ITEM_ID,
+        // DOIS tiers declarados, UM índice no modelo.
+        model: [modelo([0])],
+        standardise_tier_variation: [tierPersonalizado(2), tierPersonalizado(2)],
+      }),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('71 — updateTierVariation EXIGE variation_option_id, que initTierVariation deixa opcional', async () => {
+    // ⚠️ Duas páginas, duas tabelas: uma marca o id da opção REQUIRED e a outra
+    // não. Uma guarda só, com um flag — nunca duas guardas parecidas.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ACK_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const erro = await erroDe(
+      client.updateTierVariation({
+        item_id: ITEM_ID,
+        standardise_tier_variation: [tierPersonalizado(1)],
+      }),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('variation_option_id');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // PAR: o MESMO tier passa em init_tier_variation.
+    const outroFetch = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TIER_WRITE_BODY));
+    await createShopeeClient(shopConfig(outroFetch)).initTierVariation({
+      item_id: ITEM_ID,
+      model: [modelo([0])],
+      standardise_tier_variation: [tierPersonalizado(1)],
+    });
+    expect(outroFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('72 — updateTierVariation recusa model_id duplicado', async () => {
+    // ⚠️ `error_duplicate_modelid: The model_id is duplicate` — recusado aqui
+    // para não gastar a chamada, e porque um model_list com id repetido é sempre
+    // uma lista montada duas vezes.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ACK_BODY));
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).updateTierVariation({
+        item_id: ITEM_ID,
+        model_list: [
+          { model_id: MODEL_ID, tier_index: [0] },
+          { model_id: MODEL_ID, tier_index: [1] },
+        ],
+      }),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('repetido');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('73 — updateTierVariation recusa uma chamada sem model_list e sem standardise_tier_variation', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ACK_BODY));
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).updateTierVariation({ item_id: ITEM_ID }),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('74 — updateTierVariation devolve o envelope PURO, sem `response`', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...ACK_BODY, warning: 'um modelo ficou fora' }),
+    );
+    const ack = await createShopeeClient(shopConfig(fetchMock)).updateTierVariation({
+      item_id: ITEM_ID,
+      model_list: [{ model_id: MODEL_ID, tier_index: [0] }],
+    });
+
+    expect(ack.request_id).toBe('req-ack');
+    expect(ack.warning).toBe('um modelo ficou fora');
+    expect('response' in ack).toBe(false);
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(
+      SHOPEE_UPDATE_TIER_VARIATION_PATH,
+    );
+  });
+
+  it('75 — updateModel aceita model_sku VAZIO e recusa 101 caracteres', async () => {
+    // ⚠️ `guide 221 §5`: "we support the delete operation, you can upload the
+    // null string" — a string vazia APAGA o SKU, e é legal.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ACK_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    await client.updateModel({ item_id: ITEM_ID, model: [{ model_id: MODEL_ID, model_sku: '' }] });
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(SHOPEE_UPDATE_MODEL_PATH);
+
+    const erro = await erroDe(
+      client.updateModel({
+        item_id: ITEM_ID,
+        model: [{ model_id: MODEL_ID, model_sku: 'x'.repeat(SHOPEE_MODEL_SKU_MAX_LENGTH + 1) }],
+      }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('76 — o request de update_model NÃO declara o campo de status do modelo', () => {
+    // ⚠️ Asserção de FONTE, porque acrescentar uma chave opcional não falha nada.
+    // A página: "Only CNSC and KRSC sellers can set the model_status" — e uma
+    // loja BR não é nenhuma das duas, então o campo é INCONSTRUÍVEL aqui, não
+    // apenas documentado como proibido. A RAZÃO fica no docblock ACIMA da
+    // interface (fora da fatia), justamente para que esta busca não case com ela.
+    const inicio = FONTE_API.indexOf('export interface ShopeeUpdateModelRequest');
+    const fim = FONTE_API.indexOf('export interface ShopeeDeleteModelRequest');
+    expect(inicio).toBeGreaterThan(-1);
+    expect(fim).toBeGreaterThan(inicio);
+
+    const corpoDaInterface = FONTE_API.slice(inicio, fim);
+    expect(corpoDaInterface).toContain('model_sku');
+    expect(corpoDaInterface).not.toContain(['model', '_status'].join(''));
+    // E a razão continua escrita logo acima, para quem for tentado a declará-lo.
+    expect(FONTE_API.slice(Math.max(0, inicio - 1500), inicio)).toContain('CNSC');
+  });
+
+  it('77 — um modelo com dimension e SEM weight é recusado antes da rede', async () => {
+    // ⚠️ Das duas páginas de modelo, verbatim: "If set the dimension of this
+    // model, them must set the weight of this model".
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(TIER_WRITE_BODY));
+    const erro = await erroDe(
+      createShopeeClient(shopConfig(fetchMock)).addModel({
+        item_id: ITEM_ID,
+        model_list: [
+          modelo([0], { dimension: { package_height: 10, package_length: 10, package_width: 10 } }),
+        ],
+      }),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('weight');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('delete_model / delete_item — sem chamador no passo 11', () => {
+  it('78 — POSTam nos seus caminhos e recusam id 0 antes da rede', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ACK_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+
+    await client.deleteModel({ item_id: ITEM_ID, model_id: MODEL_ID });
+    await client.deleteItem({ item_id: ITEM_ID });
+    expect(fetchMock.mock.calls.map(([u]) => new URL(String(u)).pathname)).toEqual([
+      SHOPEE_DELETE_MODEL_PATH,
+      SHOPEE_DELETE_ITEM_PATH,
+    ]);
+
+    expect(await erroDe(client.deleteModel({ item_id: ITEM_ID, model_id: 0 }))).toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(await erroDe(client.deleteItem({ item_id: 0 }))).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('unlist_item', () => {
+  it('79 — POSTa item_list e devolve sucesso E falha por entrada, dentro do envelope', async () => {
+    // ⚠️ Uma entrada pode cair no `failure_list` com a chamada respondendo 200 e
+    // `error` vazio: quem só checasse o throw reportaria uma pausa que não houve.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UNLIST_BODY));
+    const res = await createShopeeClient(shopConfig(fetchMock)).unlistItem({
+      item_list: [
+        { item_id: ITEM_ID, unlist: true },
+        { item_id: ITEM_ID_2, unlist: true },
+      ],
+    });
+
+    expect(res.response.success_list).toHaveLength(1);
+    expect(res.response.failure_list[0]?.failed_reason).toBe('error_item_not_found');
+    // ⚠️ `success_list[].unlist` ECOA a bandeira pedida; não é o novo item_status.
+    expect(res.response.success_list[0]?.unlist).toBe(true);
+    expect(new URL(String(fetchMock.mock.calls[0]![0])).pathname).toBe(SHOPEE_UNLIST_ITEM_PATH);
+  });
+
+  it('80 — recusa 0 e 51 entradas e um item_id repetido', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UNLIST_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    const demais = Array.from({ length: SHOPEE_UNLIST_MAX_ITEMS + 1 }, (_, i) => ({
+      item_id: ITEM_ID + i,
+      unlist: true,
+    }));
+
+    expect(await erroDe(client.unlistItem({ item_list: [] }))).toBeInstanceOf(ShopeeConfigError);
+    expect(await erroDe(client.unlistItem({ item_list: demais }))).toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    // ⚠️ Duas entradas com o mesmo id são irreconciliáveis contra um
+    // `success_list` chaveado só por item_id.
+    const repetido = await erroDe(
+      client.unlistItem({
+        item_list: [
+          { item_id: ITEM_ID, unlist: true },
+          { item_id: ITEM_ID, unlist: false },
+        ],
+      }),
+    );
+    expect(repetido).toBeInstanceOf(ShopeeConfigError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('as duas LEITURAS do passo 11', () => {
+  it('81 — getItemViolationInfo vai por GET, com item_id_list codificado, e DESEMBRULHA', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(VIOLATION_BODY));
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getItemViolationInfo({
+      itemIds: [ITEM_ID, ITEM_ID_2],
+    });
+
+    // LEITURA: o envelope NÃO chega ao chamador.
+    expect('error' in payload).toBe(false);
+    expect(payload.item_list[0]?.item_id).toBe(ITEM_ID);
+    // ⚠️ A string "FALSE" chega como string — nada aqui a dobra.
+    expect(payload.item_list[0]?.deboost).toBe('FALSE');
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('GET');
+    expect(init?.body).toBeUndefined();
+    expect(url.pathname).toBe(SHOPEE_GET_ITEM_VIOLATION_INFO_PATH);
+    expect(url.searchParams.get('item_id_list')).toBe(
+      encodeShopeeIdList([ITEM_ID, ITEM_ID_2], SHOPEE_ITEM_ID_LIST_ENCODING),
+    );
+  });
+
+  it('82 — getItemViolationInfo aceita ids REPETIDOS e recusa 51', async () => {
+    // ⚠️ Duplicatas passam, espelhando `getItemBaseInfo`: quem chama já
+    // reconcilia por item_id e a Shopee pode devolver menos linhas.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(VIOLATION_BODY));
+    const client = createShopeeClient(shopConfig(fetchMock));
+    await client.getItemViolationInfo({ itemIds: [ITEM_ID, ITEM_ID] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const erro = await erroDe(
+      client.getItemViolationInfo({ itemIds: ids(SHOPEE_ITEM_VIOLATION_MAX_IDS + 1) }),
+    );
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect(await erroDe(client.getItemViolationInfo({ itemIds: [] }))).toBeInstanceOf(
+      ShopeeConfigError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('91 — getItemViolationInfo lê o corpo MEDIDO, que não traz a chave `error`, e é o ÚNICO a tolerá-lo', async () => {
+    // ⚠️ Em 2026-09-17 o sandbox respondeu esta operação com
+    // `{message, request_id, response: {item_list: […]}}` e mais nada — sem
+    // `error` — e a etapa 1 do transporte recusou o corpo inteiro
+    // (`campos=["error"]`). A tolerância é do TRANSPORTE e é por operação; o
+    // schema continua recusando esse mesmo corpo sozinho (types.test.ts, 15).
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse(VIOLATION_BODY_SEM_ERROR),
+    );
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getItemViolationInfo({
+      itemIds: [ITEM_ID],
+    });
+
+    expect(payload.item_list[0]?.item_id).toBe(ITEM_ID);
+    expect(payload.item_list[0]?.item_status).toBe('BANNED');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // ⚠️ Asserção de FONTE, e ela é o contrato inteiro: a flag vale para UMA
+    // operação. Um segundo call site a copiando passaria por todos os testes de
+    // comportamento deste arquivo — cada operação é testada com corpos que TÊM
+    // `error` — e alargaria em silêncio o único ponto do pacote onde um corpo
+    // injulgável pode virar sucesso.
+    const ocorrencias = FONTE_API.split('erroAusenteEhSucesso').length - 1;
+    expect(ocorrencias).toBe(1);
+    const inicio = FONTE_API.indexOf('getItemViolationInfo: async');
+    const fim = FONTE_API.indexOf('getChannelList: async');
+    expect(inicio).toBeGreaterThan(-1);
+    expect(fim).toBeGreaterThan(inicio);
+    expect(FONTE_API.slice(inicio, fim)).toContain('erroAusenteEhSucesso: true');
+  });
+
+  it('83 — getChannelList vai por GET sem parâmetro nenhum além dos comuns, e o size_id continua STRING', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(CHANNEL_LIST_BODY));
+    const payload = await createShopeeClient(shopConfig(fetchMock)).getChannelList();
+
+    expect('error' in payload).toBe(false);
+    expect(payload.logistics_channel_list[0]?.logistics_channel_id).toBe(90021);
+    // ⚠️ STRING aqui e int32 no add_item: um "0" que voltasse como 0 mandaria um
+    // tamanho que o vendedor não escolheu. A conversão é de quem monta o item.
+    expect(payload.logistics_channel_list[0]?.size_list?.[0]?.size_id).toBe('1');
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(rawUrl));
+    expect(init?.method).toBe('GET');
+    expect(url.pathname).toBe(SHOPEE_GET_CHANNEL_LIST_PATH);
+    expect([...url.searchParams.keys()].sort()).toEqual([...CHAVES_COMUNS].sort());
+  });
+});
+
+describe('upload_image — o único multipart do pacote', () => {
+  const BYTES = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  function paramsUpload(extra: Partial<UploadImageParams> = {}): UploadImageParams {
+    return { bytes: BYTES, filename: 'foto.png', contentType: 'image/png', ...extra };
+  }
+
+  it('84 — POSTa multipart SEM cabeçalho Content-Type, com o campo "image" e o scene "normal"', async () => {
+    // ⚠️ O `fetch` é que escreve o Content-Type COM o boundary; pôr o cabeçalho
+    // à mão (como faz o sample PHP da própria página) produz um corpo que a
+    // Shopee não parseia e um erro que se lê como request ruim.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_BODY));
+    await createShopeePartnerClient(partnerConfig(fetchMock)).uploadImage(paramsUpload());
+
+    const [rawUrl, init] = fetchMock.mock.calls[0]!;
+    expect(new URL(String(rawUrl)).pathname).toBe(SHOPEE_UPLOAD_IMAGE_PATH);
+    expect(init?.method).toBe('POST');
+    const headers = init?.headers as Record<string, string>;
+    expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('content-type');
+
+    expect(init?.body).toBeInstanceOf(FormData);
+    const form = init?.body as FormData;
+    const arquivo = form.get(SHOPEE_UPLOAD_IMAGE_FIELD);
+    expect(arquivo).toBeInstanceOf(Blob);
+    expect((arquivo as File).name).toBe('foto.png');
+    expect((arquivo as Blob).type).toBe('image/png');
+    expect((arquivo as Blob).size).toBe(BYTES.byteLength);
+    expect(form.get('scene')).toBe('normal');
+    // ⛔ QUASE-IGUAL: o nome do campo é `image`, nunca `file` (o sample JAVA).
+    expect(form.get('file')).toBeNull();
+  });
+
+  it('85 — signing "public" não emite access_token nem shop_id; "shop" emite os dois', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_BODY));
+    const partner = createShopeePartnerClient(partnerConfig(fetchMock));
+
+    await partner.uploadImage(paramsUpload({ signing: 'public' }));
+    await partner.uploadImage(
+      paramsUpload({
+        signing: 'shop',
+        shopAuth: { accessToken: 'access-inventado', shopId: TEST_SHOP_ID },
+      }),
+    );
+
+    const publico = new URL(String(fetchMock.mock.calls[0]![0]));
+    const daLoja = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect(publico.searchParams.get('access_token')).toBeNull();
+    expect(publico.searchParams.get('shop_id')).toBeNull();
+    expect(daLoja.searchParams.get('access_token')).toBe('access-inventado');
+    expect(daLoja.searchParams.get('shop_id')).toBe(String(TEST_SHOP_ID));
+    // ⚠️ As duas classes assinam base strings DIFERENTES — é por isso que o
+    // literal decide a query E a assinatura de uma vez só.
+    expect(daLoja.searchParams.get('sign')).not.toBe(publico.searchParams.get('sign'));
+  });
+
+  it('86 — sem `signing`, a chamada sai exatamente como o literal SHOPEE_UPLOAD_IMAGE_SIGNING manda', async () => {
+    // ⚠️ PAR: este teste NÃO afirma qual é o literal — o probe do sandbox pode
+    // virá-lo numa linha só, e um teste que fixasse o valor faria dessa virada
+    // duas. O que ele fixa é que o DEFAULT e o literal não podem divergir.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_BODY));
+    const partner = createShopeePartnerClient(partnerConfig(fetchMock));
+    const shopAuth = { accessToken: 'access-inventado', shopId: TEST_SHOP_ID };
+
+    await partner.uploadImage(paramsUpload({ shopAuth }));
+    await partner.uploadImage(paramsUpload({ shopAuth, signing: SHOPEE_UPLOAD_IMAGE_SIGNING }));
+
+    const semSigning = new URL(String(fetchMock.mock.calls[0]![0]));
+    const comSigning = new URL(String(fetchMock.mock.calls[1]![0]));
+    expect([...semSigning.searchParams.keys()].sort()).toEqual(
+      [...comSigning.searchParams.keys()].sort(),
+    );
+    expect(semSigning.searchParams.get('sign')).toBe(comSigning.searchParams.get('sign'));
+  });
+
+  it('87 — signing "shop" SEM shopAuth rejeita com ShopeeConfigError ANTES de qualquer fetch', async () => {
+    // ⚠️ Sem esta recusa a chamada sairia assinada como PUBLIC e voltaria
+    // `error_param: There is no access_token in query.` — exatamente a mensagem
+    // que o literal existe para ler, chegando pelo motivo errado.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_BODY));
+    const erro = await erroDe(
+      createShopeePartnerClient(partnerConfig(fetchMock)).uploadImage(
+        paramsUpload({ signing: 'shop' }),
+      ),
+    );
+
+    expect(erro).toBeInstanceOf(ShopeeConfigError);
+    expect((erro as Error).message).toContain('shopAuth');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('88 — recusa 10 MB + 1 byte, um content-type image/gif, um filename em branco e 0 bytes', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(UPLOAD_BODY));
+    const partner = createShopeePartnerClient(partnerConfig(fetchMock));
+
+    const grande = await erroDe(
+      partner.uploadImage(
+        paramsUpload({ bytes: new Uint8Array(SHOPEE_UPLOAD_IMAGE_MAX_BYTES + 1) }),
+      ),
+    );
+    const gif = await erroDe(partner.uploadImage(paramsUpload({ contentType: 'image/gif' })));
+    const semNome = await erroDe(partner.uploadImage(paramsUpload({ filename: '  ' })));
+    const vazio = await erroDe(partner.uploadImage(paramsUpload({ bytes: new Uint8Array(0) })));
+
+    for (const erro of [grande, gif, semNome, vazio]) {
+      expect(erro).toBeInstanceOf(ShopeeConfigError);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // PAR: o MESMO content-type com caixa e espaços passa.
+    await partner.uploadImage(paramsUpload({ contentType: '  IMAGE/JPEG ' }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('89 — devolve o envelope inteiro, com as DUAS posições de imagem', async () => {
+    // ⚠️ `image_info` é a forma de arquivo único e `image_info_list[]` a de
+    // vários, com um `error` POR ÍNDICE: um 200 pode conter uma falha por foto.
+    // Só quem chama consegue registrar QUAL das duas chegou.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      jsonResponse({ ...UPLOAD_BODY, warning: 'imagem redimensionada' }),
+    );
+    const res = await createShopeePartnerClient(partnerConfig(fetchMock)).uploadImage({
+      bytes: BYTES,
+      filename: 'foto.png',
+      contentType: 'image/png',
+      scene: SHOPEE_UPLOAD_IMAGE_SCENE.desc,
+    });
+
+    expect(res.warning).toBe('imagem redimensionada');
+    expect(res.response.image_info?.image_id).toBe('img-1');
+    expect(res.response.image_info_list?.[1]?.error).toBe('error_param');
+    expect((fetchMock.mock.calls[0]![1]?.body as FormData).get('scene')).toBe('desc');
+  });
+});
+
+describe('a superfície pública do passo 11', () => {
+  it('90 — as DOZE operações e os DOZE caminhos saem pelo index do pacote', async () => {
+    // ⚠️ `index.ts` re-exporta por WILDCARD, então nenhuma adição do passo 11
+    // precisou de linha lá — mas um rename silencioso tiraria uma operação da
+    // superfície pública sem quebrar nada dentro do pacote.
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () => jsonResponse(ACK_BODY));
+    const client: ShopeeClient = pacote.createShopeeClient(shopConfig(fetchMock));
+    const partner = pacote.createShopeePartnerClient(partnerConfig(fetchMock));
+
+    const operacoes = [
+      'addItem',
+      'updateItem',
+      'initTierVariation',
+      'updateTierVariation',
+      'addModel',
+      'updateModel',
+      'deleteModel',
+      'deleteItem',
+      'unlistItem',
+      'getItemViolationInfo',
+      'getChannelList',
+    ] as const;
+    for (const nome of operacoes) expect(typeof client[nome]).toBe('function');
+    expect(typeof partner.uploadImage).toBe('function');
+
+    const caminhos = [
+      pacote.SHOPEE_ADD_ITEM_PATH,
+      pacote.SHOPEE_UPDATE_ITEM_PATH,
+      pacote.SHOPEE_INIT_TIER_VARIATION_PATH,
+      pacote.SHOPEE_UPDATE_TIER_VARIATION_PATH,
+      pacote.SHOPEE_ADD_MODEL_PATH,
+      pacote.SHOPEE_UPDATE_MODEL_PATH,
+      pacote.SHOPEE_DELETE_MODEL_PATH,
+      pacote.SHOPEE_DELETE_ITEM_PATH,
+      pacote.SHOPEE_UNLIST_ITEM_PATH,
+      pacote.SHOPEE_GET_ITEM_VIOLATION_INFO_PATH,
+      pacote.SHOPEE_GET_CHANNEL_LIST_PATH,
+      pacote.SHOPEE_UPLOAD_IMAGE_PATH,
+    ];
+    expect(new Set(caminhos).size).toBe(12);
+    for (const caminho of caminhos) expect(caminho.startsWith('/api/v2/')).toBe(true);
+    // Os limites do WIRE também são do pacote — `apps/shopee` não declara cópia.
+    expect(pacote.SHOPEE_TIER_MAX_OPTIONS).toBe(SHOPEE_TIER_MAX_OPTIONS);
+    expect(pacote.SHOPEE_UPLOAD_IMAGE_FIELD).toBe(SHOPEE_UPLOAD_IMAGE_FIELD);
   });
 });

@@ -112,6 +112,34 @@ export const REDACTED_PATH_SUFFIXES: readonly (readonly string[])[] = [
   ['cancel_reason'],
   ['buyer_cancel_reason'],
 
+  // — provider PROSE about a seller's listing (`push 16` /
+  //   `get_item_violation_info`). Same class as the four free-text entries above
+  //   and the same treatment: no denylist can anticipate what ends up in prose,
+  //   and a real `violation_reason` reads as a full pt-BR sentence naming the
+  //   product.
+  //
+  //   ⚠️ ONE segment each, and that is correct HERE: `item_status_details` and
+  //   `deboost_details` are ARRAYS, so `walk` renders the path as
+  //   `item_status_details.*.violation_reason` — and a SUFFIX match on a single
+  //   segment matches it, in BOTH containers and under either spelling of the
+  //   deboost key (`deboost_details` in the parameter table, `deboosted_details`
+  //   in the page's own sample). The `payment_info` entries above need the index
+  //   because they are spelled WITH their array parent; these are not.
+  //
+  //   Deliberately KEPT, because they carry no prose and every contract
+  //   assertion keys on them: `violation_type` (a closed seven-value Shopee
+  //   vocabulary, and what the aviso's `params.violacao` renders), `fail_error`
+  //   (a CODE, not prose), `suggested_category[].category_id` /
+  //   `category_name` (taxonomy labels — the same class as `item_name`, and the
+  //   single most actionable field on the push), and `item_name` itself, which
+  //   `name` does NOT suffix-match: a listing title is not a person.
+  ['violation_reason'],
+  ['suggestion'],
+  // ⚠️ `get_item_violation_info`'s per-entry twin of the two above: partial
+  // failure there is IN-BAND (`fail_error` + `fail_message` inside `item_list[]`),
+  // not a separate `failure_list`.
+  ['fail_message'],
+
   // — fiscal. A chave de acesso identifies the nota, its issuer and its recipient.
   ['invoice_data', 'access_key'],
 
