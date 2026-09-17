@@ -89,6 +89,31 @@
  * single joined literal in `getAttributeTree`) and `gtin_limit`'s position (see
  * {@link ShopeeItemLimitRead}, which carries BOTH).
  *
+ * ## The item reads (step 9)
+ *
+ * Four more, all Shop-signed GETs on the `product` module: `getItemList` (one
+ * page of ids), `getItemBaseInfo` (1…50 full items), `getModelList` (ONE item's
+ * variations — there is no batch form) and `getKitItemInfo` (ONE kit).
+ *
+ * ⚠️ They force the one shared change this package has taken since step 1:
+ * `item_status` is REQUIRED on `get_item_list` and is a **REPEATED query key**
+ * (`item_status=NORMAL&item_status=UNLIST` — the only explicit sentence about
+ * repetition anywhere in Shopee's corpus), so `signedQuery` now APPENDS an array
+ * value instead of only ever `set`ting a scalar. The signature is untouched:
+ * the base string never reads the operation's parameters.
+ *
+ * ⚠️ `item_id_list`'s spelling is Shopee's fifth contradiction instrumented
+ * here rather than guessed — its ONE page samples three encodings — and it is
+ * one literal: {@link SHOPEE_ITEM_ID_LIST_ENCODING}.
+ *
+ * ⚠️ Four boundary operations of the same module are deliberately NOT built:
+ * `get_item_promotion` (volatile promotion state, and `get_model_list` already
+ * hands one `promotion_id` per model), `get_item_extra_info` (sales/views/likes
+ * have no sink in this ERP), `search_item` (it cannot enumerate a catalogue —
+ * its own `error_param` demands a name or an attribute filter — and carries
+ * neither `update_time` nor `tag.kit`) and `upload_image` (step 9 only
+ * DOWNLOADS `image_url`).
+ *
  * This package never caches: the TTL cache lives in `apps/shopee`, keyed per
  * integração, because every one of these answers is per shop.
  */
@@ -105,9 +130,13 @@ import {
   type ShopeeEscrowDetail,
   type ShopeeEscrowList,
   type ShopeeGtinLimit,
+  type ShopeeItemBaseInfo,
   type ShopeeItemLimit,
+  type ShopeeItemList,
+  type ShopeeKitItemInfo,
   type ShopeeKitItemLimit,
   type ShopeeLostPushResponse,
+  type ShopeeModelList,
   type ShopeeOrderDetail,
   type ShopeeOrderList,
   type ShopeePackageDetail,
@@ -123,9 +152,13 @@ import {
   shopeeConfirmLostPushSchema,
   shopeeEscrowDetailSchema,
   shopeeEscrowListSchema,
+  shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
+  shopeeItemListSchema,
+  shopeeKitItemInfoSchema,
   shopeeKitItemLimitSchema,
   shopeeLostPushSchema,
+  shopeeModelListSchema,
   shopeeOrderDetailSchema,
   shopeeOrderListSchema,
   shopeePackageDetailSchema,
@@ -164,6 +197,15 @@ export const SHOPEE_GET_KIT_ITEM_LIMIT_PATH = '/api/v2/product/get_kit_item_limi
 export const SHOPEE_GET_VARIATIONS_PATH = '/api/v2/product/get_variations';
 /** `GET` — Shop-signed. WRAPPED. Offered, never applied automatically. */
 export const SHOPEE_CATEGORY_RECOMMEND_PATH = '/api/v2/product/category_recommend';
+
+/** `GET` — Shop-signed. WRAPPED. ONE page of this shop's item ids. */
+export const SHOPEE_GET_ITEM_LIST_PATH = '/api/v2/product/get_item_list';
+/** `GET` — Shop-signed. WRAPPED. The full detail of up to 50 items. */
+export const SHOPEE_GET_ITEM_BASE_INFO_PATH = '/api/v2/product/get_item_base_info';
+/** `GET` — Shop-signed. WRAPPED. ONE item's variation trees and models. */
+export const SHOPEE_GET_MODEL_LIST_PATH = '/api/v2/product/get_model_list';
+/** `GET` — Shop-signed. WRAPPED. ONE kit item and its components. */
+export const SHOPEE_GET_KIT_ITEM_INFO_PATH = '/api/v2/product/get_kit_item_info';
 
 /** `GET` — Public-signed. ONE page of the 3-day lost-push queue (the earliest 100). */
 export const SHOPEE_GET_LOST_PUSH_PATH = '/api/v2/push/get_lost_push_message';
@@ -314,6 +356,77 @@ export const SHOPEE_ATTRIBUTE_TREE_MAX_CATEGORIES = 20;
 
 /** `get_brand_list`: `page_size` is documented `[1,100]`. */
 export const SHOPEE_BRAND_MAX_PAGE_SIZE = 100;
+
+/**
+ * `get_item_base_info`: `item_id_list` is documented `limit [0,50]`.
+ *
+ * ⚠️ The mass import's per-dispatch batch size is bounded by this, so one drain
+ * is one call: a batch bigger than this would silently need a second one.
+ */
+export const SHOPEE_ITEM_BASE_INFO_MAX_IDS = 50;
+
+/**
+ * The SIX wire values of `ItemStatus` (`guide 31`), for the **REQUEST** side of
+ * `get_item_list`.
+ *
+ * ⚠️ Named `…_WIRE` because `@delfrance/schemas` already exports a
+ * `SHOPEE_ITEM_STATUS` of its own (the link document's stored status) and
+ * `apps/shopee` imports both packages in the same module.
+ *
+ * ⚠️ REQUEST side only. On a RESPONSE the field is a loose string in `types.ts`,
+ * deliberately: Shopee moved this set once already (four values to six), and a
+ * value it adds tomorrow must cost us nothing on the way IN while a wrong value
+ * on the way OUT is our own bug and rejects before the wire.
+ */
+export const SHOPEE_ITEM_STATUS_WIRE = {
+  normal: 'NORMAL',
+  banned: 'BANNED',
+  unlist: 'UNLIST',
+  reviewing: 'REVIEWING',
+  sellerDelete: 'SELLER_DELETE',
+  shopeeDelete: 'SHOPEE_DELETE',
+} as const;
+export type ShopeeItemStatusWire =
+  (typeof SHOPEE_ITEM_STATUS_WIRE)[keyof typeof SHOPEE_ITEM_STATUS_WIRE];
+
+/** The three spellings {@link SHOPEE_ITEM_ID_LIST_ENCODING} chooses between. */
+export type ShopeeIdListEncoding = 'bare-comma' | 'bracket-comma' | 'bracket-space';
+
+/**
+ * How `item_id_list` is serialised — the {@link SHOPEE_ESCROW_DETAIL_TRANSPORT}
+ * technique, because `get_item_base_info`'s ONE page samples THREE encodings for
+ * it (`[34001 34002]` in Java, `%5B34001+34002%5D` in PHP/Python,
+ * `[34001,34002]` in cURL) while its two siblings `get_item_extra_info` and
+ * `get_item_promotion` sample a BARE COMMA.
+ *
+ * ⚠️ The repo's own shipped precedent for a Shopee `*_list` query parameter is
+ * the bare comma (`category_id_list` on `get_attribute_tree`, step 10), so that
+ * is the default and ONE literal here flips it. A wrong guess surfaces as
+ * `error_param`, which `apps/shopee` logs raw beside
+ * {@link encodeShopeeIdList}'s output — so the answer arrives as evidence
+ * instead of as a second guess.
+ */
+export const SHOPEE_ITEM_ID_LIST_ENCODING: ShopeeIdListEncoding = 'bare-comma';
+
+/**
+ * `item_id_list`, in whichever of the three spellings is asked for.
+ *
+ * ⚠️ Exported so a caller can log the spelling that actually went out beside a
+ * raw `error_param` — the same reason step 10 logs `category_id_list`'s.
+ */
+export function encodeShopeeIdList(
+  ids: readonly number[],
+  encoding: ShopeeIdListEncoding = SHOPEE_ITEM_ID_LIST_ENCODING,
+): string {
+  switch (encoding) {
+    case 'bare-comma':
+      return ids.join(',');
+    case 'bracket-comma':
+      return `[${ids.join(',')}]`;
+    case 'bracket-space':
+      return `[${ids.join(' ')}]`;
+  }
+}
 
 /**
  * The envelope `error` value the two lost-push pages print where every other
@@ -506,6 +619,55 @@ export interface GetKitItemLimitParams {
 /** `get_variations` — a LEAF category id. */
 export interface GetVariationsParams {
   readonly categoryId: number;
+}
+
+/**
+ * `get_item_list` — ONE page of this shop's item ids.
+ *
+ * ⚠️ The two `update_time` bounds are wire-shaped **SECONDS**, and the unit
+ * lives in the field name, exactly as on {@link GetOrderListParams}. The package
+ * converts no unit.
+ */
+export interface GetItemListParams {
+  /** ⚠️ `>= 0`, not `> 0`: the FIRST page is offset zero, never an id. */
+  readonly offset: number;
+  /** 1…100, REQUIRED by Shopee. */
+  readonly pageSize: number;
+  /**
+   * REQUIRED by Shopee, and sent as a REPEATED query key — never comma-joined.
+   *
+   * ⚠️ This package never defaults it. The legacy importer defaulted it to
+   * `NORMAL` and never offered a choice, so every UNLIST listing in the shop was
+   * structurally invisible for years; a required parameter with no default is
+   * what makes that a decision the caller has to make.
+   */
+  readonly statuses: readonly ShopeeItemStatusWire[];
+  /** Unix SECONDS, optional lower bound on the item's own `update_time`. */
+  readonly updateTimeFromS?: number;
+  /** Unix SECONDS. ⚠️ Must be strictly LATER than `updateTimeFromS`. */
+  readonly updateTimeToS?: number;
+}
+
+/** `get_item_base_info` — 1…50 items, in ONE call. */
+export interface GetItemBaseInfoParams {
+  /**
+   * 1…50 item ids, serialised by {@link encodeShopeeIdList}.
+   *
+   * ⚠️ Every element must be a positive safe integer, refused BEFORE the fetch:
+   * a `0` would be sent for Shopee to reject, and the list is ONE joined scalar
+   * on the wire, so its `error_param` could never say WHICH element was wrong.
+   */
+  readonly itemIds: readonly number[];
+}
+
+/** `get_model_list` — ONE item. There is no batch form and no paging. */
+export interface GetModelListParams {
+  readonly itemId: number;
+}
+
+/** `get_kit_item_info` — ONE kit item. */
+export interface GetKitItemInfoParams {
+  readonly itemId: number;
 }
 
 /** `confirm_consumed_lost_push_message` — the ONE parameter, and it rides in the BODY. */
@@ -766,6 +928,81 @@ export interface ShopeeClient {
   categoryRecommend(p: CategoryRecommendParams): Promise<ShopeeCategoryRecommend>;
 
   /**
+   * ONE page of this shop's item ids.
+   *
+   * ⚠️ It does NOT auto-page: `has_next_page` and `next_offset` come back on the
+   * payload and the caller echoes `next_offset` — NEVER `offset + page_size`,
+   * which is what the legacy did and what makes a mutating catalogue skip rows.
+   *
+   * ⚠️ `item_status` is REQUIRED and is a REPEATED query key. The caller picks
+   * the set; this package never defaults it — see
+   * {@link GetItemListParams.statuses}.
+   *
+   * ⚠️ `total_count` is INFORMATIONAL. It is glossed "total count of all items"
+   * and no page says whether it honours the `item_status` filter, so nothing may
+   * use it as a progress denominator or as a termination signal.
+   *
+   * ⚠️ `error_param: get items offset over limit, please use the next field` is
+   * a documented error of this page and its cap VALUE appears nowhere. It is
+   * TERMINAL for a scan, not retryable: the mitigation is a narrower
+   * `update_time` window.
+   *
+   * ⚠️ The page documents NO ordering and no stability across pages. An offset
+   * walk over a catalogue that changes under it can skip rows; the only
+   * documented mitigation is freezing the window with `updateTimeFromS`/`ToS`.
+   */
+  getItemList(p: GetItemListParams): Promise<ShopeeItemList>;
+
+  /**
+   * The FULL detail of 1…50 items.
+   *
+   * ⚠️ It ALWAYS sends `need_tax_info=true` and NEVER `need_complaint_policy`,
+   * and neither is a parameter: the BR fiscal block is ABSENT unless asked for
+   * (the legacy never asked, so NCM/CEST/origem never arrived), and
+   * `complaint_policy` is PL-only — pure body weight for a BR shop.
+   *
+   * ⚠️ The response may carry FEWER rows than were asked for. Reconcile by
+   * `item_id`, never by position.
+   *
+   * ⚠️ `promotion_id` is NOT on this response (removed 2026-04-03); it survives
+   * only in the page's stale sample, and nothing here reads it.
+   *
+   * ⚠️ `price_info` is absent when `has_model` is true — per-model prices come
+   * from {@link ShopeeClient.getModelList}.
+   */
+  getItemBaseInfo(p: GetItemBaseInfoParams): Promise<ShopeeItemBaseInfo>;
+
+  /**
+   * ONE item's variation trees and models.
+   *
+   * ⚠️ One call per item: there is no batch form and no paging on this page,
+   * which is why a catalogue import has to be resumable.
+   *
+   * ⚠️ BOTH trees travel to the caller. `tier_variation` is deprecated on the
+   * WRITE side only and is still a documented response field;
+   * `standardise_tier_variation` is all-zeros for a BR shop outside Fashion,
+   * where the only usable option identity is the NAME.
+   */
+  getModelList(p: GetModelListParams): Promise<ShopeeModelList>;
+
+  /**
+   * ONE kit item and its components.
+   *
+   * ⚠️ There is NO kit LISTING endpoint. Kits are discovered only through
+   * `get_item_list`'s `item.tag.kit`.
+   *
+   * ⚠️ `item_id` is a SCALAR that carries a batch bound (`limits [0,50]`) on its
+   * own page; every sample and the response itself handle exactly one kit.
+   *
+   * ⚠️ The kit pages carry NO stock field anywhere and the derivation rule is
+   * undocumented. Nothing in this repo may infer one.
+   *
+   * ⚠️ Four field names differ from the item read on purpose — see
+   * `shopeeKitItemSchema` in `types.ts`, which lists every one.
+   */
+  getKitItemInfo(p: GetKitItemInfoParams): Promise<ShopeeKitItemInfo>;
+
+  /**
    * ONE page of this shop's orders in a ≤ 15-day window.
    *
    * ⚠️ It does NOT auto-page, like every other read here: `more` and
@@ -903,6 +1140,100 @@ function assertBrandListParams(p: GetBrandListParams): void {
       `status deve ser 1 (normal) ou 2 (pendente) (recebido: ${JSON.stringify(p.status)}).`,
     );
   }
+}
+
+/**
+ * Every `get_item_list` bound, checked BEFORE any fetch.
+ *
+ * ⚠️ Every branch is a `ShopeeConfigError` — a caller bug, never a provider
+ * failure — so the mass import's provider-error containment must not swallow it:
+ * a contained one would be written into the job as a per-item failure and read
+ * like a catalogue of broken listings.
+ *
+ * ⚠️ The EMPTY-list branch is the one this file owes the transport.
+ * `signedQuery` emits NOTHING for an empty array (it is a query builder and owns
+ * no refusal vocabulary), so without this branch a required parameter would
+ * simply not go out and Shopee would answer `error_param_item_status` — a
+ * message that reads like a provider fault and points nowhere near the caller
+ * that forgot the list.
+ *
+ * ⚠️ `offset >= 0`, deliberately NOT `assertIdPositivo`: the first page IS
+ * offset zero, and reusing the id reader here would refuse it.
+ */
+function assertItemListParams(p: GetItemListParams): void {
+  if (!Number.isSafeInteger(p.pageSize) || p.pageSize < 1 || p.pageSize > SHOPEE_MAX_PAGE_SIZE) {
+    throw new ShopeeConfigError(
+      `page_size deve estar entre 1 e ${String(SHOPEE_MAX_PAGE_SIZE)} (recebido: ${JSON.stringify(p.pageSize)}).`,
+    );
+  }
+  if (!Number.isSafeInteger(p.offset) || p.offset < 0) {
+    throw new ShopeeConfigError(
+      `offset deve ser um inteiro >= 0 (recebido: ${JSON.stringify(p.offset)}).`,
+    );
+  }
+  if (p.statuses.length === 0) {
+    throw new ShopeeConfigError(
+      'item_status é obrigatório: informe ao menos um status (uma lista vazia não emite chave nenhuma).',
+    );
+  }
+  const conhecidos = new Set<string>(Object.values(SHOPEE_ITEM_STATUS_WIRE));
+  const vistos = new Set<string>();
+  p.statuses.forEach((status, posicao) => {
+    // ⚠️ Case-SENSITIVE. `'normal'` is not a wire value: Shopee's enum is
+    // uppercase, and folding the case here would make this client accept a
+    // spelling only it understands.
+    if (!conhecidos.has(status)) {
+      throw new ShopeeConfigError(
+        `item_status inválido (posição ${String(posicao)}, recebido: ${JSON.stringify(status)}).`,
+      );
+    }
+    if (vistos.has(status)) {
+      throw new ShopeeConfigError(
+        `item_status repetido (posição ${String(posicao)}, recebido: ${JSON.stringify(status)}).`,
+      );
+    }
+    vistos.add(status);
+  });
+  if (p.updateTimeFromS !== undefined)
+    assertSegundosPositivos('update_time_from', p.updateTimeFromS);
+  if (p.updateTimeToS !== undefined) assertSegundosPositivos('update_time_to', p.updateTimeToS);
+  if (
+    p.updateTimeFromS !== undefined &&
+    p.updateTimeToS !== undefined &&
+    p.updateTimeFromS >= p.updateTimeToS
+  ) {
+    // ⚠️ STRICT: the page's own `error_update_time_range` says "Update_time_to
+    // should be LATER than update_time_from", so a zero-width window is refused
+    // here — unlike `get_escrow_list`, whose page allows one.
+    throw new ShopeeConfigError(
+      `update_time_from deve ser anterior a update_time_to (recebido: ${JSON.stringify(p.updateTimeFromS)} e ${JSON.stringify(p.updateTimeToS)}).`,
+    );
+  }
+}
+
+/**
+ * Every `get_item_base_info` bound, checked BEFORE any fetch.
+ *
+ * ⚠️ The per-element branch is the load-bearing one, for
+ * `assertOrderDetailParams`'s reason: the wire parameter is ONE joined scalar,
+ * so Shopee's `error_param` could only ever say that `item_id_list` was wrong,
+ * never WHICH element — and a `0` id sent for Shopee to reject costs a call that
+ * was never going to answer.
+ */
+function assertItemBaseInfoParams(p: GetItemBaseInfoParams): void {
+  const quantidade = p.itemIds.length;
+  if (quantidade < 1 || quantidade > SHOPEE_ITEM_BASE_INFO_MAX_IDS) {
+    throw new ShopeeConfigError(
+      `item_id_list deve conter de 1 a ${String(SHOPEE_ITEM_BASE_INFO_MAX_IDS)} itens (recebido: ${String(quantidade)}).`,
+    );
+  }
+  p.itemIds.forEach((itemId, posicao) => {
+    if (!Number.isSafeInteger(itemId) || itemId <= 0) {
+      throw new ShopeeConfigError(
+        `item_id_list deve ser um inteiro positivo (posição ${String(posicao)}, recebido: ${JSON.stringify(itemId)}).`,
+      );
+    }
+  });
 }
 
 /**
@@ -1237,11 +1568,13 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         schema: shopeeAttributeTreeSchema,
         surface: SHOPEE_SURFACE.business,
         // ⚠️ `category_id_list`, joined by commas. The page's parameter table says
-        // `category_id_list` while its own cURL sample sends `category_ids`;
-        // `signedQuery` cannot emit a repeated key anyway, so the joined scalar is
-        // the only shape available. `apps/shopee` sends ONE id per call, which is
-        // valid under both spellings, and logs `error_param` raw — so flipping the
-        // name is a single literal here if the live API disagrees.
+        // `category_id_list` while its own cURL sample sends `category_ids`.
+        // ⚠️ A repeated key IS expressible since step 9 (`sign.ts`'s array
+        // branch appends one entry per element) — the joined scalar stays
+        // because THIS page's samples disagree about the spelling, not about the
+        // shape, and because `apps/shopee` sends ONE id per call, which is valid
+        // under every reading. It logs `error_param` raw, so flipping the name
+        // is a single literal here if the live API disagrees.
         query: { category_id_list: ids.join(','), language: SHOPEE_TAXONOMY_LANGUAGE },
       });
       return res.response;
@@ -1332,6 +1665,84 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
       return res.response;
     },
 
+    /* ------------------------------ item reads ------------------------------ */
+
+    getItemList: async (p) => {
+      assertItemListParams(p);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_ITEM_LIST_PATH,
+        call: await signedCall(),
+        schema: shopeeItemListSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: {
+          offset: p.offset,
+          page_size: p.pageSize,
+          // ⚠️ THE repeated key — the one parameter in this package that is not
+          // a joined scalar. `signedQuery` appends one entry per element, in
+          // order; the page's own words are "please upload the url like this:
+          // item_status=NORMAL&item_status=BANNED". Joining these with commas is
+          // documented NOWHERE.
+          item_status: p.statuses,
+          // `undefined` is dropped by `signedQuery`, so an unfiltered scan
+          // really sends no window at all.
+          update_time_from: p.updateTimeFromS,
+          update_time_to: p.updateTimeToS,
+        },
+      });
+      return res.response;
+    },
+
+    getItemBaseInfo: async (p) => {
+      assertItemBaseInfoParams(p);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_ITEM_BASE_INFO_PATH,
+        call: await signedCall(),
+        schema: shopeeItemBaseInfoSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: {
+          // ⚠️ ONE joined scalar, and WHICH spelling is one literal — see
+          // SHOPEE_ITEM_ID_LIST_ENCODING. This page samples three of them.
+          item_id_list: encodeShopeeIdList(p.itemIds),
+          // ⚠️ A literal, never a parameter. The BR fiscal block is absent
+          // unless asked for, and asking costs nothing; the STRING 'true' is
+          // what the wire wants, exactly like `request_order_status_pending`.
+          need_tax_info: 'true',
+          // ⚠️ `need_complaint_policy` is deliberately NEVER sent: that block is
+          // PL-only, so for a BR shop it is body weight and nothing else.
+        },
+      });
+      return res.response;
+    },
+
+    getModelList: async (p) => {
+      assertIdPositivo('item_id', p.itemId);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        path: SHOPEE_GET_MODEL_LIST_PATH,
+        call: await signedCall(),
+        schema: shopeeModelListSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: { item_id: p.itemId },
+      });
+      return res.response;
+    },
+
+    getKitItemInfo: async (p) => {
+      assertIdPositivo('item_id', p.itemId);
+      const res = await shopeeCall(transport, {
+        method: 'GET',
+        // ⚠️ Its own path. A kit is never read through the item endpoint.
+        path: SHOPEE_GET_KIT_ITEM_INFO_PATH,
+        call: await signedCall(),
+        schema: shopeeKitItemInfoSchema,
+        surface: SHOPEE_SURFACE.business,
+        query: { item_id: p.itemId },
+      });
+      return res.response;
+    },
+
     /* ------------------------------- orders -------------------------------- */
 
     getOrderList: async (p) => {
@@ -1372,8 +1783,10 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         schema: shopeeOrderDetailSchema,
         surface: SHOPEE_SURFACE.business,
         query: {
-          // ⚠️ ONE joined scalar, commas between: `signedQuery` cannot emit a
-          // repeated key, and the page's own request sample is comma-joined.
+          // ⚠️ ONE joined scalar, commas between: the page's own request sample
+          // is comma-joined. `signedQuery` CAN emit a repeated key since step 9,
+          // and this parameter is deliberately not migrated to it — no page
+          // documents the repeated form for `order_sn_list`.
           order_sn_list: p.orderSnList.join(','),
           // ⚠️ The wire wants the STRING 'true'; `undefined` is dropped by
           // `signedQuery`, so `false` really sends nothing. Same shape as
@@ -1448,9 +1861,10 @@ export function createShopeeClient(config: ShopeeClientConfig): ShopeeClient {
         // per OPERATION, never global.
         emptyErrorAliases: SHOPEE_PACKAGE_DETAIL_ERROR_ALIASES,
         query: {
-          // ⚠️ ONE joined scalar, commas and NO spaces: `signedQuery` cannot emit
-          // a repeated key, and the page's own request sample is comma-joined
-          // (`…OFG1156498731071468%2COFG199593509207187…`).
+          // ⚠️ ONE joined scalar, commas and NO spaces: the page's own request
+          // sample is comma-joined (`…OFG1156498731071468%2COFG199593509207187…`).
+          // A repeated key is expressible since step 9 and this parameter is
+          // deliberately not migrated to it — no page documents that form here.
           // ⚠️ TRIMMED, element by element, because that is what
           // `assertPackageDetailParams` JUDGED: it refuses on `numero.trim()`, so
           // an untrimmed join would send the very bytes every refusal had already

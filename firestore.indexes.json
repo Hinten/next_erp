@@ -209,6 +209,20 @@
       ]
     },
     {
+      "collectionGroup": "importacoesShopee",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "enviosPrecoMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [

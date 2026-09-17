@@ -2,15 +2,21 @@ name: CI — Shopee
 
 # The Cloud Tasks round trip for the Shopee backend (#1511, master-plan step 3).
 #
-# ⚠️ THIS LANE OWNS EXACTLY ONE SUITE, and that is deliberate. `ci.yml` still
+# ⚠️ THIS LANE OWNS EXACTLY ONE JOB, and that is deliberate. `ci.yml` still
 # runs every `@delfrance/shopee-app` unit test in `CI test`, unfiltered and with
 # no `if:` — the strongest guarantee in this repo — so nothing was excluded here
 # and nothing was promised in exchange (root CLAUDE.md: "an exclusion is a
-# promise that the owning lane runs them"). What `ci.yml` CANNOT run is the one
-# suite below: it needs a JDK, a pinned firebase-tools, a built functions
-# artifact and three emulators, which is why it lives in its own lane behind its
-# own gate. Step 22 (#1530) may move the offline job in here when it adds the
-# Firestore-only emulator job; until then the smaller blast radius wins.
+# promise that the owning lane runs them"). What `ci.yml` CANNOT run are the
+# suites below: they need a JDK, a pinned firebase-tools, a built functions
+# artifact and three emulators, which is why they live in their own lane behind
+# their own gate. Step 22 (#1530) may move the offline job in here when it adds
+# the Firestore-only emulator job; until then the smaller blast radius wins.
+#
+# ⚠️ ONE job, TWO suite files (5 tests) since step 9: the receiver round trip
+# (`app/api/webhooks/shopee/route.tasks.test.ts`, 3) and the mass-import one
+# (`lib/shopee/produtos/importacaoMassa.tasks.test.ts`, 2). Adding a file with
+# the `.tasks.test.ts` suffix adds it to THIS job — no new job, no new check
+# name, no new row in the gate manifest.
 #
 # What the single job proves, with nothing mocked:
 #
@@ -22,6 +28,20 @@ name: CI — Shopee
 #     → an unknown push_code → `park`
 #     → a real `parked` doc in notificacoesShopee
 #
+# and, since step 9 (#1517), the second queue end to end:
+#
+#   a seeded `running` importacoesShopee job + a WRONG-tipo integracao
+#     → createShopeeMassImportScheduler()   the real region-qualified queue name
+#     → Cloud Tasks emulator → Functions emulator
+#     → processShopeeMassImport             the real deployed onTaskDispatched
+#     → resolverContexto → loadShopeeContext refuses on `tipo`
+#     → the job doc stamped `failed` on the FIRST attempt (retryCount 0)
+#
+# ⚠️ That second path is NOT a push delivery, and the wrong-tipo conta is chosen
+# for the same reason the unmapped shop is: the refusal PRECEDES any client, so
+# the dispatch writes a document having made zero Shopee calls — by call order,
+# not by a mock.
+#
 # OFFLINE BY CONSTRUCTION — no Shopee credentials, ever. Shopee DOES have a
 # sandbox, so the danger here is not "there is nowhere safe to call": it is that
 # Shopee's `refresh_token` is SINGLE-USE and rotating, so one unstubbed refresh
@@ -32,7 +52,9 @@ name: CI — Shopee
 # process the setup file never reaches. The partner id and key below are
 # invented values, not credentials, and demo-erp holds no real refresh_token, so
 # a call that escapes the kill-switch answers `error_sign` rather than burning
-# anything. Keep the tasks suites on push codes that need no Shopee call.
+# anything. Keep the tasks suites on paths that need no Shopee call at all —
+# a push code whose arm makes none, or a refusal that fires before a client is
+# constructed.
 #
 # ⚠️ The suites are disjoint BY GLOB. `apps/shopee/vitest.config.ts` EXCLUDES
 # `**/*.tasks.test.ts` (and `**/*.firestore.test.ts`, listed before that lane
@@ -45,11 +67,23 @@ name: CI — Shopee
 #     on Enterprise a missing index does not throw — it silently full-scans and
 #     bills the scan. That is guard C/D in
 #     packages/data/src/admin/notifications/notificationGuardrails.test.ts, and
-#     the two Shopee composites deploy in the migration window (#1532).
+#     the FIVE Shopee composites deploy in the migration window (#1532):
+#     notificacoesShopee (status, processedAt); integracao (tipo, shop_id,
+#     ativo); prodshopee (item_id, contaProdutoShopeeOuterRef) collection-group;
+#     variashopee (model_id, contaVariacaoShopeeOuterRef) collection-group; and
+#     importacoesShopee (integracaoId, status), step 9's.
 #   - The Cloud Tasks SCHEDULING DELAY. `scheduleDelaySeconds` is ignored by the
-#     emulator — dispatch is pure FIFO (firebase-tools#8254, open). This channel
-#     sets no delay, so the test never leans on it. `retryConfig` and
-#     `rateLimits` are asserted off `__endpoint` in processNotification.test.ts.
+#     emulator — dispatch is pure FIFO (firebase-tools#8254, open). ⚠️ This
+#     channel no longer "sets no delay": the notification scheduler still sets
+#     none, but step 9's mass-import scheduler DOES set one, on the burst
+#     rate-limit pause (re-enqueue with retryAfterSeconds ?? 60). NEITHER tasks
+#     suite exercises that path, and neither may — here a delayed re-enqueue
+#     dispatches immediately, so a test asserting the pause would pass for the
+#     wrong reason. What the mass-import round trip proves is the FIRST-ATTEMPT
+#     failed stamp, never the pause; the pause is pinned offline in
+#     apps/shopee/lib/shopee/produtos/importacaoMassa.test.ts. `retryConfig` and
+#     `rateLimits` are asserted off `__endpoint` in processNotification.test.ts
+#     and processMassImport.test.ts.
 #   - The push HMAC against Shopee's own signer. `guide 18`'s vectors are pinned
 #     offline in `pushSignature.test.ts`; here the signature is produced by the
 #     same helper the route verifies with, so this job proves the queue hop, not
@@ -115,6 +149,17 @@ on:
       # freight schema — a FILE where a file is meant, like the block above.
       - 'packages/schemas/src/shared/frete.ts'
       - 'packages/schemas/src/shared/notificationResilience.ts'
+      # Step 9 (the anúncio → produto import) is the first thing this channel
+      # writes into the catálogo, and its graph reaches seven more paths. A
+      # change to any of them must re-run this lane, because the functions
+      # bundle and the emulator round trip both go through them.
+      - 'packages/storage/**' # the photo unit's bucket helpers
+      - 'packages/schemas/src/produto/**' # produto, precos, componentesKit, both link schemas
+      - 'packages/schemas/src/grupoDeVariacoes.ts' # the tier-1 guarded write's target
+      - 'packages/schemas/src/categoria.ts' # the `shopee-<id>` categoria chain
+      - 'packages/schemas/src/storage/**' # the arquivo shapes the photo unit writes
+      - 'packages/schemas/src/importacaoShopee.ts' # the mass-import job document
+      - 'packages/data/src/admin/hash.ts' # sha256Hex — every deterministic produto id
       - 'firestore.indexes.json'
       - 'firebase.shopee.tasks.json'
       - 'pnpm-lock.yaml'

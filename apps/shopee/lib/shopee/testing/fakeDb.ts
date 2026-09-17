@@ -131,11 +131,40 @@
  * the production query carries (a range clause already refuses an absent field)
  * rather than relying on the position.
  *
+ * Added by step 9 (#1517), again strictly ADDITIVELY — the TWENTY suites that
+ * drive this double are byte-unedited, which is the additivity claim's only
+ * proof:
+ *
+ *  - an `{ __arrayUnion: [...] }` sentinel, APPLIED on write exactly like
+ *    `__increment` — union by deep equality, order preserved, no duplicates —
+ *    and the real `FieldValue.arrayUnion(...)` is applied the same way, because
+ *    `putArquivoAdmin` (`@delfrance/storage/admin`) writes the SDK's own
+ *    sentinel and a double that stored it verbatim would leave every
+ *    `externalIds` / `fotos` assertion reading a sentinel object instead of the
+ *    merged array. The patch log still proves which sentinel was written, which
+ *    a read-modify-write would not;
+ *  - DOTTED-PATH keys on `update` (and only on `update`, which is Firestore's
+ *    own rule: a dotted key in `set` is a literal field NAME). `precos.<tabelaId>`
+ *    is why — the produto price write names one tabela key so the legacy `precos`
+ *    map is never re-validated and a sibling tabela provably cannot be touched.
+ *    Intermediate objects are created and CLONED along the path, so a sibling
+ *    field of the same parent survives;
+ *  - {@link CarimboFake} on every snapshot (`updateTime`) plus the
+ *    `update(patch, { lastUpdateTime })` PRECONDITION, which rejects a stale
+ *    stamp with a gRPC 9 that `isFailedPrecondition` (`@delfrance/data/admin`)
+ *    recognises. ⚠️ The stamp is an OBJECT with `isEqual`, not a number, because
+ *    a real `Timestamp` is: a comparison written as `a.updateTime === b.updateTime`
+ *    is false for two equal real stamps and TRUE for two equal numeric ones, so
+ *    a numeric double would take that bug green. Without this pair, the guarded
+ *    price write silently degrades to an unguarded one in every test —
+ *    `import.ts`'s own comment says the precondition's fallback "exists only so
+ *    an in-memory double may omit it".
+ *
  * ⚠️ This file is in `firestore-transaction-inventory`'s scope from here on —
  * that guard greps raw TEXT, so even a doc comment naming the method pulls a
  * file in. Its entry is the "test harness" one, beside `occTransaction.ts`.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
   OccEngine,
   type OccOpKind,
@@ -145,9 +174,37 @@ import {
 
 export type DocData = Record<string, unknown>;
 
+/**
+ * A `Timestamp`-shaped write stamp: monotonically increasing, comparable ONLY
+ * through {@link CarimboFake.isEqual}.
+ *
+ * ⚠️ An object and not a number on purpose. Two reads of one real `Timestamp`
+ * are two INSTANCES, so `snapA.updateTime === snapB.updateTime` is false for
+ * equal real stamps and true for equal numeric ones — a numeric double would
+ * take a `===` comparison green and ship it.
+ */
+export interface CarimboFake {
+  readonly seq: number;
+  isEqual(outro: unknown): boolean;
+  toMillis(): number;
+}
+
+function carimbo(seq: number): CarimboFake {
+  return {
+    seq,
+    isEqual: (outro: unknown) =>
+      typeof outro === 'object' && outro !== null && (outro as { seq?: unknown }).seq === seq,
+    toMillis: () => seq,
+  };
+}
+
+function ehCarimbo(v: unknown): v is CarimboFake {
+  return typeof v === 'object' && v !== null && typeof (v as { seq?: unknown }).seq === 'number';
+}
+
 interface Stored {
   data: DocData;
-  updateTime: number;
+  updateTime: CarimboFake;
 }
 
 interface Filtro {
@@ -254,19 +311,117 @@ export function increment(by: number): unknown {
   return { __increment: by };
 }
 
+/**
+ * The array-union sentinel these fakes speak. A test may write either this or
+ * the real `FieldValue.arrayUnion(...)`; both are applied identically.
+ */
+export function arrayUnion(...elementos: unknown[]): unknown {
+  return { __arrayUnion: elementos };
+}
+
 function ehIncremento(v: unknown): v is { __increment: number } {
   return typeof v === 'object' && v !== null && '__increment' in v;
 }
 
-function aplicar(anterior: DocData | undefined, patch: DocData): DocData {
+/**
+ * The elements of an array-union sentinel — ours, or the Admin SDK's own
+ * (`FieldValue.arrayUnion(...)` carries them on a public `elements` array; the
+ * `importMigration.test.ts` double reads the same field). `null` for anything
+ * else, INCLUDING a `FieldValue` that is not an array union: an unsupported
+ * sentinel stays a plain overwrite rather than being guessed at.
+ */
+function elementosDeUniao(v: unknown): unknown[] | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const nosso = (v as { __arrayUnion?: unknown }).__arrayUnion;
+  if (Array.isArray(nosso)) return nosso;
+  if (v instanceof FieldValue) {
+    const elements = (v as unknown as { elements?: unknown }).elements;
+    return Array.isArray(elements) ? elements : null;
+  }
+  return null;
+}
+
+/**
+ * Structural equality for the union's dedup key.
+ *
+ * ⚠️ Deliberately NOT named after any shared helper: the
+ * `equivalence-fold-inventory` guard keys on a word-bounded list of thirteen
+ * helper names, and this file would then owe it an entry.
+ *
+ * Equal: same primitive value (`null` only to `null`), same array length and
+ * element-for-element equality, and same key SET (order-independent) with equal
+ * values. Distinct: a number and its stringified form (`1` ≠ `"1"`), `0` ≠
+ * `null`, and two arrays of different length — the same distinctions real
+ * Firestore's `arrayUnion` draws, which is what keeps a legacy `externalId`
+ * stored as a string from silently deduping against a numeric one.
+ */
+function iguaisEmProfundidade(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => iguaisEmProfundidade(x, b[i]));
+  }
+  if (typeof a !== 'object' || a === null || b === null || typeof b !== 'object') return false;
+  const ca = a as Record<string, unknown>;
+  const cb = b as Record<string, unknown>;
+  const ka = Object.keys(ca);
+  const kb = Object.keys(cb);
+  if (ka.length !== kb.length) return false;
+  return ka.every((k) => k in cb && iguaisEmProfundidade(ca[k], cb[k]));
+}
+
+/** Real `arrayUnion` semantics: append in order, skip anything already present. */
+function unir(base: unknown, elementos: unknown[]): unknown[] {
+  const saida = Array.isArray(base) ? [...(base as unknown[])] : [];
+  for (const el of elementos) {
+    if (!saida.some((existente) => iguaisEmProfundidade(existente, el))) saida.push(el);
+  }
+  return saida;
+}
+
+/**
+ * Write one key, resolving the sentinels against the CURRENT value.
+ *
+ * `caminho` is a field path: one segment for a plain key, several for a dotted
+ * one. Intermediate objects are created and CLONED along the way, so a sibling
+ * field of the same parent survives the write.
+ */
+function escreverCaminho(alvo: DocData, caminho: string[], valor: unknown): void {
+  const [chave, ...resto] = caminho as [string, ...string[]];
+  if (resto.length === 0) {
+    const atual = alvo[chave];
+    const elementos = elementosDeUniao(valor);
+    if (ehIncremento(valor)) {
+      alvo[chave] = (typeof atual === 'number' ? atual : 0) + valor.__increment;
+    } else if (elementos) {
+      alvo[chave] = unir(atual, elementos);
+    } else {
+      alvo[chave] = valor;
+    }
+    return;
+  }
+  const filhoAtual = alvo[chave];
+  const filho: DocData =
+    typeof filhoAtual === 'object' && filhoAtual !== null && !Array.isArray(filhoAtual)
+      ? { ...(filhoAtual as DocData) }
+      : {};
+  alvo[chave] = filho;
+  escreverCaminho(filho, resto, valor);
+}
+
+/**
+ * Apply a patch over the previous document.
+ *
+ * `expandirCaminhos` is Firestore's own rule, not a convenience: a dotted key is
+ * a FIELD PATH in `update` and a literal field NAME in `set`/`create`, so only
+ * the update verbs pass `true`.
+ */
+function aplicar(anterior: DocData | undefined, patch: DocData, expandirCaminhos = false): DocData {
   const saida: DocData = { ...anterior };
   for (const [chave, valor] of Object.entries(patch)) {
-    if (ehIncremento(valor)) {
-      const base = saida[chave];
-      saida[chave] = (typeof base === 'number' ? base : 0) + valor.__increment;
-    } else {
-      saida[chave] = valor;
-    }
+    const caminho = expandirCaminhos && chave.includes('.') ? chave.split('.') : [chave];
+    escreverCaminho(saida, caminho, valor);
   }
   return saida;
 }
@@ -337,8 +492,8 @@ export class FakeDb {
     if (kind === 'update') this.patches.push({ path, patch: data });
     this.writes.push({ path, patch: data });
     this.store[path] = {
-      data: kind === 'update' ? aplicar(atual?.data, data) : aplicar(undefined, data),
-      updateTime: this.relogio,
+      data: kind === 'update' ? aplicar(atual?.data, data, true) : aplicar(undefined, data),
+      updateTime: carimbo(this.relogio),
     };
   }
 
@@ -354,7 +509,7 @@ export class FakeDb {
 
   seed(path: string, data: DocData): void {
     this.relogio += 1;
-    this.store[path] = { data, updateTime: this.relogio };
+    this.store[path] = { data, updateTime: carimbo(this.relogio) };
   }
 
   /** Document ids under a collection path, in insertion order. */
@@ -376,7 +531,7 @@ export class FakeDb {
         if (this.store[path]) return Promise.reject(grpc(6, 'ALREADY_EXISTS'));
         this.relogio += 1;
         this.writes.push({ path, patch: data });
-        this.store[path] = { data: aplicar(undefined, data), updateTime: this.relogio };
+        this.store[path] = { data: aplicar(undefined, data), updateTime: carimbo(this.relogio) };
         return Promise.resolve();
       },
       get: () => {
@@ -388,18 +543,30 @@ export class FakeDb {
           data: () => atual?.data,
         });
       },
-      update: (patch: DocData, precond?: { lastUpdateTime?: number }) => {
+      // ⚠️ `lastUpdateTime` is compared through the STAMP's own identity (its
+      // `seq`), never by object reference: a caller hands back the very object
+      // `get()` returned, and a fake that compared references would answer
+      // "still fresh" for a document a second writer had already replaced.
+      update: (patch: DocData, precond?: { lastUpdateTime?: unknown }) => {
         const falha = this.falhasDeUpdate.get(path);
         if (falha) return Promise.reject(falha);
         const atual = this.store[path];
         if (!atual) return Promise.reject(grpc(5, 'NOT_FOUND'));
-        if (precond?.lastUpdateTime !== undefined && precond.lastUpdateTime !== atual.updateTime) {
-          return Promise.reject(grpc(9, 'FAILED_PRECONDITION'));
+        if (precond?.lastUpdateTime !== undefined) {
+          const esperado = precond.lastUpdateTime;
+          if (!ehCarimbo(esperado) || !atual.updateTime.isEqual(esperado)) {
+            return Promise.reject(grpc(9, 'FAILED_PRECONDITION'));
+          }
         }
         this.relogio += 1;
         this.patches.push({ path, patch });
         this.writes.push({ path, patch });
-        this.store[path] = { data: aplicar(atual.data, patch), updateTime: this.relogio };
+        // ⚠️ `true`: a dotted key is a FIELD PATH in `update` (and a literal
+        // field NAME in `set` below) — Firestore's rule, not a convenience.
+        this.store[path] = {
+          data: aplicar(atual.data, patch, true),
+          updateTime: carimbo(this.relogio),
+        };
         return Promise.resolve();
       },
       set: (data: DocData, opts?: { merge?: boolean }) => {
@@ -408,7 +575,7 @@ export class FakeDb {
         this.writes.push({ path, patch: data });
         this.store[path] = {
           data: opts?.merge === true ? aplicar(atual?.data, data) : data,
-          updateTime: this.relogio,
+          updateTime: carimbo(this.relogio),
         };
         return Promise.resolve();
       },
@@ -426,7 +593,9 @@ export class FakeDb {
     let limite: number | null = null;
     let apos: string | null = null;
 
-    const buscar = async (): Promise<{ docs: { id: string; data: () => DocData }[] }> => {
+    const buscar = async (): Promise<{
+      docs: { id: string; updateTime: CarimboFake; data: () => DocData }[];
+    }> => {
       const alvo = filtros.find((f) => f.campo === 'shop_id')?.valor;
       const falha = typeof alvo === 'number' ? this.falhas.get(alvo) : undefined;
       if (falha) throw falha;
@@ -457,7 +626,17 @@ export class FakeDb {
       const ordenados = ordens.length > 0 ? ordenar(encontrados, ordens) : encontrados;
       const apartirDe = apos == null ? ordenados : depoisDe(ordenados, apos);
       const limitados = limite == null ? apartirDe : apartirDe.slice(0, limite);
-      return { docs: limitados.map(({ id, stored }) => ({ id, data: () => stored.data })) };
+      // ⚠️ `updateTime` rides every row (step 9): a guarded write derives its
+      // patch from the doc a QUERY found, and without the stamp here the
+      // precondition would have to be dropped in exactly the tests that exist
+      // to prove it holds.
+      return {
+        docs: limitados.map(({ id, stored }) => ({
+          id,
+          updateTime: stored.updateTime,
+          data: () => stored.data,
+        })),
+      };
     };
 
     const consulta = {
@@ -501,7 +680,7 @@ export class FakeDb {
         const caminho = `${colPath}/${id}`;
         this.relogio += 1;
         this.writes.push({ path: caminho, patch: data });
-        this.store[caminho] = { data: aplicar(undefined, data), updateTime: this.relogio };
+        this.store[caminho] = { data: aplicar(undefined, data), updateTime: carimbo(this.relogio) };
         return Promise.resolve({ id, path: caminho });
       },
       // ⚠️ No argument ⇒ an auto id, exactly like `ref.doc().id`: that is how
@@ -550,6 +729,7 @@ export class FakeDb {
         .map(({ segs, stored }) => ({
           id: segs[segs.length - 1]!,
           exists: true,
+          updateTime: stored.updateTime,
           data: () => stored.data,
           ref: { parent: { parent: { id: segs[segs.length - 3]! } } },
         }));

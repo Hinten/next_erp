@@ -18,6 +18,7 @@ export {
 } from './pedidoReconcile';
 
 export { isAlreadyExists, isFailedPrecondition, isNotFound } from './grpcErrors';
+export { sha256Hex } from './hash';
 export {
   CodigoMunicipioNaoResolvidoError,
   resolveCodigoMunicipio,

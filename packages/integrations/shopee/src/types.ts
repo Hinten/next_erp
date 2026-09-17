@@ -1783,3 +1783,820 @@ export type ShopeePackageDetail = z.infer<typeof shopeePackageDetailPayloadSchem
 /** `GET /api/v2/order/get_package_detail` — WRAPPED under `response`. */
 export const shopeePackageDetailSchema = wrappedOp(shopeePackageDetailPayloadSchema);
 export type ShopeePackageDetailResponse = z.infer<typeof shopeePackageDetailSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                        The item reads (step 9)                              */
+/* -------------------------------------------------------------------------- */
+
+/* ------------------------------ get_item_list ----------------------------- */
+
+/**
+ * One row of `get_item_list.response.item`.
+ *
+ * ⚠️ `item_status` is a LOOSE `z.string()`, NOT the six-value enum. Shopee moved
+ * this set once already — four values to six, `announcement 769`/`841` — and a
+ * strict enum on a RESPONSE would fail the WHOLE page, and with it a whole
+ * catalogue scan, for one value Shopee adds. The six values are refused or
+ * accepted on the REQUEST side ({@link SHOPEE_ITEM_STATUS_WIRE} in `api.ts`),
+ * where a wrong value is OUR bug.
+ *
+ * ⚠️ `tag` is nullable because the field was added 2024-10-18: a shop whose rows
+ * predate it simply has none. `tag.kit` is the ONLY kit discovery channel that
+ * exists — there is no kit LISTING endpoint — so a `false` here is DATA (this
+ * item is not a kit), never an absence.
+ */
+export const shopeeItemListRowSchema = z
+  .object({
+    item_id: wireInt(),
+    item_status: z.string().nullable().default(null),
+    /** SECONDS. Informational on this row. */
+    update_time: wireInt().nullable().default(null),
+    tag: z
+      .object({ kit: z.boolean().nullable().default(null) })
+      .passthrough()
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeeItemListRow = z.infer<typeof shopeeItemListRowSchema>;
+
+/**
+ * The inner payload of `get_item_list` — ONE page of item ids.
+ *
+ * ⚠️ `has_next_page` is a STRICT `z.boolean()`, the
+ * {@link shopeeOrderListPayloadSchema} reading: it is the scan's only
+ * termination signal, and a `"false"` STRING coerced to `true` would spin the
+ * walk forever while coerced to `false` it would truncate a catalogue in
+ * silence.
+ *
+ * ⚠️ `next_offset` is ECHOED BACK as the next `offset`, never recomputed as
+ * `offset + page_size` — the page says "this value need set to next
+ * request.offset" and the API reserves the right for the two to differ.
+ *
+ * ⚠️ MEASURED on the sandbox (2026-09-16, step 9's wave-0 probe): the response
+ * carries FIVE keys — `item, total_count, has_next_page, next_offset, next` —
+ * and `next_offset` was present only on a FULL page (page_size 1 on a 1-item
+ * shop ⇒ `next_offset: 1`), ABSENT on a page with room left (page_size 10 on
+ * the same shop). `next` is UNDOCUMENTED, always present, and a STRING (`""`
+ * on every page seen). Both are declared so neither reading throws; the scan
+ * echoes `next_offset` while `has_next_page` is true, and a `has_next_page:
+ * true` with no usable `next_offset` is a TERMINAL job error, never a silent
+ * end of the catalogue (register item 66).
+ *
+ * ⚠️ `total_count` is INFORMATIONAL. It is glossed "total count of all items"
+ * and NO page says whether it honours the `item_status` filter, so nothing may
+ * use it as a progress denominator or as a termination signal.
+ */
+export const shopeeItemListPayloadSchema = z
+  .object({
+    item: z.array(shopeeItemListRowSchema).default([]),
+    total_count: wireInt().nullable().default(null),
+    has_next_page: z.boolean(),
+    next_offset: wireInt().nullable().default(null),
+    /** Undocumented; a string on the sandbox (`""`). Observed, never consumed. */
+    next: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeItemList = z.infer<typeof shopeeItemListPayloadSchema>;
+
+/** `GET /api/v2/product/get_item_list` — WRAPPED under `response`. */
+export const shopeeItemListSchema = wrappedOp(shopeeItemListPayloadSchema);
+export type ShopeeItemListResponse = z.infer<typeof shopeeItemListSchema>;
+
+/* --------------------------- get_item_base_info --------------------------- */
+
+/** One value of an item's attribute. `value_unit` is the unit the seller picked. */
+export const shopeeAtributoValorDoItemSchema = z
+  .object({
+    value_id: wireInt().nullable().default(null),
+    original_value_name: z.string().nullable().default(null),
+    value_unit: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeAtributoValorDoItem = z.infer<typeof shopeeAtributoValorDoItemSchema>;
+
+/**
+ * One attribute AS FILLED ON AN ITEM.
+ *
+ * ⚠️ Not {@link shopeeAtributoSchema}: that one is the CATEGORY's attribute
+ * definition from `get_attribute_tree` (with its editor metadata and every
+ * possible value), and this one is the item's own filled values. They share
+ * field names and are different shapes.
+ *
+ * ⚠️ The kit page spells the container `attributes`; this page spells it
+ * `attribute_list`. Same element shape, two names — both are declared, neither
+ * is renamed.
+ */
+export const shopeeAtributoDoItemSchema = z
+  .object({
+    attribute_id: wireInt().nullable().default(null),
+    original_attribute_name: z.string().nullable().default(null),
+    is_mandatory: z.boolean().nullable().default(null),
+    attribute_value_list: z.array(shopeeAtributoValorDoItemSchema).default([]),
+  })
+  .passthrough();
+export type ShopeeAtributoDoItem = z.infer<typeof shopeeAtributoDoItemSchema>;
+
+/**
+ * An item's images — three PARALLEL-INDEXED arrays.
+ *
+ * ⚠️ `image_url_list[i]` and `image_id_list[i]` are the same picture. Nothing
+ * here asserts the two lengths match; the reader pairs by index and counts what
+ * it could not pair.
+ */
+export const shopeeItemImageSchema = z
+  .object({
+    image_url_list: z.array(z.string()).nullable().default(null),
+    image_id_list: z.array(z.string()).nullable().default(null),
+    image_ratio: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeItemImage = z.infer<typeof shopeeItemImageSchema>;
+
+/** One logistics channel the seller enabled on this item. */
+export const shopeeLogisticInfoSchema = z
+  .object({
+    logistic_id: wireInt().nullable().default(null),
+    logistic_name: z.string().nullable().default(null),
+    enabled: z.boolean().nullable().default(null),
+    shipping_fee: wireNumber().nullable().default(null),
+    size_id: wireInt().nullable().default(null),
+    is_free: z.boolean().nullable().default(null),
+    estimated_shipping_fee: wireNumber().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeLogisticInfo = z.infer<typeof shopeeLogisticInfoSchema>;
+
+/**
+ * One wholesale tier.
+ *
+ * ⚠️ The CONTAINER is `wholesales` (plural) on the read side and `wholesale` on
+ * the write side — that rename is real. The INNER field is `unit_price` on BOTH
+ * sides: an `unit → unit_price` rename is stale and re-applying it would read
+ * the price off a field that does not exist.
+ */
+export const shopeeWholesaleSchema = z
+  .object({
+    min_count: wireInt().nullable().default(null),
+    max_count: wireInt().nullable().default(null),
+    unit_price: wireNumber().nullable().default(null),
+    inflated_price_of_unit_price: wireNumber().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeWholesale = z.infer<typeof shopeeWholesaleSchema>;
+
+/**
+ * One currency's prices, on an item or on a model.
+ *
+ * ⚠️ An ARRAY on both pages, never an object, and it is ABSENT on an item whose
+ * `has_model` is true — per-model prices come from `get_model_list`.
+ *
+ * ⚠️ `current_price` is the PROMOTION price while one is running;
+ * `original_price` is the shelf price. Which of the two an importer keeps is the
+ * app's decision, not this schema's.
+ */
+export const shopeePriceInfoSchema = z
+  .object({
+    currency: z.string().nullable().default(null),
+    original_price: wireNumber().nullable().default(null),
+    current_price: wireNumber().nullable().default(null),
+    inflated_price_of_original_price: wireNumber().nullable().default(null),
+    inflated_price_of_current_price: wireNumber().nullable().default(null),
+    sip_item_price: wireNumber().nullable().default(null),
+    sip_item_price_source: z.string().nullable().default(null),
+    local_price: wireNumber().nullable().default(null),
+    local_promotion_price: wireNumber().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeePriceInfo = z.infer<typeof shopeePriceInfoSchema>;
+
+/**
+ * The stock block, on an item or on a model.
+ *
+ * ⚠️ `seller_stock` is the seller's OWN stock — the only one an import may sum.
+ * `shopee_stock` is what sits in a Shopee warehouse and is not ours to read as
+ * availability.
+ *
+ * ⚠️ `shopee_stock[].stock` is typed int32 on `get_item_base_info` and STRING on
+ * `get_model_list` — one doc inconsistency, one `wireInt()`, which reads both.
+ */
+export const shopeeStockInfoV2Schema = z
+  .object({
+    summary_info: z
+      .object({
+        total_reserved_stock: wireInt().nullable().default(null),
+        total_available_stock: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    seller_stock: z
+      .array(
+        z
+          .object({
+            location_id: z.string().nullable().default(null),
+            stock: wireInt().nullable().default(null),
+            if_saleable: z.boolean().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+    shopee_stock: z
+      .array(
+        z
+          .object({
+            location_id: z.string().nullable().default(null),
+            stock: wireInt().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+    /** PH/VN/ID/MY selected shops only — carried, never read. */
+    advance_stock: z.record(z.string(), z.unknown()).nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeStockInfoV2 = z.infer<typeof shopeeStockInfoV2Schema>;
+
+/**
+ * The BR fiscal block, returned only when `need_tax_info=true` is sent.
+ *
+ * ⚠️ **EVERY field is a STRING, including the numeric-looking codes**, and a
+ * `wireInt()` anywhere here would be a defect: `"00"` on `ncm`/`cest` means
+ * "this item has none", and `origin`, `operation_type`, `icms_cst` and `csosn`
+ * carry meaningful LEADING ZEROS that a number read would destroy silently.
+ * `tax_type` is the block's one int32, and it is TW-only.
+ *
+ * ⚠️ `same_state_cfop` is writable on `add_item` and ABSENT from this page's
+ * response table. It is declared anyway, because a doc gap and a doc bug look
+ * identical and `.passthrough()` would otherwise hide which one it is.
+ *
+ * ⚠️ `invoice_option`/`vat_rate` (PL), `hs_code`/`tax_code` (IN) ride the
+ * passthrough undeclared: declaring a field this repo never reads is noise that
+ * later reads like a contract.
+ */
+export const shopeeTaxInfoSchema = z
+  .object({
+    ncm: z.string().nullable().default(null),
+    cest: z.string().nullable().default(null),
+    csosn: z.string().nullable().default(null),
+    origin: z.string().nullable().default(null),
+    diff_state_cfop: z.string().nullable().default(null),
+    same_state_cfop: z.string().nullable().default(null),
+    export_cfop: z.string().nullable().default(null),
+    measure_unit: z.string().nullable().default(null),
+    pis: z.string().nullable().default(null),
+    cofins: z.string().nullable().default(null),
+    icms_cst: z.string().nullable().default(null),
+    pis_cofins_cst: z.string().nullable().default(null),
+    federal_state_taxes: z.string().nullable().default(null),
+    operation_type: z.string().nullable().default(null),
+    ex_tipi: z.string().nullable().default(null),
+    fci_num: z.string().nullable().default(null),
+    recopi_num: z.string().nullable().default(null),
+    additional_info: z.string().nullable().default(null),
+    group_item_info: z.record(z.string(), z.unknown()).nullable().default(null),
+    /** ⚠️ TW-only, and the ONE int32 of this block. */
+    tax_type: wireInt().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeTaxInfo = z.infer<typeof shopeeTaxInfoSchema>;
+
+/**
+ * The `extended` description — an ORDERED list of text blocks and image blocks.
+ *
+ * ⚠️ Mutually exclusive with `description`: when `description_type` is
+ * `extended`, `description` comes back EMPTY, and vice versa. A reader that
+ * looks only at `description` sees nothing for every whitelisted seller's item.
+ */
+export const shopeeDescriptionInfoSchema = z
+  .object({
+    extended_description: z
+      .object({
+        field_list: z
+          .array(
+            z
+              .object({
+                /** `text` | `image` — loose, the enum has no Data Definition page. */
+                field_type: z.string().nullable().default(null),
+                text: z.string().nullable().default(null),
+                image_info: z
+                  .object({
+                    image_id: z.string().nullable().default(null),
+                    image_url: z.string().nullable().default(null),
+                  })
+                  .passthrough()
+                  .nullable()
+                  .default(null),
+              })
+              .passthrough(),
+          )
+          .default([]),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+  })
+  .passthrough();
+export type ShopeeDescriptionInfo = z.infer<typeof shopeeDescriptionInfoSchema>;
+
+/**
+ * The five fields whose NESTING `get_item_base_info` contradicts itself about:
+ * its parameter table renders them as SIBLINGS of `item_list` under `response`,
+ * while its own response SAMPLE puts them INSIDE each item.
+ *
+ * ⚠️ Declaring them in ONE place only is the silent failure — under the wrong
+ * reading `tax_info` arrives `null` for every item and the whole fiscal block
+ * vanishes with no error anywhere. So both positions are declared and the reader
+ * prefers the ITEM one (the sample is the more plausible source: they are
+ * per-item data) at the cost of one `??`.
+ */
+export const SHOPEE_NESTING_AMBIGUOUS_KEYS = [
+  'tax_info',
+  'description_type',
+  'description_info',
+  'stock_info_v2',
+  'complaint_policy',
+] as const;
+export type ShopeeNestingAmbiguousKey = (typeof SHOPEE_NESTING_AMBIGUOUS_KEYS)[number];
+
+const nestingAmbiguousShape = {
+  tax_info: shopeeTaxInfoSchema.nullable().default(null),
+  /** `normal` | `extended` — loose; the enum has no Data Definition page. */
+  description_type: z.string().nullable().default(null),
+  description_info: shopeeDescriptionInfoSchema.nullable().default(null),
+  stock_info_v2: shopeeStockInfoV2Schema.nullable().default(null),
+  /** PL-only and NEVER requested. Declared so the tolerant shape is total. */
+  complaint_policy: z.record(z.string(), z.unknown()).nullable().default(null),
+} as const;
+
+/**
+ * One row of `get_item_base_info.response.item_list`.
+ *
+ * ⚠️ `weight` is a **STRING in KG** on the read side and a float on the write
+ * side. Never `wireNumber()` here: it would SUCCEED and hide the asymmetry from
+ * the publish step, which has to send a number.
+ *
+ * ⚠️ `dimension` is in CM and its three members are integers. An absent one is
+ * `null`, never `0` — a package 0 cm tall is not the same statement as a package
+ * whose height was never set.
+ *
+ * ⚠️ `gtin_code: "00"` means "item without GTIN" and is a STRING. Numeric
+ * coercion anywhere near it is a defect.
+ *
+ * ⚠️ `has_model` is deliberately NOT strict, unlike `has_next_page`: it
+ * terminates no loop, and a `null` degrades to "no models", which the importer
+ * treats as an ordinary no-variation listing.
+ *
+ * ⚠️ `promotion_id` is **absent by design**. It was REMOVED from this page on
+ * 2026-04-03 and survives only in the page's stale sample; declaring it would
+ * invite a read of a field that no longer arrives.
+ *
+ * ⚠️ `size_chart` is a URL and `size_chart_id` an id — there is no
+ * `size_chart_info` on the read side. Both are carried and neither is consumed
+ * (the size-chart step owns them).
+ */
+export const shopeeItemBaseInfoRowSchema = z
+  .object({
+    item_id: wireInt(),
+    /** int32 here; the KIT page declares the same name as an int64 ARRAY. */
+    category_id: wireInt().nullable().default(null),
+    item_name: z.string().nullable().default(null),
+    /** Empty when `description_type` is `extended` — see `description_info`. */
+    description: z.string().nullable().default(null),
+    /** The seller's own identifier, "sometimes called parent SKU". */
+    item_sku: z.string().nullable().default(null),
+    /** SECONDS. */
+    create_time: wireInt().nullable().default(null),
+    /** SECONDS. */
+    update_time: wireInt().nullable().default(null),
+    /** ⚠️ The READ name. The link document's own field is `attributes`. */
+    attribute_list: z.array(shopeeAtributoDoItemSchema).nullable().default(null),
+    price_info: z.array(shopeePriceInfoSchema).nullable().default(null),
+    image: shopeeItemImageSchema.nullable().default(null),
+    weight: z.string().nullable().default(null),
+    dimension: z
+      .object({
+        package_length: wireInt().nullable().default(null),
+        package_width: wireInt().nullable().default(null),
+        package_height: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    logistic_info: z.array(shopeeLogisticInfoSchema).nullable().default(null),
+    pre_order: z
+      .object({
+        is_pre_order: z.boolean().nullable().default(null),
+        days_to_ship: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    /** ⚠️ PLURAL on the read side; the write side and the link doc say `wholesale`. */
+    wholesales: z.array(shopeeWholesaleSchema).nullable().default(null),
+    /** `NEW` | `USED`, and REQUIRED for BR on the write side. */
+    condition: z.string().nullable().default(null),
+    /** A URL. */
+    size_chart: z.string().nullable().default(null),
+    size_chart_id: wireInt().nullable().default(null),
+    /** Loose, for {@link shopeeItemListRowSchema}'s reason. */
+    item_status: z.string().nullable().default(null),
+    has_model: z.boolean().nullable().default(null),
+    /**
+     * ⚠️ The page types it `boolean`; the sandbox sends the STRING `"FALSE"`
+     * (measured 2026-09-16, step 9's wave-0 probe — a `z.boolean()` here
+     * refused the WHOLE page, `ShopeeSchemaError` on
+     * `response.item_list[].deboost`, and with it every import). Nothing reads
+     * it, so both spellings are accepted verbatim and nothing folds them.
+     */
+    deboost: z.union([z.boolean(), z.string()]).nullable().default(null),
+    has_promotion: z.boolean().nullable().default(null),
+    is_fulfillment_by_shopee: z.boolean().nullable().default(null),
+    /** ⚠️ `brand_id: 0` is "No brand" — data, not an absence. */
+    brand: z
+      .object({
+        brand_id: wireInt().nullable().default(null),
+        original_brand_name: z.string().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    /** ID/MY local sellers only. */
+    item_dangerous: wireInt().nullable().default(null),
+    gtin_code: z.string().nullable().default(null),
+    video_info: z
+      .array(
+        z
+          .object({
+            video_url: z.string().nullable().default(null),
+            thumbnail_url: z.string().nullable().default(null),
+            duration: wireInt().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+    tag: z
+      .object({ kit: z.boolean().nullable().default(null) })
+      .passthrough()
+      .nullable()
+      .default(null),
+    ...nestingAmbiguousShape,
+  })
+  .passthrough();
+export type ShopeeItemBaseInfoRow = z.infer<typeof shopeeItemBaseInfoRowSchema>;
+
+/**
+ * The inner payload of `get_item_base_info` — 1…50 items.
+ *
+ * ⚠️ It carries the five ambiguous fields TOO, as the page's parameter table
+ * renders them. The reader prefers the row's copy and falls back to this one;
+ * see {@link SHOPEE_NESTING_AMBIGUOUS_KEYS}.
+ *
+ * ⚠️ FEWER rows than were asked for is a valid answer. Reconcile by `item_id`,
+ * never by position.
+ *
+ * ⚠️ **Per-ELEMENT tolerance with a `null` sentinel**, the
+ * {@link shopeePackageDetailPayloadSchema} precedent and for its reason: this op
+ * is batched to 50, and one malformed row must not cost the other 49. Without
+ * it one listing whose `weight`, `gtin_code` or BR `tax_info` block disagrees
+ * with a declared type refuses the WHOLE body, the mass-import drain rethrows,
+ * the ladder burns every attempt and the job ends `failed` with the healthy
+ * items of that batch never imported and no `failures[]` row naming anybody —
+ * and every later job walks back into the same listing. The precondition the
+ * precedent asks for is met here BECAUSE of the paragraph above: the caller
+ * already reconciles by `item_id` and already has a per-item verdict for an id
+ * with no row, so a `null` lands in a contained failure instead of a
+ * dispatch-level throw.
+ *
+ * ⚠️ Deliberately NOT per FIELD, and NOT a substitute for a strict field type:
+ * wire drift on this op is systematic (one field wrong on EVERY row), and a
+ * per-field catch would manufacture a null identity. A body whose rows are ALL
+ * sentinels still surfaces — as one failure row per id — rather than as data.
+ */
+export const shopeeItemBaseInfoPayloadSchema = z
+  .object({
+    item_list: z.array(shopeeItemBaseInfoRowSchema.nullable().catch(null)).default([]),
+    ...nestingAmbiguousShape,
+  })
+  .passthrough();
+export type ShopeeItemBaseInfo = z.infer<typeof shopeeItemBaseInfoPayloadSchema>;
+
+/** `GET /api/v2/product/get_item_base_info` — WRAPPED under `response`. */
+export const shopeeItemBaseInfoSchema = wrappedOp(shopeeItemBaseInfoPayloadSchema);
+export type ShopeeItemBaseInfoResponse = z.infer<typeof shopeeItemBaseInfoSchema>;
+
+/* ----------------------------- get_model_list ----------------------------- */
+
+/**
+ * One tier of the CUSTOM variation tree (`tier_variation`).
+ *
+ * ⚠️ Deprecated on the WRITE side only; it is still a documented RESPONSE field,
+ * and for a BR shop outside Fashion it is the only tree with usable names.
+ */
+export const shopeeTierVariationSchema = z
+  .object({
+    name: z.string().nullable().default(null),
+    option_list: z
+      .array(
+        z
+          .object({
+            option: z.string().nullable().default(null),
+            image: z
+              .object({
+                image_id: z.string().nullable().default(null),
+                image_url: z.string().nullable().default(null),
+              })
+              .passthrough()
+              .nullable()
+              .default(null),
+          })
+          .passthrough(),
+      )
+      .default([]),
+  })
+  .passthrough();
+export type ShopeeTierVariation = z.infer<typeof shopeeTierVariationSchema>;
+
+/**
+ * One tier of the STANDARDISED variation tree.
+ *
+ * ⚠️ `variation_id: 0` and `variation_option_id: 0` are the documented CUSTOM
+ * sentinel — a VALUE, not an absence — and for a BR shop outside Fashion every
+ * id here is 0. A reader that treats 0 as "present" mints a shared identity for
+ * every custom option in the catalogue.
+ */
+export const shopeeStandardiseTierVariationSchema = z
+  .object({
+    variation_id: wireInt().nullable().default(null),
+    variation_name: z.string().nullable().default(null),
+    variation_group_id: wireInt().nullable().default(null),
+    variation_option_list: z
+      .array(
+        z
+          .object({
+            variation_option_id: wireInt().nullable().default(null),
+            variation_option_name: z.string().nullable().default(null),
+            image_id: z.string().nullable().default(null),
+            image_url: z.string().nullable().default(null),
+          })
+          .passthrough(),
+      )
+      .default([]),
+  })
+  .passthrough();
+export type ShopeeStandardiseTierVariation = z.infer<typeof shopeeStandardiseTierVariationSchema>;
+
+/**
+ * One model (variation) of an item.
+ *
+ * ⚠️ `promotion_id` is declared and READ so a body carrying it parses — and it
+ * is NEVER stored. It became a **uint64** on 2026-07-31: a value above 2^53
+ * cannot survive `JSON.parse` into a `number`, and `z.number().int()` would
+ * accept the already-corrupted result. It is also volatile promotion state,
+ * re-readable from `get_item_promotion` at any time.
+ *
+ * ⚠️ `model_status` is a LOOSE `z.string()`, not the two-value enum: the LINK
+ * schema is where that enum lives, and an unknown value must cost ONE item's
+ * write, never a whole page's parse.
+ *
+ * ⚠️ `weight` is a STRING in KG here too, and `dimension` falls back to the
+ * item's when the model does not set its own.
+ */
+export const shopeeModelSchema = z
+  .object({
+    model_id: wireInt(),
+    tier_index: z.array(wireInt()).default([]),
+    promotion_id: wireInt().nullable().default(null),
+    has_promotion: z.boolean().nullable().default(null),
+    model_sku: z.string().nullable().default(null),
+    model_status: z.string().nullable().default(null),
+    price_info: z.array(shopeePriceInfoSchema).nullable().default(null),
+    stock_info_v2: shopeeStockInfoV2Schema.nullable().default(null),
+    pre_order: z
+      .object({
+        is_pre_order: z.boolean().nullable().default(null),
+        days_to_ship: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    gtin_code: z.string().nullable().default(null),
+    weight: z.string().nullable().default(null),
+    dimension: z
+      .object({
+        package_length: wireInt().nullable().default(null),
+        package_width: wireInt().nullable().default(null),
+        package_height: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    is_fulfillment_by_shopee: z.boolean().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeModel = z.infer<typeof shopeeModelSchema>;
+
+/**
+ * The inner payload of `get_model_list` — ONE item's trees and models.
+ *
+ * ⚠️ BOTH trees are nullable and BOTH may be absent, in any combination. The
+ * legacy dereferenced `tier_variation` unconditionally while its own exporter
+ * called that tree deprecated; the page still documents it as a live response
+ * field. Tolerate every combination — the option identity falls back to the
+ * NAME.
+ *
+ * ⚠️ There is no batch form and no paging: ONE call per variation-bearing item.
+ * That is the throughput floor of a catalogue import, and the reason it must be
+ * resumable.
+ */
+export const shopeeModelListPayloadSchema = z
+  .object({
+    tier_variation: z.array(shopeeTierVariationSchema).nullable().default(null),
+    standardise_tier_variation: z
+      .array(shopeeStandardiseTierVariationSchema)
+      .nullable()
+      .default(null),
+    model: z.array(shopeeModelSchema).default([]),
+  })
+  .passthrough();
+export type ShopeeModelList = z.infer<typeof shopeeModelListPayloadSchema>;
+
+/** `GET /api/v2/product/get_model_list` — WRAPPED under `response`. */
+export const shopeeModelListSchema = wrappedOp(shopeeModelListPayloadSchema);
+export type ShopeeModelListResponse = z.infer<typeof shopeeModelListSchema>;
+
+/* ---------------------------- get_kit_item_info --------------------------- */
+
+/**
+ * One component of one kit model.
+ *
+ * ⚠️ A component is addressed as a PAIR: `component_item_id` AND
+ * `component_model_id`. `quantity` is how many of it compose the kit model.
+ *
+ * ⚠️ `component_item_or_model_image` is an image_id, not a URL.
+ */
+export const shopeeKitComponentSchema = z
+  .object({
+    component_item_id: wireInt(),
+    component_item_name: z.string().nullable().default(null),
+    component_model_id: wireInt().nullable().default(null),
+    component_model_name: z.string().nullable().default(null),
+    quantity: wireInt().nullable().default(null),
+    main_component: z.boolean().nullable().default(null),
+    component_item_or_model_image: z.string().nullable().default(null),
+    component_item_or_model_sku: z.string().nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeKitComponent = z.infer<typeof shopeeKitComponentSchema>;
+
+/**
+ * One kit model — at most nine per kit, one tier only.
+ *
+ * ⚠️ `model_sku` is declared `int64` on the page and comes back `""` in its own
+ * sample. It is a STRING here: a sku is an identifier, and reading `"001"` as
+ * the number 1 would fold two different skus onto one.
+ */
+export const shopeeKitModelSchema = z
+  .object({
+    model_id: wireInt(),
+    model_sku: z.string().nullable().default(null),
+    original_price: wireNumber().nullable().default(null),
+    tier_index: z.array(wireInt()).default([]),
+    component_list: z.array(shopeeKitComponentSchema).default([]),
+  })
+  .passthrough();
+export type ShopeeKitModel = z.infer<typeof shopeeKitModelSchema>;
+
+/**
+ * `get_kit_item_info.response.product_info` — ONE kit item.
+ *
+ * ⚠️ **Four field names differ from the item read on purpose**, and each is a
+ * silent `null` if copied across: `attributes` (not `attribute_list`),
+ * `brand_info` (not `brand`), `pre_order_info` (not `pre_order`) and
+ * `tier_variation_list` (not `tier_variation`). The page's TABLE also says
+ * `images` where its own SAMPLE says `image`, and its
+ * `tier_variation_list[].option_list[].image` is an ARRAY where the item page's
+ * is an object. Every one of those is declared in BOTH spellings rather than
+ * guessed.
+ *
+ * ⚠️ `category_id` is declared `int64[]` and sampled as a SCALAR. Both parse;
+ * the app normalises.
+ *
+ * ⚠️ **There is NO stock field anywhere on this page** — not here, not on
+ * `add_kit_item`, not on `update_kit_item` — and the derivation rule is
+ * undocumented. Nothing in this repo may infer one.
+ */
+export const shopeeKitItemSchema = z
+  .object({
+    item_id: wireInt(),
+    item_name: z.string().nullable().default(null),
+    category_id: z
+      .union([wireInt(), z.array(wireInt())])
+      .nullable()
+      .default(null),
+    item_status: z.string().nullable().default(null),
+    item_sku: z.string().nullable().default(null),
+    /** The page's TABLE spelling (1:1 ratio). */
+    images: shopeeItemImageSchema.nullable().default(null),
+    /** The page's own SAMPLE spelling. Both are read; neither is invented. */
+    image: shopeeItemImageSchema.nullable().default(null),
+    long_images: shopeeItemImageSchema.nullable().default(null),
+    description: z.string().nullable().default(null),
+    description_type: z.string().nullable().default(null),
+    description_info: shopeeDescriptionInfoSchema.nullable().default(null),
+    /** ⚠️ `attributes`, not `attribute_list`. */
+    attributes: z.array(shopeeAtributoDoItemSchema).nullable().default(null),
+    weight: z.string().nullable().default(null),
+    dimension: z
+      .object({
+        package_length: wireInt().nullable().default(null),
+        package_width: wireInt().nullable().default(null),
+        package_height: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    /** ⚠️ `brand_info`, not `brand`. */
+    brand_info: z
+      .object({
+        brand_id: wireInt().nullable().default(null),
+        original_brand_name: z.string().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    model_list: z.array(shopeeKitModelSchema).default([]),
+    /** ⚠️ `pre_order_info`, not `pre_order`. */
+    pre_order_info: z
+      .object({
+        is_pre_order: z.boolean().nullable().default(null),
+        days_to_ship: wireInt().nullable().default(null),
+      })
+      .passthrough()
+      .nullable()
+      .default(null),
+    /** ⚠️ `tier_variation_list`, and its `image` is an ARRAY here. */
+    tier_variation_list: z
+      .array(
+        z
+          .object({
+            name: z.string().nullable().default(null),
+            option_list: z
+              .array(
+                z
+                  .object({
+                    option: z.string().nullable().default(null),
+                    image: z
+                      .union([
+                        z
+                          .object({
+                            image_id: z.string().nullable().default(null),
+                            image_url: z.string().nullable().default(null),
+                          })
+                          .passthrough(),
+                        z.array(
+                          z
+                            .object({
+                              image_id: z.string().nullable().default(null),
+                              image_url: z.string().nullable().default(null),
+                            })
+                            .passthrough(),
+                        ),
+                      ])
+                      .nullable()
+                      .default(null),
+                  })
+                  .passthrough(),
+              )
+              .default([]),
+          })
+          .passthrough(),
+      )
+      .nullable()
+      .default(null),
+    /** Sample-only fields, absent from the page's parameter table. SECONDS. */
+    create_time: wireInt().nullable().default(null),
+    update_time: wireInt().nullable().default(null),
+    logistic_info: z.array(shopeeLogisticInfoSchema).nullable().default(null),
+  })
+  .passthrough();
+export type ShopeeKitItem = z.infer<typeof shopeeKitItemSchema>;
+
+/**
+ * The inner payload of `get_kit_item_info` — ONE kit.
+ *
+ * ⚠️ `product_info: null` parses. It is the app's "this kit is unreadable", and
+ * the app refuses the item for it — never a silent import of a kit as a simple
+ * product.
+ */
+export const shopeeKitItemInfoPayloadSchema = z
+  .object({ product_info: shopeeKitItemSchema.nullable().default(null) })
+  .passthrough();
+export type ShopeeKitItemInfo = z.infer<typeof shopeeKitItemInfoPayloadSchema>;
+
+/** `GET /api/v2/product/get_kit_item_info` — WRAPPED under `response`. */
+export const shopeeKitItemInfoSchema = wrappedOp(shopeeKitItemInfoPayloadSchema);
+export type ShopeeKitItemInfoResponse = z.infer<typeof shopeeKitItemInfoSchema>;

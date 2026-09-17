@@ -29,16 +29,21 @@
  * document down. See {@link makePagamentoIdShopee}, which spells out why the
  * two (and Mercado Livre's third spelling) each ended up where they are.
  *
- * ⚠️ There is no shared `sha256Hex` in `@delfrance/core` (checked). Mercado
- * Livre declares its own the same way, from `node:crypto`; a third copy would be
- * the one to promote, not the second.
+ * ⚠️ `sha256Hex` was PROMOTED in step 9 (#1517) and this file is now a CALLER,
+ * not a declarer: it lives in `@delfrance/data/admin`
+ * (`packages/data/src/admin/hash.ts`), which is Admin-SDK-only by declaration —
+ * `node:crypto` is server-only and `packages/core`'s root barrel reaches every
+ * browser bundle. The promoted helper spells `.update(input, 'utf8')`, which is
+ * what `createHash().update(string)` already defaults to, so every digest below
+ * is byte-identical to the one the private copy produced — `orderIds.test.ts`
+ * is unedited and green, and that is the proof. Mercado Livre still declares
+ * its own two copies; folding them in is a recorded follow-up, not this PR.
+ *
+ * ⚠️ The helper owns the ALGORITHM; this file owns the PREIMAGES. Nothing about
+ * the promotion makes the template literals below safe to reformat.
  */
-import { createHash } from 'node:crypto';
+import { sha256Hex } from '@delfrance/data/admin';
 import type { ShopeeOrderItem } from '@delfrance/integrations-shopee';
-
-function sha256Hex(input: string): string {
-  return createHash('sha256').update(input, 'utf8').digest('hex');
-}
 
 /**
  * Deterministic `pedidos/{id}` doc id for one Shopee order — the LEGACY

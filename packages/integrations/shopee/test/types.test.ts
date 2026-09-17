@@ -5,9 +5,11 @@ import { describe, expect, it } from 'vitest';
 import {
   SHOPEE_INVOICE_ISSUER,
   SHOPEE_LOGISTICS_STATUS,
+  SHOPEE_NESTING_AMBIGUOUS_KEYS,
   SHOPEE_PACKAGE_FULFILLMENT_STATUS,
   SHOPEE_SHOP_STATUS,
   SHOPEE_TRACKING_LOGISTICS_STATUS,
+  type ShopeeNestingAmbiguousKey,
   dataOp,
   flatOp,
   shopeeAppPushConfigSchema,
@@ -22,9 +24,13 @@ import {
   shopeeEscrowDetailSchema,
   shopeeEscrowListSchema,
   shopeeFaixaSchema,
+  shopeeItemBaseInfoSchema,
   shopeeItemLimitSchema,
+  shopeeItemListSchema,
+  shopeeKitItemInfoSchema,
   shopeeKitItemLimitSchema,
   shopeeLostPushSchema,
+  shopeeModelListSchema,
   shopeeOrderDetailSchema,
   shopeeOrderListSchema,
   shopeePackageDetailItemSchema,
@@ -1740,5 +1746,553 @@ describe('o detalhe do pacote (get_package_detail, passo 7)', () => {
     expect(linha.status_info_tag?.timestamp).toBe(1_662_209_873);
     expect(linha.invoice_pending?.status).toBe('pending');
     expect(linha.invoice_pending?.pending_reason).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     As quatro leituras de item (passo 9)                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * ⚠️ Ids de FIXTURE. Os dois que vêm dos samples das próprias páginas públicas
+ * da Shopee (`2500139861`, `2000458802`) são exemplos de documentação, não ids
+ * de loja nenhuma.
+ */
+const ITEM_ID = 2500139861;
+const MODEL_ID = 2000458802;
+
+/** O CÓDIGO-FONTE do módulo, para as asserções que só a fonte pode fazer. */
+const FONTE_TYPES = readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8');
+
+/** O trecho do passo 9 — do marcador de seção até o fim do arquivo. */
+const SECAO_PASSO_9 = FONTE_TYPES.slice(FONTE_TYPES.indexOf('The item reads (step 9)'));
+
+/**
+ * ⚠️ SÓ as linhas de CÓDIGO. As asserções de fonte abaixo falam de DECLARAÇÕES,
+ * e os docblocks deste módulo citam de propósito o que ele NÃO declara —
+ * `promotion_id`, o rename obsoleto `unit`, o `z.number()` que seria o defeito.
+ * Varrer a prosa junto transformaria cada explicação numa falha.
+ */
+function semComentarios(trecho: string): string {
+  return trecho
+    .split('\n')
+    .filter((linha) => !/^\s*(\/\/|\/\*|\*)/.test(linha))
+    .join('\n');
+}
+
+const CODIGO_PASSO_9 = semComentarios(SECAO_PASSO_9);
+
+function trechoEntre(de: string, ate: string): string {
+  const inicio = SECAO_PASSO_9.indexOf(de);
+  const fim = SECAO_PASSO_9.indexOf(ate);
+  expect(inicio).toBeGreaterThan(-1);
+  expect(fim).toBeGreaterThan(inicio);
+  return semComentarios(SECAO_PASSO_9.slice(inicio, fim));
+}
+
+function corpoItemList(payload: Record<string, unknown> = {}) {
+  return {
+    error: '',
+    request_id: 'req-item-list',
+    response: { item: [], total_count: 19, has_next_page: false, next_offset: 0, ...payload },
+  };
+}
+
+function linhaItemBase(extra: Record<string, unknown> = {}) {
+  return { item_id: ITEM_ID, item_name: 'Vestido longo', ...extra };
+}
+
+function corpoItemBase(payload: Record<string, unknown> = {}, linha: Record<string, unknown> = {}) {
+  return {
+    error: '',
+    request_id: 'req-item-base',
+    response: { item_list: [linhaItemBase(linha)], ...payload },
+  };
+}
+
+function corpoModelList(payload: Record<string, unknown> = {}) {
+  return { error: '', request_id: 'req-model', response: { model: [], ...payload } };
+}
+
+function corpoKit(produto: Record<string, unknown> | null = {}) {
+  return {
+    error: '',
+    request_id: 'req-kit',
+    response: {
+      product_info: produto === null ? null : { item_id: ITEM_ID, model_list: [], ...produto },
+    },
+  };
+}
+
+describe('as quatro leituras de item (passo 9)', () => {
+  it('1 — get_item_list desembrulha `response` e preserva `has_next_page` intacto', () => {
+    const paginado = shopeeItemListSchema.parse(
+      corpoItemList({
+        item: [{ item_id: ITEM_ID, item_status: 'NORMAL', update_time: 1_608_128_470 }],
+        has_next_page: true,
+        next_offset: 10,
+      }),
+    );
+    expect(paginado.response.has_next_page).toBe(true);
+    expect(paginado.response.next_offset).toBe(10);
+    expect(paginado.response.item[0]!.item_id).toBe(ITEM_ID);
+    // O envelope segue no objeto de fora, nunca dentro do payload.
+    expect('error' in paginado.response).toBe(false);
+  });
+
+  it('2 — ⛔ NEAR-MISS: `has_next_page: "false"` (STRING) derruba a página — nada coage o sinal de parada', () => {
+    // ⚠️ Coagida para `true` a varredura gira para sempre; coagida para `false`
+    // ela trunca o catálogo EM SILÊNCIO. Falhar é a única saída legível.
+    const lido = shopeeItemListSchema.safeParse(corpoItemList({ has_next_page: 'false' }));
+    expect(lido.success).toBe(false);
+    expect(lido.error?.issues.map((i) => i.path.join('.'))).toContain('response.has_next_page');
+
+    // ÂNCORA: o booleano de verdade passa — sem isto o teste passaria com um
+    // schema que recusasse tudo.
+    expect(shopeeItemListSchema.safeParse(corpoItemList({ has_next_page: false })).success).toBe(
+      true,
+    );
+  });
+
+  it('3 — uma linha SEM `tag` parseia: o campo é de 2024 e lojas antigas não o têm', () => {
+    const paginado = shopeeItemListSchema.parse(
+      corpoItemList({ item: [{ item_id: ITEM_ID, item_status: 'NORMAL' }] }),
+    );
+    expect(paginado.response.item[0]!.tag).toBeNull();
+  });
+
+  it('4 — `tag.kit: false` continua sendo `false`, nunca vira ausência', () => {
+    // ⚠️ `tag.kit` é o ÚNICO canal de descoberta de kit que existe. Dobrar
+    // `false` em `null` apagaria a diferença entre "não é kit" e "não sei".
+    const paginado = shopeeItemListSchema.parse(
+      corpoItemList({ item: [{ item_id: ITEM_ID, tag: { kit: false } }] }),
+    );
+    expect(paginado.response.item[0]!.tag?.kit).toBe(false);
+    expect(paginado.response.item[0]!.tag).not.toBeNull();
+  });
+
+  it('5 — `total_count` ausente vira `null` e não quebra a página', () => {
+    const paginado = shopeeItemListSchema.parse(
+      corpoItemList({ total_count: undefined, item: [{ item_id: ITEM_ID }] }),
+    );
+    expect(paginado.response.total_count).toBeNull();
+    expect(paginado.response.item).toHaveLength(1);
+  });
+
+  it('5b — a página REAL do sandbox parseia: `next` é uma STRING vazia e `next_offset` está AUSENTE', () => {
+    // ⚠️ MEDIDO 2026-09-16: com page_size 10 numa loja de 1 item a resposta
+    // trouxe `has_next_page: false`, `next: ""` e NENHUM `next_offset`; com
+    // page_size 1 (página CHEIA) trouxe `next_offset: 1`. `next` não está em
+    // página nenhuma da documentação. As duas chaves são declaradas para que
+    // nenhuma das duas formas derrube a varredura.
+    const paginado = shopeeItemListSchema.parse(
+      corpoItemList({
+        item: [
+          {
+            item_id: ITEM_ID,
+            item_status: 'NORMAL',
+            update_time: 1_608_128_470,
+            tag: { kit: false },
+          },
+        ],
+        total_count: 1,
+        has_next_page: false,
+        next: '',
+        next_offset: undefined,
+      }),
+    );
+    expect(paginado.response.next).toBe('');
+    expect(paginado.response.next_offset).toBeNull();
+    expect(paginado.response.has_next_page).toBe(false);
+
+    // A página CHEIA traz o `next_offset` numérico ao lado do `next` vazio.
+    const cheia = shopeeItemListSchema.parse(
+      corpoItemList({ has_next_page: false, next: '', next_offset: 1 }),
+    );
+    expect(cheia.response.next_offset).toBe(1);
+  });
+
+  it('5c — `deboost` chega como a STRING "FALSE" no sandbox e a página NÃO cai; o booleano documentado também passa', () => {
+    // ⚠️ MEDIDO 2026-09-16: um `z.boolean()` aqui recusou a página inteira
+    // (`ShopeeSchemaError` em `response.item_list[].deboost`) — e com ela toda
+    // importação. Ninguém lê o campo; as duas grafias sobrevivem verbatim.
+    const texto = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, { deboost: 'FALSE' }));
+    expect(texto.response.item_list[0]!.deboost).toBe('FALSE');
+    const booleano = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, { deboost: true }));
+    expect(booleano.response.item_list[0]!.deboost).toBe(true);
+    const ausente = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, {}));
+    expect(ausente.response.item_list[0]!.deboost).toBeNull();
+  });
+
+  it('5d — UMA linha ruim vira o sentinela `null` e NÃO derruba as outras 49 do lote', () => {
+    // ⚠️ O precedente é `shopeePackageDetailPayloadSchema`, a outra op em LOTE
+    // deste mesmo arquivo, e a condição que ele exige está satisfeita aqui: quem
+    // chama reconcilia por `item_id` e já tem um veredito por item para um id sem
+    // linha. Sem isso, uma listagem cujo `weight`/`gtin_code`/bloco `tax_info`
+    // discorda de um tipo declarado recusa o CORPO inteiro, o dreno relança, a
+    // escada queima as três tentativas e o job morre com os itens saudáveis do
+    // lote nunca importados — e todo job seguinte volta a esbarrar nela.
+    const lido = shopeeItemBaseInfoSchema.parse({
+      error: '',
+      request_id: 'req-item-base',
+      response: {
+        item_list: [
+          linhaItemBase({ item_id: 2_500_139_861 }),
+          // `weight` é `z.string()`; um número aqui é a discordância por LINHA.
+          { ...linhaItemBase({ item_id: 2_500_139_862 }), weight: 10.02 },
+        ],
+      },
+    });
+
+    expect(lido.response.item_list).toHaveLength(2);
+    expect(lido.response.item_list[0]!.item_id).toBe(2_500_139_861);
+    expect(lido.response.item_list[1]).toBeNull();
+  });
+
+  it('5e — ⛔ NEAR-MISS do sentinela: ele é por ELEMENTO, nunca por campo, e a LISTA segue estrita', () => {
+    // A linha ruim some INTEIRA. Ela NÃO volta meio-lida com `weight: null`, que
+    // é o que um `.catch` por CAMPO faria — e aí o `item_id` sobreviveria e o
+    // dreno importaria uma listagem com um peso fabricado.
+    const so = shopeeItemBaseInfoSchema.parse({
+      error: '',
+      response: { item_list: [{ ...linhaItemBase({ item_id: 2_500_139_861 }), weight: 10.02 }] },
+    });
+    expect(so.response.item_list).toEqual([null]);
+
+    // E a tolerância para no elemento: `item_list` que não é lista continua
+    // recusando o corpo, porque aí não há linha nenhuma a conter.
+    expect(() =>
+      shopeeItemBaseInfoSchema.parse({ error: '', response: { item_list: 'nao-e-lista' } }),
+    ).toThrow();
+  });
+
+  it('6 — get_item_base_info lê `tax_info` DENTRO do item (o sample da página)', () => {
+    const lido = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { tax_info: { ncm: '61091000', origin: '0' } }),
+    );
+    expect(lido.response.item_list[0]!.tax_info?.ncm).toBe('61091000');
+    expect(lido.response.item_list[0]!.tax_info?.origin).toBe('0');
+  });
+
+  it('7 — get_item_base_info lê `tax_info` IRMÃO de `item_list` (a tabela da página)', () => {
+    const lido = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({ tax_info: { ncm: '61091000', cest: '00' } }),
+    );
+    expect(lido.response.tax_info?.ncm).toBe('61091000');
+    // A posição do item continua existindo, vazia — as duas são declaradas.
+    expect(lido.response.item_list[0]!.tax_info).toBeNull();
+  });
+
+  it('8 — ⛔ NEAR-MISS: um `tax_info` em NENHUMA das duas posições vira `null`, não erro', () => {
+    // ⚠️ Declarar o campo em UM lugar só é a falha silenciosa: sob a leitura
+    // errada, `tax_info` chega `null` para TODO item e o bloco fiscal some sem
+    // erro nenhum em lugar nenhum.
+    const lido = shopeeItemBaseInfoSchema.parse(corpoItemBase());
+    expect(lido.response.tax_info).toBeNull();
+    expect(lido.response.item_list[0]!.tax_info).toBeNull();
+  });
+
+  it('9 — a mesma tolerância vale para os CINCO campos ambíguos, nas duas posições', () => {
+    const valores: Record<ShopeeNestingAmbiguousKey, unknown> = {
+      tax_info: { ncm: '61091000' },
+      description_type: 'extended',
+      description_info: {
+        extended_description: { field_list: [{ field_type: 'text', text: 'a' }] },
+      },
+      stock_info_v2: { seller_stock: [{ location_id: 'BR', stock: 7 }] },
+      complaint_policy: { warranty_time: 'ONE_YEAR' },
+    };
+
+    for (const chave of SHOPEE_NESTING_AMBIGUOUS_KEYS) {
+      const noItem = shopeeItemBaseInfoSchema.parse(
+        corpoItemBase({}, { [chave]: valores[chave] }),
+      ).response;
+      expect(noItem.item_list[0]![chave]).not.toBeNull();
+      expect(noItem[chave]).toBeNull();
+
+      const naRaiz = shopeeItemBaseInfoSchema.parse(
+        corpoItemBase({ [chave]: valores[chave] }),
+      ).response;
+      expect(naRaiz[chave]).not.toBeNull();
+      expect(naRaiz.item_list[0]![chave]).toBeNull();
+    }
+    expect(SHOPEE_NESTING_AMBIGUOUS_KEYS).toHaveLength(5);
+  });
+
+  it('10 — `weight` chega como STRING: `"10.02"` não é coagido a número', () => {
+    // ⚠️ Do lado da escrita a Shopee quer um float. `wireNumber()` aqui teria
+    // SUCESSO e escondido a assimetria de quem for publicar.
+    const lido = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, { weight: '10.02' }));
+    expect(lido.response.item_list[0]!.weight).toBe('10.02');
+    expect(typeof lido.response.item_list[0]!.weight).toBe('string');
+  });
+
+  it('11 — `dimension` são inteiros em CM e um ausente vira `null`, nunca 0', () => {
+    const lido = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { dimension: { package_length: 11, package_width: 22 } }),
+    );
+    const dim = lido.response.item_list[0]!.dimension!;
+    expect(dim.package_length).toBe(11);
+    expect(dim.package_width).toBe(22);
+    // ⚠️ Um pacote de 0 cm de altura não é a mesma afirmação que uma altura
+    // nunca preenchida.
+    expect(dim.package_height).toBeNull();
+  });
+
+  it('12 — `ncm: "00"` e `gtin_code: "00"` sobrevivem como strings de DOIS zeros', () => {
+    const lido = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { gtin_code: '00', tax_info: { ncm: '00', cest: '00' } }),
+    );
+    const linha = lido.response.item_list[0]!;
+    expect(linha.gtin_code).toBe('00');
+    expect(linha.tax_info?.ncm).toBe('00');
+    expect(linha.tax_info?.cest).toBe('00');
+    // ⛔ NEAR-MISS: `'0'` é outra string, e não vira a mesma coisa.
+    const zeroSolto = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, { gtin_code: '0' }));
+    expect(zeroSolto.response.item_list[0]!.gtin_code).toBe('0');
+  });
+
+  it('13 — ⛔ NEAR-MISS: nenhum campo de `tax_info` é numérico — `origin: "0"` não vira 0', () => {
+    // ⚠️ `origin`, `operation_type`, `icms_cst` e `csosn` carregam ZEROS À
+    // ESQUERDA que uma leitura numérica destruiria em silêncio.
+    const lido = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { tax_info: { origin: '0', csosn: '0102', icms_cst: '000', pis: '1.65' } }),
+    );
+    const tax = lido.response.item_list[0]!.tax_info!;
+    expect(tax.origin).toBe('0');
+    expect(tax.origin).not.toBe(0);
+    expect(tax.csosn).toBe('0102');
+    expect(tax.icms_cst).toBe('000');
+    expect(tax.pis).toBe('1.65');
+    for (const valor of [tax.origin, tax.csosn, tax.icms_cst, tax.pis]) {
+      expect(typeof valor).toBe('string');
+    }
+  });
+
+  it('14 — `price_info` ausente (item COM models) parseia como `null`', () => {
+    const lido = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, { has_model: true }));
+    expect(lido.response.item_list[0]!.has_model).toBe(true);
+    expect(lido.response.item_list[0]!.price_info).toBeNull();
+  });
+
+  it('15 — `wholesales` (PLURAL) é o nome lido, e o campo interno é `unit_price`', () => {
+    // ⚠️ Só o CONTÊINER muda entre leitura e escrita (`wholesales` → `wholesale`).
+    // Renomear o campo interno para `unit` corromperia o valor.
+    const lido = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { wholesales: [{ min_count: 2, max_count: 5, unit_price: 19.9 }] }),
+    );
+    const faixa = lido.response.item_list[0]!.wholesales![0]!;
+    expect(faixa.unit_price).toBe(19.9);
+    expect(faixa.min_count).toBe(2);
+    expect(faixa.max_count).toBe(5);
+    // ⚠️ `\b` antes de `unit:`, senão `measure_unit:` (do bloco fiscal) casaria.
+    expect(CODIGO_PASSO_9).toMatch(/unit_price:/);
+    expect(CODIGO_PASSO_9).not.toMatch(/\bunit:/);
+  });
+
+  it('16 — `item_status: "SELLER_DELETE"` parseia: o enum estrito é do lado do REQUEST', () => {
+    const lido = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { item_status: 'SELLER_DELETE' }),
+    );
+    expect(lido.response.item_list[0]!.item_status).toBe('SELLER_DELETE');
+  });
+
+  it('17 — um `item_status` que a Shopee inventar amanhã NÃO derruba a página', () => {
+    // ⚠️ Esse conjunto já andou uma vez (quatro valores → seis). Um enum estrito
+    // na RESPOSTA derrubaria a página inteira — e com ela a varredura inteira.
+    const paginado = shopeeItemListSchema.parse(
+      corpoItemList({ item: [{ item_id: ITEM_ID, item_status: 'ALGO_QUE_NAO_EXISTE_HOJE' }] }),
+    );
+    expect(paginado.response.item[0]!.item_status).toBe('ALGO_QUE_NAO_EXISTE_HOJE');
+  });
+
+  it('18 — get_model_list com as DUAS árvores presentes', () => {
+    const lido = shopeeModelListSchema.parse(
+      corpoModelList({
+        tier_variation: [{ name: 'Cor', option_list: [{ option: 'Azul' }] }],
+        standardise_tier_variation: [
+          { variation_id: 100_043, variation_name: 'Cor', variation_option_list: [] },
+        ],
+        model: [{ model_id: MODEL_ID, tier_index: [0] }],
+      }),
+    );
+    expect(lido.response.tier_variation![0]!.option_list[0]!.option).toBe('Azul');
+    expect(lido.response.standardise_tier_variation![0]!.variation_id).toBe(100_043);
+    expect(lido.response.model[0]!.model_id).toBe(MODEL_ID);
+  });
+
+  it('19 — get_model_list com SÓ `tier_variation`', () => {
+    const lido = shopeeModelListSchema.parse(
+      corpoModelList({ tier_variation: [{ name: 'Tamanho', option_list: [{ option: 'M' }] }] }),
+    );
+    expect(lido.response.tier_variation).toHaveLength(1);
+    expect(lido.response.standardise_tier_variation).toBeNull();
+  });
+
+  it('20 — get_model_list com SÓ `standardise_tier_variation`', () => {
+    const lido = shopeeModelListSchema.parse(
+      corpoModelList({
+        standardise_tier_variation: [
+          { variation_id: 0, variation_name: 'Cor', variation_option_list: [] },
+        ],
+      }),
+    );
+    expect(lido.response.standardise_tier_variation).toHaveLength(1);
+    expect(lido.response.tier_variation).toBeNull();
+  });
+
+  it('21 — get_model_list com NENHUMA das duas árvores: `model[]` ainda parseia', () => {
+    // ⚠️ O legado desreferenciava `tier_variation!` enquanto o próprio
+    // exportador dele chamava essa árvore de depreciada. Toda combinação tem de
+    // atravessar: a identidade da opção cai de volta no NOME.
+    const lido = shopeeModelListSchema.parse(
+      corpoModelList({ model: [{ model_id: MODEL_ID, model_sku: 'SKU-AZUL-M' }] }),
+    );
+    expect(lido.response.tier_variation).toBeNull();
+    expect(lido.response.standardise_tier_variation).toBeNull();
+    expect(lido.response.model[0]!.model_sku).toBe('SKU-AZUL-M');
+  });
+
+  it('22 — `variation_id: 0` e `variation_option_id: 0` sobrevivem como ZERO', () => {
+    // ⚠️ `0` é a SENTINELA documentada de opção CUSTOM — um valor, não uma
+    // ausência — e para uma loja BR fora de Moda todo id aqui é 0.
+    const lido = shopeeModelListSchema.parse(
+      corpoModelList({
+        standardise_tier_variation: [
+          {
+            variation_id: 0,
+            variation_name: 'Cor',
+            variation_option_list: [{ variation_option_id: 0, variation_option_name: 'Azul' }],
+          },
+        ],
+      }),
+    );
+    const arvore = lido.response.standardise_tier_variation![0]!;
+    expect(arvore.variation_id).toBe(0);
+    expect(arvore.variation_id).not.toBeNull();
+    expect(arvore.variation_option_list[0]!.variation_option_id).toBe(0);
+  });
+
+  it('23 — `promotion_id` é lido como número e o tipo o expõe — nenhum consumidor o grava', () => {
+    // ⚠️ É um uint64 desde 2026-07-31. Acima de 2^53 o valor já chega corrompido
+    // do `JSON.parse`, e `.int()` aceitaria o resultado. Por isso ele é LIDO e
+    // descartado, nunca armazenado.
+    const lido = shopeeModelListSchema.parse(
+      corpoModelList({ model: [{ model_id: MODEL_ID, promotion_id: '104993304719361' }] }),
+    );
+    expect(lido.response.model[0]!.promotion_id).toBe(104_993_304_719_361);
+  });
+
+  it('24 — `shopee_stock[].stock` como STRING e como INT dão o mesmo número', () => {
+    // ⚠️ A Shopee tipa esse campo como int32 numa página e como string na outra.
+    // Uma tolerância, duas páginas.
+    const comoString = shopeeModelListSchema.parse(
+      corpoModelList({
+        model: [
+          {
+            model_id: MODEL_ID,
+            stock_info_v2: { shopee_stock: [{ location_id: 'BR', stock: '7' }] },
+          },
+        ],
+      }),
+    ).response.model[0]!.stock_info_v2!.shopee_stock![0]!.stock;
+
+    const comoInt = shopeeItemBaseInfoSchema.parse(
+      corpoItemBase({}, { stock_info_v2: { shopee_stock: [{ location_id: 'BR', stock: 7 }] } }),
+    ).response.item_list[0]!.stock_info_v2!.shopee_stock![0]!.stock;
+
+    expect(comoString).toBe(7);
+    expect(comoString).toBe(comoInt);
+  });
+
+  it('25 — get_kit_item_info: `category_id` ESCALAR e `category_id` ARRAY, ambos parseiam', () => {
+    // ⚠️ A página declara `int64[]` e o sample dela devolve um escalar.
+    expect(
+      shopeeKitItemInfoSchema.parse(corpoKit({ category_id: 107_290 })).response.product_info
+        ?.category_id,
+    ).toBe(107_290);
+    expect(
+      shopeeKitItemInfoSchema.parse(corpoKit({ category_id: [107_290] })).response.product_info
+        ?.category_id,
+    ).toEqual([107_290]);
+  });
+
+  it('26 — get_kit_item_info: `image` (sample) e `images` (tabela) coexistem', () => {
+    const lido = shopeeKitItemInfoSchema.parse(
+      corpoKit({
+        images: { image_id_list: ['a'], image_url_list: ['https://cf.shopee.com.br/file/a'] },
+        image: { image_id_list: ['b'], image_url_list: ['https://cf.shopee.com.br/file/b'] },
+      }),
+    );
+    expect(lido.response.product_info?.images?.image_id_list).toEqual(['a']);
+    expect(lido.response.product_info?.image?.image_id_list).toEqual(['b']);
+  });
+
+  it('27 — get_kit_item_info: `model_sku: ""` (STRING) parseia apesar do int64 declarado', () => {
+    // ⚠️ Um sku é identidade: ler `"001"` como o número 1 dobraria dois skus
+    // diferentes num só.
+    const lido = shopeeKitItemInfoSchema.parse(
+      corpoKit({ model_list: [{ model_id: MODEL_ID, model_sku: '' }] }),
+    );
+    expect(lido.response.product_info?.model_list[0]!.model_sku).toBe('');
+  });
+
+  it('28 — get_kit_item_info: `tier_variation_list[].option_list[].image` OBJETO ou ARRAY', () => {
+    const comoObjeto = shopeeKitItemInfoSchema.parse(
+      corpoKit({
+        tier_variation_list: [
+          { name: 'Cor', option_list: [{ option: 'Azul', image: { image_id: 'a' } }] },
+        ],
+      }),
+    );
+    const comoArray = shopeeKitItemInfoSchema.parse(
+      corpoKit({
+        tier_variation_list: [
+          { name: 'Cor', option_list: [{ option: 'Azul', image: [{ image_id: 'a' }] }] },
+        ],
+      }),
+    );
+    expect(
+      comoObjeto.response.product_info?.tier_variation_list![0]!.option_list[0]!.image,
+    ).toEqual({ image_id: 'a', image_url: null });
+    expect(comoArray.response.product_info?.tier_variation_list![0]!.option_list[0]!.image).toEqual(
+      [{ image_id: 'a', image_url: null }],
+    );
+  });
+
+  it('29 — ⛔ NEAR-MISS: `product_info` ausente vira `null` — quem recusa o kit é a app, não a página', () => {
+    expect(shopeeKitItemInfoSchema.parse(corpoKit(null)).response.product_info).toBeNull();
+    expect(
+      shopeeKitItemInfoSchema.parse({ error: '', response: {} }).response.product_info,
+    ).toBeNull();
+  });
+
+  it('30 — nenhum schema novo do passo 9 declara um `z.number()` CRU', () => {
+    // ⚠️ O mesmo invariante que `integration-response-numbers-tolerant.test.js`
+    // guarda no repo, aplicado ao trecho deste passo: um serializador que cita
+    // UM campo não pode custar o recurso inteiro (#1087).
+    const cruas = CODIGO_PASSO_9.split('\n').filter((linha) => /z\.number\(\)/.test(linha));
+    expect(cruas).toEqual([]);
+    // ÂNCORA: o trecho realmente foi encontrado e tem números nele.
+    expect(CODIGO_PASSO_9.length).toBeGreaterThan(1000);
+    expect(CODIGO_PASSO_9).toContain('wireInt()');
+    expect(CODIGO_PASSO_9).toContain('wireNumber()');
+  });
+
+  it('53 — ⛔ NEAR-MISS: nenhum schema novo declara `promotion_id` em get_item_base_info', () => {
+    // ⚠️ Removido dessa página em 2026-04-03; sobrevive só no sample obsoleto
+    // dela. Declará-lo convidaria a uma leitura de um campo que não chega mais.
+    const baseInfo = trechoEntre('get_item_base_info ---', 'get_model_list ---');
+    expect(baseInfo).not.toContain('promotion_id');
+
+    // ÂNCORA, e é ela que impede o teste de passar lendo o trecho errado: o
+    // `get_model_list` DECLARA o campo, porque lá ele existe.
+    expect(trechoEntre('get_model_list ---', 'get_kit_item_info ---')).toContain('promotion_id');
+
+    // E um corpo que ainda o traga atravessa pelo passthrough, sem ser tipado.
+    const lido = shopeeItemBaseInfoSchema.parse(corpoItemBase({}, { promotion_id: 123 }));
+    expect((lido.response.item_list[0] as unknown as Record<string, unknown>).promotion_id).toBe(
+      123,
+    );
   });
 });

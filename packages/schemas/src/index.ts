@@ -492,6 +492,30 @@ export {
 } from './backfillPedidosShopee';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the checkpoint/progress
+  // doc for the Shopee "Importar todos os anúncios" mass-import job
+  // (master-plan step 9, #1517), twin of importacaoMercadoLivre above. Bare
+  // schema+meta (perms 0n), not a DomainSchema — see the NOTE at the bottom of
+  // importacaoShopee.ts. ⚠️ Every stamp here is MILLISECONDS; the only SECONDS
+  // are the two `…S` options, which are the wire's own unit.
+  importacaoShopeeStatusSchema,
+  IMPORTACAO_SHOPEE_STATUS,
+  shopeeImportStatusSchema,
+  SHOPEE_IMPORT_STATUS,
+  SHOPEE_IMPORT_STATUS_PADRAO,
+  OPCOES_IMPORTACAO_SHOPEE_PADRAO,
+  importacaoShopeeOptionsSchema,
+  shopeeImportacaoFalhaSchema,
+  importacaoShopeeSchema,
+  importacaoShopeeMeta,
+  type ImportacaoShopeeStatus,
+  type ShopeeImportStatus,
+  type ImportacaoShopeeOptions,
+  type ShopeeImportacaoFalha,
+  type ImportacaoShopee,
+} from './importacaoShopee';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
   // cursor doc for the WEEKLY Shopee settlement sweep (master-plan step 6,
   // #1514), which pages `get_escrow_list` and stamps `pagamento.liquidacao`.

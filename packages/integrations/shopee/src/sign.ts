@@ -89,6 +89,26 @@ export function shopeeTimestamp(nowMs: number): number {
   return Math.floor(nowMs / 1000);
 }
 
+/**
+ * A value that may travel in the signed query.
+ *
+ * ⚠️ The ARRAY member exists for exactly one documented parameter today:
+ * `item_status` on `v2.product.get_item_list`, whose page carries the only
+ * explicit sentence about repetition in the corpus — "If you want to search
+ * multiple status, please upload the url like this:
+ * item_status=NORMAL&item_status=BANNED". Every other `*_list` parameter in this
+ * package is a COMMA-JOINED scalar (`category_id_list`, `order_sn_list`,
+ * `package_number_list`), and none of them may be migrated to this shape on a
+ * guess: `get_item_base_info`'s own page samples THREE encodings for
+ * `item_id_list` and its two siblings sample a fourth.
+ *
+ * ⚠️ The signature is UNAFFECTED: `baseStringFor` reads `partnerId`, `path` and
+ * `timestamp` (plus the token and the id for a shop/merchant call) and never
+ * `extra`. A test pins that the same call with and without a repeated key
+ * produces the SAME `sign`, for all three classes.
+ */
+export type ShopeeQueryValue = string | number | readonly string[] | readonly number[] | undefined;
+
 export interface SignedQueryParams {
   readonly partnerId: number;
   readonly partnerKey: string;
@@ -97,7 +117,7 @@ export interface SignedQueryParams {
   /** Injected clock, in milliseconds. */
   readonly nowMs: number;
   /** Operation parameters that belong in the query. `undefined` values are dropped. */
-  readonly extra?: Readonly<Record<string, string | number | undefined>>;
+  readonly extra?: Readonly<Record<string, ShopeeQueryValue>>;
 }
 
 function baseStringFor(p: SignedQueryParams, timestamp: number): string {
@@ -148,7 +168,19 @@ export function signedQuery(p: SignedQueryParams): URLSearchParams {
   }
 
   for (const [key, value] of Object.entries(p.extra ?? {})) {
-    if (value !== undefined) qs.set(key, String(value));
+    if (value === undefined) continue;
+    if (Array.isArray(value)) {
+      // ⚠️ APPEND, one entry per element, in the given order — `set` would keep
+      // only the last one, which is the whole reason the array member exists.
+      // An EMPTY array emits NOTHING, exactly like `undefined`: this module is a
+      // query builder and owns no refusal vocabulary. The refusal for a
+      // required-but-empty list lives in `api.ts`'s bound guard
+      // (`ShopeeConfigError`, before the wire), where the parameter's
+      // REQUIRED-ness is known.
+      for (const v of value as readonly (string | number)[]) qs.append(key, String(v));
+      continue;
+    }
+    qs.set(key, String(value));
   }
   return qs;
 }
