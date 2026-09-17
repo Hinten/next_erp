@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Thirty-five exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -335,6 +335,30 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Twenty-nine exports:
   ⚠️ **TTL is not available on this collection** (#651): a Firestore TTL policy
   needs a native `timestamp`-typed field, and `historicoModificacaoSchema.timestamp`
   is an **int** (`microsSinceEpoch`). Retention needs a sweep, not a policy.
+- **`onClienteChanged`** (`onDocumentWrittenWithAuthContext`, built from
+  `makeModificationHistoryTrigger`) / **`onEnderecoChanged`** (same factory) —
+  the cliente rollout of the same family (#650), writing
+  `clientes/{id}/historicoDeModificacoes` with the endereço subcollection's rows
+  tagged `subcolecao: 'enderecos'`. Same shape as the pedido pair: `clientes`
+  declares a cascade over `enderecos` but deliberately has NO delete trigger
+  enforcing it (an endereço is read LIVE by ref from the NF-e orchestrator and
+  the pedido printer, so cascading would break reprinting for every historical
+  pedido of that customer) — nothing sweeps a cliente's subtree, so a cliente
+  DELETE writes a tombstone (`onClienteChanged` uses the factory's default,
+  unlike produto's early return) and `requireParentExists` stays **OFF** on
+  `onEnderecoChanged` for the same reason `onPagamentoChanged`'s does.
+- **`onOperacaoChanged`** (`onDocumentWrittenWithAuthContext`, hand-rolled like
+  `onPedidoChanged`/`onProdutoChanged`) / **`onRegraImpostoChanged`** (built
+  from `makeModificationHistoryTrigger`) — the operação rollout of the same
+  family (#650), writing `operacao/{id}/historicoDeModificacoes` with the
+  `regras` subcollection's rows tagged `subcolecao: 'regras'`. Unlike
+  clientes/pedidos, `onOperacaoDeleted` DOES sweep an operação's whole subtree
+  (`deleteDocumentSubtree`'s `listCollections()` discovery, no code change
+  needed for the new subcollection), so this pair follows produto's convention
+  instead: `onOperacaoChanged` returns early on delete rather than writing a
+  tombstone, and `onRegraImpostoChanged` sets `requireParentExists: true` to
+  guard the same cascade race `onProdutoExtraDataChanged`/`onProdutoImpostoChanged`
+  guard against.
 - ⚠️ **The whole modification-history family uses
   `onDocumentWrittenWithAuthContext`**, including the three produto triggers,
   which were plain `onDocumentWritten` before. `resolveUsuarioOuterRef`
