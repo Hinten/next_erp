@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { SHOPEE_ERROR_KIND, ShopeeApiError, ShopeeError } from '@delfrance/integrations-shopee';
@@ -22,6 +22,7 @@ import {
   type ProblemaDeBloqueio,
   type ProblemaPublicacao,
 } from './errosPublicacao';
+import { MOTIVO_TAX_INFO_OMITIDO } from './taxInfoPublicacao';
 
 const PRODUTO_ID = 'prod-fixture-1';
 const ITEM_ID = 2500139861;
@@ -423,5 +424,97 @@ describe('constantesAnuncio', () => {
     expect(constantes.FRASE_TAX_INFO_INCOMPLETO).toBe(
       'all BR tax field should be empty or be filled at same time',
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  O7 — todo membro do vocabulário tem um PRODUTOR                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A lição do `kit-nao-importado` mecanizada: um motivo declarado que ninguém
+ * produz é uma promessa que a UI renderiza e o código nunca cumpre — e ele
+ * compila, passa em todo teste de pareamento chave↔slug e só aparece quando um
+ * operador pergunta por que aquele veredicto nunca sai.
+ *
+ * O universo lido é TEXTO CRU: todo `*.ts` não-teste desta pasta mais os três
+ * roteiros da etapa 11. Texto cru porque o que se quer pegar é um membro sem
+ * nenhuma menção — um `import` não o mostraria, e uma checagem de tipo menos
+ * ainda.
+ */
+const RAIZ_ANUNCIOS = new URL('./', import.meta.url);
+
+const ROTAS_DA_ETAPA_11 = [
+  '../../../app/api/marketplace/shopee/publicar/route.ts',
+  '../../../app/api/marketplace/shopee/anuncio-status/route.ts',
+  '../../../app/api/marketplace/shopee/reverificar-anuncio/route.ts',
+] as const;
+
+function fontesQuePodemProduzir(excluir: readonly string[]): Map<string, string> {
+  const fontes = new Map<string, string>();
+  for (const nome of readdirSync(RAIZ_ANUNCIOS)) {
+    if (!nome.endsWith('.ts') || nome.endsWith('.test.ts')) continue;
+    if (excluir.includes(nome)) continue;
+    fontes.set(nome, readFileSync(new URL(nome, RAIZ_ANUNCIOS), 'utf8'));
+  }
+  for (const rel of ROTAS_DA_ETAPA_11) {
+    fontes.set(rel, readFileSync(new URL(rel, RAIZ_ANUNCIOS), 'utf8'));
+  }
+  return fontes;
+}
+
+describe('O7 — todo membro do vocabulário tem um produtor fora de errosPublicacao.ts', () => {
+  it('os 22 motivos de bloqueio: cada um é escrito por ALGUM outro arquivo', () => {
+    // O arquivo que DECLARA está fora do universo, senão a asserção seria
+    // vácua: a própria união de tipos soletra os 22 slugs.
+    const fontes = fontesQuePodemProduzir(['errosPublicacao.ts']);
+    // Uma âncora: se a leitura da pasta falhar, o teste passa sozinho.
+    expect(fontes.size).toBeGreaterThan(10);
+    expect(fontes.has('../../../app/api/marketplace/shopee/publicar/route.ts')).toBe(true);
+
+    const orfaos: string[] = [];
+    for (const [chave, slug] of Object.entries(MOTIVO_PUBLICACAO_BLOQUEADA)) {
+      const grafias = [`'${slug}'`, `"${slug}"`, `MOTIVO_PUBLICACAO_BLOQUEADA.${chave}`];
+      const temProdutor = [...fontes.values()].some((fonte) =>
+        grafias.some((g) => fonte.includes(g)),
+      );
+      if (!temProdutor) orfaos.push(`${chave} (${slug})`);
+    }
+
+    expect(orfaos, 'motivos declarados que NINGUÉM produz').toEqual([]);
+    expect(Object.keys(MOTIVO_PUBLICACAO_BLOQUEADA)).toHaveLength(22);
+  });
+
+  it('os 11 motivos de tax_info omitido: cada um é escrito pela CONSTANTE companheira', () => {
+    // ⚠️ Assimetria deliberada com o teste acima, e ela é o que o mantém
+    // afiado: aqui o arquivo que declara (`taxInfoPublicacao.ts`) é também o
+    // produtor de nove dos onze, então excluí-lo tornaria o teste impossível de
+    // passar. Em troca, a grafia aceita é SÓ a da constante companheira — e ela
+    // não aparece na declaração, que soletra slugs crus. Um membro acrescentado
+    // à união sem um `MOTIVO_TAX_INFO_OMITIDO.<chave>` em lugar nenhum falha
+    // aqui, que é exatamente a propriedade que se quer.
+    const fontes = fontesQuePodemProduzir([]);
+    expect(fontes.has('taxInfoPublicacao.ts')).toBe(true);
+    expect(fontes.has('lerImpostoDoProduto.ts')).toBe(true);
+
+    const orfaos: string[] = [];
+    for (const chave of Object.keys(MOTIVO_TAX_INFO_OMITIDO)) {
+      const grafia = `MOTIVO_TAX_INFO_OMITIDO.${chave}`;
+      if (![...fontes.values()].some((fonte) => fonte.includes(grafia))) orfaos.push(chave);
+    }
+
+    expect(orfaos, 'motivos de imposto declarados que NINGUÉM produz').toEqual([]);
+    expect(Object.keys(MOTIVO_TAX_INFO_OMITIDO)).toHaveLength(11);
+  });
+
+  it('`recusado-incompleto` é produzido pelo publicador, e `sem-operacao` pelo leitor', () => {
+    // Os dois membros que NÃO nascem no mapeador puro. Nomeá-los aqui é o que
+    // impede o teste acima de continuar verde depois de a nova-tentativa única
+    // do C13 ou a cascata de operação serem removidas.
+    const publicador = readFileSync(new URL('./publicarAnuncio.ts', RAIZ_ANUNCIOS), 'utf8');
+    const leitor = readFileSync(new URL('./lerImpostoDoProduto.ts', RAIZ_ANUNCIOS), 'utf8');
+
+    expect(publicador).toContain(`MOTIVO_TAX_INFO_OMITIDO.${'recusadoIncompleto'}`);
+    expect(leitor).toContain(`MOTIVO_TAX_INFO_OMITIDO.${'semOperacao'}`);
   });
 });

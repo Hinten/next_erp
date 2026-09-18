@@ -162,7 +162,14 @@ const CODEBASES = {
     deployConfig: 'firebase.shopee.deploy.json',
     buildScript: 'apps/shopee/functions/build.mjs',
     deployDoc: 'apps/shopee/functions/DEPLOY.md',
-    inlined: { FUNCTIONS_REGION: null },
+    // FIREBASE_DATABASE_ID arrived with step 11 (#1519), which gave this
+    // codebase its FIRST Firestore trigger (`onProdutoShopeeLinkChanged`): an
+    // `onDocument*` whose `database:` resolves to `undefined` binds to the
+    // non-existent `(default)` and never fires. It is listed here because the
+    // `lists EVERY build.mjs default` test makes a new `define` that this table
+    // omits an error — the table would otherwise print the old two rows on
+    // every deploy, green.
+    inlined: { FUNCTIONS_REGION: null, FIREBASE_DATABASE_ID: 'default' },
     tasksRegionVar: 'FUNCTIONS_REGION',
     backendVar: 'SHOPEE_TASKS_REGION',
     backendManifest: 'apps/shopee/apphosting.yaml',

@@ -1,4 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { afterAll, describe, expect, it } from 'vitest';
+
+import { produtoShopeeLinkCollection } from '@delfrance/data/admin/collections';
 
 import { LOST_PUSH_RETENTION_HOURS } from '../../lib/shopee/notificacoes/lostPushSweep';
 import { SHOPEE_NOTIFICATION_QUEUE } from '../../lib/shopee/notificacoes/notificacao';
@@ -65,6 +70,7 @@ const {
   sweepShopeeEscrowSettlement,
   sweepShopeeLostPushes,
   sweepShopeeStuckReservations,
+  onProdutoShopeeLinkChanged,
 } = modulo;
 
 afterAll(() => {
@@ -111,12 +117,42 @@ const AGENDAMENTOS = {
  */
 const FILAS = { processShopeeNotification, processShopeeMassImport } as const;
 
+/**
+ * Every FIRESTORE-TRIGGER export of this codebase — the third sibling of
+ * {@link AGENDAMENTOS} and {@link FILAS}, and it exists for the same reason.
+ *
+ * ⚠️ Both exhaustiveness tests below filter on `scheduleTrigger` /
+ * `taskQueueTrigger`. A gen2 Firestore trigger carries **`eventTrigger`**, so
+ * it is enumerated by NEITHER — before this map an `onDocument*` export had its
+ * region, its `database`, its `secrets` and its `retry` read by NOTHING. Step
+ * 11 (#1519) added the codebase's first one, which is the third batch to land
+ * in a file whose framing once said "the two triggers".
+ *
+ * The failure this guards is the silent one, and it is the single most
+ * expensive typo in the repo: an `onDocument*` that omits `database` — or
+ * spells it `(default)` — deploys fine, binds to a database that does not exist
+ * and NEVER FIRES, with nothing anywhere to say so.
+ */
+const GATILHOS = { onProdutoShopeeLinkChanged } as const;
+
 function endpointOf(fn: unknown): Record<string, unknown> {
   return (fn as { __endpoint: Record<string, unknown> }).__endpoint;
 }
 
 function gatilhoDe(fn: unknown): { schedule?: string; timeZone?: string } {
   return endpointOf(fn).scheduleTrigger as { schedule?: string; timeZone?: string };
+}
+
+function gatilhoDeEvento(fn: unknown): {
+  eventFilters?: Record<string, string>;
+  eventFilterPathPatterns?: Record<string, string>;
+  retry?: boolean;
+} {
+  return endpointOf(fn).eventTrigger as {
+    eventFilters?: Record<string, string>;
+    eventFilterPathPatterns?: Record<string, string>;
+    retry?: boolean;
+  };
 }
 
 /** The two partner credentials every Shopee-API-bound trigger must bind. */
@@ -367,6 +403,93 @@ describe('sweepShopeeStuckReservations', () => {
   });
 });
 
+describe('onProdutoShopeeLinkChanged', () => {
+  it('escuta produtos/{produtoId}/prodshopee/{linkId}', () => {
+    // ⚠️ Pinned against the HANDLE's own path, not a second literal. The leaf
+    // name is the VERIFIED Flutter one (#289) — the guessed `produtoshopee`
+    // never matched a collection Flutter writes, and the failure was silent:
+    // the trigger simply never fires, exactly like a wrong `database`.
+    const doHandle = produtoShopeeLinkCollection.resolvePath({ produtoId: '{produtoId}' });
+
+    expect(gatilhoDeEvento(onProdutoShopeeLinkChanged).eventFilterPathPatterns?.document).toBe(
+      `${doHandle}/{linkId}`,
+    );
+    // ÂNCORA: the handle really resolved a wildcard path, so the comparison
+    // above cannot be two `undefined`s agreeing.
+    expect(doHandle).toBe('produtos/{produtoId}/prodshopee');
+  });
+
+  it("⚠️ liga-se ao banco NOMEADO 'default' — não a '(default)'", () => {
+    // THE load-bearing assertion of this describe, and it MUST be an exact
+    // equality on the parsed field — never a `JSON.stringify(...)
+    // .toContain('default')`. The serialized endpoint always carries
+    // `"namespace":"(default)"`, and an OMITTED `database` defaults to
+    // `"(default)"` too, so a substring check passes in every case and guards
+    // nothing. Firestore Enterprise names this project's database literally
+    // `default`; a trigger bound to `(default)` deploys fine and never fires.
+    expect(gatilhoDeEvento(onProdutoShopeeLinkChanged).eventFilters?.database).toBe('default');
+  });
+
+  it("⛔ QUASE-FALHA: um database '(default)' ou ausente é REPROVADO", () => {
+    // The near-miss of the assertion above, spelled as the two things a
+    // `toContain` cannot distinguish: the sentinel spelling, and no value at
+    // all.
+    const banco = gatilhoDeEvento(onProdutoShopeeLinkChanged).eventFilters?.database;
+
+    expect(banco).toBeDefined();
+    expect(banco).not.toBe('(default)');
+  });
+
+  it('declara a região inlinada', () => {
+    // ⚠️ Inherited from `setGlobalOptions` (options.ts), NOT declared per
+    // function — which is the codebase's own pattern and the reason it is worth
+    // asserting: the registration rides the bare `import './options'` at the
+    // TOP of index.ts, and a duplicate import further down would merge into it
+    // and move the registration AFTER the trigger modules. The functions then
+    // deploy fine, to the wrong region (#1108).
+    expect(endpointOf(onProdutoShopeeLinkChanged).region).toEqual([process.env.FUNCTIONS_REGION]);
+  });
+
+  it('declara retry: true', () => {
+    // At-least-once redelivery for TRANSIENT Firestore failures. It is safe
+    // ONLY because of how each arm is written: the add is an `arrayUnion`
+    // (commutative, idempotent) and the remove re-derives its verdict from a
+    // guarded re-read of what is stored NOW — a redelivery replays the ORIGINAL
+    // CloudEvent, i.e. the same stale before/after snapshots.
+    expect(gatilhoDeEvento(onProdutoShopeeLinkChanged).retry).toBe(true);
+  });
+
+  it('NÃO vincula segredo nenhum — nunca chama a Shopee', () => {
+    // The sibling of the exact-set assertions below, in the opposite direction.
+    // `secrets:` is a whitelist an operator grants one by one, and a needless
+    // binding is one more Secret Manager grant that can 403 the function at
+    // startup — taking down the owner of `integracoesComProduto`, which is the
+    // anchor pre-filter every sweep opens with.
+    expect(endpointOf(onProdutoShopeeLinkChanged).secretEnvironmentVariables ?? []).toEqual([]);
+  });
+
+  it('⚠️ o id do banco é INLINADO pelo build.mjs, não lido em execução', () => {
+    // ⚠️ This has to be a SOURCE assertion, because no runtime assertion can
+    // see it: unbundled, `process.env.FIREBASE_DATABASE_ID ?? 'default'`
+    // answers `'default'` whether the build inlined anything or not, so the
+    // exact-equality test above stays green over the mutation that matters.
+    // What breaks in the cloud is narrower — Firebase reads no env during
+    // codebase ANALYSIS, so without the `define` the analyzed endpoint carries
+    // `undefined` and the trigger is registered against the non-existent
+    // `(default)`.
+    //
+    // ⚠️ `src/lib/admin.ts` reading the same variable at RUNTIME for `getDb()`
+    // is a DIFFERENT thing and does not cover this — a reader who sees it there
+    // concludes the variable is already handled.
+    const build = readFileSync(fileURLToPath(new URL('../build.mjs', import.meta.url)), 'utf8');
+
+    expect(build).toContain("'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId)");
+    expect(build).toContain("process.env.FIREBASE_DATABASE_ID || 'default'");
+    // ÂNCORA: the file really was read and really is this codebase's build.
+    expect(build).toContain("'process.env.FUNCTIONS_REGION': JSON.stringify(region)");
+  });
+});
+
 describe('as quase-falhas que um `toContain` sozinho não pega', () => {
   it('nenhum dos agendamentos vincula um TERCEIRO segredo', () => {
     // `secrets:` is a whitelist an operator has to grant one by one. A name that
@@ -442,11 +565,41 @@ describe('as quase-falhas que um `toContain` sozinho não pega', () => {
     expect(exportados.sort()).toEqual(Object.keys(FILAS).sort());
   });
 
-  it('as duas famílias são DISJUNTAS — nada é agendamento e fila ao mesmo tempo', () => {
-    // Um export que aparecesse nos dois mapas satisfaria as duas asserções de
-    // exaustividade e teria as suas opções lidas pelo conjunto errado.
-    const agendamentos = new Set(Object.keys(AGENDAMENTOS));
-    for (const nome of Object.keys(FILAS)) expect(agendamentos.has(nome)).toBe(false);
+  it('todo gatilho de evento exportado está coberto por GATILHOS', () => {
+    // A terceira gêmea, e a que fechou o buraco maior: as duas asserções acima
+    // percorrem `scheduleTrigger` / `taskQueueTrigger`, então um `onDocument*`
+    // exportado não era lido por NADA — nem a região, nem o `database`, nem os
+    // segredos, nem o `retry`. O passo 11 (#1519) trouxe o primeiro desta
+    // codebase, e é isto que torna crescer o mapa obrigatório em vez de
+    // lembrado.
+    const exportados = Object.entries(modulo as unknown as Record<string, unknown>)
+      .filter(([, valor]) => {
+        const endpoint = (valor as { __endpoint?: Record<string, unknown> } | null)?.__endpoint;
+        return endpoint !== undefined && endpoint.eventTrigger !== undefined;
+      })
+      .map(([nome]) => nome);
+    expect(exportados.sort()).toEqual(Object.keys(GATILHOS).sort());
+  });
+
+  it('as TRÊS famílias são DISJUNTAS — nada é agendamento, fila e gatilho ao mesmo tempo', () => {
+    // Um export que aparecesse em dois mapas satisfaria as duas asserções de
+    // exaustividade correspondentes e teria as suas opções lidas pelo conjunto
+    // errado. Os TRÊS pares, não só o primeiro: com três famílias há três
+    // maneiras de duplicar, e duas delas passariam por uma verificação escrita
+    // para duas.
+    const familias = { AGENDAMENTOS, FILAS, GATILHOS };
+    const pares = [
+      ['AGENDAMENTOS', 'FILAS'],
+      ['AGENDAMENTOS', 'GATILHOS'],
+      ['FILAS', 'GATILHOS'],
+    ] as const;
+
+    for (const [a, b] of pares) {
+      const naPrimeira = new Set(Object.keys(familias[a]));
+      for (const nome of Object.keys(familias[b])) {
+        expect(naPrimeira.has(nome), `${nome} está em ${a} E em ${b}`).toBe(false);
+      }
+    }
   });
 
   it('todo onSchedule exportado está coberto por um describe acima', () => {
