@@ -11,6 +11,7 @@ runs them, from this worktree, against the project the environment points at.
 | `rastrear-pedido.ts`     | rehearses the shipment merge of ONE order (step 7)    | only with `--live`        |
 | `varrer-reservas.ts`     | rehearses the weekly stuck-reservation sweep (step 8) | only with `--live`        |
 | `importar-anuncio.ts`    | imports ONE anúncio through the real step-9 path      | only with `--live`        |
+| `publicar-anuncio.ts`    | publishes ONE produto through the real step-11 path   | only with `--live`        |
 
 ⚠️ No `--` separator in any command below: pnpm forwards that token into the
 script, which parses `process.argv` itself and rejects it.
@@ -857,3 +858,192 @@ kit-componente-nao-vinculado`, printed together with the component table so
   worth doing before any live run against a real catalogue.
 - **Never run by an agent** (root `CLAUDE.md` rule 8) — in `--live` it writes
   real produtos, real links and real files into Storage.
+
+---
+
+## `publicar:anuncio` — rehearsing the first listing WRITE
+
+Every script above this one either READS Shopee or writes the ERP. This one is
+the first that writes **Shopee**: `--live` creates or updates a real listing on
+a real marketplace, visible to real buyers. `publicarAnuncioShopee` normally
+runs from the `publicar` route; this script drives the same code from a terminal
+against ONE named produto, so the channel's first `add_item` is deliberate and
+observable instead of arriving on an HTTP call nobody was watching.
+
+It is also where the whole plan is printed. The publisher is split `preparar`
+(write-free) → `planejar` (pure) → `aplicar`, so a dry run runs the first two
+halves and renders what the third would send. That is not a re-implementation of
+the live path: it is the live path, minus the writer. The reasoning behind every
+line it prints is `lib/shopee/anuncios/README.md`.
+
+### 12.1 Environment
+
+Same `.env.local` as every other script here (`dotenv -e ../../.env.local -- tsx
+…`), and the same variables as §1. Step 11 adds **no** variable of its own —
+what it needs are three fields on the **integração document**, and each one
+silently disables a leg:
+
+| field on `integracao/{id}` | what its absence does                                                                                     |
+| -------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `operacaoOuterRef`         | `tax_info` is omitted with `motivo=sem-operacao` — the listing publishes with NO fiscal block             |
+| `tabelaNormalOuterRef`     | the produto reads as priceless and the plan is BLOCKED with `sem-preco` / `filho-sem-preco`               |
+| `depositoOuterRef`         | the available stock reads as `0`, which a shop with a stock minimum refuses as `estoque-abaixo-do-minimo` |
+
+⚠️ **The shop must be authorized.** A conta connected by MAIN ACCOUNT has no
+`shop_id`, so nothing can be Shop-signed: the script prints an instruction and
+exits `1` rather than a stack. That is a legitimate state, not a bug.
+
+⚠️ **This CLI writes on the real marketplace**, so the project the environment
+points at decides which shop you are publishing to. Read the preamble — mode,
+project, database, `SHOPEE_SANDBOX`, the integração, the produto — before you let
+it continue, exactly as in §1.
+
+### 12.2 Dry run first — always
+
+```bash
+pnpm --filter @delfrance/shopee-app publicar:anuncio --integracao int-1 --produto prod-1
+```
+
+⚠️ **A dry run is not offline, and it is not free.** It reads Firestore, calls
+`get_item_limit`, the category tree and `get_channel_list` — and **it uploads the
+pictures**. The `add_item` body needs real `image_id`s to be a body at all, so
+the photo resolver runs for real; the cost is paid ONCE, because every id lands
+in `arquivos.externalIds` and the next pass reuses it. What a dry run never does
+is WRITE Firestore or create a listing, and that property is **structural**:
+neither `prepararPublicacao` nor `planejarPublicacao` has a writer anywhere in
+its body, proved by a FakeDb that throws on every write verb.
+
+The usage the script itself prints (`--help`, answered before any validation and
+before the first dynamic import, so it touches no environment, no Firestore and
+no Shopee):
+
+```
+Publica UM produto do ERP como anúncio na Shopee, pelo caminho real do step 11.
+
+  pnpm --filter @delfrance/shopee-app publicar:anuncio \
+    --integracao <integracaoId> --produto <produtoId> [opções]
+
+Obrigatórios
+  --integracao <id>   documento da integração Shopee (ex.: int-1)
+  --produto <id>      o produto PAI do ERP (nunca uma variação)
+
+Opções
+  --link <docId>      o vínculo prodshopee a usar, quando o produto tem mais de um
+  --categoria <id>    category_id folha, só dígitos. Só é usado quando o vínculo
+                      NÃO tem categoria; nunca sobrescreve a armazenada.
+  --status UNLIST     publica pausado. O padrão é NORMAL (à venda).
+  --dry-run           lê, resolve as fotos e PLANEJA, sem escrever. É o PADRÃO.
+  --live              PUBLICA DE VERDADE na Shopee e grava os vínculos.
+  --project <id>      sobrescreve FIREBASE_PROJECT_ID antes de abrir o admin.
+  --json              imprime o mesmo resumo redigido em JSON no stdout
+                      (o cabeçalho vai para o stderr).
+  --help, -h          mostra esta ajuda e sai com 0, sem abrir o Firestore
+                      nem chamar a Shopee.
+```
+
+| flag                | meaning                                                                                                                                                                           |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--integracao <id>` | **required** — the Shopee integração document. A conta missing, inactive or of another tipo fails HERE, in `loadShopeeContext`                                                    |
+| `--produto <id>`    | **required** — the **PARENT** produto. A child or a native kit is refused inside `prepararPublicacao`, before a plan exists (see the exit codes below)                            |
+| `--link <docId>`    | optional — which `prodshopee` link to use when the produto has more than one. A `linkDocId` belonging to another conta resolves to nothing and the script exits `1`, never to 404 |
+| `--categoria <id>`  | optional — **digits only, and never trimmed**: `' 100017'` is refused rather than repaired. Used ONLY when the resolved link carries no `category_id`; it never overwrites one    |
+| `--status`          | `NORMAL` (default) or `UNLIST`, **exactly** — no case fold and no alias, so `unlist` is refused                                                                                   |
+| `--dry-run`         | the **DEFAULT**, and redundant. ⚠️ `--live --dry-run` is **REFUSED**, never resolved by precedence                                                                                |
+| `--live`            | the only opt-in to a real publish                                                                                                                                                 |
+| `--project <id>`    | overrides `FIREBASE_PROJECT_ID` before the admin app resolves it                                                                                                                  |
+| `--json`            | the same REDACTED summary as one parseable document on stdout, preamble on stderr                                                                                                 |
+| `--help`, `-h`      | prints the usage and exits `0`, ahead of every validation                                                                                                                         |
+
+⚠️ A bare `--` is refused, and no command in this file carries one (see the note
+at the top).
+
+### 12.3 What to read in the output
+
+Thirteen blocks, in order. The whole rendering is an **allow-list** — named
+fields only, never a raw payload — so it is safe to paste into an issue. Keep it
+that way if you extend it.
+
+| line                                                                                                                          | what it tells you                                                                                                                                                                                                                                                        |
+| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `## O que uma publicação faria (produto …, sequência create\|update)`                                                         | whether this run would CREATE a listing or update the one the link already names. `create` on a produto you believe is published means the link is missing, not that Shopee forgot it.                                                                                   |
+| `item_id … vínculo=`                                                                                                          | `novo` on a create, else the stored id, plus which `prodshopee` document decided.                                                                                                                                                                                        |
+| `status … pedido=… add_item envia=…`                                                                                          | the two are DIFFERENT on purpose: a create with children always sends `UNLIST` and is re-listed after the models exist. `pedido=` is what you asked for.                                                                                                                 |
+| `categoria … (folha\|nao-folha\|desconhecida)`                                                                                | the resolved id, the leaf verdict and the root-first path, or `(fora da árvore)`. A non-leaf is refused as `categoria-invalida`.                                                                                                                                         |
+| `item_name` / `descrição` / `condition` / `weight` / `dimension` / `brand` / `item_sku / gtin_code` / `pre_order` / `imagens` | the body's scalar fields. The description is **counted, never rendered** (`«REDIGIDA — N caractere(s)»`), and `imagens` is a COUNT: the URLs and the `image_id`s are omitted deliberately.                                                                               |
+| `### attribute_list (N)`                                                                                                      | per attribute the id, how many values and whether it is mandatory — then `obrigatórios SEM valor` as NAMES, which is exactly the `atributo-obrigatorio` refusal spelled out.                                                                                             |
+| `### tax_info`                                                                                                                | `bloco … ENVIADO inteiro` or `omitido (<motivo>)`, the `chaves` line always, then one `chave valor` line per field. ⚠️ **The VALUES are printed here** — unlike `importar:anuncio`, which prints keys only. A CFOP or a CSOSN is a catalogue code, not a seller's datum. |
+| `### logistic_info (N a enviar)`                                                                                              | one row per channel sent (`fee_type`, `enabled`, `is_free`) and then `pulados` with each channel's reason. A channel can appear in both lists — one says "on anyway", the other "not sent by us".                                                                        |
+| `### tiers (N)`                                                                                                               | per grupo the `variation_id` and the group, then each option with `foto=sim\|não` and `(ocupada por modelo sem filho)` where a live model holds a position nothing of ours binds.                                                                                        |
+| `### modelos (acao=…, profundidade mudou=…)`                                                                                  | `init` / `update` / `nenhuma`, the new models' `tier_index`, sku, price and stock, the re-listed ones, the skus to update, the `modelos sem filho` that are KEPT, and any `vínculos desaparecidos`.                                                                      |
+| `### fotos e sequência`                                                                                                       | five counts plus one line per failure (`arquivoId — motivo`, **never** the message or the URL), and which re-list door is planned.                                                                                                                                       |
+| `### passos que o --live executaria (N)`                                                                                      | the plan's own step list, numbered. It is READ from the plan, never re-listed by the renderer, so it cannot start lying about what the publisher does.                                                                                                                   |
+| `### problemas: NENHUM — este produto é publicável`                                                                           | the line you are looking for. Otherwise `### problemas (N) — NADA seria enviado` and one line per problema (campo · motivo · mensagem) — a non-empty list means **nothing** would be sent, not that part of it would.                                                    |
+
+### 12.4 The live run
+
+```bash
+pnpm --filter @delfrance/shopee-app publicar:anuncio --integracao int-1 --produto prod-1 --live
+```
+
+⚠️ **`--live` creates a REAL listing.** Use `--status UNLIST` to publish it
+paused and look at it in Seller Centre before it is for sale — that is the
+rehearsal shape for a first real publish, and re-listing it later is one
+`anuncio-status reativar` away.
+
+The live printout is shorter and different on purpose: `item_id` / `vínculo` /
+`sequência`, then the **read-back** (`estadoAnuncio`, `item_status`, `deboost`)
+or `DEGRADOU — a segunda escrita de vínculo NÃO aconteceu` when the confirmation
+read refused, `relistagem` naming which door worked, `tax_info` (`enviado` or
+`omitido (<motivo>)`), the violation aviso, the count of calls spent on Shopee,
+and the modelos / fotos counters. Everything there comes from what Shopee
+ANSWERED — the status is never echoed back from the request.
+
+**The exit codes.** `0` on any DRY RUN that reached a PLAN, **including a blocked
+one**: a `problema` is an answer, and reading them is what the dry run is for.
+`0` on `--help`. `1` on any throw, described by CLASS plus the Shopee code and
+path, never by a payload. `1` when the produto is not found, or the named
+`--link` belongs to another conta. `1` on a conta with no `shop_id`.
+⚠️ **`1` in BOTH modes for a produto that is a CHILD or a native KIT**, because
+`prepararPublicacao` refuses those before a plan exists — the rule is "was a plan
+reached", not "how bad is the refusal". ⚠️ Under `--live` a refusal is not caught
+either, and the transcript adds `Nada garante que nada foi criado` plus
+`releia com --dry-run`.
+
+### 12.5 Caveats you should expect to see (none of these is a bug)
+
+- **THE DRY RUN UPLOADS ITS PICTURES.** Said again because it surprises
+  everyone: the body needs real `image_id`s. Paid once, cached on the arquivo.
+- **`tax_info` omitted with `motivo=sem-operacao`** on a produto whose conta has
+  no `operacaoOuterRef`, or whose operação has no rule matching the produto. The
+  block is whole or absent — there is no partial `tax_info`.
+- **`taxInfoOmitido: 'recusado-incompleto'`** after a live run means Shopee
+  refused the block as incomplete and the publisher retried the SAME call ONCE
+  without it. The listing published; the fiscal block did not.
+- **`logistica-sem-canal`** on a shop whose only enabled channel needs a
+  `size_id` the produto has none of (`SIZE_SELECTION`). A shop with no usable
+  channel cannot publish, and that is Shopee's rule, not ours.
+- **The ≥ 5 s wait looks like a hang** between `add_item` and the tier leg on a
+  create with children. It is `esperar(5000)`, and it is deliberate: Shopee
+  needs the item to settle before `init_tier_variation`.
+- **The parent's price and stock are ignored once models exist.** They ride the
+  create because the body requires them, and the models replace them inside the
+  same sequence.
+- **`estoque-abaixo-do-minimo`** names a band you did not choose: the shop's own
+  `stock_limit.min_limit`. The sandbox shop's minimum is **2**, measured — so a
+  produto with one unit available is refused, and Mercado Livre accepting `0`
+  here is not evidence about Shopee.
+- **A re-list refused with `error_set_normal_unlisted_item`** falls back to
+  `update_item {item_status: 'NORMAL'}`. Two documented doors, one literal
+  ordering them; seeing the second one used is information, not a failure.
+- **`modelos sem filho`** is a live model with no ERP child. It is **KEPT** in
+  every list, because an omitted model is a DELETED model at Shopee.
+- **The model plan on an UPDATE path is PROVISIONAL in a dry run.** `preparar`
+  reads no `get_model_list`, so the printed leg is reconciled against an unknown
+  live tree; the live run re-derives it from a FRESH read. Stated in the module
+  header too.
+- **A dry run over an existing listing prints the CREATE body's fields** —
+  `item_status`, `seller_stock` and `pre_order` included — because `criar` is
+  always the complete body and `atualizar` is the field-wise subset of it. The
+  header line tells you which sequence would actually run.
+- **Never run by an agent** (root `CLAUDE.md` rule 8) — in `--live` it publishes
+  on a real marketplace, and in either mode it uploads pictures to Shopee.

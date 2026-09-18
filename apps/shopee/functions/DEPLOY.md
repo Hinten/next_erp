@@ -36,8 +36,10 @@ the bundle, proven before the first deploy.
 - The App Hosting backend for `apps/shopee` created in the Firebase console.
 - Env / secrets on the deployed function: `FIREBASE_PROJECT_ID` + admin creds,
   plus `SHOPEE_PARTNER_ID` and `SHOPEE_PARTNER_KEY` in Secret Manager (see
-  **Secrets** below — both are `secrets:` on all nine triggers: the **two queue
-  handlers** plus the seven schedules).
+  **Secrets** below — both are `secrets:` on nine of the **ten** triggers: the
+  **two queue handlers** plus the seven schedules. ⚠️ Since step 11 the tenth is
+  the Firestore trigger `onProdutoShopeeLinkChanged`, and it binds **none** of
+  them, because it never calls Shopee).
 - **Region match**: the App Hosting backend must enqueue onto the queue in the
   function's region. The enqueuer resolves it from
   `SHOPEE_TASKS_REGION ?? FUNCTIONS_REGION`, and there is **no default** — an
@@ -76,23 +78,35 @@ locally without deploying: `node apps/shopee/functions/build.mjs` (writes
 the full servable folder at `.deploy/shopee-functions`. Both need
 `FUNCTIONS_REGION` set — `requireBuildRegion` throws without it, on purpose.
 
-⚠️ **The inline proof.** Two handlers reach this bundle through a **dynamic**
-`import()` in `lib/shopee/notificacoes/notificacao.ts` — lazily, so the App
-Hosting receiver's own bundle never carries the pedido tree. The functions
-bundle is the half that must carry them, and the bundler inlining them is not
-something any test asserts. Check it after a build:
+⚠️ **The inline proof.** **Three** handlers reach this bundle through a
+**dynamic** `import()` in `lib/shopee/notificacoes/notificacao.ts` — lazily, so
+the App Hosting receiver's own bundle never carries the pedido tree or the
+publish tree. The functions bundle is the half that must carry them, and the
+bundler inlining them is not something any test asserts. Check it after a build:
 
 ```bash
 FUNCTIONS_REGION=us-east1 node apps/shopee/functions/scripts/prepare-deploy.mjs
-for n in importarPedidoShopee rastrearPedidoShopee; do
+for n in importarPedidoShopee rastrearPedidoShopee tratarPushDeAnuncio \
+         onProdutoShopeeLinkChanged; do
   grep -q "$n" .deploy/shopee-functions/index.js || echo "AUSENTE $n"
 done
+grep -q '"default"' .deploy/shopee-functions/index.js || echo 'AUSENTE database id'
 ```
 
-Silence is the pass: both names are in the bundle. An `AUSENTE <nome>` line says
-the dispatched function would park (step 5) or never reach the shipment merge
-(step 7) instead of running it — green everywhere else, because nothing but this
-check looks.
+Silence is the pass: every name is in the bundle. An `AUSENTE <nome>` line says
+the dispatched function would park (step 5), never reach the shipment merge
+(step 7) or never reach the listing-lifecycle handler (step 11) instead of
+running it — green everywhere else, because nothing but this check looks.
+`onProdutoShopeeLinkChanged` is not a dynamic import but an EXPORT, so its
+absence would mean the trigger was not deployed at all.
+
+⚠️ **The last line is a SMOKE CHECK, not the guard.** The thing that really
+pins the inlined Firestore database id is `src/index.test.ts`'s exact-equality
+assertion on the trigger's `eventFilters.database` (plus a source assertion over
+`build.mjs`, because unbundled `process.env.FIREBASE_DATABASE_ID ?? 'default'`
+answers `'default'` whether the build inlined anything or not — the runtime test
+cannot see that mutation). The bundle `grep` only tells you the literal survived
+esbuild; it cannot tell you it landed on the trigger.
 
 ⚠️ **One check PER NAME, never a combined `grep -c -e A -e B`.** That form prints
 one SUM, so a bundle carrying only `importarPedidoShopee` still prints a non-zero
@@ -112,11 +126,15 @@ block exists to catch. Only `grep -q` per name has a per-name exit status.
 | `sweepShopeeEscrowSettlement`    | `onSchedule('10 5 * * 1')`             | #1514 — the WEEKLY SETTLEMENT SWEEP, and the only thing in this channel that ever learns what the marketplace actually PAID. Shopee ships no payment push, and `escrow_release_time` is exposed by exactly ONE endpoint (`get_escrow_list`), so the final figure cannot arrive by event. Per active conta it pages that listing over a release-time window from a durable MILLISECOND cursor (`liquidacaoShopee/{integracaoId}`), re-reads each row's escrow and stamps the top-level `pagamento.liquidacao`; a row whose pagamento does not exist yet is parked and re-driven with a synthetic code 3, capped at 50 per tick. Mondays 05:10 America/Sao_Paulo, `timeoutSeconds 540`; binds both secrets; **ENQUEUES**. ⚠️ It ships **ON, with no `*_ENABLED` flag** — deliberately, unlike the backfill: a backstop that ships off is #778's failure, and the fan-out is bounded on every axis (300 settlements, 50 synthetic pushes).                                                                                                                                                                                                                                                                                         |
 | `sweepShopeeStuckReservations`   | `onSchedule('40 4 * * 1')`             | #1516 — the WEEKLY STUCK-RESERVATION SWEEP: the backstop BEHIND the other three, and the only one reaching past the 3-day lost-push window. Walks pedidos still holding a stock reservation in `aguardandoConfirmacaoDePagamento` past `MAX_IDADE_D` (paged, ≤ 2 000 documents scanned), reads `get_order_detail` in batches of 50 with a three-token optional-field allow-list, **ENQUEUES** a synthetic code 3 (`origem: 'reserva-travada'`) for an order that MOVED, and raises a `pedidoPrecisaDecisao` aviso for the residual — an order Shopee still reports `UNPAID`/`PENDING`, no longer knows, or holds in `TO_RETURN` — with the machine resolver that tipo has owed since it was declared. ⚠️ **It never writes the pedido and runs no transaction**, so `pedido.estado` keeps ONE writer, step 5. Mondays 04:40 America/Sao_Paulo, `timeoutSeconds 540`; binds both secrets. **DOUBLY GATED and it SHIPS OFF**: `SHOPEE_PEDIDO_TRAVADO_SWEEP_ENABLED=1` is the master flag (off ⇒ the tick reads nothing at all) and `SHOPEE_PEDIDO_TRAVADO_DRY_RUN=1` is the report-only rehearsal that is the load-bearing artefact of the step — see "Runtime env" below.                                                        |
 | `backfillShopeeOrders`           | `onSchedule('every 15 minutes')`       | #1512 — the ORDER BACKFILL: pages `get_order_list` by `update_time` per active conta from its durable cursor and enqueues one SYNTHETIC code-3 notification per `order_sn`, i.e. the same import path a real push takes. The only way to reach `PENDING` / `RETRY_SHIP` / `TO_CONFIRM_RECEIVE` / `TO_RETURN` orders, which the status filter cannot list, and the only documented recovery from a suspended subscription. **No-op until `SHOPEE_ORDER_BACKFILL_ENABLED=1`** (see "Runtime env" below) — since step 5 that flag is the ONLY gate, and every synthesized code 3 runs the order import. `timeoutSeconds 540`; binds both secrets; **ENQUEUES**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `onProdutoShopeeLinkChanged`     | `onDocumentWritten` (Firestore)        | #1519 / master-plan step 11 — the codebase's **FIRST Firestore trigger** and the TENTH: `onDocumentWritten` on `produtos/{produtoId}/prodshopee/{linkId}`, the only one here that never calls Shopee. It maintains `produtos.integracoesComProduto`, so `/produtos` can badge a Shopee-linked produto. ⚠️ **Zero reads and zero writes on the overwhelming majority of invocations**: `planejarMudancaDeLinkShopee` is pure and answers "nothing moved" for a status-only merge, so the handler never even opens a Firestore handle — a test pins that path. When affiliation DOES move it adds the conta with `arrayUnion`, or re-derives orphanhood by reading the produto's WHOLE `prodshopee` subcollection (no `where`, so **no new composite index**) and removes with `arrayRemove`. `database` is the LITERAL name **`default`**, inlined at build time from `FIREBASE_DATABASE_ID` — never the `(default)` sentinel, which fails every op `5 NOT_FOUND`. `retry: true`, safe because the add is an `arrayUnion` and the remove re-derives inside its own read set. **No secrets**, and it **does not enqueue**, so it needs no Cloud Tasks IAM at all. No per-function `region:`: it inherits `setGlobalOptions`.      |
 
 ### Secrets: `SHOPEE_PARTNER_ID` + `SHOPEE_PARTNER_KEY`
 
 Both are declared as `secrets:` on **both queue handlers** and on **every one of
-the seven schedules**, because all of them can reach a PUBLIC-signed Shopee call
+the seven schedules** — nine of the ten triggers, the exception being step 11's
+Firestore trigger, which binds neither because it makes no Shopee call at all
+(`src/index.test.ts` asserts that absence, so a secret drifting onto it reds CI)
+— because all of them can reach a PUBLIC-signed Shopee call
 (`shopeeConfig()` → `createShopeePartnerClient`) — and the order backfill needs
 them for its Shop-signed calls too, since the access token rides in the query
 while the HMAC is always partner-keyed. Without the bindings none of them fails
@@ -257,6 +275,16 @@ Manager (`firebase functions:secrets:set` + the `secrets: [...]` option, which
 is how `SHOPEE_PARTNER_ID` / `SHOPEE_PARTNER_KEY` travel).
 
 ## ⚠️ One-time IAM — the App Hosting backend enqueues Cloud Tasks
+
+⚠️ **Nothing below applies to step 11's Firestore trigger, and adding it here
+would do HARM.** A Firestore trigger is invoked by **Eventarc**, not by a Cloud
+Tasks enqueuer, so `onProdutoShopeeLinkChanged` needs no
+`roles/cloudtasks.enqueuer`, no `roles/iam.serviceAccountUser` and no
+per-service `roles/run.invoker` — it declares no `invoker` at all. And
+`TASKS_INVOKER_SA` is **AUTHORITATIVE**: a deploy REPLACES the member list it
+names, so adding a principal "for the trigger" would DISPLACE one that matters
+and break the queue leg instead. Grant the roles below for the two **queue**
+functions only.
 
 The receiver route (`/api/webhooks/shopee`, on the App Hosting backend) enqueues
 onto the `processShopeeNotification` queue via `firebase-admin`'s
@@ -418,8 +446,19 @@ constructed — **zero Shopee calls**, proved by call ORDER rather than by a moc
 and by `retryCount: 0` on the single dispatch. `ci.yml`'s `CI test`
 runs every unit suite in this app, this codebase included.
 
-Two gaps to know about:
+Three gaps to know about:
 
+- **The Firestore trigger never executes in CI either.** `firebase.shopee.tasks.json`
+  runs firestore + functions + tasks, and the functions emulator loads
+  `onProdutoShopeeLinkChanged` without ever delivering it an event: no lane
+  writes a `prodshopee` document through the emulated Firestore to watch the
+  handler wake up. Its BODY is covered by unit tests over the app's own FakeDb
+  and its OPTIONS by `src/index.test.ts` over `__endpoint` — the document
+  pattern, `database: 'default'` (exact equality on the parsed field, never a
+  `JSON.stringify().toContain()`, because the serialized endpoint always carries
+  `"namespace":"(default)"`), `retry: true` and the empty secret set. What no
+  test can show is that **Eventarc** delivers anything at all; the first real
+  proof is the deploy (see Cutover).
 - **None of the seven `onSchedule` triggers ever executes in CI.** The functions
   emulator logs them as "ignored because the pubsub emulator does not exist or
   is not running", so the lane loads them and nothing drives them. Their bodies
@@ -455,3 +494,16 @@ grant the IAM above, deploy this codebase, deploy the App Hosting backend, and
 only THEN register the push callback URL with Shopee (#1534). Registering first
 means every delivery arrives at a backend whose queue does not exist — each one
 persisted as `failed` and drained late, at best.
+
+⚠️ **One unknown for the FIRST deploy after step 11: Eventarc.** This codebase
+has never held an `onDocument*` trigger, so whether the project needs Eventarc
+and Pub-Sub APIs enabled (and the Eventarc service agent granted) before
+`onProdutoShopeeLinkChanged` can be created is **not settled by anything in this
+repo** — no test, no emulator and no CI lane exercises it, because the functions
+emulator never runs a Firestore trigger here. It is a **migration-window fact**
+(root `CLAUDE.md` rule 8, register item 81): surfaced here, settled by the first
+deploy, **never run by an agent**. If that deploy refuses the trigger, the other
+nine functions are unaffected — the failure is per-function — and enabling the
+APIs plus re-running the same deploy is the whole remedy. Nothing else in the
+channel depends on it: the badge on `/produtos` is step 21's surface, and it is
+not rendered yet.

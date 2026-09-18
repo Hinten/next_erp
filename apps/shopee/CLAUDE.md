@@ -20,10 +20,10 @@ a resumable Cloud Tasks job)**.
 `pedidos/{id}/pagamentos` subcollection, and since step 9 the **catálogo**
 itself (`produtos`, `grupoDeVariacoes`, `categorias`, `arquivos`, `prodshopee` /
 `variashopee`) — so the old blanket "this app writes nothing" is no longer true
-and must not be re-asserted. What is still true is the direction: **nothing is
-published or written TO Shopee** (step 9 pulls IN; publishing is step 11's), and
-the only state-changing calls the app
-makes are the OAuth exchange, the token refresh and the lost-push CONFIRM. All
+and must not be re-asserted. ⚠️ And since step 11 the app WRITES listings TO
+Shopee (`add_item`, the tier/model APIs, `unlist_item`, `upload_image`), beside
+the three other state-changing calls it
+makes: the OAuth exchange, the token refresh and the lost-push CONFIRM. All
 three matter: the `refresh_token` is single-use and rotating, and a confirm acks
 a page of the 3-day queue irreversibly.
 
@@ -1614,7 +1614,7 @@ are the rules a change must not break.**
   inventoried) and the only file there that may name the API.
 - **No ruleset regeneration, no new env var.** Publishing, stock, price, size
   charts and creating a kit ON Shopee are steps 11/12/13/18/19; `/produtos`
-  shows no Shopee badge until the link trigger of steps 11/12.
+  shows the Shopee badge since step 11's link trigger.
 
 ## Taxonomy reads (`lib/shopee/taxonomia/`, step 10)
 
@@ -1703,6 +1703,24 @@ said `push 13` was where granularity would earn its keep. It is not — `push 13
 is the brand-register RESULT and the dispatch table `ack`s it, invalidating
 nothing. Nothing in step 3 clears a taxonomy cache; whichever step first reacts
 to a brand or category change is where the question comes back.
+
+## Publish (`lib/shopee/anuncios/`, step 11)
+
+The first WRITER of a listing. Reasoning: `anuncios/README.md`.
+
+- No clock, no `next/server`, no `runTransaction` word: the functions bundle
+  reaches here; `deps.nowMs`/`deps.esperar` are parameters.
+- `preparar` (write-free) → `planejar` (pure) → `aplicar`; each write-back
+  lands the instant Shopee confirms, so a half-failed publish RESUMES.
+- Create with children: `add_item` UNLIST → esperar → `init_tier_variation` →
+  `get_model_list` → re-list. `model_list` is built from a FRESH
+  `get_model_list`; a model with no ERP child is KEPT; no link doc is deleted.
+- `tax_info` is whole or absent; the three seller constants are NOT sent, and
+  one all-or-nothing refusal retries the same call once without the block.
+- Refusals throw `ShopeePublishBlockedError` BEFORE any Shopee write; a
+  rejection is a `problema` on the field that fixes it. Both vocabularies
+  PERSIST.
+- `item_status` comes from the READ-BACK, never the request.
 
 ## Rules specific to this app
 
@@ -1804,17 +1822,18 @@ read by nothing.
 `ci-shopee.yml` carries exactly ONE suite job, `Shopee Cloud Tasks round trip`,
 behind the unskippable `CI gate (shopee)`. It builds the functions artifact and
 runs `*.tasks.test.ts` against firestore + functions + tasks emulators
-(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 9 that job runs
-**two suite FILES and five tests**
+(`firebase.shopee.tasks.json`, ports 8084/5003/9500). Since step 11 that job runs
+**three suite FILES and six tests**
 (`app/api/webhooks/shopee/route.tasks.test.ts` ×3,
-`lib/shopee/produtos/importacaoMassa.tasks.test.ts` ×2) — still one job, still
+`lib/shopee/produtos/importacaoMassa.tasks.test.ts` ×2,
+`lib/shopee/notificacoes/pushAnuncio.tasks.test.ts` ×1) — still one job, still
 one check name, no new gate-manifest row.
 
-Three **push deliveries** go through the receiver hop: an unknown push code
-(→ `parked`); since step 5 a **code 3**, and since step 7 a **code 4**, naming a
-shop that maps to no integração (→ `deferred`). Step 9's file is a different
+Four **push deliveries** go through the receiver hop: an unknown push code
+(→ `parked`); since step 5 a **code 3**, since step 7 a **code 4** and since
+step 11 a **code 16**, naming a shop that maps to no integração (→ `deferred`). Step 9's file is a different
 hop: enqueue → the tasks emulator → the real `processShopeeMassImport` → a
-seeded job stamped `failed`. All four are chosen for the same reason — the only
+seeded job stamped `failed`. All five are chosen for the same reason — the only
 outcomes that write a document with NO Shopee call: the mass-import one seeds an
 `integracao/int-1` of the **WRONG `tipo`**, so `loadShopeeContext` refuses
 before a client exists, and the stamp lands on `retryCount: 0` (a path that had
