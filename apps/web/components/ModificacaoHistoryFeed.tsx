@@ -151,6 +151,13 @@ export interface ModificacaoHistoryFeedProps {
     field: string,
     change: { old: unknown; new: unknown },
   ) => ReactNode;
+  /**
+   * Document-level controls for the WHOLE entry, rendered once in the
+   * expanded body below the per-field changes. Produto uses this for
+   * "Restaurar documento" on a `delete`-kind entry (#648); pedido passes
+   * nothing.
+   */
+  renderEntryActions?: (entry: ListEntry) => ReactNode;
   emptyLabel?: string;
   pageSize?: number;
   /**
@@ -176,6 +183,7 @@ export function ModificacaoHistoryFeed({
   ctx,
   subcolecaoLabels,
   renderFieldActions,
+  renderEntryActions,
   emptyLabel = 'Nenhuma modificação registrada.',
   pageSize = DEFAULT_PAGE_SIZE,
   extraEntries,
@@ -349,6 +357,7 @@ export function ModificacaoHistoryFeed({
           nomes={nomes}
           subcolecaoLabels={subcolecaoLabels}
           renderFieldActions={renderFieldActions}
+          renderEntryActions={renderEntryActions}
           onToggle={() => setExpandedId((id) => (id === entry.id ? null : entry.id))}
         />
       ))}
@@ -372,6 +381,7 @@ interface EntryRowProps {
   nomes: Record<string, string>;
   subcolecaoLabels?: Readonly<Record<string, string>>;
   renderFieldActions?: ModificacaoHistoryFeedProps['renderFieldActions'];
+  renderEntryActions?: ModificacaoHistoryFeedProps['renderEntryActions'];
   onToggle: () => void;
 }
 
@@ -381,6 +391,7 @@ function EntryRow({
   nomes,
   subcolecaoLabels,
   renderFieldActions,
+  renderEntryActions,
   onToggle,
 }: EntryRowProps) {
   const origem = subcolecaoLabels
@@ -439,6 +450,7 @@ function EntryRow({
                 Sem detalhes de campos para esta entrada.
               </Text>
             )}
+            {renderEntryActions?.(entry)}
           </Stack>
         </Box>
       )}
