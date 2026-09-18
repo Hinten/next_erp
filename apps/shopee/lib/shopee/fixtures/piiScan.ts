@@ -79,8 +79,10 @@ const PATTERNS: readonly { readonly kind: PiiFinding['kind']; readonly re: RegEx
   { kind: 'email', re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
   { kind: 'cpf', re: /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/ },
   { kind: 'cpf', re: /(?<!\d)\d{11}(?!\d)/ },
-  { kind: 'cnpj', re: /\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b/ },
-  { kind: 'cnpj', re: /(?<!\d)\d{14}(?!\d)/ },
+  // ⚠️ Alphanumeric CNPJ (RFB IN 2.229/2024): `[0-9A-Z]{12}[0-9]{2}`. A `\d{14}`
+  // scanner reports a fixture clean while it still carries a real CNPJ.
+  { kind: 'cnpj', re: /\b[0-9A-Z]{2}\.[0-9A-Z]{3}\.[0-9A-Z]{3}\/[0-9A-Z]{4}-[0-9]{2}\b/ },
+  { kind: 'cnpj', re: /(?<![0-9A-Z])[0-9A-Z]{12}[0-9]{2}(?![0-9A-Z])/ },
   { kind: 'phone', re: /\(\d{2}\)\s?\d{4,5}-\d{4}/ },
   {
     kind: 'endereco',

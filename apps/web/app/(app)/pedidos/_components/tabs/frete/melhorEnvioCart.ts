@@ -13,6 +13,8 @@
  * `invoice.key` and flips `non_commercial` off (#209); without one it sends
  * `non_commercial: true` (declaração de conteúdo).
  */
+import { normalizeDocumento } from '@delfrance/core/documents';
+
 import { localTelefoneOrNull } from '@delfrance/core/phone';
 import {
   type CartInsertRequest,
@@ -72,9 +74,16 @@ export interface BuildPedidoCartInput {
   readonly invoiceKey?: string | null;
 }
 
-/** 14 digits = CNPJ (PJ); anything else (typically 11 = CPF) is treated as PF. */
+/**
+ * 14 characters = CNPJ (PJ); anything else (typically 11 = CPF) is treated as PF.
+ *
+ * ⚠️ Normalises punctuation without stripping letters. A `replace(/\D/g, '')`
+ * here classified an alphanumeric-CNPJ cliente (RFB IN 2.229/2024) as PF, so
+ * Melhor Envio received the document under the wrong party key and the label
+ * went out with the wrong party type — no error anywhere.
+ */
 function isPessoaJuridica(document: string | null): boolean {
-  return (document ?? '').replace(/\D/g, '').length === 14;
+  return normalizeDocumento(document ?? '').length === 14;
 }
 
 /**

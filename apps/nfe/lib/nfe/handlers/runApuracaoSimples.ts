@@ -21,6 +21,8 @@
  * `fetchReceita` é injetado: os testes passam um stub e exercitam a decisão,
  * que é a parte que pode estar errada.
  */
+import { normalizeDocumento } from '@delfrance/core/documents';
+
 import type { Firestore } from 'firebase-admin/firestore';
 
 import { roundReais } from '@delfrance/core/money';
@@ -119,14 +121,24 @@ export interface ResultadoApuracao {
 }
 
 /**
- * A raiz do CNPJ — os 8 primeiros dígitos, que identificam a EMPRESA.
- * `null` quando o campo não tem 14 dígitos, caso em que a filial é apurada
+ * A raiz do CNPJ — os 8 primeiros caracteres, que identificam a EMPRESA.
+ * `null` quando o campo não tem 14 caracteres, caso em que a filial é apurada
  * sozinha em vez de entrar num grupo errado.
+ *
+ * ⚠️ Normaliza pontuação SEM remover letras. Um `replace(/\D/g, '')` aqui
+ * devolvia `null` para um CNPJ alfanumérico (RFB IN 2.229/2024), e o chamador
+ * cai num `filial:<id>` — então cada filial era apurada SOZINHA em vez de
+ * agrupada pela raiz, produzindo um RBT12 errado. Sem erro, sem sinal em CI:
+ * só um número de Simples Nacional incorreto.
  */
 export function raizCnpj(cnpj: string | null | undefined): string | null {
   if (typeof cnpj !== 'string') return null;
-  const digitos = cnpj.replace(/\D/g, '');
-  return digitos.length === 14 ? digitos.slice(0, 8) : null;
+  const normalizado = normalizeDocumento(cnpj);
+  // ⚠️ Shape, not just length. A bare `length === 14` would accept
+  // `abcdefghijklmn` and hand back a fabricated root; the CNPJ format is twelve
+  // [0-9A-Z] followed by two NUMERIC check digits, in both the legacy and the
+  // alfa form, so this refuses garbage while accepting either.
+  return /^[0-9A-Z]{12}[0-9]{2}$/.test(normalizado) ? normalizado.slice(0, 8) : null;
 }
 
 /** Uma filial com o que a apuração precisa dela. */
